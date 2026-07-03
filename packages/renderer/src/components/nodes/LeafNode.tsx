@@ -4,11 +4,12 @@
  * handles), so a reader sees what flows in and what flows out of the unit.
  */
 
+import { useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { accentForKind } from "../../theme/kindColors";
 import { ellipsize } from "../../theme/displayName";
 import { isCallable } from "../../layout/nodeSize";
-import { useBlueprint } from "../../state/StoreContext";
+import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { BlueprintNode } from "../../layout/rfTypes";
 import { NodeHeader } from "./NodeHeader";
 import { TelemetryBadges } from "../TelemetryBadges";
@@ -19,11 +20,16 @@ export function LeafNode(props: NodeProps<BlueprintNode>) {
   const metrics = useBlueprint((state) => state.telemetry[props.id]);
   const selected = useBlueprint((state) => state.selectedId === props.id);
   const isEntry = useBlueprint((state) => state.flowRootId === props.id);
+  const sourceUrl = useBlueprint((state) => state.sourceUrl);
+  const showCode = useBlueprintActions().showCode;
   const callable = isCallable(node.kind);
+  // Offer the source button only for a callable whose location the server can actually serve.
+  const canShowCode = callable && Boolean(node.location) && Boolean(sourceUrl);
   return (
     <div style={cardStyle(accent, selected, isEntry)}>
       <Handle type="target" position={Position.Left} id="in" style={pinStyle(callable)} />
-      <NodeHeader node={node} accent={accent} entry={isEntry}>
+      {canShowCode ? <CodeButton onShow={() => void showCode(node)} /> : null}
+      <NodeHeader node={node} accent={accent} entry={isEntry} reserveRight={canShowCode}>
         <TelemetryBadges metrics={metrics} />
       </NodeHeader>
       <div style={BODY_STYLE}>
@@ -35,8 +41,32 @@ export function LeafNode(props: NodeProps<BlueprintNode>) {
   );
 }
 
+// The subtle </> control that opens the source drawer. It lives OUTSIDE NodeHeader (a <button>
+// can't nest a <button>) as an absolutely-positioned corner control; stopPropagation keeps its
+// click off the node's select/dive handlers. Hover lifts it to the accent green.
+function CodeButton(props: { onShow: () => void }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      type="button"
+      aria-label="Show source"
+      title="Show source"
+      style={hover ? CODE_BUTTON_HOVER_STYLE : CODE_BUTTON_STYLE}
+      onClick={(event) => {
+        event.stopPropagation();
+        props.onShow();
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      {"</>"}
+    </button>
+  );
+}
+
 function cardStyle(accent: string, selected: boolean, isEntry: boolean): React.CSSProperties {
   return {
+    position: "relative",
     width: "100%",
     height: "100%",
     boxSizing: "border-box",
@@ -61,6 +91,27 @@ function pinStyle(callable: boolean): React.CSSProperties {
     border: "none",
   };
 }
+
+const CODE_BUTTON_STYLE: React.CSSProperties = {
+  position: "absolute",
+  top: 6,
+  right: 8,
+  zIndex: 2,
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  fontSize: 11,
+  lineHeight: 1,
+  color: "#7B8695",
+  background: "transparent",
+  border: "1px solid #2A2F37",
+  borderRadius: 5,
+  padding: "1px 5px",
+  cursor: "pointer",
+};
+const CODE_BUTTON_HOVER_STYLE: React.CSSProperties = {
+  ...CODE_BUTTON_STYLE,
+  color: "#56C271",
+  borderColor: "#56C271",
+};
 
 const BODY_STYLE: React.CSSProperties = { padding: "6px 12px 10px" };
 const SUMMARY_STYLE: React.CSSProperties = { fontSize: 11, color: "#9AA4B2", lineHeight: "15px" };

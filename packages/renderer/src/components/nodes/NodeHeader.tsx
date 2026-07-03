@@ -14,6 +14,9 @@ export function NodeHeader(props: {
   entry?: boolean;
   chevron?: "collapsed" | "expanded";
   onToggle?: () => void;
+  /** Reserve room at the content's right edge for a card control (the leaf's source button) so
+   * the right-aligned kind label never slides under it. */
+  reserveRight?: boolean;
   children?: ReactNode;
 }) {
   return (
@@ -24,7 +27,7 @@ export function NodeHeader(props: {
       onDoubleClick={swallowDoubleClick}
     >
       <span style={{ ...RAIL_STYLE, background: props.accent }} />
-      <span style={CONTENT_STYLE}>
+      <span style={props.reserveRight ? CONTENT_RESERVED_STYLE : CONTENT_STYLE}>
         <span style={TITLE_ROW_STYLE}>
           {props.chevron ? <span style={CHEVRON_STYLE}>{glyph(props.chevron)}</span> : null}
           {props.entry ? <span style={ENTRY_PILL_STYLE}>ENTRY</span> : null}
@@ -75,6 +78,8 @@ function headerStyle(accent: string): React.CSSProperties {
 
 const RAIL_STYLE: React.CSSProperties = { width: 3, borderRadius: 2, flex: "0 0 auto" };
 const CONTENT_STYLE: React.CSSProperties = { flex: "1 1 auto", minWidth: 0 };
+// Clears the ~30px source button pinned to the leaf card's top-right corner.
+const CONTENT_RESERVED_STYLE: React.CSSProperties = { ...CONTENT_STYLE, paddingRight: 34 };
 const TITLE_ROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "baseline", gap: 6 };
 const CHEVRON_STYLE: React.CSSProperties = { fontSize: 10, opacity: 0.8 };
 const ENTRY_PILL_STYLE: React.CSSProperties = {

@@ -11,8 +11,13 @@ import type { OverlaySource } from "./overlay-source";
 
 const HEAD_CLOSE = "</head>";
 
-export function injectBootScript(html: string, overlay: OverlaySource, preselectedEnv: string | null): string {
-  const script = `<script>window.__MERIDIAN__=${escapeForScript(bootJson(overlay, preselectedEnv))}</script>`;
+export function injectBootScript(
+  html: string,
+  overlay: OverlaySource,
+  preselectedEnv: string | null,
+  sourceRoot: string | null,
+): string {
+  const script = `<script>window.__MERIDIAN__=${escapeForScript(bootJson(overlay, preselectedEnv, sourceRoot))}</script>`;
   if (html.includes(HEAD_CLOSE)) {
     return html.replace(HEAD_CLOSE, `${script}${HEAD_CLOSE}`);
   }
@@ -25,11 +30,12 @@ function escapeForScript(json: string): string {
   return json.replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
 }
 
-function bootJson(overlay: OverlaySource, preselectedEnv: string | null): string {
+function bootJson(overlay: OverlaySource, preselectedEnv: string | null, sourceRoot: string | null): string {
   return JSON.stringify({
     graphUrl: "/api/graph",
     metaUrl: "/api/meta",
     overlayUrl: "/api/overlay",
+    sourceUrl: sourceRoot ? "/api/source" : null,
     hasOverlay: hasOverlay(overlay),
     overlayKind: overlayKind(overlay),
     envRequired: hasOverlay(overlay),

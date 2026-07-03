@@ -1,7 +1,8 @@
 /**
  * Creating and serving the in-memory graphs behind the web flow. `/api/generate` clones + extracts
  * a source into an artifact kept under a deterministic id; `/api/graph|meta` and `/view` read it
- * back. The clone token is resolved by precedence — an explicit pasted token, else the signed-in
+ * back, and the extracted source dir is retained under the same id so `/api/source` can serve code
+ * slices. The clone token is resolved by precedence — an explicit pasted token, else the signed-in
  * session's token, else the environment — so sign-in and manual tokens both feed the vetted path.
  */
 
@@ -23,6 +24,10 @@ export async function handleGenerate(ctx: Context, request: IncomingMessage, res
     ctx.cwd,
     token,
   );
+  // A successful generate retains the source (so `/api/source` can read it) and defers cleanup to
+  // process exit; only a failure removes the temp clone now. A local path's cleanup is a no-op, so
+  // this never deletes the user's own directory.
+  let retained = false;
   try {
     const { artifact, warnings } = await extractToArtifact({
       absoluteRoot: source.dir,
@@ -34,10 +39,15 @@ export async function handleGenerate(ctx: Context, request: IncomingMessage, res
     });
     const id = artifactId(parsed);
     ctx.graphs.set(id, artifact);
+    ctx.sourceRoots.set(id, source.dir);
+    ctx.tempCleanups.add(source.cleanup);
+    retained = true;
     const counts = { nodes: artifact.nodes.length, edges: artifact.edges.length };
     sendJson(response, 200, { id, target: source.target, counts, warnings });
   } finally {
-    source.cleanup();
+    if (!retained) {
+      source.cleanup();
+    }
   }
 }
 
