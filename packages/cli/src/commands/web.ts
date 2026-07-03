@@ -17,6 +17,7 @@ export interface WebOptions extends GlobalOptions {
   port: number;
   host: string;
   open: boolean;
+  githubClientId?: string;
 }
 
 export async function runWeb(source: string | undefined, options: WebOptions): Promise<void> {
@@ -27,6 +28,7 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
     webUiPath: webUiPath(),
     cwd,
     source,
+    githubClientId: options.githubClientId ?? process.env.MERIDIAN_GITHUB_CLIENT_ID,
   });
   await serve(
     server,

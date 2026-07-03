@@ -1,10 +1,18 @@
 <!doctype html>
 <!--
-  Blueprint web landing page.
+  Meridian web landing page.
 
-  Deliberately dependency-free (no build step, no framework): the `web` command serves this
-  file verbatim, and the only server contract is POST /api/generate -> { id } | { error }.
-  On success we redirect to /view?id=<id>, which serves the unchanged renderer bundle.
+  Deliberately dependency-free (no build step, no framework): the `web` command serves this file
+  verbatim, injecting `window.__MERIDIAN_AUTH__` (is sign-in configured?) and an optional
+  `window.__MERIDIAN_PREFILL__`. The server contract is:
+    POST /api/auth/device  -> { userCode, verificationUri, verificationUriComplete, intervalSeconds }
+    GET  /api/auth/status  -> { signedIn, status, user? }         (server polls GitHub; token stays server-side)
+    GET  /api/auth/session -> { configured, signedIn, user? }
+    POST /api/auth/logout  -> { signedIn:false }
+    GET  /api/repos/search?q= -> { repos: [{ fullName, isPrivate, defaultBranch, description, ownerAvatarUrl }] }
+    POST /api/generate     -> { id } | { error }
+  On generate success we redirect to /view?id=<id>. Every GitHub-sourced string is written via
+  textContent and every URL is https-validated before use — repo names/descriptions are untrusted.
 -->
 <html lang="en" data-theme="dark">
   <head>
@@ -23,6 +31,11 @@
       }
       * {
         box-sizing: border-box;
+      }
+      /* A component's own `display` (e.g. `.me { display: flex }`) outranks the UA `[hidden]` rule,
+         so make `hidden` authoritative for every element the script toggles. */
+      [hidden] {
+        display: none !important;
       }
       html,
       body {
@@ -132,6 +145,122 @@
         filter: grayscale(0.4) brightness(0.8);
         cursor: progress;
       }
+      button.ghost {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--text);
+        border-radius: 9px;
+        padding: 11px 14px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: border-color 0.15s ease;
+      }
+      button.ghost:hover {
+        border-color: var(--accent);
+      }
+      .auth {
+        border: 1px solid var(--border);
+        border-radius: 11px;
+        padding: 16px;
+        margin-bottom: 20px;
+        background: #12171e;
+      }
+      .auth-msg {
+        margin-top: 10px;
+        font-size: 13px;
+        color: var(--muted);
+        min-height: 16px;
+      }
+      .auth-msg.error {
+        color: var(--danger);
+      }
+      .device {
+        margin-top: 12px;
+        font-size: 14px;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+      .device code {
+        display: inline-block;
+        margin-top: 6px;
+        font-size: 20px;
+        letter-spacing: 0.12em;
+        color: var(--text);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 6px 12px;
+      }
+      .device a {
+        color: var(--accent);
+      }
+      .me {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .avatar {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        border: 1px solid var(--border);
+      }
+      .me-login {
+        font-weight: 600;
+        flex: 1;
+      }
+      .results {
+        list-style: none;
+        margin: 8px 0 0;
+        padding: 0;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        overflow: hidden;
+      }
+      .result {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        width: 100%;
+        text-align: left;
+        background: transparent;
+        border: 0;
+        border-bottom: 1px solid var(--border);
+        color: var(--text);
+        padding: 10px 12px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .result:last-child {
+        border-bottom: 0;
+      }
+      .result:hover {
+        background: #1b222c;
+      }
+      .result-name {
+        font-weight: 600;
+      }
+      .result-desc {
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1;
+      }
+      .badge {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 1px 7px;
+      }
+      button.primary,
+      button.ghost {
+        font-family: inherit;
+      }
       .divider {
         display: flex;
         align-items: center;
@@ -184,9 +313,31 @@
       <h1>Meridian<span class="dot">.</span></h1>
       <p class="subtitle">Map any codebase's call flow.</p>
 
+      <section class="auth" id="auth">
+        <div id="signin-area">
+          <button type="button" class="ghost" id="signin" hidden>Sign in with GitHub</button>
+          <p class="hint" id="auth-disabled" hidden>
+            Sign-in is off — set <code>MERIDIAN_GITHUB_CLIENT_ID</code> (a GitHub OAuth app client id with Device
+            Flow enabled) to browse private repos. Public repos work without it.
+          </p>
+          <div class="device" id="device" hidden>
+            Open <a id="verify-link" target="_blank" rel="noopener noreferrer">github.com/login/device</a> and enter:
+            <br /><code id="usercode"></code>
+            <div class="auth-msg" id="device-msg">Waiting for authorization…</div>
+          </div>
+          <div class="auth-msg" id="auth-msg"></div>
+        </div>
+        <div class="me" id="signedin" hidden>
+          <img class="avatar" id="me-avatar" alt="" hidden />
+          <span class="me-login" id="me-login"></span>
+          <button type="button" class="ghost" id="signout">Sign out</button>
+        </div>
+      </section>
+
       <form id="form" autocomplete="off">
         <label for="repo">GitHub repository</label>
         <input id="repo" name="repo" placeholder="owner/repo  or  https://github.com/owner/repo" />
+        <ul class="results" id="results" hidden></ul>
         <div class="chips" id="chips">
           <button type="button" class="chip" data-repo="sindresorhus/type-fest">sindresorhus/type-fest</button>
           <button type="button" class="chip" data-repo="sindresorhus/ky">sindresorhus/ky</button>
@@ -204,7 +355,7 @@
         </div>
 
         <details class="secondary">
-          <summary>Access token (for private repos)</summary>
+          <summary>Access token (for private repos, if not signed in)</summary>
           <label for="token">Access token</label>
           <input id="token" name="token" type="password" placeholder="ghp_… (optional)" />
           <p class="hint">Used locally only, for this one clone — or set <code>GITHUB_TOKEN</code> in your shell.</p>
@@ -222,8 +373,13 @@
     <script>
       const $ = (id) => document.getElementById(id);
       const status = $("status");
+      const authConfig = window.__MERIDIAN_AUTH__ || { configured: false };
+      let signedIn = false;
+      let pollTimer = null;
+      let pollDelayMs = 5000;
+      let searchTimer = null;
 
-      // A CLI positional (`blueprint web <source>`) is injected as a prefill string.
+      // A CLI positional (`meridian web <source>`) is injected as a prefill string.
       const prefill = window.__MERIDIAN_PREFILL__;
       if (typeof prefill === "string" && prefill.length) {
         if (/^https?:\/\//i.test(prefill) || /^[\w.-]+\/[\w.-]+$/.test(prefill)) {
@@ -237,15 +393,224 @@
         chip.addEventListener("click", () => {
           $("repo").value = chip.dataset.repo;
           $("path").value = "";
+          hideResults();
         });
       }
 
+      // --- server calls (always same-origin, JSON on POST) ---
+      function apiGet(path) {
+        return fetch(path, { credentials: "same-origin" });
+      }
+      function apiPost(path, body) {
+        return fetch(path, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body || {}),
+        });
+      }
+
+      // Only https://github.com links may become an href; anything else is dropped (no javascript:).
+      function safeGithubUrl(value) {
+        if (typeof value !== "string") return null;
+        try {
+          const url = new URL(value);
+          return url.protocol === "https:" && url.host === "github.com" ? url.toString() : null;
+        } catch {
+          return null;
+        }
+      }
+
+      function safeHttpsUrl(value) {
+        if (typeof value !== "string") return null;
+        try {
+          return new URL(value).protocol === "https:" ? value : null;
+        } catch {
+          return null;
+        }
+      }
+
+      // --- auth panel state ---
+      function setAuthMsg(text, isError) {
+        const el = $("auth-msg");
+        el.textContent = text || "";
+        el.className = "auth-msg" + (isError ? " error" : "");
+      }
+
+      function showSignedOut() {
+        signedIn = false;
+        $("signedin").hidden = true;
+        $("signin-area").hidden = false;
+        $("device").hidden = true;
+        $("signin").hidden = !authConfig.configured;
+        $("auth-disabled").hidden = authConfig.configured;
+        hideResults();
+      }
+
+      function showSignedIn(user) {
+        signedIn = true;
+        clearTimeout(pollTimer);
+        $("signin-area").hidden = true;
+        $("device").hidden = true;
+        $("signedin").hidden = false;
+        setAuthMsg("");
+        $("me-login").textContent = user && user.login ? user.login : "signed in";
+        const avatar = $("me-avatar");
+        const src = user && safeHttpsUrl(user.avatarUrl);
+        if (src) {
+          avatar.src = src;
+          avatar.hidden = false;
+        } else {
+          avatar.hidden = true;
+        }
+      }
+
+      async function initAuth() {
+        showSignedOut();
+        if (!authConfig.configured) return;
+        try {
+          const data = await (await apiGet("/api/auth/session")).json();
+          if (data.signedIn) showSignedIn(data.user);
+        } catch {
+          /* stay signed out */
+        }
+      }
+
+      // --- device flow ---
+      $("signin").addEventListener("click", startSignIn);
+      $("signout").addEventListener("click", signOut);
+
+      async function startSignIn() {
+        setAuthMsg("Contacting GitHub…");
+        try {
+          const res = await apiPost("/api/auth/device");
+          const data = await res.json();
+          if (!res.ok) {
+            setAuthMsg(data.error || "Sign-in is unavailable.", true);
+            return;
+          }
+          renderDeviceCode(data);
+          pollDelayMs = Math.max(Number(data.intervalSeconds) || 5, 4) * 1000;
+          schedulePoll();
+        } catch {
+          setAuthMsg("Could not reach the server.", true);
+        }
+      }
+
+      function renderDeviceCode(data) {
+        setAuthMsg("");
+        $("device").hidden = false;
+        $("usercode").textContent = data.userCode || "";
+        const link = $("verify-link");
+        const href = safeGithubUrl(data.verificationUriComplete) || safeGithubUrl(data.verificationUri);
+        link.textContent = typeof data.verificationUri === "string" ? data.verificationUri : "github.com/login/device";
+        if (href) link.href = href;
+        else link.removeAttribute("href");
+        $("device-msg").textContent = "Waiting for authorization…";
+      }
+
+      function schedulePoll() {
+        clearTimeout(pollTimer);
+        pollTimer = setTimeout(pollStatus, pollDelayMs);
+      }
+
+      async function pollStatus() {
+        let data;
+        try {
+          data = await (await apiGet("/api/auth/status")).json();
+        } catch {
+          schedulePoll();
+          return;
+        }
+        if (data.status === "authorized") return showSignedIn(data.user);
+        if (data.status === "pending") return schedulePoll();
+        endSignIn(data);
+      }
+
+      function endSignIn(data) {
+        clearTimeout(pollTimer);
+        $("device").hidden = true;
+        const messages = { expired: "The code expired — try again.", denied: "Sign-in was declined." };
+        const fallback = (data && data.message) || "Sign-in failed.";
+        setAuthMsg((data && messages[data.status]) || fallback, true);
+      }
+
+      async function signOut() {
+        try {
+          await apiPost("/api/auth/logout");
+        } catch {
+          /* clearing local state is enough */
+        }
+        showSignedOut();
+      }
+
+      // --- repo search (only when signed in; the repo field doubles as the search box) ---
+      $("repo").addEventListener("input", () => {
+        if (!signedIn) return;
+        clearTimeout(searchTimer);
+        const query = $("repo").value.trim();
+        if (!query) return hideResults();
+        searchTimer = setTimeout(() => runSearch(query), 250);
+      });
+
+      async function runSearch(query) {
+        try {
+          const res = await apiGet("/api/repos/search?q=" + encodeURIComponent(query));
+          if (!res.ok) return hideResults();
+          const data = await res.json();
+          renderResults(Array.isArray(data.repos) ? data.repos : []);
+        } catch {
+          hideResults();
+        }
+      }
+
+      function renderResults(repos) {
+        const list = $("results");
+        list.replaceChildren();
+        for (const repo of repos) list.appendChild(resultItem(repo));
+        list.hidden = repos.length === 0;
+      }
+
+      // Built entirely with createElement + textContent: repo names/descriptions are untrusted.
+      function resultItem(repo) {
+        const item = document.createElement("li");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "result";
+        appendText(button, "result-name", repo.fullName);
+        if (repo.isPrivate) appendText(button, "badge", "private");
+        if (repo.description) appendText(button, "result-desc", repo.description);
+        button.addEventListener("click", () => pickRepo(repo));
+        item.appendChild(button);
+        return item;
+      }
+
+      function appendText(parent, className, text) {
+        const span = document.createElement("span");
+        span.className = className;
+        span.textContent = typeof text === "string" ? text : "";
+        parent.appendChild(span);
+      }
+
+      function pickRepo(repo) {
+        $("repo").value = typeof repo.fullName === "string" ? repo.fullName : "";
+        if (typeof repo.defaultBranch === "string") $("ref").placeholder = repo.defaultBranch;
+        $("path").value = "";
+        hideResults();
+      }
+
+      function hideResults() {
+        const list = $("results");
+        list.replaceChildren();
+        list.hidden = true;
+      }
+
+      // --- generate (unchanged contract: a local path wins, else the repo field is GitHub input) ---
       function setStatus(text, kind) {
         status.textContent = text;
         status.className = "status" + (kind ? " " + kind : "");
       }
 
-      // A local path wins if present; otherwise treat the repo field as GitHub input.
       function buildRequest() {
         const path = $("path").value.trim();
         if (path) {
@@ -272,14 +637,11 @@
           setStatus("Enter a GitHub repo or a local path.", "error");
           return;
         }
+        hideResults();
         $("submit").disabled = true;
         setStatus("Cloning + analyzing…", "busy");
         try {
-          const response = await fetch("/api/generate", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(request),
-          });
+          const response = await apiPost("/api/generate", request);
           const data = await response.json();
           if (response.ok && data.id) {
             setStatus("Rendering…", "busy");
@@ -293,6 +655,8 @@
           $("submit").disabled = false;
         }
       });
+
+      initAuth();
     </script>
   </body>
 </html>

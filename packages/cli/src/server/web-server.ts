@@ -1,10 +1,10 @@
 /**
- * The pure HTTP server factory for `blueprint web`.
+ * The pure HTTP server factory for `meridian web`.
  *
- * Like `createBlueprintServer` it returns an unbound `http.Server` so routing is unit-testable
- * without a port or a browser. It holds an in-memory Map of generated graphs (one per submitted
- * source) so a single running server can render many repos; the renderer bundle is served
- * UNCHANGED and only the injected `window.__MERIDIAN__` differs per graph.
+ * Returns an unbound `http.Server` so routing is unit-testable without a port or a browser. It holds
+ * an in-memory Map of generated graphs (one per submitted source) plus the sign-in session store;
+ * the renderer bundle is served UNCHANGED and only the injected `window.__MERIDIAN__` differs per
+ * graph. Graph creation/serving lives in `web-graph`; the sign-in flow in `web-auth`.
  */
 
 import { createServer } from "node:http";
@@ -13,13 +13,17 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GraphArtifact } from "@meridian/core";
 import { CliError, EXIT } from "../errors";
-import { extractToArtifact } from "../extract-pipeline";
 import { serveStatic } from "./static-files";
 import type { StaticAssets } from "./static-files";
-import { resolveSource } from "./clone";
 import { WebError } from "./web-error";
-import { injectPrefill, injectViewBoot } from "./web-boot";
-import { artifactId, parseGenerateRequest, readJsonBody } from "./web-request";
+import { injectAuthConfig, injectPrefill } from "./web-boot";
+import { sendHtml, sendJson } from "./http-response";
+import { createGitHubClient } from "./github";
+import type { GitHubClient } from "./github";
+import { SessionStore } from "./session";
+import { assertJsonContentType, assertSameOrigin } from "./web-guards";
+import { handleAuthSession, handleAuthStatus, handleDeviceStart, handleLogout, handleRepoSearch } from "./web-auth";
+import { handleGenerate, sendGraph, sendMeta, sendView } from "./web-graph";
 
 export interface WebServerConfig {
   rendererRoot: string;
@@ -29,14 +33,18 @@ export interface WebServerConfig {
   cwd: string;
   /** Optional CLI positional pre-filled into the landing form. */
   source?: string;
+  /** GitHub OAuth app client id enabling Device Flow sign-in; absent → sign-in disabled. */
+  githubClientId?: string;
 }
 
-interface Context {
+export interface Context {
   graphs: Map<string, GraphArtifact>;
   rendererIndex: string;
   landingHtml: string;
   staticAssets: StaticAssets;
   cwd: string;
+  sessions: SessionStore;
+  github: GitHubClient | null;
 }
 
 export function createWebServer(config: WebServerConfig): Server {
@@ -51,7 +59,8 @@ function buildContext(config: WebServerConfig): Context {
   if (!existsSync(indexPath)) {
     throw new CliError(EXIT.io, `renderer bundle not found at ${config.rendererRoot} — run \`pnpm --filter @meridian/cli copy-renderer\``);
   }
-  const landing = injectPrefill(readFileSync(config.webUiPath, "utf8"), config.source);
+  const github = config.githubClientId ? createGitHubClient({ clientId: config.githubClientId }) : null;
+  const landing = injectAuthConfig(injectPrefill(readFileSync(config.webUiPath, "utf8"), config.source), github !== null);
   return {
     graphs: new Map(),
     rendererIndex: readFileSync(indexPath, "utf8"),
@@ -59,25 +68,15 @@ function buildContext(config: WebServerConfig): Context {
     // Stray routes fall back to the front door rather than the renderer shell.
     staticAssets: { rendererRoot: config.rendererRoot, indexHtml: landing },
     cwd: config.cwd,
+    sessions: new SessionStore(),
+    github,
   };
 }
 
 async function handle(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
   const url = new URL(request.url ?? "/", "http://localhost");
-  if (request.method === "POST" && url.pathname === "/api/generate") {
-    await handleGenerate(ctx, request, response);
-    return;
-  }
-  if (url.pathname === "/api/graph") {
-    sendGraph(ctx, response, url.searchParams.get("id"));
-    return;
-  }
-  if (url.pathname === "/api/meta") {
-    sendMeta(ctx, response, url.searchParams.get("id"));
-    return;
-  }
-  if (url.pathname === "/api/overlay") {
-    sendJson(response, 400, { error: "no telemetry overlay in web mode" });
+  if (url.pathname.startsWith("/api/")) {
+    await handleApi(ctx, request, response, url);
     return;
   }
   if (url.pathname === "/view") {
@@ -91,67 +90,61 @@ async function handle(ctx: Context, request: IncomingMessage, response: ServerRe
   serveStatic(ctx.staticAssets, url.pathname, response);
 }
 
-async function handleGenerate(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
-  const parsed = parseGenerateRequest(await readJsonBody(request));
-  // Prefer an env token (never in the browser); a per-request token overrides it.
-  const token = parsed.token ?? process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
-  const source = await resolveSource({ kind: parsed.kind, value: parsed.value, ref: parsed.ref, subdir: parsed.subdir }, ctx.cwd, token);
-  try {
-    const { artifact, warnings } = await extractToArtifact({
-      absoluteRoot: source.dir,
-      cwd: source.dir, // records target.root as "." — never leaks the temp clone path
-      language: parsed.lang,
-      depth: "function",
-      materializeBoundary: false,
-      targetName: source.target, // the repo label (e.g. "sindresorhus/ky"), not the temp dir
-    });
-    const id = artifactId(parsed);
-    ctx.graphs.set(id, artifact);
-    sendJson(response, 200, {
-      id,
-      target: source.target,
-      counts: { nodes: artifact.nodes.length, edges: artifact.edges.length },
-      warnings,
-    });
-  } finally {
-    source.cleanup();
-  }
-}
-
-function sendGraph(ctx: Context, response: ServerResponse, id: string | null): void {
-  const artifact = lookup(ctx, id);
-  if (!artifact) {
-    sendJson(response, 404, { error: "unknown graph id" });
+// Every `/api/*` path is terminal (never falls through to the static SPA fallback), and the
+// same-origin guard runs before any handler so a cross-site page cannot drive these routes.
+async function handleApi(ctx: Context, request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+  assertSameOrigin(request);
+  if (request.method === "POST") {
+    assertJsonContentType(request);
+    await handleApiPost(ctx, request, response, url.pathname);
     return;
   }
-  sendJson(response, 200, artifact);
+  await handleApiGet(ctx, request, response, url);
 }
 
-function sendMeta(ctx: Context, response: ServerResponse, id: string | null): void {
-  const artifact = lookup(ctx, id);
-  if (!artifact) {
-    sendJson(response, 404, { error: "unknown graph id" });
+async function handleApiPost(ctx: Context, request: IncomingMessage, response: ServerResponse, pathname: string): Promise<void> {
+  if (pathname === "/api/generate") {
+    await handleGenerate(ctx, request, response);
     return;
   }
-  sendJson(response, 200, {
-    schemaVersion: artifact.schemaVersion,
-    generatedAt: artifact.generatedAt,
-    nodeCount: artifact.nodes.length,
-    hasOverlay: false,
-    environments: [],
-  });
-}
-
-function sendView(ctx: Context, response: ServerResponse, id: string | null): void {
-  if (!lookup(ctx, id)) {
-    sendHtml(response, "<!doctype html><meta charset=utf-8><title>Meridian</title><p>Unknown graph id.</p>", 404);
+  if (pathname === "/api/auth/device") {
+    await handleDeviceStart(ctx, response);
     return;
   }
-  sendHtml(response, injectViewBoot(ctx.rendererIndex, id as string));
+  if (pathname === "/api/auth/logout") {
+    handleLogout(ctx, request, response);
+    return;
+  }
+  sendJson(response, 404, { error: "unknown endpoint" });
 }
 
-function lookup(ctx: Context, id: string | null): GraphArtifact | undefined {
-  return id ? ctx.graphs.get(id) : undefined;
+async function handleApiGet(ctx: Context, request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+  const pathname = url.pathname;
+  if (pathname === "/api/graph") {
+    sendGraph(ctx, response, url.searchParams.get("id"));
+    return;
+  }
+  if (pathname === "/api/meta") {
+    sendMeta(ctx, response, url.searchParams.get("id"));
+    return;
+  }
+  if (pathname === "/api/overlay") {
+    sendJson(response, 400, { error: "no telemetry overlay in web mode" });
+    return;
+  }
+  if (pathname === "/api/auth/status") {
+    await handleAuthStatus(ctx, request, response);
+    return;
+  }
+  if (pathname === "/api/auth/session") {
+    handleAuthSession(ctx, request, response);
+    return;
+  }
+  if (pathname === "/api/repos/search") {
+    await handleRepoSearch(ctx, request, response, url.searchParams.get("q") ?? "");
+    return;
+  }
+  sendJson(response, 404, { error: "unknown endpoint" });
 }
 
 function sendError(response: ServerResponse, error: unknown): void {
@@ -169,14 +162,4 @@ function sendError(response: ServerResponse, error: unknown): void {
   }
   // Never echo an unknown error's text — it could carry a path or secret we did not vet.
   sendJson(response, 500, { error: "internal error while generating the blueprint" });
-}
-
-function sendJson(response: ServerResponse, status: number, body: unknown): void {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(body));
-}
-
-function sendHtml(response: ServerResponse, html: string, status = 200): void {
-  response.writeHead(status, { "content-type": "text/html; charset=utf-8" });
-  response.end(html);
 }
