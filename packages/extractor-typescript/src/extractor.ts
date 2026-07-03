@@ -7,6 +7,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import type { SourceFile } from "ts-morph";
 import type {
   DetectionResult,
   ExtractOptions,
@@ -15,7 +16,8 @@ import type {
   LanguageExtractor,
   LanguageTag,
 } from "@meridian/core";
-import { loadProject } from "./project-loader";
+import type { NodeDescriptor } from "./model";
+import { loadProject, type LoadedProject } from "./project-loader";
 import { buildStructure } from "./structural-pass";
 import { assignFinalIds, buildGraphNodes } from "./finalize-nodes";
 import { buildResolutionIndex } from "./resolution-index";
@@ -59,7 +61,8 @@ async function runExtraction(options: ExtractOptions): Promise<ExtractionResult>
   const rawEdges = collectRawEdges(loaded, descriptors, index, moduleByFilePath, diagnostics);
   const built = buildEdges(rawEdges, options);
   const collapsed = collapseToDepth(buildGraphNodes(descriptors), built.edges, options.depth ?? "function");
-  const flows = buildLogicFlows(descriptors, index, new Set(collapsed.nodes.map((node) => node.id)));
+  const keepIds = new Set(collapsed.nodes.map((node) => node.id));
+  const flows = buildLogicFlows(descriptors, index, keepIds, moduleSourcesById(loaded, moduleByFilePath));
   appendDropDiagnostics(diagnostics, built);
   const stats = buildStats({
     files: loaded.sourceFiles.length,
@@ -69,6 +72,22 @@ async function runExtraction(options: ExtractOptions): Promise<ExtractionResult>
     unresolvedCalls: built.unresolvedCalls,
   });
   return { language: "typescript", nodes: collapsed.nodes, edges: collapsed.edges, stats, diagnostics, flows };
+}
+
+// Key each surviving module's SourceFile by its node id, so the flow pass can chart the
+// module's load-time top-level statements. Descriptors carry no SourceFile; we match by path.
+function moduleSourcesById(
+  loaded: LoadedProject,
+  moduleByFilePath: Map<string, NodeDescriptor>,
+): Map<string, SourceFile> {
+  const byId = new Map<string, SourceFile>();
+  for (const sourceFile of loaded.sourceFiles) {
+    const moduleNode = moduleByFilePath.get(sourceFile.getFilePath());
+    if (moduleNode) {
+      byId.set(moduleNode.finalId, sourceFile);
+    }
+  }
+  return byId;
 }
 
 function appendDropDiagnostics(diagnostics: ExtractionDiagnostic[], built: EdgeBuildResult): void {

@@ -6,8 +6,8 @@
  * call chip drills into that callable's own flow; a breadcrumb walks back out.
  */
 
-import { Fragment } from "react";
-import type { FlowStep, GraphNode, NodeId } from "@meridian/core";
+import { Fragment, useMemo, useState } from "react";
+import type { FlowStep, GraphArtifact, GraphNode, LogicFlows, NodeId } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 
 /** A generous ceiling so a cyclic or pathologically nested flow can never hang the render. */
@@ -25,13 +25,7 @@ export function LogicFlowView() {
   const { logicFlowFor, logicFlowTo, showCode, expandCode } = useBlueprintActions();
 
   if (logicRoot === null) {
-    return (
-      <div style={CENTER_STYLE}>
-        <div style={HINT_STYLE}>
-          Double-click a method — or search one in the sidebar — to see its logic flow.
-        </div>
-      </div>
-    );
+    return <LogicFlowPicker />;
   }
 
   const rootNode = index.nodesById.get(logicRoot);
@@ -70,6 +64,129 @@ export function LogicFlowView() {
       </div>
     </div>
   );
+}
+
+/**
+ * The empty-state entry picker (shown only while nothing is opened): search any callable/module
+ * that ships a logic flow, or pick from the ranked entry points — with the app entry (`main.ts`)
+ * floated to the top — to open its flow directly, without hunting for a node in the Call-flow graph.
+ */
+function LogicFlowPicker() {
+  const artifact = useBlueprint((state) => state.artifact);
+  const index = useBlueprint((state) => state.index);
+  const { openLogicFlow } = useBlueprintActions();
+  const [query, setQuery] = useState("");
+
+  // Thousands of flow keys are possible, so rank once per artifact — not on every keystroke/render.
+  const entries = useMemo(() => rankedFlowEntries(artifact, index.nodesById), [artifact, index.nodesById]);
+  const needle = query.trim().toLowerCase();
+  const rows = needle ? searchFlows(entries, needle) : entries.slice(0, 20);
+
+  return (
+    <div style={PICKER_CONTAINER_STYLE}>
+      <div style={PICKER_PANEL_STYLE}>
+        <div style={PICKER_HINT_STYLE}>
+          Pick an entry point, search a method, or double-click one in Call flow.
+        </div>
+        <input
+          style={PICKER_SEARCH_STYLE}
+          placeholder="Search a method or module…"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        <div style={PICKER_LIST_STYLE}>
+          {rows.length > 0 ? (
+            rows.map((pick) => <PickRow key={pick.id} pick={pick} onOpen={openLogicFlow} />)
+          ) : (
+            <div style={PICKER_EMPTY_STYLE}>
+              {needle ? `No method or module matches “${query.trim()}”.` : "No logic flows in this artifact."}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** One clickable entry row: name over a faint file path, with a kind tag (module is accented). */
+function PickRow(props: { pick: FlowPick; onOpen: (id: NodeId) => void }) {
+  const { pick } = props;
+  return (
+    <button type="button" style={ROW_STYLE} title={pick.id} onClick={() => props.onOpen(pick.id)}>
+      <span style={ROW_MAIN_STYLE}>
+        <span style={ROW_NAME_STYLE}>{pick.displayName}</span>
+        {pick.file ? <span style={ROW_FILE_STYLE}>{pick.file}</span> : null}
+      </span>
+      <span style={kindTagStyle(pick.kind)}>{pick.kind}</span>
+    </button>
+  );
+}
+
+interface FlowPick {
+  id: NodeId;
+  displayName: string;
+  qualifiedName: string;
+  file: string;
+  kind: string;
+}
+
+// A name that *starts with* an entry/boot word — matched against the basename `displayName`
+// (`main.ts`, `app.tsx`), NOT the full id: the app lives under `src/aria/app/…`, so a path match
+// would boost every file and let test names sort to the top. Anchored, so `AboutSection…` misses.
+const ENTRY_NAME = /^(main|index|bootstrap|app|entry|boot|server|root)\b/i;
+const ENTRY_NAME_BOOST = 1000;
+// A module's top-level flow is the file's own init/boot sequence, so it outranks a plain callable.
+const MODULE_BOOST = 100;
+// Test/story fixtures are never an app entry, so they're dropped from the default list entirely.
+const TEST_FILE = /(__tests?__|\.test\.|\.spec\.|\.stories\.)/i;
+
+/**
+ * Every node that ships a logic flow, ranked for "entry-ness": an entry-ish name (main/boot/…)
+ * outweighs everything, and a module (a file's top-level init flow) outranks a callable — so an
+ * entry module like `main.ts` floats to the very top. Test/story files are excluded outright.
+ * One pass + sort; the caller slices.
+ */
+function rankedFlowEntries(artifact: GraphArtifact, nodesById: ReadonlyMap<string, GraphNode>): FlowPick[] {
+  const flows = artifact.extensions?.logicFlow as unknown as LogicFlows | undefined;
+  if (!flows) {
+    return [];
+  }
+  const ranked: Array<{ pick: FlowPick; score: number }> = [];
+  for (const id of Object.keys(flows)) {
+    const node = nodesById.get(id);
+    if (!node || TEST_FILE.test(id)) {
+      continue;
+    }
+    const nameBoost = ENTRY_NAME.test(node.displayName) ? ENTRY_NAME_BOOST : 0;
+    const score = nameBoost + (node.kind === "module" ? MODULE_BOOST : 0);
+    ranked.push({ score, pick: pickFor(id, node) });
+  }
+  ranked.sort((a, b) => b.score - a.score || a.pick.displayName.localeCompare(b.pick.displayName));
+  return ranked.map((entry) => entry.pick);
+}
+
+function pickFor(id: NodeId, node: GraphNode): FlowPick {
+  return {
+    id,
+    displayName: node.displayName,
+    qualifiedName: node.qualifiedName,
+    file: node.location?.file ?? "",
+    kind: node.kind,
+  };
+}
+
+/** First ~15 ranked entries whose display or qualified name contains the (lowercased) needle. */
+function searchFlows(entries: FlowPick[], needle: string): FlowPick[] {
+  const found: FlowPick[] = [];
+  for (const entry of entries) {
+    if (entry.displayName.toLowerCase().includes(needle) || entry.qualifiedName.toLowerCase().includes(needle)) {
+      found.push(entry);
+      if (found.length >= 15) {
+        break;
+      }
+    }
+  }
+  return found;
 }
 
 /** The drill trail root..current; each segment jumps back to that callable's flow. */
@@ -191,16 +308,87 @@ function Arrow() {
 // The toolbar floats over the top-left, so the flow content clears it with a left inset.
 const CONTAINER_STYLE: React.CSSProperties = { position: "absolute", inset: 0, background: "#0E1116", overflow: "auto" };
 const CONTENT_STYLE: React.CSSProperties = { boxSizing: "border-box", minHeight: "100%", padding: "20px 28px 28px 336px" };
-const CENTER_STYLE: React.CSSProperties = {
+
+// The empty-state picker shares the content inset so it clears the floating top-left toolbar.
+const PICKER_CONTAINER_STYLE: React.CSSProperties = {
   position: "absolute",
   inset: 0,
+  boxSizing: "border-box",
   background: "#0E1116",
+  overflow: "auto",
+  padding: "20px 28px 28px 336px",
+};
+const PICKER_PANEL_STYLE: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 10,
+  maxWidth: 520,
+  border: "1px solid #2A2F37",
+  borderRadius: 12,
+  background: "#12171E",
+  padding: 16,
+};
+const PICKER_HINT_STYLE: React.CSSProperties = { fontSize: 13, color: "#7B8695", lineHeight: 1.5 };
+const PICKER_SEARCH_STYLE: React.CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  fontSize: 13,
+  padding: "6px 10px",
+  background: "#0E1116",
+  border: "1px solid #2A2F37",
+  borderRadius: 6,
+  color: "#E6EDF3",
+};
+const PICKER_LIST_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 4, maxHeight: 420, overflowY: "auto" };
+const PICKER_EMPTY_STYLE: React.CSSProperties = { fontSize: 12, color: "#6C7683", padding: "6px 2px" };
+
+const ROW_STYLE: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
-  justifyContent: "center",
-  padding: 24,
+  gap: 10,
+  textAlign: "left",
+  borderRadius: 6,
+  border: "1px solid #2A2F37",
+  background: "#12171E",
+  color: "#9AA4B2",
+  padding: "6px 10px",
+  cursor: "pointer",
+  font: "inherit",
 };
-const HINT_STYLE: React.CSSProperties = { maxWidth: 420, textAlign: "center", fontSize: 14, color: "#7B8695", lineHeight: 1.6 };
+const ROW_MAIN_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 1, flex: 1, minWidth: 0 };
+const ROW_NAME_STYLE: React.CSSProperties = {
+  fontSize: 13,
+  color: "#E6EDF3",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+const ROW_FILE_STYLE: React.CSSProperties = {
+  fontSize: 10,
+  color: "#6C7683",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+const KIND_TAG_STYLE: React.CSSProperties = {
+  flex: "0 0 auto",
+  fontSize: 9,
+  fontWeight: 600,
+  textTransform: "uppercase",
+  letterSpacing: "0.05em",
+  border: "1px solid #2A2F37",
+  borderRadius: 4,
+  padding: "1px 6px",
+  color: "#7B8695",
+};
+
+// Accent the module tag green — a module's top-level flow is the app/boot init, the place to start.
+function kindTagStyle(kind: string): React.CSSProperties {
+  if (kind !== "module") {
+    return KIND_TAG_STYLE;
+  }
+  return { ...KIND_TAG_STYLE, color: "#56C271", borderColor: "#2C4133" };
+}
 
 const BREADCRUMB_STYLE: React.CSSProperties = {
   display: "flex",

@@ -2,7 +2,8 @@
  * Golden test for the logic-flow pass: extract a fixture of hand-picked specimens and assert
  * the exact `FlowStep` tree each callable produces — kinds, order, nesting, call labels and
  * resolved targets. Covers linearity, execution order, loops, if/else, switch-less branches,
- * loops-with-branches, and try/catch, plus the "empty flow is omitted" rule.
+ * loops-with-branches, and try/catch, plus the "empty flow is omitted" rule — and a module's
+ * top-level (load-time) code charted as the module node's own flow.
  */
 
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -82,6 +83,30 @@ function report(e: unknown) {}
 function fallback() {}
 `;
 
+// A module whose top-level runs at load: a call, a branch, a loop — plus declarations that do
+// NOT run at load (helper's body is helper's own flow, not the module's).
+const MODULE_SOURCE = `
+const flag = true;
+const xs: number[] = [1, 2, 3];
+
+setup();
+if (flag) {
+  enable();
+}
+for (const x of xs) {
+  handle(x);
+}
+
+export function helper() {
+  ignored();
+}
+
+function setup() {}
+function enable() {}
+function handle(x: number) {}
+function ignored() {}
+`;
+
 let root: string;
 let result: ExtractionResult;
 
@@ -89,6 +114,7 @@ beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), "bp-flow-"));
   mkdirSync(join(root, "src"));
   writeFileSync(join(root, "src", "specimens.ts"), SOURCE);
+  writeFileSync(join(root, "src", "boot.ts"), MODULE_SOURCE);
   const extractor = createTypeScriptExtractor();
   result = await extractor.extract({ root, include: ["src/**/*.ts"] });
 });
@@ -106,6 +132,15 @@ function stepsFor(qualname: string): FlowStep[] | undefined {
 
 function callLabels(steps: FlowStep[]): string[] {
   return steps.filter((step) => step.kind === "call").map((step) => (step as { label: string }).label);
+}
+
+// Every call label anywhere in a flow tree, in execution order — used to prove a call is absent.
+function allCallLabels(steps: FlowStep[]): string[] {
+  return steps.flatMap((step) => {
+    if (step.kind === "call") return [step.label];
+    if (step.kind === "loop") return allCallLabels(step.body);
+    return step.paths.flatMap((path) => allCallLabels(path.body));
+  });
 }
 
 describe("logic-flow pass", () => {
@@ -167,6 +202,31 @@ describe("logic-flow pass", () => {
         expect(branch.paths[0].body).toEqual([]);
       }
     }
+  });
+
+  it("charts a module's top-level code as its load-time flow, skipping declarations (boot)", () => {
+    const steps = stepsFor("src/boot.ts") ?? [];
+    expect(steps.map((step) => step.kind)).toEqual(["call", "branch", "loop"]);
+    expect(steps[0]).toMatchObject({ kind: "call", label: "setup" });
+
+    const branch = steps[1];
+    expect(branch.kind).toBe("branch");
+    if (branch.kind === "branch") {
+      expect(branch.label).toBe("if flag");
+      expect(branch.paths.map((path) => path.label)).toEqual(["then"]);
+      expect(callLabels(branch.paths[0].body)).toEqual(["enable"]);
+    }
+
+    const loop = steps[2];
+    expect(loop.kind).toBe("loop");
+    if (loop.kind === "loop") {
+      expect(loop.label).toBe("for each x");
+      expect(callLabels(loop.body)).toEqual(["handle"]);
+    }
+
+    // helper() is declared at load, not run — its call to ignored() is helper's own flow.
+    expect(allCallLabels(steps)).toEqual(["setup", "enable", "handle"]);
+    expect(callLabels(stepsFor("helper") ?? [])).toEqual(["ignored"]);
   });
 
   it("maps try/catch to try and catch paths (handleTry)", () => {
