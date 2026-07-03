@@ -52,41 +52,44 @@ export function LogicFlowView() {
 
   return (
     <div style={CONTAINER_STYLE}>
+      {/* CONTENT centers the column in the canvas right of the floating toolbar; COLUMN caps its width. */}
       <div style={CONTENT_STYLE}>
-        <div style={HEADER_ROW_STYLE}>
-          <LogicBreadcrumb stack={logicStack} nodesById={index.nodesById} onJump={logicFlowTo} />
-          <InlineDepthControl value={logicInlineDepth} onChange={setLogicInlineDepth} />
+        <div style={COLUMN_STYLE}>
+          <div style={HEADER_ROW_STYLE}>
+            <LogicBreadcrumb stack={logicStack} nodesById={index.nodesById} onJump={logicFlowTo} />
+            <InlineDepthControl value={logicInlineDepth} onChange={setLogicInlineDepth} />
+          </div>
+          {steps && steps.length > 0 ? (
+            <div style={FLOW_WRAP_STYLE}>
+              <FlowTrack
+                steps={steps}
+                depth={0}
+                remainingDepth={logicInlineDepth}
+                ancestorPath={new Set<NodeId>([logicRoot])}
+                ctx={{ logicFlowFor, budget: { n: 0 } }}
+              />
+            </div>
+          ) : (
+            <div style={EMPTY_STYLE}>
+              <span style={EMPTY_MARK_STYLE}>∅</span>
+              <span>No calls or control flow in {rootName}.</span>
+              {canShowCode && rootNode ? (
+                <button
+                  type="button"
+                  style={SHOW_CODE_STYLE}
+                  onClick={() => {
+                    // showCode opens inline; expandCode pops the always-mounted modal CodePanel,
+                    // which is the only code surface the logic view has (no on-canvas nodes here).
+                    void showCode(rootNode);
+                    expandCode();
+                  }}
+                >
+                  Show code
+                </button>
+              ) : null}
+            </div>
+          )}
         </div>
-        {steps && steps.length > 0 ? (
-          <div style={FLOW_WRAP_STYLE}>
-            <FlowTrack
-              steps={steps}
-              depth={0}
-              remainingDepth={logicInlineDepth}
-              ancestorPath={new Set<NodeId>([logicRoot])}
-              ctx={{ logicFlowFor, budget: { n: 0 } }}
-            />
-          </div>
-        ) : (
-          <div style={EMPTY_STYLE}>
-            <span style={EMPTY_MARK_STYLE}>∅</span>
-            <span>No calls or control flow in {rootName}.</span>
-            {canShowCode && rootNode ? (
-              <button
-                type="button"
-                style={SHOW_CODE_STYLE}
-                onClick={() => {
-                  // showCode opens inline; expandCode pops the always-mounted modal CodePanel,
-                  // which is the only code surface the logic view has (no on-canvas nodes here).
-                  void showCode(rootNode);
-                  expandCode();
-                }}
-              >
-                Show code
-              </button>
-            ) : null}
-          </div>
-        )}
       </div>
     </div>
   );
@@ -94,8 +97,9 @@ export function LogicFlowView() {
 
 /**
  * The empty-state entry picker (shown only while nothing is opened): search any callable/module
- * that ships a logic flow, or pick from the ranked entry points — with the app entry (`main.ts`)
- * floated to the top — to open its flow directly, without hunting for a node in the Call-flow graph.
+ * that ships a logic flow, or pick from the ranked entry points — with the CLI-declared app entries
+ * (`extensions.entryModules`) pinned on top — to open its flow directly, without hunting for a node
+ * in the Call-flow graph.
  */
 function LogicFlowPicker() {
   const artifact = useBlueprint((state) => state.artifact);
@@ -167,20 +171,24 @@ const MODULE_BOOST = 100;
 const TEST_FILE = /(__tests?__|\.test\.|\.spec\.|\.stories\.)/i;
 
 /**
- * Every node that ships a logic flow, ranked for "entry-ness": an entry-ish name (main/boot/…)
- * outweighs everything, and a module (a file's top-level init flow) outranks a callable — so an
- * entry module like `main.ts` floats to the very top. Test/story files are excluded outright.
- * One pass + sort; the caller slices.
+ * Every node that ships a logic flow, ordered for the picker: the CLI-declared app entries
+ * (`extensions.entryModules`) are pinned on top in their declared order, then the rest follow a
+ * name/kind heuristic — an entry-ish name (main/boot/…) outweighs everything, and a module (a
+ * file's top-level init flow) outranks a callable. Test/story files are excluded. The caller slices.
  */
 function rankedFlowEntries(artifact: GraphArtifact, nodesById: ReadonlyMap<string, GraphNode>): FlowPick[] {
   const flows = artifact.extensions?.logicFlow as unknown as LogicFlows | undefined;
   if (!flows) {
     return [];
   }
+  const flowKeys = new Set(Object.keys(flows));
+  const pinned = declaredEntryPicks(artifact, flowKeys, nodesById);
+  const pinnedIds = new Set(pinned.map((pick) => pick.id));
+
   const ranked: Array<{ pick: FlowPick; score: number }> = [];
-  for (const id of Object.keys(flows)) {
+  for (const id of flowKeys) {
     const node = nodesById.get(id);
-    if (!node || TEST_FILE.test(id)) {
+    if (pinnedIds.has(id) || !node || TEST_FILE.test(id)) {
       continue;
     }
     const nameBoost = ENTRY_NAME.test(node.displayName) ? ENTRY_NAME_BOOST : 0;
@@ -188,7 +196,35 @@ function rankedFlowEntries(artifact: GraphArtifact, nodesById: ReadonlyMap<strin
     ranked.push({ score, pick: pickFor(id, node) });
   }
   ranked.sort((a, b) => b.score - a.score || a.pick.displayName.localeCompare(b.pick.displayName));
-  return ranked.map((entry) => entry.pick);
+  return [...pinned, ...ranked.map((entry) => entry.pick)];
+}
+
+/**
+ * The CLI-declared app entries (`extensions.entryModules`) that actually belong in the picker: kept
+ * only when they ship a logic flow (the picker lists flow-bearing nodes) and aren't test fixtures,
+ * in declared order, deduped. Absent/empty on older artifacts → no pins (behavior unchanged), so
+ * it's read defensively from the loose extensions record with the same cast as `logicFlow`.
+ */
+function declaredEntryPicks(
+  artifact: GraphArtifact,
+  flowKeys: ReadonlySet<string>,
+  nodesById: ReadonlyMap<string, GraphNode>,
+): FlowPick[] {
+  const declared = artifact.extensions?.entryModules as unknown as NodeId[] | undefined;
+  if (!Array.isArray(declared)) {
+    return [];
+  }
+  const picks: FlowPick[] = [];
+  const seen = new Set<NodeId>();
+  for (const id of declared) {
+    const node = nodesById.get(id);
+    if (seen.has(id) || !flowKeys.has(id) || !node || TEST_FILE.test(id)) {
+      continue;
+    }
+    seen.add(id);
+    picks.push(pickFor(id, node));
+  }
+  return picks;
 }
 
 function pickFor(id: NodeId, node: GraphNode): FlowPick {
@@ -377,12 +413,18 @@ function CallStepView(props: {
   return <CallChip step={step} recursion={blockedByCycle} />;
 }
 
-// A resolved call is drillable (double-click → its own flow); external/unresolved stay dimmed. A
-// call skipped only because its target is already inlined above shows a faint recursion marker.
+// Three tiers of resolved-ness. A DIVABLE call — one whose target ships its own logic flow — is the
+// one a double-click actually drills into, so it pops: brighter green, a soft lift, and a ▸ drill
+// glyph. A resolved LEAF (no flow of its own) stays plain green but wears no glyph. External /
+// unresolved calls stay dimmed. A call skipped only because its target is already inlined above
+// shows a faint recursion marker. A ▸-less code button (`</>`) opens any resolved target's source.
 function CallChip(props: { step: CallStep; recursion?: boolean }) {
   const { step } = props;
-  const { drillLogicFlow } = useBlueprintActions();
+  const { drillLogicFlow, logicFlowFor, index, sourceUrl, showCode, expandCode } = useBlueprintActions();
   const target = step.resolution === "resolved" ? step.target : null;
+  const targetNode = target !== null ? index.nodesById.get(target) : undefined;
+  const divable = target !== null && (logicFlowFor(target)?.length ?? 0) > 0;
+  const canShowCode = Boolean(targetNode?.location) && Boolean(sourceUrl);
   const title = props.recursion
     ? "recursion — already inlined above"
     : target !== null
@@ -390,14 +432,43 @@ function CallChip(props: { step: CallStep; recursion?: boolean }) {
       : `${step.resolution} call`;
   return (
     <div
-      style={target !== null ? CALL_CHIP_STYLE : CALL_CHIP_MUTED_STYLE}
+      style={chipStyleFor(target, divable)}
       onDoubleClick={target !== null ? () => drillLogicFlow(target) : undefined}
       title={title}
     >
       <b style={target !== null ? CALL_NAME_STYLE : CALL_NAME_MUTED_STYLE}>{step.label}</b>
       {props.recursion ? <span style={RECURSION_MARK_STYLE} aria-hidden>↩</span> : null}
+      {divable || canShowCode ? (
+        <span style={CALL_TAIL_STYLE}>
+          {divable ? <span style={DRILL_MARK_STYLE} aria-hidden>▸</span> : null}
+          {canShowCode && targetNode ? (
+            <button
+              type="button"
+              style={CODE_BUTTON_STYLE}
+              title="Show code"
+              // Stop both handlers so opening the source can't also trip the chip's drill.
+              onClick={(event) => {
+                event.stopPropagation();
+                void showCode(targetNode);
+                expandCode();
+              }}
+              onDoubleClick={(event) => event.stopPropagation()}
+            >
+              {"</>"}
+            </button>
+          ) : null}
+        </span>
+      ) : null}
     </div>
   );
+}
+
+// Muted for external/unresolved; brighter green + lift for a divable target; plain green otherwise.
+function chipStyleFor(target: NodeId | null, divable: boolean): React.CSSProperties {
+  if (target === null) {
+    return CALL_CHIP_MUTED_STYLE;
+  }
+  return divable ? CALL_CHIP_DIVABLE_STYLE : CALL_CHIP_STYLE;
 }
 
 /**
@@ -502,28 +573,46 @@ function Arrow() {
   );
 }
 
-// The toolbar floats over the top-left, so the flow content clears it with a left inset.
-const CONTAINER_STYLE: React.CSSProperties = { position: "absolute", inset: 0, background: "#0E1116", overflow: "auto" };
-const CONTENT_STYLE: React.CSSProperties = { boxSizing: "border-box", minHeight: "100%", padding: "20px 28px 28px 336px" };
+// The toolbar floats over roughly the top-left ~320px column, so the content keeps a left inset as a
+// MINIMUM (it always clears the toolbar), then centers the flow in the remaining canvas.
+const TOOLBAR_CLEARANCE = 336;
+// A ceiling so the flow doesn't sprawl edge-to-edge on a wide monitor; it centers below this.
+const FLOW_MAX_WIDTH = 1120;
 
-// The empty-state picker shares the content inset so it clears the floating top-left toolbar.
+const CONTAINER_STYLE: React.CSSProperties = { position: "absolute", inset: 0, background: "#0E1116", overflow: "auto" };
+const CONTENT_STYLE: React.CSSProperties = {
+  boxSizing: "border-box",
+  minHeight: "100%",
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  padding: `36px 48px 48px ${TOOLBAR_CLEARANCE}px`,
+};
+// The centered column: fills the free canvas up to a cap, keeping header + flow on one aligned width.
+const COLUMN_STYLE: React.CSSProperties = { width: "100%", maxWidth: FLOW_MAX_WIDTH };
+
+// The empty-state picker centers its panel in the same toolbar-cleared canvas as the flow.
 const PICKER_CONTAINER_STYLE: React.CSSProperties = {
   position: "absolute",
   inset: 0,
   boxSizing: "border-box",
   background: "#0E1116",
   overflow: "auto",
-  padding: "20px 28px 28px 336px",
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  padding: `48px 48px 48px ${TOOLBAR_CLEARANCE}px`,
 };
 const PICKER_PANEL_STYLE: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 10,
-  maxWidth: 520,
+  width: "100%",
+  maxWidth: 560,
   border: "1px solid #2A2F37",
   borderRadius: 12,
   background: "#12171E",
-  padding: 16,
+  padding: 20,
 };
 const PICKER_HINT_STYLE: React.CSSProperties = { fontSize: 13, color: "#7B8695", lineHeight: 1.5 };
 const PICKER_SEARCH_STYLE: React.CSSProperties = {
@@ -647,16 +736,19 @@ const CRUMB_CURRENT_STYLE: React.CSSProperties = { ...CRUMB_STYLE, color: "#E6ED
 const CRUMB_SEP_STYLE: React.CSSProperties = { color: "#4B535F", fontSize: 13 };
 
 const FLOW_WRAP_STYLE: React.CSSProperties = {
+  // minWidth:0 lets this flex child shrink so a wide track scrolls HERE, never the page body.
+  minWidth: 0,
+  maxWidth: "100%",
   overflowX: "auto",
   border: "1px solid #2A2F37",
   borderRadius: 12,
   background: "#12171E",
-  padding: 16,
+  padding: 24,
 };
 const TRACK_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 0, width: "max-content" };
 
-const ARROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", flex: "0 0 auto", margin: "0 6px" };
-const ARROW_LINE_STYLE: React.CSSProperties = { width: 16, height: 2, background: "#2A2F37" };
+const ARROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", flex: "0 0 auto", margin: "0 10px" };
+const ARROW_LINE_STYLE: React.CSSProperties = { width: 22, height: 2, background: "#2A2F37" };
 const ARROW_HEAD_STYLE: React.CSSProperties = {
   width: 0,
   height: 0,
@@ -667,6 +759,8 @@ const ARROW_HEAD_STYLE: React.CSSProperties = {
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 const CALL_CHIP_STYLE: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
   flex: "0 0 auto",
   border: "1px solid #2A2F37",
   borderLeft: "3px solid #56C271",
@@ -679,6 +773,15 @@ const CALL_CHIP_STYLE: React.CSSProperties = {
   whiteSpace: "nowrap",
   cursor: "pointer",
 };
+// A divable target (its own flow to open) pops: a brighter green rail, a faint green wash, and a
+// soft lift — so the reader's eye lands on the chips a double-click actually drills into.
+const CALL_CHIP_DIVABLE_STYLE: React.CSSProperties = {
+  ...CALL_CHIP_STYLE,
+  borderLeft: "3px solid #6BE38A",
+  borderColor: "rgba(86,194,113,0.45)",
+  background: "#111A15",
+  boxShadow: "0 1px 4px rgba(0,0,0,0.35)",
+};
 const CALL_CHIP_MUTED_STYLE: React.CSSProperties = {
   ...CALL_CHIP_STYLE,
   borderLeft: "3px dashed #3A414C",
@@ -688,6 +791,22 @@ const CALL_CHIP_MUTED_STYLE: React.CSSProperties = {
 const CALL_NAME_STYLE: React.CSSProperties = { color: "#56C271", fontWeight: 600 };
 const CALL_NAME_MUTED_STYLE: React.CSSProperties = { color: "#9AA4B2", fontWeight: 600 };
 const RECURSION_MARK_STYLE: React.CSSProperties = { marginLeft: 6, color: "#7B8695", opacity: 0.7 };
+
+// The chip's trailing affordances (drill glyph + code button) ride flush to the right edge.
+const CALL_TAIL_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, marginLeft: 12 };
+const DRILL_MARK_STYLE: React.CSSProperties = { color: "#6BE38A", fontSize: 13, lineHeight: 1 };
+const CODE_BUTTON_STYLE: React.CSSProperties = {
+  flex: "0 0 auto",
+  fontFamily: MONO,
+  fontSize: 11,
+  lineHeight: 1,
+  padding: "3px 5px",
+  border: "1px solid #2A2F37",
+  borderRadius: 5,
+  background: "#161B22",
+  color: "#7B8695",
+  cursor: "pointer",
+};
 
 // An inlined call reads as a faint green-tinted box — distinct from loop(amber)/branch(cyan) — with
 // the call chip as its header and the callee's own flow nested below.
