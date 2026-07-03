@@ -1,9 +1,10 @@
 /**
  * The logic-flow pass: for each callable descriptor, walk its body AST into an ordered
- * `FlowStep[]`. Only method calls and control structures survive; everything else collapses
- * to nothing (but is still descended into, to find the calls buried in it). Calls are emitted
- * in EXECUTION order — arguments before the call — so `f(g(x))` yields `g` then `f`. Nested
- * function/arrow/class bodies are NOT descended: they are their own callables.
+ * `FlowStep[]`; for each MODULE, walk its top-level statements the same way (the code that
+ * auto-runs on load). Only method calls and control structures survive; everything else
+ * collapses to nothing (but is still descended into, to find the calls buried in it). Calls
+ * are emitted in EXECUTION order — arguments before the call — so `f(g(x))` yields `g` then
+ * `f`. Nested function/arrow/class bodies are NOT descended: they are their own callables.
  */
 
 import { Node } from "ts-morph";
@@ -14,6 +15,7 @@ import type {
   IfStatement,
   IterationStatement,
   NewExpression,
+  SourceFile,
   SwitchStatement,
   TryStatement,
 } from "ts-morph";
@@ -39,21 +41,25 @@ interface WalkContext {
 }
 
 /**
- * One flow per callable descriptor whose id survives depth-collapse. An empty flow (no calls,
- * no control structures) is omitted — an absent entry means "nothing worth charting".
+ * One flow per callable descriptor — and per module (its top-level, load-time statements) —
+ * whose id survives depth-collapse. An empty flow (no calls, no control structures) is omitted
+ * — an absent entry means "nothing worth charting". `moduleSourcesById` maps a surviving
+ * module's node id to its `SourceFile`; module descriptors keep `callableNode: null` so edge
+ * sourcing is unaffected.
  */
 export function buildLogicFlows(
   descriptors: NodeDescriptor[],
   index: ResolutionIndex,
   keepIds: ReadonlySet<string>,
+  moduleSourcesById: ReadonlyMap<string, SourceFile>,
 ): LogicFlows {
   const flows: LogicFlows = {};
   const context: WalkContext = { index };
   for (const descriptor of descriptors) {
-    if (!descriptor.callableNode || !keepIds.has(descriptor.finalId)) {
+    if (!keepIds.has(descriptor.finalId)) {
       continue;
     }
-    const steps = flowOf(descriptor.callableNode, context);
+    const steps = stepsOf(descriptor, moduleSourcesById, context);
     if (steps.length > 0) {
       flows[descriptor.finalId] = steps;
     }
@@ -61,9 +67,29 @@ export function buildLogicFlows(
   return flows;
 }
 
+/** A callable charts its body; a module charts the top-level statements that run on load. */
+function stepsOf(
+  descriptor: NodeDescriptor,
+  moduleSourcesById: ReadonlyMap<string, SourceFile>,
+  context: WalkContext,
+): FlowStep[] {
+  if (descriptor.callableNode) {
+    return flowOf(descriptor.callableNode, context);
+  }
+  const sourceFile = moduleSourcesById.get(descriptor.finalId);
+  return sourceFile ? moduleFlow(sourceFile, context) : [];
+}
+
 function flowOf(callableNode: Node, context: WalkContext): FlowStep[] {
   const body = bodyOf(callableNode);
   return body ? walkBody(body, context, 0) : [];
+}
+
+// The same walker as a callable body: imports/declarations collapse to nothing, `export <fn>`
+// stops at its callable boundary, and an `app.on('x', () => {…})` registration emits one call
+// without descending its callback (the callback does not run at load).
+function moduleFlow(sourceFile: SourceFile, context: WalkContext): FlowStep[] {
+  return sourceFile.getStatements().flatMap((statement) => walk(statement, context, 0));
 }
 
 /** The node to walk: a function's block itself, or an arrow/function-expression's body. */
