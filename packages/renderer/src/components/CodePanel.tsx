@@ -1,8 +1,9 @@
 /**
- * The source-code drawer: a right-side panel that shows the code for a double-clicked callable.
- * Its whole state lives on the store's `codeView` (populated by `showCode`); this component only
- * renders it and offers two ways out — the close button and Escape. Code is placed as a text
- * child of <pre>/<code> so React escapes it (never dangerouslySetInnerHTML).
+ * The source-code modal: a centered overlay that blows up the code shown inline on a node (its
+ * ⤢ expand button flips `codeView.mode` to "modal"). Its whole state lives on the store's
+ * `codeView`; this component renders only when the mode is "modal" and offers three ways out —
+ * the close button, Escape, and a backdrop click. Code is placed as a text child of <pre>/<code>
+ * so React escapes it (never dangerouslySetInnerHTML).
  */
 
 import { useEffect } from "react";
@@ -11,9 +12,9 @@ import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 export function CodePanel() {
   const codeView = useBlueprint((state) => state.codeView);
   const { closeCode } = useBlueprintActions();
-  const open = codeView !== null;
+  const open = codeView?.mode === "modal";
 
-  // Escape closes the drawer while it's open. Rebinding on `open` keeps the listener off the
+  // Escape closes the modal while it's open. Rebinding on `open` keeps the listener off the
   // document when nothing is shown.
   useEffect(() => {
     if (!open) {
@@ -28,31 +29,40 @@ export function CodePanel() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [open, closeCode]);
 
-  if (!codeView) {
+  if (!codeView || codeView.mode !== "modal") {
     return null;
   }
   const { node, code, loading, error, truncated } = codeView;
   const { file, startLine, endLine } = node.location;
   const range = endLine && endLine !== startLine ? `${startLine}-${endLine}` : String(startLine);
 
+  // A backdrop click closes; clicks inside the panel are swallowed so they don't reach it.
   return (
-    <aside style={DRAWER_STYLE} aria-label="Source code">
-      <header style={HEADER_STYLE}>
-        <div style={HEADER_TEXT_STYLE}>
-          <div style={TITLE_STYLE} title={node.qualifiedName}>{node.displayName}</div>
-          <div style={LOCATION_STYLE} title={file}>{`${file}:${range}`}</div>
+    <div style={BACKDROP_STYLE} onClick={closeCode}>
+      <div
+        style={PANEL_STYLE}
+        role="dialog"
+        aria-modal
+        aria-label="Source code"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header style={HEADER_STYLE}>
+          <div style={HEADER_TEXT_STYLE}>
+            <div style={TITLE_STYLE} title={node.qualifiedName}>{node.displayName}</div>
+            <div style={LOCATION_STYLE} title={file}>{`${file}:${range}`}</div>
+          </div>
+          <button type="button" style={CLOSE_STYLE} onClick={closeCode} aria-label="Close source">
+            ×
+          </button>
+        </header>
+        <div style={BODY_STYLE}>
+          {loading ? <div style={STATUS_STYLE}>Loading source…</div> : null}
+          {error ? <div style={ERROR_STYLE}>{error}</div> : null}
+          {code !== null ? <CodeListing code={code} startLine={startLine} /> : null}
+          {truncated ? <div style={TRUNCATED_STYLE}>Snippet truncated by the server.</div> : null}
         </div>
-        <button type="button" style={CLOSE_STYLE} onClick={closeCode} aria-label="Close source">
-          ×
-        </button>
-      </header>
-      <div style={BODY_STYLE}>
-        {loading ? <div style={STATUS_STYLE}>Loading source…</div> : null}
-        {error ? <div style={ERROR_STYLE}>{error}</div> : null}
-        {code !== null ? <CodeListing code={code} startLine={startLine} /> : null}
-        {truncated ? <div style={TRUNCATED_STYLE}>Snippet truncated by the server.</div> : null}
       </div>
-    </aside>
+    </div>
   );
 }
 
@@ -68,19 +78,26 @@ function CodeListing(props: { code: string; startLine: number }) {
   );
 }
 
-const DRAWER_STYLE: React.CSSProperties = {
+const BACKDROP_STYLE: React.CSSProperties = {
   position: "absolute",
-  top: 0,
-  right: 0,
-  bottom: 0,
-  width: 460,
-  maxWidth: "100%",
+  inset: 0,
+  background: "rgba(8,10,14,0.6)",
+  zIndex: 30,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+};
+const PANEL_STYLE: React.CSSProperties = {
+  width: "70vw",
+  maxWidth: 900,
+  height: "75vh",
   display: "flex",
   flexDirection: "column",
   background: "#0E1116",
-  borderLeft: "1px solid #2A2F37",
-  zIndex: 20,
-  boxShadow: "-8px 0 24px rgba(0,0,0,0.45)",
+  border: "1px solid #2A2F37",
+  borderRadius: 12,
+  overflow: "hidden",
+  boxShadow: "0 24px 64px rgba(0,0,0,0.55)",
 };
 const HEADER_STYLE: React.CSSProperties = {
   display: "flex",
