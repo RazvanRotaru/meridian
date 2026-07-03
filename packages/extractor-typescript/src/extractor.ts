@@ -22,6 +22,7 @@ import { buildResolutionIndex } from "./resolution-index";
 import { collectRawEdges } from "./edge-pass";
 import { buildEdges, type EdgeBuildResult } from "./edge-build";
 import { collapseToDepth } from "./depth-collapse";
+import { buildLogicFlows } from "./flow-pass";
 import { buildStats } from "./stats";
 
 const NODE_ID_LANGUAGE = "ts";
@@ -58,6 +59,7 @@ async function runExtraction(options: ExtractOptions): Promise<ExtractionResult>
   const rawEdges = collectRawEdges(loaded, descriptors, index, moduleByFilePath, diagnostics);
   const built = buildEdges(rawEdges, options);
   const collapsed = collapseToDepth(buildGraphNodes(descriptors), built.edges, options.depth ?? "function");
+  const flows = buildLogicFlows(descriptors, index, new Set(collapsed.nodes.map((node) => node.id)));
   appendDropDiagnostics(diagnostics, built);
   const stats = buildStats({
     files: loaded.sourceFiles.length,
@@ -66,7 +68,7 @@ async function runExtraction(options: ExtractOptions): Promise<ExtractionResult>
     externalCallsDropped: built.externalCallsDropped,
     unresolvedCalls: built.unresolvedCalls,
   });
-  return { language: "typescript", nodes: collapsed.nodes, edges: collapsed.edges, stats, diagnostics };
+  return { language: "typescript", nodes: collapsed.nodes, edges: collapsed.edges, stats, diagnostics, flows };
 }
 
 function appendDropDiagnostics(diagnostics: ExtractionDiagnostic[], built: EdgeBuildResult): void {
