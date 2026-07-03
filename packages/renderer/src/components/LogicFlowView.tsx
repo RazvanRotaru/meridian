@@ -4,6 +4,10 @@
  * .logicFlow` as plain nested divs (no React Flow / ELK) — green call chips, amber dashed loop
  * containers, and cyan branch containers whose paths stack as rows. Double-clicking a resolved
  * call chip drills into that callable's own flow; a breadcrumb walks back out.
+ *
+ * The "Inline" dial pre-expands resolved calls IN PLACE: each callee's own flow nests inside the
+ * caller's, up to `logicInlineDepth` (0..2) levels, so several methods' logic reads together. A
+ * cycle guard (the ancestor path) and a shared step budget keep a deep expansion from hanging.
  */
 
 import { Fragment, useMemo, useState } from "react";
@@ -12,17 +16,30 @@ import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 
 /** A generous ceiling so a cyclic or pathologically nested flow can never hang the render. */
 const MAX_DEPTH = 200;
+/** Total rendered steps past which inlining stops (remaining calls fall back to leaf chips), so a
+ * deep pre-expansion on a huge method can never explode the DOM and hang the browser. */
+const INLINE_BUDGET = 800;
+/** The inline-depth dial's stops; 0 keeps calls as leaf chips (the original behavior). */
+const INLINE_DEPTHS: ReadonlyArray<number> = [0, 1, 2];
 
 type CallStep = Extract<FlowStep, { kind: "call" }>;
 type LoopStep = Extract<FlowStep, { kind: "loop" }>;
 type BranchStep = Extract<FlowStep, { kind: "branch" }>;
 
+/** Shared state for one flow render pass: the callee-flow lookup + a mutable step budget. The
+ * per-node `remainingDepth`/`ancestorPath` vary as inlining descends, so they travel as own props. */
+interface FlowContext {
+  logicFlowFor: (nodeId: string) => FlowStep[] | undefined;
+  budget: { n: number };
+}
+
 export function LogicFlowView() {
   const logicRoot = useBlueprint((state) => state.logicRoot);
   const logicStack = useBlueprint((state) => state.logicStack);
+  const logicInlineDepth = useBlueprint((state) => state.logicInlineDepth);
   const index = useBlueprint((state) => state.index);
   const sourceUrl = useBlueprint((state) => state.sourceUrl);
-  const { logicFlowFor, logicFlowTo, showCode, expandCode } = useBlueprintActions();
+  const { logicFlowFor, logicFlowTo, setLogicInlineDepth, showCode, expandCode } = useBlueprintActions();
 
   if (logicRoot === null) {
     return <LogicFlowPicker />;
@@ -36,10 +53,19 @@ export function LogicFlowView() {
   return (
     <div style={CONTAINER_STYLE}>
       <div style={CONTENT_STYLE}>
-        <LogicBreadcrumb stack={logicStack} nodesById={index.nodesById} onJump={logicFlowTo} />
+        <div style={HEADER_ROW_STYLE}>
+          <LogicBreadcrumb stack={logicStack} nodesById={index.nodesById} onJump={logicFlowTo} />
+          <InlineDepthControl value={logicInlineDepth} onChange={setLogicInlineDepth} />
+        </div>
         {steps && steps.length > 0 ? (
           <div style={FLOW_WRAP_STYLE}>
-            <FlowTrack steps={steps} depth={0} />
+            <FlowTrack
+              steps={steps}
+              depth={0}
+              remainingDepth={logicInlineDepth}
+              ancestorPath={new Set<NodeId>([logicRoot])}
+              ctx={{ logicFlowFor, budget: { n: 0 } }}
+            />
           </div>
         ) : (
           <div style={EMPTY_STYLE}>
@@ -218,8 +244,41 @@ function LogicBreadcrumb(props: {
   );
 }
 
-/** A horizontal execution track: steps left → right with → connectors between them. */
-function FlowTrack(props: { steps: FlowStep[]; depth: number }) {
+/** The inline-depth dial: pick how many levels of resolved calls expand in place (0 = leaf chips). */
+function InlineDepthControl(props: { value: number; onChange: (depth: number) => void }) {
+  return (
+    <div style={INLINE_CONTROL_STYLE}>
+      <span style={INLINE_LABEL_STYLE}>Inline</span>
+      <div style={INLINE_GROUP_STYLE} role="group" aria-label="Inline depth">
+        {INLINE_DEPTHS.map((depth) => (
+          <button
+            key={depth}
+            type="button"
+            style={inlinePillStyle(depth === props.value)}
+            aria-pressed={depth === props.value}
+            onClick={() => props.onChange(depth)}
+          >
+            {depth}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A horizontal execution track: steps left → right with → connectors between them. `remainingDepth`
+ * is how many more levels of resolved calls may expand in place; `ancestorPath` is the inlined
+ * caller chain (the cycle guard). Both pass THROUGH loop/branch nesting unchanged — only inlining
+ * a call spends a level.
+ */
+function FlowTrack(props: {
+  steps: FlowStep[];
+  depth: number;
+  remainingDepth: number;
+  ancestorPath: ReadonlySet<string>;
+  ctx: FlowContext;
+}) {
   if (props.depth > MAX_DEPTH) {
     return <span style={NONE_STYLE}>…</span>;
   }
@@ -228,40 +287,160 @@ function FlowTrack(props: { steps: FlowStep[]; depth: number }) {
       {props.steps.map((step, position) => (
         <Fragment key={position}>
           {position > 0 ? <Arrow /> : null}
-          <FlowStepView step={step} depth={props.depth} />
+          <FlowStepView
+            step={step}
+            depth={props.depth}
+            remainingDepth={props.remainingDepth}
+            ancestorPath={props.ancestorPath}
+            ctx={props.ctx}
+          />
         </Fragment>
       ))}
     </div>
   );
 }
 
-function FlowStepView(props: { step: FlowStep; depth: number }) {
+function FlowStepView(props: {
+  step: FlowStep;
+  depth: number;
+  remainingDepth: number;
+  ancestorPath: ReadonlySet<string>;
+  ctx: FlowContext;
+}) {
+  // Count every rendered step against the shared budget; the cap is read back in CallStepView.
+  props.ctx.budget.n += 1;
   if (props.step.kind === "call") {
-    return <CallChip step={props.step} />;
+    return (
+      <CallStepView
+        step={props.step}
+        depth={props.depth}
+        remainingDepth={props.remainingDepth}
+        ancestorPath={props.ancestorPath}
+        ctx={props.ctx}
+      />
+    );
   }
   if (props.step.kind === "loop") {
-    return <LoopBox step={props.step} depth={props.depth} />;
+    return (
+      <LoopBox
+        step={props.step}
+        depth={props.depth}
+        remainingDepth={props.remainingDepth}
+        ancestorPath={props.ancestorPath}
+        ctx={props.ctx}
+      />
+    );
   }
-  return <BranchBox step={props.step} depth={props.depth} />;
+  return (
+    <BranchBox
+      step={props.step}
+      depth={props.depth}
+      remainingDepth={props.remainingDepth}
+      ancestorPath={props.ancestorPath}
+      ctx={props.ctx}
+    />
+  );
 }
 
-// A resolved call is drillable (double-click → its own flow); external/unresolved stay dimmed.
-function CallChip(props: { step: CallStep }) {
+/**
+ * A call step: inline the callee's flow in place when there's depth left, the target resolves, it
+ * has a flow, the budget holds, and the target isn't already an inlined ancestor (the cycle guard).
+ * Otherwise fall back to a leaf chip — flagged with a ↩ marker when only the cycle guard stopped it.
+ */
+function CallStepView(props: {
+  step: CallStep;
+  depth: number;
+  remainingDepth: number;
+  ancestorPath: ReadonlySet<string>;
+  ctx: FlowContext;
+}) {
+  const { step, ctx } = props;
+  const target = step.resolution === "resolved" ? step.target : null;
+  const calleeFlow = target !== null ? ctx.logicFlowFor(target) : undefined;
+  const inlinable =
+    props.remainingDepth > 0 && target !== null && (calleeFlow?.length ?? 0) > 0 && ctx.budget.n <= INLINE_BUDGET;
+  const blockedByCycle = inlinable && target !== null && props.ancestorPath.has(target);
+
+  if (inlinable && !blockedByCycle && target !== null && calleeFlow) {
+    return (
+      <InlineCall
+        step={step}
+        target={target}
+        calleeFlow={calleeFlow}
+        depth={props.depth}
+        remainingDepth={props.remainingDepth}
+        ancestorPath={props.ancestorPath}
+        ctx={ctx}
+      />
+    );
+  }
+  return <CallChip step={step} recursion={blockedByCycle} />;
+}
+
+// A resolved call is drillable (double-click → its own flow); external/unresolved stay dimmed. A
+// call skipped only because its target is already inlined above shows a faint recursion marker.
+function CallChip(props: { step: CallStep; recursion?: boolean }) {
   const { step } = props;
   const { drillLogicFlow } = useBlueprintActions();
   const target = step.resolution === "resolved" ? step.target : null;
+  const title = props.recursion
+    ? "recursion — already inlined above"
+    : target !== null
+      ? "double-click to open its flow"
+      : `${step.resolution} call`;
   return (
     <div
       style={target !== null ? CALL_CHIP_STYLE : CALL_CHIP_MUTED_STYLE}
       onDoubleClick={target !== null ? () => drillLogicFlow(target) : undefined}
-      title={target !== null ? "double-click to open its flow" : `${step.resolution} call`}
+      title={title}
     >
       <b style={target !== null ? CALL_NAME_STYLE : CALL_NAME_MUTED_STYLE}>{step.label}</b>
+      {props.recursion ? <span style={RECURSION_MARK_STYLE} aria-hidden>↩</span> : null}
     </div>
   );
 }
 
-function LoopBox(props: { step: LoopStep; depth: number }) {
+/**
+ * A resolved call expanded in place: the call chip is the container header (still double-click →
+ * drill), and the callee's own flow renders nested below as its own track, one inline level deeper
+ * with the target added to the ancestor path so a later self-call can't re-inline forever.
+ */
+function InlineCall(props: {
+  step: CallStep;
+  target: NodeId;
+  calleeFlow: FlowStep[];
+  depth: number;
+  remainingDepth: number;
+  ancestorPath: ReadonlySet<string>;
+  ctx: FlowContext;
+}) {
+  const childPath = new Set(props.ancestorPath);
+  childPath.add(props.target);
+  return (
+    <div style={INLINE_CALL_STYLE}>
+      <div style={INLINE_CALL_HEADER_STYLE}>
+        <CallChip step={props.step} />
+      </div>
+      <div style={INLINE_CALL_BODY_STYLE}>
+        <FlowTrack
+          steps={props.calleeFlow}
+          depth={props.depth + 1}
+          remainingDepth={props.remainingDepth - 1}
+          ancestorPath={childPath}
+          ctx={props.ctx}
+        />
+      </div>
+    </div>
+  );
+}
+
+function LoopBox(props: {
+  step: LoopStep;
+  depth: number;
+  remainingDepth: number;
+  ancestorPath: ReadonlySet<string>;
+  ctx: FlowContext;
+}) {
   const { step } = props;
   return (
     <div style={LOOP_STYLE}>
@@ -270,12 +449,24 @@ function LoopBox(props: { step: LoopStep; depth: number }) {
         {step.label && step.label !== "loop" ? <span style={LOOP_LABEL_STYLE}>{step.label}</span> : null}
         <span style={LOOP_REPEAT_STYLE}>↻</span>
       </div>
-      <FlowTrack steps={step.body} depth={props.depth + 1} />
+      <FlowTrack
+        steps={step.body}
+        depth={props.depth + 1}
+        remainingDepth={props.remainingDepth}
+        ancestorPath={props.ancestorPath}
+        ctx={props.ctx}
+      />
     </div>
   );
 }
 
-function BranchBox(props: { step: BranchStep; depth: number }) {
+function BranchBox(props: {
+  step: BranchStep;
+  depth: number;
+  remainingDepth: number;
+  ancestorPath: ReadonlySet<string>;
+  ctx: FlowContext;
+}) {
   const { step } = props;
   return (
     <div style={BRANCH_STYLE}>
@@ -285,7 +476,13 @@ function BranchBox(props: { step: BranchStep; depth: number }) {
           <div key={position} style={BRANCH_ROW_STYLE}>
             <span style={ROW_LABEL_STYLE}>{path.label}</span>
             {path.body.length > 0 ? (
-              <FlowTrack steps={path.body} depth={props.depth + 1} />
+              <FlowTrack
+                steps={path.body}
+                depth={props.depth + 1}
+                remainingDepth={props.remainingDepth}
+                ancestorPath={props.ancestorPath}
+                ctx={props.ctx}
+              />
             ) : (
               <span style={NONE_STYLE}>—</span>
             )}
@@ -390,13 +587,52 @@ function kindTagStyle(kind: string): React.CSSProperties {
   return { ...KIND_TAG_STYLE, color: "#56C271", borderColor: "#2C4133" };
 }
 
+// Breadcrumb on the left, inline dial on the right; the row owns the gap below (breadcrumb no longer does).
+const HEADER_ROW_STYLE: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  flexWrap: "wrap",
+  gap: 12,
+  marginBottom: 16,
+};
 const BREADCRUMB_STYLE: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   flexWrap: "wrap",
   gap: 4,
-  marginBottom: 16,
 };
+
+// The inline-depth dial mirrors the Code-flows depth dial: muted pills in a boxed group, active one lit.
+const INLINE_CONTROL_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, flex: "0 0 auto" };
+const INLINE_LABEL_STYLE: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: "uppercase",
+  letterSpacing: "0.06em",
+  color: "#7B8695",
+};
+const INLINE_GROUP_STYLE: React.CSSProperties = {
+  display: "flex",
+  padding: 2,
+  gap: 2,
+  borderRadius: 8,
+  border: "1px solid #2A2F37",
+  background: "#0E1116",
+};
+
+function inlinePillStyle(active: boolean): React.CSSProperties {
+  return {
+    border: "none",
+    borderRadius: 6,
+    padding: "3px 9px",
+    fontSize: 11,
+    cursor: "pointer",
+    font: "inherit",
+    fontWeight: active ? 600 : 400,
+    background: active ? "#1F2530" : "transparent",
+    color: active ? "#E6EDF3" : "#9AA4B2",
+  };
+}
 const CRUMB_STYLE: React.CSSProperties = {
   background: "transparent",
   border: "none",
@@ -451,6 +687,19 @@ const CALL_CHIP_MUTED_STYLE: React.CSSProperties = {
 };
 const CALL_NAME_STYLE: React.CSSProperties = { color: "#56C271", fontWeight: 600 };
 const CALL_NAME_MUTED_STYLE: React.CSSProperties = { color: "#9AA4B2", fontWeight: 600 };
+const RECURSION_MARK_STYLE: React.CSSProperties = { marginLeft: 6, color: "#7B8695", opacity: 0.7 };
+
+// An inlined call reads as a faint green-tinted box — distinct from loop(amber)/branch(cyan) — with
+// the call chip as its header and the callee's own flow nested below.
+const INLINE_CALL_STYLE: React.CSSProperties = {
+  flex: "0 0 auto",
+  border: "1px solid rgba(86,194,113,0.35)",
+  borderRadius: 10,
+  background: "rgba(86,194,113,0.04)",
+  padding: "8px 10px 10px",
+};
+const INLINE_CALL_HEADER_STYLE: React.CSSProperties = { display: "flex", marginBottom: 9 };
+const INLINE_CALL_BODY_STYLE: React.CSSProperties = { paddingLeft: 2 };
 
 const LOOP_STYLE: React.CSSProperties = {
   flex: "0 0 auto",

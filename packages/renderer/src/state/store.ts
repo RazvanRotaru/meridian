@@ -46,6 +46,9 @@ export interface BlueprintState {
   logicRoot: NodeId | null;
   /** The drill trail into logic flows, oldest first — root..current — powering the logic breadcrumb. */
   logicStack: NodeId[];
+  /** How many levels of resolved calls the Logic-flow view inlines in place; 0 == calls are leaf
+   * chips (today's behavior). Sticky across open/drill so the reader keeps their chosen depth. */
+  logicInlineDepth: number;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -74,6 +77,7 @@ export interface BlueprintState {
   openLogicFlow(nodeId: string): void;
   drillLogicFlow(nodeId: string): void;
   logicFlowTo(nodeId: string): void;
+  setLogicInlineDepth(depth: number): void;
   setViewMode(mode: ViewMode): void;
   setEnvironment(environment: string): void;
   refreshTelemetry(): Promise<void>;
@@ -110,6 +114,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     flowDepth: null,
     logicRoot: null,
     logicStack: [],
+    logicInlineDepth: 0,
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -218,6 +223,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       set({ logicStack: get().logicStack.slice(0, index + 1), logicRoot: nodeId });
+    },
+
+    // Set how many levels of resolved calls the Logic-flow view expands in place. Clamped to 0..2
+    // (the cap that keeps a deep pre-expansion from hanging the browser). Sticky — never reset on
+    // open/drill — so the reader's chosen inline depth carries across navigation.
+    setLogicInlineDepth(depth) {
+      set({ logicInlineDepth: Math.max(0, Math.min(2, Math.trunc(depth))) });
     },
 
     // Switching mode re-derives + relayouts like a dive. Entering UI mode dives to the render
