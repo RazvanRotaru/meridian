@@ -1,7 +1,7 @@
 /**
  * The recursive declaration walk: classes -> methods, interfaces -> method signatures,
- * top-level functions and arrow consts, and namespaces (recursed). Emission is top-down so
- * a child's parent descriptor always already exists.
+ * top-level functions and arrow consts, object-literal consts -> methods, and namespaces
+ * (recursed). Emission is top-down so a child's parent descriptor always already exists.
  */
 
 import {
@@ -39,6 +39,7 @@ export function emitContainer(
   for (const declaration of container.getInterfaces()) emitInterface(declaration, parent, enclosingNames, context);
   for (const declaration of container.getFunctions()) emitFunction(declaration, parent, enclosingNames, context);
   for (const declaration of arrowConsts(container)) emitArrowConst(declaration, parent, enclosingNames, context);
+  for (const declaration of objectLiteralConsts(container)) emitObjectLiteralConst(declaration, parent, enclosingNames, context);
   for (const declaration of container.getModules()) emitNamespace(declaration, parent, enclosingNames, context);
 }
 
@@ -116,12 +117,47 @@ function emitArrowProperty(node: PropertyDeclaration, parent: NodeDescriptor, en
   );
 }
 
-function container(kind: "class" | "interface" | "namespace", localName: string, enclosingNames: string[], parent: NodeDescriptor, declarationNode: Node) {
+// A const bound to an object literal is a container node; its function-valued members are methods.
+function emitObjectLiteralConst(node: VariableDeclaration, parent: NodeDescriptor, enclosingNames: string[], context: EmitContext): void {
+  const name = node.getName();
+  const self = context.emit(
+    memberDescriptor(context, container("object", name, enclosingNames, parent, node)),
+  );
+  const object = node.getInitializer();
+  if (!Node.isObjectLiteralExpression(object)) {
+    return;
+  }
+  const inner = [...enclosingNames, name];
+  for (const property of object.getProperties()) emitObjectMember(property, self, inner, context);
+}
+
+// One object-literal property. We stay one level deep, so nested object literals are not recursed.
+function emitObjectMember(property: Node, parent: NodeDescriptor, enclosingNames: string[], context: EmitContext): void {
+  if (Node.isMethodDeclaration(property) || Node.isGetAccessorDeclaration(property) || Node.isSetAccessorDeclaration(property)) {
+    emitCallable(property, property.getName(), parent, enclosingNames, context);
+    return;
+  }
+  if (Node.isPropertyAssignment(property) && isCallableInitializer(property.getInitializer())) {
+    const initializer = property.getInitializer();
+    context.emit(
+      memberDescriptor(context, {
+        kind: "method", localName: property.getName(), enclosingNames, parent,
+        declarationNode: property, callableNode: initializer ?? null, signatureSource: asSignature(initializer), emitTelemetry: true,
+      }),
+    );
+  }
+}
+
+function container(kind: "class" | "interface" | "namespace" | "object", localName: string, enclosingNames: string[], parent: NodeDescriptor, declarationNode: Node) {
   return { kind, localName, enclosingNames, parent, declarationNode, callableNode: null, signatureSource: null, emitTelemetry: false };
 }
 
 function arrowConsts(node: Container): VariableDeclaration[] {
   return node.getVariableDeclarations().filter((declaration) => isCallableInitializer(declaration.getInitializer()));
+}
+
+function objectLiteralConsts(node: Container): VariableDeclaration[] {
+  return node.getVariableDeclarations().filter((declaration) => Node.isObjectLiteralExpression(declaration.getInitializer()));
 }
 
 function arrowProperties(node: ClassDeclaration): PropertyDeclaration[] {
