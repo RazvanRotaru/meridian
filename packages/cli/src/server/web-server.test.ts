@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
+import { request as httpRequest } from "node:http";
 import { createWebServer } from "./web-server";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -91,6 +92,79 @@ describe("createWebServer generate -> view (offline path source)", () => {
     expect(graph.target.language).toBe("python");
   }, 60_000);
 });
+
+describe("createWebServer auth routes (sign-in not configured)", () => {
+  it("reports sign-in disabled and no session", async () => {
+    const data = await getJson<{ configured: boolean; signedIn: boolean }>(`${base}/api/auth/session`);
+    expect(data).toMatchObject({ configured: false, signedIn: false });
+  });
+
+  it("injects the disabled auth config into the landing page", async () => {
+    const html = await (await fetch(`${base}/`)).text();
+    expect(html).toContain('window.__MERIDIAN_AUTH__={"configured":false}');
+  });
+
+  it("401s auth status and repo search without a session", async () => {
+    expect((await fetch(`${base}/api/auth/status`)).status).toBe(401);
+    expect((await fetch(`${base}/api/repos/search?q=ky`)).status).toBe(401);
+  });
+
+  it("400s device start when no client id is configured", async () => {
+    expect((await post("/api/auth/device", {})).status).toBe(400);
+  });
+
+  it("415s a POST without a JSON content type", async () => {
+    const res = await fetch(`${base}/api/auth/device`, { method: "POST", headers: { "content-type": "text/plain" }, body: "{}" });
+    expect(res.status).toBe(415);
+  });
+
+  it("403s a cross-origin API request", async () => {
+    expect(await statusWithOrigin("/api/auth/session", "http://evil.example")).toBe(403);
+  });
+
+  it("404s an unknown /api path as JSON, never the SPA fallback", async () => {
+    const res = await fetch(`${base}/api/nope`);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("application/json");
+  });
+});
+
+describe("createWebServer with sign-in configured", () => {
+  let configuredRoot: string;
+  let configured: Server;
+  let configuredBase: string;
+
+  beforeAll(async () => {
+    configuredRoot = writeFakeRenderer();
+    configured = createWebServer({ rendererRoot: configuredRoot, webUiPath: WEB_UI, cwd: REPO_ROOT, githubClientId: "Iv1.test" });
+    configuredBase = await listenEphemeral(configured);
+  });
+
+  afterAll(() => {
+    configured.close();
+    rmSync(configuredRoot, { recursive: true, force: true });
+  });
+
+  it("advertises sign-in as configured without any network call", async () => {
+    const data = (await (await fetch(`${configuredBase}/api/auth/session`)).json()) as { configured: boolean };
+    expect(data.configured).toBe(true);
+  });
+
+  it("injects configured:true into the landing page", async () => {
+    const html = await (await fetch(`${configuredBase}/`)).text();
+    expect(html).toContain('window.__MERIDIAN_AUTH__={"configured":true}');
+  });
+});
+
+function statusWithOrigin(path: string, origin: string): Promise<number> {
+  return new Promise((resolveStatus) => {
+    const req = httpRequest(`${base}${path}`, { headers: { origin } }, (res) => {
+      res.resume();
+      resolveStatus(res.statusCode ?? 0);
+    });
+    req.end();
+  });
+}
 
 async function post(path: string, body: unknown): Promise<Response> {
   return fetch(`${base}${path}`, {
