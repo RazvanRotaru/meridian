@@ -6,6 +6,7 @@
  * extractors registered with the `ExtractorRegistry`.
  */
 
+import type { LogicFlows } from "./flow";
 import type { GraphEdge, GraphNode, LanguageTag, NodeKind } from "./types";
 
 export interface DetectionResult {
@@ -49,6 +50,8 @@ export interface ExtractionResult {
   edges: GraphEdge[];
   stats: ExtractionStats;
   diagnostics: ExtractionDiagnostic[];
+  /** Per-callable intra-procedural logic flows; the CLI stamps them into `extensions.logicFlow`. */
+  flows?: LogicFlows;
 }
 
 export interface LanguageExtractor {

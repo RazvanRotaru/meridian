@@ -7,8 +7,8 @@
  */
 
 import { basename } from "node:path";
-import { SCHEMA_VERSION } from "@meridian/core";
-import type { ExtractionResult, GraphArtifact, LanguageTag } from "@meridian/core";
+import { LOGIC_FLOW_EXTENSION, SCHEMA_VERSION } from "@meridian/core";
+import type { ExtractionResult, GraphArtifact, JsonValue, LanguageTag } from "@meridian/core";
 import { nowIso } from "./clock";
 import { generatorVersion } from "./version";
 
@@ -28,7 +28,7 @@ export interface HeaderInputs {
 }
 
 export function buildArtifact(inputs: HeaderInputs): GraphArtifact {
-  return {
+  const artifact: GraphArtifact = {
     schemaVersion: SCHEMA_VERSION,
     generatedAt: nowIso(),
     generator: { name: "meridian", version: generatorVersion() },
@@ -41,4 +41,18 @@ export function buildArtifact(inputs: HeaderInputs): GraphArtifact {
     nodes: inputs.extraction.nodes,
     edges: inputs.extraction.edges,
   };
+  const extensions = extensionsFor(inputs.extraction);
+  if (extensions) {
+    artifact.extensions = extensions;
+  }
+  return artifact;
+}
+
+/** Fold the extractor's optional side-channels (logic flows) into the `extensions` record. */
+function extensionsFor(extraction: ExtractionResult): Record<string, JsonValue> | undefined {
+  const flows = extraction.flows;
+  if (!flows || Object.keys(flows).length === 0) {
+    return undefined;
+  }
+  return { [LOGIC_FLOW_EXTENSION]: flows as unknown as JsonValue };
 }
