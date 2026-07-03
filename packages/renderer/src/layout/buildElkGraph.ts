@@ -18,14 +18,32 @@ const ROOT_LAYOUT_OPTIONS: Record<string, string> = {
   "elk.algorithm": "layered",
   "elk.direction": "RIGHT",
   "elk.hierarchyHandling": "INCLUDE_CHILDREN",
-  "elk.layered.spacing.nodeNodeBetweenLayers": "64",
-  "elk.spacing.nodeNode": "34",
+  // Sources (no incoming wires after cycle breaking) land in the FIRST column; model order
+  // keeps siblings in source order so the layout reads top-to-bottom like the code does.
+  "elk.layered.cycleBreaking.strategy": "GREEDY",
+  "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
+  "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
+  // Route wires AROUND boxes (orthogonal sections rendered by the edge component); naive
+  // point-to-point beziers slicing through nodes are what made big graphs unreadable.
+  "elk.edgeRouting": "ORTHOGONAL",
+  // Fan-ins share a trunk channel (bus look) instead of forty parallel wires pinching a port.
+  "elk.layered.mergeEdges": "true",
+  "elk.layered.spacing.nodeNodeBetweenLayers": "80",
+  "elk.spacing.nodeNode": "18",
+  "elk.spacing.edgeNode": "24",
+  "elk.spacing.edgeEdge": "12",
+  // Disconnected islands pack side-by-side instead of stretching one endless column.
+  "elk.separateConnectedComponents": "true",
+  "elk.spacing.componentComponent": "48",
+  "elk.aspectRatio": "1.8",
   "elk.padding": "[top=28,left=28,bottom=28,right=28]",
 };
 
 // Top padding leaves room for the container's title bar; React Flow draws nothing there itself.
 const CONTAINER_LAYOUT_OPTIONS: Record<string, string> = {
-  "elk.padding": "[top=46,left=18,bottom=18,right=18]",
+  "elk.padding": "[top=44,left=16,bottom=16,right=16]",
+  "elk.spacing.nodeNode": "14",
+  "elk.layered.spacing.nodeNodeBetweenLayers": "56",
 };
 
 export function buildElkGraph(visible: VisibleNode[], edges: LiftedEdge[]): ElkNode {

@@ -8,7 +8,7 @@
  */
 
 import { MarkerType } from "@xyflow/react";
-import type { ElkNode } from "elkjs/lib/elk-api";
+import type { ElkExtendedEdge, ElkNode } from "elkjs/lib/elk-api";
 import type { LiftedEdge, VisibleNode } from "../derive/types";
 import { wireColorForKind } from "../theme/edgeColors";
 import { ELK_ROOT_ID } from "./buildElkGraph";
@@ -26,7 +26,21 @@ export function toReactFlow(
 ): ReactFlowGraph {
   const nodes: BlueprintNode[] = [];
   emitChildren(laidOut.children ?? [], undefined, visibleById, nodes);
-  return { nodes, edges: liftedEdges.map(toReactFlowEdge) };
+  const routes = routesById(laidOut.edges ?? []);
+  return { nodes, edges: liftedEdges.map((edge) => toReactFlowEdge(edge, routes.get(edge.id))) };
+}
+
+/** Flatten each routed edge's first section into start -> bends -> end, keyed by edge id. */
+function routesById(elkEdges: ElkExtendedEdge[]): Map<string, Array<{ x: number; y: number }>> {
+  const routes = new Map<string, Array<{ x: number; y: number }>>();
+  for (const edge of elkEdges) {
+    const section = edge.sections?.[0];
+    if (!section) {
+      continue;
+    }
+    routes.set(edge.id, [section.startPoint, ...(section.bendPoints ?? []), section.endPoint]);
+  }
+  return routes;
 }
 
 function emitChildren(
@@ -66,21 +80,24 @@ function toReactFlowNode(
   };
 }
 
-function toReactFlowEdge(edge: LiftedEdge): BlueprintEdge {
+function toReactFlowEdge(
+  edge: LiftedEdge,
+  points: Array<{ x: number; y: number }> | undefined,
+): BlueprintEdge {
   return {
     id: edge.id,
     source: edge.source,
     target: edge.target,
     type: "blueprint",
-    // Resolved wires get marching-ants dashes; unresolved wires stay static + dim (honesty).
-    animated: edge.resolved,
-    markerEnd: { type: MarkerType.ArrowClosed, color: wireColorForKind(edge.kind), width: 18, height: 18 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: wireColorForKind(edge.kind), width: 12, height: 12 },
     data: {
       kind: edge.kind,
       weight: edge.weight,
       underlyingEdgeIds: edge.underlyingEdgeIds,
       lifted: edge.lifted,
       resolved: edge.resolved,
+      highlight: "rest",
+      points,
     },
   };
 }

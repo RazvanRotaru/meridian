@@ -17,29 +17,31 @@ export function ContainerNode(props: NodeProps<BlueprintNode>) {
   const accent = accentForKind(node.kind);
   const metrics = useBlueprint((state) => state.telemetry[props.id]);
   const selected = useBlueprint((state) => state.selectedId === props.id);
+  // Dim when a path trace is active and this frame is not on it (ancestors of path nodes stay lit).
+  const dimmed = useBlueprint((state) => state.pathNodeIds.size > 0 && !state.pathNodeIds.has(props.id));
   const toggleExpand = useBlueprintActions().toggleExpand;
   return (
-    <div style={frameStyle(accent, isExpanded, selected)}>
+    <div style={{ ...frameStyle(accent, isExpanded, selected), ...dimStyle(dimmed) }}>
       <Handle type="target" position={Position.Left} id="in" style={HANDLE_STYLE} />
       <NodeHeader
         node={node}
         accent={accent}
         chevron={isExpanded ? "expanded" : "collapsed"}
+        count={childCount}
         onToggle={() => toggleExpand(props.id)}
       >
         <TelemetryBadges metrics={metrics} />
       </NodeHeader>
-      {isExpanded ? null : <CollapsedBody summary={node.summary} childCount={childCount} accent={accent} />}
+      {!isExpanded && node.summary ? <CollapsedBody summary={node.summary} /> : null}
       <Handle type="source" position={Position.Right} id="out" style={HANDLE_STYLE} />
     </div>
   );
 }
 
-function CollapsedBody(props: { summary: string | null | undefined; childCount: number; accent: string }) {
+function CollapsedBody(props: { summary: string }) {
   return (
     <div style={BODY_STYLE}>
-      <div style={{ ...COUNT_STYLE, color: props.accent }}>{props.childCount} items</div>
-      {props.summary ? <div style={SUMMARY_STYLE}>{ellipsize(props.summary, 84)}</div> : null}
+      <div style={SUMMARY_STYLE}>{ellipsize(props.summary, 84)}</div>
     </div>
   );
 }
@@ -58,7 +60,21 @@ function frameStyle(accent: string, isExpanded: boolean, selected: boolean): Rea
   };
 }
 
+function dimStyle(dimmed: boolean): React.CSSProperties {
+  return {
+    opacity: dimmed ? 0.25 : 1,
+    filter: dimmed ? "saturate(0.5)" : undefined,
+    transition: "opacity 140ms, filter 140ms",
+  };
+}
+
 const HANDLE_STYLE: React.CSSProperties = { background: "#3A414C", width: 7, height: 7, border: "none" };
-const BODY_STYLE: React.CSSProperties = { padding: "8px 12px 10px" };
-const COUNT_STYLE: React.CSSProperties = { fontSize: 12, fontWeight: 600 };
-const SUMMARY_STYLE: React.CSSProperties = { fontSize: 11, color: "#9AA4B2", marginTop: 4, lineHeight: "15px" };
+const BODY_STYLE: React.CSSProperties = { padding: "5px 12px 7px" };
+const SUMMARY_STYLE: React.CSSProperties = {
+  fontSize: 11,
+  color: "#9AA4B2",
+  lineHeight: "15px",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};

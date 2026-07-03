@@ -1,7 +1,11 @@
 /**
- * The shared node header: a kind-accent rail, a title-cased display name, an optional
- * expand/collapse chevron, and a slot for telemetry badges. The header IS the toggle for
- * containers, so clicking it stops propagation (a body click selects; a header click drills).
+ * The shared node header: a kind-accent rail, an optional expand/collapse chevron, a
+ * title-cased display name, an optional child-count chip, and a slot for badges.
+ *
+ * Interaction contract (matches familiar tree UIs): ONLY the chevron toggles expansion —
+ * clicks on it never bubble. Everywhere else on the header behaves like the node body, so a
+ * single click selects (path trace) and a double click dives into a container. This keeps
+ * title-only compact nodes fully divable.
  */
 
 import type { ReactNode } from "react";
@@ -12,69 +16,94 @@ export function NodeHeader(props: {
   node: GraphNode;
   accent: string;
   chevron?: "collapsed" | "expanded";
+  count?: number;
   onToggle?: () => void;
   children?: ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      style={headerStyle(props.accent)}
-      onClick={handleToggle(props.onToggle)}
-      onDoubleClick={swallowDoubleClick}
-    >
+    <div style={headerStyle(props.accent)}>
       <span style={{ ...RAIL_STYLE, background: props.accent }} />
       <span style={CONTENT_STYLE}>
         <span style={TITLE_ROW_STYLE}>
-          {props.chevron ? <span style={CHEVRON_STYLE}>{glyph(props.chevron)}</span> : null}
+          {props.chevron && props.onToggle ? (
+            <Chevron chevron={props.chevron} onToggle={props.onToggle} />
+          ) : null}
           <span style={TITLE_STYLE}>{titleCase(props.node.displayName)}</span>
+          {props.count !== undefined ? (
+            <span style={{ ...COUNT_CHIP_STYLE, color: props.accent, borderColor: `${props.accent}55` }}>
+              {props.count}
+            </span>
+          ) : null}
           <span style={{ ...KIND_STYLE, color: props.accent }}>{props.node.kind}</span>
         </span>
         {props.children}
       </span>
-    </button>
+    </div>
   );
 }
 
-function handleToggle(onToggle?: () => void) {
-  return (event: React.MouseEvent) => {
-    if (!onToggle) {
-      return;
-    }
+function Chevron(props: { chevron: "collapsed" | "expanded"; onToggle: () => void }) {
+  const stopAnd = (action?: () => void) => (event: React.MouseEvent) => {
     event.stopPropagation();
-    onToggle();
+    action?.();
   };
-}
-
-// The header is the inline expand/collapse control, so a double-click on it must never bubble
-// up to the canvas dive handler — the chevron toggles, it never dives.
-function swallowDoubleClick(event: React.MouseEvent): void {
-  event.stopPropagation();
-}
-
-function glyph(chevron: "collapsed" | "expanded"): string {
-  return chevron === "expanded" ? "▾" : "▸";
+  return (
+    <button
+      type="button"
+      aria-label={props.chevron === "expanded" ? "Collapse" : "Expand"}
+      style={CHEVRON_BUTTON_STYLE}
+      onClick={stopAnd(props.onToggle)}
+      onDoubleClick={stopAnd()}
+    >
+      {props.chevron === "expanded" ? "▾" : "▸"}
+    </button>
+  );
 }
 
 function headerStyle(accent: string): React.CSSProperties {
   return {
     display: "flex",
     width: "100%",
-    gap: 10,
-    padding: "8px 10px",
-    border: "none",
+    gap: 8,
+    padding: "7px 10px",
     borderBottom: `1px solid ${accent}33`,
     background: "transparent",
     color: "#E6EDF3",
     textAlign: "left",
     cursor: "pointer",
     font: "inherit",
+    boxSizing: "border-box",
   };
 }
 
+const COUNT_CHIP_STYLE: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 700,
+  lineHeight: "14px",
+  padding: "0 6px",
+  borderRadius: 8,
+  border: "1px solid",
+  flex: "0 0 auto",
+};
+
 const RAIL_STYLE: React.CSSProperties = { width: 3, borderRadius: 2, flex: "0 0 auto" };
 const CONTENT_STYLE: React.CSSProperties = { flex: "1 1 auto", minWidth: 0 };
-const TITLE_ROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "baseline", gap: 6 };
-const CHEVRON_STYLE: React.CSSProperties = { fontSize: 10, opacity: 0.8 };
+const TITLE_ROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6 };
+const CHEVRON_BUTTON_STYLE: React.CSSProperties = {
+  width: 16,
+  height: 16,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 0,
+  border: "none",
+  borderRadius: 4,
+  background: "transparent",
+  color: "#9AA4B2",
+  fontSize: 10,
+  cursor: "pointer",
+  flex: "0 0 auto",
+};
 const TITLE_STYLE: React.CSSProperties = {
   fontWeight: 600,
   fontSize: 13,
@@ -87,4 +116,5 @@ const KIND_STYLE: React.CSSProperties = {
   textTransform: "uppercase",
   letterSpacing: 0.5,
   marginLeft: "auto",
+  flex: "0 0 auto",
 };

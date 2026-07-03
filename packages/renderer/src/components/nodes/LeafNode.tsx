@@ -18,17 +18,21 @@ export function LeafNode(props: NodeProps<BlueprintNode>) {
   const accent = accentForKind(node.kind);
   const metrics = useBlueprint((state) => state.telemetry[props.id]);
   const selected = useBlueprint((state) => state.selectedId === props.id);
+  // Dim when a path trace is active and this node is not on it.
+  const dimmed = useBlueprint((state) => state.pathNodeIds.size > 0 && !state.pathNodeIds.has(props.id));
   const callable = isCallable(node.kind);
   return (
-    <div style={cardStyle(accent, selected)}>
+    <div style={{ ...cardStyle(accent, selected), ...dimStyle(dimmed) }}>
       <Handle type="target" position={Position.Left} id="in" style={pinStyle(callable)} />
       <NodeHeader node={node} accent={accent}>
         <TelemetryBadges metrics={metrics} />
       </NodeHeader>
-      <div style={BODY_STYLE}>
-        {node.summary ? <div style={SUMMARY_STYLE}>{ellipsize(node.summary, 96)}</div> : null}
-        {callable && node.signature ? <code style={SIGNATURE_STYLE}>{node.signature}</code> : null}
-      </div>
+      {node.summary || (callable && node.signature) ? (
+        <div style={BODY_STYLE}>
+          {node.summary ? <div style={SUMMARY_STYLE}>{ellipsize(node.summary, 96)}</div> : null}
+          {callable && node.signature ? <code style={SIGNATURE_STYLE}>{node.signature}</code> : null}
+        </div>
+      ) : null}
       <Handle type="source" position={Position.Right} id="out" style={pinStyle(callable)} />
     </div>
   );
@@ -47,6 +51,14 @@ function cardStyle(accent: string, selected: boolean): React.CSSProperties {
   };
 }
 
+function dimStyle(dimmed: boolean): React.CSSProperties {
+  return {
+    opacity: dimmed ? 0.25 : 1,
+    filter: dimmed ? "saturate(0.5)" : undefined,
+    transition: "opacity 140ms, filter 140ms",
+  };
+}
+
 // Callable pins are visible typed connectors; non-callable leaves keep them subtle.
 function pinStyle(callable: boolean): React.CSSProperties {
   return {
@@ -57,11 +69,18 @@ function pinStyle(callable: boolean): React.CSSProperties {
   };
 }
 
-const BODY_STYLE: React.CSSProperties = { padding: "6px 12px 10px" };
-const SUMMARY_STYLE: React.CSSProperties = { fontSize: 11, color: "#9AA4B2", lineHeight: "15px" };
+const BODY_STYLE: React.CSSProperties = { padding: "5px 12px 7px" };
+const SUMMARY_STYLE: React.CSSProperties = {
+  fontSize: 11,
+  color: "#9AA4B2",
+  lineHeight: "15px",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};
 const SIGNATURE_STYLE: React.CSSProperties = {
   display: "block",
-  marginTop: 6,
+  marginTop: 4,
   fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
   fontSize: 11,
   color: "#C9D3E0",

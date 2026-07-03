@@ -6,11 +6,15 @@
 
 import type { VisibleNode } from "../derive/types";
 
-const COLLAPSED_WIDTH = 232;
-const COLLAPSED_HEIGHT = 78;
 const CHAR_WIDTH = 7.4;
-const MIN_CALLABLE_WIDTH = 200;
-const MAX_CALLABLE_WIDTH = 420;
+const MIN_WIDTH = 168;
+const MAX_WIDTH = 420;
+// Heights mirror what the node components actually paint: a 34px header row, then one
+// optional 20px summary line, then an optional 24px signature line (plus body padding).
+const HEADER_HEIGHT = 34;
+const SUMMARY_HEIGHT = 20;
+const SIGNATURE_HEIGHT = 24;
+const BODY_PADDING = 12;
 
 export interface BoxSize {
   width: number;
@@ -23,19 +27,15 @@ export function isCallable(kind: string): boolean {
 
 /** Size for any node ELK will NOT measure itself: a leaf or a collapsed container. */
 export function boxSize(visibleNode: VisibleNode): BoxSize {
-  if (isCallable(visibleNode.node.kind)) {
-    return callableSize(visibleNode);
-  }
-  return { width: COLLAPSED_WIDTH, height: COLLAPSED_HEIGHT };
-}
-
-function callableSize(visibleNode: VisibleNode): BoxSize {
-  const signature = visibleNode.node.signature ?? "";
-  const titleText = visibleNode.node.displayName;
-  const longestLine = Math.max(titleText.length, signature.length);
-  const width = clamp(MIN_CALLABLE_WIDTH, MAX_CALLABLE_WIDTH, 40 + longestLine * CHAR_WIDTH);
-  // Pins occupy a dedicated row under the signature, so callable leaves are taller.
-  const height = signature.length > 0 ? 104 : 76;
+  const node = visibleNode.node;
+  const signature = isCallable(node.kind) ? (node.signature ?? "") : "";
+  const hasSummary = Boolean(node.summary);
+  // The header row also fits the kind label and (for containers) the child-count chip.
+  const headerChars = node.displayName.length + node.kind.length + (visibleNode.isContainer ? 6 : 0);
+  const longestLine = Math.max(headerChars, signature.length);
+  const width = clamp(MIN_WIDTH, MAX_WIDTH, 56 + longestLine * CHAR_WIDTH);
+  const bodyLines = (hasSummary ? SUMMARY_HEIGHT : 0) + (signature.length > 0 ? SIGNATURE_HEIGHT : 0);
+  const height = HEADER_HEIGHT + (bodyLines > 0 ? bodyLines + BODY_PADDING : 0);
   return { width: Math.round(width), height };
 }
 

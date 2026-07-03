@@ -16,6 +16,17 @@
         color: #e6edf3;
         font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
       }
+      /* Marching-ants flow along wires on the active path trace. */
+      @keyframes meridian-flow {
+        to {
+          stroke-dashoffset: -14;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .react-flow__edge path {
+          animation: none !important;
+        }
+      }
     </style>
   </head>
   <body>

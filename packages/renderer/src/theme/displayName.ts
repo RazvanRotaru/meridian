@@ -5,6 +5,11 @@
  */
 
 export function titleCase(name: string): string {
+  // File-ish names (module boxes: "app.tsx", "use-thing.ts") stay verbatim — engineers
+  // navigate by real file names; title-casing them ("App Tsx") reads as a mangle.
+  if (/\.[a-z]{2,4}$/i.test(name)) {
+    return name;
+  }
   return splitWords(name).map(capitalize).join(" ");
 }
 

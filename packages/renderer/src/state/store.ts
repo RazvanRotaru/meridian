@@ -6,12 +6,15 @@
  */
 
 import { createStore, type StoreApi } from "zustand/vanilla";
+import { MarkerType } from "@xyflow/react";
 import type { GraphArtifact, NodeMetrics } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
-import type { BlueprintEdge, BlueprintNode } from "../layout/rfTypes";
+import type { BlueprintEdge, BlueprintNode, EdgeHighlight } from "../layout/rfTypes";
 import type { TelemetryProvider } from "../telemetry/provider";
 import type { ViewMode } from "../derive/edgeSelection";
 import { uiFocusTarget } from "../derive/uiFocus";
+import { EMPTY_HIGHLIGHT, tracePath, traceEdge, type PathHighlight } from "../derive/pathTrace";
+import { PATH_DOWNSTREAM, PATH_UPSTREAM, wireColorForKind } from "../theme/edgeColors";
 import { deriveLayout } from "./deriveLayout";
 
 export type LayoutStatus = "idle" | "laying-out" | "ready" | "error";
@@ -21,6 +24,10 @@ export interface BlueprintState {
   index: GraphIndex;
   expanded: Set<string>;
   selectedId: string | null;
+  /** Every node on the active path trace; empty == nothing is dimmed. */
+  pathNodeIds: ReadonlySet<string>;
+  /** How far a click traces: direct neighbours (calm default) or the full transitive impact. */
+  traceDepth: "direct" | "full";
   /** The dived-into container; null == the graph roots (top level). Never drawn — it IS the breadcrumb. */
   focusId: string | null;
   /** Which relationship story is on screen: the call graph, or the React composition tree. */
@@ -37,6 +44,8 @@ export interface BlueprintState {
   expandPath(nodeId: string): void;
   collapseAll(): void;
   select(nodeId: string | null): void;
+  selectEdge(edgeId: string): void;
+  setTraceDepth(depth: "direct" | "full"): void;
   diveInto(nodeId: string): void;
   diveTo(nodeId: string): void;
   diveHome(): void;
@@ -64,6 +73,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     index: dependencies.index,
     expanded: new Set<string>(),
     selectedId: null,
+    pathNodeIds: EMPTY_HIGHLIGHT.nodeIds,
+    traceDepth: "direct",
     focusId: null,
     viewMode: "call",
     rfNodes: [],
@@ -90,8 +101,38 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().relayout();
     },
 
+    // Selecting a node traces its up/downstream path (at the chosen depth) over the visible
+    // wires and repaints the edge set with direction colours; null clears back to rest.
     select(nodeId) {
-      set({ selectedId: nodeId });
+      const highlight = nodeId ? tracePath(get().rfEdges, nodeId, hopsFor(get().traceDepth)) : EMPTY_HIGHLIGHT;
+      set({
+        selectedId: nodeId,
+        pathNodeIds: withAncestors(highlight.nodeIds, get().index),
+        rfEdges: withHighlight(get().rfEdges, highlight),
+      });
+    },
+
+    // Changing depth re-traces the current selection in place.
+    setTraceDepth(depth) {
+      set({ traceDepth: depth });
+      const selectedId = get().selectedId;
+      if (selectedId) {
+        get().select(selectedId);
+      }
+    },
+
+    // Selecting a wire highlights just that hop and its two endpoints.
+    selectEdge(edgeId) {
+      const edge = get().rfEdges.find((candidate) => candidate.id === edgeId);
+      if (!edge) {
+        return;
+      }
+      const highlight = traceEdge(edge);
+      set({
+        selectedId: null,
+        pathNodeIds: withAncestors(highlight.nodeIds, get().index),
+        rfEdges: withHighlight(get().rfEdges, highlight),
+      });
     },
 
     // Dive into a container (you are now INSIDE it, seeing its children). A no-op when already
@@ -159,9 +200,70 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (get().layoutSeq !== sequence) {
         return; // a newer toggle superseded this layout; discard the stale result.
       }
-      set({ rfNodes: graph.nodes, rfEdges: graph.edges, layoutStatus: "ready" });
+      // The visible set changed under the selection: re-trace it when the node survived the
+      // change (e.g. a sibling expanded mid-trace), clear it when it vanished (dive/collapse).
+      const selectedId = get().selectedId;
+      const stillVisible = selectedId !== null && graph.nodes.some((node) => node.id === selectedId);
+      const highlight =
+        stillVisible && selectedId
+          ? tracePath(graph.edges, selectedId, hopsFor(get().traceDepth))
+          : EMPTY_HIGHLIGHT;
+      set({
+        rfNodes: graph.nodes,
+        rfEdges: withHighlight(graph.edges, highlight),
+        layoutStatus: "ready",
+        selectedId: stillVisible ? selectedId : null,
+        pathNodeIds: withAncestors(highlight.nodeIds, get().index),
+      });
     },
   }));
+}
+
+function hopsFor(depth: "direct" | "full"): number {
+  return depth === "direct" ? 1 : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Expanded container frames never receive lifted edges (wires lift to their visible children),
+ * so without their ancestors a traced path would sit inside dimmed boxes. Lighting the whole
+ * containment chain keeps the frames around the path readable.
+ */
+function withAncestors(nodeIds: ReadonlySet<string>, index: GraphIndex): ReadonlySet<string> {
+  if (nodeIds.size === 0) {
+    return nodeIds;
+  }
+  const expanded = new Set(nodeIds);
+  for (const nodeId of nodeIds) {
+    for (const ancestor of index.ancestorsOf(nodeId)) {
+      expanded.add(ancestor.id);
+    }
+  }
+  return expanded;
+}
+
+/**
+ * Stamp a path trace onto the edge set: every edge gets its highlight state in `data` and a
+ * marker recoloured to match (markers are static per edge object, so a repaint means new edge
+ * objects — cheap at lifted-edge counts, and React Flow diffs by id).
+ */
+function withHighlight(edges: BlueprintEdge[], highlight: PathHighlight): BlueprintEdge[] {
+  const active = highlight.nodeIds.size > 0;
+  return edges.map((edge) => {
+    const direction = highlight.edgeDirections.get(edge.id);
+    const state: EdgeHighlight = !active ? "rest" : (direction ?? "off");
+    if (edge.data?.highlight === state) {
+      return edge;
+    }
+    const color =
+      state === "down" ? PATH_DOWNSTREAM
+      : state === "up" ? PATH_UPSTREAM
+      : wireColorForKind(edge.data?.kind ?? "");
+    return {
+      ...edge,
+      markerEnd: { type: MarkerType.ArrowClosed, color, width: 15, height: 15 },
+      data: { ...edge.data, highlight: state } as BlueprintEdge["data"],
+    };
+  });
 }
 
 function withToggled(expanded: Set<string>, nodeId: string): Set<string> {
