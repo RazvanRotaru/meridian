@@ -1,0 +1,8 @@
+{
+  "name": "orders-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Example service used as a blueprint extraction fixture: a small order-processing flow with clear call chains.",
+  "main": "src/index.ts"
+}

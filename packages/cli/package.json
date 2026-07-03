@@ -1,0 +1,37 @@
+{
+  "name": "@meridian/cli",
+  "version": "0.1.0",
+  "description": "The `meridian` CLI: generate a graph artifact, mint a mock telemetry overlay, and view it in the renderer.",
+  "type": "module",
+  "bin": {
+    "meridian": "./dist/bin.js"
+  },
+  "files": [
+    "dist",
+    "renderer-dist",
+    "web-ui"
+  ],
+  "scripts": {
+    "build": "tsup && chmod +x dist/bin.js",
+    "copy-renderer": "node scripts/copy-renderer.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "e2e": "vitest run --config vitest.e2e.config.ts",
+    "prepack": "pnpm run build && pnpm run copy-renderer"
+  },
+  "dependencies": {
+    "@meridian/core": "workspace:*",
+    "@meridian/extractor-python": "workspace:*",
+    "@meridian/extractor-typescript": "workspace:*",
+    "commander": "15.0.0"
+  },
+  "devDependencies": {
+    "@meridian/renderer": "workspace:*",
+    "@types/node": "^26.0.1",
+    "playwright": "1.61.1",
+    "tsup": "^8.5.1",
+    "tsx": "^4.0.0",
+    "typescript": "6.0.3",
+    "vitest": "^4.1.9"
+  }
+}

@@ -1,0 +1,5 @@
+[project]
+name = "orders-service-py"
+version = "0.1.0"
+description = "Example Python service used as a blueprint extraction fixture: an order-processing flow with clear call chains."
+requires-python = ">=3.10"

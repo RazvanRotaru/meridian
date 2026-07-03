@@ -1,0 +1,298 @@
+<!doctype html>
+<!--
+  Blueprint web landing page.
+
+  Deliberately dependency-free (no build step, no framework): the `web` command serves this
+  file verbatim, and the only server contract is POST /api/generate -> { id } | { error }.
+  On success we redirect to /view?id=<id>, which serves the unchanged renderer bundle.
+-->
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Meridian</title>
+    <style>
+      :root {
+        --bg: #0e1116;
+        --panel: #161b22;
+        --border: #232a33;
+        --accent: #56c271;
+        --text: #e6edf3;
+        --muted: #8b98a5;
+        --danger: #f2777a;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+      .card {
+        width: 100%;
+        max-width: 520px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 32px;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+      }
+      h1 {
+        margin: 0;
+        font-size: 30px;
+        letter-spacing: -0.02em;
+      }
+      h1 .dot {
+        color: var(--accent);
+      }
+      .subtitle {
+        margin: 6px 0 22px;
+        color: var(--muted);
+        font-size: 15px;
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        margin: 16px 0 6px;
+      }
+      input {
+        width: 100%;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        color: var(--text);
+        font-size: 14px;
+        padding: 11px 12px;
+        outline: none;
+        transition: border-color 0.15s ease;
+      }
+      input:focus {
+        border-color: var(--accent);
+      }
+      input::placeholder {
+        color: #55606c;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+      }
+      .row > div {
+        flex: 1;
+      }
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      .chip {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        border-radius: 999px;
+        padding: 5px 11px;
+        font-size: 12px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+      .chip:hover {
+        border-color: var(--accent);
+        color: var(--text);
+      }
+      button.primary {
+        width: 100%;
+        margin-top: 22px;
+        background: var(--accent);
+        color: #062012;
+        border: 0;
+        border-radius: 9px;
+        padding: 13px;
+        font-size: 15px;
+        font-weight: 650;
+        cursor: pointer;
+        transition: filter 0.15s ease;
+      }
+      button.primary:hover {
+        filter: brightness(1.07);
+      }
+      button.primary:disabled {
+        filter: grayscale(0.4) brightness(0.8);
+        cursor: progress;
+      }
+      .divider {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin: 22px 0 4px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .divider::before,
+      .divider::after {
+        content: "";
+        flex: 1;
+        height: 1px;
+        background: var(--border);
+      }
+      .hint {
+        margin-top: 6px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .status {
+        margin-top: 16px;
+        min-height: 20px;
+        font-size: 14px;
+      }
+      .status.busy {
+        color: var(--muted);
+      }
+      .status.error {
+        color: var(--danger);
+      }
+      .secondary {
+        margin-top: 20px;
+        border-top: 1px solid var(--border);
+        padding-top: 6px;
+      }
+      summary {
+        cursor: pointer;
+        color: var(--muted);
+        font-size: 13px;
+        list-style: none;
+      }
+      summary::-webkit-details-marker {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>Meridian<span class="dot">.</span></h1>
+      <p class="subtitle">Map any codebase's call flow.</p>
+
+      <form id="form" autocomplete="off">
+        <label for="repo">GitHub repository</label>
+        <input id="repo" name="repo" placeholder="owner/repo  or  https://github.com/owner/repo" />
+        <div class="chips" id="chips">
+          <button type="button" class="chip" data-repo="sindresorhus/type-fest">sindresorhus/type-fest</button>
+          <button type="button" class="chip" data-repo="sindresorhus/ky">sindresorhus/ky</button>
+        </div>
+
+        <div class="row">
+          <div>
+            <label for="ref">Branch (optional)</label>
+            <input id="ref" name="ref" placeholder="main" />
+          </div>
+          <div>
+            <label for="subdir">Source subfolder (optional)</label>
+            <input id="subdir" name="subdir" placeholder="e.g. src" />
+          </div>
+        </div>
+
+        <details class="secondary">
+          <summary>Access token (for private repos)</summary>
+          <label for="token">Access token</label>
+          <input id="token" name="token" type="password" placeholder="ghp_… (optional)" />
+          <p class="hint">Used locally only, for this one clone — or set <code>GITHUB_TOKEN</code> in your shell.</p>
+        </details>
+
+        <button type="submit" class="primary" id="submit">Generate blueprint</button>
+        <div class="status" id="status"></div>
+      </form>
+
+      <div class="divider">or a local path</div>
+      <input id="path" placeholder="/absolute/or/relative/path/to/a/repo" />
+      <p class="hint">Extraction runs on the server; nothing is uploaded to GitHub.</p>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const status = $("status");
+
+      // A CLI positional (`blueprint web <source>`) is injected as a prefill string.
+      const prefill = window.__MERIDIAN_PREFILL__;
+      if (typeof prefill === "string" && prefill.length) {
+        if (/^https?:\/\//i.test(prefill) || /^[\w.-]+\/[\w.-]+$/.test(prefill)) {
+          $("repo").value = prefill;
+        } else {
+          $("path").value = prefill;
+        }
+      }
+
+      for (const chip of document.querySelectorAll(".chip")) {
+        chip.addEventListener("click", () => {
+          $("repo").value = chip.dataset.repo;
+          $("path").value = "";
+        });
+      }
+
+      function setStatus(text, kind) {
+        status.textContent = text;
+        status.className = "status" + (kind ? " " + kind : "");
+      }
+
+      // A local path wins if present; otherwise treat the repo field as GitHub input.
+      function buildRequest() {
+        const path = $("path").value.trim();
+        if (path) {
+          return { kind: "path", value: path };
+        }
+        const repo = $("repo").value.trim();
+        if (!repo) {
+          return null;
+        }
+        const body = { kind: "github", value: repo };
+        const ref = $("ref").value.trim();
+        const subdir = $("subdir").value.trim();
+        const token = $("token").value.trim();
+        if (ref) body.ref = ref;
+        if (subdir) body.subdir = subdir;
+        if (token) body.token = token;
+        return body;
+      }
+
+      $("form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const request = buildRequest();
+        if (!request) {
+          setStatus("Enter a GitHub repo or a local path.", "error");
+          return;
+        }
+        $("submit").disabled = true;
+        setStatus("Cloning + analyzing…", "busy");
+        try {
+          const response = await fetch("/api/generate", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(request),
+          });
+          const data = await response.json();
+          if (response.ok && data.id) {
+            setStatus("Rendering…", "busy");
+            window.location = "/view?id=" + encodeURIComponent(data.id);
+            return;
+          }
+          setStatus(data.error || "Generation failed.", "error");
+        } catch (error) {
+          setStatus("Could not reach the server.", "error");
+        } finally {
+          $("submit").disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

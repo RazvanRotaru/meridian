@@ -1,0 +1,38 @@
+{
+  "name": "@meridian/core",
+  "version": "0.1.0",
+  "description": "The graph-artifact contract: schema, types, node-id grammar, validation, overlay, and the LanguageExtractor interface.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./mock": {
+      "types": "./dist/mock.d.ts",
+      "import": "./dist/mock.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "schema"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "schema:emit": "tsx scripts/emit-schema.ts"
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "tsup": "^8.5.1",
+    "tsx": "^4.0.0",
+    "typescript": "6.0.3",
+    "vitest": "^4.1.9"
+  }
+}

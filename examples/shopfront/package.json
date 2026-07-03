@@ -1,0 +1,12 @@
+{
+  "name": "shopfront",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Example storefront used as a blueprint extraction fixture: a deliberately tangled service layer plus a React UI composition tree.",
+  "main": "src/main.tsx",
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

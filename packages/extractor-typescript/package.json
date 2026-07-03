@@ -1,0 +1,32 @@
+{
+  "name": "@meridian/extractor-typescript",
+  "version": "0.1.0",
+  "description": "The TypeScript LanguageExtractor: turns a TS source tree into graph nodes + edges via ts-morph.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@meridian/core": "workspace:*",
+    "ts-morph": "28.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "tsup": "^8.5.1",
+    "typescript": "6.0.3",
+    "vitest": "^4.1.9"
+  }
+}

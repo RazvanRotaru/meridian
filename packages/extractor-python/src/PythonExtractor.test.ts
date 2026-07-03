@@ -1,0 +1,129 @@
+/**
+ * Golden test: extract the orders-service-py fixture and assert the exact resolved call/new
+ * graph (by source->target qualname), the node-id grammar + package nodes, the builtins-drop
+ * policy, the telemetry contract on callables, and a full Tier-1 + Tier-2 validation pass.
+ */
+
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+import { validateArtifact, type ExtractionResult, type GraphArtifact, type GraphEdge } from "@meridian/core";
+import { createPythonExtractor } from "./index";
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+const FIXTURE_ROOT = join(REPO_ROOT, "examples", "orders-service-py");
+
+async function extractFixture(overrides = {}): Promise<ExtractionResult> {
+  return createPythonExtractor().extract({ root: FIXTURE_ROOT, ...overrides });
+}
+
+function qualnameById(result: ExtractionResult): Map<string, string> {
+  return new Map(result.nodes.map((node) => [node.id, node.qualifiedName]));
+}
+
+function hasEdge(result: ExtractionResult, kind: string, sourceQn: string, targetQn: string): boolean {
+  const names = qualnameById(result);
+  return result.edges.some(
+    (edge: GraphEdge) =>
+      edge.kind === kind &&
+      edge.resolution === "resolved" &&
+      names.get(edge.source) === sourceQn &&
+      names.get(edge.target) === targetQn,
+  );
+}
+
+function artifactFrom(result: ExtractionResult): GraphArtifact {
+  return {
+    schemaVersion: "1.0.0",
+    generatedAt: new Date().toISOString(),
+    generator: { name: "test", version: "0.0.0" },
+    target: { name: "orders-service-py", root: "examples/orders-service-py", language: "python" },
+    telemetry: { joinKey: "node.id", requiredRuntimeAttributes: ["service.name"], serviceDefaulting: "forbidden" },
+    nodes: result.nodes,
+    edges: result.edges,
+  };
+}
+
+describe("PythonExtractor over orders-service-py", () => {
+  it("resolves the OrderRoutes handlers", async () => {
+    const result = await extractFixture();
+    expect(hasEdge(result, "calls", "OrderRoutes.handle_create_order", "OrderService.place_order")).toBe(true);
+    expect(hasEdge(result, "calls", "OrderRoutes.handle_create_order", "OrderRoutes._created")).toBe(true);
+    expect(hasEdge(result, "instantiates", "OrderRoutes.handle_create_order", "ApiResponse")).toBe(true);
+    expect(hasEdge(result, "calls", "OrderRoutes.handle_get_order", "OrderService.get_order")).toBe(true);
+    expect(hasEdge(result, "instantiates", "OrderRoutes.handle_get_order", "ApiResponse")).toBe(true);
+  });
+
+  it("resolves the OrderService fan-out", async () => {
+    const result = await extractFixture();
+    for (const target of [
+      "validate_order_request",
+      "PricingService.price",
+      "OrderService._assemble",
+      "OrderRepository.save",
+      "EmailService.send_order_confirmation",
+    ]) {
+      expect(hasEdge(result, "calls", "OrderService.place_order", target)).toBe(true);
+    }
+    expect(hasEdge(result, "calls", "OrderService.get_order", "OrderRepository.find_by_id")).toBe(true);
+    expect(hasEdge(result, "instantiates", "OrderService._assemble", "Order")).toBe(true);
+    expect(hasEdge(result, "calls", "OrderService._assemble", "OrderService._next_id")).toBe(true);
+  });
+
+  it("resolves pricing, email, and validation internals", async () => {
+    const result = await extractFixture();
+    for (const target of ["PricingService._subtotal", "PricingService._discount_for", "PricingService._tax"]) {
+      expect(hasEdge(result, "calls", "PricingService.price", target)).toBe(true);
+    }
+    expect(hasEdge(result, "calls", "PricingService._discount_for", "PricingService._is_known_code")).toBe(true);
+    expect(hasEdge(result, "calls", "EmailService.send_order_confirmation", "EmailService._render_confirmation")).toBe(true);
+    expect(hasEdge(result, "calls", "EmailService.send_order_confirmation", "EmailService._deliver")).toBe(true);
+    expect(hasEdge(result, "calls", "validate_order_request", "_assert_line_is_sane")).toBe(true);
+    expect(hasEdge(result, "instantiates", "validate_order_request", "ValidationError")).toBe(true);
+  });
+
+  it("emits instantiates edges from build_orders_app", async () => {
+    const result = await extractFixture();
+    for (const target of ["PricingService", "OrderRepository", "EmailService", "OrderService", "OrderRoutes"]) {
+      expect(hasEdge(result, "instantiates", "build_orders_app", target)).toBe(true);
+    }
+  });
+
+  it("ids follow the <lang>:<modulePath>#<qualname> grammar with package nodes", async () => {
+    const result = await extractFixture();
+    const placeOrder = result.nodes.find((node) => node.qualifiedName === "OrderService.place_order");
+    expect(placeOrder?.id).toBe("py:orders.services.order_service#OrderService.place_order");
+    expect(result.nodes.some((node) => node.kind === "package" && node.id === "py:orders")).toBe(true);
+    expect(result.nodes.some((node) => node.kind === "package" && node.id === "py:orders.services")).toBe(true);
+  });
+
+  it("drops builtins as external by default and counts an unresolved call", async () => {
+    const result = await extractFixture();
+    expect(result.stats.externalCallsDropped).toBeGreaterThan(0);
+    expect(result.stats.unresolvedCalls).toBeGreaterThan(0);
+    const names = qualnameById(result);
+    const leaksBuiltin = result.edges.some((edge) => ["len", "round", "sum"].includes(names.get(edge.target) ?? ""));
+    expect(leaksBuiltin).toBe(false);
+  });
+
+  it("stamps telemetry on every callable and never leaks a service/environment field", async () => {
+    const result = await extractFixture();
+    const callables = result.nodes.filter((node) => node.kind === "function" || node.kind === "method");
+    expect(callables.length).toBeGreaterThan(0);
+    for (const node of callables) {
+      expect(node.telemetry?.codeFunction).toBeTruthy();
+      expect(node.telemetry?.spanNameHints.length ?? 0).toBeGreaterThanOrEqual(1);
+    }
+    const forbidden = ["service", "serviceName", "environment", "deployment", "env"];
+    for (const node of result.nodes) {
+      expect(forbidden.some((key) => key in node)).toBe(false);
+    }
+  });
+
+  it("produces an artifact that passes Tier-1 + Tier-2 validation", async () => {
+    const result = await extractFixture();
+    const validation = validateArtifact(artifactFrom(result));
+    expect(validation.errors).toEqual([]);
+    expect(validation.ok).toBe(true);
+  });
+});

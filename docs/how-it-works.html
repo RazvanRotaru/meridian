@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meridian — how it works</title>
+<style>
+  :root{
+    --bg:#0E1116; --panel:#161A21; --panel-2:#12161C; --panel-3:#0F1319;
+    --border:#2A2F37; --border-soft:#20252d;
+    --text:#E6EDF3; --muted:#9AA4B2; --muted-2:#6E7681;
+    --pkg:#A77BF3; --mod:#3FB7C4; --cls:#E0A33E; --iface:#C57BD6; --fn:#56C271; --ext:#6E7681;
+    --edge:#8B95A3; --dim:#6E7681; --render:#3FB7C4; --hot:#E5534B;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background-color:var(--bg);
+    background-image:radial-gradient(rgba(255,255,255,.028) 1px, transparent 1px);
+    background-size:22px 22px;
+    color:var(--text); font-family:var(--sans);
+    line-height:1.5; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1200px; margin:0 auto; padding:0 28px 90px}
+
+  /* ---- header / hero ---- */
+  header{padding:70px 0 30px}
+  .wordmark{font-size:40px; font-weight:800; letter-spacing:-.02em; margin:0}
+  .wordmark .dot{color:var(--fn)}
+  .tagline{margin:14px 0 0; font-size:20px; color:var(--muted); font-weight:400; letter-spacing:-.01em}
+  .tagline b{color:var(--text); font-weight:600}
+  .tagline .arrow{color:var(--fn); font-weight:700; padding:0 6px}
+
+  /* ---- section scaffolding ---- */
+  .sec{margin:60px 0}
+  .sec-h{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin:0 0 20px}
+  .sec-n{font-family:var(--mono); font-size:12px; font-weight:700; color:var(--mod);
+    border:1px solid var(--border); border-radius:7px; padding:3px 9px; letter-spacing:.02em}
+  .sec-t{font-size:21px; font-weight:700; letter-spacing:-.01em; margin:0}
+  .sec-c{color:var(--muted); font-size:13.5px; margin:0}
+  .sec-c code, .cap code{font-family:var(--mono); font-size:.92em; color:var(--text);
+    background:#ffffff08; border:1px solid var(--border-soft); border-radius:5px; padding:1px 5px}
+
+  .diagram{background:var(--panel-2); border:1px solid var(--border); border-radius:16px; padding:26px 24px}
+  .cap{color:var(--muted); font-size:13px; margin:16px 2px 0; text-align:center}
+  .cap em{color:var(--text); font-style:italic}
+
+  svg{display:block; width:100%; height:auto}
+  svg text{fill:var(--text); font-family:var(--sans)}
+  .t{font-weight:700; font-size:13px}
+  .t-sm{font-weight:700; font-size:12px}
+  .k{font-weight:700; font-size:9.5px; letter-spacing:.09em}
+  .sub{font-size:11px; fill:var(--muted); font-weight:400}
+  .lbl{font-size:11px; fill:var(--muted); font-weight:600}
+  .lbl-mono{font-size:11px; fill:var(--muted); font-family:var(--mono)}
+  .mono{font-family:var(--mono)}
+  .tri{fill:var(--muted)}
+  .n{fill:var(--panel-2); stroke:var(--border); stroke-width:1}
+  .n-lg{fill:var(--panel-3); stroke:var(--border); stroke-width:1}
+  .n-hi{fill:#171b23; stroke:#3a4150; stroke-width:1.4}
+
+  .e-call{stroke:var(--edge); stroke-width:1.7; fill:none}
+  .e-dim{stroke:var(--dim); stroke-width:1.7; fill:none; stroke-dasharray:5 5; opacity:.85}
+  .e-render{stroke:var(--render); stroke-width:1.7; fill:none; stroke-dasharray:6 5}
+  .e-hot{stroke:var(--hot); stroke-width:2.6; fill:none; stroke-dasharray:7 5}
+
+  .p-ok{fill:rgba(86,194,113,.08); stroke:var(--fn); stroke-width:1}
+  .p-warn{fill:rgba(224,163,62,.08); stroke:var(--cls); stroke-width:1}
+  .p-bad{fill:rgba(229,83,75,.10); stroke:var(--hot); stroke-width:1}
+  .pt{font-size:10px; font-family:var(--mono)}
+
+  /* ---- legend ---- */
+  .legend{display:flex; flex-wrap:wrap; gap:26px 34px; align-items:flex-start;
+    background:var(--panel-2); border:1px solid var(--border); border-radius:14px; padding:20px 24px}
+  .legend h4{margin:0 0 12px; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); font-weight:700}
+  .legend .grp{min-width:210px}
+  .chips{display:flex; flex-wrap:wrap; gap:9px 14px}
+  .chip{display:inline-flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text)}
+  .swatch{width:11px; height:11px; border-radius:3px; flex:0 0 auto}
+  .eline{display:inline-flex; align-items:center; gap:9px; font-size:12.5px; color:var(--text)}
+  .eline svg{width:44px; height:12px; flex:0 0 auto}
+
+  /* ---- figures / screenshots ---- */
+  .shots{display:grid; gap:18px; margin-top:22px; grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+  figure.shot{margin:0}
+  figure.shot img{display:block; width:100%; border:1px solid var(--border); border-radius:10px}
+  figure.shot figcaption{margin-top:9px; font-size:12px; color:var(--muted); text-align:center}
+  .shot-narrow{max-width:520px; margin:22px auto 0}
+
+  /* ---- toggle chip (mirrors the app) ---- */
+  .toggle{display:inline-flex; padding:4px; gap:4px; background:var(--panel-3);
+    border:1px solid var(--border); border-radius:11px}
+  .toggle span{font-size:13px; font-weight:700; padding:6px 14px; border-radius:8px; color:var(--muted)}
+  .toggle span.on{background:#20252e; color:var(--text)}
+  .center{text-align:center}
+
+  .grid-2{display:grid; gap:20px; grid-template-columns:1fr 1fr}
+  @media (max-width:780px){ .grid-2{grid-template-columns:1fr} .wrap{padding:0 18px 70px} .wordmark{font-size:32px} .tagline{font-size:17px} }
+
+  footer{margin-top:70px; padding-top:26px; border-top:1px solid var(--border); color:var(--muted); font-size:12.5px}
+  footer .mono{color:var(--text)}
+  footer a{color:var(--mod); text-decoration:none}
+</style>
+</head>
+<body>
+
+<!-- shared arrowhead markers, referenced across every diagram -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="ah-grey"   markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#8B95A3"/></marker>
+  <marker id="ah-dim"    markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#6E7681"/></marker>
+  <marker id="ah-cyan"   markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#3FB7C4"/></marker>
+  <marker id="ah-red"    markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#E5534B"/></marker>
+  <marker id="ah-purple" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#A77BF3"/></marker>
+  <marker id="ah-green"  markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#56C271"/></marker>
+  <linearGradient id="flow" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#3FB7C4"/><stop offset="1" stop-color="#A77BF3"/>
+  </linearGradient>
+</defs></svg>
+
+<div class="wrap">
+
+  <!-- ============ HERO ============ -->
+  <header>
+    <h1 class="wordmark">Meridian<span class="dot">.</span></h1>
+    <p class="tagline">Any codebase <span class="arrow">&#8594;</span> a <b>live map</b> of how it flows.</p>
+
+    <div class="diagram" style="margin-top:26px">
+      <svg viewBox="0 0 1160 280" role="img" aria-label="A faded block of source code transforms into a live node graph.">
+        <!-- LEFT: faded code -->
+        <rect class="n" x="24" y="34" width="440" height="212" rx="13"/>
+        <circle cx="48" cy="58" r="4" fill="#3a4150"/><circle cx="63" cy="58" r="4" fill="#3a4150"/><circle cx="78" cy="58" r="4" fill="#3a4150"/>
+        <line x1="24" y1="74" x2="464" y2="74" stroke="var(--border)"/>
+        <g class="mono" font-size="12.5" opacity="0.5">
+          <text x="44" y="104"><tspan fill="#56C271">export class</tspan> <tspan fill="#E0A33E">OrderService</tspan> <tspan fill="#9AA4B2">{</tspan></text>
+          <text x="60" y="128"><tspan fill="#3FB7C4">placeOrder</tspan><tspan fill="#9AA4B2">(req: </tspan><tspan fill="#E0A33E">OrderRequest</tspan><tspan fill="#9AA4B2">) {</tspan></text>
+          <text x="80" y="152"><tspan fill="#56C271">const</tspan> <tspan fill="#9AA4B2">q = this.</tspan><tspan fill="#3FB7C4">pricing.quote</tspan><tspan fill="#9AA4B2">(req);</tspan></text>
+          <text x="80" y="176"><tspan fill="#9AA4B2">stripe.</tspan><tspan fill="#3FB7C4">charge</tspan><tspan fill="#9AA4B2">(q.total);</tspan></text>
+          <text x="80" y="200"><tspan fill="#56C271">return</tspan> <tspan fill="#9AA4B2">this.repo.</tspan><tspan fill="#3FB7C4">save</tspan><tspan fill="#9AA4B2">(order);</tspan></text>
+          <text x="60" y="224" fill="#9AA4B2">}</text>
+        </g>
+
+        <!-- ARROW -->
+        <line x1="486" y1="140" x2="556" y2="140" stroke="url(#flow)" stroke-width="3.5" marker-end="url(#ah-purple)"/>
+        <text class="lbl-mono" x="521" y="128" text-anchor="middle">blueprint</text>
+        <text class="lbl-mono" x="521" y="164" text-anchor="middle" fill="#56C271">generate</text>
+
+        <!-- RIGHT: mini blueprint (echoes the shopfront telemetry shot) -->
+        <rect class="n-lg" x="576" y="30" width="560" height="216" rx="12"/>
+        <rect x="586" y="42" width="4" height="20" rx="2" fill="var(--pkg)"/>
+        <text class="t-sm" x="600" y="56">shopfront</text>
+        <text class="k" x="1124" y="55" text-anchor="end" fill="var(--pkg)">SYSTEM</text>
+
+        <!-- edges: red hot fan-in on Utils -->
+        <path class="e-hot" d="M726,110 C820,110 860,150 956,150" marker-end="url(#ah-red)"/>
+        <path class="e-hot" d="M726,196 C820,196 860,160 956,158" marker-end="url(#ah-red)"/>
+        <path class="e-call" d="M726,104 C760,104 770,140 812,144" marker-end="url(#ah-grey)"/>
+        <path class="e-call" d="M726,190 C760,190 770,152 812,150" marker-end="url(#ah-grey)"/>
+        <path class="e-hot" d="M920,150 C938,150 940,150 956,150" marker-end="url(#ah-red)"/>
+
+        <!-- Ui -->
+        <g transform="translate(596,76)"><rect class="n" width="130" height="60" rx="8"/><rect x="7" y="8" width="4" height="44" rx="2" fill="var(--pkg)"/><path class="tri" d="M18 18 l6 4 l-6 4 z"/><text class="t-sm" x="30" y="26">Ui</text><text class="k" x="120" y="25" text-anchor="end" fill="var(--pkg)">PKG</text><rect class="p-ok" x="14" y="36" width="66" height="16" rx="5"/><text class="pt p-ok" fill="#56C271" x="47" y="47.5" text-anchor="middle">1.4k calls</text></g>
+        <!-- Api -->
+        <g transform="translate(596,162)"><rect class="n" width="130" height="60" rx="8"/><rect x="7" y="8" width="4" height="44" rx="2" fill="var(--pkg)"/><path class="tri" d="M18 18 l6 4 l-6 4 z"/><text class="t-sm" x="30" y="26">Api</text><text class="k" x="120" y="25" text-anchor="end" fill="var(--pkg)">PKG</text><rect class="p-warn" x="14" y="36" width="60" height="16" rx="5"/><text class="pt p-warn" fill="#E0A33E" x="44" y="47.5" text-anchor="middle">1.8% err</text></g>
+        <!-- Services -->
+        <g transform="translate(812,118)"><rect class="n" width="108" height="60" rx="8"/><rect x="7" y="8" width="4" height="44" rx="2" fill="var(--pkg)"/><path class="tri" d="M18 18 l6 4 l-6 4 z"/><text class="t-sm" x="30" y="26">Services</text><rect class="p-ok" x="14" y="36" width="80" height="16" rx="5"/><text class="pt p-ok" fill="#56C271" x="54" y="47.5" text-anchor="middle">96.5k calls</text></g>
+        <!-- Utils (god module, red) -->
+        <g transform="translate(956,116)"><rect class="n-hi" width="168" height="66" rx="8"/><rect x="7" y="9" width="4" height="48" rx="2" fill="var(--pkg)"/><path class="tri" d="M18 19 l6 4 l-6 4 z"/><text class="t" x="30" y="28">Utils</text><text class="k" x="158" y="27" text-anchor="end" fill="var(--pkg)">PKG</text><rect class="p-ok" x="14" y="40" width="72" height="17" rx="5"/><text class="pt p-ok" fill="#56C271" x="50" y="52" text-anchor="middle">36k calls</text><rect class="p-bad" x="92" y="40" width="62" height="17" rx="5"/><text class="pt p-bad" fill="#E5534B" x="123" y="52" text-anchor="middle">5.0% err</text></g>
+      </svg>
+    </div>
+    <p class="cap">Static source in, an interactive blueprint out — <em>red high-error wires converge on the <span class="mono">Utils</span> god-module</em>.</p>
+  </header>
+
+  <!-- ============ LEGEND ============ -->
+  <div class="legend">
+    <div class="grp">
+      <h4>Node kinds</h4>
+      <div class="chips">
+        <span class="chip"><span class="swatch" style="background:var(--pkg)"></span>package</span>
+        <span class="chip"><span class="swatch" style="background:var(--mod)"></span>module</span>
+        <span class="chip"><span class="swatch" style="background:var(--cls)"></span>class</span>
+        <span class="chip"><span class="swatch" style="background:var(--iface)"></span>interface</span>
+        <span class="chip"><span class="swatch" style="background:var(--fn)"></span>function&#8202;/&#8202;method</span>
+        <span class="chip"><span class="swatch" style="background:var(--ext)"></span>external</span>
+      </div>
+    </div>
+    <div class="grp">
+      <h4>Edges</h4>
+      <div class="chips" style="flex-direction:column; gap:9px">
+        <span class="eline"><svg viewBox="0 0 44 12"><line x1="2" y1="6" x2="36" y2="6" class="e-call" marker-end="url(#ah-grey)"/></svg>calls · resolved</span>
+        <span class="eline"><svg viewBox="0 0 44 12"><line x1="2" y1="6" x2="36" y2="6" class="e-dim" marker-end="url(#ah-dim)"/></svg>external&#8202;/&#8202;unresolved</span>
+        <span class="eline"><svg viewBox="0 0 44 12"><line x1="2" y1="6" x2="36" y2="6" class="e-render" marker-end="url(#ah-cyan)"/></svg>renders (UI)</span>
+        <span class="eline"><svg viewBox="0 0 44 12"><line x1="2" y1="6" x2="36" y2="6" class="e-hot" marker-end="url(#ah-red)"/></svg>hot&#8202;/&#8202;high-error</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 2 · PIPELINE ============ -->
+  <section class="sec">
+    <div class="sec-h">
+      <span class="sec-n">01</span>
+      <h2 class="sec-t">The pipeline</h2>
+      <p class="sec-c">source &#8594; extractor &#8594; artifact &#8594; renderer</p>
+    </div>
+    <div class="diagram">
+      <svg viewBox="0 0 1160 190" role="img" aria-label="Left-to-right pipeline: source code, LanguageExtractor, graph artifact JSON, renderer, interactive blueprint.">
+        <!-- arrows first (behind boxes) -->
+        <line x1="212" y1="86" x2="243" y2="86" class="e-call" marker-end="url(#ah-grey)"/>
+        <line x1="447" y1="86" x2="478" y2="86" class="e-call" marker-end="url(#ah-grey)"/>
+        <line x1="682" y1="86" x2="713" y2="86" class="e-call" marker-end="url(#ah-grey)"/>
+        <line x1="917" y1="86" x2="948" y2="86" class="e-call" marker-end="url(#ah-grey)"/>
+
+        <!-- 1 source code -->
+        <g transform="translate(10,40)"><rect class="n" width="202" height="92" rx="11"/>
+          <g transform="translate(16,30)" stroke="var(--mod)" stroke-width="1.7" fill="none"><path d="M2 0 h16 l6 6 v20 h-22 z"/><path d="M4 12 l-3 3 l3 3" /><path d="M14 12 l3 3 l-3 3"/></g>
+          <text class="t" x="56" y="42">source code</text><text class="sub" x="56" y="62">a repo · a folder</text></g>
+        <!-- 2 extractor -->
+        <g transform="translate(245,40)"><rect class="n" width="202" height="92" rx="11"/>
+          <g transform="translate(15,32)" stroke="var(--fn)" stroke-width="1.7" fill="none"><path d="M0 0 h26 l-9 11 v11 l-8 4 v-15 z"/></g>
+          <text class="t" x="52" y="40" font-size="12.5">LanguageExtractor</text><text class="sub" x="52" y="60" font-size="10.5">ts-morph · Python ast</text></g>
+        <!-- 3 artifact -->
+        <g transform="translate(480,40)"><rect class="n" width="202" height="92" rx="11"/>
+          <text class="mono" x="14" y="53" font-size="22" fill="var(--cls)">{ }</text>
+          <text class="t" x="66" y="42">graph artifact</text><text class="sub" x="66" y="62">one JSON snapshot</text></g>
+        <!-- 4 renderer -->
+        <g transform="translate(715,40)"><rect class="n" width="202" height="92" rx="11"/>
+          <g transform="translate(16,32)"><rect x="0" y="0" width="12" height="9" rx="2" fill="none" stroke="var(--pkg)" stroke-width="1.7"/><rect x="18" y="16" width="12" height="9" rx="2" fill="none" stroke="var(--pkg)" stroke-width="1.7"/><line x1="12" y1="5" x2="18" y2="20" stroke="var(--edge)" stroke-width="1.5"/></g>
+          <text class="t" x="56" y="42">renderer</text><text class="sub" x="56" y="62" font-size="10.5">React · xyflow · elkjs</text></g>
+        <!-- 5 blueprint -->
+        <g transform="translate(950,40)"><rect class="n-hi" width="202" height="92" rx="11"/>
+          <g transform="translate(16,30)"><rect x="0" y="2" width="13" height="9" rx="2" fill="rgba(63,183,196,.15)" stroke="var(--mod)" stroke-width="1.6"/><rect x="20" y="14" width="13" height="9" rx="2" fill="rgba(167,123,243,.15)" stroke="var(--pkg)" stroke-width="1.6"/><rect x="2" y="20" width="13" height="9" rx="2" fill="rgba(86,194,113,.15)" stroke="var(--fn)" stroke-width="1.6"/></g>
+          <text class="t" x="56" y="42">interactive</text><text class="t" x="56" y="60" fill="var(--fn)">blueprint</text></g>
+      </svg>
+      <p class="cap">the artifact <em>is</em> the code — regenerate anytime, it never drifts.</p>
+    </div>
+
+    <div class="shots">
+      <figure class="shot"><img src="media/01-callflow-telemetry.png" alt="Meridian call-flow view with a live telemetry overlay painted onto the graph.">
+        <figcaption>Call flow + live telemetry overlay</figcaption></figure>
+      <figure class="shot"><img src="media/05-python.png" alt="The identical renderer showing a Python service — language-agnostic.">
+        <figcaption>Same renderer, a Python service — <span class="mono">py:</span> ids</figcaption></figure>
+    </div>
+  </section>
+
+  <!-- ============ 3 · ONE ID, THREE JOBS ============ -->
+  <section class="sec">
+    <div class="sec-h">
+      <span class="sec-n">02</span>
+      <h2 class="sec-t">One id, three jobs</h2>
+      <p class="sec-c">the node id = generalized <code>__qualname__</code></p>
+    </div>
+    <div class="diagram">
+      <svg viewBox="0 0 1160 300" role="img" aria-label="A single node id fans out to three roles: graph key, React-Flow node id, and telemetry join key.">
+        <!-- the id pill -->
+        <rect class="n-hi" x="300" y="40" width="560" height="52" rx="11"/>
+        <text class="mono" x="580" y="72" text-anchor="middle" font-size="15">
+          <tspan fill="#9AA4B2">ts</tspan><tspan fill="#6E7681">:</tspan><tspan fill="#E6EDF3">src/services/orderService.ts</tspan><tspan fill="#6E7681">#</tspan><tspan fill="#56C271">OrderService.placeOrder</tspan>
+        </text>
+        <!-- brackets under the pill parts -->
+        <path d="M362,98 v6 h216 v-6" fill="none" stroke="var(--border)" stroke-width="1"/>
+        <text class="lbl" x="470" y="120" text-anchor="middle">&lt;lang&gt;:&lt;modulePath&gt;</text>
+        <path d="M596,98 v6 h184 v-6" fill="none" stroke="var(--fn)" stroke-width="1" opacity="0.6"/>
+        <text class="lbl" x="688" y="120" text-anchor="middle" fill="#56C271">#&lt;qualname&gt;</text>
+
+        <!-- fan-out arrows -->
+        <path class="e-call" d="M540,92 C420,120 300,150 262,196" marker-end="url(#ah-grey)"/>
+        <path class="e-call" d="M580,94 V196" marker-end="url(#ah-grey)"/>
+        <path class="e-call" d="M620,92 C740,120 860,150 898,196" marker-end="url(#ah-grey)"/>
+
+        <!-- three targets -->
+        <g transform="translate(122,200)"><rect class="n" width="280" height="64" rx="10"/><rect x="8" y="10" width="4" height="44" rx="2" fill="var(--cls)"/>
+          <text class="mono" x="24" y="30" font-size="15" fill="var(--cls)">{ }</text>
+          <text class="t" x="56" y="30">graph key</text><text class="sub" x="56" y="49">node.id + parentId in the JSON</text></g>
+        <g transform="translate(440,200)"><rect class="n" width="280" height="64" rx="10"/><rect x="8" y="10" width="4" height="44" rx="2" fill="var(--pkg)"/>
+          <g transform="translate(22,20)"><rect x="0" y="2" width="12" height="9" rx="2" fill="none" stroke="var(--pkg)" stroke-width="1.6"/><rect x="14" y="14" width="12" height="9" rx="2" fill="none" stroke="var(--pkg)" stroke-width="1.6"/></g>
+          <text class="t" x="60" y="30">React-Flow node id</text><text class="sub" x="60" y="49">mapped verbatim to the canvas</text></g>
+        <g transform="translate(758,200)"><rect class="n" width="280" height="64" rx="10"/><rect x="8" y="10" width="4" height="44" rx="2" fill="var(--fn)"/>
+          <path d="M24,32 h8 l4,-12 l6,22 l4,-10 h8" fill="none" stroke="var(--fn)" stroke-width="1.7"/>
+          <text class="t" x="64" y="30">telemetry join key</text><text class="sub" x="64" y="49">one span attribute, exact match</text></g>
+      </svg>
+      <p class="cap"><em>structure &amp; runtime never desync</em> — the same string is the graph key, the canvas id, and the trace join.</p>
+    </div>
+  </section>
+
+  <!-- ============ 4 · WHAT IT EXTRACTS ============ -->
+  <section class="sec">
+    <div class="sec-h">
+      <span class="sec-n">03</span>
+      <h2 class="sec-t">What it extracts</h2>
+      <p class="sec-c">package &#8594; module &#8594; class &#8594; method, plus honest edges</p>
+    </div>
+    <div class="diagram">
+      <svg viewBox="0 0 1160 340" role="img" aria-label="A code snippet becomes nested colour-coded nodes with a resolved calls edge and a dashed external edge.">
+        <!-- LEFT: code -->
+        <rect class="n" x="20" y="40" width="410" height="238" rx="12"/>
+        <circle cx="44" cy="64" r="4" fill="#3a4150"/><circle cx="59" cy="64" r="4" fill="#3a4150"/><circle cx="74" cy="64" r="4" fill="#3a4150"/>
+        <line x1="20" y1="80" x2="430" y2="80" stroke="var(--border)"/>
+        <g class="mono" font-size="12.5">
+          <text x="40" y="110"><tspan fill="#56C271">class</tspan> <tspan fill="#E0A33E">OrderService</tspan> <tspan fill="#9AA4B2">{</tspan></text>
+          <text x="56" y="136"><tspan fill="#3FB7C4">placeOrder</tspan><tspan fill="#9AA4B2">(req) {</tspan></text>
+          <text x="72" y="162"><tspan fill="#9AA4B2">this.pricing.</tspan><tspan fill="#3FB7C4">quote</tspan><tspan fill="#9AA4B2">(req)</tspan></text>
+          <text x="200" y="162" fill="#56C271" font-size="10.5">// calls</text>
+          <text x="72" y="188"><tspan fill="#9AA4B2">stripe.</tspan><tspan fill="#3FB7C4">charge</tspan><tspan fill="#9AA4B2">(total)</tspan></text>
+          <text x="200" y="188" fill="#6E7681" font-size="10.5">// external</text>
+          <text x="56" y="214" fill="#9AA4B2">}</text>
+          <text x="40" y="240" fill="#9AA4B2">}</text>
+        </g>
+
+        <!-- arrow to graph -->
+        <line x1="446" y1="158" x2="500" y2="158" stroke="url(#flow)" stroke-width="3.5" marker-end="url(#ah-purple)"/>
+
+        <!-- RIGHT: nested nodes -->
+        <!-- package -->
+        <rect class="n-lg" x="516" y="34" width="330" height="200" rx="11"/>
+        <rect x="526" y="46" width="4" height="18" rx="2" fill="var(--pkg)"/><text class="t-sm" x="540" y="59">services</text><text class="k" x="834" y="58" text-anchor="end" fill="var(--pkg)">PACKAGE</text>
+        <!-- module -->
+        <rect class="n-lg" x="534" y="76" width="296" height="146" rx="10"/>
+        <rect x="544" y="88" width="4" height="16" rx="2" fill="var(--mod)"/><text class="t-sm" x="558" y="100" font-size="11.5">orderService.ts</text><text class="k" x="818" y="99" text-anchor="end" fill="var(--mod)">MODULE</text>
+        <!-- class -->
+        <rect class="n-lg" x="552" y="114" width="262" height="94" rx="9"/>
+        <rect x="562" y="126" width="4" height="16" rx="2" fill="var(--cls)"/><text class="t-sm" x="576" y="138" font-size="11.5">OrderService</text><text class="k" x="802" y="137" text-anchor="end" fill="var(--cls)">CLASS</text>
+        <!-- method -->
+        <rect class="n" x="570" y="152" width="228" height="42" rx="8"/>
+        <rect x="578" y="161" width="4" height="24" rx="2" fill="var(--fn)"/><text class="t-sm" x="592" y="170" font-size="11.5">placeOrder()</text><text class="k" x="786" y="169" text-anchor="end" fill="var(--fn)">METHOD</text>
+        <text class="lbl-mono" x="592" y="186" font-size="9.5">(request): Order</text>
+
+        <!-- target: PricingService.quote -->
+        <rect class="n-lg" x="900" y="44" width="238" height="86" rx="10"/>
+        <rect x="910" y="56" width="4" height="16" rx="2" fill="var(--cls)"/><text class="t-sm" x="924" y="68" font-size="11.5">PricingService</text><text class="k" x="1126" y="67" text-anchor="end" fill="var(--cls)">CLASS</text>
+        <rect class="n" x="916" y="82" width="206" height="38" rx="8"/><rect x="924" y="90" width="4" height="22" rx="2" fill="var(--fn)"/><text class="t-sm" x="938" y="105" font-size="11.5">quote()</text><text class="k" x="1110" y="104" text-anchor="end" fill="var(--fn)">METHOD</text>
+
+        <!-- external box -->
+        <rect class="n" x="900" y="166" width="238" height="66" rx="10" stroke-dasharray="4 4"/>
+        <rect x="910" y="178" width="4" height="20" rx="2" fill="var(--ext)"/><text class="t-sm" x="924" y="190" font-size="11.5" fill="#c3cbd6">stripe.charge</text><text class="k" x="1126" y="189" text-anchor="end" fill="var(--ext)">EXTERNAL</text>
+        <text class="lbl-mono" x="924" y="212" font-size="9.5">ext:stripe#charge</text>
+
+        <!-- edges -->
+        <path class="e-call" d="M798,168 C850,164 862,104 896,100" marker-end="url(#ah-grey)"/>
+        <text class="lbl" x="852" y="120">calls</text>
+        <path class="e-dim" d="M798,182 C850,192 862,196 896,198" marker-end="url(#ah-dim)"/>
+        <text class="lbl" x="846" y="214">external</text>
+      </svg>
+      <p class="cap"><em>honest by design:</em> library &amp; unresolved calls are surfaced as dashed boundary edges — shown, never hidden.</p>
+    </div>
+
+    <figure class="shot shot-narrow"><img src="media/04-boundary-edges.png" alt="External boundary edges: library and builtin calls surfaced as dim dashed wires into an External group.">
+      <figcaption><span class="mono">--include-external</span> surfaces the boundary into an <span class="mono">External</span> group</figcaption></figure>
+  </section>
+
+  <!-- ============ 5 · TWO LENSES + DIVE-IN ============ -->
+  <section class="sec">
+    <div class="sec-h">
+      <span class="sec-n">04</span>
+      <h2 class="sec-t">Two lenses, and dive-in</h2>
+      <p class="sec-c">same nodes, different edges — then descend one box at a time</p>
+    </div>
+
+    <div class="diagram">
+      <div class="center" style="margin-bottom:14px">
+        <span class="toggle"><span class="on">Call flow</span><span>UI composition</span></span>
+      </div>
+      <svg viewBox="0 0 1160 250" role="img" aria-label="The same four component nodes shown twice: as a call graph with grey arrows, and as a cyan renders tree.">
+        <text class="lbl" x="30" y="24" font-size="12" font-weight="700" fill="#c3cbd6">CALL FLOW &mdash; who calls whom</text>
+        <text class="lbl" x="620" y="24" font-size="12" font-weight="700" fill="#3FB7C4">UI COMPOSITION &mdash; who renders whom</text>
+        <line x1="580" y1="44" x2="580" y2="234" stroke="var(--border)"/>
+
+        <!-- LEFT graph: call flow (grey) -->
+        <path class="e-call" d="M150,80 C210,80 210,120 258,120" marker-end="url(#ah-grey)"/>
+        <path class="e-call" d="M150,86 C210,120 210,170 258,178" marker-end="url(#ah-grey)"/>
+        <path class="e-call" d="M410,120 C450,120 450,170 410,178" marker-end="url(#ah-grey)"/>
+        <g transform="translate(28,58)"><rect class="n" width="122" height="48" rx="8"/><rect x="7" y="9" width="4" height="30" rx="2" fill="var(--mod)"/><path class="tri" d="M18 20 l6 4 l-6 4 z"/><text class="t-sm" x="30" y="29" font-size="11.5">CartPanel</text></g>
+        <g transform="translate(258,96)"><rect class="n" width="152" height="48" rx="8"/><rect x="7" y="9" width="4" height="30" rx="2" fill="var(--mod)"/><path class="tri" d="M18 20 l6 4 l-6 4 z"/><text class="t-sm" x="30" y="29" font-size="11.5">CartService</text></g>
+        <g transform="translate(258,154)"><rect class="n" width="152" height="48" rx="8"/><rect x="7" y="9" width="4" height="30" rx="2" fill="var(--mod)"/><path class="tri" d="M18 20 l6 4 l-6 4 z"/><text class="t-sm" x="30" y="29" font-size="11.5">PricingService</text></g>
+
+        <!-- RIGHT graph: renders (cyan tree) -->
+        <path class="e-render" d="M732,120 C790,120 790,80 838,80" marker-end="url(#ah-cyan)"/>
+        <path class="e-render" d="M732,124 C790,124 790,178 838,178" marker-end="url(#ah-cyan)"/>
+        <text class="lbl" x="790" y="66" text-anchor="middle" font-size="9.5" font-weight="700" fill="#3FB7C4">RENDERS</text>
+        <g transform="translate(610,96)"><rect class="n" width="122" height="48" rx="8"/><rect x="7" y="9" width="4" height="30" rx="2" fill="var(--mod)"/><path class="tri" d="M18 20 l6 4 l-6 4 z"/><text class="t-sm" x="30" y="29" font-size="11.5">CartPanel</text></g>
+        <g transform="translate(838,56)"><rect class="n" width="152" height="48" rx="8"/><rect x="7" y="9" width="4" height="30" rx="2" fill="var(--mod)"/><path class="tri" d="M18 20 l6 4 l-6 4 z"/><text class="t-sm" x="30" y="29" font-size="11.5">CartLine</text></g>
+        <g transform="translate(838,154)"><rect class="n" width="152" height="48" rx="8"/><rect x="7" y="9" width="4" height="30" rx="2" fill="var(--mod)"/><path class="tri" d="M18 20 l6 4 l-6 4 z"/><text class="t-sm" x="30" y="29" font-size="11.5">CheckoutBar</text></g>
+      </svg>
+    </div>
+
+    <div class="diagram" style="margin-top:20px">
+      <svg viewBox="0 0 1160 250" role="img" aria-label="Double-clicking a Services box re-roots the canvas into it, with a breadcrumb System, Src, Services.">
+        <!-- LEFT: a big box with children + cursor -->
+        <rect class="n-lg" x="30" y="40" width="360" height="180" rx="12"/>
+        <rect x="42" y="54" width="4" height="20" rx="2" fill="var(--pkg)"/><text class="t" x="56" y="68">Services</text><text class="k" x="378" y="67" text-anchor="end" fill="var(--pkg)">PACKAGE</text>
+        <g opacity="0.75">
+          <g transform="translate(52,92)"><rect class="n" width="150" height="34" rx="7"/><rect x="7" y="7" width="4" height="20" rx="2" fill="var(--mod)"/><text class="t-sm" x="24" y="22" font-size="10.5">PaymentService</text></g>
+          <g transform="translate(218,92)"><rect class="n" width="150" height="34" rx="7"/><rect x="7" y="7" width="4" height="20" rx="2" fill="var(--mod)"/><text class="t-sm" x="24" y="22" font-size="10.5">CartService</text></g>
+          <g transform="translate(52,140)"><rect class="n" width="150" height="34" rx="7"/><rect x="7" y="7" width="4" height="20" rx="2" fill="var(--mod)"/><text class="t-sm" x="24" y="22" font-size="10.5">PricingService</text></g>
+          <g transform="translate(218,140)"><rect class="n" width="150" height="34" rx="7"/><rect x="7" y="7" width="4" height="20" rx="2" fill="var(--mod)"/><text class="t-sm" x="24" y="22" font-size="10.5">CatalogService</text></g>
+        </g>
+        <!-- cursor glyph -->
+        <g transform="translate(206,150)"><path d="M0,0 L0,20 L5,15 L9,23 L12,21 L8,14 L15,14 Z" fill="#E6EDF3" stroke="#0E1116" stroke-width="1"/></g>
+        <rect x="196" y="182" width="120" height="24" rx="6" fill="#20252e" stroke="var(--border)"/>
+        <text class="lbl" x="256" y="198" text-anchor="middle" fill="#E6EDF3">double-click</text>
+
+        <!-- arrow -->
+        <line x1="410" y1="130" x2="486" y2="130" stroke="url(#flow)" stroke-width="3.5" marker-end="url(#ah-purple)"/>
+        <text class="lbl" x="448" y="118" text-anchor="middle">re-root</text>
+
+        <!-- RIGHT: re-rooted canvas -->
+        <rect class="n" x="506" y="40" width="628" height="180" rx="12"/>
+        <line x1="506" y1="76" x2="1134" y2="76" stroke="var(--border)"/>
+        <!-- breadcrumb -->
+        <text class="mono" x="524" y="63" font-size="12.5"><tspan fill="#9AA4B2">System</tspan><tspan fill="#6E7681"> &#8250; </tspan><tspan fill="#9AA4B2">Src</tspan><tspan fill="#6E7681"> &#8250; </tspan><tspan fill="#E6EDF3">Services</tspan></text>
+        <text class="lbl" x="1120" y="63" text-anchor="end" font-size="10.5">everything else hidden</text>
+        <!-- interior fills the frame -->
+        <path class="e-call" d="M700,120 C748,120 748,160 796,160" marker-end="url(#ah-grey)"/>
+        <path class="e-call" d="M700,124 C748,150 748,110 796,112" marker-end="url(#ah-grey)"/>
+        <g transform="translate(540,96)"><rect class="n" width="160" height="46" rx="8"/><rect x="7" y="9" width="4" height="28" rx="2" fill="var(--mod)"/><path class="tri" d="M18 19 l6 4 l-6 4 z"/><text class="t-sm" x="30" y="28" font-size="11.5">CheckoutService</text></g>
+        <g transform="translate(796,90)"><rect class="n" width="150" height="44" rx="8"/><rect x="7" y="8" width="4" height="28" rx="2" fill="var(--mod)"/><path class="tri" d="M18 19 l6 4 l-6 4 z"/><text class="t-sm" x="30" y="27" font-size="11.5">PaymentService</text></g>
+        <g transform="translate(796,146)"><rect class="n" width="150" height="44" rx="8"/><rect x="7" y="8" width="4" height="28" rx="2" fill="var(--mod)"/><path class="tri" d="M18 19 l6 4 l-6 4 z"/><text class="t-sm" x="30" y="27" font-size="11.5">AuditService</text></g>
+        <g transform="translate(972,118)"><rect class="n" width="140" height="44" rx="8"/><rect x="7" y="8" width="4" height="28" rx="2" fill="var(--mod)"/><path class="tri" d="M18 19 l6 4 l-6 4 z"/><text class="t-sm" x="30" y="27" font-size="11.5">UserService</text></g>
+      </svg>
+      <p class="cap">dive into a box to keep a huge graph readable — a breadcrumb climbs back out.</p>
+    </div>
+
+    <div class="shots">
+      <figure class="shot"><img src="media/03-ui-composition.png" alt="UI composition view: the same graph rendered as a React component render tree with renders edges.">
+        <figcaption>UI-composition lens — the render tree</figcaption></figure>
+      <figure class="shot"><img src="media/02-divein.png" alt="Dive-in focused into the services layer, with breadcrumb System, Src, Services.">
+        <figcaption>Dive-in — re-rooted into <span class="mono">Services</span></figcaption></figure>
+    </div>
+  </section>
+
+  <!-- ============ 6 · ARCHITECTURE ============ -->
+  <section class="sec">
+    <div class="sec-h">
+      <span class="sec-n">05</span>
+      <h2 class="sec-t">Architecture</h2>
+      <p class="sec-c">one frozen contract, everything points at it</p>
+    </div>
+    <div class="diagram">
+      <svg viewBox="0 0 1160 360" role="img" aria-label="Package diagram: extractor-typescript, extractor-python, cli, and renderer all depend on the central @meridian/core contract.">
+        <!-- arrows into core -->
+        <path class="e-call" d="M334,104 C420,120 452,140 476,158" marker-end="url(#ah-grey)"/>
+        <path class="e-call" d="M334,268 C420,250 452,224 476,204" marker-end="url(#ah-grey)"/>
+        <path class="e-call" d="M830,104 C744,120 712,140 688,158" marker-end="url(#ah-grey)"/>
+        <path class="e-call" d="M830,268 C744,250 712,224 688,204" marker-end="url(#ah-grey)"/>
+        <text class="lbl" x="392" y="120" text-anchor="middle">implements</text>
+        <text class="lbl" x="392" y="256" text-anchor="middle">implements</text>
+        <text class="lbl" x="770" y="120" text-anchor="middle">orchestrates</text>
+        <text class="lbl" x="770" y="258" text-anchor="middle">consumes</text>
+
+        <!-- core (center) -->
+        <rect class="n-hi" x="476" y="140" width="208" height="86" rx="12"/>
+        <rect x="488" y="154" width="4" height="24" rx="2" fill="var(--pkg)"/>
+        <text class="t mono" x="502" y="170" font-size="13">@meridian/core</text>
+        <text class="sub" x="502" y="190" font-size="10.5">zod schema &#183; node-id grammar</text>
+        <text class="sub" x="502" y="206" font-size="10.5">LanguageExtractor &#183; validateArtifact</text>
+        <text class="lbl" x="580" y="126" text-anchor="middle" fill="#c3cbd6" font-weight="700" font-size="11">THE FROZEN CONTRACT</text>
+
+        <!-- satellites -->
+        <g transform="translate(122,60)"><rect class="n" width="212" height="66" rx="10"/><rect x="8" y="11" width="4" height="44" rx="2" fill="var(--mod)"/>
+          <text class="t-sm mono" x="24" y="30" font-size="12">extractor-typescript</text><text class="sub" x="24" y="49" font-size="10.5">ts-morph &#183; JSX renders</text></g>
+        <g transform="translate(122,236)"><rect class="n" width="212" height="66" rx="10"/><rect x="8" y="11" width="4" height="44" rx="2" fill="var(--mod)"/>
+          <text class="t-sm mono" x="24" y="30" font-size="12">extractor-python</text><text class="sub" x="24" y="49" font-size="10.5">stdlib ast analyzer</text></g>
+        <g transform="translate(830,60)"><rect class="n" width="212" height="66" rx="10"/><rect x="8" y="11" width="4" height="44" rx="2" fill="var(--fn)"/>
+          <text class="t-sm mono" x="24" y="30" font-size="12">cli</text><text class="sub" x="24" y="49" font-size="10.5">generate &#183; view &#183; web</text></g>
+        <g transform="translate(830,236)"><rect class="n" width="212" height="66" rx="10"/><rect x="8" y="11" width="4" height="44" rx="2" fill="var(--pkg)"/>
+          <text class="t-sm mono" x="24" y="30" font-size="12">renderer</text><text class="sub" x="24" y="49" font-size="10.5">the dark Blueprints SPA</text></g>
+
+        <text class="lbl" x="580" y="330" text-anchor="middle" font-size="13" fill="#c3cbd6">new language = one new extractor &#183; nothing else changes</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ============ 7 · BLUEPRINT WEB ============ -->
+  <section class="sec">
+    <div class="sec-h">
+      <span class="sec-n">06</span>
+      <h2 class="sec-t">meridian web</h2>
+      <p class="sec-c">paste a repo, get a blueprint — locally</p>
+    </div>
+    <div class="diagram">
+      <svg viewBox="0 0 1160 180" role="img" aria-label="Sequence: browser pastes owner/repo to a local server, which git clones depth one, extracts, and opens the view.">
+        <!-- edges with action labels -->
+        <path class="e-call" d="M250,92 H336" marker-end="url(#ah-grey)"/>
+        <text class="lbl-mono" x="293" y="80" text-anchor="middle">owner/repo</text>
+        <path class="e-call" d="M564,92 H650" marker-end="url(#ah-grey)"/>
+        <text class="lbl-mono" x="607" y="80" text-anchor="middle" font-size="10">clone --depth 1</text>
+        <path class="e-call" d="M852,92 H910" marker-end="url(#ah-grey)"/>
+        <text class="lbl-mono" x="881" y="80" text-anchor="middle">/view</text>
+
+        <!-- browser -->
+        <g transform="translate(30,52)"><rect class="n" width="212" height="80" rx="11"/>
+          <rect x="20" y="18" width="172" height="44" rx="6" fill="none" stroke="var(--border)"/>
+          <line x1="20" y1="30" x2="192" y2="30" stroke="var(--border)"/>
+          <circle cx="28" cy="24" r="2.5" fill="#3a4150"/><circle cx="36" cy="24" r="2.5" fill="#3a4150"/><circle cx="44" cy="24" r="2.5" fill="#3a4150"/>
+          <text class="t-sm" x="30" y="52" font-size="11.5">browser</text></g>
+        <!-- local server -->
+        <g transform="translate(344,52)"><rect class="n" width="212" height="80" rx="11"/><rect x="8" y="12" width="4" height="56" rx="2" fill="var(--fn)"/>
+          <text class="t-sm" x="24" y="34">local server</text><text class="sub" x="24" y="56" font-size="10.5">meridian web &#183; localhost</text></g>
+        <!-- extractor -->
+        <g transform="translate(658,52)"><rect class="n" width="186" height="80" rx="11"/><rect x="8" y="12" width="4" height="56" rx="2" fill="var(--mod)"/>
+          <text class="t-sm" x="24" y="34">extractor</text><text class="sub" x="24" y="56" font-size="10.5">clone &#8594; generate</text></g>
+        <!-- view -->
+        <g transform="translate(918,52)"><rect class="n-hi" width="212" height="80" rx="11"/><rect x="8" y="12" width="4" height="56" rx="2" fill="var(--pkg)"/>
+          <g transform="translate(20,26)"><rect x="0" y="2" width="12" height="9" rx="2" fill="rgba(63,183,196,.15)" stroke="var(--mod)" stroke-width="1.5"/><rect x="16" y="14" width="12" height="9" rx="2" fill="rgba(167,123,243,.15)" stroke="var(--pkg)" stroke-width="1.5"/></g>
+          <text class="t-sm" x="58" y="40">interactive</text><text class="t-sm" x="58" y="58" fill="var(--fn)">blueprint</text></g>
+      </svg>
+      <p class="cap">self-hosted &#183; <em>code never leaves your machine</em> &#183; private repos via a local-only token.</p>
+    </div>
+
+    <figure class="shot shot-narrow"><img src="media/06-web-landing.png" alt="The meridian web front door: paste a GitHub repo or a local path, then generate a blueprint.">
+      <figcaption>The <span class="mono">meridian web</span> front door</figcaption></figure>
+  </section>
+
+  <footer>
+    <p><span class="mono">meridian</span> &mdash; a CLI + dark-mode renderer that maps any codebase's call flow.
+    Contract: <span class="mono">knowledge/adr/0001-graph-artifact-schema.md</span> &#183; JSON Schema at <span class="mono">packages/core/schema/graph-artifact-1.0.0.json</span>.</p>
+    <p style="margin-top:8px">Colours: <span style="color:var(--pkg)">package</span> &#183; <span style="color:var(--mod)">module</span> &#183; <span style="color:var(--cls)">class</span> &#183; <span style="color:var(--iface)">interface</span> &#183; <span style="color:var(--fn)">function</span> &#183; <span style="color:var(--ext)">external</span>. Single self-contained file &mdash; no external scripts, styles, fonts, or CDNs.</p>
+  </footer>
+
+</div>
+</body>
+</html>

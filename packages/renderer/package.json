@@ -1,0 +1,30 @@
+{
+  "name": "@meridian/renderer",
+  "version": "0.1.0",
+  "description": "The dark Unreal-Blueprints SPA: compound nodes, custom expand/collapse, ELK layout, pluggable telemetry overlay.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@meridian/core": "workspace:*",
+    "@xyflow/react": "12.11.1",
+    "elkjs": "0.11.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "zustand": "5.0.14"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.0.3",
+    "typescript": "6.0.3",
+    "vite": "8.1.0",
+    "vitest": "^4.1.9"
+  }
+}

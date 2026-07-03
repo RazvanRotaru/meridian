@@ -1,0 +1,1417 @@
+{
+  "schemaVersion": "1.0.0",
+  "generatedAt": "2026-06-27T08:59:12.655Z",
+  "generator": {
+    "name": "blueprint",
+    "version": "blueprint@0.1.0 (ts-morph@28)"
+  },
+  "target": {
+    "name": "orders-service",
+    "root": "examples/orders-service",
+    "language": "typescript"
+  },
+  "telemetry": {
+    "joinKey": "node.id",
+    "requiredRuntimeAttributes": [
+      "service.name",
+      "deployment.environment.name"
+    ],
+    "serviceDefaulting": "forbidden"
+  },
+  "nodes": [
+    {
+      "id": "ts:src",
+      "kind": "package",
+      "qualifiedName": "src",
+      "displayName": "src",
+      "summary": null,
+      "parentId": null,
+      "location": {
+        "file": "src",
+        "startLine": 1,
+        "endLine": 1
+      }
+    },
+    {
+      "id": "ts:src/api",
+      "kind": "package",
+      "qualifiedName": "src/api",
+      "displayName": "api",
+      "summary": null,
+      "parentId": "ts:src",
+      "location": {
+        "file": "src/api",
+        "startLine": 1,
+        "endLine": 1
+      }
+    },
+    {
+      "id": "ts:src/domain",
+      "kind": "package",
+      "qualifiedName": "src/domain",
+      "displayName": "domain",
+      "summary": null,
+      "parentId": "ts:src",
+      "location": {
+        "file": "src/domain",
+        "startLine": 1,
+        "endLine": 1
+      }
+    },
+    {
+      "id": "ts:src/notifications",
+      "kind": "package",
+      "qualifiedName": "src/notifications",
+      "displayName": "notifications",
+      "summary": null,
+      "parentId": "ts:src",
+      "location": {
+        "file": "src/notifications",
+        "startLine": 1,
+        "endLine": 1
+      }
+    },
+    {
+      "id": "ts:src/pricing",
+      "kind": "package",
+      "qualifiedName": "src/pricing",
+      "displayName": "pricing",
+      "summary": null,
+      "parentId": "ts:src",
+      "location": {
+        "file": "src/pricing",
+        "startLine": 1,
+        "endLine": 1
+      }
+    },
+    {
+      "id": "ts:src/repository",
+      "kind": "package",
+      "qualifiedName": "src/repository",
+      "displayName": "repository",
+      "summary": null,
+      "parentId": "ts:src",
+      "location": {
+        "file": "src/repository",
+        "startLine": 1,
+        "endLine": 1
+      }
+    },
+    {
+      "id": "ts:src/services",
+      "kind": "package",
+      "qualifiedName": "src/services",
+      "displayName": "services",
+      "summary": null,
+      "parentId": "ts:src",
+      "location": {
+        "file": "src/services",
+        "startLine": 1,
+        "endLine": 1
+      }
+    },
+    {
+      "id": "ts:src/validation",
+      "kind": "package",
+      "qualifiedName": "src/validation",
+      "displayName": "validation",
+      "summary": null,
+      "parentId": "ts:src",
+      "location": {
+        "file": "src/validation",
+        "startLine": 1,
+        "endLine": 1
+      }
+    },
+    {
+      "id": "ts:src/index.ts",
+      "kind": "module",
+      "qualifiedName": "src/index.ts",
+      "displayName": "index.ts",
+      "summary": null,
+      "parentId": "ts:src",
+      "location": {
+        "file": "src/index.ts",
+        "startLine": 1,
+        "endLine": 15
+      }
+    },
+    {
+      "id": "ts:src/index.ts#buildOrdersApp",
+      "kind": "function",
+      "qualifiedName": "buildOrdersApp",
+      "displayName": "buildOrdersApp",
+      "summary": "Wire the whole order-processing flow together and return the HTTP entry points.",
+      "parentId": "ts:src/index.ts",
+      "location": {
+        "file": "src/index.ts",
+        "startLine": 8,
+        "endLine": 14
+      },
+      "signature": "buildOrdersApp(): OrderRoutes",
+      "tags": [
+        "export"
+      ],
+      "telemetry": {
+        "codeNamespace": null,
+        "codeFunction": "buildOrdersApp",
+        "spanNameHints": [
+          "buildOrdersApp"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/api/orderRoutes.ts",
+      "kind": "module",
+      "qualifiedName": "src/api/orderRoutes.ts",
+      "displayName": "orderRoutes.ts",
+      "summary": null,
+      "parentId": "ts:src/api",
+      "location": {
+        "file": "src/api/orderRoutes.ts",
+        "startLine": 1,
+        "endLine": 47
+      }
+    },
+    {
+      "id": "ts:src/api/orderRoutes.ts#OrderRoutes",
+      "kind": "class",
+      "qualifiedName": "OrderRoutes",
+      "displayName": "OrderRoutes",
+      "summary": "Translates incoming HTTP requests into order-service calls.",
+      "parentId": "ts:src/api/orderRoutes.ts",
+      "location": {
+        "file": "src/api/orderRoutes.ts",
+        "startLine": 12,
+        "endLine": 46
+      },
+      "tags": [
+        "export"
+      ]
+    },
+    {
+      "id": "ts:src/api/orderRoutes.ts#OrderRoutes.constructor",
+      "kind": "method",
+      "qualifiedName": "OrderRoutes.constructor",
+      "displayName": "constructor",
+      "summary": null,
+      "parentId": "ts:src/api/orderRoutes.ts#OrderRoutes",
+      "location": {
+        "file": "src/api/orderRoutes.ts",
+        "startLine": 13,
+        "endLine": 13
+      },
+      "signature": "constructor(orders: OrderService)",
+      "tags": [
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "OrderRoutes",
+        "codeFunction": "constructor",
+        "spanNameHints": [
+          "OrderRoutes.constructor",
+          "constructor"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder",
+      "kind": "method",
+      "qualifiedName": "OrderRoutes.handleCreateOrder",
+      "displayName": "handleCreateOrder",
+      "summary": "POST /orders — place a new order.",
+      "parentId": "ts:src/api/orderRoutes.ts#OrderRoutes",
+      "location": {
+        "file": "src/api/orderRoutes.ts",
+        "startLine": 16,
+        "endLine": 23
+      },
+      "signature": "handleCreateOrder(request: OrderRequest): ApiResponse",
+      "tags": [
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "OrderRoutes",
+        "codeFunction": "handleCreateOrder",
+        "spanNameHints": [
+          "OrderRoutes.handleCreateOrder",
+          "handleCreateOrder"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/api/orderRoutes.ts#OrderRoutes.handleGetOrder",
+      "kind": "method",
+      "qualifiedName": "OrderRoutes.handleGetOrder",
+      "displayName": "handleGetOrder",
+      "summary": "GET /orders/:id — fetch a previously placed order.",
+      "parentId": "ts:src/api/orderRoutes.ts#OrderRoutes",
+      "location": {
+        "file": "src/api/orderRoutes.ts",
+        "startLine": 26,
+        "endLine": 32
+      },
+      "signature": "handleGetOrder(id: string): ApiResponse",
+      "tags": [
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "OrderRoutes",
+        "codeFunction": "handleGetOrder",
+        "spanNameHints": [
+          "OrderRoutes.handleGetOrder",
+          "handleGetOrder"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/api/orderRoutes.ts#OrderRoutes.created",
+      "kind": "method",
+      "qualifiedName": "OrderRoutes.created",
+      "displayName": "created",
+      "summary": "Shape a 201 response for a freshly placed order.",
+      "parentId": "ts:src/api/orderRoutes.ts#OrderRoutes",
+      "location": {
+        "file": "src/api/orderRoutes.ts",
+        "startLine": 35,
+        "endLine": 37
+      },
+      "signature": "created(order: Order): ApiResponse",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "OrderRoutes",
+        "codeFunction": "created",
+        "spanNameHints": [
+          "OrderRoutes.created",
+          "created"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/api/orderRoutes.ts#OrderRoutes.toErrorResponse",
+      "kind": "method",
+      "qualifiedName": "OrderRoutes.toErrorResponse",
+      "displayName": "toErrorResponse",
+      "summary": "Map domain errors onto HTTP status codes.",
+      "parentId": "ts:src/api/orderRoutes.ts#OrderRoutes",
+      "location": {
+        "file": "src/api/orderRoutes.ts",
+        "startLine": 40,
+        "endLine": 45
+      },
+      "signature": "toErrorResponse(error: unknown): ApiResponse",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "OrderRoutes",
+        "codeFunction": "toErrorResponse",
+        "spanNameHints": [
+          "OrderRoutes.toErrorResponse",
+          "toErrorResponse"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/api/orderRoutes.ts#ApiResponse",
+      "kind": "interface",
+      "qualifiedName": "ApiResponse",
+      "displayName": "ApiResponse",
+      "summary": "A minimal HTTP-style response.",
+      "parentId": "ts:src/api/orderRoutes.ts",
+      "location": {
+        "file": "src/api/orderRoutes.ts",
+        "startLine": 6,
+        "endLine": 9
+      },
+      "tags": [
+        "export"
+      ]
+    },
+    {
+      "id": "ts:src/domain/order.ts",
+      "kind": "module",
+      "qualifiedName": "src/domain/order.ts",
+      "displayName": "order.ts",
+      "summary": null,
+      "parentId": "ts:src/domain",
+      "location": {
+        "file": "src/domain/order.ts",
+        "startLine": 1,
+        "endLine": 30
+      }
+    },
+    {
+      "id": "ts:src/domain/order.ts#OrderLine",
+      "kind": "interface",
+      "qualifiedName": "OrderLine",
+      "displayName": "OrderLine",
+      "summary": "A single thing a customer wants to buy, and how many.",
+      "parentId": "ts:src/domain/order.ts",
+      "location": {
+        "file": "src/domain/order.ts",
+        "startLine": 6,
+        "endLine": 10
+      },
+      "tags": [
+        "export"
+      ]
+    },
+    {
+      "id": "ts:src/domain/order.ts#OrderRequest",
+      "kind": "interface",
+      "qualifiedName": "OrderRequest",
+      "displayName": "OrderRequest",
+      "summary": "What a customer submits when they want to place an order.",
+      "parentId": "ts:src/domain/order.ts",
+      "location": {
+        "file": "src/domain/order.ts",
+        "startLine": 13,
+        "endLine": 17
+      },
+      "tags": [
+        "export"
+      ]
+    },
+    {
+      "id": "ts:src/domain/order.ts#Order",
+      "kind": "interface",
+      "qualifiedName": "Order",
+      "displayName": "Order",
+      "summary": "A priced, validated order ready to be stored and confirmed.",
+      "parentId": "ts:src/domain/order.ts",
+      "location": {
+        "file": "src/domain/order.ts",
+        "startLine": 20,
+        "endLine": 29
+      },
+      "tags": [
+        "export"
+      ]
+    },
+    {
+      "id": "ts:src/notifications/emailService.ts",
+      "kind": "module",
+      "qualifiedName": "src/notifications/emailService.ts",
+      "displayName": "emailService.ts",
+      "summary": null,
+      "parentId": "ts:src/notifications",
+      "location": {
+        "file": "src/notifications/emailService.ts",
+        "startLine": 1,
+        "endLine": 25
+      }
+    },
+    {
+      "id": "ts:src/notifications/emailService.ts#EmailService",
+      "kind": "class",
+      "qualifiedName": "EmailService",
+      "displayName": "EmailService",
+      "summary": "Sends transactional email to customers.",
+      "parentId": "ts:src/notifications/emailService.ts",
+      "location": {
+        "file": "src/notifications/emailService.ts",
+        "startLine": 4,
+        "endLine": 24
+      },
+      "tags": [
+        "export"
+      ]
+    },
+    {
+      "id": "ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation",
+      "kind": "method",
+      "qualifiedName": "EmailService.sendOrderConfirmation",
+      "displayName": "sendOrderConfirmation",
+      "summary": "Let the customer know their order went through.",
+      "parentId": "ts:src/notifications/emailService.ts#EmailService",
+      "location": {
+        "file": "src/notifications/emailService.ts",
+        "startLine": 6,
+        "endLine": 9
+      },
+      "signature": "sendOrderConfirmation(order: Order): void",
+      "tags": [
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "EmailService",
+        "codeFunction": "sendOrderConfirmation",
+        "spanNameHints": [
+          "EmailService.sendOrderConfirmation",
+          "sendOrderConfirmation"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/notifications/emailService.ts#EmailService.renderConfirmation",
+      "kind": "method",
+      "qualifiedName": "EmailService.renderConfirmation",
+      "displayName": "renderConfirmation",
+      "summary": "Build the human-readable confirmation text.",
+      "parentId": "ts:src/notifications/emailService.ts#EmailService",
+      "location": {
+        "file": "src/notifications/emailService.ts",
+        "startLine": 12,
+        "endLine": 15
+      },
+      "signature": "renderConfirmation(order: Order): string",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "EmailService",
+        "codeFunction": "renderConfirmation",
+        "spanNameHints": [
+          "EmailService.renderConfirmation",
+          "renderConfirmation"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/notifications/emailService.ts#EmailService.deliver",
+      "kind": "method",
+      "qualifiedName": "EmailService.deliver",
+      "displayName": "deliver",
+      "summary": "Hand the message off to the mail transport.",
+      "parentId": "ts:src/notifications/emailService.ts#EmailService",
+      "location": {
+        "file": "src/notifications/emailService.ts",
+        "startLine": 18,
+        "endLine": 23
+      },
+      "signature": "deliver(to: string, subject: string, body: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "EmailService",
+        "codeFunction": "deliver",
+        "spanNameHints": [
+          "EmailService.deliver",
+          "deliver"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/pricing/pricingService.ts",
+      "kind": "module",
+      "qualifiedName": "src/pricing/pricingService.ts",
+      "displayName": "pricingService.ts",
+      "summary": null,
+      "parentId": "ts:src/pricing",
+      "location": {
+        "file": "src/pricing/pricingService.ts",
+        "startLine": 1,
+        "endLine": 44
+      }
+    },
+    {
+      "id": "ts:src/pricing/pricingService.ts#PricingService",
+      "kind": "class",
+      "qualifiedName": "PricingService",
+      "displayName": "PricingService",
+      "summary": "Turns a raw request into the money side of an order: subtotal, discount, tax, total.",
+      "parentId": "ts:src/pricing/pricingService.ts",
+      "location": {
+        "file": "src/pricing/pricingService.ts",
+        "startLine": 6,
+        "endLine": 43
+      },
+      "tags": [
+        "export"
+      ]
+    },
+    {
+      "id": "ts:src/pricing/pricingService.ts#PricingService.price",
+      "kind": "method",
+      "qualifiedName": "PricingService.price",
+      "displayName": "price",
+      "summary": "Compute every monetary field for an order request.",
+      "parentId": "ts:src/pricing/pricingService.ts#PricingService",
+      "location": {
+        "file": "src/pricing/pricingService.ts",
+        "startLine": 8,
+        "endLine": 19
+      },
+      "signature": "price(request: OrderRequest): Pick<Order, \"subtotalCents\" | \"discountCents\" | \"taxCents\" | \"totalCents\">",
+      "tags": [
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "PricingService",
+        "codeFunction": "price",
+        "spanNameHints": [
+          "PricingService.price",
+          "price"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/pricing/pricingService.ts#PricingService.subtotal",
+      "kind": "method",
+      "qualifiedName": "PricingService.subtotal",
+      "displayName": "subtotal",
+      "summary": "Add up the price of every line.",
+      "parentId": "ts:src/pricing/pricingService.ts#PricingService",
+      "location": {
+        "file": "src/pricing/pricingService.ts",
+        "startLine": 22,
+        "endLine": 24
+      },
+      "signature": "subtotal(lines: OrderLine[]): number",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "PricingService",
+        "codeFunction": "subtotal",
+        "spanNameHints": [
+          "PricingService.subtotal",
+          "subtotal"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/pricing/pricingService.ts#PricingService.discountFor",
+      "kind": "method",
+      "qualifiedName": "PricingService.discountFor",
+      "displayName": "discountFor",
+      "summary": "Apply a flat 10% discount when a known code is present.",
+      "parentId": "ts:src/pricing/pricingService.ts#PricingService",
+      "location": {
+        "file": "src/pricing/pricingService.ts",
+        "startLine": 27,
+        "endLine": 32
+      },
+      "signature": "discountFor(subtotalCents: number, code: string | undefined): number",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "PricingService",
+        "codeFunction": "discountFor",
+        "spanNameHints": [
+          "PricingService.discountFor",
+          "discountFor"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/pricing/pricingService.ts#PricingService.isKnownCode",
+      "kind": "method",
+      "qualifiedName": "PricingService.isKnownCode",
+      "displayName": "isKnownCode",
+      "summary": "Whether a discount code is one we honor.",
+      "parentId": "ts:src/pricing/pricingService.ts#PricingService",
+      "location": {
+        "file": "src/pricing/pricingService.ts",
+        "startLine": 35,
+        "endLine": 37
+      },
+      "signature": "isKnownCode(code: string): boolean",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "PricingService",
+        "codeFunction": "isKnownCode",
+        "spanNameHints": [
+          "PricingService.isKnownCode",
+          "isKnownCode"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/pricing/pricingService.ts#PricingService.tax",
+      "kind": "method",
+      "qualifiedName": "PricingService.tax",
+      "displayName": "tax",
+      "summary": "Sales tax on the post-discount amount.",
+      "parentId": "ts:src/pricing/pricingService.ts#PricingService",
+      "location": {
+        "file": "src/pricing/pricingService.ts",
+        "startLine": 40,
+        "endLine": 42
+      },
+      "signature": "tax(baseCents: number): number",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "PricingService",
+        "codeFunction": "tax",
+        "spanNameHints": [
+          "PricingService.tax",
+          "tax"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/repository/orderRepository.ts",
+      "kind": "module",
+      "qualifiedName": "src/repository/orderRepository.ts",
+      "displayName": "orderRepository.ts",
+      "summary": null,
+      "parentId": "ts:src/repository",
+      "location": {
+        "file": "src/repository/orderRepository.ts",
+        "startLine": 1,
+        "endLine": 22
+      }
+    },
+    {
+      "id": "ts:src/repository/orderRepository.ts#OrderRepository",
+      "kind": "class",
+      "qualifiedName": "OrderRepository",
+      "displayName": "OrderRepository",
+      "summary": "Stores orders and reads them back.",
+      "parentId": "ts:src/repository/orderRepository.ts",
+      "location": {
+        "file": "src/repository/orderRepository.ts",
+        "startLine": 4,
+        "endLine": 21
+      },
+      "tags": [
+        "export"
+      ]
+    },
+    {
+      "id": "ts:src/repository/orderRepository.ts#OrderRepository.save",
+      "kind": "method",
+      "qualifiedName": "OrderRepository.save",
+      "displayName": "save",
+      "summary": "Persist an order so it can be looked up later.",
+      "parentId": "ts:src/repository/orderRepository.ts#OrderRepository",
+      "location": {
+        "file": "src/repository/orderRepository.ts",
+        "startLine": 8,
+        "endLine": 10
+      },
+      "signature": "save(order: Order): void",
+      "tags": [
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "OrderRepository",
+        "codeFunction": "save",
+        "spanNameHints": [
+          "OrderRepository.save",
+          "save"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/repository/orderRepository.ts#OrderRepository.findById",
+      "kind": "method",
+      "qualifiedName": "OrderRepository.findById",
+      "displayName": "findById",
+      "summary": "Find a previously saved order, or undefined if we have never seen it.",
+      "parentId": "ts:src/repository/orderRepository.ts#OrderRepository",
+      "location": {
+        "file": "src/repository/orderRepository.ts",
+        "startLine": 13,
+        "endLine": 15
+      },
+      "signature": "findById(id: string): Order | undefined",
+      "tags": [
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "OrderRepository",
+        "codeFunction": "findById",
+        "spanNameHints": [
+          "OrderRepository.findById",
+          "findById"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/repository/orderRepository.ts#OrderRepository.count",
+      "kind": "method",
+      "qualifiedName": "OrderRepository.count",
+      "displayName": "count",
+      "summary": "How many orders we are currently holding.",
+      "parentId": "ts:src/repository/orderRepository.ts#OrderRepository",
+      "location": {
+        "file": "src/repository/orderRepository.ts",
+        "startLine": 18,
+        "endLine": 20
+      },
+      "signature": "count(): number",
+      "tags": [
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "OrderRepository",
+        "codeFunction": "count",
+        "spanNameHints": [
+          "OrderRepository.count",
+          "count"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/services/orderService.ts",
+      "kind": "module",
+      "qualifiedName": "src/services/orderService.ts",
+      "displayName": "orderService.ts",
+      "summary": null,
+      "parentId": "ts:src/services",
+      "location": {
+        "file": "src/services/orderService.ts",
+        "startLine": 1,
+        "endLine": 57
+      }
+    },
+    {
+      "id": "ts:src/services/orderService.ts#OrderService",
+      "kind": "class",
+      "qualifiedName": "OrderService",
+      "displayName": "OrderService",
+      "summary": "The heart of the flow: takes a request and turns it into a stored, confirmed order.",
+      "parentId": "ts:src/services/orderService.ts",
+      "location": {
+        "file": "src/services/orderService.ts",
+        "startLine": 10,
+        "endLine": 56
+      },
+      "tags": [
+        "export"
+      ]
+    },
+    {
+      "id": "ts:src/services/orderService.ts#OrderService.constructor",
+      "kind": "method",
+      "qualifiedName": "OrderService.constructor",
+      "displayName": "constructor",
+      "summary": null,
+      "parentId": "ts:src/services/orderService.ts#OrderService",
+      "location": {
+        "file": "src/services/orderService.ts",
+        "startLine": 11,
+        "endLine": 15
+      },
+      "signature": "constructor(pricing: PricingService, repository: OrderRepository, email: EmailService)",
+      "tags": [
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "OrderService",
+        "codeFunction": "constructor",
+        "spanNameHints": [
+          "OrderService.constructor",
+          "constructor"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/services/orderService.ts#OrderService.placeOrder",
+      "kind": "method",
+      "qualifiedName": "OrderService.placeOrder",
+      "displayName": "placeOrder",
+      "summary": "Validate, price, store, and confirm a new order.",
+      "parentId": "ts:src/services/orderService.ts#OrderService",
+      "location": {
+        "file": "src/services/orderService.ts",
+        "startLine": 18,
+        "endLine": 25
+      },
+      "signature": "placeOrder(request: OrderRequest): Order",
+      "tags": [
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "OrderService",
+        "codeFunction": "placeOrder",
+        "spanNameHints": [
+          "OrderService.placeOrder",
+          "placeOrder"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/services/orderService.ts#OrderService.getOrder",
+      "kind": "method",
+      "qualifiedName": "OrderService.getOrder",
+      "displayName": "getOrder",
+      "summary": "Look up an order that was placed earlier.",
+      "parentId": "ts:src/services/orderService.ts#OrderService",
+      "location": {
+        "file": "src/services/orderService.ts",
+        "startLine": 28,
+        "endLine": 30
+      },
+      "signature": "getOrder(id: string): Order | undefined",
+      "tags": [
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "OrderService",
+        "codeFunction": "getOrder",
+        "spanNameHints": [
+          "OrderService.getOrder",
+          "getOrder"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/services/orderService.ts#OrderService.assemble",
+      "kind": "method",
+      "qualifiedName": "OrderService.assemble",
+      "displayName": "assemble",
+      "summary": "Combine the request with its computed money fields into a final order.",
+      "parentId": "ts:src/services/orderService.ts#OrderService",
+      "location": {
+        "file": "src/services/orderService.ts",
+        "startLine": 33,
+        "endLine": 44
+      },
+      "signature": "assemble(request: OrderRequest, money: Pick<Order, \"subtotalCents\" | \"discountCents\" | \"taxCents\" | \"totalCents\">): Order",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "OrderService",
+        "codeFunction": "assemble",
+        "spanNameHints": [
+          "OrderService.assemble",
+          "assemble"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/services/orderService.ts#OrderService.nextId",
+      "kind": "method",
+      "qualifiedName": "OrderService.nextId",
+      "displayName": "nextId",
+      "summary": "Hand out a fresh, unique order id.",
+      "parentId": "ts:src/services/orderService.ts#OrderService",
+      "location": {
+        "file": "src/services/orderService.ts",
+        "startLine": 47,
+        "endLine": 50
+      },
+      "signature": "nextId(): string",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "OrderService",
+        "codeFunction": "nextId",
+        "spanNameHints": [
+          "OrderService.nextId",
+          "nextId"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/services/orderService.ts#OrderService.timestamp",
+      "kind": "method",
+      "qualifiedName": "OrderService.timestamp",
+      "displayName": "timestamp",
+      "summary": "When this order was placed.",
+      "parentId": "ts:src/services/orderService.ts#OrderService",
+      "location": {
+        "file": "src/services/orderService.ts",
+        "startLine": 53,
+        "endLine": 55
+      },
+      "signature": "timestamp(): string",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "OrderService",
+        "codeFunction": "timestamp",
+        "spanNameHints": [
+          "OrderService.timestamp",
+          "timestamp"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/validation/orderValidator.ts",
+      "kind": "module",
+      "qualifiedName": "src/validation/orderValidator.ts",
+      "displayName": "orderValidator.ts",
+      "summary": null,
+      "parentId": "ts:src/validation",
+      "location": {
+        "file": "src/validation/orderValidator.ts",
+        "startLine": 1,
+        "endLine": 31
+      }
+    },
+    {
+      "id": "ts:src/validation/orderValidator.ts#ValidationError",
+      "kind": "class",
+      "qualifiedName": "ValidationError",
+      "displayName": "ValidationError",
+      "summary": "Raised when an incoming order request does not make sense.",
+      "parentId": "ts:src/validation/orderValidator.ts",
+      "location": {
+        "file": "src/validation/orderValidator.ts",
+        "startLine": 4,
+        "endLine": 4
+      },
+      "tags": [
+        "export"
+      ]
+    },
+    {
+      "id": "ts:src/validation/orderValidator.ts#validateOrderRequest",
+      "kind": "function",
+      "qualifiedName": "validateOrderRequest",
+      "displayName": "validateOrderRequest",
+      "summary": "Check that an order request is well-formed before we price it.",
+      "parentId": "ts:src/validation/orderValidator.ts",
+      "location": {
+        "file": "src/validation/orderValidator.ts",
+        "startLine": 7,
+        "endLine": 17
+      },
+      "signature": "validateOrderRequest(request: OrderRequest): void",
+      "tags": [
+        "export"
+      ],
+      "telemetry": {
+        "codeNamespace": null,
+        "codeFunction": "validateOrderRequest",
+        "spanNameHints": [
+          "validateOrderRequest"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/validation/orderValidator.ts#assertLineIsSane",
+      "kind": "function",
+      "qualifiedName": "assertLineIsSane",
+      "displayName": "assertLineIsSane",
+      "summary": "Reject negative quantities, empty SKUs, and impossible prices.",
+      "parentId": "ts:src/validation/orderValidator.ts",
+      "location": {
+        "file": "src/validation/orderValidator.ts",
+        "startLine": 20,
+        "endLine": 30
+      },
+      "signature": "assertLineIsSane(sku: string, quantity: number, unitPriceCents: number): void",
+      "telemetry": {
+        "codeNamespace": null,
+        "codeFunction": "assertLineIsSane",
+        "spanNameHints": [
+          "assertLineIsSane"
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "instantiates@ts:src/index.ts#buildOrdersApp|ts:src/pricing/pricingService.ts#PricingService",
+      "source": "ts:src/index.ts#buildOrdersApp",
+      "target": "ts:src/pricing/pricingService.ts#PricingService",
+      "kind": "instantiates",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/index.ts",
+          "line": 9,
+          "col": 19
+        }
+      ]
+    },
+    {
+      "id": "instantiates@ts:src/index.ts#buildOrdersApp|ts:src/repository/orderRepository.ts#OrderRepository",
+      "source": "ts:src/index.ts#buildOrdersApp",
+      "target": "ts:src/repository/orderRepository.ts#OrderRepository",
+      "kind": "instantiates",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/index.ts",
+          "line": 10,
+          "col": 22
+        }
+      ]
+    },
+    {
+      "id": "instantiates@ts:src/index.ts#buildOrdersApp|ts:src/notifications/emailService.ts#EmailService",
+      "source": "ts:src/index.ts#buildOrdersApp",
+      "target": "ts:src/notifications/emailService.ts#EmailService",
+      "kind": "instantiates",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/index.ts",
+          "line": 11,
+          "col": 17
+        }
+      ]
+    },
+    {
+      "id": "instantiates@ts:src/index.ts#buildOrdersApp|ts:src/services/orderService.ts#OrderService",
+      "source": "ts:src/index.ts#buildOrdersApp",
+      "target": "ts:src/services/orderService.ts#OrderService",
+      "kind": "instantiates",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/index.ts",
+          "line": 12,
+          "col": 18
+        }
+      ]
+    },
+    {
+      "id": "instantiates@ts:src/index.ts#buildOrdersApp|ts:src/api/orderRoutes.ts#OrderRoutes",
+      "source": "ts:src/index.ts#buildOrdersApp",
+      "target": "ts:src/api/orderRoutes.ts#OrderRoutes",
+      "kind": "instantiates",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/index.ts",
+          "line": 13,
+          "col": 10
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder|ts:src/services/orderService.ts#OrderService.placeOrder",
+      "source": "ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder",
+      "target": "ts:src/services/orderService.ts#OrderService.placeOrder",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/api/orderRoutes.ts",
+          "line": 18,
+          "col": 21
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder|ts:src/api/orderRoutes.ts#OrderRoutes.created",
+      "source": "ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder",
+      "target": "ts:src/api/orderRoutes.ts#OrderRoutes.created",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/api/orderRoutes.ts",
+          "line": 19,
+          "col": 14
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder|ts:src/api/orderRoutes.ts#OrderRoutes.toErrorResponse",
+      "source": "ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder",
+      "target": "ts:src/api/orderRoutes.ts#OrderRoutes.toErrorResponse",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/api/orderRoutes.ts",
+          "line": 21,
+          "col": 14
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/api/orderRoutes.ts#OrderRoutes.handleGetOrder|ts:src/services/orderService.ts#OrderService.getOrder",
+      "source": "ts:src/api/orderRoutes.ts#OrderRoutes.handleGetOrder",
+      "target": "ts:src/services/orderService.ts#OrderService.getOrder",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/api/orderRoutes.ts",
+          "line": 27,
+          "col": 19
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation|ts:src/notifications/emailService.ts#EmailService.renderConfirmation",
+      "source": "ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation",
+      "target": "ts:src/notifications/emailService.ts#EmailService.renderConfirmation",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/notifications/emailService.ts",
+          "line": 7,
+          "col": 18
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation|ts:src/notifications/emailService.ts#EmailService.deliver",
+      "source": "ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation",
+      "target": "ts:src/notifications/emailService.ts#EmailService.deliver",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/notifications/emailService.ts",
+          "line": 8,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/pricing/pricingService.ts#PricingService.price|ts:src/pricing/pricingService.ts#PricingService.subtotal",
+      "source": "ts:src/pricing/pricingService.ts#PricingService.price",
+      "target": "ts:src/pricing/pricingService.ts#PricingService.subtotal",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/pricing/pricingService.ts",
+          "line": 9,
+          "col": 27
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/pricing/pricingService.ts#PricingService.price|ts:src/pricing/pricingService.ts#PricingService.discountFor",
+      "source": "ts:src/pricing/pricingService.ts#PricingService.price",
+      "target": "ts:src/pricing/pricingService.ts#PricingService.discountFor",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/pricing/pricingService.ts",
+          "line": 10,
+          "col": 27
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/pricing/pricingService.ts#PricingService.price|ts:src/pricing/pricingService.ts#PricingService.tax",
+      "source": "ts:src/pricing/pricingService.ts#PricingService.price",
+      "target": "ts:src/pricing/pricingService.ts#PricingService.tax",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/pricing/pricingService.ts",
+          "line": 12,
+          "col": 22
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/pricing/pricingService.ts#PricingService.discountFor|ts:src/pricing/pricingService.ts#PricingService.isKnownCode",
+      "source": "ts:src/pricing/pricingService.ts#PricingService.discountFor",
+      "target": "ts:src/pricing/pricingService.ts#PricingService.isKnownCode",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/pricing/pricingService.ts",
+          "line": 28,
+          "col": 19
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/services/orderService.ts#OrderService.placeOrder|ts:src/validation/orderValidator.ts#validateOrderRequest",
+      "source": "ts:src/services/orderService.ts#OrderService.placeOrder",
+      "target": "ts:src/validation/orderValidator.ts#validateOrderRequest",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 19,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/services/orderService.ts#OrderService.placeOrder|ts:src/pricing/pricingService.ts#PricingService.price",
+      "source": "ts:src/services/orderService.ts#OrderService.placeOrder",
+      "target": "ts:src/pricing/pricingService.ts#PricingService.price",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 20,
+          "col": 19
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/services/orderService.ts#OrderService.placeOrder|ts:src/services/orderService.ts#OrderService.assemble",
+      "source": "ts:src/services/orderService.ts#OrderService.placeOrder",
+      "target": "ts:src/services/orderService.ts#OrderService.assemble",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 21,
+          "col": 19
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/services/orderService.ts#OrderService.placeOrder|ts:src/repository/orderRepository.ts#OrderRepository.save",
+      "source": "ts:src/services/orderService.ts#OrderService.placeOrder",
+      "target": "ts:src/repository/orderRepository.ts#OrderRepository.save",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 22,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/services/orderService.ts#OrderService.placeOrder|ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation",
+      "source": "ts:src/services/orderService.ts#OrderService.placeOrder",
+      "target": "ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 23,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/services/orderService.ts#OrderService.getOrder|ts:src/repository/orderRepository.ts#OrderRepository.findById",
+      "source": "ts:src/services/orderService.ts#OrderService.getOrder",
+      "target": "ts:src/repository/orderRepository.ts#OrderRepository.findById",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 29,
+          "col": 12
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/services/orderService.ts#OrderService.assemble|ts:src/services/orderService.ts#OrderService.nextId",
+      "source": "ts:src/services/orderService.ts#OrderService.assemble",
+      "target": "ts:src/services/orderService.ts#OrderService.nextId",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 38,
+          "col": 11
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/services/orderService.ts#OrderService.assemble|ts:src/services/orderService.ts#OrderService.timestamp",
+      "source": "ts:src/services/orderService.ts#OrderService.assemble",
+      "target": "ts:src/services/orderService.ts#OrderService.timestamp",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 42,
+          "col": 18
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/validation/orderValidator.ts#validateOrderRequest|ts:src/validation/orderValidator.ts#assertLineIsSane",
+      "source": "ts:src/validation/orderValidator.ts#validateOrderRequest",
+      "target": "ts:src/validation/orderValidator.ts#assertLineIsSane",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/validation/orderValidator.ts",
+          "line": 15,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "instantiates@ts:src/validation/orderValidator.ts#validateOrderRequest|ts:src/validation/orderValidator.ts#ValidationError",
+      "source": "ts:src/validation/orderValidator.ts#validateOrderRequest",
+      "target": "ts:src/validation/orderValidator.ts#ValidationError",
+      "kind": "instantiates",
+      "resolution": "resolved",
+      "weight": 2,
+      "callSites": [
+        {
+          "file": "src/validation/orderValidator.ts",
+          "line": 9,
+          "col": 11
+        },
+        {
+          "file": "src/validation/orderValidator.ts",
+          "line": 12,
+          "col": 11
+        }
+      ]
+    },
+    {
+      "id": "instantiates@ts:src/validation/orderValidator.ts#assertLineIsSane|ts:src/validation/orderValidator.ts#ValidationError",
+      "source": "ts:src/validation/orderValidator.ts#assertLineIsSane",
+      "target": "ts:src/validation/orderValidator.ts#ValidationError",
+      "kind": "instantiates",
+      "resolution": "resolved",
+      "weight": 3,
+      "callSites": [
+        {
+          "file": "src/validation/orderValidator.ts",
+          "line": 22,
+          "col": 11
+        },
+        {
+          "file": "src/validation/orderValidator.ts",
+          "line": 25,
+          "col": 11
+        },
+        {
+          "file": "src/validation/orderValidator.ts",
+          "line": 28,
+          "col": 11
+        }
+      ]
+    }
+  ]
+}
