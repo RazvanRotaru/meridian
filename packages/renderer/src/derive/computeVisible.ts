@@ -52,3 +52,35 @@ function visit(
 export function visibleIdSet(visible: VisibleNode[]): Set<string> {
   return new Set(visible.map((entry) => entry.id));
 }
+
+/**
+ * The visible set for an isolated flow: the DFS is pruned to `keep` (the flow's nodes plus their
+ * ancestors) and every kept container is treated as expanded, so the tree opens straight down to
+ * the flow's real functions rather than the collapsed package boxes.
+ */
+export function computeVisibleWithin(index: GraphIndex, keep: ReadonlySet<string>): VisibleNode[] {
+  const visible: VisibleNode[] = [];
+  for (const root of index.roots) {
+    visitWithin(root.id, 0, index, keep, visible);
+  }
+  return visible;
+}
+
+function visitWithin(
+  nodeId: string,
+  depth: number,
+  index: GraphIndex,
+  keep: ReadonlySet<string>,
+  visible: VisibleNode[],
+): void {
+  const node = index.nodesById.get(nodeId);
+  if (!node || !keep.has(nodeId)) {
+    return;
+  }
+  const children = (index.childrenByParent.get(nodeId) ?? []).filter((child) => keep.has(child.id));
+  const isContainer = children.length > 0;
+  visible.push({ id: nodeId, node, isContainer, isExpanded: isContainer, depth, childCount: children.length });
+  for (const child of children) {
+    visitWithin(child.id, depth + 1, index, keep, visible);
+  }
+}

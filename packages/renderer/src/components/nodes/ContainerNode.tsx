@@ -17,13 +17,15 @@ export function ContainerNode(props: NodeProps<BlueprintNode>) {
   const accent = accentForKind(node.kind);
   const metrics = useBlueprint((state) => state.telemetry[props.id]);
   const selected = useBlueprint((state) => state.selectedId === props.id);
+  const isEntry = useBlueprint((state) => state.flowRootId === props.id);
   const toggleExpand = useBlueprintActions().toggleExpand;
   return (
-    <div style={frameStyle(accent, isExpanded, selected)}>
+    <div style={frameStyle(accent, isExpanded, selected, isEntry)}>
       <Handle type="target" position={Position.Left} id="in" style={HANDLE_STYLE} />
       <NodeHeader
         node={node}
         accent={accent}
+        entry={isEntry}
         chevron={isExpanded ? "expanded" : "collapsed"}
         onToggle={() => toggleExpand(props.id)}
       >
@@ -44,16 +46,20 @@ function CollapsedBody(props: { summary: string | null | undefined; childCount: 
   );
 }
 
-function frameStyle(accent: string, isExpanded: boolean, selected: boolean): React.CSSProperties {
+function frameStyle(accent: string, isExpanded: boolean, selected: boolean, isEntry: boolean): React.CSSProperties {
   return {
     width: "100%",
     height: "100%",
     boxSizing: "border-box",
     borderRadius: 10,
-    border: `1px solid ${selected ? accent : "#2A2F37"}`,
+    border: isEntry ? "2px solid #56C271" : `1px solid ${selected ? accent : "#2A2F37"}`,
     // Expanded frames stay near-transparent so nested children read as "inside" the box.
     background: isExpanded ? "rgba(18,21,27,0.55)" : "#161A21",
-    boxShadow: selected ? `0 0 0 1px ${accent}66` : "0 1px 2px rgba(0,0,0,0.4)",
+    boxShadow: isEntry
+      ? "0 0 0 3px rgba(86,194,113,0.30)"
+      : selected
+        ? `0 0 0 1px ${accent}66`
+        : "0 1px 2px rgba(0,0,0,0.4)",
     overflow: "hidden",
   };
 }

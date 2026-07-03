@@ -11,6 +11,7 @@ import { titleCase } from "../../theme/displayName";
 export function NodeHeader(props: {
   node: GraphNode;
   accent: string;
+  entry?: boolean;
   chevron?: "collapsed" | "expanded";
   onToggle?: () => void;
   children?: ReactNode;
@@ -26,6 +27,7 @@ export function NodeHeader(props: {
       <span style={CONTENT_STYLE}>
         <span style={TITLE_ROW_STYLE}>
           {props.chevron ? <span style={CHEVRON_STYLE}>{glyph(props.chevron)}</span> : null}
+          {props.entry ? <span style={ENTRY_PILL_STYLE}>ENTRY</span> : null}
           <span style={TITLE_STYLE}>{titleCase(props.node.displayName)}</span>
           <span style={{ ...KIND_STYLE, color: props.accent }}>{props.node.kind}</span>
         </span>
@@ -75,6 +77,17 @@ const RAIL_STYLE: React.CSSProperties = { width: 3, borderRadius: 2, flex: "0 0 
 const CONTENT_STYLE: React.CSSProperties = { flex: "1 1 auto", minWidth: 0 };
 const TITLE_ROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "baseline", gap: 6 };
 const CHEVRON_STYLE: React.CSSProperties = { fontSize: 10, opacity: 0.8 };
+const ENTRY_PILL_STYLE: React.CSSProperties = {
+  fontSize: 9,
+  fontWeight: 700,
+  letterSpacing: 0.5,
+  textTransform: "uppercase",
+  background: "#56C271",
+  color: "#062012",
+  borderRadius: 4,
+  padding: "1px 5px",
+  flex: "0 0 auto",
+};
 const TITLE_STYLE: React.CSSProperties = {
   fontWeight: 600,
   fontSize: 13,
