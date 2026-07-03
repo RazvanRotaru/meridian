@@ -13,19 +13,24 @@ import { UI_EDGE_KIND } from "../../derive/edgeSelection";
 import { useBlueprint } from "../../state/StoreContext";
 import type { BlueprintEdge as BlueprintEdgeType } from "../../layout/rfTypes";
 
+const SELECTED_WIRE = "#E6B84D";
+
 export function BlueprintEdge(props: EdgeProps<BlueprintEdgeType>) {
   const [path, labelX, labelY] = getBezierPath(props);
   const targetMetrics = useBlueprint((state) => state.telemetry[props.target]);
+  const selectedId = useBlueprint((state) => state.selectedId);
   const resolved = props.data?.resolved ?? true;
   const isRenders = props.data?.kind === UI_EDGE_KIND;
   const baseColor = wireColorForKind(props.data?.kind ?? "");
   const color = targetMetrics ? reddenByErrorRate(baseColor, targetMetrics.errorRate) : baseColor;
+  const incident = selectedId != null && (props.source === selectedId || props.target === selectedId);
+  const dimmed = selectedId != null && !incident;
   return (
     <BaseEdge
       id={props.id}
       path={path}
       markerEnd={props.markerEnd}
-      style={wireStyle(color, props.data?.weight ?? 1, resolved)}
+      style={wireStyle(color, props.data?.weight ?? 1, resolved, incident, dimmed)}
       label={isRenders ? "renders" : undefined}
       labelX={labelX}
       labelY={labelY}
@@ -34,12 +39,26 @@ export function BlueprintEdge(props: EdgeProps<BlueprintEdgeType>) {
   );
 }
 
-function wireStyle(color: string, weight: number, resolved: boolean): React.CSSProperties {
+function wireStyle(
+  color: string,
+  weight: number,
+  resolved: boolean,
+  incident: boolean,
+  dimmed: boolean,
+): React.CSSProperties {
+  if (incident) {
+    return {
+      stroke: SELECTED_WIRE,
+      strokeWidth: Math.max(2.5, strokeWidthForWeight(weight)),
+      strokeDasharray: resolved ? undefined : "5 4",
+      opacity: 1,
+    };
+  }
   return {
     stroke: color,
     strokeWidth: strokeWidthForWeight(weight),
     strokeDasharray: resolved ? undefined : "5 4",
-    opacity: resolved ? 0.95 : 0.5,
+    opacity: dimmed ? 0.12 : resolved ? 0.95 : 0.5,
   };
 }
 

@@ -11,6 +11,7 @@ const KIND_COLORS: Record<string, string> = {
   module: "#3FB7C4",
   namespace: "#3FB7C4",
   class: "#E0A33E",
+  object: "#D98E5A",
   interface: "#C57BD6",
   enum: "#E0A33E",
   typeAlias: "#C57BD6",

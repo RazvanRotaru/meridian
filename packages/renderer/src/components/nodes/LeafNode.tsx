@@ -18,11 +18,12 @@ export function LeafNode(props: NodeProps<BlueprintNode>) {
   const accent = accentForKind(node.kind);
   const metrics = useBlueprint((state) => state.telemetry[props.id]);
   const selected = useBlueprint((state) => state.selectedId === props.id);
+  const isEntry = useBlueprint((state) => state.flowRootId === props.id);
   const callable = isCallable(node.kind);
   return (
-    <div style={cardStyle(accent, selected)}>
+    <div style={cardStyle(accent, selected, isEntry)}>
       <Handle type="target" position={Position.Left} id="in" style={pinStyle(callable)} />
-      <NodeHeader node={node} accent={accent}>
+      <NodeHeader node={node} accent={accent} entry={isEntry}>
         <TelemetryBadges metrics={metrics} />
       </NodeHeader>
       <div style={BODY_STYLE}>
@@ -34,15 +35,19 @@ export function LeafNode(props: NodeProps<BlueprintNode>) {
   );
 }
 
-function cardStyle(accent: string, selected: boolean): React.CSSProperties {
+function cardStyle(accent: string, selected: boolean, isEntry: boolean): React.CSSProperties {
   return {
     width: "100%",
     height: "100%",
     boxSizing: "border-box",
     borderRadius: 10,
-    border: `1px solid ${selected ? accent : "#2A2F37"}`,
+    border: isEntry ? "2px solid #56C271" : `1px solid ${selected ? accent : "#2A2F37"}`,
     background: "#161A21",
-    boxShadow: selected ? `0 0 0 1px ${accent}66` : "0 1px 2px rgba(0,0,0,0.4)",
+    boxShadow: isEntry
+      ? "0 0 0 3px rgba(86,194,113,0.30)"
+      : selected
+        ? `0 0 0 1px ${accent}66`
+        : "0 1px 2px rgba(0,0,0,0.4)",
     overflow: "hidden",
   };
 }

@@ -45,7 +45,16 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
       nodesDraggable={false}
       nodesConnectable={false}
       elementsSelectable
+      // Click-drag pans the canvas; it must never rubber-band select or text-highlight node labels.
+      panOnDrag
+      selectionOnDrag={false}
+      style={{ userSelect: "none" }}
       fitView
+      fitViewOptions={{ padding: 0.2, minZoom: 0.01 }}
+      // A big isolated flow can be hundreds of nodes; let the canvas zoom far out to see it all
+      // (React Flow's default minZoom of 0.5 clips large graphs) while keeping a sane zoom-in cap.
+      minZoom={0.01}
+      maxZoom={4}
       // Double-click is repurposed for diving, so the pane must not also zoom on it.
       zoomOnDoubleClick={false}
       proOptions={{ hideAttribution: true }}

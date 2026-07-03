@@ -25,6 +25,10 @@ export interface BlueprintState {
   focusId: string | null;
   /** Which relationship story is on screen: the call graph, or the React composition tree. */
   viewMode: ViewMode;
+  /** The entry node whose forward call-flow is isolated on screen; null == the whole graph. */
+  flowRootId: string | null;
+  /** Hop cap from the flow entry; null == follow the flow all the way. */
+  flowDepth: number | null;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -40,6 +44,9 @@ export interface BlueprintState {
   diveInto(nodeId: string): void;
   diveTo(nodeId: string): void;
   diveHome(): void;
+  isolateFlow(nodeId: string): void;
+  clearFlow(): void;
+  setFlowDepth(depth: number | null): void;
   setViewMode(mode: ViewMode): void;
   setEnvironment(environment: string): void;
   refreshTelemetry(): Promise<void>;
@@ -66,6 +73,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     selectedId: null,
     focusId: null,
     viewMode: "call",
+    flowRootId: null,
+    flowDepth: null,
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -121,6 +130,29 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().relayout();
     },
 
+    // Isolate the forward call-flow rooted at a node (always at full depth first — the reader
+    // dials it back with setFlowDepth). Selecting it keeps a highlight on the entry.
+    isolateFlow(nodeId) {
+      set({ flowRootId: nodeId, flowDepth: null, selectedId: nodeId });
+      void get().relayout();
+    },
+
+    clearFlow() {
+      if (get().flowRootId === null) {
+        return;
+      }
+      set({ flowRootId: null, flowDepth: null });
+      void get().relayout();
+    },
+
+    setFlowDepth(depth) {
+      if (get().flowDepth === depth) {
+        return;
+      }
+      set({ flowDepth: depth });
+      void get().relayout();
+    },
+
     // Switching mode re-derives + relayouts like a dive. Entering UI mode dives to the render
     // subtree; leaving it returns to call-flow at the focus you had before (home if none).
     setViewMode(mode) {
@@ -155,7 +187,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     async relayout() {
       const sequence = get().layoutSeq + 1;
       set({ layoutSeq: sequence, layoutStatus: "laying-out" });
-      const graph = await deriveLayout(get().index, get().expanded, get().focusId, get().viewMode);
+      const { index, expanded, focusId, viewMode, flowRootId, flowDepth } = get();
+      const flow = flowRootId ? { rootId: flowRootId, depth: flowDepth } : null;
+      const graph = await deriveLayout(index, expanded, focusId, viewMode, flow);
       if (get().layoutSeq !== sequence) {
         return; // a newer toggle superseded this layout; discard the stale result.
       }

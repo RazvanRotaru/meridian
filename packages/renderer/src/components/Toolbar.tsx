@@ -8,6 +8,7 @@ import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { EnvSelector } from "./EnvSelector";
 import { Breadcrumb } from "./Breadcrumb";
 import { ViewModeToggle } from "./ViewModeToggle";
+import { FlowSelector } from "./FlowSelector";
 
 export function Toolbar(props: { preselectedEnv: string | null }) {
   const targetName = useBlueprint((state) => state.artifact.target.name);
@@ -17,13 +18,14 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
     <Panel position="top-left">
       <div style={PANEL_STYLE}>
         <div style={TITLE_ROW_STYLE}>
-          <strong style={TITLE_STYLE}>{targetName}</strong>
+          <strong style={TITLE_STYLE} title={targetName}>{targetName}</strong>
           <button type="button" style={RESET_STYLE} onClick={collapseAll}>
             Collapse all
           </button>
         </div>
         <ViewModeToggle />
         <Breadcrumb />
+        <FlowSelector />
         {hasOverlay ? <EnvSelector preselectedEnv={props.preselectedEnv} /> : null}
       </div>
     </Panel>
@@ -39,9 +41,18 @@ const PANEL_STYLE: React.CSSProperties = {
   border: "1px solid #2A2F37",
   background: "rgba(14,17,22,0.92)",
   backdropFilter: "blur(6px)",
+  maxWidth: 300,
 };
 const TITLE_ROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 12 };
-const TITLE_STYLE: React.CSSProperties = { fontSize: 14, color: "#E6EDF3" };
+const TITLE_STYLE: React.CSSProperties = {
+  fontSize: 14,
+  color: "#E6EDF3",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  flex: 1,
+  minWidth: 0,
+};
 const RESET_STYLE: React.CSSProperties = {
   marginLeft: "auto",
   background: "#1A1F27",
