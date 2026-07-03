@@ -6,13 +6,19 @@
  * rather than letting the SPA infer an environment.
  */
 
+import type { ChangeOverlay } from "@meridian/core";
 import { hasOverlay, overlayKind } from "./overlay-source";
 import type { OverlaySource } from "./overlay-source";
 
 const HEAD_CLOSE = "</head>";
 
-export function injectBootScript(html: string, overlay: OverlaySource, preselectedEnv: string | null): string {
-  const script = `<script>window.__MERIDIAN__=${escapeForScript(bootJson(overlay, preselectedEnv))}</script>`;
+export function injectBootScript(
+  html: string,
+  overlay: OverlaySource,
+  preselectedEnv: string | null,
+  change: ChangeOverlay | null = null,
+): string {
+  const script = `<script>window.__MERIDIAN__=${escapeForScript(bootJson(overlay, preselectedEnv, change))}</script>`;
   if (html.includes(HEAD_CLOSE)) {
     return html.replace(HEAD_CLOSE, `${script}${HEAD_CLOSE}`);
   }
@@ -25,7 +31,7 @@ function escapeForScript(json: string): string {
   return json.replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
 }
 
-function bootJson(overlay: OverlaySource, preselectedEnv: string | null): string {
+function bootJson(overlay: OverlaySource, preselectedEnv: string | null, change: ChangeOverlay | null): string {
   return JSON.stringify({
     graphUrl: "/api/graph",
     metaUrl: "/api/meta",
@@ -35,5 +41,7 @@ function bootJson(overlay: OverlaySource, preselectedEnv: string | null): string
     envRequired: hasOverlay(overlay),
     preselectedEnv,
     defaultEnv: null,
+    changeUrl: change ? "/api/change" : null,
+    fileDiffUrl: change ? "/api/file-diff" : null,
   });
 }

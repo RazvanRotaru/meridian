@@ -40,6 +40,8 @@ const ROOT_LAYOUT_OPTIONS: Record<string, string> = {
 };
 
 // Top padding leaves room for the container's title bar; React Flow draws nothing there itself.
+// NOTE: under INCLUDE_CHILDREN the root pass lays out the whole hierarchy — child graphs may
+// only carry padding/spacing here; layered.* / routing options on a subgraph crash elkjs.
 const CONTAINER_LAYOUT_OPTIONS: Record<string, string> = {
   "elk.padding": "[top=44,left=16,bottom=16,right=16]",
   "elk.spacing.nodeNode": "14",

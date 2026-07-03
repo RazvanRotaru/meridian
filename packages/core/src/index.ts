@@ -10,6 +10,7 @@ export * from "./schema";
 export * from "./ids";
 export * from "./validate";
 export * from "./overlay";
+export * from "./change";
 export * from "./extractor";
 export * from "./assembly";
 export * from "./boundary";

@@ -24,9 +24,31 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
         </div>
         <ViewModeToggle />
         <Breadcrumb />
+        <RangeRow />
         {hasOverlay ? <EnvSelector preselectedEnv={props.preselectedEnv} /> : null}
       </div>
     </Panel>
+  );
+}
+
+/** The change-lens status row, mirroring the ENVIRONMENT row: which range is painted on. */
+function RangeRow() {
+  const change = useBlueprint((state) => state.change);
+  if (!change) {
+    return null;
+  }
+  const files = Object.values(change.files);
+  const additions = files.reduce((sum, file) => sum + file.additions, 0);
+  const deletions = files.reduce((sum, file) => sum + file.deletions, 0);
+  return (
+    <div style={RANGE_ROW_STYLE}>
+      <span style={RANGE_LABEL_STYLE}>RANGE</span>
+      <code style={RANGE_VALUE_STYLE}>{change.range}</code>
+      <span style={RANGE_STATS_STYLE}>
+        {files.length}Δ · <span style={{ color: "#56C271" }}>+{additions}</span>{" "}
+        <span style={{ color: "#E5534B" }}>−{deletions}</span>
+      </span>
+    </div>
   );
 }
 
@@ -39,6 +61,23 @@ const PANEL_STYLE: React.CSSProperties = {
   border: "1px solid #2A2F37",
   background: "rgba(14,17,22,0.92)",
   backdropFilter: "blur(6px)",
+};
+const RANGE_ROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
+const RANGE_LABEL_STYLE: React.CSSProperties = {
+  fontSize: 9,
+  fontWeight: 700,
+  letterSpacing: 0.8,
+  color: "#7C8696",
+};
+const RANGE_VALUE_STYLE: React.CSSProperties = {
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  fontSize: 11,
+  color: "#E8B341",
+};
+const RANGE_STATS_STYLE: React.CSSProperties = {
+  fontSize: 11,
+  color: "#9AA4B2",
+  fontVariantNumeric: "tabular-nums",
 };
 const TITLE_ROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 12 };
 const TITLE_STYLE: React.CSSProperties = { fontSize: 14, color: "#E6EDF3" };

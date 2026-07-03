@@ -12,6 +12,7 @@ import { useBlueprint } from "../../state/StoreContext";
 import type { BlueprintNode } from "../../layout/rfTypes";
 import { NodeHeader } from "./NodeHeader";
 import { TelemetryBadges } from "../TelemetryBadges";
+import { ChangePill } from "../ChangePill";
 
 export function LeafNode(props: NodeProps<BlueprintNode>) {
   const node = props.data.node;
@@ -20,11 +21,12 @@ export function LeafNode(props: NodeProps<BlueprintNode>) {
   const selected = useBlueprint((state) => state.selectedId === props.id);
   // Dim when a path trace is active and this node is not on it.
   const dimmed = useBlueprint((state) => state.pathNodeIds.size > 0 && !state.pathNodeIds.has(props.id));
+  const changeEntry = useBlueprint((state) => state.changeRollup.get(props.id));
   const callable = isCallable(node.kind);
   return (
     <div style={{ ...cardStyle(accent, selected), ...dimStyle(dimmed) }}>
       <Handle type="target" position={Position.Left} id="in" style={pinStyle(callable)} />
-      <NodeHeader node={node} accent={accent}>
+      <NodeHeader node={node} accent={accent} trailing={changeEntry ? <ChangePill entry={changeEntry} /> : undefined}>
         <TelemetryBadges metrics={metrics} />
       </NodeHeader>
       {node.summary || (callable && node.signature) ? (

@@ -16,6 +16,10 @@ export interface BootConfig {
   envRequired: boolean;
   preselectedEnv: string | null;
   defaultEnv: null;
+  /** Set when the server carries a change-lens overlay (`meridian view --change`). */
+  changeUrl?: string | null;
+  /** Per-file unified-diff endpoint, present iff `changeUrl` is. */
+  fileDiffUrl?: string | null;
 }
 
 interface InjectedConfig extends Omit<BootConfig, "defaultEnv"> {
@@ -37,6 +41,8 @@ const DEV_FALLBACK: BootConfig = {
   envRequired: true,
   preselectedEnv: null,
   defaultEnv: null,
+  changeUrl: null,
+  fileDiffUrl: null,
 };
 
 export function readBootConfig(): BootConfig {

@@ -4,6 +4,7 @@
  * the collapsed roots. The store and boot config are handed to React from here.
  */
 
+import { isChangeOverlay, type ChangeOverlay } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { createHttpTelemetryProvider } from "../telemetry/httpProvider";
 import type { TelemetryProvider } from "../telemetry/provider";
@@ -22,9 +23,36 @@ export async function bootstrap(): Promise<BootResult> {
   const artifact = await loadArtifact(boot.graphUrl);
   const index = buildGraphIndex(artifact);
   const provider = await buildProvider(boot);
-  const store = createBlueprintStore({ artifact, index, provider, hasOverlay: boot.hasOverlay });
+  const change = await loadChange(boot);
+  const store = createBlueprintStore({
+    artifact,
+    index,
+    provider,
+    hasOverlay: boot.hasOverlay,
+    change,
+    fileDiffUrl: boot.fileDiffUrl ?? null,
+  });
+  // Deterministic hook for e2e drivers (select/dive/openDiff without brittle canvas clicks).
+  (window as Window & { __MERIDIAN_STORE__?: BlueprintStore }).__MERIDIAN_STORE__ = store;
   await store.getState().relayout();
   return { store, boot };
+}
+
+/** A broken change overlay degrades to structure-only viewing, never a boot failure. */
+async function loadChange(boot: BootConfig): Promise<ChangeOverlay | null> {
+  if (!boot.changeUrl) {
+    return null;
+  }
+  try {
+    const response = await fetch(boot.changeUrl);
+    if (!response.ok) {
+      return null;
+    }
+    const parsed: unknown = await response.json();
+    return isChangeOverlay(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 async function buildProvider(boot: BootConfig): Promise<TelemetryProvider | null> {

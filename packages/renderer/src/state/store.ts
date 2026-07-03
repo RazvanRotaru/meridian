@@ -7,7 +7,7 @@
 
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { MarkerType } from "@xyflow/react";
-import type { GraphArtifact, NodeMetrics } from "@meridian/core";
+import type { ChangeOverlay, GraphArtifact, NodeChange, NodeMetrics } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { BlueprintEdge, BlueprintNode, EdgeHighlight } from "../layout/rfTypes";
 import type { TelemetryProvider } from "../telemetry/provider";
@@ -16,6 +16,12 @@ import { uiFocusTarget } from "../derive/uiFocus";
 import { EMPTY_HIGHLIGHT, tracePath, traceEdge, type PathHighlight } from "../derive/pathTrace";
 import { PATH_DOWNSTREAM, PATH_UPSTREAM, wireColorForKind } from "../theme/edgeColors";
 import { deriveLayout } from "./deriveLayout";
+
+/** A node's slice of the change lens: its own diff stats, or a container's roll-up. */
+export interface ChangeEntry extends NodeChange {
+  /** Number of changed modules (files) at-or-below this node; 0 for a spanned symbol. */
+  changedCount: number;
+}
 
 export type LayoutStatus = "idle" | "laying-out" | "ready" | "error";
 
@@ -40,6 +46,17 @@ export interface BlueprintState {
   environment: string | null;
   provider: TelemetryProvider | null;
   hasOverlay: boolean;
+  /** The change lens (null == structure-only view). */
+  change: ChangeOverlay | null;
+  /** node.id -> own change or container roll-up; empty when no change lens. */
+  changeRollup: ReadonlyMap<string, ChangeEntry>;
+  fileDiffUrl: string | null;
+  /** The node whose diff the drawer is showing; null == drawer closed. */
+  diffNodeId: string | null;
+  openDiff(nodeId: string): void;
+  closeDiff(): void;
+  /** Step the drawer to the previous/next changed node in reading (layout) order. */
+  stepDiff(delta: 1 | -1): void;
   toggleExpand(nodeId: string): void;
   expandPath(nodeId: string): void;
   collapseAll(): void;
@@ -60,6 +77,8 @@ export interface StoreDependencies {
   index: GraphIndex;
   provider: TelemetryProvider | null;
   hasOverlay: boolean;
+  change?: ChangeOverlay | null;
+  fileDiffUrl?: string | null;
 }
 
 export type BlueprintStore = StoreApi<BlueprintState>;
@@ -85,6 +104,35 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     environment: null,
     provider: dependencies.provider,
     hasOverlay: dependencies.hasOverlay,
+    change: dependencies.change ?? null,
+    changeRollup: buildChangeRollup(dependencies.change ?? null, dependencies.index),
+    fileDiffUrl: dependencies.fileDiffUrl ?? null,
+    diffNodeId: null,
+
+    openDiff(nodeId) {
+      set({ diffNodeId: nodeId });
+    },
+
+    closeDiff() {
+      set({ diffNodeId: null });
+    },
+
+    // Walk EVERY changed stop in the range (deepest symbols first, file order), revealing
+    // hidden ones as it goes — the drawer turns review into a lap across the whole map.
+    stepDiff(delta) {
+      const { diffNodeId, change, index } = get();
+      if (!diffNodeId || !change) {
+        return;
+      }
+      const stops = changeStops(change, index);
+      if (stops.length === 0) {
+        return;
+      }
+      const at = stops.indexOf(diffNodeId);
+      const next = stops[(at === -1 ? 0 : at + delta + stops.length) % stops.length];
+      get().expandPath(next);
+      set({ diffNodeId: next, selectedId: next });
+    },
 
     toggleExpand(nodeId) {
       set({ expanded: withToggled(get().expanded, nodeId) });
@@ -196,7 +244,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     async relayout() {
       const sequence = get().layoutSeq + 1;
       set({ layoutSeq: sequence, layoutStatus: "laying-out" });
-      const graph = await deriveLayout(get().index, get().expanded, get().focusId, get().viewMode);
+      let graph: Awaited<ReturnType<typeof deriveLayout>>;
+      try {
+        graph = await deriveLayout(get().index, get().expanded, get().focusId, get().viewMode);
+      } catch (error) {
+        // A layout failure must never freeze the canvas on "laying-out" — keep the previous
+        // graph on screen and surface the failure where a dev can see it.
+        console.error("relayout failed", error);
+        if (get().layoutSeq === sequence) {
+          set({ layoutStatus: "error" });
+        }
+        return;
+      }
       if (get().layoutSeq !== sequence) {
         return; // a newer toggle superseded this layout; discard the stale result.
       }
@@ -221,6 +280,69 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
 function hopsFor(depth: "direct" | "full"): number {
   return depth === "direct" ? 1 : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Fold the flat change overlay onto the containment tree, once per boot. Every changed node
+ * keeps its own stats; containers accumulate ONLY their descendant modules' whole-file totals
+ * (module ± already contains the file's function-level lines — summing both would double-count).
+ */
+function buildChangeRollup(
+  change: ChangeOverlay | null,
+  index: GraphIndex,
+): ReadonlyMap<string, ChangeEntry> {
+  const rollup = new Map<string, ChangeEntry>();
+  if (!change) {
+    return rollup;
+  }
+  for (const [nodeId, nodeChange] of Object.entries(change.nodes)) {
+    const own = rollup.get(nodeId);
+    rollup.set(nodeId, {
+      ...nodeChange,
+      changedCount: own?.changedCount ?? 0,
+    });
+    if (index.nodesById.get(nodeId)?.kind !== "module") {
+      continue;
+    }
+    for (const ancestor of index.ancestorsOf(nodeId)) {
+      if (ancestor.id === nodeId) {
+        continue;
+      }
+      const aggregate = rollup.get(ancestor.id);
+      if (aggregate) {
+        aggregate.additions += nodeChange.additions;
+        aggregate.deletions += nodeChange.deletions;
+        aggregate.changedCount += 1;
+      } else {
+        rollup.set(ancestor.id, {
+          status: "modified",
+          additions: nodeChange.additions,
+          deletions: nodeChange.deletions,
+          changedCount: 1,
+        });
+      }
+    }
+  }
+  return rollup;
+}
+
+/**
+ * The review walk's stops: every changed node with NO changed descendant (a method beats its
+ * class, a function beats its module; a test module with no symbol entries stands by itself),
+ * ordered by file then source line — the same order a reviewer reads a diff in.
+ */
+export function changeStops(change: ChangeOverlay, index: GraphIndex): string[] {
+  const ids = Object.keys(change.nodes);
+  const deepest = ids.filter(
+    (id) => !ids.some((other) => other !== id && (other.startsWith(`${id}.`) || other.startsWith(`${id}#`))),
+  );
+  return deepest
+    .map((id) => {
+      const node = index.nodesById.get(id);
+      return { id, file: node?.location?.file ?? "", line: node?.location?.startLine ?? 0 };
+    })
+    .sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line))
+    .map((stop) => stop.id);
 }
 
 /**

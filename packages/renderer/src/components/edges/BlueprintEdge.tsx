@@ -18,7 +18,7 @@
 
 import { BaseEdge, getBezierPath, type EdgeProps } from "@xyflow/react";
 import { reddenByErrorRate } from "../../theme/telemetryColor";
-import { PATH_DOWNSTREAM, PATH_UPSTREAM, wireStyleForKind } from "../../theme/edgeColors";
+import { HOT_WIRE, PATH_DOWNSTREAM, PATH_UPSTREAM, wireStyleForKind } from "../../theme/edgeColors";
 import { UI_EDGE_KIND } from "../../derive/edgeSelection";
 import { useBlueprint } from "../../state/StoreContext";
 import type { BlueprintEdge as BlueprintEdgeType, EdgeHighlight } from "../../layout/rfTypes";
@@ -28,18 +28,27 @@ const CORNER_RADIUS = 7;
 export function BlueprintEdge(props: EdgeProps<BlueprintEdgeType>) {
   const [path, labelX, labelY] = routedPath(props);
   const targetMetrics = useBlueprint((state) => state.telemetry[props.target]);
+  // A wire is HOT when the change lens marks BOTH of its endpoints — the seam the range
+  // actually flowed through. Hot wires read as red dotted heat at rest; a path trace wins.
+  const hot = useBlueprint(
+    (state) => state.changeRollup.has(props.source) && state.changeRollup.has(props.target),
+  );
   const resolved = props.data?.resolved ?? true;
   const highlight: EdgeHighlight = props.data?.highlight ?? "rest";
   const kindStyle = wireStyleForKind(props.data?.kind ?? "");
   const restColor = targetMetrics ? reddenByErrorRate(kindStyle.color, targetMetrics.errorRate) : kindStyle.color;
-  const color = highlight === "down" ? PATH_DOWNSTREAM : highlight === "up" ? PATH_UPSTREAM : restColor;
+  const color =
+    highlight === "down" ? PATH_DOWNSTREAM
+    : highlight === "up" ? PATH_UPSTREAM
+    : hot && highlight === "rest" ? HOT_WIRE
+    : restColor;
   const showLabel = props.data?.kind === UI_EDGE_KIND && highlight !== "off";
   return (
     <BaseEdge
       id={props.id}
       path={path}
       markerEnd={props.markerEnd}
-      style={wireStyle(color, kindStyle.dash, props.data?.weight ?? 1, resolved, highlight)}
+      style={wireStyle(color, kindStyle.dash, props.data?.weight ?? 1, resolved, highlight, hot)}
       label={showLabel ? "renders" : undefined}
       labelX={labelX}
       labelY={labelY}
@@ -52,7 +61,8 @@ export function BlueprintEdge(props: EdgeProps<BlueprintEdgeType>) {
 function routedPath(props: EdgeProps<BlueprintEdgeType>): [string, number, number] {
   const points = props.data?.points;
   if (!points || points.length < 2) {
-    return getBezierPath(props);
+    const [path, labelX, labelY] = getBezierPath(props);
+    return [path, labelX, labelY];
   }
   const mid = midpointOf(points);
   return [roundedPolylinePath(points, CORNER_RADIUS), mid.x, mid.y];
@@ -118,27 +128,34 @@ function wireStyle(
   weight: number,
   resolved: boolean,
   highlight: EdgeHighlight,
+  hot: boolean,
 ): React.CSSProperties {
   const onPath = highlight === "down" || highlight === "up";
-  const width = strokeWidthForWeight(weight) + (onPath ? 0.9 : 0);
+  const isHotAtRest = hot && highlight === "rest";
+  const width = Math.max(strokeWidthForWeight(weight) + (onPath ? 0.9 : 0), isHotAtRest ? 2.4 : 0);
   // An unresolved aggregate always reads dashed (honesty) even when its kind is solid.
   const dash = kindDash ?? (resolved ? undefined : "5 4");
   return {
     stroke: color,
     strokeWidth: width,
-    strokeDasharray: onPath ? (dash ?? "9 5") : dash,
-    opacity: opacityFor(highlight, resolved),
+    // Hot wires wear the round-dot heat treatment; path traces keep their marching dashes.
+    strokeDasharray: isHotAtRest ? "0.1 7" : onPath ? (dash ?? "9 5") : dash,
+    strokeLinecap: isHotAtRest ? "round" : undefined,
+    opacity: opacityFor(highlight, resolved, hot),
     // Marching ants along the flow direction, only for wires on the active path.
     animation: onPath ? "meridian-flow 0.9s linear infinite" : undefined,
     transition: "stroke 140ms, opacity 140ms",
   };
 }
 
-function opacityFor(highlight: EdgeHighlight, resolved: boolean): number {
+function opacityFor(highlight: EdgeHighlight, resolved: boolean, hot: boolean): number {
   if (highlight === "off") {
     return 0.05;
   }
   if (highlight === "rest") {
+    if (hot) {
+      return 0.8;
+    }
     return resolved ? 0.32 : 0.16;
   }
   return 1;

@@ -8,7 +8,8 @@
 
 import type { ServerResponse } from "node:http";
 import { buildMockOverlay } from "@meridian/core/mock";
-import type { GraphArtifact } from "@meridian/core";
+import type { ChangeOverlay, GraphArtifact } from "@meridian/core";
+import { runGit } from "../git-diff";
 import { hasOverlay } from "./overlay-source";
 import type { OverlaySource } from "./overlay-source";
 
@@ -64,6 +65,42 @@ export function sendOverlay(
     return;
   }
   sendJson(response, 404, { error: `no overlay for env '${env}'` });
+}
+
+export function sendChange(response: ServerResponse, change: ChangeOverlay | null): void {
+  if (!change) {
+    sendJson(response, 404, { error: "no change overlay loaded; pass --change to `meridian view`" });
+    return;
+  }
+  sendJson(response, 200, change);
+}
+
+/**
+ * Stream the real unified diff for ONE changed file. The `file` parameter must be a key of
+ * the overlay's `files` map — an allowlist, so no request can name an arbitrary path — and
+ * the git invocation is argv-only behind a `--` fence against the overlay's own repo/range.
+ */
+export async function sendFileDiff(
+  response: ServerResponse,
+  change: ChangeOverlay | null,
+  file: string | null,
+): Promise<void> {
+  if (!change) {
+    sendJson(response, 404, { error: "no change overlay loaded" });
+    return;
+  }
+  if (!file || !Object.prototype.hasOwnProperty.call(change.files, file)) {
+    sendJson(response, 404, { error: "unknown file; must be one of the overlay's changed files" });
+    return;
+  }
+  const repoPath = change.prefix === "" ? file : `${change.prefix}/${file}`;
+  try {
+    const diff = await runGit(change.repoRoot, ["diff", change.range, "--", repoPath]);
+    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    response.end(diff);
+  } catch (error) {
+    sendJson(response, 500, { error: error instanceof Error ? error.message : "git diff failed" });
+  }
 }
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {

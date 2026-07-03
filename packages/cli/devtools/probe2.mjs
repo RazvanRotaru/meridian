@@ -1,0 +1,17 @@
+import { chromium } from "playwright";
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+page.on("pageerror", (e) => console.log("PAGEERROR:", String(e).slice(0, 400)));
+page.on("console", (m) => { if (m.type() === "error") console.log("CONSOLE:", m.text().slice(0, 300)); });
+await page.goto("http://localhost:4700", { waitUntil: "networkidle" });
+await page.waitForSelector(".react-flow__node", { timeout: 60000 });
+await page.waitForTimeout(1200);
+await page.locator(".react-flow__node", { hasText: "Src" }).first().dblclick({ force: true });
+await page.waitForTimeout(2500);
+console.log("after dive:", await page.locator(".react-flow__node").count());
+const hooks = page.locator(".react-flow__node", { hasText: "Hooks" }).first();
+console.log("hooks node found:", await hooks.count(), JSON.stringify(await hooks.innerText().catch(()=>"N/A")));
+await hooks.getByRole("button", { name: "Expand" }).click({ force: true });
+await page.waitForTimeout(6000);
+console.log("after expand:", await page.locator(".react-flow__node").count());
+await browser.close();

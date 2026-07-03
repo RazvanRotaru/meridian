@@ -21,7 +21,15 @@ export function DetailPanel() {
   const rfEdges = useBlueprint((state) => state.rfEdges);
   const traceDepth = useBlueprint((state) => state.traceDepth);
   const isContainer = useBlueprint((state) => (state.selectedId ? state.index.isContainer(state.selectedId) : false));
-  const { select, setTraceDepth, diveInto } = useBlueprintActions();
+  const changeEntry = useBlueprint((state) => (state.selectedId ? state.changeRollup.get(state.selectedId) : undefined));
+  const hasFileDiff = useBlueprint((state) => {
+    if (!state.selectedId || !state.change) {
+      return false;
+    }
+    const file = state.index.nodesById.get(state.selectedId)?.location?.file;
+    return Boolean(file && Object.prototype.hasOwnProperty.call(state.change.files, file));
+  });
+  const { select, setTraceDepth, diveInto, openDiff } = useBlueprintActions();
 
   const connections = useMemo(
     () => (selectedId ? groupConnections(rfEdges, selectedId) : null),
@@ -44,6 +52,24 @@ export function DetailPanel() {
       <div style={PATH_STYLE}>{node.id}</div>
       {node.summary ? <div style={SUMMARY_STYLE}>{node.summary}</div> : null}
       {node.signature ? <code style={SIGNATURE_STYLE}>{node.signature}</code> : null}
+
+      {changeEntry ? (
+        <div style={CHANGE_ROW_STYLE}>
+          <span style={{ ...LABEL_STYLE, color: "#E8B341" }}>
+            {changeEntry.status.toUpperCase()}
+            {changeEntry.changedCount > 1 ? ` · ${changeEntry.changedCount} files` : ""}
+          </span>
+          <span style={CHANGE_STATS_STYLE}>
+            <span style={{ color: "#56C271" }}>+{changeEntry.additions}</span>{" "}
+            <span style={{ color: "#E5534B" }}>−{changeEntry.deletions}</span>
+          </span>
+          {hasFileDiff ? (
+            <button type="button" style={DIFF_BUTTON_STYLE} onClick={() => openDiff(selectedId)}>
+              Open diff ⌄
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       <div style={ROW_STYLE}>
         <span style={LABEL_STYLE}>TRACE</span>
@@ -228,6 +254,31 @@ const SIGNATURE_STYLE: React.CSSProperties = {
   whiteSpace: "pre",
 };
 const ROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" };
+const CHANGE_ROW_STYLE: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "6px 8px",
+  borderRadius: 7,
+  border: "1px solid #2A2F37",
+  background: "#11141A",
+};
+const CHANGE_STATS_STYLE: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 700,
+  fontVariantNumeric: "tabular-nums",
+};
+const DIFF_BUTTON_STYLE: React.CSSProperties = {
+  marginLeft: "auto",
+  background: "#1A1F27",
+  color: "#4EE1C4",
+  border: "1px solid #2A3A37",
+  borderRadius: 6,
+  padding: "3px 8px",
+  fontSize: 11,
+  fontWeight: 600,
+  cursor: "pointer",
+};
 const LABEL_STYLE: React.CSSProperties = {
   fontSize: 9,
   fontWeight: 700,

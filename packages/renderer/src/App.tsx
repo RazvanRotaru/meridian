@@ -5,6 +5,7 @@ import type { BootConfig } from "./boot/bootConfig";
 import { StoreProvider } from "./state/StoreContext";
 import type { BlueprintStore } from "./state/store";
 import { BlueprintCanvas } from "./components/BlueprintCanvas";
+import { DiffDrawer } from "./components/DiffDrawer";
 
 export function App(props: { store: BlueprintStore; boot: BootConfig }) {
   return (
@@ -12,6 +13,7 @@ export function App(props: { store: BlueprintStore; boot: BootConfig }) {
       <ReactFlowProvider>
         <div style={{ height: "100%" }}>
           <BlueprintCanvas preselectedEnv={props.boot.preselectedEnv} />
+          <DiffDrawer />
         </div>
       </ReactFlowProvider>
     </StoreProvider>

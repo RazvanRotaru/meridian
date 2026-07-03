@@ -32,6 +32,8 @@ const DEFAULT_WIRE: WireStyle = { color: "#7C8696" };
 export const PATH_DOWNSTREAM = "#4EE1C4";
 /** Upstream of the selection: what reaches the selected node. */
 export const PATH_UPSTREAM = "#A78BFA";
+/** A wire whose BOTH endpoints the change lens marked — the seam the range flowed through. */
+export const HOT_WIRE = "#E5534B";
 
 export function wireStyleForKind(kind: string): WireStyle {
   return WIRE_STYLES[kind] ?? DEFAULT_WIRE;

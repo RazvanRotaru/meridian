@@ -17,6 +17,8 @@ export function NodeHeader(props: {
   accent: string;
   chevron?: "collapsed" | "expanded";
   count?: number;
+  /** Inline title-row content (e.g. the change pill) — never adds a second row. */
+  trailing?: ReactNode;
   onToggle?: () => void;
   children?: ReactNode;
 }) {
@@ -34,6 +36,7 @@ export function NodeHeader(props: {
               {props.count}
             </span>
           ) : null}
+          {props.trailing}
           <span style={{ ...KIND_STYLE, color: props.accent }}>{props.node.kind}</span>
         </span>
         {props.children}

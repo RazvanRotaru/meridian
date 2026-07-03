@@ -11,6 +11,8 @@ import { runGenerate } from "./commands/generate";
 import type { GenerateOptions } from "./commands/generate";
 import { runMock } from "./commands/mock";
 import type { MockOptions } from "./commands/mock";
+import { runChange } from "./commands/change";
+import type { ChangeOptions } from "./commands/change";
 import { runView } from "./commands/view";
 import type { ViewOptions } from "./commands/view";
 import { runWeb } from "./commands/web";
@@ -32,6 +34,7 @@ export function buildProgram(): Command {
     .option("--quiet", "suppress human progress output");
   registerGenerate(program);
   registerMock(program);
+  registerChange(program);
   registerView(program);
   registerWeb(program);
   return program;
@@ -65,6 +68,19 @@ function registerMock(program: Command): void {
     );
 }
 
+function registerChange(program: Command): void {
+  program
+    .command("change [graph]")
+    .description("Mint a change-lens overlay (change/1.0) from a git revision range")
+    .requiredOption("--repo <dir>", "git repository root the range refers to")
+    .requiredOption("--range <range>", "git revision range, e.g. main..HEAD or A..B")
+    .option("--prefix <path>", "path from the repo root to the extracted target root", "")
+    .option("-o, --out <file>", "overlay output path", "meridian.change.json")
+    .action((graph, _options, command) =>
+      runChange(graph ?? "meridian.graph.json", command.optsWithGlobals() as ChangeOptions),
+    );
+}
+
 function registerView(program: Command): void {
   program
     .command("view [graph]")
@@ -74,6 +90,7 @@ function registerView(program: Command): void {
     .option("--no-open", "do not open a browser")
     .option("--overlay <source>", "overlay source: a file path or 'mock'")
     .option("--env <env>", "environment (also read from BLUEPRINT_ENV)")
+    .option("--change <file>", "change-lens overlay file (from `meridian change`)")
     .action((graph, _options, command) =>
       runView(graph ?? "meridian.graph.json", command.optsWithGlobals() as ViewOptions),
     );

@@ -7,7 +7,7 @@
  */
 
 import { fileURLToPath } from "node:url";
-import type { GraphArtifact } from "@meridian/core";
+import { isChangeOverlay, type ChangeOverlay, type GraphArtifact } from "@meridian/core";
 import { CliError, EXIT } from "../errors";
 import { resolveAgainst, resolveCwd } from "../paths";
 import { readJsonFile } from "../json-io";
@@ -24,6 +24,7 @@ export interface ViewOptions extends GlobalOptions {
   open: boolean;
   overlay?: string;
   env?: string;
+  change?: string;
 }
 
 export async function runView(graph: string, options: ViewOptions): Promise<void> {
@@ -32,8 +33,21 @@ export async function runView(graph: string, options: ViewOptions): Promise<void
   const env = requireEnvForOverlay(options);
   const artifact = loadGraph(graph, cwd);
   const overlay = resolveOverlaySource(options.overlay, cwd);
-  const server = createBlueprintServer({ artifact, overlay, preselectedEnv: env, rendererRoot: rendererRoot() });
+  const change = loadChange(options.change, cwd);
+  const server = createBlueprintServer({ artifact, overlay, change, preselectedEnv: env, rendererRoot: rendererRoot() });
   await serve(server, { host: options.host, startPort: options.port, openBrowser: options.open }, reporter);
+}
+
+function loadChange(source: string | undefined, cwd: string): ChangeOverlay | null {
+  if (!source) {
+    return null;
+  }
+  const changePath = resolveAgainst(cwd, source);
+  const parsed = readJsonFile(changePath);
+  if (!isChangeOverlay(parsed)) {
+    throw new CliError(EXIT.usage, `${changePath} is not a change/1.0 overlay (run \`meridian change\`)`);
+  }
+  return parsed;
 }
 
 function requireEnvForOverlay(options: ViewOptions): string | null {
