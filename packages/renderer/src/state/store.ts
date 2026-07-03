@@ -6,7 +6,7 @@
  */
 
 import { createStore, type StoreApi } from "zustand/vanilla";
-import type { GraphArtifact, GraphNode, NodeMetrics } from "@meridian/core";
+import type { FlowStep, GraphArtifact, GraphNode, LogicFlows, NodeId, NodeMetrics } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { BlueprintEdge, BlueprintNode } from "../layout/rfTypes";
 import type { TelemetryProvider } from "../telemetry/provider";
@@ -42,6 +42,10 @@ export interface BlueprintState {
   flowRootId: string | null;
   /** Hop cap from the flow entry; null == follow the flow all the way. */
   flowDepth: number | null;
+  /** The callable whose intra-procedural logic flow the Logic-flow view charts; null == none picked yet. */
+  logicRoot: NodeId | null;
+  /** The drill trail into logic flows, oldest first — root..current — powering the logic breadcrumb. */
+  logicStack: NodeId[];
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -65,6 +69,11 @@ export interface BlueprintState {
   isolateFlow(nodeId: string): void;
   clearFlow(): void;
   setFlowDepth(depth: number | null): void;
+  /** The logic flow charted for a callable, or undefined when it has none (empty body). */
+  logicFlowFor(nodeId: string): FlowStep[] | undefined;
+  openLogicFlow(nodeId: string): void;
+  drillLogicFlow(nodeId: string): void;
+  logicFlowTo(nodeId: string): void;
   setViewMode(mode: ViewMode): void;
   setEnvironment(environment: string): void;
   refreshTelemetry(): Promise<void>;
@@ -99,6 +108,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     viewMode: "call",
     flowRootId: null,
     flowDepth: null,
+    logicRoot: null,
+    logicStack: [],
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -179,18 +190,58 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().relayout();
     },
 
+    // The logic flow charted for a callable id: read straight from the artifact extension, keyed
+    // by the same node.id grammar as the graph. `extensions` is a loose record, so cast once here.
+    logicFlowFor(nodeId) {
+      const flows = get().artifact.extensions?.logicFlow;
+      if (!flows) {
+        return undefined;
+      }
+      return (flows as unknown as LogicFlows)[nodeId];
+    },
+
+    // Open a callable's logic flow (the double-click "dive into logic" gesture). This view renders
+    // straight from logicRoot, not from rfNodes/ELK, so it deliberately skips relayout.
+    openLogicFlow(nodeId) {
+      set({ viewMode: "logic", logicRoot: nodeId, logicStack: [nodeId], selectedId: nodeId });
+    },
+
+    // Drill from a call chip into its target's own flow — push it onto the trail.
+    drillLogicFlow(nodeId) {
+      set({ logicStack: [...get().logicStack, nodeId], logicRoot: nodeId });
+    },
+
+    // Jump back to an earlier callable in the trail (a logic-breadcrumb click), truncating there.
+    logicFlowTo(nodeId) {
+      const index = get().logicStack.indexOf(nodeId);
+      if (index === -1) {
+        return;
+      }
+      set({ logicStack: get().logicStack.slice(0, index + 1), logicRoot: nodeId });
+    },
+
     // Switching mode re-derives + relayouts like a dive. Entering UI mode dives to the render
-    // subtree; leaving it returns to call-flow at the focus you had before (home if none).
+    // subtree; leaving it returns to call-flow at the focus you had before (home if none). The
+    // logic view is a standalone render (no rfNodes/ELK), so it neither dives nor relayouts, and
+    // it leaves the graph focus untouched so returning to call/ui resumes where you were.
     setViewMode(mode) {
-      if (get().viewMode === mode) {
+      const previous = get().viewMode;
+      if (previous === mode) {
+        return;
+      }
+      if (mode === "logic") {
+        set({ viewMode: mode });
         return;
       }
       if (mode === "ui") {
         focusBeforeUi = get().focusId;
         set({ viewMode: mode, focusId: uiFocusTarget(get().index) });
-      } else {
+      } else if (previous === "ui") {
         set({ viewMode: mode, focusId: focusBeforeUi });
         focusBeforeUi = null;
+      } else {
+        // Leaving logic back to call: the graph focus was preserved, so just flip the mode.
+        set({ viewMode: mode });
       }
       void get().relayout();
     },

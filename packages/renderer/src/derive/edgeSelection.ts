@@ -7,7 +7,7 @@
 
 import type { GraphEdge } from "@meridian/core";
 
-export type ViewMode = "call" | "ui";
+export type ViewMode = "call" | "ui" | "logic";
 
 /** The behavioural call graph: everything the extractor emits EXCEPT the React "renders" tree. */
 const CALL_EDGE_KINDS: ReadonlySet<string> = new Set([
@@ -24,6 +24,10 @@ export const UI_EDGE_KIND = "renders";
 export function selectEdgesForMode(edges: GraphEdge[], mode: ViewMode): GraphEdge[] {
   if (mode === "ui") {
     return edges.filter((edge) => edge.kind === UI_EDGE_KIND);
+  }
+  // Logic flow is a per-callable control-flow render, not an edge graph — it lifts no wires.
+  if (mode === "logic") {
+    return [];
   }
   return edges.filter((edge) => CALL_EDGE_KINDS.has(edge.kind));
 }

@@ -39,4 +39,8 @@ describe("selectEdgesForMode", () => {
     expect(selectEdgesForMode([edge("imports")], "ui")).toEqual([]);
     expect(selectEdgesForMode([edge("renders")], "call")).toEqual([]);
   });
+
+  it("'logic' lifts NO edges — it is a per-callable control-flow render, not an edge graph", () => {
+    expect(selectEdgesForMode(MIXED, "logic")).toEqual([]);
+  });
 });
