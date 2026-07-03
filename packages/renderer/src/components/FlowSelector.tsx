@@ -15,7 +15,7 @@ const DEPTHS: ReadonlyArray<{ value: number | null; label: string }> = [
   { value: 3, label: "3" },
   { value: null, label: "All" },
 ];
-const MATCH_KINDS: ReadonlySet<string> = new Set(["function", "method", "module", "object", "class"]);
+const MATCH_KINDS: ReadonlySet<string> = new Set(["function", "method"]);
 
 export function FlowSelector() {
   const index = useBlueprint((state) => state.index);
@@ -31,7 +31,9 @@ export function FlowSelector() {
   const matches = useMemo(() => searchNodes(index.nodesById, query), [index, query]);
   const activeLabel = flowRootId ? index.nodesById.get(flowRootId)?.displayName ?? flowRootId : null;
   const selectedLabel = selectedId ? index.nodesById.get(selectedId)?.displayName : undefined;
-  const canRootSelection = selectedId !== null && selectedId !== flowRootId;
+  const selectedKind = selectedId ? index.nodesById.get(selectedId)?.kind : undefined;
+  const canRootSelection =
+    selectedId !== null && selectedId !== flowRootId && (selectedKind === "function" || selectedKind === "method");
 
   return (
     <section style={SECTION_STYLE} aria-label="Code flows">
