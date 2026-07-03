@@ -22,7 +22,13 @@ export async function bootstrap(): Promise<BootResult> {
   const artifact = await loadArtifact(boot.graphUrl);
   const index = buildGraphIndex(artifact);
   const provider = await buildProvider(boot);
-  const store = createBlueprintStore({ artifact, index, provider, hasOverlay: boot.hasOverlay });
+  const store = createBlueprintStore({
+    artifact,
+    index,
+    provider,
+    hasOverlay: boot.hasOverlay,
+    sourceUrl: boot.sourceUrl,
+  });
   await store.getState().relayout();
   return { store, boot };
 }

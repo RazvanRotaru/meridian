@@ -14,6 +14,7 @@ export function injectViewBoot(html: string, id: string): string {
     graphUrl: `/api/graph?id=${id}`,
     metaUrl: `/api/meta?id=${id}`,
     overlayUrl: "/api/overlay",
+    sourceUrl: `/api/source?id=${id}`,
     hasOverlay: false,
     overlayKind: null,
     envRequired: false,

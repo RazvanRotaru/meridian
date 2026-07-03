@@ -24,6 +24,7 @@ export interface ViewOptions extends GlobalOptions {
   open: boolean;
   overlay?: string;
   env?: string;
+  sourceRoot?: string;
 }
 
 export async function runView(graph: string, options: ViewOptions): Promise<void> {
@@ -32,7 +33,8 @@ export async function runView(graph: string, options: ViewOptions): Promise<void
   const env = requireEnvForOverlay(options);
   const artifact = loadGraph(graph, cwd);
   const overlay = resolveOverlaySource(options.overlay, cwd);
-  const server = createBlueprintServer({ artifact, overlay, preselectedEnv: env, rendererRoot: rendererRoot() });
+  const sourceRoot = options.sourceRoot ? resolveAgainst(cwd, options.sourceRoot) : undefined;
+  const server = createBlueprintServer({ artifact, overlay, preselectedEnv: env, rendererRoot: rendererRoot(), sourceRoot });
   await serve(server, { host: options.host, startPort: options.port, openBrowser: options.open }, reporter);
 }
 

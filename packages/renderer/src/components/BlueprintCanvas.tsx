@@ -19,18 +19,22 @@ import type { BlueprintNode, BlueprintEdge, BlueprintNodeData } from "../layout/
 import { nodeTypes } from "./nodes/nodeTypes";
 import { edgeTypes } from "./edges/edgeTypes";
 import { Toolbar } from "./Toolbar";
+import { CodePanel } from "./CodePanel";
 
 export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
   const nodes = useBlueprint((state) => state.rfNodes);
   const edges = useBlueprint((state) => state.rfEdges);
   const { select, diveInto } = useBlueprintActions();
   const onNodeClick: NodeMouseHandler<BlueprintNode> = (_event, node) => select(node.id);
-  // Double-clicking a container's frame dives INTO it (Unreal-Blueprints black-box drill-down);
-  // a leaf does nothing. Header double-clicks stop propagation, so they never reach here.
+  // Double-clicking a container's frame dives INTO it (Unreal-Blueprints black-box drill-down).
+  // Header double-clicks stop propagation, so they never reach here. Showing a leaf's source now
+  // lives on the node's own </> button, freeing double-click for a future logic-flow dive.
   const onNodeDoubleClick: NodeMouseHandler<BlueprintNode> = (_event, node) => {
     if (node.data.isContainer) {
       diveInto(node.id);
+      return;
     }
+    // Leaf (a callable): double-click is reserved for diving into its intra-procedural logic flow (not built yet).
   };
   return (
     <ReactFlow<BlueprintNode, BlueprintEdge>
@@ -63,6 +67,7 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
       <Controls showInteractive={false} />
       <MiniMap pannable zoomable nodeColor={miniMapColor} maskColor="rgba(8,10,14,0.7)" />
       <Toolbar preselectedEnv={props.preselectedEnv} />
+      <CodePanel />
     </ReactFlow>
   );
 }

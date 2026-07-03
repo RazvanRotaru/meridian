@@ -24,6 +24,7 @@ import { SessionStore } from "./session";
 import { assertJsonContentType, assertSameOrigin } from "./web-guards";
 import { handleAuthSession, handleAuthStatus, handleDeviceStart, handleLogout, handleRepoSearch } from "./web-auth";
 import { handleGenerate, sendGraph, sendMeta, sendView } from "./web-graph";
+import { sendSource } from "./source-serve";
 
 export interface WebServerConfig {
   rendererRoot: string;
@@ -39,6 +40,10 @@ export interface WebServerConfig {
 
 export interface Context {
   graphs: Map<string, GraphArtifact>;
+  /** Per-id source directory retained after a successful generate so `/api/source` can read it. */
+  sourceRoots: Map<string, string>;
+  /** Temp-clone removers, held until process exit so retained sources are cleaned on shutdown. */
+  tempCleanups: Set<() => void>;
   rendererIndex: string;
   landingHtml: string;
   staticAssets: StaticAssets;
@@ -61,8 +66,10 @@ function buildContext(config: WebServerConfig): Context {
   }
   const github = config.githubClientId ? createGitHubClient({ clientId: config.githubClientId }) : null;
   const landing = injectAuthConfig(injectPrefill(readFileSync(config.webUiPath, "utf8"), config.source), github !== null);
-  return {
+  const ctx: Context = {
     graphs: new Map(),
+    sourceRoots: new Map(),
+    tempCleanups: new Set(),
     rendererIndex: readFileSync(indexPath, "utf8"),
     landingHtml: landing,
     // Stray routes fall back to the front door rather than the renderer shell.
@@ -71,6 +78,18 @@ function buildContext(config: WebServerConfig): Context {
     sessions: new SessionStore(),
     github,
   };
+  cleanRetainedSourcesOnExit(ctx);
+  return ctx;
+}
+
+// A successful generate keeps its temp clone alive so `/api/source` can serve file slices; this
+// exit hook still removes every retained clone on shutdown so `web` never leaks temp directories.
+function cleanRetainedSourcesOnExit(ctx: Context): void {
+  process.once("exit", () => {
+    for (const cleanup of ctx.tempCleanups) {
+      cleanup();
+    }
+  });
 }
 
 async function handle(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -130,6 +149,10 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
   }
   if (pathname === "/api/overlay") {
     sendJson(response, 400, { error: "no telemetry overlay in web mode" });
+    return;
+  }
+  if (pathname === "/api/source") {
+    sendSource(response, ctx.sourceRoots.get(url.searchParams.get("id") ?? "") ?? null, url.searchParams);
     return;
   }
   if (pathname === "/api/auth/status") {

@@ -15,6 +15,8 @@ export interface BootConfig {
   overlayKind: "mock" | "file" | "tempo" | null;
   envRequired: boolean;
   preselectedEnv: string | null;
+  /** Base URL the renderer GETs to fetch a node's source; null when source isn't available. */
+  sourceUrl: string | null;
   defaultEnv: null;
 }
 
@@ -36,6 +38,7 @@ const DEV_FALLBACK: BootConfig = {
   overlayKind: "mock",
   envRequired: true,
   preselectedEnv: null,
+  sourceUrl: null,
   defaultEnv: null,
 };
 

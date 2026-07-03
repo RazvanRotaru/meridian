@@ -74,6 +74,7 @@ function registerView(program: Command): void {
     .option("--no-open", "do not open a browser")
     .option("--overlay <source>", "overlay source: a file path or 'mock'")
     .option("--env <env>", "environment (also read from BLUEPRINT_ENV)")
+    .option("--source-root <dir>", "serve source for code view from this directory")
     .action((graph, _options, command) =>
       runView(graph ?? "meridian.graph.json", command.optsWithGlobals() as ViewOptions),
     );

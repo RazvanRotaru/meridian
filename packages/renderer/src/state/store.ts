@@ -6,7 +6,7 @@
  */
 
 import { createStore, type StoreApi } from "zustand/vanilla";
-import type { GraphArtifact, NodeMetrics } from "@meridian/core";
+import type { GraphArtifact, GraphNode, NodeMetrics } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { BlueprintEdge, BlueprintNode } from "../layout/rfTypes";
 import type { TelemetryProvider } from "../telemetry/provider";
@@ -15,6 +15,19 @@ import { uiFocusTarget } from "../derive/uiFocus";
 import { deriveLayout } from "./deriveLayout";
 
 export type LayoutStatus = "idle" | "laying-out" | "ready" | "error";
+
+/** The source view's state: which node, its fetched code, and the in-flight/error status.
+ * `mode` decides where it renders — a compact panel inline on the node, or a centered modal. */
+export interface CodeView {
+  node: GraphNode;
+  code: string | null;
+  loading: boolean;
+  error: string | null;
+  /** Where the code shows: a compact panel hanging off the node, or a blown-up centered modal. */
+  mode: "inline" | "modal";
+  /** The server capped the snippet; the panel shows a note when set. */
+  truncated?: boolean;
+}
 
 export interface BlueprintState {
   artifact: GraphArtifact;
@@ -37,6 +50,11 @@ export interface BlueprintState {
   environment: string | null;
   provider: TelemetryProvider | null;
   hasOverlay: boolean;
+  /** Base URL for on-demand source fetches; null when the server ships no source access. Node
+   * components read it to decide whether to offer a "show source" control. */
+  sourceUrl: string | null;
+  /** The open source view (inline panel or modal); null when nothing is being shown. */
+  codeView: CodeView | null;
   toggleExpand(nodeId: string): void;
   expandPath(nodeId: string): void;
   collapseAll(): void;
@@ -50,6 +68,9 @@ export interface BlueprintState {
   setViewMode(mode: ViewMode): void;
   setEnvironment(environment: string): void;
   refreshTelemetry(): Promise<void>;
+  showCode(node: GraphNode): Promise<void>;
+  expandCode(): void;
+  closeCode(): void;
   relayout(): Promise<void>;
 }
 
@@ -58,6 +79,7 @@ export interface StoreDependencies {
   index: GraphIndex;
   provider: TelemetryProvider | null;
   hasOverlay: boolean;
+  sourceUrl: string | null;
 }
 
 export type BlueprintStore = StoreApi<BlueprintState>;
@@ -65,6 +87,8 @@ export type BlueprintStore = StoreApi<BlueprintState>;
 export function createBlueprintStore(dependencies: StoreDependencies): BlueprintStore {
   // The focus to restore when leaving UI mode, kept off the reactive state (nothing renders it).
   let focusBeforeUi: string | null = null;
+  // Null when the server didn't ship source access — the code drawer is then inert.
+  const sourceUrl = dependencies.sourceUrl;
 
   return createStore<BlueprintState>((set, get) => ({
     artifact: dependencies.artifact,
@@ -83,6 +107,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     environment: null,
     provider: dependencies.provider,
     hasOverlay: dependencies.hasOverlay,
+    sourceUrl,
+    codeView: null,
 
     toggleExpand(nodeId) {
       set({ expanded: withToggled(get().expanded, nodeId) });
@@ -182,6 +208,65 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       set({ telemetry: await provider.fetchMetrics(environment) });
+    },
+
+    // Fetch and reveal a callable's source, starting inline on the node. Inert when the server
+    // ships no source access or the node has no location. A race guard drops the result if a newer
+    // click (a different node) has since taken over the view; the mode is preserved across the
+    // fetch so a mid-flight expand-to-modal is not clobbered when the code lands.
+    async showCode(node) {
+      if (!sourceUrl || !node.location) {
+        return;
+      }
+      set({ codeView: { node, code: null, loading: true, error: null, mode: "inline" } });
+      try {
+        const url = new URL(sourceUrl, window.location.origin);
+        url.searchParams.set("file", node.location.file);
+        url.searchParams.set("start", String(node.location.startLine));
+        url.searchParams.set("end", String(node.location.endLine ?? node.location.startLine));
+        const res = await fetch(url, { credentials: "same-origin" });
+        if (get().codeView?.node.id !== node.id) {
+          return;
+        }
+        const mode = get().codeView?.mode ?? "inline";
+        if (!res.ok) {
+          set({ codeView: { node, code: null, loading: false, error: "Could not load source.", mode } });
+          return;
+        }
+        const data = await res.json();
+        if (get().codeView?.node.id !== node.id) {
+          return;
+        }
+        set({
+          codeView: {
+            node,
+            code: data.code,
+            loading: false,
+            error: null,
+            truncated: data.truncated,
+            mode: get().codeView?.mode ?? "inline",
+          },
+        });
+      } catch {
+        if (get().codeView?.node.id !== node.id) {
+          return;
+        }
+        const mode = get().codeView?.mode ?? "inline";
+        set({ codeView: { node, code: null, loading: false, error: "Could not load source.", mode } });
+      }
+    },
+
+    // Blow the current inline panel up into the centered modal. A no-op when nothing is shown.
+    expandCode() {
+      const { codeView } = get();
+      if (!codeView) {
+        return;
+      }
+      set({ codeView: { ...codeView, mode: "modal" } });
+    },
+
+    closeCode() {
+      set({ codeView: null });
     },
 
     async relayout() {
