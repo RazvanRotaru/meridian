@@ -8,9 +8,13 @@
 
 import { basename } from "node:path";
 import { LOGIC_FLOW_EXTENSION, SCHEMA_VERSION } from "@meridian/core";
-import type { ExtractionResult, GraphArtifact, JsonValue, LanguageTag } from "@meridian/core";
+import type { ExtractionResult, GraphArtifact, GraphNode, JsonValue, LanguageTag } from "@meridian/core";
 import { nowIso } from "./clock";
+import { entryModulesExtension } from "./entry-points";
 import { generatorVersion } from "./version";
+
+/** Free-form extension key: the repo's declared application entry points, best-first (NodeId[]). */
+const ENTRY_MODULES_EXTENSION = "entryModules";
 
 const TELEMETRY_CONTRACT: GraphArtifact["telemetry"] = {
   joinKey: "node.id",
@@ -41,18 +45,30 @@ export function buildArtifact(inputs: HeaderInputs): GraphArtifact {
     nodes: inputs.extraction.nodes,
     edges: inputs.extraction.edges,
   };
-  const extensions = extensionsFor(inputs.extraction);
-  if (extensions) {
+  const extensions = extensionsFor(inputs);
+  if (Object.keys(extensions).length > 0) {
     artifact.extensions = extensions;
   }
   return artifact;
 }
 
-/** Fold the extractor's optional side-channels (logic flows) into the `extensions` record. */
-function extensionsFor(extraction: ExtractionResult): Record<string, JsonValue> | undefined {
-  const flows = extraction.flows;
-  if (!flows || Object.keys(flows).length === 0) {
-    return undefined;
+/**
+ * Fold the artifact's optional side-channels into the `extensions` record: the extractor's
+ * logic flows and the CLI-resolved entry modules. Each is omitted when it has nothing to add.
+ */
+function extensionsFor(inputs: HeaderInputs): Record<string, JsonValue> {
+  const extensions: Record<string, JsonValue> = {};
+  const flows = inputs.extraction.flows;
+  if (flows && Object.keys(flows).length > 0) {
+    extensions[LOGIC_FLOW_EXTENSION] = flows as unknown as JsonValue;
   }
-  return { [LOGIC_FLOW_EXTENSION]: flows as unknown as JsonValue };
+  const entryModules = entryModulesExtension(inputs.absoluteRoot, moduleNodesOf(inputs.extraction));
+  if (entryModules) {
+    extensions[ENTRY_MODULES_EXTENSION] = entryModules;
+  }
+  return extensions;
+}
+
+function moduleNodesOf(extraction: ExtractionResult): GraphNode[] {
+  return extraction.nodes.filter((node) => node.kind === "module");
 }
