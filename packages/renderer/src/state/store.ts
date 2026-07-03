@@ -15,6 +15,13 @@ import type { ViewMode } from "../derive/edgeSelection";
 import { uiFocusTarget } from "../derive/uiFocus";
 import { EMPTY_HIGHLIGHT, tracePath, traceEdge, type PathHighlight } from "../derive/pathTrace";
 import { PATH_DOWNSTREAM, PATH_UPSTREAM, wireColorForKind } from "../theme/edgeColors";
+import {
+  loadComments,
+  newComment,
+  rollupCommentCounts,
+  saveComments,
+  type CommentsByNode,
+} from "./comments";
 import { deriveLayout } from "./deriveLayout";
 
 /** A node's slice of the change lens: its own diff stats, or a container's roll-up. */
@@ -57,6 +64,12 @@ export interface BlueprintState {
   closeDiff(): void;
   /** Step the drawer to the previous/next changed node in reading (layout) order. */
   stepDiff(delta: 1 | -1): void;
+  /** Node-anchored review notes (localStorage-persisted per artifact target). */
+  comments: CommentsByNode;
+  /** node.id -> open comment count at-or-below it (containers roll up). */
+  commentCounts: ReadonlyMap<string, number>;
+  addComment(nodeId: string, text: string): void;
+  toggleCommentResolved(nodeId: string, commentId: string): void;
   toggleExpand(nodeId: string): void;
   expandPath(nodeId: string): void;
   collapseAll(): void;
@@ -86,6 +99,7 @@ export type BlueprintStore = StoreApi<BlueprintState>;
 export function createBlueprintStore(dependencies: StoreDependencies): BlueprintStore {
   // The focus to restore when leaving UI mode, kept off the reactive state (nothing renders it).
   let focusBeforeUi: string | null = null;
+  const initialComments = loadComments(dependencies.artifact.target.name);
 
   return createStore<BlueprintState>((set, get) => ({
     artifact: dependencies.artifact,
@@ -115,6 +129,34 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     closeDiff() {
       set({ diffNodeId: null });
+    },
+
+    comments: initialComments,
+    commentCounts: rollupCommentCounts(initialComments, dependencies.index),
+
+    addComment(nodeId, text) {
+      const trimmed = text.trim();
+      if (trimmed.length === 0) {
+        return;
+      }
+      const comments: CommentsByNode = {
+        ...get().comments,
+        [nodeId]: [...(get().comments[nodeId] ?? []), newComment(trimmed)],
+      };
+      saveComments(get().artifact.target.name, comments);
+      set({ comments, commentCounts: rollupCommentCounts(comments, get().index) });
+    },
+
+    toggleCommentResolved(nodeId, commentId) {
+      const forNode = get().comments[nodeId] ?? [];
+      const comments: CommentsByNode = {
+        ...get().comments,
+        [nodeId]: forNode.map((comment) =>
+          comment.id === commentId ? { ...comment, resolved: !comment.resolved } : comment,
+        ),
+      };
+      saveComments(get().artifact.target.name, comments);
+      set({ comments, commentCounts: rollupCommentCounts(comments, get().index) });
     },
 
     // Walk EVERY changed stop in the range (deepest symbols first, file order), revealing

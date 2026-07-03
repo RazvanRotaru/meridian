@@ -12,6 +12,7 @@ import type { BlueprintNode } from "../../layout/rfTypes";
 import { NodeHeader } from "./NodeHeader";
 import { TelemetryBadges } from "../TelemetryBadges";
 import { ChangePill } from "../ChangePill";
+import { CommentBadge } from "../CommentBadge";
 
 export function ContainerNode(props: NodeProps<BlueprintNode>) {
   const { node, isExpanded, childCount } = props.data;
@@ -21,6 +22,7 @@ export function ContainerNode(props: NodeProps<BlueprintNode>) {
   // Dim when a path trace is active and this frame is not on it (ancestors of path nodes stay lit).
   const dimmed = useBlueprint((state) => state.pathNodeIds.size > 0 && !state.pathNodeIds.has(props.id));
   const changeEntry = useBlueprint((state) => state.changeRollup.get(props.id));
+  const commentCount = useBlueprint((state) => state.commentCounts.get(props.id) ?? 0);
   const toggleExpand = useBlueprintActions().toggleExpand;
   return (
     <div style={{ ...frameStyle(accent, isExpanded, selected), ...dimStyle(dimmed) }}>
@@ -30,7 +32,12 @@ export function ContainerNode(props: NodeProps<BlueprintNode>) {
         accent={accent}
         chevron={isExpanded ? "expanded" : "collapsed"}
         count={childCount}
-        trailing={changeEntry ? <ChangePill entry={changeEntry} /> : undefined}
+        trailing={
+          <>
+            {changeEntry ? <ChangePill entry={changeEntry} /> : null}
+            {commentCount > 0 ? <CommentBadge count={commentCount} /> : null}
+          </>
+        }
         onToggle={() => toggleExpand(props.id)}
       >
         <TelemetryBadges metrics={metrics} />

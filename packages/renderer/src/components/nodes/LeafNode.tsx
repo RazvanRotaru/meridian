@@ -13,6 +13,7 @@ import type { BlueprintNode } from "../../layout/rfTypes";
 import { NodeHeader } from "./NodeHeader";
 import { TelemetryBadges } from "../TelemetryBadges";
 import { ChangePill } from "../ChangePill";
+import { CommentBadge } from "../CommentBadge";
 
 export function LeafNode(props: NodeProps<BlueprintNode>) {
   const node = props.data.node;
@@ -22,11 +23,21 @@ export function LeafNode(props: NodeProps<BlueprintNode>) {
   // Dim when a path trace is active and this node is not on it.
   const dimmed = useBlueprint((state) => state.pathNodeIds.size > 0 && !state.pathNodeIds.has(props.id));
   const changeEntry = useBlueprint((state) => state.changeRollup.get(props.id));
+  const commentCount = useBlueprint((state) => state.commentCounts.get(props.id) ?? 0);
   const callable = isCallable(node.kind);
   return (
     <div style={{ ...cardStyle(accent, selected), ...dimStyle(dimmed) }}>
       <Handle type="target" position={Position.Left} id="in" style={pinStyle(callable)} />
-      <NodeHeader node={node} accent={accent} trailing={changeEntry ? <ChangePill entry={changeEntry} /> : undefined}>
+      <NodeHeader
+        node={node}
+        accent={accent}
+        trailing={
+          <>
+            {changeEntry ? <ChangePill entry={changeEntry} /> : null}
+            {commentCount > 0 ? <CommentBadge count={commentCount} /> : null}
+          </>
+        }
+      >
         <TelemetryBadges metrics={metrics} />
       </NodeHeader>
       {node.summary || (callable && node.signature) ? (

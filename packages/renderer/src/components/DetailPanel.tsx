@@ -6,12 +6,13 @@
  * without hunting the canvas.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { accentForKind } from "../theme/kindColors";
 import { PATH_DOWNSTREAM, PATH_UPSTREAM } from "../theme/edgeColors";
 import { titleCase } from "../theme/displayName";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import type { BlueprintEdge } from "../layout/rfTypes";
+import type { NodeComment } from "../state/comments";
 
 const MAX_ROWS_PER_DIRECTION = 8;
 
@@ -100,8 +101,68 @@ export function DetailPanel() {
         rows={connections.incoming}
         onPick={select}
       />
+      <CommentSection nodeId={selectedId} />
     </div>
   );
+}
+
+/** Node-anchored review notes: list (with resolve toggles) + a compose box. */
+function CommentSection(props: { nodeId: string }) {
+  const comments = useBlueprint((state) => state.comments[props.nodeId] ?? EMPTY_COMMENTS);
+  const { addComment, toggleCommentResolved } = useBlueprintActions();
+  const [draft, setDraft] = useState("");
+  const submit = () => {
+    addComment(props.nodeId, draft);
+    setDraft("");
+  };
+  return (
+    <div style={LIST_STYLE}>
+      <div style={{ ...LABEL_STYLE, color: "#A78BFA" }}>COMMENTS · {comments.length}</div>
+      {comments.map((comment) => (
+        <div key={comment.id} style={COMMENT_STYLE}>
+          <div style={COMMENT_HEAD_STYLE}>
+            <span style={COMMENT_AUTHOR_STYLE}>{comment.author}</span>
+            <span style={COMMENT_TIME_STYLE}>{shortDate(comment.createdAt)}</span>
+            <button
+              type="button"
+              style={resolveStyle(comment.resolved)}
+              onClick={() => toggleCommentResolved(props.nodeId, comment.id)}
+              title={comment.resolved ? "Reopen" : "Resolve"}
+            >
+              {comment.resolved ? "✓ resolved" : "resolve"}
+            </button>
+          </div>
+          <div style={{ ...COMMENT_TEXT_STYLE, opacity: comment.resolved ? 0.55 : 1 }}>{comment.text}</div>
+        </div>
+      ))}
+      <div style={COMPOSE_STYLE}>
+        <textarea
+          style={TEXTAREA_STYLE}
+          rows={2}
+          placeholder="Add a review note…"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              submit();
+            }
+          }}
+        />
+        <button type="button" style={ADD_COMMENT_STYLE} onClick={submit} disabled={draft.trim().length === 0}>
+          Comment
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const EMPTY_COMMENTS: NodeComment[] = [];
+
+function shortDate(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 interface ConnectionRow {
@@ -326,6 +387,53 @@ const SEGMENTED_STYLE: React.CSSProperties = {
   borderRadius: 7,
   overflow: "hidden",
 };
+const COMMENT_STYLE: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 3,
+  padding: "6px 8px",
+  borderRadius: 7,
+  border: "1px solid #24283266",
+  background: "#11141A",
+};
+const COMMENT_HEAD_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
+const COMMENT_AUTHOR_STYLE: React.CSSProperties = { fontSize: 11, fontWeight: 700, color: "#C9D3E0" };
+const COMMENT_TIME_STYLE: React.CSSProperties = { fontSize: 10, color: "#7C8696" };
+const COMMENT_TEXT_STYLE: React.CSSProperties = { fontSize: 11, color: "#9AA4B2", lineHeight: "15px", whiteSpace: "pre-wrap" };
+const COMPOSE_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6 };
+const TEXTAREA_STYLE: React.CSSProperties = {
+  resize: "vertical",
+  background: "#11141A",
+  border: "1px solid #2A2F37",
+  borderRadius: 7,
+  color: "#E6EDF3",
+  fontSize: 11,
+  fontFamily: "inherit",
+  padding: "6px 8px",
+};
+const ADD_COMMENT_STYLE: React.CSSProperties = {
+  alignSelf: "flex-end",
+  background: "#232936",
+  color: "#E6EDF3",
+  border: "1px solid #2A2F37",
+  borderRadius: 6,
+  padding: "3px 10px",
+  fontSize: 11,
+  fontWeight: 600,
+  cursor: "pointer",
+};
+
+function resolveStyle(resolved: boolean): React.CSSProperties {
+  return {
+    marginLeft: "auto",
+    border: "none",
+    background: "transparent",
+    color: resolved ? "#56C271" : "#7C8696",
+    fontSize: 10,
+    cursor: "pointer",
+    padding: 0,
+  };
+}
 
 function segmentStyle(active: boolean): React.CSSProperties {
   return {
