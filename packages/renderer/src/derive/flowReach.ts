@@ -23,7 +23,7 @@ export interface FlowEntry {
 const TEST_PATH = /(__tests?__|\.test\.|\.spec\.|\.stories\.)/i;
 const ENTRY_NAME = /(^|\/)(main|index|bootstrap|app|entry|boot|server|start|root)\b/i;
 const ENTRY_NAME_BOOST = 100_000;
-const NON_ENTRY_KINDS: ReadonlySet<string> = new Set(["interface", "package", "namespace"]);
+const ENTRY_KINDS: ReadonlySet<string> = new Set(["function", "method"]);
 
 /** Forward call-reachable node ids from `rootId`'s subtree, optionally capped at `maxDepth` hops. */
 export function forwardReachable(
@@ -55,7 +55,7 @@ export function flowKeepSet(reachable: ReadonlySet<string>, index: GraphIndex): 
   return keep;
 }
 
-/** Candidate flow entries (never-called callers + module-level code), ranked for the quick-picks. */
+/** Candidate flow entries (never-called callables — functions/methods), ranked for the quick-picks. */
 export function rankedEntryPoints(index: GraphIndex, viewMode: ViewMode, limit = 12): FlowEntry[] {
   const edges = selectEdgesForMode(index.edges, viewMode);
   const inDegree = countBy(edges, (edge) => edge.target);
@@ -120,11 +120,10 @@ function subtreeIds(index: GraphIndex, rootId: string): string[] {
 
 function isEntryCandidate(index: GraphIndex, id: string, inDegree: number): boolean {
   const node = index.nodesById.get(id);
-  if (!node || TEST_PATH.test(id) || NON_ENTRY_KINDS.has(node.kind)) {
+  if (!node || TEST_PATH.test(id) || !ENTRY_KINDS.has(node.kind)) {
     return false;
   }
-  // A module that runs code at import time is an entry; anything else must be a never-called caller.
-  return node.kind === "module" || inDegree === 0;
+  return inDegree === 0;
 }
 
 function entryFor(index: GraphIndex, id: string, fanOut: number): FlowEntry {
