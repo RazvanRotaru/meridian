@@ -48,8 +48,14 @@ const CONTAINER_LAYOUT_OPTIONS: Record<string, string> = {
   "elk.layered.spacing.nodeNodeBetweenLayers": "56",
 };
 
-export function buildElkGraph(visible: VisibleNode[], edges: LiftedEdge[]): ElkNode {
-  const elkById = new Map<string, ElkNode>(visible.map((node) => [node.id, toElkNode(node)]));
+export function buildElkGraph(
+  visible: VisibleNode[],
+  edges: LiftedEdge[],
+  extraHeaderWidthOf: (nodeId: string) => number = () => 0,
+): ElkNode {
+  const elkById = new Map<string, ElkNode>(
+    visible.map((node) => [node.id, toElkNode(node, extraHeaderWidthOf(node.id))]),
+  );
   const visibleIds = new Set(visible.map((node) => node.id));
   const roots: ElkNode[] = [];
   for (const node of visible) {
@@ -77,11 +83,11 @@ function attachToParent(
   roots.push(elkNode);
 }
 
-function toElkNode(visibleNode: VisibleNode): ElkNode {
+function toElkNode(visibleNode: VisibleNode, extraHeaderWidth: number): ElkNode {
   if (visibleNode.isExpanded) {
     return { id: visibleNode.id, children: [], layoutOptions: CONTAINER_LAYOUT_OPTIONS };
   }
-  const { width, height } = boxSize(visibleNode);
+  const { width, height } = boxSize(visibleNode, extraHeaderWidth);
   return { id: visibleNode.id, width, height };
 }
 

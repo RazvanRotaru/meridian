@@ -286,9 +286,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     async relayout() {
       const sequence = get().layoutSeq + 1;
       set({ layoutSeq: sequence, layoutStatus: "laying-out" });
+      // Reserve title-row width for the runtime chips a node will actually wear.
+      const extraHeaderWidthOf = (nodeId: string) =>
+        (get().changeRollup.has(nodeId) ? 96 : 0) + ((get().commentCounts.get(nodeId) ?? 0) > 0 ? 48 : 0);
       let graph: Awaited<ReturnType<typeof deriveLayout>>;
       try {
-        graph = await deriveLayout(get().index, get().expanded, get().focusId, get().viewMode);
+        graph = await deriveLayout(get().index, get().expanded, get().focusId, get().viewMode, extraHeaderWidthOf);
       } catch (error) {
         // A layout failure must never freeze the canvas on "laying-out" — keep the previous
         // graph on screen and surface the failure where a dev can see it.

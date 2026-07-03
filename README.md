@@ -94,10 +94,39 @@ published as JSON Schema at
 
 | Command | What it does |
 | --- | --- |
-| `meridian generate [path]` | Extract a codebase into a graph artifact. `--lang` (auto: `typescript` \| `python`), `-o`, `--depth package\|module\|class\|function`, `--include-external`, `--include`, `--exclude`, `--tsconfig`. |
-| `meridian view [graph]` | Serve the renderer on a graph + open the browser. `--port`, `--host`, `--no-open`, `--overlay <file\|mock>`, `--env`. |
+| `meridian generate [path]` | Extract a codebase into a graph artifact. `--lang` (auto: `typescript` \| `python`), `-o`, `--depth package\|module\|class\|function`, `--include-external`, `--include`, `--exclude`, `--tsconfig`. Solution-style tsconfigs (`"files": []` + references) fall back to a pruned glob scan, so monorepo roots extract too. |
+| `meridian change [graph]` | Mint a **change-lens overlay** (`change/1.0`) from a git range: `--repo <dir>`, `--range A..B`, `--prefix` (path from the repo root to the extracted target), `-o`. Joins `git diff` hunks onto node source spans — modules carry whole-file totals, functions/classes light up only when a hunk intersects their span. |
+| `meridian view [graph]` | Serve the renderer on a graph + open the browser. `--port`, `--host`, `--no-open`, `--overlay <file\|mock>`, `--env`, `--change <file>` (adds `/api/change` + `/api/file-diff`). |
 | `meridian web [source]` | Local web UI: paste a **GitHub repo** (`owner/repo` or URL) / local path — clones (`--depth 1`) + extracts + renders. Private repos via `GITHUB_TOKEN`/`GH_TOKEN` or a local-only token field. `--port`, `--host`, `--no-open`. |
 | `meridian mock-telemetry [graph]` | Mint a deterministic mock overlay. **`--env` is required** (no default, never prod); `-o`, `--seed`. |
+
+### The change lens — review a PR on the map
+
+```bash
+meridian generate ./repo/apps/web -o graph.json
+meridian change graph.json --repo ./repo --prefix apps/web --range main..HEAD -o change.json
+meridian view graph.json --change change.json
+```
+
+The range is painted onto the blueprint: **± pills** on every touched box (containers roll up
+their files' totals), **red dotted hot wires** where both endpoints changed, a **RANGE row** in
+the toolbar, and a **diff drawer** (bottom) streaming the real unified diff of the selected
+node, scroll-anchored at its source span. `j` / `k` walk every changed symbol in file order —
+the map auto-expands and re-selects as you step, so reviewing a PR becomes a lap across the
+codebase instead of a scroll through a flat file list.
+
+### Reading & navigating the canvas
+
+- **Click** a box: select it and trace its path — **direct neighbours** by default, **full
+  impact** (transitive closure) one toggle away in the detail panel. Downstream wires teal,
+  upstream violet; everything off-path dims.
+- **Double-click** a container: dive in (the breadcrumb climbs back out). The **chevron**
+  expands in place; clicking a connection row in the detail panel walks the selection.
+- **Wire language:** `calls` solid steel · `instantiates` amber dots · `extends`/`implements`
+  purple dashes · `renders` cyan · unresolved stays dim + dashed · **hot** (change at both
+  ends) red dots.
+- **Comments:** node-anchored review notes in the detail panel (localStorage per target);
+  💬 open-counts roll up onto collapsed containers.
 
 ## Packages
 

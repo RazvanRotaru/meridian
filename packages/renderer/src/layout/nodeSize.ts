@@ -25,15 +25,19 @@ export function isCallable(kind: string): boolean {
   return kind === "function" || kind === "method";
 }
 
-/** Size for any node ELK will NOT measure itself: a leaf or a collapsed container. */
-export function boxSize(visibleNode: VisibleNode): BoxSize {
+/**
+ * Size for any node ELK will NOT measure itself: a leaf or a collapsed container.
+ * `extraHeaderWidth` reserves room for runtime header chips (change pill, comment badge) so
+ * they never squeeze the title out of its own box.
+ */
+export function boxSize(visibleNode: VisibleNode, extraHeaderWidth = 0): BoxSize {
   const node = visibleNode.node;
   const signature = isCallable(node.kind) ? (node.signature ?? "") : "";
   const hasSummary = Boolean(node.summary);
   // The header row also fits the kind label and (for containers) the child-count chip.
   const headerChars = node.displayName.length + node.kind.length + (visibleNode.isContainer ? 6 : 0);
-  const longestLine = Math.max(headerChars, signature.length);
-  const width = clamp(MIN_WIDTH, MAX_WIDTH, 56 + longestLine * CHAR_WIDTH);
+  const headerWidth = 56 + headerChars * CHAR_WIDTH + extraHeaderWidth;
+  const width = clamp(MIN_WIDTH, MAX_WIDTH, Math.max(headerWidth, 56 + signature.length * CHAR_WIDTH));
   const bodyLines = (hasSummary ? SUMMARY_HEIGHT : 0) + (signature.length > 0 ? SIGNATURE_HEIGHT : 0);
   const height = HEADER_HEIGHT + (bodyLines > 0 ? bodyLines + BODY_PADDING : 0);
   return { width: Math.round(width), height };

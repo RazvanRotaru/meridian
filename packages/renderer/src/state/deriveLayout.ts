@@ -19,11 +19,12 @@ export async function deriveLayout(
   expanded: ReadonlySet<string>,
   focusId: string | null,
   viewMode: ViewMode,
+  extraHeaderWidthOf: (nodeId: string) => number = () => 0,
 ): Promise<ReactFlowGraph> {
   const visible = computeVisible(index, expanded, focusId);
   const edges = scopeEdges(selectEdgesForMode(index.edges, viewMode), focusId, index);
   const liftedEdges = liftEdges(edges, visibleIdSet(visible), index.parentOf);
-  const elkGraph = buildElkGraph(visible, liftedEdges);
+  const elkGraph = buildElkGraph(visible, liftedEdges, extraHeaderWidthOf);
   const laidOut = await runElkLayout(elkGraph);
   return toReactFlow(laidOut, byId(visible), liftedEdges);
 }
