@@ -10,6 +10,7 @@ import type { ViewMode } from "../derive/edgeSelection";
 const SEGMENTS: ReadonlyArray<{ mode: ViewMode; label: string }> = [
   { mode: "call", label: "Call flow" },
   { mode: "ui", label: "UI composition" },
+  { mode: "logic", label: "Logic flow" },
 ];
 
 export function ViewModeToggle() {
