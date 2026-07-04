@@ -2,12 +2,13 @@
  * The source-code modal: a centered overlay that blows up the code shown inline on a node (its
  * ⤢ expand button flips `codeView.mode` to "modal"). Its whole state lives on the store's
  * `codeView`; this component renders only when the mode is "modal" and offers three ways out —
- * the close button, Escape, and a backdrop click. Code is placed as a text child of <pre>/<code>
- * so React escapes it (never dangerouslySetInnerHTML).
+ * the close button, Escape, and a backdrop click. The code is syntax-highlighted by CodeBlock,
+ * which escapes it as plain text children (never dangerouslySetInnerHTML).
  */
 
 import { useEffect } from "react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
+import { CodeBlock } from "./CodeBlock";
 
 export function CodePanel() {
   const codeView = useBlueprint((state) => state.codeView);
@@ -58,22 +59,10 @@ export function CodePanel() {
         <div style={BODY_STYLE}>
           {loading ? <div style={STATUS_STYLE}>Loading source…</div> : null}
           {error ? <div style={ERROR_STYLE}>{error}</div> : null}
-          {code !== null ? <CodeListing code={code} startLine={startLine} /> : null}
+          {code !== null ? <CodeBlock code={code} maxHeight="70vh" /> : null}
           {truncated ? <div style={TRUNCATED_STYLE}>Snippet truncated by the server.</div> : null}
         </div>
       </div>
-    </div>
-  );
-}
-
-/** A line-numbered listing: a gutter of numbers starting at `startLine`, next to the code. */
-function CodeListing(props: { code: string; startLine: number }) {
-  const lines = props.code.split("\n");
-  const gutter = lines.map((_line, index) => props.startLine + index).join("\n");
-  return (
-    <div style={LISTING_STYLE}>
-      <pre style={GUTTER_STYLE} aria-hidden>{gutter}</pre>
-      <pre style={CODE_STYLE}><code>{props.code}</code></pre>
     </div>
   );
 }
@@ -145,24 +134,3 @@ const BODY_STYLE: React.CSSProperties = {
 const STATUS_STYLE: React.CSSProperties = { fontSize: 12, color: "#7B8695" };
 const ERROR_STYLE: React.CSSProperties = { fontSize: 12, color: "#f2777a" };
 const TRUNCATED_STYLE: React.CSSProperties = { marginTop: 8, fontSize: 11, color: "#7B8695" };
-const LISTING_STYLE: React.CSSProperties = {
-  display: "flex",
-  gap: 12,
-  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-  fontSize: 12,
-  lineHeight: "18px",
-};
-const GUTTER_STYLE: React.CSSProperties = {
-  margin: 0,
-  textAlign: "right",
-  color: "#4A525F",
-  userSelect: "none",
-  whiteSpace: "pre",
-};
-const CODE_STYLE: React.CSSProperties = {
-  margin: 0,
-  flex: 1,
-  color: "#C9D3E0",
-  whiteSpace: "pre",
-  overflowX: "auto",
-};

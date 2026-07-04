@@ -12,6 +12,8 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { LogicRfNode } from "../../../layout/logicElk";
 import type { LogicNodeData } from "../../../derive/logicGraph";
+import type { CodeView } from "../../../state/store";
+import { CodeBlock } from "../../CodeBlock";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
@@ -25,10 +27,11 @@ function ExecPins() {
 }
 
 function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
-  const { toggleLogicExpand, showCode, expandCode } = useBlueprintActions();
+  const { toggleLogicExpand, showCode, expandCode, closeCode } = useBlueprintActions();
   const index = useBlueprint((s) => s.index);
   const sourceUrl = useBlueprint((s) => s.sourceUrl);
   const logicSelected = useBlueprint((s) => s.logicSelected);
+  const codeView = useBlueprint((s) => s.codeView);
   const d = data as LogicNodeData;
   const select = selectStateFor(d.targetId, logicSelected);
   if (d.isContainer) {
@@ -36,41 +39,85 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   }
   const codeNode = d.targetId ? index.nodesById.get(d.targetId) : undefined;
   const canCode = Boolean(codeNode?.location) && Boolean(sourceUrl);
+  // The inline box shows only for THIS block's own target, and only while the store keeps it in
+  // the compact "inline" mode (the modal takes over once expandCode flips mode → "modal").
+  const showingInline = codeNode != null && codeView != null && codeView.node.id === codeNode.id && codeView.mode === "inline";
   const stop = (e: React.MouseEvent) => e.stopPropagation();
+  // </> now TOGGLES the compact inline view instead of jumping straight to the modal: a second
+  // click on the block that's already showing closes it; the modal is reached from the box's ⤢.
+  const toggleCode = () => (showingInline ? closeCode() : void showCode(codeNode!));
   const codeButton = canCode && codeNode ? (
-    <button type="button" style={CODE_BTN} title="view source" onClick={(e) => { stop(e); void showCode(codeNode); expandCode(); }}>{"</>"}</button>
+    <button type="button" style={CODE_BTN} title="view source" onClick={(e) => { stop(e); toggleCode(); }}>{"</>"}</button>
   ) : null;
+  const inline = showingInline && codeView ? <InlineCode codeView={codeView} onExpand={expandCode} onClose={closeCode} /> : null;
   // A greyed leaf is a small chip beside the larger call nodes: the name stays priority (never
   // clipped) while provenance shrinks to just the module on one tight line, full `pkg › module`
   // in its title. Greyed leaves are never expandable, so there is no disclosure chevron here.
   if (d.greyed) {
     return (
-      <div style={selectStyle(GREY_BODY, select)}>
-        <ExecPins />
-        <div style={GREY_TITLE}>
-          <span style={GREY_GLYPH}>ƒ</span>
-          <span style={NAME} title={d.label}>{d.label}</span>
-          {codeButton}
+      <div style={WRAP}>
+        <div style={selectStyle(GREY_BODY, select)}>
+          <ExecPins />
+          <div style={GREY_TITLE}>
+            <span style={GREY_GLYPH}>ƒ</span>
+            <span style={NAME} title={d.label}>{d.label}</span>
+            {codeButton}
+          </div>
+          {d.provenance ? <div style={GREY_PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.module}</div> : null}
         </div>
-        {d.provenance ? <div style={GREY_PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.module}</div> : null}
+        {inline}
       </div>
     );
   }
   // A normal block is an expandable call (non-greyed blocks are always expandable). Expand-in-place
   // is now an explicit title-tail button beside </> (collapsed here, so ▸), not a header click —
   // a single body click selects and a double-click dives, so the old click-to-expand was ambiguous.
+  // The relative WRAP (not clipped) hosts the clipped body PLUS the inline box hanging below it.
   return (
-    <div style={selectStyle(BODY, select)}>
-      <ExecPins />
-      <div style={titleStyle(BLOCK_ACCENT)}>
-        <span style={GLYPH}>ƒ</span>
-        <span style={NAME} title={d.label}>{d.label}</span>
-        <span style={TITLE_TAIL}>
-          <ExpandButton expanded={false} onToggle={() => toggleLogicExpand(id)} />
-          {codeButton}
-        </span>
+    <div style={WRAP}>
+      <div style={selectStyle(BODY, select)}>
+        <ExecPins />
+        <div style={titleStyle(BLOCK_ACCENT)}>
+          <span style={GLYPH}>ƒ</span>
+          <span style={NAME} title={d.label}>{d.label}</span>
+          <span style={TITLE_TAIL}>
+            <ExpandButton expanded={false} onToggle={() => toggleLogicExpand(id)} />
+            {codeButton}
+          </span>
+        </div>
+        {d.provenance ? <div style={PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.pkg} › {d.provenance.module}</div> : null}
       </div>
-      {d.provenance ? <div style={PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.pkg} › {d.provenance.module}</div> : null}
+      {inline}
+    </div>
+  );
+}
+
+/**
+ * The compact inline source box for a logic building block: an absolutely-positioned panel hanging
+ * just below the node (top:100%), a SIBLING of the clipped body so the body's overflow:hidden can't
+ * cut it off. It is capped in width and the code scrolls inside CodeBlock, so it overlays neighbours
+ * without changing the node's laid-out box (no relayout). Its ⤢ blows the same code up into the
+ * centered modal (CodePanel); × closes it. Pointer events are swallowed so interacting with the box
+ * never pans the canvas, drags the node, or triggers select/dive.
+ */
+function InlineCode(props: { codeView: CodeView; onExpand: () => void; onClose: () => void }) {
+  const { node, code, loading, error, truncated } = props.codeView;
+  const { file, startLine, endLine } = node.location;
+  const range = endLine && endLine !== startLine ? `${startLine}-${endLine}` : String(startLine);
+  const stop = (e: React.SyntheticEvent) => e.stopPropagation();
+  return (
+    <div style={INLINE_BOX} onClick={stop} onDoubleClick={stop} onMouseDown={stop}>
+      <div style={INLINE_HEAD}>
+        <span style={INLINE_LOC} title={file}>{`${file}:${range}`}</span>
+        <button type="button" style={INLINE_ICON} aria-label="Open in modal" title="Open in modal" onClick={(e) => { stop(e); props.onExpand(); }}>⤢</button>
+        <button type="button" style={INLINE_ICON} aria-label="Close source" title="Close" onClick={(e) => { stop(e); props.onClose(); }}>×</button>
+      </div>
+      <div style={INLINE_BODY}>
+        {loading ? <div style={INLINE_STATUS}>Loading…</div> : null}
+        {error ? <div style={INLINE_ERROR}>{error}</div> : null}
+        {code !== null ? <CodeBlock code={code} maxHeight={200} /> : null}
+        {truncated ? <div style={INLINE_TRUNC}>…truncated</div> : null}
+      </div>
     </div>
   );
 }
@@ -225,6 +272,10 @@ const BRANCH_ACCENT = "#A78BFA";
 
 const PIN: React.CSSProperties = { width: 7, height: 7, background: "#C8D3E0", border: "none", minWidth: 0, minHeight: 0 };
 
+// The block's outer shell: fills the node box and is NOT clipped, so the inline code box (an
+// absolute child at top:100%) can hang below the body's overflow:hidden without being cut off.
+const WRAP: React.CSSProperties = { position: "relative", width: "100%", height: "100%", fontFamily: MONO };
+
 const BODY: React.CSSProperties = {
   width: "100%",
   height: "100%",
@@ -319,3 +370,28 @@ const GREY_PROV: React.CSSProperties = { padding: "0 6px 2px", fontSize: 9, line
 const FRAME_PROV: React.CSSProperties = { fontSize: 9, fontWeight: 400, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const COUNT: React.CSSProperties = { marginLeft: "auto", fontSize: 10, fontWeight: 600, opacity: 0.75 };
 const CODE_BTN: React.CSSProperties = { marginLeft: "auto", border: "none", background: "rgba(0,0,0,0.18)", color: "#0B0E13", borderRadius: 4, padding: "1px 5px", fontSize: 10, fontFamily: MONO, cursor: "pointer" };
+
+// The inline source box: hangs below the node (top:100%), high z-index so it overlays neighbours,
+// left-aligned to the node. overflow:hidden keeps the rounded corners; the code scrolls in CodeBlock.
+const INLINE_BOX: React.CSSProperties = {
+  position: "absolute",
+  top: "100%",
+  left: 0,
+  marginTop: 6,
+  width: 460,
+  maxWidth: "60vw",
+  zIndex: 20,
+  background: "#0E1116",
+  border: "1px solid #2A2F37",
+  borderRadius: 8,
+  boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+  overflow: "hidden",
+  cursor: "default",
+};
+const INLINE_HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", background: "#161B22", borderBottom: "1px solid #2A2F37" };
+const INLINE_LOC: React.CSSProperties = { flex: 1, minWidth: 0, fontSize: 10, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const INLINE_ICON: React.CSSProperties = { flexShrink: 0, background: "#1A1F27", color: "#9AA4B2", border: "1px solid #2A2F37", borderRadius: 5, width: 20, height: 20, fontSize: 12, lineHeight: 1, cursor: "pointer" };
+const INLINE_BODY: React.CSSProperties = { padding: 8 };
+const INLINE_STATUS: React.CSSProperties = { fontSize: 11, color: "#7B8695" };
+const INLINE_ERROR: React.CSSProperties = { fontSize: 11, color: "#f2777a" };
+const INLINE_TRUNC: React.CSSProperties = { marginTop: 6, fontSize: 10, color: "#7B8695" };
