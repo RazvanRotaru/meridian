@@ -81,13 +81,15 @@ function markDependencyCycles(metrics: Map<string, UnitMetrics>, nodes: GraphNod
 }
 
 /** Post-pass (needs every unit's instability): SDP says "depend toward stability", so each
- * efferent target strictly MORE unstable than the unit itself is one violation. */
+ * efferent target strictly MORE unstable than the unit itself is one violation. Compares RAW
+ * instability (recomputed from the integer Ce/Ca), never the rounded display field — otherwise a
+ * strict `>` collapses to equality at a 2-decimal boundary and silently drops a real violation. */
 function countSdpViolations(metrics: Map<string, UnitMetrics>, couplingByUnit: Map<string, UnitCoupling>): void {
+  const rawInstability = (m: UnitMetrics | undefined) => (m ? instabilityOf(m.ca, m.ce) : 0);
   for (const metric of metrics.values()) {
     const efferent = couplingByUnit.get(metric.id)?.efferent ?? new Set<string>();
-    metric.sdpViolations = [...efferent].filter(
-      (target) => (metrics.get(target)?.instability ?? 0) > metric.instability,
-    ).length;
+    const own = rawInstability(metric);
+    metric.sdpViolations = [...efferent].filter((target) => rawInstability(metrics.get(target)) > own).length;
   }
 }
 

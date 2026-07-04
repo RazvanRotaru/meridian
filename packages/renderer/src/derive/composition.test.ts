@@ -369,6 +369,27 @@ describe("SDP violations", () => {
     expect(metricOf(nodes, edges, "B").sdpViolations).toBe(0); // leaves have I = 0
     expect(metricOf(nodes, edges, "C").sdpViolations).toBe(0); // no efferent at all
   });
+
+  it("counts a violation even when both instabilities round to the same 2 decimals", () => {
+    // A: Ca 5, Ce 12 → raw I = 12/17 = 0.7059. T: Ca 2, Ce 5 → raw I = 5/7 = 0.7143.
+    // Both display as 0.71, but T is genuinely more unstable — the raw compare must still catch it.
+    const n: GraphNode[] = [];
+    const e: GraphEdge[] = [];
+    const mods = ["A", "T", "FT1"];
+    for (let i = 1; i <= 5; i++) mods.push(`FA${i}`);
+    for (let i = 1; i <= 11; i++) mods.push(`C${i}`);
+    for (let i = 1; i <= 5; i++) mods.push(`D${i}`);
+    for (const id of mods) n.push(node(id, "module"), node(`${id}#f`, "function", { parentId: id }));
+    for (let i = 1; i <= 5; i++) e.push(edge(`FA${i}#f`, "A#f")); // Ca(A) = 5
+    e.push(edge("A#f", "T#f")); // the boundary-case efferent
+    for (let i = 1; i <= 11; i++) e.push(edge("A#f", `C${i}#f`)); // Ce(A) = 12 total
+    e.push(edge("FT1#f", "T#f")); // Ca(T) = 2 (A + FT1)
+    for (let i = 1; i <= 5; i++) e.push(edge("T#f", `D${i}#f`)); // Ce(T) = 5
+
+    const a = metricOf(n, e, "A");
+    expect(a.instability).toBe(metricOf(n, e, "T").instability); // both 0.71
+    expect(a.sdpViolations).toBe(1); // T only; rounding must not hide it
+  });
 });
 
 describe("rankRefactorCandidates", () => {
