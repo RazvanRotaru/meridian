@@ -81,6 +81,33 @@ export function handleTry() {
 function doWork() {}
 function report(e: unknown) {}
 function fallback() {}
+
+export function iterate(items: string[]) {
+  prep();
+  items.forEach((x) => {
+    seen(x);
+    if (x) {
+      mark();
+    }
+  });
+  done();
+}
+function prep() {}
+function seen(x: string) {}
+function mark() {}
+function done() {}
+
+export function iterateNamed(items: string[], handler: (x: string) => void) {
+  items.forEach(handler);
+}
+
+export function iterateFrom() {
+  getItems().forEach((x) => {
+    use(x);
+  });
+}
+function getItems(): string[] { return []; }
+function use(x: string) {}
 `;
 
 // A module whose top-level runs at load: a call, a branch, a loop — plus declarations that do
@@ -227,6 +254,43 @@ describe("logic-flow pass", () => {
     // helper() is declared at load, not run — its call to ignored() is helper's own flow.
     expect(allCallLabels(steps)).toEqual(["setup", "enable", "handle"]);
     expect(callLabels(stepsFor("helper") ?? [])).toEqual(["ignored"]);
+  });
+
+  it("lifts an inline forEach callback into a loop with the callback body walked (iterate)", () => {
+    const steps = stepsFor("iterate") ?? [];
+    expect(steps.map((step) => step.kind)).toEqual(["call", "loop", "call"]);
+    expect(steps[0]).toMatchObject({ kind: "call", label: "prep" });
+    expect(steps[2]).toMatchObject({ kind: "call", label: "done" });
+    const loop = steps[1];
+    expect(loop.kind).toBe("loop");
+    if (loop.kind === "loop") {
+      expect(loop.label).toBe("for each x");
+      expect(loop.body.map((step) => step.kind)).toEqual(["call", "branch"]);
+      expect(callLabels(loop.body)).toEqual(["seen"]);
+      const branch = loop.body[1];
+      if (branch.kind === "branch") {
+        expect(branch.label).toBe("if x");
+        expect(callLabels(branch.paths[0].body)).toEqual(["mark"]);
+      }
+    }
+  });
+
+  it("keeps a non-inline (named) iteration callback as a plain call, not a loop (iterateNamed)", () => {
+    const steps = stepsFor("iterateNamed") ?? [];
+    expect(steps.map((step) => step.kind)).toEqual(["call"]);
+    expect(steps[0]).toMatchObject({ kind: "call", label: "items.forEach" });
+  });
+
+  it("emits receiver calls before the iteration loop (iterateFrom)", () => {
+    const steps = stepsFor("iterateFrom") ?? [];
+    expect(steps.map((step) => step.kind)).toEqual(["call", "loop"]);
+    expect(steps[0]).toMatchObject({ kind: "call", label: "getItems" });
+    const loop = steps[1];
+    expect(loop.kind).toBe("loop");
+    if (loop.kind === "loop") {
+      expect(loop.label).toBe("for each x");
+      expect(callLabels(loop.body)).toEqual(["use"]);
+    }
   });
 
   it("maps try/catch to try and catch paths (handleTry)", () => {
