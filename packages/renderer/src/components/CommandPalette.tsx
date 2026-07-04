@@ -12,8 +12,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { GraphArtifact, GraphNode, NodeId } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 
-// Only callables and modules have a meaningful logic flow to open; classes/enums/etc. are skipped.
-const SYMBOL_KINDS = new Set(["function", "method", "module"]);
+// Logic/UI mode: only callables and modules have a meaningful logic flow to open.
+const LOGIC_KINDS = new Set(["function", "method", "module"]);
+// Composition ("call") mode: the structural roots the tab can open rooted at — modules and packages.
+const ROOT_KINDS = new Set(["module", "package"]);
 // Cap the list so a huge graph never renders thousands of rows into the scroll container.
 const MAX_ROWS = 40;
 
@@ -31,7 +33,10 @@ interface SymbolEntry {
 export function CommandPalette() {
   const artifact = useBlueprint((state) => state.artifact);
   const index = useBlueprint((state) => state.index);
-  const { openLogicFlow } = useBlueprintActions();
+  const viewMode = useBlueprint((state) => state.viewMode);
+  const { openLogicFlow, setCompRoot } = useBlueprintActions();
+  // The "call" lens IS the Service-composition graph, so there ⌘P re-roots it; logic/ui open a flow.
+  const compositionMode = viewMode === "call";
 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -60,10 +65,10 @@ export function CommandPalette() {
     }
   }, [open]);
 
-  // Rank once per artifact (flow-bearing symbols first) — not on every keystroke. The order carries
-  // through the substring filter below, so matches with a flow always sort above those without.
-  const symbols = useMemo(() => collectSymbols(artifact, index.nodesById), [artifact, index.nodesById]);
-  const results = useMemo(() => selectResults(symbols, query), [symbols, query]);
+  // Rank once per artifact + mode (not on every keystroke): logic ranks flow-bearing symbols first;
+  // composition lists modules/packages by name. The order carries through the substring filter below.
+  const symbols = useMemo(() => collectSymbols(artifact, index.nodesById, compositionMode), [artifact, index.nodesById, compositionMode]);
+  const results = useMemo(() => selectResults(symbols, query, compositionMode), [symbols, query, compositionMode]);
 
   // Typing shifts the result set, so re-prime the highlight to the top match.
   useEffect(() => {
@@ -81,8 +86,13 @@ export function CommandPalette() {
   }
 
   const close = () => setOpen(false);
+  // Composition mode re-roots the graph at the pick; logic/ui open its logic flow. Either way, close.
   const openPick = (id: NodeId) => {
-    openLogicFlow(id);
+    if (compositionMode) {
+      setCompRoot(id);
+    } else {
+      openLogicFlow(id);
+    }
     close();
   };
 
@@ -110,11 +120,11 @@ export function CommandPalette() {
   // Backdrop click closes; clicks inside the dialog are swallowed so they don't reach it.
   return (
     <div style={BACKDROP_STYLE} onClick={close}>
-      <div style={DIALOG_STYLE} role="dialog" aria-modal aria-label="Open a symbol's logic flow" onClick={(e) => e.stopPropagation()}>
+      <div style={DIALOG_STYLE} role="dialog" aria-modal aria-label={compositionMode ? "Root the composition at a module or package" : "Open a symbol's logic flow"} onClick={(e) => e.stopPropagation()}>
         <input
           style={INPUT_STYLE}
           autoFocus
-          placeholder="Search a symbol to open its logic flow…"
+          placeholder={compositionMode ? "Root the composition at…" : "Search a symbol to open its logic flow…"}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={onInputKeyDown}
@@ -172,15 +182,17 @@ function ResultRow(props: {
 }
 
 /**
- * Every function/method/module in the graph as a searchable row, sorted flow-bearing first (then
- * alphabetically). Filtering preserves this order, so symbols that actually open a logic flow always
- * rank above those that don't. `logicFlow` is a loose extension record, so it's cast like the store.
+ * The searchable rows for the current mode. Logic/UI: every function/method/module, sorted
+ * flow-bearing first (then alphabetically) so flow-openable symbols rank above those without.
+ * Composition: every module/package (the structural roots), no step count — they sort by name.
+ * Both preserve their order through the substring filter. `logicFlow` is a loose extension record.
  */
-function collectSymbols(artifact: GraphArtifact, nodesById: ReadonlyMap<string, GraphNode>): SymbolEntry[] {
-  const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as Record<string, unknown[]>;
+function collectSymbols(artifact: GraphArtifact, nodesById: ReadonlyMap<string, GraphNode>, compositionMode: boolean): SymbolEntry[] {
+  const flows = compositionMode ? {} : ((artifact.extensions?.logicFlow ?? {}) as unknown as Record<string, unknown[]>);
+  const kinds = compositionMode ? ROOT_KINDS : LOGIC_KINDS;
   const entries: SymbolEntry[] = [];
   for (const node of nodesById.values()) {
-    if (!SYMBOL_KINDS.has(node.kind)) {
+    if (!kinds.has(node.kind)) {
       continue;
     }
     const steps = flows[node.id];
@@ -204,13 +216,15 @@ function byFlowThenName(a: SymbolEntry, b: SymbolEntry): number {
 }
 
 /**
- * The rows to show: with no query, the top flow-bearing symbols (a sensible default to jump into);
- * with a query, symbols whose display OR qualified name contains the (lowercased) needle. Capped.
+ * The rows to show: with no query, a sensible default set — composition shows the top roots, logic
+ * shows the top flow-bearing symbols (the ones worth jumping into); with a query, symbols whose
+ * display OR qualified name contains the (lowercased) needle. Capped.
  */
-function selectResults(symbols: SymbolEntry[], query: string): SymbolEntry[] {
+function selectResults(symbols: SymbolEntry[], query: string, compositionMode: boolean): SymbolEntry[] {
   const needle = query.trim().toLowerCase();
   if (!needle) {
-    return symbols.filter((entry) => entry.stepCount !== null).slice(0, MAX_ROWS);
+    const base = compositionMode ? symbols : symbols.filter((entry) => entry.stepCount !== null);
+    return base.slice(0, MAX_ROWS);
   }
   const matched: SymbolEntry[] = [];
   for (const entry of symbols) {

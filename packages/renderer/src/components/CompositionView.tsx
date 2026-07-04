@@ -21,7 +21,9 @@ export function CompositionView() {
   const edges = useBlueprint((state) => state.compRfEdges);
   const selectedId = useBlueprint((state) => state.compSelectedId);
   const layoutStatus = useBlueprint((state) => state.compLayoutStatus);
-  const { selectCompUnit } = useBlueprintActions();
+  const compRoot = useBlueprint((state) => state.compRoot);
+  const nodesById = useBlueprint((state) => state.index.nodesById);
+  const { selectCompUnit, setCompRoot } = useBlueprintActions();
 
   // The highlight is a pure repaint over the store's laid-out graph — recomputed only when the
   // layout or the selection changes, never mutating the store arrays.
@@ -31,15 +33,30 @@ export function CompositionView() {
   );
 
   // A cluster frame is a passive panel, not a selectable unit — clicking one clears the selection,
-  // exactly like clicking empty canvas, so it never dims every unit with a nonsense frame id.
-  const onNodeClick: NodeMouseHandler<Node> = (_event, node) =>
-    selectCompUnit(node.type === "cluster" ? null : node.id);
+  // like clicking empty canvas. A boundary neighbour re-roots the graph THERE (travel one hop out);
+  // any other unit selects normally.
+  const onNodeClick: NodeMouseHandler<Node> = (_event, node) => {
+    if (node.type === "cluster") {
+      selectCompUnit(null);
+      return;
+    }
+    if ((node.data as CompNodeData).boundary) {
+      setCompRoot(node.id);
+      return;
+    }
+    selectCompUnit(node.id);
+  };
 
   // A handle on the surface so the first laid-out graph fits once (the `fitView` prop only fits on
   // mount, before the async ELK layout has produced any nodes). Guarded so later relayouts don't
   // yank the viewport back.
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const fitted = useRef(false);
+  // A new root is a fresh graph, so clear the one-shot guard FIRST: when the rooted layout lands, the
+  // fit effect below re-fits the viewport to it exactly as it did on first load.
+  useEffect(() => {
+    fitted.current = false;
+  }, [compRoot]);
   useEffect(() => {
     if (!rfRef.current || nodes.length === 0 || fitted.current) {
       return;
@@ -49,6 +66,7 @@ export function CompositionView() {
   }, [nodes]);
 
   const isEmpty = nodes.length === 0 && layoutStatus === "ready";
+  const rootLabel = compRoot ? nodesById.get(compRoot)?.displayName ?? compRoot : null;
 
   return (
     <div style={SURFACE_STYLE}>
@@ -65,8 +83,30 @@ export function CompositionView() {
       >
         <CanvasChrome nodeColor={miniMapColor} />
       </ReactFlow>
+      <CompositionBreadcrumb rootId={compRoot} rootLabel={rootLabel} onHome={() => setCompRoot(null)} />
       {isEmpty ? <EmptyCompositionCard /> : null}
     </div>
+  );
+}
+
+/**
+ * The composition root trail, mirroring the Logic-flow breadcrumb: "Whole system" alone when rootless,
+ * else "Whole system ▸ <root>" where "Whole system" is a button back to the full graph. Floated
+ * top-left, inset to clear the Toolbar panel.
+ */
+function CompositionBreadcrumb(props: { rootId: string | null; rootLabel: string | null; onHome: () => void }) {
+  return (
+    <nav style={BREADCRUMB_STYLE} aria-label="Composition root">
+      {props.rootLabel === null ? (
+        <span style={CRUMB_CURRENT_STYLE} aria-current="page">Whole system</span>
+      ) : (
+        <>
+          <button type="button" style={CRUMB_STYLE} onClick={props.onHome}>Whole system</button>
+          <span style={CRUMB_SEP_STYLE} aria-hidden>›</span>
+          <span style={CRUMB_CURRENT_STYLE} aria-current="page" title={props.rootId ?? undefined}>{props.rootLabel}</span>
+        </>
+      )}
+    </nav>
   );
 }
 
@@ -150,6 +190,34 @@ function EmptyCompositionCard() {
 }
 
 const SURFACE_STYLE: React.CSSProperties = { position: "absolute", inset: 0, background: "#0E1116" };
+// Floats top-left, inset past the Toolbar panel (matches the Logic view's overlay clearance); a
+// compact dark pill so the trail reads over the canvas without stealing pans outside itself.
+const BREADCRUMB_STYLE: React.CSSProperties = {
+  position: "absolute",
+  top: 16,
+  left: 340,
+  zIndex: 5,
+  display: "flex",
+  alignItems: "center",
+  gap: 4,
+  border: "1px solid #2A2F37",
+  borderRadius: 8,
+  background: "rgba(18,23,30,0.92)",
+  padding: "4px 8px",
+};
+// Mirrors LogicFlowView's crumb styling so the two breadcrumbs read as one control language.
+const CRUMB_STYLE: React.CSSProperties = {
+  background: "transparent",
+  border: "none",
+  padding: "2px 4px",
+  borderRadius: 4,
+  cursor: "pointer",
+  font: "inherit",
+  fontSize: 13,
+  color: "#9AA4B2",
+};
+const CRUMB_CURRENT_STYLE: React.CSSProperties = { ...CRUMB_STYLE, color: "#E6EDF3", fontWeight: 600, cursor: "default" };
+const CRUMB_SEP_STYLE: React.CSSProperties = { color: "#4B535F", fontSize: 13 };
 const EMPTY_WRAP_STYLE: React.CSSProperties = {
   position: "absolute",
   inset: 0,

@@ -10,6 +10,7 @@
 import type { GraphEdge, GraphNode } from "@meridian/core";
 import { computeCompositionMetrics, type UnitMetrics } from "./composition";
 import { couplingEdges } from "./composition-graph";
+import { computeRootedView } from "./compositionRoot";
 import { buildClusters, type ClusterFrame } from "./compositionClusters";
 
 // A `type` (not an interface) so it satisfies React Flow's `Node<T extends Record<string, unknown>>`
@@ -19,6 +20,9 @@ export type CompNodeData = {
   kind: string;
   label: string;
   metrics: UnitMetrics;
+  /** A 1-hop coupling neighbour of the rooted subtree — drawn faded + click-to-re-root. Absent/false
+   * for the root's own units and for the whole-system (rootless) view. */
+  boundary?: boolean;
 };
 
 // A cluster FRAME's data: presentation only — the package/folder label plus the tallies that drive
@@ -63,20 +67,29 @@ export interface CompositionGraphSpec {
  * Every unit that carries weight — has ≥1 member OR sits on ≥1 coupling wire — as a sized
  * scorecard, plus the peer wires between them. An empty, uncoupled unit is dropped so the canvas
  * isn't cluttered with dead frames; a coupling endpoint is always kept even if it has no members.
+ *
+ * A non-null `root` (a module/package node id) narrows the graph to a ROOTED view: only the units
+ * the root contains plus their 1-hop coupling neighbours (the latter flagged `boundary` and drawn
+ * faded so a click can re-root there). `root === null` is the unchanged whole-system view.
  */
-export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[]): CompositionGraphSpec {
+export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[], root: string | null = null): CompositionGraphSpec {
   const metrics = computeCompositionMetrics(nodes, edges);
   const couplings = couplingEdges(nodes, edges);
   const coupled = couplingEndpoints(couplings);
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
 
+  // The whole-system survivor set drives both views; a root then restricts it to its subtree + the
+  // 1-hop neighbours, keeping the root's own unit even if it would otherwise be dropped.
+  const survivors = survivingUnits(metrics, coupled);
+  const view = computeRootedView(root, survivors, root !== null && metrics.has(root), couplings, nodesById);
+
   const unitSpecs: CompNodeSpec[] = [];
   const emitted = new Set<string>();
   for (const metric of metrics.values()) {
-    if (metric.members === 0 && !coupled.has(metric.id)) {
+    if (!view.visible.has(metric.id)) {
       continue;
     }
-    unitSpecs.push(unitNode(metric));
+    unitSpecs.push(unitNode(metric, view.boundary.has(metric.id)));
     emitted.add(metric.id);
   }
 
@@ -137,8 +150,19 @@ function couplingEndpoints(couplings: ReturnType<typeof couplingEdges>): Set<str
   return ids;
 }
 
-function unitNode(metric: UnitMetrics): CompNodeSpec {
-  const data: CompNodeData = { unitId: metric.id, kind: metric.kind, label: metric.displayName, metrics: metric };
+/** The units carrying weight: ≥1 member OR ≥1 coupling wire — the whole-system scorecard set. */
+function survivingUnits(metrics: Map<string, UnitMetrics>, coupled: Set<string>): Set<string> {
+  const survivors = new Set<string>();
+  for (const metric of metrics.values()) {
+    if (metric.members > 0 || coupled.has(metric.id)) {
+      survivors.add(metric.id);
+    }
+  }
+  return survivors;
+}
+
+function unitNode(metric: UnitMetrics, boundary: boolean): CompNodeSpec {
+  const data: CompNodeData = { unitId: metric.id, kind: metric.kind, label: metric.displayName, metrics: metric, boundary };
   const { width, height } = sizeFor(data);
   return { id: metric.id, type: "unit", width, height, data };
 }

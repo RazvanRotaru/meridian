@@ -24,18 +24,25 @@ function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
   const compSelectedId = useBlueprint((state) => state.compSelectedId);
   const d = data as CompNodeData;
   const metrics = d.metrics;
-  const selected = compSelectedId === d.unitId;
+  // A boundary (1-hop neighbour of the root) is a faded, click-to-re-root ghost — never the selected
+  // unit, so it never wears the green selection ring.
+  const boundary = d.boundary === true;
+  const selected = compSelectedId === d.unitId && !boundary;
   const health = colorForDistance(metrics.distance);
   const tint = accentForKind(d.kind);
   return (
-    <div style={selected ? CARD_SELECTED : CARD}>
+    <div style={boundary ? CARD_BOUNDARY : selected ? CARD_SELECTED : CARD}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+      {/* The health rail stays crisp on a boundary card so the neighbour's health still reads. */}
       <div style={{ ...ACCENT_BAR, background: health }} />
-      <div style={INNER}>
+      <div style={boundary ? INNER_BOUNDARY : INNER}>
         <div style={HEADER}>
           <span style={{ ...GLYPH, color: tint }}>{glyphForKind(d.kind)}</span>
           <span style={LABEL} title={d.label}>{d.label}</span>
+          {boundary ? (
+            <span style={BOUNDARY_TAG} title="Click to root the composition here">▸ ROOT</span>
+          ) : null}
           <span style={{ ...KIND_TAG, color: tint, borderColor: tint }}>{d.kind.toUpperCase()}</span>
         </div>
         <div style={METRIC_ROW}>
@@ -136,6 +143,14 @@ const CARD_SELECTED: React.CSSProperties = {
   borderColor: COMP_SELECT_ACCENT,
   boxShadow: `0 0 0 2px ${COMP_SELECT_ACCENT}`,
 };
+// A boundary neighbour reads as a ghost: dashed border + darker fill say "context, not part of the
+// root"; its body dims (below) while the accent rail stays lit. Clicking it re-roots there.
+const CARD_BOUNDARY: React.CSSProperties = {
+  ...CARD,
+  borderStyle: "dashed",
+  borderColor: "#39414D",
+  background: "#0F141B",
+};
 // The 4px left rail, coloured by health — the card's fastest visual signal.
 const ACCENT_BAR: React.CSSProperties = { position: "absolute", left: 0, top: 0, bottom: 0, width: 4 };
 const INNER: React.CSSProperties = {
@@ -144,7 +159,21 @@ const INNER: React.CSSProperties = {
   gap: 5,
   padding: "9px 11px 9px 13px",
 };
+// A boundary card's body recedes; the "▸ ROOT" affordance below is bright enough to stay legible.
+const INNER_BOUNDARY: React.CSSProperties = { ...INNER, opacity: 0.6 };
 const HEADER: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6 };
+// The re-root affordance on a boundary card — a blue pill mirroring the palette's structural accent.
+const BOUNDARY_TAG: React.CSSProperties = {
+  flexShrink: 0,
+  fontSize: 8,
+  fontWeight: 700,
+  letterSpacing: "0.06em",
+  color: "#8FB6E3",
+  border: "1px solid #2F4A66",
+  background: "rgba(59,122,192,0.16)",
+  borderRadius: 3,
+  padding: "1px 4px",
+};
 const GLYPH: React.CSSProperties = { fontSize: 12, flexShrink: 0 };
 const LABEL: React.CSSProperties = {
   flex: 1,

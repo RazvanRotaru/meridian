@@ -91,6 +91,9 @@ export interface BlueprintState {
   compLayoutStatus: LayoutStatus;
   /** The selected composition unit id; null == none. A repaint-only highlight — no relayout. */
   compSelectedId: string | null;
+  /** The module/package the Service-composition tab is rooted at; null == the whole system. Defaults
+   * to the app's first entry module. Only its subtree + 1-hop coupling neighbours are drawn. */
+  compRoot: string | null;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -130,6 +133,7 @@ export interface BlueprintState {
   logicRelayout(): Promise<void>;
   compRelayout(): Promise<void>;
   selectCompUnit(id: string | null): void;
+  setCompRoot(id: string | null): void;
   setViewMode(mode: ViewMode): void;
   setEnvironment(environment: string): void;
   refreshTelemetry(): Promise<void>;
@@ -158,6 +162,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let compLayoutSeq = 0;
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
+  // The composition tab opens on the WHOLE-SYSTEM overview (null root); file-rooting is the explicit
+  // focus tool (⌘P / click a boundary or frame). Auto-rooting at the declared entry module proved a
+  // poor default — a React entry (e.g. main.tsx) is a thin bootstrap with no cross-unit coupling, so
+  // it roots to a lone card. Predictable overview-first beats a sometimes-empty auto-root; whether to
+  // auto-root a meaningful entry is an open design question (see docs/service-composition-design.md §8).
+  const defaultCompRoot = null;
 
   return createStore<BlueprintState>((set, get) => ({
     artifact: dependencies.artifact,
@@ -184,6 +194,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     compRfEdges: [],
     compLayoutStatus: "idle",
     compSelectedId: null,
+    compRoot: defaultCompRoot,
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -378,11 +389,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // stale-seq guard. Reads the raw nodes/edges off the index (built from the artifact); the derive
     // decides which units earn a card and wires their couplings.
     async compRelayout() {
-      const { index } = get();
+      const { index, compRoot } = get();
       const nodes = [...index.nodesById.values()];
       const sequence = ++compLayoutSeq;
       set({ compLayoutStatus: "laying-out" });
-      const graph = await deriveCompositionLayout(nodes, index.edges);
+      const graph = await deriveCompositionLayout(nodes, index.edges, compRoot);
       if (compLayoutSeq !== sequence) {
         return; // a newer layout superseded this one.
       }
@@ -393,6 +404,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // graph, so this needs no relayout — it only repaints the highlight.
     selectCompUnit(id) {
       set({ compSelectedId: id });
+    },
+
+    // Re-root the Service-composition graph at a module/package (null == whole system). Clears the
+    // selection (it means nothing in a new rooted view) and re-lays out. A no-op when already there,
+    // matching the store's other navigation guards.
+    setCompRoot(id) {
+      if (get().compRoot === id) {
+        return;
+      }
+      set({ compRoot: id, compSelectedId: null });
+      void get().compRelayout();
     },
 
     // Switching mode re-derives + relayouts like a dive. Entering UI mode dives to the render
