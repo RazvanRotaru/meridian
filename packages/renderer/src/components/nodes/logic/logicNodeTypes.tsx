@@ -3,8 +3,9 @@
  * bar and left/right exec pins (the white sequence wires connect through them). A "building block"
  * is a function-call node — provenance (package › module) rides under the title so a block is never
  * a bare name; expandable ones carry a disclosure and expand INTO a container frame; greyed leaves
- * are smaller/desaturated. `for`/`while`/`try` render as framed containers; `if`/`switch` as a
- * compact Branch node whose then/else/case wires leave labeled.
+ * shrink to small chips (name stays priority, provenance compacts to just the module). `for`/`while`
+ * /`try` render as framed containers; `if`/`switch` render as a violet hexagon DECISION node —
+ * a shape that reads as control-flow at a glance — whose then/else/case wires leave labeled.
  */
 
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
@@ -36,19 +37,34 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   const codeNode = d.targetId ? index.nodesById.get(d.targetId) : undefined;
   const canCode = Boolean(codeNode?.location) && Boolean(sourceUrl);
   const stop = (e: React.MouseEvent) => e.stopPropagation();
+  const codeButton = canCode && codeNode ? (
+    <button type="button" style={CODE_BTN} title="view source" onClick={(e) => { stop(e); void showCode(codeNode); expandCode(); }}>{"</>"}</button>
+  ) : null;
+  // A greyed leaf is a small chip beside the larger call nodes: the name stays priority (never
+  // clipped) while provenance shrinks to just the module on one tight line, full `pkg › module`
+  // in its title. Greyed leaves are never expandable, so there is no disclosure chevron here.
+  if (d.greyed) {
+    return (
+      <div style={selectStyle(GREY_BODY, select)}>
+        <ExecPins />
+        <div style={GREY_TITLE}>
+          <span style={GREY_GLYPH}>ƒ</span>
+          <span style={NAME} title={d.label}>{d.label}</span>
+          {codeButton}
+        </div>
+        {d.provenance ? <div style={GREY_PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.module}</div> : null}
+      </div>
+    );
+  }
+  // A normal block is an expandable call (non-greyed blocks are always expandable): the chevron
+  // opens its flow, and the full provenance line stays visible under the title.
   return (
-    <div style={selectStyle(d.greyed ? GREY_BODY : BODY, select)}>
+    <div style={selectStyle(BODY, select)}>
       <ExecPins />
-      <div style={titleStyle(d.greyed ? GREY_ACCENT : BLOCK_ACCENT)}>
-        {d.expandable ? (
-          <span style={CHEV} onClick={(e) => { stop(e); toggleLogicExpand(id); }} title="expand its flow">▸</span>
-        ) : (
-          <span style={GLYPH}>ƒ</span>
-        )}
+      <div style={titleStyle(BLOCK_ACCENT)}>
+        <span style={CHEV} onClick={(e) => { stop(e); toggleLogicExpand(id); }} title="expand its flow">▸</span>
         <span style={NAME} title={d.label}>{d.label}</span>
-        {canCode && codeNode ? (
-          <button type="button" style={CODE_BTN} title="view source" onClick={(e) => { stop(e); void showCode(codeNode); expandCode(); }}>{"</>"}</button>
-        ) : null}
+        {codeButton}
       </div>
       {d.provenance ? <div style={PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.pkg} › {d.provenance.module}</div> : null}
     </div>
@@ -82,12 +98,16 @@ function BranchNode({ data }: NodeProps<LogicRfNode>) {
   const logicSelected = useBlueprint((s) => s.logicSelected);
   const d = data as LogicNodeData;
   const select = selectStateFor(d.targetId, logicSelected);
+  // switch fans out to many cases; if is binary — different glyphs signal which decision at a glance.
+  const glyph = d.logicKind === "switch" ? "⋔" : "◆";
   return (
-    <div style={selectStyle(BRANCH_BODY, select)}>
+    <div style={selectStyle(BRANCH_WRAP, select)}>
+      {/* Handles live OUTSIDE the clipped shape so the exec pins aren't clipped away; they still
+          anchor at the wrapper's left/right centre — the hexagon's exec points. */}
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-      <div style={titleStyle(BRANCH_ACCENT)}>
-        <span style={GLYPH}>◈</span>
+      <div style={BRANCH_SHAPE}>
+        <span style={BRANCH_GLYPH}>{glyph}</span>
         <span style={NAME} title={d.label}>{d.label}</span>
       </div>
     </div>
@@ -166,7 +186,8 @@ const BLOCK_ACCENT = "#3B7AC0";
 const GREY_ACCENT = "#3A414C";
 const LOOP_ACCENT = "#E6B84D";
 const TRY_ACCENT = "#D98A5B";
-const BRANCH_ACCENT = "#61DAFB";
+// Violet, deliberately unlike the blue building-block accent: a branch reads as control-flow.
+const BRANCH_ACCENT = "#A78BFA";
 
 const PIN: React.CSSProperties = { width: 7, height: 7, background: "#C8D3E0", border: "none", minWidth: 0, minHeight: 0 };
 
@@ -181,7 +202,28 @@ const BODY: React.CSSProperties = {
   fontFamily: MONO,
 };
 const GREY_BODY: React.CSSProperties = { ...BODY, opacity: 0.6, background: "#0E1116" };
-const BRANCH_BODY: React.CSSProperties = { ...BODY, borderColor: BRANCH_ACCENT };
+
+// A branch renders as a violet hexagon (points on the exec axis) so it never reads as a rectangular
+// building block. The wrapper hosts the exec pins and any selection dim; the shape does the clipping.
+const BRANCH_WRAP: React.CSSProperties = { position: "relative", width: "100%", height: "100%", fontFamily: MONO };
+// clip-path can't paint a border or box-shadow, but branch nodes never enter the "selected" state
+// (their targetId is null), so only the opacity dim applies — and opacity survives the clip.
+const BRANCH_SHAPE: React.CSSProperties = {
+  width: "100%",
+  height: "100%",
+  boxSizing: "border-box",
+  clipPath: "polygon(14% 0, 86% 0, 100% 50%, 86% 100%, 14% 100%, 0 50%)",
+  background: BRANCH_ACCENT,
+  color: "#0B0E13",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 6,
+  padding: "0 26px", // clear the slanted points so the centred label isn't clipped
+  fontSize: 12,
+  fontWeight: 700,
+};
+const BRANCH_GLYPH: React.CSSProperties = { fontSize: 13, flexShrink: 0 };
 
 function titleStyle(accent: string): React.CSSProperties {
   return {
@@ -230,6 +272,11 @@ const CHEV: React.CSSProperties = { cursor: "pointer", fontSize: 11, padding: "0
 const CHEV_OPEN: React.CSSProperties = { marginLeft: "auto", fontSize: 10 };
 const NAME: React.CSSProperties = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const PROV: React.CSSProperties = { padding: "4px 8px", fontSize: 10, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+// The greyed chip is tight: a compact title (light text on the muted slate so the priority name
+// stays legible) over one small provenance line. Padding/fonts shrink to fit the ~30px chip.
+const GREY_TITLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "2px 6px", background: GREY_ACCENT, color: "#C8D3E0", fontSize: 10, fontWeight: 700, lineHeight: 1.2 };
+const GREY_GLYPH: React.CSSProperties = { fontSize: 9, opacity: 0.7, flexShrink: 0 };
+const GREY_PROV: React.CSSProperties = { padding: "0 6px 2px", fontSize: 9, lineHeight: 1, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const FRAME_PROV: React.CSSProperties = { fontSize: 9, fontWeight: 400, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const COUNT: React.CSSProperties = { marginLeft: "auto", fontSize: 10, fontWeight: 600, opacity: 0.75 };
 const CODE_BTN: React.CSSProperties = { marginLeft: "auto", border: "none", background: "rgba(0,0,0,0.18)", color: "#0B0E13", borderRadius: 4, padding: "1px 5px", fontSize: 10, fontFamily: MONO, cursor: "pointer" };
