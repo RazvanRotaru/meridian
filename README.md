@@ -7,10 +7,13 @@ from the source, so it can't rot.
 
 `meridian` is a CLI + a dark-mode web renderer. It **generates** a versioned graph artifact
 from source and **views** it as an interactive blueprint — with a "black box" dive-in, a
-call-flow ↔ UI-composition lens, and an optional live-telemetry overlay.
+call-flow ↔ UI-composition ↔ logic-flow lens, and an optional live-telemetry overlay. The
+**logic-flow** lens draws one callable's intra-procedural control flow, Unreal-Blueprints-style
+(calls, branches, loops, drill-in, ⌘P symbol search).
 
 > 📊 **[Visual explainer → `docs/how-it-works.html`](docs/how-it-works.html)** (diagrams, ~no text) ·
-> ▶ **[20-second tour](docs/media/meridian-tour.webm)**
+> ▶ **[20-second tour](docs/media/meridian-tour.webm)** ·
+> 🧭 **[Logic-flow tour → `docs/logic-flow-demo.html`](docs/logic-flow-demo.html)** (self-contained page — [preview](https://htmlpreview.github.io/?https://raw.githubusercontent.com/RazvanRotaru/meridian/main/docs/logic-flow-demo.html), or download & open in a browser)
 
 ## Quickstart
 
