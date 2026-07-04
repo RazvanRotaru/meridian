@@ -1,10 +1,10 @@
 /**
  * The canvas shell. It hosts the always-mounted Toolbar (tab toggle + sidebar), the modal
  * CodePanel, and the global Cmd/Ctrl+P CommandPalette, and swaps its main surface by view mode:
- * the call/UI graph is the controlled,
- * read-only React Flow surface (FlowCanvas); "logic" swaps in the plain nested-div LogicFlowView.
- * The React Flow surface is not draggable/connectable, selectable (selection driven into the
- * store via onNodeClick), dark color mode, dotted background, kind-coloured MiniMap.
+ * "call" is the Service-composition scorecard graph (CompositionView); "ui" is the React
+ * composition call graph (FlowCanvas); "logic" is the intra-procedural LogicFlowView. All three are
+ * read-only React Flow surfaces — not draggable/connectable, selectable (selection driven into the
+ * store via onNodeClick), dark color mode, dotted background, coloured MiniMap.
  */
 
 import { ReactFlow, type Node, type NodeMouseHandler } from "@xyflow/react";
@@ -19,6 +19,7 @@ import { Toolbar } from "./Toolbar";
 import { CodePanel } from "./CodePanel";
 import { CommandPalette } from "./CommandPalette";
 import { LogicFlowView } from "./LogicFlowView";
+import { CompositionView } from "./CompositionView";
 
 // The Logic-flow view is a plain nested-div render, not a React Flow surface, so it swaps in for
 // <ReactFlow> whole. Toolbar (the tab toggle + sidebar) and the modal CodePanel stay mounted in
@@ -28,7 +29,7 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
   const viewMode = useBlueprint((state) => state.viewMode);
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
-      {viewMode === "logic" ? <LogicFlowView /> : <FlowCanvas />}
+      {viewMode === "call" ? <CompositionView /> : viewMode === "logic" ? <LogicFlowView /> : <FlowCanvas />}
       <Toolbar preselectedEnv={props.preselectedEnv} />
       <CodePanel />
       {/* Global Cmd/Ctrl+P quick-open — mounted here so the shortcut works in every view mode. */}

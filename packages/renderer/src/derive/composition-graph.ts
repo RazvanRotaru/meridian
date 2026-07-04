@@ -125,6 +125,80 @@ export function emptyCoupling(): UnitCoupling {
   return { efferent: new Set(), afferent: new Set(), external: new Set(), internalCalls: [] };
 }
 
+/** A cross-unit dependency wire between two composition units. `kinds` unions every underlying
+ * node-level edge kind linking the pair; `inheritanceOnly` marks a pair joined SOLELY by
+ * extends/implements, so the view can style inheritance apart from ordinary use. */
+export interface CouplingEdge {
+  source: string;
+  target: string;
+  kinds: Set<string>;
+  inheritanceOnly: boolean;
+}
+
+const INHERITANCE_KINDS: ReadonlySet<string> = new Set(["extends", "implements"]);
+
+/**
+ * The peer-dependency wires between composition units: one edge per ordered (source, target) unit
+ * pair, unioning the kinds of every node-level coupling edge that crosses the two. Same-unit calls,
+ * external targets (a `unitIdOf` of null), and CONTAINMENT pairs — a module and a class it holds —
+ * are dropped: containment is drawn as a frame (PR3), not a peer wire. Reuses `buildUnitIndex` and
+ * the same coupling-kind gate as `accumulateCoupling`, walking edges once.
+ */
+export function couplingEdges(nodes: GraphNode[], edges: GraphEdge[]): CouplingEdge[] {
+  const index = buildUnitIndex(nodes);
+  const byPair = new Map<string, CouplingEdge>();
+  for (const edge of edges) {
+    if (COUPLING_KINDS.has(edge.kind)) {
+      addCouplingEdge(edge, index, byPair);
+    }
+  }
+  for (const edge of byPair.values()) {
+    edge.inheritanceOnly = [...edge.kinds].every((kind) => INHERITANCE_KINDS.has(kind));
+  }
+  return [...byPair.values()];
+}
+
+/** Fold one node-level edge into its unit pair, skipping same-unit, external, and containment pairs. */
+function addCouplingEdge(edge: GraphEdge, index: UnitIndex, byPair: Map<string, CouplingEdge>): void {
+  const sourceUnit = index.unitIdOf(edge.source);
+  const targetUnit = index.unitIdOf(edge.target);
+  // A null unit is an external/absent endpoint (never in the node set); same-unit is internal.
+  if (sourceUnit === null || targetUnit === null || sourceUnit === targetUnit) {
+    return;
+  }
+  if (isContainmentPair(sourceUnit, targetUnit, index.nodesById)) {
+    return;
+  }
+  const key = `${sourceUnit}->${targetUnit}`;
+  const existing = byPair.get(key);
+  if (existing) {
+    existing.kinds.add(edge.kind);
+    return;
+  }
+  byPair.set(key, { source: sourceUnit, target: targetUnit, kinds: new Set([edge.kind]), inheritanceOnly: false });
+}
+
+/** True when one unit sits inside the other's containment subtree (via parentId) — e.g. a module
+ * and a class declared in it: a frame in the graph, not a dependency between peers. */
+function isContainmentPair(a: string, b: string, nodesById: Map<string, GraphNode>): boolean {
+  return isAncestorUnit(a, b, nodesById) || isAncestorUnit(b, a, nodesById);
+}
+
+/** Walk `descendantId`'s parentId chain; true if it reaches `ancestorId`. A visited guard
+ * terminates on the (tolerated) malformed parentId cycle. */
+function isAncestorUnit(ancestorId: string, descendantId: string, nodesById: Map<string, GraphNode>): boolean {
+  const seen = new Set<string>();
+  let current = nodesById.get(descendantId)?.parentId ?? null;
+  while (current && !seen.has(current)) {
+    if (current === ancestorId) {
+      return true;
+    }
+    seen.add(current);
+    current = nodesById.get(current)?.parentId ?? null;
+  }
+  return false;
+}
+
 /** LCOM4: weakly-connected components among members linked by internal calls (singletons count). */
 export function countComponents(memberIds: string[], callPairs: Array<[string, string]>): number {
   if (memberIds.length === 0) {

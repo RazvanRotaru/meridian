@@ -1,0 +1,185 @@
+/**
+ * The Service-composition scorecard: one composition unit (class/interface/object/module) as a
+ * SOLID health card, styled after the dark Unreal-Blueprints palette. A left accent bar coloured by
+ * distance-from-the-main-sequence gives an at-a-glance health read; the body carries the kind, the
+ * coupling/cohesion metrics, and a wrapping row of design-smell chips. A green ring marks the
+ * selected unit — read from the store, mirroring how logic nodes show their selection.
+ */
+
+import { memo } from "react";
+import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { useBlueprint } from "../../../state/StoreContext";
+import { colorForDistance, type CompNodeData } from "../../../derive/compositionGraph";
+import type { CompRfNode } from "../../../layout/compositionElk";
+import type { Smell } from "../../../derive/composition";
+import { accentForKind } from "../../../theme/kindColors";
+
+const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
+// The green shared with the emphasized coupling wires so the node ring and the edge glow read as
+// one highlight (mirrors logic's SELECT_ACCENT).
+export const COMP_SELECT_ACCENT = "#6BE38A";
+
+function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
+  const compSelectedId = useBlueprint((state) => state.compSelectedId);
+  const d = data as CompNodeData;
+  const metrics = d.metrics;
+  const selected = compSelectedId === d.unitId;
+  const health = colorForDistance(metrics.distance);
+  const tint = accentForKind(d.kind);
+  return (
+    <div style={selected ? CARD_SELECTED : CARD}>
+      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+      <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+      <div style={{ ...ACCENT_BAR, background: health }} />
+      <div style={INNER}>
+        <div style={HEADER}>
+          <span style={{ ...GLYPH, color: tint }}>{glyphForKind(d.kind)}</span>
+          <span style={LABEL} title={d.label}>{d.label}</span>
+          <span style={{ ...KIND_TAG, color: tint, borderColor: tint }}>{d.kind.toUpperCase()}</span>
+        </div>
+        <div style={METRIC_ROW}>
+          <span style={METRIC_MUTED}>members</span>
+          <span style={METRIC_VALUE}>{metrics.members}</span>
+          <span style={SEP}>·</span>
+          <span style={METRIC_MUTED}>cohesion</span>
+          <span style={METRIC_VALUE}>{metrics.cohesion}</span>
+        </div>
+        <div style={METRIC_ROW}>
+          <MetricPair label="Ce" value={metrics.ce} title="efferent coupling" />
+          <span style={SEP}>·</span>
+          <MetricPair label="Ca" value={metrics.ca} title="afferent coupling" />
+          <span style={SEP}>·</span>
+          <MetricPair label="I" value={metrics.instability} title="instability" />
+          <span style={SEP}>·</span>
+          <MetricPair label="A" value={metrics.abstractness} title="abstractness" />
+        </div>
+        <div style={{ ...DISTANCE_ROW, color: health }} title="distance from the main sequence">
+          <span style={DISTANCE_LABEL}>D</span>
+          <span style={DISTANCE_VALUE}>{metrics.distance}</span>
+        </div>
+        {metrics.smells.length > 0 ? (
+          <div style={CHIP_ROW}>
+            {metrics.smells.map((smell) => (
+              <SmellChip key={smell} smell={smell} />
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** One `label value` metric cell — a small muted label over its mono value. */
+function MetricPair(props: { label: string; value: number; title: string }) {
+  return (
+    <span style={PAIR} title={props.title}>
+      <span style={METRIC_MUTED}>{props.label}</span>
+      <span style={METRIC_VALUE}>{props.value}</span>
+    </span>
+  );
+}
+
+/** A design-smell pill: short glanceable label, red for the structural hazards (HUB/PAIN), amber
+ * for the softer split/unused hints. Full smell name rides the hover title. */
+function SmellChip(props: { smell: Smell }) {
+  return (
+    <span style={SMELL_TONE[props.smell] === "red" ? CHIP_RED : CHIP_AMBER} title={props.smell}>
+      {SMELL_LABEL[props.smell]}
+    </span>
+  );
+}
+
+const SMELL_LABEL: Record<Smell, string> = {
+  "god-module": "HUB",
+  "zone-of-pain": "PAIN",
+  "zone-of-uselessness": "UNUSED",
+  "low-cohesion": "SPLIT",
+};
+const SMELL_TONE: Record<Smell, "red" | "amber"> = {
+  "god-module": "red",
+  "zone-of-pain": "red",
+  "zone-of-uselessness": "amber",
+  "low-cohesion": "amber",
+};
+
+// A compact kind glyph so a card reads as class/module/interface/object before the tag is scanned.
+const KIND_GLYPH: Record<string, string> = {
+  module: "▤",
+  class: "◆",
+  interface: "◇",
+  object: "❑",
+};
+function glyphForKind(kind: string): string {
+  return KIND_GLYPH[kind] ?? "▪";
+}
+
+export const CompositionNode = memo(CompositionNodeImpl);
+export const compNodeTypes = { unit: CompositionNode };
+
+const PIN: React.CSSProperties = { width: 7, height: 7, background: "#C8D3E0", border: "none", minWidth: 0, minHeight: 0 };
+
+const CARD: React.CSSProperties = {
+  position: "relative",
+  width: "100%",
+  height: "100%",
+  boxSizing: "border-box",
+  border: "1px solid #232935",
+  borderRadius: 8,
+  background: "#12171E",
+  overflow: "hidden",
+  fontFamily: MONO,
+};
+// The selection ring is an outset box-shadow, so overflow:hidden on the card never clips it.
+const CARD_SELECTED: React.CSSProperties = {
+  ...CARD,
+  borderColor: COMP_SELECT_ACCENT,
+  boxShadow: `0 0 0 2px ${COMP_SELECT_ACCENT}`,
+};
+// The 4px left rail, coloured by health — the card's fastest visual signal.
+const ACCENT_BAR: React.CSSProperties = { position: "absolute", left: 0, top: 0, bottom: 0, width: 4 };
+const INNER: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 5,
+  padding: "9px 11px 9px 13px",
+};
+const HEADER: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6 };
+const GLYPH: React.CSSProperties = { fontSize: 12, flexShrink: 0 };
+const LABEL: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  fontSize: 13,
+  fontWeight: 700,
+  color: "#E6EDF3",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+const KIND_TAG: React.CSSProperties = {
+  flexShrink: 0,
+  fontSize: 8,
+  fontWeight: 700,
+  letterSpacing: "0.06em",
+  border: "1px solid",
+  borderRadius: 3,
+  padding: "1px 4px",
+};
+const METRIC_ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: "#9AA4B2" };
+const PAIR: React.CSSProperties = { display: "inline-flex", alignItems: "baseline", gap: 3 };
+const METRIC_MUTED: React.CSSProperties = { color: "#6C7683" };
+const METRIC_VALUE: React.CSSProperties = { color: "#C8D3E0", fontWeight: 600 };
+const SEP: React.CSSProperties = { color: "#3A414C" };
+const DISTANCE_ROW: React.CSSProperties = { display: "flex", alignItems: "baseline", gap: 5, fontWeight: 700 };
+const DISTANCE_LABEL: React.CSSProperties = { fontSize: 11, letterSpacing: "0.04em" };
+const DISTANCE_VALUE: React.CSSProperties = { fontSize: 15 };
+const CHIP_ROW: React.CSSProperties = { display: "flex", flexWrap: "wrap", gap: 4, marginTop: 1 };
+const CHIP_BASE: React.CSSProperties = {
+  fontSize: 8.5,
+  fontWeight: 700,
+  letterSpacing: "0.05em",
+  borderRadius: 3,
+  padding: "1px 5px",
+  border: "1px solid",
+};
+const CHIP_RED: React.CSSProperties = { ...CHIP_BASE, color: "#F0787C", borderColor: "#5B2B2F", background: "rgba(229,72,77,0.14)" };
+const CHIP_AMBER: React.CSSProperties = { ...CHIP_BASE, color: "#E6B84D", borderColor: "#5A4A24", background: "rgba(230,184,77,0.14)" };
