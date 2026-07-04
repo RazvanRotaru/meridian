@@ -1,6 +1,7 @@
 /**
- * The canvas shell. It hosts the always-mounted Toolbar (tab toggle + sidebar) and modal
- * CodePanel, and swaps its main surface by view mode: the call/UI graph is the controlled,
+ * The canvas shell. It hosts the always-mounted Toolbar (tab toggle + sidebar), the modal
+ * CodePanel, and the global Cmd/Ctrl+P CommandPalette, and swaps its main surface by view mode:
+ * the call/UI graph is the controlled,
  * read-only React Flow surface (FlowCanvas); "logic" swaps in the plain nested-div LogicFlowView.
  * The React Flow surface is not draggable/connectable, selectable (selection driven into the
  * store via onNodeClick), dark color mode, dotted background, kind-coloured MiniMap.
@@ -23,6 +24,7 @@ import { nodeTypes } from "./nodes/nodeTypes";
 import { edgeTypes } from "./edges/edgeTypes";
 import { Toolbar } from "./Toolbar";
 import { CodePanel } from "./CodePanel";
+import { CommandPalette } from "./CommandPalette";
 import { LogicFlowView } from "./LogicFlowView";
 
 // The Logic-flow view is a plain nested-div render, not a React Flow surface, so it swaps in for
@@ -36,6 +38,8 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
       {viewMode === "logic" ? <LogicFlowView /> : <FlowCanvas />}
       <Toolbar preselectedEnv={props.preselectedEnv} />
       <CodePanel />
+      {/* Global Cmd/Ctrl+P quick-open — mounted here so the shortcut works in every view mode. */}
+      <CommandPalette />
     </div>
   );
 }
