@@ -6,10 +6,12 @@
 
 import { Node, SyntaxKind } from "ts-morph";
 import type {
+  ArrowFunction,
   DoStatement,
   ForInStatement,
   ForOfStatement,
   ForStatement,
+  FunctionExpression,
   IfStatement,
   SwitchStatement,
   WhileStatement,
@@ -38,6 +40,24 @@ function propertyAccessName(receiver: Node, name: string): string {
 
 export function forOfLabel(node: ForOfStatement | ForInStatement): string {
   return `for each ${truncate(bindingText(node))}`;
+}
+
+/**
+ * Label for an Array-iteration loop (`items.forEach(x => …)`). `forEach` reads like a `for..of`
+ * over the element (`for each x`); the transforming methods keep their name so the shape is
+ * legible (`map x`, `filter row`). With no callback parameter, just the method name.
+ */
+export function iterationLabel(methodName: string, callback: ArrowFunction | FunctionExpression): string {
+  const param = firstParamName(callback);
+  if (!param) {
+    return methodName;
+  }
+  return methodName === "forEach" ? `for each ${param}` : `${methodName} ${param}`;
+}
+
+function firstParamName(callback: ArrowFunction | FunctionExpression): string | null {
+  const first = callback.getParameters()[0];
+  return first ? truncate(first.getName()) : null;
 }
 
 function bindingText(node: ForOfStatement | ForInStatement): string {
