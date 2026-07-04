@@ -241,10 +241,11 @@ const JUMP_MUTED = "#4B535F";
  * The jump-to-flow satellites for the current selection: every flow that TRANSITIVELY reaches the
  * selected target (a direct caller at depth 1, its caller at depth 2, …, up to `ghostDepth`), each
  * a dashed ghost node. Ghosts stack in horizontal ROWS clear ABOVE the graph — depth 1 just above
- * the graph's top edge (as before), each further hop a row higher — every row centred on the
- * selected call site and wired DOWN INTO it (those flows contain this block, so the arrow points at
- * it). Purely additive: it reads the store's laid-out nodes but never mutates them, so selection and
- * the depth dial stay repaints (no relayout). Empty unless a target is selected and reached elsewhere.
+ * the graph's top edge, each further hop a row higher — every row centred on the selected call site.
+ * The wires among them trace the CALL CHAIN (see `buildChainEdges`), not a fan to the selection: a
+ * depth-2 ghost points at the depth-1 ghost it actually calls, which in turn points at the selected
+ * block. Purely additive: it reads the store's laid-out nodes but never mutates them, so selection
+ * and the depth dial stay repaints (no relayout). Empty unless a target is selected and reached elsewhere.
  */
 function buildJumpSatellites(
   nodes: LogicRfNode[],
@@ -276,10 +277,9 @@ function buildJumpSatellites(
   const byDepth = groupByDepth(ranked);
 
   const jumpNodes: Node[] = [];
-  const jumpEdges: Edge[] = [];
   for (const [depth, roots] of byDepth) {
     // This depth's row sits `depth` clear gaps ABOVE the graph's top edge, so deeper (more indirect)
-    // callers stack higher. It's centred on the selected call site so its wires drop straight down.
+    // callers stack higher. It's centred on the selected call site so the chain reads top→down into it.
     const rowY = top - depth * (JUMP_HEIGHT + JUMP_ROW_GAP);
     const totalWidth = roots.length * JUMP_WIDTH + (roots.length - 1) * JUMP_COL_GAP;
     const startX = sel.x + selWidth / 2 - totalWidth / 2;
@@ -295,12 +295,76 @@ function buildJumpSatellites(
         draggable: false,
         data: { rootId: root, label: node?.displayName ?? root, file: node?.location?.file, depth } satisfies JumpFlowNodeData,
       });
-      // FROM the ghost (in the row above) DOWN INTO the selected call site: React Flow attaches the
-      // ghost's source (Bottom) handle to the block's target (Left) pin, so the arrowhead lands on it.
-      jumpEdges.push(jumpEdge(`jump:${root}`, callSite.id, root, depth));
     });
   }
+  const jumpEdges = buildChainEdges(ranked, logicSelected, callSite.id, containment);
   return { jumpNodes, jumpEdges, total };
+}
+
+/**
+ * The satellite wires, drawn as the reverse-call CHAIN AMONG the rendered ghosts — NOT a fan pointing
+ * every ghost straight at the selected node. For A→B→C with C selected, this yields A→B and B→C.
+ *
+ * The containment map is read as a reverse call graph: `X ∈ containment.get(N)` means "X calls N", so
+ * X's ghost points at N — the node ONE HOP CLOSER to the selection. So for each node N in {selected}
+ * ∪ {rendered ghosts}, every rendered caller X of N gets an edge `jump:X` → (N is the selection ? its
+ * call-site node : `jump:N`). Depth-1 ghosts thus land on the selected call site; a depth-2 ghost
+ * lands on the depth-1 ghost it calls; and so on up the tree.
+ *
+ * ORPHAN FALLBACK: near the 24-cap a ghost's own callee may be undrawn, leaving it with no outgoing
+ * edge; it's then wired straight to the selected call site so it never dangles. Edges dedupe on their
+ * source→target pair. The "contains" label rides ONLY the genuine direct-caller edges into the
+ * selected node; ghost→ghost and fallback edges stay unlabeled (the vertical chain is self-evident).
+ */
+function buildChainEdges(
+  ranked: Array<[string, number]>,
+  logicSelected: NodeId,
+  callSiteNodeId: string,
+  containment: Map<string, string[]>,
+): Edge[] {
+  const rendered = new Set(ranked.map(([root]) => root));
+  const edges: Edge[] = [];
+  const seenPairs = new Set<string>();
+  const emitted = new Set<string>();
+
+  // Link each rendered caller X of `target` to `target`'s rendered node (`X ∈ containment.get(N)` ⇒
+  // edge X→N). Skips a self-call (a recursive root is its own caller) and any caller not rendered.
+  const linkCallers = (target: string, targetNodeId: string, labeled: boolean) => {
+    for (const caller of containment.get(target) ?? []) {
+      if (caller === target || !rendered.has(caller)) {
+        continue;
+      }
+      const source = `jump:${caller}`;
+      const pair = `${source}->${targetNodeId}`;
+      if (seenPairs.has(pair)) {
+        continue;
+      }
+      seenPairs.add(pair);
+      emitted.add(caller);
+      edges.push(jumpEdge(source, targetNodeId, pair, labeled));
+    }
+  };
+
+  // The selected block's direct callers point at its call site (labeled "contains"); every rendered
+  // ghost's direct callers point at that ghost (unlabeled — a link in the chain, not a container).
+  linkCallers(logicSelected, callSiteNodeId, true);
+  for (const root of rendered) {
+    linkCallers(root, `jump:${root}`, false);
+  }
+
+  // A ghost whose callee fell outside the cap has no outgoing edge yet; wire it to the selected call
+  // site so it never dangles. Unlabeled: it isn't a direct caller of the selection.
+  for (const root of rendered) {
+    if (emitted.has(root)) {
+      continue;
+    }
+    const source = `jump:${root}`;
+    const pair = `${source}->${callSiteNodeId}`;
+    seenPairs.add(pair);
+    emitted.add(root);
+    edges.push(jumpEdge(source, callSiteNodeId, pair, false));
+  }
+  return edges;
 }
 
 // Bucket the ranked (root, depth) pairs into one list per depth, preserving the ranked order within
@@ -352,15 +416,16 @@ function absolutePos(node: LogicRfNode, byId: Map<string, LogicRfNode>): { x: nu
 }
 
 // The satellite wire: dashed, muted grey, no animation — it must not compete with the emphasized
-// exec thread. It runs FROM the caller ghost (in the row above) DOWN INTO the selected block. Only a
-// DIRECT (depth-1) caller wears the "contains" label ("that flow contains this block"); for indirect
-// callers the wire stays unlabeled — the node's own "↑n" badge already says how many hops away it is.
-function jumpEdge(source: string, target: string, root: string, depth: number): Edge {
+// exec thread. It runs FROM a caller ghost (in the row above) DOWN INTO the node one hop closer to
+// the selection (a deeper ghost, or the selected call site). Only a genuine DIRECT caller of the
+// selection wears the "contains" label; ghost→ghost links stay unlabeled — the chain speaks for
+// itself. The id is the source→target pair, which the caller has already deduped, so it's unique.
+function jumpEdge(source: string, target: string, pair: string, labeled: boolean): Edge {
   return {
-    id: `jumpedge:${root}`,
+    id: `jumpedge:${pair}`,
     source,
     target,
-    label: depth === 1 ? "contains" : undefined,
+    label: labeled ? "contains" : undefined,
     animated: false,
     style: { stroke: JUMP_MUTED, strokeWidth: 1.5, strokeDasharray: "4 3" },
     labelStyle: { fill: "#7B8695", fontSize: 9 },
