@@ -591,7 +591,7 @@ function LogicFlowPicker() {
     <div style={PICKER_CONTAINER_STYLE}>
       <div style={PICKER_PANEL_STYLE}>
         <div style={PICKER_HINT_STYLE}>
-          Pick an entry point, search a method, or double-click one in Call flow.
+          Pick an entry point, search a method, or double-click one in Service composition.
         </div>
         <input
           style={PICKER_SEARCH_STYLE}
