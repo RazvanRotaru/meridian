@@ -41,6 +41,27 @@ function unitIds(specNodes: ReturnType<typeof deriveCompositionGraph>["nodes"]):
   return specNodes.filter((n) => n.type === "unit").map((n) => n.id).sort();
 }
 
+// A single unit scorecard's data, or undefined when that unit isn't drawn.
+function unitData(specNodes: ReturnType<typeof deriveCompositionGraph>["nodes"], id: string): CompNodeData | undefined {
+  return specNodes.find((n) => n.id === id && n.type === "unit")?.data as CompNodeData | undefined;
+}
+
+// A → B → C module chain (A also owns a class K), so C sits two coupling hops from A. The staple
+// fixture for the rooting cases below.
+function rootingFixture(): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const nodes = [
+    node("ts:a", "module"),
+    node("ts:a#f", "function", "ts:a"),
+    node("ts:a#K", "class", "ts:a"),
+    node("ts:a#K.m", "method", "ts:a#K"),
+    node("ts:b", "module"),
+    node("ts:b#g", "function", "ts:b"),
+    node("ts:c", "module"),
+    node("ts:c#h", "function", "ts:c"),
+  ];
+  return { nodes, edges: [edge("ts:a#f", "ts:b#g"), edge("ts:b#g", "ts:c#h")] };
+}
+
 describe("deriveCompositionGraph", () => {
   it("yields two unit nodes and one coupling edge for a two-unit dependency", () => {
     const nodes = [
@@ -75,6 +96,43 @@ describe("deriveCompositionGraph", () => {
     expect(ids).not.toContain("ts:m"); // empty + uncoupled
     expect(ids).not.toContain("ts:i");
     expect(spec.edges[0].inheritanceOnly).toBe(true);
+  });
+});
+
+describe("deriveCompositionGraph rooting", () => {
+  it("roots at a module: its own units + 1-hop neighbours (flagged boundary), 2-hop units absent", () => {
+    const { nodes, edges } = rootingFixture();
+    const spec = deriveCompositionGraph(nodes, edges, "ts:a");
+    // ts:a's own units (the module + its class K) plus the 1-hop neighbour ts:b; ts:c is two hops out.
+    expect(unitIds(spec.nodes)).toEqual(["ts:a", "ts:a#K", "ts:b"]);
+    expect(unitIds(spec.nodes)).not.toContain("ts:c");
+    expect(unitData(spec.nodes, "ts:b")?.boundary).toBe(true);
+    expect(unitData(spec.nodes, "ts:a")?.boundary).toBeFalsy();
+    expect(unitData(spec.nodes, "ts:a#K")?.boundary).toBeFalsy();
+    // Only the root→neighbour wire survives; the neighbour→2-hop wire is dropped with its far end.
+    expect(spec.edges).toHaveLength(1);
+    expect(spec.edges[0]).toMatchObject({ source: "ts:a", target: "ts:b" });
+  });
+
+  it("treats root = null as the whole-system graph with no boundary units", () => {
+    const { nodes, edges } = rootingFixture();
+    const spec = deriveCompositionGraph(nodes, edges, null);
+    expect(unitIds(spec.nodes)).toEqual(["ts:a", "ts:a#K", "ts:b", "ts:c"]);
+    expect(unitData(spec.nodes, "ts:b")?.boundary).toBeFalsy();
+  });
+
+  it("falls back to the whole system when the root id is stale/invalid", () => {
+    const { nodes, edges } = rootingFixture();
+    const spec = deriveCompositionGraph(nodes, edges, "ts:does-not-exist");
+    expect(unitIds(spec.nodes)).toEqual(["ts:a", "ts:a#K", "ts:b", "ts:c"]);
+  });
+
+  it("keeps the root's own unit even with 0 members and 0 couplings", () => {
+    // ts:x is a memberless, uncoupled module (dropped whole-system) — but as the root it's never hidden.
+    const nodes = [node("ts:x", "module"), node("ts:x#K", "class", "ts:x")];
+    const spec = deriveCompositionGraph(nodes, [], "ts:x");
+    expect(unitIds(spec.nodes)).toEqual(["ts:x"]);
+    expect(unitData(spec.nodes, "ts:x")?.boundary).toBeFalsy();
   });
 });
 

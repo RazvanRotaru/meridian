@@ -184,6 +184,17 @@ function isContainmentPair(a: string, b: string, nodesById: Map<string, GraphNod
   return isAncestorUnit(a, b, nodesById) || isAncestorUnit(b, a, nodesById);
 }
 
+/**
+ * True when `rootId` is an ANCESTOR-OR-SELF of `unitId` via the parentId chain — the unit sits
+ * inside (or IS) the rooting node. A MODULE root thus contains the module unit and the class/object/
+ * interface units declared in it; a PACKAGE root contains its whole subtree; a CLASS root contains
+ * only itself. Reuses the visited-guarded `isAncestorUnit` walk, so a malformed parentId cycle can't
+ * loop forever. Powers the Service-composition tab's "root at one module/package" view.
+ */
+export function isWithinRoot(unitId: string, rootId: string, nodesById: Map<string, GraphNode>): boolean {
+  return unitId === rootId || isAncestorUnit(rootId, unitId, nodesById);
+}
+
 /** Walk `descendantId`'s parentId chain; true if it reaches `ancestorId`. A visited guard
  * terminates on the (tolerated) malformed parentId cycle. */
 function isAncestorUnit(ancestorId: string, descendantId: string, nodesById: Map<string, GraphNode>): boolean {

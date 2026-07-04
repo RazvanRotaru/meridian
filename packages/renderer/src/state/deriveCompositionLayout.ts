@@ -9,8 +9,12 @@ import { deriveCompositionGraph, type CompNodeSpec } from "../derive/composition
 import { buildCompositionElkGraph, toReactFlowComposition, type CompositionReactFlowGraph } from "../layout/compositionElk";
 import { runElkLayout } from "../layout/elkLayout";
 
-export async function deriveCompositionLayout(nodes: GraphNode[], edges: GraphEdge[]): Promise<CompositionReactFlowGraph> {
-  const spec = deriveCompositionGraph(nodes, edges);
+export async function deriveCompositionLayout(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  root: string | null = null,
+): Promise<CompositionReactFlowGraph> {
+  const spec = deriveCompositionGraph(nodes, edges, root);
   if (spec.nodes.length === 0) {
     return { nodes: [], edges: [] };
   }
