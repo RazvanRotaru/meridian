@@ -18,6 +18,7 @@ import {
   Controls,
   MiniMap,
   ReactFlow,
+  type EdgeMarker,
   type Node,
   type NodeMouseHandler,
 } from "@xyflow/react";
@@ -44,10 +45,11 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
   const logicStack = useBlueprint((state) => state.logicStack);
   const nodes = useBlueprint((state) => state.logicRfNodes);
   const edges = useBlueprint((state) => state.logicRfEdges);
+  const logicSelected = useBlueprint((state) => state.logicSelected);
   const layoutStatus = useBlueprint((state) => state.logicLayoutStatus);
   const hideGreyed = useBlueprint((state) => state.hideGreyed);
   const index = useBlueprint((state) => state.index);
-  const { drillLogicFlow, logicFlowTo, toggleHideGreyed } = useBlueprintActions();
+  const { drillLogicFlow, logicFlowTo, toggleHideGreyed, selectLogicTarget } = useBlueprintActions();
 
   // The one gesture the node components don't own: dive into a resolved, flow-bearing block's own
   // flow. Inline expand/collapse is a title-click, handled inside the node — never re-handled here.
@@ -57,15 +59,34 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
     }
   };
 
+  // Single-click a building block to trace its call target: selection is BY TARGET, so every call
+  // site of the same target lights up. Re-clicking the selected target clears it; container/branch
+  // nodes (no target) do nothing. A cheap repaint — no relayout.
+  const onNodeClick: NodeMouseHandler<LogicRfNode> = (_event, node) => {
+    const target = node.data.targetId;
+    if (target) {
+      selectLogicTarget(target === logicSelected ? null : target);
+    }
+  };
+
+  // Emphasize the exec wires touching the selected target's call sites; dim the rest. Recomputed
+  // only when the layout edges/nodes or the selection change — never mutating the store arrays.
+  const styledEdges = useMemo(
+    () => emphasizeSelectedEdges(edges, nodes, logicSelected),
+    [edges, logicSelected, nodes],
+  );
+
   const isEmpty = nodes.length === 0 && layoutStatus === "ready";
 
   return (
     <div style={SURFACE_STYLE}>
       <ReactFlow<LogicRfNode, LogicRfEdge>
         nodes={nodes}
-        edges={edges}
+        edges={styledEdges}
         nodeTypes={logicNodeTypes}
+        onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
+        onPaneClick={() => selectLogicTarget(null)}
         colorMode="dark"
         nodesDraggable={false}
         nodesConnectable={false}
@@ -96,6 +117,59 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
       {isEmpty ? <EmptyFlowCard rootId={props.rootId} /> : null}
     </div>
   );
+}
+
+// The accent green shared with the selected node ring: the emphasized wires glow the same colour so
+// a selected target and the threads leaving/entering its call sites read as one highlight.
+const SELECT_ACCENT = "#6BE38A";
+const DIM_OPACITY = 0.25;
+const EMPHASIS_WIDTH = 3;
+
+/**
+ * Style the exec wires for the current selection: wires whose source OR target is a call site of the
+ * selected target glow (green, thicker); the rest dim so one target's threads trace clearly through
+ * the spaghetti. No selection → the layout edges pass through untouched (same array, no new objects).
+ */
+function emphasizeSelectedEdges(
+  edges: LogicRfEdge[],
+  nodes: LogicRfNode[],
+  logicSelected: NodeId | null,
+): LogicRfEdge[] {
+  if (logicSelected === null) {
+    return edges;
+  }
+  const callSites = callSiteNodeIds(nodes, logicSelected);
+  return edges.map((edge) =>
+    callSites.has(edge.source) || callSites.has(edge.target) ? emphasizeEdge(edge) : dimEdge(edge),
+  );
+}
+
+// A target can be called many times; collect every node that calls THIS target so all its wires light up.
+function callSiteNodeIds(nodes: LogicRfNode[], logicSelected: NodeId): Set<string> {
+  const ids = new Set<string>();
+  for (const node of nodes) {
+    if (node.data.targetId === logicSelected) {
+      ids.add(node.id);
+    }
+  }
+  return ids;
+}
+
+function emphasizeEdge(edge: LogicRfEdge): LogicRfEdge {
+  return {
+    ...edge,
+    style: { ...edge.style, stroke: SELECT_ACCENT, strokeWidth: EMPHASIS_WIDTH, opacity: 1 },
+    markerEnd: tintMarker(edge.markerEnd, SELECT_ACCENT),
+  };
+}
+
+function dimEdge(edge: LogicRfEdge): LogicRfEdge {
+  return { ...edge, style: { ...edge.style, opacity: DIM_OPACITY } };
+}
+
+// Keep the arrowhead in step with the recoloured wire; a string marker (rare) can't be tinted, so pass it through.
+function tintMarker(marker: LogicRfEdge["markerEnd"], color: string): LogicRfEdge["markerEnd"] {
+  return marker && typeof marker === "object" ? { ...(marker as EdgeMarker), color } : marker;
 }
 
 // The MiniMap gets untyped `Node`s; narrow to our logic data and mirror each node type's accent.
