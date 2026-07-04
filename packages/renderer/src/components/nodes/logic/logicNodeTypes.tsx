@@ -27,15 +27,17 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   const { toggleLogicExpand, showCode, expandCode } = useBlueprintActions();
   const index = useBlueprint((s) => s.index);
   const sourceUrl = useBlueprint((s) => s.sourceUrl);
+  const logicSelected = useBlueprint((s) => s.logicSelected);
   const d = data as LogicNodeData;
+  const select = selectStateFor(d.targetId, logicSelected);
   if (d.isContainer) {
-    return <ContainerFrame accent={BLOCK_ACCENT} label={d.label} glyph="ƒ" onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} />;
+    return <ContainerFrame accent={BLOCK_ACCENT} label={d.label} glyph="ƒ" onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} select={select} />;
   }
   const codeNode = d.targetId ? index.nodesById.get(d.targetId) : undefined;
   const canCode = Boolean(codeNode?.location) && Boolean(sourceUrl);
   const stop = (e: React.MouseEvent) => e.stopPropagation();
   return (
-    <div style={d.greyed ? GREY_BODY : BODY}>
+    <div style={selectStyle(d.greyed ? GREY_BODY : BODY, select)}>
       <ExecPins />
       <div style={titleStyle(d.greyed ? GREY_ACCENT : BLOCK_ACCENT)}>
         {d.expandable ? (
@@ -55,15 +57,17 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
 
 function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
   const { toggleLogicExpand } = useBlueprintActions();
+  const logicSelected = useBlueprint((s) => s.logicSelected);
   const d = data as LogicNodeData;
+  const select = selectStateFor(d.targetId, logicSelected);
   const isTry = d.logicKind === "try";
   const accent = isTry ? TRY_ACCENT : LOOP_ACCENT;
   const glyph = isTry ? "⚠" : "↻";
   if (d.isContainer) {
-    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={null} />;
+    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={null} select={select} />;
   }
   return (
-    <div style={BODY} onClick={() => toggleLogicExpand(id)}>
+    <div style={selectStyle(BODY, select)} onClick={() => toggleLogicExpand(id)}>
       <ExecPins />
       <div style={titleStyle(accent)}>
         <span style={GLYPH}>{glyph}</span>
@@ -75,9 +79,11 @@ function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
 }
 
 function BranchNode({ data }: NodeProps<LogicRfNode>) {
+  const logicSelected = useBlueprint((s) => s.logicSelected);
   const d = data as LogicNodeData;
+  const select = selectStateFor(d.targetId, logicSelected);
   return (
-    <div style={BRANCH_BODY}>
+    <div style={selectStyle(BRANCH_BODY, select)}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={titleStyle(BRANCH_ACCENT)}>
@@ -90,9 +96,9 @@ function BranchNode({ data }: NodeProps<LogicRfNode>) {
 
 /** A framed container (expanded call / loop / try): a title bar sits over ELK's reserved top pad;
  * child nodes render in the space below. Clicking the title collapses it. */
-function ContainerFrame(props: { accent: string; label: string; glyph: string; onToggle: () => void; provenance: LogicNodeData["provenance"] }) {
+function ContainerFrame(props: { accent: string; label: string; glyph: string; onToggle: () => void; provenance: LogicNodeData["provenance"]; select: SelectState }) {
   return (
-    <div style={frameStyle(props.accent)}>
+    <div style={selectStyle(frameStyle(props.accent), props.select)}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={frameTitleStyle(props.accent)} onClick={props.onToggle} title="collapse">
@@ -106,6 +112,31 @@ function ContainerFrame(props: { accent: string; label: string; glyph: string; o
 }
 
 export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: BranchNode };
+
+// Selection is BY TARGET (a target can be called many times): a matched call site rings green so
+// every call of the same target lights up together; while some target is selected, unrelated nodes
+// dim so the matches pop. Structural nodes (loops/branches) carry no target, so they only ever dim.
+type SelectState = "selected" | "dimmed" | "none";
+const SELECT_ACCENT = "#6BE38A";
+
+function selectStateFor(targetId: string | null, logicSelected: string | null): SelectState {
+  if (logicSelected === null) {
+    return "none";
+  }
+  return targetId !== null && targetId === logicSelected ? "selected" : "dimmed";
+}
+
+// Layer the selection state over a node's base style: a bright ring at full opacity when matched
+// (so it pops even over a greyed leaf's fade), a dim veil when some other target holds the selection.
+function selectStyle(base: React.CSSProperties, select: SelectState): React.CSSProperties {
+  if (select === "selected") {
+    return { ...base, opacity: 1, borderColor: SELECT_ACCENT, boxShadow: `0 0 0 2px ${SELECT_ACCENT}` };
+  }
+  if (select === "dimmed") {
+    return { ...base, opacity: 0.5 };
+  }
+  return base;
+}
 
 const BLOCK_ACCENT = "#3B7AC0";
 const GREY_ACCENT = "#3A414C";
