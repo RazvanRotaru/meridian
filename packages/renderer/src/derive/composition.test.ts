@@ -151,11 +151,11 @@ describe("cohesion (LCOM4)", () => {
   ];
   const fragmentedEdges = [edge("ts:m#C.m1", "ts:m#C.m2"), edge("ts:m#C.m3", "ts:m#C.m4")];
 
-  it("splits two disconnected call clusters into 2 components and flags low cohesion", () => {
+  it("splits two disconnected call clusters into 2 components at cohesion 0.67 (not low enough to flag)", () => {
     const c = metricOf(fragmented, fragmentedEdges, "ts:m#C");
     expect(c.lcomComponents).toBe(2);
     expect(c.cohesion).toBe(0.67); // 1 − (2 − 1) / (4 − 1)
-    expect(c.smells).toContain("low-cohesion");
+    expect(c.smells).not.toContain("low-cohesion"); // 0.67 > 0.34 — the rule flags fragmentation relative to size
   });
 
   it("collapses a fully chained class into 1 component with cohesion 1", () => {
@@ -202,6 +202,46 @@ describe("smells", () => {
     const edges = [edge("ts:u#U", "ts:u#V", "extends")]; // U → V: I(U) = 1, A(U) = 1
     expect(metricOf(nodes, edges, "ts:u#U").smells).toContain("zone-of-uselessness");
     expect(metricOf(nodes, edges, "ts:u#V").smells).not.toContain("zone-of-uselessness"); // I(V) = 0
+  });
+
+  it("fires low-cohesion when a 4-member unit fragments into 3 components (cohesion 0.33 ≤ 0.34)", () => {
+    const nodes = [
+      node("ts:m#C", "class"),
+      node("ts:m#C.m1", "method", { parentId: "ts:m#C" }),
+      node("ts:m#C.m2", "method", { parentId: "ts:m#C" }),
+      node("ts:m#C.m3", "method", { parentId: "ts:m#C" }),
+      node("ts:m#C.m4", "method", { parentId: "ts:m#C" }),
+    ]; // m1→m2 cluster + m3 + m4 isolated → 3 components
+    const edges = [edge("ts:m#C.m1", "ts:m#C.m2")];
+    const c = metricOf(nodes, edges, "ts:m#C");
+    expect(c.lcomComponents).toBe(3);
+    expect(c.cohesion).toBe(0.33); // 1 − (3 − 1) / (4 − 1)
+    expect(c.smells).toContain("low-cohesion");
+  });
+
+  it("does not fire low-cohesion on a cohesive unit with one stray member (the CartService case)", () => {
+    // 6 members: m1..m5 form one call cluster + a stray m6 → 2 components, cohesion 0.8.
+    // The old `lcomComponents ≥ 2` rule flagged this false positive; the cohesion-ratio rule does not.
+    const nodes = [
+      node("ts:m#Cart", "class"),
+      node("ts:m#Cart.m1", "method", { parentId: "ts:m#Cart" }),
+      node("ts:m#Cart.m2", "method", { parentId: "ts:m#Cart" }),
+      node("ts:m#Cart.m3", "method", { parentId: "ts:m#Cart" }),
+      node("ts:m#Cart.m4", "method", { parentId: "ts:m#Cart" }),
+      node("ts:m#Cart.m5", "method", { parentId: "ts:m#Cart" }),
+      node("ts:m#Cart.m6", "method", { parentId: "ts:m#Cart" }),
+    ];
+    const edges = [
+      edge("ts:m#Cart.m1", "ts:m#Cart.m2"),
+      edge("ts:m#Cart.m2", "ts:m#Cart.m3"),
+      edge("ts:m#Cart.m3", "ts:m#Cart.m4"),
+      edge("ts:m#Cart.m4", "ts:m#Cart.m5"),
+    ]; // m6 has no internal calls
+    const c = metricOf(nodes, edges, "ts:m#Cart");
+    expect(c.members).toBe(6);
+    expect(c.lcomComponents).toBe(2);
+    expect(c.cohesion).toBe(0.8); // 1 − (2 − 1) / (6 − 1)
+    expect(c.smells).not.toContain("low-cohesion");
   });
 
   it("does not fire low-cohesion below the member threshold even when fragmented", () => {

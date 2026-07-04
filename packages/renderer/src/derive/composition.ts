@@ -44,7 +44,7 @@ const PAIN_MIN_AFFERENT = 3; // concrete AND actually depended upon → costly t
 const USELESS_MIN_ABSTRACTNESS = 0.7;
 const USELESS_MIN_INSTABILITY = 0.7;
 const LOW_COHESION_MIN_MEMBERS = 4;
-const LOW_COHESION_MIN_COMPONENTS = 2; // ≥2 unrelated jobs → SRP split candidate.
+const LOW_COHESION_MAX_COHESION = 0.34; // flags fragmentation relative to size (low cohesion), not a raw component count.
 
 /** Compute metrics for every unit in the graph, keyed by unit id. */
 export function computeCompositionMetrics(nodes: GraphNode[], edges: GraphEdge[]): Map<string, UnitMetrics> {
@@ -67,7 +67,7 @@ function metricsFor(unit: GraphNode, members: GraphNode[], coupling: UnitCouplin
   const abstractness = abstractnessOf(unit, members);
   const lcomComponents = countComponents(members.map((member) => member.id), coupling.internalCalls);
   const cohesion = cohesionOf(members.length, lcomComponents);
-  const facts = { ca, ce, instability, abstractness, memberCount: members.length, lcomComponents };
+  const facts = { ca, ce, instability, abstractness, memberCount: members.length, cohesion };
   return {
     id: unit.id,
     kind: unit.kind,
@@ -120,7 +120,7 @@ interface SmellFacts {
   instability: number;
   abstractness: number;
   memberCount: number;
-  lcomComponents: number;
+  cohesion: number;
 }
 
 function smellsFor(facts: SmellFacts): Smell[] {
@@ -134,7 +134,7 @@ function smellsFor(facts: SmellFacts): Smell[] {
   if (facts.abstractness >= USELESS_MIN_ABSTRACTNESS && facts.instability >= USELESS_MIN_INSTABILITY) {
     smells.push("zone-of-uselessness");
   }
-  if (facts.memberCount >= LOW_COHESION_MIN_MEMBERS && facts.lcomComponents >= LOW_COHESION_MIN_COMPONENTS) {
+  if (facts.memberCount >= LOW_COHESION_MIN_MEMBERS && facts.cohesion <= LOW_COHESION_MAX_COHESION) {
     smells.push("low-cohesion");
   }
   return smells;
