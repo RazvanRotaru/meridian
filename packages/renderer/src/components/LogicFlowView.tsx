@@ -28,7 +28,7 @@ import { arrowMarker } from "../theme/edgeColors";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { LogicNodeData } from "../derive/logicGraph";
 import type { GraphIndex } from "../graph/graphIndex";
-import { buildFlowContainmentIndex } from "../derive/flowInspect";
+import { buildFlowContainmentIndex, transitiveCallers } from "../derive/flowInspect";
 
 export function LogicFlowView() {
   const logicRoot = useBlueprint((state) => state.logicRoot);
@@ -52,9 +52,10 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
   const logicSelected = useBlueprint((state) => state.logicSelected);
   const layoutStatus = useBlueprint((state) => state.logicLayoutStatus);
   const hideGreyed = useBlueprint((state) => state.hideGreyed);
+  const ghostDepth = useBlueprint((state) => state.ghostDepth);
   const index = useBlueprint((state) => state.index);
   const artifact = useBlueprint((state) => state.artifact);
-  const { drillLogicFlow, logicFlowTo, diveLogicContainer, logicFocusTo, toggleHideGreyed, selectLogicTarget } =
+  const { drillLogicFlow, logicFlowTo, diveLogicContainer, logicFocusTo, toggleHideGreyed, setGhostDepth, selectLogicTarget } =
     useBlueprintActions();
 
   // The two gestures the node components don't own, mutually exclusive by node kind: a control
@@ -99,11 +100,12 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
     [artifact],
   );
 
-  // The "jump-to-flow" satellites for the current selection, appended (RELAYOUT-FREE) beside the
-  // selected call site. Selection stays a cheap repaint: the store's laid-out graph is untouched.
+  // The "jump-to-flow" satellites for the current selection, appended (RELAYOUT-FREE) above the
+  // selected call site — one row per hop of indirect callers (up to `ghostDepth`). Selection and the
+  // depth dial stay cheap repaints: the store's laid-out graph is untouched.
   const { jumpNodes, jumpEdges } = useMemo(
-    () => buildJumpSatellites(nodes, logicSelected, logicRoot, containment, index),
-    [nodes, logicSelected, logicRoot, containment, index],
+    () => buildJumpSatellites(nodes, logicSelected, logicRoot, containment, index, ghostDepth),
+    [nodes, logicSelected, logicRoot, containment, index, ghostDepth],
   );
 
   // A handle on the React Flow surface: the `fitView` prop only fits on mount, so navigation needs
@@ -155,6 +157,8 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
         onFocusJump={logicFocusTo}
         hideGreyed={hideGreyed}
         onToggleHide={toggleHideGreyed}
+        ghostDepth={ghostDepth}
+        onSetGhostDepth={setGhostDepth}
       />
       {isEmpty ? <EmptyFlowCard rootId={props.rootId} /> : null}
     </div>
@@ -213,25 +217,27 @@ function tintMarker(marker: LogicRfEdge["markerEnd"], color: string): LogicRfEdg
   return marker && typeof marker === "object" ? { ...(marker as EdgeMarker), color } : marker;
 }
 
-// At most this many satellites — a heavily-shared callable can appear in dozens of flows; six is
-// enough to signal "also called elsewhere" without burying the selected node. The rest are dropped.
-const MAX_JUMPS = 6;
+// At most this many satellites TOTAL across all depth rows — a heavily-shared callable can be
+// reachable from dozens of flows, and pulling in indirect callers only widens that. Nearest callers
+// (lowest depth) are kept first; the rest are dropped, so the cap never buries the selected node.
+const MAX_JUMPS_TOTAL = 24;
 const JUMP_WIDTH = 180;
 const JUMP_HEIGHT = 44;
-// Ghosts sit in a horizontal ROW clear ABOVE the whole graph so they never overlap a laid-out node:
-// ROW_GAP is the vertical clearance between the row and the graph's top edge; COL_GAP is the gap
-// between neighbouring ghosts within the row.
+// Ghosts sit in horizontal ROWS clear ABOVE the whole graph so they never overlap a laid-out node,
+// one row per hop of indirect caller: ROW_GAP is the vertical clearance BETWEEN rows (and between
+// row 1 and the graph's top edge); COL_GAP is the gap between neighbouring ghosts within a row.
 const JUMP_ROW_GAP = 90;
 const JUMP_COL_GAP = 40;
 const JUMP_MUTED = "#4B535F";
 
 /**
- * The jump-to-flow satellites for the current selection: for every OTHER flow that also CALLS the
- * selected target, a dashed ghost node placed in a horizontal ROW clear ABOVE the whole graph (so it
- * never overlaps a laid-out node), centred on the selected call site and wired DOWN INTO it (those
- * flows contain this block, so the arrow points at it). Purely additive — it reads the store's
- * laid-out nodes but never mutates them, so selection stays a repaint (no relayout). Empty unless a
- * target is selected and it's called elsewhere.
+ * The jump-to-flow satellites for the current selection: every flow that TRANSITIVELY reaches the
+ * selected target (a direct caller at depth 1, its caller at depth 2, …, up to `ghostDepth`), each
+ * a dashed ghost node. Ghosts stack in horizontal ROWS clear ABOVE the graph — depth 1 just above
+ * the graph's top edge (as before), each further hop a row higher — every row centred on the
+ * selected call site and wired DOWN INTO it (those flows contain this block, so the arrow points at
+ * it). Purely additive: it reads the store's laid-out nodes but never mutates them, so selection and
+ * the depth dial stay repaints (no relayout). Empty unless a target is selected and reached elsewhere.
  */
 function buildJumpSatellites(
   nodes: LogicRfNode[],
@@ -239,50 +245,67 @@ function buildJumpSatellites(
   logicRoot: NodeId,
   containment: Map<string, string[]>,
   index: GraphIndex,
+  ghostDepth: number,
 ): { jumpNodes: Node[]; jumpEdges: Edge[] } {
   if (logicSelected === null) {
     return { jumpNodes: [], jumpEdges: [] };
   }
-  const roots = (containment.get(logicSelected) ?? []).filter((root) => root !== logicRoot).slice(0, MAX_JUMPS);
+  // Walk the reverse call graph back `ghostDepth` hops; drop the flow we're already looking at, then
+  // keep the NEAREST callers when over the cap (BFS keys depth-ascending, so sort makes it explicit).
+  const callers = transitiveCallers(containment, logicSelected, ghostDepth);
+  callers.delete(logicRoot);
+  const ranked = [...callers.entries()].sort((a, b) => a[1] - b[1]).slice(0, MAX_JUMPS_TOTAL);
   const callSite = nodes.find((node) => node.data.targetId === logicSelected);
-  if (roots.length === 0 || !callSite) {
+  if (ranked.length === 0 || !callSite) {
     return { jumpNodes: [], jumpEdges: [] };
   }
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  // The ghost row sits a clear gap ABOVE the graph's top edge (its own height + gap), so no ghost
-  // ever overlaps a laid-out node. It's centred on the selected call site so its wires drop straight
-  // down into the block: total row width fixes the left start, ghosts stride across at COL_GAP.
-  const rowY = graphTop(nodes, byId) - JUMP_HEIGHT - JUMP_ROW_GAP;
+  const top = graphTop(nodes, byId);
   const sel = absolutePos(callSite, byId);
   const selWidth = callSite.width ?? JUMP_WIDTH;
-  const totalWidth = roots.length * JUMP_WIDTH + (roots.length - 1) * JUMP_COL_GAP;
-  const startX = sel.x + selWidth / 2 - totalWidth / 2;
+  const byDepth = groupByDepth(ranked);
 
   const jumpNodes: Node[] = [];
   const jumpEdges: Edge[] = [];
-  const seen = new Set<string>();
-  roots.forEach((root, i) => {
-    const id = `jump:${root}`;
-    if (seen.has(id)) {
-      return;
-    }
-    seen.add(id);
-    const node = index.nodesById.get(root);
-    jumpNodes.push({
-      id,
-      type: "jumpflow",
-      position: { x: startX + i * (JUMP_WIDTH + JUMP_COL_GAP), y: rowY },
-      width: JUMP_WIDTH,
-      height: JUMP_HEIGHT,
-      selectable: false,
-      draggable: false,
-      data: { rootId: root, label: node?.displayName ?? root, file: node?.location?.file } satisfies JumpFlowNodeData,
+  for (const [depth, roots] of byDepth) {
+    // This depth's row sits `depth` clear gaps ABOVE the graph's top edge, so deeper (more indirect)
+    // callers stack higher. It's centred on the selected call site so its wires drop straight down.
+    const rowY = top - depth * (JUMP_HEIGHT + JUMP_ROW_GAP);
+    const totalWidth = roots.length * JUMP_WIDTH + (roots.length - 1) * JUMP_COL_GAP;
+    const startX = sel.x + selWidth / 2 - totalWidth / 2;
+    roots.forEach((root, i) => {
+      const node = index.nodesById.get(root);
+      jumpNodes.push({
+        id: `jump:${root}`,
+        type: "jumpflow",
+        position: { x: startX + i * (JUMP_WIDTH + JUMP_COL_GAP), y: rowY },
+        width: JUMP_WIDTH,
+        height: JUMP_HEIGHT,
+        selectable: false,
+        draggable: false,
+        data: { rootId: root, label: node?.displayName ?? root, file: node?.location?.file, depth } satisfies JumpFlowNodeData,
+      });
+      // FROM the ghost (in the row above) DOWN INTO the selected call site: React Flow attaches the
+      // ghost's source (Bottom) handle to the block's target (Left) pin, so the arrowhead lands on it.
+      jumpEdges.push(jumpEdge(`jump:${root}`, callSite.id, root, depth));
     });
-    // FROM the ghost (in the row above) DOWN INTO the selected call site: React Flow attaches the
-    // ghost's source (Bottom) handle to the block's target (Left) pin, so the arrowhead lands on it.
-    jumpEdges.push(jumpEdge(id, callSite.id, root));
-  });
+  }
   return { jumpNodes, jumpEdges };
+}
+
+// Bucket the ranked (root, depth) pairs into one list per depth, preserving the ranked order within
+// each — so each depth becomes its own centred row of ghosts.
+function groupByDepth(ranked: Array<[string, number]>): Map<number, string[]> {
+  const byDepth = new Map<number, string[]>();
+  for (const [root, depth] of ranked) {
+    const roots = byDepth.get(depth);
+    if (roots) {
+      roots.push(root);
+    } else {
+      byDepth.set(depth, [root]);
+    }
+  }
+  return byDepth;
 }
 
 // The top edge (minimum absolute y) of the whole laid-out graph. Every node's ELK position is
@@ -319,14 +342,15 @@ function absolutePos(node: LogicRfNode, byId: Map<string, LogicRfNode>): { x: nu
 }
 
 // The satellite wire: dashed, muted grey, no animation — it must not compete with the emphasized
-// exec thread. It runs FROM the caller ghost (in the row above) DOWN INTO the selected block; a small
-// "contains" label reads as "that flow contains this block", and the arrowhead lands on the block.
-function jumpEdge(source: string, target: string, root: string): Edge {
+// exec thread. It runs FROM the caller ghost (in the row above) DOWN INTO the selected block. Only a
+// DIRECT (depth-1) caller wears the "contains" label ("that flow contains this block"); for indirect
+// callers the wire stays unlabeled — the node's own "↑n" badge already says how many hops away it is.
+function jumpEdge(source: string, target: string, root: string, depth: number): Edge {
   return {
     id: `jumpedge:${root}`,
     source,
     target,
-    label: "contains",
+    label: depth === 1 ? "contains" : undefined,
     animated: false,
     style: { stroke: JUMP_MUTED, strokeWidth: 1.5, strokeDasharray: "4 3" },
     labelStyle: { fill: "#7B8695", fontSize: 9 },
@@ -353,8 +377,9 @@ function miniMapColor(node: Node): string {
 
 /**
  * The floating overlay header, offset to clear the Toolbar's top-left column: the drill breadcrumb
- * on the left, the "hide leaf blocks" toggle on the right. Its own container ignores pointer events
- * so the gap between the two still pans the canvas; each control re-enables them for itself.
+ * on the left, and on the right the "related flows" depth dial beside the "hide leaf blocks" toggle.
+ * Its own container ignores pointer events so the gap between them still pans the canvas; each
+ * control re-enables them for itself.
  */
 function LogicOverlayHeader(props: {
   stack: NodeId[];
@@ -364,6 +389,8 @@ function LogicOverlayHeader(props: {
   onFocusJump: (index: number) => void;
   hideGreyed: boolean;
   onToggleHide: () => void;
+  ghostDepth: number;
+  onSetGhostDepth: (depth: number) => void;
 }) {
   return (
     <div style={OVERLAY_HEADER_STYLE}>
@@ -376,14 +403,46 @@ function LogicOverlayHeader(props: {
           onFocusJump={props.onFocusJump}
         />
       </div>
-      <button
-        type="button"
-        style={hideToggleStyle(props.hideGreyed)}
-        aria-pressed={props.hideGreyed}
-        onClick={props.onToggleHide}
-      >
-        {props.hideGreyed ? "Show leaf blocks" : "Hide leaf blocks"}
-      </button>
+      <div style={HEADER_CONTROLS_STYLE}>
+        <GhostDepthDial depth={props.ghostDepth} onSet={props.onSetGhostDepth} />
+        <button
+          type="button"
+          style={hideToggleStyle(props.hideGreyed)}
+          aria-pressed={props.hideGreyed}
+          onClick={props.onToggleHide}
+        >
+          {props.hideGreyed ? "Show leaf blocks" : "Hide leaf blocks"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// The depth range the related-flows dial offers, matching the store's setGhostDepth clamp (1..3).
+const GHOST_DEPTHS = [1, 2, 3] as const;
+
+/**
+ * The "related flows" depth dial: pills 1 · 2 · 3 that set how many hops of INDIRECT callers the
+ * ghosts reach back (1 == direct callers only). The active pill reads pressed; it governs the ghosts
+ * shown for the current/next selection (a repaint, no relayout).
+ */
+function GhostDepthDial(props: { depth: number; onSet: (depth: number) => void }) {
+  return (
+    <div style={DIAL_STYLE}>
+      <span style={DIAL_LABEL_STYLE}>Related</span>
+      {GHOST_DEPTHS.map((n) => (
+        <button
+          key={n}
+          type="button"
+          style={dialPillStyle(props.depth === n)}
+          aria-pressed={props.depth === n}
+          aria-label={`Related flows depth: ${n} ${n === 1 ? "hop" : "hops"}`}
+          title={`Show callers up to ${n} ${n === 1 ? "hop" : "hops"} away`}
+          onClick={() => props.onSet(n)}
+        >
+          {n}
+        </button>
+      ))}
     </div>
   );
 }
@@ -664,6 +723,16 @@ const HEADER_PANEL_STYLE: React.CSSProperties = {
   padding: "4px 8px",
 };
 
+// The right-hand control cluster (depth dial + hide toggle). Transparent to pointer events so the
+// gaps still pan the canvas; each control opts back in for itself.
+const HEADER_CONTROLS_STYLE: React.CSSProperties = {
+  flex: "0 0 auto",
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  pointerEvents: "none",
+};
+
 function hideToggleStyle(active: boolean): React.CSSProperties {
   return {
     pointerEvents: "auto",
@@ -675,6 +744,33 @@ function hideToggleStyle(active: boolean): React.CSSProperties {
     font: "inherit",
     border: `1px solid ${active ? "#3B7AC0" : "#2A2F37"}`,
     background: active ? "#111A24" : "rgba(18,23,30,0.92)",
+    color: active ? "#8FB6E3" : "#9AA4B2",
+  };
+}
+
+// The related-flows depth dial: a small pill group matching the hide toggle's panel look.
+const DIAL_STYLE: React.CSSProperties = {
+  pointerEvents: "auto",
+  display: "flex",
+  alignItems: "center",
+  gap: 3,
+  border: "1px solid #2A2F37",
+  borderRadius: 6,
+  background: "rgba(18,23,30,0.92)",
+  padding: "3px 6px",
+};
+const DIAL_LABEL_STYLE: React.CSSProperties = { fontSize: 11, color: "#7B8695", marginRight: 2 };
+
+function dialPillStyle(active: boolean): React.CSSProperties {
+  return {
+    minWidth: 22,
+    fontSize: 12,
+    padding: "2px 6px",
+    borderRadius: 4,
+    cursor: "pointer",
+    font: "inherit",
+    border: `1px solid ${active ? "#3B7AC0" : "transparent"}`,
+    background: active ? "#111A24" : "transparent",
     color: active ? "#8FB6E3" : "#9AA4B2",
   };
 }

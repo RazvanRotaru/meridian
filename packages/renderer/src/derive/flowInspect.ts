@@ -84,6 +84,39 @@ export function buildFlowContainmentIndex(flows: LogicFlows): Map<string, string
   return containment;
 }
 
+/**
+ * Transitive callers of a target, keyed by the MIN number of hops (1..maxDepth) to reach it — a
+ * backward BFS over the containment map read as a REVERSE call graph (target → its direct callers).
+ * Callables are both flow-roots AND call-targets, so `containment.get(caller)` yields the caller's
+ * OWN callers; walking that chain surfaces indirect callers: for A→B→C, target C sees B at depth 1
+ * and A at depth 2. BFS visits nearer callers first, so first-seen wins == each caller's minimum
+ * hop count. A `visited` set seeded with the target guards cycles AND excludes the target itself.
+ */
+export function transitiveCallers(
+  containment: Map<string, string[]>,
+  targetId: string,
+  maxDepth: number,
+): Map<string, number> {
+  const callers = new Map<string, number>();
+  const visited = new Set<string>([targetId]);
+  let frontier = [targetId];
+  for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth += 1) {
+    const next: string[] = [];
+    for (const node of frontier) {
+      for (const caller of containment.get(node) ?? []) {
+        if (visited.has(caller)) {
+          continue;
+        }
+        visited.add(caller);
+        callers.set(caller, depth);
+        next.push(caller);
+      }
+    }
+    frontier = next;
+  }
+  return callers;
+}
+
 function calleeFor(index: GraphIndex, edge: GraphEdge): Callee {
   if (isExternalId(edge.target)) {
     return { id: edge.target, resolution: edge.resolution, kind: "external", label: stripPrefix(edge.target) };

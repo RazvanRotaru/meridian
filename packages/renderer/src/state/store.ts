@@ -59,6 +59,10 @@ export interface BlueprintState {
    * target id (not call site), so every same-target call site — the "direct links" — highlights
    * for free. Cleared whenever the charted flow changes so a stale selection can't linger. */
   logicSelected: NodeId | null;
+  /** How many hops of INDIRECT callers the "related flows" ghosts reach back over the reverse call
+   * graph: 1 == direct callers only (today's behavior), up to 3. Sticky across navigation; it's a
+   * repaint-only setting — the view recomputes the ghosts in a useMemo, no relayout. */
+  ghostDepth: number;
   /** Flow-root ids the reader pinned for quick access. Session-scoped, survives navigation. */
   pinnedFlows: NodeId[];
   /** Logic-graph nodes the reader toggled AWAY from their default expansion (calls default
@@ -101,6 +105,7 @@ export interface BlueprintState {
   diveLogicContainer(id: string, label: string, bodies: FlowPath[]): void;
   logicFocusTo(index: number): void;
   setLogicInlineDepth(depth: number): void;
+  setGhostDepth(depth: number): void;
   selectLogicTarget(id: NodeId | null): void;
   togglePinnedFlow(id: NodeId): void;
   toggleLogicExpand(nodeId: string): void;
@@ -147,6 +152,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     logicFocus: [],
     logicInlineDepth: 0,
     logicSelected: null,
+    ghostDepth: 1,
     pinnedFlows: [],
     expandedLogic: new Set<string>(),
     hideGreyed: false,
@@ -287,6 +293,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // open/drill — so the reader's chosen inline depth carries across navigation.
     setLogicInlineDepth(depth) {
       set({ logicInlineDepth: Math.max(0, Math.min(2, Math.trunc(depth))) });
+    },
+
+    // Set how many hops of indirect callers the "related flows" ghosts reach back. Clamped to 1..3
+    // (1 == direct callers, today's behavior). A repaint only — the view recomputes the ghosts in a
+    // useMemo from this — so it deliberately does NOT relayout the graph.
+    setGhostDepth(depth) {
+      set({ ghostDepth: Math.max(1, Math.min(3, Math.trunc(depth))) });
     },
 
     // Select a call target in the Logic-flow view (pass null to clear). The view renders straight
