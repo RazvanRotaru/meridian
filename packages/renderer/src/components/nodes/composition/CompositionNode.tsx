@@ -13,6 +13,7 @@ import { colorForDistance, type CompNodeData } from "../../../derive/composition
 import type { CompRfNode } from "../../../layout/compositionElk";
 import type { Smell } from "../../../derive/composition";
 import { accentForKind } from "../../../theme/kindColors";
+import { ClusterFrameNode } from "./ClusterFrameNode";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 // The green shared with the emphasized coupling wires so the node ring and the edge glow read as
@@ -114,7 +115,7 @@ function glyphForKind(kind: string): string {
 }
 
 export const CompositionNode = memo(CompositionNodeImpl);
-export const compNodeTypes = { unit: CompositionNode };
+export const compNodeTypes = { unit: CompositionNode, cluster: ClusterFrameNode };
 
 const PIN: React.CSSProperties = { width: 7, height: 7, background: "#C8D3E0", border: "none", minWidth: 0, minHeight: 0 };
 
