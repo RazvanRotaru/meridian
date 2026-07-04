@@ -66,9 +66,15 @@ export function CommandPalette() {
   const results = useMemo(() => selectResults(symbols, query), [symbols, query]);
 
   // Typing shifts the result set, so re-prime the highlight to the top match.
-  useEffect(() => setHighlighted(0), [query]);
-  // Keep the highlighted row in view as arrow keys walk past the fold.
-  useEffect(() => activeRowRef.current?.scrollIntoView({ block: "nearest" }), [highlighted, results]);
+  useEffect(() => {
+    setHighlighted(0);
+  }, [query]);
+  // Keep the highlighted row in view as arrow keys walk past the fold. Block body is REQUIRED: a
+  // concise arrow would return scrollIntoView's result, which React treats as a cleanup function and
+  // invokes on the next run — in browsers where it returns a non-undefined value that crashes.
+  useEffect(() => {
+    activeRowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [highlighted, results]);
 
   if (!open) {
     return null;
