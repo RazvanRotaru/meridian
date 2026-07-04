@@ -33,11 +33,14 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   const codeView = useBlueprint((s) => s.codeView);
   const d = data as LogicNodeData;
   const select = selectStateFor(d.targetId, logicSelected);
-  // A "defined here" node is a DECLARATION, not an exec step, so it wears a distinct teal accent
-  // (clearly not the blue of a call block) while keeping the same body/pins/buttons for select/drill.
-  const accent = d.definition ? DEF_ACCENT : BLOCK_ACCENT;
+  // A method call (one made through a receiver / a class method) reads apart from a free function at a
+  // glance: a distinct glyph, and a small indigo shift off the blue call accent. A "defined here" node
+  // keeps its teal DECLARATION accent regardless (its declaration-ness dominates), gaining only the
+  // glyph — so defs stay visually consistent with their existing treatment.
+  const glyph = d.callKind === "method" ? METHOD_GLYPH : "ƒ";
+  const accent = d.definition ? DEF_ACCENT : d.callKind === "method" ? METHOD_ACCENT : BLOCK_ACCENT;
   if (d.isContainer) {
-    return <ContainerFrame accent={accent} label={d.label} glyph="ƒ" onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} select={select} />;
+    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} select={select} />;
   }
   const codeNode = d.targetId ? index.nodesById.get(d.targetId) : undefined;
   const canCode = Boolean(codeNode?.location) && Boolean(sourceUrl);
@@ -61,7 +64,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
         <div style={selectStyle(GREY_BODY, select)}>
           <ExecPins />
           <div style={GREY_TITLE}>
-            <span style={GREY_GLYPH}>ƒ</span>
+            <span style={GREY_GLYPH}>{glyph}</span>
             <span style={NAME} title={d.label}>{d.label}</span>
             {codeButton}
           </div>
@@ -80,7 +83,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
       <div style={selectStyle(BODY, select)}>
         <ExecPins />
         <div style={titleStyle(accent)}>
-          <span style={GLYPH}>ƒ</span>
+          <span style={GLYPH}>{glyph}</span>
           <span style={NAME} title={d.label}>{d.label}</span>
           <span style={TITLE_TAIL}>
             {d.definition ? <span style={DEF_TAG}>def</span> : null}
@@ -138,12 +141,25 @@ function BranchNode({ data }: NodeProps<LogicRfNode>) {
           anchor at the wrapper's left/right centre — the hexagon's exec points. */}
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-      <div style={BRANCH_SHAPE}>
+      {/* Compact by design: a hard-clipped condition caption keeps the decision node small; the FULL
+          condition rides in the hover title so nothing is lost. */}
+      <div style={BRANCH_SHAPE} title={d.label}>
         <span style={BRANCH_GLYPH}>{glyph}</span>
-        <span style={NAME} title={d.label}>{d.label}</span>
+        <span style={NAME}>{compactCondition(d.label)}</span>
       </div>
     </div>
   );
+}
+
+/**
+ * A compact decision caption for the Branch node. The glyph already signals if vs switch, so DROP the
+ * leading keyword and clip the condition HARD — this node must stay small and glanceable, never a wide
+ * box; the full text lives in the node's hover title. ~14 chars fits the near-fixed footprint.
+ */
+function compactCondition(label: string): string {
+  const condition = label.replace(/^(if|switch)\b\s*/, "").trim();
+  const text = condition || label;
+  return text.length > 14 ? `${text.slice(0, 14).trimEnd()}…` : text;
 }
 
 /** A framed container (expanded call / loop / try): a title bar sits over ELK's reserved top pad;
@@ -275,6 +291,11 @@ function selectStyle(base: React.CSSProperties, select: SelectState): React.CSSP
 }
 
 const BLOCK_ACCENT = "#3B7AC0";
+// A small INDIGO shift off the blue call accent — same family, not a jarring new colour — so a method
+// call (through a receiver / a class method) is distinguishable at a glance from a free function.
+const METHOD_ACCENT = "#5E74C6";
+// Evokes the `::` scope-resolution of a member call, versus the `ƒ` of a free function.
+const METHOD_GLYPH = "∷";
 // Teal, deliberately unlike the blue call accent: a definition node is a declaration ("defined
 // here"), a different kind of thing from a call site in the flow.
 const DEF_ACCENT = "#3FB8AF";
@@ -317,12 +338,12 @@ const BRANCH_SHAPE: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  gap: 6,
-  padding: "0 26px", // clear the slanted points so the centred label isn't clipped
-  fontSize: 12,
+  gap: 4,
+  padding: "0 16px", // clear the slanted points so the compact centred caption isn't clipped
+  fontSize: 11,
   fontWeight: 700,
 };
-const BRANCH_GLYPH: React.CSSProperties = { fontSize: 13, flexShrink: 0 };
+const BRANCH_GLYPH: React.CSSProperties = { fontSize: 12, flexShrink: 0 };
 
 function titleStyle(accent: string): React.CSSProperties {
   return {

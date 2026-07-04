@@ -132,6 +132,21 @@ describe("deriveLogicGraph", () => {
     expect(edges).toEqual([expect.objectContaining({ source: "r::0::p0/0", target: "r::0::p0/1", kind: "seq" })]);
   });
 
+  it("tags call steps function vs method (resolved target kind, else a receiver in the label)", () => {
+    const flows: LogicFlows = {
+      r: [
+        call("fn", "ext:l#fn", "external"), //           free function: no receiver, no method target
+        call("store.select", "ext:l#s", "external"), //  receiver in the label ⇒ method
+        call("run", "ts:m#C.run", "resolved"), //        resolved target IS a method ⇒ method (label has no dot)
+      ],
+    };
+    const index = makeIndex([{ id: "ts:m#C.run", name: "run", kind: "method", parentId: null }]);
+    const { nodes } = deriveLogicGraph("r", flows, index, NONE, { hideGreyed: false });
+    expect(nodes.find((n) => n.id === "r::0")!.data.callKind).toBe("function");
+    expect(nodes.find((n) => n.id === "r::1")!.data.callKind).toBe("method");
+    expect(nodes.find((n) => n.id === "r::2")!.data.callKind).toBe("method");
+  });
+
   it("hideGreyed drops greyed leaves and stitches the sequence around them", () => {
     const flows: LogicFlows = {
       r: [call("fn", "ts:m#fn", "resolved"), call("grey", "ext:l#g", "external"), call("fn2", "ts:m#fn2", "resolved")],
