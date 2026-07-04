@@ -17,7 +17,8 @@ Unreal-Blueprints-style (calls, branches, loops, drill-in, ⌘P symbol search).
 > ▶ **[20-second tour](docs/media/meridian-tour.webm)** ·
 > 🧭 **[Logic-flow tour → `docs/logic-flow-demo.html`](docs/logic-flow-demo.html)** (self-contained page — [preview](https://htmlpreview.github.io/?https://raw.githubusercontent.com/RazvanRotaru/meridian/main/docs/logic-flow-demo.html), or download & open in a browser) ·
 > 🔎 **[Use case: inspecting tool execution → `docs/logic-flow-usecase.html`](docs/logic-flow-usecase.html)** (a worked five-move investigation — [preview](https://htmlpreview.github.io/?https://raw.githubusercontent.com/RazvanRotaru/meridian/main/docs/logic-flow-usecase.html)) ·
-> 🏛️ **[Service composition → `docs/service-composition.html`](docs/service-composition.html)** (the SOLID-architecture lens — [preview](https://htmlpreview.github.io/?https://raw.githubusercontent.com/RazvanRotaru/meridian/main/docs/service-composition.html); design rationale in [`docs/service-composition-design.md`](docs/service-composition-design.md))
+> 🏛️ **[Service composition → `docs/service-composition.html`](docs/service-composition.html)** (the SOLID-architecture lens — [preview](https://htmlpreview.github.io/?https://raw.githubusercontent.com/RazvanRotaru/meridian/main/docs/service-composition.html); design rationale in [`docs/service-composition-design.md`](docs/service-composition-design.md)) ·
+> 🧭 **[Service-composition tour → `docs/service-composition-demo.html`](docs/service-composition-demo.html)** (a six-move visual walkthrough with real frames — [preview](https://htmlpreview.github.io/?https://raw.githubusercontent.com/RazvanRotaru/meridian/main/docs/service-composition-demo.html))
 
 ## Quickstart
 
