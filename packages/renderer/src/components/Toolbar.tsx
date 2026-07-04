@@ -9,10 +9,14 @@ import { EnvSelector } from "./EnvSelector";
 import { Breadcrumb } from "./Breadcrumb";
 import { ViewModeToggle } from "./ViewModeToggle";
 import { FlowSelector } from "./FlowSelector";
+import { CompositionPanel } from "./composition/CompositionPanel";
 
 export function Toolbar(props: { preselectedEnv: string | null }) {
   const targetName = useBlueprint((state) => state.artifact.target.name);
   const hasOverlay = useBlueprint((state) => state.hasOverlay);
+  // The "call" lens IS the Service-composition surface, so the sidebar swaps the call-flow picker
+  // (meaningless there) for the composition map + refactor worklist; ui/logic keep the FlowSelector.
+  const isComposition = useBlueprint((state) => state.viewMode) === "call";
   const collapseAll = useBlueprintActions().collapseAll;
   return (
     <Panel position="top-left">
@@ -25,7 +29,7 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
         </div>
         <ViewModeToggle />
         <Breadcrumb />
-        <FlowSelector />
+        {isComposition ? <CompositionPanel /> : <FlowSelector />}
         {hasOverlay ? <EnvSelector preselectedEnv={props.preselectedEnv} /> : null}
       </div>
     </Panel>

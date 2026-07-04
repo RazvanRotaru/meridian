@@ -11,8 +11,8 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
 import { colorForDistance, type CompNodeData } from "../../../derive/compositionGraph";
 import type { CompRfNode } from "../../../layout/compositionElk";
-import type { Smell } from "../../../derive/composition";
 import { accentForKind } from "../../../theme/kindColors";
+import { SmellChip } from "../../composition/SmellChip";
 import { ClusterFrameNode } from "./ClusterFrameNode";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -86,29 +86,6 @@ function MetricPair(props: { label: string; value: number; title: string }) {
     </span>
   );
 }
-
-/** A design-smell pill: short glanceable label, red for the structural hazards (HUB/PAIN), amber
- * for the softer split/unused hints. Full smell name rides the hover title. */
-function SmellChip(props: { smell: Smell }) {
-  return (
-    <span style={SMELL_TONE[props.smell] === "red" ? CHIP_RED : CHIP_AMBER} title={props.smell}>
-      {SMELL_LABEL[props.smell]}
-    </span>
-  );
-}
-
-const SMELL_LABEL: Record<Smell, string> = {
-  "god-module": "HUB",
-  "zone-of-pain": "PAIN",
-  "zone-of-uselessness": "UNUSED",
-  "low-cohesion": "SPLIT",
-};
-const SMELL_TONE: Record<Smell, "red" | "amber"> = {
-  "god-module": "red",
-  "zone-of-pain": "red",
-  "zone-of-uselessness": "amber",
-  "low-cohesion": "amber",
-};
 
 // A compact kind glyph so a card reads as class/module/interface/object before the tag is scanned.
 const KIND_GLYPH: Record<string, string> = {
@@ -203,13 +180,3 @@ const DISTANCE_ROW: React.CSSProperties = { display: "flex", alignItems: "baseli
 const DISTANCE_LABEL: React.CSSProperties = { fontSize: 11, letterSpacing: "0.04em" };
 const DISTANCE_VALUE: React.CSSProperties = { fontSize: 15 };
 const CHIP_ROW: React.CSSProperties = { display: "flex", flexWrap: "wrap", gap: 4, marginTop: 1 };
-const CHIP_BASE: React.CSSProperties = {
-  fontSize: 8.5,
-  fontWeight: 700,
-  letterSpacing: "0.05em",
-  borderRadius: 3,
-  padding: "1px 5px",
-  border: "1px solid",
-};
-const CHIP_RED: React.CSSProperties = { ...CHIP_BASE, color: "#F0787C", borderColor: "#5B2B2F", background: "rgba(229,72,77,0.14)" };
-const CHIP_AMBER: React.CSSProperties = { ...CHIP_BASE, color: "#E6B84D", borderColor: "#5A4A24", background: "rgba(230,184,77,0.14)" };
