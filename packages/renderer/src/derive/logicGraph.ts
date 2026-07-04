@@ -11,6 +11,7 @@
 import type { EdgeResolution, FlowPath, FlowStep, GraphNode, LogicFlows } from "@meridian/core";
 import { parseNodeId } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
+import { clamp } from "../layout/measure";
 
 export type LogicNodeType = "block" | "control" | "branch";
 
@@ -378,17 +379,17 @@ function sizeFor(label: string, greyed: boolean, type: LogicNodeType): { width: 
   if (type === "branch") {
     // A touch wider than a plain box: the hexagon's slanted points eat horizontal room around the
     // centred label, so the min keeps short conditions (`if x`) from crushing the text.
-    return { width: clamp(150, 260, 60 + label.length * 7.2), height: 56 };
+    return { width: roundedClamp(150, 260, 60 + label.length * 7.2), height: 56 };
   }
   if (greyed) {
     // A small chip: clearly smaller than an expandable block so size alone signals "leaf, no flow".
-    return { width: clamp(88, 150, 22 + label.length * 5.6), height: 30 };
+    return { width: roundedClamp(88, 150, 22 + label.length * 5.6), height: 30 };
   }
-  return { width: clamp(190, 360, 44 + label.length * 7.2), height: 66 };
+  return { width: roundedClamp(190, 360, 44 + label.length * 7.2), height: 66 };
 }
 
-function clamp(min: number, max: number, value: number): number {
-  return Math.round(Math.min(max, Math.max(min, value)));
+function roundedClamp(min: number, max: number, value: number): number {
+  return Math.round(clamp(min, max, value));
 }
 
 function isTryLabel(label: string): boolean {

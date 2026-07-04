@@ -12,8 +12,7 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
 import type { LogicNodeData } from "../../../derive/logicGraph";
-import type { CodeView } from "../../../state/store";
-import { CodeBlock } from "../../CodeBlock";
+import { CodeInlinePanel } from "../../CodeInlinePanel";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
@@ -52,7 +51,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   const codeButton = canCode && codeNode ? (
     <button type="button" style={CODE_BTN} title="view source" onClick={(e) => { stop(e); toggleCode(); }}>{"</>"}</button>
   ) : null;
-  const inline = showingInline && codeView ? <InlineCode codeView={codeView} onExpand={expandCode} onClose={closeCode} /> : null;
+  const inline = showingInline && codeView ? <CodeInlinePanel codeView={codeView} onExpand={expandCode} onClose={closeCode} /> : null;
   // A greyed leaf is a small chip beside the larger call nodes: the name stays priority (never
   // clipped) while provenance shrinks to just the module on one tight line, full `pkg › module`
   // in its title. Greyed leaves are never expandable, so there is no disclosure chevron here.
@@ -97,36 +96,6 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
         {d.provenance ? <div style={PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.pkg} › {d.provenance.module}</div> : null}
       </div>
       {inline}
-    </div>
-  );
-}
-
-/**
- * The compact inline source box for a logic building block: an absolutely-positioned panel hanging
- * just below the node (top:100%), a SIBLING of the clipped body so the body's overflow:hidden can't
- * cut it off. It is capped in width and the code scrolls inside CodeBlock, so it overlays neighbours
- * without changing the node's laid-out box (no relayout). Its ⤢ blows the same code up into the
- * centered modal (CodePanel); × closes it. Pointer events are swallowed so interacting with the box
- * never pans the canvas, drags the node, or triggers select/dive.
- */
-function InlineCode(props: { codeView: CodeView; onExpand: () => void; onClose: () => void }) {
-  const { node, code, loading, error, truncated } = props.codeView;
-  const { file, startLine, endLine } = node.location;
-  const range = endLine && endLine !== startLine ? `${startLine}-${endLine}` : String(startLine);
-  const stop = (e: React.SyntheticEvent) => e.stopPropagation();
-  return (
-    <div style={INLINE_BOX} onClick={stop} onDoubleClick={stop} onMouseDown={stop}>
-      <div style={INLINE_HEAD}>
-        <span style={INLINE_LOC} title={file}>{`${file}:${range}`}</span>
-        <button type="button" style={INLINE_ICON} aria-label="Open in modal" title="Open in modal" onClick={(e) => { stop(e); props.onExpand(); }}>⤢</button>
-        <button type="button" style={INLINE_ICON} aria-label="Close source" title="Close" onClick={(e) => { stop(e); props.onClose(); }}>×</button>
-      </div>
-      <div style={INLINE_BODY}>
-        {loading ? <div style={INLINE_STATUS}>Loading…</div> : null}
-        {error ? <div style={INLINE_ERROR}>{error}</div> : null}
-        {code !== null ? <CodeBlock code={code} maxHeight={200} /> : null}
-        {truncated ? <div style={INLINE_TRUNC}>…truncated</div> : null}
-      </div>
     </div>
   );
 }
@@ -274,7 +243,9 @@ export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: 
 // every call of the same target lights up together; while some target is selected, unrelated nodes
 // dim so the matches pop. Structural nodes (loops/branches) carry no target, so they only ever dim.
 type SelectState = "selected" | "dimmed" | "none";
-const SELECT_ACCENT = "#6BE38A";
+// The accent green shared with the emphasized logic edges (imported by LogicFlowView) so the node
+// ring and the edge glow can't drift.
+export const SELECT_ACCENT = "#6BE38A";
 
 function selectStateFor(targetId: string | null, logicSelected: string | null): SelectState {
   if (logicSelected === null) {
@@ -438,28 +409,3 @@ const DEFGROUP_TITLE: React.CSSProperties = {
 const DEFGROUP_NAME: React.CSSProperties = { ...NAME, flex: 1, minWidth: 0 };
 const DEFGROUP_TAG: React.CSSProperties = { flexShrink: 0, fontSize: 8, fontWeight: 700, letterSpacing: "0.06em", border: "1px solid rgba(63,184,175,0.4)", borderRadius: 3, padding: "1px 4px", color: "#3FB8AF" };
 const DEFGROUP_COUNT: React.CSSProperties = { flexShrink: 0, fontSize: 10, fontWeight: 600, color: "#6C7683" };
-
-// The inline source box: hangs below the node (top:100%), high z-index so it overlays neighbours,
-// left-aligned to the node. overflow:hidden keeps the rounded corners; the code scrolls in CodeBlock.
-const INLINE_BOX: React.CSSProperties = {
-  position: "absolute",
-  top: "100%",
-  left: 0,
-  marginTop: 6,
-  width: 460,
-  maxWidth: "60vw",
-  zIndex: 20,
-  background: "#0E1116",
-  border: "1px solid #2A2F37",
-  borderRadius: 8,
-  boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
-  overflow: "hidden",
-  cursor: "default",
-};
-const INLINE_HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", background: "#161B22", borderBottom: "1px solid #2A2F37" };
-const INLINE_LOC: React.CSSProperties = { flex: 1, minWidth: 0, fontSize: 10, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
-const INLINE_ICON: React.CSSProperties = { flexShrink: 0, background: "#1A1F27", color: "#9AA4B2", border: "1px solid #2A2F37", borderRadius: 5, width: 20, height: 20, fontSize: 12, lineHeight: 1, cursor: "pointer" };
-const INLINE_BODY: React.CSSProperties = { padding: 8 };
-const INLINE_STATUS: React.CSSProperties = { fontSize: 11, color: "#7B8695" };
-const INLINE_ERROR: React.CSSProperties = { fontSize: 11, color: "#f2777a" };
-const INLINE_TRUNC: React.CSSProperties = { marginTop: 6, fontSize: 10, color: "#7B8695" };
