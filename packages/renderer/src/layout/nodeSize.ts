@@ -5,6 +5,7 @@
  */
 
 import type { VisibleNode } from "../derive/types";
+import { clamp } from "./measure";
 
 const COLLAPSED_WIDTH = 232;
 const COLLAPSED_HEIGHT = 78;
@@ -37,8 +38,4 @@ function callableSize(visibleNode: VisibleNode): BoxSize {
   // Pins occupy a dedicated row under the signature, so callable leaves are taller.
   const height = signature.length > 0 ? 104 : 76;
   return { width: Math.round(width), height };
-}
-
-function clamp(min: number, max: number, value: number): number {
-  return Math.min(max, Math.max(min, value));
 }

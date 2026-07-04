@@ -13,11 +13,6 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Background,
-  BackgroundVariant,
-  Controls,
-  MarkerType,
-  MiniMap,
   ReactFlow,
   type Edge,
   type EdgeMarker,
@@ -27,7 +22,9 @@ import {
 } from "@xyflow/react";
 import type { GraphArtifact, GraphNode, LogicFlows, NodeId } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
-import { logicNodeTypes, type JumpFlowNodeData } from "./nodes/logic/logicNodeTypes";
+import { logicNodeTypes, SELECT_ACCENT, type JumpFlowNodeData } from "./nodes/logic/logicNodeTypes";
+import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
+import { arrowMarker } from "../theme/edgeColors";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { LogicNodeData } from "../derive/logicGraph";
 import type { GraphIndex } from "../graph/graphIndex";
@@ -146,25 +143,9 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={() => selectLogicTarget(null)}
-        colorMode="dark"
-        nodesDraggable={false}
-        nodesConnectable={false}
-        // Click-drag pans; it must never rubber-band select or text-highlight node labels.
-        panOnDrag
-        selectionOnDrag={false}
-        style={{ userSelect: "none" }}
-        fitView
-        fitViewOptions={{ padding: 0.2, minZoom: 0.01 }}
-        // A deep flow can be many nodes; let it zoom far out (default minZoom 0.5 clips) but cap zoom-in.
-        minZoom={0.01}
-        maxZoom={4}
-        // Double-click drills into a callee, so the pane must not also zoom on it.
-        zoomOnDoubleClick={false}
-        proOptions={{ hideAttribution: true }}
+        {...READONLY_CANVAS_PROPS}
       >
-        <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#222732" />
-        <Controls showInteractive={false} />
-        <MiniMap pannable zoomable nodeColor={miniMapColor} maskColor="rgba(8,10,14,0.7)" />
+        <CanvasChrome nodeColor={miniMapColor} />
       </ReactFlow>
       <LogicOverlayHeader
         stack={logicStack}
@@ -180,9 +161,8 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
   );
 }
 
-// The accent green shared with the selected node ring: the emphasized wires glow the same colour so
-// a selected target and the threads leaving/entering its call sites read as one highlight.
-const SELECT_ACCENT = "#6BE38A";
+// SELECT_ACCENT (the green shared with the selected node ring) is imported from logicNodeTypes so the
+// emphasized wires and the node ring can't drift: they read as one highlight.
 const DIM_OPACITY = 0.25;
 const EMPHASIS_WIDTH = 3;
 
@@ -352,7 +332,7 @@ function jumpEdge(source: string, target: string, root: string): Edge {
     labelStyle: { fill: "#7B8695", fontSize: 9 },
     labelBgStyle: { fill: "#12171E", fillOpacity: 0.9 },
     labelBgPadding: [3, 1],
-    markerEnd: { type: MarkerType.ArrowClosed, color: JUMP_MUTED, width: 12, height: 12 },
+    markerEnd: arrowMarker(JUMP_MUTED, 12),
   };
 }
 

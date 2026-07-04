@@ -5,9 +5,16 @@
  * accent so UI-composition mode is legible at a glance even when both live on screen.
  */
 
+import { MarkerType } from "@xyflow/react";
+
 export const WIRE_COLOR = "#7C8696";
 export const RENDERS_WIRE = "#61DAFB";
 
 export function wireColorForKind(kind: string): string {
   return kind === "renders" ? RENDERS_WIRE : WIRE_COLOR;
+}
+
+/** The closed arrowhead a laid-out edge terminates in, coloured to match its wire. */
+export function arrowMarker(color: string, size = 18) {
+  return { type: MarkerType.ArrowClosed, color, width: size, height: size };
 }

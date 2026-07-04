@@ -60,7 +60,17 @@ function colorFor(m: RegExpExecArray): string {
   return COLOR.plain;
 }
 
-export function CodeBlock({ code, maxHeight = 220 }: { code: string; maxHeight?: number | string }) {
+export function CodeBlock({
+  code,
+  maxHeight = 220,
+  startLine,
+}: {
+  code: string;
+  maxHeight?: number | string;
+  /** When set, a right-aligned line-number gutter is rendered alongside the code, numbering from
+   * this line. Omitted → no gutter (the plain highlighted listing). Highlighting is kept either way. */
+  startLine?: number;
+}) {
   // Reset the shared regex's lastIndex per run (it is stateful with the `g` flag) and never let a
   // tokenizing surprise blank the panel — fall back to the raw, still-escaped source.
   const pieces = useMemo(() => {
@@ -71,13 +81,26 @@ export function CodeBlock({ code, maxHeight = 220 }: { code: string; maxHeight?:
       return [{ text: code, color: COLOR.plain }];
     }
   }, [code]);
+  const highlighted = pieces.map((piece, index) => (
+    <span key={index} style={{ color: piece.color }}>{piece.text}</span>
+  ));
+  if (startLine === undefined) {
+    return <pre style={{ ...PRE_STYLE, maxHeight }}>{highlighted}</pre>;
+  }
+  // Gutter mode: the row owns the vertical scroll (numbers and code scroll together, always the
+  // same height); the code column owns horizontal scroll (min-width:0 lets it shrink and scroll
+  // inside itself) so the fixed-width gutter never slides out of view.
   return (
-    <pre style={{ ...PRE_STYLE, maxHeight }}>
-      {pieces.map((piece, index) => (
-        <span key={index} style={{ color: piece.color }}>{piece.text}</span>
-      ))}
-    </pre>
+    <div style={{ ...LISTING_STYLE, maxHeight }}>
+      <pre style={GUTTER_STYLE} aria-hidden>{lineNumbers(code, startLine)}</pre>
+      <pre style={CODE_COLUMN_STYLE}>{highlighted}</pre>
+    </div>
   );
+}
+
+// A right-aligned column of consecutive line numbers, one per line of `code`, starting at `startLine`.
+function lineNumbers(code: string, startLine: number): string {
+  return code.split("\n").map((_line, index) => startLine + index).join("\n");
 }
 
 const PRE_STYLE: React.CSSProperties = {
@@ -89,4 +112,30 @@ const PRE_STYLE: React.CSSProperties = {
   color: COLOR.plain,
   whiteSpace: "pre",
   tabSize: 2,
+};
+
+const LISTING_STYLE: React.CSSProperties = {
+  display: "flex",
+  gap: 10,
+  overflow: "auto",
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  fontSize: 11.5,
+  lineHeight: "17px",
+  tabSize: 2,
+};
+const GUTTER_STYLE: React.CSSProperties = {
+  margin: 0,
+  flexShrink: 0,
+  textAlign: "right",
+  color: "#4A525F",
+  userSelect: "none",
+  whiteSpace: "pre",
+};
+const CODE_COLUMN_STYLE: React.CSSProperties = {
+  margin: 0,
+  flex: 1,
+  minWidth: 0,
+  color: COLOR.plain,
+  whiteSpace: "pre",
+  overflowX: "auto",
 };

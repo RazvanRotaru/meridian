@@ -11,7 +11,7 @@ import { ellipsize } from "../../theme/displayName";
 import { isCallable } from "../../layout/nodeSize";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { BlueprintNode } from "../../layout/rfTypes";
-import type { CodeView } from "../../state/store";
+import { CodeInlinePanel } from "../CodeInlinePanel";
 import { NodeHeader } from "./NodeHeader";
 import { TelemetryBadges } from "../TelemetryBadges";
 
@@ -47,7 +47,7 @@ export function LeafNode(props: NodeProps<BlueprintNode>) {
         <Handle type="source" position={Position.Right} id="out" style={pinStyle(callable)} />
       </div>
       {codeView && showingHere && codeView.mode === "inline" ? (
-        <InlineCodePanel codeView={codeView} onExpand={expandCode} onClose={closeCode} />
+        <CodeInlinePanel codeView={codeView} onExpand={expandCode} onClose={closeCode} showGutter />
       ) : null}
     </>
   );
@@ -74,69 +74,6 @@ function CodeButton(props: { active: boolean; onToggle: () => void }) {
     >
       {"</>"}
     </button>
-  );
-}
-
-// The compact inline code panel: an absolutely-positioned section hanging just below the card
-// (top:100%), capped in width/height and scrollable, so it overlays neighbours without changing
-// the node's laid-out box (no relayout). Clicks inside stay off the node's select/dive handlers.
-// Its ⤢ button blows the same code up into the centered modal (CodePanel); × closes it.
-function InlineCodePanel(props: { codeView: CodeView; onExpand: () => void; onClose: () => void }) {
-  const { node, code, loading, error, truncated } = props.codeView;
-  const { file, startLine, endLine } = node.location;
-  const range = endLine && endLine !== startLine ? `${startLine}-${endLine}` : String(startLine);
-  return (
-    <div
-      style={INLINE_PANEL_STYLE}
-      onClick={(event) => event.stopPropagation()}
-      onDoubleClick={(event) => event.stopPropagation()}
-    >
-      <div style={INLINE_HEADER_STYLE}>
-        <span style={INLINE_LOCATION_STYLE} title={file}>{`${file}:${range}`}</span>
-        <button
-          type="button"
-          style={INLINE_ICON_STYLE}
-          aria-label="Open in modal"
-          title="Open in modal"
-          onClick={(event) => {
-            event.stopPropagation();
-            props.onExpand();
-          }}
-        >
-          ⤢
-        </button>
-        <button
-          type="button"
-          style={INLINE_ICON_STYLE}
-          aria-label="Close source"
-          title="Close"
-          onClick={(event) => {
-            event.stopPropagation();
-            props.onClose();
-          }}
-        >
-          ×
-        </button>
-      </div>
-      <div style={INLINE_BODY_STYLE}>
-        {loading ? <div style={INLINE_STATUS_STYLE}>Loading…</div> : null}
-        {error ? <div style={INLINE_ERROR_STYLE}>{error}</div> : null}
-        {code !== null ? <InlineCodeListing code={code} startLine={startLine} /> : null}
-        {truncated ? <div style={INLINE_TRUNCATED_STYLE}>…truncated</div> : null}
-      </div>
-    </div>
-  );
-}
-
-// A line-numbered listing: a gutter of numbers starting at `startLine`, next to the code.
-function InlineCodeListing(props: { code: string; startLine: number }) {
-  const lines = props.code.split("\n");
-  const gutter = lines.map((_line, index) => props.startLine + index).join("\n");
-  return (
-    <div style={INLINE_LISTING_STYLE}>
-      <pre style={INLINE_GUTTER_STYLE} aria-hidden>{gutter}</pre>
-      <pre style={INLINE_CODE_STYLE}><code>{props.code}</code></pre>
-    </div>
   );
 }
 
@@ -200,77 +137,4 @@ const SIGNATURE_STYLE: React.CSSProperties = {
   whiteSpace: "nowrap",
   overflow: "hidden",
   textOverflow: "ellipsis",
-};
-
-const INLINE_PANEL_STYLE: React.CSSProperties = {
-  position: "absolute",
-  top: "100%",
-  left: 0,
-  marginTop: 6,
-  width: "min(440px, 150%)",
-  maxHeight: 200,
-  overflow: "auto",
-  zIndex: 5,
-  background: "#0E1116",
-  border: "1px solid #2A2F37",
-  borderRadius: 8,
-  boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
-  cursor: "default",
-};
-const INLINE_HEADER_STYLE: React.CSSProperties = {
-  position: "sticky",
-  top: 0,
-  display: "flex",
-  alignItems: "center",
-  gap: 6,
-  padding: "5px 8px",
-  background: "#161B22",
-  borderBottom: "1px solid #2A2F37",
-};
-const INLINE_LOCATION_STYLE: React.CSSProperties = {
-  flex: 1,
-  minWidth: 0,
-  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-  fontSize: 10,
-  color: "#7B8695",
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-};
-const INLINE_ICON_STYLE: React.CSSProperties = {
-  flexShrink: 0,
-  background: "#1A1F27",
-  color: "#9AA4B2",
-  border: "1px solid #2A2F37",
-  borderRadius: 5,
-  width: 20,
-  height: 20,
-  fontSize: 12,
-  lineHeight: 1,
-  cursor: "pointer",
-};
-const INLINE_BODY_STYLE: React.CSSProperties = { padding: 8 };
-const INLINE_STATUS_STYLE: React.CSSProperties = { fontSize: 11, color: "#7B8695" };
-const INLINE_ERROR_STYLE: React.CSSProperties = { fontSize: 11, color: "#f2777a" };
-const INLINE_TRUNCATED_STYLE: React.CSSProperties = { marginTop: 6, fontSize: 10, color: "#7B8695" };
-const INLINE_LISTING_STYLE: React.CSSProperties = {
-  display: "flex",
-  gap: 10,
-  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-  fontSize: 11,
-  lineHeight: "16px",
-};
-const INLINE_GUTTER_STYLE: React.CSSProperties = {
-  margin: 0,
-  textAlign: "right",
-  color: "#4A525F",
-  userSelect: "none",
-  whiteSpace: "pre",
-};
-const INLINE_CODE_STYLE: React.CSSProperties = {
-  margin: 0,
-  flex: 1,
-  color: "#C9D3E0",
-  whiteSpace: "pre",
-  overflowX: "auto",
 };
