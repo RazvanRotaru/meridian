@@ -282,10 +282,13 @@ function firstSegment(path: string): string {
 
 function sizeFor(label: string, greyed: boolean, type: LogicNodeType): { width: number; height: number } {
   if (type === "branch") {
-    return { width: clamp(130, 240, 44 + label.length * 7), height: 54 };
+    // A touch wider than a plain box: the hexagon's slanted points eat horizontal room around the
+    // centred label, so the min keeps short conditions (`if x`) from crushing the text.
+    return { width: clamp(150, 260, 60 + label.length * 7.2), height: 56 };
   }
   if (greyed) {
-    return { width: clamp(120, 200, 28 + label.length * 6.4), height: 40 };
+    // A small chip: clearly smaller than an expandable block so size alone signals "leaf, no flow".
+    return { width: clamp(88, 150, 22 + label.length * 5.6), height: 30 };
   }
   return { width: clamp(190, 360, 44 + label.length * 7.2), height: 66 };
 }
