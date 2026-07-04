@@ -7,14 +7,17 @@ from the source, so it can't rot.
 
 `meridian` is a CLI + a dark-mode web renderer. It **generates** a versioned graph artifact
 from source and **views** it as an interactive blueprint — with a "black box" dive-in, a
-call-flow ↔ UI-composition ↔ logic-flow lens, and an optional live-telemetry overlay. The
-**logic-flow** lens draws one callable's intra-procedural control flow, Unreal-Blueprints-style
-(calls, branches, loops, drill-in, ⌘P symbol search).
+service-composition ↔ UI-composition ↔ logic-flow lens, and an optional live-telemetry overlay.
+The **service-composition** lens scores every module/class on Robert C. Martin's component
+metrics (coupling, instability, abstractness, cohesion) and flags design smells — a SOLID
+architecture map. The **logic-flow** lens draws one callable's intra-procedural control flow,
+Unreal-Blueprints-style (calls, branches, loops, drill-in, ⌘P symbol search).
 
 > 📊 **[Visual explainer → `docs/how-it-works.html`](docs/how-it-works.html)** (diagrams, ~no text) ·
 > ▶ **[20-second tour](docs/media/meridian-tour.webm)** ·
 > 🧭 **[Logic-flow tour → `docs/logic-flow-demo.html`](docs/logic-flow-demo.html)** (self-contained page — [preview](https://htmlpreview.github.io/?https://raw.githubusercontent.com/RazvanRotaru/meridian/main/docs/logic-flow-demo.html), or download & open in a browser) ·
-> 🔎 **[Use case: inspecting tool execution → `docs/logic-flow-usecase.html`](docs/logic-flow-usecase.html)** (a worked five-move investigation — [preview](https://htmlpreview.github.io/?https://raw.githubusercontent.com/RazvanRotaru/meridian/main/docs/logic-flow-usecase.html))
+> 🔎 **[Use case: inspecting tool execution → `docs/logic-flow-usecase.html`](docs/logic-flow-usecase.html)** (a worked five-move investigation — [preview](https://htmlpreview.github.io/?https://raw.githubusercontent.com/RazvanRotaru/meridian/main/docs/logic-flow-usecase.html)) ·
+> 🏛️ **[Service composition → `docs/service-composition.html`](docs/service-composition.html)** (the SOLID-architecture lens — [preview](https://htmlpreview.github.io/?https://raw.githubusercontent.com/RazvanRotaru/meridian/main/docs/service-composition.html); design rationale in [`docs/service-composition-design.md`](docs/service-composition-design.md))
 
 ## Quickstart
 
@@ -82,8 +85,9 @@ node id **and** the telemetry join key, so structure and runtime data never desy
    compound nodes with custom expand/collapse, auto-layout that routes edges across nested groups,
    typed pins, and progressive disclosure from the system level down. **Dive-in ("black box"):**
    double-click a box to re-root the canvas *into* it, with a breadcrumb to climb out — so a huge
-   graph stays readable one box at a time. **View modes:** Call-flow ↔ UI-composition — the same
-   graph as either the call graph or, for React, the component render tree.
+   graph stays readable one box at a time. **View modes:** Service-composition (module/class SOLID
+   health scorecards + coupling), UI-composition (the React render tree), and Logic-flow (one
+   callable's control flow).
 3. **Telemetry overlay (pluggable).** Paint runtime metrics — call count, latency percentiles, error
    rate — joined by node id. A deterministic **mock** provider ships today; a real Tempo/OTel
    provider drops into the same contract with zero re-keying. The environment selector is

@@ -1,0 +1,328 @@
+<title>Service composition — meridian</title>
+<style>
+  :root {
+    --bg: #0b0e13; --panel: #12171e; --panel-2: #10151c; --panel-3: #161c24;
+    --border: #232935; --border-lit: #2f3644;
+    --text: #e6edf3; --muted: #8592a3; --faint: #5b6675;
+    --teal: #3fb8af; --green: #56c271; --amber: #e6b84d; --red: #e5484d;
+    --violet: #a78bfa; --gold: #c9a24b; --blue: #3b7ac0;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --maxw: 1000px;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1100px 520px at 50% -8%, rgba(63,184,175,0.07), transparent 62%),
+      var(--bg);
+    color: var(--text); font-family: var(--sans); line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 48px 24px 80px; }
+
+  header { display: flex; flex-direction: column; gap: 14px; margin-bottom: 8px; }
+  .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--teal); display: flex; align-items: center; gap: 10px; }
+  .eyebrow::before { content: ""; width: 24px; height: 2px; background: var(--teal); display: inline-block; }
+  h1 { font-family: var(--mono); font-weight: 600; font-size: clamp(28px, 4.4vw, 46px); letter-spacing: -0.015em; line-height: 1.06; margin: 0; text-wrap: balance; }
+  h1 .accent { color: var(--green); }
+  .lede { color: var(--muted); font-size: 17px; max-width: 64ch; margin: 0; }
+  .subject {
+    align-self: flex-start; margin-top: 4px; font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+    background: var(--panel); border: 1px solid var(--border-lit); border-radius: 8px; padding: 9px 13px;
+  }
+  .subject b { color: var(--text); font-weight: 600; }
+
+  section { margin-top: 56px; }
+  .kicker { font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--faint); margin: 0 0 10px; }
+  h2 { font-size: clamp(21px, 2.6vw, 27px); letter-spacing: -0.01em; margin: 0 0 12px; text-wrap: balance; }
+  p { margin: 0 0 14px; }
+  p.body, .prose p { color: #c4cdd9; font-size: 15.5px; max-width: 68ch; }
+  strong { color: var(--text); font-weight: 600; }
+  .mono { font-family: var(--mono); }
+  code { font-family: var(--mono); font-size: 0.88em; color: #b7c3d1; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+
+  /* two-up compare */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .cmp { border: 1px solid var(--border); border-radius: 12px; background: var(--panel-2); padding: 20px 20px 18px; }
+  .cmp.old { opacity: 0.92; }
+  .cmp.now { border-color: var(--border-lit); box-shadow: 0 0 0 1px rgba(63,184,175,0.12), 0 18px 40px rgba(0,0,0,0.35); }
+  .cmp .tag { font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
+  .cmp.old .tag { color: var(--faint); }
+  .cmp.now .tag { color: var(--teal); }
+  .cmp h3 { font-size: 17px; margin: 8px 0 8px; }
+  .cmp p { color: #b3bdca; font-size: 14px; margin: 0; }
+  .cmp .q { font-family: var(--mono); font-size: 13px; color: var(--text); margin: 12px 0 0; padding-top: 12px; border-top: 1px dashed var(--border); }
+
+  /* scorecard mock + anatomy */
+  .anatomy { display: grid; grid-template-columns: 300px 1fr; gap: 32px; align-items: start; }
+  .card {
+    position: relative; width: 264px; border: 1px solid var(--border); border-radius: 9px;
+    background: var(--panel); overflow: hidden; font-family: var(--mono); box-shadow: 0 16px 40px rgba(0,0,0,0.4);
+  }
+  .card .rail { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--red); }
+  .card .inner { padding: 11px 13px 12px 16px; display: flex; flex-direction: column; gap: 7px; }
+  .card .hdr { display: flex; align-items: center; gap: 7px; }
+  .card .glyph { color: var(--blue); font-size: 13px; }
+  .card .name { flex: 1; font-size: 13.5px; font-weight: 700; color: var(--text); }
+  .card .ktag { font-size: 8px; font-weight: 700; letter-spacing: 0.06em; color: var(--blue); border: 1px solid var(--blue); border-radius: 3px; padding: 1px 4px; }
+  .card .row { display: flex; gap: 6px; align-items: baseline; font-size: 11px; color: var(--muted); }
+  .card .row .lbl { color: #6c7683; }
+  .card .row .val { color: #c8d3e0; font-weight: 600; }
+  .card .row .sep { color: #3a414c; }
+  .card .dist { display: flex; gap: 6px; align-items: baseline; font-weight: 700; color: var(--red); }
+  .card .dist .d { font-size: 11px; } .card .dist .dv { font-size: 16px; }
+  .card .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 1px; }
+  .chip { font-size: 8.5px; font-weight: 700; letter-spacing: 0.05em; border-radius: 3px; padding: 1px 5px; border: 1px solid; }
+  .chip.red { color: #f0787c; border-color: #5b2b2f; background: rgba(229,72,77,0.14); }
+  .chip.amber { color: var(--amber); border-color: #5a4a24; background: rgba(230,184,77,0.14); }
+
+  .notes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+  .notes li { display: grid; grid-template-columns: 92px 1fr; gap: 14px; align-items: baseline; }
+  .notes .k { font-family: var(--mono); font-size: 12px; color: var(--teal); font-weight: 600; }
+  .notes .v { color: #bcc6d2; font-size: 14px; }
+  .notes .v b { color: var(--text); }
+
+  /* metrics -> SOLID */
+  .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .metric { border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); padding: 15px 16px; }
+  .metric .top { display: flex; align-items: baseline; gap: 9px; margin-bottom: 6px; }
+  .metric .sym { font-family: var(--mono); font-size: 15px; font-weight: 700; color: var(--teal); }
+  .metric .nm { font-size: 14px; font-weight: 600; color: var(--text); }
+  .metric .sol { margin-left: auto; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.06em; color: var(--faint); border: 1px solid var(--border-lit); border-radius: 4px; padding: 1px 6px; }
+  .metric p { margin: 0; font-size: 13px; color: #aeb8c5; }
+  .metric .frm { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+
+  /* main sequence chart */
+  .chart-wrap { display: grid; grid-template-columns: 420px 1fr; gap: 32px; align-items: center; }
+  .chart { border: 1px solid var(--border); border-radius: 12px; background: var(--panel-2); padding: 14px; }
+  .legend { display: flex; flex-direction: column; gap: 12px; }
+  .legend .lg { display: flex; gap: 10px; align-items: flex-start; font-size: 13.5px; color: #bcc6d2; }
+  .legend .dot { flex: 0 0 auto; width: 11px; height: 11px; border-radius: 50%; margin-top: 5px; }
+  .legend .lg b { color: var(--text); }
+
+  /* boundary edges illustration */
+  .edges { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+  .edgerow { display: grid; grid-template-columns: 150px 1fr; gap: 14px; align-items: center; }
+  .edgerow .swatch { height: 0; border-top-width: 2px; border-top-style: solid; }
+  .edgerow .desc { font-size: 13.5px; color: #bcc6d2; }
+  .edgerow .desc b { color: var(--text); }
+
+  .callout { border: 1px solid var(--border); border-left: 3px solid var(--teal); border-radius: 8px; background: linear-gradient(180deg, rgba(63,184,175,0.05), var(--panel)); padding: 16px 18px; margin-top: 18px; }
+  .callout p { margin: 0; color: #cdd6e1; font-size: 14.5px; }
+  .callout .lead { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--teal); margin-bottom: 6px; }
+
+  .stat-strip { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+  .stat { border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); padding: 12px 16px; min-width: 128px; }
+  .stat .n { font-family: var(--mono); font-size: 22px; font-weight: 700; color: var(--text); line-height: 1; }
+  .stat .n.red { color: var(--red); } .stat .n.gold { color: var(--gold); }
+  .stat .cap { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+
+  .limits { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+  .limits li { display: grid; grid-template-columns: 20px 1fr; gap: 12px; font-size: 14.5px; color: #bcc6d2; }
+  .limits .mk { color: var(--amber); font-family: var(--mono); }
+  .limits li b { color: var(--text); }
+
+  footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--faint); font-size: 12.5px; font-family: var(--mono); display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+  @media (max-width: 760px) {
+    .compare, .metrics { grid-template-columns: 1fr; }
+    .anatomy, .chart-wrap { grid-template-columns: 1fr; }
+    .anatomy .card { margin: 0 auto; }
+    .notes li, .edgerow { grid-template-columns: 78px 1fr; }
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">meridian · concept</div>
+    <h1>Design for change,<br>not just for <span class="accent">running</span>.</h1>
+    <p class="lede">The <b>Service&nbsp;composition</b> tab reframes the first view of a codebase. Instead of "what calls what at runtime," it answers the architect's question: <i>are these the right units, and are they coupled and cohesive enough that I can change one without breaking the others?</i></p>
+    <div class="subject"><span style="color:var(--faint)">replaces ·</span> <b>Call&nbsp;flow</b> &nbsp;→&nbsp; <b>Service&nbsp;composition</b> &nbsp;·&nbsp; same React-Flow canvas, a different question</div>
+  </header>
+
+  <section>
+    <p class="kicker">The reframe</p>
+    <h2>Two views, two questions</h2>
+    <p class="body">A call graph tells you how execution moves. It's the right lens when you're tracing a bug or following a request. But it doesn't tell you whether the code is <i>shaped well</i> — whether a module does one job, whether a class is a hub everything leans on, whether a dependency points the wrong way. Those are the questions you ask when you're about to <b>build</b> or <b>refactor</b> something. So the first tab now answers those instead.</p>
+    <div class="compare">
+      <div class="cmp old">
+        <span class="tag">was · call flow</span>
+        <h3>How does execution move?</h3>
+        <p>Function-to-function call edges, drilled system → module → class → function. Great for tracing a path; silent about structure.</p>
+        <p class="q">"What runs when I call this?"</p>
+      </div>
+      <div class="cmp now">
+        <span class="tag">now · service composition</span>
+        <h3>Is this well composed?</h3>
+        <p>Every module and class is a <b>health scorecard</b>; the wires are dependencies between units, grouped by package. Coupling, cohesion and abstraction read at a glance.</p>
+        <p class="q">"Can I change this safely — and where should new code go?"</p>
+      </div>
+    </div>
+    <div class="callout">
+      <div class="lead">The load-bearing idea</div>
+      <p>The person who coined <b>SOLID</b> — Robert&nbsp;C.&nbsp;Martin — also defined the metrics for reasoning about how components fit together. We compute exactly those, from the call/instantiate/inherit edges the extractor already produces. <b>No new data, no dependency-graph dump</b> — just an honest reading of the structure you already have.</p>
+    </div>
+  </section>
+
+  <section>
+    <p class="kicker">The unit</p>
+    <h2>Each box is a scorecard, not a folder</h2>
+    <p class="body">A <b>unit</b> is a class, an interface, an object literal, or a whole module (its loose functions). Every unit becomes a card whose numbers are derived from the graph — and whose <b>left rail is coloured by health</b>, so a problem area is visible before you read a single digit.</p>
+    <div class="anatomy">
+      <div class="card">
+        <div class="rail"></div>
+        <div class="inner">
+          <div class="hdr"><span class="glyph">◆</span><span class="name">BaseRepository</span><span class="ktag">CLASS</span></div>
+          <div class="row"><span class="lbl">members</span><span class="val">5</span><span class="sep">·</span><span class="lbl">cohesion</span><span class="val">0.25</span></div>
+          <div class="row"><span class="lbl">Ce</span><span class="val">2</span><span class="sep">·</span><span class="lbl">Ca</span><span class="val">9</span><span class="sep">·</span><span class="lbl">I</span><span class="val">0.18</span><span class="sep">·</span><span class="lbl">A</span><span class="val">0.2</span></div>
+          <div class="dist"><span class="d">D</span><span class="dv">0.62</span></div>
+          <div class="chips"><span class="chip red">PAIN</span><span class="chip amber">SPLIT</span></div>
+        </div>
+      </div>
+      <ul class="notes">
+        <li><span class="k">health rail</span><span class="v">Red because this unit sits <b>far off the main sequence</b> (D&nbsp;0.62). Green ≈ ideal, amber ≈ drifting, red ≈ trouble.</span></li>
+        <li><span class="k">Ca 9</span><span class="v"><b>Nine</b> other units depend on it. Anything you change here ripples to all nine — the definition of risk.</span></li>
+        <li><span class="k">A 0.2</span><span class="v">Almost entirely <b>concrete</b>. Heavily depended-upon <i>and</i> concrete is the worst place to be — hence <b>PAIN</b>.</span></li>
+        <li><span class="k">cohesion</span><span class="v">0.25 — its five methods form four disconnected clusters. It's doing several unrelated jobs → <b>SPLIT</b> candidate.</span></li>
+        <li><span class="k">chips</span><span class="v">The named smells: <b>HUB</b>, <b>PAIN</b>, <b>UNUSED</b>, <b>SPLIT</b>. Red = structural hazard, amber = a hint worth a look.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <p class="kicker">The five numbers</p>
+    <h2>What each metric means — and which principle it guards</h2>
+    <div class="metrics">
+      <div class="metric">
+        <div class="top"><span class="sym">Ce · Ca</span><span class="nm">Coupling, out & in</span><span class="sol">SRP · DIP</span></div>
+        <p>Distinct units this one depends on (<span class="mono">Ce</span>, efferent) and that depend on it (<span class="mono">Ca</span>, afferent). Fan-out is responsibility; fan-in is risk.</p>
+      </div>
+      <div class="metric">
+        <div class="top"><span class="sym">I</span><span class="nm">Instability</span><span class="sol">DIP</span></div>
+        <p>How exposed a unit is to change from below.</p>
+        <p class="frm">I = Ce / (Ce + Ca) — 0 stable, 1 unstable</p>
+      </div>
+      <div class="metric">
+        <div class="top"><span class="sym">A</span><span class="nm">Abstractness</span><span class="sol">OCP · DIP</span></div>
+        <p>Share of a unit that is abstract (interfaces, abstract members). Stable things should be abstract so you extend rather than edit them.</p>
+      </div>
+      <div class="metric">
+        <div class="top"><span class="sym">D</span><span class="nm">Distance from the main sequence</span><span class="sol">the score</span></div>
+        <p>How far the unit is from the ideal balance of abstraction and stability.</p>
+        <p class="frm">D = | A + I − 1 | — 0 ideal, 1 worst; this colours the rail</p>
+      </div>
+      <div class="metric">
+        <div class="top"><span class="sym">Coh</span><span class="nm">Cohesion (LCOM4)</span><span class="sol">SRP</span></div>
+        <p>Do a unit's own methods work together? Measured as connected clusters of internal calls. Many clusters → it's really several units in a trench-coat.</p>
+      </div>
+      <div class="metric">
+        <div class="top"><span class="sym">⌖</span><span class="nm">Smells</span><span class="sol">read-out</span></div>
+        <p><b>HUB</b> coupled both ways · <b>PAIN</b> concrete &amp; depended-upon · <b>UNUSED</b> abstract &amp; friendless · <b>SPLIT</b> low cohesion. The chips are just thresholds crossed on the numbers above.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="kicker">The map behind the colour</p>
+    <h2>The main sequence</h2>
+    <p class="body">Plot every unit by abstractness (A) against instability (I). The diagonal is the <b>main sequence</b> — the healthy balance where stable code is abstract and volatile code is concrete. The two corners off it are the traps. A unit's distance from that line <i>is</i> the health colour on its rail.</p>
+    <div class="chart-wrap">
+      <div class="chart">
+        <svg viewBox="0 0 400 340" width="100%" role="img" aria-label="Abstractness versus instability scatter with the main sequence diagonal, zone of pain in the lower-left and zone of uselessness in the upper-right.">
+          <!-- plot frame -->
+          <defs>
+            <linearGradient id="painG" x1="0" y1="1" x2="1" y2="0">
+              <stop offset="0" stop-color="rgba(229,72,77,0.22)"/><stop offset="1" stop-color="rgba(229,72,77,0)"/>
+            </linearGradient>
+            <linearGradient id="useG" x1="1" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="rgba(230,184,77,0.20)"/><stop offset="1" stop-color="rgba(230,184,77,0)"/>
+            </linearGradient>
+          </defs>
+          <!-- axes box: plot area x 56..372, y 24..292 -->
+          <rect x="56" y="24" width="316" height="268" fill="#0d1218" stroke="#232935"/>
+          <!-- zone of pain (bottom-left) -->
+          <path d="M56 292 L214 292 L56 158 Z" fill="url(#painG)"/>
+          <!-- zone of uselessness (top-right) -->
+          <path d="M372 24 L214 24 L372 158 Z" fill="url(#useG)"/>
+          <!-- main sequence line: (I0,A1)=(56,24) to (I1,A0)=(372,292) -->
+          <line x1="56" y1="24" x2="372" y2="292" stroke="#3fb8af" stroke-width="2" stroke-dasharray="6 4"/>
+          <text x="300" y="120" fill="#3fb8af" font-family="var(--mono)" font-size="10" transform="rotate(40 300 120)">main sequence · D=0</text>
+          <!-- zone labels -->
+          <text x="70" y="284" fill="#e5484d" font-family="var(--mono)" font-size="10">zone of pain</text>
+          <text x="70" y="298" fill="#8592a3" font-family="var(--mono)" font-size="8.5" opacity="0">.</text>
+          <text x="270" y="40" fill="#e6b84d" font-family="var(--mono)" font-size="10">zone of uselessness</text>
+          <!-- points: map I in [0,1]->x 56..372, A in[0,1]->y 292..24 -->
+          <!-- response.ts A0 I0 -> (56,292) pain corner -->
+          <circle cx="66" cy="282" r="5.5" fill="#e5484d"/>
+          <text x="76" y="285" fill="#c4cdd9" font-family="var(--mono)" font-size="9.5">response.ts · D1.0</text>
+          <!-- BaseRepository A0.2 I0.18 -> x=56+.18*316=113, y=292-.2*268=238 -->
+          <circle cx="113" cy="238" r="5" fill="#e5484d"/>
+          <text x="122" y="241" fill="#c4cdd9" font-family="var(--mono)" font-size="9.5">BaseRepository · D0.62</text>
+          <!-- CatalogService A0 I0.5 -> x=214 y=292 -->
+          <circle cx="214" cy="284" r="5" fill="#e6b84d"/>
+          <text x="150" y="276" fill="#c4cdd9" font-family="var(--mono)" font-size="9.5">CatalogService · D0.5</text>
+          <!-- StoredInventory A1 I1 -> (372,24) uselessness corner -->
+          <circle cx="362" cy="34" r="5.5" fill="#e6b84d"/>
+          <text x="240" y="30" fill="#c4cdd9" font-family="var(--mono)" font-size="9.5">StoredInventory · D1.0</text>
+          <!-- a healthy on-line point illustrative A0.55 I0.45 -> x=56+.45*316=198 y=292-.55*268=145 -->
+          <circle cx="198" cy="147" r="5" fill="#56c271"/>
+          <text x="206" y="150" fill="#c4cdd9" font-family="var(--mono)" font-size="9.5">ideal · D≈0</text>
+          <!-- axis labels -->
+          <text x="214" y="316" fill="#8592a3" font-family="var(--mono)" font-size="10" text-anchor="middle">Instability  I  →</text>
+          <text x="26" y="158" fill="#8592a3" font-family="var(--mono)" font-size="10" text-anchor="middle" transform="rotate(-90 26 158)">Abstractness  A  →</text>
+        </svg>
+      </div>
+      <div class="legend">
+        <div class="lg"><span class="dot" style="background:var(--red)"></span><div><b>Zone of pain</b> — concrete and heavily depended-upon. Rigid: everyone needs it, nobody can safely change it. On <span class="mono">shopfront</span>, <code>response.ts</code> and <code>BaseRepository</code> live here.</div></div>
+        <div class="lg"><span class="dot" style="background:var(--amber)"></span><div><b>Zone of uselessness</b> — abstract but nothing depends on it. Speculative generality; <code>StoredInventory</code> is an interface no one uses.</div></div>
+        <div class="lg"><span class="dot" style="background:var(--green)"></span><div><b>On the sequence</b> — abstraction matched to stability. The goal for anything you build.</div></div>
+        <div class="lg"><span class="dot" style="background:var(--teal)"></span><div>Most real TypeScript clusters along the bottom edge (<span class="mono">A≈0</span> — few abstractions), so health there is driven almost entirely by instability. That flatness is itself a finding.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="kicker">Where things live</p>
+    <h2>Packages, and the wires that cross them</h2>
+    <p class="body">Units are grouped into a titled frame per <b>package (folder)</b> — the view reads as "what's in each package," and a frame carries an <b>N⚠</b> badge when it holds smelly units. The wires are colour-coded by whether they stay home:</p>
+    <div class="edges">
+      <div class="edgerow"><div class="swatch" style="border-color:#4a5261; opacity:0.6"></div><div class="desc"><b>Internal</b> — coupling within a package. Expected cohesion; it recedes into the background.</div></div>
+      <div class="edgerow"><div class="swatch" style="border-color:var(--gold); border-top-width:2.5px"></div><div class="desc"><b>Cross-boundary</b> — a dependency that leaves its package. This is the packaging signal: a unit more wired across a line than within it may be in the wrong place.</div></div>
+      <div class="edgerow"><div class="swatch" style="border-color:var(--violet); border-top-style:dashed"></div><div class="desc"><b>Inheritance</b> — <span class="mono">extends</span> / <span class="mono">implements</span>, called out separately because it's a different kind of relationship.</div></div>
+    </div>
+    <div class="stat-strip">
+      <div class="stat"><div class="n gold">97 / 126</div><div class="cap">shopfront edges that cross a package boundary</div></div>
+      <div class="stat"><div class="n red">services 9/14</div><div class="cap">units carrying a smell in one package</div></div>
+      <div class="stat"><div class="n">8</div><div class="cap">package frames</div></div>
+    </div>
+    <div class="callout">
+      <div class="lead">Why this matters</div>
+      <p>When most of a system's dependencies cross package lines, the folders aren't really encapsulating anything — the packaging is decorative. That's a Common-Closure signal you can act on: move the unit, or redraw the boundary.</p>
+    </div>
+  </section>
+
+  <section>
+    <p class="kicker">Where you start</p>
+    <h2>Rooted where you are, not the whole system at once</h2>
+    <p class="body">A whole-codebase dump is a hairball. So the tab opens <b>rooted at one file</b> — by default the app entry — showing the units that file contains plus their <b>one-hop neighbours</b> as faded <i>boundary</i> cards. Click a boundary card to travel into it; press <span class="mono">⌘P</span> to root anywhere; the breadcrumb's <b>"Whole system"</b> zooms back out. You explore the composition the way you read code: from a point of interest, outward.</p>
+  </section>
+
+  <section>
+    <p class="kicker">Keeping it honest</p>
+    <h2>What this is — and isn't</h2>
+    <p class="body">The metrics are a lens, not a verdict. The tab is deliberate about what it can and can't claim:</p>
+    <ul class="limits">
+      <li><span class="mk">▹</span><div><b>Derived from real edges, always in sync.</b> Coupling comes from <span class="mono">calls</span>, <span class="mono">instantiates</span>, <span class="mono">extends</span>, <span class="mono">implements</span> the extractor already emits — regenerate the graph and the scores follow the code.</div></li>
+      <li><span class="mk">▹</span><div><b>Not a dependency graph.</b> It's a scored composition map, not a wire-dump. <span class="mono">import</span> edges are a separate optional layer (a fast-follow), off by default so the signal stays clean.</div></li>
+      <li><span class="mk">▹</span><div><b>Cohesion is call-based, so it reads pessimistic in TypeScript.</b> Methods often reach through <code>this.repo.x()</code> rather than calling each other, so <b>SPLIT</b> fires broadly. Treat it as a prompt to look, not proof.</div></li>
+      <li><span class="mk">▹</span><div><b>The thresholds are opinions.</b> HUB/PAIN/UNUSED/SPLIT fire on tunable constants. They're conversation-starters for "how should we build this," which was the whole point.</div></li>
+    </ul>
+  </section>
+
+  <footer>
+    <span>meridian · Service composition · a SOLID-architecture lens on the call graph</span>
+    <span>node bin.js view graph.json</span>
+  </footer>
+</div>
