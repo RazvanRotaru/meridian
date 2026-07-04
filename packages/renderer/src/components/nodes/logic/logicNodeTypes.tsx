@@ -191,12 +191,13 @@ function ExpandButton(props: { expanded: boolean; onToggle: () => void }) {
 
 /**
  * A "jump-to-flow" satellite: a small dashed, muted ghost node the VIEW appends in a row ABOVE the
- * selected building block for every OTHER logic flow that also CALLS its target. It is the SOURCE of
+ * selected building block for every flow that (transitively) reaches its target. It is the SOURCE of
  * the jump wire (a source Handle on the BOTTOM, no target pin): the wire runs from here DOWN INTO the
  * selected block below — those flows contain this block, so the arrow points at it. Clicking it
- * switches the canvas to that flow. Its data is minimal — a flow-root id, a display label, a faint file path.
+ * switches the canvas to that flow. Its data is minimal — a flow-root id, a display label, a faint
+ * file path, and how many hops away it is (`depth`): 1 == a direct caller, higher == an indirect one.
  */
-export type JumpFlowNodeData = { rootId: string; label: string; file?: string };
+export type JumpFlowNodeData = { rootId: string; label: string; file?: string; depth: number };
 type JumpFlowRfNode = Node<JumpFlowNodeData>;
 
 function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
@@ -208,6 +209,9 @@ function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
       <div style={JUMP_HEAD}>
         <span style={JUMP_GLYPH}>↗</span>
         <span style={NAME} title={d.label}>{d.label}</span>
+        {/* An indirect caller (2+ hops back over the reverse call graph) wears a hop badge so it
+            reads apart from a direct caller; a direct caller (depth 1) needs none. */}
+        {d.depth > 1 ? <span style={JUMP_DEPTH_BADGE} title={`${d.depth} hops away`}>{`↑${d.depth}`}</span> : null}
       </div>
       {d.file ? <div style={JUMP_FILE} title={d.file}>{d.file}</div> : null}
     </div>
@@ -356,6 +360,19 @@ const JUMP_BODY: React.CSSProperties = {
 };
 const JUMP_HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600 };
 const JUMP_GLYPH: React.CSSProperties = { fontSize: 10, opacity: 0.8, color: "#7B8695" };
+// The hop badge on an INDIRECT caller ghost: a quiet blue pill pinned at the row's right end, so a
+// 2+-hops-away caller is distinguishable at a glance from a direct one (which carries no badge).
+const JUMP_DEPTH_BADGE: React.CSSProperties = {
+  marginLeft: "auto",
+  flexShrink: 0,
+  fontSize: 9,
+  fontWeight: 700,
+  color: "#8FB6E3",
+  border: "1px solid #2A3B4D",
+  borderRadius: 3,
+  padding: "0 4px",
+  background: "rgba(59,122,192,0.15)",
+};
 const JUMP_FILE: React.CSSProperties = { fontSize: 9, color: "#6C7683", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 
 const GLYPH: React.CSSProperties = { fontSize: 11, opacity: 0.85 };

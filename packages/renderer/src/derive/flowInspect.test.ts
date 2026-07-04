@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 import type { EdgeResolution, GraphEdge, GraphNode, FlowStep, LogicFlows } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
-import { buildFlowContainmentIndex, calleesOf, flowCallTargets, ghostCallees } from "./flowInspect";
+import { buildFlowContainmentIndex, calleesOf, flowCallTargets, ghostCallees, transitiveCallers } from "./flowInspect";
 
 function node(id: string, kind: string, displayName: string): GraphNode {
   return { id, kind, qualifiedName: id, displayName, location: { file: "f.ts", startLine: 1 } } as GraphNode;
@@ -123,5 +123,30 @@ describe("buildFlowContainmentIndex", () => {
 
   it("returns an empty map for no flows", () => {
     expect(buildFlowContainmentIndex({})).toEqual(new Map());
+  });
+});
+
+describe("transitiveCallers", () => {
+  // A→B→C→A: A calls B, B calls C, C calls A. The containment index REVERSES that (target → its
+  // direct callers), so a backward BFS from C surfaces B at 1 hop and A at 2 — and the edge back to
+  // A (the cycle) must NOT revisit C (the BFS seed) or loop forever.
+  const containment = buildFlowContainmentIndex({
+    "ts:m#A": [call("ts:m#B", "resolved")],
+    "ts:m#B": [call("ts:m#C", "resolved")],
+    "ts:m#C": [call("ts:m#A", "resolved")],
+  });
+
+  it("keys each reachable caller by its MIN hop count, excluding the target and closing the cycle", () => {
+    const callers = transitiveCallers(containment, "ts:m#C", 5);
+    expect(callers.get("ts:m#B")).toBe(1); // direct caller
+    expect(callers.get("ts:m#A")).toBe(2); // indirect: caller of the caller
+    expect(callers.has("ts:m#C")).toBe(false); // the target itself is never its own caller
+    expect(callers.size).toBe(2); // the cycle back to C adds nothing
+  });
+
+  it("bounds the walk at maxDepth", () => {
+    const callers = transitiveCallers(containment, "ts:m#C", 1);
+    expect(callers.get("ts:m#B")).toBe(1);
+    expect(callers.has("ts:m#A")).toBe(false); // A is 2 hops away, beyond maxDepth 1
   });
 });
