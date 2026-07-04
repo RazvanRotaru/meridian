@@ -14,7 +14,9 @@ import type { ViewMode } from "../derive/edgeSelection";
 import { uiFocusTarget } from "../derive/uiFocus";
 import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
+import { deriveCompositionLayout } from "./deriveCompositionLayout";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
+import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
 
 /**
  * The "All" setting for the related-flows depth dial: a depth larger than any real call-graph chain.
@@ -82,6 +84,13 @@ export interface BlueprintState {
   logicRfNodes: LogicRfNode[];
   logicRfEdges: LogicRfEdge[];
   logicLayoutStatus: LayoutStatus;
+  /** The laid-out Service-composition graph (React Flow), recomputed via ELK whenever the "call"
+   * lens is (re)entered. Composition IS the "call" surface now — the old call graph no longer renders. */
+  compRfNodes: CompRfNode[];
+  compRfEdges: CompRfEdge[];
+  compLayoutStatus: LayoutStatus;
+  /** The selected composition unit id; null == none. A repaint-only highlight — no relayout. */
+  compSelectedId: string | null;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -119,6 +128,8 @@ export interface BlueprintState {
   toggleLogicExpand(nodeId: string): void;
   toggleHideGreyed(): void;
   logicRelayout(): Promise<void>;
+  compRelayout(): Promise<void>;
+  selectCompUnit(id: string | null): void;
   setViewMode(mode: ViewMode): void;
   setEnvironment(environment: string): void;
   refreshTelemetry(): Promise<void>;
@@ -143,6 +154,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let focusBeforeUi: string | null = null;
   // Monotonic seq to drop a stale Logic-graph layout when a newer open/drill/toggle supersedes it.
   let logicLayoutSeq = 0;
+  // Same guard for the composition layout — a newer relayout discards an older in-flight ELK pass.
+  let compLayoutSeq = 0;
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
 
@@ -167,6 +180,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     logicRfNodes: [],
     logicRfEdges: [],
     logicLayoutStatus: "idle",
+    compRfNodes: [],
+    compRfEdges: [],
+    compLayoutStatus: "idle",
+    compSelectedId: null,
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -357,6 +374,27 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ logicRfNodes: graph.nodes, logicRfEdges: graph.edges, logicLayoutStatus: "ready" });
     },
 
+    // Re-derive the Service-composition graph from the whole artifact through ELK, behind the same
+    // stale-seq guard. Reads the raw nodes/edges off the index (built from the artifact); the derive
+    // decides which units earn a card and wires their couplings.
+    async compRelayout() {
+      const { index } = get();
+      const nodes = [...index.nodesById.values()];
+      const sequence = ++compLayoutSeq;
+      set({ compLayoutStatus: "laying-out" });
+      const graph = await deriveCompositionLayout(nodes, index.edges);
+      if (compLayoutSeq !== sequence) {
+        return; // a newer layout superseded this one.
+      }
+      set({ compRfNodes: graph.nodes, compRfEdges: graph.edges, compLayoutStatus: "ready" });
+    },
+
+    // Select a composition unit (pass null to clear). The view renders straight from the laid-out
+    // graph, so this needs no relayout — it only repaints the highlight.
+    selectCompUnit(id) {
+      set({ compSelectedId: id });
+    },
+
     // Switching mode re-derives + relayouts like a dive. Entering UI mode dives to the render
     // subtree; leaving it returns to call-flow at the focus you had before (home if none). The
     // logic view is a standalone render (no rfNodes/ELK), so it neither dives nor relayouts, and
@@ -458,6 +496,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     async relayout() {
+      // The "call" lens IS the Service-composition graph now (not the old call graph), so route its
+      // layout to compRelayout and skip the deriveLayout path entirely. This runs on the boot relayout
+      // (viewMode starts "call") and whenever setViewMode re-enters "call", so composition populates
+      // on first load and on every tab-switch back with no separate trigger. "ui" still derives below.
+      if (get().viewMode === "call") {
+        await get().compRelayout();
+        return;
+      }
       const sequence = get().layoutSeq + 1;
       set({ layoutSeq: sequence, layoutStatus: "laying-out" });
       const { index, expanded, focusId, viewMode, flowRootId, flowDepth } = get();
