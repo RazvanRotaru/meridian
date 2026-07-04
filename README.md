@@ -13,7 +13,8 @@ call-flow ↔ UI-composition ↔ logic-flow lens, and an optional live-telemetry
 
 > 📊 **[Visual explainer → `docs/how-it-works.html`](docs/how-it-works.html)** (diagrams, ~no text) ·
 > ▶ **[20-second tour](docs/media/meridian-tour.webm)** ·
-> 🧭 **[Logic-flow tour → `docs/logic-flow-demo.html`](docs/logic-flow-demo.html)** (self-contained page — [preview](https://htmlpreview.github.io/?https://raw.githubusercontent.com/RazvanRotaru/meridian/main/docs/logic-flow-demo.html), or download & open in a browser)
+> 🧭 **[Logic-flow tour → `docs/logic-flow-demo.html`](docs/logic-flow-demo.html)** (self-contained page — [preview](https://htmlpreview.github.io/?https://raw.githubusercontent.com/RazvanRotaru/meridian/main/docs/logic-flow-demo.html), or download & open in a browser) ·
+> 🔎 **[Use case: inspecting tool execution → `docs/logic-flow-usecase.html`](docs/logic-flow-usecase.html)** (a worked five-move investigation — [preview](https://htmlpreview.github.io/?https://raw.githubusercontent.com/RazvanRotaru/meridian/main/docs/logic-flow-usecase.html))
 
 ## Quickstart
 
