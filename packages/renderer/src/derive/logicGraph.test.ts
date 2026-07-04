@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { EdgeResolution, FlowPath, FlowStep, LogicFlows } from "@meridian/core";
 import type { GraphNode } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
-import { deriveLogicGraph, deriveLogicGraphFromBodies } from "./logicGraph";
+import { collectModuleDefinitions, definitionNodeData, deriveLogicGraph, deriveLogicGraphFromBodies } from "./logicGraph";
 
 /** A GraphIndex stub: deriveLogicGraph only reads nodesById + ancestorsOf. */
 function makeIndex(entries: Array<{ id: string; name: string; kind: string; parentId: string | null }>): GraphIndex {
@@ -13,6 +13,12 @@ function makeIndex(entries: Array<{ id: string; name: string; kind: string; pare
     ]),
   );
   const parentOf = new Map(entries.map((e) => [e.id, e.parentId]));
+  const childrenByParent = new Map<string, GraphNode[]>();
+  for (const e of entries) {
+    if (e.parentId === null) continue;
+    const node = nodesById.get(e.id)!;
+    childrenByParent.set(e.parentId, [...(childrenByParent.get(e.parentId) ?? []), node]);
+  }
   const ancestorsOf = (id: string): GraphNode[] => {
     const path: GraphNode[] = [];
     const seen = new Set<string>();
@@ -25,7 +31,8 @@ function makeIndex(entries: Array<{ id: string; name: string; kind: string; pare
     }
     return path.reverse();
   };
-  return { nodesById, ancestorsOf } as unknown as GraphIndex;
+  const childrenOf = (id: string): GraphNode[] => childrenByParent.get(id) ?? [];
+  return { nodesById, ancestorsOf, childrenOf } as unknown as GraphIndex;
 }
 
 const call = (label: string, target: string | null, resolution: EdgeResolution): FlowStep => ({ kind: "call", label, target, resolution });
@@ -135,5 +142,62 @@ describe("deriveLogicGraph", () => {
     const { nodes, edges } = deriveLogicGraph("r", flows, index, NONE, { hideGreyed: true });
     expect(nodes.map((n) => n.id)).toEqual(["r::0", "r::2"]);
     expect(edges).toEqual([expect.objectContaining({ source: "r::0", target: "r::2", kind: "seq" })]);
+  });
+});
+
+describe("collectModuleDefinitions", () => {
+  it("collects callables nested under object/class methods recursively, sorted by name", () => {
+    // A module owning a top-level function and an object literal whose methods are nested one level
+    // deeper — collection must recurse to reach `mw.startExecution`, not just scan direct children.
+    const index = makeIndex([
+      { id: "ts:m.ts", name: "m.ts", kind: "module", parentId: null },
+      { id: "ts:m.ts#run", name: "run", kind: "function", parentId: "ts:m.ts" },
+      { id: "ts:m.ts#mw", name: "mw", kind: "variable", parentId: "ts:m.ts" },
+      { id: "ts:m.ts#mw.startExecution", name: "startExecution", kind: "method", parentId: "ts:m.ts#mw" },
+      { id: "ts:m.ts#mw.endExecution", name: "endExecution", kind: "method", parentId: "ts:m.ts#mw" },
+    ]);
+    // Sorted by display name (endExecution < run < startExecution). The `mw` variable is not a
+    // callable so it's excluded, and the module itself is never included.
+    expect(collectModuleDefinitions(index, "ts:m.ts")).toEqual([
+      "ts:m.ts#mw.endExecution",
+      "ts:m.ts#run",
+      "ts:m.ts#mw.startExecution",
+    ]);
+  });
+
+  it("returns an empty list for a module with no defined callables", () => {
+    const index = makeIndex([{ id: "ts:empty.ts", name: "empty.ts", kind: "module", parentId: null }]);
+    expect(collectModuleDefinitions(index, "ts:empty.ts")).toEqual([]);
+  });
+});
+
+describe("definitionNodeData", () => {
+  const index = makeIndex([
+    { id: "ts:m.ts", name: "m.ts", kind: "module", parentId: null },
+    { id: "ts:m.ts#mw", name: "mw", kind: "variable", parentId: "ts:m.ts" },
+    { id: "ts:m.ts#mw.startExecution", name: "startExecution", kind: "method", parentId: "ts:m.ts#mw" },
+    { id: "ts:m.ts#leaf", name: "leaf", kind: "function", parentId: "ts:m.ts" },
+  ]);
+
+  it("targets the callable, is expandable when it has a flow, and reads as owner › name", () => {
+    const flows: LogicFlows = { "ts:m.ts#mw.startExecution": [call("x", "ext:l#x", "external")] };
+    const data = definitionNodeData("ts:m.ts#mw.startExecution", flows, index);
+    expect(data).toMatchObject({
+      logicKind: "call",
+      definition: true,
+      targetId: "ts:m.ts#mw.startExecution",
+      resolution: "resolved",
+      greyed: false,
+      isContainer: false,
+      expandable: true,
+      childCount: 1,
+      label: "startExecution",
+      provenance: { pkg: "mw", module: "startExecution" }, // owning object › method name
+    });
+  });
+
+  it("is not expandable when the callable ships no flow", () => {
+    const data = definitionNodeData("ts:m.ts#leaf", {}, index);
+    expect(data).toMatchObject({ definition: true, expandable: false, childCount: 0, greyed: false });
   });
 });

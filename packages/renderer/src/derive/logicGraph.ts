@@ -8,7 +8,7 @@
  * Pure: (rootId, flows, index, expanded set, options) → {nodes, edges}. No React, no ELK.
  */
 
-import type { EdgeResolution, FlowPath, FlowStep, LogicFlows } from "@meridian/core";
+import type { EdgeResolution, FlowPath, FlowStep, GraphNode, LogicFlows } from "@meridian/core";
 import { parseNodeId } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 
@@ -25,6 +25,9 @@ export type LogicNodeData = {
   greyed: boolean;
   provenance: { pkg: string; module: string } | null;
   childCount: number;
+  /** A callable DEFINED in the open module (not a step in its load-flow): rendered as a distinct
+   * disconnected "defined here" node so the view can style it apart from ordinary call blocks. */
+  definition?: boolean;
   /** The sub-chains a control container holds (a loop's single body, or a try's try/catch/finally
    * arms). Set ONLY on `control` nodes so a double-click can DIVE into them without re-parsing the
    * flow; undefined on calls/branches. */
@@ -87,6 +90,65 @@ export function deriveLogicGraphFromBodies(
   options: { hideGreyed: boolean },
 ): LogicGraphSpec {
   return new LogicGraphBuilder(prefix, flows, index, expandedLogic, options).buildFromBodies(bodies);
+}
+
+/**
+ * The ids of every callable DEFINED anywhere under `moduleId` — the file's exported/declared
+ * functions and methods, which its thin top-level load-flow never mentions. Walks `childrenOf`
+ * RECURSIVELY (not just direct children) so methods on object/class literals — e.g.
+ * `toolExecutionMiddleware.startExecution`, nested under the object node — are collected too.
+ * Sorted by display name for a stable grid; the module itself is excluded (it's not a callable).
+ */
+export function collectModuleDefinitions(index: GraphIndex, moduleId: string): string[] {
+  const found: GraphNode[] = [];
+  const walk = (id: string): void => {
+    for (const child of index.childrenOf(id)) {
+      if (child.kind === "function" || child.kind === "method") {
+        found.push(child);
+      }
+      walk(child.id);
+    }
+  };
+  walk(moduleId);
+  return found.sort((a, b) => a.displayName.localeCompare(b.displayName)).map((node) => node.id);
+}
+
+/**
+ * Block-like data for a "defined here" node: it targets the callable itself, so single-click
+ * selection (and its jump-to-flow ghosts) and double-click drill both route through the same
+ * `targetId`/`expandable` path an ordinary call block uses. `expandable` reflects whether that
+ * callable actually ships a flow to dive into; provenance reads as `<owner> › <name>` (the owning
+ * object/class/module, then the callable) so a bare method name always shows where it lives.
+ */
+export function definitionNodeData(callableId: string, flows: LogicFlows, index: GraphIndex): LogicNodeData {
+  const node = index.nodesById.get(callableId);
+  const expandable = (flows[callableId]?.length ?? 0) > 0;
+  return {
+    logicKind: "call",
+    definition: true,
+    label: node?.displayName ?? baseName(parseNodeId(callableId).modulePath),
+    targetId: callableId,
+    resolution: "resolved",
+    expandable,
+    isExpanded: false,
+    isContainer: false,
+    greyed: false,
+    provenance: definitionProvenance(callableId, node, index),
+    childCount: expandable ? flows[callableId].length : 0,
+  };
+}
+
+/** `<owner> › <name>`: the immediate parent's display name (its object/class/module) over the
+ * callable's own name — clearer for a declaration than the pkg›module a call block shows. */
+function definitionProvenance(
+  callableId: string,
+  node: GraphNode | undefined,
+  index: GraphIndex,
+): { pkg: string; module: string } {
+  const ancestors = index.ancestorsOf(callableId); // root..id inclusive; [-2] is the parent.
+  const parent = ancestors[ancestors.length - 2];
+  const name = node?.displayName ?? baseName(parseNodeId(callableId).modulePath);
+  return { pkg: parent?.displayName ?? "", module: name };
 }
 
 class LogicGraphBuilder {
