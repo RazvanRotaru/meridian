@@ -13,6 +13,8 @@ import type { TelemetryProvider } from "../telemetry/provider";
 import type { ViewMode } from "../derive/edgeSelection";
 import { uiFocusTarget } from "../derive/uiFocus";
 import { deriveLayout } from "./deriveLayout";
+import { deriveLogicLayout } from "./deriveLogicLayout";
+import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 
 export type LayoutStatus = "idle" | "laying-out" | "ready" | "error";
 
@@ -49,6 +51,21 @@ export interface BlueprintState {
   /** How many levels of resolved calls the Logic-flow view inlines in place; 0 == calls are leaf
    * chips (today's behavior). Sticky across open/drill so the reader keeps their chosen depth. */
   logicInlineDepth: number;
+  /** The selected call TARGET in the Logic-flow view; null == nothing picked. Selection is by
+   * target id (not call site), so every same-target call site — the "direct links" — highlights
+   * for free. Cleared whenever the charted flow changes so a stale selection can't linger. */
+  logicSelected: NodeId | null;
+  /** Flow-root ids the reader pinned for quick access. Session-scoped, survives navigation. */
+  pinnedFlows: NodeId[];
+  /** Logic-graph nodes the reader toggled AWAY from their default expansion (calls default
+   * collapsed; loops/try default expanded) — an expand/collapse flips membership. */
+  expandedLogic: Set<string>;
+  /** Hide the non-expandable (greyed) building-block leaves in the Logic graph. */
+  hideGreyed: boolean;
+  /** The laid-out Logic graph (React Flow), recomputed on open/drill/expand/toggle via ELK. */
+  logicRfNodes: LogicRfNode[];
+  logicRfEdges: LogicRfEdge[];
+  logicLayoutStatus: LayoutStatus;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -78,6 +95,11 @@ export interface BlueprintState {
   drillLogicFlow(nodeId: string): void;
   logicFlowTo(nodeId: string): void;
   setLogicInlineDepth(depth: number): void;
+  selectLogicTarget(id: NodeId | null): void;
+  togglePinnedFlow(id: NodeId): void;
+  toggleLogicExpand(nodeId: string): void;
+  toggleHideGreyed(): void;
+  logicRelayout(): Promise<void>;
   setViewMode(mode: ViewMode): void;
   setEnvironment(environment: string): void;
   refreshTelemetry(): Promise<void>;
@@ -100,6 +122,8 @@ export type BlueprintStore = StoreApi<BlueprintState>;
 export function createBlueprintStore(dependencies: StoreDependencies): BlueprintStore {
   // The focus to restore when leaving UI mode, kept off the reactive state (nothing renders it).
   let focusBeforeUi: string | null = null;
+  // Monotonic seq to drop a stale Logic-graph layout when a newer open/drill/toggle supersedes it.
+  let logicLayoutSeq = 0;
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
 
@@ -115,6 +139,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     logicRoot: null,
     logicStack: [],
     logicInlineDepth: 0,
+    logicSelected: null,
+    pinnedFlows: [],
+    expandedLogic: new Set<string>(),
+    hideGreyed: false,
+    logicRfNodes: [],
+    logicRfEdges: [],
+    logicLayoutStatus: "idle",
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -205,15 +236,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       return (flows as unknown as LogicFlows)[nodeId];
     },
 
-    // Open a callable's logic flow (the double-click "dive into logic" gesture). This view renders
-    // straight from logicRoot, not from rfNodes/ELK, so it deliberately skips relayout.
+    // Open a callable's logic flow (the double-click "dive into logic" gesture). A fresh chart
+    // starts at default expansion; clear any prior selection (it means nothing in a new chart).
     openLogicFlow(nodeId) {
-      set({ viewMode: "logic", logicRoot: nodeId, logicStack: [nodeId], selectedId: nodeId });
+      set({ viewMode: "logic", logicRoot: nodeId, logicStack: [nodeId], selectedId: nodeId, logicSelected: null, expandedLogic: new Set<string>() });
+      void get().logicRelayout();
     },
 
-    // Drill from a call chip into its target's own flow — push it onto the trail.
+    // Drill from a call node into its target's own flow — push it onto the trail, re-chart from it.
     drillLogicFlow(nodeId) {
-      set({ logicStack: [...get().logicStack, nodeId], logicRoot: nodeId });
+      set({ logicStack: [...get().logicStack, nodeId], logicRoot: nodeId, logicSelected: null, expandedLogic: new Set<string>() });
+      void get().logicRelayout();
     },
 
     // Jump back to an earlier callable in the trail (a logic-breadcrumb click), truncating there.
@@ -222,7 +255,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (index === -1) {
         return;
       }
-      set({ logicStack: get().logicStack.slice(0, index + 1), logicRoot: nodeId });
+      set({ logicStack: get().logicStack.slice(0, index + 1), logicRoot: nodeId, logicSelected: null, expandedLogic: new Set<string>() });
+      void get().logicRelayout();
     },
 
     // Set how many levels of resolved calls the Logic-flow view expands in place. Clamped to 0..2
@@ -230,6 +264,49 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // open/drill — so the reader's chosen inline depth carries across navigation.
     setLogicInlineDepth(depth) {
       set({ logicInlineDepth: Math.max(0, Math.min(2, Math.trunc(depth))) });
+    },
+
+    // Select a call target in the Logic-flow view (pass null to clear). The view renders straight
+    // from logicRoot, so this needs no relayout — it only repaints the highlight.
+    selectLogicTarget(id) {
+      set({ logicSelected: id });
+    },
+
+    // Pin/unpin a flow-root for quick access; a plain membership toggle over the session list.
+    togglePinnedFlow(id) {
+      const pinned = get().pinnedFlows;
+      set({ pinnedFlows: pinned.includes(id) ? pinned.filter((pin) => pin !== id) : [...pinned, id] });
+    },
+
+    // Expand/collapse a Logic-graph node: a call reveals its callee flow nested inline; a loop/try
+    // shows or hides its body. Flip membership in expandedLogic, then re-lay out the graph.
+    toggleLogicExpand(nodeId) {
+      set({ expandedLogic: withToggled(get().expandedLogic, nodeId) });
+      void get().logicRelayout();
+    },
+
+    // Toggle hiding the greyed (non-expandable) building-block leaves — the library/leaf calls.
+    toggleHideGreyed() {
+      set({ hideGreyed: !get().hideGreyed });
+      void get().logicRelayout();
+    },
+
+    // Re-derive the Logic graph for the current root through ELK, behind a stale-seq guard (a newer
+    // open/drill/toggle discards an older in-flight layout). A null root clears the graph.
+    async logicRelayout() {
+      const { logicRoot, index, artifact, expandedLogic, hideGreyed } = get();
+      if (logicRoot === null) {
+        set({ logicRfNodes: [], logicRfEdges: [], logicLayoutStatus: "idle" });
+        return;
+      }
+      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const sequence = ++logicLayoutSeq;
+      set({ logicLayoutStatus: "laying-out" });
+      const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, { hideGreyed });
+      if (logicLayoutSeq !== sequence) {
+        return; // a newer layout superseded this one.
+      }
+      set({ logicRfNodes: graph.nodes, logicRfEdges: graph.edges, logicLayoutStatus: "ready" });
     },
 
     // Switching mode re-derives + relayouts like a dive. Entering UI mode dives to the render

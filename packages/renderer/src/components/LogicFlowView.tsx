@@ -1,95 +1,167 @@
 /**
- * The Logic-flow view: one callable's intra-procedural control-flow, read LEFT → RIGHT in
- * execution order. It renders the per-callable `FlowStep[]` shipped in `artifact.extensions
- * .logicFlow` as plain nested divs (no React Flow / ELK) — green call chips, amber dashed loop
- * containers, and cyan branch containers whose paths stack as rows. Double-clicking a resolved
- * call chip drills into that callable's own flow; a breadcrumb walks back out.
+ * The Logic-flow view: one callable's intra-procedural control-flow as an Unreal-Blueprints-style
+ * React Flow graph. Nodes/edges are laid out by ELK in the store (`logicRfNodes`/`logicRfEdges`);
+ * this component only mounts the read-only <ReactFlow> surface, an overlay header (breadcrumb +
+ * "hide leaf blocks" toggle) that clears the floating Toolbar, and the empty/entry states.
  *
- * The "Inline" dial pre-expands resolved calls IN PLACE: each callee's own flow nests inside the
- * caller's, up to `logicInlineDepth` (0..2) levels, so several methods' logic reads together. A
- * cycle guard (the ancestor path) and a shared step budget keep a deep expansion from hanging.
+ * Node interactions live in the node components themselves — title-click expands a call/loop/try in
+ * place, the `</>` button opens source. This adds the ONE gesture they can't: double-clicking a
+ * resolved, flow-bearing block dives into that callee's own flow as a new breadcrumb level.
+ *
+ * While nothing is opened (`logicRoot === null`) it shows the entry picker instead of the graph.
  */
 
 import { Fragment, useMemo, useState } from "react";
-import type { FlowStep, GraphArtifact, GraphNode, LogicFlows, NodeId } from "@meridian/core";
+import {
+  Background,
+  BackgroundVariant,
+  Controls,
+  MiniMap,
+  ReactFlow,
+  type Node,
+  type NodeMouseHandler,
+} from "@xyflow/react";
+import type { GraphArtifact, GraphNode, LogicFlows, NodeId } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
-
-/** A generous ceiling so a cyclic or pathologically nested flow can never hang the render. */
-const MAX_DEPTH = 200;
-/** Total rendered steps past which inlining stops (remaining calls fall back to leaf chips), so a
- * deep pre-expansion on a huge method can never explode the DOM and hang the browser. */
-const INLINE_BUDGET = 800;
-/** The inline-depth dial's stops; 0 keeps calls as leaf chips (the original behavior). */
-const INLINE_DEPTHS: ReadonlyArray<number> = [0, 1, 2];
-
-type CallStep = Extract<FlowStep, { kind: "call" }>;
-type LoopStep = Extract<FlowStep, { kind: "loop" }>;
-type BranchStep = Extract<FlowStep, { kind: "branch" }>;
-
-/** Shared state for one flow render pass: the callee-flow lookup + a mutable step budget. The
- * per-node `remainingDepth`/`ancestorPath` vary as inlining descends, so they travel as own props. */
-interface FlowContext {
-  logicFlowFor: (nodeId: string) => FlowStep[] | undefined;
-  budget: { n: number };
-}
+import { logicNodeTypes } from "./nodes/logic/logicNodeTypes";
+import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
+import type { LogicNodeData } from "../derive/logicGraph";
 
 export function LogicFlowView() {
   const logicRoot = useBlueprint((state) => state.logicRoot);
-  const logicStack = useBlueprint((state) => state.logicStack);
-  const logicInlineDepth = useBlueprint((state) => state.logicInlineDepth);
-  const index = useBlueprint((state) => state.index);
-  const sourceUrl = useBlueprint((state) => state.sourceUrl);
-  const { logicFlowFor, logicFlowTo, setLogicInlineDepth, showCode, expandCode } = useBlueprintActions();
-
   if (logicRoot === null) {
     return <LogicFlowPicker />;
   }
+  return <LogicFlowGraph rootId={logicRoot} />;
+}
 
-  const rootNode = index.nodesById.get(logicRoot);
-  const rootName = rootNode?.displayName ?? logicRoot;
-  const steps = logicFlowFor(logicRoot);
-  const canShowCode = Boolean(rootNode?.location) && Boolean(sourceUrl);
+/**
+ * The graph surface for the opened flow: a full-bleed, read-only React Flow (mirroring the call
+ * graph's canvas props) with the overlay header floating above it, and a centered card when the
+ * charted callable has no calls or control flow of its own.
+ */
+function LogicFlowGraph(props: { rootId: NodeId }) {
+  const logicStack = useBlueprint((state) => state.logicStack);
+  const nodes = useBlueprint((state) => state.logicRfNodes);
+  const edges = useBlueprint((state) => state.logicRfEdges);
+  const layoutStatus = useBlueprint((state) => state.logicLayoutStatus);
+  const hideGreyed = useBlueprint((state) => state.hideGreyed);
+  const index = useBlueprint((state) => state.index);
+  const { drillLogicFlow, logicFlowTo, toggleHideGreyed } = useBlueprintActions();
+
+  // The one gesture the node components don't own: dive into a resolved, flow-bearing block's own
+  // flow. Inline expand/collapse is a title-click, handled inside the node — never re-handled here.
+  const onNodeDoubleClick: NodeMouseHandler<LogicRfNode> = (_event, node) => {
+    if (node.data.expandable && node.data.targetId !== null) {
+      drillLogicFlow(node.data.targetId);
+    }
+  };
+
+  const isEmpty = nodes.length === 0 && layoutStatus === "ready";
 
   return (
-    <div style={CONTAINER_STYLE}>
-      {/* CONTENT centers the column in the canvas right of the floating toolbar; COLUMN caps its width. */}
-      <div style={CONTENT_STYLE}>
-        <div style={COLUMN_STYLE}>
-          <div style={HEADER_ROW_STYLE}>
-            <LogicBreadcrumb stack={logicStack} nodesById={index.nodesById} onJump={logicFlowTo} />
-            <InlineDepthControl value={logicInlineDepth} onChange={setLogicInlineDepth} />
-          </div>
-          {steps && steps.length > 0 ? (
-            <div style={FLOW_WRAP_STYLE}>
-              <FlowTrack
-                steps={steps}
-                depth={0}
-                remainingDepth={logicInlineDepth}
-                ancestorPath={new Set<NodeId>([logicRoot])}
-                ctx={{ logicFlowFor, budget: { n: 0 } }}
-              />
-            </div>
-          ) : (
-            <div style={EMPTY_STYLE}>
-              <span style={EMPTY_MARK_STYLE}>∅</span>
-              <span>No calls or control flow in {rootName}.</span>
-              {canShowCode && rootNode ? (
-                <button
-                  type="button"
-                  style={SHOW_CODE_STYLE}
-                  onClick={() => {
-                    // showCode opens inline; expandCode pops the always-mounted modal CodePanel,
-                    // which is the only code surface the logic view has (no on-canvas nodes here).
-                    void showCode(rootNode);
-                    expandCode();
-                  }}
-                >
-                  Show code
-                </button>
-              ) : null}
-            </div>
-          )}
-        </div>
+    <div style={SURFACE_STYLE}>
+      <ReactFlow<LogicRfNode, LogicRfEdge>
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={logicNodeTypes}
+        onNodeDoubleClick={onNodeDoubleClick}
+        colorMode="dark"
+        nodesDraggable={false}
+        nodesConnectable={false}
+        // Click-drag pans; it must never rubber-band select or text-highlight node labels.
+        panOnDrag
+        selectionOnDrag={false}
+        style={{ userSelect: "none" }}
+        fitView
+        fitViewOptions={{ padding: 0.2, minZoom: 0.01 }}
+        // A deep flow can be many nodes; let it zoom far out (default minZoom 0.5 clips) but cap zoom-in.
+        minZoom={0.01}
+        maxZoom={4}
+        // Double-click drills into a callee, so the pane must not also zoom on it.
+        zoomOnDoubleClick={false}
+        proOptions={{ hideAttribution: true }}
+      >
+        <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#222732" />
+        <Controls showInteractive={false} />
+        <MiniMap pannable zoomable nodeColor={miniMapColor} maskColor="rgba(8,10,14,0.7)" />
+      </ReactFlow>
+      <LogicOverlayHeader
+        stack={logicStack}
+        nodesById={index.nodesById}
+        onJump={logicFlowTo}
+        hideGreyed={hideGreyed}
+        onToggleHide={toggleHideGreyed}
+      />
+      {isEmpty ? <EmptyFlowCard rootId={props.rootId} /> : null}
+    </div>
+  );
+}
+
+// The MiniMap gets untyped `Node`s; narrow to our logic data and mirror each node type's accent.
+function miniMapColor(node: Node): string {
+  const data = node.data as LogicNodeData;
+  if (data.logicKind === "loop") return "#E6B84D";
+  if (data.logicKind === "try") return "#D98A5B";
+  if (data.logicKind === "if" || data.logicKind === "switch") return "#61DAFB";
+  return data.greyed ? "#3A414C" : "#3B7AC0";
+}
+
+/**
+ * The floating overlay header, offset to clear the Toolbar's top-left column: the drill breadcrumb
+ * on the left, the "hide leaf blocks" toggle on the right. Its own container ignores pointer events
+ * so the gap between the two still pans the canvas; each control re-enables them for itself.
+ */
+function LogicOverlayHeader(props: {
+  stack: NodeId[];
+  nodesById: ReadonlyMap<string, GraphNode>;
+  onJump: (id: NodeId) => void;
+  hideGreyed: boolean;
+  onToggleHide: () => void;
+}) {
+  return (
+    <div style={OVERLAY_HEADER_STYLE}>
+      <div style={HEADER_PANEL_STYLE}>
+        <LogicBreadcrumb stack={props.stack} nodesById={props.nodesById} onJump={props.onJump} />
+      </div>
+      <button
+        type="button"
+        style={hideToggleStyle(props.hideGreyed)}
+        aria-pressed={props.hideGreyed}
+        onClick={props.onToggleHide}
+      >
+        {props.hideGreyed ? "Show leaf blocks" : "Hide leaf blocks"}
+      </button>
+    </div>
+  );
+}
+
+/** Shown when a charted callable ships a flow with no drawable steps: a centered note + a way into
+ * its source (the modal CodePanel is the only code surface the logic view has). */
+function EmptyFlowCard(props: { rootId: NodeId }) {
+  const index = useBlueprint((state) => state.index);
+  const sourceUrl = useBlueprint((state) => state.sourceUrl);
+  const { showCode, expandCode } = useBlueprintActions();
+  const rootNode = index.nodesById.get(props.rootId);
+  const rootName = rootNode?.displayName ?? props.rootId;
+  const canShowCode = Boolean(rootNode?.location) && Boolean(sourceUrl);
+  return (
+    <div style={EMPTY_WRAP_STYLE}>
+      <div style={EMPTY_CARD_STYLE}>
+        <span style={EMPTY_MARK_STYLE}>∅</span>
+        <span>No calls or control flow in {rootName}.</span>
+        {canShowCode && rootNode ? (
+          <button
+            type="button"
+            style={SHOW_CODE_STYLE}
+            onClick={() => {
+              void showCode(rootNode);
+              expandCode();
+            }}
+          >
+            Show code
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -280,318 +352,107 @@ function LogicBreadcrumb(props: {
   );
 }
 
-/** The inline-depth dial: pick how many levels of resolved calls expand in place (0 = leaf chips). */
-function InlineDepthControl(props: { value: number; onChange: (depth: number) => void }) {
-  return (
-    <div style={INLINE_CONTROL_STYLE}>
-      <span style={INLINE_LABEL_STYLE}>Inline</span>
-      <div style={INLINE_GROUP_STYLE} role="group" aria-label="Inline depth">
-        {INLINE_DEPTHS.map((depth) => (
-          <button
-            key={depth}
-            type="button"
-            style={inlinePillStyle(depth === props.value)}
-            aria-pressed={depth === props.value}
-            onClick={() => props.onChange(depth)}
-          >
-            {depth}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/**
- * A horizontal execution track: steps left → right with → connectors between them. `remainingDepth`
- * is how many more levels of resolved calls may expand in place; `ancestorPath` is the inlined
- * caller chain (the cycle guard). Both pass THROUGH loop/branch nesting unchanged — only inlining
- * a call spends a level.
- */
-function FlowTrack(props: {
-  steps: FlowStep[];
-  depth: number;
-  remainingDepth: number;
-  ancestorPath: ReadonlySet<string>;
-  ctx: FlowContext;
-}) {
-  if (props.depth > MAX_DEPTH) {
-    return <span style={NONE_STYLE}>…</span>;
-  }
-  return (
-    <div style={TRACK_STYLE}>
-      {props.steps.map((step, position) => (
-        <Fragment key={position}>
-          {position > 0 ? <Arrow /> : null}
-          <FlowStepView
-            step={step}
-            depth={props.depth}
-            remainingDepth={props.remainingDepth}
-            ancestorPath={props.ancestorPath}
-            ctx={props.ctx}
-          />
-        </Fragment>
-      ))}
-    </div>
-  );
-}
-
-function FlowStepView(props: {
-  step: FlowStep;
-  depth: number;
-  remainingDepth: number;
-  ancestorPath: ReadonlySet<string>;
-  ctx: FlowContext;
-}) {
-  // Count every rendered step against the shared budget; the cap is read back in CallStepView.
-  props.ctx.budget.n += 1;
-  if (props.step.kind === "call") {
-    return (
-      <CallStepView
-        step={props.step}
-        depth={props.depth}
-        remainingDepth={props.remainingDepth}
-        ancestorPath={props.ancestorPath}
-        ctx={props.ctx}
-      />
-    );
-  }
-  if (props.step.kind === "loop") {
-    return (
-      <LoopBox
-        step={props.step}
-        depth={props.depth}
-        remainingDepth={props.remainingDepth}
-        ancestorPath={props.ancestorPath}
-        ctx={props.ctx}
-      />
-    );
-  }
-  return (
-    <BranchBox
-      step={props.step}
-      depth={props.depth}
-      remainingDepth={props.remainingDepth}
-      ancestorPath={props.ancestorPath}
-      ctx={props.ctx}
-    />
-  );
-}
-
-/**
- * A call step: inline the callee's flow in place when there's depth left, the target resolves, it
- * has a flow, the budget holds, and the target isn't already an inlined ancestor (the cycle guard).
- * Otherwise fall back to a leaf chip — flagged with a ↩ marker when only the cycle guard stopped it.
- */
-function CallStepView(props: {
-  step: CallStep;
-  depth: number;
-  remainingDepth: number;
-  ancestorPath: ReadonlySet<string>;
-  ctx: FlowContext;
-}) {
-  const { step, ctx } = props;
-  const target = step.resolution === "resolved" ? step.target : null;
-  const calleeFlow = target !== null ? ctx.logicFlowFor(target) : undefined;
-  const inlinable =
-    props.remainingDepth > 0 && target !== null && (calleeFlow?.length ?? 0) > 0 && ctx.budget.n <= INLINE_BUDGET;
-  const blockedByCycle = inlinable && target !== null && props.ancestorPath.has(target);
-
-  if (inlinable && !blockedByCycle && target !== null && calleeFlow) {
-    return (
-      <InlineCall
-        step={step}
-        target={target}
-        calleeFlow={calleeFlow}
-        depth={props.depth}
-        remainingDepth={props.remainingDepth}
-        ancestorPath={props.ancestorPath}
-        ctx={ctx}
-      />
-    );
-  }
-  return <CallChip step={step} recursion={blockedByCycle} />;
-}
-
-// Three tiers of resolved-ness. A DIVABLE call — one whose target ships its own logic flow — is the
-// one a double-click actually drills into, so it pops: brighter green, a soft lift, and a ▸ drill
-// glyph. A resolved LEAF (no flow of its own) stays plain green but wears no glyph. External /
-// unresolved calls stay dimmed. A call skipped only because its target is already inlined above
-// shows a faint recursion marker. A ▸-less code button (`</>`) opens any resolved target's source.
-function CallChip(props: { step: CallStep; recursion?: boolean }) {
-  const { step } = props;
-  const { drillLogicFlow, logicFlowFor, index, sourceUrl, showCode, expandCode } = useBlueprintActions();
-  const target = step.resolution === "resolved" ? step.target : null;
-  const targetNode = target !== null ? index.nodesById.get(target) : undefined;
-  const divable = target !== null && (logicFlowFor(target)?.length ?? 0) > 0;
-  const canShowCode = Boolean(targetNode?.location) && Boolean(sourceUrl);
-  const title = props.recursion
-    ? "recursion — already inlined above"
-    : target !== null
-      ? "double-click to open its flow"
-      : `${step.resolution} call`;
-  return (
-    <div
-      style={chipStyleFor(target, divable)}
-      onDoubleClick={target !== null ? () => drillLogicFlow(target) : undefined}
-      title={title}
-    >
-      <b style={target !== null ? CALL_NAME_STYLE : CALL_NAME_MUTED_STYLE}>{step.label}</b>
-      {props.recursion ? <span style={RECURSION_MARK_STYLE} aria-hidden>↩</span> : null}
-      {divable || canShowCode ? (
-        <span style={CALL_TAIL_STYLE}>
-          {divable ? <span style={DRILL_MARK_STYLE} aria-hidden>▸</span> : null}
-          {canShowCode && targetNode ? (
-            <button
-              type="button"
-              style={CODE_BUTTON_STYLE}
-              title="Show code"
-              // Stop both handlers so opening the source can't also trip the chip's drill.
-              onClick={(event) => {
-                event.stopPropagation();
-                void showCode(targetNode);
-                expandCode();
-              }}
-              onDoubleClick={(event) => event.stopPropagation()}
-            >
-              {"</>"}
-            </button>
-          ) : null}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-// Muted for external/unresolved; brighter green + lift for a divable target; plain green otherwise.
-function chipStyleFor(target: NodeId | null, divable: boolean): React.CSSProperties {
-  if (target === null) {
-    return CALL_CHIP_MUTED_STYLE;
-  }
-  return divable ? CALL_CHIP_DIVABLE_STYLE : CALL_CHIP_STYLE;
-}
-
-/**
- * A resolved call expanded in place: the call chip is the container header (still double-click →
- * drill), and the callee's own flow renders nested below as its own track, one inline level deeper
- * with the target added to the ancestor path so a later self-call can't re-inline forever.
- */
-function InlineCall(props: {
-  step: CallStep;
-  target: NodeId;
-  calleeFlow: FlowStep[];
-  depth: number;
-  remainingDepth: number;
-  ancestorPath: ReadonlySet<string>;
-  ctx: FlowContext;
-}) {
-  const childPath = new Set(props.ancestorPath);
-  childPath.add(props.target);
-  return (
-    <div style={INLINE_CALL_STYLE}>
-      <div style={INLINE_CALL_HEADER_STYLE}>
-        <CallChip step={props.step} />
-      </div>
-      <div style={INLINE_CALL_BODY_STYLE}>
-        <FlowTrack
-          steps={props.calleeFlow}
-          depth={props.depth + 1}
-          remainingDepth={props.remainingDepth - 1}
-          ancestorPath={childPath}
-          ctx={props.ctx}
-        />
-      </div>
-    </div>
-  );
-}
-
-function LoopBox(props: {
-  step: LoopStep;
-  depth: number;
-  remainingDepth: number;
-  ancestorPath: ReadonlySet<string>;
-  ctx: FlowContext;
-}) {
-  const { step } = props;
-  return (
-    <div style={LOOP_STYLE}>
-      <div style={LOOP_HEADER_STYLE}>
-        <span>loop</span>
-        {step.label && step.label !== "loop" ? <span style={LOOP_LABEL_STYLE}>{step.label}</span> : null}
-        <span style={LOOP_REPEAT_STYLE}>↻</span>
-      </div>
-      <FlowTrack
-        steps={step.body}
-        depth={props.depth + 1}
-        remainingDepth={props.remainingDepth}
-        ancestorPath={props.ancestorPath}
-        ctx={props.ctx}
-      />
-    </div>
-  );
-}
-
-function BranchBox(props: {
-  step: BranchStep;
-  depth: number;
-  remainingDepth: number;
-  ancestorPath: ReadonlySet<string>;
-  ctx: FlowContext;
-}) {
-  const { step } = props;
-  return (
-    <div style={BRANCH_STYLE}>
-      <div style={BRANCH_COND_STYLE}>{step.label}</div>
-      <div style={BRANCH_ROWS_STYLE}>
-        {step.paths.map((path, position) => (
-          <div key={position} style={BRANCH_ROW_STYLE}>
-            <span style={ROW_LABEL_STYLE}>{path.label}</span>
-            {path.body.length > 0 ? (
-              <FlowTrack
-                steps={path.body}
-                depth={props.depth + 1}
-                remainingDepth={props.remainingDepth}
-                ancestorPath={props.ancestorPath}
-                ctx={props.ctx}
-              />
-            ) : (
-              <span style={NONE_STYLE}>—</span>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function Arrow() {
-  return (
-    <span style={ARROW_STYLE} aria-hidden>
-      <span style={ARROW_LINE_STYLE} />
-      <span style={ARROW_HEAD_STYLE} />
-    </span>
-  );
-}
-
-// The toolbar floats over roughly the top-left ~320px column, so the content keeps a left inset as a
-// MINIMUM (it always clears the toolbar), then centers the flow in the remaining canvas.
+// The toolbar floats over roughly the top-left ~320px column, so the picker and the overlay header
+// keep a left inset that clears it.
 const TOOLBAR_CLEARANCE = 336;
-// A ceiling so the flow doesn't sprawl edge-to-edge on a wide monitor; it centers below this.
-const FLOW_MAX_WIDTH = 1120;
 
-const CONTAINER_STYLE: React.CSSProperties = { position: "absolute", inset: 0, background: "#0E1116", overflow: "auto" };
-const CONTENT_STYLE: React.CSSProperties = {
-  boxSizing: "border-box",
-  minHeight: "100%",
+// The graph fills the canvas shell; the header and empty card float above it.
+const SURFACE_STYLE: React.CSSProperties = { position: "absolute", inset: 0, background: "#0E1116" };
+
+// Floats above the graph, clearing the Toolbar's column; transparent to pointer events so the gap
+// still pans (each control opts back in).
+const OVERLAY_HEADER_STYLE: React.CSSProperties = {
+  position: "absolute",
+  top: 16,
+  left: 340,
+  right: 16,
   display: "flex",
-  flexDirection: "column",
-  alignItems: "center",
-  padding: `36px 48px 48px ${TOOLBAR_CLEARANCE}px`,
+  alignItems: "flex-start",
+  justifyContent: "space-between",
+  gap: 12,
+  pointerEvents: "none",
+  zIndex: 5,
 };
-// The centered column: fills the free canvas up to a cap, keeping header + flow on one aligned width.
-const COLUMN_STYLE: React.CSSProperties = { width: "100%", maxWidth: FLOW_MAX_WIDTH };
+const HEADER_PANEL_STYLE: React.CSSProperties = {
+  pointerEvents: "auto",
+  minWidth: 0,
+  border: "1px solid #2A2F37",
+  borderRadius: 8,
+  background: "rgba(18,23,30,0.92)",
+  padding: "4px 8px",
+};
 
-// The empty-state picker centers its panel in the same toolbar-cleared canvas as the flow.
+function hideToggleStyle(active: boolean): React.CSSProperties {
+  return {
+    pointerEvents: "auto",
+    flex: "0 0 auto",
+    fontSize: 12,
+    padding: "6px 10px",
+    borderRadius: 6,
+    cursor: "pointer",
+    font: "inherit",
+    border: `1px solid ${active ? "#3B7AC0" : "#2A2F37"}`,
+    background: active ? "#111A24" : "rgba(18,23,30,0.92)",
+    color: active ? "#8FB6E3" : "#9AA4B2",
+  };
+}
+
+const BREADCRUMB_STYLE: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  flexWrap: "wrap",
+  gap: 4,
+};
+const CRUMB_STYLE: React.CSSProperties = {
+  background: "transparent",
+  border: "none",
+  padding: "2px 4px",
+  borderRadius: 4,
+  cursor: "pointer",
+  font: "inherit",
+  fontSize: 13,
+  color: "#9AA4B2",
+};
+const CRUMB_CURRENT_STYLE: React.CSSProperties = { ...CRUMB_STYLE, color: "#E6EDF3", fontWeight: 600, cursor: "default" };
+const CRUMB_SEP_STYLE: React.CSSProperties = { color: "#4B535F", fontSize: 13 };
+
+// The empty card centers over the graph surface; its wrapper passes pointer events through so the
+// canvas still pans around it, while the card itself stays interactive.
+const EMPTY_WRAP_STYLE: React.CSSProperties = {
+  position: "absolute",
+  inset: 0,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  pointerEvents: "none",
+  padding: `0 48px 0 ${TOOLBAR_CLEARANCE}px`,
+};
+const EMPTY_CARD_STYLE: React.CSSProperties = {
+  pointerEvents: "auto",
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+  maxWidth: 560,
+  border: "1px dashed #2A2F37",
+  borderRadius: 10,
+  background: "#12171E",
+  padding: "16px 18px",
+  fontSize: 13,
+  color: "#7B8695",
+};
+const EMPTY_MARK_STYLE: React.CSSProperties = { fontSize: 22, opacity: 0.5 };
+const SHOW_CODE_STYLE: React.CSSProperties = {
+  marginLeft: "auto",
+  background: "#1A1F27",
+  color: "#9AA4B2",
+  border: "1px solid #2A2F37",
+  borderRadius: 6,
+  padding: "5px 10px",
+  fontSize: 12,
+  cursor: "pointer",
+};
+
+// The empty-state picker centers its panel in the same toolbar-cleared canvas as the graph.
 const PICKER_CONTAINER_STYLE: React.CSSProperties = {
   position: "absolute",
   inset: 0,
@@ -675,213 +536,3 @@ function kindTagStyle(kind: string): React.CSSProperties {
   }
   return { ...KIND_TAG_STYLE, color: "#56C271", borderColor: "#2C4133" };
 }
-
-// Breadcrumb on the left, inline dial on the right; the row owns the gap below (breadcrumb no longer does).
-const HEADER_ROW_STYLE: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  flexWrap: "wrap",
-  gap: 12,
-  marginBottom: 16,
-};
-const BREADCRUMB_STYLE: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  flexWrap: "wrap",
-  gap: 4,
-};
-
-// The inline-depth dial mirrors the Code-flows depth dial: muted pills in a boxed group, active one lit.
-const INLINE_CONTROL_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, flex: "0 0 auto" };
-const INLINE_LABEL_STYLE: React.CSSProperties = {
-  fontSize: 11,
-  textTransform: "uppercase",
-  letterSpacing: "0.06em",
-  color: "#7B8695",
-};
-const INLINE_GROUP_STYLE: React.CSSProperties = {
-  display: "flex",
-  padding: 2,
-  gap: 2,
-  borderRadius: 8,
-  border: "1px solid #2A2F37",
-  background: "#0E1116",
-};
-
-function inlinePillStyle(active: boolean): React.CSSProperties {
-  return {
-    border: "none",
-    borderRadius: 6,
-    padding: "3px 9px",
-    fontSize: 11,
-    cursor: "pointer",
-    font: "inherit",
-    fontWeight: active ? 600 : 400,
-    background: active ? "#1F2530" : "transparent",
-    color: active ? "#E6EDF3" : "#9AA4B2",
-  };
-}
-const CRUMB_STYLE: React.CSSProperties = {
-  background: "transparent",
-  border: "none",
-  padding: "2px 4px",
-  borderRadius: 4,
-  cursor: "pointer",
-  font: "inherit",
-  fontSize: 13,
-  color: "#9AA4B2",
-};
-const CRUMB_CURRENT_STYLE: React.CSSProperties = { ...CRUMB_STYLE, color: "#E6EDF3", fontWeight: 600, cursor: "default" };
-const CRUMB_SEP_STYLE: React.CSSProperties = { color: "#4B535F", fontSize: 13 };
-
-const FLOW_WRAP_STYLE: React.CSSProperties = {
-  // minWidth:0 lets this flex child shrink so a wide track scrolls HERE, never the page body.
-  minWidth: 0,
-  maxWidth: "100%",
-  overflowX: "auto",
-  border: "1px solid #2A2F37",
-  borderRadius: 12,
-  background: "#12171E",
-  padding: 24,
-};
-const TRACK_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 0, width: "max-content" };
-
-const ARROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", flex: "0 0 auto", margin: "0 10px" };
-const ARROW_LINE_STYLE: React.CSSProperties = { width: 22, height: 2, background: "#2A2F37" };
-const ARROW_HEAD_STYLE: React.CSSProperties = {
-  width: 0,
-  height: 0,
-  borderTop: "4px solid transparent",
-  borderBottom: "4px solid transparent",
-  borderLeft: "5px solid #2A2F37",
-};
-
-const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
-const CALL_CHIP_STYLE: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  flex: "0 0 auto",
-  border: "1px solid #2A2F37",
-  borderLeft: "3px solid #56C271",
-  borderRadius: 8,
-  background: "#10151C",
-  padding: "8px 12px",
-  fontFamily: MONO,
-  fontSize: 13,
-  color: "#E6EDF3",
-  whiteSpace: "nowrap",
-  cursor: "pointer",
-};
-// A divable target (its own flow to open) pops: a brighter green rail, a faint green wash, and a
-// soft lift — so the reader's eye lands on the chips a double-click actually drills into.
-const CALL_CHIP_DIVABLE_STYLE: React.CSSProperties = {
-  ...CALL_CHIP_STYLE,
-  borderLeft: "3px solid #6BE38A",
-  borderColor: "rgba(86,194,113,0.45)",
-  background: "#111A15",
-  boxShadow: "0 1px 4px rgba(0,0,0,0.35)",
-};
-const CALL_CHIP_MUTED_STYLE: React.CSSProperties = {
-  ...CALL_CHIP_STYLE,
-  borderLeft: "3px dashed #3A414C",
-  opacity: 0.55,
-  cursor: "default",
-};
-const CALL_NAME_STYLE: React.CSSProperties = { color: "#56C271", fontWeight: 600 };
-const CALL_NAME_MUTED_STYLE: React.CSSProperties = { color: "#9AA4B2", fontWeight: 600 };
-const RECURSION_MARK_STYLE: React.CSSProperties = { marginLeft: 6, color: "#7B8695", opacity: 0.7 };
-
-// The chip's trailing affordances (drill glyph + code button) ride flush to the right edge.
-const CALL_TAIL_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, marginLeft: 12 };
-const DRILL_MARK_STYLE: React.CSSProperties = { color: "#6BE38A", fontSize: 13, lineHeight: 1 };
-const CODE_BUTTON_STYLE: React.CSSProperties = {
-  flex: "0 0 auto",
-  fontFamily: MONO,
-  fontSize: 11,
-  lineHeight: 1,
-  padding: "3px 5px",
-  border: "1px solid #2A2F37",
-  borderRadius: 5,
-  background: "#161B22",
-  color: "#7B8695",
-  cursor: "pointer",
-};
-
-// An inlined call reads as a faint green-tinted box — distinct from loop(amber)/branch(cyan) — with
-// the call chip as its header and the callee's own flow nested below.
-const INLINE_CALL_STYLE: React.CSSProperties = {
-  flex: "0 0 auto",
-  border: "1px solid rgba(86,194,113,0.35)",
-  borderRadius: 10,
-  background: "rgba(86,194,113,0.04)",
-  padding: "8px 10px 10px",
-};
-const INLINE_CALL_HEADER_STYLE: React.CSSProperties = { display: "flex", marginBottom: 9 };
-const INLINE_CALL_BODY_STYLE: React.CSSProperties = { paddingLeft: 2 };
-
-const LOOP_STYLE: React.CSSProperties = {
-  flex: "0 0 auto",
-  border: "1px dashed #E6B84D",
-  borderRadius: 10,
-  background: "rgba(230,184,77,0.05)",
-  padding: "8px 10px 10px",
-};
-const LOOP_HEADER_STYLE: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  marginBottom: 9,
-  fontSize: 10,
-  fontWeight: 600,
-  textTransform: "uppercase",
-  letterSpacing: "0.06em",
-  color: "#E6B84D",
-};
-const LOOP_LABEL_STYLE: React.CSSProperties = { fontFamily: MONO, fontSize: 11, textTransform: "none", letterSpacing: 0 };
-const LOOP_REPEAT_STYLE: React.CSSProperties = { marginLeft: "auto", fontSize: 12, opacity: 0.85 };
-
-const BRANCH_STYLE: React.CSSProperties = {
-  flex: "0 0 auto",
-  border: "1px solid #61DAFB",
-  borderRadius: 10,
-  background: "rgba(97,218,251,0.05)",
-  padding: "8px 10px 6px",
-};
-const BRANCH_COND_STYLE: React.CSSProperties = { fontFamily: MONO, fontSize: 12, color: "#61DAFB", marginBottom: 8 };
-const BRANCH_ROWS_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 7 };
-const BRANCH_ROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 10 };
-const ROW_LABEL_STYLE: React.CSSProperties = {
-  flex: "0 0 auto",
-  minWidth: 74,
-  fontSize: 10,
-  fontWeight: 600,
-  textTransform: "uppercase",
-  letterSpacing: "0.05em",
-  color: "#7B8695",
-  textAlign: "right",
-};
-const NONE_STYLE: React.CSSProperties = { fontFamily: MONO, fontSize: 12, color: "#6C7683" };
-
-const EMPTY_STYLE: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 12,
-  maxWidth: 560,
-  border: "1px dashed #2A2F37",
-  borderRadius: 10,
-  padding: "16px 18px",
-  fontSize: 13,
-  color: "#7B8695",
-};
-const EMPTY_MARK_STYLE: React.CSSProperties = { fontSize: 22, opacity: 0.5 };
-const SHOW_CODE_STYLE: React.CSSProperties = {
-  marginLeft: "auto",
-  background: "#1A1F27",
-  color: "#9AA4B2",
-  border: "1px solid #2A2F37",
-  borderRadius: 6,
-  padding: "5px 10px",
-  fontSize: 12,
-  cursor: "pointer",
-};
