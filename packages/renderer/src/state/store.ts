@@ -15,6 +15,7 @@ import { uiFocusTarget } from "../derive/uiFocus";
 import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
+import type { BehaviorData } from "../derive/behavior";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
 
@@ -94,6 +95,12 @@ export interface BlueprintState {
   /** The module/package the Service-composition tab is rooted at; null == the whole system. Defaults
    * to the app's first entry module. Only its subtree + 1-hop coupling neighbours are drawn. */
   compRoot: string | null;
+  /** Rooted composition views only: draw the full BLAST RADIUS (every unit that transitively
+   * depends on the root) as boundary cards instead of the 1-hop neighbours. */
+  compBlastRadius: boolean;
+  /** The parsed /api/behavior report (git churn + co-change); null until it loads, or when the
+   * server ships none / the payload is malformed. Its arrival re-lays out the composition graph. */
+  behavior: BehaviorData | null;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -134,6 +141,8 @@ export interface BlueprintState {
   compRelayout(): Promise<void>;
   selectCompUnit(id: string | null): void;
   setCompRoot(id: string | null): void;
+  setCompBlastRadius(on: boolean): void;
+  setBehavior(behavior: BehaviorData | null): void;
   setViewMode(mode: ViewMode): void;
   setEnvironment(environment: string): void;
   refreshTelemetry(): Promise<void>;
@@ -195,6 +204,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     compLayoutStatus: "idle",
     compSelectedId: null,
     compRoot: defaultCompRoot,
+    compBlastRadius: false,
+    behavior: null,
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -389,11 +400,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // stale-seq guard. Reads the raw nodes/edges off the index (built from the artifact); the derive
     // decides which units earn a card and wires their couplings.
     async compRelayout() {
-      const { index, compRoot } = get();
+      const { index, compRoot, compBlastRadius, behavior } = get();
       const nodes = [...index.nodesById.values()];
       const sequence = ++compLayoutSeq;
       set({ compLayoutStatus: "laying-out" });
-      const graph = await deriveCompositionLayout(nodes, index.edges, compRoot);
+      const graph = await deriveCompositionLayout(nodes, index.edges, { root: compRoot, blastRadius: compBlastRadius, behavior });
       if (compLayoutSeq !== sequence) {
         return; // a newer layout superseded this one.
       }
@@ -414,6 +425,27 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       set({ compRoot: id, compSelectedId: null });
+      void get().compRelayout();
+    },
+
+    // Flip the rooted view between 1-hop neighbours and the full blast radius. The setting changes
+    // which boundary cards exist, so it re-lays out; it's sticky across re-roots on purpose — a
+    // reader auditing change impact keeps the lens as they hop roots.
+    setCompBlastRadius(on) {
+      if (get().compBlastRadius === on) {
+        return;
+      }
+      set({ compBlastRadius: on });
+      void get().compRelayout();
+    },
+
+    // Land the fetched behavior report (or clear it). Churn badges and co-change ghost wires are
+    // part of the composition SPEC, not a repaint, so its arrival re-lays out the graph.
+    setBehavior(behavior) {
+      if (get().behavior === behavior) {
+        return;
+      }
+      set({ behavior });
       void get().compRelayout();
     },
 

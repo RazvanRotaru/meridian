@@ -13,7 +13,7 @@ import { arrowMarker } from "../theme/edgeColors";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
 
 export type CompRfNode = Node<CompNodeData | ClusterNodeData, CompNodeType>;
-export type CompRfEdgeData = { inheritanceOnly: boolean; crossBoundary: boolean };
+export type CompRfEdgeData = { inheritanceOnly: boolean; crossBoundary: boolean; changeCoupling: boolean };
 export type CompRfEdge = Edge<CompRfEdgeData>;
 export interface CompositionReactFlowGraph {
   nodes: CompRfNode[];
@@ -73,34 +73,44 @@ function toReactFlowNode(elkNode: ElkNode, parentId: string | undefined, spec: C
   };
 }
 
-// The three wire treatments, in priority order. An inheritance-only pair reads DISTINCT — dashed
-// violet — because extends/implements is a different relationship from ordinary use. Otherwise a
-// SAME-cluster wire is expected cohesion: muted grey, thin, low opacity, it recedes. A wire that
-// CROSSES a frame boundary is the packaging (Common-Closure) signal, so it's emphasized in a warm
-// signal colour, thicker, full opacity. Never animated: this is structure, not a live flow.
+// The wire treatments, in priority order. A CO-CHANGE ghost is a suggestion, not a structural
+// fact: dotted, low-opacity rose — apart from both the violet inheritance dash and the gold
+// cross-boundary wire — and arrowless, because "changes together" is symmetric. An inheritance-only
+// pair reads DISTINCT — dashed violet — because extends/implements is a different relationship from
+// ordinary use. Otherwise a SAME-cluster wire is expected cohesion: muted grey, thin, low opacity,
+// it recedes. A wire that CROSSES a frame boundary is the packaging (Common-Closure) signal, so
+// it's emphasized in a warm signal colour, thicker, full opacity. Never animated: this is
+// structure, not a live flow.
+const CHANGE_COUPLING_COLOR = "#D97BB6";
 const INHERITANCE_COLOR = "#A78BFA";
 const INTERNAL_COLOR = "#4A5261";
 const CROSS_BOUNDARY_COLOR = "#C9A24B";
+const DOTTED = "2 5";
+const DASHED = "5 4";
 
 interface EdgeStroke {
   color: string;
   width: number;
   opacity: number;
-  dashed: boolean;
+  dashArray?: string;
 }
 
 function strokeFor(edge: CompEdgeSpec): EdgeStroke {
+  if (edge.changeCoupling) {
+    return { color: CHANGE_COUPLING_COLOR, width: 1.25, opacity: 0.55, dashArray: DOTTED };
+  }
   if (edge.inheritanceOnly) {
-    return { color: INHERITANCE_COLOR, width: 1.5, opacity: 1, dashed: true };
+    return { color: INHERITANCE_COLOR, width: 1.5, opacity: 1, dashArray: DASHED };
   }
   if (edge.crossBoundary) {
-    return { color: CROSS_BOUNDARY_COLOR, width: 1.75, opacity: 1, dashed: false };
+    return { color: CROSS_BOUNDARY_COLOR, width: 1.75, opacity: 1 };
   }
-  return { color: INTERNAL_COLOR, width: 1, opacity: 0.45, dashed: false };
+  return { color: INTERNAL_COLOR, width: 1, opacity: 0.45 };
 }
 
 function toReactFlowEdge(edge: CompEdgeSpec): CompRfEdge {
   const stroke = strokeFor(edge);
+  const changeCoupling = edge.changeCoupling === true;
   return {
     id: edge.id,
     source: edge.source,
@@ -110,9 +120,10 @@ function toReactFlowEdge(edge: CompEdgeSpec): CompRfEdge {
       stroke: stroke.color,
       strokeWidth: stroke.width,
       opacity: stroke.opacity,
-      ...(stroke.dashed ? { strokeDasharray: "5 4" } : {}),
+      ...(stroke.dashArray ? { strokeDasharray: stroke.dashArray } : {}),
     },
-    markerEnd: arrowMarker(stroke.color, 14),
-    data: { inheritanceOnly: edge.inheritanceOnly, crossBoundary: edge.crossBoundary },
+    // Co-change is symmetric, so a ghost wire carries no arrowhead.
+    markerEnd: changeCoupling ? undefined : arrowMarker(stroke.color, 14),
+    data: { inheritanceOnly: edge.inheritanceOnly, crossBoundary: edge.crossBoundary, changeCoupling },
   };
 }

@@ -40,6 +40,7 @@ function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
         <div style={HEADER}>
           <span style={{ ...GLYPH, color: tint }}>{glyphForKind(d.kind)}</span>
           <span style={LABEL} title={d.label}>{d.label}</span>
+          {d.churn !== undefined ? <ChurnBadge churn={d.churn} /> : null}
           {boundary ? (
             <span style={BOUNDARY_TAG} title="Click to root the composition here">▸ ROOT</span>
           ) : null}
@@ -74,6 +75,22 @@ function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
         ) : null}
       </div>
     </div>
+  );
+}
+
+// Ten touches in the analyzed window is "hot": the badge warms to amber so a frequently-changed
+// unit stands out; below that it stays muted context.
+const CHURN_HOT_FROM = 10;
+
+/** The git-churn badge: how many analyzed commits touched this unit's file, mono "Δn". The scope
+ * (how many commits were analyzed) is read from the store so the card data stays a plain number. */
+function ChurnBadge(props: { churn: number }) {
+  const commitsAnalyzed = useBlueprint((state) => state.behavior?.commitsAnalyzed);
+  const scope = commitsAnalyzed !== undefined ? `last ${commitsAnalyzed} commits` : "analyzed history";
+  return (
+    <span style={props.churn >= CHURN_HOT_FROM ? CHURN_HOT : CHURN_MUTED} title={`commits touching this file (${scope})`}>
+      {`Δ${props.churn}`}
+    </span>
   );
 }
 
@@ -215,3 +232,13 @@ const CHIP_BASE: React.CSSProperties = {
 };
 const CHIP_RED: React.CSSProperties = { ...CHIP_BASE, color: "#F0787C", borderColor: "#5B2B2F", background: "rgba(229,72,77,0.14)" };
 const CHIP_AMBER: React.CSSProperties = { ...CHIP_BASE, color: "#E6B84D", borderColor: "#5A4A24", background: "rgba(230,184,77,0.14)" };
+const CHURN_BASE: React.CSSProperties = {
+  flexShrink: 0,
+  fontSize: 9,
+  fontWeight: 700,
+  borderRadius: 3,
+  padding: "1px 4px",
+  border: "1px solid",
+};
+const CHURN_MUTED: React.CSSProperties = { ...CHURN_BASE, color: "#8A93A0", borderColor: "#2A313D", background: "rgba(122,133,148,0.10)" };
+const CHURN_HOT: React.CSSProperties = { ...CHURN_BASE, color: "#E6B84D", borderColor: "#5A4A24", background: "rgba(230,184,77,0.14)" };

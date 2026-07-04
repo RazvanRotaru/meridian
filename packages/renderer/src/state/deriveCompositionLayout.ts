@@ -5,16 +5,16 @@
  */
 
 import type { GraphEdge, GraphNode } from "@meridian/core";
-import { deriveCompositionGraph, type CompNodeSpec } from "../derive/compositionGraph";
+import { deriveCompositionGraph, type CompNodeSpec, type CompositionViewOptions } from "../derive/compositionGraph";
 import { buildCompositionElkGraph, toReactFlowComposition, type CompositionReactFlowGraph } from "../layout/compositionElk";
 import { runElkLayout } from "../layout/elkLayout";
 
 export async function deriveCompositionLayout(
   nodes: GraphNode[],
   edges: GraphEdge[],
-  root: string | null = null,
+  view: CompositionViewOptions = { root: null },
 ): Promise<CompositionReactFlowGraph> {
-  const spec = deriveCompositionGraph(nodes, edges, root);
+  const spec = deriveCompositionGraph(nodes, edges, view);
   if (spec.nodes.length === 0) {
     return { nodes: [], edges: [] };
   }

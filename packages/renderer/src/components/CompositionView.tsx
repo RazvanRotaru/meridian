@@ -22,8 +22,9 @@ export function CompositionView() {
   const selectedId = useBlueprint((state) => state.compSelectedId);
   const layoutStatus = useBlueprint((state) => state.compLayoutStatus);
   const compRoot = useBlueprint((state) => state.compRoot);
+  const blastRadius = useBlueprint((state) => state.compBlastRadius);
   const nodesById = useBlueprint((state) => state.index.nodesById);
-  const { selectCompUnit, setCompRoot } = useBlueprintActions();
+  const { selectCompUnit, setCompRoot, setCompBlastRadius } = useBlueprintActions();
 
   // The highlight is a pure repaint over the store's laid-out graph — recomputed only when the
   // layout or the selection changes, never mutating the store arrays.
@@ -83,7 +84,13 @@ export function CompositionView() {
       >
         <CanvasChrome nodeColor={miniMapColor} />
       </ReactFlow>
-      <CompositionBreadcrumb rootId={compRoot} rootLabel={rootLabel} onHome={() => setCompRoot(null)} />
+      <CompositionBreadcrumb
+        rootId={compRoot}
+        rootLabel={rootLabel}
+        onHome={() => setCompRoot(null)}
+        blastRadius={blastRadius}
+        onToggleBlastRadius={() => setCompBlastRadius(!blastRadius)}
+      />
       {isEmpty ? <EmptyCompositionCard /> : null}
     </div>
   );
@@ -91,10 +98,17 @@ export function CompositionView() {
 
 /**
  * The composition root trail, mirroring the Logic-flow breadcrumb: "Whole system" alone when rootless,
- * else "Whole system ▸ <root>" where "Whole system" is a button back to the full graph. Floated
+ * else "Whole system ▸ <root>" where "Whole system" is a button back to the full graph, followed by
+ * the blast-radius toggle (rooted views only — the whole system has no boundary to widen). Floated
  * top-left, inset to clear the Toolbar panel.
  */
-function CompositionBreadcrumb(props: { rootId: string | null; rootLabel: string | null; onHome: () => void }) {
+function CompositionBreadcrumb(props: {
+  rootId: string | null;
+  rootLabel: string | null;
+  onHome: () => void;
+  blastRadius: boolean;
+  onToggleBlastRadius: () => void;
+}) {
   return (
     <nav style={BREADCRUMB_STYLE} aria-label="Composition root">
       {props.rootLabel === null ? (
@@ -104,6 +118,15 @@ function CompositionBreadcrumb(props: { rootId: string | null; rootLabel: string
           <button type="button" style={CRUMB_STYLE} onClick={props.onHome}>Whole system</button>
           <span style={CRUMB_SEP_STYLE} aria-hidden>›</span>
           <span style={CRUMB_CURRENT_STYLE} aria-current="page" title={props.rootId ?? undefined}>{props.rootLabel}</span>
+          <button
+            type="button"
+            style={props.blastRadius ? BLAST_PILL_ON_STYLE : BLAST_PILL_STYLE}
+            onClick={props.onToggleBlastRadius}
+            aria-pressed={props.blastRadius}
+            title="Show every unit that transitively depends on this root, not just 1-hop neighbours"
+          >
+            Blast radius
+          </button>
         </>
       )}
     </nav>
@@ -219,6 +242,25 @@ const CRUMB_STYLE: React.CSSProperties = {
 };
 const CRUMB_CURRENT_STYLE: React.CSSProperties = { ...CRUMB_STYLE, color: "#E6EDF3", fontWeight: 600, cursor: "default" };
 const CRUMB_SEP_STYLE: React.CSSProperties = { color: "#4B535F", fontSize: 13 };
+// The blast-radius toggle: a quiet pill that lights amber when on — the same warning warmth as the
+// hot-churn badge, since both speak about change impact.
+const BLAST_PILL_STYLE: React.CSSProperties = {
+  marginLeft: 6,
+  fontSize: 11,
+  fontWeight: 600,
+  color: "#9AA4B2",
+  border: "1px solid #2A2F37",
+  borderRadius: 999,
+  background: "transparent",
+  padding: "2px 9px",
+  cursor: "pointer",
+};
+const BLAST_PILL_ON_STYLE: React.CSSProperties = {
+  ...BLAST_PILL_STYLE,
+  color: "#E6B84D",
+  borderColor: "#5A4A24",
+  background: "rgba(230,184,77,0.14)",
+};
 const EMPTY_WRAP_STYLE: React.CSSProperties = {
   position: "absolute",
   inset: 0,

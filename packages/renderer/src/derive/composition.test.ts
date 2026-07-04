@@ -398,4 +398,41 @@ describe("rankRefactorCandidates", () => {
     expect(ranked[1].smells).toContain("dependency-cycle");
     expect(ranked[2].id).toBe("H");
   });
+
+  describe("churn weighting", () => {
+    // The cycle pair (severity 5) outranks the hub (severity 4) statically; heavy churn on the
+    // hub multiplies its severity past them (4 × (1 + min(20, 20) / 10) = 12 > 5).
+    const withCycle = [
+      ...nodes,
+      node("CY1", "module"), node("CY1#f", "function", { parentId: "CY1" }),
+      node("CY2", "module"), node("CY2#f", "function", { parentId: "CY2" }),
+    ];
+    const cycleEdges = [...edges, edge("CY1#f", "CY2#f"), edge("CY2#f", "CY1#f")];
+    const metrics = computeCompositionMetrics(withCycle, cycleEdges);
+
+    it("multiplies severity by churn, promoting a hot smelly unit", () => {
+      const ranked = rankRefactorCandidates(metrics, new Map([["H", 20]]));
+      expect(ranked[0].id).toBe("H");
+    });
+
+    it("caps the churn multiplier, so runaway churn cannot grow past 3x", () => {
+      // At 5 × 3 = 15 the capped cycle units retake the hub's 12 despite 10× more raw churn.
+      const ranked = rankRefactorCandidates(metrics, new Map([["H", 20], ["CY1", 200], ["CY2", 200]]));
+      expect(ranked[0].smells).toContain("dependency-cycle");
+      expect(ranked[2].id).toBe("H");
+    });
+
+    it("leaves the ranking unchanged when no churn map is given", () => {
+      const bare = rankRefactorCandidates(metrics).map((unit) => unit.id);
+      const empty = rankRefactorCandidates(metrics, new Map()).map((unit) => unit.id);
+      expect(empty).toEqual(bare);
+      expect(bare[0]).not.toBe("H");
+    });
+
+    it("cannot promote a smell-free unit — zero severity times anything stays zero", () => {
+      const ranked = rankRefactorCandidates(metrics, new Map([["C0", 100]]));
+      expect(ranked[0].id).not.toBe("C0");
+      expect(ranked[ranked.length - 1].smells).toEqual([]);
+    });
+  });
 });

@@ -206,21 +206,35 @@ const SMELL_WEIGHT: Record<Smell, number> = {
   "zone-of-uselessness": 2,
 };
 
-/** Worst-first for the refactor-candidates panel: heaviest smells, then distance, then size. */
-export function rankRefactorCandidates(metrics: Map<string, UnitMetrics> | UnitMetrics[]): UnitMetrics[] {
+/** Worst-first for the refactor-candidates panel: heaviest smells (churn-amplified when a git
+ * churn map is supplied — a smelly unit that also changes often outranks a quiet one), then
+ * distance, then size. Without churn the ranking is the unweighted severity order. */
+export function rankRefactorCandidates(
+  metrics: Map<string, UnitMetrics> | UnitMetrics[],
+  churnByUnitId?: Map<string, number>,
+): UnitMetrics[] {
   const units = Array.isArray(metrics) ? [...metrics] : [...metrics.values()];
-  return units.sort(bySeverityDescending);
+  return units.sort((a, b) => bySeverityDescending(a, b, churnByUnitId));
 }
 
-function bySeverityDescending(a: UnitMetrics, b: UnitMetrics): number {
+function bySeverityDescending(a: UnitMetrics, b: UnitMetrics, churnByUnitId?: Map<string, number>): number {
   return (
-    severityScore(b) - severityScore(a) ||
+    severityScore(b, churnByUnitId) - severityScore(a, churnByUnitId) ||
     b.distance - a.distance ||
     b.members - a.members ||
     a.id.localeCompare(b.id)
   );
 }
 
-function severityScore(unit: UnitMetrics): number {
-  return unit.smells.reduce((sum, smell) => sum + SMELL_WEIGHT[smell], 0);
+function severityScore(unit: UnitMetrics, churnByUnitId?: Map<string, number>): number {
+  const smellWeight = unit.smells.reduce((sum, smell) => sum + SMELL_WEIGHT[smell], 0);
+  return smellWeight * churnMultiplier(churnByUnitId?.get(unit.id));
+}
+
+// Frequently-changed code hurts more when it's smelly: churn scales severity up to 3× (capped at
+// 20 commits so one hot file can't drown the ranking); no churn data leaves severity untouched.
+const CHURN_CAP = 20;
+
+function churnMultiplier(churn: number | undefined): number {
+  return churn === undefined ? 1 : 1 + Math.min(churn, CHURN_CAP) / 10;
 }

@@ -10,6 +10,7 @@ import type { TelemetryProvider } from "../telemetry/provider";
 import { createBlueprintStore, type BlueprintStore } from "../state/store";
 import { readBootConfig, type BootConfig } from "./bootConfig";
 import { loadArtifact } from "./loadArtifact";
+import { loadBehavior } from "./loadBehavior";
 import { loadEnvironments } from "./loadEnvironments";
 
 export interface BootResult {
@@ -30,7 +31,17 @@ export async function bootstrap(): Promise<BootResult> {
     sourceUrl: boot.sourceUrl,
   });
   await store.getState().relayout();
+  // Deliberately unawaited: the first render never waits on git history. When (if) the report
+  // lands, `setBehavior` re-lays out the composition graph with churn badges + co-change ghosts.
+  void applyBehavior(boot.behaviorUrl, store);
   return { store, boot };
+}
+
+async function applyBehavior(behaviorUrl: string | null, store: BlueprintStore): Promise<void> {
+  const behavior = await loadBehavior(behaviorUrl);
+  if (behavior !== null) {
+    store.getState().setBehavior(behavior);
+  }
 }
 
 async function buildProvider(boot: BootConfig): Promise<TelemetryProvider | null> {

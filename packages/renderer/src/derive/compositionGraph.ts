@@ -10,9 +10,10 @@
 
 import type { GraphEdge, GraphNode } from "@meridian/core";
 import { computeCompositionMetrics, type UnitMetrics } from "./composition";
-import { couplingEdges } from "./composition-graph";
+import { couplingEdges, type CouplingEdge } from "./composition-graph";
 import { computeRootedView } from "./compositionRoot";
 import { buildClusters, type ClusterFrame } from "./compositionClusters";
+import { churnByUnit, coChangeUnitPairs, type BehaviorData } from "./behavior";
 
 // A `type` (not an interface) so it satisfies React Flow's `Node<T extends Record<string, unknown>>`
 // constraint — an interface lacks the implicit index signature (mirrors logic's LogicNodeData).
@@ -21,9 +22,13 @@ export type CompNodeData = {
   kind: string;
   label: string;
   metrics: UnitMetrics;
-  /** A 1-hop coupling neighbour of the rooted subtree — drawn faded + click-to-re-root. Absent/false
+  /** A coupling neighbour of the rooted subtree — drawn faded + click-to-re-root. Absent/false
    * for the root's own units and for the whole-system (rootless) view. */
   boundary?: boolean;
+  /** Commits touching this unit's module file (the --behavior git pass). It rides here — NOT on
+   * UnitMetrics — because metrics are the pure static product of nodes + edges, while churn is a
+   * behavioral overlay joined at view time, like `boundary`. Absent without behavior data. */
+  churn?: number;
 };
 
 // A cluster FRAME's data: presentation only — the package/folder label plus the tallies that drive
@@ -57,6 +62,9 @@ export interface CompEdgeSpec {
   inheritanceOnly: boolean;
   /** True when the pair sits in DIFFERENT clusters — the packaging / Common-Closure signal. */
   crossBoundary: boolean;
+  /** True on a co-change GHOST wire: the pair habitually changes together in git history yet has
+   * no structural coupling — hidden coupling the static graph missed. Symmetric (no arrowhead). */
+  changeCoupling?: boolean;
 }
 
 export interface CompositionGraphSpec {
@@ -64,33 +72,53 @@ export interface CompositionGraphSpec {
   edges: CompEdgeSpec[];
 }
 
+/** How the composition graph is viewed: the root (null == whole system), the rooted neighbour
+ * reach (1-hop vs the full blast radius), and the optional git-behavior overlay. */
+export interface CompositionViewOptions {
+  root: string | null;
+  /** Rooted views only: boundary = every transitive dependent of the root instead of 1-hop. */
+  blastRadius?: boolean;
+  /** Per-file churn + co-change pairs, joined onto units by module file when present. */
+  behavior?: BehaviorData | null;
+}
+
+const WHOLE_SYSTEM: CompositionViewOptions = { root: null };
+
 /**
  * Every unit that carries weight — has ≥1 member OR sits on ≥1 coupling wire — as a sized
  * scorecard, plus the peer wires between them. An empty, uncoupled unit is dropped so the canvas
  * isn't cluttered with dead frames; a coupling endpoint is always kept even if it has no members.
  *
- * A non-null `root` (a module/package node id) narrows the graph to a ROOTED view: only the units
- * the root contains plus their 1-hop coupling neighbours (the latter flagged `boundary` and drawn
- * faded so a click can re-root there). `root === null` is the unchanged whole-system view.
+ * A non-null `view.root` (a module/package node id) narrows the graph to a ROOTED view: only the
+ * units the root contains plus their coupling neighbours — 1-hop, or every transitive dependent
+ * with `view.blastRadius` — the latter flagged `boundary` and drawn faded so a click can re-root
+ * there. `view.behavior` adds churn onto each unit and co-change ghost wires between visible,
+ * structurally-uncoupled pairs.
  */
-export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[], root: string | null = null): CompositionGraphSpec {
+export function deriveCompositionGraph(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  view: CompositionViewOptions = WHOLE_SYSTEM,
+): CompositionGraphSpec {
   const metrics = computeCompositionMetrics(nodes, edges);
   const couplings = couplingEdges(nodes, edges);
   const coupled = couplingEndpoints(couplings);
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
 
   // The whole-system survivor set drives both views; a root then restricts it to its subtree + the
-  // 1-hop neighbours, keeping the root's own unit even if it would otherwise be dropped.
+  // neighbour reach, keeping the root's own unit even if it would otherwise be dropped.
   const survivors = survivingUnits(metrics, coupled);
-  const view = computeRootedView(root, survivors, root !== null && metrics.has(root), couplings, nodesById);
+  const { root } = view;
+  const rooted = computeRootedView(root, survivors, root !== null && metrics.has(root), couplings, nodesById, view.blastRadius === true);
 
+  const churn = view.behavior ? churnByUnit(metrics.values(), view.behavior) : undefined;
   const unitSpecs: CompNodeSpec[] = [];
   const emitted = new Set<string>();
   for (const metric of metrics.values()) {
-    if (!view.visible.has(metric.id)) {
+    if (!rooted.visible.has(metric.id)) {
       continue;
     }
-    unitSpecs.push(unitNode(metric, view.boundary.has(metric.id)));
+    unitSpecs.push(unitNode(metric, rooted.boundary.has(metric.id), churn?.get(metric.id)));
     emitted.add(metric.id);
   }
 
@@ -103,7 +131,7 @@ export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[], r
   // A coupling endpoint is always a unit with a metrics entry, so both ends are emitted; the guard
   // is defensive against a pair that somehow references a dropped unit. A pair spanning two frames
   // is the packaging signal the layout emphasizes.
-  const edgeSpecs = couplings
+  const edgeSpecs: CompEdgeSpec[] = couplings
     .filter((edge) => emitted.has(edge.source) && emitted.has(edge.target))
     .map((edge) => ({
       id: `couple:${edge.source}->${edge.target}`,
@@ -112,8 +140,40 @@ export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[], r
       inheritanceOnly: edge.inheritanceOnly,
       crossBoundary: clusterOf.get(edge.source) !== clusterOf.get(edge.target),
     }));
+  edgeSpecs.push(...changeCouplingSpecs(view.behavior ?? null, metrics, emitted, couplings, clusterOf));
 
   return { nodes: nodeSpecs, edges: edgeSpecs };
+}
+
+/** The co-change ghost wires: unit pairs that change together in git history, kept ONLY when both
+ * ends are visible and no structural coupling wire joins them in either direction. */
+function changeCouplingSpecs(
+  behavior: BehaviorData | null,
+  metrics: Map<string, UnitMetrics>,
+  emitted: Set<string>,
+  couplings: CouplingEdge[],
+  clusterOf: Map<string, string>,
+): CompEdgeSpec[] {
+  if (!behavior) {
+    return [];
+  }
+  const structurallyCoupled = new Set(couplings.map((edge) => pairKey(edge.source, edge.target)));
+  return coChangeUnitPairs(metrics.values(), behavior)
+    .filter(([a, b]) => emitted.has(a) && emitted.has(b) && !structurallyCoupled.has(pairKey(a, b)))
+    .map(([a, b]) => ({
+      id: `cochange:${a}<->${b}`,
+      source: a,
+      target: b,
+      inheritanceOnly: false,
+      crossBoundary: clusterOf.get(a) !== clusterOf.get(b),
+      changeCoupling: true,
+    }));
+}
+
+/** Direction-free pair key: coChangeUnitPairs orders pairs `[min, max]`, so keying couplings the
+ * same way makes one lookup cover both wire directions. */
+function pairKey(a: string, b: string): string {
+  return a < b ? `${a}\n${b}` : `${b}\n${a}`;
 }
 
 /** Set each unit spec's `parentId` to its cluster frame, returning the unit→cluster map the edge
@@ -162,8 +222,8 @@ function survivingUnits(metrics: Map<string, UnitMetrics>, coupled: Set<string>)
   return survivors;
 }
 
-function unitNode(metric: UnitMetrics, boundary: boolean): CompNodeSpec {
-  const data: CompNodeData = { unitId: metric.id, kind: metric.kind, label: metric.displayName, metrics: metric, boundary };
+function unitNode(metric: UnitMetrics, boundary: boolean, churn: number | undefined): CompNodeSpec {
+  const data: CompNodeData = { unitId: metric.id, kind: metric.kind, label: metric.displayName, metrics: metric, boundary, churn };
   const { width, height } = sizeFor(data);
   return { id: metric.id, type: "unit", width, height, data };
 }

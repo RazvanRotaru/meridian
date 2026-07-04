@@ -17,6 +17,8 @@ export interface BootConfig {
   preselectedEnv: string | null;
   /** Base URL the renderer GETs to fetch a node's source; null when source isn't available. */
   sourceUrl: string | null;
+  /** URL of the git-history behavior report; null when `view` ran without `--behavior`. */
+  behaviorUrl: string | null;
   defaultEnv: null;
 }
 
@@ -39,6 +41,7 @@ const DEV_FALLBACK: BootConfig = {
   envRequired: true,
   preselectedEnv: null,
   sourceUrl: null,
+  behaviorUrl: null,
   defaultEnv: null,
 };
 
@@ -54,5 +57,6 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
   if (injected.defaultEnv !== null) {
     throw new Error("boot contract violation: defaultEnv must never be defaulted (always null)");
   }
-  return { ...injected, defaultEnv: null };
+  // `?? null` tolerates a server predating the behavior contract — absence means "no behavior data".
+  return { ...injected, behaviorUrl: injected.behaviorUrl ?? null, defaultEnv: null };
 }
