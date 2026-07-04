@@ -84,7 +84,7 @@ Implemented in `packages/renderer/src/derive/composition.ts` (formulas) and
 | `god-module` | HUB | `Ca ≥ 5 && Ce ≥ 5` |
 | `zone-of-pain` | PAIN | `A ≤ 0.3 && I ≤ 0.3 && Ca ≥ 3` |
 | `zone-of-uselessness` | UNUSED | `A ≥ 0.7 && I ≥ 0.7` |
-| `low-cohesion` | SPLIT | `members ≥ 4 && lcomComponents ≥ 2` |
+| `low-cohesion` | SPLIT | `members ≥ 4 && cohesion ≤ 0.34` (fragmentation relative to size) |
 
 Smells are computed from **raw (unrounded)** ratios; the stored/displayed metrics are rounded to 2
 decimals afterward, so a rounding boundary can't flip a threshold. `rankRefactorCandidates()` orders
@@ -190,7 +190,8 @@ Each is stated as **decision → why → alternative rejected → trade-off**.
    a focused subgraph; the "Whole system" breadcrumb restores the overview in one click.
 
 9. **Thresholds are tunable constants; A/I zone cut-offs are the canonical ones** (0.3 / 0.7),
-   hub/split are count-based. *Trade-off:* they're opinions; see §8.
+   hub is count-based, split is a cohesion-ratio threshold (`cohesion ≤ 0.34`, fragmentation relative
+   to size). *Trade-off:* they're opinions; see §8.
 
 10. **ELK lays out units inside frames (not hand-gridded).** *Why:* composition units carry coupling
     edges, so the layered algorithm orders them sensibly — unlike the Logic-flow definition grid,
@@ -218,8 +219,16 @@ extractor pass to emit `imports` edges (the edge kind already exists in the sche
 - Health colour is **stepwise** (green/amber/red), not a continuous gradient — legible, but coarse.
 
 **Open questions we want the review to weigh in on:**
-1. **SPLIT noise:** raise the member threshold, drop LCOM until we can extract field access, or keep
-   it as a soft hint? What's the least-misleading default?
+1. **SPLIT noise — RESOLVED.** A POC on `shopfront` showed the flat `lcomComponents ≥ 2` rule was
+   size-blind: it flagged cohesive classes (e.g. `CartService`, cohesion 0.80 — five methods in one
+   call-cluster plus one stray) as false positives. We adopted the **cohesion-ratio rule (V3):
+   `members ≥ 4 && cohesion ≤ 0.34`**, flagging fragmentation *relative to size* rather than a raw
+   component count. On `shopfront` it drops the 6 mostly-cohesive false positives (16 → 10 SPLIT
+   flags) while keeping the genuinely low-cohesion units and the trench-coat `legacy.ts`. **Residual
+   caveat stands:** SPLIT remains a *soft hint* because call-based LCOM still cannot distinguish
+   cohesive-by-responsibility delegation (cohesion-0 route/repository classes that reach through
+   `this.repo.x()`) from a true trench-coat — the full fix is field-access-aware LCOM, which needs an
+   extractor pass.
 2. **Ship the imports layer?** Is a *scored* map sufficient, or do reviewers want declared
    `import` structure alongside behavioural coupling?
 3. **Cluster granularity:** nearest package (current) vs. immediate folder vs. algorithmic community
