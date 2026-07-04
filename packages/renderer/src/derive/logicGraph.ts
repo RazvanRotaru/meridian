@@ -33,6 +33,11 @@ export type LogicNodeData = {
    * arms). Set ONLY on `control` nodes so a double-click can DIVE into them without re-parsing the
    * flow; undefined on calls/branches. */
   bodies?: FlowPath[];
+  /** Whether a `logicKind:"call"` block is a free function or a method (called through a receiver).
+   * HEURISTIC: without type info we can't reliably separate an instance method from a static one, so
+   * "method" means "called through a receiver / a class method", not strictly an instance method.
+   * Set on call block nodes (and definition nodes, from their node kind); undefined on loop/try/if. */
+  callKind?: "function" | "method";
 };
 
 export interface LogicNodeSpec {
@@ -136,6 +141,8 @@ export function definitionNodeData(callableId: string, flows: LogicFlows, index:
     greyed: false,
     provenance: definitionProvenance(callableId, node, index),
     childCount: expandable ? flows[callableId].length : 0,
+    // A declared callable's own node kind is authoritative here (no receiver to infer from).
+    callKind: node?.kind === "method" ? "method" : "function",
   };
 }
 
@@ -236,12 +243,27 @@ class LogicGraphBuilder {
       greyed,
       provenance: provenanceOf(step.target, step.resolution, this.index),
       childCount: expandable && step.target ? this.flows[step.target].length : 0,
+      callKind: this.callKindOf(step),
     };
     this.push(id, parentId, "block", data, greyed);
     if (isExpanded && step.target) {
       this.sequence(this.flows[step.target], id, `${path}/`);
     }
     return { entry: id, exits: [{ id }] };
+  }
+
+  /**
+   * Function vs method for a call step. Prefer the RESOLVED target's own node kind; otherwise (an
+   * unresolved/external call, or a target that isn't a method) fall back to the label shape — a
+   * `receiver.method` label (anything with a `.`, e.g. `store.selectSessionId`, `this.foo`,
+   * `mixpanelService.track`) reads as a method call. See `callKind`'s note on the heuristic's limits.
+   */
+  private callKindOf(step: Extract<FlowStep, { kind: "call" }>): "function" | "method" {
+    const target = step.target ? this.index.nodesById.get(step.target) : undefined;
+    if (target?.kind === "method") {
+      return "method";
+    }
+    return step.label.includes(".") ? "method" : "function";
   }
 
   /** Loop and try/catch share the same container shape: default-expanded, children nested. */
@@ -377,9 +399,10 @@ function firstSegment(path: string): string {
 
 function sizeFor(label: string, greyed: boolean, type: LogicNodeType): { width: number; height: number } {
   if (type === "branch") {
-    // A touch wider than a plain box: the hexagon's slanted points eat horizontal room around the
-    // centred label, so the min keeps short conditions (`if x`) from crushing the text.
-    return { width: roundedClamp(150, 260, 60 + label.length * 7.2), height: 56 };
+    // A COMPACT, near-fixed decision node: an `if`/`switch` should be a small glanceable glyph, not a
+    // wide box. The body hard-truncates the condition (full text in the hover title), so the width
+    // barely tracks label length and stays tightly bounded — never a sprawling rectangle.
+    return { width: roundedClamp(84, 132, 34 + label.length * 4.4), height: 44 };
   }
   if (greyed) {
     // A small chip: clearly smaller than an expandable block so size alone signals "leaf, no flow".
