@@ -56,15 +56,19 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
       </div>
     );
   }
-  // A normal block is an expandable call (non-greyed blocks are always expandable): the chevron
-  // opens its flow, and the full provenance line stays visible under the title.
+  // A normal block is an expandable call (non-greyed blocks are always expandable). Expand-in-place
+  // is now an explicit title-tail button beside </> (collapsed here, so ▸), not a header click —
+  // a single body click selects and a double-click dives, so the old click-to-expand was ambiguous.
   return (
     <div style={selectStyle(BODY, select)}>
       <ExecPins />
       <div style={titleStyle(BLOCK_ACCENT)}>
-        <span style={CHEV} onClick={(e) => { stop(e); toggleLogicExpand(id); }} title="expand its flow">▸</span>
+        <span style={GLYPH}>ƒ</span>
         <span style={NAME} title={d.label}>{d.label}</span>
-        {codeButton}
+        <span style={TITLE_TAIL}>
+          <ExpandButton expanded={false} onToggle={() => toggleLogicExpand(id)} />
+          {codeButton}
+        </span>
       </div>
       {d.provenance ? <div style={PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.pkg} › {d.provenance.module}</div> : null}
     </div>
@@ -82,13 +86,16 @@ function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
   if (d.isContainer) {
     return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={null} select={select} />;
   }
+  // No whole-node onClick: a single click on a container would fight both node selection and the
+  // double-click-to-dive gesture. Collapse/expand is the explicit title button only (collapsed → ▸).
   return (
-    <div style={selectStyle(BODY, select)} onClick={() => toggleLogicExpand(id)}>
+    <div style={selectStyle(BODY, select)}>
       <ExecPins />
       <div style={titleStyle(accent)}>
         <span style={GLYPH}>{glyph}</span>
         <span style={NAME} title={d.label}>{d.label}</span>
-        <span style={COUNT}>{d.childCount} ▸</span>
+        <span style={COUNT}>{d.childCount}</span>
+        <ExpandButton expanded={false} onToggle={() => toggleLogicExpand(id)} />
       </div>
     </div>
   );
@@ -115,27 +122,54 @@ function BranchNode({ data }: NodeProps<LogicRfNode>) {
 }
 
 /** A framed container (expanded call / loop / try): a title bar sits over ELK's reserved top pad;
- * child nodes render in the space below. Clicking the title collapses it. */
+ * child nodes render in the space below. Collapse is the explicit ▾ button in the title tail — the
+ * whole-title click was removed so it no longer fights node selection / double-click-to-dive. */
 function ContainerFrame(props: { accent: string; label: string; glyph: string; onToggle: () => void; provenance: LogicNodeData["provenance"]; select: SelectState }) {
   return (
     <div style={selectStyle(frameStyle(props.accent), props.select)}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-      <div style={frameTitleStyle(props.accent)} onClick={props.onToggle} title="collapse">
+      <div style={frameTitleStyle(props.accent)}>
         <span style={GLYPH}>{props.glyph}</span>
         <span style={NAME}>{props.label}</span>
         {props.provenance ? <span style={FRAME_PROV}>{props.provenance.pkg} › {props.provenance.module}</span> : null}
-        <span style={CHEV_OPEN}>▾</span>
+        <span style={TITLE_TAIL}>
+          <ExpandButton expanded onToggle={props.onToggle} />
+        </span>
       </div>
     </div>
   );
 }
 
 /**
+ * The explicit expand/collapse toggle every EXPANDABLE node carries in its title tail, styled to sit
+ * beside the </> code button. Expansion happens ONLY here now — a single body click selects and a
+ * double-click dives — so it stops propagation so the node never also selects/drills/dives on it.
+ * ▾ when expanded, ▸ when collapsed.
+ */
+function ExpandButton(props: { expanded: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      style={EXPAND_BTN}
+      title={props.expanded ? "collapse" : "expand in place"}
+      aria-expanded={props.expanded}
+      onClick={(e) => {
+        e.stopPropagation();
+        props.onToggle();
+      }}
+    >
+      {props.expanded ? "▾" : "▸"}
+    </button>
+  );
+}
+
+/**
  * A "jump-to-flow" satellite: a small dashed, muted ghost node the VIEW appends beside the selected
- * building block for every OTHER logic flow that also calls its target. It only receives an exec
- * wire (a target Handle on the LEFT, no source pin) and, when clicked, switches the canvas to that
- * flow. Its data is minimal by design — a flow-root id, a display label, and a faint file path.
+ * building block for every OTHER logic flow that also CALLS its target. It is the SOURCE of the jump
+ * wire (a source Handle on the RIGHT, no target pin): the wire runs from here INTO the selected
+ * block's left pin — those flows call this block, so the arrow points into it. Clicking it switches
+ * the canvas to that flow. Its data is minimal — a flow-root id, a display label, a faint file path.
  */
 export type JumpFlowNodeData = { rootId: string; label: string; file?: string };
 type JumpFlowRfNode = Node<JumpFlowNodeData>;
@@ -145,7 +179,7 @@ function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
   const d = data as JumpFlowNodeData;
   return (
     <div style={JUMP_BODY} onClick={() => openLogicFlow(d.rootId)} title={`Open flow: ${d.label}`}>
-      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+      <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={JUMP_HEAD}>
         <span style={JUMP_GLYPH}>↗</span>
         <span style={NAME} title={d.label}>{d.label}</span>
@@ -242,7 +276,7 @@ function frameStyle(accent: string): React.CSSProperties {
   return { width: "100%", height: "100%", boxSizing: "border-box", border: `1px solid ${accent}`, borderRadius: 10, background: "rgba(16,21,28,0.55)", fontFamily: MONO };
 }
 function frameTitleStyle(accent: string): React.CSSProperties {
-  return { display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderBottom: `1px solid ${accent}`, color: accent, fontSize: 11, fontWeight: 700, cursor: "pointer" };
+  return { display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderBottom: `1px solid ${accent}`, color: accent, fontSize: 11, fontWeight: 700 };
 }
 
 // The satellite "ghost" look: dashed border, muted fill/text — it reads as a detached shortcut, not
@@ -268,8 +302,13 @@ const JUMP_GLYPH: React.CSSProperties = { fontSize: 10, opacity: 0.8, color: "#7
 const JUMP_FILE: React.CSSProperties = { fontSize: 9, color: "#6C7683", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 
 const GLYPH: React.CSSProperties = { fontSize: 11, opacity: 0.85 };
-const CHEV: React.CSSProperties = { cursor: "pointer", fontSize: 11, padding: "0 2px" };
-const CHEV_OPEN: React.CSSProperties = { marginLeft: "auto", fontSize: 10 };
+// Right-aligned title tail holding the expand toggle (and, on a call block, the </> button). A
+// content-sized flex box pushed right by its own auto margin, so its buttons sit snug together.
+const TITLE_TAIL: React.CSSProperties = { marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 };
+// The expand/collapse toggle, matched to CODE_BTN so the two title buttons read as a pair.
+// `color: inherit` keeps it dark on a solid accent title (like </>) and accent-coloured on a
+// container frame's dark title, where the </> button never appears.
+const EXPAND_BTN: React.CSSProperties = { border: "none", background: "rgba(0,0,0,0.18)", color: "inherit", borderRadius: 4, padding: "1px 6px", fontSize: 10, lineHeight: 1, fontFamily: MONO, cursor: "pointer" };
 const NAME: React.CSSProperties = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const PROV: React.CSSProperties = { padding: "4px 8px", fontSize: 10, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 // The greyed chip is tight: a compact title (light text on the muted slate so the priority name

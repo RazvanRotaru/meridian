@@ -211,14 +211,18 @@ function tintMarker(marker: LogicRfEdge["markerEnd"], color: string): LogicRfEdg
 const MAX_JUMPS = 6;
 const JUMP_WIDTH = 180;
 const JUMP_HEIGHT = 44;
-const JUMP_GAP = 40; // clearance below the selected node before the first satellite
+// Callers sit to the LEFT of the selected block so their wires flow left→right INTO its input pin;
+// SIDE_GAP is the horizontal clearance between a satellite's right edge and the block's left edge.
+const JUMP_SIDE_GAP = 60;
+const JUMP_DROP = 8; // small downward nudge so the stack reads as flowing into the block's left side
 const JUMP_STEP = 56; // vertical stride between stacked satellites
 const JUMP_MUTED = "#4B535F";
 
 /**
- * The jump-to-flow satellites for the current selection: for every OTHER flow that also calls the
- * selected target, a dashed ghost node stacked just below the selected call site, each wired from
- * that call site. Purely additive — it reads the store's laid-out nodes but never mutates them, so
+ * The jump-to-flow satellites for the current selection: for every OTHER flow that also CALLS the
+ * selected target, a dashed ghost node stacked to the LEFT of the selected call site, each wired
+ * FROM the satellite INTO that call site's input pin (those flows call this block, so the arrow
+ * points into it). Purely additive — it reads the store's laid-out nodes but never mutates them, so
  * selection stays a repaint (no relayout). Empty unless a target is selected and it's called elsewhere.
  */
 function buildJumpSatellites(
@@ -238,7 +242,10 @@ function buildJumpSatellites(
   }
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const origin = absolutePos(callSite, byId);
-  const baseY = origin.y + (callSite.height ?? JUMP_HEIGHT) + JUMP_GAP;
+  // Anchor the whole stack to the LEFT of the block (a satellite width + clearance), nudged down a
+  // touch, so every jump wire runs rightward into the block's left (input) pin — those flows call it.
+  const anchorX = origin.x - (JUMP_WIDTH + JUMP_SIDE_GAP);
+  const baseY = origin.y + JUMP_DROP;
 
   const jumpNodes: Node[] = [];
   const jumpEdges: Edge[] = [];
@@ -253,14 +260,16 @@ function buildJumpSatellites(
     jumpNodes.push({
       id,
       type: "jumpflow",
-      position: { x: origin.x, y: baseY + i * JUMP_STEP },
+      position: { x: anchorX, y: baseY + i * JUMP_STEP },
       width: JUMP_WIDTH,
       height: JUMP_HEIGHT,
       selectable: false,
       draggable: false,
       data: { rootId: root, label: node?.displayName ?? root, file: node?.location?.file } satisfies JumpFlowNodeData,
     });
-    jumpEdges.push(jumpEdge(callSite.id, id, root));
+    // FROM the satellite INTO the selected call site: React Flow attaches the satellite's source
+    // (Right) handle to the block's target (Left) pin, so the arrowhead lands on the block's input.
+    jumpEdges.push(jumpEdge(id, callSite.id, root));
   });
   return { jumpNodes, jumpEdges };
 }
@@ -289,7 +298,8 @@ function absolutePos(node: LogicRfNode, byId: Map<string, LogicRfNode>): { x: nu
 }
 
 // The satellite wire: dashed, muted grey, no animation — it must not compete with the emphasized
-// exec thread. A small "in" label reads as "also called in this flow"; it points INTO the ghost.
+// exec thread. It runs FROM the caller satellite INTO the selected block's left pin; a small "in"
+// label reads as "this block is called in that flow", and the arrowhead lands on the block's input.
 function jumpEdge(source: string, target: string, root: string): Edge {
   return {
     id: `jumpedge:${root}`,
