@@ -48,6 +48,7 @@ export function LogicFlowView() {
 function LogicFlowGraph(props: { rootId: NodeId }) {
   const logicRoot = props.rootId;
   const logicStack = useBlueprint((state) => state.logicStack);
+  const logicFocus = useBlueprint((state) => state.logicFocus);
   const nodes = useBlueprint((state) => state.logicRfNodes);
   const edges = useBlueprint((state) => state.logicRfEdges);
   const logicSelected = useBlueprint((state) => state.logicSelected);
@@ -55,14 +56,23 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
   const hideGreyed = useBlueprint((state) => state.hideGreyed);
   const index = useBlueprint((state) => state.index);
   const artifact = useBlueprint((state) => state.artifact);
-  const { drillLogicFlow, logicFlowTo, toggleHideGreyed, selectLogicTarget } = useBlueprintActions();
+  const { drillLogicFlow, logicFlowTo, diveLogicContainer, logicFocusTo, toggleHideGreyed, selectLogicTarget } =
+    useBlueprintActions();
 
-  // The one gesture the node components don't own: dive into a resolved, flow-bearing block's own
-  // flow. Inline expand/collapse is a title-click, handled inside the node — never re-handled here.
-  // Fires for every node on the surface, so a jump satellite (which owns its own click) is skipped.
+  // The two gestures the node components don't own, mutually exclusive by node kind: a control
+  // container (loop/try, no targetId) DIVES into its bodies as a focused sub-view; an expandable
+  // call (no bodies) drills into its callee's own flow. Inline expand/collapse stays a title-click
+  // inside the node. Fires for every node, so a jump satellite (owns its own click) is skipped.
   const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
     const data = logicDataOf(node);
-    if (data?.expandable && data.targetId !== null) {
+    if (!data) {
+      return;
+    }
+    if (node.type === "control" && data.bodies?.length) {
+      diveLogicContainer(node.id, data.label, data.bodies);
+      return;
+    }
+    if (data.expandable && data.targetId !== null) {
       drillLogicFlow(data.targetId);
     }
   };
@@ -131,8 +141,10 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
       </ReactFlow>
       <LogicOverlayHeader
         stack={logicStack}
+        focus={logicFocus}
         nodesById={index.nodesById}
         onJump={logicFlowTo}
+        onFocusJump={logicFocusTo}
         hideGreyed={hideGreyed}
         onToggleHide={toggleHideGreyed}
       />
@@ -315,15 +327,23 @@ function miniMapColor(node: Node): string {
  */
 function LogicOverlayHeader(props: {
   stack: NodeId[];
+  focus: readonly { id: string; label: string }[];
   nodesById: ReadonlyMap<string, GraphNode>;
   onJump: (id: NodeId) => void;
+  onFocusJump: (index: number) => void;
   hideGreyed: boolean;
   onToggleHide: () => void;
 }) {
   return (
     <div style={OVERLAY_HEADER_STYLE}>
       <div style={HEADER_PANEL_STYLE}>
-        <LogicBreadcrumb stack={props.stack} nodesById={props.nodesById} onJump={props.onJump} />
+        <LogicBreadcrumb
+          stack={props.stack}
+          focus={props.focus}
+          nodesById={props.nodesById}
+          onJump={props.onJump}
+          onFocusJump={props.onFocusJump}
+        />
       </div>
       <button
         type="button"
@@ -524,32 +544,62 @@ function searchFlows(entries: FlowPick[], needle: string): FlowPick[] {
   return found;
 }
 
-/** The drill trail root..current; each segment jumps back to that callable's flow. */
+/**
+ * The navigation trail: the callable drill crumbs (root..current) first, then one crumb per active
+ * container DIVE. A callable crumb jumps back to that flow (clearing any dive via `logicFlowTo`); a
+ * focus crumb jumps back along the dive trail. The deepest crumb overall is "current" — that's the
+ * last focus crumb while diving, otherwise the last callable crumb (so a callable crumb stays
+ * clickable-to-exit whenever a dive is active).
+ */
 function LogicBreadcrumb(props: {
   stack: NodeId[];
+  focus: readonly { id: string; label: string }[];
   nodesById: ReadonlyMap<string, GraphNode>;
   onJump: (id: NodeId) => void;
+  onFocusJump: (index: number) => void;
 }) {
+  const diving = props.focus.length > 0;
   return (
     <nav style={BREADCRUMB_STYLE} aria-label="Logic flow trail">
-      {props.stack.map((id, position) => {
-        const current = position === props.stack.length - 1;
-        return (
-          <Fragment key={`${id}:${position}`}>
-            {position > 0 ? <span style={CRUMB_SEP_STYLE} aria-hidden>›</span> : null}
-            <button
-              type="button"
-              style={current ? CRUMB_CURRENT_STYLE : CRUMB_STYLE}
-              onClick={() => props.onJump(id)}
-              aria-current={current ? "page" : undefined}
-              title={id}
-            >
-              {props.nodesById.get(id)?.displayName ?? id}
-            </button>
-          </Fragment>
-        );
-      })}
+      {props.stack.map((id, position) => (
+        <Crumb
+          key={`s:${id}:${position}`}
+          label={props.nodesById.get(id)?.displayName ?? id}
+          title={id}
+          separator={position > 0}
+          current={!diving && position === props.stack.length - 1}
+          onClick={() => props.onJump(id)}
+        />
+      ))}
+      {props.focus.map((entry, i) => (
+        <Crumb
+          key={`f:${entry.id}:${i}`}
+          label={entry.label}
+          title={entry.label}
+          separator
+          current={i === props.focus.length - 1}
+          onClick={() => props.onFocusJump(i)}
+        />
+      ))}
     </nav>
+  );
+}
+
+/** One breadcrumb segment: an optional leading separator, then the (styled) crumb button. */
+function Crumb(props: { label: string; title: string; separator: boolean; current: boolean; onClick: () => void }) {
+  return (
+    <Fragment>
+      {props.separator ? <span style={CRUMB_SEP_STYLE} aria-hidden>›</span> : null}
+      <button
+        type="button"
+        style={props.current ? CRUMB_CURRENT_STYLE : CRUMB_STYLE}
+        onClick={props.onClick}
+        aria-current={props.current ? "page" : undefined}
+        title={props.title}
+      >
+        {props.label}
+      </button>
+    </Fragment>
   );
 }
 

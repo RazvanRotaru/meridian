@@ -6,7 +6,7 @@
  */
 
 import { createStore, type StoreApi } from "zustand/vanilla";
-import type { FlowStep, GraphArtifact, GraphNode, LogicFlows, NodeId, NodeMetrics } from "@meridian/core";
+import type { FlowPath, FlowStep, GraphArtifact, GraphNode, LogicFlows, NodeId, NodeMetrics } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { BlueprintEdge, BlueprintNode } from "../layout/rfTypes";
 import type { TelemetryProvider } from "../telemetry/provider";
@@ -48,6 +48,10 @@ export interface BlueprintState {
   logicRoot: NodeId | null;
   /** The drill trail into logic flows, oldest first — root..current — powering the logic breadcrumb. */
   logicStack: NodeId[];
+  /** The DIVE trail INTO control containers, oldest first; each entry re-charts the canvas to show
+   * only that container's bodies. Empty == show the whole callable flow. It sits ON TOP of the
+   * callable's `logicStack` in the breadcrumb (a container lives inside the current callable). */
+  logicFocus: Array<{ id: string; label: string; bodies: FlowPath[] }>;
   /** How many levels of resolved calls the Logic-flow view inlines in place; 0 == calls are leaf
    * chips (today's behavior). Sticky across open/drill so the reader keeps their chosen depth. */
   logicInlineDepth: number;
@@ -94,6 +98,8 @@ export interface BlueprintState {
   openLogicFlow(nodeId: string): void;
   drillLogicFlow(nodeId: string): void;
   logicFlowTo(nodeId: string): void;
+  diveLogicContainer(id: string, label: string, bodies: FlowPath[]): void;
+  logicFocusTo(index: number): void;
   setLogicInlineDepth(depth: number): void;
   selectLogicTarget(id: NodeId | null): void;
   togglePinnedFlow(id: NodeId): void;
@@ -138,6 +144,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     flowDepth: null,
     logicRoot: null,
     logicStack: [],
+    logicFocus: [],
     logicInlineDepth: 0,
     logicSelected: null,
     pinnedFlows: [],
@@ -239,23 +246,39 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Open a callable's logic flow (the double-click "dive into logic" gesture). A fresh chart
     // starts at default expansion; clear any prior selection (it means nothing in a new chart).
     openLogicFlow(nodeId) {
-      set({ viewMode: "logic", logicRoot: nodeId, logicStack: [nodeId], selectedId: nodeId, logicSelected: null, expandedLogic: new Set<string>() });
+      set({ viewMode: "logic", logicRoot: nodeId, logicStack: [nodeId], logicFocus: [], selectedId: nodeId, logicSelected: null, expandedLogic: new Set<string>() });
       void get().logicRelayout();
     },
 
     // Drill from a call node into its target's own flow — push it onto the trail, re-chart from it.
+    // A changed callable starts unfocused, so any container dive is dropped.
     drillLogicFlow(nodeId) {
-      set({ logicStack: [...get().logicStack, nodeId], logicRoot: nodeId, logicSelected: null, expandedLogic: new Set<string>() });
+      set({ logicStack: [...get().logicStack, nodeId], logicRoot: nodeId, logicFocus: [], logicSelected: null, expandedLogic: new Set<string>() });
       void get().logicRelayout();
     },
 
     // Jump back to an earlier callable in the trail (a logic-breadcrumb click), truncating there.
+    // Clears any container dive — returning to a callable crumb shows its full flow.
     logicFlowTo(nodeId) {
       const index = get().logicStack.indexOf(nodeId);
       if (index === -1) {
         return;
       }
-      set({ logicStack: get().logicStack.slice(0, index + 1), logicRoot: nodeId, logicSelected: null, expandedLogic: new Set<string>() });
+      set({ logicStack: get().logicStack.slice(0, index + 1), logicRoot: nodeId, logicFocus: [], logicSelected: null, expandedLogic: new Set<string>() });
+      void get().logicRelayout();
+    },
+
+    // Dive INTO a control container (loop/try): re-chart the canvas to show ONLY its bodies as a
+    // focused sub-view, the breadcrumb gaining a segment. Push it, reset expansion, relayout.
+    diveLogicContainer(id, label, bodies) {
+      set({ logicFocus: [...get().logicFocus, { id, label, bodies }], logicSelected: null, expandedLogic: new Set<string>() });
+      void get().logicRelayout();
+    },
+
+    // Jump back along the container-dive trail (a focus-breadcrumb click): truncate to `index + 1`;
+    // a negative index clears focus entirely, back to the full callable flow. Reset, relayout.
+    logicFocusTo(index) {
+      set({ logicFocus: index < 0 ? [] : get().logicFocus.slice(0, index + 1), logicSelected: null, expandedLogic: new Set<string>() });
       void get().logicRelayout();
     },
 
@@ -294,7 +317,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Re-derive the Logic graph for the current root through ELK, behind a stale-seq guard (a newer
     // open/drill/toggle discards an older in-flight layout). A null root clears the graph.
     async logicRelayout() {
-      const { logicRoot, index, artifact, expandedLogic, hideGreyed } = get();
+      const { logicRoot, index, artifact, expandedLogic, hideGreyed, logicFocus } = get();
       if (logicRoot === null) {
         set({ logicRfNodes: [], logicRfEdges: [], logicLayoutStatus: "idle" });
         return;
@@ -302,7 +325,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const sequence = ++logicLayoutSeq;
       set({ logicLayoutStatus: "laying-out" });
-      const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, { hideGreyed });
+      // A container dive charts only the TOP focus entry's bodies; else the whole callable flow.
+      const top = logicFocus[logicFocus.length - 1];
+      const focus = top ? { id: top.id, bodies: top.bodies } : undefined;
+      const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, { hideGreyed }, focus);
       if (logicLayoutSeq !== sequence) {
         return; // a newer layout superseded this one.
       }

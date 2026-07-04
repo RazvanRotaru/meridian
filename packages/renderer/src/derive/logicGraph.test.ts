@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { EdgeResolution, FlowStep, LogicFlows } from "@meridian/core";
+import type { EdgeResolution, FlowPath, FlowStep, LogicFlows } from "@meridian/core";
 import type { GraphNode } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
-import { deriveLogicGraph } from "./logicGraph";
+import { deriveLogicGraph, deriveLogicGraphFromBodies } from "./logicGraph";
 
 /** A GraphIndex stub: deriveLogicGraph only reads nodesById + ancestorsOf. */
 function makeIndex(entries: Array<{ id: string; name: string; kind: string; parentId: string | null }>): GraphIndex {
@@ -92,6 +92,37 @@ describe("deriveLogicGraph", () => {
     const container = nodes.find((n) => n.id === "r::0")!;
     expect(container).toMatchObject({ type: "control", data: { logicKind: "try", isContainer: true } });
     expect(nodes.filter((n) => n.parentId === "r::0")).toHaveLength(2);
+  });
+
+  it("carries a container's bodies on its node so a dive can re-chart them", () => {
+    const tryStep: FlowStep = {
+      kind: "branch",
+      label: "try/catch",
+      paths: [{ label: "try", body: [call("t", "ext:l#t", "external")] }, { label: "catch e", body: [call("c", "ext:l#c", "external")] }],
+    };
+    const loop: FlowStep = { kind: "loop", label: "for each x", body: [call("s", "ext:l#s", "external")] };
+    const { nodes } = deriveLogicGraph("r", { r: [tryStep, loop] }, makeIndex([]), NONE, { hideGreyed: false });
+    const tryNode = nodes.find((n) => n.id === "r::0")!;
+    const loopNode = nodes.find((n) => n.id === "r::1")!;
+    // try node carries all its arms; loop node carries its single body labeled with the loop label.
+    expect(tryNode.data.bodies?.map((b) => b.label)).toEqual(["try", "catch e"]);
+    expect(loopNode.data.bodies?.map((b) => b.label)).toEqual(["for each x"]);
+    // a plain call carries none — only control containers do.
+    expect(nodes.find((n) => n.type === "block")?.data.bodies).toBeUndefined();
+  });
+
+  it("deriveLogicGraphFromBodies renders each body as an independent, prefixed top-level chain", () => {
+    // A try's arms dived into: the try body has two steps (chained), the catch has one.
+    const bodies: FlowPath[] = [
+      { label: "try", body: [call("a", "ext:l#a", "external"), call("b", "ext:l#b", "external")] },
+      { label: "catch e", body: [call("c", "ext:l#c", "external")] },
+    ];
+    const { nodes, edges } = deriveLogicGraphFromBodies("r::0", bodies, {}, makeIndex([]), NONE, { hideGreyed: false });
+    // ids are namespaced by the prefix and per-body (p0/p1); every node stays top-level.
+    expect(nodes.map((n) => n.id)).toEqual(["r::0::p0/0", "r::0::p0/1", "r::0::p1/0"]);
+    expect(nodes.every((n) => n.type === "block" && n.parentId === null)).toBe(true);
+    // The two bodies are independent: one seq edge chains WITHIN the try body, none crosses to catch.
+    expect(edges).toEqual([expect.objectContaining({ source: "r::0::p0/0", target: "r::0::p0/1", kind: "seq" })]);
   });
 
   it("hideGreyed drops greyed leaves and stitches the sequence around them", () => {
