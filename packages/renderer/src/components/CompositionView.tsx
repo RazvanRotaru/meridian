@@ -30,7 +30,10 @@ export function CompositionView() {
     [nodes, edges, selectedId],
   );
 
-  const onNodeClick: NodeMouseHandler<Node> = (_event, node) => selectCompUnit(node.id);
+  // A cluster frame is a passive panel, not a selectable unit — clicking one clears the selection,
+  // exactly like clicking empty canvas, so it never dims every unit with a nonsense frame id.
+  const onNodeClick: NodeMouseHandler<Node> = (_event, node) =>
+    selectCompUnit(node.type === "cluster" ? null : node.id);
 
   // A handle on the surface so the first laid-out graph fits once (the `fitView` prop only fits on
   // mount, before the async ELK layout has produced any nodes). Guarded so later relayouts don't
@@ -89,9 +92,12 @@ function emphasizeSelection(
   const styledEdges = edges.map((edge) =>
     edge.source === selectedId || edge.target === selectedId ? emphasizeEdge(edge) : dimEdge(edge),
   );
-  // The selected unit is seeded into `connected`, so it (and its neighbours) never dim; the node's
-  // own green ring is drawn by CompositionNode reading the store.
-  const styledNodes = nodes.map((node) => (connected.has(node.id) ? node : dimNode(node)));
+  // Only UNIT scorecards dim/emphasize — cluster frames stay at full opacity so their lit children
+  // read normally over them. The selected unit is seeded into `connected`, so it (and its
+  // neighbours) never dim; the node's own green ring is drawn by CompositionNode reading the store.
+  const styledNodes = nodes.map((node) =>
+    node.type === "cluster" || connected.has(node.id) ? node : dimNode(node),
+  );
   return { styledNodes, styledEdges };
 }
 
@@ -120,9 +126,13 @@ function dimNode(node: CompRfNode): CompRfNode {
   return { ...node, style: { ...node.style, opacity: DIM_NODE_OPACITY } };
 }
 
-// The MiniMap gets untyped `Node`s; narrow to our unit data and tint each dot by its health colour
-// so the map reads the same green→amber→red story as the cards.
+// The MiniMap gets untyped `Node`s; a cluster frame carries no metrics, so it reads as a neutral
+// panel tone, while each unit dot tints by its health colour — the same green→amber→red story as
+// the cards.
 function miniMapColor(node: Node): string {
+  if (node.type === "cluster") {
+    return "#2A313D";
+  }
   return colorForDistance((node.data as CompNodeData).metrics.distance);
 }
 

@@ -10,6 +10,7 @@
 import type { GraphEdge, GraphNode } from "@meridian/core";
 import { computeCompositionMetrics, type UnitMetrics } from "./composition";
 import { couplingEdges } from "./composition-graph";
+import { buildClusters, type ClusterFrame } from "./compositionClusters";
 
 // A `type` (not an interface) so it satisfies React Flow's `Node<T extends Record<string, unknown>>`
 // constraint — an interface lacks the implicit index signature (mirrors logic's LogicNodeData).
@@ -20,14 +21,28 @@ export type CompNodeData = {
   metrics: UnitMetrics;
 };
 
-export type CompNodeType = "unit";
+// A cluster FRAME's data: presentation only — the package/folder label plus the tallies that drive
+// its header badges. A `type` for the same index-signature reason as CompNodeData.
+export type ClusterNodeData = {
+  clusterId: string;
+  label: string;
+  unitCount: number;
+  smellyCount: number;
+};
 
+export type CompNodeType = "unit" | "cluster";
+
+// A single spec type spans both node kinds (mirrors logic's LogicNodeSpec): a "unit" carries its
+// scorecard size and a cluster `parentId`; a "cluster" frame is a container ELK sizes, so it omits
+// width/height and parentId. `data` narrows on `type`.
 export interface CompNodeSpec {
   id: string;
   type: CompNodeType;
-  width: number;
-  height: number;
-  data: CompNodeData;
+  width?: number;
+  height?: number;
+  /** The cluster frame this unit nests in (undefined for a frame itself). */
+  parentId?: string;
+  data: CompNodeData | ClusterNodeData;
 }
 
 export interface CompEdgeSpec {
@@ -35,6 +50,8 @@ export interface CompEdgeSpec {
   source: string;
   target: string;
   inheritanceOnly: boolean;
+  /** True when the pair sits in DIFFERENT clusters — the packaging / Common-Closure signal. */
+  crossBoundary: boolean;
 }
 
 export interface CompositionGraphSpec {
@@ -51,19 +68,27 @@ export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[]): 
   const metrics = computeCompositionMetrics(nodes, edges);
   const couplings = couplingEdges(nodes, edges);
   const coupled = couplingEndpoints(couplings);
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
 
-  const nodeSpecs: CompNodeSpec[] = [];
+  const unitSpecs: CompNodeSpec[] = [];
   const emitted = new Set<string>();
   for (const metric of metrics.values()) {
     if (metric.members === 0 && !coupled.has(metric.id)) {
       continue;
     }
-    nodeSpecs.push(unitNode(metric));
+    unitSpecs.push(unitNode(metric));
     emitted.add(metric.id);
   }
 
+  // Group the surviving units into package frames and pin each unit to its frame. A frame node is
+  // emitted BEFORE its child units so React Flow always sees a parent ahead of its children.
+  const clusters = buildClusters(unitSpecs, nodesById);
+  const clusterOf = assignClusters(clusters, unitSpecs);
+  const nodeSpecs = [...clusters.map(clusterNode), ...unitSpecs];
+
   // A coupling endpoint is always a unit with a metrics entry, so both ends are emitted; the guard
-  // is defensive against a pair that somehow references a dropped unit.
+  // is defensive against a pair that somehow references a dropped unit. A pair spanning two frames
+  // is the packaging signal the layout emphasizes.
   const edgeSpecs = couplings
     .filter((edge) => emitted.has(edge.source) && emitted.has(edge.target))
     .map((edge) => ({
@@ -71,9 +96,36 @@ export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[]): 
       source: edge.source,
       target: edge.target,
       inheritanceOnly: edge.inheritanceOnly,
+      crossBoundary: clusterOf.get(edge.source) !== clusterOf.get(edge.target),
     }));
 
   return { nodes: nodeSpecs, edges: edgeSpecs };
+}
+
+/** Set each unit spec's `parentId` to its cluster frame, returning the unit→cluster map the edge
+ * pass reuses to flag cross-boundary couplings. */
+function assignClusters(clusters: ClusterFrame[], unitSpecs: CompNodeSpec[]): Map<string, string> {
+  const clusterOf = new Map<string, string>();
+  for (const cluster of clusters) {
+    for (const unitId of cluster.unitIds) {
+      clusterOf.set(unitId, cluster.id);
+    }
+  }
+  for (const spec of unitSpecs) {
+    spec.parentId = clusterOf.get(spec.id);
+  }
+  return clusterOf;
+}
+
+function clusterNode(cluster: ClusterFrame): CompNodeSpec {
+  const data: ClusterNodeData = {
+    clusterId: cluster.id,
+    label: cluster.label,
+    unitCount: cluster.unitIds.length,
+    smellyCount: cluster.smellyCount,
+  };
+  // No width/height, no parentId: ELK sizes a container from its children, and a frame is a root.
+  return { id: cluster.id, type: "cluster", data };
 }
 
 function couplingEndpoints(couplings: ReturnType<typeof couplingEdges>): Set<string> {

@@ -1,19 +1,19 @@
 /**
  * Lay out a CompositionGraphSpec with ELK and map it to React Flow — the composition-tab analog of
- * `logicElk`. This PR is a FLAT graph (module cluster frames land in PR3), so nothing is a
- * container: every unit lays out at its scorecard size and no node carries a parentId. The nesting
- * helper, root-only layout contract and parent-relative mapping live in `elkNesting`; this module
- * supplies the composition adapter, layout options and edge styling.
+ * `logicElk`. Unit scorecards nest inside their package CLUSTER FRAMES: a frame recurses as an ELK
+ * container carrying title-bar padding; each unit is a leaf at its scorecard size. The nesting
+ * helper, root-only `hierarchyHandling` contract and parent-relative mapping live in `elkNesting`;
+ * this module supplies the composition adapter, layout options and edge styling.
  */
 
 import { type Edge, type Node } from "@xyflow/react";
 import type { ElkNode } from "elkjs/lib/elk-api";
-import type { CompEdgeSpec, CompNodeData, CompNodeSpec, CompNodeType, CompositionGraphSpec } from "../derive/compositionGraph";
+import type { ClusterNodeData, CompEdgeSpec, CompNodeData, CompNodeSpec, CompNodeType, CompositionGraphSpec } from "../derive/compositionGraph";
 import { arrowMarker } from "../theme/edgeColors";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
 
-export type CompRfNode = Node<CompNodeData, CompNodeType>;
-export type CompRfEdgeData = { inheritanceOnly: boolean };
+export type CompRfNode = Node<CompNodeData | ClusterNodeData, CompNodeType>;
+export type CompRfEdgeData = { inheritanceOnly: boolean; crossBoundary: boolean };
 export type CompRfEdge = Edge<CompRfEdgeData>;
 export interface CompositionReactFlowGraph {
   nodes: CompRfNode[];
@@ -21,23 +21,31 @@ export interface CompositionReactFlowGraph {
 }
 
 // Shared with the logic layout: layered left→right so efferent wires read as "depends on the unit
-// to my right". Spacing values mirror logic's so the two graph surfaces feel of a piece.
+// to my right", with root-only INCLUDE_CHILDREN so wires route across frame boundaries. Spacing
+// values mirror logic's so the two graph surfaces feel of a piece.
 const ROOT_LAYOUT_OPTIONS: Record<string, string> = {
   "elk.algorithm": "layered",
   "elk.direction": "RIGHT",
+  "elk.hierarchyHandling": "INCLUDE_CHILDREN",
   "elk.layered.spacing.nodeNodeBetweenLayers": "72",
   "elk.spacing.nodeNode": "36",
   "elk.padding": "[top=24,left=24,bottom=24,right=24]",
 };
 
-// A flat graph this PR: no unit nests another, so nothing is a container and every node is a leaf
-// carrying its spec size. `parentId` is always undefined; `containerOptions` is never consulted.
+// Top padding clears the cluster frame's title bar (React Flow draws nothing there itself) — matches
+// logic's container padding so the two nested surfaces feel of a piece.
+const CONTAINER_LAYOUT_OPTIONS: Record<string, string> = {
+  "elk.padding": "[top=42,left=16,bottom=16,right=16]",
+};
+
+// A cluster frame is the only container; every unit is a leaf carrying its scorecard size (the
+// fallbacks are defensive — a unit spec always sets them).
 const adapter: ElkNestAdapter<CompNodeSpec> = {
   id: (node) => node.id,
-  parentId: () => undefined,
-  isContainer: () => false,
-  leafSize: (node) => ({ width: node.width, height: node.height }),
-  containerOptions: {},
+  parentId: (node) => node.parentId,
+  isContainer: (node) => node.type === "cluster",
+  leafSize: (node) => ({ width: node.width ?? 240, height: node.height ?? 104 }),
+  containerOptions: CONTAINER_LAYOUT_OPTIONS,
 };
 
 export function buildCompositionElkGraph(spec: CompositionGraphSpec): ElkNode {
@@ -65,21 +73,46 @@ function toReactFlowNode(elkNode: ElkNode, parentId: string | undefined, spec: C
   };
 }
 
-// A plain coupling wire is neutral steel with an arrow pointing source→target ("source depends on
-// target"). An inheritance-only pair reads DISTINCT — dashed violet — because extends/implements is
-// a different relationship from ordinary use. Never animated: this is structure, not a live flow.
-const COUPLING_COLOR = "#5B6675";
+// The three wire treatments, in priority order. An inheritance-only pair reads DISTINCT — dashed
+// violet — because extends/implements is a different relationship from ordinary use. Otherwise a
+// SAME-cluster wire is expected cohesion: muted grey, thin, low opacity, it recedes. A wire that
+// CROSSES a frame boundary is the packaging (Common-Closure) signal, so it's emphasized in a warm
+// signal colour, thicker, full opacity. Never animated: this is structure, not a live flow.
 const INHERITANCE_COLOR = "#A78BFA";
+const INTERNAL_COLOR = "#4A5261";
+const CROSS_BOUNDARY_COLOR = "#C9A24B";
+
+interface EdgeStroke {
+  color: string;
+  width: number;
+  opacity: number;
+  dashed: boolean;
+}
+
+function strokeFor(edge: CompEdgeSpec): EdgeStroke {
+  if (edge.inheritanceOnly) {
+    return { color: INHERITANCE_COLOR, width: 1.5, opacity: 1, dashed: true };
+  }
+  if (edge.crossBoundary) {
+    return { color: CROSS_BOUNDARY_COLOR, width: 1.75, opacity: 1, dashed: false };
+  }
+  return { color: INTERNAL_COLOR, width: 1, opacity: 0.45, dashed: false };
+}
 
 function toReactFlowEdge(edge: CompEdgeSpec): CompRfEdge {
-  const color = edge.inheritanceOnly ? INHERITANCE_COLOR : COUPLING_COLOR;
+  const stroke = strokeFor(edge);
   return {
     id: edge.id,
     source: edge.source,
     target: edge.target,
     animated: false,
-    style: { stroke: color, strokeWidth: 1.5, ...(edge.inheritanceOnly ? { strokeDasharray: "5 4" } : {}) },
-    markerEnd: arrowMarker(color, 14),
-    data: { inheritanceOnly: edge.inheritanceOnly },
+    style: {
+      stroke: stroke.color,
+      strokeWidth: stroke.width,
+      opacity: stroke.opacity,
+      ...(stroke.dashed ? { strokeDasharray: "5 4" } : {}),
+    },
+    markerEnd: arrowMarker(stroke.color, 14),
+    data: { inheritanceOnly: edge.inheritanceOnly, crossBoundary: edge.crossBoundary },
   };
 }

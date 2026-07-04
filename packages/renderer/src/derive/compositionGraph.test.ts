@@ -36,6 +36,11 @@ function dataWith(smells: Smell[]): CompNodeData {
   return { unitId: "u", kind: "class", label: "U", metrics: { smells } as UnitMetrics };
 }
 
+// The unit scorecard ids, sorted — spec.nodes now also holds cluster frame nodes we filter out here.
+function unitIds(specNodes: ReturnType<typeof deriveCompositionGraph>["nodes"]): string[] {
+  return specNodes.filter((n) => n.type === "unit").map((n) => n.id).sort();
+}
+
 describe("deriveCompositionGraph", () => {
   it("yields two unit nodes and one coupling edge for a two-unit dependency", () => {
     const nodes = [
@@ -45,9 +50,10 @@ describe("deriveCompositionGraph", () => {
       node("ts:b#g", "function", "ts:b"),
     ];
     const spec = deriveCompositionGraph(nodes, [edge("ts:a#f", "ts:b#g")]);
-    expect(spec.nodes.map((n) => n.id).sort()).toEqual(["ts:a", "ts:b"]);
+    expect(unitIds(spec.nodes)).toEqual(["ts:a", "ts:b"]);
     expect(spec.edges).toHaveLength(1);
-    expect(spec.edges[0]).toMatchObject({ id: "couple:ts:a->ts:b", source: "ts:a", target: "ts:b", inheritanceOnly: false });
+    // Both modules are package-less, so they share the "(root)" frame — same cluster, not crossing.
+    expect(spec.edges[0]).toMatchObject({ id: "couple:ts:a->ts:b", source: "ts:a", target: "ts:b", inheritanceOnly: false, crossBoundary: false });
   });
 
   it("drops an empty, uncoupled unit but keeps a coupling endpoint with no members", () => {
@@ -62,7 +68,7 @@ describe("deriveCompositionGraph", () => {
       node("ts:i#J", "interface", "ts:i"),
     ];
     const spec = deriveCompositionGraph(nodes, [edge("ts:i#I", "ts:i#J", "extends")]);
-    const ids = spec.nodes.map((n) => n.id).sort();
+    const ids = unitIds(spec.nodes);
     expect(ids).toContain("ts:m#C"); // has a member
     expect(ids).toContain("ts:i#I"); // coupling endpoint, 0 members
     expect(ids).toContain("ts:i#J");
