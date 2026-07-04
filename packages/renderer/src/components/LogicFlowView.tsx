@@ -11,7 +11,7 @@
  * While nothing is opened (`logicRoot === null`) it shows the entry picker instead of the graph.
  */
 
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -23,6 +23,7 @@ import {
   type EdgeMarker,
   type Node,
   type NodeMouseHandler,
+  type ReactFlowInstance,
 } from "@xyflow/react";
 import type { GraphArtifact, GraphNode, LogicFlows, NodeId } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
@@ -108,6 +109,29 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
     [nodes, logicSelected, logicRoot, containment, index],
   );
 
+  // A handle on the React Flow surface: the `fitView` prop only fits on mount, so navigation needs
+  // this to recentre the viewport imperatively.
+  const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
+
+  // The navigation identity: the callable drill trail plus the container-dive focus stack. It changes
+  // on EVERY navigation — open/drill/dive/jump/pick, and breadcrumb-BACK too (the trail then differs
+  // from the last-fitted one) — and stays CONSTANT across expand/collapse, the hide-leaf toggle, and
+  // selection, none of which touch the trail or the focus stack.
+  const navKey = `${logicStack.join(">")}||${logicFocus.map((entry) => entry.id).join(">")}`;
+
+  // Recentre only when NAVIGATION lands a fresh graph, not on the expand/collapse or hide-leaf
+  // relayouts that also produce new `nodes` for the SAME flow. Keyed on `[nodes]` ALONE, never on
+  // `navKey`: navKey flips a render BEFORE the async `nodes` relayout, so keying on it would fit the
+  // STALE graph then skip the real one. Firing when the new nodes actually arrive — and guarding by
+  // navKey — fits exactly once per navigation and skips same-flow relayouts.
+  const lastFitKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (!rfRef.current || nodes.length === 0) return;
+    if (lastFitKey.current === navKey) return;
+    lastFitKey.current = navKey;
+    requestAnimationFrame(() => rfRef.current?.fitView({ padding: 0.2, duration: 400, minZoom: 0.01 }));
+  }, [nodes]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const isEmpty = nodes.length === 0 && layoutStatus === "ready";
 
   return (
@@ -116,6 +140,9 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
         nodes={[...nodes, ...jumpNodes]}
         edges={[...styledEdges, ...jumpEdges]}
         nodeTypes={logicNodeTypes}
+        onInit={(instance) => {
+          rfRef.current = instance;
+        }}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={() => selectLogicTarget(null)}
