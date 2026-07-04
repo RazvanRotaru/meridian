@@ -7,7 +7,7 @@
  * compact Branch node whose then/else/case wires leave labeled.
  */
 
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { LogicRfNode } from "../../../layout/logicElk";
 import type { LogicNodeData } from "../../../derive/logicGraph";
@@ -111,7 +111,31 @@ function ContainerFrame(props: { accent: string; label: string; glyph: string; o
   );
 }
 
-export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: BranchNode };
+/**
+ * A "jump-to-flow" satellite: a small dashed, muted ghost node the VIEW appends beside the selected
+ * building block for every OTHER logic flow that also calls its target. It only receives an exec
+ * wire (a target Handle on the LEFT, no source pin) and, when clicked, switches the canvas to that
+ * flow. Its data is minimal by design — a flow-root id, a display label, and a faint file path.
+ */
+export type JumpFlowNodeData = { rootId: string; label: string; file?: string };
+type JumpFlowRfNode = Node<JumpFlowNodeData>;
+
+function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
+  const { openLogicFlow } = useBlueprintActions();
+  const d = data as JumpFlowNodeData;
+  return (
+    <div style={JUMP_BODY} onClick={() => openLogicFlow(d.rootId)} title={`Open flow: ${d.label}`}>
+      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+      <div style={JUMP_HEAD}>
+        <span style={JUMP_GLYPH}>↗</span>
+        <span style={NAME} title={d.label}>{d.label}</span>
+      </div>
+      {d.file ? <div style={JUMP_FILE} title={d.file}>{d.file}</div> : null}
+    </div>
+  );
+}
+
+export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: BranchNode, jumpflow: JumpFlowNode };
 
 // Selection is BY TARGET (a target can be called many times): a matched call site rings green so
 // every call of the same target lights up together; while some target is selected, unrelated nodes
@@ -178,6 +202,28 @@ function frameStyle(accent: string): React.CSSProperties {
 function frameTitleStyle(accent: string): React.CSSProperties {
   return { display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderBottom: `1px solid ${accent}`, color: accent, fontSize: 11, fontWeight: 700, cursor: "pointer" };
 }
+
+// The satellite "ghost" look: dashed border, muted fill/text — it reads as a detached shortcut, not
+// a step in this flow. Full opacity (it's never dimmed by the selection) so it stays clickable.
+const JUMP_BODY: React.CSSProperties = {
+  width: "100%",
+  height: "100%",
+  boxSizing: "border-box",
+  border: "1px dashed #4B535F",
+  borderRadius: 8,
+  background: "rgba(16,21,28,0.6)",
+  padding: "5px 9px",
+  fontFamily: MONO,
+  color: "#9AA4B2",
+  cursor: "pointer",
+  display: "flex",
+  flexDirection: "column",
+  gap: 2,
+  overflow: "hidden",
+};
+const JUMP_HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600 };
+const JUMP_GLYPH: React.CSSProperties = { fontSize: 10, opacity: 0.8, color: "#7B8695" };
+const JUMP_FILE: React.CSSProperties = { fontSize: 9, color: "#6C7683", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 
 const GLYPH: React.CSSProperties = { fontSize: 11, opacity: 0.85 };
 const CHEV: React.CSSProperties = { cursor: "pointer", fontSize: 11, padding: "0 2px" };

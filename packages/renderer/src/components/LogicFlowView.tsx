@@ -16,17 +16,21 @@ import {
   Background,
   BackgroundVariant,
   Controls,
+  MarkerType,
   MiniMap,
   ReactFlow,
+  type Edge,
   type EdgeMarker,
   type Node,
   type NodeMouseHandler,
 } from "@xyflow/react";
 import type { GraphArtifact, GraphNode, LogicFlows, NodeId } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
-import { logicNodeTypes } from "./nodes/logic/logicNodeTypes";
+import { logicNodeTypes, type JumpFlowNodeData } from "./nodes/logic/logicNodeTypes";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { LogicNodeData } from "../derive/logicGraph";
+import type { GraphIndex } from "../graph/graphIndex";
+import { buildFlowContainmentIndex } from "../derive/flowInspect";
 
 export function LogicFlowView() {
   const logicRoot = useBlueprint((state) => state.logicRoot);
@@ -42,6 +46,7 @@ export function LogicFlowView() {
  * charted callable has no calls or control flow of its own.
  */
 function LogicFlowGraph(props: { rootId: NodeId }) {
+  const logicRoot = props.rootId;
   const logicStack = useBlueprint((state) => state.logicStack);
   const nodes = useBlueprint((state) => state.logicRfNodes);
   const edges = useBlueprint((state) => state.logicRfEdges);
@@ -49,21 +54,24 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
   const layoutStatus = useBlueprint((state) => state.logicLayoutStatus);
   const hideGreyed = useBlueprint((state) => state.hideGreyed);
   const index = useBlueprint((state) => state.index);
+  const artifact = useBlueprint((state) => state.artifact);
   const { drillLogicFlow, logicFlowTo, toggleHideGreyed, selectLogicTarget } = useBlueprintActions();
 
   // The one gesture the node components don't own: dive into a resolved, flow-bearing block's own
   // flow. Inline expand/collapse is a title-click, handled inside the node — never re-handled here.
-  const onNodeDoubleClick: NodeMouseHandler<LogicRfNode> = (_event, node) => {
-    if (node.data.expandable && node.data.targetId !== null) {
-      drillLogicFlow(node.data.targetId);
+  // Fires for every node on the surface, so a jump satellite (which owns its own click) is skipped.
+  const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
+    const data = logicDataOf(node);
+    if (data?.expandable && data.targetId !== null) {
+      drillLogicFlow(data.targetId);
     }
   };
 
   // Single-click a building block to trace its call target: selection is BY TARGET, so every call
   // site of the same target lights up. Re-clicking the selected target clears it; container/branch
-  // nodes (no target) do nothing. A cheap repaint — no relayout.
-  const onNodeClick: NodeMouseHandler<LogicRfNode> = (_event, node) => {
-    const target = node.data.targetId;
+  // nodes (no target) do nothing; jump satellites open their flow themselves. A cheap repaint.
+  const onNodeClick: NodeMouseHandler<Node> = (_event, node) => {
+    const target = logicDataOf(node)?.targetId;
     if (target) {
       selectLogicTarget(target === logicSelected ? null : target);
     }
@@ -76,13 +84,27 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
     [edges, logicSelected, nodes],
   );
 
+  // Reverse index (call target → the flow-roots that call it), rebuilt only when the artifact does:
+  // it walks every flow once, so it must not run per selection/render.
+  const containment = useMemo(
+    () => buildFlowContainmentIndex((artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows),
+    [artifact],
+  );
+
+  // The "jump-to-flow" satellites for the current selection, appended (RELAYOUT-FREE) beside the
+  // selected call site. Selection stays a cheap repaint: the store's laid-out graph is untouched.
+  const { jumpNodes, jumpEdges } = useMemo(
+    () => buildJumpSatellites(nodes, logicSelected, logicRoot, containment, index),
+    [nodes, logicSelected, logicRoot, containment, index],
+  );
+
   const isEmpty = nodes.length === 0 && layoutStatus === "ready";
 
   return (
     <div style={SURFACE_STYLE}>
-      <ReactFlow<LogicRfNode, LogicRfEdge>
-        nodes={nodes}
-        edges={styledEdges}
+      <ReactFlow<Node, Edge>
+        nodes={[...nodes, ...jumpNodes]}
+        edges={[...styledEdges, ...jumpEdges]}
         nodeTypes={logicNodeTypes}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
@@ -170,6 +192,111 @@ function dimEdge(edge: LogicRfEdge): LogicRfEdge {
 // Keep the arrowhead in step with the recoloured wire; a string marker (rare) can't be tinted, so pass it through.
 function tintMarker(marker: LogicRfEdge["markerEnd"], color: string): LogicRfEdge["markerEnd"] {
   return marker && typeof marker === "object" ? { ...(marker as EdgeMarker), color } : marker;
+}
+
+// At most this many satellites — a heavily-shared callable can appear in dozens of flows; six is
+// enough to signal "also called elsewhere" without burying the selected node. The rest are dropped.
+const MAX_JUMPS = 6;
+const JUMP_WIDTH = 180;
+const JUMP_HEIGHT = 44;
+const JUMP_GAP = 40; // clearance below the selected node before the first satellite
+const JUMP_STEP = 56; // vertical stride between stacked satellites
+const JUMP_MUTED = "#4B535F";
+
+/**
+ * The jump-to-flow satellites for the current selection: for every OTHER flow that also calls the
+ * selected target, a dashed ghost node stacked just below the selected call site, each wired from
+ * that call site. Purely additive — it reads the store's laid-out nodes but never mutates them, so
+ * selection stays a repaint (no relayout). Empty unless a target is selected and it's called elsewhere.
+ */
+function buildJumpSatellites(
+  nodes: LogicRfNode[],
+  logicSelected: NodeId | null,
+  logicRoot: NodeId,
+  containment: Map<string, string[]>,
+  index: GraphIndex,
+): { jumpNodes: Node[]; jumpEdges: Edge[] } {
+  if (logicSelected === null) {
+    return { jumpNodes: [], jumpEdges: [] };
+  }
+  const roots = (containment.get(logicSelected) ?? []).filter((root) => root !== logicRoot).slice(0, MAX_JUMPS);
+  const callSite = nodes.find((node) => node.data.targetId === logicSelected);
+  if (roots.length === 0 || !callSite) {
+    return { jumpNodes: [], jumpEdges: [] };
+  }
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const origin = absolutePos(callSite, byId);
+  const baseY = origin.y + (callSite.height ?? JUMP_HEIGHT) + JUMP_GAP;
+
+  const jumpNodes: Node[] = [];
+  const jumpEdges: Edge[] = [];
+  const seen = new Set<string>();
+  roots.forEach((root, i) => {
+    const id = `jump:${root}`;
+    if (seen.has(id)) {
+      return;
+    }
+    seen.add(id);
+    const node = index.nodesById.get(root);
+    jumpNodes.push({
+      id,
+      type: "jumpflow",
+      position: { x: origin.x, y: baseY + i * JUMP_STEP },
+      width: JUMP_WIDTH,
+      height: JUMP_HEIGHT,
+      selectable: false,
+      draggable: false,
+      data: { rootId: root, label: node?.displayName ?? root, file: node?.location?.file } satisfies JumpFlowNodeData,
+    });
+    jumpEdges.push(jumpEdge(callSite.id, id, root));
+  });
+  return { jumpNodes, jumpEdges };
+}
+
+/**
+ * A logic node's ELK position is PARENT-RELATIVE (React Flow `parentId`), so sum the offsets up the
+ * containment chain to get the call site's true canvas coordinate — where the satellites anchor.
+ * A `seen` guard terminates on the (tolerated) malformed parentId cycle.
+ */
+function absolutePos(node: LogicRfNode, byId: Map<string, LogicRfNode>): { x: number; y: number } {
+  let x = node.position.x;
+  let y = node.position.y;
+  const seen = new Set<string>([node.id]);
+  let parentId = node.parentId;
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId);
+    const parent = byId.get(parentId);
+    if (!parent) {
+      break;
+    }
+    x += parent.position.x;
+    y += parent.position.y;
+    parentId = parent.parentId;
+  }
+  return { x, y };
+}
+
+// The satellite wire: dashed, muted grey, no animation — it must not compete with the emphasized
+// exec thread. A small "in" label reads as "also called in this flow"; it points INTO the ghost.
+function jumpEdge(source: string, target: string, root: string): Edge {
+  return {
+    id: `jumpedge:${root}`,
+    source,
+    target,
+    label: "in",
+    animated: false,
+    style: { stroke: JUMP_MUTED, strokeWidth: 1.5, strokeDasharray: "4 3" },
+    labelStyle: { fill: "#7B8695", fontSize: 9 },
+    labelBgStyle: { fill: "#12171E", fillOpacity: 0.9 },
+    labelBgPadding: [3, 1],
+    markerEnd: { type: MarkerType.ArrowClosed, color: JUMP_MUTED, width: 12, height: 12 },
+  };
+}
+
+// The click handlers run for every node on the surface, including the appended jump satellites. A
+// satellite carries no logic data and owns its own click, so hand back logic data only for real nodes.
+function logicDataOf(node: Node): LogicNodeData | null {
+  return node.type === "jumpflow" ? null : (node.data as LogicNodeData);
 }
 
 // The MiniMap gets untyped `Node`s; narrow to our logic data and mirror each node type's accent.
