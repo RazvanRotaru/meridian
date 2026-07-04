@@ -191,11 +191,12 @@ function ExpandButton(props: { expanded: boolean; onToggle: () => void }) {
 
 /**
  * A "jump-to-flow" satellite: a small dashed, muted ghost node the VIEW appends in a row ABOVE the
- * selected building block for every flow that (transitively) reaches its target. It is the SOURCE of
- * the jump wire (a source Handle on the BOTTOM, no target pin): the wire runs from here DOWN INTO the
- * selected block below — those flows contain this block, so the arrow points at it. Clicking it
- * switches the canvas to that flow. Its data is minimal — a flow-root id, a display label, a faint
- * file path, and how many hops away it is (`depth`): 1 == a direct caller, higher == an indirect one.
+ * selected building block for every flow that (transitively) reaches its target. It sits in the
+ * caller CHAIN, so it is BOTH ends of a jump wire: a source Handle on the BOTTOM (the wire runs DOWN
+ * into the node one hop closer to the selection — a deeper ghost, or the selected block itself) AND
+ * a target Handle on the TOP (a deeper caller's wire lands here), so the chain reads top→down.
+ * Clicking it switches the canvas to that flow. Its data is minimal — a flow-root id, a display
+ * label, a faint file path, and how many hops away it is (`depth`): 1 == direct, higher == indirect.
  */
 export type JumpFlowNodeData = { rootId: string; label: string; file?: string; depth: number };
 type JumpFlowRfNode = Node<JumpFlowNodeData>;
@@ -205,6 +206,9 @@ function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
   const d = data as JumpFlowNodeData;
   return (
     <div style={JUMP_BODY} onClick={() => openLogicFlow(d.rootId)} title={`Open flow: ${d.label}`}>
+      {/* Target pin on top (a deeper caller's wire lands here) + source pin on the bottom (this
+          node's wire drops to the node one hop closer to the selection): the chain wires top→down. */}
+      <Handle type="target" position={Position.Top} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Bottom} style={PIN} isConnectable={false} />
       <div style={JUMP_HEAD}>
         <span style={JUMP_GLYPH}>↗</span>
