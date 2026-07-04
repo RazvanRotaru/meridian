@@ -16,6 +16,14 @@ import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 
+/**
+ * The "All" setting for the related-flows depth dial: a depth larger than any real call-graph chain.
+ * `transitiveCallers`' BFS terminates when the frontier empties (no more callers to visit), so 99 ≡
+ * "the entire transitive-caller closure" — it just never bottoms out on a real graph — with no perf
+ * risk, since the walk is bounded by the callers that exist, not by this number.
+ */
+export const GHOST_DEPTH_ALL = 99;
+
 export type LayoutStatus = "idle" | "laying-out" | "ready" | "error";
 
 /** The source view's state: which node, its fetched code, and the in-flight/error status.
@@ -295,11 +303,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ logicInlineDepth: Math.max(0, Math.min(2, Math.trunc(depth))) });
     },
 
-    // Set how many hops of indirect callers the "related flows" ghosts reach back. Clamped to 1..3
-    // (1 == direct callers, today's behavior). A repaint only — the view recomputes the ghosts in a
-    // useMemo from this — so it deliberately does NOT relayout the graph.
+    // Set how many hops of indirect callers the "related flows" ghosts reach back. Clamped to
+    // 1..GHOST_DEPTH_ALL — 1 == direct callers (today's behavior), 2/3 walk that many hops, and
+    // GHOST_DEPTH_ALL means the whole transitive-caller closure. A repaint only — the view recomputes
+    // the ghosts in a useMemo from this — so it deliberately does NOT relayout the graph.
     setGhostDepth(depth) {
-      set({ ghostDepth: Math.max(1, Math.min(3, Math.trunc(depth))) });
+      set({ ghostDepth: Math.max(1, Math.min(GHOST_DEPTH_ALL, Math.trunc(depth))) });
     },
 
     // Select a call target in the Logic-flow view (pass null to clear). The view renders straight
