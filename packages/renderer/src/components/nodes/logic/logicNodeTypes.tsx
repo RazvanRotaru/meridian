@@ -34,8 +34,11 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   const codeView = useBlueprint((s) => s.codeView);
   const d = data as LogicNodeData;
   const select = selectStateFor(d.targetId, logicSelected);
+  // A "defined here" node is a DECLARATION, not an exec step, so it wears a distinct teal accent
+  // (clearly not the blue of a call block) while keeping the same body/pins/buttons for select/drill.
+  const accent = d.definition ? DEF_ACCENT : BLOCK_ACCENT;
   if (d.isContainer) {
-    return <ContainerFrame accent={BLOCK_ACCENT} label={d.label} glyph="ƒ" onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} select={select} />;
+    return <ContainerFrame accent={accent} label={d.label} glyph="ƒ" onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} select={select} />;
   }
   const codeNode = d.targetId ? index.nodesById.get(d.targetId) : undefined;
   const canCode = Boolean(codeNode?.location) && Boolean(sourceUrl);
@@ -77,11 +80,17 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
     <div style={WRAP}>
       <div style={selectStyle(BODY, select)}>
         <ExecPins />
-        <div style={titleStyle(BLOCK_ACCENT)}>
+        <div style={titleStyle(accent)}>
           <span style={GLYPH}>ƒ</span>
           <span style={NAME} title={d.label}>{d.label}</span>
           <span style={TITLE_TAIL}>
-            <ExpandButton expanded={false} onToggle={() => toggleLogicExpand(id)} />
+            {d.definition ? <span style={DEF_TAG}>def</span> : null}
+            {/* Gate on `expandable`: a call block is always expandable here, but a defined callable
+                with no flow of its own is not — so it drops the disclosure rather than dangling a
+                dead ▸. (Existing non-definition blocks are unaffected: non-greyed ⇒ expandable.)
+                Definition nodes also omit it: they're a grid appended after layout, so expand-in-place
+                never re-nests them — double-click to drill is their gesture instead. */}
+            {d.expandable && !d.definition ? <ExpandButton expanded={false} onToggle={() => toggleLogicExpand(id)} /> : null}
             {codeButton}
           </span>
         </div>
@@ -264,6 +273,9 @@ function selectStyle(base: React.CSSProperties, select: SelectState): React.CSSP
 }
 
 const BLOCK_ACCENT = "#3B7AC0";
+// Teal, deliberately unlike the blue call accent: a definition node is a declaration ("defined
+// here"), a different kind of thing from a call site in the flow.
+const DEF_ACCENT = "#3FB8AF";
 const GREY_ACCENT = "#3A414C";
 const LOOP_ACCENT = "#E6B84D";
 const TRY_ACCENT = "#D98A5B";
@@ -369,6 +381,9 @@ const GREY_GLYPH: React.CSSProperties = { fontSize: 9, opacity: 0.7, flexShrink:
 const GREY_PROV: React.CSSProperties = { padding: "0 6px 2px", fontSize: 9, lineHeight: 1, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const FRAME_PROV: React.CSSProperties = { fontSize: 9, fontWeight: 400, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const COUNT: React.CSSProperties = { marginLeft: "auto", fontSize: 10, fontWeight: 600, opacity: 0.75 };
+// The little "def" pill on a definition node's title: dark on the teal accent, so it reads as a
+// quiet kind-tag ("defined here") without competing with the callable name beside it.
+const DEF_TAG: React.CSSProperties = { flexShrink: 0, fontSize: 8, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", border: "1px solid rgba(0,0,0,0.35)", borderRadius: 3, padding: "0 3px", opacity: 0.75 };
 const CODE_BTN: React.CSSProperties = { marginLeft: "auto", border: "none", background: "rgba(0,0,0,0.18)", color: "#0B0E13", borderRadius: 4, padding: "1px 5px", fontSize: 10, fontFamily: MONO, cursor: "pointer" };
 
 // The inline source box: hangs below the node (top:100%), high z-index so it overlays neighbours,
