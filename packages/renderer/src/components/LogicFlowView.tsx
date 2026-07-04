@@ -22,6 +22,7 @@ import {
 } from "@xyflow/react";
 import type { GraphArtifact, GraphNode, LogicFlows, NodeId } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
+import { GHOST_DEPTH_ALL } from "../state/store";
 import { logicNodeTypes, SELECT_ACCENT, type JumpFlowNodeData } from "./nodes/logic/logicNodeTypes";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { arrowMarker } from "../theme/edgeColors";
@@ -103,10 +104,15 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
   // The "jump-to-flow" satellites for the current selection, appended (RELAYOUT-FREE) above the
   // selected call site — one row per hop of indirect callers (up to `ghostDepth`). Selection and the
   // depth dial stay cheap repaints: the store's laid-out graph is untouched.
-  const { jumpNodes, jumpEdges } = useMemo(
+  const { jumpNodes, jumpEdges, total } = useMemo(
     () => buildJumpSatellites(nodes, logicSelected, logicRoot, containment, index, ghostDepth),
     [nodes, logicSelected, logicRoot, containment, index, ghostDepth],
   );
+
+  // HONEST CAP: transitiveCallers can find more related flows than the 24-ghost render cap draws.
+  // `total` is the full countable set (closure minus the current root); the shortfall is surfaced as
+  // a "+N more" label in the depth dial so the truncation is never silent. 0 when nothing is cut.
+  const moreCount = Math.max(0, total - jumpNodes.length);
 
   // A handle on the React Flow surface: the `fitView` prop only fits on mount, so navigation needs
   // this to recentre the viewport imperatively.
@@ -159,6 +165,7 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
         onToggleHide={toggleHideGreyed}
         ghostDepth={ghostDepth}
         onSetGhostDepth={setGhostDepth}
+        moreCount={moreCount}
       />
       {isEmpty ? <EmptyFlowCard rootId={props.rootId} /> : null}
     </div>
@@ -246,18 +253,21 @@ function buildJumpSatellites(
   containment: Map<string, string[]>,
   index: GraphIndex,
   ghostDepth: number,
-): { jumpNodes: Node[]; jumpEdges: Edge[] } {
+): { jumpNodes: Node[]; jumpEdges: Edge[]; total: number } {
   if (logicSelected === null) {
-    return { jumpNodes: [], jumpEdges: [] };
+    return { jumpNodes: [], jumpEdges: [], total: 0 };
   }
-  // Walk the reverse call graph back `ghostDepth` hops; drop the flow we're already looking at, then
-  // keep the NEAREST callers when over the cap (BFS keys depth-ascending, so sort makes it explicit).
+  // Walk the reverse call graph back `ghostDepth` hops (GHOST_DEPTH_ALL == the whole closure); drop
+  // the flow we're already looking at, then keep the NEAREST callers when over the cap (BFS keys
+  // depth-ascending, so sort makes it explicit). `total` is the countable set before the cap, so the
+  // caller can surface how many the 24-ghost cap left undrawn.
   const callers = transitiveCallers(containment, logicSelected, ghostDepth);
   callers.delete(logicRoot);
+  const total = callers.size;
   const ranked = [...callers.entries()].sort((a, b) => a[1] - b[1]).slice(0, MAX_JUMPS_TOTAL);
   const callSite = nodes.find((node) => node.data.targetId === logicSelected);
   if (ranked.length === 0 || !callSite) {
-    return { jumpNodes: [], jumpEdges: [] };
+    return { jumpNodes: [], jumpEdges: [], total };
   }
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const top = graphTop(nodes, byId);
@@ -290,7 +300,7 @@ function buildJumpSatellites(
       jumpEdges.push(jumpEdge(`jump:${root}`, callSite.id, root, depth));
     });
   }
-  return { jumpNodes, jumpEdges };
+  return { jumpNodes, jumpEdges, total };
 }
 
 // Bucket the ranked (root, depth) pairs into one list per depth, preserving the ranked order within
@@ -391,6 +401,7 @@ function LogicOverlayHeader(props: {
   onToggleHide: () => void;
   ghostDepth: number;
   onSetGhostDepth: (depth: number) => void;
+  moreCount: number;
 }) {
   return (
     <div style={OVERLAY_HEADER_STYLE}>
@@ -404,7 +415,7 @@ function LogicOverlayHeader(props: {
         />
       </div>
       <div style={HEADER_CONTROLS_STYLE}>
-        <GhostDepthDial depth={props.ghostDepth} onSet={props.onSetGhostDepth} />
+        <GhostDepthDial depth={props.ghostDepth} moreCount={props.moreCount} onSet={props.onSetGhostDepth} />
         <button
           type="button"
           style={hideToggleStyle(props.hideGreyed)}
@@ -418,15 +429,20 @@ function LogicOverlayHeader(props: {
   );
 }
 
-// The depth range the related-flows dial offers, matching the store's setGhostDepth clamp (1..3).
+// The finite hop steps the related-flows dial offers as numbered pills; "All" (GHOST_DEPTH_ALL) is a
+// fourth pill handled separately since it's a sentinel, not a hop count.
 const GHOST_DEPTHS = [1, 2, 3] as const;
 
 /**
- * The "related flows" depth dial: pills 1 · 2 · 3 that set how many hops of INDIRECT callers the
- * ghosts reach back (1 == direct callers only). The active pill reads pressed; it governs the ghosts
- * shown for the current/next selection (a repaint, no relayout).
+ * The "related flows" depth dial: pills 1 · 2 · 3 · All that set how many hops of INDIRECT callers
+ * the ghosts reach back — 1 == direct callers only, All == the whole transitive-caller closure. The
+ * active pill reads pressed (a numbered pill on exact match, "All" whenever the depth is beyond 3);
+ * it governs the ghosts shown for the current/next selection (a repaint, no relayout). When the 24-
+ * ghost cap hides some, a muted "+N more" trails the pills so the truncation isn't silent.
  */
-function GhostDepthDial(props: { depth: number; onSet: (depth: number) => void }) {
+function GhostDepthDial(props: { depth: number; moreCount: number; onSet: (depth: number) => void }) {
+  // "All" is selected for any depth past the numbered pills, so a stored GHOST_DEPTH_ALL lights it.
+  const allActive = props.depth >= 4;
   return (
     <div style={DIAL_STYLE}>
       <span style={DIAL_LABEL_STYLE}>Related</span>
@@ -443,6 +459,17 @@ function GhostDepthDial(props: { depth: number; onSet: (depth: number) => void }
           {n}
         </button>
       ))}
+      <button
+        type="button"
+        style={dialPillStyle(allActive)}
+        aria-pressed={allActive}
+        aria-label="Related flows depth: all callers"
+        title="Show every transitive caller (no depth limit)"
+        onClick={() => props.onSet(GHOST_DEPTH_ALL)}
+      >
+        All
+      </button>
+      {props.moreCount > 0 ? <span style={DIAL_MORE_STYLE}>+{props.moreCount} more</span> : null}
     </div>
   );
 }
@@ -760,6 +787,9 @@ const DIAL_STYLE: React.CSSProperties = {
   padding: "3px 6px",
 };
 const DIAL_LABEL_STYLE: React.CSSProperties = { fontSize: 11, color: "#7B8695", marginRight: 2 };
+// The honest-cap chip trailing the pills: muted and non-interactive, it just states how many related
+// flows the 24-ghost render cap left off the canvas.
+const DIAL_MORE_STYLE: React.CSSProperties = { fontSize: 10, color: "#7B8695", marginLeft: 4, whiteSpace: "nowrap" };
 
 function dialPillStyle(active: boolean): React.CSSProperties {
   return {
