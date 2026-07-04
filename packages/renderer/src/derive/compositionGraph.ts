@@ -2,7 +2,8 @@
  * Derive the graph's composition units into a pre-layout spec — the SOLID health scorecards the
  * Service-composition tab renders, wired by coupling edges. Each unit (class/interface/object body
  * or a whole module) becomes a scorecard sized to its metrics; each cross-unit coupling becomes one
- * peer wire. Colour tracks distance-from-the-main-sequence (green → amber → red).
+ * peer wire. Card-rail colour tracks change RISK (afferent coupling + SDP violations); the
+ * distance-from-the-main-sequence scale stays alongside for the D figure (green → amber → red).
  *
  * Pure: (nodes, edges) → {nodes, edges}. No React, no ELK. Mirrors `logicGraph.ts`.
  */
@@ -195,6 +196,24 @@ export function colorForDistance(distance: number): string {
   }
   if (distance >= DISTANCE_RED_MIN) {
     return HEALTH_RED;
+  }
+  return HEALTH_AMBER;
+}
+
+// Change-risk scale for the card rail + minimap: how dangerous is touching this unit right now.
+// Afferent coupling measures the blast radius of a change; SDP violations count dependencies that
+// point the wrong way (toward MORE unstable units). Red trips on either signal alone; green needs
+// both quiet. The distance scale above stays exported for the scorecard's D figure and the scatter.
+const RISK_CA_GREEN_BELOW = 3;
+const RISK_CA_RED_FROM = 6;
+const RISK_SDP_RED_FROM = 3;
+
+export function colorForRisk(ca: number, sdpViolations: number): string {
+  if (ca >= RISK_CA_RED_FROM || sdpViolations >= RISK_SDP_RED_FROM) {
+    return HEALTH_RED;
+  }
+  if (ca < RISK_CA_GREEN_BELOW && sdpViolations === 0) {
+    return HEALTH_GREEN;
   }
   return HEALTH_AMBER;
 }

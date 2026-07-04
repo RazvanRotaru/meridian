@@ -12,12 +12,14 @@ import {
   accumulateCoupling,
   buildUnitIndex,
   countComponents,
+  couplingEdges,
   emptyCoupling,
   groupMembersByUnit,
   type UnitCoupling,
 } from "./composition-graph";
+import { cyclePeersByUnit } from "./composition-cycles";
 
-export type Smell = "god-module" | "zone-of-pain" | "zone-of-uselessness" | "low-cohesion";
+export type Smell = "god-module" | "zone-of-pain" | "zone-of-uselessness" | "low-cohesion" | "dependency-cycle";
 
 export interface UnitMetrics {
   id: string;
@@ -33,6 +35,10 @@ export interface UnitMetrics {
   abstractness: number;
   distance: number;
   externalFanout: number;
+  /** The other units of this unit's dependency cycle (its SCC), sorted; empty when acyclic. */
+  cyclePeers: string[];
+  /** Stable Dependencies Principle violations: efferent targets MORE unstable than this unit. */
+  sdpViolations: number;
   smells: Smell[];
 }
 
@@ -43,8 +49,8 @@ const PAIN_MAX_INSTABILITY = 0.3;
 const PAIN_MIN_AFFERENT = 3; // concrete AND actually depended upon → costly to change.
 const USELESS_MIN_ABSTRACTNESS = 0.7;
 const USELESS_MIN_INSTABILITY = 0.7;
-const LOW_COHESION_MIN_MEMBERS = 4;
-const LOW_COHESION_MIN_COMPONENTS = 2; // ≥2 unrelated jobs → SRP split candidate.
+const LOW_COHESION_MIN_MEMBERS = 8; // gate on the cohesion member set, not the full callable count.
+const LOW_COHESION_MIN_COMPONENTS = 3; // ≥3 unrelated jobs → SRP split candidate.
 
 /** Compute metrics for every unit in the graph, keyed by unit id. */
 export function computeCompositionMetrics(nodes: GraphNode[], edges: GraphEdge[]): Map<string, UnitMetrics> {
@@ -57,7 +63,32 @@ export function computeCompositionMetrics(nodes: GraphNode[], edges: GraphEdge[]
     const coupling = couplingByUnit.get(unit.id) ?? emptyCoupling();
     metrics.set(unit.id, metricsFor(unit, members, coupling));
   }
+  markDependencyCycles(metrics, nodes, edges);
+  countSdpViolations(metrics, couplingByUnit);
   return metrics;
+}
+
+/** Post-pass: every unit inside a ≥2-unit strongly-connected component of the coupling graph is
+ * in a dependency cycle — flag it and record its peers so the UI/tests can name the loop. */
+function markDependencyCycles(metrics: Map<string, UnitMetrics>, nodes: GraphNode[], edges: GraphEdge[]): void {
+  for (const [unitId, peers] of cyclePeersByUnit(couplingEdges(nodes, edges))) {
+    const metric = metrics.get(unitId);
+    if (metric) {
+      metric.cyclePeers = peers;
+      metric.smells.unshift("dependency-cycle"); // worst smell first, so the chip row leads with it.
+    }
+  }
+}
+
+/** Post-pass (needs every unit's instability): SDP says "depend toward stability", so each
+ * efferent target strictly MORE unstable than the unit itself is one violation. */
+function countSdpViolations(metrics: Map<string, UnitMetrics>, couplingByUnit: Map<string, UnitCoupling>): void {
+  for (const metric of metrics.values()) {
+    const efferent = couplingByUnit.get(metric.id)?.efferent ?? new Set<string>();
+    metric.sdpViolations = [...efferent].filter(
+      (target) => (metrics.get(target)?.instability ?? 0) > metric.instability,
+    ).length;
+  }
 }
 
 function metricsFor(unit: GraphNode, members: GraphNode[], coupling: UnitCoupling): UnitMetrics {
@@ -65,9 +96,10 @@ function metricsFor(unit: GraphNode, members: GraphNode[], coupling: UnitCouplin
   const ca = coupling.afferent.size;
   const instability = instabilityOf(ca, ce);
   const abstractness = abstractnessOf(unit, members);
-  const lcomComponents = countComponents(members.map((member) => member.id), coupling.internalCalls);
-  const cohesion = cohesionOf(members.length, lcomComponents);
-  const facts = { ca, ce, instability, abstractness, memberCount: members.length, lcomComponents };
+  const cohesionMembers = members.filter(isCohesionMember);
+  const lcomComponents = countComponents(cohesionMembers.map((member) => member.id), coupling.internalCalls);
+  const cohesion = cohesionOf(cohesionMembers.length, lcomComponents);
+  const facts = { ca, ce, instability, abstractness, cohesionMemberCount: cohesionMembers.length, lcomComponents };
   return {
     id: unit.id,
     kind: unit.kind,
@@ -82,8 +114,28 @@ function metricsFor(unit: GraphNode, members: GraphNode[], coupling: UnitCouplin
     abstractness: round2(abstractness),
     distance: round2(Math.abs(abstractness + instability - 1)),
     externalFanout: coupling.external.size,
+    cyclePeers: [],
+    sdpViolations: 0,
     smells: smellsFor(facts),
   };
+}
+
+// The cohesion story: constructors and accessors are wiring, not behaviour — a constructor touches
+// every collaborator and a getter touches one field, so both blur the LCOM call-cluster signal.
+// They are excluded from the ENTIRE cohesion computation (component count, the cohesion score's
+// denominator, and the SPLIT member gate) so those three displayed numbers always agree; `members`
+// keeps the full callable count because it measures unit SIZE and feeds abstractness, not cohesion.
+// Detection stays conservative — only what extractors clearly emit: the TS extractor names
+// constructors "constructor" (Python: "__init__"); accessor-ness only ever arrives as a tag
+// (Python tags @property "property"; TS emits no accessor marker today, so its get/set pass through).
+const CONSTRUCTOR_NAMES: ReadonlySet<string> = new Set(["constructor", "__init__"]);
+const ACCESSOR_TAGS: ReadonlySet<string> = new Set(["get", "set", "accessor", "property"]);
+
+function isCohesionMember(node: GraphNode): boolean {
+  if (CONSTRUCTOR_NAMES.has(node.displayName)) {
+    return false;
+  }
+  return !(node.tags ?? []).some((tag) => ACCESSOR_TAGS.has(tag));
 }
 
 function instabilityOf(ca: number, ce: number): number {
@@ -119,7 +171,7 @@ interface SmellFacts {
   ce: number;
   instability: number;
   abstractness: number;
-  memberCount: number;
+  cohesionMemberCount: number;
   lcomComponents: number;
 }
 
@@ -134,7 +186,7 @@ function smellsFor(facts: SmellFacts): Smell[] {
   if (facts.abstractness >= USELESS_MIN_ABSTRACTNESS && facts.instability >= USELESS_MIN_INSTABILITY) {
     smells.push("zone-of-uselessness");
   }
-  if (facts.memberCount >= LOW_COHESION_MIN_MEMBERS && facts.lcomComponents >= LOW_COHESION_MIN_COMPONENTS) {
+  if (facts.cohesionMemberCount >= LOW_COHESION_MIN_MEMBERS && facts.lcomComponents >= LOW_COHESION_MIN_COMPONENTS) {
     smells.push("low-cohesion");
   }
   return smells;
@@ -144,8 +196,10 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-// A smell's contribution to a unit's severity — heaviest structural problems weigh most.
+// A smell's contribution to a unit's severity — heaviest structural problems weigh most. A
+// dependency cycle outranks even a god-module: it can't be refactored one unit at a time.
 const SMELL_WEIGHT: Record<Smell, number> = {
+  "dependency-cycle": 5,
   "god-module": 4,
   "low-cohesion": 3,
   "zone-of-pain": 3,

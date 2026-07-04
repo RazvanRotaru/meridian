@@ -5,23 +5,35 @@
 
 import { describe, expect, it } from "vitest";
 import { injectBootScript } from "./boot-script";
+import type { BootOptions } from "./boot-script";
 
 describe("injectBootScript", () => {
   it("escapes a hostile preselected env so it cannot terminate the script tag", () => {
     const hostile = "</script><script>alert(document.domain)</script>";
-    const html = injectBootScript("<head></head>", { kind: "mock" }, hostile, null);
+    const html = injectBootScript("<head></head>", bootOptions({ preselectedEnv: hostile }));
     expect(html).not.toContain("</script><script>alert");
     expect(html).toContain("\\u003c/script\\u003e");
   });
 
   it("still injects a parseable boot object that never defaults the environment", () => {
-    const html = injectBootScript("<head></head>", { kind: "mock" }, "staging", null);
+    const html = injectBootScript("<head></head>", bootOptions({ preselectedEnv: "staging" }));
     expect(html).toContain('"preselectedEnv":"staging"');
     expect(html).toContain('"defaultEnv":null');
   });
 
   it("advertises the source endpoint only when a source root is configured", () => {
-    expect(injectBootScript("<head></head>", { kind: "mock" }, null, "/repo")).toContain('"sourceUrl":"/api/source"');
-    expect(injectBootScript("<head></head>", { kind: "mock" }, null, null)).toContain('"sourceUrl":null');
+    expect(injectBootScript("<head></head>", bootOptions({ sourceRoot: "/repo" }))).toContain('"sourceUrl":"/api/source"');
+    expect(injectBootScript("<head></head>", bootOptions({}))).toContain('"sourceUrl":null');
+  });
+
+  it("advertises the behavior endpoint only when --behavior produced a report", () => {
+    expect(injectBootScript("<head></head>", bootOptions({ behaviorEnabled: true }))).toContain(
+      '"behaviorUrl":"/api/behavior"',
+    );
+    expect(injectBootScript("<head></head>", bootOptions({}))).toContain('"behaviorUrl":null');
   });
 });
+
+function bootOptions(overrides: Partial<BootOptions>): BootOptions {
+  return { overlay: { kind: "mock" }, preselectedEnv: null, sourceRoot: null, behaviorEnabled: false, ...overrides };
+}

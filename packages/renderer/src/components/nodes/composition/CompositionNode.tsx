@@ -1,15 +1,15 @@
 /**
  * The Service-composition scorecard: one composition unit (class/interface/object/module) as a
  * SOLID health card, styled after the dark Unreal-Blueprints palette. A left accent bar coloured by
- * distance-from-the-main-sequence gives an at-a-glance health read; the body carries the kind, the
- * coupling/cohesion metrics, and a wrapping row of design-smell chips. A green ring marks the
- * selected unit — read from the store, mirroring how logic nodes show their selection.
+ * change RISK (afferent coupling + SDP violations) gives an at-a-glance read; the body carries the
+ * kind, the coupling/cohesion metrics, and a wrapping row of design-smell chips. A green ring marks
+ * the selected unit — read from the store, mirroring how logic nodes show their selection.
  */
 
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
-import { colorForDistance, type CompNodeData } from "../../../derive/compositionGraph";
+import { colorForRisk, type CompNodeData } from "../../../derive/compositionGraph";
 import type { CompRfNode } from "../../../layout/compositionElk";
 import type { Smell } from "../../../derive/composition";
 import { accentForKind } from "../../../theme/kindColors";
@@ -28,7 +28,7 @@ function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
   // unit, so it never wears the green selection ring.
   const boundary = d.boundary === true;
   const selected = compSelectedId === d.unitId && !boundary;
-  const health = colorForDistance(metrics.distance);
+  const health = colorForRisk(metrics.ca, metrics.sdpViolations);
   const tint = accentForKind(d.kind);
   return (
     <div style={boundary ? CARD_BOUNDARY : selected ? CARD_SELECTED : CARD}>
@@ -87,8 +87,8 @@ function MetricPair(props: { label: string; value: number; title: string }) {
   );
 }
 
-/** A design-smell pill: short glanceable label, red for the structural hazards (HUB/PAIN), amber
- * for the softer split/unused hints. Full smell name rides the hover title. */
+/** A design-smell pill: short glanceable label, red for the structural hazards (CYCLE/HUB/PAIN),
+ * amber for the softer split/unused hints. Full smell name rides the hover title. */
 function SmellChip(props: { smell: Smell }) {
   return (
     <span style={SMELL_TONE[props.smell] === "red" ? CHIP_RED : CHIP_AMBER} title={props.smell}>
@@ -98,12 +98,14 @@ function SmellChip(props: { smell: Smell }) {
 }
 
 const SMELL_LABEL: Record<Smell, string> = {
+  "dependency-cycle": "CYCLE",
   "god-module": "HUB",
   "zone-of-pain": "PAIN",
   "zone-of-uselessness": "UNUSED",
   "low-cohesion": "SPLIT",
 };
 const SMELL_TONE: Record<Smell, "red" | "amber"> = {
+  "dependency-cycle": "red",
   "god-module": "red",
   "zone-of-pain": "red",
   "zone-of-uselessness": "amber",

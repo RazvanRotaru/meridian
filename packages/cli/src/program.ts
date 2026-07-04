@@ -75,6 +75,8 @@ function registerView(program: Command): void {
     .option("--overlay <source>", "overlay source: a file path or 'mock'")
     .option("--env <env>", "environment (also read from BLUEPRINT_ENV)")
     .option("--source-root <dir>", "serve source for code view from this directory")
+    .option("--behavior", "analyze git history (churn + co-change) and serve it at /api/behavior")
+    .option("--behavior-commits <n>", "commits of git history to analyze", parseCommitLimit, 500)
     .action((graph, _options, command) =>
       runView(graph ?? "meridian.graph.json", command.optsWithGlobals() as ViewOptions),
     );
@@ -97,4 +99,14 @@ function parsePort(value: string): number {
     throw new InvalidArgumentError("port must be an integer in 1..65535");
   }
   return port;
+}
+
+const MAX_BEHAVIOR_COMMITS = 5000;
+
+function parseCommitLimit(value: string): number {
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_BEHAVIOR_COMMITS) {
+    throw new InvalidArgumentError(`behavior-commits must be an integer in 1..${MAX_BEHAVIOR_COMMITS}`);
+  }
+  return limit;
 }

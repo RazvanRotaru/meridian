@@ -14,7 +14,8 @@ import type { GraphArtifact } from "@meridian/core";
 import { CliError, EXIT } from "../errors";
 import { injectBootScript } from "./boot-script";
 import type { OverlaySource } from "./overlay-source";
-import { sendGraph, sendMeta, sendOverlay } from "./api";
+import type { BehaviorReport } from "./behavior";
+import { sendBehavior, sendGraph, sendMeta, sendOverlay } from "./api";
 import { sendSource } from "./source-serve";
 import { serveStatic } from "./static-files";
 import type { StaticAssets } from "./static-files";
@@ -26,6 +27,8 @@ export interface ServerConfig {
   rendererRoot: string;
   /** Directory the `/api/source` code view reads from; absent → source view disabled. */
   sourceRoot?: string;
+  /** Startup-computed `--behavior` git-history report; absent → `/api/behavior` is a 404. */
+  behavior?: BehaviorReport | null;
 }
 
 export function createBlueprintServer(config: ServerConfig): Server {
@@ -39,7 +42,12 @@ function loadAssets(config: ServerConfig): StaticAssets {
     throw new CliError(EXIT.io, `renderer bundle not found at ${config.rendererRoot} — run \`pnpm --filter @meridian/cli copy-renderer\``);
   }
   const rawHtml = readFileSync(indexPath, "utf8");
-  const indexHtml = injectBootScript(rawHtml, config.overlay, config.preselectedEnv, config.sourceRoot ?? null);
+  const indexHtml = injectBootScript(rawHtml, {
+    overlay: config.overlay,
+    preselectedEnv: config.preselectedEnv,
+    sourceRoot: config.sourceRoot ?? null,
+    behaviorEnabled: Boolean(config.behavior),
+  });
   return { rendererRoot: config.rendererRoot, indexHtml };
 }
 
@@ -55,6 +63,10 @@ function route(config: ServerConfig, assets: StaticAssets, request: IncomingMess
   }
   if (url.pathname === "/api/overlay") {
     sendOverlay(response, config.artifact, config.overlay, url.searchParams.get("env"));
+    return;
+  }
+  if (url.pathname === "/api/behavior") {
+    sendBehavior(response, config.behavior ?? null);
     return;
   }
   if (url.pathname === "/api/source") {

@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { GraphEdge, GraphNode } from "@meridian/core";
 import {
   colorForDistance,
+  colorForRisk,
   deriveCompositionGraph,
   sizeFor,
   HEALTH_AMBER,
@@ -155,5 +156,24 @@ describe("colorForDistance", () => {
     expect(colorForDistance(0.69)).toBe(HEALTH_AMBER);
     expect(colorForDistance(0.7)).toBe(HEALTH_RED);
     expect(colorForDistance(1)).toBe(HEALTH_RED);
+  });
+});
+
+describe("colorForRisk", () => {
+  it("is green only when Ca < 3 and there is no SDP violation", () => {
+    expect(colorForRisk(0, 0)).toBe(HEALTH_GREEN);
+    expect(colorForRisk(2, 0)).toBe(HEALTH_GREEN);
+  });
+
+  it("is amber when one signal creeps without either red trigger", () => {
+    expect(colorForRisk(3, 0)).toBe(HEALTH_AMBER); // Ca leaves the green band
+    expect(colorForRisk(0, 1)).toBe(HEALTH_AMBER); // any SDP violation ends the green
+    expect(colorForRisk(5, 2)).toBe(HEALTH_AMBER); // both elevated, neither at the red line
+  });
+
+  it("is red when either Ca ≥ 6 or SDP violations ≥ 3", () => {
+    expect(colorForRisk(6, 0)).toBe(HEALTH_RED);
+    expect(colorForRisk(0, 3)).toBe(HEALTH_RED);
+    expect(colorForRisk(9, 5)).toBe(HEALTH_RED);
   });
 });

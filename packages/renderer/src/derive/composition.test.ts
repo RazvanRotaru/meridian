@@ -151,11 +151,11 @@ describe("cohesion (LCOM4)", () => {
   ];
   const fragmentedEdges = [edge("ts:m#C.m1", "ts:m#C.m2"), edge("ts:m#C.m3", "ts:m#C.m4")];
 
-  it("splits two disconnected call clusters into 2 components and flags low cohesion", () => {
+  it("splits two disconnected call clusters into 2 components without tripping the SPLIT gate", () => {
     const c = metricOf(fragmented, fragmentedEdges, "ts:m#C");
     expect(c.lcomComponents).toBe(2);
     expect(c.cohesion).toBe(0.67); // 1 − (2 − 1) / (4 − 1)
-    expect(c.smells).toContain("low-cohesion");
+    expect(c.smells).not.toContain("low-cohesion"); // 4 members / 2 components sits below the 8 / 3 gate
   });
 
   it("collapses a fully chained class into 1 component with cohesion 1", () => {
@@ -167,6 +167,75 @@ describe("cohesion (LCOM4)", () => {
     const c = metricOf(fragmented, chainEdges, "ts:m#C");
     expect(c.lcomComponents).toBe(1);
     expect(c.cohesion).toBe(1);
+    expect(c.smells).not.toContain("low-cohesion");
+  });
+
+  it("excludes the constructor from the LCOM graph, so it cannot glue unrelated clusters", () => {
+    // The ctor calls into both clusters — with it counted, everything would collapse to 1 component.
+    const nodes = [...fragmented, node("ts:m#C.ctor", "method", { parentId: "ts:m#C", displayName: "constructor" })];
+    const edges = [...fragmentedEdges, edge("ts:m#C.ctor", "ts:m#C.m1"), edge("ts:m#C.ctor", "ts:m#C.m3")];
+    const c = metricOf(nodes, edges, "ts:m#C");
+    expect(c.lcomComponents).toBe(2);
+    expect(c.cohesion).toBe(0.67); // denominator is the 4 FILTERED members, matching the components
+    expect(c.members).toBe(5); // the displayed size still counts every callable, ctor included
+  });
+
+  it("excludes accessor-tagged members from the LCOM graph and the cohesion denominator", () => {
+    const nodes = [
+      ...fragmented,
+      node("ts:m#C.g", "method", { parentId: "ts:m#C", tags: ["get"] }),
+      node("ts:m#C.p", "method", { parentId: "ts:m#C", tags: ["property"] }),
+    ];
+    const c = metricOf(nodes, fragmentedEdges, "ts:m#C");
+    expect(c.lcomComponents).toBe(2); // the two accessors would otherwise be 2 extra singletons
+    expect(c.cohesion).toBe(0.67);
+    expect(c.members).toBe(6);
+  });
+});
+
+describe("low-cohesion (SPLIT) regate", () => {
+  // A class of `memberCount` methods forming disconnected pairs: m0→m1, m2→m3, … (odd leftover
+  // member stays a singleton), so components = ceil(memberCount / 2).
+  function fragmentedClass(memberCount: number): { nodes: GraphNode[]; edges: GraphEdge[] } {
+    const nodes = [node("ts:m#C", "class")];
+    const edges: GraphEdge[] = [];
+    for (let i = 0; i < memberCount; i += 1) {
+      nodes.push(node(`ts:m#C.m${i}`, "method", { parentId: "ts:m#C" }));
+      if (i % 2 === 1) {
+        edges.push(edge(`ts:m#C.m${i - 1}`, `ts:m#C.m${i}`));
+      }
+    }
+    return { nodes, edges };
+  }
+
+  it("fires with 8 members in 4 components (≥ 8 members and ≥ 3 components)", () => {
+    const { nodes, edges } = fragmentedClass(8);
+    const c = metricOf(nodes, edges, "ts:m#C");
+    expect(c.lcomComponents).toBe(4);
+    expect(c.smells).toContain("low-cohesion");
+  });
+
+  it("does not fire with 7 members even in 4 components (member gate)", () => {
+    const { nodes, edges } = fragmentedClass(7);
+    const c = metricOf(nodes, edges, "ts:m#C");
+    expect(c.lcomComponents).toBe(4);
+    expect(c.smells).not.toContain("low-cohesion");
+  });
+
+  it("does not fire with 8 members in only 2 components (component gate)", () => {
+    const { nodes, edges } = fragmentedClass(8);
+    // Chain the pairs into two clusters of 4: {m0..m3} and {m4..m7}.
+    edges.push(edge("ts:m#C.m1", "ts:m#C.m2"), edge("ts:m#C.m5", "ts:m#C.m6"));
+    const c = metricOf(nodes, edges, "ts:m#C");
+    expect(c.lcomComponents).toBe(2);
+    expect(c.smells).not.toContain("low-cohesion");
+  });
+
+  it("gates on the FILTERED member count: 8 callables where 1 is a constructor do not fire", () => {
+    const { nodes, edges } = fragmentedClass(7);
+    nodes.push(node("ts:m#C.ctor", "method", { parentId: "ts:m#C", displayName: "constructor" }));
+    const c = metricOf(nodes, edges, "ts:m#C");
+    expect(c.members).toBe(8);
     expect(c.smells).not.toContain("low-cohesion");
   });
 });
@@ -210,7 +279,7 @@ describe("smells", () => {
       node("ts:m#C.m1", "method", { parentId: "ts:m#C" }),
       node("ts:m#C.m2", "method", { parentId: "ts:m#C" }),
       node("ts:m#C.m3", "method", { parentId: "ts:m#C" }),
-    ]; // 3 members, no internal calls → 3 components, but members < 4
+    ]; // 3 members, no internal calls → 3 components, but members < 8
     const c = metricOf(nodes, [], "ts:m#C");
     expect(c.lcomComponents).toBe(3);
     expect(c.smells).not.toContain("low-cohesion");
@@ -232,6 +301,76 @@ describe("external fan-out", () => {
   });
 });
 
+describe("dependency-cycle smell", () => {
+  // Standalone modules whose top-level functions call each other — one unit per module.
+  function moduleWeb(links: Array<[string, string]>): { nodes: GraphNode[]; edges: GraphEdge[] } {
+    const ids = new Set(links.flat());
+    const nodes = [...ids].flatMap((id) => [node(id, "module"), node(`${id}#f`, "function", { parentId: id })]);
+    const edges = links.map(([source, target]) => edge(`${source}#f`, `${target}#f`));
+    return { nodes, edges };
+  }
+
+  it("flags both units of a 2-unit cycle with each other as cyclePeers", () => {
+    const { nodes, edges } = moduleWeb([["ts:a", "ts:b"], ["ts:b", "ts:a"]]);
+    const a = metricOf(nodes, edges, "ts:a");
+    const b = metricOf(nodes, edges, "ts:b");
+    expect(a.smells).toContain("dependency-cycle");
+    expect(b.smells).toContain("dependency-cycle");
+    expect(a.cyclePeers).toEqual(["ts:b"]);
+    expect(b.cyclePeers).toEqual(["ts:a"]);
+  });
+
+  it("flags all three units of a 3-unit cycle and lists both peers, sorted", () => {
+    const { nodes, edges } = moduleWeb([["ts:a", "ts:b"], ["ts:b", "ts:c"], ["ts:c", "ts:a"]]);
+    for (const id of ["ts:a", "ts:b", "ts:c"]) {
+      expect(metricOf(nodes, edges, id).smells).toContain("dependency-cycle");
+    }
+    expect(metricOf(nodes, edges, "ts:a").cyclePeers).toEqual(["ts:b", "ts:c"]);
+  });
+
+  it("does not flag any unit of an acyclic chain", () => {
+    const { nodes, edges } = moduleWeb([["ts:a", "ts:b"], ["ts:b", "ts:c"]]);
+    for (const id of ["ts:a", "ts:b", "ts:c"]) {
+      const metric = metricOf(nodes, edges, id);
+      expect(metric.smells).not.toContain("dependency-cycle");
+      expect(metric.cyclePeers).toEqual([]);
+    }
+  });
+
+  it("keeps a unit outside the cycle clean even when it feeds into one", () => {
+    const { nodes, edges } = moduleWeb([["ts:x", "ts:a"], ["ts:a", "ts:b"], ["ts:b", "ts:a"]]);
+    expect(metricOf(nodes, edges, "ts:x").smells).not.toContain("dependency-cycle");
+    expect(metricOf(nodes, edges, "ts:a").cyclePeers).toEqual(["ts:b"]);
+  });
+});
+
+describe("SDP violations", () => {
+  // A: Ca 3 (x1..x3), Ce 3 (b, c, d) → I = 0.5. Targets: b (I = 2/3), c (I = 0), d (I = 0.8) —
+  // two of them are MORE unstable than A, so A leans on shifting ground twice.
+  const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+  for (const id of ["A", "B", "C", "D", "X1", "X2", "X3", "L1", "L2", "L3", "L4", "L5", "L6"]) {
+    nodes.push(node(id, "module"), node(`${id}#f`, "function", { parentId: id }));
+  }
+  for (const feeder of ["X1", "X2", "X3"]) {
+    edges.push(edge(`${feeder}#f`, "A#f"));
+  }
+  edges.push(edge("A#f", "B#f"), edge("A#f", "C#f"), edge("A#f", "D#f"));
+  edges.push(edge("B#f", "L1#f"), edge("B#f", "L2#f"));
+  edges.push(edge("D#f", "L3#f"), edge("D#f", "L4#f"), edge("D#f", "L5#f"), edge("D#f", "L6#f"));
+
+  it("counts only the efferent targets strictly more unstable than the unit itself", () => {
+    const a = metricOf(nodes, edges, "A");
+    expect(a.instability).toBe(0.5);
+    expect(a.sdpViolations).toBe(2); // B and D, not the fully stable C
+  });
+
+  it("is 0 for a unit whose dependencies are all at least as stable", () => {
+    expect(metricOf(nodes, edges, "B").sdpViolations).toBe(0); // leaves have I = 0
+    expect(metricOf(nodes, edges, "C").sdpViolations).toBe(0); // no efferent at all
+  });
+});
+
 describe("rankRefactorCandidates", () => {
   const nodes: GraphNode[] = [node("H", "module"), node("H#h", "function", { parentId: "H" })];
   const edges: GraphEdge[] = [];
@@ -245,5 +384,18 @@ describe("rankRefactorCandidates", () => {
     const metrics = computeCompositionMetrics(nodes, edges);
     expect(rankRefactorCandidates(metrics)[0].id).toBe("H");
     expect(rankRefactorCandidates([...metrics.values()])[0].id).toBe("H");
+  });
+
+  it("ranks a dependency-cycle unit above the god-module hub", () => {
+    const withCycle = [
+      ...nodes,
+      node("CY1", "module"), node("CY1#f", "function", { parentId: "CY1" }),
+      node("CY2", "module"), node("CY2#f", "function", { parentId: "CY2" }),
+    ];
+    const cycleEdges = [...edges, edge("CY1#f", "CY2#f"), edge("CY2#f", "CY1#f")];
+    const ranked = rankRefactorCandidates(computeCompositionMetrics(withCycle, cycleEdges));
+    expect(ranked[0].smells).toContain("dependency-cycle");
+    expect(ranked[1].smells).toContain("dependency-cycle");
+    expect(ranked[2].id).toBe("H");
   });
 });

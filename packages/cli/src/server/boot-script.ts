@@ -3,21 +3,24 @@
  *
  * `defaultEnv` is always null and `envRequired` mirrors `hasOverlay`: the renderer asserts
  * the never-default-prod invariant from this very object, so the server states it explicitly
- * rather than letting the SPA infer an environment.
+ * rather than letting the SPA infer an environment. `behaviorUrl` follows the same pattern:
+ * the URL when `--behavior` produced a report, null otherwise — the SPA never probes.
  */
 
 import { hasOverlay, overlayKind } from "./overlay-source";
 import type { OverlaySource } from "./overlay-source";
 
+export interface BootOptions {
+  overlay: OverlaySource;
+  preselectedEnv: string | null;
+  sourceRoot: string | null;
+  behaviorEnabled: boolean;
+}
+
 const HEAD_CLOSE = "</head>";
 
-export function injectBootScript(
-  html: string,
-  overlay: OverlaySource,
-  preselectedEnv: string | null,
-  sourceRoot: string | null,
-): string {
-  const script = `<script>window.__MERIDIAN__=${escapeForScript(bootJson(overlay, preselectedEnv, sourceRoot))}</script>`;
+export function injectBootScript(html: string, options: BootOptions): string {
+  const script = `<script>window.__MERIDIAN__=${escapeForScript(bootJson(options))}</script>`;
   if (html.includes(HEAD_CLOSE)) {
     return html.replace(HEAD_CLOSE, `${script}${HEAD_CLOSE}`);
   }
@@ -30,16 +33,17 @@ function escapeForScript(json: string): string {
   return json.replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
 }
 
-function bootJson(overlay: OverlaySource, preselectedEnv: string | null, sourceRoot: string | null): string {
+function bootJson(options: BootOptions): string {
   return JSON.stringify({
     graphUrl: "/api/graph",
     metaUrl: "/api/meta",
     overlayUrl: "/api/overlay",
-    sourceUrl: sourceRoot ? "/api/source" : null,
-    hasOverlay: hasOverlay(overlay),
-    overlayKind: overlayKind(overlay),
-    envRequired: hasOverlay(overlay),
-    preselectedEnv,
+    sourceUrl: options.sourceRoot ? "/api/source" : null,
+    behaviorUrl: options.behaviorEnabled ? "/api/behavior" : null,
+    hasOverlay: hasOverlay(options.overlay),
+    overlayKind: overlayKind(options.overlay),
+    envRequired: hasOverlay(options.overlay),
+    preselectedEnv: options.preselectedEnv,
     defaultEnv: null,
   });
 }

@@ -15,6 +15,8 @@ import { validateOrThrow } from "../validation";
 import { Reporter } from "../reporter";
 import type { GlobalOptions } from "../reporter";
 import { resolveOverlaySource } from "../server/overlay-source";
+import { collectBehavior } from "../server/behavior";
+import type { BehaviorReport } from "../server/behavior";
 import { createBlueprintServer } from "../server/server";
 import { serve } from "../server/serve";
 
@@ -25,6 +27,8 @@ export interface ViewOptions extends GlobalOptions {
   overlay?: string;
   env?: string;
   sourceRoot?: string;
+  behavior?: boolean;
+  behaviorCommits: number;
 }
 
 export async function runView(graph: string, options: ViewOptions): Promise<void> {
@@ -34,8 +38,25 @@ export async function runView(graph: string, options: ViewOptions): Promise<void
   const artifact = loadGraph(graph, cwd);
   const overlay = resolveOverlaySource(options.overlay, cwd);
   const sourceRoot = options.sourceRoot ? resolveAgainst(cwd, options.sourceRoot) : undefined;
-  const server = createBlueprintServer({ artifact, overlay, preselectedEnv: env, rendererRoot: rendererRoot(), sourceRoot });
+  const behavior = await resolveBehavior(options, sourceRoot, reporter);
+  const server = createBlueprintServer({ artifact, overlay, preselectedEnv: env, rendererRoot: rendererRoot(), sourceRoot, behavior });
   await serve(server, { host: options.host, startPort: options.port, openBrowser: options.open }, reporter);
+}
+
+/** `--behavior` runs git inside the source root; anything short of that degrades to a warning, never a crash. */
+async function resolveBehavior(
+  options: ViewOptions,
+  sourceRoot: string | undefined,
+  reporter: Reporter,
+): Promise<BehaviorReport | null> {
+  if (!options.behavior) {
+    return null;
+  }
+  if (!sourceRoot) {
+    reporter.info("warning: --behavior needs --source-root to locate the git repository; behavior analysis disabled");
+    return null;
+  }
+  return collectBehavior(sourceRoot, options.behaviorCommits, (line) => reporter.info(`warning: ${line}`));
 }
 
 function requireEnvForOverlay(options: ViewOptions): string | null {

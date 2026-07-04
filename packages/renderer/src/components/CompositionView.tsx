@@ -14,7 +14,7 @@ import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { compNodeTypes } from "./nodes/composition/CompositionNode";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import type { CompRfEdge, CompRfNode } from "../layout/compositionElk";
-import { colorForDistance, type CompNodeData } from "../derive/compositionGraph";
+import { colorForRisk, type CompNodeData } from "../derive/compositionGraph";
 
 export function CompositionView() {
   const nodes = useBlueprint((state) => state.compRfNodes);
@@ -167,13 +167,14 @@ function dimNode(node: CompRfNode): CompRfNode {
 }
 
 // The MiniMap gets untyped `Node`s; a cluster frame carries no metrics, so it reads as a neutral
-// panel tone, while each unit dot tints by its health colour — the same green→amber→red story as
-// the cards.
+// panel tone, while each unit dot tints by its change-risk colour — the same green→amber→red story
+// as the card rails.
 function miniMapColor(node: Node): string {
   if (node.type === "cluster") {
     return "#2A313D";
   }
-  return colorForDistance((node.data as CompNodeData).metrics.distance);
+  const metrics = (node.data as CompNodeData).metrics;
+  return colorForRisk(metrics.ca, metrics.sdpViolations);
 }
 
 /** Shown when the artifact has no composition units to chart (no classes/modules with members or

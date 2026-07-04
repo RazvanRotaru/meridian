@@ -69,6 +69,35 @@ describe("createBlueprintServer", () => {
     expect(malformed.status).toBe(200); // falls back to index, not an unhandled URIError
     expect((await fetch(`${base}/api/meta`)).status).toBe(200); // server is still alive
   });
+
+  it("404s /api/behavior and advertises behaviorUrl null when --behavior is off", async () => {
+    expect((await fetch(`${base}/api/behavior`)).status).toBe(404);
+    expect(await (await fetch(`${base}/`)).text()).toContain('"behaviorUrl":null');
+  });
+});
+
+describe("createBlueprintServer with a behavior report", () => {
+  const behavior = {
+    behaviorVersion: "1" as const,
+    generatedAt: "2026-01-01T00:00:00.000Z",
+    commitsAnalyzed: 4,
+    churnByFile: { "src/a.ts": 4 },
+    coChange: [{ a: "src/a.ts", b: "src/b.ts", count: 3, ratio: 1 }],
+  };
+  let behaviorServer: Server;
+  let behaviorBase: string;
+
+  beforeAll(async () => {
+    behaviorServer = createBlueprintServer({ artifact, overlay: { kind: "mock" }, preselectedEnv: null, rendererRoot, behavior });
+    behaviorBase = await listenEphemeral(behaviorServer);
+  });
+
+  afterAll(() => behaviorServer.close());
+
+  it("serves the cached report and advertises behaviorUrl in the boot script", async () => {
+    expect(await getJson(`${behaviorBase}/api/behavior`)).toEqual(behavior);
+    expect(await (await fetch(`${behaviorBase}/`)).text()).toContain('"behaviorUrl":"/api/behavior"');
+  });
 });
 
 async function getJson<T = Record<string, unknown>>(url: string): Promise<T> {

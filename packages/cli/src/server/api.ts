@@ -11,6 +11,7 @@ import { buildMockOverlay } from "@meridian/core/mock";
 import type { GraphArtifact } from "@meridian/core";
 import { hasOverlay } from "./overlay-source";
 import type { OverlaySource } from "./overlay-source";
+import type { BehaviorReport } from "./behavior";
 
 export function sendMeta(response: ServerResponse, graph: GraphArtifact, overlay: OverlaySource): void {
   sendJson(response, 200, {
@@ -64,6 +65,20 @@ export function sendOverlay(
     return;
   }
   sendJson(response, 404, { error: `no overlay for env '${env}'` });
+}
+
+/**
+ * Disabled behavior (`--behavior` not passed) is a hard 404, not an `{available:false}`
+ * soft-success: the boot script already advertises `behaviorUrl: null`, so a well-behaved
+ * renderer never calls this, and a stray caller gets an unambiguous error. The report is
+ * computed once at startup and served from memory; it takes no request input to echo.
+ */
+export function sendBehavior(response: ServerResponse, behavior: BehaviorReport | null): void {
+  if (!behavior) {
+    sendJson(response, 404, { error: "behavior analysis not enabled; run view with --behavior" });
+    return;
+  }
+  sendJson(response, 200, behavior);
 }
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
