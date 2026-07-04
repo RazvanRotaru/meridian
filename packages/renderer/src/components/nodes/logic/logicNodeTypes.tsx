@@ -10,7 +10,7 @@
 
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
-import type { LogicRfNode } from "../../../layout/logicElk";
+import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
 import type { LogicNodeData } from "../../../derive/logicGraph";
 import type { CodeView } from "../../../state/store";
 import { CodeBlock } from "../../CodeBlock";
@@ -245,7 +245,30 @@ function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
   );
 }
 
-export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: BranchNode, jumpflow: JumpFlowNode };
+/**
+ * A def-group FRAME: the structural container the module view groups a callable owner's methods
+ * into — an object literal, a class, or the top-level `functions` bucket. It fills its laid-out box
+ * with a titled, teal-tinted border; its body stays transparent so the def nodes React Flow parents
+ * to it render OVER it. It is NOT an exec node — no exec pins, no target — so clicking it is a
+ * harmless no-op (no selection/drill); only the def blocks inside it are interactive.
+ */
+function DefGroupNode({ data }: NodeProps<LogicRfNode>) {
+  const d = data as DefGroupData;
+  // The top-level functions group records kind "module": tag it FUNCTIONS. Every other group is an
+  // owner (object/class), so its kind uppercases straight to the tag (OBJECT / CLASS / …).
+  const tag = d.kind === "module" ? "FUNCTIONS" : d.kind.toUpperCase();
+  return (
+    <div style={DEFGROUP_FRAME}>
+      <div style={DEFGROUP_TITLE}>
+        <span style={DEFGROUP_NAME} title={d.label}>{d.label}</span>
+        <span style={DEFGROUP_TAG}>{tag}</span>
+        <span style={DEFGROUP_COUNT}>{d.childCount}</span>
+      </div>
+    </div>
+  );
+}
+
+export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: BranchNode, jumpflow: JumpFlowNode, defgroup: DefGroupNode };
 
 // Selection is BY TARGET (a target can be called many times): a matched call site rings green so
 // every call of the same target lights up together; while some target is selected, unrelated nodes
@@ -385,6 +408,36 @@ const COUNT: React.CSSProperties = { marginLeft: "auto", fontSize: 10, fontWeigh
 // quiet kind-tag ("defined here") without competing with the callable name beside it.
 const DEF_TAG: React.CSSProperties = { flexShrink: 0, fontSize: 8, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", border: "1px solid rgba(0,0,0,0.35)", borderRadius: 3, padding: "0 3px", opacity: 0.75 };
 const CODE_BTN: React.CSSProperties = { marginLeft: "auto", border: "none", background: "rgba(0,0,0,0.18)", color: "#0B0E13", borderRadius: 4, padding: "1px 5px", fontSize: 10, fontFamily: MONO, cursor: "pointer" };
+
+// The def-group frame reuses the def teal (#3FB8AF) but SUBTLER — a faint tinted border/fill that
+// reads as a structural group, not a call block. It fills its exact laid-out box (border-box); the
+// title bar height matches the layout's TITLE_H, and the body is left transparent for the child def
+// nodes to render over. A 32px title matches deriveLogicLayout's TITLE_H so children clear it.
+const DEFGROUP_FRAME: React.CSSProperties = {
+  width: "100%",
+  height: "100%",
+  boxSizing: "border-box",
+  border: "1px solid rgba(63,184,175,0.4)",
+  borderRadius: 10,
+  background: "rgba(63,184,175,0.05)",
+  fontFamily: MONO,
+};
+const DEFGROUP_TITLE: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  height: 32,
+  boxSizing: "border-box",
+  padding: "0 12px",
+  borderBottom: "1px solid rgba(63,184,175,0.25)",
+  color: "#7FD6CF",
+  fontSize: 12,
+  fontWeight: 700,
+};
+// The owner name takes the row and truncates; the kind tag and count stay pinned at the right.
+const DEFGROUP_NAME: React.CSSProperties = { ...NAME, flex: 1, minWidth: 0 };
+const DEFGROUP_TAG: React.CSSProperties = { flexShrink: 0, fontSize: 8, fontWeight: 700, letterSpacing: "0.06em", border: "1px solid rgba(63,184,175,0.4)", borderRadius: 3, padding: "1px 4px", color: "#3FB8AF" };
+const DEFGROUP_COUNT: React.CSSProperties = { flexShrink: 0, fontSize: 10, fontWeight: 600, color: "#6C7683" };
 
 // The inline source box: hangs below the node (top:100%), high z-index so it overlays neighbours,
 // left-aligned to the node. overflow:hidden keeps the rounded corners; the code scrolls in CodeBlock.
