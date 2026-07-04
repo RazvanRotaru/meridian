@@ -8,7 +8,7 @@ import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import type { ViewMode } from "../derive/edgeSelection";
 
 const SEGMENTS: ReadonlyArray<{ mode: ViewMode; label: string }> = [
-  { mode: "call", label: "Call flow" },
+  { mode: "call", label: "Service composition" },
   { mode: "ui", label: "UI composition" },
   { mode: "logic", label: "Logic flow" },
 ];
