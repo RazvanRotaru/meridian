@@ -4,9 +4,9 @@
  * in a stale-layout guard, exactly like `deriveLayout` does for the call graph.
  */
 
-import type { LogicFlows } from "@meridian/core";
+import type { FlowPath, LogicFlows } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
-import { deriveLogicGraph, type LogicNodeSpec } from "../derive/logicGraph";
+import { deriveLogicGraph, deriveLogicGraphFromBodies, type LogicNodeSpec } from "../derive/logicGraph";
 import { buildLogicElkGraph, toReactFlowLogic, type LogicReactFlowGraph } from "../layout/logicElk";
 import { runElkLayout } from "../layout/elkLayout";
 
@@ -16,8 +16,13 @@ export async function deriveLogicLayout(
   index: GraphIndex,
   expandedLogic: ReadonlySet<string>,
   options: { hideGreyed: boolean },
+  // When set, chart ONLY this container's bodies as a focused sub-view (the DIVE gesture) instead
+  // of the whole callable flow rooted at `rootId`.
+  focus?: { id: string; bodies: FlowPath[] },
 ): Promise<LogicReactFlowGraph> {
-  const spec = deriveLogicGraph(rootId, flows, index, expandedLogic, options);
+  const spec = focus
+    ? deriveLogicGraphFromBodies(focus.id, focus.bodies, flows, index, expandedLogic, options)
+    : deriveLogicGraph(rootId, flows, index, expandedLogic, options);
   if (spec.nodes.length === 0) {
     return { nodes: [], edges: [] };
   }

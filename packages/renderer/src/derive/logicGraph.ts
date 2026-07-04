@@ -8,7 +8,7 @@
  * Pure: (rootId, flows, index, expanded set, options) → {nodes, edges}. No React, no ELK.
  */
 
-import type { EdgeResolution, FlowStep, LogicFlows } from "@meridian/core";
+import type { EdgeResolution, FlowPath, FlowStep, LogicFlows } from "@meridian/core";
 import { parseNodeId } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 
@@ -25,6 +25,10 @@ export type LogicNodeData = {
   greyed: boolean;
   provenance: { pkg: string; module: string } | null;
   childCount: number;
+  /** The sub-chains a control container holds (a loop's single body, or a try's try/catch/finally
+   * arms). Set ONLY on `control` nodes so a double-click can DIVE into them without re-parsing the
+   * flow; undefined on calls/branches. */
+  bodies?: FlowPath[];
 };
 
 export interface LogicNodeSpec {
@@ -69,6 +73,22 @@ export function deriveLogicGraph(
   return new LogicGraphBuilder(rootId, flows, index, expandedLogic, options).build(steps);
 }
 
+/**
+ * Chart a control container's bodies as INDEPENDENT top-level chains — the DIVE-into-a-container
+ * view (the container analog of drilling a callable). `prefix` (the container's own node id)
+ * namespaces every node id so they stay stable across relayouts and unique against any other view.
+ */
+export function deriveLogicGraphFromBodies(
+  prefix: string,
+  bodies: FlowPath[],
+  flows: LogicFlows,
+  index: GraphIndex,
+  expandedLogic: ReadonlySet<string>,
+  options: { hideGreyed: boolean },
+): LogicGraphSpec {
+  return new LogicGraphBuilder(prefix, flows, index, expandedLogic, options).buildFromBodies(bodies);
+}
+
 class LogicGraphBuilder {
   private readonly nodes: LogicNodeSpec[] = [];
   private readonly edges: LogicEdgeSpec[] = [];
@@ -84,6 +104,16 @@ class LogicGraphBuilder {
 
   build(steps: FlowStep[]): LogicGraphSpec {
     this.sequence(steps, null, "");
+    return { nodes: this.nodes, edges: this.edges };
+  }
+
+  /**
+   * The dive entry: render each body as its own top-level chain under `p${i}/` so ids stay unique.
+   * Separate bodies are NOT exec-linked (a try's try/catch/finally arms don't run in sequence),
+   * exactly like a container's inner rendering — only here they sit at the top level, not nested.
+   */
+  buildFromBodies(bodies: FlowPath[]): LogicGraphSpec {
+    bodies.forEach((body, i) => this.sequence(body.body, null, `p${i}/`));
     return { nodes: this.nodes, edges: this.edges };
   }
 
@@ -113,12 +143,12 @@ class LogicGraphBuilder {
       return this.callStep(step, parentId, path, id);
     }
     if (step.kind === "loop") {
-      return this.loopOrTry(parentId, path, id, "loop", step.label, [step.body], step.body.length);
+      const bodies: FlowPath[] = [{ label: step.label, body: step.body }];
+      return this.loopOrTry(parentId, path, id, "loop", step.label, bodies, step.body.length);
     }
     if (isTryLabel(step.label)) {
-      const bodies = step.paths.map((p) => p.body);
-      const count = bodies.reduce((sum, b) => sum + b.length, 0);
-      return this.loopOrTry(parentId, path, id, "try", "try / catch", bodies, count);
+      const count = step.paths.reduce((sum, p) => sum + p.body.length, 0);
+      return this.loopOrTry(parentId, path, id, "try", "try / catch", step.paths, count);
     }
     return this.branchStep(step, parentId, path, id);
   }
@@ -158,7 +188,7 @@ class LogicGraphBuilder {
     id: string,
     logicKind: "loop" | "try",
     label: string,
-    bodies: FlowStep[][],
+    bodies: FlowPath[],
     childCount: number,
   ): { entry: string; exits: Exit[] } {
     const isExpanded = this.expandedState(id, true);
@@ -173,12 +203,14 @@ class LogicGraphBuilder {
       greyed: false,
       provenance: null,
       childCount,
+      // Carried so a double-click can DIVE into these sub-chains without re-parsing the flow.
+      bodies,
     };
     this.push(id, parentId, "control", data, false);
     if (isExpanded) {
       // Each body is an independent sub-chain inside the frame (a try's catch/finally do not run
       // sequentially after its try block), so they are not exec-linked to each other.
-      bodies.forEach((body, bi) => this.sequence(body, id, `${path}/p${bi}/`));
+      bodies.forEach((body, bi) => this.sequence(body.body, id, `${path}/p${bi}/`));
     }
     return { entry: id, exits: [{ id }] };
   }
