@@ -211,19 +211,20 @@ function tintMarker(marker: LogicRfEdge["markerEnd"], color: string): LogicRfEdg
 const MAX_JUMPS = 6;
 const JUMP_WIDTH = 180;
 const JUMP_HEIGHT = 44;
-// Callers sit to the LEFT of the selected block so their wires flow left→right INTO its input pin;
-// SIDE_GAP is the horizontal clearance between a satellite's right edge and the block's left edge.
-const JUMP_SIDE_GAP = 60;
-const JUMP_DROP = 8; // small downward nudge so the stack reads as flowing into the block's left side
-const JUMP_STEP = 56; // vertical stride between stacked satellites
+// Ghosts sit in a horizontal ROW clear ABOVE the whole graph so they never overlap a laid-out node:
+// ROW_GAP is the vertical clearance between the row and the graph's top edge; COL_GAP is the gap
+// between neighbouring ghosts within the row.
+const JUMP_ROW_GAP = 90;
+const JUMP_COL_GAP = 40;
 const JUMP_MUTED = "#4B535F";
 
 /**
  * The jump-to-flow satellites for the current selection: for every OTHER flow that also CALLS the
- * selected target, a dashed ghost node stacked to the LEFT of the selected call site, each wired
- * FROM the satellite INTO that call site's input pin (those flows call this block, so the arrow
- * points into it). Purely additive — it reads the store's laid-out nodes but never mutates them, so
- * selection stays a repaint (no relayout). Empty unless a target is selected and it's called elsewhere.
+ * selected target, a dashed ghost node placed in a horizontal ROW clear ABOVE the whole graph (so it
+ * never overlaps a laid-out node), centred on the selected call site and wired DOWN INTO it (those
+ * flows contain this block, so the arrow points at it). Purely additive — it reads the store's
+ * laid-out nodes but never mutates them, so selection stays a repaint (no relayout). Empty unless a
+ * target is selected and it's called elsewhere.
  */
 function buildJumpSatellites(
   nodes: LogicRfNode[],
@@ -241,11 +242,14 @@ function buildJumpSatellites(
     return { jumpNodes: [], jumpEdges: [] };
   }
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  const origin = absolutePos(callSite, byId);
-  // Anchor the whole stack to the LEFT of the block (a satellite width + clearance), nudged down a
-  // touch, so every jump wire runs rightward into the block's left (input) pin — those flows call it.
-  const anchorX = origin.x - (JUMP_WIDTH + JUMP_SIDE_GAP);
-  const baseY = origin.y + JUMP_DROP;
+  // The ghost row sits a clear gap ABOVE the graph's top edge (its own height + gap), so no ghost
+  // ever overlaps a laid-out node. It's centred on the selected call site so its wires drop straight
+  // down into the block: total row width fixes the left start, ghosts stride across at COL_GAP.
+  const rowY = graphTop(nodes, byId) - JUMP_HEIGHT - JUMP_ROW_GAP;
+  const sel = absolutePos(callSite, byId);
+  const selWidth = callSite.width ?? JUMP_WIDTH;
+  const totalWidth = roots.length * JUMP_WIDTH + (roots.length - 1) * JUMP_COL_GAP;
+  const startX = sel.x + selWidth / 2 - totalWidth / 2;
 
   const jumpNodes: Node[] = [];
   const jumpEdges: Edge[] = [];
@@ -260,18 +264,28 @@ function buildJumpSatellites(
     jumpNodes.push({
       id,
       type: "jumpflow",
-      position: { x: anchorX, y: baseY + i * JUMP_STEP },
+      position: { x: startX + i * (JUMP_WIDTH + JUMP_COL_GAP), y: rowY },
       width: JUMP_WIDTH,
       height: JUMP_HEIGHT,
       selectable: false,
       draggable: false,
       data: { rootId: root, label: node?.displayName ?? root, file: node?.location?.file } satisfies JumpFlowNodeData,
     });
-    // FROM the satellite INTO the selected call site: React Flow attaches the satellite's source
-    // (Right) handle to the block's target (Left) pin, so the arrowhead lands on the block's input.
+    // FROM the ghost (in the row above) DOWN INTO the selected call site: React Flow attaches the
+    // ghost's source (Bottom) handle to the block's target (Left) pin, so the arrowhead lands on it.
     jumpEdges.push(jumpEdge(id, callSite.id, root));
   });
   return { jumpNodes, jumpEdges };
+}
+
+// The top edge (minimum absolute y) of the whole laid-out graph. Every node's ELK position is
+// parent-relative, so its true canvas y is summed up the parent chain; the ghost row anchors above this.
+function graphTop(nodes: LogicRfNode[], byId: Map<string, LogicRfNode>): number {
+  let top = Infinity;
+  for (const node of nodes) {
+    top = Math.min(top, absolutePos(node, byId).y);
+  }
+  return top;
 }
 
 /**
@@ -298,14 +312,14 @@ function absolutePos(node: LogicRfNode, byId: Map<string, LogicRfNode>): { x: nu
 }
 
 // The satellite wire: dashed, muted grey, no animation — it must not compete with the emphasized
-// exec thread. It runs FROM the caller satellite INTO the selected block's left pin; a small "in"
-// label reads as "this block is called in that flow", and the arrowhead lands on the block's input.
+// exec thread. It runs FROM the caller ghost (in the row above) DOWN INTO the selected block; a small
+// "contains" label reads as "that flow contains this block", and the arrowhead lands on the block.
 function jumpEdge(source: string, target: string, root: string): Edge {
   return {
     id: `jumpedge:${root}`,
     source,
     target,
-    label: "in",
+    label: "contains",
     animated: false,
     style: { stroke: JUMP_MUTED, strokeWidth: 1.5, strokeDasharray: "4 3" },
     labelStyle: { fill: "#7B8695", fontSize: 9 },
