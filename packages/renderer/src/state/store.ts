@@ -410,15 +410,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // stale-seq guard. Reads the raw nodes/edges off the index (built from the artifact); the derive
     // decides which units earn a card and wires their couplings.
     async compRelayout() {
-      const { index, compRoot, showTests } = get();
-      // Hiding tests drops test-module scorecards and any coupling wire touching test code, so the
-      // composition map reflects production units only — matching the Tests toggle on the other views.
-      const hidden = showTests ? null : index.testIds;
-      const nodes = hidden ? [...index.nodesById.values()].filter((node) => !hidden.has(node.id)) : [...index.nodesById.values()];
-      const edges = hidden ? index.edges.filter((edge) => !hidden.has(edge.source) && !hidden.has(edge.target)) : index.edges;
+      const { index, compRoot } = get();
+      // The layout ALWAYS includes test units, so toggling the Tests filter never moves a production
+      // card — the composition view hides test cards in place (a repaint), it does not re-lay-out.
+      const nodes = [...index.nodesById.values()];
       const sequence = ++compLayoutSeq;
       set({ compLayoutStatus: "laying-out" });
-      const graph = await deriveCompositionLayout(nodes, edges, compRoot);
+      const graph = await deriveCompositionLayout(nodes, index.edges, compRoot);
       if (compLayoutSeq !== sequence) {
         return; // a newer layout superseded this one.
       }
@@ -473,16 +471,23 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // composition graph's own selection/root — retreat home first.
     toggleShowTests() {
       const showTests = !get().showTests;
-      const { focusId, selectedId, compSelectedId, compRoot, index } = get();
+      const { focusId, selectedId, compSelectedId, compRoot, viewMode, index } = get();
       const strandedById = (id: string | null) => !showTests && id !== null && index.testIds.has(id);
+      const nextCompRoot = strandedById(compRoot) ? null : compRoot;
       set({
         showTests,
         focusId: strandedById(focusId) ? null : focusId,
         selectedId: strandedById(selectedId) ? null : selectedId,
         compSelectedId: strandedById(compSelectedId) ? null : compSelectedId,
-        compRoot: strandedById(compRoot) ? null : compRoot,
+        compRoot: nextCompRoot,
       });
-      void get().relayout();
+      // The composition view hides test cards in place (CompositionView filters the rendered set),
+      // so it must NOT re-lay-out — that would reshuffle production cards, the very thing we avoid.
+      // It only relayouts when the root itself changed (it was rooted inside now-hidden test code).
+      // Every other surface still relayouts to drop the hidden subtree.
+      if (viewMode !== "call" || nextCompRoot !== compRoot) {
+        void get().relayout();
+      }
     },
 
     // The layout is untouched — coverage only recolors — so no relayout is needed.
