@@ -16,7 +16,7 @@ import { clamp } from "../layout/measure";
 export type LogicNodeType = "block" | "control" | "branch";
 
 export type LogicNodeData = {
-  logicKind: "call" | "loop" | "try" | "if" | "switch";
+  logicKind: "call" | "loop" | "try" | "callback" | "if" | "switch";
   label: string;
   targetId: string | null;
   resolution: EdgeResolution | null;
@@ -212,13 +212,13 @@ class LogicGraphBuilder {
     if (step.kind === "call") {
       return this.callStep(step, parentId, path, id);
     }
-    if (step.kind === "loop") {
+    if (step.kind === "loop" || step.kind === "callback") {
       const bodies: FlowPath[] = [{ label: step.label, body: step.body }];
-      return this.loopOrTry(parentId, path, id, "loop", step.label, bodies, step.body.length);
+      return this.container(parentId, path, id, step.kind, step.label, bodies, step.body.length);
     }
     if (isTryLabel(step.label)) {
       const count = step.paths.reduce((sum, p) => sum + p.body.length, 0);
-      return this.loopOrTry(parentId, path, id, "try", "try / catch", step.paths, count);
+      return this.container(parentId, path, id, "try", "try / catch", step.paths, count);
     }
     return this.branchStep(step, parentId, path, id);
   }
@@ -266,12 +266,12 @@ class LogicGraphBuilder {
     return step.label.includes(".") ? "method" : "function";
   }
 
-  /** Loop and try/catch share the same container shape: default-expanded, children nested. */
-  private loopOrTry(
+  /** Loop, try/catch and callback share the same container shape: default-expanded, children nested. */
+  private container(
     parentId: string | null,
     path: string,
     id: string,
-    logicKind: "loop" | "try",
+    logicKind: "loop" | "try" | "callback",
     label: string,
     bodies: FlowPath[],
     childCount: number,

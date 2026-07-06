@@ -165,7 +165,7 @@ function callLabels(steps: FlowStep[]): string[] {
 function allCallLabels(steps: FlowStep[]): string[] {
   return steps.flatMap((step) => {
     if (step.kind === "call") return [step.label];
-    if (step.kind === "loop") return allCallLabels(step.body);
+    if (step.kind === "loop" || step.kind === "callback") return allCallLabels(step.body);
     return step.paths.flatMap((path) => allCallLabels(path.body));
   });
 }

@@ -108,9 +108,8 @@ function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
   const logicSelected = useBlueprint((s) => s.logicSelected);
   const d = data as LogicNodeData;
   const select = selectStateFor(d.targetId, logicSelected);
-  const isTry = d.logicKind === "try";
-  const accent = isTry ? TRY_ACCENT : LOOP_ACCENT;
-  const glyph = isTry ? "⚠" : "↻";
+  const accent = CONTROL_ACCENT[d.logicKind] ?? LOOP_ACCENT;
+  const glyph = CONTROL_GLYPH[d.logicKind] ?? "↻";
   if (d.isContainer) {
     return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={null} select={select} />;
   }
@@ -302,6 +301,14 @@ const DEF_ACCENT = "#3FB8AF";
 const GREY_ACCENT = "#3A414C";
 const LOOP_ACCENT = "#E6B84D";
 const TRY_ACCENT = "#D98A5B";
+// A deferred/handed-over callback (a hook body, `.then`, `setTimeout`, a JSX handler): a muted
+// slate-cyan, deliberately cooler than the loop/try accents — it reads as "logic passed elsewhere",
+// not control-flow that runs here and now.
+const CALLBACK_ACCENT = "#5FA8A0";
+// A dotted-arrow glyph for "handed to": the callback is given away, not run in place.
+const CALLBACK_GLYPH = "⤳";
+const CONTROL_ACCENT: Record<string, string> = { loop: LOOP_ACCENT, try: TRY_ACCENT, callback: CALLBACK_ACCENT };
+const CONTROL_GLYPH: Record<string, string> = { loop: "↻", try: "⚠", callback: CALLBACK_GLYPH };
 // Violet, deliberately unlike the blue building-block accent: a branch reads as control-flow.
 const BRANCH_ACCENT = "#A78BFA";
 
