@@ -234,6 +234,8 @@ const JUMP_COL_GAP = 40;
 // The vertical gap between stacked ghosts in the entry cluster's single-column layout — tighter than
 // the depth-row gap since it's a compact list, but clear enough for the chain wire + arrow between them.
 const JUMP_STACK_GAP = 34;
+// The horizontal clearance between that left-hand column and the entry end-cap it feeds into.
+const JUMP_COL_HGAP = 96;
 const JUMP_MUTED = "#4B535F";
 
 /**
@@ -339,21 +341,29 @@ function buildGhostCluster(target: NodeId, anchor: LogicRfNode, idPrefix: string
       data: { rootId: root, label: node?.displayName ?? root, file: node?.location?.file, depth } satisfies JumpFlowNodeData,
     };
   };
-  const jumpNodes: Node[] =
-    layout === "column"
-      ? // One vertical column centred on the anchor; ranked is depth-ascending, so index 0 (the
-        // nearest caller) sits just above the graph and deeper callers stack upward.
-        ranked.map(([root, depth], i) => makeGhost(root, depth, anchorCenterX - JUMP_WIDTH / 2, a.top - (i + 1) * (JUMP_HEIGHT + JUMP_STACK_GAP)))
-      : [...groupByDepth(ranked)].flatMap(([depth, roots]) => {
-          // This depth's row sits `depth` clear gaps ABOVE the graph's top edge (deeper == higher),
-          // centred on the anchor so the chain reads top→down into it.
-          const rowY = a.top - depth * (JUMP_HEIGHT + JUMP_ROW_GAP);
-          const rowWidth = roots.length * JUMP_WIDTH + (roots.length - 1) * JUMP_COL_GAP;
-          const startX = anchorCenterX - rowWidth / 2;
-          return roots.map((root, i) => makeGhost(root, depth, startX + i * (JUMP_WIDTH + JUMP_COL_GAP), rowY));
-        });
+  const jumpNodes: Node[] = layout === "column" ? stackLeft() : fanRows();
   const jumpEdges = buildChainEdges(ranked, target, anchor.id, idPrefix, a.containment);
   return { jumpNodes, jumpEdges, total };
+
+  // A single column to the LEFT of the entry end-cap, vertically CENTRED on it so the entry sits at
+  // the column's mid-height. ranked is depth-ascending, so nearest callers lead the column top-down.
+  function stackLeft(): Node[] {
+    const centerY = anchorPos.y + (anchor.height ?? JUMP_HEIGHT) / 2;
+    const columnHeight = ranked.length * JUMP_HEIGHT + (ranked.length - 1) * JUMP_STACK_GAP;
+    const startY = centerY - columnHeight / 2;
+    const x = anchorPos.x - JUMP_COL_HGAP - JUMP_WIDTH;
+    return ranked.map(([root, depth], i) => makeGhost(root, depth, x, startY + i * (JUMP_HEIGHT + JUMP_STACK_GAP)));
+  }
+
+  // Each hop-depth fanned into its own centred horizontal row clear ABOVE the graph (deeper == higher).
+  function fanRows(): Node[] {
+    return [...groupByDepth(ranked)].flatMap(([depth, roots]) => {
+      const rowY = a.top - depth * (JUMP_HEIGHT + JUMP_ROW_GAP);
+      const rowWidth = roots.length * JUMP_WIDTH + (roots.length - 1) * JUMP_COL_GAP;
+      const startX = anchorCenterX - rowWidth / 2;
+      return roots.map((root, i) => makeGhost(root, depth, startX + i * (JUMP_WIDTH + JUMP_COL_GAP), rowY));
+    });
+  }
 }
 
 /**

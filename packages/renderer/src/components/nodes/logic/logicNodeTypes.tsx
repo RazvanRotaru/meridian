@@ -241,17 +241,17 @@ function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
 /**
  * A flow END-CAP: the ENTRY the observed callable starts at, or the synthetic EXIT every trailing
  * path converges onto. Both are compact pills, not call blocks (no provenance/disclosure/code). The
- * ENTRY wears the callable's name and a top TARGET pin so the view's caller-ghosts wire DOWN into it
- * (mirroring how a selected block collects its jump-to-flow ghosts), plus a right SOURCE pin the exec
- * thread leaves through into the first step. The EXIT is a dead end: a left TARGET pin, no source.
- * Neither is a call site (`targetId: null`), so clicking one is a harmless no-op.
+ * ENTRY wears the callable's name and a left TARGET pin so the view's caller-ghosts — stacked in a
+ * column to its left — wire INTO it, plus a right SOURCE pin the exec thread leaves through into the
+ * first step. The EXIT is a dead end: a left TARGET pin, no source. Neither is a call site
+ * (`targetId: null`), so clicking one is a harmless no-op.
  */
 function TerminalNode({ data }: NodeProps<LogicRfNode>) {
   const d = data as TerminalData;
   if (d.terminal === "entry") {
     return (
       <div style={ENTRY_BODY} title={`Flow entry: ${d.label}`}>
-        <Handle type="target" position={Position.Top} style={PIN} isConnectable={false} />
+        <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
         <span style={TERMINAL_GLYPH}>▶</span>
         <span style={NAME} title={d.label}>{d.label}</span>
