@@ -15,6 +15,8 @@ import { runView } from "./commands/view";
 import type { ViewOptions } from "./commands/view";
 import { parseFailUnder, runCoverage } from "./commands/coverage";
 import type { CoverageOptions } from "./commands/coverage";
+import { runLink } from "./commands/link";
+import type { LinkOptions } from "./commands/link";
 import { runWeb } from "./commands/web";
 import type { WebOptions } from "./commands/web";
 
@@ -37,6 +39,7 @@ export function buildProgram(): Command {
   registerView(program);
   registerWeb(program);
   registerCoverage(program);
+  registerLink(program);
   return program;
 }
 
@@ -103,6 +106,15 @@ function registerCoverage(program: Command): void {
     .action((graph, _options, command) =>
       runCoverage(graph ?? "meridian.graph.json", command.optsWithGlobals() as CoverageOptions),
     );
+}
+
+function registerLink(program: Command): void {
+  program
+    .command("link <graphs...>")
+    .description("Join two or more graph artifacts into one system graph via their IPC channel keys")
+    .option("-o, --out <file>", "linked artifact output path", "meridian.system.json")
+    .option("--name <name>", "display name for the linked system (default: the joined source names)")
+    .action((graphs, _options, command) => runLink(graphs, command.optsWithGlobals() as LinkOptions));
 }
 
 function parsePort(value: string): number {

@@ -20,6 +20,10 @@ const KIND_COLORS: Record<string, string> = {
   // Boundary nodes read as muted grey — they are outside the analyzed code.
   external: "#6E7681",
   unresolved: "#565E68",
+  // IPC: a channel is the shared wire two processes meet on (gold, like its edges); a system
+  // frame is one linked artifact — steel blue, structural rather than behavioural.
+  channel: "#C9A24B",
+  system: "#8FB6E3",
 };
 
 const NEUTRAL_ACCENT = "#7A8290";

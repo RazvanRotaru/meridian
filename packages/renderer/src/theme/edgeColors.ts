@@ -9,9 +9,14 @@ import { MarkerType } from "@xyflow/react";
 
 export const WIRE_COLOR = "#7C8696";
 export const RENDERS_WIRE = "#61DAFB";
+/** IPC hops (`sends`/`handles` through a channel node): warm gold — "leaves the process". */
+export const IPC_WIRE = "#C9A24B";
 
 export function wireColorForKind(kind: string): string {
-  return kind === "renders" ? RENDERS_WIRE : WIRE_COLOR;
+  if (kind === "renders") {
+    return RENDERS_WIRE;
+  }
+  return kind === "sends" || kind === "handles" ? IPC_WIRE : WIRE_COLOR;
 }
 
 /** The closed arrowhead a laid-out edge terminates in, coloured to match its wire. */
