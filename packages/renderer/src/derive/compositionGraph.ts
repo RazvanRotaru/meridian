@@ -11,6 +11,7 @@ import type { GraphEdge, GraphNode } from "@meridian/core";
 import { buildUnitIndex, computeCompositionMetrics, couplingEdges, groupMembersByUnit, type UnitMetrics } from "@meridian/design-metrics";
 import { computeRootedView } from "./compositionRoot";
 import { buildClusters, type ClusterFrame } from "./compositionClusters";
+import { aggregateByPackage, type PackageSummaryData } from "./compositionAggregate";
 
 // A `type` (not an interface) so it satisfies React Flow's `Node<T extends Record<string, unknown>>`
 // constraint — an interface lacks the implicit index signature (mirrors logic's LogicNodeData).
@@ -49,7 +50,7 @@ export type ChannelCompData = {
   dangling: "out-only" | "in-only" | null;
 };
 
-export type CompNodeType = "unit" | "cluster" | "channel";
+export type CompNodeType = "unit" | "cluster" | "channel" | "package";
 
 // A single spec type spans both node kinds (mirrors logic's LogicNodeSpec): a "unit" carries its
 // scorecard size and a cluster `parentId`; a "cluster" frame is a container ELK sizes, so it omits
@@ -61,7 +62,7 @@ export interface CompNodeSpec {
   height?: number;
   /** The cluster frame this unit nests in (undefined for a frame itself). */
   parentId?: string;
-  data: CompNodeData | ClusterNodeData | ChannelCompData;
+  data: CompNodeData | ClusterNodeData | ChannelCompData | PackageSummaryData;
 }
 
 export interface CompEdgeSpec {
@@ -88,18 +89,34 @@ export interface CompositionGraphSpec {
  * A non-null `root` (a module/package node id) narrows the graph to a ROOTED view: only the units
  * the root contains plus their 1-hop coupling neighbours (the latter flagged `boundary` and drawn
  * faded so a click can re-root there). `root === null` is the unchanged whole-system view.
+ *
+ * `aggregate` (whole-system only) rolls every unit up to its PACKAGE — one summary card each,
+ * hundreds not thousands — so a giant repo lays out and reads. Double-clicking a package roots
+ * there, dropping back to unit scorecards.
  */
-export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[], root: string | null = null, showMetrics = true): CompositionGraphSpec {
+export function deriveCompositionGraph(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  root: string | null = null,
+  showMetrics = true,
+  aggregate = false,
+): CompositionGraphSpec {
   const metrics = computeCompositionMetrics(nodes, edges);
   const couplings = couplingEdges(nodes, edges);
   const coupled = couplingEndpoints(couplings);
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const survivors = survivingUnits(metrics, coupled);
+
+  // Whole-system on a big repo: aggregate to packages instead of exploding into unit cards.
+  if (aggregate && root === null) {
+    return aggregateByPackage(edges, metrics, couplings, survivors, nodesById);
+  }
+
   // The unit → members partition, reused per card so a scorecard can list the methods it holds.
   const membersByUnit = groupMembersByUnit(nodes, buildUnitIndex(nodes));
 
   // The whole-system survivor set drives both views; a root then restricts it to its subtree + the
   // 1-hop neighbours, keeping the root's own unit even if it would otherwise be dropped.
-  const survivors = survivingUnits(metrics, coupled);
   const view = computeRootedView(root, survivors, root !== null && metrics.has(root), couplings, nodesById);
 
   const unitSpecs: CompNodeSpec[] = [];
@@ -131,10 +148,9 @@ export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[], r
       crossBoundary: clusterOf.get(edge.source) !== clusterOf.get(edge.target),
     }));
 
-  // The IPC layer: channel cards between the frames, wired by the artifact's sends/handles edges
-  // lifted to unit level. Only channels touching an emitted unit appear, so a rooted view never
-  // scatters unrelated channels around its subtree.
-  const ipc = ipcLayer(edges, emitted, nodesById);
+  // The IPC layer: channel cards wired by the artifact's sends/handles edges, each function
+  // endpoint lifted to its nearest emitted UNIT (the scorecard that holds it).
+  const ipc = ipcLayerFor(edges, (id) => nearestEmittedUnit(id, emitted, nodesById), channelSidesOf(edges));
 
   return { nodes: [...nodeSpecs, ...ipc.nodes], edges: [...edgeSpecs, ...ipc.edges] };
 }
@@ -145,58 +161,73 @@ const CHANNEL_HEIGHT = 46;
 
 /**
  * Project the artifact's IPC hops onto the composition canvas: each `sends`/`handles` edge has a
- * function endpoint and a channel endpoint — the function LIFTS to its nearest emitted unit (the
- * scorecard that contains it), the channel becomes a top-level card, and each hop becomes a gold
- * wire. A channel missing a whole side keeps an honest `dangling` flag for its card to show.
+ * function endpoint and a channel endpoint — `resolve` lifts the function endpoint to the visible
+ * card that owns it (a UNIT in the drilled-in view, a PACKAGE in the aggregated view), the channel
+ * becomes a top-level card, and each hop becomes a gold wire. A channel missing a whole side keeps
+ * an honest `dangling` flag. Shared by the unit view and the package aggregation so both agree.
  */
-function ipcLayer(
+export function ipcLayerFor(
   edges: GraphEdge[],
-  emitted: ReadonlySet<string>,
-  nodesById: Map<string, GraphNode>,
+  resolve: (nodeId: string) => string | null,
+  sides: Map<string, { out: boolean; in: boolean }>,
 ): { nodes: CompNodeSpec[]; edges: CompEdgeSpec[] } {
-  const sides = channelSides(edges);
   const channelSpecs = new Map<string, CompNodeSpec>();
   const edgeSpecs = new Map<string, CompEdgeSpec>();
+  const channelById = channelNodesById(edges, sides);
   for (const edge of edges) {
     if (edge.kind !== "sends" && edge.kind !== "handles") {
       continue;
     }
     const outbound = edge.kind === "sends";
-    const channelNode = nodesById.get(outbound ? edge.target : edge.source);
-    const unit = nearestEmittedUnit(outbound ? edge.source : edge.target, emitted, nodesById);
-    if (!channelNode || !unit) {
+    const channelNode = channelById.get(outbound ? edge.target : edge.source);
+    const owner = resolve(outbound ? edge.source : edge.target);
+    if (!channelNode || !owner) {
       continue;
     }
     if (!channelSpecs.has(channelNode.id)) {
-      channelSpecs.set(channelNode.id, channelSpec(channelNode, sides.get(channelNode.id)));
+      channelSpecs.set(channelNode.id, channelNode.spec);
     }
-    const source = outbound ? unit : channelNode.id;
-    const target = outbound ? channelNode.id : unit;
-    edgeSpecs.set(`ipc:${source}->${target}`, {
-      id: `ipc:${source}->${target}`,
-      source,
-      target,
-      inheritanceOnly: false,
-      crossBoundary: false,
-      ipc: true,
-    });
+    const source = outbound ? owner : channelNode.id;
+    const target = outbound ? channelNode.id : owner;
+    edgeSpecs.set(`ipc:${source}->${target}`, { id: `ipc:${source}->${target}`, source, target, inheritanceOnly: false, crossBoundary: false, ipc: true });
   }
   return { nodes: [...channelSpecs.values()], edges: [...edgeSpecs.values()] };
 }
 
-function channelSpec(node: GraphNode, sides: { out: boolean; in: boolean } | undefined): CompNodeSpec {
+/** The channel-node id → its card spec, derived once. A channel node isn't in nodesById in the
+ * aggregate path's world (it reads only edges), so its id + protocol come off the edge's channel id. */
+function channelNodesById(edges: GraphEdge[], sides: Map<string, { out: boolean; in: boolean }>): Map<string, { id: string; spec: CompNodeSpec }> {
+  const byId = new Map<string, { id: string; spec: CompNodeSpec }>();
+  for (const edge of edges) {
+    if (edge.kind !== "sends" && edge.kind !== "handles") {
+      continue;
+    }
+    const id = edge.kind === "sends" ? edge.target : edge.source;
+    if (!byId.has(id)) {
+      byId.set(id, { id, spec: channelSpecFromId(id, sides.get(id)) });
+    }
+  }
+  return byId;
+}
+
+// A channel id is `ipc:<protocol>/<slug>` — recover the protocol and display label from it, so the
+// aggregate path needn't carry the channel GraphNodes. Matches core's channelNodeId grammar.
+function channelSpecFromId(id: string, sides: { out: boolean; in: boolean } | undefined): CompNodeSpec {
+  const body = id.startsWith("ipc:") ? id.slice(4) : id;
+  const slash = body.indexOf("/");
+  const protocol = slash === -1 ? "ipc" : body.slice(0, slash);
+  const label = (slash === -1 ? body : body.slice(slash + 1)).replace(/\+/g, " ").replace(/%23/g, "#");
   const data: ChannelCompData = {
-    channelId: node.id,
-    label: node.displayName,
-    protocol: node.tags?.[0] ?? "ipc",
+    channelId: id,
+    label,
+    protocol,
     dangling: sides && !sides.in ? "out-only" : sides && !sides.out ? "in-only" : null,
   };
-  // Top-level (no parent frame): a channel is the space BETWEEN systems, so ELK routes it between.
-  return { id: node.id, type: "channel", width: CHANNEL_WIDTH, height: CHANNEL_HEIGHT, data };
+  return { id, type: "channel", width: CHANNEL_WIDTH, height: CHANNEL_HEIGHT, data };
 }
 
 /** Which sides each channel has ANYWHERE in the artifact (not just the visible subset). */
-function channelSides(edges: GraphEdge[]): Map<string, { out: boolean; in: boolean }> {
+export function channelSidesOf(edges: GraphEdge[]): Map<string, { out: boolean; in: boolean }> {
   const sides = new Map<string, { out: boolean; in: boolean }>();
   for (const edge of edges) {
     if (edge.kind !== "sends" && edge.kind !== "handles") {

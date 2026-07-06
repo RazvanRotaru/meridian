@@ -37,6 +37,11 @@ import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
  */
 export const GHOST_DEPTH_ALL = 99;
 
+/** Above this many modules, the whole-system composition view aggregates to package cards rather
+ * than drawing every unit — the point where in-browser ELK of unit cards stops being interactive.
+ * The examples stay well under it (unit-level); a real repo like Autopilot (4.8k modules) is over. */
+const COMPOSITION_AGGREGATE_THRESHOLD = 400;
+
 export type LayoutStatus = "idle" | "laying-out" | "ready" | "error";
 
 /** The source view's state: which node, its fetched code, and the in-flight/error status.
@@ -201,6 +206,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let logicLayoutSeq = 0;
   // Same guard for the composition layout — a newer relayout discards an older in-flight ELK pass.
   let compLayoutSeq = 0;
+  // Whether the composition layout has EVER included test units. Tests start hidden, and laying
+  // out thousands of test cards nobody sees is the single biggest cost on a big repo — so the
+  // first layout excludes them. Turning tests ON pays one relayout and sets this latch; from then
+  // on the layout keeps tests so hiding again is a pure repaint (no reshuffle), as before.
+  let compIncludesTests = false;
   // And for the composition-tab method-preview drawer's logic layout (the EXPERIMENT surface).
   let compMethodLayoutSeq = 0;
   // Null when the server didn't ship source access — the code drawer is then inert.
@@ -219,7 +229,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     selectedId: null,
     focusId: null,
     viewMode: "call",
-    showTests: true,
+    // Tests start HIDDEN: most reads are about production code, and skipping thousands of test
+    // cards makes the first layout of a big repo dramatically faster. One click brings them in.
+    showTests: false,
     coverageMode: false,
     coverage: null,
     flowRootId: null,
@@ -464,13 +476,25 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // stale-seq guard. Reads the raw nodes/edges off the index (built from the artifact); the derive
     // decides which units earn a card and wires their couplings.
     async compRelayout() {
-      const { index, compRoot, showSolidMetrics } = get();
-      // The layout ALWAYS includes test units, so toggling the Tests filter never moves a production
-      // card — the composition view hides test cards in place (a repaint), it does not re-lay-out.
-      const nodes = [...index.nodesById.values()];
+      const { index, compRoot, showSolidMetrics, showTests } = get();
+      // Tests start hidden, so the FIRST layout excludes test units entirely — on a big repo they
+      // can be a third of all cards, and laying out thousands of cards nobody sees is what made
+      // the initial view crawl. Once tests have been shown, the layout keeps them (latched), so
+      // hiding again is a pure repaint and production cards never reshuffle.
+      compIncludesTests = compIncludesTests || showTests;
+      const all = [...index.nodesById.values()];
+      const nodes = compIncludesTests ? all : all.filter((node) => !index.testIds.has(node.id));
+      const edges = compIncludesTests
+        ? index.edges
+        : index.edges.filter((edge) => !index.testIds.has(edge.source) && !index.testIds.has(edge.target));
+      // Whole-system on a big repo: aggregate to package cards so ELK lays out hundreds, not the
+      // thousands of unit scorecards that lock up a slower engine. A drilled-in (rooted) view is
+      // already small, so it always stays at unit granularity. The module count is the cheap proxy
+      // for "how many cards the unaggregated view would draw".
+      const aggregate = compRoot === null && moduleCount(nodes) > COMPOSITION_AGGREGATE_THRESHOLD;
       const sequence = ++compLayoutSeq;
       set({ compLayoutStatus: "laying-out" });
-      const graph = await deriveCompositionLayout(nodes, index.edges, compRoot, showSolidMetrics);
+      const graph = await deriveCompositionLayout(nodes, edges, compRoot, showSolidMetrics, aggregate);
       if (compLayoutSeq !== sequence) {
         return; // a newer layout superseded this one.
       }
@@ -579,9 +603,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       });
       // The composition view hides test cards in place (CompositionView filters the rendered set),
       // so it must NOT re-lay-out — that would reshuffle production cards, the very thing we avoid.
-      // It only relayouts when the root itself changed (it was rooted inside now-hidden test code).
-      // Every other surface still relayouts to drop the hidden subtree.
-      if (viewMode !== "call" || nextCompRoot !== compRoot) {
+      // Two exceptions relayout anyway: the root changed (it pointed into now-hidden test code), or
+      // tests are being shown for the FIRST time and the latched layout doesn't contain them yet.
+      const needsTestCards = showTests && !compIncludesTests;
+      if (viewMode !== "call" || nextCompRoot !== compRoot || needsTestCards) {
         void get().relayout();
       }
     },
@@ -691,6 +716,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ rfNodes: graph.nodes, rfEdges: graph.edges, layoutStatus: "ready" });
     },
   }));
+}
+
+/** Cheap proxy for composition graph size: how many module nodes the artifact has. */
+function moduleCount(nodes: GraphNode[]): number {
+  let count = 0;
+  for (const node of nodes) {
+    if (node.kind === "module") count += 1;
+  }
+  return count;
 }
 
 function withToggled(expanded: Set<string>, nodeId: string): Set<string> {

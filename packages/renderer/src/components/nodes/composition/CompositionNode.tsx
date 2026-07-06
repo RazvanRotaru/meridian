@@ -10,6 +10,7 @@ import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
 import { colorForDistance, type ChannelCompData, type CompNodeData } from "../../../derive/compositionGraph";
+import type { PackageSummaryData } from "../../../derive/compositionAggregate";
 import type { CompRfNode } from "../../../layout/compositionElk";
 import { accentForKind } from "../../../theme/kindColors";
 import { coverageAccent } from "../../../theme/coverageColors";
@@ -144,9 +145,45 @@ function danglingTitle(d: ChannelCompData): string {
   return `${d.protocol} channel — an IPC boundary joined by its channel key`;
 }
 
+/**
+ * A PACKAGE summary card — the aggregated whole-system unit. Rolls a package's units into one card:
+ * a health rail by worst distance, the unit/member counts, and a smell tally. Double-click roots the
+ * view into it (handled by the view), so it reads as "a folder you can open".
+ */
+function PackageSummaryNodeImpl({ data }: NodeProps<CompRfNode>) {
+  const compSelectedId = useBlueprint((state) => state.compSelectedId);
+  const d = data as PackageSummaryData;
+  const selected = compSelectedId === d.packageId;
+  const health = colorForDistance(d.worstDistance);
+  return (
+    <div style={selected ? CARD_SELECTED : CARD} title={`${d.label} — double-click to open its units`}>
+      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+      <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+      <div style={{ ...ACCENT_BAR, background: health }} />
+      <div style={INNER}>
+        <div style={HEADER}>
+          <span style={{ ...GLYPH, color: "#A77BF3" }}>▤</span>
+          <span style={LABEL} title={d.label}>{d.label}</span>
+          <span style={{ ...KIND_TAG, color: "#A77BF3", borderColor: "#A77BF3" }}>PACKAGE</span>
+        </div>
+        <div style={METRIC_ROW}>
+          <span style={METRIC_VALUE}>{d.unitCount}</span><span style={METRIC_MUTED}>units</span>
+          <span style={SEP}>·</span>
+          <span style={METRIC_VALUE}>{d.memberCount}</span><span style={METRIC_MUTED}>members</span>
+          {d.smellyCount > 0 ? (<><span style={SEP}>·</span><span style={{ ...METRIC_VALUE, color: "#E5484D" }}>{d.smellyCount}</span><span style={METRIC_MUTED}>smelly</span></>) : null}
+        </div>
+        <div style={{ ...DISTANCE_ROW, color: health }} title="worst distance from the main sequence in this package">
+          <span style={DISTANCE_LABEL}>worst D</span><span style={DISTANCE_VALUE}>{d.worstDistance}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export const CompositionNode = memo(CompositionNodeImpl);
 export const ChannelCompNode = memo(ChannelCompNodeImpl);
-export const compNodeTypes = { unit: CompositionNode, cluster: ClusterFrameNode, channel: ChannelCompNode };
+export const PackageSummaryNode = memo(PackageSummaryNodeImpl);
+export const compNodeTypes = { unit: CompositionNode, cluster: ClusterFrameNode, channel: ChannelCompNode, package: PackageSummaryNode };
 
 const PIN: React.CSSProperties = { width: 7, height: 7, background: "#C8D3E0", border: "none", minWidth: 0, minHeight: 0 };
 

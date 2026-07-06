@@ -27,6 +27,10 @@ export const READONLY_CANVAS_PROPS = {
   minZoom: 0.01,
   maxZoom: 4,
   zoomOnDoubleClick: false,
+  // Only mount DOM for nodes in the viewport. A big system graph has thousands of cards; without
+  // this, React Flow builds a DOM node for every one up front, which alone can lock up a slower
+  // engine (Safari/WebKit). Culling keeps the mounted set to what's actually on screen.
+  onlyRenderVisibleElements: true,
   proOptions: { hideAttribution: true },
 } as const;
 

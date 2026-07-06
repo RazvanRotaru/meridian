@@ -9,10 +9,11 @@
 import { type Edge, type Node } from "@xyflow/react";
 import type { ElkNode } from "elkjs/lib/elk-api";
 import type { ChannelCompData, ClusterNodeData, CompEdgeSpec, CompNodeData, CompNodeSpec, CompNodeType, CompositionGraphSpec } from "../derive/compositionGraph";
+import type { PackageSummaryData } from "../derive/compositionAggregate";
 import { arrowMarker, IPC_WIRE } from "../theme/edgeColors";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
 
-export type CompRfNode = Node<CompNodeData | ClusterNodeData | ChannelCompData, CompNodeType>;
+export type CompRfNode = Node<CompNodeData | ClusterNodeData | ChannelCompData | PackageSummaryData, CompNodeType>;
 export type CompRfEdgeData = { inheritanceOnly: boolean; crossBoundary: boolean; ipc?: boolean };
 export type CompRfEdge = Edge<CompRfEdgeData>;
 export interface CompositionReactFlowGraph {

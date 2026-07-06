@@ -92,6 +92,10 @@ export function CompositionView() {
   }, [nodes]);
 
   const isEmpty = nodes.length === 0 && layoutStatus === "ready";
+  // On a big graph the whole-system ELK pass can take tens of seconds; without a signal, a blank
+  // canvas reads as "broken". Shown only while nothing is on screen yet — a focused relayout of an
+  // already-drawn graph keeps the old layout visible instead.
+  const isLayingOut = nodes.length === 0 && layoutStatus === "laying-out";
   const rootLabel = compRoot ? nodesById.get(compRoot)?.displayName ?? compRoot : null;
 
   return (
@@ -113,6 +117,7 @@ export function CompositionView() {
       </ReactFlow>
       <CompositionBreadcrumb rootId={compRoot} rootLabel={rootLabel} onHome={() => setCompRoot(null)} />
       {isEmpty ? <EmptyCompositionCard /> : null}
+      {isLayingOut ? <LayingOutCard unitCount={nodesById.size} /> : null}
       {/* EXPERIMENT: a member click previews that method's logic flow here, docked over the map. */}
       <CompMethodDrawer />
     </div>
@@ -231,6 +236,10 @@ function miniMapColor(node: Node, coverage: CoverageReport | null): string {
   if (node.type === "channel") {
     return "#C9A24B"; // the IPC gold, matching the channel cards and wires
   }
+  if (node.type === "package") {
+    const wd = (node.data as { worstDistance?: number })?.worstDistance;
+    return typeof wd === "number" ? colorForDistance(wd) : "#A77BF3";
+  }
   const metrics = (node.data as Partial<CompNodeData>)?.metrics;
   if (node.type !== "unit" || !metrics) {
     return "#2A313D";
@@ -249,6 +258,22 @@ function EmptyCompositionCard() {
       <div style={EMPTY_CARD_STYLE}>
         <span style={EMPTY_MARK_STYLE}>∅</span>
         <span>No composition units to chart in this artifact.</span>
+      </div>
+    </div>
+  );
+}
+
+/** Shown while the FIRST layout of this view is still in ELK — a big system can take tens of
+ * seconds, and a silent blank canvas reads as broken. Suggests the fast path (focus a package). */
+function LayingOutCard(props: { unitCount: number }) {
+  return (
+    <div style={EMPTY_WRAP_STYLE}>
+      <div style={EMPTY_CARD_STYLE}>
+        <span style={{ ...EMPTY_MARK_STYLE, animation: "none" }}>⏳</span>
+        <span>
+          Laying out the whole system ({props.unitCount.toLocaleString()} graph nodes)… large systems can take
+          up to a minute. Tip: <b>⌘P</b> a package to focus a smaller view first.
+        </span>
       </div>
     </div>
   );
