@@ -1,0 +1,208 @@
+/**
+ * The coverage side panel (top-right, coverage mode only): the overall verdict, a legend,
+ * and the worst-covered classes/modules with each uncovered member and WHY it is uncovered.
+ * Clicking a member expands the path to it and selects it on the canvas — the panel is a
+ * navigator, not just a report.
+ */
+
+import { useMemo } from "react";
+import { Panel } from "@xyflow/react";
+import type { CoverageReport } from "@meridian/core";
+import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
+import { buildCoverageRows, type CoverageRow } from "../derive/coverageRows";
+import { COVERAGE_COLORS } from "../theme/coverageColors";
+
+const MAX_ROWS = 10;
+
+export function CoveragePanel() {
+  const report = useBlueprint((state) => (state.coverageMode ? state.coverage : null));
+  const index = useBlueprint((state) => state.index);
+  const rows = useMemo(() => (report ? buildCoverageRows(report, index) : []), [report, index]);
+  if (!report) {
+    return null;
+  }
+  return (
+    <Panel position="top-right">
+      <div style={PANEL_STYLE}>
+        <Summary report={report} />
+        <Legend />
+        {report.summary.testNodes === 0 ? <NoTests /> : <Rows rows={rows} />}
+      </div>
+    </Panel>
+  );
+}
+
+function Summary(props: { report: CoverageReport }) {
+  const { summary } = props.report;
+  return (
+    <div>
+      <div style={TITLE_STYLE}>
+        Static coverage <span style={{ color: percentColor(summary.percent), fontSize: 16 }}>{summary.percent}%</span>
+      </div>
+      <div style={MUTED_STYLE}>
+        {summary.covered} tested + {summary.indirect} reached of {summary.callables} callables ·{" "}
+        {summary.uncovered} untested
+      </div>
+      {summary.unresolvedFromTests > 0 ? (
+        <div style={CAVEAT_STYLE}>
+          ⚠ {summary.unresolvedFromTests} unresolved call(s) leave test code — real coverage may be higher.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Legend() {
+  return (
+    <div style={LEGEND_STYLE}>
+      <LegendItem color={COVERAGE_COLORS.covered} label="tested directly" />
+      <LegendItem color={COVERAGE_COLORS.indirect} label="reached via others" />
+      <LegendItem color={COVERAGE_COLORS.uncovered} label="untested" />
+      <LegendItem color={COVERAGE_COLORS.test} label="test code" />
+    </div>
+  );
+}
+
+function LegendItem(props: { color: string; label: string }) {
+  return (
+    <span style={LEGEND_ITEM_STYLE}>
+      <span style={{ ...SWATCH_STYLE, background: props.color }} />
+      {props.label}
+    </span>
+  );
+}
+
+function NoTests() {
+  return (
+    <div style={MUTED_STYLE}>
+      No test code in this graph. If the project has tests, regenerate the artifact without{" "}
+      <code>--exclude-tests</code>.
+    </div>
+  );
+}
+
+function Rows(props: { rows: CoverageRow[] }) {
+  const shown = props.rows.slice(0, MAX_ROWS);
+  const hiddenCount = props.rows.length - shown.length;
+  return (
+    <div style={ROWS_STYLE}>
+      {shown.map((row) => (
+        <ContainerRow key={row.id} row={row} />
+      ))}
+      {hiddenCount > 0 ? <div style={MUTED_STYLE}>…and {hiddenCount} more (best-covered last)</div> : null}
+    </div>
+  );
+}
+
+function ContainerRow(props: { row: CoverageRow }) {
+  const actions = useBlueprintActions();
+  const viewMode = useBlueprint((state) => state.viewMode);
+  const parentOf = useBlueprint((state) => state.index.parentOf);
+  const go = (nodeId: string) => navigate(nodeId, viewMode, parentOf, actions);
+  const { row } = props;
+  return (
+    <div style={ROW_STYLE}>
+      <button type="button" style={ROW_HEAD_STYLE} onClick={() => go(row.id)}>
+        <span style={{ color: percentColor(row.percent), fontVariantNumeric: "tabular-nums" }}>
+          {String(row.percent).padStart(3, " ")}%
+        </span>
+        <span style={ROW_NAME_STYLE}>{row.name}</span>
+        <span style={MUTED_STYLE}>
+          {row.covered}/{row.total}
+        </span>
+      </button>
+      {row.uncoveredMembers.map((member) => (
+        <button
+          key={member.id}
+          type="button"
+          style={MEMBER_STYLE}
+          title={member.reason}
+          onClick={() => go(member.id)}
+        >
+          ✗ {member.name} <span style={REASON_STYLE}>— {member.reason}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Clicking a row navigates the ACTIVE surface to the node. The composition view ("call") has no
+// expand/collapse — its unit cards are class/module ids — so we highlight the unit itself (a
+// method row highlights its parent unit). The FlowCanvas ("ui") expands the path and selects.
+function navigate(
+  nodeId: string,
+  viewMode: string,
+  parentOf: ReadonlyMap<string, string | null>,
+  actions: { expandPath(id: string): void; select(id: string | null): void; selectCompUnit(id: string | null): void },
+): void {
+  if (viewMode === "call") {
+    actions.selectCompUnit(unitIdFor(nodeId, parentOf));
+    return;
+  }
+  actions.expandPath(nodeId);
+  actions.select(nodeId);
+}
+
+// A composition unit is a class/module; a method row's unit is its nearest such ancestor. Walk up
+// until an ancestor is a plausible unit (has its own parent chain end), defaulting to the node itself.
+function unitIdFor(nodeId: string, parentOf: ReadonlyMap<string, string | null>): string {
+  const parent = parentOf.get(nodeId);
+  // Methods hang off a class; functions hang off a module. Either parent IS the composition unit.
+  return parent ?? nodeId;
+}
+
+function percentColor(percent: number): string {
+  return percent >= 75 ? COVERAGE_COLORS.covered : percent >= 40 ? COVERAGE_COLORS.indirect : COVERAGE_COLORS.uncovered;
+}
+
+const PANEL_STYLE: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 10,
+  padding: 12,
+  borderRadius: 10,
+  border: "1px solid #2A2F37",
+  background: "rgba(14,17,22,0.94)",
+  backdropFilter: "blur(6px)",
+  width: 340,
+  maxHeight: "70vh",
+  overflowY: "auto",
+  color: "#E6EDF3",
+};
+const TITLE_STYLE: React.CSSProperties = { fontSize: 14, fontWeight: 600, display: "flex", gap: 8, alignItems: "baseline" };
+const MUTED_STYLE: React.CSSProperties = { fontSize: 11, color: "#9AA4B2" };
+const CAVEAT_STYLE: React.CSSProperties = { fontSize: 11, color: COVERAGE_COLORS.indirect, marginTop: 4 };
+const LEGEND_STYLE: React.CSSProperties = { display: "flex", flexWrap: "wrap", gap: "4px 12px" };
+const LEGEND_ITEM_STYLE: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: "#9AA4B2" };
+const SWATCH_STYLE: React.CSSProperties = { width: 8, height: 8, borderRadius: 2, display: "inline-block" };
+const ROWS_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 8 };
+const ROW_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 2 };
+const ROW_HEAD_STYLE: React.CSSProperties = {
+  display: "flex",
+  gap: 8,
+  alignItems: "baseline",
+  border: "none",
+  background: "transparent",
+  color: "#E6EDF3",
+  font: "inherit",
+  fontSize: 12,
+  fontWeight: 600,
+  padding: "2px 0",
+  cursor: "pointer",
+  textAlign: "left",
+};
+const ROW_NAME_STYLE: React.CSSProperties = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const MEMBER_STYLE: React.CSSProperties = {
+  border: "none",
+  background: "transparent",
+  color: COVERAGE_COLORS.uncovered,
+  font: "inherit",
+  fontSize: 11,
+  padding: "1px 0 1px 14px",
+  cursor: "pointer",
+  textAlign: "left",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+const REASON_STYLE: React.CSSProperties = { color: "#9AA4B2" };

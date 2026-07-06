@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { GraphNode } from "@meridian/core";
-import type { Smell, UnitMetrics } from "./composition";
+import type { Smell, UnitMetrics } from "@meridian/design-metrics";
 import type { CompNodeSpec } from "./compositionGraph";
 import { buildClusters, clusterIdOf, clusterLabel, ROOT_CLUSTER_ID } from "./compositionClusters";
 

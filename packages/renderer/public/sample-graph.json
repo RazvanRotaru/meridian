@@ -1,9 +1,9 @@
 {
   "schemaVersion": "1.0.0",
-  "generatedAt": "2026-06-27T08:59:12.655Z",
+  "generatedAt": "2026-07-06T15:05:07.828Z",
   "generator": {
-    "name": "blueprint",
-    "version": "blueprint@0.1.0 (ts-morph@28)"
+    "name": "meridian",
+    "version": "meridian@0.1.0 (ts-morph@28)"
   },
   "target": {
     "name": "orders-service",
@@ -28,6 +28,19 @@
       "parentId": null,
       "location": {
         "file": "src",
+        "startLine": 1,
+        "endLine": 1
+      }
+    },
+    {
+      "id": "ts:src/__tests__",
+      "kind": "package",
+      "qualifiedName": "src/__tests__",
+      "displayName": "__tests__",
+      "summary": null,
+      "parentId": "ts:src",
+      "location": {
+        "file": "src/__tests__",
         "startLine": 1,
         "endLine": 1
       }
@@ -157,6 +170,258 @@
         "codeFunction": "buildOrdersApp",
         "spanNameHints": [
           "buildOrdersApp"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/__tests__/orderService.test.ts",
+      "kind": "module",
+      "qualifiedName": "src/__tests__/orderService.test.ts",
+      "displayName": "orderService.test.ts",
+      "summary": null,
+      "parentId": "ts:src/__tests__",
+      "location": {
+        "file": "src/__tests__/orderService.test.ts",
+        "startLine": 1,
+        "endLine": 47
+      },
+      "tags": [
+        "test"
+      ]
+    },
+    {
+      "id": "ts:src/__tests__/orderService.test.ts#expectEqual",
+      "kind": "function",
+      "qualifiedName": "expectEqual",
+      "displayName": "expectEqual",
+      "summary": "Minimal assertion so this fixture needs no test-framework dependency.",
+      "parentId": "ts:src/__tests__/orderService.test.ts",
+      "location": {
+        "file": "src/__tests__/orderService.test.ts",
+        "startLine": 14,
+        "endLine": 18
+      },
+      "signature": "expectEqual(actual: unknown, expected: unknown, label: string): void",
+      "telemetry": {
+        "codeNamespace": null,
+        "codeFunction": "expectEqual",
+        "spanNameHints": [
+          "expectEqual"
+        ]
+      },
+      "tags": [
+        "test"
+      ]
+    },
+    {
+      "id": "ts:src/__tests__/orderService.test.ts#sampleRequest",
+      "kind": "function",
+      "qualifiedName": "sampleRequest",
+      "displayName": "sampleRequest",
+      "summary": "A well-formed two-line order request.",
+      "parentId": "ts:src/__tests__/orderService.test.ts",
+      "location": {
+        "file": "src/__tests__/orderService.test.ts",
+        "startLine": 21,
+        "endLine": 29
+      },
+      "signature": "sampleRequest(): OrderRequest",
+      "telemetry": {
+        "codeNamespace": null,
+        "codeFunction": "sampleRequest",
+        "spanNameHints": [
+          "sampleRequest"
+        ]
+      },
+      "tags": [
+        "test"
+      ]
+    },
+    {
+      "id": "ts:src/__tests__/orderService.test.ts#buildService",
+      "kind": "function",
+      "qualifiedName": "buildService",
+      "displayName": "buildService",
+      "summary": null,
+      "parentId": "ts:src/__tests__/orderService.test.ts",
+      "location": {
+        "file": "src/__tests__/orderService.test.ts",
+        "startLine": 31,
+        "endLine": 33
+      },
+      "signature": "buildService(): OrderService",
+      "telemetry": {
+        "codeNamespace": null,
+        "codeFunction": "buildService",
+        "spanNameHints": [
+          "buildService"
+        ]
+      },
+      "tags": [
+        "test"
+      ]
+    },
+    {
+      "id": "ts:src/__tests__/orderService.test.ts#testPlaceOrderStoresAndPrices",
+      "kind": "function",
+      "qualifiedName": "testPlaceOrderStoresAndPrices",
+      "displayName": "testPlaceOrderStoresAndPrices",
+      "summary": null,
+      "parentId": "ts:src/__tests__/orderService.test.ts",
+      "location": {
+        "file": "src/__tests__/orderService.test.ts",
+        "startLine": 35,
+        "endLine": 40
+      },
+      "signature": "testPlaceOrderStoresAndPrices(): void",
+      "tags": [
+        "export",
+        "test"
+      ],
+      "telemetry": {
+        "codeNamespace": null,
+        "codeFunction": "testPlaceOrderStoresAndPrices",
+        "spanNameHints": [
+          "testPlaceOrderStoresAndPrices"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/__tests__/orderService.test.ts#testGetOrderFindsWhatWasPlaced",
+      "kind": "function",
+      "qualifiedName": "testGetOrderFindsWhatWasPlaced",
+      "displayName": "testGetOrderFindsWhatWasPlaced",
+      "summary": null,
+      "parentId": "ts:src/__tests__/orderService.test.ts",
+      "location": {
+        "file": "src/__tests__/orderService.test.ts",
+        "startLine": 42,
+        "endLine": 46
+      },
+      "signature": "testGetOrderFindsWhatWasPlaced(): void",
+      "tags": [
+        "export",
+        "test"
+      ],
+      "telemetry": {
+        "codeNamespace": null,
+        "codeFunction": "testGetOrderFindsWhatWasPlaced",
+        "spanNameHints": [
+          "testGetOrderFindsWhatWasPlaced"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/__tests__/pricingService.test.ts",
+      "kind": "module",
+      "qualifiedName": "src/__tests__/pricingService.test.ts",
+      "displayName": "pricingService.test.ts",
+      "summary": null,
+      "parentId": "ts:src/__tests__",
+      "location": {
+        "file": "src/__tests__/pricingService.test.ts",
+        "startLine": 1,
+        "endLine": 35
+      },
+      "tags": [
+        "test"
+      ]
+    },
+    {
+      "id": "ts:src/__tests__/pricingService.test.ts#expectEqual",
+      "kind": "function",
+      "qualifiedName": "expectEqual",
+      "displayName": "expectEqual",
+      "summary": null,
+      "parentId": "ts:src/__tests__/pricingService.test.ts",
+      "location": {
+        "file": "src/__tests__/pricingService.test.ts",
+        "startLine": 10,
+        "endLine": 14
+      },
+      "signature": "expectEqual(actual: unknown, expected: unknown, label: string): void",
+      "telemetry": {
+        "codeNamespace": null,
+        "codeFunction": "expectEqual",
+        "spanNameHints": [
+          "expectEqual"
+        ]
+      },
+      "tags": [
+        "test"
+      ]
+    },
+    {
+      "id": "ts:src/__tests__/pricingService.test.ts#requestWith",
+      "kind": "function",
+      "qualifiedName": "requestWith",
+      "displayName": "requestWith",
+      "summary": null,
+      "parentId": "ts:src/__tests__/pricingService.test.ts",
+      "location": {
+        "file": "src/__tests__/pricingService.test.ts",
+        "startLine": 16,
+        "endLine": 22
+      },
+      "signature": "requestWith(discountCode: string): OrderRequest",
+      "telemetry": {
+        "codeNamespace": null,
+        "codeFunction": "requestWith",
+        "spanNameHints": [
+          "requestWith"
+        ]
+      },
+      "tags": [
+        "test"
+      ]
+    },
+    {
+      "id": "ts:src/__tests__/pricingService.test.ts#testPriceWithoutDiscount",
+      "kind": "function",
+      "qualifiedName": "testPriceWithoutDiscount",
+      "displayName": "testPriceWithoutDiscount",
+      "summary": null,
+      "parentId": "ts:src/__tests__/pricingService.test.ts",
+      "location": {
+        "file": "src/__tests__/pricingService.test.ts",
+        "startLine": 24,
+        "endLine": 28
+      },
+      "signature": "testPriceWithoutDiscount(): void",
+      "tags": [
+        "export",
+        "test"
+      ],
+      "telemetry": {
+        "codeNamespace": null,
+        "codeFunction": "testPriceWithoutDiscount",
+        "spanNameHints": [
+          "testPriceWithoutDiscount"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/__tests__/pricingService.test.ts#testPriceHonorsKnownDiscountCode",
+      "kind": "function",
+      "qualifiedName": "testPriceHonorsKnownDiscountCode",
+      "displayName": "testPriceHonorsKnownDiscountCode",
+      "summary": null,
+      "parentId": "ts:src/__tests__/pricingService.test.ts",
+      "location": {
+        "file": "src/__tests__/pricingService.test.ts",
+        "startLine": 30,
+        "endLine": 34
+      },
+      "signature": "testPriceHonorsKnownDiscountCode(): void",
+      "tags": [
+        "export",
+        "test"
+      ],
+      "telemetry": {
+        "codeNamespace": null,
+        "codeFunction": "testPriceHonorsKnownDiscountCode",
+        "spanNameHints": [
+          "testPriceHonorsKnownDiscountCode"
         ]
       }
     },
@@ -1084,6 +1349,336 @@
       ]
     },
     {
+      "id": "calls@ts:src/__tests__/orderService.test.ts#testPlaceOrderStoresAndPrices|ts:src/__tests__/orderService.test.ts#buildService",
+      "source": "ts:src/__tests__/orderService.test.ts#testPlaceOrderStoresAndPrices",
+      "target": "ts:src/__tests__/orderService.test.ts#buildService",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 36,
+          "col": 19
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/__tests__/orderService.test.ts#testPlaceOrderStoresAndPrices|ts:src/services/orderService.ts#OrderService.placeOrder",
+      "source": "ts:src/__tests__/orderService.test.ts#testPlaceOrderStoresAndPrices",
+      "target": "ts:src/services/orderService.ts#OrderService.placeOrder",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 37,
+          "col": 17
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/__tests__/orderService.test.ts#testPlaceOrderStoresAndPrices|ts:src/__tests__/orderService.test.ts#sampleRequest",
+      "source": "ts:src/__tests__/orderService.test.ts#testPlaceOrderStoresAndPrices",
+      "target": "ts:src/__tests__/orderService.test.ts#sampleRequest",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 37,
+          "col": 36
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/__tests__/orderService.test.ts#testPlaceOrderStoresAndPrices|ts:src/__tests__/orderService.test.ts#expectEqual",
+      "source": "ts:src/__tests__/orderService.test.ts#testPlaceOrderStoresAndPrices",
+      "target": "ts:src/__tests__/orderService.test.ts#expectEqual",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 2,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 38,
+          "col": 3
+        },
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 39,
+          "col": 3
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/__tests__/orderService.test.ts#testGetOrderFindsWhatWasPlaced|ts:src/__tests__/orderService.test.ts#buildService",
+      "source": "ts:src/__tests__/orderService.test.ts#testGetOrderFindsWhatWasPlaced",
+      "target": "ts:src/__tests__/orderService.test.ts#buildService",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 43,
+          "col": 19
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/__tests__/orderService.test.ts#testGetOrderFindsWhatWasPlaced|ts:src/services/orderService.ts#OrderService.placeOrder",
+      "source": "ts:src/__tests__/orderService.test.ts#testGetOrderFindsWhatWasPlaced",
+      "target": "ts:src/services/orderService.ts#OrderService.placeOrder",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 44,
+          "col": 18
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/__tests__/orderService.test.ts#testGetOrderFindsWhatWasPlaced|ts:src/__tests__/orderService.test.ts#sampleRequest",
+      "source": "ts:src/__tests__/orderService.test.ts#testGetOrderFindsWhatWasPlaced",
+      "target": "ts:src/__tests__/orderService.test.ts#sampleRequest",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 44,
+          "col": 37
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/__tests__/orderService.test.ts#testGetOrderFindsWhatWasPlaced|ts:src/__tests__/orderService.test.ts#expectEqual",
+      "source": "ts:src/__tests__/orderService.test.ts#testGetOrderFindsWhatWasPlaced",
+      "target": "ts:src/__tests__/orderService.test.ts#expectEqual",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 45,
+          "col": 3
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/__tests__/orderService.test.ts#testGetOrderFindsWhatWasPlaced|ts:src/services/orderService.ts#OrderService.getOrder",
+      "source": "ts:src/__tests__/orderService.test.ts#testGetOrderFindsWhatWasPlaced",
+      "target": "ts:src/services/orderService.ts#OrderService.getOrder",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 45,
+          "col": 15
+        }
+      ]
+    },
+    {
+      "id": "instantiates@ts:src/__tests__/orderService.test.ts#buildService|ts:src/services/orderService.ts#OrderService",
+      "source": "ts:src/__tests__/orderService.test.ts#buildService",
+      "target": "ts:src/services/orderService.ts#OrderService",
+      "kind": "instantiates",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 32,
+          "col": 10
+        }
+      ]
+    },
+    {
+      "id": "instantiates@ts:src/__tests__/orderService.test.ts#buildService|ts:src/pricing/pricingService.ts#PricingService",
+      "source": "ts:src/__tests__/orderService.test.ts#buildService",
+      "target": "ts:src/pricing/pricingService.ts#PricingService",
+      "kind": "instantiates",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 32,
+          "col": 27
+        }
+      ]
+    },
+    {
+      "id": "instantiates@ts:src/__tests__/orderService.test.ts#buildService|ts:src/repository/orderRepository.ts#OrderRepository",
+      "source": "ts:src/__tests__/orderService.test.ts#buildService",
+      "target": "ts:src/repository/orderRepository.ts#OrderRepository",
+      "kind": "instantiates",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 32,
+          "col": 49
+        }
+      ]
+    },
+    {
+      "id": "instantiates@ts:src/__tests__/orderService.test.ts#buildService|ts:src/notifications/emailService.ts#EmailService",
+      "source": "ts:src/__tests__/orderService.test.ts#buildService",
+      "target": "ts:src/notifications/emailService.ts#EmailService",
+      "kind": "instantiates",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 32,
+          "col": 72
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/__tests__/pricingService.test.ts#testPriceWithoutDiscount|ts:src/pricing/pricingService.ts#PricingService.price",
+      "source": "ts:src/__tests__/pricingService.test.ts#testPriceWithoutDiscount",
+      "target": "ts:src/pricing/pricingService.ts#PricingService.price",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/pricingService.test.ts",
+          "line": 25,
+          "col": 17
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/__tests__/pricingService.test.ts#testPriceWithoutDiscount|ts:src/__tests__/pricingService.test.ts#requestWith",
+      "source": "ts:src/__tests__/pricingService.test.ts#testPriceWithoutDiscount",
+      "target": "ts:src/__tests__/pricingService.test.ts#requestWith",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/pricingService.test.ts",
+          "line": 25,
+          "col": 44
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/__tests__/pricingService.test.ts#testPriceWithoutDiscount|ts:src/__tests__/pricingService.test.ts#expectEqual",
+      "source": "ts:src/__tests__/pricingService.test.ts#testPriceWithoutDiscount",
+      "target": "ts:src/__tests__/pricingService.test.ts#expectEqual",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 2,
+      "callSites": [
+        {
+          "file": "src/__tests__/pricingService.test.ts",
+          "line": 26,
+          "col": 3
+        },
+        {
+          "file": "src/__tests__/pricingService.test.ts",
+          "line": 27,
+          "col": 3
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/__tests__/pricingService.test.ts#testPriceHonorsKnownDiscountCode|ts:src/pricing/pricingService.ts#PricingService.price",
+      "source": "ts:src/__tests__/pricingService.test.ts#testPriceHonorsKnownDiscountCode",
+      "target": "ts:src/pricing/pricingService.ts#PricingService.price",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/pricingService.test.ts",
+          "line": 31,
+          "col": 17
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/__tests__/pricingService.test.ts#testPriceHonorsKnownDiscountCode|ts:src/__tests__/pricingService.test.ts#requestWith",
+      "source": "ts:src/__tests__/pricingService.test.ts#testPriceHonorsKnownDiscountCode",
+      "target": "ts:src/__tests__/pricingService.test.ts#requestWith",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/pricingService.test.ts",
+          "line": 31,
+          "col": 44
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/__tests__/pricingService.test.ts#testPriceHonorsKnownDiscountCode|ts:src/__tests__/pricingService.test.ts#expectEqual",
+      "source": "ts:src/__tests__/pricingService.test.ts#testPriceHonorsKnownDiscountCode",
+      "target": "ts:src/__tests__/pricingService.test.ts#expectEqual",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 2,
+      "callSites": [
+        {
+          "file": "src/__tests__/pricingService.test.ts",
+          "line": 32,
+          "col": 3
+        },
+        {
+          "file": "src/__tests__/pricingService.test.ts",
+          "line": 33,
+          "col": 3
+        }
+      ]
+    },
+    {
+      "id": "instantiates@ts:src/__tests__/pricingService.test.ts#testPriceWithoutDiscount|ts:src/pricing/pricingService.ts#PricingService",
+      "source": "ts:src/__tests__/pricingService.test.ts#testPriceWithoutDiscount",
+      "target": "ts:src/pricing/pricingService.ts#PricingService",
+      "kind": "instantiates",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/pricingService.test.ts",
+          "line": 25,
+          "col": 17
+        }
+      ]
+    },
+    {
+      "id": "instantiates@ts:src/__tests__/pricingService.test.ts#testPriceHonorsKnownDiscountCode|ts:src/pricing/pricingService.ts#PricingService",
+      "source": "ts:src/__tests__/pricingService.test.ts#testPriceHonorsKnownDiscountCode",
+      "target": "ts:src/pricing/pricingService.ts#PricingService",
+      "kind": "instantiates",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/pricingService.test.ts",
+          "line": 31,
+          "col": 17
+        }
+      ]
+    },
+    {
       "id": "calls@ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder|ts:src/services/orderService.ts#OrderService.placeOrder",
       "source": "ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder",
       "target": "ts:src/services/orderService.ts#OrderService.placeOrder",
@@ -1413,5 +2008,572 @@
         }
       ]
     }
-  ]
+  ],
+  "extensions": {
+    "logicFlow": {
+      "ts:src/index.ts#buildOrdersApp": [
+        {
+          "kind": "call",
+          "label": "PricingService",
+          "target": "ts:src/pricing/pricingService.ts#PricingService",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "OrderRepository",
+          "target": "ts:src/repository/orderRepository.ts#OrderRepository",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "EmailService",
+          "target": "ts:src/notifications/emailService.ts#EmailService",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "OrderService",
+          "target": "ts:src/services/orderService.ts#OrderService",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "OrderRoutes",
+          "target": "ts:src/api/orderRoutes.ts#OrderRoutes",
+          "resolution": "resolved"
+        }
+      ],
+      "ts:src/__tests__/orderService.test.ts#expectEqual": [
+        {
+          "kind": "branch",
+          "label": "if actual !== expected",
+          "paths": [
+            {
+              "label": "then",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "String",
+                  "target": null,
+                  "resolution": "external"
+                },
+                {
+                  "kind": "call",
+                  "label": "String",
+                  "target": null,
+                  "resolution": "external"
+                },
+                {
+                  "kind": "call",
+                  "label": "Error",
+                  "target": null,
+                  "resolution": "external"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "ts:src/__tests__/orderService.test.ts#buildService": [
+        {
+          "kind": "call",
+          "label": "PricingService",
+          "target": "ts:src/pricing/pricingService.ts#PricingService",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "OrderRepository",
+          "target": "ts:src/repository/orderRepository.ts#OrderRepository",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "EmailService",
+          "target": "ts:src/notifications/emailService.ts#EmailService",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "OrderService",
+          "target": "ts:src/services/orderService.ts#OrderService",
+          "resolution": "resolved"
+        }
+      ],
+      "ts:src/__tests__/orderService.test.ts#testPlaceOrderStoresAndPrices": [
+        {
+          "kind": "call",
+          "label": "buildService",
+          "target": "ts:src/__tests__/orderService.test.ts#buildService",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "sampleRequest",
+          "target": "ts:src/__tests__/orderService.test.ts#sampleRequest",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "service.placeOrder",
+          "target": "ts:src/services/orderService.ts#OrderService.placeOrder",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "expectEqual",
+          "target": "ts:src/__tests__/orderService.test.ts#expectEqual",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "expectEqual",
+          "target": "ts:src/__tests__/orderService.test.ts#expectEqual",
+          "resolution": "resolved"
+        }
+      ],
+      "ts:src/__tests__/orderService.test.ts#testGetOrderFindsWhatWasPlaced": [
+        {
+          "kind": "call",
+          "label": "buildService",
+          "target": "ts:src/__tests__/orderService.test.ts#buildService",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "sampleRequest",
+          "target": "ts:src/__tests__/orderService.test.ts#sampleRequest",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "service.placeOrder",
+          "target": "ts:src/services/orderService.ts#OrderService.placeOrder",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "service.getOrder",
+          "target": "ts:src/services/orderService.ts#OrderService.getOrder",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "expectEqual",
+          "target": "ts:src/__tests__/orderService.test.ts#expectEqual",
+          "resolution": "resolved"
+        }
+      ],
+      "ts:src/__tests__/pricingService.test.ts#expectEqual": [
+        {
+          "kind": "branch",
+          "label": "if actual !== expected",
+          "paths": [
+            {
+              "label": "then",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "String",
+                  "target": null,
+                  "resolution": "external"
+                },
+                {
+                  "kind": "call",
+                  "label": "String",
+                  "target": null,
+                  "resolution": "external"
+                },
+                {
+                  "kind": "call",
+                  "label": "Error",
+                  "target": null,
+                  "resolution": "external"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "ts:src/__tests__/pricingService.test.ts#testPriceWithoutDiscount": [
+        {
+          "kind": "call",
+          "label": "PricingService",
+          "target": "ts:src/pricing/pricingService.ts#PricingService",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "requestWith",
+          "target": "ts:src/__tests__/pricingService.test.ts#requestWith",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "price",
+          "target": "ts:src/pricing/pricingService.ts#PricingService.price",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "expectEqual",
+          "target": "ts:src/__tests__/pricingService.test.ts#expectEqual",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "expectEqual",
+          "target": "ts:src/__tests__/pricingService.test.ts#expectEqual",
+          "resolution": "resolved"
+        }
+      ],
+      "ts:src/__tests__/pricingService.test.ts#testPriceHonorsKnownDiscountCode": [
+        {
+          "kind": "call",
+          "label": "PricingService",
+          "target": "ts:src/pricing/pricingService.ts#PricingService",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "requestWith",
+          "target": "ts:src/__tests__/pricingService.test.ts#requestWith",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "price",
+          "target": "ts:src/pricing/pricingService.ts#PricingService.price",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "expectEqual",
+          "target": "ts:src/__tests__/pricingService.test.ts#expectEqual",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "expectEqual",
+          "target": "ts:src/__tests__/pricingService.test.ts#expectEqual",
+          "resolution": "resolved"
+        }
+      ],
+      "ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder": [
+        {
+          "kind": "branch",
+          "label": "try/catch",
+          "paths": [
+            {
+              "label": "try",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "placeOrder",
+                  "target": "ts:src/services/orderService.ts#OrderService.placeOrder",
+                  "resolution": "resolved"
+                },
+                {
+                  "kind": "call",
+                  "label": "this.created",
+                  "target": "ts:src/api/orderRoutes.ts#OrderRoutes.created",
+                  "resolution": "resolved"
+                }
+              ]
+            },
+            {
+              "label": "catch error",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "this.toErrorResponse",
+                  "target": "ts:src/api/orderRoutes.ts#OrderRoutes.toErrorResponse",
+                  "resolution": "resolved"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "ts:src/api/orderRoutes.ts#OrderRoutes.handleGetOrder": [
+        {
+          "kind": "call",
+          "label": "getOrder",
+          "target": "ts:src/services/orderService.ts#OrderService.getOrder",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "branch",
+          "label": "if !order",
+          "paths": [
+            {
+              "label": "then",
+              "body": []
+            }
+          ]
+        }
+      ],
+      "ts:src/api/orderRoutes.ts#OrderRoutes.toErrorResponse": [
+        {
+          "kind": "branch",
+          "label": "if error instanceof ValidationError",
+          "paths": [
+            {
+              "label": "then",
+              "body": []
+            }
+          ]
+        }
+      ],
+      "ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation": [
+        {
+          "kind": "call",
+          "label": "this.renderConfirmation",
+          "target": "ts:src/notifications/emailService.ts#EmailService.renderConfirmation",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "this.deliver",
+          "target": "ts:src/notifications/emailService.ts#EmailService.deliver",
+          "resolution": "resolved"
+        }
+      ],
+      "ts:src/notifications/emailService.ts#EmailService.renderConfirmation": [
+        {
+          "kind": "call",
+          "label": "toFixed",
+          "target": null,
+          "resolution": "external"
+        }
+      ],
+      "ts:src/pricing/pricingService.ts#PricingService.price": [
+        {
+          "kind": "call",
+          "label": "this.subtotal",
+          "target": "ts:src/pricing/pricingService.ts#PricingService.subtotal",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "this.discountFor",
+          "target": "ts:src/pricing/pricingService.ts#PricingService.discountFor",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "this.tax",
+          "target": "ts:src/pricing/pricingService.ts#PricingService.tax",
+          "resolution": "resolved"
+        }
+      ],
+      "ts:src/pricing/pricingService.ts#PricingService.subtotal": [
+        {
+          "kind": "loop",
+          "label": "reduce sum",
+          "body": []
+        }
+      ],
+      "ts:src/pricing/pricingService.ts#PricingService.discountFor": [
+        {
+          "kind": "branch",
+          "label": "if !code || !this.isKnownCode(code)",
+          "paths": [
+            {
+              "label": "then",
+              "body": []
+            }
+          ]
+        },
+        {
+          "kind": "call",
+          "label": "Math.round",
+          "target": null,
+          "resolution": "external"
+        }
+      ],
+      "ts:src/pricing/pricingService.ts#PricingService.tax": [
+        {
+          "kind": "call",
+          "label": "Math.round",
+          "target": null,
+          "resolution": "external"
+        }
+      ],
+      "ts:src/repository/orderRepository.ts#OrderRepository.save": [
+        {
+          "kind": "call",
+          "label": "set",
+          "target": null,
+          "resolution": "external"
+        }
+      ],
+      "ts:src/repository/orderRepository.ts#OrderRepository.findById": [
+        {
+          "kind": "call",
+          "label": "get",
+          "target": null,
+          "resolution": "external"
+        }
+      ],
+      "ts:src/services/orderService.ts#OrderService.placeOrder": [
+        {
+          "kind": "call",
+          "label": "validateOrderRequest",
+          "target": "ts:src/validation/orderValidator.ts#validateOrderRequest",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "price",
+          "target": "ts:src/pricing/pricingService.ts#PricingService.price",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "this.assemble",
+          "target": "ts:src/services/orderService.ts#OrderService.assemble",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "save",
+          "target": "ts:src/repository/orderRepository.ts#OrderRepository.save",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "sendOrderConfirmation",
+          "target": "ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation",
+          "resolution": "resolved"
+        }
+      ],
+      "ts:src/services/orderService.ts#OrderService.getOrder": [
+        {
+          "kind": "call",
+          "label": "findById",
+          "target": "ts:src/repository/orderRepository.ts#OrderRepository.findById",
+          "resolution": "resolved"
+        }
+      ],
+      "ts:src/services/orderService.ts#OrderService.assemble": [
+        {
+          "kind": "call",
+          "label": "this.nextId",
+          "target": "ts:src/services/orderService.ts#OrderService.nextId",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "this.timestamp",
+          "target": "ts:src/services/orderService.ts#OrderService.timestamp",
+          "resolution": "resolved"
+        }
+      ],
+      "ts:src/validation/orderValidator.ts#validateOrderRequest": [
+        {
+          "kind": "branch",
+          "label": "if !request.customerId",
+          "paths": [
+            {
+              "label": "then",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "ValidationError",
+                  "target": "ts:src/validation/orderValidator.ts#ValidationError",
+                  "resolution": "resolved"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "branch",
+          "label": "if request.lines.length === 0",
+          "paths": [
+            {
+              "label": "then",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "ValidationError",
+                  "target": "ts:src/validation/orderValidator.ts#ValidationError",
+                  "resolution": "resolved"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "loop",
+          "label": "for each line",
+          "body": [
+            {
+              "kind": "call",
+              "label": "assertLineIsSane",
+              "target": "ts:src/validation/orderValidator.ts#assertLineIsSane",
+              "resolution": "resolved"
+            }
+          ]
+        }
+      ],
+      "ts:src/validation/orderValidator.ts#assertLineIsSane": [
+        {
+          "kind": "branch",
+          "label": "if !sku",
+          "paths": [
+            {
+              "label": "then",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "ValidationError",
+                  "target": "ts:src/validation/orderValidator.ts#ValidationError",
+                  "resolution": "resolved"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "branch",
+          "label": "if quantity <= 0",
+          "paths": [
+            {
+              "label": "then",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "ValidationError",
+                  "target": "ts:src/validation/orderValidator.ts#ValidationError",
+                  "resolution": "resolved"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "branch",
+          "label": "if unitPriceCents < 0",
+          "paths": [
+            {
+              "label": "then",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "ValidationError",
+                  "target": "ts:src/validation/orderValidator.ts#ValidationError",
+                  "resolution": "resolved"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "entryModules": [
+      "ts:src/index.ts"
+    ]
+  }
 }

@@ -5,6 +5,7 @@
  * index keys everything by that id verbatim and never mints a parallel identifier.
  */
 
+import { collectTestIds } from "@meridian/core";
 import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
 
 export interface GraphIndex {
@@ -14,6 +15,8 @@ export interface GraphIndex {
   parentOf: Map<string, string | null>;
   outEdges: Map<string, GraphEdge[]>;
   edges: GraphEdge[];
+  /** Every test-code node (tag or path heuristic), closed over containment — the hide-tests set. */
+  testIds: Set<string>;
   isContainer(nodeId: string): boolean;
   /** Ordered children of a node (source order); the roots of a dive-in focus scope. */
   childrenOf(nodeId: string): GraphNode[];
@@ -34,6 +37,7 @@ export function buildGraphIndex(artifact: GraphArtifact): GraphIndex {
     parentOf,
     outEdges: groupOutEdges(artifact.edges),
     edges: artifact.edges,
+    testIds: collectTestIds(artifact.nodes),
     isContainer: (nodeId) => (childrenByParent.get(nodeId)?.length ?? 0) > 0,
     childrenOf: (nodeId) => childrenByParent.get(nodeId) ?? [],
     ancestorsOf: (nodeId) => ancestorsOf(nodeId, nodesById, parentOf),

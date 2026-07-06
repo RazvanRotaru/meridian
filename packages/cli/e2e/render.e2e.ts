@@ -11,8 +11,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chromium, type Browser, type Page } from "playwright";
 import { chromiumInstalled, generateGraph, runCli, startView } from "./harness";
 
-const COLLAPSED_CHEVRON = "▸"; // ▸
-
 let graphDir: string | undefined;
 
 afterAll(() => {
@@ -46,19 +44,10 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     server?.kill("SIGINT");
   });
 
-  it("starts collapsed at the single system root (progressive disclosure)", async () => {
-    expect(await page.locator(".react-flow__node").count()).toBe(1);
-  });
-
-  it("expands in place to the full graph with no console or page errors", async () => {
-    for (let round = 0; round < 5; round += 1) {
-      const clicked = await expandCollapsed(page);
-      await page.waitForTimeout(600);
-      if (clicked === 0) {
-        break;
-      }
-    }
-    expect(await page.locator(".react-flow__node").count()).toBeGreaterThan(20);
+  it("renders the Service-composition scorecards wired by couplings, with no console/page errors", async () => {
+    // The default "call" lens is the composition graph: unit scorecards drawn at once (no
+    // progressive disclosure) and coupling wires between them.
+    expect(await page.locator(".react-flow__node").count()).toBeGreaterThan(5);
     expect(await page.locator(".react-flow__edge").count()).toBeGreaterThan(0);
     expect(consoleErrors).toEqual([]);
     expect(pageErrors).toEqual([]);
@@ -71,6 +60,30 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     await page.waitForFunction(() => document.body.innerText.includes("loaded: staging"));
     expect(await statusText(page)).toContain("loaded: staging");
   });
+
+  it("drops test-code units from the composition graph when the Tests toggle is clicked", async () => {
+    const before = await page.locator(".react-flow__node").count();
+    await page.click('button:has-text("Tests (")');
+    await page.waitForTimeout(700);
+    const hidden = await page.locator(".react-flow__node").count();
+    expect(hidden).toBeLessThan(before); // the test-module scorecards (and their wires) are gone
+    // Toggling back restores them — the graph is filtered, not permanently pruned.
+    await page.click('button:has-text("Tests (")');
+    await page.waitForTimeout(700);
+    expect(await page.locator(".react-flow__node").count()).toBe(before);
+  });
+
+  it("coverage mode opens the panel with verdicts, reasons, and the summary percentage", async () => {
+    await page.click('button:has-text("Coverage")');
+    await page.waitForSelector("text=Static coverage");
+    const panel = await page.locator("text=Static coverage").locator("xpath=ancestor::div[1]").innerText();
+    expect(panel).toMatch(/\d+%/);
+    await page.waitForSelector("text=untested");
+    await page.waitForSelector("text=OrderRoutes");
+    await page.waitForSelector("text=/never called in the graph/");
+    expect(consoleErrors).toEqual([]);
+    expect(pageErrors).toEqual([]);
+  });
 });
 
 describe("never-prod gate", () => {
@@ -82,15 +95,6 @@ describe("never-prod gate", () => {
     expect(result.stderr).toMatch(/never defaults/i);
   });
 });
-
-function expandCollapsed(page: Page): Promise<number> {
-  return page.evaluate((chevron) => {
-    const buttons = Array.from(document.querySelectorAll(".react-flow__node button"));
-    const collapsed = buttons.filter((button) => button.textContent?.includes(chevron));
-    collapsed.forEach((button) => (button as HTMLButtonElement).click());
-    return collapsed.length;
-  }, COLLAPSED_CHEVRON);
-}
 
 function statusText(page: Page): Promise<string> {
   return page.locator("text=/no telemetry|loaded:/").first().innerText();

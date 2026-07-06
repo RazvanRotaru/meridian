@@ -12,9 +12,12 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { ReactFlow, type Edge, type Node, type NodeMouseHandler, type ReactFlowInstance } from "@xyflow/react";
+import type { CoverageReport } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { compNodeTypes } from "./nodes/composition/CompositionNode";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
+import { CoveragePanel } from "./CoveragePanel";
+import { coverageAccent } from "../theme/coverageColors";
 import type { CompRfEdge, CompRfNode } from "../layout/compositionElk";
 import { colorForDistance, type CompNodeData } from "../derive/compositionGraph";
 
@@ -25,13 +28,25 @@ export function CompositionView() {
   const layoutStatus = useBlueprint((state) => state.compLayoutStatus);
   const compRoot = useBlueprint((state) => state.compRoot);
   const nodesById = useBlueprint((state) => state.index.nodesById);
+  const coverage = useBlueprint((state) => (state.coverageMode ? state.coverage : null));
+  const showTests = useBlueprint((state) => state.showTests);
+  const testIds = useBlueprint((state) => state.index.testIds);
   const { selectCompUnit, setCompRoot } = useBlueprintActions();
 
-  // The highlight is a pure repaint over the store's laid-out graph — recomputed only when the
-  // layout or the selection changes, never mutating the store arrays.
+  // Hiding tests is a pure VISIBILITY filter over the already-laid-out graph: test cards (and any
+  // cluster frame left empty by their removal, and any wire touching them) drop out, but every
+  // production card keeps its exact position — the layout is computed once with tests included, so
+  // the structure never reshuffles when the toggle flips.
+  const { nodes: shownNodes, edges: shownEdges } = useMemo(
+    () => (showTests ? { nodes, edges } : withoutTests(nodes, edges, testIds)),
+    [nodes, edges, showTests, testIds],
+  );
+
+  // The highlight is a pure repaint over the (filtered) laid-out graph — recomputed only when the
+  // layout, filter, or selection changes, never mutating the store arrays.
   const { styledNodes, styledEdges } = useMemo(
-    () => emphasizeSelection(nodes, edges, selectedId),
-    [nodes, edges, selectedId],
+    () => emphasizeSelection(shownNodes, shownEdges, selectedId),
+    [shownNodes, shownEdges, selectedId],
   );
 
   // Single-click ALWAYS just selects + highlights — it never moves the viewport. A cluster frame is a
@@ -88,7 +103,8 @@ export function CompositionView() {
         onPaneClick={() => selectCompUnit(null)}
         {...READONLY_CANVAS_PROPS}
       >
-        <CanvasChrome nodeColor={miniMapColor} />
+        <CanvasChrome nodeColor={(node) => miniMapColor(node, coverage)} />
+        <CoveragePanel />
       </ReactFlow>
       <CompositionBreadcrumb rootId={compRoot} rootLabel={rootLabel} onHome={() => setCompRoot(null)} />
       {isEmpty ? <EmptyCompositionCard /> : null}
@@ -115,6 +131,30 @@ function CompositionBreadcrumb(props: { rootId: string | null; rootLabel: string
       )}
     </nav>
   );
+}
+
+/**
+ * Drop test-code unit cards, the wires touching them, and any cluster frame left with no visible
+ * unit — WITHOUT touching positions, so the surviving production cards stay exactly where ELK put
+ * them (the layout was computed with tests included). A cluster frame is kept as long as one of its
+ * unit children survives, so a production card never references a removed parent frame.
+ */
+function withoutTests(
+  nodes: CompRfNode[],
+  edges: CompRfEdge[],
+  testIds: ReadonlySet<string>,
+): { nodes: CompRfNode[]; edges: CompRfEdge[] } {
+  const liveClusters = new Set<string>();
+  for (const node of nodes) {
+    if (node.type !== "cluster" && !testIds.has(node.id) && node.parentId) {
+      liveClusters.add(node.parentId);
+    }
+  }
+  const keptNodes = nodes.filter((node) =>
+    node.type === "cluster" ? liveClusters.has(node.id) : !testIds.has(node.id),
+  );
+  const keptEdges = edges.filter((edge) => !testIds.has(edge.source) && !testIds.has(edge.target));
+  return { nodes: keptNodes, edges: keptEdges };
 }
 
 const DIM_EDGE_OPACITY = 0.12;
@@ -178,11 +218,15 @@ function dimNode(node: CompRfNode): CompRfNode {
 // App.tsx. A cluster frame, and any logic node leaking in mid-switch, carries no `metrics`, so treat
 // anything that isn't a metrics-bearing unit as the neutral panel tone rather than dereferencing a
 // missing `metrics` (which blanked the app on the logic→composition link). A unit dot tints by its
-// health colour — the same green→amber→red story as the cards.
-function miniMapColor(node: Node): string {
+// health colour — the same green→amber→red story as the cards. In coverage mode the dots echo the
+// coverage verdict instead, matching the recoloured rails.
+function miniMapColor(node: Node, coverage: CoverageReport | null): string {
   const metrics = (node.data as Partial<CompNodeData>)?.metrics;
   if (node.type !== "unit" || !metrics) {
     return "#2A313D";
+  }
+  if (coverage) {
+    return coverageAccent(node.id, coverage);
   }
   return colorForDistance(metrics.distance);
 }

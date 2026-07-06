@@ -7,7 +7,7 @@
  * caller can persist or serve a half-formed graph.
  */
 
-import { ExtractorRegistry, materializeBoundaryNodes } from "@meridian/core";
+import { ExtractorRegistry, collectTestIds, materializeBoundaryNodes, tagTestNodes } from "@meridian/core";
 import type { ExtractOptions, ExtractionResult, GraphArtifact, LanguageExtractor } from "@meridian/core";
 import { TypeScriptExtractor } from "@meridian/extractor-typescript";
 import { PythonExtractor } from "@meridian/extractor-python";
@@ -28,6 +28,8 @@ export interface PipelineRequest {
   includeUnresolved?: boolean;
   /** `generate` materializes boundary nodes; the web flow keeps the graph lean (default off). */
   materializeBoundary: boolean;
+  /** Drop test code from the artifact entirely (`--exclude-tests`); default is include + tag. */
+  excludeTests?: boolean;
   /** Display name for the artifact; the web flow passes the repo label so the title isn't a temp dir. */
   targetName?: string;
 }
@@ -42,9 +44,10 @@ export interface PipelineResult {
 export async function extractToArtifact(request: PipelineRequest): Promise<PipelineResult> {
   const extractor = await selectExtractor(request.absoluteRoot, request.language);
   const raw = await runExtract(extractor, request);
+  const classified = classifyTests(raw, request.excludeTests ?? false);
   const extraction = request.materializeBoundary
-    ? { ...raw, nodes: materializeBoundaryNodes(raw.nodes, raw.edges) }
-    : raw;
+    ? { ...classified, nodes: materializeBoundaryNodes(classified.nodes, classified.edges) }
+    : classified;
   const artifact = buildArtifact({
     absoluteRoot: request.absoluteRoot,
     rootRelativeToCwd: rootRelativeToCwd(request.cwd, request.absoluteRoot),
@@ -67,6 +70,24 @@ export async function selectExtractor(absoluteRoot: string, language: string | u
     throw new CliError(EXIT.extractor, `${reason} (available: ${available})`);
   }
   return extractor;
+}
+
+/**
+ * Language-agnostic test classification: tag test-path nodes (any extractor benefits), or —
+ * under `--exclude-tests` — drop test code plus every edge touching it, restoring a lean
+ * production-only graph.
+ */
+function classifyTests(extraction: ExtractionResult, excludeTests: boolean): ExtractionResult {
+  const nodes = tagTestNodes(extraction.nodes);
+  if (!excludeTests) {
+    return { ...extraction, nodes };
+  }
+  const testIds = collectTestIds(nodes);
+  return {
+    ...extraction,
+    nodes: nodes.filter((node) => !testIds.has(node.id)),
+    edges: extraction.edges.filter((edge) => !testIds.has(edge.source) && !testIds.has(edge.target)),
+  };
 }
 
 async function runExtract(extractor: LanguageExtractor, request: PipelineRequest): Promise<ExtractionResult> {

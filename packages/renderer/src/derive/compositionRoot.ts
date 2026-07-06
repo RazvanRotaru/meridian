@@ -7,7 +7,7 @@
  */
 
 import type { GraphNode } from "@meridian/core";
-import { isWithinRoot, type CouplingEdge } from "./composition-graph";
+import { isWithinRoot, type CouplingEdge } from "@meridian/design-metrics";
 
 /** The units to draw for a root, and which of them are the 1-hop boundary neighbours (never root's). */
 export interface RootedView {
