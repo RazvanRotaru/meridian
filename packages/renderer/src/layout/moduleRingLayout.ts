@@ -65,30 +65,53 @@ function frameHeight(rows: number): number {
   return TITLE_BAR + FRAME_PADDING * 2 + rows * CARD_HEIGHT + (rows - 1) * CARD_GAP;
 }
 
-/** Absolute top-left of every frame, grouped by ring and placed on its concentric circle. */
+/**
+ * Absolute top-left of every frame, placed ring-by-ring from the centre OUT. Each ring's radius is
+ * forced to clear the one inside it (`prevOuterReach`), so a widened inner ring can never grow past
+ * an outer ring and invert the depth ordering — rings stay strictly nested regardless of crowding.
+ */
 function placeFrames(packed: PackedFrame[]): Map<string, { x: number; y: number }> {
   const positions = new Map<string, { x: number; y: number }>();
-  for (const [ring, frames] of framesByRing(packed)) {
-    placeRing(ring, frames, positions);
+  // The furthest any already-placed frame reaches from the origin — the floor the next ring clears.
+  let prevOuterReach = 0;
+  for (const [ring, frames] of ringsAscending(packed)) {
+    const radius = placeRing(ring, frames, positions, prevOuterReach);
+    prevOuterReach = radius + maxFrameHalfExtent(frames);
   }
   return positions;
 }
 
-function placeRing(ring: number, frames: PackedFrame[], positions: Map<string, { x: number; y: number }>): void {
+/** Place one ring's frames on its circle and return the ring radius used (0 for the centred entry). */
+function placeRing(
+  ring: number,
+  frames: PackedFrame[],
+  positions: Map<string, { x: number; y: number }>,
+  prevOuterReach: number,
+): number {
   if (ring === 0 && frames.length === 1) {
     positions.set(frames[0].spec.id, topLeft(0, 0, frames[0]));
-    return;
+    return 0;
   }
-  const radius = ringRadius(ring, frames);
+  const radius = ringRadius(ring, frames, prevOuterReach);
   frames.forEach((frame, index) => {
     const angle = START_ANGLE + (2 * Math.PI * index) / frames.length;
     positions.set(frame.spec.id, topLeft(radius * Math.cos(angle), radius * Math.sin(angle), frame));
   });
+  return radius;
 }
 
-/** The ring radius: the stepped nominal, widened so the ring's frames fit around its circumference. */
-function ringRadius(ring: number, frames: PackedFrame[]): number {
-  return Math.max(RING_BASE + ring * RING_STEP, circumferenceRadius(frames));
+/**
+ * The ring radius: the largest of the stepped nominal, the WITHIN-ring circumference floor (so a
+ * ring's own frames fit around it), and the MONOTONIC floor that clears the ring inside this one
+ * (inner reach + this ring's half-extent + a gap). The last guarantees outer rings never fall inside
+ * an inner ring the circumference floor blew up.
+ */
+function ringRadius(ring: number, frames: PackedFrame[], prevOuterReach: number): number {
+  return Math.max(
+    RING_BASE + ring * RING_STEP,
+    circumferenceRadius(frames),
+    prevOuterReach + maxFrameHalfExtent(frames) + FRAME_GAP,
+  );
 }
 
 function circumferenceRadius(frames: PackedFrame[]): number {
@@ -96,8 +119,18 @@ function circumferenceRadius(frames: PackedFrame[]): number {
   return needed / (2 * Math.PI);
 }
 
+/** The largest distance any frame in the ring reaches from its own centre — half its diagonal. */
+function maxFrameHalfExtent(frames: PackedFrame[]): number {
+  return frames.reduce((max, frame) => Math.max(max, diagonal(frame) / 2), 0);
+}
+
 function diagonal(frame: PackedFrame): number {
   return Math.hypot(frame.width, frame.height);
+}
+
+/** The rings in ascending order, so each is placed AFTER — and outside — the ring within it. */
+function ringsAscending(packed: PackedFrame[]): Array<[number, PackedFrame[]]> {
+  return [...framesByRing(packed)].sort(([a], [b]) => a - b);
 }
 
 /** Centre the frame on a point: React Flow positions are top-left, so back off half its size. */

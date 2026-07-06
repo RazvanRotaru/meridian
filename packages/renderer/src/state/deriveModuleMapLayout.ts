@@ -35,7 +35,10 @@ export function readEntryModules(artifact: GraphArtifact): string[] {
 export function deriveModuleMapLayout(
   index: GraphIndex,
   moduleRoot: string | null,
-  moduleDepth: number,
+  // The requested depth cap, or `null` for the whole radius (the "All" position). Passing the store's
+  // GHOST_DEPTH_ALL sentinel as a plain number would silently cap a >sentinel-deep chain, so the
+  // store maps "All" to null before calling — keeping the walk truly unbounded.
+  moduleDepth: number | null,
   entryModules: string[],
 ): ModuleMapLayout {
   const requestedRoot = moduleRoot ?? resolveModuleRoot(index, entryModules);
@@ -51,14 +54,14 @@ export function deriveModuleMapLayout(
   return { nodes, edges, effectiveRoot: full.rootId, maxDepth: full.maxObservedDepth };
 }
 
-/** The full radius when the depth reaches it (nothing to trim), else a fresh depth-capped derivation. */
+/** The full radius when the depth is unbounded or already reaches it, else a fresh capped derivation. */
 function specForDepth(
   index: GraphIndex,
   full: ModuleMapSpec,
-  moduleDepth: number,
+  moduleDepth: number | null,
   entryModules: string[],
 ): ModuleMapSpec {
-  if (moduleDepth >= full.maxObservedDepth) {
+  if (moduleDepth === null || moduleDepth >= full.maxObservedDepth) {
     return full;
   }
   return deriveModuleMap(index, { rootId: full.rootId as string, maxDepth: moduleDepth, entryModules });

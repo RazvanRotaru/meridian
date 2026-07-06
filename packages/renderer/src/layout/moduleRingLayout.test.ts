@@ -44,6 +44,26 @@ function overlaps(a: ReturnType<typeof rect>, b: ReturnType<typeof rect>): boole
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
+// A frame's centre distance from the origin — its ring's effective radius, used to assert that outer
+// rings sit strictly outside inner ones.
+function centerDist(node: Node): number {
+  const box = rect(node);
+  return Math.hypot(box.x + box.w / 2, box.y + box.h / 2);
+}
+
+// An over-crowded ring 1 (20 frames) whose circumference floor balloons its radius PAST ring 2's
+// nominal radius — the exact case that inverts depth unless outer rings are pushed to clear inner
+// ones. One lone frame on ring 2 should still land outside every ring-1 frame.
+function overFullInnerSpec(): ModuleMapSpec {
+  const inner = Array.from({ length: 20 }, (_, i) => frame(`I${i}`, 1, 1));
+  const innerFiles = inner.map((f) => file(`if-${f.id}`, f.id, 1));
+  return spec({
+    frames: [...inner, frame("O", 2, 1)],
+    files: [...innerFiles, file("of", "O", 2)],
+    maxObservedDepth: 2,
+  });
+}
+
 describe("layoutModuleMap", () => {
   it("returns empty arrays for an empty spec", () => {
     expect(layoutModuleMap(spec({}))).toEqual({ nodes: [], edges: [] });
@@ -78,6 +98,19 @@ describe("layoutModuleMap", () => {
       for (let j = i + 1; j < frames.length; j += 1) {
         expect(overlaps(frames[i], frames[j])).toBe(false);
       }
+    }
+  });
+
+  it("keeps an outer ring outside an over-crowded inner ring (no depth inversion)", () => {
+    const frames = frameNodes(layoutModuleMap(overFullInnerSpec()).nodes);
+    const outer = frames.find((node) => node.id === "O") as Node;
+    const innerFrames = frames.filter((node) => node.id.startsWith("I"));
+    const innerMaxDist = Math.max(...innerFrames.map(centerDist));
+    // The lone ring-2 frame must sit farther out than every crowded ring-1 frame...
+    expect(centerDist(outer)).toBeGreaterThan(innerMaxDist);
+    // ...and must not overlap any of them (the visual symptom of an inversion).
+    for (const inner of innerFrames) {
+      expect(overlaps(rect(outer), rect(inner))).toBe(false);
     }
   });
 

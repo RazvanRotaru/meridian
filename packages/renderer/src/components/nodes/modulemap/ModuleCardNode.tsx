@@ -53,8 +53,9 @@ export const ModuleCardNode = memo(ModuleCardNodeImpl);
 export const moduleNodeTypes = { file: ModuleCardNode, frame: ModuleFrameNode };
 
 // Category → accent hue, echoing the palette used across the dark surfaces: entry green (the "you are
-// here" signal), ui blue, util amber, config violet, app a neutral slate.
-const CATEGORY_COLOR: Record<ModuleCategory, string> = {
+// here" signal), ui blue, util amber, config violet, app a neutral slate. Exported so the Module-map
+// MiniMap tints its file dots with the same palette as the cards.
+export const CATEGORY_COLOR: Record<ModuleCategory, string> = {
   entry: "#56C271",
   ui: "#5B9BE3",
   util: "#C9A24B",

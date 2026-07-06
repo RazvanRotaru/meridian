@@ -501,7 +501,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
       await Promise.resolve();
-      const layout = deriveModuleMapLayout(index, moduleRoot, moduleDepth, readEntryModules(artifact));
+      // "All" (the GHOST_DEPTH_ALL sentinel) means the whole radius — pass null so the walk is truly
+      // unbounded rather than capped at the sentinel's numeric value.
+      const depthCap = moduleDepth >= GHOST_DEPTH_ALL ? null : moduleDepth;
+      const layout = deriveModuleMapLayout(index, moduleRoot, depthCap, readEntryModules(artifact));
       if (moduleLayoutSeq !== sequence) {
         return; // a newer root/depth change superseded this one.
       }

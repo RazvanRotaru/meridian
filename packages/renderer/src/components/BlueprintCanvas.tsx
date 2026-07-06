@@ -2,9 +2,10 @@
  * The canvas shell. It hosts the always-mounted Toolbar (tab toggle + sidebar), the modal
  * CodePanel, and the global Cmd/Ctrl+P CommandPalette, and swaps its main surface by view mode:
  * "call" is the Service-composition scorecard graph (CompositionView); "ui" is the React
- * composition call graph (FlowCanvas); "logic" is the intra-procedural LogicFlowView. All three are
- * read-only React Flow surfaces — not draggable/connectable, selectable (selection driven into the
- * store via onNodeClick), dark color mode, dotted background, coloured MiniMap.
+ * composition call graph (FlowCanvas); "logic" is the intra-procedural LogicFlowView; "modules" is
+ * the import blast-radius Module-map (ModuleMapView). All are read-only React Flow surfaces — not
+ * draggable/connectable, selectable (selection driven into the store via onNodeClick), dark color
+ * mode, dotted background, coloured MiniMap.
  */
 
 import { ReactFlow, ReactFlowProvider, type Node, type NodeMouseHandler } from "@xyflow/react";
@@ -23,6 +24,7 @@ import { CodePanel } from "./CodePanel";
 import { CommandPalette } from "./CommandPalette";
 import { LogicFlowView } from "./LogicFlowView";
 import { CompositionView } from "./CompositionView";
+import { ModuleMapView } from "./ModuleMapView";
 
 // The Logic-flow view is a plain nested-div render, not a React Flow surface, so it swaps in for
 // <ReactFlow> whole. Toolbar (the tab toggle + sidebar) and the modal CodePanel stay mounted in
@@ -37,7 +39,15 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
           one's first render (which crashed its MiniMap nodeColor on foreign-shaped data). The
           always-mounted Toolbar's <Panel> keeps using the outer App-level provider. */}
       <ReactFlowProvider key={viewMode}>
-        {viewMode === "call" ? <CompositionView /> : viewMode === "logic" ? <LogicFlowView /> : <FlowCanvas />}
+        {viewMode === "call" ? (
+          <CompositionView />
+        ) : viewMode === "logic" ? (
+          <LogicFlowView />
+        ) : viewMode === "modules" ? (
+          <ModuleMapView />
+        ) : (
+          <FlowCanvas />
+        )}
       </ReactFlowProvider>
       <Toolbar preselectedEnv={props.preselectedEnv} />
       <CodePanel />
