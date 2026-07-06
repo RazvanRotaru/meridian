@@ -7,7 +7,7 @@
  * store via onNodeClick), dark color mode, dotted background, coloured MiniMap.
  */
 
-import { ReactFlow, type Node, type NodeMouseHandler } from "@xyflow/react";
+import { ReactFlow, ReactFlowProvider, type Node, type NodeMouseHandler } from "@xyflow/react";
 import { accentForKind } from "../theme/kindColors";
 import { coverageAccent } from "../theme/coverageColors";
 import type { CoverageReport } from "@meridian/core";
@@ -32,7 +32,13 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
   const viewMode = useBlueprint((state) => state.viewMode);
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
-      {viewMode === "call" ? <CompositionView /> : viewMode === "logic" ? <LogicFlowView /> : <FlowCanvas />}
+      {/* Each view is its OWN ReactFlow surface; keying a fresh provider per mode gives each its own
+          React Flow store, so a tab switch can never bleed the previous surface's nodes into the next
+          one's first render (which crashed its MiniMap nodeColor on foreign-shaped data). The
+          always-mounted Toolbar's <Panel> keeps using the outer App-level provider. */}
+      <ReactFlowProvider key={viewMode}>
+        {viewMode === "call" ? <CompositionView /> : viewMode === "logic" ? <LogicFlowView /> : <FlowCanvas />}
+      </ReactFlowProvider>
       <Toolbar preselectedEnv={props.preselectedEnv} />
       <CodePanel />
       {/* Global Cmd/Ctrl+P quick-open — mounted here so the shortcut works in every view mode. */}
