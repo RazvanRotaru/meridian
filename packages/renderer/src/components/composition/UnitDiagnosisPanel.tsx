@@ -4,8 +4,7 @@
  * Presentation only; the parent resolves the active unit's metrics.
  */
 
-import type { UnitMetrics } from "../../derive/composition";
-import { diagnoseUnit, type Tone } from "../../derive/compositionAdvice";
+import { diagnoseUnit, type Tone, type UnitMetrics } from "@meridian/design-metrics";
 
 export function UnitDiagnosisPanel(props: { unit: UnitMetrics | null }) {
   return (

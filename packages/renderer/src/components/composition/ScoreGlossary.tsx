@@ -4,7 +4,7 @@
  */
 
 import { useState } from "react";
-import { SCORE_GLOSSARY } from "../../derive/compositionAdvice";
+import { SCORE_GLOSSARY } from "@meridian/design-metrics";
 
 export function ScoreGlossary() {
   const [open, setOpen] = useState(false);

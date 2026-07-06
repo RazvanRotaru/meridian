@@ -1,0 +1,31 @@
+{
+  "name": "@meridian/design-metrics",
+  "version": "0.1.0",
+  "description": "Robert C. Martin's component-design (SOLID) metrics, LCOM4 cohesion, design smells, and refactor advice — computed from a Meridian graph (nodes + edges). Pure, framework-free.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@meridian/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "tsup": "^8.5.1",
+    "typescript": "6.0.3",
+    "vitest": "^4.1.9"
+  }
+}
