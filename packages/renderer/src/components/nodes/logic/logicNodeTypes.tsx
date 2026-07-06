@@ -12,7 +12,6 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
 import type { LogicNodeData } from "../../../derive/logicGraph";
-import type { LogicOwner } from "../../../derive/logicOwner";
 import { CodeInlinePanel } from "../../CodeInlinePanel";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -27,7 +26,7 @@ function ExecPins() {
 }
 
 function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
-  const { toggleLogicExpand, showCode, expandCode, closeCode, openComposition } = useBlueprintActions();
+  const { toggleLogicExpand, showCode, expandCode, closeCode } = useBlueprintActions();
   const index = useBlueprint((s) => s.index);
   const sourceUrl = useBlueprint((s) => s.sourceUrl);
   const logicSelected = useBlueprint((s) => s.logicSelected);
@@ -97,12 +96,13 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
             {codeButton}
           </span>
         </div>
-        {d.provenance ? <div style={PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.pkg} › {d.provenance.module}</div> : null}
-        {/* The per-node vertical detail — WHAT the block calls (signature) and WHICH service unit owns
-            it (a click-through chip). Definition grid cells are a fixed compact size and already show
-            their owner in provenance, so they opt out; only in-flow call blocks carry these. */}
+        {/* A FRAMED block sits inside its service frame, whose title already names the owner — so it
+            drops the provenance line and shows just name + signature. A standalone/external call (or a
+            definition grid cell) keeps its `pkg › module` provenance. */}
+        {!d.framed && d.provenance ? <div style={PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.pkg} › {d.provenance.module}</div> : null}
+        {/* The signature — WHAT the block calls. Definition grid cells are a fixed compact size, so
+            they opt out; only in-flow call blocks carry it. */}
         {!d.definition && d.signature ? <div style={SIGNATURE} title={d.signature}>{d.signature}</div> : null}
-        {!d.definition && d.owner ? <OwnerChip owner={d.owner} onOpen={openComposition} /> : null}
       </div>
       {inline}
     </div>
@@ -110,30 +110,43 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
 }
 
 /**
- * The owning-unit chip a call block wears: a health dot (distance colour, shared with the scorecards)
- * + the unit's kind glyph + name, click-through to open that unit in the Service-composition view. A
- * quiet inset row — metadata, not a second accent bar — with a smell marker when the unit is unhealthy.
+ * A SERVICE FRAME: the logic-flow analog of a composition scorecard. Consecutive calls into the same
+ * owning unit nest inside it, so the flat exec chain reads UML-like (containers, like the composition
+ * view). Its title bar is a click-through to that unit in the Service-composition view — a health dot
+ * + kind glyph + name (+ smell marker) + a count of the calls it frames — health-tinted so the frame's
+ * health reads at a glance. It carries NO exec pins: the white wires thread between the child blocks
+ * across frames, never through the frame itself. The body stays transparent for ELK-placed children.
  */
-function OwnerChip({ owner, onOpen }: { owner: LogicOwner; onOpen: (unitId: string) => void }) {
+function ServiceGroupNode({ data }: NodeProps<LogicRfNode>) {
+  const { openComposition } = useBlueprintActions();
+  const d = data as LogicNodeData;
+  const owner = d.owner;
+  if (!owner) {
+    return null; // a service frame is only ever emitted WITH an owner; defensive against a bad spec.
+  }
   return (
-    <button
-      type="button"
-      style={OWNER_CHIP}
-      title={`Open ${owner.label} in Service composition`}
-      onClick={(e) => {
-        e.stopPropagation();
-        onOpen(owner.unitId);
-      }}
-    >
-      <span style={{ ...OWNER_DOT, background: owner.health }} />
-      <span style={OWNER_GLYPH}>{unitGlyph(owner.kind)}</span>
-      <span style={NAME} title={owner.label}>{owner.label}</span>
-      {owner.smelly ? <span style={OWNER_SMELL} title="carries a design smell">⚠</span> : null}
-    </button>
+    <div style={serviceFrameStyle(owner.health)}>
+      <div style={{ ...SERVICE_RAIL, background: owner.health }} />
+      <button
+        type="button"
+        style={SERVICE_TITLE}
+        title={`Open ${owner.label} in Service composition`}
+        onClick={(e) => {
+          e.stopPropagation();
+          openComposition(owner.unitId);
+        }}
+      >
+        <span style={{ ...SERVICE_DOT, background: owner.health }} />
+        <span style={SERVICE_GLYPH}>{unitGlyph(owner.kind)}</span>
+        <span style={NAME} title={owner.label}>{owner.label}</span>
+        {owner.smelly ? <span style={SERVICE_SMELL} title="carries a design smell">⚠</span> : null}
+        <span style={SERVICE_COUNT}>{d.childCount}</span>
+      </button>
+    </div>
   );
 }
 
-// A compact unit glyph mirroring the scorecards, so the owner chip reads as the same kind of thing.
+// A compact unit glyph mirroring the scorecards, so a service frame reads as the same kind of thing.
 const UNIT_GLYPH: Record<string, string> = { module: "▤", class: "◆", interface: "◇", object: "❑" };
 function unitGlyph(kind: string): string {
   return UNIT_GLYPH[kind] ?? "▪";
@@ -297,7 +310,7 @@ function DefGroupNode({ data }: NodeProps<LogicRfNode>) {
   );
 }
 
-export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: BranchNode, jumpflow: JumpFlowNode, defgroup: DefGroupNode };
+export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: BranchNode, jumpflow: JumpFlowNode, defgroup: DefGroupNode, servicegroup: ServiceGroupNode };
 
 // Selection is BY TARGET (a target can be called many times): a matched call site rings green so
 // every call of the same target lights up together; while some target is selected, unrelated nodes
@@ -449,27 +462,49 @@ const PROV: React.CSSProperties = { padding: "4px 8px", fontSize: 10, color: "#7
 // The signature line: dimmer than provenance (secondary detail), mono, one clipped line — the full
 // text rides the hover title so a long signature never widens the block.
 const SIGNATURE: React.CSSProperties = { padding: "0 8px 3px", fontSize: 9.5, color: "#5F6874", fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
-// The owning-unit chip row: a quiet inset strip (not an accent bar) that reads as metadata; it's a
-// button so it's obviously click-through to the Service-composition view.
-const OWNER_CHIP: React.CSSProperties = {
+// The service frame: a neutral-bordered container (like the composition card) with a health-tinted
+// left rail, hosting the run's call blocks. Body transparent so ELK-placed children render over it.
+function serviceFrameStyle(health: string): React.CSSProperties {
+  return {
+    width: "100%",
+    height: "100%",
+    position: "relative",
+    boxSizing: "border-box",
+    border: "1px solid #2A2F37",
+    borderLeft: `1px solid ${health}`,
+    borderRadius: 10,
+    background: "rgba(18,23,30,0.45)",
+    fontFamily: MONO,
+    overflow: "hidden",
+  };
+}
+// The 3px health rail down the frame's left edge — the composition card's fastest health signal.
+const SERVICE_RAIL: React.CSSProperties = { position: "absolute", left: 0, top: 0, bottom: 0, width: 3 };
+// The title bar is a click-through to the unit in the Service-composition view. Its height (~34px)
+// sits under ELK's 42px container top padding so the child blocks clear it.
+const SERVICE_TITLE: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
-  gap: 5,
-  width: "calc(100% - 12px)",
-  margin: "0 6px 6px",
-  padding: "2px 6px",
-  border: "1px solid #262C35",
-  borderRadius: 5,
-  background: "rgba(255,255,255,0.03)",
-  color: "#9AA4B2",
+  gap: 6,
+  width: "100%",
+  height: 34,
+  boxSizing: "border-box",
+  padding: "0 10px 0 12px",
+  border: "none",
+  borderBottom: "1px solid #232935",
+  background: "rgba(255,255,255,0.02)",
+  color: "#C8D3E0",
   fontFamily: MONO,
-  fontSize: 10,
+  fontSize: 12,
+  fontWeight: 700,
   cursor: "pointer",
   textAlign: "left",
 };
-const OWNER_DOT: React.CSSProperties = { width: 7, height: 7, borderRadius: "50%", flexShrink: 0 };
-const OWNER_GLYPH: React.CSSProperties = { fontSize: 9, opacity: 0.7, flexShrink: 0 };
-const OWNER_SMELL: React.CSSProperties = { marginLeft: "auto", flexShrink: 0, fontSize: 9, color: "#E6B84D" };
+const SERVICE_DOT: React.CSSProperties = { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 };
+const SERVICE_GLYPH: React.CSSProperties = { fontSize: 11, opacity: 0.8, flexShrink: 0 };
+const SERVICE_SMELL: React.CSSProperties = { flexShrink: 0, fontSize: 10, color: "#E6B84D" };
+// The count of calls the frame wraps, pinned right (auto margin) so it never crowds the name.
+const SERVICE_COUNT: React.CSSProperties = { marginLeft: "auto", flexShrink: 0, fontSize: 10, fontWeight: 600, color: "#6C7683" };
 // The greyed chip is tight: a compact title (light text on the muted slate so the priority name
 // stays legible) over one small provenance line. Padding/fonts shrink to fit the ~30px chip.
 const GREY_TITLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "2px 6px", background: GREY_ACCENT, color: "#C8D3E0", fontSize: 10, fontWeight: 700, lineHeight: 1.2 };

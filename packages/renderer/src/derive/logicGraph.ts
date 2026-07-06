@@ -17,10 +17,10 @@ import { clamp } from "../layout/measure";
 /** No owner/signature enrichment — the default when a caller (e.g. a unit test) supplies no lookup. */
 const NO_OWNER: OwnerLookup = () => null;
 
-export type LogicNodeType = "block" | "control" | "branch";
+export type LogicNodeType = "block" | "control" | "branch" | "servicegroup";
 
 export type LogicNodeData = {
-  logicKind: "call" | "loop" | "try" | "if" | "switch";
+  logicKind: "call" | "loop" | "try" | "if" | "switch" | "service";
   label: string;
   targetId: string | null;
   resolution: EdgeResolution | null;
@@ -46,8 +46,12 @@ export type LogicNodeData = {
    * its name — the per-node vertical detail. Undefined for unresolved/external/signatureless targets. */
   signature?: string;
   /** The Service-composition unit that OWNS the call target (its class/object/module), with health +
-   * smell — the block's "service relationship" chip, and the seam that links across to that view. */
+   * smell. On a "service" frame it's the framed unit (title + click-through); on a call block it's the
+   * owner the enclosing frame already shows, kept for the framing pass and as a fallback. */
   owner?: LogicOwner | null;
+  /** True on a call block nested inside a service frame: the frame title names the owner, so the block
+   * drops its own provenance line (§ ServiceGroupNode). Undefined on standalone/external calls. */
+  framed?: boolean;
 };
 
 export interface LogicNodeSpec {
@@ -76,6 +80,19 @@ export interface LogicGraphSpec {
 interface Exit {
   id: string;
   edgeLabel?: string;
+}
+
+/** A flow step paired with its ORIGINAL index in the level, so a framed run keeps stable node ids. */
+interface IndexedStep {
+  step: FlowStep;
+  i: number;
+}
+
+/** One emit unit of a level: a service `frame` wrapping a run of same-owner calls, or a lone flat
+ * step (`frame: null`). See `planLevel`. */
+interface RunUnit {
+  frame: { owner: LogicOwner; id: string } | null;
+  steps: IndexedStep[];
 }
 
 export function deriveLogicGraph(
@@ -207,30 +224,107 @@ class LogicGraphBuilder {
     return { nodes: this.nodes, edges: this.edges };
   }
 
-  /** Emit one nesting level as a chain of exec-linked steps; return its entry + trailing exits. */
+  /**
+   * Emit one nesting level, grouping consecutive calls to the SAME owning service into one frame so
+   * the flow reads UML-like (mirrors the composition view): a run of framable calls nests under a
+   * service-frame container, everything else emits flat. Exec wires are UNCHANGED — they thread
+   * block→block in execution order across frame boundaries (ELK's root INCLUDE_CHILDREN routes them),
+   * so `firstId`/`lastExits` still stitch branches and loops exactly as before.
+   */
   private sequence(steps: FlowStep[], parentId: string | null, prefix: string): { firstId: string | null; lastExits: Exit[] } {
     let firstId: string | null = null;
     let prevExits: Exit[] = [];
-    steps.forEach((step, i) => {
-      if (this.options.hideGreyed && this.isGreyedLeaf(step)) {
-        return; // skip the node; prevExits carries over so the chain stitches prev → next.
+    for (const unit of this.planLevel(steps, prefix)) {
+      const stepParent = unit.frame ? this.emitServiceFrame(unit.frame, unit.steps.length, parentId) : parentId;
+      for (const { step, i } of unit.steps) {
+        const emit = this.step(step, stepParent, `${prefix}${i}`, unit.frame !== null);
+        if (firstId === null) {
+          firstId = emit.entry;
+        }
+        for (const exit of prevExits) {
+          this.link(exit, emit.entry);
+        }
+        prevExits = emit.exits;
       }
-      const emit = this.step(step, parentId, `${prefix}${i}`);
-      if (firstId === null) {
-        firstId = emit.entry;
-      }
-      for (const exit of prevExits) {
-        this.link(exit, emit.entry);
-      }
-      prevExits = emit.exits;
-    });
+    }
     return { firstId, lastExits: prevExits };
   }
 
-  private step(step: FlowStep, parentId: string | null, path: string): { entry: string; exits: Exit[] } {
+  /**
+   * Partition a level into emit units: maximal runs of consecutive framable calls sharing one owner
+   * (each a `frame` unit), with every other step a lone flat unit. hideGreyed leaves are dropped here
+   * (they never join a run), matching the old skip. Original indices ride along so ids stay stable.
+   */
+  private planLevel(steps: FlowStep[], prefix: string): RunUnit[] {
+    const units: RunUnit[] = [];
+    let run: { owner: LogicOwner; steps: IndexedStep[] } | null = null;
+    const flush = () => {
+      if (run) {
+        units.push({ frame: { owner: run.owner, id: `${this.rootId}::svc/${prefix}${run.steps[0].i}` }, steps: run.steps });
+        run = null;
+      }
+    };
+    steps.forEach((step, i) => {
+      if (this.options.hideGreyed && this.isGreyedLeaf(step)) {
+        return;
+      }
+      const owner = this.framableOwner(step, `${this.rootId}::${prefix}${i}`);
+      if (owner && run && run.owner.unitId === owner.unitId) {
+        run.steps.push({ step, i });
+      } else if (owner) {
+        flush();
+        run = { owner, steps: [{ step, i }] };
+      } else {
+        flush();
+        units.push({ frame: null, steps: [{ step, i }] });
+      }
+    });
+    flush();
+    return units;
+  }
+
+  /**
+   * The owner a call would be FRAMED under, or null if the step breaks a run: non-calls, calls to an
+   * unowned (external/unresolved) target, and EXPANDED calls (they become their own container, so
+   * they can't also nest in a service frame). Greyed-but-resolved calls with an owner ARE framable —
+   * they belong in their service's frame — so the greyed-ness alone never disqualifies.
+   */
+  private framableOwner(step: FlowStep, id: string): LogicOwner | null {
+    if (step.kind !== "call") {
+      return null;
+    }
+    const expandable = step.resolution === "resolved" && step.target !== null && (this.flows[step.target]?.length ?? 0) > 0;
+    if (expandable && this.expandedState(id, false)) {
+      return null;
+    }
+    return this.ownerLookup(step.target);
+  }
+
+  /** Emit the titled service-frame container (an ELK container, so no measured size); returns its id
+   * to parent the run's call blocks. Reuses `LogicNodeData` — `owner` carries the health/kind/unitId
+   * the frame title renders, so no discriminated-union member is needed. */
+  private emitServiceFrame(frame: { owner: LogicOwner; id: string }, childCount: number, parentId: string | null): string {
+    const data: LogicNodeData = {
+      logicKind: "service",
+      label: frame.owner.label,
+      targetId: null,
+      resolution: null,
+      expandable: false,
+      isExpanded: true,
+      isContainer: true,
+      greyed: false,
+      provenance: null,
+      childCount,
+      owner: frame.owner,
+    };
+    this.push(frame.id, parentId, "servicegroup", data, false);
+    return frame.id;
+  }
+
+  private step(step: FlowStep, parentId: string | null, path: string, framed: boolean): { entry: string; exits: Exit[] } {
     const id = `${this.rootId}::${path}`;
     if (step.kind === "call") {
-      return this.callStep(step, parentId, path, id);
+      return this.callStep(step, parentId, path, id, framed);
     }
     if (step.kind === "loop") {
       const bodies: FlowPath[] = [{ label: step.label, body: step.body }];
@@ -248,6 +342,7 @@ class LogicGraphBuilder {
     parentId: string | null,
     path: string,
     id: string,
+    framed: boolean,
   ): { entry: string; exits: Exit[] } {
     const expandable = step.resolution === "resolved" && step.target !== null && (this.flows[step.target]?.length ?? 0) > 0;
     const greyed = !expandable;
@@ -266,6 +361,7 @@ class LogicGraphBuilder {
       callKind: this.callKindOf(step),
       signature: step.target ? this.index.nodesById.get(step.target)?.signature : undefined,
       owner: this.ownerLookup(step.target),
+      framed,
     };
     this.push(id, parentId, "block", data, greyed);
     if (isExpanded && step.target) {
@@ -379,7 +475,7 @@ class LogicGraphBuilder {
   private push(id: string, parentId: string | null, type: LogicNodeType, data: LogicNodeData, greyed: boolean): void {
     const spec: LogicNodeSpec = { id, parentId, type, data };
     if (!data.isContainer) {
-      const { width, height } = sizeFor(data.label, greyed, type, Boolean(data.signature), Boolean(data.owner));
+      const { width, height } = sizeFor(data.label, greyed, type, Boolean(data.signature));
       spec.width = width;
       spec.height = height;
     }
@@ -419,18 +515,16 @@ function firstSegment(path: string): string {
   return path.split("/")[0] ?? path;
 }
 
-// Extra vertical bands a non-greyed block grows by when it carries the new per-node detail: a
-// signature line and/or the owning-unit chip. Kept as named consts so the render heights (in
-// logicNodeTypes) and the laid-out box stay in lockstep.
+// The signature line's vertical band a non-greyed block grows by. Named so the render height (in
+// logicNodeTypes) and the laid-out box stay in lockstep. The owner is now the enclosing service
+// frame, not a per-block row, so a block only grows for its signature.
 const SIGNATURE_ROW_H = 16;
-const OWNER_ROW_H = 20;
 
 function sizeFor(
   label: string,
   greyed: boolean,
   type: LogicNodeType,
   hasSignature: boolean,
-  hasOwner: boolean,
 ): { width: number; height: number } {
   if (type === "branch") {
     // A COMPACT, near-fixed decision node: an `if`/`switch` should be a small glanceable glyph, not a
@@ -442,10 +536,8 @@ function sizeFor(
     // A small chip: clearly smaller than an expandable block so size alone signals "leaf, no flow".
     return { width: roundedClamp(88, 150, 22 + label.length * 5.6), height: 30 };
   }
-  // Base clears the title + provenance; each of the new detail rows adds its own band so the block
-  // never clips the signature / owner chip the node component appends.
-  const extra = (hasSignature ? SIGNATURE_ROW_H : 0) + (hasOwner ? OWNER_ROW_H : 0);
-  return { width: roundedClamp(190, 360, 44 + label.length * 7.2), height: 66 + extra };
+  // Base clears the title + provenance; the signature row adds its band so the block never clips it.
+  return { width: roundedClamp(190, 360, 44 + label.length * 7.2), height: 66 + (hasSignature ? SIGNATURE_ROW_H : 0) };
 }
 
 function roundedClamp(min: number, max: number, value: number): number {
