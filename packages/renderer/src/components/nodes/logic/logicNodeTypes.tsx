@@ -15,6 +15,7 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
 import type { LogicNodeData, TerminalData } from "../../../derive/logicGraph";
+import { coverageAccent, coverageVerdict, COVERAGE_COLORS, type CoverageVerdict } from "../../../theme/coverageColors";
 import { CodeInlinePanel } from "../../CodeInlinePanel";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -34,6 +35,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   const sourceUrl = useBlueprint((s) => s.sourceUrl);
   const logicSelected = useBlueprint((s) => s.logicSelected);
   const codeView = useBlueprint((s) => s.codeView);
+  const coverage = useBlueprint((s) => (s.coverageMode ? s.coverage : null));
   const d = data as LogicNodeData;
   const select = selectStateFor(d.targetId, logicSelected);
   // A method call (one made through a receiver / a class method) reads apart from a free function at a
@@ -41,9 +43,18 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   // keeps its teal DECLARATION accent regardless (its declaration-ness dominates), gaining only the
   // glyph — so defs stay visually consistent with their existing treatment.
   const glyph = d.callKind === "method" ? METHOD_GLYPH : "ƒ";
-  const accent = d.definition ? DEF_ACCENT : d.callKind === "method" ? METHOD_ACCENT : BLOCK_ACCENT;
+  // In coverage mode the title bar recolors by the CALLEE's coverage verdict (green/amber/red), so the
+  // exec flow doubles as a coverage map; otherwise it keeps the call/method/def accent.
+  const covAccent = coverage && d.targetId ? coverageAccent(d.targetId, coverage) : null;
+  const accent = covAccent ?? (d.definition ? DEF_ACCENT : d.callKind === "method" ? METHOD_ACCENT : BLOCK_ACCENT);
+  // The explicit per-node coverage signal: a dark-tracked "battery" that reads on ANY title colour
+  // (a coverage-tinted title would swallow a coverage-tinted badge). Only for measured callees.
+  const covVerdict = coverage && d.targetId ? coverageVerdict(d.targetId, coverage) : null;
+  const battery = covVerdict === "covered" || covVerdict === "indirect" || covVerdict === "uncovered"
+    ? <CoverageBattery verdict={covVerdict} />
+    : null;
   if (d.isContainer) {
-    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} select={select} />;
+    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} select={select} badge={battery} />;
   }
   const codeNode = d.targetId ? index.nodesById.get(d.targetId) : undefined;
   const canCode = Boolean(codeNode?.location) && Boolean(sourceUrl);
@@ -69,6 +80,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
           <div style={GREY_TITLE}>
             <span style={GREY_GLYPH}>{glyph}</span>
             <span style={NAME} title={d.label}>{d.label}</span>
+            {battery}
             {codeButton}
           </div>
           {d.provenance ? <div style={GREY_PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.module}</div> : null}
@@ -89,6 +101,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
           <span style={GLYPH}>{glyph}</span>
           <span style={NAME} title={d.label}>{d.label}</span>
           <span style={TITLE_TAIL}>
+            {battery}
             {d.definition ? <span style={DEF_TAG}>def</span> : null}
             {/* Gate on `expandable`: a call block is always expandable here, but a defined callable
                 with no flow of its own is not — so it drops the disclosure rather than dangling a
@@ -214,7 +227,7 @@ function conditionText(label: string): string {
 /** A framed container (expanded call / loop / try): a title bar sits over ELK's reserved top pad;
  * child nodes render in the space below. Collapse is the explicit ▾ button in the title tail — the
  * whole-title click was removed so it no longer fights node selection / double-click-to-dive. */
-function ContainerFrame(props: { accent: string; label: string; glyph: string; onToggle: () => void; provenance: LogicNodeData["provenance"]; select: SelectState }) {
+function ContainerFrame(props: { accent: string; label: string; glyph: string; onToggle: () => void; provenance: LogicNodeData["provenance"]; select: SelectState; badge?: React.ReactNode }) {
   return (
     <div style={selectStyle(frameStyle(props.accent), props.select)}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
@@ -224,6 +237,7 @@ function ContainerFrame(props: { accent: string; label: string; glyph: string; o
         <span style={NAME}>{props.label}</span>
         {props.provenance ? <span style={FRAME_PROV}>{props.provenance.pkg} › {props.provenance.module}</span> : null}
         <span style={TITLE_TAIL}>
+          {props.badge}
           <ExpandButton expanded onToggle={props.onToggle} />
         </span>
       </div>
@@ -237,6 +251,33 @@ function ContainerFrame(props: { accent: string; label: string; glyph: string; o
  * double-click dives — so it stops propagation so the node never also selects/drills/dives on it.
  * ▾ when expanded, ▸ when collapsed.
  */
+/**
+ * The per-node coverage "battery": a dark-tracked mini progress bar (with a battery nub) whose fill
+ * and colour show how well the callee is covered — full green when a test hits it directly, ~60%
+ * amber when tests only reach it through other code, near-empty red when nothing tests it. The dark
+ * track keeps it legible on ANY title colour (a coverage-tinted badge on a coverage-tinted bar
+ * vanished); the verdict rides the hover title and aria-label so it's not colour-only.
+ */
+const BATTERY_FILL_FRACTION: Record<CoverageVerdict, number> = { covered: 1, indirect: 0.6, uncovered: 0.12, test: 0, none: 0 };
+const BATTERY_TITLE: Record<CoverageVerdict, string> = {
+  covered: "Tested directly",
+  indirect: "Reached by tests (via other code)",
+  uncovered: "Untested",
+  test: "Test code",
+  none: "Not measured",
+};
+function CoverageBattery({ verdict }: { verdict: CoverageVerdict }) {
+  const color = COVERAGE_COLORS[verdict];
+  return (
+    <span style={BATTERY_WRAP} title={BATTERY_TITLE[verdict]} aria-label={`Coverage: ${BATTERY_TITLE[verdict]}`}>
+      <span style={BATTERY_TRACK}>
+        <span style={{ ...BATTERY_FILL, width: `${BATTERY_FILL_FRACTION[verdict] * 100}%`, background: color }} />
+      </span>
+      <span style={{ ...BATTERY_NUB, background: color }} />
+    </span>
+  );
+}
+
 function ExpandButton(props: { expanded: boolean; onToggle: () => void }) {
   return (
     <button
@@ -263,24 +304,34 @@ function ExpandButton(props: { expanded: boolean; onToggle: () => void }) {
  * Clicking it switches the canvas to that flow. Its data is minimal — a flow-root id, a display
  * label, a faint file path, and how many hops away it is (`depth`): 1 == direct, higher == indirect.
  */
-export type JumpFlowNodeData = { rootId: string; label: string; file?: string; depth: number };
+export type JumpFlowNodeData = { rootId: string; label: string; file?: string; depth: number; test?: boolean };
 type JumpFlowRfNode = Node<JumpFlowNodeData>;
 
 function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
   const { openLogicFlow } = useBlueprintActions();
   const d = data as JumpFlowNodeData;
+  // A test ghost (Show tests) reads apart from an ordinary caller ghost: violet dashed border + a
+  // "TEST" tag, mirroring the coverage palette's test-code colour, so it's clearly "a test exercising
+  // this method" rather than just another caller. Clicking still opens that node's own flow.
+  const isTest = d.test === true;
+  // A caller ghost is a shortcut into that flow (click to open); a test ghost is read-only context —
+  // it just shows WHICH tests exercise this method, so it takes no click and shows no pointer cursor.
   return (
-    <div style={JUMP_BODY} onClick={() => openLogicFlow(d.rootId)} title={`Open flow: ${d.label}`}>
+    <div style={isTest ? JUMP_TEST_BODY : JUMP_BODY} onClick={isTest ? undefined : () => openLogicFlow(d.rootId)} title={isTest ? `Test: ${d.label}` : `Open flow: ${d.label}`}>
       {/* Target pin on top (a deeper caller's wire lands here) + source pin on the bottom (this
           node's wire drops to the node one hop closer to the selection): the chain wires top→down. */}
       <Handle type="target" position={Position.Top} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Bottom} style={PIN} isConnectable={false} />
       <div style={JUMP_HEAD}>
-        <span style={JUMP_GLYPH}>↗</span>
+        <span style={{ ...JUMP_GLYPH, ...(isTest ? { color: COVERAGE_COLORS.test } : {}) }}>{isTest ? "🧪" : "↗"}</span>
         <span style={NAME} title={d.label}>{d.label}</span>
-        {/* An indirect caller (2+ hops back over the reverse call graph) wears a hop badge so it
-            reads apart from a direct caller; a direct caller (depth 1) needs none. */}
-        {d.depth > 1 ? <span style={JUMP_DEPTH_BADGE} title={`${d.depth} hops away`}>{`↑${d.depth}`}</span> : null}
+        {isTest ? (
+          <span style={JUMP_TEST_TAG}>TEST</span>
+        ) : d.depth > 1 ? (
+          // An indirect caller (2+ hops back over the reverse call graph) wears a hop badge so it
+          // reads apart from a direct caller; a direct caller (depth 1) needs none.
+          <span style={JUMP_DEPTH_BADGE} title={`${d.depth} hops away`}>{`↑${d.depth}`}</span>
+        ) : null}
       </div>
       {d.file ? <div style={JUMP_FILE} title={d.file}>{d.file}</div> : null}
     </div>
@@ -512,6 +563,36 @@ const JUMP_BODY: React.CSSProperties = {
   gap: 2,
   overflow: "hidden",
 };
+// A test ghost: the same detached-shortcut shape as a caller ghost, re-tinted violet so it reads as
+// test code (matching the coverage palette) rather than another caller in the flow.
+const JUMP_TEST_BODY: React.CSSProperties = {
+  width: "100%",
+  height: "100%",
+  boxSizing: "border-box",
+  border: `1px dashed ${COVERAGE_COLORS.test}`,
+  borderRadius: 8,
+  background: "rgba(28,20,45,0.72)",
+  padding: "5px 9px",
+  fontFamily: MONO,
+  color: "#C6BCE0",
+  cursor: "default",
+  display: "flex",
+  flexDirection: "column",
+  gap: 2,
+  overflow: "hidden",
+};
+const JUMP_TEST_TAG: React.CSSProperties = {
+  marginLeft: "auto",
+  flexShrink: 0,
+  fontSize: 8.5,
+  fontWeight: 700,
+  letterSpacing: "0.06em",
+  color: COVERAGE_COLORS.test,
+  border: `1px solid ${COVERAGE_COLORS.test}66`,
+  borderRadius: 3,
+  padding: "0 4px",
+  background: "rgba(163,113,247,0.14)",
+};
 const JUMP_HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600 };
 const JUMP_GLYPH: React.CSSProperties = { fontSize: 10, opacity: 0.8, color: "#7B8695" };
 // The hop badge on an INDIRECT caller ghost: a quiet blue pill pinned at the row's right end, so a
@@ -528,6 +609,24 @@ const JUMP_DEPTH_BADGE: React.CSSProperties = {
   background: "rgba(59,122,192,0.15)",
 };
 const JUMP_FILE: React.CSSProperties = { fontSize: 9, color: "#6C7683", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+
+// The coverage battery: a dark track + colour fill + a small nub, so it reads as a fuel gauge on any
+// title colour. flex-none so it never squeezes the name; the nub is the battery's positive terminal.
+const BATTERY_WRAP: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 1, flexShrink: 0 };
+const BATTERY_TRACK: React.CSSProperties = {
+  width: 30,
+  height: 9,
+  boxSizing: "border-box",
+  borderRadius: 2,
+  background: "#0B0E13",
+  border: "1px solid rgba(0,0,0,0.45)",
+  padding: 1,
+  overflow: "hidden",
+  display: "flex",
+  alignItems: "center",
+};
+const BATTERY_FILL: React.CSSProperties = { height: "100%", borderRadius: 1, minWidth: 2 };
+const BATTERY_NUB: React.CSSProperties = { width: 2, height: 5, borderRadius: 1, opacity: 0.55 };
 
 // The entry/exit end-caps: a compact rounded pill (never a rectangular building block), tinted by its
 // accent. Shared base; the entry keeps its ENTRY tag pinned right, the exit centres its bare caption.

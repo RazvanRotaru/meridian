@@ -82,6 +82,9 @@ export interface BlueprintState {
   /** How many levels of resolved calls the Logic-flow view inlines in place; 0 == calls are leaf
    * chips (today's behavior). Sticky across open/drill so the reader keeps their chosen depth. */
   logicInlineDepth: number;
+  /** Coverage mode only: whether the tests that directly exercise the charted callable are drawn as
+   * ghost nodes above the flow. A repaint-only flag (the view derives the ghosts), like `logicSelected`. */
+  showLogicTests: boolean;
   /** The selected call TARGET in the Logic-flow view; null == nothing picked. Selection is by
    * target id (not call site), so every same-target call site — the "direct links" — highlights
    * for free. Cleared whenever the charted flow changes so a stale selection can't linger. */
@@ -156,6 +159,7 @@ export interface BlueprintState {
   diveLogicContainer(id: string, label: string, bodies: FlowPath[]): void;
   logicFocusTo(index: number): void;
   setLogicInlineDepth(depth: number): void;
+  toggleLogicTests(): void;
   setGhostDepth(depth: number): void;
   selectLogicTarget(id: NodeId | null): void;
   togglePinnedFlow(id: NodeId): void;
@@ -224,6 +228,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     logicStack: [],
     logicFocus: [],
     logicInlineDepth: 0,
+    showLogicTests: false,
     logicSelected: null,
     ghostDepth: 1,
     pinnedFlows: [],
@@ -385,6 +390,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // open/drill — so the reader's chosen inline depth carries across navigation.
     setLogicInlineDepth(depth) {
       set({ logicInlineDepth: Math.max(0, Math.min(2, Math.trunc(depth))) });
+    },
+
+    // Coverage mode: reveal/hide the tests that directly exercise the charted callable as ghost
+    // nodes above the flow. Repaint only — the view derives the ghosts from this flag + the coverage
+    // report, mirroring how the related-flows ghosts ride selection — so it never relayouts.
+    toggleLogicTests() {
+      set({ showLogicTests: !get().showLogicTests });
     },
 
     // Set how many hops of indirect callers the "related flows" ghosts reach back. Clamped to
