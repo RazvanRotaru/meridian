@@ -12,6 +12,7 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
 import type { LogicNodeData } from "../../../derive/logicGraph";
+import type { LogicOwner } from "../../../derive/logicOwner";
 import { CodeInlinePanel } from "../../CodeInlinePanel";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -26,7 +27,7 @@ function ExecPins() {
 }
 
 function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
-  const { toggleLogicExpand, showCode, expandCode, closeCode } = useBlueprintActions();
+  const { toggleLogicExpand, showCode, expandCode, closeCode, openComposition } = useBlueprintActions();
   const index = useBlueprint((s) => s.index);
   const sourceUrl = useBlueprint((s) => s.sourceUrl);
   const logicSelected = useBlueprint((s) => s.logicSelected);
@@ -97,10 +98,45 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
           </span>
         </div>
         {d.provenance ? <div style={PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.pkg} › {d.provenance.module}</div> : null}
+        {/* The per-node vertical detail — WHAT the block calls (signature) and WHICH service unit owns
+            it (a click-through chip). Definition grid cells are a fixed compact size and already show
+            their owner in provenance, so they opt out; only in-flow call blocks carry these. */}
+        {!d.definition && d.signature ? <div style={SIGNATURE} title={d.signature}>{d.signature}</div> : null}
+        {!d.definition && d.owner ? <OwnerChip owner={d.owner} onOpen={openComposition} /> : null}
       </div>
       {inline}
     </div>
   );
+}
+
+/**
+ * The owning-unit chip a call block wears: a health dot (distance colour, shared with the scorecards)
+ * + the unit's kind glyph + name, click-through to open that unit in the Service-composition view. A
+ * quiet inset row — metadata, not a second accent bar — with a smell marker when the unit is unhealthy.
+ */
+function OwnerChip({ owner, onOpen }: { owner: LogicOwner; onOpen: (unitId: string) => void }) {
+  return (
+    <button
+      type="button"
+      style={OWNER_CHIP}
+      title={`Open ${owner.label} in Service composition`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpen(owner.unitId);
+      }}
+    >
+      <span style={{ ...OWNER_DOT, background: owner.health }} />
+      <span style={OWNER_GLYPH}>{unitGlyph(owner.kind)}</span>
+      <span style={NAME} title={owner.label}>{owner.label}</span>
+      {owner.smelly ? <span style={OWNER_SMELL} title="carries a design smell">⚠</span> : null}
+    </button>
+  );
+}
+
+// A compact unit glyph mirroring the scorecards, so the owner chip reads as the same kind of thing.
+const UNIT_GLYPH: Record<string, string> = { module: "▤", class: "◆", interface: "◇", object: "❑" };
+function unitGlyph(kind: string): string {
+  return UNIT_GLYPH[kind] ?? "▪";
 }
 
 function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
@@ -410,6 +446,30 @@ const TITLE_TAIL: React.CSSProperties = { marginLeft: "auto", display: "flex", a
 const EXPAND_BTN: React.CSSProperties = { border: "none", background: "rgba(0,0,0,0.18)", color: "inherit", borderRadius: 4, padding: "1px 6px", fontSize: 10, lineHeight: 1, fontFamily: MONO, cursor: "pointer" };
 const NAME: React.CSSProperties = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const PROV: React.CSSProperties = { padding: "4px 8px", fontSize: 10, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+// The signature line: dimmer than provenance (secondary detail), mono, one clipped line — the full
+// text rides the hover title so a long signature never widens the block.
+const SIGNATURE: React.CSSProperties = { padding: "0 8px 3px", fontSize: 9.5, color: "#5F6874", fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+// The owning-unit chip row: a quiet inset strip (not an accent bar) that reads as metadata; it's a
+// button so it's obviously click-through to the Service-composition view.
+const OWNER_CHIP: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 5,
+  width: "calc(100% - 12px)",
+  margin: "0 6px 6px",
+  padding: "2px 6px",
+  border: "1px solid #262C35",
+  borderRadius: 5,
+  background: "rgba(255,255,255,0.03)",
+  color: "#9AA4B2",
+  fontFamily: MONO,
+  fontSize: 10,
+  cursor: "pointer",
+  textAlign: "left",
+};
+const OWNER_DOT: React.CSSProperties = { width: 7, height: 7, borderRadius: "50%", flexShrink: 0 };
+const OWNER_GLYPH: React.CSSProperties = { fontSize: 9, opacity: 0.7, flexShrink: 0 };
+const OWNER_SMELL: React.CSSProperties = { marginLeft: "auto", flexShrink: 0, fontSize: 9, color: "#E6B84D" };
 // The greyed chip is tight: a compact title (light text on the muted slate so the priority name
 // stays legible) over one small provenance line. Padding/fonts shrink to fit the ~30px chip.
 const GREY_TITLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "2px 6px", background: GREY_ACCENT, color: "#C8D3E0", fontSize: 10, fontWeight: 700, lineHeight: 1.2 };

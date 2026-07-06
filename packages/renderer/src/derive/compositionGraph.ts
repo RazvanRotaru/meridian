@@ -9,7 +9,7 @@
 
 import type { GraphEdge, GraphNode } from "@meridian/core";
 import { computeCompositionMetrics, type UnitMetrics } from "./composition";
-import { couplingEdges } from "./composition-graph";
+import { buildUnitIndex, couplingEdges, groupMembersByUnit } from "./composition-graph";
 import { computeRootedView } from "./compositionRoot";
 import { buildClusters, type ClusterFrame } from "./compositionClusters";
 
@@ -20,10 +20,17 @@ export type CompNodeData = {
   kind: string;
   label: string;
   metrics: UnitMetrics;
+  /** The unit's callable members (its methods/functions), sorted by name — surfaced on the card so a
+   * service shows WHAT it holds, each a click-through into that member's logic flow. */
+  members: { id: string; name: string }[];
   /** A 1-hop coupling neighbour of the rooted subtree — drawn faded + click-to-re-root. Absent/false
    * for the root's own units and for the whole-system (rootless) view. */
   boundary?: boolean;
 };
+
+/** How many member rows a card shows before collapsing the rest into a "+N more" line. Shared with
+ * CompositionNode so the rendered rows and the laid-out card height can't drift. */
+export const MEMBERS_SHOWN = 5;
 
 // A cluster FRAME's data: presentation only — the package/folder label plus the tallies that drive
 // its header badges. A `type` for the same index-signature reason as CompNodeData.
@@ -77,6 +84,8 @@ export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[], r
   const couplings = couplingEdges(nodes, edges);
   const coupled = couplingEndpoints(couplings);
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  // The unit → members partition, reused per card so a scorecard can list the methods it holds.
+  const membersByUnit = groupMembersByUnit(nodes, buildUnitIndex(nodes));
 
   // The whole-system survivor set drives both views; a root then restricts it to its subtree + the
   // 1-hop neighbours, keeping the root's own unit even if it would otherwise be dropped.
@@ -89,7 +98,7 @@ export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[], r
     if (!view.visible.has(metric.id)) {
       continue;
     }
-    unitSpecs.push(unitNode(metric, view.boundary.has(metric.id)));
+    unitSpecs.push(unitNode(metric, view.boundary.has(metric.id), membersByUnit.get(metric.id) ?? []));
     emitted.add(metric.id);
   }
 
@@ -161,8 +170,11 @@ function survivingUnits(metrics: Map<string, UnitMetrics>, coupled: Set<string>)
   return survivors;
 }
 
-function unitNode(metric: UnitMetrics, boundary: boolean): CompNodeSpec {
-  const data: CompNodeData = { unitId: metric.id, kind: metric.kind, label: metric.displayName, metrics: metric, boundary };
+function unitNode(metric: UnitMetrics, boundary: boolean, members: GraphNode[]): CompNodeSpec {
+  const memberList = members
+    .map((member) => ({ id: member.id, name: member.displayName }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const data: CompNodeData = { unitId: metric.id, kind: metric.kind, label: metric.displayName, metrics: metric, members: memberList, boundary };
   const { width, height } = sizeFor(data);
   return { id: metric.id, type: "unit", width, height, data };
 }
@@ -174,10 +186,25 @@ const CARD_WIDTH = 240;
 const CARD_BASE_HEIGHT = 104;
 const CHIP_ROW_HEIGHT = 22;
 const CHIPS_PER_ROW = 2;
+// The member list geometry: a small header band plus one line per shown member (and a "+N more" line
+// when capped). A boundary ghost never lists members, so it stays at the base height.
+const MEMBER_HEADER_HEIGHT = 16;
+const MEMBER_ROW_HEIGHT = 15;
 
 export function sizeFor(data: CompNodeData): { width: number; height: number } {
   const chipRows = Math.ceil(data.metrics.smells.length / CHIPS_PER_ROW);
-  return { width: CARD_WIDTH, height: CARD_BASE_HEIGHT + chipRows * CHIP_ROW_HEIGHT };
+  return { width: CARD_WIDTH, height: CARD_BASE_HEIGHT + chipRows * CHIP_ROW_HEIGHT + memberBandHeight(data) };
+}
+
+/** The vertical band the member list occupies: nothing for a boundary ghost or a memberless unit,
+ * else a header plus a row per shown member and one more for the "+N more" overflow line. */
+function memberBandHeight(data: CompNodeData): number {
+  if (data.boundary || data.members.length === 0) {
+    return 0;
+  }
+  const shown = Math.min(data.members.length, MEMBERS_SHOWN);
+  const overflowRow = data.members.length > MEMBERS_SHOWN ? 1 : 0;
+  return MEMBER_HEADER_HEIGHT + (shown + overflowRow) * MEMBER_ROW_HEIGHT;
 }
 
 // Distance-from-the-main-sequence health scale, stepwise green → amber → red. The middle band

@@ -120,6 +120,7 @@ export interface BlueprintState {
   /** The logic flow charted for a callable, or undefined when it has none (empty body). */
   logicFlowFor(nodeId: string): FlowStep[] | undefined;
   openLogicFlow(nodeId: string): void;
+  openComposition(unitId: string): void;
   drillLogicFlow(nodeId: string): void;
   logicFlowTo(nodeId: string): void;
   diveLogicContainer(id: string, label: string, bodies: FlowPath[]): void;
@@ -290,6 +291,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     openLogicFlow(nodeId) {
       set({ viewMode: "logic", logicRoot: nodeId, logicStack: [nodeId], logicFocus: [], selectedId: nodeId, logicSelected: null, expandedLogic: new Set<string>() });
       void get().logicRelayout();
+    },
+
+    // The logic→composition link: a call block's owning-unit chip opens that unit HERE, rooted and
+    // selected, so a reader can pivot from "who calls this" to "how healthy is the unit it lives in".
+    // No guard needed — compRelayout is idempotent, and rooting+selecting is always a fresh view.
+    openComposition(unitId) {
+      set({ viewMode: "call", compRoot: unitId, compSelectedId: unitId });
+      void get().compRelayout();
     },
 
     // Drill from a call node into its target's own flow — push it onto the trail, re-chart from it.

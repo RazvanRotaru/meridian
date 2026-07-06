@@ -22,7 +22,7 @@ function node(id: string, kind: string, parentId?: string, displayName?: string)
 }
 
 function unitSpec(id: string, smells: Smell[] = []): CompNodeSpec {
-  return { id, type: "unit", width: 240, height: 104, data: { unitId: id, kind: "class", label: id, metrics: { smells } as UnitMetrics } };
+  return { id, type: "unit", width: 240, height: 104, data: { unitId: id, kind: "class", label: id, metrics: { smells } as UnitMetrics, members: [] } };
 }
 
 function indexOf(nodes: GraphNode[]): Map<string, GraphNode> {

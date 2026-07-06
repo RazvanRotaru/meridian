@@ -11,7 +11,11 @@
 import type { EdgeResolution, FlowPath, FlowStep, GraphNode, LogicFlows } from "@meridian/core";
 import { parseNodeId } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
+import type { LogicOwner, OwnerLookup } from "./logicOwner";
 import { clamp } from "../layout/measure";
+
+/** No owner/signature enrichment — the default when a caller (e.g. a unit test) supplies no lookup. */
+const NO_OWNER: OwnerLookup = () => null;
 
 export type LogicNodeType = "block" | "control" | "branch";
 
@@ -38,6 +42,12 @@ export type LogicNodeData = {
    * "method" means "called through a receiver / a class method", not strictly an instance method.
    * Set on call block nodes (and definition nodes, from their node kind); undefined on loop/try/if. */
   callKind?: "function" | "method";
+  /** The resolved target's own signature (params/return), so a block shows WHAT it calls, not just
+   * its name — the per-node vertical detail. Undefined for unresolved/external/signatureless targets. */
+  signature?: string;
+  /** The Service-composition unit that OWNS the call target (its class/object/module), with health +
+   * smell — the block's "service relationship" chip, and the seam that links across to that view. */
+  owner?: LogicOwner | null;
 };
 
 export interface LogicNodeSpec {
@@ -74,12 +84,13 @@ export function deriveLogicGraph(
   index: GraphIndex,
   expandedLogic: ReadonlySet<string>,
   options: { hideGreyed: boolean },
+  ownerLookup: OwnerLookup = NO_OWNER,
 ): LogicGraphSpec {
   const steps = flows[rootId];
   if (!steps || steps.length === 0) {
     return { nodes: [], edges: [] };
   }
-  return new LogicGraphBuilder(rootId, flows, index, expandedLogic, options).build(steps);
+  return new LogicGraphBuilder(rootId, flows, index, expandedLogic, options, ownerLookup).build(steps);
 }
 
 /**
@@ -94,8 +105,9 @@ export function deriveLogicGraphFromBodies(
   index: GraphIndex,
   expandedLogic: ReadonlySet<string>,
   options: { hideGreyed: boolean },
+  ownerLookup: OwnerLookup = NO_OWNER,
 ): LogicGraphSpec {
-  return new LogicGraphBuilder(prefix, flows, index, expandedLogic, options).buildFromBodies(bodies);
+  return new LogicGraphBuilder(prefix, flows, index, expandedLogic, options, ownerLookup).buildFromBodies(bodies);
 }
 
 /**
@@ -126,7 +138,12 @@ export function collectModuleDefinitions(index: GraphIndex, moduleId: string): s
  * callable actually ships a flow to dive into; provenance reads as `<owner> › <name>` (the owning
  * object/class/module, then the callable) so a bare method name always shows where it lives.
  */
-export function definitionNodeData(callableId: string, flows: LogicFlows, index: GraphIndex): LogicNodeData {
+export function definitionNodeData(
+  callableId: string,
+  flows: LogicFlows,
+  index: GraphIndex,
+  ownerLookup: OwnerLookup = NO_OWNER,
+): LogicNodeData {
   const node = index.nodesById.get(callableId);
   const expandable = (flows[callableId]?.length ?? 0) > 0;
   return {
@@ -143,6 +160,8 @@ export function definitionNodeData(callableId: string, flows: LogicFlows, index:
     childCount: expandable ? flows[callableId].length : 0,
     // A declared callable's own node kind is authoritative here (no receiver to infer from).
     callKind: node?.kind === "method" ? "method" : "function",
+    signature: node?.signature,
+    owner: ownerLookup(callableId),
   };
 }
 
@@ -170,6 +189,7 @@ class LogicGraphBuilder {
     private readonly index: GraphIndex,
     private readonly expanded: ReadonlySet<string>,
     private readonly options: { hideGreyed: boolean },
+    private readonly ownerLookup: OwnerLookup,
   ) {}
 
   build(steps: FlowStep[]): LogicGraphSpec {
@@ -244,6 +264,8 @@ class LogicGraphBuilder {
       provenance: provenanceOf(step.target, step.resolution, this.index),
       childCount: expandable && step.target ? this.flows[step.target].length : 0,
       callKind: this.callKindOf(step),
+      signature: step.target ? this.index.nodesById.get(step.target)?.signature : undefined,
+      owner: this.ownerLookup(step.target),
     };
     this.push(id, parentId, "block", data, greyed);
     if (isExpanded && step.target) {
@@ -357,7 +379,7 @@ class LogicGraphBuilder {
   private push(id: string, parentId: string | null, type: LogicNodeType, data: LogicNodeData, greyed: boolean): void {
     const spec: LogicNodeSpec = { id, parentId, type, data };
     if (!data.isContainer) {
-      const { width, height } = sizeFor(data.label, greyed, type);
+      const { width, height } = sizeFor(data.label, greyed, type, Boolean(data.signature), Boolean(data.owner));
       spec.width = width;
       spec.height = height;
     }
@@ -397,7 +419,19 @@ function firstSegment(path: string): string {
   return path.split("/")[0] ?? path;
 }
 
-function sizeFor(label: string, greyed: boolean, type: LogicNodeType): { width: number; height: number } {
+// Extra vertical bands a non-greyed block grows by when it carries the new per-node detail: a
+// signature line and/or the owning-unit chip. Kept as named consts so the render heights (in
+// logicNodeTypes) and the laid-out box stay in lockstep.
+const SIGNATURE_ROW_H = 16;
+const OWNER_ROW_H = 20;
+
+function sizeFor(
+  label: string,
+  greyed: boolean,
+  type: LogicNodeType,
+  hasSignature: boolean,
+  hasOwner: boolean,
+): { width: number; height: number } {
   if (type === "branch") {
     // A COMPACT, near-fixed decision node: an `if`/`switch` should be a small glanceable glyph, not a
     // wide box. The body hard-truncates the condition (full text in the hover title), so the width
@@ -408,7 +442,10 @@ function sizeFor(label: string, greyed: boolean, type: LogicNodeType): { width: 
     // A small chip: clearly smaller than an expandable block so size alone signals "leaf, no flow".
     return { width: roundedClamp(88, 150, 22 + label.length * 5.6), height: 30 };
   }
-  return { width: roundedClamp(190, 360, 44 + label.length * 7.2), height: 66 };
+  // Base clears the title + provenance; each of the new detail rows adds its own band so the block
+  // never clips the signature / owner chip the node component appends.
+  const extra = (hasSignature ? SIGNATURE_ROW_H : 0) + (hasOwner ? OWNER_ROW_H : 0);
+  return { width: roundedClamp(190, 360, 44 + label.length * 7.2), height: 66 + extra };
 }
 
 function roundedClamp(min: number, max: number, value: number): number {
