@@ -144,6 +144,13 @@ describe("sizeFor", () => {
     expect(two.width).toBe(240);
     expect(two.height).toBeGreaterThan(zero.height);
   });
+
+  it("collapses to a compact height when metrics are hidden", () => {
+    const shown = sizeFor(dataWith(["god-module", "low-cohesion"]), true);
+    const hidden = sizeFor(dataWith(["god-module", "low-cohesion"]), false);
+    expect(hidden.width).toBe(240);
+    expect(hidden.height).toBeLessThan(shown.height);
+  });
 });
 
 describe("colorForDistance", () => {
