@@ -2,6 +2,9 @@
  * The "Tests" visibility switch: one click removes every test file (and its edges) from the
  * diagram, one click brings them back. Disabled — but still visible, as an honest "none
  * found" — when the graph contains no test code.
+ *
+ * Hidden in the Logic-flow view: that surface charts ONE production method, so hiding test files
+ * changes nothing there — and it would collide with that view's own "Covering tests" control.
  */
 
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
@@ -10,8 +13,12 @@ import type { BlueprintState } from "../state/store";
 export function TestsToggle() {
   const showTests = useBlueprint((state) => state.showTests);
   const testFileCount = useBlueprint(countTestFiles);
+  const inLogicView = useBlueprint((state) => state.viewMode === "logic");
   const toggleShowTests = useBlueprintActions().toggleShowTests;
   const none = testFileCount === 0;
+  if (inLogicView) {
+    return null;
+  }
   return (
     <button
       type="button"

@@ -350,17 +350,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().logicRelayout();
     },
 
-    // Set how many levels of resolved calls the Logic-flow view auto-expands in place: 0 == calls
-    // are collapsed chips (the default), 1/2 inline that many levels of their callees. Clamped to
-    // 0..2 (the cap that keeps a deep pre-expansion from hanging the browser). Sticky across
-    // open/drill so the reader's chosen depth carries. Changes the layout, so it relayouts.
+    // Set how many levels of resolved calls the Logic-flow view expands in place. Clamped to 0..2
+    // (the cap that keeps a deep pre-expansion from hanging the browser). Sticky — never reset on
+    // open/drill — so the reader's chosen inline depth carries across navigation.
     setLogicInlineDepth(depth) {
-      const next = Math.max(0, Math.min(2, Math.trunc(depth)));
-      if (next === get().logicInlineDepth) {
-        return;
-      }
-      set({ logicInlineDepth: next });
-      void get().logicRelayout();
+      set({ logicInlineDepth: Math.max(0, Math.min(2, Math.trunc(depth))) });
     },
 
     // Coverage mode: reveal/hide the tests that directly exercise the charted callable as ghost
@@ -406,7 +400,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Re-derive the Logic graph for the current root through ELK, behind a stale-seq guard (a newer
     // open/drill/toggle discards an older in-flight layout). A null root clears the graph.
     async logicRelayout() {
-      const { logicRoot, index, artifact, expandedLogic, hideGreyed, logicFocus, logicInlineDepth } = get();
+      const { logicRoot, index, artifact, expandedLogic, hideGreyed, logicFocus } = get();
       if (logicRoot === null) {
         set({ logicRfNodes: [], logicRfEdges: [], logicLayoutStatus: "idle" });
         return;
@@ -417,7 +411,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // A container dive charts only the TOP focus entry's bodies; else the whole callable flow.
       const top = logicFocus[logicFocus.length - 1];
       const focus = top ? { id: top.id, bodies: top.bodies } : undefined;
-      const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, { hideGreyed, inlineDepth: logicInlineDepth }, focus);
+      const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, { hideGreyed }, focus);
       if (logicLayoutSeq !== sequence) {
         return; // a newer layout superseded this one.
       }

@@ -57,10 +57,9 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
   const ghostDepth = useBlueprint((state) => state.ghostDepth);
   const index = useBlueprint((state) => state.index);
   const artifact = useBlueprint((state) => state.artifact);
-  const inlineDepth = useBlueprint((state) => state.logicInlineDepth);
   const coverage = useBlueprint((state) => (state.coverageMode ? state.coverage : null));
   const showLogicTests = useBlueprint((state) => state.showLogicTests);
-  const { drillLogicFlow, logicFlowTo, diveLogicContainer, logicFocusTo, toggleHideGreyed, setGhostDepth, selectLogicTarget, setLogicInlineDepth, toggleLogicTests } =
+  const { drillLogicFlow, logicFlowTo, diveLogicContainer, logicFocusTo, toggleHideGreyed, setGhostDepth, selectLogicTarget, toggleLogicTests } =
     useBlueprintActions();
 
   // The two gestures the node components don't own, mutually exclusive by node kind: a control
@@ -181,8 +180,6 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
         ghostDepth={ghostDepth}
         onSetGhostDepth={setGhostDepth}
         moreCount={moreCount}
-        inlineDepth={inlineDepth}
-        onSetInlineDepth={setLogicInlineDepth}
         coverageActive={coverage !== null}
         rootCoverage={rootCoverage}
         flowCoverage={flowCoverage}
@@ -600,8 +597,6 @@ function LogicOverlayHeader(props: {
   ghostDepth: number;
   onSetGhostDepth: (depth: number) => void;
   moreCount: number;
-  inlineDepth: number;
-  onSetInlineDepth: (depth: number) => void;
   coverageActive: boolean;
   rootCoverage: RootCoverage | null;
   flowCoverage: FlowCoverageTally | null;
@@ -624,7 +619,6 @@ function LogicOverlayHeader(props: {
         ) : null}
       </div>
       <div style={HEADER_CONTROLS_STYLE}>
-        <InlineDepthDial depth={props.inlineDepth} onSet={props.onSetInlineDepth} />
         {props.coverageActive ? (
           <button
             type="button"
@@ -634,7 +628,7 @@ function LogicOverlayHeader(props: {
             title={props.directTestCount === 0 ? "No test calls this method directly" : props.showTests ? "Hide the tests exercising this method" : "Show the tests exercising this method"}
             onClick={props.onToggleTests}
           >
-            🧪 Tests{props.directTestCount > 0 ? ` (${props.directTestCount})` : ""}
+            🧪 Covering tests{props.directTestCount > 0 ? ` (${props.directTestCount})` : ""}
           </button>
         ) : null}
         <GhostDepthDial depth={props.ghostDepth} moreCount={props.moreCount} onSet={props.onSetGhostDepth} />
@@ -656,7 +650,9 @@ function CoverageHeadline(props: { root: RootCoverage; flow: FlowCoverageTally |
   const color = VERDICT_COLOR[props.root.status];
   const flow = props.flow;
   const covered = flow ? flow.direct + flow.reached : 0;
-  const pct = (n: number) => (flow && flow.total ? `${(100 * n) / flow.total}%` : "0%");
+  const percent = flow && flow.total ? Math.round((100 * covered) / flow.total) : 0;
+  const bandColor = percent >= 75 ? COVERAGE_COLORS.covered : percent >= 40 ? COVERAGE_COLORS.indirect : COVERAGE_COLORS.uncovered;
+  const width = (n: number) => (flow && flow.total ? `${(100 * n) / flow.total}%` : "0%");
   return (
     <div style={HEADLINE_STYLE}>
       <div style={HEADLINE_ROW}>
@@ -667,16 +663,16 @@ function CoverageHeadline(props: { root: RootCoverage; flow: FlowCoverageTally |
       {flow && flow.total > 0 ? (
         <div style={METER_WRAP}>
           <div style={METER_ROW}>
-            <span style={METER_LAB}>Calls covered</span>
+            <span style={METER_LAB}>Flow coverage</span>
             <span style={METER_VAL}>
-              {covered}
-              <span style={METER_FRAC}> / {flow.total}</span>
+              <span style={{ color: bandColor, fontSize: 14 }}>{percent}%</span>
+              <span style={METER_FRAC}> · {covered}/{flow.total} calls</span>
             </span>
           </div>
           <div style={METER_BAR}>
-            <span style={{ background: COVERAGE_COLORS.covered, width: pct(flow.direct) }} />
-            <span style={{ background: COVERAGE_COLORS.indirect, width: pct(flow.reached) }} />
-            <span style={{ background: COVERAGE_COLORS.uncovered, width: pct(flow.untested) }} />
+            <span style={{ background: COVERAGE_COLORS.covered, width: width(flow.direct) }} />
+            <span style={{ background: COVERAGE_COLORS.indirect, width: width(flow.reached) }} />
+            <span style={{ background: COVERAGE_COLORS.uncovered, width: width(flow.untested) }} />
           </div>
         </div>
       ) : null}
@@ -684,32 +680,6 @@ function CoverageHeadline(props: { root: RootCoverage; flow: FlowCoverageTally |
   );
 }
 
-// The inline-depth dial: 1 shows the method's calls as collapsed chips, 2/3 auto-inline that many
-// levels of callees in place. Displayed level == inlineDepth + 1 (a re-layout on change).
-const INLINE_LEVELS = [1, 2, 3] as const;
-function InlineDepthDial(props: { depth: number; onSet: (depth: number) => void }) {
-  return (
-    <div style={DIAL_STYLE}>
-      <span style={DIAL_LABEL_STYLE}>Depth</span>
-      {INLINE_LEVELS.map((level) => {
-        const active = props.depth === level - 1;
-        return (
-          <button
-            key={level}
-            type="button"
-            style={dialPillStyle(active)}
-            aria-pressed={active}
-            aria-label={`Inline dependency depth: ${level} level${level === 1 ? "" : "s"}`}
-            title={level === 1 ? "Calls as chips (no inlining)" : `Auto-inline ${level - 1} level${level - 1 === 1 ? "" : "s"} of callees`}
-            onClick={() => props.onSet(level - 1)}
-          >
-            {level}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
 // The finite hop steps the related-flows dial offers as numbered pills; "All" (GHOST_DEPTH_ALL) is a
 // fourth pill handled separately since it's a sentinel, not a hop count.

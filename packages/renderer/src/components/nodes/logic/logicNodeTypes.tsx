@@ -12,9 +12,8 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
 import type { LogicNodeData } from "../../../derive/logicGraph";
-import { coverageAccent, COVERAGE_COLORS } from "../../../theme/coverageColors";
+import { coverageAccent, coverageVerdict, COVERAGE_COLORS, type CoverageVerdict } from "../../../theme/coverageColors";
 import { CodeInlinePanel } from "../../CodeInlinePanel";
-import { CoverageBadge } from "../../CoverageBadge";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
@@ -45,9 +44,14 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   // exec flow doubles as a coverage map; otherwise it keeps the call/method/def accent.
   const covAccent = coverage && d.targetId ? coverageAccent(d.targetId, coverage) : null;
   const accent = covAccent ?? (d.definition ? DEF_ACCENT : d.callKind === "method" ? METHOD_ACCENT : BLOCK_ACCENT);
-  const covBadge = d.targetId ? <CoverageBadge nodeId={d.targetId} /> : null;
+  // The explicit per-node coverage signal: a dark-tracked "battery" that reads on ANY title colour
+  // (a coverage-tinted title would swallow a coverage-tinted badge). Only for measured callees.
+  const covVerdict = coverage && d.targetId ? coverageVerdict(d.targetId, coverage) : null;
+  const battery = covVerdict === "covered" || covVerdict === "indirect" || covVerdict === "uncovered"
+    ? <CoverageBattery verdict={covVerdict} />
+    : null;
   if (d.isContainer) {
-    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} select={select} badge={covBadge} />;
+    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} select={select} badge={battery} />;
   }
   const codeNode = d.targetId ? index.nodesById.get(d.targetId) : undefined;
   const canCode = Boolean(codeNode?.location) && Boolean(sourceUrl);
@@ -73,7 +77,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
           <div style={GREY_TITLE}>
             <span style={GREY_GLYPH}>{glyph}</span>
             <span style={NAME} title={d.label}>{d.label}</span>
-            {covBadge}
+            {battery}
             {codeButton}
           </div>
           {d.provenance ? <div style={GREY_PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.module}</div> : null}
@@ -94,7 +98,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
           <span style={GLYPH}>{glyph}</span>
           <span style={NAME} title={d.label}>{d.label}</span>
           <span style={TITLE_TAIL}>
-            {covBadge}
+            {battery}
             {d.definition ? <span style={DEF_TAG}>def</span> : null}
             {/* Gate on `expandable`: a call block is always expandable here, but a defined callable
                 with no flow of its own is not — so it drops the disclosure rather than dangling a
@@ -198,6 +202,33 @@ function ContainerFrame(props: { accent: string; label: string; glyph: string; o
  * double-click dives — so it stops propagation so the node never also selects/drills/dives on it.
  * ▾ when expanded, ▸ when collapsed.
  */
+/**
+ * The per-node coverage "battery": a dark-tracked mini progress bar (with a battery nub) whose fill
+ * and colour show how well the callee is covered — full green when a test hits it directly, ~60%
+ * amber when tests only reach it through other code, near-empty red when nothing tests it. The dark
+ * track keeps it legible on ANY title colour (a coverage-tinted badge on a coverage-tinted bar
+ * vanished); the verdict rides the hover title and aria-label so it's not colour-only.
+ */
+const BATTERY_FILL_FRACTION: Record<CoverageVerdict, number> = { covered: 1, indirect: 0.6, uncovered: 0.12, test: 0, none: 0 };
+const BATTERY_TITLE: Record<CoverageVerdict, string> = {
+  covered: "Tested directly",
+  indirect: "Reached by tests (via other code)",
+  uncovered: "Untested",
+  test: "Test code",
+  none: "Not measured",
+};
+function CoverageBattery({ verdict }: { verdict: CoverageVerdict }) {
+  const color = COVERAGE_COLORS[verdict];
+  return (
+    <span style={BATTERY_WRAP} title={BATTERY_TITLE[verdict]} aria-label={`Coverage: ${BATTERY_TITLE[verdict]}`}>
+      <span style={BATTERY_TRACK}>
+        <span style={{ ...BATTERY_FILL, width: `${BATTERY_FILL_FRACTION[verdict] * 100}%`, background: color }} />
+      </span>
+      <span style={{ ...BATTERY_NUB, background: color }} />
+    </span>
+  );
+}
+
 function ExpandButton(props: { expanded: boolean; onToggle: () => void }) {
   return (
     <button
@@ -447,6 +478,24 @@ const JUMP_DEPTH_BADGE: React.CSSProperties = {
   background: "rgba(59,122,192,0.15)",
 };
 const JUMP_FILE: React.CSSProperties = { fontSize: 9, color: "#6C7683", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+
+// The coverage battery: a dark track + colour fill + a small nub, so it reads as a fuel gauge on any
+// title colour. flex-none so it never squeezes the name; the nub is the battery's positive terminal.
+const BATTERY_WRAP: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 1, flexShrink: 0 };
+const BATTERY_TRACK: React.CSSProperties = {
+  width: 30,
+  height: 9,
+  boxSizing: "border-box",
+  borderRadius: 2,
+  background: "#0B0E13",
+  border: "1px solid rgba(0,0,0,0.45)",
+  padding: 1,
+  overflow: "hidden",
+  display: "flex",
+  alignItems: "center",
+};
+const BATTERY_FILL: React.CSSProperties = { height: "100%", borderRadius: 1, minWidth: 2 };
+const BATTERY_NUB: React.CSSProperties = { width: 2, height: 5, borderRadius: 1, opacity: 0.55 };
 
 const GLYPH: React.CSSProperties = { fontSize: 11, opacity: 0.85 };
 // Right-aligned title tail holding the expand toggle (and, on a call block, the </> button). A
