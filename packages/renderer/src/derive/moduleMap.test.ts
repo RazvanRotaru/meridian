@@ -24,6 +24,24 @@ function importEdge(source: string, target: string): GraphEdge {
   return { id: `imports:${source}->${target}`, source, target, kind: "imports", resolution: "resolved" } as GraphEdge;
 }
 
+/** A `package` node carrying the extractor's `npm-package` tag — an owning npm-package root. */
+function npmPkg(id: string, displayName: string, parentId?: string): GraphNode {
+  return { ...node(id, "package", parentId, displayName), tags: ["npm-package"] } as GraphNode;
+}
+
+// pkgA{src/main.ts} imports pkgB{src/util.ts} — two npm packages, each with a nested `src/` dir.
+function multiPackageFixture(): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const nodes = [
+    npmPkg("ts:pkgA", "pkgA"),
+    node("ts:pkgA/src", "package", "ts:pkgA", "src"),
+    node("ts:pkgA/src/main.ts", "module", "ts:pkgA/src", "main.ts"),
+    npmPkg("ts:pkgB", "pkgB"),
+    node("ts:pkgB/src", "package", "ts:pkgB", "src"),
+    node("ts:pkgB/src/util.ts", "module", "ts:pkgB/src", "util.ts"),
+  ];
+  return { nodes, edges: [importEdge("ts:pkgA/src/main.ts", "ts:pkgB/src/util.ts")] };
+}
+
 function indexOf(nodes: GraphNode[], edges: GraphEdge[]) {
   return buildGraphIndex({ nodes, edges } as GraphArtifact);
 }
@@ -99,5 +117,30 @@ describe("deriveModuleMap", () => {
   it("returns an empty spec when no root can be resolved", () => {
     const spec = deriveModuleMap(indexOf([node("ts:x", "class")], []), { rootId: "ts:x", maxDepth: null });
     expect(spec).toEqual({ files: [], frames: [], edges: [], rootId: null, maxObservedDepth: 0 });
+  });
+
+  it("folds files by owning npm package when the graph spans multiple packages", () => {
+    const { nodes, edges } = multiPackageFixture();
+    const spec = deriveModuleMap(indexOf(nodes, edges), { rootId: "ts:pkgA/src/main.ts", maxDepth: null });
+    // Frames are the npm-package roots, not the deeper `src/` sub-directories.
+    expect(spec.files.find((file) => file.id === "ts:pkgA/src/main.ts")?.frameId).toBe("ts:pkgA");
+    expect(spec.files.find((file) => file.id === "ts:pkgB/src/util.ts")?.frameId).toBe("ts:pkgB");
+    expect(spec.frames.map((frame) => frame.id)).toEqual(["ts:pkgA", "ts:pkgB"]);
+    expect(spec.frames.find((frame) => frame.id === "ts:pkgA")?.data.label).toBe("pkgA");
+    expect(edgeFor(spec, "ts:pkgA/src/main.ts", "ts:pkgB/src/util.ts")?.crossFrame).toBe(true);
+  });
+
+  it("keeps directory framing within a single npm package", () => {
+    // main.ts -> helper.ts, both inside pkgA/src: one npm package, so frame by directory not package.
+    const nodes = [
+      npmPkg("ts:pkgA", "pkgA"),
+      node("ts:pkgA/src", "package", "ts:pkgA", "src"),
+      node("ts:pkgA/src/main.ts", "module", "ts:pkgA/src", "main.ts"),
+      node("ts:pkgA/src/helper.ts", "module", "ts:pkgA/src", "helper.ts"),
+    ];
+    const edges = [importEdge("ts:pkgA/src/main.ts", "ts:pkgA/src/helper.ts")];
+    const spec = deriveModuleMap(indexOf(nodes, edges), { rootId: "ts:pkgA/src/main.ts", maxDepth: null });
+    expect(spec.files.find((file) => file.id === "ts:pkgA/src/main.ts")?.frameId).toBe("ts:pkgA/src");
+    expect(spec.frames.map((frame) => frame.id)).toEqual(["ts:pkgA/src"]);
   });
 });

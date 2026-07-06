@@ -7,7 +7,7 @@
 
 import { parseNodeId } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
-import { clusterIdOf, clusterLabel } from "./compositionClusters";
+import { clusterIdOf, clusterLabel, npmPackageClusterId, npmPackageIdOf } from "./compositionClusters";
 import { computeReach } from "./importReach";
 import { categorize, type ModuleCategory } from "./moduleCategory";
 import { buildModuleGraph, resolveModuleRoot, weightKey, type ModuleGraph } from "./moduleGraph";
@@ -79,13 +79,31 @@ function effectiveRoot(index: GraphIndex, graph: ModuleGraph, opts: ModuleMapOpt
   return resolveModuleRoot(index, opts.entryModules);
 }
 
-/** Each reachable file to its frame — the nearest `package` ancestor, or the shared "(root)" frame. */
+/**
+ * Each reachable file to its frame. ADAPTIVE: when the reachable set spans more than one npm package
+ * we frame by owning package (so a cross-package graph reads as package→package); within a single
+ * package we keep the finer directory framing (`clusterIdOf`) so a single-app view isn't one big box.
+ */
 function mapFilesToFrames(reach: Map<string, number>, index: GraphIndex): Map<string, string> {
+  const fileIds = [...reach.keys()];
+  const framer = spansMultiplePackages(fileIds, index) ? npmPackageClusterId : clusterIdOf;
   const frameOf = new Map<string, string>();
-  for (const fileId of reach.keys()) {
-    frameOf.set(fileId, clusterIdOf(fileId, index.nodesById));
+  for (const fileId of fileIds) {
+    frameOf.set(fileId, framer(fileId, index.nodesById));
   }
   return frameOf;
+}
+
+/** True once two distinct owning npm packages appear among the reachable files (short-circuits). */
+function spansMultiplePackages(fileIds: string[], index: GraphIndex): boolean {
+  const packages = new Set<string>();
+  for (const fileId of fileIds) {
+    const pkg = npmPackageIdOf(fileId, index.nodesById);
+    if (pkg !== null && packages.add(pkg).size > 1) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** One card per reachable file, sorted by id so the layout and tests are deterministic. */

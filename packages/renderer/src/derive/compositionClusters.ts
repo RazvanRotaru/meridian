@@ -10,6 +10,9 @@ import type { CompNodeSpec } from "./compositionGraph";
 
 const PACKAGE_KIND = "package";
 
+/** Tag the extractor puts on a `package` node whose directory owns a package.json (an npm package). */
+const NPM_PACKAGE_TAG = "npm-package";
+
 /** The frame every package-less unit falls into — a stable id/label safe as a React Flow node id. */
 export const ROOT_CLUSTER_ID = "(root)";
 
@@ -38,6 +41,28 @@ export function clusterIdOf(unitId: string, nodesById: Map<string, GraphNode>): 
     current = current.parentId ? nodesById.get(current.parentId) : undefined;
   }
   return ROOT_CLUSTER_ID;
+}
+
+/**
+ * The nearest ancestor `package` node tagged `npm-package` (the file's owning npm package), or null
+ * when the file sits outside any npm package. Same visited-guarded parentId walk as `clusterIdOf`.
+ */
+export function npmPackageIdOf(nodeId: string, nodesById: Map<string, GraphNode>): string | null {
+  const visited = new Set<string>();
+  let current = nodesById.get(nodeId);
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    if (current.kind === PACKAGE_KIND && (current.tags?.includes(NPM_PACKAGE_TAG) ?? false)) {
+      return current.id;
+    }
+    current = current.parentId ? nodesById.get(current.parentId) : undefined;
+  }
+  return null;
+}
+
+/** The owning npm package's cluster id, falling back to the directory cluster for untagged trees. */
+export function npmPackageClusterId(nodeId: string, nodesById: Map<string, GraphNode>): string {
+  return npmPackageIdOf(nodeId, nodesById) ?? clusterIdOf(nodeId, nodesById);
 }
 
 /** A cluster's title: the package node's display name, or "(root)" for the package-less fallback. */
