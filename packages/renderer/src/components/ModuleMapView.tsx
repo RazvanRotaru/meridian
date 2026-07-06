@@ -26,6 +26,7 @@ export function ModuleMapView() {
   const selectedId = useBlueprint((state) => state.moduleSelectedId);
   const layoutStatus = useBlueprint((state) => state.moduleLayoutStatus);
   const moduleRoot = useBlueprint((state) => state.moduleRoot);
+  const moduleDepth = useBlueprint((state) => state.moduleDepth);
   const effectiveRoot = useBlueprint((state) => state.moduleEffectiveRoot);
   const nodesById = useBlueprint((state) => state.index.nodesById);
   const testIds = useBlueprint((state) => state.index.testIds);
@@ -56,13 +57,15 @@ export function ModuleMapView() {
     }
   };
 
-  // Fit once per root: the `fitView` prop only fits on mount, before the sync layout has produced
-  // nodes; re-rooting clears the guard so the fresh radius re-fits, exactly like CompositionView.
+  // Fit once per RELAYOUT: the `fitView` prop only fits on mount, before the sync layout has produced
+  // nodes. `moduleRfNodes` only changes on a relayout — a root OR depth change — so clearing the
+  // guard on both re-fits the fresh (larger/smaller) ring set to the viewport. Category toggles are
+  // paint-only (they never change `nodes`), so they correctly do NOT trigger a refit.
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const fitted = useRef(false);
   useEffect(() => {
     fitted.current = false;
-  }, [moduleRoot]);
+  }, [moduleRoot, moduleDepth]);
   useEffect(() => {
     if (!rfRef.current || nodes.length === 0 || fitted.current) {
       return;

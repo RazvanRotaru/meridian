@@ -565,8 +565,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       // The Module map is a standalone surface (its own synchronous ring layout), so — like logic — it
       // neither dives nor touches the graph focus; it just flips the mode and lays its own graph out.
+      // Clicking INTO the lens always opens it at the clean depth-1 default (entry + direct imports),
+      // never a wide depth inherited from a prior visit — the first paint must not be the full-radius
+      // clutter. A shared/reloaded deep link is unaffected: it restores via setState on boot (not this
+      // click path), so an explicit ?mdepth=N still opens at N.
       if (mode === "modules") {
-        set({ viewMode: mode });
+        set({ viewMode: mode, moduleDepth: 1 });
         void get().moduleRelayout();
         return;
       }
