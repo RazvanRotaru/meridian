@@ -8,8 +8,7 @@
  */
 
 import type { GraphEdge, GraphNode } from "@meridian/core";
-import { computeCompositionMetrics, type UnitMetrics } from "./composition";
-import { buildUnitIndex, couplingEdges, groupMembersByUnit } from "./composition-graph";
+import { buildUnitIndex, computeCompositionMetrics, couplingEdges, groupMembersByUnit, type UnitMetrics } from "@meridian/design-metrics";
 import { computeRootedView } from "./compositionRoot";
 import { buildClusters, type ClusterFrame } from "./compositionClusters";
 
@@ -79,7 +78,7 @@ export interface CompositionGraphSpec {
  * the root contains plus their 1-hop coupling neighbours (the latter flagged `boundary` and drawn
  * faded so a click can re-root there). `root === null` is the unchanged whole-system view.
  */
-export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[], root: string | null = null): CompositionGraphSpec {
+export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[], root: string | null = null, showMetrics = true): CompositionGraphSpec {
   const metrics = computeCompositionMetrics(nodes, edges);
   const couplings = couplingEdges(nodes, edges);
   const coupled = couplingEndpoints(couplings);
@@ -98,7 +97,7 @@ export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[], r
     if (!view.visible.has(metric.id)) {
       continue;
     }
-    unitSpecs.push(unitNode(metric, view.boundary.has(metric.id), membersByUnit.get(metric.id) ?? []));
+    unitSpecs.push(unitNode(metric, view.boundary.has(metric.id), showMetrics, membersByUnit.get(metric.id) ?? []));
     emitted.add(metric.id);
   }
 
@@ -170,12 +169,12 @@ function survivingUnits(metrics: Map<string, UnitMetrics>, coupled: Set<string>)
   return survivors;
 }
 
-function unitNode(metric: UnitMetrics, boundary: boolean, members: GraphNode[]): CompNodeSpec {
+function unitNode(metric: UnitMetrics, boundary: boolean, showMetrics: boolean, members: GraphNode[]): CompNodeSpec {
   const memberList = members
     .map((member) => ({ id: member.id, name: member.displayName }))
     .sort((a, b) => a.name.localeCompare(b.name));
   const data: CompNodeData = { unitId: metric.id, kind: metric.kind, label: metric.displayName, metrics: metric, members: memberList, boundary };
-  const { width, height } = sizeFor(data);
+  const { width, height } = sizeFor(data, showMetrics);
   return { id: metric.id, type: "unit", width, height, data };
 }
 
@@ -190,8 +189,14 @@ const CHIPS_PER_ROW = 2;
 // when capped). A boundary ghost never lists members, so it stays at the base height.
 const MEMBER_HEADER_HEIGHT = 16;
 const MEMBER_ROW_HEIGHT = 15;
+// A metrics-off card still shows its header (kind + name) and the D (distance) rating row, so it
+// collapses only partway — clearing those two rows, not the members/coupling rows or chip band.
+const CARD_COMPACT_HEIGHT = 66;
 
-export function sizeFor(data: CompNodeData): { width: number; height: number } {
+export function sizeFor(data: CompNodeData, showMetrics = true): { width: number; height: number } {
+  if (!showMetrics) {
+    return { width: CARD_WIDTH, height: CARD_COMPACT_HEIGHT };
+  }
   const chipRows = Math.ceil(data.metrics.smells.length / CHIPS_PER_ROW);
   return { width: CARD_WIDTH, height: CARD_BASE_HEIGHT + chipRows * CHIP_ROW_HEIGHT + memberBandHeight(data) };
 }

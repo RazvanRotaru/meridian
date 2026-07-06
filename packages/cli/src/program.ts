@@ -13,6 +13,8 @@ import { runMock } from "./commands/mock";
 import type { MockOptions } from "./commands/mock";
 import { runView } from "./commands/view";
 import type { ViewOptions } from "./commands/view";
+import { parseFailUnder, runCoverage } from "./commands/coverage";
+import type { CoverageOptions } from "./commands/coverage";
 import { runWeb } from "./commands/web";
 import type { WebOptions } from "./commands/web";
 
@@ -34,6 +36,7 @@ export function buildProgram(): Command {
   registerMock(program);
   registerView(program);
   registerWeb(program);
+  registerCoverage(program);
   return program;
 }
 
@@ -49,6 +52,7 @@ function registerGenerate(program: Command): void {
     .option("--tsconfig <file>", "tsconfig path (auto <path>/tsconfig.json if present)")
     .option("--include-external", "keep external (library/builtin) call targets as boundary nodes")
     .option("--include-unresolved", "keep dynamic/unresolved call targets as boundary nodes")
+    .option("--exclude-tests", "drop test files from the graph (default: include them, tagged 'test')")
     .action((path, _options, command) => runGenerate(path ?? ".", command.optsWithGlobals() as GenerateOptions));
 }
 
@@ -89,6 +93,16 @@ function registerWeb(program: Command): void {
     .option("--no-open", "do not open a browser")
     .option("--github-client-id <id>", "GitHub OAuth app client id for sign-in (also read from MERIDIAN_GITHUB_CLIENT_ID)")
     .action((source, _options, command) => runWeb(source, command.optsWithGlobals() as WebOptions));
+}
+
+function registerCoverage(program: Command): void {
+  program
+    .command("coverage [graph]")
+    .description("Report static test coverage derived from the graph's call reachability")
+    .option("--fail-under <percent>", "exit non-zero when coverage is below this percentage", parseFailUnder)
+    .action((graph, _options, command) =>
+      runCoverage(graph ?? "meridian.graph.json", command.optsWithGlobals() as CoverageOptions),
+    );
 }
 
 function parsePort(value: string): number {

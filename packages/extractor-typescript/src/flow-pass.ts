@@ -4,47 +4,29 @@
  * auto-runs on load). Only method calls and control structures survive; everything else
  * collapses to nothing (but is still descended into, to find the calls buried in it). Calls
  * are emitted in EXECUTION order — arguments before the call — so `f(g(x))` yields `g` then
- * `f`. Nested function/arrow/class bodies are NOT descended: they are their own callables — the
- * one exception is an inline callback to a synchronous Array-iteration method (`forEach`/`map`/…),
- * which is lifted into a `loop` step (see `iterationCall`) because it runs as part of this flow.
+ * `f`. Nested function/class DECLARATIONS are not descended: they are their own callables. But
+ * inline callbacks chart here, in the flow that contains them: an Array-iteration callback
+ * (`items.forEach(x => …)`) lifts into a `loop` step (it genuinely runs, in order, as part of
+ * this flow); every OTHER inline callback (a `useEffect`/`useMemo` body, a `.then` continuation,
+ * a `setTimeout` action, a JSX handler like `onClick={() => …}`) nests under a `callback` step —
+ * "this callback was handed to X" — asserting nothing about when, or whether, it runs. The
+ * exception: a callback that is itself an emitted node's body (an HOC-wrapped component) charts
+ * as that node's own flow instead of double-charting here (see `callback-steps.ts`).
  */
 
 import { Node } from "ts-morph";
-import type {
-  ArrowFunction,
-  CallExpression,
-  CaseOrDefaultClause,
-  CatchClause,
-  FunctionExpression,
-  IfStatement,
-  IterationStatement,
-  NewExpression,
-  PropertyAccessExpression,
-  SourceFile,
-  SwitchStatement,
-  TryStatement,
-} from "ts-morph";
-import type { FlowPath, FlowStep, LogicFlows } from "@meridian/core";
+import type { CallExpression, NewExpression, SourceFile } from "ts-morph";
+import type { FlowStep, LogicFlows } from "@meridian/core";
+import { inlineCallbackSteps, iterationCall, iterationSteps, jsxHandlerSteps } from "./callback-steps";
+import { controlStep } from "./control-steps";
+import { calleeName } from "./flow-labels";
+import { bodyOf, type FlowWalker } from "./flow-walker";
 import { resolveTarget } from "./edge-resolve";
-import {
-  calleeName,
-  forLabel,
-  forOfLabel,
-  ifLabel,
-  iterationLabel,
-  switchLabel,
-  truncate,
-  whileLabel,
-} from "./flow-labels";
 import type { NodeDescriptor } from "./model";
 import type { ResolutionIndex } from "./resolution-index";
 
 /** A generous ceiling that only truly pathological nesting hits — a stack-overflow guard. */
 const MAX_DEPTH = 500;
-
-interface WalkContext {
-  index: ResolutionIndex;
-}
 
 /**
  * One flow per callable descriptor — and per module (its top-level, load-time statements) —
@@ -60,12 +42,12 @@ export function buildLogicFlows(
   moduleSourcesById: ReadonlyMap<string, SourceFile>,
 ): LogicFlows {
   const flows: LogicFlows = {};
-  const context: WalkContext = { index };
+  const walker = createWalker(index);
   for (const descriptor of descriptors) {
     if (!keepIds.has(descriptor.finalId)) {
       continue;
     }
-    const steps = stepsOf(descriptor, moduleSourcesById, context);
+    const steps = stepsOf(descriptor, moduleSourcesById, walker);
     if (steps.length > 0) {
       flows[descriptor.finalId] = steps;
     }
@@ -77,207 +59,84 @@ export function buildLogicFlows(
 function stepsOf(
   descriptor: NodeDescriptor,
   moduleSourcesById: ReadonlyMap<string, SourceFile>,
-  context: WalkContext,
+  walker: FlowWalker,
 ): FlowStep[] {
   if (descriptor.callableNode) {
-    return flowOf(descriptor.callableNode, context);
+    return flowOf(descriptor.callableNode, walker);
   }
   const sourceFile = moduleSourcesById.get(descriptor.finalId);
-  return sourceFile ? moduleFlow(sourceFile, context) : [];
+  return sourceFile ? moduleFlow(sourceFile, walker) : [];
 }
 
-function flowOf(callableNode: Node, context: WalkContext): FlowStep[] {
+function flowOf(callableNode: Node, walker: FlowWalker): FlowStep[] {
   const body = bodyOf(callableNode);
-  return body ? walkBody(body, context, 0) : [];
+  return body ? walker.walkBody(body, 0) : [];
 }
 
 // The same walker as a callable body: imports/declarations collapse to nothing, `export <fn>`
-// stops at its callable boundary, and an `app.on('x', () => {…})` registration emits one call
-// without descending its callback (the callback does not run at load).
-function moduleFlow(sourceFile: SourceFile, context: WalkContext): FlowStep[] {
-  return sourceFile.getStatements().flatMap((statement) => walk(statement, context, 0));
+// stops at its callable boundary, and a `const App = memo(() => {…})` wrapper emits one call
+// without re-charting App's body (the callback is App's own flow, not the module's).
+function moduleFlow(sourceFile: SourceFile, walker: FlowWalker): FlowStep[] {
+  return sourceFile.getStatements().flatMap((statement) => walker.walk(statement, 0));
 }
 
-/** The node to walk: a function's block itself, or an arrow/function-expression's body. */
-function bodyOf(callableNode: Node): Node | null {
-  if (Node.isBlock(callableNode)) {
-    return callableNode;
-  }
-  return (callableNode as { getBody?(): Node | undefined }).getBody?.() ?? null;
+/** The step builders recurse through this object, so the modules stay import-acyclic. */
+function createWalker(index: ResolutionIndex): FlowWalker {
+  const walker: FlowWalker = {
+    index,
+    walk: (node, depth) => walk(node, walker, depth),
+    walkBody: (body, depth) => walkBody(body, walker, depth),
+  };
+  return walker;
 }
 
 /** A block contributes its statements' steps; a concise arrow body is a single expression. */
-function walkBody(body: Node, context: WalkContext, depth: number): FlowStep[] {
+function walkBody(body: Node, walker: FlowWalker, depth: number): FlowStep[] {
   if (Node.isBlock(body)) {
-    return body.getStatements().flatMap((statement) => walk(statement, context, depth));
+    return body.getStatements().flatMap((statement) => walk(statement, walker, depth));
   }
-  return walk(body, context, depth);
+  return walk(body, walker, depth);
 }
 
-function walk(node: Node, context: WalkContext, depth: number): FlowStep[] {
-  if (depth > MAX_DEPTH || isCallableBoundary(node)) {
+function walk(node: Node, walker: FlowWalker, depth: number): FlowStep[] {
+  if (depth > MAX_DEPTH) {
     return [];
   }
-  const control = controlStep(node, context, depth);
+  if (isCallableBoundary(node)) {
+    return jsxHandlerSteps(node, walker, depth);
+  }
+  const control = controlStep(node, walker, depth);
   if (control) {
     return [control];
   }
   if (Node.isCallExpression(node) || Node.isNewExpression(node)) {
-    return callSteps(node, context, depth);
+    return callSteps(node, walker, depth);
   }
-  return descend(node, context, depth);
+  return descend(node, walker, depth);
 }
 
 /** Collapse this node to nothing, but keep looking inside it for calls. */
-function descend(node: Node, context: WalkContext, depth: number): FlowStep[] {
-  return node.forEachChildAsArray().flatMap((child) => walk(child, context, depth + 1));
+function descend(node: Node, walker: FlowWalker, depth: number): FlowStep[] {
+  return node.forEachChildAsArray().flatMap((child) => walk(child, walker, depth + 1));
 }
 
-function controlStep(node: Node, context: WalkContext, depth: number): FlowStep | null {
-  if (Node.isIterationStatement(node)) {
-    return loopStep(node, context, depth);
-  }
-  if (Node.isIfStatement(node)) {
-    return ifStep(node, context, depth);
-  }
-  if (Node.isSwitchStatement(node)) {
-    return switchStep(node, context, depth);
-  }
-  if (Node.isTryStatement(node)) {
-    return tryStep(node, context, depth);
-  }
-  return null;
-}
-
-function loopStep(node: IterationStatement, context: WalkContext, depth: number): FlowStep {
-  return { kind: "loop", label: loopLabel(node), body: walkBody(node.getStatement(), context, depth + 1) };
-}
-
-function loopLabel(node: IterationStatement): string {
-  if (Node.isForOfStatement(node) || Node.isForInStatement(node)) {
-    return forOfLabel(node);
-  }
-  if (Node.isWhileStatement(node) || Node.isDoStatement(node)) {
-    return whileLabel(node);
-  }
-  return Node.isForStatement(node) ? forLabel(node) : "loop";
-}
-
-// `else if` chains nest: the `else` path holds the trailing `if` as its own single branch step.
-function ifStep(node: IfStatement, context: WalkContext, depth: number): FlowStep {
-  const paths: FlowPath[] = [{ label: "then", body: walkBody(node.getThenStatement(), context, depth + 1) }];
-  const elseStatement = node.getElseStatement();
-  if (elseStatement) {
-    paths.push({ label: "else", body: walkBody(elseStatement, context, depth + 1) });
-  }
-  return { kind: "branch", label: ifLabel(node), paths };
-}
-
-function switchStep(node: SwitchStatement, context: WalkContext, depth: number): FlowStep {
-  const paths = node.getClauses().map((clause) => clausePath(clause, context, depth));
-  return { kind: "branch", label: switchLabel(node), paths };
-}
-
-function clausePath(clause: CaseOrDefaultClause, context: WalkContext, depth: number): FlowPath {
-  const label = Node.isCaseClause(clause) ? truncate(clause.getExpression().getText()) : "default";
-  const body = clause.getStatements().flatMap((statement) => walk(statement, context, depth + 1));
-  return { label, body };
-}
-
-function tryStep(node: TryStatement, context: WalkContext, depth: number): FlowStep {
-  const paths: FlowPath[] = [{ label: "try", body: walkBody(node.getTryBlock(), context, depth + 1) }];
-  const catchClause = node.getCatchClause();
-  if (catchClause) {
-    paths.push({ label: catchLabel(catchClause), body: walkBody(catchClause.getBlock(), context, depth + 1) });
-  }
-  const finallyBlock = node.getFinallyBlock();
-  if (finallyBlock) {
-    paths.push({ label: "finally", body: walkBody(finallyBlock, context, depth + 1) });
-  }
-  return { kind: "branch", label: "try/catch", paths };
-}
-
-function catchLabel(clause: CatchClause): string {
-  const variable = clause.getVariableDeclaration();
-  return variable ? `catch ${variable.getName()}` : "catch";
-}
-
-// Descend first (arguments + callee sub-expressions run before the call), then emit this call —
-// UNLESS this is an Array-iteration call with an inline callback, which becomes a loop instead.
-function callSteps(node: CallExpression | NewExpression, context: WalkContext, depth: number): FlowStep[] {
+// Descend first (arguments + callee sub-expressions run before the call), then emit this call,
+// then one nested `callback` step per inline callback it was handed — UNLESS this is an
+// Array-iteration call with an inline callback, which becomes a loop instead. An unnameable
+// callee (super(), import(), computed) emits no call step of its own.
+function callSteps(node: CallExpression | NewExpression, walker: FlowWalker, depth: number): FlowStep[] {
   const iteration = Node.isCallExpression(node) ? iterationCall(node) : null;
   if (iteration) {
-    return iterationSteps(node as CallExpression, iteration, context, depth);
+    return iterationSteps(node as CallExpression, iteration, walker, depth);
   }
-  const steps = descend(node, context, depth);
+  const steps = descend(node, walker, depth);
   const callee = node.getExpression();
   const label = calleeName(callee);
-  if (!label) {
-    return steps; // an unnameable callee (super(), import(), computed) — keep only its nested calls
+  if (label) {
+    const resolution = resolveTarget(callee, walker.index);
+    steps.push({ kind: "call", label, target: resolution.resolvedTarget, resolution: resolution.resolution });
   }
-  const resolution = resolveTarget(callee, context.index);
-  steps.push({ kind: "call", label, target: resolution.resolvedTarget, resolution: resolution.resolution });
-  return steps;
-}
-
-// Synchronous Array-iteration methods whose callback runs once per element, in order — so an
-// inline callback reads as a loop body. Deferred/event callbacks (.then/.catch/.finally,
-// addEventListener/.on, setTimeout/setInterval) are deliberately ABSENT: they run later, not
-// during this flow, so they stay ordinary `call` steps with an undescended callback.
-const ITERATION_METHODS = new Set([
-  "forEach",
-  "map",
-  "filter",
-  "reduce",
-  "reduceRight",
-  "some",
-  "every",
-  "find",
-  "findIndex",
-  "findLast",
-  "findLastIndex",
-  "flatMap",
-  "sort",
-]);
-
-interface IterationCall {
-  callee: PropertyAccessExpression;
-  callback: ArrowFunction | FunctionExpression;
-}
-
-// An Array-iteration call with an INLINE callback — the shape we lift into a loop. A named
-// callback (`items.forEach(handler)`) is not inline, so it falls through to a plain call.
-function iterationCall(node: CallExpression): IterationCall | null {
-  const callee = node.getExpression();
-  if (!Node.isPropertyAccessExpression(callee) || !ITERATION_METHODS.has(callee.getName())) {
-    return null;
-  }
-  const callback = node.getArguments().find(isInlineCallback);
-  return callback ? { callee, callback } : null;
-}
-
-function isInlineCallback(node: Node): node is ArrowFunction | FunctionExpression {
-  return Node.isArrowFunction(node) || Node.isFunctionExpression(node);
-}
-
-// The receiver and any non-callback args evaluate BEFORE the callback iterates, so emit their
-// calls first, in execution order (e.g. getItems() in getItems().forEach(cb)); then the loop
-// whose body is the callback walked inline — NOT stopped at the arrow's callable boundary, since
-// this callback genuinely runs as part of THIS flow rather than being its own callable.
-function iterationSteps(
-  node: CallExpression,
-  call: IterationCall,
-  context: WalkContext,
-  depth: number,
-): FlowStep[] {
-  const preludeNodes = [call.callee.getExpression(), ...node.getArguments().filter((arg) => arg !== call.callback)];
-  const steps = preludeNodes.flatMap((child) => walk(child, context, depth + 1));
-  const body = call.callback.getBody();
-  steps.push({
-    kind: "loop",
-    label: iterationLabel(call.callee.getName(), call.callback),
-    body: body ? walkBody(body, context, depth + 1) : [],
-  });
+  steps.push(...inlineCallbackSteps(node, label, walker, depth));
   return steps;
 }
 

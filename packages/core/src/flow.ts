@@ -12,7 +12,11 @@ import type { EdgeResolution, NodeId } from "./types";
 export type FlowStep =
   | { kind: "call"; label: string; target: NodeId | null; resolution: EdgeResolution }
   | { kind: "loop"; label: string; body: FlowStep[] }
-  | { kind: "branch"; label: string; paths: FlowPath[] };
+  | { kind: "branch"; label: string; paths: FlowPath[] }
+  /** An inline callback handed to a call (`useEffect(() => …)`, `setTimeout(() => …)`) or bound
+   * to a JSX attribute (`onClick={() => …}`). Its body nests here rather than charting as flat
+   * siblings, because HANDING OVER a callback asserts nothing about when — or whether — it runs. */
+  | { kind: "callback"; label: string; body: FlowStep[] };
 
 export interface FlowPath {
   label: string;

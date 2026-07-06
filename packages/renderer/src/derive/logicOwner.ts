@@ -9,8 +9,7 @@
  */
 
 import type { GraphEdge, GraphNode } from "@meridian/core";
-import { computeCompositionMetrics } from "./composition";
-import { buildUnitIndex } from "./composition-graph";
+import { buildUnitIndex, computeCompositionMetrics } from "@meridian/design-metrics";
 import { colorForDistance } from "./compositionGraph";
 
 /** The owning composition unit of a call target, resolved for the logic node's chip. */

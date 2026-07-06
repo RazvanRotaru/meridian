@@ -8,6 +8,8 @@ import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { EnvSelector } from "./EnvSelector";
 import { Breadcrumb } from "./Breadcrumb";
 import { ViewModeToggle } from "./ViewModeToggle";
+import { TestsToggle } from "./TestsToggle";
+import { CoverageToggle } from "./CoverageToggle";
 import { FlowSelector } from "./FlowSelector";
 import { CompositionPanel } from "./composition/CompositionPanel";
 
@@ -28,6 +30,10 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
           </button>
         </div>
         <ViewModeToggle />
+        <div style={FILTER_ROW_STYLE}>
+          <TestsToggle />
+          <CoverageToggle />
+        </div>
         <Breadcrumb />
         {isComposition ? <CompositionPanel /> : <FlowSelector />}
         {hasOverlay ? <EnvSelector preselectedEnv={props.preselectedEnv} /> : null}
@@ -48,6 +54,7 @@ const PANEL_STYLE: React.CSSProperties = {
   maxWidth: 300,
 };
 const TITLE_ROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 12 };
+const FILTER_ROW_STYLE: React.CSSProperties = { display: "flex", gap: 6 };
 const TITLE_STYLE: React.CSSProperties = {
   fontSize: 14,
   color: "#E6EDF3",

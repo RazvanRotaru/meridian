@@ -5,7 +5,7 @@
  * (most TypeScript units land on A=0), so a tiny deterministic jitter fans overlapping dots apart.
  */
 
-import type { UnitMetrics } from "./composition";
+import type { UnitMetrics } from "@meridian/design-metrics";
 
 export interface ScatterPoint {
   id: string;

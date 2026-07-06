@@ -18,11 +18,15 @@ frozen contract); nothing depends on the CLI or renderer.
 packages/core                  the contract — zod schema (source of truth) → JSON Schema, the
                                node-id grammar (ids.ts), two-tier validateArtifact, overlay types,
                                the LanguageExtractor interface, aggregateEdges/collapseToDepth,
-                               materializeBoundaryNodes.  @meridian/core/mock = NODE-ONLY subpath.
+                               materializeBoundaryNodes, test detection (test-detection.ts: the
+                               "test" tag + path heuristics) and static coverage from call
+                               reachability (coverage.ts).  @meridian/core/mock = NODE-ONLY subpath.
 packages/extractor-typescript  ts-morph adapter (TS/TSX incl. JSX renders edges).
 packages/extractor-python      spawns a bundled stdlib-ast analyzer (python/*.py) + a TS adapter.
-packages/cli                   commander CLI: generate / view / web / mock-telemetry.
-packages/renderer              React 19 + @xyflow/react + elkjs SPA (Vite).
+packages/design-metrics        pure graph→metrics: Martin's Ca/Ce/I/A/D + LCOM4 cohesion, design
+                               smells, worst-first ranking, and per-unit diagnosis/advice. No React.
+packages/cli                   commander CLI: generate / view / web / mock-telemetry / coverage.
+packages/renderer              React 19 + @xyflow/react + elkjs SPA (Vite); consumes @meridian/design-metrics.
 examples/{orders-service, orders-service-py, shopfront}   fixtures used by golden + e2e tests.
 knowledge/adr/0001-...md       THE contract decision. Read it before touching the schema.
 ```
@@ -42,6 +46,11 @@ knowledge/adr/0001-...md       THE contract decision. Read it before touching th
   mirrors it (env selector mandatory, `defaultEnv` always null).
 - Extractors are **pure graph producers** — they return nodes/edges, NOT the artifact header. The CLI
   (`extract-pipeline.ts` → `artifact-header.ts`) stamps schemaVersion/generator/target/telemetry.
+- **Test code is IN the graph by default**, tagged `"test"` via the open `tags` vocabulary (no schema
+  change; tagging happens language-agnostically in `extract-pipeline.ts`, heuristics in core's
+  `test-detection.ts`). `generate --exclude-tests` drops it; the renderer's Tests toggle hides it;
+  `coverage.ts` derives static coverage (direct/indirect/uncovered + reasons) from resolved
+  execution edges only — unresolved calls from tests are a reported caveat, never counted.
 - `validateArtifact` is two-tier (zod shape + cross-array invariants). `generate` fails **closed**
   (writes nothing on error); `view`/`web` are lenient (warn-level) so a new extractor isn't blocked.
 
@@ -58,6 +67,7 @@ pnpm --filter @meridian/cli e2e     # headless-Chromium e2e (needs: npx playwrig
 node packages/cli/dist/bin.js generate examples/orders-service -o /tmp/g.json
 node packages/cli/dist/bin.js view /tmp/g.json --overlay mock --env staging
 node packages/cli/dist/bin.js web sindresorhus/ky
+node packages/cli/dist/bin.js coverage /tmp/g.json --fail-under 60   # static coverage CI gate
 ```
 
 `meridian view`/`web` serve the renderer from `packages/cli/renderer-dist` — after changing the

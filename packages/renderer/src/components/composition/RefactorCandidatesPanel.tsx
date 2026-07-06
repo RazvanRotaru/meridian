@@ -7,7 +7,7 @@
 
 import { useMemo } from "react";
 import type { GraphNode } from "@meridian/core";
-import type { UnitMetrics } from "../../derive/composition";
+import type { UnitMetrics } from "@meridian/design-metrics";
 import { colorForDistance } from "../../derive/compositionGraph";
 import { clusterIdOf, clusterLabel } from "../../derive/compositionClusters";
 import { SmellChip } from "./SmellChip";

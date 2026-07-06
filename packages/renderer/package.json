@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@meridian/core": "workspace:*",
+    "@meridian/design-metrics": "workspace:*",
     "@xyflow/react": "12.11.1",
     "elkjs": "0.11.1",
     "react": "19.2.7",

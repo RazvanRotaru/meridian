@@ -52,9 +52,13 @@ async function layoutFlow(
   ownerLookup: OwnerLookup,
   focus?: { id: string; bodies: FlowPath[] },
 ): Promise<LogicReactFlowGraph> {
+  // Entry/exit end-caps frame a callable's flow only: a container DIVE (`focus`) charts sub-chains
+  // with no single entry, and a module's top-level flow is a load sequence that nothing "calls" — so
+  // both opt out of terminals (a module still gets its def-grid below, appended in deriveLogicLayout).
+  const withTerminals = index.nodesById.get(rootId)?.kind !== "module";
   const spec = focus
     ? deriveLogicGraphFromBodies(focus.id, focus.bodies, flows, index, expandedLogic, options, ownerLookup)
-    : deriveLogicGraph(rootId, flows, index, expandedLogic, options, ownerLookup);
+    : deriveLogicGraph(rootId, flows, index, expandedLogic, { ...options, withTerminals }, ownerLookup);
   if (spec.nodes.length === 0) {
     return { nodes: [], edges: [] };
   }

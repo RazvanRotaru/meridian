@@ -93,6 +93,13 @@ node id **and** the telemetry join key, so structure and runtime data never desy
    rate — joined by node id. A deterministic **mock** provider ships today; a real Tempo/OTel
    provider drops into the same contract with zero re-keying. The environment selector is
    **mandatory** and never defaults to prod.
+4. **Tests & static coverage.** Test files enter the graph tagged `"test"` (path heuristics:
+   `*.test.*` / `*.spec.*` / `__tests__` / `test_*.py` / …) — one toolbar click hides or shows them.
+   **Coverage mode** recolors the whole graph from pure call reachability: green = a test calls it
+   directly, amber = reached only through other code, red = nothing reaches it — and the coverage
+   panel names each untested class/method **with the reason** ("never called — entry point or dead
+   code" vs "only called by uncovered code: …"). Only `resolved` edges count; unresolved calls
+   leaving test code are surfaced as an explicit caveat, never silently counted.
 
 The contract is specified in
 [`knowledge/adr/0001-graph-artifact-schema.md`](knowledge/adr/0001-graph-artifact-schema.md) and
@@ -103,10 +110,11 @@ published as JSON Schema at
 
 | Command | What it does |
 | --- | --- |
-| `meridian generate [path]` | Extract a codebase into a graph artifact. `--lang` (auto: `typescript` \| `python`), `-o`, `--depth package\|module\|class\|function`, `--include-external`, `--include`, `--exclude`, `--tsconfig`. |
+| `meridian generate [path]` | Extract a codebase into a graph artifact. `--lang` (auto: `typescript` \| `python`), `-o`, `--depth package\|module\|class\|function`, `--include-external`, `--include`, `--exclude`, `--tsconfig`, `--exclude-tests` (default: tests included, tagged `test`). |
 | `meridian view [graph]` | Serve the renderer on a graph + open the browser. `--port`, `--host`, `--no-open`, `--overlay <file\|mock>`, `--env`. |
 | `meridian web [source]` | Local web UI: paste a **GitHub repo** (`owner/repo` or URL) / local path — clones (`--depth 1`) + extracts + renders. Private repos via `GITHUB_TOKEN`/`GH_TOKEN` or a local-only token field. `--port`, `--host`, `--no-open`. |
 | `meridian mock-telemetry [graph]` | Mint a deterministic mock overlay. **`--env` is required** (no default, never prod); `-o`, `--seed`. |
+| `meridian coverage [graph]` | Terminal report of the same static coverage the renderer overlays: per-class percentages, every uncovered member with its reason. `--fail-under <pct>` makes it a CI gate (exit 3 below threshold). |
 
 ## Packages
 
