@@ -265,8 +265,10 @@ function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
   // "TEST" tag, mirroring the coverage palette's test-code colour, so it's clearly "a test exercising
   // this method" rather than just another caller. Clicking still opens that node's own flow.
   const isTest = d.test === true;
+  // A caller ghost is a shortcut into that flow (click to open); a test ghost is read-only context —
+  // it just shows WHICH tests exercise this method, so it takes no click and shows no pointer cursor.
   return (
-    <div style={isTest ? JUMP_TEST_BODY : JUMP_BODY} onClick={() => openLogicFlow(d.rootId)} title={isTest ? `Test: ${d.label}` : `Open flow: ${d.label}`}>
+    <div style={isTest ? JUMP_TEST_BODY : JUMP_BODY} onClick={isTest ? undefined : () => openLogicFlow(d.rootId)} title={isTest ? `Test: ${d.label}` : `Open flow: ${d.label}`}>
       {/* Target pin on top (a deeper caller's wire lands here) + source pin on the bottom (this
           node's wire drops to the node one hop closer to the selection): the chain wires top→down. */}
       <Handle type="target" position={Position.Top} style={PIN} isConnectable={false} />
@@ -444,7 +446,7 @@ const JUMP_TEST_BODY: React.CSSProperties = {
   padding: "5px 9px",
   fontFamily: MONO,
   color: "#C6BCE0",
-  cursor: "pointer",
+  cursor: "default",
   display: "flex",
   flexDirection: "column",
   gap: 2,
