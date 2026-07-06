@@ -25,11 +25,17 @@ export interface NavState {
   logicRoot: string | null;
   logicStack: string[];
   expanded: string[];
+  /** The Module-map root file; null == the resolved default entry. */
+  moduleRoot: string | null;
+  /** The Module-map import-hop depth (GHOST_DEPTH_ALL == the whole radius). */
+  moduleDepth: number;
+  /** Module categories painted out of the map — a comma-joined list in the URL. */
+  hiddenCategories: string[];
   environment: string | null;
 }
 
 /** Every param key we own — listed once so `mergeNavIntoSearch` can clear them before rewriting. */
-const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "lroot", "lstack", "expand", "env"] as const;
+const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "lroot", "lstack", "expand", "mroot", "mdepth", "mhide", "env"] as const;
 
 /** The navigation state the app boots into — the baseline a restore resets absent keys back to. */
 export const DEFAULT_NAV: NavState = {
@@ -44,6 +50,9 @@ export const DEFAULT_NAV: NavState = {
   logicRoot: null,
   logicStack: [],
   expanded: [],
+  moduleRoot: null,
+  moduleDepth: 1,
+  hiddenCategories: [],
   environment: null,
 };
 
@@ -60,6 +69,9 @@ interface NavSource {
   logicRoot: string | null;
   logicStack: readonly string[];
   expanded: ReadonlySet<string>;
+  moduleRoot: string | null;
+  moduleDepth: number;
+  hiddenCategories: ReadonlySet<string>;
   environment: string | null;
 }
 
@@ -77,7 +89,10 @@ export function navFrom(state: NavSource): NavState {
     logicRoot: state.logicRoot,
     logicStack: [...state.logicStack],
     expanded: [...state.expanded].sort(),
-  environment: state.environment,
+    moduleRoot: state.moduleRoot,
+    moduleDepth: state.moduleDepth,
+    hiddenCategories: [...state.hiddenCategories].sort(),
+    environment: state.environment,
   };
 }
 
@@ -95,6 +110,9 @@ export function encodeNav(nav: NavState): Map<string, string> {
   setId(out, "lroot", nav.logicRoot);
   setList(out, "lstack", nav.logicStack);
   setList(out, "expand", nav.expanded);
+  setId(out, "mroot", nav.moduleRoot);
+  if (nav.moduleDepth !== 1) out.set("mdepth", String(nav.moduleDepth));
+  setList(out, "mhide", nav.hiddenCategories);
   setId(out, "env", nav.environment);
   return out;
 }
@@ -103,7 +121,7 @@ export function encodeNav(nav: NavState): Map<string, string> {
 export function decodeNav(params: URLSearchParams): Partial<NavState> {
   const out: Partial<NavState> = {};
   const view = params.get("view");
-  if (view === "call" || view === "ui" || view === "logic") out.viewMode = view;
+  if (view === "call" || view === "ui" || view === "logic" || view === "modules") out.viewMode = view;
   assignId(params, "focus", out, "focusId");
   assignId(params, "root", out, "compRoot");
   assignId(params, "sel", out, "selectedId");
@@ -115,6 +133,10 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   assignId(params, "lroot", out, "logicRoot");
   assignList(params, "lstack", out, "logicStack");
   assignList(params, "expand", out, "expanded");
+  assignId(params, "mroot", out, "moduleRoot");
+  const moduleDepth = params.get("mdepth");
+  if (moduleDepth !== null && !Number.isNaN(Number(moduleDepth))) out.moduleDepth = Number(moduleDepth);
+  assignList(params, "mhide", out, "hiddenCategories");
   assignId(params, "env", out, "environment");
   return out;
 }
@@ -142,6 +164,7 @@ export function isNavigationChange(prev: NavState, next: NavState): boolean {
     prev.viewMode !== next.viewMode ||
     prev.focusId !== next.focusId ||
     prev.compRoot !== next.compRoot ||
+    prev.moduleRoot !== next.moduleRoot ||
     prev.flowRootId !== next.flowRootId ||
     prev.logicRoot !== next.logicRoot ||
     prev.logicStack.join(",") !== next.logicStack.join(",")

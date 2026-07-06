@@ -15,6 +15,9 @@ function emptyNav(): NavState {
     logicRoot: null,
     logicStack: [],
     expanded: [],
+    moduleRoot: null,
+    moduleDepth: 1,
+    hiddenCategories: [],
     environment: null,
   };
 }
@@ -69,6 +72,28 @@ describe("urlState", () => {
 
   it("round-trips a selected environment", () => {
     expect(roundTrip({ ...emptyNav(), environment: "staging" })).toEqual({ environment: "staging" });
+  });
+
+  it("round-trips a module-map view (root, depth, hidden categories)", () => {
+    const nav: NavState = {
+      ...emptyNav(),
+      viewMode: "modules",
+      moduleRoot: "ts:src/app.ts",
+      moduleDepth: 3,
+      hiddenCategories: ["config", "util"],
+    };
+    expect(roundTrip(nav)).toEqual({
+      viewMode: "modules",
+      moduleRoot: "ts:src/app.ts",
+      moduleDepth: 3,
+      hiddenCategories: ["config", "util"],
+    });
+  });
+
+  it("omits module-map keys at their defaults (depth 1, no hidden categories)", () => {
+    const nav: NavState = { ...emptyNav(), viewMode: "modules", moduleDepth: 1, hiddenCategories: [] };
+    expect(encodeNav(nav).has("mdepth")).toBe(false);
+    expect(encodeNav(nav).has("mhide")).toBe(false);
   });
 
   it("preserves foreign params (web-mode id) while owning its own keys", () => {
@@ -153,6 +178,9 @@ function storeShape() {
     logicRoot: null,
     logicStack: [] as string[],
     expanded: new Set<string>(),
+    moduleRoot: null,
+    moduleDepth: 1,
+    hiddenCategories: new Set<string>(),
     environment: null,
   };
 }

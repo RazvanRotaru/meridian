@@ -11,6 +11,7 @@ const SEGMENTS: ReadonlyArray<{ mode: ViewMode; label: string }> = [
   { mode: "call", label: "Service composition" },
   { mode: "ui", label: "UI composition" },
   { mode: "logic", label: "Logic flow" },
+  { mode: "modules", label: "Module map" },
 ];
 
 export function ViewModeToggle() {
@@ -35,6 +36,7 @@ export function ViewModeToggle() {
 
 const GROUP_STYLE: React.CSSProperties = {
   display: "flex",
+  flexWrap: "wrap",
   padding: 2,
   gap: 2,
   borderRadius: 8,

@@ -6,6 +6,7 @@
  */
 
 import { createStore, type StoreApi } from "zustand/vanilla";
+import type { Edge, Node } from "@xyflow/react";
 import { computeCoverage } from "@meridian/core";
 import type {
   CoverageReport,
@@ -25,6 +26,8 @@ import { uiFocusTarget } from "../derive/uiFocus";
 import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
+import { deriveModuleMapLayout, readEntryModules } from "./deriveModuleMapLayout";
+import type { ModuleCategory } from "../derive/moduleCategory";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
@@ -114,6 +117,25 @@ export interface BlueprintState {
   /** Whether the composition scorecards show their SOLID metric rows + smell chips. Off == a
    * structure-only view (kind + name), decluttered. Persisted to localStorage across reloads. */
   showSolidMetrics: boolean;
+  /** The laid-out Module-map graph (concentric import rings), recomputed synchronously whenever the
+   * "modules" lens is (re)entered or its root/depth changes. */
+  moduleRfNodes: Node[];
+  moduleRfEdges: Edge[];
+  moduleLayoutStatus: LayoutStatus;
+  /** The file the Module map is rooted (blast-radius centred) at; null == resolve the default entry. */
+  moduleRoot: string | null;
+  /** The module actually walked from once `moduleRoot`/defaults resolve; null == none found. Read by
+   * the surface for the "rooted at" breadcrumb and the depth slider's ceiling. */
+  moduleEffectiveRoot: string | null;
+  /** The unbounded max import hop-depth from the root — the depth slider's stable upper bound. */
+  moduleMaxDepth: number;
+  /** How many import hops out from the root the map draws; GHOST_DEPTH_ALL == the whole radius. */
+  moduleDepth: number;
+  /** Module categories painted OUT of the map (a render-time filter — never a re-derive; the full
+   * blast radius is always walked so a hidden `util` can't sever the path past it). */
+  hiddenCategories: Set<ModuleCategory>;
+  /** The selected file card id in the Module map; null == none. A repaint-only highlight — no relayout. */
+  moduleSelectedId: string | null;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -155,6 +177,11 @@ export interface BlueprintState {
   selectCompUnit(id: string | null): void;
   setCompRoot(id: string | null): void;
   toggleSolidMetrics(): void;
+  moduleRelayout(): Promise<void>;
+  setModuleRoot(id: string | null): void;
+  setModuleDepth(depth: number): void;
+  toggleCategory(category: ModuleCategory): void;
+  selectModule(id: string | null): void;
   setViewMode(mode: ViewMode): void;
   toggleShowTests(): void;
   toggleCoverageMode(): void;
@@ -183,6 +210,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let logicLayoutSeq = 0;
   // Same guard for the composition layout — a newer relayout discards an older in-flight ELK pass.
   let compLayoutSeq = 0;
+  // And for the Module-map layout, so a newer root/depth change supersedes an older derivation.
+  let moduleLayoutSeq = 0;
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
   // The composition tab opens on the WHOLE-SYSTEM overview (null root); file-rooting is the explicit
@@ -222,6 +251,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     compSelectedId: null,
     compRoot: defaultCompRoot,
     showSolidMetrics: readSolidMetricsPref(),
+    moduleRfNodes: [],
+    moduleRfEdges: [],
+    moduleLayoutStatus: "idle",
+    moduleRoot: null,
+    moduleEffectiveRoot: null,
+    moduleMaxDepth: 0,
+    moduleDepth: 1,
+    hiddenCategories: new Set<ModuleCategory>(),
+    moduleSelectedId: null,
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -455,6 +493,60 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().compRelayout();
     },
 
+    // Re-derive the Module map for the current root + depth, behind the same stale-seq guard. The
+    // derivation is synchronous; the await yields one microtask so a concurrent root/depth change can
+    // bump the seq and discard this pass — matching compRelayout's guarded flow.
+    async moduleRelayout() {
+      const { index, artifact, moduleRoot, moduleDepth } = get();
+      const sequence = ++moduleLayoutSeq;
+      set({ moduleLayoutStatus: "laying-out" });
+      await Promise.resolve();
+      const layout = deriveModuleMapLayout(index, moduleRoot, moduleDepth, readEntryModules(artifact));
+      if (moduleLayoutSeq !== sequence) {
+        return; // a newer root/depth change superseded this one.
+      }
+      set({
+        moduleRfNodes: layout.nodes,
+        moduleRfEdges: layout.edges,
+        moduleEffectiveRoot: layout.effectiveRoot,
+        moduleMaxDepth: layout.maxDepth,
+        moduleLayoutStatus: "ready",
+      });
+    },
+
+    // Re-root the Module map at a file (null == fall back to the resolved default entry). Clears the
+    // selection (it means nothing in a new radius) and re-lays out. A no-op when already there.
+    setModuleRoot(id) {
+      if (get().moduleRoot === id) {
+        return;
+      }
+      set({ moduleRoot: id, moduleSelectedId: null });
+      void get().moduleRelayout();
+    },
+
+    // Set how many import hops out the map draws (clamped 1..GHOST_DEPTH_ALL). Fewer hops means fewer
+    // rings, so it IS a relayout — but the slider's ceiling stays the unbounded diameter (see
+    // deriveModuleMapLayout), so dialing down never strands the reader at a low depth.
+    setModuleDepth(depth) {
+      const next = Math.max(1, Math.min(GHOST_DEPTH_ALL, Math.trunc(depth)));
+      if (get().moduleDepth === next) {
+        return;
+      }
+      set({ moduleDepth: next });
+      void get().moduleRelayout();
+    },
+
+    // Show/hide a module category. PAINT-ONLY: the surface filters the category's cards out in place,
+    // so this deliberately does NOT relayout — the full blast radius stays walked and positions stable.
+    toggleCategory(category) {
+      set({ hiddenCategories: withToggledCategory(get().hiddenCategories, category) });
+    },
+
+    // Select a Module-map file card (pass null to clear). A repaint-only highlight — no relayout.
+    selectModule(id) {
+      set({ moduleSelectedId: id });
+    },
+
     // Switching mode re-derives + relayouts like a dive. Entering UI mode dives to the render
     // subtree; leaving it returns to call-flow at the focus you had before (home if none). The
     // logic view is a standalone render (no rfNodes/ELK), so it neither dives nor relayouts, and
@@ -466,6 +558,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       if (mode === "logic") {
         set({ viewMode: mode });
+        return;
+      }
+      // The Module map is a standalone surface (its own synchronous ring layout), so — like logic — it
+      // neither dives nor touches the graph focus; it just flips the mode and lays its own graph out.
+      if (mode === "modules") {
+        set({ viewMode: mode });
+        void get().moduleRelayout();
         return;
       }
       if (mode === "ui") {
@@ -486,21 +585,26 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // composition graph's own selection/root — retreat home first.
     toggleShowTests() {
       const showTests = !get().showTests;
-      const { focusId, selectedId, compSelectedId, compRoot, viewMode, index } = get();
+      const { focusId, selectedId, compSelectedId, compRoot, moduleRoot, moduleSelectedId, viewMode, index } = get();
       const strandedById = (id: string | null) => !showTests && id !== null && index.testIds.has(id);
       const nextCompRoot = strandedById(compRoot) ? null : compRoot;
+      const nextModuleRoot = strandedById(moduleRoot) ? null : moduleRoot;
       set({
         showTests,
         focusId: strandedById(focusId) ? null : focusId,
         selectedId: strandedById(selectedId) ? null : selectedId,
         compSelectedId: strandedById(compSelectedId) ? null : compSelectedId,
         compRoot: nextCompRoot,
+        moduleSelectedId: strandedById(moduleSelectedId) ? null : moduleSelectedId,
+        moduleRoot: nextModuleRoot,
       });
-      // The composition view hides test cards in place (CompositionView filters the rendered set),
-      // so it must NOT re-lay-out — that would reshuffle production cards, the very thing we avoid.
-      // It only relayouts when the root itself changed (it was rooted inside now-hidden test code).
-      // Every other surface still relayouts to drop the hidden subtree.
-      if (viewMode !== "call" || nextCompRoot !== compRoot) {
+      // The composition AND module-map views hide test cards in place (the surface filters the
+      // rendered set), so they must NOT re-lay-out — that would reshuffle production cards, the very
+      // thing we avoid. They only relayout when their OWN root changed (it was rooted inside now-hidden
+      // test code). Every other surface still relayouts to drop the hidden subtree.
+      const paintOnlyMode = viewMode === "call" || viewMode === "modules";
+      const rootChanged = nextCompRoot !== compRoot || nextModuleRoot !== moduleRoot;
+      if (!paintOnlyMode || rootChanged) {
         void get().relayout();
       }
     },
@@ -598,6 +702,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         await get().compRelayout();
         return;
       }
+      // The Module map is its own surface with a synchronous ring layout; route it to moduleRelayout
+      // (this also runs on a boot/back-forward restore into the "modules" lens). "ui" derives below.
+      if (get().viewMode === "modules") {
+        await get().moduleRelayout();
+        return;
+      }
       const sequence = get().layoutSeq + 1;
       set({ layoutSeq: sequence, layoutStatus: "laying-out" });
       const { index, expanded, focusId, viewMode, flowRootId, flowDepth, showTests } = get();
@@ -618,6 +728,17 @@ function withToggled(expanded: Set<string>, nodeId: string): Set<string> {
     next.delete(nodeId);
   } else {
     next.add(nodeId);
+  }
+  return next;
+}
+
+/** Flip a category's membership in the hidden-category set (typed sibling of `withToggled`). */
+function withToggledCategory(hidden: Set<ModuleCategory>, category: ModuleCategory): Set<ModuleCategory> {
+  const next = new Set(hidden);
+  if (next.has(category)) {
+    next.delete(category);
+  } else {
+    next.add(category);
   }
   return next;
 }
