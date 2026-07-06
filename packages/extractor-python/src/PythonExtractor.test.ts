@@ -4,6 +4,8 @@
  * policy, the telemetry contract on callables, and a full Tier-1 + Tier-2 validation pass.
  */
 
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -125,5 +127,36 @@ describe("PythonExtractor over orders-service-py", () => {
     const validation = validateArtifact(artifactFrom(result));
     expect(validation.errors).toEqual([]);
     expect(validation.ok).toBe(true);
+  });
+
+  it("disambiguates colliding ids with ~n ordinals instead of emitting duplicates", async () => {
+    const root = await mkdtemp(join(tmpdir(), "meridian-pydup-"));
+    try {
+      await writeFile(join(root, "twice.py"), "def f():\n    return 1\n\n\ndef f():\n    return 2\n");
+      const result = await createPythonExtractor().extract({ root });
+      const ids = result.nodes.map((node) => node.id).sort();
+      expect(ids).toContain("py:twice#f");
+      expect(ids).toContain("py:twice#f~1");
+      expect(new Set(ids).size).toBe(ids.length); // no duplicates survive
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("never walks virtualenvs or vendored trees (a real .venv holds 20k+ files)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "meridian-pyvenv-"));
+    try {
+      await mkdir(join(root, ".venv", "lib"), { recursive: true });
+      await mkdir(join(root, "node_modules", "pkg"), { recursive: true });
+      await writeFile(join(root, "app.py"), "def main():\n    return 1\n");
+      await writeFile(join(root, ".venv", "lib", "vendored.py"), "def hidden():\n    return 2\n");
+      await writeFile(join(root, "node_modules", "pkg", "shim.py"), "def shim():\n    return 3\n");
+      const result = await createPythonExtractor().extract({ root });
+      const files = new Set(result.nodes.map((node) => node.location.file));
+      expect(files.has("app.py")).toBe(true);
+      expect([...files].some((file) => file.includes(".venv") || file.includes("node_modules"))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
