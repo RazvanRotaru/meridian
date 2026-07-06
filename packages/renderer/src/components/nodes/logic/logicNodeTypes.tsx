@@ -11,7 +11,7 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
-import type { LogicNodeData } from "../../../derive/logicGraph";
+import type { LogicNodeData, TerminalData } from "../../../derive/logicGraph";
 import { CodeInlinePanel } from "../../CodeInlinePanel";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -239,6 +239,36 @@ function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
 }
 
 /**
+ * A flow END-CAP: the ENTRY the observed callable starts at, or the synthetic EXIT every trailing
+ * path converges onto. Both are compact pills, not call blocks (no provenance/disclosure/code). The
+ * ENTRY wears the callable's name and a top TARGET pin so the view's caller-ghosts wire DOWN into it
+ * (mirroring how a selected block collects its jump-to-flow ghosts), plus a right SOURCE pin the exec
+ * thread leaves through into the first step. The EXIT is a dead end: a left TARGET pin, no source.
+ * Neither is a call site (`targetId: null`), so clicking one is a harmless no-op.
+ */
+function TerminalNode({ data }: NodeProps<LogicRfNode>) {
+  const d = data as TerminalData;
+  if (d.terminal === "entry") {
+    return (
+      <div style={ENTRY_BODY} title={`Flow entry: ${d.label}`}>
+        <Handle type="target" position={Position.Top} style={PIN} isConnectable={false} />
+        <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+        <span style={TERMINAL_GLYPH}>▶</span>
+        <span style={NAME} title={d.label}>{d.label}</span>
+        <span style={ENTRY_TAG}>ENTRY</span>
+      </div>
+    );
+  }
+  return (
+    <div style={EXIT_BODY} title="Flow exit">
+      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+      <span style={TERMINAL_GLYPH}>■</span>
+      <span style={NAME}>EXIT</span>
+    </div>
+  );
+}
+
+/**
  * A def-group FRAME: the structural container the module view groups a callable owner's methods
  * into — an object literal, a class, or the top-level `functions` bucket. It fills its laid-out box
  * with a titled, teal-tinted border; its body stays transparent so the def nodes React Flow parents
@@ -261,7 +291,7 @@ function DefGroupNode({ data }: NodeProps<LogicRfNode>) {
   );
 }
 
-export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: BranchNode, jumpflow: JumpFlowNode, defgroup: DefGroupNode };
+export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: BranchNode, jumpflow: JumpFlowNode, defgroup: DefGroupNode, terminal: TerminalNode };
 
 // Selection is BY TARGET (a target can be called many times): a matched call site rings green so
 // every call of the same target lights up together; while some target is selected, unrelated nodes
@@ -304,6 +334,10 @@ const LOOP_ACCENT = "#E6B84D";
 const TRY_ACCENT = "#D98A5B";
 // Violet, deliberately unlike the blue building-block accent: a branch reads as control-flow.
 const BRANCH_ACCENT = "#A78BFA";
+// A calm green marks the flow's START (evokes a "play"/entry point); a muted slate marks the neutral
+// synthetic EXIT end-cap — deliberately quiet so it reads as a terminus, not another step.
+const ENTRY_ACCENT = "#4FB477";
+const EXIT_ACCENT = "#8A93A0";
 
 const PIN: React.CSSProperties = { width: 7, height: 7, background: "#C8D3E0", border: "none", minWidth: 0, minHeight: 0 };
 
@@ -399,6 +433,27 @@ const JUMP_DEPTH_BADGE: React.CSSProperties = {
   background: "rgba(59,122,192,0.15)",
 };
 const JUMP_FILE: React.CSSProperties = { fontSize: 9, color: "#6C7683", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+
+// The entry/exit end-caps: a compact rounded pill (never a rectangular building block), tinted by its
+// accent. Shared base; the entry keeps its ENTRY tag pinned right, the exit centres its bare caption.
+const TERMINAL_BASE: React.CSSProperties = {
+  width: "100%",
+  height: "100%",
+  boxSizing: "border-box",
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "0 14px",
+  borderRadius: 999,
+  fontFamily: MONO,
+  fontSize: 12,
+  fontWeight: 700,
+  overflow: "hidden",
+};
+const ENTRY_BODY: React.CSSProperties = { ...TERMINAL_BASE, border: `1px solid ${ENTRY_ACCENT}`, background: "rgba(79,180,119,0.12)", color: "#CDEAD9" };
+const EXIT_BODY: React.CSSProperties = { ...TERMINAL_BASE, justifyContent: "center", border: `1px solid ${EXIT_ACCENT}`, background: "rgba(138,147,160,0.10)", color: "#B7C0CC" };
+const TERMINAL_GLYPH: React.CSSProperties = { fontSize: 10, flexShrink: 0, opacity: 0.85 };
+const ENTRY_TAG: React.CSSProperties = { marginLeft: "auto", flexShrink: 0, fontSize: 8, fontWeight: 700, letterSpacing: "0.08em", border: `1px solid ${ENTRY_ACCENT}`, borderRadius: 3, padding: "1px 4px", color: ENTRY_ACCENT };
 
 const GLYPH: React.CSSProperties = { fontSize: 11, opacity: 0.85 };
 // Right-aligned title tail holding the expand toggle (and, on a call block, the </> button). A

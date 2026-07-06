@@ -101,18 +101,14 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
     [artifact],
   );
 
-  // The "jump-to-flow" satellites for the current selection, appended (RELAYOUT-FREE) above the
-  // selected call site — one row per hop of indirect callers (up to `ghostDepth`). Selection and the
-  // depth dial stay cheap repaints: the store's laid-out graph is untouched.
-  const { jumpNodes, jumpEdges, total } = useMemo(
+  // Caller-ghosts, appended (RELAYOUT-FREE) above the graph: the observed callable's OWN callers hang
+  // over the entry end-cap BY DEFAULT, and a selected block's callers hang over its call site — two
+  // clusters, either possibly empty. `moreCount` is the active cluster's honest 24-cap shortfall,
+  // surfaced as a "+N more" on the depth dial so the truncation is never silent. Cheap repaints.
+  const { jumpNodes, jumpEdges, moreCount } = useMemo(
     () => buildJumpSatellites(nodes, logicSelected, logicRoot, containment, index, ghostDepth),
     [nodes, logicSelected, logicRoot, containment, index, ghostDepth],
   );
-
-  // HONEST CAP: transitiveCallers can find more related flows than the 24-ghost render cap draws.
-  // `total` is the full countable set (closure minus the current root); the shortfall is surfaced as
-  // a "+N more" label in the depth dial so the truncation is never silent. 0 when nothing is cut.
-  const moreCount = Math.max(0, total - jumpNodes.length);
 
   // A handle on the React Flow surface: the `fitView` prop only fits on mount, so navigation needs
   // this to recentre the viewport imperatively.
@@ -238,14 +234,12 @@ const JUMP_COL_GAP = 40;
 const JUMP_MUTED = "#4B535F";
 
 /**
- * The jump-to-flow satellites for the current selection: every flow that TRANSITIVELY reaches the
- * selected target (a direct caller at depth 1, its caller at depth 2, …, up to `ghostDepth`), each
- * a dashed ghost node. Ghosts stack in horizontal ROWS clear ABOVE the graph — depth 1 just above
- * the graph's top edge, each further hop a row higher — every row centred on the selected call site.
- * The wires among them trace the CALL CHAIN (see `buildChainEdges`), not a fan to the selection: a
- * depth-2 ghost points at the depth-1 ghost it actually calls, which in turn points at the selected
- * block. Purely additive: it reads the store's laid-out nodes but never mutates them, so selection
- * and the depth dial stay repaints (no relayout). Empty unless a target is selected and reached elsewhere.
+ * The caller-ghost clusters appended (RELAYOUT-FREE) above the graph. TWO clusters, either possibly
+ * empty: the observed callable's OWN callers hang over the flow's entry end-cap BY DEFAULT (so you
+ * see where the flow is entered from just by observing it), and — exactly as before — a selected
+ * block's callers hang over its call site. Each ghost is a dashed satellite; rows stack by hop depth
+ * clear above the graph, wired as the reverse-call CHAIN (see buildChainEdges). Purely additive: it
+ * reads the store's laid-out nodes but never mutates them, so selection and the depth dial stay repaints.
  */
 function buildJumpSatellites(
   nodes: LogicRfNode[],
@@ -254,39 +248,85 @@ function buildJumpSatellites(
   containment: Map<string, string[]>,
   index: GraphIndex,
   ghostDepth: number,
-): { jumpNodes: Node[]; jumpEdges: Edge[]; total: number } {
-  if (logicSelected === null) {
-    return { jumpNodes: [], jumpEdges: [], total: 0 };
-  }
-  // Walk the reverse call graph back `ghostDepth` hops (GHOST_DEPTH_ALL == the whole closure); drop
-  // the flow we're already looking at, then keep the NEAREST callers when over the cap (BFS keys
-  // depth-ascending, so sort makes it explicit). `total` is the countable set before the cap, so the
-  // caller can surface how many the 24-ghost cap left undrawn.
-  const callers = transitiveCallers(containment, logicSelected, ghostDepth);
-  callers.delete(logicRoot);
-  const total = callers.size;
-  const ranked = [...callers.entries()].sort((a, b) => a[1] - b[1]).slice(0, MAX_JUMPS_TOTAL);
-  const callSite = nodes.find((node) => node.data.targetId === logicSelected);
-  if (ranked.length === 0 || !callSite) {
-    return { jumpNodes: [], jumpEdges: [], total };
+): { jumpNodes: Node[]; jumpEdges: Edge[]; moreCount: number } {
+  if (nodes.length === 0) {
+    return { jumpNodes: [], jumpEdges: [], moreCount: 0 };
   }
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const top = graphTop(nodes, byId);
-  const sel = absolutePos(callSite, byId);
-  const selWidth = callSite.width ?? JUMP_WIDTH;
-  const byDepth = groupByDepth(ranked);
+  const args: GhostClusterArgs = { byId, top, containment, index, ghostDepth, logicRoot };
 
+  // The entry cluster: callers of the observed callable, anchored on its entry end-cap. Independent
+  // of selection — this is the "when observing a flow, show where it's called from" default.
+  const entryNode = byId.get(`${logicRoot}::entry`);
+  const entry = entryNode ? buildGhostCluster(logicRoot, entryNode, "jump:entry:", args) : null;
+
+  // The selection cluster: callers of the selected call target, anchored on its call site (today's
+  // click-to-reveal behavior). Skipped when nothing is selected or the target isn't drawn.
+  const callSite = logicSelected !== null ? nodes.find((node) => node.data.targetId === logicSelected) : undefined;
+  const selection = logicSelected !== null && callSite ? buildGhostCluster(logicSelected, callSite, "jump:sel:", args) : null;
+
+  const clusters = [entry, selection].filter((c): c is GhostCluster => c !== null);
+  // "+N more" reports the cluster the user is acting on: the selection when one's active, else the
+  // entry's own callers — never the sum, so it stays a meaningful count for the focused set.
+  const active = selection ?? entry;
+  const moreCount = active ? Math.max(0, active.total - active.jumpNodes.length) : 0;
+  return {
+    jumpNodes: clusters.flatMap((c) => c.jumpNodes),
+    jumpEdges: clusters.flatMap((c) => c.jumpEdges),
+    moreCount,
+  };
+}
+
+interface GhostCluster {
+  jumpNodes: Node[];
+  jumpEdges: Edge[];
+  total: number;
+}
+
+// The shared inputs a cluster needs: the laid-out nodes indexed by id, the graph's top edge to hang
+// rows above, and the reverse-call map + depth to walk. `logicRoot` is the flow we're in, always
+// dropped from a caller set so the current flow never shows as its own ghost.
+interface GhostClusterArgs {
+  byId: Map<string, LogicRfNode>;
+  top: number;
+  containment: Map<string, string[]>;
+  index: GraphIndex;
+  ghostDepth: number;
+  logicRoot: NodeId;
+}
+
+/**
+ * One caller-ghost cluster: the flows that TRANSITIVELY reach `target` (a direct caller at depth 1,
+ * its caller at depth 2, …, up to `ghostDepth`), drawn as dashed satellites in rows clear ABOVE the
+ * graph and centred on `anchor` (the entry end-cap, or a selected call site). `idPrefix` namespaces
+ * the ghost node ids so the entry and selection clusters can't collide on a shared caller's React
+ * key. `total` is the countable caller set BEFORE the 24-ghost cap, so the dial can surface the shortfall.
+ */
+function buildGhostCluster(target: NodeId, anchor: LogicRfNode, idPrefix: string, a: GhostClusterArgs): GhostCluster {
+  // Walk the reverse call graph back `ghostDepth` hops (GHOST_DEPTH_ALL == the whole closure); drop
+  // the flow we're already looking at, then keep the NEAREST callers when over the cap (BFS keys
+  // depth-ascending, so the sort makes it explicit).
+  const callers = transitiveCallers(a.containment, target, a.ghostDepth);
+  callers.delete(a.logicRoot);
+  const total = callers.size;
+  const ranked = [...callers.entries()].sort((x, y) => x[1] - y[1]).slice(0, MAX_JUMPS_TOTAL);
+  if (ranked.length === 0) {
+    return { jumpNodes: [], jumpEdges: [], total };
+  }
+  const anchorPos = absolutePos(anchor, a.byId);
+  const anchorWidth = anchor.width ?? JUMP_WIDTH;
   const jumpNodes: Node[] = [];
-  for (const [depth, roots] of byDepth) {
-    // This depth's row sits `depth` clear gaps ABOVE the graph's top edge, so deeper (more indirect)
-    // callers stack higher. It's centred on the selected call site so the chain reads top→down into it.
-    const rowY = top - depth * (JUMP_HEIGHT + JUMP_ROW_GAP);
-    const totalWidth = roots.length * JUMP_WIDTH + (roots.length - 1) * JUMP_COL_GAP;
-    const startX = sel.x + selWidth / 2 - totalWidth / 2;
+  for (const [depth, roots] of groupByDepth(ranked)) {
+    // This depth's row sits `depth` clear gaps ABOVE the graph's top edge (deeper == higher), centred
+    // on the anchor so the chain reads top→down into it.
+    const rowY = a.top - depth * (JUMP_HEIGHT + JUMP_ROW_GAP);
+    const rowWidth = roots.length * JUMP_WIDTH + (roots.length - 1) * JUMP_COL_GAP;
+    const startX = anchorPos.x + anchorWidth / 2 - rowWidth / 2;
     roots.forEach((root, i) => {
-      const node = index.nodesById.get(root);
+      const node = a.index.nodesById.get(root);
       jumpNodes.push({
-        id: `jump:${root}`,
+        id: `${idPrefix}${root}`,
         type: "jumpflow",
         position: { x: startX + i * (JUMP_WIDTH + JUMP_COL_GAP), y: rowY },
         width: JUMP_WIDTH,
@@ -297,72 +337,74 @@ function buildJumpSatellites(
       });
     });
   }
-  const jumpEdges = buildChainEdges(ranked, logicSelected, callSite.id, containment);
+  const jumpEdges = buildChainEdges(ranked, target, anchor.id, idPrefix, a.containment);
   return { jumpNodes, jumpEdges, total };
 }
 
 /**
  * The satellite wires, drawn as the reverse-call CHAIN AMONG the rendered ghosts — NOT a fan pointing
- * every ghost straight at the selected node. For A→B→C with C selected, this yields A→B and B→C.
+ * every ghost straight at the anchor. For A→B→C with C the target, this yields A→B and B→C.
  *
  * The containment map is read as a reverse call graph: `X ∈ containment.get(N)` means "X calls N", so
- * X's ghost points at N — the node ONE HOP CLOSER to the selection. So for each node N in {selected}
- * ∪ {rendered ghosts}, every rendered caller X of N gets an edge `jump:X` → (N is the selection ? its
- * call-site node : `jump:N`). Depth-1 ghosts thus land on the selected call site; a depth-2 ghost
- * lands on the depth-1 ghost it calls; and so on up the tree.
+ * X's ghost points at N — the node ONE HOP CLOSER to the anchor. So for each node N in {target} ∪
+ * {rendered ghosts}, every rendered caller X of N gets an edge `<prefix>X` → (N is the target ? the
+ * anchor node : `<prefix>N`). Depth-1 ghosts thus land on the anchor; a depth-2 ghost lands on the
+ * depth-1 ghost it calls; and so on up the tree. `idPrefix` matches the cluster's ghost node ids.
  *
  * ORPHAN FALLBACK: near the 24-cap a ghost's own callee may be undrawn, leaving it with no outgoing
- * edge; it's then wired straight to the selected call site so it never dangles. Edges dedupe on their
+ * edge; it's then wired straight to the anchor so it never dangles. Edges dedupe on their
  * source→target pair. The "contains" label rides ONLY the genuine direct-caller edges into the
- * selected node; ghost→ghost and fallback edges stay unlabeled (the vertical chain is self-evident).
+ * anchor; ghost→ghost and fallback edges stay unlabeled (the vertical chain is self-evident).
  */
 function buildChainEdges(
   ranked: Array<[string, number]>,
-  logicSelected: NodeId,
-  callSiteNodeId: string,
+  target: NodeId,
+  anchorNodeId: string,
+  idPrefix: string,
   containment: Map<string, string[]>,
 ): Edge[] {
   const rendered = new Set(ranked.map(([root]) => root));
   const edges: Edge[] = [];
   const seenPairs = new Set<string>();
   const emitted = new Set<string>();
+  const ghostId = (root: string) => `${idPrefix}${root}`;
 
-  // Link each rendered caller X of `target` to `target`'s rendered node (`X ∈ containment.get(N)` ⇒
-  // edge X→N). Skips a self-call (a recursive root is its own caller) and any caller not rendered.
-  const linkCallers = (target: string, targetNodeId: string, labeled: boolean) => {
-    for (const caller of containment.get(target) ?? []) {
-      if (caller === target || !rendered.has(caller)) {
+  // Link each rendered caller X of `at` to `at`'s rendered node (`X ∈ containment.get(at)` ⇒ edge
+  // X→at). Skips a self-call (a recursive root is its own caller) and any caller not rendered.
+  const linkCallers = (at: string, atNodeId: string, labeled: boolean) => {
+    for (const caller of containment.get(at) ?? []) {
+      if (caller === at || !rendered.has(caller)) {
         continue;
       }
-      const source = `jump:${caller}`;
-      const pair = `${source}->${targetNodeId}`;
+      const source = ghostId(caller);
+      const pair = `${source}->${atNodeId}`;
       if (seenPairs.has(pair)) {
         continue;
       }
       seenPairs.add(pair);
       emitted.add(caller);
-      edges.push(jumpEdge(source, targetNodeId, pair, labeled));
+      edges.push(jumpEdge(source, atNodeId, pair, labeled));
     }
   };
 
-  // The selected block's direct callers point at its call site (labeled "contains"); every rendered
-  // ghost's direct callers point at that ghost (unlabeled — a link in the chain, not a container).
-  linkCallers(logicSelected, callSiteNodeId, true);
+  // The target's direct callers point at the anchor (labeled "contains"); every rendered ghost's
+  // direct callers point at that ghost (unlabeled — a link in the chain, not a container).
+  linkCallers(target, anchorNodeId, true);
   for (const root of rendered) {
-    linkCallers(root, `jump:${root}`, false);
+    linkCallers(root, ghostId(root), false);
   }
 
-  // A ghost whose callee fell outside the cap has no outgoing edge yet; wire it to the selected call
-  // site so it never dangles. Unlabeled: it isn't a direct caller of the selection.
+  // A ghost whose callee fell outside the cap has no outgoing edge yet; wire it to the anchor so it
+  // never dangles. Unlabeled: it isn't a direct caller of the target.
   for (const root of rendered) {
     if (emitted.has(root)) {
       continue;
     }
-    const source = `jump:${root}`;
-    const pair = `${source}->${callSiteNodeId}`;
+    const source = ghostId(root);
+    const pair = `${source}->${anchorNodeId}`;
     seenPairs.add(pair);
     emitted.add(root);
-    edges.push(jumpEdge(source, callSiteNodeId, pair, false));
+    edges.push(jumpEdge(source, anchorNodeId, pair, false));
   }
   return edges;
 }
@@ -435,14 +477,18 @@ function jumpEdge(source: string, target: string, pair: string, labeled: boolean
   };
 }
 
-// The click handlers run for every node on the surface, including the appended jump satellites. A
-// satellite carries no logic data and owns its own click, so hand back logic data only for real nodes.
+// The click handlers run for every node on the surface, including the appended jump satellites and
+// the entry/exit end-caps. Those carry no call data (a satellite owns its own click; a terminal is
+// no call site), so hand back logic data only for real exec nodes.
 function logicDataOf(node: Node): LogicNodeData | null {
-  return node.type === "jumpflow" ? null : (node.data as LogicNodeData);
+  return node.type === "jumpflow" || node.type === "terminal" ? null : (node.data as LogicNodeData);
 }
 
 // The MiniMap gets untyped `Node`s; narrow to our logic data and mirror each node type's accent.
 function miniMapColor(node: Node): string {
+  if (node.type === "terminal") {
+    return (node.data as { terminal: "entry" | "exit" }).terminal === "entry" ? "#4FB477" : "#8A93A0";
+  }
   const data = node.data as LogicNodeData;
   if (data.logicKind === "loop") return "#E6B84D";
   if (data.logicKind === "try") return "#D98A5B";
