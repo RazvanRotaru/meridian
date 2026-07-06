@@ -20,6 +20,8 @@ export interface Callee {
 
 const EXTERNAL_PREFIXES = ["ext:", "unresolved:"] as const;
 
+const EMPTY: ReadonlySet<string> = new Set();
+
 /**
  * Distinct callees of a node, from its call-graph out-edges. Deduped by target id (the graph can
  * fold several call sites into one edge, but repeats still happen across kinds), first edge wins.
@@ -91,26 +93,36 @@ export function buildFlowContainmentIndex(flows: LogicFlows): Map<string, string
  * OWN callers; walking that chain surfaces indirect callers: for A→B→C, target C sees B at depth 1
  * and A at depth 2. BFS visits nearer callers first, so first-seen wins == each caller's minimum
  * hop count. A `visited` set seeded with the target guards cycles AND excludes the target itself.
+ *
+ * `transparent` callers are a PASSTHROUGH: not emitted and costing NO hop — reaching one absorbs it
+ * at the current depth and expands its OWN callers at that same depth. This exists so the charted
+ * flow you're already inside is a FREE hop: a call site's direct external caller IS the flow's root,
+ * and counting the root you're already viewing would strand that true caller one level too deep.
  */
 export function transitiveCallers(
   containment: Map<string, string[]>,
   targetId: string,
   maxDepth: number,
+  transparent: ReadonlySet<string> = EMPTY,
 ): Map<string, number> {
   const callers = new Map<string, number>();
   const visited = new Set<string>([targetId]);
   let frontier = [targetId];
   for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth += 1) {
     const next: string[] = [];
-    for (const node of frontier) {
-      for (const caller of containment.get(node) ?? []) {
-        if (visited.has(caller)) {
-          continue;
-        }
-        visited.add(caller);
-        callers.set(caller, depth);
-        next.push(caller);
+    // A within-depth queue so a TRANSPARENT caller (the flow you're already inside) is absorbed at
+    // THIS depth: it isn't emitted and costs no hop — its own callers are enqueued at the same depth.
+    const queue: string[] = frontier.flatMap((node) => containment.get(node) ?? []);
+    while (queue.length > 0) {
+      const caller = queue.shift() as string;
+      if (visited.has(caller)) continue;
+      visited.add(caller);
+      if (transparent.has(caller)) {
+        for (const up of containment.get(caller) ?? []) queue.push(up);
+        continue;
       }
+      callers.set(caller, depth);
+      next.push(caller);
     }
     frontier = next;
   }

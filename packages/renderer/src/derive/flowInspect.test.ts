@@ -149,4 +149,25 @@ describe("transitiveCallers", () => {
     expect(callers.get("ts:m#B")).toBe(1);
     expect(callers.has("ts:m#A")).toBe(false); // A is 2 hops away, beyond maxDepth 1
   });
+
+  // A→B→C (A calls B, B calls C): reversed, C's caller is B at depth 1 and A at depth 2. This is the
+  // regression guard that a linear chain still keys the OLD depths when nothing is made transparent.
+  const chain = buildFlowContainmentIndex({
+    "ts:m#A": [call("ts:m#B", "resolved")],
+    "ts:m#B": [call("ts:m#C", "resolved")],
+  });
+
+  it("keeps the old depths when no caller is transparent", () => {
+    const callers = transitiveCallers(chain, "ts:m#C", 4);
+    expect(callers.get("ts:m#B")).toBe(1);
+    expect(callers.get("ts:m#A")).toBe(2);
+  });
+
+  it("absorbs a transparent caller — its callers rise to the freed depth, it isn't emitted", () => {
+    // B is the charted flow (transparent): a FREE hop. So A, B's own caller, reads depth 1 (not 2),
+    // and B itself never appears in the caller set.
+    const callers = transitiveCallers(chain, "ts:m#C", 4, new Set(["ts:m#B"]));
+    expect(callers.get("ts:m#A")).toBe(1);
+    expect(callers.has("ts:m#B")).toBe(false);
+  });
 });

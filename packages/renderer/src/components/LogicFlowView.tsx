@@ -292,8 +292,9 @@ interface GhostCluster {
 }
 
 // The shared inputs a cluster needs: the laid-out nodes indexed by id, the graph's top edge to hang
-// rows above, and the reverse-call map + depth to walk. `logicRoot` is the flow we're in, always
-// dropped from a caller set so the current flow never shows as its own ghost.
+// rows above, and the reverse-call map + depth to walk. `logicRoot` is the flow we're in, walked as a
+// TRANSPARENT (free, non-emitted) hop so it never shows as its own ghost and a direct caller of the
+// flow reads at depth 1, not stranded at 2 behind the root you're already viewing.
 interface GhostClusterArgs {
   byId: Map<string, LogicRfNode>;
   top: number;
@@ -316,11 +317,10 @@ interface GhostClusterArgs {
  * edges follow the containment graph, not the coordinates (see buildChainEdges).
  */
 function buildGhostCluster(target: NodeId, anchor: LogicRfNode, idPrefix: string, a: GhostClusterArgs, layout: "rows" | "column"): GhostCluster {
-  // Walk the reverse call graph back `ghostDepth` hops (GHOST_DEPTH_ALL == the whole closure); drop
-  // the flow we're already looking at, then keep the NEAREST callers when over the cap (BFS keys
-  // depth-ascending, so the sort makes it explicit).
-  const callers = transitiveCallers(a.containment, target, a.ghostDepth);
-  callers.delete(a.logicRoot);
+  // Walk the reverse call graph back `ghostDepth` hops (GHOST_DEPTH_ALL == the whole closure); the
+  // flow we're already looking at is a TRANSPARENT passthrough (never emitted, costs no hop), then
+  // keep the NEAREST callers when over the cap (BFS keys depth-ascending, so the sort makes it explicit).
+  const callers = transitiveCallers(a.containment, target, a.ghostDepth, new Set([a.logicRoot]));
   const total = callers.size;
   const ranked = [...callers.entries()].sort((x, y) => x[1] - y[1]).slice(0, MAX_JUMPS_TOTAL);
   if (ranked.length === 0) {
