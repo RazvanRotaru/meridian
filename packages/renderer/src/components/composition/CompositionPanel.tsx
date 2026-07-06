@@ -4,8 +4,10 @@
  * map) over a worst-first refactor-candidate list (the worklist). Both are global (computed from the
  * whole graph, not the rooted subset); a click on either roots the canvas at that unit.
  *
- * Metrics are computed ONCE here (keyed on the index) and shared with both children so the ranking
- * and the scatter never recompute the same pass twice.
+ * Metrics are computed ONCE here (keyed on the index) and shared with the children so the ranking,
+ * the scatter, and the active unit's diagnosis never recompute the same pass twice. Below the map it
+ * also explains the active unit — a per-unit diagnosis (verdict + findings + suggestions) — and a
+ * collapsible glossary of what each score means.
  */
 
 import { useMemo } from "react";
@@ -14,6 +16,8 @@ import { computeCompositionMetrics, rankRefactorCandidates } from "../../derive/
 import { MainSequenceScatter } from "./MainSequenceScatter";
 import { RefactorCandidatesPanel } from "./RefactorCandidatesPanel";
 import { CompositionLegend } from "./CompositionLegend";
+import { UnitDiagnosisPanel } from "./UnitDiagnosisPanel";
+import { ScoreGlossary } from "./ScoreGlossary";
 
 export function CompositionPanel() {
   const index = useBlueprint((state) => state.index);
@@ -29,6 +33,9 @@ export function CompositionPanel() {
   // The scatter clears selection when it re-roots, so `compSelectedId ?? compRoot` is the unit the
   // reader is currently focused on — the one both panels emphasize.
   const activeId = compSelectedId ?? compRoot;
+
+  // The active unit's metrics drive the diagnosis; null when nothing is focused or the root isn't a unit.
+  const activeUnit = activeId ? metrics.get(activeId) ?? null : null;
 
   // A row navigates the canvas (re-root) AND fixes the selection highlight so the row + the card ring
   // agree; the scatter dot just re-roots (selection follows via the guard above).
@@ -48,6 +55,7 @@ export function CompositionPanel() {
       >
         {showMetrics ? "Hide metrics" : "Show metrics"}
       </button>
+      <UnitDiagnosisPanel unit={activeUnit} />
       {showMetrics ? (
         <section style={SECTION_STYLE} aria-label="Main sequence">
           <div style={HEADER_STYLE}>Main sequence</div>
@@ -55,6 +63,7 @@ export function CompositionPanel() {
         </section>
       ) : null}
       <RefactorCandidatesPanel candidates={ranked} nodesById={index.nodesById} activeId={activeId} onPick={pickRow} />
+      <ScoreGlossary />
       <CompositionLegend />
     </>
   );
