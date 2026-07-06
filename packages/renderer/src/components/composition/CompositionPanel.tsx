@@ -4,22 +4,27 @@
  * map) over a worst-first refactor-candidate list (the worklist). Both are global (computed from the
  * whole graph, not the rooted subset); a click on either roots the canvas at that unit.
  *
- * Metrics are computed ONCE here (keyed on the index) and shared with both children so the ranking
- * and the scatter never recompute the same pass twice.
+ * Metrics are computed ONCE here (keyed on the index) and shared with the children so the ranking,
+ * the scatter, and the active unit's diagnosis never recompute the same pass twice. Below the map it
+ * also explains the active unit — a per-unit diagnosis (verdict + findings + suggestions) — and a
+ * collapsible glossary of what each score means.
  */
 
 import { useMemo } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import { computeCompositionMetrics, rankRefactorCandidates } from "../../derive/composition";
+import { computeCompositionMetrics, rankRefactorCandidates } from "@meridian/design-metrics";
 import { MainSequenceScatter } from "./MainSequenceScatter";
 import { RefactorCandidatesPanel } from "./RefactorCandidatesPanel";
 import { CompositionLegend } from "./CompositionLegend";
+import { UnitDiagnosisPanel } from "./UnitDiagnosisPanel";
+import { ScoreGlossary } from "./ScoreGlossary";
 
 export function CompositionPanel() {
   const index = useBlueprint((state) => state.index);
   const compRoot = useBlueprint((state) => state.compRoot);
   const compSelectedId = useBlueprint((state) => state.compSelectedId);
-  const { setCompRoot, selectCompUnit } = useBlueprintActions();
+  const showMetrics = useBlueprint((state) => state.showSolidMetrics);
+  const { setCompRoot, selectCompUnit, toggleSolidMetrics } = useBlueprintActions();
 
   const metrics = useMemo(() => computeCompositionMetrics([...index.nodesById.values()], index.edges), [index]);
   const units = useMemo(() => [...metrics.values()], [metrics]);
@@ -28,6 +33,9 @@ export function CompositionPanel() {
   // The scatter clears selection when it re-roots, so `compSelectedId ?? compRoot` is the unit the
   // reader is currently focused on — the one both panels emphasize.
   const activeId = compSelectedId ?? compRoot;
+
+  // The active unit's metrics drive the diagnosis; null when nothing is focused or the root isn't a unit.
+  const activeUnit = activeId ? metrics.get(activeId) ?? null : null;
 
   // A row navigates the canvas (re-root) AND fixes the selection highlight so the row + the card ring
   // agree; the scatter dot just re-roots (selection follows via the guard above).
@@ -38,14 +46,42 @@ export function CompositionPanel() {
 
   return (
     <>
-      <section style={SECTION_STYLE} aria-label="Main sequence">
-        <div style={HEADER_STYLE}>Main sequence</div>
-        <MainSequenceScatter metrics={units} activeId={activeId} onPick={setCompRoot} />
-      </section>
+      <button
+        type="button"
+        style={metricsToggleStyle(!showMetrics)}
+        aria-pressed={!showMetrics}
+        onClick={toggleSolidMetrics}
+        title="Show or hide the SOLID metrics — the card metric rows, smell chips, and the main-sequence map (the D rating stays)"
+      >
+        {showMetrics ? "Hide metrics" : "Show metrics"}
+      </button>
+      <UnitDiagnosisPanel unit={activeUnit} />
+      {showMetrics ? (
+        <section style={SECTION_STYLE} aria-label="Main sequence">
+          <div style={HEADER_STYLE}>Main sequence</div>
+          <MainSequenceScatter metrics={units} activeId={activeId} onPick={setCompRoot} />
+        </section>
+      ) : null}
       <RefactorCandidatesPanel candidates={ranked} nodesById={index.nodesById} activeId={activeId} onPick={pickRow} />
+      <ScoreGlossary />
       <CompositionLegend />
     </>
   );
+}
+
+// Mirrors LogicFlowView's hide-toggle: pressed (blue) when metrics are currently hidden.
+function metricsToggleStyle(active: boolean): React.CSSProperties {
+  return {
+    alignSelf: "flex-start",
+    fontSize: 12,
+    padding: "6px 10px",
+    borderRadius: 6,
+    cursor: "pointer",
+    font: "inherit",
+    border: `1px solid ${active ? "#3B7AC0" : "#2A2F37"}`,
+    background: active ? "#111A24" : "#12171E",
+    color: active ? "#8FB6E3" : "#9AA4B2",
+  };
 }
 
 const SECTION_STYLE: React.CSSProperties = {

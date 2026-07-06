@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { EdgeResolution, FlowPath, FlowStep, LogicFlows } from "@meridian/core";
 import type { GraphNode } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
-import { collectModuleDefinitions, definitionNodeData, deriveLogicGraph, deriveLogicGraphFromBodies } from "./logicGraph";
+import { collectModuleDefinitions, definitionNodeData, deriveLogicGraph, deriveLogicGraphFromBodies, type LogicNodeData } from "./logicGraph";
 
 /** A GraphIndex stub: deriveLogicGraph only reads nodesById + ancestorsOf. */
 function makeIndex(entries: Array<{ id: string; name: string; kind: string; parentId: string | null }>): GraphIndex {
@@ -37,6 +37,10 @@ function makeIndex(entries: Array<{ id: string; name: string; kind: string; pare
 
 const call = (label: string, target: string | null, resolution: EdgeResolution): FlowStep => ({ kind: "call", label, target, resolution });
 const NONE = new Set<string>();
+
+// A spec node's `data` is now `LogicNodeData | TerminalData`; every node these assertions touch is a
+// real exec node (never a terminal end-cap), so narrow to the exec shape for the property reads.
+const execData = (node: { data: unknown }): LogicNodeData => node.data as LogicNodeData;
 
 describe("deriveLogicGraph", () => {
   it("emits a call sequence as block nodes chained by seq edges in order", () => {
@@ -112,10 +116,10 @@ describe("deriveLogicGraph", () => {
     const tryNode = nodes.find((n) => n.id === "r::0")!;
     const loopNode = nodes.find((n) => n.id === "r::1")!;
     // try node carries all its arms; loop node carries its single body labeled with the loop label.
-    expect(tryNode.data.bodies?.map((b) => b.label)).toEqual(["try", "catch e"]);
-    expect(loopNode.data.bodies?.map((b) => b.label)).toEqual(["for each x"]);
+    expect(execData(tryNode).bodies?.map((b) => b.label)).toEqual(["try", "catch e"]);
+    expect(execData(loopNode).bodies?.map((b) => b.label)).toEqual(["for each x"]);
     // a plain call carries none — only control containers do.
-    expect(nodes.find((n) => n.type === "block")?.data.bodies).toBeUndefined();
+    expect(execData(nodes.find((n) => n.type === "block")!).bodies).toBeUndefined();
   });
 
   it("deriveLogicGraphFromBodies renders each body as an independent, prefixed top-level chain", () => {
@@ -142,9 +146,9 @@ describe("deriveLogicGraph", () => {
     };
     const index = makeIndex([{ id: "ts:m#C.run", name: "run", kind: "method", parentId: null }]);
     const { nodes } = deriveLogicGraph("r", flows, index, NONE, { hideGreyed: false });
-    expect(nodes.find((n) => n.id === "r::0")!.data.callKind).toBe("function");
-    expect(nodes.find((n) => n.id === "r::1")!.data.callKind).toBe("method");
-    expect(nodes.find((n) => n.id === "r::2")!.data.callKind).toBe("method");
+    expect(execData(nodes.find((n) => n.id === "r::0")!).callKind).toBe("function");
+    expect(execData(nodes.find((n) => n.id === "r::1")!).callKind).toBe("method");
+    expect(execData(nodes.find((n) => n.id === "r::2")!).callKind).toBe("method");
   });
 
   it("hideGreyed drops greyed leaves and stitches the sequence around them", () => {
@@ -157,6 +161,37 @@ describe("deriveLogicGraph", () => {
     const { nodes, edges } = deriveLogicGraph("r", flows, index, NONE, { hideGreyed: true });
     expect(nodes.map((n) => n.id)).toEqual(["r::0", "r::2"]);
     expect(edges).toEqual([expect.objectContaining({ source: "r::0", target: "r::2", kind: "seq" })]);
+  });
+
+  it("frames a callable flow with entry/exit terminals when withTerminals is set", () => {
+    const flows: LogicFlows = { r: [call("a", "ext:l#a", "external"), call("b", "ext:l#b", "external")] };
+    const index = makeIndex([{ id: "r", name: "handler", kind: "function", parentId: null }]);
+    const { nodes, edges } = deriveLogicGraph("r", flows, index, NONE, { hideGreyed: false, withTerminals: true });
+    expect(nodes.find((n) => n.id === "r::entry")).toMatchObject({ type: "terminal", data: { terminal: "entry", label: "handler", targetId: null } });
+    expect(nodes.find((n) => n.id === "r::exit")).toMatchObject({ type: "terminal", data: { terminal: "exit", targetId: null } });
+    // entry wires INTO the first step; the last step wires INTO exit.
+    expect(edges).toContainEqual(expect.objectContaining({ source: "r::entry", target: "r::0", kind: "seq" }));
+    expect(edges).toContainEqual(expect.objectContaining({ source: "r::1", target: "r::exit", kind: "seq" }));
+  });
+
+  it("converges a trailing branch's pins onto the exit terminal, labels intact", () => {
+    const branch: FlowStep = { kind: "branch", label: "if cond", paths: [{ label: "then", body: [call("t", "ext:l#t", "external")] }, { label: "else", body: [] }] };
+    const { edges } = deriveLogicGraph("r", { r: [branch] }, makeIndex([]), NONE, { hideGreyed: false, withTerminals: true });
+    // the then-path's tail runs into exit (seq); the empty else pin runs from the branch into exit carrying its label.
+    expect(edges).toContainEqual(expect.objectContaining({ source: "r::0/b0/0", target: "r::exit", kind: "seq" }));
+    expect(edges).toContainEqual(expect.objectContaining({ source: "r::0", target: "r::exit", kind: "branch", label: "else" }));
+  });
+
+  it("emits no terminals unless withTerminals is set", () => {
+    const flows: LogicFlows = { r: [call("a", "ext:l#a", "external")] };
+    const { nodes } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false });
+    expect(nodes.some((n) => n.type === "terminal")).toBe(false);
+  });
+
+  it("deriveLogicGraphFromBodies never frames dived bodies with terminals", () => {
+    const bodies: FlowPath[] = [{ label: "try", body: [call("a", "ext:l#a", "external")] }];
+    const { nodes } = deriveLogicGraphFromBodies("r::0", bodies, {}, makeIndex([]), NONE, { hideGreyed: false });
+    expect(nodes.some((n) => n.type === "terminal")).toBe(false);
   });
 });
 
@@ -214,5 +249,51 @@ describe("definitionNodeData", () => {
   it("is not expandable when the callable ships no flow", () => {
     const data = definitionNodeData("ts:m.ts#leaf", {}, index);
     expect(data).toMatchObject({ definition: true, expandable: false, childCount: 0, greyed: false });
+  });
+});
+
+describe("deriveLogicGraph service frames", () => {
+  // An owner lookup that maps a target id to a unit id encoded in the target itself (`ext:<unit>#..`),
+  // so a test can control which consecutive calls share an owner.
+  const ownerOf = (targetId: string | null) => {
+    if (targetId === null) return null;
+    const unitId = targetId.split("#")[0];
+    return { unitId, label: unitId, kind: "class", health: "#56C271", smelly: false };
+  };
+
+  it("stays flat by default (nestByService off): no servicegroup nodes, calls are plain blocks", () => {
+    const flows: LogicFlows = { r: [call("a", "ext:svc#a", "external"), call("b", "ext:svc#b", "external")] };
+    const { nodes } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false }, ownerOf);
+    expect(nodes.filter((n) => n.type === "servicegroup")).toHaveLength(0);
+    expect(nodes.map((n) => n.type)).toEqual(["block", "block"]);
+    expect(nodes.every((n) => (n.data as { framed?: boolean }).framed !== true)).toBe(true);
+  });
+
+  it("wraps a run of consecutive same-owner calls in ONE servicegroup frame, blocks parented to it", () => {
+    const flows: LogicFlows = { r: [call("a", "ext:svc#a", "external"), call("b", "ext:svc#b", "external")] };
+    const { nodes, edges } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false, nestByService: true }, ownerOf);
+    const frames = nodes.filter((n) => n.type === "servicegroup");
+    expect(frames).toHaveLength(1);
+    expect(frames[0].data).toMatchObject({ logicKind: "service", isContainer: true, childCount: 2, owner: { unitId: "ext:svc" } });
+    const blocks = nodes.filter((n) => n.type === "block");
+    expect(blocks.every((b) => b.parentId === frames[0].id)).toBe(true);
+    expect(blocks.every((b) => (b.data as { framed?: boolean }).framed === true)).toBe(true);
+    // Exec wiring is unchanged: the blocks still chain in order, across the frame boundary.
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toMatchObject({ source: "r::0", target: "r::1", kind: "seq" });
+  });
+
+  it("breaks the run into separate frames when the owner changes", () => {
+    const flows: LogicFlows = { r: [call("a", "ext:x#a", "external"), call("b", "ext:y#b", "external"), call("c", "ext:y#c", "external")] };
+    const { nodes } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false, nestByService: true }, ownerOf);
+    const frames = nodes.filter((n) => n.type === "servicegroup");
+    expect(frames.map((f) => (f.data as { childCount: number }).childCount)).toEqual([1, 2]);
+  });
+
+  it("does not frame calls with no owning unit (external/unresolved) even with nesting on — they stay flat", () => {
+    const flows: LogicFlows = { r: [call("a", null, "unresolved"), call("b", null, "unresolved")] };
+    const { nodes } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false, nestByService: true }, ownerOf);
+    expect(nodes.filter((n) => n.type === "servicegroup")).toHaveLength(0);
+    expect(nodes.filter((n) => n.type === "block")).toHaveLength(2);
   });
 });

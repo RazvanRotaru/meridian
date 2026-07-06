@@ -16,7 +16,9 @@ export function EnvSelector(props: { preselectedEnv: string | null }) {
   const provider = useBlueprint((state) => state.provider);
   const applied = useBlueprint((state) => state.environment);
   const actions = useBlueprintActions();
-  const [pending, setPending] = useState(props.preselectedEnv ?? "");
+  // Seed the dropdown from an already-applied env (e.g. one restored from the URL) so a shared
+  // link shows its environment selected; the lazy initializer captures it once at mount.
+  const [pending, setPending] = useState(() => applied ?? props.preselectedEnv ?? "");
   if (!provider) {
     return null;
   }

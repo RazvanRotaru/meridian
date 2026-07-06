@@ -25,6 +25,7 @@ import { uiFocusTarget } from "../derive/uiFocus";
 import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
+import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
 
@@ -99,6 +100,9 @@ export interface BlueprintState {
   expandedLogic: Set<string>;
   /** Hide the non-expandable (greyed) building-block leaves in the Logic graph. */
   hideGreyed: boolean;
+  /** Nest consecutive same-owner calls under service frames in the Logic graph. Default OFF (flat):
+   * the framing is opt-in, so the flow reads as plain blocks unless the reader turns it on. */
+  nestByService: boolean;
   /** The laid-out Logic graph (React Flow), recomputed on open/drill/expand/toggle via ELK. */
   logicRfNodes: LogicRfNode[];
   logicRfEdges: LogicRfEdge[];
@@ -113,6 +117,9 @@ export interface BlueprintState {
   /** The module/package the Service-composition tab is rooted at; null == the whole system. Defaults
    * to the app's first entry module. Only its subtree + 1-hop coupling neighbours are drawn. */
   compRoot: string | null;
+  /** Whether the composition scorecards show their SOLID metric rows + smell chips. Off == a
+   * structure-only view (kind + name), decluttered. Persisted to localStorage across reloads. */
+  showSolidMetrics: boolean;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -139,6 +146,7 @@ export interface BlueprintState {
   /** The logic flow charted for a callable, or undefined when it has none (empty body). */
   logicFlowFor(nodeId: string): FlowStep[] | undefined;
   openLogicFlow(nodeId: string): void;
+  openComposition(unitId: string): void;
   drillLogicFlow(nodeId: string): void;
   logicFlowTo(nodeId: string): void;
   diveLogicContainer(id: string, label: string, bodies: FlowPath[]): void;
@@ -150,10 +158,12 @@ export interface BlueprintState {
   togglePinnedFlow(id: NodeId): void;
   toggleLogicExpand(nodeId: string): void;
   toggleHideGreyed(): void;
+  toggleNestByService(): void;
   logicRelayout(): Promise<void>;
   compRelayout(): Promise<void>;
   selectCompUnit(id: string | null): void;
   setCompRoot(id: string | null): void;
+  toggleSolidMetrics(): void;
   setViewMode(mode: ViewMode): void;
   toggleShowTests(): void;
   toggleCoverageMode(): void;
@@ -213,6 +223,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     pinnedFlows: [],
     expandedLogic: new Set<string>(),
     hideGreyed: false,
+    nestByService: false,
     logicRfNodes: [],
     logicRfEdges: [],
     logicLayoutStatus: "idle",
@@ -221,6 +232,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     compLayoutStatus: "idle",
     compSelectedId: null,
     compRoot: defaultCompRoot,
+    showSolidMetrics: readSolidMetricsPref(),
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -318,6 +330,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().logicRelayout();
     },
 
+    // The logic→composition link: a call block's owning-unit chip opens that unit HERE, rooted and
+    // selected, so a reader can pivot from "who calls this" to "how healthy is the unit it lives in".
+    // No guard needed — compRelayout is idempotent, and rooting+selecting is always a fresh view.
+    openComposition(unitId) {
+      set({ viewMode: "call", compRoot: unitId, compSelectedId: unitId });
+      void get().compRelayout();
+    },
+
     // Drill from a call node into its target's own flow — push it onto the trail, re-chart from it.
     // A changed callable starts unfocused, so any container dive is dropped.
     drillLogicFlow(nodeId) {
@@ -397,10 +417,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().logicRelayout();
     },
 
+    // Toggle the service-frame nesting — flat blocks (default) vs consecutive same-owner calls grouped
+    // under service frames. Mirrors toggleHideGreyed: flip the flag, then re-lay out the graph.
+    toggleNestByService() {
+      set({ nestByService: !get().nestByService });
+      void get().logicRelayout();
+    },
+
     // Re-derive the Logic graph for the current root through ELK, behind a stale-seq guard (a newer
     // open/drill/toggle discards an older in-flight layout). A null root clears the graph.
     async logicRelayout() {
-      const { logicRoot, index, artifact, expandedLogic, hideGreyed, logicFocus } = get();
+      const { logicRoot, index, artifact, expandedLogic, hideGreyed, nestByService, logicFocus } = get();
       if (logicRoot === null) {
         set({ logicRfNodes: [], logicRfEdges: [], logicLayoutStatus: "idle" });
         return;
@@ -411,7 +438,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // A container dive charts only the TOP focus entry's bodies; else the whole callable flow.
       const top = logicFocus[logicFocus.length - 1];
       const focus = top ? { id: top.id, bodies: top.bodies } : undefined;
-      const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, { hideGreyed }, focus);
+      const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, { hideGreyed, nestByService }, focus);
       if (logicLayoutSeq !== sequence) {
         return; // a newer layout superseded this one.
       }
@@ -422,13 +449,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // stale-seq guard. Reads the raw nodes/edges off the index (built from the artifact); the derive
     // decides which units earn a card and wires their couplings.
     async compRelayout() {
-      const { index, compRoot } = get();
+      const { index, compRoot, showSolidMetrics } = get();
       // The layout ALWAYS includes test units, so toggling the Tests filter never moves a production
       // card — the composition view hides test cards in place (a repaint), it does not re-lay-out.
       const nodes = [...index.nodesById.values()];
       const sequence = ++compLayoutSeq;
       set({ compLayoutStatus: "laying-out" });
-      const graph = await deriveCompositionLayout(nodes, index.edges, compRoot);
+      const graph = await deriveCompositionLayout(nodes, index.edges, compRoot, showSolidMetrics);
       if (compLayoutSeq !== sequence) {
         return; // a newer layout superseded this one.
       }
@@ -449,6 +476,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       set({ compRoot: id, compSelectedId: null });
+      void get().compRelayout();
+    },
+
+    // Show/hide the per-card SOLID metrics (metric rows + smell chips) on the composition scorecards.
+    // Persisted across reloads; a relayout re-sizes the cards (compact when metrics are hidden).
+    toggleSolidMetrics() {
+      const next = !get().showSolidMetrics;
+      writeSolidMetricsPref(next);
+      set({ showSolidMetrics: next });
       void get().compRelayout();
     },
 

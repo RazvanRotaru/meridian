@@ -14,6 +14,7 @@ import type { CompRfNode } from "../../../layout/compositionElk";
 import { accentForKind } from "../../../theme/kindColors";
 import { coverageAccent } from "../../../theme/coverageColors";
 import { SmellChip } from "../../composition/SmellChip";
+import { CompositionMembers } from "../../composition/CompositionMembers";
 import { CoverageBadge } from "../../CoverageBadge";
 import { ClusterFrameNode } from "./ClusterFrameNode";
 
@@ -24,6 +25,7 @@ export const COMP_SELECT_ACCENT = "#6BE38A";
 
 function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
   const compSelectedId = useBlueprint((state) => state.compSelectedId);
+  const showMetrics = useBlueprint((state) => state.showSolidMetrics);
   const coverage = useBlueprint((state) => (state.coverageMode ? state.coverage : null));
   const d = data as CompNodeData;
   const metrics = d.metrics;
@@ -51,27 +53,34 @@ function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
           {coverage ? <CoverageBadge nodeId={d.unitId} /> : null}
           <span style={{ ...KIND_TAG, color: tint, borderColor: tint }}>{d.kind.toUpperCase()}</span>
         </div>
-        <div style={METRIC_ROW}>
-          <span style={METRIC_MUTED}>members</span>
-          <span style={METRIC_VALUE}>{metrics.members}</span>
-          <span style={SEP}>·</span>
-          <span style={METRIC_MUTED}>cohesion</span>
-          <span style={METRIC_VALUE}>{metrics.cohesion}</span>
-        </div>
-        <div style={METRIC_ROW}>
-          <MetricPair label="Ce" value={metrics.ce} title="efferent coupling" />
-          <span style={SEP}>·</span>
-          <MetricPair label="Ca" value={metrics.ca} title="afferent coupling" />
-          <span style={SEP}>·</span>
-          <MetricPair label="I" value={metrics.instability} title="instability" />
-          <span style={SEP}>·</span>
-          <MetricPair label="A" value={metrics.abstractness} title="abstractness" />
-        </div>
+        {showMetrics ? (
+          <>
+            <div style={METRIC_ROW}>
+              <span style={METRIC_MUTED}>members</span>
+              <span style={METRIC_VALUE}>{metrics.members}</span>
+              <span style={SEP}>·</span>
+              <span style={METRIC_MUTED}>cohesion</span>
+              <span style={METRIC_VALUE}>{metrics.cohesion}</span>
+            </div>
+            <div style={METRIC_ROW}>
+              <MetricPair label="Ce" value={metrics.ce} title="efferent coupling" />
+              <span style={SEP}>·</span>
+              <MetricPair label="Ca" value={metrics.ca} title="afferent coupling" />
+              <span style={SEP}>·</span>
+              <MetricPair label="I" value={metrics.instability} title="instability" />
+              <span style={SEP}>·</span>
+              <MetricPair label="A" value={metrics.abstractness} title="abstractness" />
+            </div>
+          </>
+        ) : null}
         <div style={{ ...DISTANCE_ROW, color: health }} title="distance from the main sequence">
           <span style={DISTANCE_LABEL}>D</span>
           <span style={DISTANCE_VALUE}>{metrics.distance}</span>
         </div>
-        {metrics.smells.length > 0 ? (
+        {/* The unit's methods — the composition→logic link. A boundary ghost is context only, so it
+            skips the list (matching its faded, non-selectable treatment). */}
+        {!boundary && d.members.length > 0 ? <CompositionMembers members={d.members} /> : null}
+        {showMetrics && metrics.smells.length > 0 ? (
           <div style={CHIP_ROW}>
             {metrics.smells.map((smell) => (
               <SmellChip key={smell} smell={smell} />

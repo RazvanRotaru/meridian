@@ -5,7 +5,7 @@
  * One definition so the two surfaces never drift apart.
  */
 
-import type { Smell } from "../../derive/composition";
+import type { Smell } from "@meridian/design-metrics";
 
 export function SmellChip(props: { smell: Smell }) {
   return (

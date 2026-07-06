@@ -8,7 +8,7 @@
 
 import { type Edge, type Node } from "@xyflow/react";
 import type { ElkNode } from "elkjs/lib/elk-api";
-import type { LogicEdgeSpec, LogicGraphSpec, LogicNodeData, LogicNodeSpec, LogicNodeType as ExecNodeType } from "../derive/logicGraph";
+import type { LogicEdgeSpec, LogicGraphSpec, LogicNodeData, LogicNodeSpec, LogicNodeType as ExecNodeType, TerminalData } from "../derive/logicGraph";
 import { arrowMarker } from "../theme/edgeColors";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
 
@@ -31,7 +31,7 @@ export type DefGroupData = {
   childCount: number;
 };
 
-export type LogicRfNode = Node<LogicNodeData | DefGroupData, LogicNodeType>;
+export type LogicRfNode = Node<LogicNodeData | DefGroupData | TerminalData, LogicNodeType>;
 export type LogicRfEdgeData = { kind: "seq" | "branch" };
 export type LogicRfEdge = Edge<LogicRfEdgeData>;
 export interface LogicReactFlowGraph {

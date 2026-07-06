@@ -1,7 +1,9 @@
 /**
  * The recursive declaration walk: classes -> methods, interfaces -> method signatures,
- * top-level functions and arrow consts, object-literal consts -> methods, and namespaces
- * (recursed). Emission is top-down so a child's parent descriptor always already exists.
+ * top-level functions and callable-binding consts/properties/default exports (see
+ * `resolveCallableBinding` — inline callables, possibly under `memo`/`forwardRef`), object-literal
+ * consts -> methods, and namespaces (recursed). Emission is top-down so a child's parent
+ * descriptor always already exists.
  */
 
 import {
@@ -13,12 +15,13 @@ import {
   type InterfaceDeclaration,
   type MethodDeclaration,
   type ModuleDeclaration,
-  type PropertyDeclaration,
   type SetAccessorDeclaration,
   type SourceFile,
   type VariableDeclaration,
 } from "ts-morph";
+import type { NodeKind } from "@meridian/core";
 import { memberDescriptor, type IdContext } from "./descriptor-factory";
+import { resolveCallableBinding, type CallableBinding } from "./inline-callables";
 import type { NodeDescriptor } from "./model";
 import type { SignatureLike } from "./node-fields";
 
@@ -38,8 +41,8 @@ export function emitContainer(
   for (const declaration of container.getClasses()) emitClass(declaration, parent, enclosingNames, context);
   for (const declaration of container.getInterfaces()) emitInterface(declaration, parent, enclosingNames, context);
   for (const declaration of container.getFunctions()) emitFunction(declaration, parent, enclosingNames, context);
-  for (const declaration of arrowConsts(container)) emitArrowConst(declaration, parent, enclosingNames, context);
-  for (const declaration of objectLiteralConsts(container)) emitObjectLiteralConst(declaration, parent, enclosingNames, context);
+  emitDefaultExports(container, parent, enclosingNames, context);
+  for (const declaration of container.getVariableDeclarations()) emitVariable(declaration, parent, enclosingNames, context);
   for (const declaration of container.getModules()) emitNamespace(declaration, parent, enclosingNames, context);
 }
 
@@ -53,7 +56,10 @@ function emitClass(node: ClassDeclaration, parent: NodeDescriptor, enclosingName
   for (const member of node.getMethods()) emitCallable(member, member.getName(), self, inner, context);
   for (const member of node.getGetAccessors()) emitCallable(member, member.getName(), self, inner, context);
   for (const member of node.getSetAccessors()) emitCallable(member, member.getName(), self, inner, context);
-  for (const member of arrowProperties(node)) emitArrowProperty(member, self, inner, context);
+  for (const member of node.getProperties()) {
+    const binding = resolveCallableBinding(member.getInitializer());
+    if (binding) emitBinding(binding, "method", member.getName(), member, self, inner, context);
+  }
 }
 
 function emitInterface(node: InterfaceDeclaration, parent: NodeDescriptor, enclosingNames: string[], context: EmitContext): void {
@@ -97,27 +103,37 @@ function emitCallable(node: CallableMember, name: string, parent: NodeDescriptor
   );
 }
 
-function emitArrowConst(node: VariableDeclaration, parent: NodeDescriptor, enclosingNames: string[], context: EmitContext): void {
-  const initializer = node.getInitializer();
-  context.emit(
-    memberDescriptor(context, {
-      kind: "function", localName: node.getName(), enclosingNames, parent,
-      declarationNode: node, callableNode: initializer ?? null, signatureSource: asSignature(initializer), emitTelemetry: true,
-    }),
-  );
+// `export default () => …` / `export default memo(() => …)`: an anonymous default export whose
+// expression binds a callable is named "default", like `export default function () {}`.
+// `export = expr` is NOT a default export — it re-exports an existing declaration, so no node.
+function emitDefaultExports(node: Container, parent: NodeDescriptor, enclosingNames: string[], context: EmitContext): void {
+  for (const statement of node.getStatements()) {
+    if (!Node.isExportAssignment(statement) || statement.isExportEquals()) {
+      continue;
+    }
+    const binding = resolveCallableBinding(statement.getExpression());
+    if (binding) emitBinding(binding, "function", "default", statement, parent, enclosingNames, context);
+  }
 }
 
-function emitArrowProperty(node: PropertyDeclaration, parent: NodeDescriptor, enclosingNames: string[], context: EmitContext): void {
-  const initializer = node.getInitializer();
-  context.emit(
-    memberDescriptor(context, {
-      kind: "method", localName: node.getName(), enclosingNames, parent,
-      declarationNode: node, callableNode: initializer ?? null, signatureSource: asSignature(initializer), emitTelemetry: true,
-    }),
-  );
+// A callable-binding const emits a function node; an object-literal const emits a container node
+// whose function-valued members are methods. Only Identifier-named declarations qualify — a
+// destructuring pattern (`const { save } = buildApi(…)`) binds pieces, and its pattern text would
+// make a malformed node id.
+function emitVariable(node: VariableDeclaration, parent: NodeDescriptor, enclosingNames: string[], context: EmitContext): void {
+  if (!Node.isIdentifier(node.getNameNode())) {
+    return;
+  }
+  const binding = resolveCallableBinding(node.getInitializer());
+  if (binding) {
+    emitBinding(binding, "function", node.getName(), node, parent, enclosingNames, context);
+    return;
+  }
+  if (Node.isObjectLiteralExpression(node.getInitializer())) {
+    emitObjectLiteralConst(node, parent, enclosingNames, context);
+  }
 }
 
-// A const bound to an object literal is a container node; its function-valued members are methods.
 function emitObjectLiteralConst(node: VariableDeclaration, parent: NodeDescriptor, enclosingNames: string[], context: EmitContext): void {
   const name = node.getName();
   const self = context.emit(
@@ -137,38 +153,39 @@ function emitObjectMember(property: Node, parent: NodeDescriptor, enclosingNames
     emitCallable(property, property.getName(), parent, enclosingNames, context);
     return;
   }
-  if (Node.isPropertyAssignment(property) && isCallableInitializer(property.getInitializer())) {
-    const initializer = property.getInitializer();
-    context.emit(
-      memberDescriptor(context, {
-        kind: "method", localName: property.getName(), enclosingNames, parent,
-        declarationNode: property, callableNode: initializer ?? null, signatureSource: asSignature(initializer), emitTelemetry: true,
-      }),
-    );
+  if (Node.isPropertyAssignment(property)) {
+    const binding = resolveCallableBinding(property.getInitializer());
+    if (binding) emitBinding(binding, "method", property.getName(), property, parent, enclosingNames, context);
   }
+}
+
+// The one emission path for every callable-binding declaration (const, class property, object
+// member, default export), so the same expression yields the same graph regardless of syntactic
+// position. A `body` binding carries the unwrapped callable; an `alias` stays bodiless — the
+// referenced component's body is its own node's flow.
+function emitBinding(
+  binding: CallableBinding,
+  kind: NodeKind,
+  localName: string,
+  declarationNode: Node,
+  parent: NodeDescriptor,
+  enclosingNames: string[],
+  context: EmitContext,
+): void {
+  const callable = binding.kind === "body" ? binding.callable : null;
+  context.emit(
+    memberDescriptor(context, {
+      kind, localName, enclosingNames, parent,
+      declarationNode, callableNode: callable, signatureSource: asSignature(callable), emitTelemetry: true,
+    }),
+  );
 }
 
 function container(kind: "class" | "interface" | "namespace" | "object", localName: string, enclosingNames: string[], parent: NodeDescriptor, declarationNode: Node) {
   return { kind, localName, enclosingNames, parent, declarationNode, callableNode: null, signatureSource: null, emitTelemetry: false };
 }
 
-function arrowConsts(node: Container): VariableDeclaration[] {
-  return node.getVariableDeclarations().filter((declaration) => isCallableInitializer(declaration.getInitializer()));
-}
-
-function objectLiteralConsts(node: Container): VariableDeclaration[] {
-  return node.getVariableDeclarations().filter((declaration) => Node.isObjectLiteralExpression(declaration.getInitializer()));
-}
-
-function arrowProperties(node: ClassDeclaration): PropertyDeclaration[] {
-  return node.getProperties().filter((property) => isCallableInitializer(property.getInitializer()));
-}
-
-function isCallableInitializer(node: Node | undefined): boolean {
-  return !!node && (Node.isArrowFunction(node) || Node.isFunctionExpression(node));
-}
-
-function asSignature(node: Node | undefined): SignatureLike | null {
+function asSignature(node: Node | null): SignatureLike | null {
   return node ? (node as unknown as SignatureLike) : null;
 }
 

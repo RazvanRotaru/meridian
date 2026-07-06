@@ -15,7 +15,7 @@ import {
   HEALTH_RED,
   type CompNodeData,
 } from "./compositionGraph";
-import type { Smell, UnitMetrics } from "./composition";
+import type { Smell, UnitMetrics } from "@meridian/design-metrics";
 
 function node(id: string, kind: string, parentId?: string): GraphNode {
   return {
@@ -33,7 +33,7 @@ function edge(source: string, target: string, kind = "calls"): GraphEdge {
 }
 
 function dataWith(smells: Smell[]): CompNodeData {
-  return { unitId: "u", kind: "class", label: "U", metrics: { smells } as UnitMetrics };
+  return { unitId: "u", kind: "class", label: "U", metrics: { smells } as UnitMetrics, members: [] };
 }
 
 // The unit scorecard ids, sorted — spec.nodes now also holds cluster frame nodes we filter out here.
@@ -143,6 +143,13 @@ describe("sizeFor", () => {
     expect(zero.width).toBe(240);
     expect(two.width).toBe(240);
     expect(two.height).toBeGreaterThan(zero.height);
+  });
+
+  it("collapses to a compact height when metrics are hidden", () => {
+    const shown = sizeFor(dataWith(["god-module", "low-cohesion"]), true);
+    const hidden = sizeFor(dataWith(["god-module", "low-cohesion"]), false);
+    expect(hidden.width).toBe(240);
+    expect(hidden.height).toBeLessThan(shown.height);
   });
 });
 

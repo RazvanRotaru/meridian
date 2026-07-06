@@ -4,14 +4,17 @@
  * is a function-call node — provenance (package › module) rides under the title so a block is never
  * a bare name; expandable ones carry a disclosure and expand INTO a container frame; greyed leaves
  * shrink to small chips (name stays priority, provenance compacts to just the module). `for`/`while`
- * /`try` render as framed containers; `if`/`switch` render as a violet hexagon DECISION node —
- * a shape that reads as control-flow at a glance — whose then/else/case wires leave labeled.
+ * /`try` render as framed containers; `if`/`switch` render as a blue outline diamond DECISION node —
+ * the classic flowchart shape that reads as control-flow at a glance. The diamond always shows a bare
+ * "X"; double-clicking it (or its ▸ button) reveals the full condition in an inline panel. Its
+ * then/else/case wires leave labeled.
  */
 
+import { useState } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
-import type { LogicNodeData } from "../../../derive/logicGraph";
+import type { LogicNodeData, TerminalData } from "../../../derive/logicGraph";
 import { coverageAccent, coverageVerdict, COVERAGE_COLORS, type CoverageVerdict } from "../../../theme/coverageColors";
 import { CodeInlinePanel } from "../../CodeInlinePanel";
 
@@ -109,11 +112,52 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
             {codeButton}
           </span>
         </div>
-        {d.provenance ? <div style={PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.pkg} › {d.provenance.module}</div> : null}
+        {/* A FRAMED block sits inside its service frame, whose title already names the owner — so it
+            drops the provenance line and shows just name + signature. A standalone/external call (or a
+            definition grid cell) keeps its `pkg › module` provenance. */}
+        {!d.framed && d.provenance ? <div style={PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.pkg} › {d.provenance.module}</div> : null}
+        {/* The signature — WHAT the block calls. Definition grid cells are a fixed compact size, so
+            they opt out; only in-flow call blocks carry it. */}
+        {!d.definition && d.signature ? <div style={SIGNATURE} title={d.signature}>{d.signature}</div> : null}
       </div>
       {inline}
     </div>
   );
+}
+
+/**
+ * A SERVICE FRAME: the logic-flow analog of a composition scorecard. Consecutive calls into the same
+ * owning unit nest inside it, so the flat exec chain reads UML-like (containers, like the composition
+ * view). Its title shows the unit — a health dot + kind glyph + name (+ smell marker) + a count of the
+ * calls it frames — health-tinted so the frame's health reads at a glance; DOUBLE-clicking the frame
+ * opens that unit in the Service-composition view (handled by the view, so single click never
+ * navigates). It carries NO exec pins: the white wires thread between the child blocks across frames,
+ * never through the frame itself. The body stays transparent for ELK-placed children.
+ */
+function ServiceGroupNode({ data }: NodeProps<LogicRfNode>) {
+  const d = data as LogicNodeData;
+  const owner = d.owner;
+  if (!owner) {
+    return null; // a service frame is only ever emitted WITH an owner; defensive against a bad spec.
+  }
+  return (
+    <div style={serviceFrameStyle(owner.health)}>
+      <div style={{ ...SERVICE_RAIL, background: owner.health }} />
+      <div style={SERVICE_TITLE} title="Double-click to open in Service composition">
+        <span style={{ ...SERVICE_DOT, background: owner.health }} />
+        <span style={SERVICE_GLYPH}>{unitGlyph(owner.kind)}</span>
+        <span style={NAME} title={owner.label}>{owner.label}</span>
+        {owner.smelly ? <span style={SERVICE_SMELL} title="carries a design smell">⚠</span> : null}
+        <span style={SERVICE_COUNT}>{d.childCount}</span>
+      </div>
+    </div>
+  );
+}
+
+// A compact unit glyph mirroring the scorecards, so a service frame reads as the same kind of thing.
+const UNIT_GLYPH: Record<string, string> = { module: "▤", class: "◆", interface: "◇", object: "❑" };
+function unitGlyph(kind: string): string {
+  return UNIT_GLYPH[kind] ?? "▪";
 }
 
 function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
@@ -121,9 +165,8 @@ function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
   const logicSelected = useBlueprint((s) => s.logicSelected);
   const d = data as LogicNodeData;
   const select = selectStateFor(d.targetId, logicSelected);
-  const isTry = d.logicKind === "try";
-  const accent = isTry ? TRY_ACCENT : LOOP_ACCENT;
-  const glyph = isTry ? "⚠" : "↻";
+  const accent = CONTROL_ACCENT[d.logicKind] ?? LOOP_ACCENT;
+  const glyph = CONTROL_GLYPH[d.logicKind] ?? "↻";
   if (d.isContainer) {
     return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={null} select={select} />;
   }
@@ -146,33 +189,39 @@ function BranchNode({ data }: NodeProps<LogicRfNode>) {
   const logicSelected = useBlueprint((s) => s.logicSelected);
   const d = data as LogicNodeData;
   const select = selectStateFor(d.targetId, logicSelected);
-  // switch fans out to many cases; if is binary — different glyphs signal which decision at a glance.
-  const glyph = d.logicKind === "switch" ? "⋔" : "◆";
+  // The diamond is a fixed marker: its content is always a single "X", so the flow stays glanceable
+  // and every decision reads the same until asked. The condition is revealed on demand.
+  const [open, setOpen] = useState(false);
+  const toggle = () => setOpen((v) => !v);
   return (
     <div style={selectStyle(BRANCH_WRAP, select)}>
-      {/* Handles live OUTSIDE the clipped shape so the exec pins aren't clipped away; they still
-          anchor at the wrapper's left/right centre — the hexagon's exec points. */}
+      {/* Handles live OUTSIDE the diamond so the exec pins aren't clipped; they anchor at the
+          wrapper's left/right centre — the diamond's exec points. */}
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-      {/* Compact by design: a hard-clipped condition caption keeps the decision node small; the FULL
-          condition rides in the hover title so nothing is lost. */}
-      <div style={BRANCH_SHAPE} title={d.label}>
-        <span style={BRANCH_GLYPH}>{glyph}</span>
-        <span style={NAME}>{compactCondition(d.label)}</span>
+      {/* Double-click the shape (or the ▸ button below) drops the full condition into an inline panel
+          — no relayout, the diamond stays small. The condition also rides in the hover title. */}
+      <div style={BRANCH_SHAPE} title={d.label} onDoubleClick={(e) => { e.stopPropagation(); toggle(); }}>
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={BRANCH_SVG} aria-hidden="true">
+          <polygon points="50,1 99,50 50,99 1,50" fill={BRANCH_FILL} stroke={BRANCH_ACCENT} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+        </svg>
+        <span style={BRANCH_LABEL}>X</span>
+      </div>
+      <div style={BRANCH_DROPDOWN}>
+        <ExpandButton expanded={open} onToggle={toggle} />
+        {open ? <div style={BRANCH_CONDITION}>{conditionText(d.label)}</div> : null}
       </div>
     </div>
   );
 }
 
 /**
- * A compact decision caption for the Branch node. The glyph already signals if vs switch, so DROP the
- * leading keyword and clip the condition HARD — this node must stay small and glanceable, never a wide
- * box; the full text lives in the node's hover title. ~14 chars fits the near-fixed footprint.
+ * The full decision condition for the Branch node's inline panel: the leading `if`/`switch` keyword is
+ * dropped (the diamond shape already says "decision"), leaving just the condition expression. NOT
+ * truncated — the panel exists precisely to show the whole thing.
  */
-function compactCondition(label: string): string {
-  const condition = label.replace(/^(if|switch)\b\s*/, "").trim();
-  const text = condition || label;
-  return text.length > 14 ? `${text.slice(0, 14).trimEnd()}…` : text;
+function conditionText(label: string): string {
+  return label.replace(/^(if|switch)\b\s*/, "").trim() || label;
 }
 
 /** A framed container (expanded call / loop / try): a title bar sits over ELK's reserved top pad;
@@ -290,6 +339,36 @@ function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
 }
 
 /**
+ * A flow END-CAP: the ENTRY the observed callable starts at, or the synthetic EXIT every trailing
+ * path converges onto. Both are compact pills, not call blocks (no provenance/disclosure/code). The
+ * ENTRY wears the callable's name and a left TARGET pin so the view's caller-ghosts — stacked in a
+ * column to its left — wire INTO it, plus a right SOURCE pin the exec thread leaves through into the
+ * first step. The EXIT is a dead end: a left TARGET pin, no source. Neither is a call site
+ * (`targetId: null`), so clicking one is a harmless no-op.
+ */
+function TerminalNode({ data }: NodeProps<LogicRfNode>) {
+  const d = data as TerminalData;
+  if (d.terminal === "entry") {
+    return (
+      <div style={ENTRY_BODY} title={`Flow entry: ${d.label}`}>
+        <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+        <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+        <span style={TERMINAL_GLYPH}>▶</span>
+        <span style={NAME} title={d.label}>{d.label}</span>
+        <span style={ENTRY_TAG}>ENTRY</span>
+      </div>
+    );
+  }
+  return (
+    <div style={EXIT_BODY} title="Flow exit">
+      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+      <span style={TERMINAL_GLYPH}>■</span>
+      <span style={NAME}>EXIT</span>
+    </div>
+  );
+}
+
+/**
  * A def-group FRAME: the structural container the module view groups a callable owner's methods
  * into — an object literal, a class, or the top-level `functions` bucket. It fills its laid-out box
  * with a titled, teal-tinted border; its body stays transparent so the def nodes React Flow parents
@@ -312,7 +391,7 @@ function DefGroupNode({ data }: NodeProps<LogicRfNode>) {
   );
 }
 
-export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: BranchNode, jumpflow: JumpFlowNode, defgroup: DefGroupNode };
+export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: BranchNode, jumpflow: JumpFlowNode, defgroup: DefGroupNode, servicegroup: ServiceGroupNode, terminal: TerminalNode };
 
 // Selection is BY TARGET (a target can be called many times): a matched call site rings green so
 // every call of the same target lights up together; while some target is selected, unrelated nodes
@@ -353,8 +432,24 @@ const DEF_ACCENT = "#3FB8AF";
 const GREY_ACCENT = "#3A414C";
 const LOOP_ACCENT = "#E6B84D";
 const TRY_ACCENT = "#D98A5B";
-// Violet, deliberately unlike the blue building-block accent: a branch reads as control-flow.
-const BRANCH_ACCENT = "#A78BFA";
+// A deferred/handed-over callback (a hook body, `.then`, `setTimeout`, a JSX handler): a muted
+// slate-cyan, deliberately cooler than the loop/try accents — it reads as "logic passed elsewhere",
+// not control-flow that runs here and now.
+const CALLBACK_ACCENT = "#5FA8A0";
+// A dotted-arrow glyph for "handed to": the callback is given away, not run in place.
+const CALLBACK_GLYPH = "⤳";
+const CONTROL_ACCENT: Record<string, string> = { loop: LOOP_ACCENT, try: TRY_ACCENT, callback: CALLBACK_ACCENT };
+const CONTROL_GLYPH: Record<string, string> = { loop: "↻", try: "⚠", callback: CALLBACK_GLYPH };
+// Sky-blue outline: a branch reads as control-flow via its diamond SHAPE, so it can share the cool
+// blue family without being mistaken for a call block — the brighter, cyan-leaning tone stays clear
+// of the deeper azure call accent and the indigo method accent.
+const BRANCH_ACCENT = "#5BB4E8";
+// Near-canvas dark so the diamond is outline-first, never a flood of colour.
+const BRANCH_FILL = "rgba(11,14,19,0.72)";
+// A calm green marks the flow's START (evokes a "play"/entry point); a muted slate marks the neutral
+// synthetic EXIT end-cap — deliberately quiet so it reads as a terminus, not another step.
+const ENTRY_ACCENT = "#4FB477";
+const EXIT_ACCENT = "#8A93A0";
 
 const PIN: React.CSSProperties = { width: 7, height: 7, background: "#C8D3E0", border: "none", minWidth: 0, minHeight: 0 };
 
@@ -374,27 +469,61 @@ const BODY: React.CSSProperties = {
 };
 const GREY_BODY: React.CSSProperties = { ...BODY, opacity: 0.6, background: "#0E1116" };
 
-// A branch renders as a violet hexagon (points on the exec axis) so it never reads as a rectangular
-// building block. The wrapper hosts the exec pins and any selection dim; the shape does the clipping.
+// A branch renders as an outline diamond (the classic decision shape) so it never reads as a
+// rectangular building block. The wrapper hosts the exec pins and any selection dim.
 const BRANCH_WRAP: React.CSSProperties = { position: "relative", width: "100%", height: "100%", fontFamily: MONO };
-// clip-path can't paint a border or box-shadow, but branch nodes never enter the "selected" state
-// (their targetId is null), so only the opacity dim applies — and opacity survives the clip.
+// The shape is a centring frame for the SVG diamond and its overlaid caption.
 const BRANCH_SHAPE: React.CSSProperties = {
+  position: "relative",
   width: "100%",
   height: "100%",
-  boxSizing: "border-box",
-  clipPath: "polygon(14% 0, 86% 0, 100% 50%, 86% 100%, 14% 100%, 0 50%)",
-  background: BRANCH_ACCENT,
-  color: "#0B0E13",
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  gap: 4,
-  padding: "0 16px", // clear the slanted points so the compact centred caption isn't clipped
-  fontSize: 11,
-  fontWeight: 700,
 };
-const BRANCH_GLYPH: React.CSSProperties = { fontSize: 12, flexShrink: 0 };
+// clip-path can't paint a border, so the diamond outline is an SVG polygon; non-scaling-stroke keeps
+// the stroke a constant width while the polygon stretches (preserveAspectRatio="none") to the box.
+const BRANCH_SVG: React.CSSProperties = { position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "visible" };
+// The single "X" marker sits ABOVE the diamond, centred on its middle.
+const BRANCH_LABEL: React.CSSProperties = {
+  position: "relative",
+  color: BRANCH_ACCENT,
+  fontSize: 14,
+  fontWeight: 700,
+  lineHeight: 1,
+};
+// The reveal affordance hangs just below the diamond (wrapper overflow is visible), holding the
+// expand toggle and, once open, the condition panel. A high z-index keeps it above neighbouring rows.
+const BRANCH_DROPDOWN: React.CSSProperties = {
+  position: "absolute",
+  top: "100%",
+  left: "50%",
+  transform: "translateX(-50%)",
+  marginTop: 3,
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  gap: 4,
+  zIndex: 10,
+  // Size to content (not the ~72px diamond it hangs off), so the condition panel fills its own width
+  // instead of collapsing to a one-char-per-line column against the narrow absolute containing block.
+  width: "max-content",
+  maxWidth: 320,
+};
+const BRANCH_CONDITION: React.CSSProperties = {
+  fontFamily: MONO,
+  fontSize: 11,
+  color: "#D7E3EF",
+  background: "#10151C",
+  border: `1px solid ${BRANCH_ACCENT}`,
+  borderRadius: 6,
+  padding: "5px 9px",
+  maxWidth: 320,
+  whiteSpace: "normal",
+  wordBreak: "break-word",
+  lineHeight: 1.4,
+  boxShadow: "0 4px 14px rgba(0,0,0,0.4)",
+};
 
 function titleStyle(accent: string): React.CSSProperties {
   return {
@@ -499,6 +628,27 @@ const BATTERY_TRACK: React.CSSProperties = {
 const BATTERY_FILL: React.CSSProperties = { height: "100%", borderRadius: 1, minWidth: 2 };
 const BATTERY_NUB: React.CSSProperties = { width: 2, height: 5, borderRadius: 1, opacity: 0.55 };
 
+// The entry/exit end-caps: a compact rounded pill (never a rectangular building block), tinted by its
+// accent. Shared base; the entry keeps its ENTRY tag pinned right, the exit centres its bare caption.
+const TERMINAL_BASE: React.CSSProperties = {
+  width: "100%",
+  height: "100%",
+  boxSizing: "border-box",
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "0 14px",
+  borderRadius: 999,
+  fontFamily: MONO,
+  fontSize: 12,
+  fontWeight: 700,
+  overflow: "hidden",
+};
+const ENTRY_BODY: React.CSSProperties = { ...TERMINAL_BASE, border: `1px solid ${ENTRY_ACCENT}`, background: "rgba(79,180,119,0.12)", color: "#CDEAD9" };
+const EXIT_BODY: React.CSSProperties = { ...TERMINAL_BASE, justifyContent: "center", border: `1px solid ${EXIT_ACCENT}`, background: "rgba(138,147,160,0.10)", color: "#B7C0CC" };
+const TERMINAL_GLYPH: React.CSSProperties = { fontSize: 10, flexShrink: 0, opacity: 0.85 };
+const ENTRY_TAG: React.CSSProperties = { marginLeft: "auto", flexShrink: 0, fontSize: 8, fontWeight: 700, letterSpacing: "0.08em", border: `1px solid ${ENTRY_ACCENT}`, borderRadius: 3, padding: "1px 4px", color: ENTRY_ACCENT };
+
 const GLYPH: React.CSSProperties = { fontSize: 11, opacity: 0.85 };
 // Right-aligned title tail holding the expand toggle (and, on a call block, the </> button). A
 // content-sized flex box pushed right by its own auto margin, so its buttons sit snug together.
@@ -509,6 +659,50 @@ const TITLE_TAIL: React.CSSProperties = { marginLeft: "auto", display: "flex", a
 const EXPAND_BTN: React.CSSProperties = { border: "none", background: "rgba(0,0,0,0.18)", color: "inherit", borderRadius: 4, padding: "1px 6px", fontSize: 10, lineHeight: 1, fontFamily: MONO, cursor: "pointer" };
 const NAME: React.CSSProperties = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const PROV: React.CSSProperties = { padding: "4px 8px", fontSize: 10, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+// The signature line: dimmer than provenance (secondary detail), mono, one clipped line — the full
+// text rides the hover title so a long signature never widens the block.
+const SIGNATURE: React.CSSProperties = { padding: "0 8px 3px", fontSize: 9.5, color: "#5F6874", fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+// The service frame: a neutral-bordered container (like the composition card) with a health-tinted
+// left rail, hosting the run's call blocks. Body transparent so ELK-placed children render over it.
+function serviceFrameStyle(health: string): React.CSSProperties {
+  return {
+    width: "100%",
+    height: "100%",
+    position: "relative",
+    boxSizing: "border-box",
+    border: "1px solid #2A2F37",
+    borderLeft: `1px solid ${health}`,
+    borderRadius: 10,
+    background: "rgba(18,23,30,0.45)",
+    fontFamily: MONO,
+    overflow: "hidden",
+  };
+}
+// The 3px health rail down the frame's left edge — the composition card's fastest health signal.
+const SERVICE_RAIL: React.CSSProperties = { position: "absolute", left: 0, top: 0, bottom: 0, width: 3 };
+// The title bar is a click-through to the unit in the Service-composition view. Its height (~34px)
+// sits under ELK's 42px container top padding so the child blocks clear it.
+const SERVICE_TITLE: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  width: "100%",
+  height: 34,
+  boxSizing: "border-box",
+  padding: "0 10px 0 12px",
+  border: "none",
+  borderBottom: "1px solid #232935",
+  background: "rgba(255,255,255,0.02)",
+  color: "#C8D3E0",
+  fontFamily: MONO,
+  fontSize: 12,
+  fontWeight: 700,
+};
+const SERVICE_DOT: React.CSSProperties = { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 };
+const SERVICE_GLYPH: React.CSSProperties = { fontSize: 11, opacity: 0.8, flexShrink: 0 };
+const SERVICE_SMELL: React.CSSProperties = { flexShrink: 0, fontSize: 10, color: "#E6B84D" };
+// The count of calls the frame wraps, pinned right (auto margin) so it never crowds the name.
+const SERVICE_COUNT: React.CSSProperties = { marginLeft: "auto", flexShrink: 0, fontSize: 10, fontWeight: 600, color: "#6C7683" };
 // The greyed chip is tight: a compact title (light text on the muted slate so the priority name
 // stays legible) over one small provenance line. Padding/fonts shrink to fit the ~30px chip.
 const GREY_TITLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "2px 6px", background: GREY_ACCENT, color: "#C8D3E0", fontSize: 10, fontWeight: 700, lineHeight: 1.2 };

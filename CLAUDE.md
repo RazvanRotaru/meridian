@@ -23,8 +23,10 @@ packages/core                  the contract — zod schema (source of truth) →
                                reachability (coverage.ts).  @meridian/core/mock = NODE-ONLY subpath.
 packages/extractor-typescript  ts-morph adapter (TS/TSX incl. JSX renders edges).
 packages/extractor-python      spawns a bundled stdlib-ast analyzer (python/*.py) + a TS adapter.
+packages/design-metrics        pure graph→metrics: Martin's Ca/Ce/I/A/D + LCOM4 cohesion, design
+                               smells, worst-first ranking, and per-unit diagnosis/advice. No React.
 packages/cli                   commander CLI: generate / view / web / mock-telemetry / coverage.
-packages/renderer              React 19 + @xyflow/react + elkjs SPA (Vite).
+packages/renderer              React 19 + @xyflow/react + elkjs SPA (Vite); consumes @meridian/design-metrics.
 examples/{orders-service, orders-service-py, shopfront}   fixtures used by golden + e2e tests.
 knowledge/adr/0001-...md       THE contract decision. Read it before touching the schema.
 ```

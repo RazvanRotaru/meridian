@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { GraphNode } from "@meridian/core";
-import type { Smell, UnitMetrics } from "./composition";
+import type { Smell, UnitMetrics } from "@meridian/design-metrics";
 import type { CompNodeSpec } from "./compositionGraph";
 import { buildClusters, clusterIdOf, clusterLabel, ROOT_CLUSTER_ID } from "./compositionClusters";
 
@@ -22,7 +22,7 @@ function node(id: string, kind: string, parentId?: string, displayName?: string)
 }
 
 function unitSpec(id: string, smells: Smell[] = []): CompNodeSpec {
-  return { id, type: "unit", width: 240, height: 104, data: { unitId: id, kind: "class", label: id, metrics: { smells } as UnitMetrics } };
+  return { id, type: "unit", width: 240, height: 104, data: { unitId: id, kind: "class", label: id, metrics: { smells } as UnitMetrics, members: [] } };
 }
 
 function indexOf(nodes: GraphNode[]): Map<string, GraphNode> {
