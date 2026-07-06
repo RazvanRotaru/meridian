@@ -68,12 +68,20 @@ interface Exit {
   edgeLabel?: string;
 }
 
+export interface LogicGraphOptions {
+  hideGreyed: boolean;
+  /** Auto-expand resolved calls this many nesting levels deep: 0/undefined == none (collapsed
+   * chips), 1/2 inline that many levels of callees. The manual per-node toggle still flips any
+   * single node. Optional so the pure-derive tests can omit it (defaulting to no inlining). */
+  inlineDepth?: number;
+}
+
 export function deriveLogicGraph(
   rootId: string,
   flows: LogicFlows,
   index: GraphIndex,
   expandedLogic: ReadonlySet<string>,
-  options: { hideGreyed: boolean },
+  options: LogicGraphOptions,
 ): LogicGraphSpec {
   const steps = flows[rootId];
   if (!steps || steps.length === 0) {
@@ -93,7 +101,7 @@ export function deriveLogicGraphFromBodies(
   flows: LogicFlows,
   index: GraphIndex,
   expandedLogic: ReadonlySet<string>,
-  options: { hideGreyed: boolean },
+  options: LogicGraphOptions,
 ): LogicGraphSpec {
   return new LogicGraphBuilder(prefix, flows, index, expandedLogic, options).buildFromBodies(bodies);
 }
@@ -169,11 +177,11 @@ class LogicGraphBuilder {
     private readonly flows: LogicFlows,
     private readonly index: GraphIndex,
     private readonly expanded: ReadonlySet<string>,
-    private readonly options: { hideGreyed: boolean },
+    private readonly options: LogicGraphOptions,
   ) {}
 
   build(steps: FlowStep[]): LogicGraphSpec {
-    this.sequence(steps, null, "");
+    this.sequence(steps, null, "", 0);
     return { nodes: this.nodes, edges: this.edges };
   }
 
@@ -183,19 +191,23 @@ class LogicGraphBuilder {
    * exactly like a container's inner rendering — only here they sit at the top level, not nested.
    */
   buildFromBodies(bodies: FlowPath[]): LogicGraphSpec {
-    bodies.forEach((body, i) => this.sequence(body.body, null, `p${i}/`));
+    bodies.forEach((body, i) => this.sequence(body.body, null, `p${i}/`, 0));
     return { nodes: this.nodes, edges: this.edges };
   }
 
-  /** Emit one nesting level as a chain of exec-linked steps; return its entry + trailing exits. */
-  private sequence(steps: FlowStep[], parentId: string | null, prefix: string): { firstId: string | null; lastExits: Exit[] } {
+  /**
+   * Emit one nesting level as a chain of exec-linked steps; return its entry + trailing exits.
+   * `depth` is the CALL-nesting depth (a callee inlined under a call is depth+1); loop/try/branch
+   * bodies stay at the same depth (they're not a call level). It drives auto-inline (see callStep).
+   */
+  private sequence(steps: FlowStep[], parentId: string | null, prefix: string, depth: number): { firstId: string | null; lastExits: Exit[] } {
     let firstId: string | null = null;
     let prevExits: Exit[] = [];
     steps.forEach((step, i) => {
       if (this.options.hideGreyed && this.isGreyedLeaf(step)) {
         return; // skip the node; prevExits carries over so the chain stitches prev → next.
       }
-      const emit = this.step(step, parentId, `${prefix}${i}`);
+      const emit = this.step(step, parentId, `${prefix}${i}`, depth);
       if (firstId === null) {
         firstId = emit.entry;
       }
@@ -207,20 +219,20 @@ class LogicGraphBuilder {
     return { firstId, lastExits: prevExits };
   }
 
-  private step(step: FlowStep, parentId: string | null, path: string): { entry: string; exits: Exit[] } {
+  private step(step: FlowStep, parentId: string | null, path: string, depth: number): { entry: string; exits: Exit[] } {
     const id = `${this.rootId}::${path}`;
     if (step.kind === "call") {
-      return this.callStep(step, parentId, path, id);
+      return this.callStep(step, parentId, path, id, depth);
     }
     if (step.kind === "loop") {
       const bodies: FlowPath[] = [{ label: step.label, body: step.body }];
-      return this.loopOrTry(parentId, path, id, "loop", step.label, bodies, step.body.length);
+      return this.loopOrTry(parentId, path, id, "loop", step.label, bodies, step.body.length, depth);
     }
     if (isTryLabel(step.label)) {
       const count = step.paths.reduce((sum, p) => sum + p.body.length, 0);
-      return this.loopOrTry(parentId, path, id, "try", "try / catch", step.paths, count);
+      return this.loopOrTry(parentId, path, id, "try", "try / catch", step.paths, count, depth);
     }
-    return this.branchStep(step, parentId, path, id);
+    return this.branchStep(step, parentId, path, id, depth);
   }
 
   private callStep(
@@ -228,10 +240,13 @@ class LogicGraphBuilder {
     parentId: string | null,
     path: string,
     id: string,
+    depth: number,
   ): { entry: string; exits: Exit[] } {
     const expandable = step.resolution === "resolved" && step.target !== null && (this.flows[step.target]?.length ?? 0) > 0;
     const greyed = !expandable;
-    const isExpanded = expandable && this.expandedState(id, false);
+    // Calls within the inline-depth window default to EXPANDED (their callees inline in place); the
+    // manual per-node toggle still flips any single call either way via expandedState's XOR.
+    const isExpanded = expandable && this.expandedState(id, depth < (this.options.inlineDepth ?? 0));
     const data: LogicNodeData = {
       logicKind: "call",
       label: step.label,
@@ -247,7 +262,8 @@ class LogicGraphBuilder {
     };
     this.push(id, parentId, "block", data, greyed);
     if (isExpanded && step.target) {
-      this.sequence(this.flows[step.target], id, `${path}/`);
+      // Descending INTO a call's callee is one more call level, so the inlined body is depth+1.
+      this.sequence(this.flows[step.target], id, `${path}/`, depth + 1);
     }
     return { entry: id, exits: [{ id }] };
   }
@@ -275,6 +291,7 @@ class LogicGraphBuilder {
     label: string,
     bodies: FlowPath[],
     childCount: number,
+    depth: number,
   ): { entry: string; exits: Exit[] } {
     const isExpanded = this.expandedState(id, true);
     const data: LogicNodeData = {
@@ -294,8 +311,10 @@ class LogicGraphBuilder {
     this.push(id, parentId, "control", data, false);
     if (isExpanded) {
       // Each body is an independent sub-chain inside the frame (a try's catch/finally do not run
-      // sequentially after its try block), so they are not exec-linked to each other.
-      bodies.forEach((body, bi) => this.sequence(body.body, id, `${path}/p${bi}/`));
+      // sequentially after its try block), so they are not exec-linked to each other. A loop/try is
+      // not a call level, so its bodies stay at the SAME call depth (a guarded call still counts as
+      // a direct call of the enclosing method).
+      bodies.forEach((body, bi) => this.sequence(body.body, id, `${path}/p${bi}/`, depth));
     }
     return { entry: id, exits: [{ id }] };
   }
@@ -305,6 +324,7 @@ class LogicGraphBuilder {
     parentId: string | null,
     path: string,
     id: string,
+    depth: number,
   ): { entry: string; exits: Exit[] } {
     const data: LogicNodeData = {
       logicKind: step.label.startsWith("switch") ? "switch" : "if",
@@ -321,7 +341,7 @@ class LogicGraphBuilder {
     this.push(id, parentId, "branch", data, false);
     const exits: Exit[] = [];
     step.paths.forEach((flowPath, pi) => {
-      const sub = this.sequence(flowPath.body, parentId, `${path}/b${pi}/`);
+      const sub = this.sequence(flowPath.body, parentId, `${path}/b${pi}/`, depth);
       if (sub.firstId) {
         this.pushEdge(id, sub.firstId, "branch", flowPath.label);
         exits.push(...sub.lastExits);

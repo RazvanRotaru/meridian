@@ -20,12 +20,13 @@ import {
   type NodeMouseHandler,
   type ReactFlowInstance,
 } from "@xyflow/react";
-import type { GraphArtifact, GraphNode, LogicFlows, NodeId } from "@meridian/core";
+import type { CoverageReport, GraphArtifact, GraphNode, LogicFlows, NodeId } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { GHOST_DEPTH_ALL } from "../state/store";
 import { logicNodeTypes, SELECT_ACCENT, type JumpFlowNodeData } from "./nodes/logic/logicNodeTypes";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { arrowMarker } from "../theme/edgeColors";
+import { COVERAGE_COLORS } from "../theme/coverageColors";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { LogicNodeData } from "../derive/logicGraph";
 import type { GraphIndex } from "../graph/graphIndex";
@@ -56,7 +57,10 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
   const ghostDepth = useBlueprint((state) => state.ghostDepth);
   const index = useBlueprint((state) => state.index);
   const artifact = useBlueprint((state) => state.artifact);
-  const { drillLogicFlow, logicFlowTo, diveLogicContainer, logicFocusTo, toggleHideGreyed, setGhostDepth, selectLogicTarget } =
+  const inlineDepth = useBlueprint((state) => state.logicInlineDepth);
+  const coverage = useBlueprint((state) => (state.coverageMode ? state.coverage : null));
+  const showLogicTests = useBlueprint((state) => state.showLogicTests);
+  const { drillLogicFlow, logicFlowTo, diveLogicContainer, logicFocusTo, toggleHideGreyed, setGhostDepth, selectLogicTarget, setLogicInlineDepth, toggleLogicTests } =
     useBlueprintActions();
 
   // The two gestures the node components don't own, mutually exclusive by node kind: a control
@@ -114,6 +118,17 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
   // a "+N more" label in the depth dial so the truncation is never silent. 0 when nothing is cut.
   const moreCount = Math.max(0, total - jumpNodes.length);
 
+  // Coverage lens (repaint-only, like selection): the charted method's own verdict, a tally of how
+  // much of its VISIBLE call flow tests reach (re-scopes as inline depth changes the node set), and —
+  // when Show tests is on — ghost nodes for the tests that directly exercise it, wired into the entry.
+  const flowCoverage = useMemo(() => (coverage ? tallyFlowCoverage(nodes, coverage) : null), [nodes, coverage]);
+  const rootCoverage = useMemo(() => (coverage ? rootVerdict(logicRoot, coverage) : null), [coverage, logicRoot]);
+  const { testNodes, testEdges } = useMemo(
+    () => (coverage && showLogicTests ? buildTestGhosts(nodes, logicRoot, coverage, index) : EMPTY_GHOSTS),
+    [coverage, showLogicTests, nodes, logicRoot, index],
+  );
+  const directTestCount = coverage?.leaves[logicRoot]?.directTestCallers.length ?? 0;
+
   // A handle on the React Flow surface: the `fitView` prop only fits on mount, so navigation needs
   // this to recentre the viewport imperatively.
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
@@ -142,8 +157,8 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
   return (
     <div style={SURFACE_STYLE}>
       <ReactFlow<Node, Edge>
-        nodes={[...nodes, ...jumpNodes]}
-        edges={[...styledEdges, ...jumpEdges]}
+        nodes={[...nodes, ...jumpNodes, ...testNodes]}
+        edges={[...styledEdges, ...jumpEdges, ...testEdges]}
         nodeTypes={logicNodeTypes}
         onInit={(instance) => {
           rfRef.current = instance;
@@ -166,6 +181,14 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
         ghostDepth={ghostDepth}
         onSetGhostDepth={setGhostDepth}
         moreCount={moreCount}
+        inlineDepth={inlineDepth}
+        onSetInlineDepth={setLogicInlineDepth}
+        coverageActive={coverage !== null}
+        rootCoverage={rootCoverage}
+        flowCoverage={flowCoverage}
+        showTests={showLogicTests}
+        directTestCount={directTestCount}
+        onToggleTests={toggleLogicTests}
       />
       {isEmpty ? <EmptyFlowCard rootId={props.rootId} /> : null}
     </div>
@@ -441,6 +464,116 @@ function logicDataOf(node: Node): LogicNodeData | null {
   return node.type === "jumpflow" ? null : (node.data as LogicNodeData);
 }
 
+// ---- coverage lens over the logic flow --------------------------------------------------------
+export interface FlowCoverageTally {
+  direct: number;
+  reached: number;
+  untested: number;
+  total: number;
+}
+export interface RootCoverage {
+  status: "covered" | "indirect" | "uncovered" | "none";
+  label: string;
+  sub: string;
+}
+const EMPTY_GHOSTS: { testNodes: Node[]; testEdges: Edge[] } = { testNodes: [], testEdges: [] };
+const MAX_TEST_GHOSTS = 12;
+
+/** The charted method's OWN verdict, for the headline: is a test exercising this callable, and how. */
+function rootVerdict(rootId: NodeId, coverage: CoverageReport): RootCoverage | null {
+  const leaf = coverage.leaves[rootId];
+  if (leaf) {
+    if (leaf.status === "covered") {
+      const n = leaf.directTestCallers.length;
+      return { status: "covered", label: "Tested directly", sub: `${n} test${n === 1 ? "" : "s"} call${n === 1 ? "s" : ""} it` };
+    }
+    if (leaf.status === "indirect") {
+      return { status: "indirect", label: "Reached via calls", sub: leaf.distance ? `${leaf.distance} hops from a test` : "reached transitively" };
+    }
+    const why = leaf.reason?.kind === "only-uncovered-callers" ? "only reached by untested code" : "never called by a test";
+    return { status: "uncovered", label: "Untested", sub: why };
+  }
+  // A module/class root (the def-grid case): fall back to its members' roll-up percentage.
+  const container = coverage.containers[rootId];
+  if (container && container.status !== "no-callables") {
+    return { status: container.status === "partial" ? "indirect" : container.status, label: `${container.percent}% of members tested`, sub: `${container.covered}/${container.total} callables` };
+  }
+  return null;
+}
+
+/** Bucket the VISIBLE call chips by their callee's verdict — the "how much of this flow is covered"
+ * meter. Deduped by target so a callee invoked twice counts once; external/unresolved calls (not a
+ * measured callable) are skipped. Re-scopes automatically as inline depth changes the node set. */
+function tallyFlowCoverage(nodes: LogicRfNode[], coverage: CoverageReport): FlowCoverageTally {
+  const seen = new Set<string>();
+  let direct = 0;
+  let reached = 0;
+  let untested = 0;
+  for (const node of nodes) {
+    const d = node.data as LogicNodeData;
+    if (d?.logicKind !== "call" || !d.targetId || d.definition || seen.has(d.targetId)) {
+      continue;
+    }
+    const leaf = coverage.leaves[d.targetId];
+    if (!leaf) {
+      continue; // an external/unresolved target — not a callable we measure.
+    }
+    seen.add(d.targetId);
+    if (leaf.status === "covered") direct += 1;
+    else if (leaf.status === "indirect") reached += 1;
+    else untested += 1;
+  }
+  return { direct, reached, untested, total: direct + reached + untested };
+}
+
+/**
+ * The tests that DIRECTLY exercise the charted method, as violet ghost nodes in a row above the
+ * flow's entry, each wired down into it — the coverage-lens analog of the related-flows caller
+ * ghosts, reading straight off `directTestCallers`. Purely additive (no relayout), like the jump
+ * satellites; empty when nothing directly tests the method (an indirect/untested root has none).
+ */
+function buildTestGhosts(
+  nodes: LogicRfNode[],
+  rootId: NodeId,
+  coverage: CoverageReport,
+  index: GraphIndex,
+): { testNodes: Node[]; testEdges: Edge[] } {
+  const testers = coverage.leaves[rootId]?.directTestCallers ?? [];
+  const topLevel = nodes.filter((node) => node.parentId === undefined && node.type !== "defgroup");
+  if (testers.length === 0 || topLevel.length === 0) {
+    return EMPTY_GHOSTS;
+  }
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const entry = topLevel.reduce((lowest, node) => (node.position.y < lowest.position.y ? node : lowest));
+  const entryPos = absolutePos(entry, byId);
+  const capped = testers.slice(0, MAX_TEST_GHOSTS);
+  const rowWidth = capped.length * JUMP_WIDTH + (capped.length - 1) * JUMP_COL_GAP;
+  const startX = entryPos.x + (entry.width ?? JUMP_WIDTH) / 2 - rowWidth / 2;
+  const rowY = graphTop(nodes, byId) - (JUMP_HEIGHT + JUMP_ROW_GAP);
+  const testNodes: Node[] = capped.map((testId, i) => {
+    const node = index.nodesById.get(testId);
+    return {
+      id: `test:${testId}`,
+      type: "jumpflow",
+      position: { x: startX + i * (JUMP_WIDTH + JUMP_COL_GAP), y: rowY },
+      width: JUMP_WIDTH,
+      height: JUMP_HEIGHT,
+      selectable: false,
+      draggable: false,
+      data: { rootId: testId, label: node?.displayName ?? testId, file: node?.location?.file, depth: 1, test: true } satisfies JumpFlowNodeData,
+    };
+  });
+  const testEdges: Edge[] = capped.map((testId) => ({
+    id: `testedge:${testId}`,
+    source: `test:${testId}`,
+    target: entry.id,
+    animated: false,
+    style: { stroke: COVERAGE_COLORS.test, strokeWidth: 1.5, strokeDasharray: "5 4", opacity: 0.85 },
+    markerEnd: arrowMarker(COVERAGE_COLORS.test, 13),
+  }));
+  return { testNodes, testEdges };
+}
+
 // The MiniMap gets untyped `Node`s; narrow to our logic data and mirror each node type's accent.
 function miniMapColor(node: Node): string {
   const data = node.data as LogicNodeData;
@@ -467,6 +600,14 @@ function LogicOverlayHeader(props: {
   ghostDepth: number;
   onSetGhostDepth: (depth: number) => void;
   moreCount: number;
+  inlineDepth: number;
+  onSetInlineDepth: (depth: number) => void;
+  coverageActive: boolean;
+  rootCoverage: RootCoverage | null;
+  flowCoverage: FlowCoverageTally | null;
+  showTests: boolean;
+  directTestCount: number;
+  onToggleTests: () => void;
 }) {
   return (
     <div style={OVERLAY_HEADER_STYLE}>
@@ -478,8 +619,24 @@ function LogicOverlayHeader(props: {
           onJump={props.onJump}
           onFocusJump={props.onFocusJump}
         />
+        {props.coverageActive && props.rootCoverage ? (
+          <CoverageHeadline root={props.rootCoverage} flow={props.flowCoverage} />
+        ) : null}
       </div>
       <div style={HEADER_CONTROLS_STYLE}>
+        <InlineDepthDial depth={props.inlineDepth} onSet={props.onSetInlineDepth} />
+        {props.coverageActive ? (
+          <button
+            type="button"
+            style={testsToggleStyle(props.showTests, props.directTestCount === 0)}
+            aria-pressed={props.showTests}
+            disabled={props.directTestCount === 0}
+            title={props.directTestCount === 0 ? "No test calls this method directly" : props.showTests ? "Hide the tests exercising this method" : "Show the tests exercising this method"}
+            onClick={props.onToggleTests}
+          >
+            🧪 Tests{props.directTestCount > 0 ? ` (${props.directTestCount})` : ""}
+          </button>
+        ) : null}
         <GhostDepthDial depth={props.ghostDepth} moreCount={props.moreCount} onSet={props.onSetGhostDepth} />
         <button
           type="button"
@@ -490,6 +647,66 @@ function LogicOverlayHeader(props: {
           {props.hideGreyed ? "Show leaf blocks" : "Hide leaf blocks"}
         </button>
       </div>
+    </div>
+  );
+}
+
+/** The method's coverage headline + a meter of how much of its visible call flow tests reach. */
+function CoverageHeadline(props: { root: RootCoverage; flow: FlowCoverageTally | null }) {
+  const color = VERDICT_COLOR[props.root.status];
+  const flow = props.flow;
+  const covered = flow ? flow.direct + flow.reached : 0;
+  const pct = (n: number) => (flow && flow.total ? `${(100 * n) / flow.total}%` : "0%");
+  return (
+    <div style={HEADLINE_STYLE}>
+      <div style={HEADLINE_ROW}>
+        <span style={{ ...HEADLINE_DOT, background: color }} />
+        <span style={{ ...HEADLINE_TXT, color }}>{props.root.label}</span>
+        <span style={HEADLINE_SUB}>{props.root.sub}</span>
+      </div>
+      {flow && flow.total > 0 ? (
+        <div style={METER_WRAP}>
+          <div style={METER_ROW}>
+            <span style={METER_LAB}>Calls covered</span>
+            <span style={METER_VAL}>
+              {covered}
+              <span style={METER_FRAC}> / {flow.total}</span>
+            </span>
+          </div>
+          <div style={METER_BAR}>
+            <span style={{ background: COVERAGE_COLORS.covered, width: pct(flow.direct) }} />
+            <span style={{ background: COVERAGE_COLORS.indirect, width: pct(flow.reached) }} />
+            <span style={{ background: COVERAGE_COLORS.uncovered, width: pct(flow.untested) }} />
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// The inline-depth dial: 1 shows the method's calls as collapsed chips, 2/3 auto-inline that many
+// levels of callees in place. Displayed level == inlineDepth + 1 (a re-layout on change).
+const INLINE_LEVELS = [1, 2, 3] as const;
+function InlineDepthDial(props: { depth: number; onSet: (depth: number) => void }) {
+  return (
+    <div style={DIAL_STYLE}>
+      <span style={DIAL_LABEL_STYLE}>Depth</span>
+      {INLINE_LEVELS.map((level) => {
+        const active = props.depth === level - 1;
+        return (
+          <button
+            key={level}
+            type="button"
+            style={dialPillStyle(active)}
+            aria-pressed={active}
+            aria-label={`Inline dependency depth: ${level} level${level === 1 ? "" : "s"}`}
+            title={level === 1 ? "Calls as chips (no inlining)" : `Auto-inline ${level - 1} level${level - 1 === 1 ? "" : "s"} of callees`}
+            onClick={() => props.onSet(level - 1)}
+          >
+            {level}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -809,11 +1026,51 @@ const OVERLAY_HEADER_STYLE: React.CSSProperties = {
 const HEADER_PANEL_STYLE: React.CSSProperties = {
   pointerEvents: "auto",
   minWidth: 0,
+  maxWidth: 340,
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
   border: "1px solid #2A2F37",
   borderRadius: 8,
   background: "rgba(18,23,30,0.92)",
-  padding: "4px 8px",
+  padding: "6px 8px",
 };
+
+// The coverage headline sits under the breadcrumb: a verdict line + a three-band meter of the
+// visible flow's coverage. Colours come from the shared coverage palette so it reads as one lens.
+const VERDICT_COLOR: Record<RootCoverage["status"], string> = {
+  covered: COVERAGE_COLORS.covered,
+  indirect: COVERAGE_COLORS.indirect,
+  uncovered: COVERAGE_COLORS.uncovered,
+  none: COVERAGE_COLORS.none,
+};
+const HEADLINE_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6, borderTop: "1px solid #232935", paddingTop: 7 };
+const HEADLINE_ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 7 };
+const HEADLINE_DOT: React.CSSProperties = { width: 9, height: 9, borderRadius: "50%", flex: "0 0 auto" };
+const HEADLINE_TXT: React.CSSProperties = { fontSize: 12.5, fontWeight: 700 };
+const HEADLINE_SUB: React.CSSProperties = { marginLeft: "auto", fontSize: 10.5, color: "#7B8695", whiteSpace: "nowrap" };
+const METER_WRAP: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 4 };
+const METER_ROW: React.CSSProperties = { display: "flex", alignItems: "baseline", justifyContent: "space-between" };
+const METER_LAB: React.CSSProperties = { fontSize: 10.5, color: "#9AA4B2" };
+const METER_VAL: React.CSSProperties = { fontSize: 11.5, color: "#E6EDF3", fontWeight: 700, fontVariantNumeric: "tabular-nums" };
+const METER_FRAC: React.CSSProperties = { color: "#7B8695", fontWeight: 400 };
+const METER_BAR: React.CSSProperties = { display: "flex", height: 6, borderRadius: 4, overflow: "hidden", background: "#0B0E13", border: "1px solid #232935" };
+
+function testsToggleStyle(active: boolean, disabled: boolean): React.CSSProperties {
+  return {
+    pointerEvents: "auto",
+    flex: "0 0 auto",
+    fontSize: 12,
+    padding: "6px 10px",
+    borderRadius: 6,
+    cursor: disabled ? "default" : "pointer",
+    font: "inherit",
+    border: `1px solid ${active ? `${COVERAGE_COLORS.test}88` : "#2A2F37"}`,
+    background: active ? "#1c1430" : "rgba(18,23,30,0.92)",
+    color: disabled ? "#565E68" : active ? "#C6BCE0" : "#9AA4B2",
+    opacity: disabled ? 0.7 : 1,
+  };
+}
 
 // The right-hand control cluster (depth dial + hide toggle). Transparent to pointer events so the
 // gaps still pan the canvas; each control opts back in for itself.

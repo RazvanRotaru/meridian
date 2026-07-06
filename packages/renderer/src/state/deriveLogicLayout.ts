@@ -21,7 +21,7 @@ export async function deriveLogicLayout(
   flows: LogicFlows,
   index: GraphIndex,
   expandedLogic: ReadonlySet<string>,
-  options: { hideGreyed: boolean },
+  options: { hideGreyed: boolean; inlineDepth: number },
   // When set, chart ONLY this container's bodies as a focused sub-view (the DIVE gesture) instead
   // of the whole callable flow rooted at `rootId`.
   focus?: { id: string; bodies: FlowPath[] },
@@ -44,7 +44,7 @@ async function layoutFlow(
   flows: LogicFlows,
   index: GraphIndex,
   expandedLogic: ReadonlySet<string>,
-  options: { hideGreyed: boolean },
+  options: { hideGreyed: boolean; inlineDepth: number },
   focus?: { id: string; bodies: FlowPath[] },
 ): Promise<LogicReactFlowGraph> {
   const spec = focus

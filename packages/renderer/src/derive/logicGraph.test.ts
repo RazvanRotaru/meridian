@@ -71,6 +71,33 @@ describe("deriveLogicGraph", () => {
     expect(expanded.nodes.find((n) => n.id === "r::0")!.data.isContainer).toBe(true);
   });
 
+  it("auto-inlines resolved calls up to inlineDepth, leaving deeper ones collapsed", () => {
+    const flows: LogicFlows = {
+      r: [call("fn", "ts:m#fn", "resolved")],
+      "ts:m#fn": [call("g", "ts:m#g", "resolved")],
+      "ts:m#g": [call("h", "ext:l#h", "external")],
+    };
+    const index = makeIndex([{ id: "ts:m#fn", name: "fn", kind: "function", parentId: null }, { id: "ts:m#g", name: "g", kind: "function", parentId: null }]);
+    // depth 0: nothing inlined (one node).
+    expect(deriveLogicGraph("r", flows, index, NONE, { hideGreyed: false, inlineDepth: 0 }).nodes).toHaveLength(1);
+    // depth 1: fn's callee g inlines under it; g stays collapsed (its callee h does not appear).
+    const d1 = deriveLogicGraph("r", flows, index, NONE, { hideGreyed: false, inlineDepth: 1 });
+    expect(d1.nodes.map((n) => n.id).sort()).toEqual(["r::0", "r::0/0"]);
+    expect(d1.nodes.find((n) => n.id === "r::0")!.data.isContainer).toBe(true);
+    // depth 2: g's callee h inlines too.
+    const d2 = deriveLogicGraph("r", flows, index, NONE, { hideGreyed: false, inlineDepth: 2 });
+    expect(d2.nodes.map((n) => n.id).sort()).toEqual(["r::0", "r::0/0", "r::0/0/0"]);
+  });
+
+  it("lets the manual per-node toggle collapse an auto-inlined call", () => {
+    const flows: LogicFlows = { r: [call("fn", "ts:m#fn", "resolved")], "ts:m#fn": [call("y", "ext:l#y", "external")] };
+    const index = makeIndex([{ id: "ts:m#fn", name: "fn", kind: "function", parentId: null }]);
+    // inlineDepth 1 auto-expands r::0, but a manual toggle (id in the set) flips it back to collapsed.
+    const toggled = deriveLogicGraph("r", flows, index, new Set(["r::0"]), { hideGreyed: false, inlineDepth: 1 });
+    expect(toggled.nodes).toHaveLength(1);
+    expect(toggled.nodes[0].data.isContainer).toBe(false);
+  });
+
   it("renders a loop as a default-expanded container with nested children", () => {
     const loop: FlowStep = { kind: "loop", label: "for each x", body: [call("step", "ext:l#s", "external")] };
     const { nodes } = deriveLogicGraph("r", { r: [loop] }, makeIndex([]), NONE, { hideGreyed: false });
