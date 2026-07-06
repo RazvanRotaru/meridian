@@ -8,13 +8,13 @@
 
 import { type Edge, type Node } from "@xyflow/react";
 import type { ElkNode } from "elkjs/lib/elk-api";
-import type { ChannelCompData, ClusterNodeData, CompEdgeSpec, CompNodeData, CompNodeSpec, CompNodeType, CompositionGraphSpec } from "../derive/compositionGraph";
+import type { ChannelCompData, ClusterNodeData, CompEdgeSpec, CompNodeData, CompNodeSpec, CompNodeType, CompositionGraphSpec, IpcChannelDetail } from "../derive/compositionGraph";
 import type { PackageSummaryData } from "../derive/compositionAggregate";
 import { arrowMarker, IPC_WIRE } from "../theme/edgeColors";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
 
 export type CompRfNode = Node<CompNodeData | ClusterNodeData | ChannelCompData | PackageSummaryData, CompNodeType>;
-export type CompRfEdgeData = { inheritanceOnly: boolean; crossBoundary: boolean; ipc?: boolean };
+export type CompRfEdgeData = { inheritanceOnly: boolean; crossBoundary: boolean; ipc?: boolean; ipcChannels?: IpcChannelDetail[] };
 export type CompRfEdge = Edge<CompRfEdgeData>;
 export interface CompositionReactFlowGraph {
   nodes: CompRfNode[];
@@ -122,6 +122,6 @@ function toReactFlowEdge(edge: CompEdgeSpec): CompRfEdge {
       ...(stroke.dashed ? { strokeDasharray: "5 4" } : {}),
     },
     markerEnd: arrowMarker(stroke.color, 16),
-    data: { inheritanceOnly: edge.inheritanceOnly, crossBoundary: edge.crossBoundary, ipc: edge.ipc },
+    data: { inheritanceOnly: edge.inheritanceOnly, crossBoundary: edge.crossBoundary, ipc: edge.ipc, ipcChannels: edge.ipcChannels },
   };
 }

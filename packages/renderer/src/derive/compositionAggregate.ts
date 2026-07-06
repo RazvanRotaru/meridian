@@ -11,7 +11,7 @@
 import type { GraphEdge, GraphNode } from "@meridian/core";
 import type { CouplingEdge, UnitMetrics } from "@meridian/design-metrics";
 import { clusterLabel, groupUnderRoot } from "./compositionClusters";
-import type { CompEdgeSpec, CompNodeSpec } from "./compositionGraph";
+import { channelDetailFromId, channelSidesOf, type CompEdgeSpec, type CompNodeSpec, type IpcChannelDetail } from "./compositionGraph";
 
 /** The roll-up a package summary card shows: how many units, how many smell, the worst health. */
 export type PackageSummaryData = {
@@ -94,6 +94,7 @@ function ipcPackageEdges(
   nodesById: Map<string, GraphNode>,
   rootId: string | null,
 ): CompEdgeSpec[] {
+  const sides = channelSidesOf(edges);
   const sendersByChannel = new Map<string, Set<string>>();
   const handlersByChannel = new Map<string, Set<string>>();
   for (const edge of edges) {
@@ -108,7 +109,8 @@ function ipcPackageEdges(
     const map = edge.kind === "sends" ? sendersByChannel : handlersByChannel;
     (map.get(channelId) ?? map.set(channelId, new Set()).get(channelId)!).add(pkg);
   }
-  const out = new Map<string, CompEdgeSpec>();
+  // Accumulate, per package pair, every channel that flows between them — the wire's inspector list.
+  const channelsByPair = new Map<string, Map<string, IpcChannelDetail>>();
   for (const [channelId, senders] of sendersByChannel) {
     for (const from of senders) {
       for (const to of handlersByChannel.get(channelId) ?? []) {
@@ -116,11 +118,26 @@ function ipcPackageEdges(
           continue; // an intra-package channel is drill-down detail, not an overview wire.
         }
         const id = `ipc:${from}->${to}`;
-        out.set(id, { id, source: from, target: to, inheritanceOnly: false, crossBoundary: true, ipc: true });
+        const bucket = channelsByPair.get(id) ?? new Map<string, IpcChannelDetail>();
+        bucket.set(channelId, channelDetailFromId(channelId, sides));
+        channelsByPair.set(id, bucket);
       }
     }
   }
-  return [...out.values()];
+  const out: CompEdgeSpec[] = [];
+  for (const [id, channels] of channelsByPair) {
+    const [source, target] = id.slice(4).split("->");
+    out.push({
+      id,
+      source,
+      target,
+      inheritanceOnly: false,
+      crossBoundary: true,
+      ipc: true,
+      ipcChannels: [...channels.values()].sort((a, b) => a.channel.localeCompare(b.channel)),
+    });
+  }
+  return out;
 }
 
 function emptySummary(pkgId: string, nodesById: Map<string, GraphNode>): PackageSummaryData {

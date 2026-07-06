@@ -10,17 +10,20 @@
  * double-click-to-dive.
  */
 
-import { useEffect, useMemo, useRef } from "react";
-import { ReactFlow, type Edge, type Node, type NodeMouseHandler, type ReactFlowInstance } from "@xyflow/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ReactFlow, type Edge, type EdgeMouseHandler, type Node, type NodeMouseHandler, type ReactFlowInstance } from "@xyflow/react";
 import type { CoverageReport } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { compNodeTypes } from "./nodes/composition/CompositionNode";
 import { CanvasChrome, MINIMAP_NODE_CAP, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { CompMethodDrawer } from "./composition/CompMethodDrawer";
 import { CoveragePanel } from "./CoveragePanel";
+import { IpcInspector } from "./composition/IpcInspector";
 import { coverageAccent } from "../theme/coverageColors";
 import type { CompRfEdge, CompRfNode } from "../layout/compositionElk";
-import { colorForDistance, type CompNodeData } from "../derive/compositionGraph";
+import { channelInfoFromId, colorForDistance, type CompNodeData } from "../derive/compositionGraph";
+import { clusterLabel } from "../derive/compositionClusters";
+import type { GraphNode } from "@meridian/core";
 
 export function CompositionView() {
   const nodes = useBlueprint((state) => state.compRfNodes);
@@ -33,6 +36,9 @@ export function CompositionView() {
   const showTests = useBlueprint((state) => state.showTests);
   const testIds = useBlueprint((state) => state.index.testIds);
   const { selectCompUnit, setCompRoot } = useBlueprintActions();
+  // The clicked IPC wire whose channels the inspector lists; view-local (a pure repaint, like the
+  // node selection). Cleared whenever a node or the pane is clicked, or the layout changes.
+  const [ipcEdgeId, setIpcEdgeId] = useState<string | null>(null);
 
   // Hiding tests is a pure VISIBILITY filter over the already-laid-out graph: test cards (and any
   // cluster frame left empty by their removal, and any wire touching them) drop out, but every
@@ -55,12 +61,39 @@ export function CompositionView() {
   // canvas; any other node (unit OR boundary card) fixes the selection highlight. Focusing/re-rooting
   // is the double-click gesture below.
   const onNodeClick: NodeMouseHandler<Node> = (_event, node) => {
+    setIpcEdgeId(null); // selecting a node closes the IPC inspector
     if (node.type === "cluster") {
       selectCompUnit(null);
       return;
     }
     selectCompUnit(node.id);
   };
+
+  // Clicking a gold IPC wire opens the inspector on the channel(s) it carries; a non-IPC (coupling)
+  // wire has no inspector, so it's a no-op. Clears the node selection so only one thing is inspected.
+  const onEdgeClick: EdgeMouseHandler<Edge> = (_event, edge) => {
+    if ((edge.data as CompRfEdge["data"])?.ipc) {
+      setIpcEdgeId(edge.id);
+      selectCompUnit(null);
+    }
+  };
+
+  // The currently-inspected IPC edge, resolved from the live (filtered) edge set.
+  const ipcEdge = useMemo(
+    () => (ipcEdgeId ? shownEdges.find((edge) => edge.id === ipcEdgeId) ?? null : null),
+    [ipcEdgeId, shownEdges],
+  );
+
+  // Highlight the inspected wire (brighter + thicker + animated) so it's clear which one is open.
+  const displayEdges = useMemo(
+    () =>
+      ipcEdgeId
+        ? styledEdges.map((edge) =>
+            edge.id === ipcEdgeId ? { ...edge, animated: true, style: { ...edge.style, strokeWidth: 3.5, opacity: 1 } } : edge,
+          )
+        : styledEdges,
+    [styledEdges, ipcEdgeId],
+  );
 
   // Double-click focuses the view HERE — re-rooting at the node (a cluster frame's id IS its package
   // node, so it roots at that package; a unit or boundary card roots there). Re-rooting re-fits the
@@ -102,19 +135,28 @@ export function CompositionView() {
     <div style={SURFACE_STYLE}>
       <ReactFlow<Node, Edge>
         nodes={styledNodes}
-        edges={styledEdges}
+        edges={displayEdges}
         nodeTypes={compNodeTypes}
         onInit={(instance) => {
           rfRef.current = instance;
         }}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
-        onPaneClick={() => selectCompUnit(null)}
+        onEdgeClick={onEdgeClick}
+        onPaneClick={() => { selectCompUnit(null); setIpcEdgeId(null); }}
         {...READONLY_CANVAS_PROPS}
       >
         <CanvasChrome nodeColor={(node) => miniMapColor(node, coverage)} minimap={nodes.length <= MINIMAP_NODE_CAP} />
         <CoveragePanel />
       </ReactFlow>
+      {ipcEdge ? (
+        <IpcInspector
+          channels={(ipcEdge.data as CompRfEdge["data"])?.ipcChannels ?? []}
+          fromLabel={labelForEndpoint(ipcEdge.source, nodesById)}
+          toLabel={labelForEndpoint(ipcEdge.target, nodesById)}
+          onClose={() => setIpcEdgeId(null)}
+        />
+      ) : null}
       <CompositionBreadcrumb rootId={compRoot} rootLabel={rootLabel} onHome={() => setCompRoot(null)} />
       {isEmpty ? <EmptyCompositionCard /> : null}
       {isLayingOut ? <LayingOutCard unitCount={nodesById.size} /> : null}
@@ -248,6 +290,19 @@ function miniMapColor(node: Node, coverage: CoverageReport | null): string {
     return coverageAccent(node.id, coverage);
   }
   return colorForDistance(metrics.distance);
+}
+
+/** A readable name for an IPC wire endpoint: the "system › package" label for a package/unit card,
+ * or the channel key for a channel-node endpoint (unit-view wires end on a channel card). */
+function labelForEndpoint(id: string, nodesById: Map<string, GraphNode>): string {
+  if (id.startsWith("ipc:")) {
+    return channelInfoFromId(id).channel;
+  }
+  const node = nodesById.get(id);
+  if (node?.kind === "package") {
+    return clusterLabel(id, nodesById);
+  }
+  return node?.displayName ?? id;
 }
 
 /** Shown when the artifact has no composition units to chart (no classes/modules with members or

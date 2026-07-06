@@ -65,6 +65,13 @@ export interface CompNodeSpec {
   data: CompNodeData | ClusterNodeData | ChannelCompData | PackageSummaryData;
 }
 
+/** One channel an IPC wire carries — shown in the inspector when the wire is clicked. */
+export interface IpcChannelDetail {
+  channel: string;
+  protocol: string;
+  dangling: "out-only" | "in-only" | null;
+}
+
 export interface CompEdgeSpec {
   id: string;
   source: string;
@@ -74,6 +81,26 @@ export interface CompEdgeSpec {
   crossBoundary: boolean;
   /** An IPC hop (a `sends`/`handles` half through a channel card) — drawn as the gold wire. */
   ipc?: boolean;
+  /** The channel(s) this IPC wire represents — one in the unit view, many on an aggregated wire. */
+  ipcChannels?: IpcChannelDetail[];
+}
+
+/** Recover a channel's display key + protocol from its `ipc:<protocol>/<slug>` id (core's grammar). */
+export function channelInfoFromId(id: string): { channel: string; protocol: string } {
+  const body = id.startsWith("ipc:") ? id.slice(4) : id;
+  const slash = body.indexOf("/");
+  const protocol = slash === -1 ? "ipc" : body.slice(0, slash);
+  const channel = (slash === -1 ? body : body.slice(slash + 1)).replace(/\+/g, " ").replace(/%23/g, "#");
+  return { channel, protocol };
+}
+
+/** A channel's full inspector detail from its id + which sides it has anywhere in the artifact. */
+export function channelDetailFromId(id: string, sides: Map<string, { out: boolean; in: boolean }>): IpcChannelDetail {
+  const side = sides.get(id);
+  return {
+    ...channelInfoFromId(id),
+    dangling: side && !side.in ? "out-only" : side && !side.out ? "in-only" : null,
+  };
 }
 
 export interface CompositionGraphSpec {
@@ -192,7 +219,16 @@ export function ipcLayerFor(
     }
     const source = outbound ? owner : channelNode.id;
     const target = outbound ? channelNode.id : owner;
-    edgeSpecs.set(`ipc:${source}->${target}`, { id: `ipc:${source}->${target}`, source, target, inheritanceOnly: false, crossBoundary: false, ipc: true });
+    const channelData = channelNode.spec.data as ChannelCompData;
+    edgeSpecs.set(`ipc:${source}->${target}`, {
+      id: `ipc:${source}->${target}`,
+      source,
+      target,
+      inheritanceOnly: false,
+      crossBoundary: false,
+      ipc: true,
+      ipcChannels: [{ channel: channelData.label, protocol: channelData.protocol, dangling: channelData.dangling }],
+    });
   }
   return { nodes: [...channelSpecs.values()], edges: [...edgeSpecs.values()] };
 }
@@ -216,13 +252,10 @@ function channelNodesById(edges: GraphEdge[], sides: Map<string, { out: boolean;
 // A channel id is `ipc:<protocol>/<slug>` — recover the protocol and display label from it, so the
 // aggregate path needn't carry the channel GraphNodes. Matches core's channelNodeId grammar.
 function channelSpecFromId(id: string, sides: { out: boolean; in: boolean } | undefined): CompNodeSpec {
-  const body = id.startsWith("ipc:") ? id.slice(4) : id;
-  const slash = body.indexOf("/");
-  const protocol = slash === -1 ? "ipc" : body.slice(0, slash);
-  const label = (slash === -1 ? body : body.slice(slash + 1)).replace(/\+/g, " ").replace(/%23/g, "#");
+  const { channel, protocol } = channelInfoFromId(id);
   const data: ChannelCompData = {
     channelId: id,
-    label,
+    label: channel,
     protocol,
     dangling: sides && !sides.in ? "out-only" : sides && !sides.out ? "in-only" : null,
   };
