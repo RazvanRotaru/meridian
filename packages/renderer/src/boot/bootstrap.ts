@@ -8,6 +8,7 @@ import { buildGraphIndex } from "../graph/graphIndex";
 import { createHttpTelemetryProvider } from "../telemetry/httpProvider";
 import type { TelemetryProvider } from "../telemetry/provider";
 import { createBlueprintStore, type BlueprintStore } from "../state/store";
+import { restoreFromUrl, startUrlSync } from "../state/urlSync";
 import { readBootConfig, type BootConfig } from "./bootConfig";
 import { loadArtifact } from "./loadArtifact";
 import { loadEnvironments } from "./loadEnvironments";
@@ -29,7 +30,10 @@ export async function bootstrap(): Promise<BootResult> {
     hasOverlay: boot.hasOverlay,
     sourceUrl: boot.sourceUrl,
   });
-  await store.getState().relayout();
+  // Restore the navigation state carried in the URL (or fall through to defaults) and run the
+  // first layout, then start reflecting the store back into the URL for reload/back/forward.
+  await restoreFromUrl(store);
+  startUrlSync(store);
   return { store, boot };
 }
 
