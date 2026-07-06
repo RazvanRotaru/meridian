@@ -12,9 +12,12 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { ReactFlow, type Edge, type Node, type NodeMouseHandler, type ReactFlowInstance } from "@xyflow/react";
+import type { CoverageReport } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { compNodeTypes } from "./nodes/composition/CompositionNode";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
+import { CoveragePanel } from "./CoveragePanel";
+import { coverageAccent } from "../theme/coverageColors";
 import type { CompRfEdge, CompRfNode } from "../layout/compositionElk";
 import { colorForDistance, type CompNodeData } from "../derive/compositionGraph";
 
@@ -25,6 +28,7 @@ export function CompositionView() {
   const layoutStatus = useBlueprint((state) => state.compLayoutStatus);
   const compRoot = useBlueprint((state) => state.compRoot);
   const nodesById = useBlueprint((state) => state.index.nodesById);
+  const coverage = useBlueprint((state) => (state.coverageMode ? state.coverage : null));
   const { selectCompUnit, setCompRoot } = useBlueprintActions();
 
   // The highlight is a pure repaint over the store's laid-out graph — recomputed only when the
@@ -88,7 +92,8 @@ export function CompositionView() {
         onPaneClick={() => selectCompUnit(null)}
         {...READONLY_CANVAS_PROPS}
       >
-        <CanvasChrome nodeColor={miniMapColor} />
+        <CanvasChrome nodeColor={(node) => miniMapColor(node, coverage)} />
+        <CoveragePanel />
       </ReactFlow>
       <CompositionBreadcrumb rootId={compRoot} rootLabel={rootLabel} onHome={() => setCompRoot(null)} />
       {isEmpty ? <EmptyCompositionCard /> : null}
@@ -175,10 +180,13 @@ function dimNode(node: CompRfNode): CompRfNode {
 
 // The MiniMap gets untyped `Node`s; a cluster frame carries no metrics, so it reads as a neutral
 // panel tone, while each unit dot tints by its health colour — the same green→amber→red story as
-// the cards.
-function miniMapColor(node: Node): string {
+// the cards. In coverage mode the dots echo the coverage verdict instead, matching the recoloured rails.
+function miniMapColor(node: Node, coverage: CoverageReport | null): string {
   if (node.type === "cluster") {
     return "#2A313D";
+  }
+  if (coverage) {
+    return coverageAccent(node.id, coverage);
   }
   return colorForDistance((node.data as CompNodeData).metrics.distance);
 }

@@ -9,6 +9,8 @@
 
 import { ReactFlow, type Node, type NodeMouseHandler } from "@xyflow/react";
 import { accentForKind } from "../theme/kindColors";
+import { coverageAccent } from "../theme/coverageColors";
+import type { CoverageReport } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { isCallable } from "../layout/nodeSize";
 import type { BlueprintNode, BlueprintEdge, BlueprintNodeData } from "../layout/rfTypes";
@@ -16,6 +18,7 @@ import { nodeTypes } from "./nodes/nodeTypes";
 import { edgeTypes } from "./edges/edgeTypes";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { Toolbar } from "./Toolbar";
+import { CoveragePanel } from "./CoveragePanel";
 import { CodePanel } from "./CodePanel";
 import { CommandPalette } from "./CommandPalette";
 import { LogicFlowView } from "./LogicFlowView";
@@ -42,6 +45,7 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
 function FlowCanvas() {
   const nodes = useBlueprint((state) => state.rfNodes);
   const edges = useBlueprint((state) => state.rfEdges);
+  const coverage = useBlueprint((state) => (state.coverageMode ? state.coverage : null));
   const { select, diveInto, openLogicFlow } = useBlueprintActions();
   const onNodeClick: NodeMouseHandler<BlueprintNode> = (_event, node) => select(node.id);
   // Double-clicking a container's frame dives INTO it (Unreal-Blueprints black-box drill-down).
@@ -67,12 +71,17 @@ function FlowCanvas() {
       onPaneClick={() => select(null)}
       {...READONLY_CANVAS_PROPS}
     >
-      <CanvasChrome nodeColor={miniMapColor} />
+      <CanvasChrome nodeColor={(node) => miniMapColor(node, coverage)} />
+      <CoveragePanel />
     </ReactFlow>
   );
 }
 
 // MiniMap is generic over the default `Node`, so we narrow its untyped data to ours here.
-function miniMapColor(node: Node): string {
+// In coverage mode the MiniMap echoes the verdict colors, so gaps stand out at overview zoom.
+function miniMapColor(node: Node, coverage: CoverageReport | null): string {
+  if (coverage) {
+    return coverageAccent(node.id, coverage);
+  }
   return accentForKind((node.data as BlueprintNodeData).node.kind);
 }
