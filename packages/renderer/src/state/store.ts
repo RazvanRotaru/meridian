@@ -80,6 +80,9 @@ export interface BlueprintState {
   expandedLogic: Set<string>;
   /** Hide the non-expandable (greyed) building-block leaves in the Logic graph. */
   hideGreyed: boolean;
+  /** Nest consecutive same-owner calls under service frames in the Logic graph. Default OFF (flat):
+   * the framing is opt-in, so the flow reads as plain blocks unless the reader turns it on. */
+  nestByService: boolean;
   /** The laid-out Logic graph (React Flow), recomputed on open/drill/expand/toggle via ELK. */
   logicRfNodes: LogicRfNode[];
   logicRfEdges: LogicRfEdge[];
@@ -131,6 +134,7 @@ export interface BlueprintState {
   togglePinnedFlow(id: NodeId): void;
   toggleLogicExpand(nodeId: string): void;
   toggleHideGreyed(): void;
+  toggleNestByService(): void;
   logicRelayout(): Promise<void>;
   compRelayout(): Promise<void>;
   selectCompUnit(id: string | null): void;
@@ -188,6 +192,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     pinnedFlows: [],
     expandedLogic: new Set<string>(),
     hideGreyed: false,
+    nestByService: false,
     logicRfNodes: [],
     logicRfEdges: [],
     logicLayoutStatus: "idle",
@@ -373,10 +378,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().logicRelayout();
     },
 
+    // Toggle the service-frame nesting — flat blocks (default) vs consecutive same-owner calls grouped
+    // under service frames. Mirrors toggleHideGreyed: flip the flag, then re-lay out the graph.
+    toggleNestByService() {
+      set({ nestByService: !get().nestByService });
+      void get().logicRelayout();
+    },
+
     // Re-derive the Logic graph for the current root through ELK, behind a stale-seq guard (a newer
     // open/drill/toggle discards an older in-flight layout). A null root clears the graph.
     async logicRelayout() {
-      const { logicRoot, index, artifact, expandedLogic, hideGreyed, logicFocus } = get();
+      const { logicRoot, index, artifact, expandedLogic, hideGreyed, nestByService, logicFocus } = get();
       if (logicRoot === null) {
         set({ logicRfNodes: [], logicRfEdges: [], logicLayoutStatus: "idle" });
         return;
@@ -387,7 +399,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // A container dive charts only the TOP focus entry's bodies; else the whole callable flow.
       const top = logicFocus[logicFocus.length - 1];
       const focus = top ? { id: top.id, bodies: top.bodies } : undefined;
-      const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, { hideGreyed }, focus);
+      const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, { hideGreyed, nestByService }, focus);
       if (logicLayoutSeq !== sequence) {
         return; // a newer layout superseded this one.
       }

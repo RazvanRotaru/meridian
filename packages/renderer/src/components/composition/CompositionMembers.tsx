@@ -22,8 +22,12 @@ export function CompositionMembers({ members }: { members: { id: string; name: s
           key={member.id}
           type="button"
           style={ROW}
-          title={`Open ${member.name} logic flow`}
-          onClick={(event) => {
+          title={`Double-click to open ${member.name} logic flow`}
+          // Open on DOUBLE-click only; swallow the single click so it neither navigates nor bubbles to
+          // the card. stopPropagation on dblclick is REQUIRED — otherwise it also fires the card's
+          // onNodeDoubleClick, which re-roots the composition view.
+          onClick={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => {
             event.stopPropagation();
             openLogicFlow(member.id);
           }}

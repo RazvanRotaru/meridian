@@ -53,10 +53,11 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
   const logicSelected = useBlueprint((state) => state.logicSelected);
   const layoutStatus = useBlueprint((state) => state.logicLayoutStatus);
   const hideGreyed = useBlueprint((state) => state.hideGreyed);
+  const nestByService = useBlueprint((state) => state.nestByService);
   const ghostDepth = useBlueprint((state) => state.ghostDepth);
   const index = useBlueprint((state) => state.index);
   const artifact = useBlueprint((state) => state.artifact);
-  const { drillLogicFlow, logicFlowTo, diveLogicContainer, logicFocusTo, toggleHideGreyed, setGhostDepth, selectLogicTarget } =
+  const { drillLogicFlow, logicFlowTo, diveLogicContainer, logicFocusTo, toggleHideGreyed, toggleNestByService, setGhostDepth, selectLogicTarget, openComposition } =
     useBlueprintActions();
 
   // The two gestures the node components don't own, mutually exclusive by node kind: a control
@@ -66,6 +67,14 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
   const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
     const data = logicDataOf(node);
     if (!data) {
+      return;
+    }
+    // A service frame carries no exec target — double-click opens its unit in the Service-composition
+    // view (single click is a no-op, so navigation is never accidental).
+    if (node.type === "servicegroup") {
+      if (data.owner) {
+        openComposition(data.owner.unitId);
+      }
       return;
     }
     if (node.type === "control" && data.bodies?.length) {
@@ -163,6 +172,8 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
         onFocusJump={logicFocusTo}
         hideGreyed={hideGreyed}
         onToggleHide={toggleHideGreyed}
+        nestByService={nestByService}
+        onToggleNest={toggleNestByService}
         ghostDepth={ghostDepth}
         onSetGhostDepth={setGhostDepth}
         moreCount={moreCount}
@@ -464,6 +475,8 @@ function LogicOverlayHeader(props: {
   onFocusJump: (index: number) => void;
   hideGreyed: boolean;
   onToggleHide: () => void;
+  nestByService: boolean;
+  onToggleNest: () => void;
   ghostDepth: number;
   onSetGhostDepth: (depth: number) => void;
   moreCount: number;
@@ -481,6 +494,14 @@ function LogicOverlayHeader(props: {
       </div>
       <div style={HEADER_CONTROLS_STYLE}>
         <GhostDepthDial depth={props.ghostDepth} moreCount={props.moreCount} onSet={props.onSetGhostDepth} />
+        <button
+          type="button"
+          style={hideToggleStyle(props.nestByService)}
+          aria-pressed={props.nestByService}
+          onClick={props.onToggleNest}
+        >
+          Group by service
+        </button>
         <button
           type="button"
           style={hideToggleStyle(props.hideGreyed)}

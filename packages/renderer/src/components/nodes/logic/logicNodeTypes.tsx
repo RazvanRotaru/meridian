@@ -112,13 +112,13 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
 /**
  * A SERVICE FRAME: the logic-flow analog of a composition scorecard. Consecutive calls into the same
  * owning unit nest inside it, so the flat exec chain reads UML-like (containers, like the composition
- * view). Its title bar is a click-through to that unit in the Service-composition view — a health dot
- * + kind glyph + name (+ smell marker) + a count of the calls it frames — health-tinted so the frame's
- * health reads at a glance. It carries NO exec pins: the white wires thread between the child blocks
- * across frames, never through the frame itself. The body stays transparent for ELK-placed children.
+ * view). Its title shows the unit — a health dot + kind glyph + name (+ smell marker) + a count of the
+ * calls it frames — health-tinted so the frame's health reads at a glance; DOUBLE-clicking the frame
+ * opens that unit in the Service-composition view (handled by the view, so single click never
+ * navigates). It carries NO exec pins: the white wires thread between the child blocks across frames,
+ * never through the frame itself. The body stays transparent for ELK-placed children.
  */
 function ServiceGroupNode({ data }: NodeProps<LogicRfNode>) {
-  const { openComposition } = useBlueprintActions();
   const d = data as LogicNodeData;
   const owner = d.owner;
   if (!owner) {
@@ -127,21 +127,13 @@ function ServiceGroupNode({ data }: NodeProps<LogicRfNode>) {
   return (
     <div style={serviceFrameStyle(owner.health)}>
       <div style={{ ...SERVICE_RAIL, background: owner.health }} />
-      <button
-        type="button"
-        style={SERVICE_TITLE}
-        title={`Open ${owner.label} in Service composition`}
-        onClick={(e) => {
-          e.stopPropagation();
-          openComposition(owner.unitId);
-        }}
-      >
+      <div style={SERVICE_TITLE} title="Double-click to open in Service composition">
         <span style={{ ...SERVICE_DOT, background: owner.health }} />
         <span style={SERVICE_GLYPH}>{unitGlyph(owner.kind)}</span>
         <span style={NAME} title={owner.label}>{owner.label}</span>
         {owner.smelly ? <span style={SERVICE_SMELL} title="carries a design smell">⚠</span> : null}
         <span style={SERVICE_COUNT}>{d.childCount}</span>
-      </button>
+      </div>
     </div>
   );
 }
@@ -497,8 +489,6 @@ const SERVICE_TITLE: React.CSSProperties = {
   fontFamily: MONO,
   fontSize: 12,
   fontWeight: 700,
-  cursor: "pointer",
-  textAlign: "left",
 };
 const SERVICE_DOT: React.CSSProperties = { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 };
 const SERVICE_GLYPH: React.CSSProperties = { fontSize: 11, opacity: 0.8, flexShrink: 0 };

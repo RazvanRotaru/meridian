@@ -100,7 +100,7 @@ export function deriveLogicGraph(
   flows: LogicFlows,
   index: GraphIndex,
   expandedLogic: ReadonlySet<string>,
-  options: { hideGreyed: boolean },
+  options: { hideGreyed: boolean; nestByService?: boolean },
   ownerLookup: OwnerLookup = NO_OWNER,
 ): LogicGraphSpec {
   const steps = flows[rootId];
@@ -121,7 +121,7 @@ export function deriveLogicGraphFromBodies(
   flows: LogicFlows,
   index: GraphIndex,
   expandedLogic: ReadonlySet<string>,
-  options: { hideGreyed: boolean },
+  options: { hideGreyed: boolean; nestByService?: boolean },
   ownerLookup: OwnerLookup = NO_OWNER,
 ): LogicGraphSpec {
   return new LogicGraphBuilder(prefix, flows, index, expandedLogic, options, ownerLookup).buildFromBodies(bodies);
@@ -205,7 +205,7 @@ class LogicGraphBuilder {
     private readonly flows: LogicFlows,
     private readonly index: GraphIndex,
     private readonly expanded: ReadonlySet<string>,
-    private readonly options: { hideGreyed: boolean },
+    private readonly options: { hideGreyed: boolean; nestByService?: boolean },
     private readonly ownerLookup: OwnerLookup,
   ) {}
 
@@ -290,8 +290,8 @@ class LogicGraphBuilder {
    * they belong in their service's frame — so the greyed-ness alone never disqualifies.
    */
   private framableOwner(step: FlowStep, id: string): LogicOwner | null {
-    if (step.kind !== "call") {
-      return null;
+    if (!this.options.nestByService || step.kind !== "call") {
+      return null; // nesting off (the default) ⇒ nothing frames, every call emits as a flat block.
     }
     const expandable = step.resolution === "resolved" && step.target !== null && (this.flows[step.target]?.length ?? 0) > 0;
     if (expandable && this.expandedState(id, false)) {
