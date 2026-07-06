@@ -14,3 +14,5 @@ export * from "./overlay";
 export * from "./extractor";
 export * from "./assembly";
 export * from "./boundary";
+export * from "./test-detection";
+export * from "./coverage";
