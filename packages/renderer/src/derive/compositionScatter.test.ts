@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { UnitMetrics } from "./composition";
+import type { UnitMetrics } from "@meridian/design-metrics";
 import { scatterPoints } from "./compositionScatter";
 
 function unit(id: string, instability: number, abstractness: number, distance = 0): UnitMetrics {

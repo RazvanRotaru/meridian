@@ -8,8 +8,7 @@
  */
 
 import type { GraphEdge, GraphNode } from "@meridian/core";
-import { computeCompositionMetrics, type UnitMetrics } from "./composition";
-import { couplingEdges } from "./composition-graph";
+import { computeCompositionMetrics, couplingEdges, type UnitMetrics } from "@meridian/design-metrics";
 import { computeRootedView } from "./compositionRoot";
 import { buildClusters, type ClusterFrame } from "./compositionClusters";
 

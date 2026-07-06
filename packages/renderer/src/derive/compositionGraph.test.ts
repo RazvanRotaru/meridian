@@ -15,7 +15,7 @@ import {
   HEALTH_RED,
   type CompNodeData,
 } from "./compositionGraph";
-import type { Smell, UnitMetrics } from "./composition";
+import type { Smell, UnitMetrics } from "@meridian/design-metrics";
 
 function node(id: string, kind: string, parentId?: string): GraphNode {
   return {

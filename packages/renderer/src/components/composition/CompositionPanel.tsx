@@ -12,7 +12,7 @@
 
 import { useMemo } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import { computeCompositionMetrics, rankRefactorCandidates } from "../../derive/composition";
+import { computeCompositionMetrics, rankRefactorCandidates } from "@meridian/design-metrics";
 import { MainSequenceScatter } from "./MainSequenceScatter";
 import { RefactorCandidatesPanel } from "./RefactorCandidatesPanel";
 import { CompositionLegend } from "./CompositionLegend";

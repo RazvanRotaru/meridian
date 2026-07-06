@@ -11,7 +11,7 @@
  */
 
 import { useMemo } from "react";
-import type { UnitMetrics } from "../../derive/composition";
+import type { UnitMetrics } from "@meridian/design-metrics";
 import { scatterPoints } from "../../derive/compositionScatter";
 import { colorForDistance, HEALTH_AMBER, HEALTH_GREEN, HEALTH_RED } from "../../derive/compositionGraph";
 import { COMP_SELECT_ACCENT } from "../nodes/composition/CompositionNode";
