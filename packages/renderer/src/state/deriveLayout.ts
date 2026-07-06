@@ -26,13 +26,18 @@ export async function deriveLayout(
   expanded: ReadonlySet<string>,
   focusId: string | null,
   viewMode: ViewMode,
+  hidden: ReadonlySet<string> = new Set(),
   flow: FlowScope | null = null,
 ): Promise<ReactFlowGraph> {
   if (flow && index.nodesById.has(flow.rootId)) {
-    return deriveFlowLayout(index, viewMode, flow);
+    return deriveFlowLayout(index, viewMode, flow, hidden);
   }
-  const visible = computeVisible(index, expanded, focusId);
-  const edges = scopeEdges(selectEdgesForMode(index.edges, viewMode), focusId, index);
+  const visible = computeVisible(index, expanded, focusId, hidden);
+  const edges = scopeEdges(selectEdgesForMode(index.edges, viewMode), focusId, index).filter(
+    // An edge touching a hidden node must not lift to the node's visible ancestor — that
+    // would re-draw the hidden code's calls as coming from its package. It disappears with it.
+    (edge) => !hidden.has(edge.source) && !hidden.has(edge.target),
+  );
   const liftedEdges = liftEdges(edges, visibleIdSet(visible), index.parentOf);
   const elkGraph = buildElkGraph(visible, liftedEdges);
   const laidOut = await runElkLayout(elkGraph);
@@ -40,9 +45,16 @@ export async function deriveLayout(
 }
 
 // One isolated flow: the reachable set is drawn fully expanded to its functions, and only edges
-// wholly inside the flow survive — so the same nodes never carry a second flow's wires.
-async function deriveFlowLayout(index: GraphIndex, viewMode: ViewMode, flow: FlowScope): Promise<ReactFlowGraph> {
-  const reachable = forwardReachable(index, flow.rootId, viewMode, flow.depth ?? undefined);
+// wholly inside the flow survive — so the same nodes never carry a second flow's wires. Hidden
+// (e.g. test) nodes are pruned from the reachable set so the flow view honors the Tests toggle too.
+async function deriveFlowLayout(
+  index: GraphIndex,
+  viewMode: ViewMode,
+  flow: FlowScope,
+  hidden: ReadonlySet<string>,
+): Promise<ReactFlowGraph> {
+  const forward = forwardReachable(index, flow.rootId, viewMode, flow.depth ?? undefined);
+  const reachable = hidden.size === 0 ? forward : new Set([...forward].filter((id) => !hidden.has(id)));
   const visible = computeVisibleWithin(index, flowKeepSet(reachable, index));
   const edges = selectEdgesForMode(index.edges, viewMode).filter(
     (edge) => reachable.has(edge.source) && reachable.has(edge.target),

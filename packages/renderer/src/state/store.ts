@@ -6,7 +6,17 @@
  */
 
 import { createStore, type StoreApi } from "zustand/vanilla";
-import type { FlowPath, FlowStep, GraphArtifact, GraphNode, LogicFlows, NodeId, NodeMetrics } from "@meridian/core";
+import { computeCoverage } from "@meridian/core";
+import type {
+  CoverageReport,
+  FlowPath,
+  FlowStep,
+  GraphArtifact,
+  GraphNode,
+  LogicFlows,
+  NodeId,
+  NodeMetrics,
+} from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { BlueprintEdge, BlueprintNode } from "../layout/rfTypes";
 import type { TelemetryProvider } from "../telemetry/provider";
@@ -51,6 +61,12 @@ export interface BlueprintState {
   focusId: string | null;
   /** Which relationship story is on screen: the call graph, or the React composition tree. */
   viewMode: ViewMode;
+  /** Whether test code (nodes tagged/heuristically detected as tests) is drawn at all. */
+  showTests: boolean;
+  /** Coverage mode recolors the graph by static test coverage and opens the coverage panel. */
+  coverageMode: boolean;
+  /** Computed once, on first entering coverage mode (the artifact never changes after boot). */
+  coverage: CoverageReport | null;
   /** The entry node whose forward call-flow is isolated on screen; null == the whole graph. */
   flowRootId: string | null;
   /** Hop cap from the flow entry; null == follow the flow all the way. */
@@ -140,6 +156,8 @@ export interface BlueprintState {
   setCompRoot(id: string | null): void;
   toggleSolidMetrics(): void;
   setViewMode(mode: ViewMode): void;
+  toggleShowTests(): void;
+  toggleCoverageMode(): void;
   setEnvironment(environment: string): void;
   refreshTelemetry(): Promise<void>;
   showCode(node: GraphNode): Promise<void>;
@@ -181,6 +199,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     selectedId: null,
     focusId: null,
     viewMode: "call",
+    showTests: true,
+    coverageMode: false,
+    coverage: null,
     flowRootId: null,
     flowDepth: null,
     logicRoot: null,
@@ -396,6 +417,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // decides which units earn a card and wires their couplings.
     async compRelayout() {
       const { index, compRoot, showSolidMetrics } = get();
+      // The layout ALWAYS includes test units, so toggling the Tests filter never moves a production
+      // card — the composition view hides test cards in place (a repaint), it does not re-lay-out.
       const nodes = [...index.nodesById.values()];
       const sequence = ++compLayoutSeq;
       set({ compLayoutStatus: "laying-out" });
@@ -456,6 +479,40 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({ viewMode: mode });
       }
       void get().relayout();
+    },
+
+    // Hiding tests while dived into (or having selected) test code would strand the view on
+    // nodes that no longer exist, so focus/selection — on every surface, including the
+    // composition graph's own selection/root — retreat home first.
+    toggleShowTests() {
+      const showTests = !get().showTests;
+      const { focusId, selectedId, compSelectedId, compRoot, viewMode, index } = get();
+      const strandedById = (id: string | null) => !showTests && id !== null && index.testIds.has(id);
+      const nextCompRoot = strandedById(compRoot) ? null : compRoot;
+      set({
+        showTests,
+        focusId: strandedById(focusId) ? null : focusId,
+        selectedId: strandedById(selectedId) ? null : selectedId,
+        compSelectedId: strandedById(compSelectedId) ? null : compSelectedId,
+        compRoot: nextCompRoot,
+      });
+      // The composition view hides test cards in place (CompositionView filters the rendered set),
+      // so it must NOT re-lay-out — that would reshuffle production cards, the very thing we avoid.
+      // It only relayouts when the root itself changed (it was rooted inside now-hidden test code).
+      // Every other surface still relayouts to drop the hidden subtree.
+      if (viewMode !== "call" || nextCompRoot !== compRoot) {
+        void get().relayout();
+      }
+    },
+
+    // The layout is untouched — coverage only recolors — so no relayout is needed.
+    toggleCoverageMode() {
+      const coverageMode = !get().coverageMode;
+      const { artifact, coverage } = get();
+      set({
+        coverageMode,
+        coverage: coverageMode && !coverage ? computeCoverage(artifact.nodes, artifact.edges) : coverage,
+      });
     },
 
     setEnvironment(environment) {
@@ -543,9 +600,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       const sequence = get().layoutSeq + 1;
       set({ layoutSeq: sequence, layoutStatus: "laying-out" });
-      const { index, expanded, focusId, viewMode, flowRootId, flowDepth } = get();
+      const { index, expanded, focusId, viewMode, flowRootId, flowDepth, showTests } = get();
+      const hidden = showTests ? new Set<string>() : index.testIds;
       const flow = flowRootId ? { rootId: flowRootId, depth: flowDepth } : null;
-      const graph = await deriveLayout(index, expanded, focusId, viewMode, flow);
+      const graph = await deriveLayout(index, expanded, focusId, viewMode, hidden, flow);
       if (get().layoutSeq !== sequence) {
         return; // a newer toggle superseded this layout; discard the stale result.
       }

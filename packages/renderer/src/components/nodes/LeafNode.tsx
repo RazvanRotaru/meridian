@@ -7,6 +7,7 @@
 import { useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { accentForKind } from "../../theme/kindColors";
+import { coverageAccent } from "../../theme/coverageColors";
 import { ellipsize } from "../../theme/displayName";
 import { isCallable } from "../../layout/nodeSize";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
@@ -14,10 +15,12 @@ import type { BlueprintNode } from "../../layout/rfTypes";
 import { CodeInlinePanel } from "../CodeInlinePanel";
 import { NodeHeader } from "./NodeHeader";
 import { TelemetryBadges } from "../TelemetryBadges";
+import { CoverageBadge } from "../CoverageBadge";
 
 export function LeafNode(props: NodeProps<BlueprintNode>) {
   const node = props.data.node;
-  const accent = accentForKind(node.kind);
+  const coverage = useBlueprint((state) => (state.coverageMode ? state.coverage : null));
+  const accent = coverage ? coverageAccent(props.id, coverage) : accentForKind(node.kind);
   const metrics = useBlueprint((state) => state.telemetry[props.id]);
   const selected = useBlueprint((state) => state.selectedId === props.id);
   const isEntry = useBlueprint((state) => state.flowRootId === props.id);
@@ -39,6 +42,7 @@ export function LeafNode(props: NodeProps<BlueprintNode>) {
         {canShowCode ? <CodeButton active={showingHere} onToggle={toggleCode} /> : null}
         <NodeHeader node={node} accent={accent} entry={isEntry} reserveRight={canShowCode}>
           <TelemetryBadges metrics={metrics} />
+          <CoverageBadge nodeId={props.id} />
         </NodeHeader>
         <div style={BODY_STYLE}>
           {node.summary ? <div style={SUMMARY_STYLE}>{ellipsize(node.summary, 96)}</div> : null}

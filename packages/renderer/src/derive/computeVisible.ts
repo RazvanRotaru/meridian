@@ -13,15 +13,18 @@
 import type { GraphIndex } from "../graph/graphIndex";
 import type { VisibleNode } from "./types";
 
+const NO_HIDDEN: ReadonlySet<string> = new Set();
+
 export function computeVisible(
   index: GraphIndex,
   expanded: ReadonlySet<string>,
   focusId: string | null = null,
+  hidden: ReadonlySet<string> = NO_HIDDEN,
 ): VisibleNode[] {
   const roots = focusId ? index.childrenOf(focusId) : index.roots;
   const visible: VisibleNode[] = [];
   for (const root of roots) {
-    visit(root.id, 0, index, expanded, visible);
+    visit(root.id, 0, index, expanded, hidden, visible);
   }
   return visible;
 }
@@ -31,13 +34,16 @@ function visit(
   depth: number,
   index: GraphIndex,
   expanded: ReadonlySet<string>,
+  hidden: ReadonlySet<string>,
   visible: VisibleNode[],
 ): void {
   const node = index.nodesById.get(nodeId);
-  if (!node) {
+  // A hidden node hides its whole subtree — like collapsed descendants, React Flow never
+  // learns it exists (so its edges lift away rather than dangle).
+  if (!node || hidden.has(nodeId)) {
     return;
   }
-  const children = index.childrenByParent.get(nodeId) ?? [];
+  const children = (index.childrenByParent.get(nodeId) ?? []).filter((child) => !hidden.has(child.id));
   const isContainer = children.length > 0;
   const isExpanded = isContainer && expanded.has(nodeId);
   visible.push({ id: nodeId, node, isContainer, isExpanded, depth, childCount: children.length });
@@ -45,7 +51,7 @@ function visit(
     return;
   }
   for (const child of children) {
-    visit(child.id, depth + 1, index, expanded, visible);
+    visit(child.id, depth + 1, index, expanded, hidden, visible);
   }
 }
 
