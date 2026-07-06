@@ -14,9 +14,8 @@ export async function deriveCompositionLayout(
   edges: GraphEdge[],
   root: string | null = null,
   showMetrics = true,
-  aggregate = false,
 ): Promise<CompositionReactFlowGraph> {
-  const spec = deriveCompositionGraph(nodes, edges, root, showMetrics, aggregate);
+  const spec = deriveCompositionGraph(nodes, edges, root, showMetrics);
   if (spec.nodes.length === 0) {
     return { nodes: [], edges: [] };
   }

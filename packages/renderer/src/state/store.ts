@@ -37,10 +37,6 @@ import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
  */
 export const GHOST_DEPTH_ALL = 99;
 
-/** Above this many modules, the whole-system composition view aggregates to package cards rather
- * than drawing every unit — the point where in-browser ELK of unit cards stops being interactive.
- * The examples stay well under it (unit-level); a real repo like Autopilot (4.8k modules) is over. */
-const COMPOSITION_AGGREGATE_THRESHOLD = 400;
 
 export type LayoutStatus = "idle" | "laying-out" | "ready" | "error";
 
@@ -487,14 +483,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const edges = compIncludesTests
         ? index.edges
         : index.edges.filter((edge) => !index.testIds.has(edge.source) && !index.testIds.has(edge.target));
-      // Whole-system on a big repo: aggregate to package cards so ELK lays out hundreds, not the
-      // thousands of unit scorecards that lock up a slower engine. A drilled-in (rooted) view is
-      // already small, so it always stays at unit granularity. The module count is the cheap proxy
-      // for "how many cards the unaggregated view would draw".
-      const aggregate = compRoot === null && moduleCount(nodes) > COMPOSITION_AGGREGATE_THRESHOLD;
+      // deriveCompositionGraph self-decides whether to aggregate (based on how many unit cards the
+      // current root's view would draw) and recurses a level deeper on each drill, so the store just
+      // hands it the root.
       const sequence = ++compLayoutSeq;
       set({ compLayoutStatus: "laying-out" });
-      const graph = await deriveCompositionLayout(nodes, edges, compRoot, showSolidMetrics, aggregate);
+      const graph = await deriveCompositionLayout(nodes, edges, compRoot, showSolidMetrics);
       if (compLayoutSeq !== sequence) {
         return; // a newer layout superseded this one.
       }
@@ -718,15 +712,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   }));
 }
 
-/** Cheap proxy for composition graph size: how many module nodes the artifact has. */
-function moduleCount(nodes: GraphNode[]): number {
-  let count = 0;
-  for (const node of nodes) {
-    if (node.kind === "module") count += 1;
-  }
-  return count;
-}
-
 function withToggled(expanded: Set<string>, nodeId: string): Set<string> {
   const next = new Set(expanded);
   if (next.has(nodeId)) {
@@ -750,3 +735,4 @@ function withAncestorsOf(nodeId: string, index: GraphIndex, expanded: Set<string
   }
   return next;
 }
+

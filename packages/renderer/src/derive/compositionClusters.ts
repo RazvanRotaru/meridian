@@ -40,6 +40,41 @@ export function clusterIdOf(unitId: string, nodesById: Map<string, GraphNode>): 
   return ROOT_CLUSTER_ID;
 }
 
+/**
+ * The group a unit rolls up to for a RECURSIVE aggregated view: the package one level below the
+ * current `rootId` on the unit's ancestor chain. With `rootId = null` (the whole-system overview)
+ * that's the top-level area (the package just under a `system` frame, or the shallowest package).
+ * Drilling one level in re-roots there, so the next aggregation shows the packages one level deeper
+ * — area → sub-package → … → units — never rendering more than one level's worth of cards at once.
+ * Falls back to the nearest package (then "(root)") when the chain has no package under the root.
+ */
+export function groupUnderRoot(unitId: string, rootId: string | null, nodesById: Map<string, GraphNode>): string {
+  // Ancestor chain root..unit (a package's parent chain up to the system/top), collected then walked
+  // downward so "one level below root" is unambiguous even with the deep nesting a big repo has.
+  const chain: GraphNode[] = [];
+  const seen = new Set<string>();
+  let current: GraphNode | undefined = nodesById.get(unitId);
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    chain.push(current);
+    current = current.parentId ? nodesById.get(current.parentId) : undefined;
+  }
+  chain.reverse(); // now top (system/package) → … → unit
+  const rootIdx = rootId === null ? indexAfterSystem(chain) : chain.findIndex((node) => node.id === rootId) + 1;
+  for (let i = Math.max(0, rootIdx); i < chain.length; i += 1) {
+    if (chain[i].kind === PACKAGE_KIND) {
+      return chain[i].id;
+    }
+  }
+  // No package below the root on this path: fall back to nearest package (or the root itself).
+  return clusterIdOf(unitId, nodesById);
+}
+
+/** The chain index just past a leading `system` frame (0 when there's no system prefix). */
+function indexAfterSystem(chain: GraphNode[]): number {
+  return chain.length > 0 && chain[0].kind === "system" ? 1 : 0;
+}
+
 /** A cluster's title: the package node's display name, or "(root)" for the package-less fallback.
  * In a LINKED artifact the package sits under a `system` frame node; the title then reads
  * `<system> › <package>` so two systems' identical folder names (src, src) stay tellable apart. */

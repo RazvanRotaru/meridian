@@ -99,7 +99,6 @@ export function deriveCompositionGraph(
   edges: GraphEdge[],
   root: string | null = null,
   showMetrics = true,
-  aggregate = false,
 ): CompositionGraphSpec {
   const metrics = computeCompositionMetrics(nodes, edges);
   const couplings = couplingEdges(nodes, edges);
@@ -107,9 +106,13 @@ export function deriveCompositionGraph(
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const survivors = survivingUnits(metrics, coupled);
 
-  // Whole-system on a big repo: aggregate to packages instead of exploding into unit cards.
-  if (aggregate && root === null) {
-    return aggregateByPackage(edges, metrics, couplings, survivors, nodesById);
+  // Recursive progressive disclosure: if the units in view (whole-system, or the rooted subtree)
+  // still exceed what the canvas can paint interactively, aggregate to the package cards ONE LEVEL
+  // below the current root. Each drill re-roots a level deeper until a package is small enough to
+  // show its unit scorecards. This is what keeps a giant repo interactive in a slower engine.
+  const inView = unitsInView(survivors, root, nodesById);
+  if (inView.size > AGGREGATE_UNIT_THRESHOLD) {
+    return aggregateByPackage(edges, metrics, couplings, inView, nodesById, root);
   }
 
   // The unit → members partition, reused per card so a scorecard can list the methods it holds.
@@ -293,6 +296,38 @@ function couplingEndpoints(couplings: ReturnType<typeof couplingEdges>): Set<str
     ids.add(edge.target);
   }
   return ids;
+}
+
+/** Above this many unit cards in view, aggregate to package cards instead. Tuned so even a slower
+ * engine (Safari/WebKit) pans/zooms smoothly — a few dozen cards, not hundreds. */
+const AGGREGATE_UNIT_THRESHOLD = 120;
+
+/** The surviving units within the current root's subtree (all survivors when root is null). */
+function unitsInView(survivors: Set<string>, root: string | null, nodesById: Map<string, GraphNode>): Set<string> {
+  if (root === null) {
+    return survivors;
+  }
+  const inView = new Set<string>();
+  for (const id of survivors) {
+    if (isWithin(id, root, nodesById)) {
+      inView.add(id);
+    }
+  }
+  return inView;
+}
+
+/** Whether `nodeId` is `root` or lies in its subtree (walks parentId, cycle-guarded). */
+function isWithin(nodeId: string, root: string, nodesById: Map<string, GraphNode>): boolean {
+  const seen = new Set<string>();
+  let current: GraphNode | undefined = nodesById.get(nodeId);
+  while (current && !seen.has(current.id)) {
+    if (current.id === root) {
+      return true;
+    }
+    seen.add(current.id);
+    current = current.parentId ? nodesById.get(current.parentId) : undefined;
+  }
+  return false;
 }
 
 /** The units carrying weight: ≥1 member OR ≥1 coupling wire — the whole-system scorecard set. */

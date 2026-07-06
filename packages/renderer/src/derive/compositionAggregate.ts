@@ -10,8 +10,8 @@
 
 import type { GraphEdge, GraphNode } from "@meridian/core";
 import type { CouplingEdge, UnitMetrics } from "@meridian/design-metrics";
-import { clusterIdOf, clusterLabel } from "./compositionClusters";
-import { channelSidesOf, ipcLayerFor, type CompEdgeSpec, type CompNodeSpec } from "./compositionGraph";
+import { clusterLabel, groupUnderRoot } from "./compositionClusters";
+import type { CompEdgeSpec, CompNodeSpec } from "./compositionGraph";
 
 /** The roll-up a package summary card shows: how many units, how many smell, the worst health. */
 export type PackageSummaryData = {
@@ -39,6 +39,7 @@ export function aggregateByPackage(
   couplings: CouplingEdge[],
   survivors: ReadonlySet<string>,
   nodesById: Map<string, GraphNode>,
+  rootId: string | null,
 ): { nodes: CompNodeSpec[]; edges: CompEdgeSpec[] } {
   const pkgOfUnit = new Map<string, string>();
   const rollup = new Map<string, PackageSummaryData>();
@@ -46,7 +47,7 @@ export function aggregateByPackage(
     if (!survivors.has(metric.id)) {
       continue;
     }
-    const pkgId = clusterIdOf(metric.id, nodesById);
+    const pkgId = groupUnderRoot(metric.id, rootId, nodesById);
     pkgOfUnit.set(metric.id, pkgId);
     const summary = rollup.get(pkgId) ?? emptySummary(pkgId, nodesById);
     summary.unitCount += 1;
@@ -77,10 +78,49 @@ export function aggregateByPackage(
     }
   }
 
-  // IPC lifted to packages: reuse the shared channel-projection, but resolve a function endpoint to
-  // its PACKAGE (not its unit) so channel wires land on the package cards.
-  const ipc = ipcLayerFor(edges, (nodeId) => resolvePackage(nodeId, emittedPkgs, nodesById), channelSidesOf(edges));
-  return { nodes: [...nodeSpecs, ...ipc.nodes], edges: [...edgeSpecs.values(), ...ipc.edges] };
+  // IPC at the overview altitude COLLAPSES to package→package wires: 400+ channel cards would both
+  // freeze the canvas and drown the signal. Each channel's sender packages × handler packages become
+  // one gold edge per pair; the individual channel cards return when you drill into a package.
+  for (const edge of ipcPackageEdges(edges, emittedPkgs, nodesById, rootId)) {
+    edgeSpecs.set(edge.id, edge);
+  }
+  return { nodes: nodeSpecs, edges: [...edgeSpecs.values()] };
+}
+
+/** Collapse every channel into direct sender-package → handler-package IPC edges (deduped). */
+function ipcPackageEdges(
+  edges: GraphEdge[],
+  emitted: ReadonlySet<string>,
+  nodesById: Map<string, GraphNode>,
+  rootId: string | null,
+): CompEdgeSpec[] {
+  const sendersByChannel = new Map<string, Set<string>>();
+  const handlersByChannel = new Map<string, Set<string>>();
+  for (const edge of edges) {
+    if (edge.kind !== "sends" && edge.kind !== "handles") {
+      continue;
+    }
+    const channelId = edge.kind === "sends" ? edge.target : edge.source;
+    const pkg = resolvePackage(edge.kind === "sends" ? edge.source : edge.target, emitted, nodesById, rootId);
+    if (!pkg) {
+      continue;
+    }
+    const map = edge.kind === "sends" ? sendersByChannel : handlersByChannel;
+    (map.get(channelId) ?? map.set(channelId, new Set()).get(channelId)!).add(pkg);
+  }
+  const out = new Map<string, CompEdgeSpec>();
+  for (const [channelId, senders] of sendersByChannel) {
+    for (const from of senders) {
+      for (const to of handlersByChannel.get(channelId) ?? []) {
+        if (from === to) {
+          continue; // an intra-package channel is drill-down detail, not an overview wire.
+        }
+        const id = `ipc:${from}->${to}`;
+        out.set(id, { id, source: from, target: to, inheritanceOnly: false, crossBoundary: true, ipc: true });
+      }
+    }
+  }
+  return [...out.values()];
 }
 
 function emptySummary(pkgId: string, nodesById: Map<string, GraphNode>): PackageSummaryData {
@@ -91,8 +131,8 @@ function packageCard(data: PackageSummaryData): CompNodeSpec {
   return { id: data.packageId, type: "package", width: PKG_CARD_WIDTH, height: PKG_CARD_HEIGHT, data };
 }
 
-/** Resolve any graph node to the emitted package it rolls up to (via nearest-package ancestor). */
-function resolvePackage(nodeId: string, emitted: ReadonlySet<string>, nodesById: Map<string, GraphNode>): string | null {
-  const pkg = clusterIdOf(nodeId, nodesById);
+/** Resolve any graph node to the emitted group card it rolls up to (one level below the root). */
+function resolvePackage(nodeId: string, emitted: ReadonlySet<string>, nodesById: Map<string, GraphNode>, rootId: string | null): string | null {
+  const pkg = groupUnderRoot(nodeId, rootId, nodesById);
   return emitted.has(pkg) ? pkg : null;
 }

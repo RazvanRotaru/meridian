@@ -15,7 +15,7 @@ import { ReactFlow, type Edge, type Node, type NodeMouseHandler, type ReactFlowI
 import type { CoverageReport } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { compNodeTypes } from "./nodes/composition/CompositionNode";
-import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
+import { CanvasChrome, MINIMAP_NODE_CAP, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { CompMethodDrawer } from "./composition/CompMethodDrawer";
 import { CoveragePanel } from "./CoveragePanel";
 import { coverageAccent } from "../theme/coverageColors";
@@ -112,7 +112,7 @@ export function CompositionView() {
         onPaneClick={() => selectCompUnit(null)}
         {...READONLY_CANVAS_PROPS}
       >
-        <CanvasChrome nodeColor={(node) => miniMapColor(node, coverage)} />
+        <CanvasChrome nodeColor={(node) => miniMapColor(node, coverage)} minimap={nodes.length <= MINIMAP_NODE_CAP} />
         <CoveragePanel />
       </ReactFlow>
       <CompositionBreadcrumb rootId={compRoot} rootLabel={rootLabel} onHome={() => setCompRoot(null)} />
