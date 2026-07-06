@@ -40,12 +40,33 @@ export function clusterIdOf(unitId: string, nodesById: Map<string, GraphNode>): 
   return ROOT_CLUSTER_ID;
 }
 
-/** A cluster's title: the package node's display name, or "(root)" for the package-less fallback. */
+/** A cluster's title: the package node's display name, or "(root)" for the package-less fallback.
+ * In a LINKED artifact the package sits under a `system` frame node; the title then reads
+ * `<system> › <package>` so two systems' identical folder names (src, src) stay tellable apart. */
 export function clusterLabel(clusterId: string, nodesById: Map<string, GraphNode>): string {
   if (clusterId === ROOT_CLUSTER_ID) {
     return ROOT_CLUSTER_ID;
   }
-  return nodesById.get(clusterId)?.displayName ?? ROOT_CLUSTER_ID;
+  const pkg = nodesById.get(clusterId);
+  if (!pkg) {
+    return ROOT_CLUSTER_ID;
+  }
+  const system = systemAncestorOf(clusterId, nodesById);
+  return system ? `${system.displayName} › ${pkg.displayName}` : pkg.displayName;
+}
+
+/** The `system` frame a node sits under (linked artifacts only); null in a single-repo graph. */
+function systemAncestorOf(nodeId: string, nodesById: Map<string, GraphNode>): GraphNode | null {
+  const visited = new Set<string>();
+  let current = nodesById.get(nodeId);
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    if (current.kind === "system") {
+      return current;
+    }
+    current = current.parentId ? nodesById.get(current.parentId) : undefined;
+  }
+  return null;
 }
 
 /**

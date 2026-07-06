@@ -65,7 +65,11 @@ export function CompositionView() {
   // Double-click focuses the view HERE — re-rooting at the node (a cluster frame's id IS its package
   // node, so it roots at that package; a unit or boundary card roots there). Re-rooting re-fits the
   // viewport (the fit effect below), which is exactly why it's a deliberate double-click, not a click.
+  // A channel is the space BETWEEN systems, not a place to root — double-click is a no-op there.
   const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
+    if (node.type === "channel") {
+      return;
+    }
     setCompRoot(node.id);
   };
 
@@ -224,6 +228,9 @@ function dimNode(node: CompRfNode): CompRfNode {
 // health colour — the same green→amber→red story as the cards. In coverage mode the dots echo the
 // coverage verdict instead, matching the recoloured rails.
 function miniMapColor(node: Node, coverage: CoverageReport | null): string {
+  if (node.type === "channel") {
+    return "#C9A24B"; // the IPC gold, matching the channel cards and wires
+  }
   const metrics = (node.data as Partial<CompNodeData>)?.metrics;
   if (node.type !== "unit" || !metrics) {
     return "#2A313D";

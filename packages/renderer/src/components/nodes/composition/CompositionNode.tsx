@@ -9,7 +9,7 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
-import { colorForDistance, type CompNodeData } from "../../../derive/compositionGraph";
+import { colorForDistance, type ChannelCompData, type CompNodeData } from "../../../derive/compositionGraph";
 import type { CompRfNode } from "../../../layout/compositionElk";
 import { accentForKind } from "../../../theme/kindColors";
 import { coverageAccent } from "../../../theme/coverageColors";
@@ -113,8 +113,40 @@ function glyphForKind(kind: string): string {
   return KIND_GLYPH[kind] ?? "▪";
 }
 
+/**
+ * An IPC channel card: the wire two processes meet on — gold and pill-shaped so it never reads as
+ * a code unit. Carries the channel key, its protocol tag, and (when a whole side is missing) an
+ * honest dangling warning. The selection ring works like a unit's, so clicking one lights its wires.
+ */
+function ChannelCompNodeImpl({ data }: NodeProps<CompRfNode>) {
+  const compSelectedId = useBlueprint((state) => state.compSelectedId);
+  const d = data as ChannelCompData;
+  const selected = compSelectedId === d.channelId;
+  return (
+    <div style={selected ? CHANNEL_CARD_SELECTED : CHANNEL_CARD} title={danglingTitle(d)}>
+      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+      <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+      <span style={CHANNEL_GLYPH}>⇄</span>
+      <span style={CHANNEL_LABEL} title={d.label}>{d.label}</span>
+      {d.dangling ? <span style={CHANNEL_WARN}>{d.dangling === "out-only" ? "⚠ no handler" : "⚠ no sender"}</span> : null}
+      <span style={CHANNEL_TAG}>{d.protocol.toUpperCase()}</span>
+    </div>
+  );
+}
+
+function danglingTitle(d: ChannelCompData): string {
+  if (d.dangling === "out-only") {
+    return `${d.label} — someone sends on this channel and nobody in the graph handles it`;
+  }
+  if (d.dangling === "in-only") {
+    return `${d.label} — a handler listens on this channel and nobody in the graph sends to it`;
+  }
+  return `${d.protocol} channel — an IPC boundary joined by its channel key`;
+}
+
 export const CompositionNode = memo(CompositionNodeImpl);
-export const compNodeTypes = { unit: CompositionNode, cluster: ClusterFrameNode };
+export const ChannelCompNode = memo(ChannelCompNodeImpl);
+export const compNodeTypes = { unit: CompositionNode, cluster: ClusterFrameNode, channel: ChannelCompNode };
 
 const PIN: React.CSSProperties = { width: 7, height: 7, background: "#C8D3E0", border: "none", minWidth: 0, minHeight: 0 };
 
@@ -195,3 +227,58 @@ const DISTANCE_ROW: React.CSSProperties = { display: "flex", alignItems: "baseli
 const DISTANCE_LABEL: React.CSSProperties = { fontSize: 11, letterSpacing: "0.04em" };
 const DISTANCE_VALUE: React.CSSProperties = { fontSize: 15 };
 const CHIP_ROW: React.CSSProperties = { display: "flex", flexWrap: "wrap", gap: 4, marginTop: 1 };
+
+// The channel pill: gold like its wires, rounded so it never reads as a code-unit scorecard.
+const IPC_GOLD = "#C9A24B";
+const CHANNEL_CARD: React.CSSProperties = {
+  position: "relative",
+  width: "100%",
+  height: "100%",
+  boxSizing: "border-box",
+  display: "flex",
+  alignItems: "center",
+  gap: 7,
+  padding: "0 12px",
+  borderRadius: 999,
+  border: `1px dashed ${IPC_GOLD}`,
+  background: "rgba(201,162,75,0.10)",
+  fontFamily: MONO,
+  overflow: "hidden",
+};
+const CHANNEL_CARD_SELECTED: React.CSSProperties = {
+  ...CHANNEL_CARD,
+  borderStyle: "solid",
+  borderColor: COMP_SELECT_ACCENT,
+  boxShadow: `0 0 0 2px ${COMP_SELECT_ACCENT}`,
+};
+const CHANNEL_GLYPH: React.CSSProperties = { fontSize: 12, color: IPC_GOLD, flexShrink: 0 };
+const CHANNEL_LABEL: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  fontSize: 12,
+  fontWeight: 700,
+  color: "#EAD9AE",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+const CHANNEL_WARN: React.CSSProperties = {
+  flexShrink: 0,
+  fontSize: 9,
+  fontWeight: 700,
+  color: "#E5484D",
+  border: "1px solid rgba(229,72,77,0.5)",
+  borderRadius: 3,
+  padding: "1px 4px",
+  background: "rgba(229,72,77,0.12)",
+};
+const CHANNEL_TAG: React.CSSProperties = {
+  flexShrink: 0,
+  fontSize: 8,
+  fontWeight: 700,
+  letterSpacing: "0.06em",
+  color: IPC_GOLD,
+  border: `1px solid ${IPC_GOLD}66`,
+  borderRadius: 3,
+  padding: "1px 4px",
+};

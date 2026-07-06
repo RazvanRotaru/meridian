@@ -40,7 +40,16 @@ export type ClusterNodeData = {
   smellyCount: number;
 };
 
-export type CompNodeType = "unit" | "cluster";
+// An IPC channel card's data: the channel key two processes meet on, plus its honesty flag —
+// `dangling` says one whole side is missing ("out-only": someone sends, nobody answers).
+export type ChannelCompData = {
+  channelId: string;
+  label: string;
+  protocol: string;
+  dangling: "out-only" | "in-only" | null;
+};
+
+export type CompNodeType = "unit" | "cluster" | "channel";
 
 // A single spec type spans both node kinds (mirrors logic's LogicNodeSpec): a "unit" carries its
 // scorecard size and a cluster `parentId`; a "cluster" frame is a container ELK sizes, so it omits
@@ -52,7 +61,7 @@ export interface CompNodeSpec {
   height?: number;
   /** The cluster frame this unit nests in (undefined for a frame itself). */
   parentId?: string;
-  data: CompNodeData | ClusterNodeData;
+  data: CompNodeData | ClusterNodeData | ChannelCompData;
 }
 
 export interface CompEdgeSpec {
@@ -62,6 +71,8 @@ export interface CompEdgeSpec {
   inheritanceOnly: boolean;
   /** True when the pair sits in DIFFERENT clusters — the packaging / Common-Closure signal. */
   crossBoundary: boolean;
+  /** An IPC hop (a `sends`/`handles` half through a channel card) — drawn as the gold wire. */
+  ipc?: boolean;
 }
 
 export interface CompositionGraphSpec {
@@ -110,7 +121,7 @@ export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[], r
   // A coupling endpoint is always a unit with a metrics entry, so both ends are emitted; the guard
   // is defensive against a pair that somehow references a dropped unit. A pair spanning two frames
   // is the packaging signal the layout emphasizes.
-  const edgeSpecs = couplings
+  const edgeSpecs: CompEdgeSpec[] = couplings
     .filter((edge) => emitted.has(edge.source) && emitted.has(edge.target))
     .map((edge) => ({
       id: `couple:${edge.source}->${edge.target}`,
@@ -120,7 +131,102 @@ export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[], r
       crossBoundary: clusterOf.get(edge.source) !== clusterOf.get(edge.target),
     }));
 
-  return { nodes: nodeSpecs, edges: edgeSpecs };
+  // The IPC layer: channel cards between the frames, wired by the artifact's sends/handles edges
+  // lifted to unit level. Only channels touching an emitted unit appear, so a rooted view never
+  // scatters unrelated channels around its subtree.
+  const ipc = ipcLayer(edges, emitted, nodesById);
+
+  return { nodes: [...nodeSpecs, ...ipc.nodes], edges: [...edgeSpecs, ...ipc.edges] };
+}
+
+// The channel card geometry: a compact pill — wide enough for "GET /api/orders/:id" plus tags.
+const CHANNEL_WIDTH = 220;
+const CHANNEL_HEIGHT = 46;
+
+/**
+ * Project the artifact's IPC hops onto the composition canvas: each `sends`/`handles` edge has a
+ * function endpoint and a channel endpoint — the function LIFTS to its nearest emitted unit (the
+ * scorecard that contains it), the channel becomes a top-level card, and each hop becomes a gold
+ * wire. A channel missing a whole side keeps an honest `dangling` flag for its card to show.
+ */
+function ipcLayer(
+  edges: GraphEdge[],
+  emitted: ReadonlySet<string>,
+  nodesById: Map<string, GraphNode>,
+): { nodes: CompNodeSpec[]; edges: CompEdgeSpec[] } {
+  const sides = channelSides(edges);
+  const channelSpecs = new Map<string, CompNodeSpec>();
+  const edgeSpecs = new Map<string, CompEdgeSpec>();
+  for (const edge of edges) {
+    if (edge.kind !== "sends" && edge.kind !== "handles") {
+      continue;
+    }
+    const outbound = edge.kind === "sends";
+    const channelNode = nodesById.get(outbound ? edge.target : edge.source);
+    const unit = nearestEmittedUnit(outbound ? edge.source : edge.target, emitted, nodesById);
+    if (!channelNode || !unit) {
+      continue;
+    }
+    if (!channelSpecs.has(channelNode.id)) {
+      channelSpecs.set(channelNode.id, channelSpec(channelNode, sides.get(channelNode.id)));
+    }
+    const source = outbound ? unit : channelNode.id;
+    const target = outbound ? channelNode.id : unit;
+    edgeSpecs.set(`ipc:${source}->${target}`, {
+      id: `ipc:${source}->${target}`,
+      source,
+      target,
+      inheritanceOnly: false,
+      crossBoundary: false,
+      ipc: true,
+    });
+  }
+  return { nodes: [...channelSpecs.values()], edges: [...edgeSpecs.values()] };
+}
+
+function channelSpec(node: GraphNode, sides: { out: boolean; in: boolean } | undefined): CompNodeSpec {
+  const data: ChannelCompData = {
+    channelId: node.id,
+    label: node.displayName,
+    protocol: node.tags?.[0] ?? "ipc",
+    dangling: sides && !sides.in ? "out-only" : sides && !sides.out ? "in-only" : null,
+  };
+  // Top-level (no parent frame): a channel is the space BETWEEN systems, so ELK routes it between.
+  return { id: node.id, type: "channel", width: CHANNEL_WIDTH, height: CHANNEL_HEIGHT, data };
+}
+
+/** Which sides each channel has ANYWHERE in the artifact (not just the visible subset). */
+function channelSides(edges: GraphEdge[]): Map<string, { out: boolean; in: boolean }> {
+  const sides = new Map<string, { out: boolean; in: boolean }>();
+  for (const edge of edges) {
+    if (edge.kind !== "sends" && edge.kind !== "handles") {
+      continue;
+    }
+    const channelId = edge.kind === "sends" ? edge.target : edge.source;
+    const entry = sides.get(channelId) ?? { out: false, in: false };
+    if (edge.kind === "sends") entry.out = true;
+    else entry.in = true;
+    sides.set(channelId, entry);
+  }
+  return sides;
+}
+
+/** Walk a function endpoint up its containment chain to the scorecard that holds it. */
+function nearestEmittedUnit(
+  nodeId: string,
+  emitted: ReadonlySet<string>,
+  nodesById: Map<string, GraphNode>,
+): string | null {
+  const visited = new Set<string>();
+  let current = nodesById.get(nodeId);
+  while (current && !visited.has(current.id)) {
+    if (emitted.has(current.id)) {
+      return current.id;
+    }
+    visited.add(current.id);
+    current = current.parentId ? nodesById.get(current.parentId) : undefined;
+  }
+  return null;
 }
 
 /** Set each unit spec's `parentId` to its cluster frame, returning the unit→cluster map the edge

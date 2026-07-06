@@ -17,6 +17,7 @@ export function CompositionLegend() {
         <LegendEdge color={INTERNAL_COLOR} label="within a package" />
         <LegendEdge color={CROSS_BOUNDARY_COLOR} label="crosses a package boundary" />
         <LegendEdge color={INHERITANCE_COLOR} label="inheritance" dashed />
+        <LegendEdge color={CROSS_BOUNDARY_COLOR} label="IPC — over the wire, via a channel" dashed />
       </div>
       <div style={HINT_STYLE}>
         <div><b style={KBD_STYLE}>click</b> → highlight a unit's dependencies</div>

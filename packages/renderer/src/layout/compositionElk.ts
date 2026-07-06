@@ -8,12 +8,12 @@
 
 import { type Edge, type Node } from "@xyflow/react";
 import type { ElkNode } from "elkjs/lib/elk-api";
-import type { ClusterNodeData, CompEdgeSpec, CompNodeData, CompNodeSpec, CompNodeType, CompositionGraphSpec } from "../derive/compositionGraph";
-import { arrowMarker } from "../theme/edgeColors";
+import type { ChannelCompData, ClusterNodeData, CompEdgeSpec, CompNodeData, CompNodeSpec, CompNodeType, CompositionGraphSpec } from "../derive/compositionGraph";
+import { arrowMarker, IPC_WIRE } from "../theme/edgeColors";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
 
-export type CompRfNode = Node<CompNodeData | ClusterNodeData, CompNodeType>;
-export type CompRfEdgeData = { inheritanceOnly: boolean; crossBoundary: boolean };
+export type CompRfNode = Node<CompNodeData | ClusterNodeData | ChannelCompData, CompNodeType>;
+export type CompRfEdgeData = { inheritanceOnly: boolean; crossBoundary: boolean; ipc?: boolean };
 export type CompRfEdge = Edge<CompRfEdgeData>;
 export interface CompositionReactFlowGraph {
   nodes: CompRfNode[];
@@ -93,6 +93,11 @@ interface EdgeStroke {
 }
 
 function strokeFor(edge: CompEdgeSpec): EdgeStroke {
+  // An IPC hop leaves the process: the shared gold, dashed to say "over the wire, not a call",
+  // animated like the cross-boundary thread so traffic direction reads at a glance.
+  if (edge.ipc) {
+    return { color: IPC_WIRE, width: 2, opacity: 1, dashed: true, animated: true };
+  }
   if (edge.inheritanceOnly) {
     return { color: INHERITANCE_COLOR, width: 2, opacity: 1, dashed: true, animated: false };
   }
@@ -116,6 +121,6 @@ function toReactFlowEdge(edge: CompEdgeSpec): CompRfEdge {
       ...(stroke.dashed ? { strokeDasharray: "5 4" } : {}),
     },
     markerEnd: arrowMarker(stroke.color, 16),
-    data: { inheritanceOnly: edge.inheritanceOnly, crossBoundary: edge.crossBoundary },
+    data: { inheritanceOnly: edge.inheritanceOnly, crossBoundary: edge.crossBoundary, ipc: edge.ipc },
   };
 }
