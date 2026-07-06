@@ -19,7 +19,8 @@ export function CompositionPanel() {
   const index = useBlueprint((state) => state.index);
   const compRoot = useBlueprint((state) => state.compRoot);
   const compSelectedId = useBlueprint((state) => state.compSelectedId);
-  const { setCompRoot, selectCompUnit } = useBlueprintActions();
+  const showMetrics = useBlueprint((state) => state.showSolidMetrics);
+  const { setCompRoot, selectCompUnit, toggleSolidMetrics } = useBlueprintActions();
 
   const metrics = useMemo(() => computeCompositionMetrics([...index.nodesById.values()], index.edges), [index]);
   const units = useMemo(() => [...metrics.values()], [metrics]);
@@ -38,6 +39,15 @@ export function CompositionPanel() {
 
   return (
     <>
+      <button
+        type="button"
+        style={metricsToggleStyle(!showMetrics)}
+        aria-pressed={!showMetrics}
+        onClick={toggleSolidMetrics}
+        title="Show or hide the SOLID metric rows and smell chips on each scorecard"
+      >
+        {showMetrics ? "Hide card metrics" : "Show card metrics"}
+      </button>
       <section style={SECTION_STYLE} aria-label="Main sequence">
         <div style={HEADER_STYLE}>Main sequence</div>
         <MainSequenceScatter metrics={units} activeId={activeId} onPick={setCompRoot} />
@@ -46,6 +56,21 @@ export function CompositionPanel() {
       <CompositionLegend />
     </>
   );
+}
+
+// Mirrors LogicFlowView's hide-toggle: pressed (blue) when metrics are currently hidden.
+function metricsToggleStyle(active: boolean): React.CSSProperties {
+  return {
+    alignSelf: "flex-start",
+    fontSize: 12,
+    padding: "6px 10px",
+    borderRadius: 6,
+    cursor: "pointer",
+    font: "inherit",
+    border: `1px solid ${active ? "#3B7AC0" : "#2A2F37"}`,
+    background: active ? "#111A24" : "#12171E",
+    color: active ? "#8FB6E3" : "#9AA4B2",
+  };
 }
 
 const SECTION_STYLE: React.CSSProperties = {

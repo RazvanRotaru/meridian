@@ -15,6 +15,7 @@ import { uiFocusTarget } from "../derive/uiFocus";
 import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
+import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
 
@@ -94,6 +95,9 @@ export interface BlueprintState {
   /** The module/package the Service-composition tab is rooted at; null == the whole system. Defaults
    * to the app's first entry module. Only its subtree + 1-hop coupling neighbours are drawn. */
   compRoot: string | null;
+  /** Whether the composition scorecards show their SOLID metric rows + smell chips. Off == a
+   * structure-only view (kind + name), decluttered. Persisted to localStorage across reloads. */
+  showSolidMetrics: boolean;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -134,6 +138,7 @@ export interface BlueprintState {
   compRelayout(): Promise<void>;
   selectCompUnit(id: string | null): void;
   setCompRoot(id: string | null): void;
+  toggleSolidMetrics(): void;
   setViewMode(mode: ViewMode): void;
   setEnvironment(environment: string): void;
   refreshTelemetry(): Promise<void>;
@@ -195,6 +200,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     compLayoutStatus: "idle",
     compSelectedId: null,
     compRoot: defaultCompRoot,
+    showSolidMetrics: readSolidMetricsPref(),
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -389,11 +395,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // stale-seq guard. Reads the raw nodes/edges off the index (built from the artifact); the derive
     // decides which units earn a card and wires their couplings.
     async compRelayout() {
-      const { index, compRoot } = get();
+      const { index, compRoot, showSolidMetrics } = get();
       const nodes = [...index.nodesById.values()];
       const sequence = ++compLayoutSeq;
       set({ compLayoutStatus: "laying-out" });
-      const graph = await deriveCompositionLayout(nodes, index.edges, compRoot);
+      const graph = await deriveCompositionLayout(nodes, index.edges, compRoot, showSolidMetrics);
       if (compLayoutSeq !== sequence) {
         return; // a newer layout superseded this one.
       }
@@ -414,6 +420,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       set({ compRoot: id, compSelectedId: null });
+      void get().compRelayout();
+    },
+
+    // Show/hide the per-card SOLID metrics (metric rows + smell chips) on the composition scorecards.
+    // Persisted across reloads; a relayout re-sizes the cards (compact when metrics are hidden).
+    toggleSolidMetrics() {
+      const next = !get().showSolidMetrics;
+      writeSolidMetricsPref(next);
+      set({ showSolidMetrics: next });
       void get().compRelayout();
     },
 

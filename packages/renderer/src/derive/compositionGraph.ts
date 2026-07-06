@@ -72,7 +72,7 @@ export interface CompositionGraphSpec {
  * the root contains plus their 1-hop coupling neighbours (the latter flagged `boundary` and drawn
  * faded so a click can re-root there). `root === null` is the unchanged whole-system view.
  */
-export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[], root: string | null = null): CompositionGraphSpec {
+export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[], root: string | null = null, showMetrics = true): CompositionGraphSpec {
   const metrics = computeCompositionMetrics(nodes, edges);
   const couplings = couplingEdges(nodes, edges);
   const coupled = couplingEndpoints(couplings);
@@ -89,7 +89,7 @@ export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[], r
     if (!view.visible.has(metric.id)) {
       continue;
     }
-    unitSpecs.push(unitNode(metric, view.boundary.has(metric.id)));
+    unitSpecs.push(unitNode(metric, view.boundary.has(metric.id), showMetrics));
     emitted.add(metric.id);
   }
 
@@ -161,9 +161,9 @@ function survivingUnits(metrics: Map<string, UnitMetrics>, coupled: Set<string>)
   return survivors;
 }
 
-function unitNode(metric: UnitMetrics, boundary: boolean): CompNodeSpec {
+function unitNode(metric: UnitMetrics, boundary: boolean, showMetrics: boolean): CompNodeSpec {
   const data: CompNodeData = { unitId: metric.id, kind: metric.kind, label: metric.displayName, metrics: metric, boundary };
-  const { width, height } = sizeFor(data);
+  const { width, height } = sizeFor(data, showMetrics);
   return { id: metric.id, type: "unit", width, height, data };
 }
 
@@ -174,8 +174,14 @@ const CARD_WIDTH = 240;
 const CARD_BASE_HEIGHT = 104;
 const CHIP_ROW_HEIGHT = 22;
 const CHIPS_PER_ROW = 2;
+// A metrics-off card shows only its header row (kind + name), so it collapses to a compact height
+// that clears just that row — no metric rows, no chip band.
+const CARD_COMPACT_HEIGHT = 40;
 
-export function sizeFor(data: CompNodeData): { width: number; height: number } {
+export function sizeFor(data: CompNodeData, showMetrics = true): { width: number; height: number } {
+  if (!showMetrics) {
+    return { width: CARD_WIDTH, height: CARD_COMPACT_HEIGHT };
+  }
   const chipRows = Math.ceil(data.metrics.smells.length / CHIPS_PER_ROW);
   return { width: CARD_WIDTH, height: CARD_BASE_HEIGHT + chipRows * CHIP_ROW_HEIGHT };
 }
