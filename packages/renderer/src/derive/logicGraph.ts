@@ -445,10 +445,10 @@ const TERMINAL_HEIGHT = 46;
 
 function sizeFor(label: string, greyed: boolean, type: LogicNodeType): { width: number; height: number } {
   if (type === "branch") {
-    // A COMPACT, near-fixed decision node: an `if`/`switch` should be a small glanceable glyph, not a
-    // wide box. The body hard-truncates the condition (full text in the hover title), so the width
-    // barely tracks label length and stays tightly bounded — never a sprawling rectangle.
-    return { width: roundedClamp(84, 132, 34 + label.length * 4.4), height: 44 };
+    // A FIXED, glanceable decision diamond. Its content is always a single "X" (the condition is
+    // revealed on demand in an inline panel), so the node never tracks label length — it stays a
+    // small, constant marker, never a sprawling box.
+    return { width: 72, height: 56 };
   }
   if (greyed) {
     // A small chip: clearly smaller than an expandable block so size alone signals "leaf, no flow".
