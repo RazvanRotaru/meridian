@@ -174,9 +174,9 @@ const CARD_WIDTH = 240;
 const CARD_BASE_HEIGHT = 104;
 const CHIP_ROW_HEIGHT = 22;
 const CHIPS_PER_ROW = 2;
-// A metrics-off card shows only its header row (kind + name), so it collapses to a compact height
-// that clears just that row — no metric rows, no chip band.
-const CARD_COMPACT_HEIGHT = 40;
+// A metrics-off card still shows its header (kind + name) and the D (distance) rating row, so it
+// collapses only partway — clearing those two rows, not the members/coupling rows or chip band.
+const CARD_COMPACT_HEIGHT = 66;
 
 export function sizeFor(data: CompNodeData, showMetrics = true): { width: number; height: number } {
   if (!showMetrics) {

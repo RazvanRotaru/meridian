@@ -44,14 +44,16 @@ export function CompositionPanel() {
         style={metricsToggleStyle(!showMetrics)}
         aria-pressed={!showMetrics}
         onClick={toggleSolidMetrics}
-        title="Show or hide the SOLID metric rows and smell chips on each scorecard"
+        title="Show or hide the SOLID metrics — the card metric rows, smell chips, and the main-sequence map (the D rating stays)"
       >
-        {showMetrics ? "Hide card metrics" : "Show card metrics"}
+        {showMetrics ? "Hide metrics" : "Show metrics"}
       </button>
-      <section style={SECTION_STYLE} aria-label="Main sequence">
-        <div style={HEADER_STYLE}>Main sequence</div>
-        <MainSequenceScatter metrics={units} activeId={activeId} onPick={setCompRoot} />
-      </section>
+      {showMetrics ? (
+        <section style={SECTION_STYLE} aria-label="Main sequence">
+          <div style={HEADER_STYLE}>Main sequence</div>
+          <MainSequenceScatter metrics={units} activeId={activeId} onPick={setCompRoot} />
+        </section>
+      ) : null}
       <RefactorCandidatesPanel candidates={ranked} nodesById={index.nodesById} activeId={activeId} onPick={pickRow} />
       <CompositionLegend />
     </>

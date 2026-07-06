@@ -64,18 +64,18 @@ function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
               <span style={SEP}>·</span>
               <MetricPair label="A" value={metrics.abstractness} title="abstractness" />
             </div>
-            <div style={{ ...DISTANCE_ROW, color: health }} title="distance from the main sequence">
-              <span style={DISTANCE_LABEL}>D</span>
-              <span style={DISTANCE_VALUE}>{metrics.distance}</span>
-            </div>
-            {metrics.smells.length > 0 ? (
-              <div style={CHIP_ROW}>
-                {metrics.smells.map((smell) => (
-                  <SmellChip key={smell} smell={smell} />
-                ))}
-              </div>
-            ) : null}
           </>
+        ) : null}
+        <div style={{ ...DISTANCE_ROW, color: health }} title="distance from the main sequence">
+          <span style={DISTANCE_LABEL}>D</span>
+          <span style={DISTANCE_VALUE}>{metrics.distance}</span>
+        </div>
+        {showMetrics && metrics.smells.length > 0 ? (
+          <div style={CHIP_ROW}>
+            {metrics.smells.map((smell) => (
+              <SmellChip key={smell} smell={smell} />
+            ))}
+          </div>
         ) : null}
       </div>
     </div>
