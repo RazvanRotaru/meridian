@@ -13,7 +13,7 @@ import { parseNodeId } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import { clamp } from "../layout/measure";
 
-export type LogicNodeType = "block" | "control" | "branch";
+export type LogicNodeType = "block" | "control" | "branch" | "terminal";
 
 export type LogicNodeData = {
   logicKind: "call" | "loop" | "try" | "callback" | "if" | "switch";
@@ -40,11 +40,25 @@ export type LogicNodeData = {
   callKind?: "function" | "method";
 };
 
+/**
+ * The ENTRY / EXIT end-caps of a top-level callable flow. A terminal is not a call step, so it
+ * carries only the two fields the layout adapter and the view structurally read off EVERY logic
+ * node: `targetId` (null — a terminal is never a call site, so clicking one is a harmless no-op) and
+ * `isContainer` (false — it's a leaf ELK sizes from width/height). This mirrors `DefGroupData`
+ * (see logicElk), which keeps the RF-node data union ergonomic by sharing those two accessors.
+ */
+export type TerminalData = {
+  targetId: null;
+  isContainer: false;
+  terminal: "entry" | "exit";
+  label: string;
+};
+
 export interface LogicNodeSpec {
   id: string;
   parentId: string | null;
   type: LogicNodeType;
-  data: LogicNodeData;
+  data: LogicNodeData | TerminalData;
   width?: number;
   height?: number;
 }
@@ -73,7 +87,9 @@ export function deriveLogicGraph(
   flows: LogicFlows,
   index: GraphIndex,
   expandedLogic: ReadonlySet<string>,
-  options: { hideGreyed: boolean },
+  // `withTerminals` frames a TOP-LEVEL callable flow with entry/exit end-caps (see build()); the
+  // container-dive path leaves it off. Optional so existing callers/tests default to no terminals.
+  options: { hideGreyed: boolean; withTerminals?: boolean },
 ): LogicGraphSpec {
   const steps = flows[rootId];
   if (!steps || steps.length === 0) {
@@ -169,12 +185,37 @@ class LogicGraphBuilder {
     private readonly flows: LogicFlows,
     private readonly index: GraphIndex,
     private readonly expanded: ReadonlySet<string>,
-    private readonly options: { hideGreyed: boolean },
+    private readonly options: { hideGreyed: boolean; withTerminals?: boolean },
   ) {}
 
   build(steps: FlowStep[]): LogicGraphSpec {
-    this.sequence(steps, null, "");
+    const { firstId, lastExits } = this.sequence(steps, null, "");
+    // Frame the whole flow with entry/exit end-caps when asked (top-level callable flows only). Guarded
+    // on a real first step: an all-greyed-and-hidden flow leaves `firstId` null, so it gets no terminals.
+    if (this.options.withTerminals && firstId !== null) {
+      this.addTerminals(firstId, lastExits);
+    }
     return { nodes: this.nodes, edges: this.edges };
+  }
+
+  /**
+   * The flow's ENTRY and EXIT end-caps: an entry node the observed callable starts at (its own name,
+   * so the view can hang caller-ghosts off it), wired by a seq edge INTO the first step; and a single
+   * synthetic exit node every trailing exec pin converges onto — dangling branch pins included, via
+   * the same `link()` the chain uses, so their labels ride along. Both are top-level (parentId null).
+   */
+  private addTerminals(firstId: string, lastExits: Exit[]): void {
+    const entry = this.index.nodesById.get(this.rootId);
+    const entryId = `${this.rootId}::entry`;
+    const entryData: TerminalData = { targetId: null, isContainer: false, terminal: "entry", label: entry?.displayName ?? baseName(parseNodeId(this.rootId).modulePath) };
+    this.nodes.push({ id: entryId, parentId: null, type: "terminal", data: entryData, width: TERMINAL_WIDTH, height: TERMINAL_HEIGHT });
+    this.pushEdge(entryId, firstId, "seq");
+    const exitId = `${this.rootId}::exit`;
+    const exitData: TerminalData = { targetId: null, isContainer: false, terminal: "exit", label: "EXIT" };
+    this.nodes.push({ id: exitId, parentId: null, type: "terminal", data: exitData, width: TERMINAL_WIDTH, height: TERMINAL_HEIGHT });
+    for (const exit of lastExits) {
+      this.link(exit, exitId);
+    }
   }
 
   /**
@@ -396,6 +437,11 @@ function baseName(path: string): string {
 function firstSegment(path: string): string {
   return path.split("/")[0] ?? path;
 }
+
+// Entry/exit end-caps are compact fixed-size pills — they carry no provenance or disclosure, so
+// unlike call blocks their width doesn't track label length.
+const TERMINAL_WIDTH = 150;
+const TERMINAL_HEIGHT = 46;
 
 function sizeFor(label: string, greyed: boolean, type: LogicNodeType): { width: number; height: number } {
   if (type === "branch") {
