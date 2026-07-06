@@ -446,6 +446,7 @@ function miniMapColor(node: Node): string {
   const data = node.data as LogicNodeData;
   if (data.logicKind === "loop") return "#E6B84D";
   if (data.logicKind === "try") return "#D98A5B";
+  if (data.logicKind === "callback") return "#5FA8A0";
   if (data.logicKind === "if" || data.logicKind === "switch") return "#61DAFB";
   return data.greyed ? "#3A414C" : "#3B7AC0";
 }
