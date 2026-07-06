@@ -231,6 +231,9 @@ const JUMP_HEIGHT = 44;
 // row 1 and the graph's top edge); COL_GAP is the gap between neighbouring ghosts within a row.
 const JUMP_ROW_GAP = 90;
 const JUMP_COL_GAP = 40;
+// The vertical gap between stacked ghosts in the entry cluster's single-column layout — tighter than
+// the depth-row gap since it's a compact list, but clear enough for the chain wire + arrow between them.
+const JUMP_STACK_GAP = 34;
 const JUMP_MUTED = "#4B535F";
 
 /**
@@ -259,12 +262,14 @@ function buildJumpSatellites(
   // The entry cluster: callers of the observed callable, anchored on its entry end-cap. Independent
   // of selection — this is the "when observing a flow, show where it's called from" default.
   const entryNode = byId.get(`${logicRoot}::entry`);
-  const entry = entryNode ? buildGhostCluster(logicRoot, entryNode, "jump:entry:", args) : null;
+  // The entry's related flows stack in a single vertical COLUMN above the end-cap (they read as a
+  // "called from" list); the selection cluster keeps the depth-row fan.
+  const entry = entryNode ? buildGhostCluster(logicRoot, entryNode, "jump:entry:", args, "column") : null;
 
   // The selection cluster: callers of the selected call target, anchored on its call site (today's
   // click-to-reveal behavior). Skipped when nothing is selected or the target isn't drawn.
   const callSite = logicSelected !== null ? nodes.find((node) => node.data.targetId === logicSelected) : undefined;
-  const selection = logicSelected !== null && callSite ? buildGhostCluster(logicSelected, callSite, "jump:sel:", args) : null;
+  const selection = logicSelected !== null && callSite ? buildGhostCluster(logicSelected, callSite, "jump:sel:", args, "rows") : null;
 
   const clusters = [entry, selection].filter((c): c is GhostCluster => c !== null);
   // "+N more" reports the cluster the user is acting on: the selection when one's active, else the
@@ -302,8 +307,13 @@ interface GhostClusterArgs {
  * graph and centred on `anchor` (the entry end-cap, or a selected call site). `idPrefix` namespaces
  * the ghost node ids so the entry and selection clusters can't collide on a shared caller's React
  * key. `total` is the countable caller set BEFORE the 24-ghost cap, so the dial can surface the shortfall.
+ *
+ * `layout` picks the arrangement above the anchor: "rows" fans each hop-depth into its own centred
+ * horizontal row (deeper == higher); "column" stacks EVERY ghost in one vertical column, nearest
+ * caller at the bottom — a compact "called from" list. Either way the chain wiring is unchanged: the
+ * edges follow the containment graph, not the coordinates (see buildChainEdges).
  */
-function buildGhostCluster(target: NodeId, anchor: LogicRfNode, idPrefix: string, a: GhostClusterArgs): GhostCluster {
+function buildGhostCluster(target: NodeId, anchor: LogicRfNode, idPrefix: string, a: GhostClusterArgs, layout: "rows" | "column"): GhostCluster {
   // Walk the reverse call graph back `ghostDepth` hops (GHOST_DEPTH_ALL == the whole closure); drop
   // the flow we're already looking at, then keep the NEAREST callers when over the cap (BFS keys
   // depth-ascending, so the sort makes it explicit).
@@ -315,28 +325,33 @@ function buildGhostCluster(target: NodeId, anchor: LogicRfNode, idPrefix: string
     return { jumpNodes: [], jumpEdges: [], total };
   }
   const anchorPos = absolutePos(anchor, a.byId);
-  const anchorWidth = anchor.width ?? JUMP_WIDTH;
-  const jumpNodes: Node[] = [];
-  for (const [depth, roots] of groupByDepth(ranked)) {
-    // This depth's row sits `depth` clear gaps ABOVE the graph's top edge (deeper == higher), centred
-    // on the anchor so the chain reads top→down into it.
-    const rowY = a.top - depth * (JUMP_HEIGHT + JUMP_ROW_GAP);
-    const rowWidth = roots.length * JUMP_WIDTH + (roots.length - 1) * JUMP_COL_GAP;
-    const startX = anchorPos.x + anchorWidth / 2 - rowWidth / 2;
-    roots.forEach((root, i) => {
-      const node = a.index.nodesById.get(root);
-      jumpNodes.push({
-        id: `${idPrefix}${root}`,
-        type: "jumpflow",
-        position: { x: startX + i * (JUMP_WIDTH + JUMP_COL_GAP), y: rowY },
-        width: JUMP_WIDTH,
-        height: JUMP_HEIGHT,
-        selectable: false,
-        draggable: false,
-        data: { rootId: root, label: node?.displayName ?? root, file: node?.location?.file, depth } satisfies JumpFlowNodeData,
-      });
-    });
-  }
+  const anchorCenterX = anchorPos.x + (anchor.width ?? JUMP_WIDTH) / 2;
+  const makeGhost = (root: string, depth: number, x: number, y: number): Node => {
+    const node = a.index.nodesById.get(root);
+    return {
+      id: `${idPrefix}${root}`,
+      type: "jumpflow",
+      position: { x, y },
+      width: JUMP_WIDTH,
+      height: JUMP_HEIGHT,
+      selectable: false,
+      draggable: false,
+      data: { rootId: root, label: node?.displayName ?? root, file: node?.location?.file, depth } satisfies JumpFlowNodeData,
+    };
+  };
+  const jumpNodes: Node[] =
+    layout === "column"
+      ? // One vertical column centred on the anchor; ranked is depth-ascending, so index 0 (the
+        // nearest caller) sits just above the graph and deeper callers stack upward.
+        ranked.map(([root, depth], i) => makeGhost(root, depth, anchorCenterX - JUMP_WIDTH / 2, a.top - (i + 1) * (JUMP_HEIGHT + JUMP_STACK_GAP)))
+      : [...groupByDepth(ranked)].flatMap(([depth, roots]) => {
+          // This depth's row sits `depth` clear gaps ABOVE the graph's top edge (deeper == higher),
+          // centred on the anchor so the chain reads top→down into it.
+          const rowY = a.top - depth * (JUMP_HEIGHT + JUMP_ROW_GAP);
+          const rowWidth = roots.length * JUMP_WIDTH + (roots.length - 1) * JUMP_COL_GAP;
+          const startX = anchorCenterX - rowWidth / 2;
+          return roots.map((root, i) => makeGhost(root, depth, startX + i * (JUMP_WIDTH + JUMP_COL_GAP), rowY));
+        });
   const jumpEdges = buildChainEdges(ranked, target, anchor.id, idPrefix, a.containment);
   return { jumpNodes, jumpEdges, total };
 }
