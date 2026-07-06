@@ -111,6 +111,13 @@ export interface BlueprintState {
   compLayoutStatus: LayoutStatus;
   /** The selected composition unit id; null == none. A repaint-only highlight — no relayout. */
   compSelectedId: string | null;
+  /** EXPERIMENT: the callable method whose logic flow is previewed in the composition-tab side
+   * drawer; null == the drawer is closed. Picked by clicking a scorecard member. Its flow is laid
+   * out into `compMethodRf*` behind the `compMethodLayoutSeq` stale guard, mirroring logicRelayout. */
+  compMethodId: NodeId | null;
+  compMethodRfNodes: LogicRfNode[];
+  compMethodRfEdges: LogicRfEdge[];
+  compMethodLayoutStatus: LayoutStatus;
   /** The module/package the Service-composition tab is rooted at; null == the whole system. Defaults
    * to the app's first entry module. Only its subtree + 1-hop coupling neighbours are drawn. */
   compRoot: string | null;
@@ -158,6 +165,8 @@ export interface BlueprintState {
   logicRelayout(): Promise<void>;
   compRelayout(): Promise<void>;
   selectCompUnit(id: string | null): void;
+  selectCompMethod(id: NodeId | null): void;
+  compMethodRelayout(): Promise<void>;
   setCompRoot(id: string | null): void;
   toggleSolidMetrics(): void;
   setViewMode(mode: ViewMode): void;
@@ -188,6 +197,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let logicLayoutSeq = 0;
   // Same guard for the composition layout — a newer relayout discards an older in-flight ELK pass.
   let compLayoutSeq = 0;
+  // And for the composition-tab method-preview drawer's logic layout (the EXPERIMENT surface).
+  let compMethodLayoutSeq = 0;
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
   // The composition tab opens on the WHOLE-SYSTEM overview (null root); file-rooting is the explicit
@@ -226,6 +237,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     compRfEdges: [],
     compLayoutStatus: "idle",
     compSelectedId: null,
+    compMethodId: null,
+    compMethodRfNodes: [],
+    compMethodRfEdges: [],
+    compMethodLayoutStatus: "idle",
     compRoot: defaultCompRoot,
     showSolidMetrics: readSolidMetricsPref(),
     rfNodes: [],
@@ -456,14 +471,47 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ compSelectedId: id });
     },
 
+    // EXPERIMENT — the composition→logic PREVIEW link. Pick (or clear with null) the method whose
+    // logic flow the side drawer charts, WITHOUT leaving the composition tab. A single click on a
+    // scorecard member fires this; it's a preview within the tab, not a tab switch (double-click a
+    // member still navigates to the full Logic tab). Kicks the drawer's own ELK relayout.
+    selectCompMethod(id) {
+      if (get().compMethodId === id) {
+        return;
+      }
+      set({ compMethodId: id });
+      void get().compMethodRelayout();
+    },
+
+    // Lay out the previewed method's logic flow into `compMethodRf*`, behind the compMethodLayoutSeq
+    // stale guard (a newer pick discards an older in-flight ELK pass), exactly like logicRelayout.
+    // Reuses the Logic-tab derive with a fresh (all-default) expansion, greyed leaves shown, and no
+    // service nesting — the preview is a fixed at-a-glance read, not the interactive Logic surface. A
+    // null pick (drawer closed) clears the arrays.
+    async compMethodRelayout() {
+      const { compMethodId, index, artifact } = get();
+      if (compMethodId === null) {
+        set({ compMethodRfNodes: [], compMethodRfEdges: [], compMethodLayoutStatus: "idle" });
+        return;
+      }
+      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const sequence = ++compMethodLayoutSeq;
+      set({ compMethodLayoutStatus: "laying-out" });
+      const graph = await deriveLogicLayout(compMethodId, flows, index, new Set<string>(), { hideGreyed: false, nestByService: false });
+      if (compMethodLayoutSeq !== sequence) {
+        return; // a newer pick superseded this one.
+      }
+      set({ compMethodRfNodes: graph.nodes, compMethodRfEdges: graph.edges, compMethodLayoutStatus: "ready" });
+    },
+
     // Re-root the Service-composition graph at a module/package (null == whole system). Clears the
-    // selection (it means nothing in a new rooted view) and re-lays out. A no-op when already there,
-    // matching the store's other navigation guards.
+    // selection AND the method-preview drawer (both mean nothing in a new rooted view) and re-lays
+    // out. A no-op when already there, matching the store's other navigation guards.
     setCompRoot(id) {
       if (get().compRoot === id) {
         return;
       }
-      set({ compRoot: id, compSelectedId: null });
+      set({ compRoot: id, compSelectedId: null, compMethodId: null, compMethodRfNodes: [], compMethodRfEdges: [], compMethodLayoutStatus: "idle" });
       void get().compRelayout();
     },
 

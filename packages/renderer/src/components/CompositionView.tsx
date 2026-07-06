@@ -16,6 +16,7 @@ import type { CoverageReport } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { compNodeTypes } from "./nodes/composition/CompositionNode";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
+import { CompMethodDrawer } from "./composition/CompMethodDrawer";
 import { CoveragePanel } from "./CoveragePanel";
 import { coverageAccent } from "../theme/coverageColors";
 import type { CompRfEdge, CompRfNode } from "../layout/compositionElk";
@@ -108,6 +109,8 @@ export function CompositionView() {
       </ReactFlow>
       <CompositionBreadcrumb rootId={compRoot} rootLabel={rootLabel} onHome={() => setCompRoot(null)} />
       {isEmpty ? <EmptyCompositionCard /> : null}
+      {/* EXPERIMENT: a member click previews that method's logic flow here, docked over the map. */}
+      <CompMethodDrawer />
     </div>
   );
 }
