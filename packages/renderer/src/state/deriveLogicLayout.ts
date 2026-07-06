@@ -13,6 +13,7 @@ import {
   deriveLogicGraphFromBodies,
   type LogicNodeSpec,
 } from "../derive/logicGraph";
+import { buildOwnerLookup, type OwnerLookup } from "../derive/logicOwner";
 import { buildLogicElkGraph, toReactFlowLogic, type DefGroupData, type LogicReactFlowGraph, type LogicRfNode } from "../layout/logicElk";
 import { runElkLayout } from "../layout/elkLayout";
 
@@ -21,18 +22,21 @@ export async function deriveLogicLayout(
   flows: LogicFlows,
   index: GraphIndex,
   expandedLogic: ReadonlySet<string>,
-  options: { hideGreyed: boolean },
+  options: { hideGreyed: boolean; nestByService: boolean },
   // When set, chart ONLY this container's bodies as a focused sub-view (the DIVE gesture) instead
   // of the whole callable flow rooted at `rootId`.
   focus?: { id: string; bodies: FlowPath[] },
 ): Promise<LogicReactFlowGraph> {
-  const flow = await layoutFlow(rootId, flows, index, expandedLogic, options, focus);
+  // Built ONCE per relayout and threaded into every node builder: it maps a call target to its owning
+  // Service-composition unit (health + smell), the seam that links the two views.
+  const ownerLookup = buildOwnerLookup([...index.nodesById.values()], index.edges);
+  const flow = await layoutFlow(rootId, flows, index, expandedLogic, options, ownerLookup, focus);
   // A module mostly EXPORTS callables; its top-level load-flow is thin (often empty), so the
   // methods it defines never show as steps. When a module root is open (not a container dive),
   // ALSO render those definitions as a disconnected grid below the flow — hence no early return on
   // an empty module flow, and definitions are declarations, not exec steps (no parent, no edges).
   if (!focus && index.nodesById.get(rootId)?.kind === "module") {
-    const defs = definitionGroups(rootId, flow.nodes, flows, index);
+    const defs = definitionGroups(rootId, flow.nodes, flows, index, ownerLookup);
     return { nodes: [...flow.nodes, ...defs], edges: flow.edges };
   }
   return flow;
@@ -44,7 +48,8 @@ async function layoutFlow(
   flows: LogicFlows,
   index: GraphIndex,
   expandedLogic: ReadonlySet<string>,
-  options: { hideGreyed: boolean },
+  options: { hideGreyed: boolean; nestByService: boolean },
+  ownerLookup: OwnerLookup,
   focus?: { id: string; bodies: FlowPath[] },
 ): Promise<LogicReactFlowGraph> {
   // Entry/exit end-caps frame a callable's flow only: a container DIVE (`focus`) charts sub-chains
@@ -52,8 +57,8 @@ async function layoutFlow(
   // both opt out of terminals (a module still gets its def-grid below, appended in deriveLogicLayout).
   const withTerminals = index.nodesById.get(rootId)?.kind !== "module";
   const spec = focus
-    ? deriveLogicGraphFromBodies(focus.id, focus.bodies, flows, index, expandedLogic, options)
-    : deriveLogicGraph(rootId, flows, index, expandedLogic, { ...options, withTerminals });
+    ? deriveLogicGraphFromBodies(focus.id, focus.bodies, flows, index, expandedLogic, options, ownerLookup)
+    : deriveLogicGraph(rootId, flows, index, expandedLogic, { ...options, withTerminals }, ownerLookup);
   if (spec.nodes.length === 0) {
     return { nodes: [], edges: [] };
   }
@@ -97,6 +102,7 @@ function definitionGroups(
   flowNodes: LogicRfNode[],
   flows: LogicFlows,
   index: GraphIndex,
+  ownerLookup: OwnerLookup,
 ): LogicRfNode[] {
   const out: LogicRfNode[] = [];
   let frameY = flowBottom(flowNodes) + FLOW_GAP;
@@ -118,7 +124,7 @@ function definitionGroups(
         position: { x: PAD + (i % cols) * (DEF_W + GAP_X), y: TITLE_H + PAD + Math.floor(i / cols) * (DEF_H + GAP_Y) },
         width: DEF_W,
         height: DEF_H,
-        data: definitionNodeData(defId, flows, index),
+        data: definitionNodeData(defId, flows, index, ownerLookup),
       });
     });
     frameY += height + GROUP_GAP;

@@ -99,11 +99,52 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
             {codeButton}
           </span>
         </div>
-        {d.provenance ? <div style={PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.pkg} › {d.provenance.module}</div> : null}
+        {/* A FRAMED block sits inside its service frame, whose title already names the owner — so it
+            drops the provenance line and shows just name + signature. A standalone/external call (or a
+            definition grid cell) keeps its `pkg › module` provenance. */}
+        {!d.framed && d.provenance ? <div style={PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.pkg} › {d.provenance.module}</div> : null}
+        {/* The signature — WHAT the block calls. Definition grid cells are a fixed compact size, so
+            they opt out; only in-flow call blocks carry it. */}
+        {!d.definition && d.signature ? <div style={SIGNATURE} title={d.signature}>{d.signature}</div> : null}
       </div>
       {inline}
     </div>
   );
+}
+
+/**
+ * A SERVICE FRAME: the logic-flow analog of a composition scorecard. Consecutive calls into the same
+ * owning unit nest inside it, so the flat exec chain reads UML-like (containers, like the composition
+ * view). Its title shows the unit — a health dot + kind glyph + name (+ smell marker) + a count of the
+ * calls it frames — health-tinted so the frame's health reads at a glance; DOUBLE-clicking the frame
+ * opens that unit in the Service-composition view (handled by the view, so single click never
+ * navigates). It carries NO exec pins: the white wires thread between the child blocks across frames,
+ * never through the frame itself. The body stays transparent for ELK-placed children.
+ */
+function ServiceGroupNode({ data }: NodeProps<LogicRfNode>) {
+  const d = data as LogicNodeData;
+  const owner = d.owner;
+  if (!owner) {
+    return null; // a service frame is only ever emitted WITH an owner; defensive against a bad spec.
+  }
+  return (
+    <div style={serviceFrameStyle(owner.health)}>
+      <div style={{ ...SERVICE_RAIL, background: owner.health }} />
+      <div style={SERVICE_TITLE} title="Double-click to open in Service composition">
+        <span style={{ ...SERVICE_DOT, background: owner.health }} />
+        <span style={SERVICE_GLYPH}>{unitGlyph(owner.kind)}</span>
+        <span style={NAME} title={owner.label}>{owner.label}</span>
+        {owner.smelly ? <span style={SERVICE_SMELL} title="carries a design smell">⚠</span> : null}
+        <span style={SERVICE_COUNT}>{d.childCount}</span>
+      </div>
+    </div>
+  );
+}
+
+// A compact unit glyph mirroring the scorecards, so a service frame reads as the same kind of thing.
+const UNIT_GLYPH: Record<string, string> = { module: "▤", class: "◆", interface: "◇", object: "❑" };
+function unitGlyph(kind: string): string {
+  return UNIT_GLYPH[kind] ?? "▪";
 }
 
 function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
@@ -299,7 +340,7 @@ function DefGroupNode({ data }: NodeProps<LogicRfNode>) {
   );
 }
 
-export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: BranchNode, jumpflow: JumpFlowNode, defgroup: DefGroupNode, terminal: TerminalNode };
+export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: BranchNode, jumpflow: JumpFlowNode, defgroup: DefGroupNode, servicegroup: ServiceGroupNode, terminal: TerminalNode };
 
 // Selection is BY TARGET (a target can be called many times): a matched call site rings green so
 // every call of the same target lights up together; while some target is selected, unrelated nodes
@@ -519,6 +560,50 @@ const TITLE_TAIL: React.CSSProperties = { marginLeft: "auto", display: "flex", a
 const EXPAND_BTN: React.CSSProperties = { border: "none", background: "rgba(0,0,0,0.18)", color: "inherit", borderRadius: 4, padding: "1px 6px", fontSize: 10, lineHeight: 1, fontFamily: MONO, cursor: "pointer" };
 const NAME: React.CSSProperties = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const PROV: React.CSSProperties = { padding: "4px 8px", fontSize: 10, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+// The signature line: dimmer than provenance (secondary detail), mono, one clipped line — the full
+// text rides the hover title so a long signature never widens the block.
+const SIGNATURE: React.CSSProperties = { padding: "0 8px 3px", fontSize: 9.5, color: "#5F6874", fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+// The service frame: a neutral-bordered container (like the composition card) with a health-tinted
+// left rail, hosting the run's call blocks. Body transparent so ELK-placed children render over it.
+function serviceFrameStyle(health: string): React.CSSProperties {
+  return {
+    width: "100%",
+    height: "100%",
+    position: "relative",
+    boxSizing: "border-box",
+    border: "1px solid #2A2F37",
+    borderLeft: `1px solid ${health}`,
+    borderRadius: 10,
+    background: "rgba(18,23,30,0.45)",
+    fontFamily: MONO,
+    overflow: "hidden",
+  };
+}
+// The 3px health rail down the frame's left edge — the composition card's fastest health signal.
+const SERVICE_RAIL: React.CSSProperties = { position: "absolute", left: 0, top: 0, bottom: 0, width: 3 };
+// The title bar is a click-through to the unit in the Service-composition view. Its height (~34px)
+// sits under ELK's 42px container top padding so the child blocks clear it.
+const SERVICE_TITLE: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  width: "100%",
+  height: 34,
+  boxSizing: "border-box",
+  padding: "0 10px 0 12px",
+  border: "none",
+  borderBottom: "1px solid #232935",
+  background: "rgba(255,255,255,0.02)",
+  color: "#C8D3E0",
+  fontFamily: MONO,
+  fontSize: 12,
+  fontWeight: 700,
+};
+const SERVICE_DOT: React.CSSProperties = { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 };
+const SERVICE_GLYPH: React.CSSProperties = { fontSize: 11, opacity: 0.8, flexShrink: 0 };
+const SERVICE_SMELL: React.CSSProperties = { flexShrink: 0, fontSize: 10, color: "#E6B84D" };
+// The count of calls the frame wraps, pinned right (auto margin) so it never crowds the name.
+const SERVICE_COUNT: React.CSSProperties = { marginLeft: "auto", flexShrink: 0, fontSize: 10, fontWeight: 600, color: "#6C7683" };
 // The greyed chip is tight: a compact title (light text on the muted slate so the priority name
 // stays legible) over one small provenance line. Padding/fonts shrink to fit the ~30px chip.
 const GREY_TITLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "2px 6px", background: GREY_ACCENT, color: "#C8D3E0", fontSize: 10, fontWeight: 700, lineHeight: 1.2 };

@@ -251,3 +251,49 @@ describe("definitionNodeData", () => {
     expect(data).toMatchObject({ definition: true, expandable: false, childCount: 0, greyed: false });
   });
 });
+
+describe("deriveLogicGraph service frames", () => {
+  // An owner lookup that maps a target id to a unit id encoded in the target itself (`ext:<unit>#..`),
+  // so a test can control which consecutive calls share an owner.
+  const ownerOf = (targetId: string | null) => {
+    if (targetId === null) return null;
+    const unitId = targetId.split("#")[0];
+    return { unitId, label: unitId, kind: "class", health: "#56C271", smelly: false };
+  };
+
+  it("stays flat by default (nestByService off): no servicegroup nodes, calls are plain blocks", () => {
+    const flows: LogicFlows = { r: [call("a", "ext:svc#a", "external"), call("b", "ext:svc#b", "external")] };
+    const { nodes } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false }, ownerOf);
+    expect(nodes.filter((n) => n.type === "servicegroup")).toHaveLength(0);
+    expect(nodes.map((n) => n.type)).toEqual(["block", "block"]);
+    expect(nodes.every((n) => (n.data as { framed?: boolean }).framed !== true)).toBe(true);
+  });
+
+  it("wraps a run of consecutive same-owner calls in ONE servicegroup frame, blocks parented to it", () => {
+    const flows: LogicFlows = { r: [call("a", "ext:svc#a", "external"), call("b", "ext:svc#b", "external")] };
+    const { nodes, edges } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false, nestByService: true }, ownerOf);
+    const frames = nodes.filter((n) => n.type === "servicegroup");
+    expect(frames).toHaveLength(1);
+    expect(frames[0].data).toMatchObject({ logicKind: "service", isContainer: true, childCount: 2, owner: { unitId: "ext:svc" } });
+    const blocks = nodes.filter((n) => n.type === "block");
+    expect(blocks.every((b) => b.parentId === frames[0].id)).toBe(true);
+    expect(blocks.every((b) => (b.data as { framed?: boolean }).framed === true)).toBe(true);
+    // Exec wiring is unchanged: the blocks still chain in order, across the frame boundary.
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toMatchObject({ source: "r::0", target: "r::1", kind: "seq" });
+  });
+
+  it("breaks the run into separate frames when the owner changes", () => {
+    const flows: LogicFlows = { r: [call("a", "ext:x#a", "external"), call("b", "ext:y#b", "external"), call("c", "ext:y#c", "external")] };
+    const { nodes } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false, nestByService: true }, ownerOf);
+    const frames = nodes.filter((n) => n.type === "servicegroup");
+    expect(frames.map((f) => (f.data as { childCount: number }).childCount)).toEqual([1, 2]);
+  });
+
+  it("does not frame calls with no owning unit (external/unresolved) even with nesting on — they stay flat", () => {
+    const flows: LogicFlows = { r: [call("a", null, "unresolved"), call("b", null, "unresolved")] };
+    const { nodes } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false, nestByService: true }, ownerOf);
+    expect(nodes.filter((n) => n.type === "servicegroup")).toHaveLength(0);
+    expect(nodes.filter((n) => n.type === "block")).toHaveLength(2);
+  });
+});
