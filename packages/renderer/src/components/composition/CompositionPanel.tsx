@@ -13,6 +13,7 @@ import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { computeCompositionMetrics, rankRefactorCandidates } from "../../derive/composition";
 import { MainSequenceScatter } from "./MainSequenceScatter";
 import { RefactorCandidatesPanel } from "./RefactorCandidatesPanel";
+import { CompositionLegend } from "./CompositionLegend";
 
 export function CompositionPanel() {
   const index = useBlueprint((state) => state.index);
@@ -42,6 +43,7 @@ export function CompositionPanel() {
         <MainSequenceScatter metrics={units} activeId={activeId} onPick={setCompRoot} />
       </section>
       <RefactorCandidatesPanel candidates={ranked} nodesById={index.nodesById} activeId={activeId} onPick={pickRow} />
+      <CompositionLegend />
     </>
   );
 }

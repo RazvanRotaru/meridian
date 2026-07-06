@@ -73,13 +73,15 @@ function toReactFlowNode(elkNode: ElkNode, parentId: string | undefined, spec: C
   };
 }
 
-// The three wire treatments, in priority order. An inheritance-only pair reads DISTINCT — dashed
-// violet — because extends/implements is a different relationship from ordinary use. Otherwise a
-// SAME-cluster wire is expected cohesion: muted grey, thin, low opacity, it recedes. A wire that
-// CROSSES a frame boundary is the packaging (Common-Closure) signal, so it's emphasized in a warm
-// signal colour, thicker, full opacity. Never animated: this is structure, not a live flow.
+// The three wire treatments, in priority order — all sharing the Logic-flow wire feel (2px stroke +
+// a matching arrowhead) so the two graph surfaces read as one, while keeping their semantic colours.
+// An inheritance-only pair reads DISTINCT — dashed violet — because extends/implements is a different
+// relationship from ordinary use. A SAME-cluster wire is expected cohesion: a quiet grey that recedes
+// without washing out. A wire that CROSSES a frame boundary is the packaging (Common-Closure) signal,
+// so it's the warm gold signal colour at full opacity and ANIMATED — a flowing thread, like Logic's
+// exec wire.
 const INHERITANCE_COLOR = "#A78BFA";
-const INTERNAL_COLOR = "#4A5261";
+const INTERNAL_COLOR = "#5B6675";
 const CROSS_BOUNDARY_COLOR = "#C9A24B";
 
 interface EdgeStroke {
@@ -87,16 +89,17 @@ interface EdgeStroke {
   width: number;
   opacity: number;
   dashed: boolean;
+  animated: boolean;
 }
 
 function strokeFor(edge: CompEdgeSpec): EdgeStroke {
   if (edge.inheritanceOnly) {
-    return { color: INHERITANCE_COLOR, width: 1.5, opacity: 1, dashed: true };
+    return { color: INHERITANCE_COLOR, width: 2, opacity: 1, dashed: true, animated: false };
   }
   if (edge.crossBoundary) {
-    return { color: CROSS_BOUNDARY_COLOR, width: 1.75, opacity: 1, dashed: false };
+    return { color: CROSS_BOUNDARY_COLOR, width: 2, opacity: 1, dashed: false, animated: true };
   }
-  return { color: INTERNAL_COLOR, width: 1, opacity: 0.45, dashed: false };
+  return { color: INTERNAL_COLOR, width: 2, opacity: 0.7, dashed: false, animated: false };
 }
 
 function toReactFlowEdge(edge: CompEdgeSpec): CompRfEdge {
@@ -105,14 +108,14 @@ function toReactFlowEdge(edge: CompEdgeSpec): CompRfEdge {
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    animated: false,
+    animated: stroke.animated,
     style: {
       stroke: stroke.color,
       strokeWidth: stroke.width,
       opacity: stroke.opacity,
       ...(stroke.dashed ? { strokeDasharray: "5 4" } : {}),
     },
-    markerEnd: arrowMarker(stroke.color, 14),
+    markerEnd: arrowMarker(stroke.color, 16),
     data: { inheritanceOnly: edge.inheritanceOnly, crossBoundary: edge.crossBoundary },
   };
 }

@@ -102,18 +102,26 @@ then `D`, then member count, then id.
 - **Cluster frame** (`ClusterFrameNode.tsx`): a titled frame per **package (folder)** — the nearest
   `package` ancestor of the units it holds (fallback `"(root)"`). Shows the package name, unit count,
   and an `N⚠` badge when it contains smelly units.
-- **Edges** (styled in `layout/compositionElk.ts`), priority order:
-  - `inheritanceOnly` (`extends`/`implements` only) → **dashed violet** `#A78BFA`.
-  - internal (same cluster) → **muted grey** `#4A5261`, 1px, opacity 0.45 (expected cohesion, recedes).
-  - cross-boundary (different cluster) → **warm gold** `#C9A24B`, 1.75px, full opacity (the packaging signal).
-- **Selection** (`CompositionView.emphasizeSelection`, repaint-only, no relayout): clicking a unit
-  lights its 1-hop coupling neighbourhood and fades the rest. Frames are never dimmed.
-- **File-rooting** (PR 4): the tab opens **rooted at one file** (default = `extensions.entryModules[0]`),
-  showing units the root *contains* plus their **1-hop neighbours** as faded **boundary** cards.
-  Click a boundary card to re-root into it; `⌘P` roots anywhere (the palette is mode-aware — it lists
-  modules/packages in composition mode, callables elsewhere); a breadcrumb's **"Whole system"** clears
-  the root. `isWithinRoot(unit, root)` = root is ancestor-or-self via `parentId`; empty root set → fall
-  back to whole-system.
+- **Edges** (styled in `layout/compositionElk.ts`) share the Logic-flow wire feel — **2px stroke +
+  a matching arrowhead** (`arrowMarker`) — keeping their semantic colours; priority order:
+  - `inheritanceOnly` (`extends`/`implements` only) → **dashed violet** `#A78BFA`, static.
+  - internal (same cluster) → **quiet grey** `#5B6675`, opacity 0.7, static (expected cohesion, recedes).
+  - cross-boundary (different cluster) → **warm gold** `#C9A24B`, full opacity, **animated** — the
+    flowing packaging (Common-Closure) signal, like Logic's exec thread.
+- **Interaction** — **single-click selects** (`CompositionView.emphasizeSelection`, repaint-only, no
+  relayout, **the viewport never moves**): it lights the unit's 1-hop coupling neighbourhood and fades
+  the rest (frames are never dimmed; a cluster-frame click clears the selection, like empty canvas).
+  **Double-click focuses/re-roots** — on a unit, a boundary card, or a package frame — mirroring the
+  call graph's double-click-to-dive, then re-fits the viewport to the new root. A compact
+  always-visible legend (`components/composition/CompositionLegend.tsx`) keys the wire colours and
+  these gestures in the sidebar.
+- **File-rooting** (PR 4): the tab opens on the **whole-system overview** (default root `null`; see
+  §8 open question 6 for why not the entry module), with rooting as the explicit focus gesture. Rooting
+  at a unit/package shows the units the root *contains* plus their **1-hop neighbours** as faded
+  **boundary** cards. Double-click a unit, boundary card, or package frame to root there; `⌘P` roots
+  anywhere (the palette is mode-aware — it lists modules/packages in composition mode, callables
+  elsewhere); a breadcrumb's **"Whole system"** clears the root. `isWithinRoot(unit, root)` = root is
+  ancestor-or-self via `parentId`; empty root set → fall back to whole-system.
 
 ---
 

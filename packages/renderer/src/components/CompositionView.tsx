@@ -3,9 +3,11 @@
  * coupling edges. Nodes/edges are laid out by ELK in the store (`compRfNodes`/`compRfEdges`); this
  * component only mounts the read-only <ReactFlow> surface and the selection highlight.
  *
- * Selection is repaint-only: clicking a unit fixes it in the store (`compSelectedId`), and a useMemo
+ * Single-click is repaint-only: it fixes the selection in the store (`compSelectedId`) and a useMemo
  * keyed on that selection emphasizes the unit's directly-connected wires while fading everything
- * unrelated — no relayout, positions untouched, exactly like the logic view's edge highlight.
+ * unrelated — no relayout, positions untouched, the viewport NEVER moves. Double-click focuses the
+ * view (`setCompRoot` → re-root + re-fit), the deliberate travel gesture, mirroring the call graph's
+ * double-click-to-dive.
  */
 
 import { useEffect, useMemo, useRef } from "react";
@@ -32,19 +34,23 @@ export function CompositionView() {
     [nodes, edges, selectedId],
   );
 
-  // A cluster frame is a passive panel, not a selectable unit — clicking one clears the selection,
-  // like clicking empty canvas. A boundary neighbour re-roots the graph THERE (travel one hop out);
-  // any other unit selects normally.
+  // Single-click ALWAYS just selects + highlights — it never moves the viewport. A cluster frame is a
+  // passive panel, not a selectable unit, so clicking one clears the selection like clicking empty
+  // canvas; any other node (unit OR boundary card) fixes the selection highlight. Focusing/re-rooting
+  // is the double-click gesture below.
   const onNodeClick: NodeMouseHandler<Node> = (_event, node) => {
     if (node.type === "cluster") {
       selectCompUnit(null);
       return;
     }
-    if ((node.data as CompNodeData).boundary) {
-      setCompRoot(node.id);
-      return;
-    }
     selectCompUnit(node.id);
+  };
+
+  // Double-click focuses the view HERE — re-rooting at the node (a cluster frame's id IS its package
+  // node, so it roots at that package; a unit or boundary card roots there). Re-rooting re-fits the
+  // viewport (the fit effect below), which is exactly why it's a deliberate double-click, not a click.
+  const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
+    setCompRoot(node.id);
   };
 
   // A handle on the surface so the first laid-out graph fits once (the `fitView` prop only fits on
@@ -78,6 +84,7 @@ export function CompositionView() {
           rfRef.current = instance;
         }}
         onNodeClick={onNodeClick}
+        onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={() => selectCompUnit(null)}
         {...READONLY_CANVAS_PROPS}
       >
