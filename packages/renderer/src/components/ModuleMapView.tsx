@@ -27,12 +27,13 @@ export function ModuleMapView() {
   const layoutStatus = useBlueprint((state) => state.moduleLayoutStatus);
   const moduleRoot = useBlueprint((state) => state.moduleRoot);
   const moduleDepth = useBlueprint((state) => state.moduleDepth);
+  const moduleOverview = useBlueprint((state) => state.moduleOverview);
   const effectiveRoot = useBlueprint((state) => state.moduleEffectiveRoot);
   const nodesById = useBlueprint((state) => state.index.nodesById);
   const testIds = useBlueprint((state) => state.index.testIds);
   const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
   const showTests = useBlueprint((state) => state.showTests);
-  const { selectModule, setModuleRoot } = useBlueprintActions();
+  const { selectModule, setModuleRoot, drillIntoPackage } = useBlueprintActions();
 
   // Category/test hiding is a pure VISIBILITY filter over the laid-out graph — hidden cards and any
   // frame they emptied drop out, but the walk (and every surviving position) is untouched, so the
@@ -50,9 +51,12 @@ export function ModuleMapView() {
   const onNodeClick: NodeMouseHandler<Node> = (_event, node) => {
     selectModule(node.type === "frame" ? null : node.id);
   };
-  // Re-root only at a file — a frame's id is a package node, which the import BFS can't walk from.
+  // Double-click travels: an overview PACKAGE drills into its files (drillIntoPackage); a file re-roots
+  // the blast radius there. A frame's id is a package node the import BFS can't walk from, so it's inert.
   const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
-    if (node.type !== "frame") {
+    if (node.type === "package") {
+      drillIntoPackage(node.id);
+    } else if (node.type !== "frame") {
       setModuleRoot(node.id);
     }
   };
@@ -65,7 +69,7 @@ export function ModuleMapView() {
   const fitted = useRef(false);
   useEffect(() => {
     fitted.current = false;
-  }, [moduleRoot, moduleDepth]);
+  }, [moduleRoot, moduleDepth, moduleOverview]);
   useEffect(() => {
     if (!rfRef.current || nodes.length === 0 || fitted.current) {
       return;
@@ -94,12 +98,14 @@ export function ModuleMapView() {
         <CanvasChrome nodeColor={miniMapColor} />
       </ReactFlow>
       <ModuleMapBreadcrumb
+        overview={moduleOverview}
+        packageCount={nodes.length}
         rootId={effectiveRoot}
         rootLabel={rootLabel}
         isCustomRoot={moduleRoot !== null}
         onHome={() => setModuleRoot(null)}
       />
-      {isEmpty ? <EmptyModuleMapCard /> : null}
+      {isEmpty ? <EmptyModuleMapCard overview={moduleOverview} /> : null}
     </div>
   );
 }
@@ -110,11 +116,20 @@ export function ModuleMapView() {
  * breadcrumb so the two lenses read as one control language.
  */
 function ModuleMapBreadcrumb(props: {
+  overview: boolean;
+  packageCount: number;
   rootId: string | null;
   rootLabel: string | null;
   isCustomRoot: boolean;
   onHome: () => void;
 }) {
+  if (props.overview) {
+    return (
+      <nav style={BREADCRUMB_STYLE} aria-label="Package overview">
+        <span style={CRUMB_CURRENT_STYLE} aria-current="page">Whole repository — {props.packageCount} packages</span>
+      </nav>
+    );
+  }
   if (props.rootLabel === null) {
     return null;
   }
@@ -135,12 +150,16 @@ function ModuleMapBreadcrumb(props: {
 
 /** Shown when nothing is reachable — no import edges, an entry with no in-project imports, or a depth
  * of 1 on a module that imports nothing — so the lens is never a silent blank canvas. */
-function EmptyModuleMapCard() {
+function EmptyModuleMapCard(props: { overview: boolean }) {
   return (
     <div style={EMPTY_WRAP_STYLE}>
       <div style={EMPTY_CARD_STYLE}>
         <span style={EMPTY_MARK_STYLE}>∅</span>
-        <span>No imported modules at this depth — raise the depth, or this entry imports nothing in-project.</span>
+        <span>
+          {props.overview
+            ? "No packages with cross-package imports — this artifact has no npm-package roots or no resolved imports."
+            : "No imported modules at this depth — raise the depth, or this entry imports nothing in-project."}
+        </span>
       </div>
     </div>
   );
@@ -151,6 +170,9 @@ function EmptyModuleMapCard() {
 function miniMapColor(node: Node): string {
   if (node.type === "frame") {
     return "#2A313D";
+  }
+  if (node.type === "package") {
+    return "#5B9BE3";
   }
   return CATEGORY_COLOR[(node.data as ModuleCardData).category];
 }

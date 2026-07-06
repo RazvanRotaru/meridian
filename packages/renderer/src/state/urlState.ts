@@ -31,11 +31,13 @@ export interface NavState {
   moduleDepth: number;
   /** Module categories painted out of the map — a comma-joined list in the URL. */
   hiddenCategories: string[];
+  /** The Module map's whole-repo PACKAGE overview is on (vs the entry-rooted file view). */
+  moduleOverview: boolean;
   environment: string | null;
 }
 
 /** Every param key we own — listed once so `mergeNavIntoSearch` can clear them before rewriting. */
-const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "lroot", "lstack", "expand", "mroot", "mdepth", "mhide", "env"] as const;
+const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "lroot", "lstack", "expand", "mroot", "mdepth", "mhide", "mov", "env"] as const;
 
 /** The navigation state the app boots into — the baseline a restore resets absent keys back to. */
 export const DEFAULT_NAV: NavState = {
@@ -53,6 +55,7 @@ export const DEFAULT_NAV: NavState = {
   moduleRoot: null,
   moduleDepth: 1,
   hiddenCategories: [],
+  moduleOverview: false,
   environment: null,
 };
 
@@ -72,6 +75,7 @@ interface NavSource {
   moduleRoot: string | null;
   moduleDepth: number;
   hiddenCategories: ReadonlySet<string>;
+  moduleOverview: boolean;
   environment: string | null;
 }
 
@@ -92,6 +96,7 @@ export function navFrom(state: NavSource): NavState {
     moduleRoot: state.moduleRoot,
     moduleDepth: state.moduleDepth,
     hiddenCategories: [...state.hiddenCategories].sort(),
+    moduleOverview: state.moduleOverview,
     environment: state.environment,
   };
 }
@@ -113,6 +118,7 @@ export function encodeNav(nav: NavState): Map<string, string> {
   setId(out, "mroot", nav.moduleRoot);
   if (nav.moduleDepth !== 1) out.set("mdepth", String(nav.moduleDepth));
   setList(out, "mhide", nav.hiddenCategories);
+  if (nav.moduleOverview) out.set("mov", "1");
   setId(out, "env", nav.environment);
   return out;
 }
@@ -137,6 +143,7 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   const moduleDepth = params.get("mdepth");
   if (moduleDepth !== null && !Number.isNaN(Number(moduleDepth))) out.moduleDepth = Number(moduleDepth);
   assignList(params, "mhide", out, "hiddenCategories");
+  if (params.get("mov") === "1") out.moduleOverview = true;
   assignId(params, "env", out, "environment");
   return out;
 }
@@ -165,6 +172,7 @@ export function isNavigationChange(prev: NavState, next: NavState): boolean {
     prev.focusId !== next.focusId ||
     prev.compRoot !== next.compRoot ||
     prev.moduleRoot !== next.moduleRoot ||
+    prev.moduleOverview !== next.moduleOverview ||
     prev.flowRootId !== next.flowRootId ||
     prev.logicRoot !== next.logicRoot ||
     prev.logicStack.join(",") !== next.logicStack.join(",")

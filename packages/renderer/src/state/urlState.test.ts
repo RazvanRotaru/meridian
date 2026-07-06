@@ -18,6 +18,7 @@ function emptyNav(): NavState {
     moduleRoot: null,
     moduleDepth: 1,
     hiddenCategories: [],
+    moduleOverview: false,
     environment: null,
   };
 }
@@ -94,6 +95,13 @@ describe("urlState", () => {
     const nav: NavState = { ...emptyNav(), viewMode: "modules", moduleDepth: 1, hiddenCategories: [] };
     expect(encodeNav(nav).has("mdepth")).toBe(false);
     expect(encodeNav(nav).has("mhide")).toBe(false);
+  });
+
+  it("round-trips the whole-repo package overview flag (mov)", () => {
+    const nav: NavState = { ...emptyNav(), viewMode: "modules", moduleOverview: true };
+    expect(encodeNav(nav).get("mov")).toBe("1");
+    expect(roundTrip(nav)).toEqual({ viewMode: "modules", moduleOverview: true });
+    expect(encodeNav({ ...emptyNav(), viewMode: "modules" }).has("mov")).toBe(false);
   });
 
   it("preserves foreign params (web-mode id) while owning its own keys", () => {
@@ -181,6 +189,7 @@ function storeShape() {
     moduleRoot: null,
     moduleDepth: 1,
     hiddenCategories: new Set<string>(),
+    moduleOverview: false,
     environment: null,
   };
 }

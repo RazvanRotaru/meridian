@@ -12,6 +12,7 @@ import { useBlueprint } from "../../../state/StoreContext";
 import type { ModuleCardData } from "../../../derive/moduleMap";
 import type { ModuleCategory } from "../../../derive/moduleCategory";
 import { ModuleFrameNode } from "./ModuleFrameNode";
+import { PackageOverviewNode } from "./PackageOverviewNode";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 // The green shared with the emphasized import wires, so a card's ring and its lit edges read as one
@@ -49,8 +50,9 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
 
 export const ModuleCardNode = memo(ModuleCardNodeImpl);
 
-/** The node-type registry the Module-map surface hands React Flow (a stable module-level reference). */
-export const moduleNodeTypes = { file: ModuleCardNode, frame: ModuleFrameNode };
+/** The node-type registry the Module-map surface hands React Flow (a stable module-level reference).
+ * `file`/`frame` are the entry-rooted file view; `package` is the whole-repo overview's collapsed node. */
+export const moduleNodeTypes = { file: ModuleCardNode, frame: ModuleFrameNode, package: PackageOverviewNode };
 
 // Category → accent hue, echoing the palette used across the dark surfaces: entry green (the "you are
 // here" signal), ui blue, util amber, config violet, app a neutral slate. Exported so the Module-map

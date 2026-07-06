@@ -26,7 +26,8 @@ import { uiFocusTarget } from "../derive/uiFocus";
 import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
-import { deriveModuleMapLayout, readEntryModules } from "./deriveModuleMapLayout";
+import { deriveModuleMapLayout, derivePackageOverviewLayout, readEntryModules } from "./deriveModuleMapLayout";
+import { packageEntryModule } from "../derive/packageOverview";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
@@ -136,6 +137,10 @@ export interface BlueprintState {
   hiddenCategories: Set<ModuleCategory>;
   /** The selected file card id in the Module map; null == none. A repaint-only highlight — no relayout. */
   moduleSelectedId: string | null;
+  /** Whole-repository PACKAGE overview: each npm package collapsed to one node with aggregated
+   * cross-package import wires (a monorepo's "root at the repo" view). false == the entry-rooted file
+   * blast radius. Independent of moduleRoot/moduleDepth (the overview spans the whole artifact). */
+  moduleOverview: boolean;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -182,6 +187,8 @@ export interface BlueprintState {
   setModuleDepth(depth: number): void;
   toggleCategory(category: ModuleCategory): void;
   selectModule(id: string | null): void;
+  setModuleOverview(on: boolean): void;
+  drillIntoPackage(packageId: string): void;
   setViewMode(mode: ViewMode): void;
   toggleShowTests(): void;
   toggleCoverageMode(): void;
@@ -260,6 +267,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleDepth: 1,
     hiddenCategories: new Set<ModuleCategory>(),
     moduleSelectedId: null,
+    moduleOverview: false,
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -497,9 +505,25 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // derivation is synchronous; the await yields one microtask so a concurrent root/depth change can
     // bump the seq and discard this pass — matching compRelayout's guarded flow.
     async moduleRelayout() {
-      const { index, artifact, moduleRoot, moduleDepth } = get();
+      const { index, artifact, moduleRoot, moduleDepth, moduleOverview } = get();
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
+      // Whole-repo overview: a package-level graph (root/depth-independent, ELK-laid) rather than the
+      // entry-rooted file rings. There is no single walked root, so the breadcrumb/depth are cleared.
+      if (moduleOverview) {
+        const overview = await derivePackageOverviewLayout(index);
+        if (moduleLayoutSeq !== sequence) {
+          return;
+        }
+        set({
+          moduleRfNodes: overview.nodes,
+          moduleRfEdges: overview.edges,
+          moduleEffectiveRoot: null,
+          moduleMaxDepth: 0,
+          moduleLayoutStatus: "ready",
+        });
+        return;
+      }
       await Promise.resolve();
       // "All" (the GHOST_DEPTH_ALL sentinel) means the whole radius — pass null so the walk is truly
       // unbounded rather than capped at the sentinel's numeric value.
@@ -548,6 +572,29 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Select a Module-map file card (pass null to clear). A repaint-only highlight — no relayout.
     selectModule(id) {
       set({ moduleSelectedId: id });
+    },
+
+    // Flip between the whole-repo PACKAGE overview and the entry-rooted file view. Clears the selection
+    // (a package id means nothing in the file view and vice versa) and re-lays out. A no-op if unchanged.
+    setModuleOverview(on) {
+      if (get().moduleOverview === on) {
+        return;
+      }
+      set({ moduleOverview: on, moduleSelectedId: null });
+      void get().moduleRelayout();
+    },
+
+    // Drill from an overview package into its files: leave the overview and re-root the blast radius at
+    // that package's entry module (index/main…), opening at the clean depth-1 default. A package with no
+    // module leaves the root null (the file view then self-heals to the resolved default entry).
+    drillIntoPackage(packageId) {
+      set({
+        moduleOverview: false,
+        moduleSelectedId: null,
+        moduleRoot: packageEntryModule(get().index, packageId),
+        moduleDepth: 1,
+      });
+      void get().moduleRelayout();
     },
 
     // Switching mode re-derives + relayouts like a dive. Entering UI mode dives to the render

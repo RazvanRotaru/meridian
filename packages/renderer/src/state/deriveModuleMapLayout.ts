@@ -15,7 +15,9 @@ import type { GraphArtifact } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import { deriveModuleMap, type ModuleMapSpec } from "../derive/moduleMap";
 import { resolveModuleRoot } from "../derive/moduleGraph";
+import { derivePackageOverview } from "../derive/packageOverview";
 import { layoutModuleMap } from "../layout/moduleRingLayout";
+import { layoutPackageOverview } from "../layout/packageOverviewLayout";
 
 export interface ModuleMapLayout {
   nodes: Node[];
@@ -69,4 +71,13 @@ function specForDepth(
 
 function emptyLayout(): ModuleMapLayout {
   return { nodes: [], edges: [], effectiveRoot: null, maxDepth: 0 };
+}
+
+/**
+ * The whole-repository PACKAGE overview: every npm package collapsed to one node, cross-package
+ * imports aggregated, laid out as an ELK dependency diagram. Root-independent (it spans the whole
+ * artifact), so it ignores the blast-radius root/depth entirely.
+ */
+export async function derivePackageOverviewLayout(index: GraphIndex): Promise<{ nodes: Node[]; edges: Edge[] }> {
+  return layoutPackageOverview(derivePackageOverview(index));
 }

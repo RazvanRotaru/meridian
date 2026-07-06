@@ -14,6 +14,7 @@ import { FlowSelector } from "./FlowSelector";
 import { CompositionPanel } from "./composition/CompositionPanel";
 import { DepthSlider } from "./DepthSlider";
 import { ModuleCategoryToggles } from "./ModuleCategoryToggles";
+import { ModuleOverviewToggle } from "./ModuleOverviewToggle";
 
 export function Toolbar(props: { preselectedEnv: string | null }) {
   const targetName = useBlueprint((state) => state.artifact.target.name);
@@ -24,6 +25,9 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
   const viewMode = useBlueprint((state) => state.viewMode);
   const isComposition = viewMode === "call";
   const isModules = viewMode === "modules";
+  // In the whole-repo package overview the depth slider is meaningless (the graph spans every package,
+  // not a hop radius), so it's hidden; the Packages⇄Files toggle stays as the scope switch.
+  const moduleOverview = useBlueprint((state) => state.moduleOverview);
   const collapseAll = useBlueprintActions().collapseAll;
   return (
     <Panel position="top-left">
@@ -44,7 +48,8 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
           <CompositionPanel />
         ) : isModules ? (
           <>
-            <DepthSlider />
+            <ModuleOverviewToggle />
+            {moduleOverview ? null : <DepthSlider />}
             <ModuleCategoryToggles />
           </>
         ) : (
