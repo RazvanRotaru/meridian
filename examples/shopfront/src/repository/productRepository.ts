@@ -1,6 +1,6 @@
 import type { Category, Product } from "../domain/product.js";
 import { BaseRepository } from "./baseRepository.js";
-import { unique } from "../utils/legacy.js";
+import { unique } from "../utils/collections.js";
 
 /** Stores the product catalog in memory. */
 export class ProductRepository extends BaseRepository<Product> {

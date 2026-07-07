@@ -1,7 +1,7 @@
 import type { ProductId, ProductView } from "../domain/product.js";
 import { ProductRepository } from "../repository/productRepository.js";
 import { CatalogService } from "./catalogService.js";
-import { groupBy, unique } from "../utils/legacy.js";
+import { groupBy, unique } from "../utils/collections.js";
 import { log } from "../utils/logger.js";
 
 /**
