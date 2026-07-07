@@ -85,25 +85,30 @@ function isHidden(node: Node, options: HideOptions): boolean {
   return options.hiddenCategories.has((node.data as ModuleCardData).category);
 }
 
+/** The node types the DIRECTED read applies to — everything that is code, not containment. */
+const CODE_TYPES: ReadonlySet<string> = new Set(["unit", "block", "step", "ghost"]);
+
 /**
  * Anti-clutter emphasis: EVERY wire is dim by default, so a level reads as its cards until the
- * reader points at one. Selecting a FILE/PACKAGE lights its import neighbourhood within `radius`
- * undirected hops (the original behavior). Selecting a CODE node (a unit, block, or flow step)
- * switches to a DIRECTED read over the dependency/flow wires — Sourcetrail-style: what this code
- * REACHES within `radius` hops lights violet and marches forward; what CALLS it lights green and
- * marches toward it. The radius dial is thus the callers/callees depth for code selections.
+ * reader points at one. Plain click selects one node; ctrl/cmd+click accumulates several, and the
+ * UNION of their reaches lights. FILE/PACKAGE selections light their import neighbourhood within
+ * `radius` undirected hops. An all-CODE selection (units, blocks, flow steps, ghosts) switches to
+ * a DIRECTED read over the dependency/flow wires — Sourcetrail-style: what this code REACHES within
+ * `radius` hops lights violet and marches forward; what CALLS it lights green and marches toward
+ * it. The radius dial is thus the callers/callees depth for code selections.
  */
-export function emphasize(nodes: Node[], edges: Edge[], activeId: string | null, radius: number): { nodes: Node[]; edges: Edge[] } {
-  // A selection that is no longer drawn (its frame collapsed, its card filtered away) must read as
-  // "nothing selected" — otherwise every node dims with nothing highlighted.
-  const active = activeId === null ? undefined : nodes.find((node) => node.id === activeId);
-  if (activeId === null || !active) {
+export function emphasize(nodes: Node[], edges: Edge[], activeIds: ReadonlySet<string>, radius: number): { nodes: Node[]; edges: Edge[] } {
+  // Selections no longer drawn (a frame collapsed, a card filtered away) drop out; none left must
+  // read as "nothing selected" — otherwise every node dims with nothing highlighted.
+  const typeById = new Map(nodes.map((node) => [node.id, node.type]));
+  const active = [...activeIds].filter((id) => typeById.has(id));
+  if (active.length === 0) {
     return { nodes, edges: edges.map((edge) => styleEdge(edge, "none")) };
   }
-  if (active.type === "unit" || active.type === "block" || active.type === "step" || active.type === "ghost") {
-    return emphasizeDirected(nodes, edges, activeId, radius);
+  if (active.every((id) => CODE_TYPES.has(typeById.get(id) ?? ""))) {
+    return emphasizeDirected(nodes, edges, active, radius);
   }
-  const near = neighbourhood(edges, activeId, radius);
+  const near = neighbourhood(edges, active, radius);
   const styledEdges = edges.map((edge) => styleEdge(edge, near.has(edge.source) && near.has(edge.target) ? "near" : "none"));
   const styledNodes = nodes.map((node) => (near.has(node.id) ? node : dimNode(node)));
   return { nodes: styledNodes, edges: styledEdges };
@@ -113,8 +118,8 @@ export function emphasize(nodes: Node[], edges: Edge[], activeId: string | null,
  * over the dep + flow wires, each to `radius` hops. Selecting an expanded FRAME means "this code" —
  * the walk seeds with every node drawn inside it, so its steps' wires light as the frame's own.
  * Import wires stay part of the backdrop. */
-function emphasizeDirected(nodes: Node[], edges: Edge[], activeId: string, radius: number): { nodes: Node[]; edges: Edge[] } {
-  const seed = withDrawnDescendants(activeId, nodes);
+function emphasizeDirected(nodes: Node[], edges: Edge[], activeIds: readonly string[], radius: number): { nodes: Node[]; edges: Edge[] } {
+  const seed = withDrawnDescendants(activeIds, nodes);
   const codeEdges = edges.filter((edge) => isDep(edge) || isFlow(edge));
   const down = directedReach(codeEdges, seed, radius, "forward");
   const up = directedReach(codeEdges, seed, radius, "reverse");
@@ -133,8 +138,8 @@ function emphasizeDirected(nodes: Node[], edges: Edge[], activeId: string, radiu
 }
 
 /** The selection plus every node drawn inside it (nodes arrive parents-before-children). */
-function withDrawnDescendants(activeId: string, nodes: Node[]): Set<string> {
-  const seed = new Set<string>([activeId]);
+function withDrawnDescendants(activeIds: readonly string[], nodes: Node[]): Set<string> {
+  const seed = new Set<string>(activeIds);
   for (const node of nodes) {
     if (node.parentId && seed.has(node.parentId)) {
       seed.add(node.id);
@@ -171,10 +176,11 @@ function directedReach(
   return { nodes: reachedNodes, edges: reachedEdges };
 }
 
-/** The active node plus every node within `radius` undirected import hops of it. */
-function neighbourhood(edges: Edge[], activeId: string, radius: number): Set<string> {
-  const reached = new Set<string>([activeId]);
-  let frontier = [activeId];
+/** The active nodes plus every node within `radius` undirected import hops of ANY of them —
+ * a multi-source BFS, so several selections light the union of their reaches. */
+function neighbourhood(edges: Edge[], activeIds: readonly string[], radius: number): Set<string> {
+  const reached = new Set<string>(activeIds);
+  let frontier = [...activeIds];
   for (let hop = 0; hop < Math.max(1, radius) && frontier.length > 0; hop += 1) {
     const next: string[] = [];
     for (const edge of edges) {

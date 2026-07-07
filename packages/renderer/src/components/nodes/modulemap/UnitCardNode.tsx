@@ -16,7 +16,7 @@ import { frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT } from "./fram
 type UnitRfNode = Node<UnitCardData, "unit">;
 
 function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
-  const selected = useBlueprint((state) => state.moduleSelectedId) === id;
+  const selected = useBlueprint((state) => state.moduleSelected.has(id));
   const accent = accentForKind(data.unitKind);
 
   const identity = (

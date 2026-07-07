@@ -22,7 +22,7 @@
 import type { GraphEdge, GraphNode, LogicFlows } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import { npmPackageIdOf } from "./compositionClusters";
-import { packageEntryModule, type ModulePackageData } from "./packageOverview";
+import { derivePackageOverview, packageEntryModule, type ModulePackageData } from "./packageOverview";
 import { weightKey, type ModuleGraph } from "./moduleGraph";
 import { basename, blockData, collapseChain, fileData, unitData, type BlockData, type ModuleCardData, type UnitCardData } from "./moduleLevel";
 import { containmentChildren, frontierRoots, subtreeFileCount } from "./moduleFrontier";
@@ -87,7 +87,11 @@ export function deriveModuleTree(
   const skeleton = walked.skeleton;
   const visibleIds = new Set(skeleton.map((entry) => entry.id));
   const lifted = liftEdges(importEdges(graph), visibleIds, index.parentOf);
-  const nodes = skeleton.map((entry) => finalize(entry, index, graph, lifted, walked.stepData));
+  // At the repo overview, root package cards wear the OWNERSHIP-fold numbers (each file counts once,
+  // toward its nearest npm package) so nested packages never double-count — main's dedicated
+  // package-overview fold, kept through the expandable walk.
+  const overviewFold = effectiveFocus === null ? foldById(index) : new Map<string, ModulePackageData>();
+  const nodes = skeleton.map((entry) => finalize(entry, index, graph, lifted, walked.stepData, overviewFold));
   const kinds = kindsOf(skeleton);
   const ghosts = ghostLevel(blockDeps, walked, visibleIds, index, kinds);
   const edges = [
@@ -265,6 +269,7 @@ function finalize(
   graph: ModuleGraph,
   lifted: ReturnType<typeof liftEdges>,
   stepData: ReadonlyMap<string, StepData>,
+  overviewFold: ReadonlyMap<string, ModulePackageData>,
 ): VisibleModuleNode {
   const data =
     entry.kind === "step"
@@ -279,7 +284,7 @@ function finalize(
             isExpanded: entry.isExpanded,
             unitCount: entry.childCount,
           })
-        : groupData(entry, index, subtreeFileCount(index, entry.id), lifted);
+        : groupData(entry, index, subtreeFileCount(index, entry.id), lifted, overviewFold);
   return { ...entry, data };
 }
 
@@ -288,7 +293,17 @@ function entryFor(fileId: string, index: GraphIndex): string | null {
   return packageEntryModule(index, npmPackageIdOf(fileId, index.nodesById) ?? fileId);
 }
 
-function groupData(entry: Skeleton, index: GraphIndex, fileCount: number, lifted: ReturnType<typeof liftEdges>): ModuleGroupData {
+function groupData(
+  entry: Skeleton,
+  index: GraphIndex,
+  fileCount: number,
+  lifted: ReturnType<typeof liftEdges>,
+  overviewFold: ReadonlyMap<string, ModulePackageData>,
+): ModuleGroupData {
+  const fold = overviewFold.get(entry.id);
+  if (fold) {
+    return { ...fold, isContainer: entry.isContainer, isExpanded: entry.isExpanded };
+  }
   const label = index.nodesById.get(entry.id)?.displayName ?? basename(entry.id);
   return {
     label,
@@ -298,6 +313,12 @@ function groupData(entry: Skeleton, index: GraphIndex, fileCount: number, lifted
     isContainer: entry.isContainer,
     isExpanded: entry.isExpanded,
   };
+}
+
+/** Overview-fold card data per npm package id (empty when the artifact has none — the topmost-dir
+ * fallback roots keep the lifted-edge numbers). */
+function foldById(index: GraphIndex): Map<string, ModulePackageData> {
+  return new Map(derivePackageOverview(index).nodes.map((node) => [node.id, node.data]));
 }
 
 /** Distinct frontier nodes this node imports (`source`) or is imported by (`target`) after lifting. */

@@ -8,6 +8,7 @@
 const INTERNAL_COLOR = "#5B6675";
 const CROSS_BOUNDARY_COLOR = "#C9A24B";
 const INHERITANCE_COLOR = "#A78BFA";
+const IPC_COLOR = "#E06CB0";
 
 export function CompositionLegend() {
   return (
@@ -17,6 +18,7 @@ export function CompositionLegend() {
         <LegendEdge color={INTERNAL_COLOR} label="within a package" />
         <LegendEdge color={CROSS_BOUNDARY_COLOR} label="crosses a package boundary" />
         <LegendEdge color={INHERITANCE_COLOR} label="inheritance" dashed />
+        <LegendEdge color={IPC_COLOR} label="IPC — over the wire, via a channel" dashed />
       </div>
       <div style={HINT_STYLE}>
         <div><b style={KBD_STYLE}>click</b> → highlight a unit's dependencies</div>

@@ -19,7 +19,7 @@ const PACKAGE_ACCENT = "#5B9BE3";
 type PackageRfNode = Node<ModuleGroupData, "package">;
 
 function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
-  const selected = useBlueprint((state) => state.moduleSelectedId) === id;
+  const selected = useBlueprint((state) => state.moduleSelected.has(id));
   const chevron = data.isContainer ? <ExpandChevron id={id} isExpanded={data.isExpanded} /> : null;
 
   if (data.isExpanded) {

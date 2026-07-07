@@ -112,6 +112,7 @@ function structuralState(nav: NavState): Record<string, unknown> {
     flowRootId: nav.flowRootId,
     flowDepth: nav.flowDepth,
     logicRoot: nav.logicRoot,
+    logicView: nav.logicView,
     logicStack: nav.logicStack,
     expanded: new Set(nav.expanded),
     moduleFocus: nav.moduleFocus,

@@ -17,6 +17,7 @@ import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes, CATEGORY_COLOR } from "./nodes/modulemap/ModuleCardNode";
 import { filterVisible, emphasize } from "./moduleMapPaint";
 import { crumbsFor, EmptyModuleMapCard, LevelBreadcrumb } from "./ModuleMapChrome";
+import { CoveragePanel } from "./CoveragePanel";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { accentForKind } from "../theme/kindColors";
 import type { BlockData, ModuleCardData, UnitCardData } from "../derive/moduleLevel";
@@ -26,7 +27,7 @@ const PACKAGE_KIND = "package";
 export function ModuleMapView() {
   const nodes = useBlueprint((state) => state.moduleRfNodes);
   const edges = useBlueprint((state) => state.moduleRfEdges);
-  const selectedId = useBlueprint((state) => state.moduleSelectedId);
+  const selected = useBlueprint((state) => state.moduleSelected);
   const layoutStatus = useBlueprint((state) => state.moduleLayoutStatus);
   const effectiveFocus = useBlueprint((state) => state.moduleEffectiveFocus);
   const radius = useBlueprint((state) => state.moduleRadius);
@@ -35,7 +36,7 @@ export function ModuleMapView() {
   const showTests = useBlueprint((state) => state.showTests);
   const showPrivate = useBlueprint((state) => state.showPrivate);
   const hasExpansions = useBlueprint((state) => state.moduleExpanded.size > 0);
-  const { selectModule, setModuleFocus, openLogicFlow, revealModule, expandAllModules, collapseAll } = useBlueprintActions();
+  const { selectModule, toggleModuleSelect, setModuleFocus, openLogicFlow, revealModule, expandAllModules, collapseAll } = useBlueprintActions();
 
   // Category/test hiding is a pure VISIBILITY filter over the laid-out graph; positions are untouched.
   const { nodes: shownNodes, edges: shownEdges } = useMemo(
@@ -44,11 +45,14 @@ export function ModuleMapView() {
   );
   // Emphasis is a second pure repaint: dim by default, light the selection's N-hop import reach.
   const { nodes: styledNodes, edges: styledEdges } = useMemo(
-    () => emphasize(shownNodes, shownEdges, selectedId, radius),
-    [shownNodes, shownEdges, selectedId, radius],
+    () => emphasize(shownNodes, shownEdges, selected, radius),
+    [shownNodes, shownEdges, selected, radius],
   );
 
-  const onNodeClick: NodeMouseHandler<Node> = (_event, node) => selectModule(node.id);
+  // Plain click REPLACES the selection; ctrl/cmd+click toggles the node in/out of it, accumulating
+  // a multi-selection whose combined reach lights up.
+  const onNodeClick: NodeMouseHandler<Node> = (event, node) =>
+    event.ctrlKey || event.metaKey ? toggleModuleSelect(node.id) : selectModule(node.id);
   // Double-click a GROUP card (a package/directory) zooms into it; a callable BLOCK opens its logic
   // flow (the map→logic link); a GHOST reveals its off-screen definition (the Map refocuses where it
   // lives); everything else only selects. The breadcrumb is the way back up.
@@ -108,6 +112,7 @@ export function ModuleMapView() {
         onCollapseAll={collapseAll}
       />
       {isEmpty ? <EmptyModuleMapCard focus={effectiveFocus} /> : null}
+      <CoveragePanel />
     </div>
   );
 }

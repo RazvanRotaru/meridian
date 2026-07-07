@@ -64,7 +64,7 @@ describe("emphasize — stale selection", () => {
   it("paints as no-selection when the selected id is no longer drawn (frame collapsed)", () => {
     const nodes = [fileNode("ts:a.ts"), fileNode("ts:b.ts")];
     const edges = [edge("ts:a.ts", "ts:b.ts")];
-    const { nodes: styled } = emphasize(nodes, edges, "ts:a.ts#Gone", 1);
+    const { nodes: styled } = emphasize(nodes, edges, new Set(["ts:a.ts#Gone"]), 1);
     // No node dims: the vanished selection must not fade the whole level.
     expect(styled.every((node) => node.style?.opacity === undefined)).toBe(true);
   });

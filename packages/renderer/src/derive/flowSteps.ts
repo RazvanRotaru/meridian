@@ -16,7 +16,7 @@ import type { FlowStep, LogicFlows, NodeId } from "@meridian/core";
  * expansion state (a container step opens into a frame of deeper steps). */
 export type StepData = {
   label: string;
-  stepKind: "call" | "loop" | "branch" | "callback";
+  stepKind: "call" | "loop" | "branch" | "callback" | "exit";
   resolved: boolean;
   isContainer: boolean;
   isExpanded: boolean;
@@ -85,11 +85,18 @@ function emitInside(id: string, step: FlowStep, depth: number, out: StepEmission
     }
     return;
   }
-  const inside = step.kind === "call" ? (step.target ? ctx.flows[ctx.resolveTarget(step.target)] ?? [] : []) : step.body;
-  emitRun(id, inside, depth, 0, out, ctx);
+  if (step.kind === "call") {
+    emitRun(id, step.target ? ctx.flows[ctx.resolveTarget(step.target)] ?? [] : [], depth, 0, out, ctx);
+    return;
+  }
+  if (step.kind === "exit") {
+    return; // never a container — nothing charts inside a return/throw.
+  }
+  emitRun(id, step.body, depth, 0, out, ctx);
 }
 
-/** Whether the step has anything to open: a charted callee flow, or a non-empty construct body. */
+/** Whether the step has anything to open: a charted callee flow, or a non-empty construct body.
+ * An `exit` (return/throw) ends its path — nothing inside, ever. */
 function hasInside(step: FlowStep, ctx: EmitContext): boolean {
   if (step.kind === "call") {
     return step.resolution === "resolved" && step.target !== null && (ctx.flows[ctx.resolveTarget(step.target)]?.length ?? 0) > 0;
@@ -97,10 +104,16 @@ function hasInside(step: FlowStep, ctx: EmitContext): boolean {
   if (step.kind === "branch") {
     return step.paths.some((path) => path.body.length > 0);
   }
+  if (step.kind === "exit") {
+    return false;
+  }
   return step.body.length > 0;
 }
 
 function stepData(step: FlowStep, isContainer: boolean, isExpanded: boolean): StepData {
+  if (step.kind === "exit") {
+    return { label: step.label ? `${step.variant} ${step.label}` : step.variant, stepKind: "exit", resolved: false, isContainer, isExpanded };
+  }
   return {
     label: step.label,
     stepKind: step.kind,

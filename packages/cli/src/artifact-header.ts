@@ -7,7 +7,7 @@
  */
 
 import { basename } from "node:path";
-import { LOGIC_FLOW_EXTENSION, SCHEMA_VERSION } from "@meridian/core";
+import { LOGIC_FLOW_EXTENSION, PORTS_EXTENSION, SCHEMA_VERSION } from "@meridian/core";
 import type { ExtractionResult, GraphArtifact, GraphNode, JsonValue, LanguageTag } from "@meridian/core";
 import { nowIso } from "./clock";
 import { entryModulesExtension } from "./entry-points";
@@ -61,6 +61,10 @@ function extensionsFor(inputs: HeaderInputs): Record<string, JsonValue> {
   const flows = inputs.extraction.flows;
   if (flows && Object.keys(flows).length > 0) {
     extensions[LOGIC_FLOW_EXTENSION] = flows as unknown as JsonValue;
+  }
+  const ports = inputs.extraction.ports;
+  if (ports && ports.length > 0) {
+    extensions[PORTS_EXTENSION] = ports as unknown as JsonValue;
   }
   const entryModules = entryModulesExtension(inputs.absoluteRoot, moduleNodesOf(inputs.extraction));
   if (entryModules) {

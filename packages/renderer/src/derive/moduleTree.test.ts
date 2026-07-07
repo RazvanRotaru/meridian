@@ -78,6 +78,19 @@ describe("deriveModuleTree — overview (focus null)", () => {
     expect((pkgA?.data as ModuleGroupData).fileCount).toBe(3); // index, util, run
   });
 
+  it("uses the package-overview ownership fold for root package counts (nested packages never double-count)", () => {
+    const nodes = [
+      npmPkg("ts:outer", "outer"),
+      node("ts:outer/root.ts", "module", "ts:outer", "root.ts"),
+      npmPkg("ts:outer/inner", "inner", "ts:outer"),
+      node("ts:outer/inner/leaf.ts", "module", "ts:outer/inner", "leaf.ts"),
+    ];
+    const edges = [importEdge("ts:outer/root.ts", "ts:outer/inner/leaf.ts")];
+    const byId = new Map(treeOf(nodes, edges, null, []).nodes.map((n) => [n.id, n.data as ModuleGroupData]));
+    expect(byId.get("ts:outer")).toMatchObject({ fileCount: 1, ce: 1, ca: 0 });
+    expect(byId.get("ts:outer/inner")).toMatchObject({ fileCount: 1, ce: 0, ca: 1 });
+  });
+
   it("collapsed packages couple as package→package wires; internal imports self-loop away", () => {
     const { nodes, edges } = fixture();
     const wires = treeOf(nodes, edges, null, []).edges.map((e) => `${e.source}->${e.target}:${e.crossFrame}`);

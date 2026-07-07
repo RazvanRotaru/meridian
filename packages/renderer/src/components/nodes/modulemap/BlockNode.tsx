@@ -17,7 +17,7 @@ import { ExpandChevron, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT
 type BlockRfNode = Node<BlockData, "block">;
 
 function BlockNodeImpl({ id, data }: NodeProps<BlockRfNode>) {
-  const selected = useBlueprint((state) => state.moduleSelectedId) === id;
+  const selected = useBlueprint((state) => state.moduleSelected.has(id));
   const accent = accentForKind(data.blockKind);
   const chevron = data.hasFlow ? <ExpandChevron id={id} isExpanded={data.isExpanded} collapsedTitle="Expand — chart this flow in place" /> : null;
   const title = data.callable ? `${data.label} — double-click to open its logic flow` : data.label;

@@ -13,6 +13,7 @@ function emptyNav(): NavState {
     flowRootId: null,
     flowDepth: null,
     logicRoot: null,
+    logicView: "graph",
     logicStack: [],
     expanded: [],
     moduleFocus: null,
@@ -36,6 +37,13 @@ describe("urlState", () => {
 
   it("encodes the non-default composition lens explicitly (view=call)", () => {
     expect(encodeNav({ ...emptyNav(), viewMode: "call" }).get("view")).toBe("call");
+  });
+
+  it("round-trips the logic sub-view, omitting the default and rejecting junk", () => {
+    const nav: NavState = { ...emptyNav(), viewMode: "logic", logicRoot: "ts:src/a.ts#f", logicView: "metro" };
+    expect(roundTrip(nav).logicView).toBe("metro");
+    expect(encodeNav(emptyNav()).has("lview")).toBe(false);
+    expect(decodeNav(new URLSearchParams("lview=bogus")).logicView).toBeUndefined();
   });
 
   it("round-trips a ui-graph view (focus, selection, expansion)", () => {
@@ -86,6 +94,7 @@ describe("urlState", () => {
       moduleFocus: "ts:packages/autopilot-studioweb",
       hiddenCategories: ["config", "util"],
     };
+    // "modules" is now the default lens, so it is omitted from the URL (and not decoded back).
     expect(roundTrip(nav)).toEqual({
       moduleFocus: "ts:packages/autopilot-studioweb",
       hiddenCategories: ["config", "util"],
@@ -195,6 +204,7 @@ function storeShape() {
     flowRootId: null,
     flowDepth: null,
     logicRoot: null,
+    logicView: "graph" as const,
     logicStack: [] as string[],
     expanded: new Set<string>(),
     moduleFocus: null,

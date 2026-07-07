@@ -9,8 +9,9 @@
  */
 
 import type { EdgeResolution, FlowPath, FlowStep, GraphNode, LogicFlows } from "@meridian/core";
-import { parseNodeId } from "@meridian/core";
+import { branchKindOf, exitLabel, parseNodeId, syntheticFallThroughLabel } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
+import { baseName, callDisplay } from "./flowViewModel";
 import type { LogicOwner, OwnerLookup } from "./logicOwner";
 import { clamp } from "../layout/measure";
 
@@ -52,6 +53,11 @@ export type LogicNodeData = {
   /** True on a call block nested inside a service frame: the frame title names the owner, so the block
    * drops its own provenance line (§ ServiceGroupNode). Undefined on standalone/external calls. */
   framed?: boolean;
+  /** The call sits under an `await`: execution holds for it (rendered as a latent ⏱ badge). */
+  awaited?: boolean;
+  /** The call's result is deliberately dropped (`void`-ed / un-awaited Promise): fire-and-forget
+   * work that outlives this flow (rendered as a detached ⤳ badge). */
+  detached?: boolean;
 };
 
 /**
@@ -64,7 +70,8 @@ export type LogicNodeData = {
 export type TerminalData = {
   targetId: null;
   isContainer: false;
-  terminal: "entry" | "exit";
+  /** `entry`/`exit` frame the whole flow; `return`/`throw` are MID-FLOW caps a path dead-ends at. */
+  terminal: "entry" | "exit" | "return" | "throw";
   label: string;
 };
 
@@ -248,6 +255,11 @@ class LogicGraphBuilder {
     const entryData: TerminalData = { targetId: null, isContainer: false, terminal: "entry", label: entry?.displayName ?? baseName(parseNodeId(this.rootId).modulePath) };
     this.nodes.push({ id: entryId, parentId: null, type: "terminal", data: entryData, width: TERMINAL_WIDTH, height: TERMINAL_HEIGHT });
     this.pushEdge(entryId, firstId, "seq");
+    // No trailing exec pins means every path already dead-ended at its own return/throw cap — a
+    // synthetic EXIT would float unconnected, so it only exists when something falls through to it.
+    if (lastExits.length === 0) {
+      return;
+    }
     const exitId = `${this.rootId}::exit`;
     const exitData: TerminalData = { targetId: null, isContainer: false, terminal: "exit", label: "EXIT" };
     this.nodes.push({ id: exitId, parentId: null, type: "terminal", data: exitData, width: TERMINAL_WIDTH, height: TERMINAL_HEIGHT });
@@ -287,6 +299,12 @@ class LogicGraphBuilder {
           this.link(exit, emit.entry);
         }
         prevExits = emit.exits;
+        // A step with NO exec exits (a return/throw cap, or a branch whose every arm exits) ends
+        // this path: whatever follows is unreachable, and charting it would strand wire-less
+        // orphan nodes for ELK to float arbitrarily over the flow.
+        if (prevExits.length === 0) {
+          return { firstId, lastExits: [] };
+        }
       }
     }
     return { firstId, lastExits: prevExits };
@@ -368,15 +386,30 @@ class LogicGraphBuilder {
     if (step.kind === "call") {
       return this.callStep(step, parentId, path, id, framed);
     }
+    if (step.kind === "exit") {
+      return this.exitStep(step, parentId, id);
+    }
     if (step.kind === "loop" || step.kind === "callback") {
       const bodies: FlowPath[] = [{ label: step.label, body: step.body }];
       return this.container(parentId, path, id, step.kind, step.label, bodies, step.body.length);
     }
-    if (isTryLabel(step.label)) {
+    if (branchKindOf(step) === "try") {
       const count = step.paths.reduce((sum, p) => sum + p.body.length, 0);
       return this.container(parentId, path, id, "try", "try / catch", step.paths, count);
     }
     return this.branchStep(step, parentId, path, id);
+  }
+
+  /**
+   * A charted `return`/`throw`: a terminal cap this path DEAD-ENDS at. It exposes NO exec exits, so
+   * nothing links onward from it — a guard's then-path visibly stops instead of silently rejoining
+   * the thread, and a branch merges only what genuinely falls through.
+   */
+  private exitStep(step: Extract<FlowStep, { kind: "exit" }>, parentId: string | null, id: string): { entry: string; exits: Exit[] } {
+    const label = exitLabel(step);
+    const data: TerminalData = { targetId: null, isContainer: false, terminal: step.variant, label };
+    this.nodes.push({ id, parentId, type: "terminal", data, width: exitCapWidth(label), height: EXIT_CAP_HEIGHT });
+    return { entry: id, exits: [] };
   }
 
   private callStep(
@@ -386,7 +419,8 @@ class LogicGraphBuilder {
     id: string,
     framed: boolean,
   ): { entry: string; exits: Exit[] } {
-    const expandable = step.resolution === "resolved" && step.target !== null && (this.flows[step.target]?.length ?? 0) > 0;
+    const display = callDisplay(step, this.flows, this.index);
+    const expandable = display.expandable;
     const greyed = !expandable;
     const isExpanded = expandable && this.expandedState(id, false);
     const data: LogicNodeData = {
@@ -400,30 +434,18 @@ class LogicGraphBuilder {
       greyed,
       provenance: provenanceOf(step.target, step.resolution, this.index),
       childCount: expandable && step.target ? this.flows[step.target].length : 0,
-      callKind: this.callKindOf(step),
+      callKind: display.method ? "method" : "function",
       signature: step.target ? this.index.nodesById.get(step.target)?.signature : undefined,
       owner: this.ownerLookup(step.target),
       framed,
+      awaited: step.awaited,
+      detached: step.detached,
     };
     this.push(id, parentId, "block", data, greyed);
     if (isExpanded && step.target) {
       this.sequence(this.flows[step.target], id, `${path}/`);
     }
     return { entry: id, exits: [{ id }] };
-  }
-
-  /**
-   * Function vs method for a call step. Prefer the RESOLVED target's own node kind; otherwise (an
-   * unresolved/external call, or a target that isn't a method) fall back to the label shape — a
-   * `receiver.method` label (anything with a `.`, e.g. `store.selectSessionId`, `this.foo`,
-   * `mixpanelService.track`) reads as a method call. See `callKind`'s note on the heuristic's limits.
-   */
-  private callKindOf(step: Extract<FlowStep, { kind: "call" }>): "function" | "method" {
-    const target = step.target ? this.index.nodesById.get(step.target) : undefined;
-    if (target?.kind === "method") {
-      return "method";
-    }
-    return step.label.includes(".") ? "method" : "function";
   }
 
   /** Loop, try/catch and callback share the same container shape: default-expanded, children nested. */
@@ -467,7 +489,7 @@ class LogicGraphBuilder {
     id: string,
   ): { entry: string; exits: Exit[] } {
     const data: LogicNodeData = {
-      logicKind: step.label.startsWith("switch") ? "switch" : "if",
+      logicKind: branchKindOf(step) === "switch" ? "switch" : "if",
       label: step.label,
       targetId: null,
       resolution: null,
@@ -484,6 +506,8 @@ class LogicGraphBuilder {
       const sub = this.sequence(flowPath.body, parentId, `${path}/b${pi}/`);
       if (sub.firstId) {
         this.pushEdge(id, sub.firstId, "branch", flowPath.label);
+        // A path that ends at a return/throw cap surfaces NO exits — it dead-ends there instead of
+        // being folded back into the merge, so only genuine fall-through reconverges.
         exits.push(...sub.lastExits);
       } else {
         // An empty path (e.g. an `if` with no `else` body): the branch pin wires straight to the
@@ -491,6 +515,13 @@ class LogicGraphBuilder {
         exits.push({ id, edgeLabel: flowPath.label });
       }
     });
+    // The path the source never wrote: an `if` with no `else` (or a switch with no `default`) falls
+    // through, so the branch gets an explicit labeled pin onto the continuation — the "implicit
+    // else" made visible instead of the flow pretending nothing happened.
+    const synthetic = syntheticFallThroughLabel(step);
+    if (synthetic) {
+      exits.push({ id, edgeLabel: synthetic });
+    }
     return { entry: id, exits };
   }
 
@@ -548,11 +579,6 @@ function provenanceOf(
   return { pkg: firstSegment(parts.modulePath) || "external", module: module || parts.modulePath };
 }
 
-function baseName(path: string): string {
-  const segments = path.split("/");
-  return segments[segments.length - 1] || path;
-}
-
 function firstSegment(path: string): string {
   return path.split("/")[0] ?? path;
 }
@@ -590,6 +616,9 @@ function roundedClamp(min: number, max: number, value: number): number {
   return Math.round(clamp(min, max, value));
 }
 
-function isTryLabel(label: string): boolean {
-  return label === "try/catch";
+// Mid-flow return/throw caps are compact pills sized to their (truncated) expression.
+const EXIT_CAP_HEIGHT = 34;
+
+function exitCapWidth(label: string): number {
+  return roundedClamp(96, 260, 36 + label.length * 6.6);
 }

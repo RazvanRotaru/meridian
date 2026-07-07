@@ -47,37 +47,40 @@ function loopLabel(node: IterationStatement): string {
 }
 
 // `else if` chains nest: the `else` path holds the trailing `if` as its own single branch step.
+// Every path carries its structured `role` so readers never have to sniff the display label.
 function ifStep(node: IfStatement, walker: FlowWalker, depth: number): FlowStep {
-  const paths: FlowPath[] = [{ label: "then", body: walker.walkBody(node.getThenStatement(), depth + 1) }];
+  const paths: FlowPath[] = [{ label: "then", role: "then", body: walker.walkBody(node.getThenStatement(), depth + 1) }];
   const elseStatement = node.getElseStatement();
   if (elseStatement) {
-    paths.push({ label: "else", body: walker.walkBody(elseStatement, depth + 1) });
+    paths.push({ label: "else", role: "else", body: walker.walkBody(elseStatement, depth + 1) });
   }
-  return { kind: "branch", label: ifLabel(node), paths };
+  return { kind: "branch", branchKind: "if", label: ifLabel(node), paths };
 }
 
 function switchStep(node: SwitchStatement, walker: FlowWalker, depth: number): FlowStep {
   const paths = node.getClauses().map((clause) => clausePath(clause, walker, depth));
-  return { kind: "branch", label: switchLabel(node), paths };
+  return { kind: "branch", branchKind: "switch", label: switchLabel(node), paths };
 }
 
 function clausePath(clause: CaseOrDefaultClause, walker: FlowWalker, depth: number): FlowPath {
-  const label = Node.isCaseClause(clause) ? truncate(clause.getExpression().getText()) : "default";
   const body = clause.getStatements().flatMap((statement) => walker.walk(statement, depth + 1));
-  return { label, body };
+  if (Node.isCaseClause(clause)) {
+    return { label: truncate(clause.getExpression().getText()), role: "case", body };
+  }
+  return { label: "default", role: "default", body };
 }
 
 function tryStep(node: TryStatement, walker: FlowWalker, depth: number): FlowStep {
-  const paths: FlowPath[] = [{ label: "try", body: walker.walkBody(node.getTryBlock(), depth + 1) }];
+  const paths: FlowPath[] = [{ label: "try", role: "try", body: walker.walkBody(node.getTryBlock(), depth + 1) }];
   const catchClause = node.getCatchClause();
   if (catchClause) {
-    paths.push({ label: catchLabel(catchClause), body: walker.walkBody(catchClause.getBlock(), depth + 1) });
+    paths.push({ label: catchLabel(catchClause), role: "catch", body: walker.walkBody(catchClause.getBlock(), depth + 1) });
   }
   const finallyBlock = node.getFinallyBlock();
   if (finallyBlock) {
-    paths.push({ label: "finally", body: walker.walkBody(finallyBlock, depth + 1) });
+    paths.push({ label: "finally", role: "finally", body: walker.walkBody(finallyBlock, depth + 1) });
   }
-  return { kind: "branch", label: "try/catch", paths };
+  return { kind: "branch", branchKind: "try", label: "try/catch", paths };
 }
 
 function catchLabel(clause: CatchClause): string {

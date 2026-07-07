@@ -15,6 +15,7 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
 import type { LogicNodeData, TerminalData } from "../../../derive/logicGraph";
+import { FLOW_COLORS } from "../../../derive/flowViewModel";
 import { coverageAccent, coverageVerdict, COVERAGE_COLORS, type CoverageVerdict } from "../../../theme/coverageColors";
 import { CodeInlinePanel } from "../../CodeInlinePanel";
 
@@ -80,6 +81,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
           <div style={GREY_TITLE}>
             <span style={GREY_GLYPH}>{glyph}</span>
             <span style={NAME} title={d.label}>{d.label}</span>
+            <AsyncBadge d={d} />
             {battery}
             {codeButton}
           </div>
@@ -101,6 +103,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
           <span style={GLYPH}>{glyph}</span>
           <span style={NAME} title={d.label}>{d.label}</span>
           <span style={TITLE_TAIL}>
+            <AsyncBadge d={d} />
             {battery}
             {d.definition ? <span style={DEF_TAG}>def</span> : null}
             {/* Gate on `expandable`: a call block is always expandable here, but a defined callable
@@ -278,6 +281,21 @@ function CoverageBattery({ verdict }: { verdict: CoverageVerdict }) {
   );
 }
 
+/**
+ * The async-semantics badge a call block wears: ⏱ for an awaited call (Unreal's "latent node" clock
+ * — execution holds here), ⤳ for a detached fire-and-forget call (result dropped; the work may
+ * outlive this flow). Absent on plain synchronous calls, so the common case stays quiet.
+ */
+function AsyncBadge({ d }: { d: LogicNodeData }) {
+  if (d.awaited) {
+    return <span style={AWAIT_BADGE} title="awaited — execution holds for this call">⏱ await</span>;
+  }
+  if (d.detached) {
+    return <span style={DETACH_BADGE} title="fire-and-forget — result dropped; may outlive this flow">⤳</span>;
+  }
+  return null;
+}
+
 function ExpandButton(props: { expanded: boolean; onToggle: () => void }) {
   return (
     <button
@@ -359,6 +377,17 @@ function TerminalNode({ data }: NodeProps<LogicRfNode>) {
       </div>
     );
   }
+  // A mid-flow `return`/`throw` cap: the red dead-end a terminated path stops at. Left target pin
+  // only — nothing ever leaves a return, which is exactly the point.
+  if (d.terminal === "return" || d.terminal === "throw") {
+    return (
+      <div style={RETURN_BODY} title={`Path ${d.terminal === "throw" ? "throws" : "returns"} here: ${d.label}`}>
+        <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+        <span style={TERMINAL_GLYPH}>{d.terminal === "throw" ? "⚡" : "⏎"}</span>
+        <span style={NAME} title={d.label}>{d.label}</span>
+      </div>
+    );
+  }
   return (
     <div style={EXIT_BODY} title="Flow exit">
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
@@ -398,8 +427,9 @@ export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: 
 // dim so the matches pop. Structural nodes (loops/branches) carry no target, so they only ever dim.
 type SelectState = "selected" | "dimmed" | "none";
 // The accent green shared with the emphasized logic edges (imported by LogicFlowView) so the node
-// ring and the edge glow can't drift.
-export const SELECT_ACCENT = "#6BE38A";
+// ring and the edge glow can't drift. Sourced from the flow palette — the alternate projections
+// (metro/blocks/timeline) highlight with the very same token.
+export const SELECT_ACCENT = FLOW_COLORS.select;
 
 function selectStateFor(targetId: string | null, logicSelected: string | null): SelectState {
   if (logicSelected === null) {
@@ -420,22 +450,25 @@ function selectStyle(base: React.CSSProperties, select: SelectState): React.CSSP
   return base;
 }
 
-const BLOCK_ACCENT = "#3B7AC0";
+// The flow palette (flowViewModel.FLOW_COLORS) is the single source for every semantic accent, so
+// the exec graph and the alternate projections can never drift apart on what a colour means. The
+// local names stay so the node styling below keeps reading in this file's own vocabulary.
+const BLOCK_ACCENT = FLOW_COLORS.call;
 // A small INDIGO shift off the blue call accent — same family, not a jarring new colour — so a method
 // call (through a receiver / a class method) is distinguishable at a glance from a free function.
-const METHOD_ACCENT = "#5E74C6";
+const METHOD_ACCENT = FLOW_COLORS.method;
 // Evokes the `::` scope-resolution of a member call, versus the `ƒ` of a free function.
 const METHOD_GLYPH = "∷";
 // Teal, deliberately unlike the blue call accent: a definition node is a declaration ("defined
 // here"), a different kind of thing from a call site in the flow.
 const DEF_ACCENT = "#3FB8AF";
 const GREY_ACCENT = "#3A414C";
-const LOOP_ACCENT = "#E6B84D";
-const TRY_ACCENT = "#D98A5B";
+const LOOP_ACCENT = FLOW_COLORS.loop;
+const TRY_ACCENT = FLOW_COLORS.try;
 // A deferred/handed-over callback (a hook body, `.then`, `setTimeout`, a JSX handler): a muted
 // slate-cyan, deliberately cooler than the loop/try accents — it reads as "logic passed elsewhere",
 // not control-flow that runs here and now.
-const CALLBACK_ACCENT = "#5FA8A0";
+const CALLBACK_ACCENT = FLOW_COLORS.callback;
 // A dotted-arrow glyph for "handed to": the callback is given away, not run in place.
 const CALLBACK_GLYPH = "⤳";
 const CONTROL_ACCENT: Record<string, string> = { loop: LOOP_ACCENT, try: TRY_ACCENT, callback: CALLBACK_ACCENT };
@@ -443,13 +476,20 @@ const CONTROL_GLYPH: Record<string, string> = { loop: "↻", try: "⚠", callbac
 // Sky-blue outline: a branch reads as control-flow via its diamond SHAPE, so it can share the cool
 // blue family without being mistaken for a call block — the brighter, cyan-leaning tone stays clear
 // of the deeper azure call accent and the indigo method accent.
-const BRANCH_ACCENT = "#5BB4E8";
+const BRANCH_ACCENT = FLOW_COLORS.branch;
 // Near-canvas dark so the diamond is outline-first, never a flood of colour.
 const BRANCH_FILL = "rgba(11,14,19,0.72)";
 // A calm green marks the flow's START (evokes a "play"/entry point); a muted slate marks the neutral
 // synthetic EXIT end-cap — deliberately quiet so it reads as a terminus, not another step.
-const ENTRY_ACCENT = "#4FB477";
-const EXIT_ACCENT = "#8A93A0";
+const ENTRY_ACCENT = FLOW_COLORS.entry;
+const EXIT_ACCENT = FLOW_COLORS.exit;
+// A warm red for the return/throw caps a terminated path dead-ends at: unlike the quiet EXIT, an
+// early return is a fact worth noticing, so it reads hot.
+const RETURN_ACCENT = FLOW_COLORS.exitCap;
+// Async semantics on a call block: cyan for an awaited (latent) call the thread holds for, violet
+// for a detached fire-and-forget call whose result is dropped and may outlive the flow.
+const AWAIT_ACCENT = FLOW_COLORS.awaited;
+const DETACH_ACCENT = FLOW_COLORS.detached;
 
 const PIN: React.CSSProperties = { width: 7, height: 7, background: "#C8D3E0", border: "none", minWidth: 0, minHeight: 0 };
 
@@ -646,8 +686,33 @@ const TERMINAL_BASE: React.CSSProperties = {
 };
 const ENTRY_BODY: React.CSSProperties = { ...TERMINAL_BASE, border: `1px solid ${ENTRY_ACCENT}`, background: "rgba(79,180,119,0.12)", color: "#CDEAD9" };
 const EXIT_BODY: React.CSSProperties = { ...TERMINAL_BASE, justifyContent: "center", border: `1px solid ${EXIT_ACCENT}`, background: "rgba(138,147,160,0.10)", color: "#B7C0CC" };
+// A return/throw cap: warm red so a dead-ending path is unmissable; squared on the entry side and
+// rounded on the far side, a one-way cap rather than a two-ended pill.
+const RETURN_BODY: React.CSSProperties = {
+  ...TERMINAL_BASE,
+  fontSize: 11,
+  border: `1px solid ${RETURN_ACCENT}`,
+  borderRadius: "6px 999px 999px 6px",
+  background: "rgba(224,108,108,0.10)",
+  color: "#F0C9C9",
+};
 const TERMINAL_GLYPH: React.CSSProperties = { fontSize: 10, flexShrink: 0, opacity: 0.85 };
 const ENTRY_TAG: React.CSSProperties = { marginLeft: "auto", flexShrink: 0, fontSize: 8, fontWeight: 700, letterSpacing: "0.08em", border: `1px solid ${ENTRY_ACCENT}`, borderRadius: 3, padding: "1px 4px", color: ENTRY_ACCENT };
+
+// The async badges: compact dark chips so they stay legible over a solid accent title bar AND over
+// a greyed chip's muted body. flex-none so they never squeeze the call name.
+const ASYNC_BADGE_BASE: React.CSSProperties = {
+  flexShrink: 0,
+  fontSize: 8.5,
+  fontWeight: 700,
+  letterSpacing: "0.05em",
+  borderRadius: 3,
+  padding: "1px 4px",
+  background: "rgba(11,14,19,0.55)",
+  whiteSpace: "nowrap",
+};
+const AWAIT_BADGE: React.CSSProperties = { ...ASYNC_BADGE_BASE, color: AWAIT_ACCENT, border: `1px solid ${AWAIT_ACCENT}88` };
+const DETACH_BADGE: React.CSSProperties = { ...ASYNC_BADGE_BASE, fontSize: 10, color: DETACH_ACCENT, border: `1px solid ${DETACH_ACCENT}88` };
 
 const GLYPH: React.CSSProperties = { fontSize: 11, opacity: 0.85 };
 // Right-aligned title tail holding the expand toggle (and, on a call block, the </> button). A

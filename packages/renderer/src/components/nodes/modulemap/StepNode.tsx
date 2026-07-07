@@ -14,7 +14,7 @@ import { useBlueprint } from "../../../state/StoreContext";
 import type { StepData } from "../../../derive/flowSteps";
 import { ExpandChevron, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
 
-const STEP_GLYPH: Record<StepData["stepKind"], string> = { call: "→", loop: "↻", branch: "⑂", callback: "λ" };
+const STEP_GLYPH: Record<StepData["stepKind"], string> = { call: "→", loop: "↻", branch: "⑂", callback: "λ", exit: "⏎" };
 // Calls tint by resolution (resolved = the wire-out blue, unresolved = muted); constructs are amber.
 const CALL_COLOR = "#5E74C6";
 const CONSTRUCT_COLOR = "#C9A24B";
@@ -22,7 +22,7 @@ const CONSTRUCT_COLOR = "#C9A24B";
 type StepRfNode = Node<StepData, "step">;
 
 function StepNodeImpl({ id, data }: NodeProps<StepRfNode>) {
-  const selected = useBlueprint((state) => state.moduleSelectedId) === id;
+  const selected = useBlueprint((state) => state.moduleSelected.has(id));
   const glyphColor = data.stepKind === "call" ? (data.resolved ? CALL_COLOR : "#565E68") : CONSTRUCT_COLOR;
   const chevron = data.isContainer ? (
     <ExpandChevron

@@ -25,7 +25,7 @@ const FILE_FRAME_ACCENT = "#3FB7C4";
 type ModuleCardRfNode = Node<ModuleCardData, "file">;
 
 function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
-  const selected = useBlueprint((state) => state.moduleSelectedId) === id;
+  const selected = useBlueprint((state) => state.moduleSelected.has(id));
   const accent = CATEGORY_COLOR[data.category];
   const chevron = data.isContainer ? (
     <ExpandChevron id={id} isExpanded={data.isExpanded} collapsedTitle={`Expand — ${data.unitCount} declaration(s) in this file`} />

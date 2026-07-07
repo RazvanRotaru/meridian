@@ -1,9 +1,9 @@
 /**
- * The Module-map pipeline behind one call: derive the inline-expandable containment tree for the
- * current focus + expansion set (the package overview when null, else the focus's subtree with
- * imports lifted to the visible frontier), then lay it out with nested ELK. Kept pure of store
- * concerns so the store can wrap it in a stale-layout guard, exactly like `deriveCompositionLayout`.
- * The import graph is built once and passed in (the store caches it), never rebuilt per relayout.
+ * The Module-map pipeline behind one call: derive the flat containment level for the current focus
+ * (the package overview when null, else the focus's children with imports lifted to the visible
+ * frontier), then lay it out with ELK. Kept pure of store concerns so the store can wrap it in a
+ * stale-layout guard, exactly like `deriveCompositionLayout`. The import graph is built once and
+ * passed in (the store caches it), never rebuilt per relayout.
  */
 
 import type { LogicFlows } from "@meridian/core";

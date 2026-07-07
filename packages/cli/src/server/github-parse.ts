@@ -8,7 +8,8 @@ import { asObject, optionalString, requireString } from "./json-fields";
 
 const OWNER_REPO = /^[\w.-]+\/[\w.-]+$/;
 const SEARCH_RESULT_LIMIT = 20;
-const LIST_RESULT_LIMIT = 30;
+/** One full page of `GET /user/repos` — the pagination loop in github.ts caps the total. */
+const LIST_RESULT_LIMIT = 100;
 
 export interface RepoSummary {
   fullName: string;

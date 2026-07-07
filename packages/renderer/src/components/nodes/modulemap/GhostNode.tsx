@@ -17,7 +17,7 @@ import { MONO, PIN, SELECT_ACCENT } from "./frameChrome";
 type GhostRfNode = Node<GhostData, "ghost">;
 
 function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
-  const selected = useBlueprint((state) => state.moduleSelectedId) === id;
+  const selected = useBlueprint((state) => state.moduleSelected.has(id));
   return (
     <div style={selected ? GHOST_SELECTED : GHOST} title={`${data.label} — off-screen; double-click to reveal it`}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
