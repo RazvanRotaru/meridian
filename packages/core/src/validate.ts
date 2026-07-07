@@ -25,11 +25,10 @@ export interface ValidationResult {
 
 const KNOWN_NODE_KINDS = new Set([
   "package", "module", "namespace", "class", "interface", "enum", "typeAlias", "function", "method",
-  "external", "unresolved", "channel", "system",
+  "external", "unresolved",
 ]);
 const KNOWN_EDGE_KINDS = new Set([
   "calls", "references", "imports", "extends", "implements", "instantiates", "renders",
-  "sends", "handles",
 ]);
 
 export function validateArtifact(input: unknown): ValidationResult {

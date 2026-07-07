@@ -7,7 +7,7 @@
  * caller can persist or serve a half-formed graph.
  */
 
-import { ExtractorRegistry, collectTestIds, materializeBoundaryNodes, materializeChannels, tagTestNodes } from "@meridian/core";
+import { ExtractorRegistry, collectTestIds, materializeBoundaryNodes, tagTestNodes } from "@meridian/core";
 import type { ExtractOptions, ExtractionResult, GraphArtifact, LanguageExtractor } from "@meridian/core";
 import { TypeScriptExtractor } from "@meridian/extractor-typescript";
 import { PythonExtractor } from "@meridian/extractor-python";
@@ -44,7 +44,7 @@ export interface PipelineResult {
 export async function extractToArtifact(request: PipelineRequest): Promise<PipelineResult> {
   const extractor = await selectExtractor(request.absoluteRoot, request.language);
   const raw = await runExtract(extractor, request);
-  const classified = channelize(classifyTests(raw, request.excludeTests ?? false));
+  const classified = classifyTests(raw, request.excludeTests ?? false);
   const extraction = request.materializeBoundary
     ? { ...classified, nodes: materializeBoundaryNodes(classified.nodes, classified.edges) }
     : classified;
@@ -88,22 +88,6 @@ function classifyTests(extraction: ExtractionResult, excludeTests: boolean): Ext
     nodes: nodes.filter((node) => !testIds.has(node.id)),
     edges: extraction.edges.filter((edge) => !testIds.has(edge.source) && !testIds.has(edge.target)),
   };
-}
-
-/**
- * Materialize the extractor's IPC ports into the graph: channel pseudo-nodes plus sends/handles
- * edges (language-agnostic — any extractor that reports ports benefits). Ports owned by nodes
- * dropped upstream (e.g. --exclude-tests) are dropped with them so the manifest never dangles.
- */
-function channelize(extraction: ExtractionResult): ExtractionResult {
-  const rawPorts = extraction.ports ?? [];
-  if (rawPorts.length === 0) {
-    return extraction;
-  }
-  const known = new Set(extraction.nodes.map((node) => node.id));
-  const ports = rawPorts.filter((port) => known.has(port.nodeId));
-  const { nodes, edges } = materializeChannels(extraction.nodes, extraction.edges, ports);
-  return { ...extraction, nodes, edges, ports };
 }
 
 async function runExtract(extractor: LanguageExtractor, request: PipelineRequest): Promise<ExtractionResult> {

@@ -1,6 +1,0 @@
-{
-  "name": "desktop-notes",
-  "private": true,
-  "version": "0.0.0",
-  "description": "Fixture: an Electron-style two-process app — IPC channels join main and renderer statically."
-}

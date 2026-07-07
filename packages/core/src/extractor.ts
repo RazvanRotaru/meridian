@@ -7,7 +7,6 @@
  */
 
 import type { LogicFlows } from "./flow";
-import type { Port } from "./ports";
 import type { GraphEdge, GraphNode, LanguageTag, NodeKind } from "./types";
 
 export interface DetectionResult {
@@ -53,9 +52,6 @@ export interface ExtractionResult {
   diagnostics: ExtractionDiagnostic[];
   /** Per-callable intra-procedural logic flows; the CLI stamps them into `extensions.logicFlow`. */
   flows?: LogicFlows;
-  /** Statically detected IPC ports (entries/exits); the CLI stamps them into `extensions.ports`
-   * and materializes channel nodes for the literal-channel ones. */
-  ports?: Port[];
 }
 
 export interface LanguageExtractor {

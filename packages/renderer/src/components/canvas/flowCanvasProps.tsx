@@ -27,27 +27,18 @@ export const READONLY_CANVAS_PROPS = {
   minZoom: 0.01,
   maxZoom: 4,
   zoomOnDoubleClick: false,
-  // Only mount DOM for nodes in the viewport. A big system graph has thousands of cards; without
-  // this, React Flow builds a DOM node for every one up front, which alone can lock up a slower
-  // engine (Safari/WebKit). Culling keeps the mounted set to what's actually on screen.
-  onlyRenderVisibleElements: true,
   proOptions: { hideAttribution: true },
 } as const;
-
-// The MiniMap draws one SVG element PER NODE and redraws them on every pan/zoom frame — at ~800
-// nodes that alone freezes interaction. Above this count the minimap is dropped (the graph is too
-// dense to navigate by minimap anyway; pan/zoom + ⌘P are the tools).
-export const MINIMAP_NODE_CAP = 250;
 
 // The three chrome children every read-only surface renders: a dotted background, the zoom/fit
 // controls (interactive toggle hidden — the graph is read-only), and a pannable minimap tinted per
 // node by the view's own colour fn.
-export function CanvasChrome({ nodeColor, minimap = true }: { nodeColor: (node: Node) => string; minimap?: boolean }) {
+export function CanvasChrome({ nodeColor }: { nodeColor: (node: Node) => string }) {
   return (
     <>
       <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#222732" />
       <Controls showInteractive={false} />
-      {minimap ? <MiniMap pannable zoomable nodeColor={nodeColor} maskColor="rgba(8,10,14,0.7)" /> : null}
+      <MiniMap pannable zoomable nodeColor={nodeColor} maskColor="rgba(8,10,14,0.7)" />
     </>
   );
 }

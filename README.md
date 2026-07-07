@@ -96,14 +96,7 @@ node id **and** the telemetry join key, so structure and runtime data never desy
    rate — joined by node id. A deterministic **mock** provider ships today; a real Tempo/OTel
    provider drops into the same contract with zero re-keying. The environment selector is
    **mandatory** and never defaults to prod.
-4. **IPC ports & system linking.** Extractors detect where code crosses a process boundary — an
-   electron `ipcRenderer.invoke`, a `fetch`, an express route — as typed **ports** (`extensions.ports`),
-   with the channel key read only from string literals (dynamic channels are reported, never guessed).
-   Matching ends join through **channel pseudo-nodes** (`sender → channel → handler`); `meridian link`
-   merges separately generated artifacts into one system graph, unifying concrete HTTP paths onto
-   route templates and keeping one-sided channels visibly dangling. Fully static — no runtime, no
-   telemetry, no manual marking (see ADR 0002).
-5. **Tests & static coverage.** Test files enter the graph tagged `"test"` (path heuristics:
+4. **Tests & static coverage.** Test files enter the graph tagged `"test"` (path heuristics:
    `*.test.*` / `*.spec.*` / `__tests__` / `test_*.py` / …) — one toolbar click hides or shows them.
    **Coverage mode** recolors the whole graph from pure call reachability: green = a test calls it
    directly, amber = reached only through other code, red = nothing reaches it — and the coverage
@@ -125,7 +118,6 @@ published as JSON Schema at
 | `meridian web [source]` | Local web UI: paste a **GitHub repo** (`owner/repo` or URL) / local path — clones (`--depth 1`) + extracts + renders. **Sign in with GitHub** (device flow, enabled by default) lists your repositories to pick from; private repos also work via `GITHUB_TOKEN`/`GH_TOKEN` or a local-only token field. `--port`, `--host`, `--no-open`, `--github-client-id`. |
 | `meridian mock-telemetry [graph]` | Mint a deterministic mock overlay. **`--env` is required** (no default, never prod); `-o`, `--seed`. |
 | `meridian coverage [graph]` | Terminal report of the same static coverage the renderer overlays: per-class percentages, every uncovered member with its reason. `--fail-under <pct>` makes it a CI gate (exit 3 below threshold). |
-| `meridian link <graphs...>` | Join two or more artifacts into one **system graph** via their IPC channel keys — HTTP paths unify onto route templates, electron/queue channels match exactly; dangling channels (nobody answers) stay visible. `-o`, `--name`. |
 
 ## Packages
 

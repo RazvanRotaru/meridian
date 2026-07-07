@@ -37,16 +37,10 @@ def main() -> None:
     json.dump({"language": "python", "modules": modules, "diagnostics": diagnostics}, sys.stdout)
 
 
-# Vendored/derived trees that must never enter the graph: caches, virtualenvs (hidden ones are
-# covered by the dot rule), installed packages, and JS dependency trees living beside Python code.
-# A real repo's .venv can hold 20k+ files — walking it overflows the analyzer's output pipe.
-_SKIP_DIRS = frozenset({"__pycache__", "node_modules", "site-packages", "venv"})
-
-
 def discover_modules(root: str):
     """Yield ``(abs_path, dotted_module, posix_relpath)`` for every non-package .py file."""
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [name for name in dirnames if name not in _SKIP_DIRS and not name.startswith(".")]
+        dirnames[:] = [name for name in dirnames if name != "__pycache__"]
         for filename in sorted(filenames):
             if not filename.endswith(".py") or filename == "__init__.py":
                 continue
