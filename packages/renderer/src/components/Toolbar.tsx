@@ -15,6 +15,7 @@ import { FlowSelector } from "./FlowSelector";
 import { CompositionPanel } from "./composition/CompositionPanel";
 import { DepthSlider } from "./DepthSlider";
 import { ModuleCategoryToggles } from "./ModuleCategoryToggles";
+import { ModuleGroupingToggle } from "./ModuleGroupingToggle";
 
 export function Toolbar(props: { preselectedEnv: string | null }) {
   const targetName = useBlueprint((state) => state.artifact.target.name);
@@ -46,6 +47,7 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
           <CompositionPanel />
         ) : isModules ? (
           <>
+            <ModuleGroupingToggle />
             <DepthSlider />
             <ModuleCategoryToggles />
           </>

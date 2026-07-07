@@ -116,6 +116,7 @@ function structuralState(nav: NavState): Record<string, unknown> {
     logicStack: nav.logicStack,
     expanded: new Set(nav.expanded),
     moduleFocus: nav.moduleFocus,
+    moduleGrouping: nav.moduleGrouping,
     moduleExpanded: new Set(nav.moduleExpanded),
     moduleRadius: nav.moduleRadius,
     hiddenCategories: new Set(nav.hiddenCategories),

@@ -17,6 +17,7 @@ function emptyNav(): NavState {
     logicStack: [],
     expanded: [],
     moduleFocus: null,
+    moduleGrouping: "packages",
     moduleExpanded: [],
     moduleRadius: 1,
     hiddenCategories: [],
@@ -99,6 +100,12 @@ describe("urlState", () => {
       moduleFocus: "ts:packages/autopilot-studioweb",
       hiddenCategories: ["config", "util"],
     });
+  });
+
+  it("round-trips module-map grouping (mgroup)", () => {
+    const nav: NavState = { ...emptyNav(), viewMode: "modules", moduleGrouping: "applications" };
+    expect(encodeNav(nav).get("mgroup")).toBe("applications");
+    expect(roundTrip(nav)).toEqual({ viewMode: "modules", moduleGrouping: "applications" });
   });
 
   it("omits module-map keys at their defaults (radius 1, no focus, no hidden categories)", () => {
@@ -208,6 +215,7 @@ function storeShape() {
     logicStack: [] as string[],
     expanded: new Set<string>(),
     moduleFocus: null,
+    moduleGrouping: "packages" as const,
     moduleExpanded: new Set<string>(),
     moduleRadius: 1,
     hiddenCategories: new Set<string>(),
