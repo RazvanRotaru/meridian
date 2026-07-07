@@ -75,14 +75,40 @@ function runExtraction(options: ExtractOptions): ExtractionResult {
   const output = runPythonAnalyzer(options.root);
   const index = buildNodes(output);
   const built = buildEdges(output, index, options);
+  const { nodes, renamed } = disambiguateIds(built.nodes);
   const stats = buildStats({
     files: output.modules.length,
-    nodes: built.nodes,
+    nodes,
     edges: built.edges,
     externalCallsDropped: built.externalCallsDropped,
     unresolvedCalls: built.unresolvedCalls,
   });
-  return { language: "python", nodes: built.nodes, edges: built.edges, stats, diagnostics: diagnosticsOf(output, built) };
+  const diagnostics = diagnosticsOf(output, built);
+  if (renamed > 0) {
+    diagnostics.push({ severity: "warn", message: `${renamed} colliding node id(s) disambiguated with ~n ordinals` });
+  }
+  return { language: "python", nodes, edges: built.edges, stats, diagnostics };
+}
+
+/**
+ * Same-id collisions (a method defined twice under conditionals, a `chat.py` module beside a
+ * `chat/` package) get the grammar's `~n` ordinal, mirroring the TS extractor's disambiguation.
+ * The FIRST occurrence keeps the bare id, so edges and parentIds — which reference the bare
+ * string — keep resolving; `generate` would otherwise fail closed on a duplicate-id error.
+ */
+function disambiguateIds(nodes: ExtractionResult["nodes"]): { nodes: ExtractionResult["nodes"]; renamed: number } {
+  const seen = new Map<string, number>();
+  let renamed = 0;
+  const result = nodes.map((node) => {
+    const count = seen.get(node.id) ?? 0;
+    seen.set(node.id, count + 1);
+    if (count === 0) {
+      return node;
+    }
+    renamed += 1;
+    return { ...node, id: `${node.id}~${count}` };
+  });
+  return { nodes: result, renamed };
 }
 
 function diagnosticsOf(output: AnalyzeOutput, built: EdgeResult): ExtractionDiagnostic[] {
