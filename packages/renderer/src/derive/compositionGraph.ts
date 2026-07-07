@@ -10,7 +10,7 @@
 import type { GraphEdge, GraphNode } from "@meridian/core";
 import { buildUnitIndex, computeCompositionMetrics, couplingEdges, groupMembersByUnit, type UnitMetrics } from "@meridian/design-metrics";
 import { computeRootedView } from "./compositionRoot";
-import { buildClusters, type ClusterFrame } from "./compositionClusters";
+import { buildClusters, nearestEmitted, type ClusterFrame } from "./compositionClusters";
 import { aggregateByPackage, type PackageSummaryData } from "./compositionAggregate";
 
 // A `type` (not an interface) so it satisfies React Flow's `Node<T extends Record<string, unknown>>`
@@ -39,6 +39,9 @@ export type ClusterNodeData = {
   label: string;
   unitCount: number;
   smellyCount: number;
+  /** True on a package the AGGREGATED view has inline-expanded — the frame header then offers the
+   * collapse (▾) control. Absent on the unit view's passive frames. */
+  expanded?: boolean;
 };
 
 // An IPC channel card's data: the channel key two processes meet on, plus its honesty flag —
@@ -60,7 +63,8 @@ export interface CompNodeSpec {
   type: CompNodeType;
   width?: number;
   height?: number;
-  /** The cluster frame this unit nests in (undefined for a frame itself). */
+  /** The cluster frame this node nests in (undefined for a top-level node; the aggregated view
+   * nests frames inside frames, so an expanded sub-package frame carries one too). */
   parentId?: string;
   data: CompNodeData | ClusterNodeData | ChannelCompData | PackageSummaryData;
 }
@@ -79,7 +83,7 @@ export interface CompEdgeSpec {
   inheritanceOnly: boolean;
   /** True when the pair sits in DIFFERENT clusters — the packaging / Common-Closure signal. */
   crossBoundary: boolean;
-  /** An IPC hop (a `sends`/`handles` half through a channel card) — drawn as the gold wire. */
+  /** An IPC hop (a `sends`/`handles` half through a channel card) — drawn as the magenta wire. */
   ipc?: boolean;
   /** The channel(s) this IPC wire represents — one in the unit view, many on an aggregated wire. */
   ipcChannels?: IpcChannelDetail[];
@@ -119,13 +123,15 @@ export interface CompositionGraphSpec {
  *
  * `aggregate` (whole-system only) rolls every unit up to its PACKAGE — one summary card each,
  * hundreds not thousands — so a giant repo lays out and reads. Double-clicking a package roots
- * there, dropping back to unit scorecards.
+ * there, dropping back to unit scorecards; a package in `expanded` instead opens INLINE as a frame
+ * holding the next level (see compositionAggregate).
  */
 export function deriveCompositionGraph(
   nodes: GraphNode[],
   edges: GraphEdge[],
   root: string | null = null,
   showMetrics = true,
+  expanded: ReadonlySet<string> = NONE_EXPANDED,
 ): CompositionGraphSpec {
   const metrics = computeCompositionMetrics(nodes, edges);
   const couplings = couplingEdges(nodes, edges);
@@ -139,7 +145,11 @@ export function deriveCompositionGraph(
   // show its unit scorecards. This is what keeps a giant repo interactive in a slower engine.
   const inView = unitsInView(survivors, root, nodesById);
   if (inView.size > AGGREGATE_UNIT_THRESHOLD) {
-    return aggregateByPackage(edges, metrics, couplings, inView, nodesById, root);
+    // Only an inline-expanded frame ever shows real scorecards at this altitude, so the member
+    // partition (needed to size + fill them) is computed only when something is expanded.
+    const membersByUnit = expanded.size > 0 ? groupMembersByUnit(nodes, buildUnitIndex(nodes)) : new Map<string, GraphNode[]>();
+    const unitCard = (unitId: string) => unitNode(metrics.get(unitId)!, false, showMetrics, membersByUnit.get(unitId) ?? []);
+    return aggregateByPackage(edges, metrics, couplings, inView, nodesById, root, expanded, unitCard);
   }
 
   // The unit → members partition, reused per card so a scorecard can list the methods it holds.
@@ -180,7 +190,7 @@ export function deriveCompositionGraph(
 
   // The IPC layer: channel cards wired by the artifact's sends/handles edges, each function
   // endpoint lifted to its nearest emitted UNIT (the scorecard that holds it).
-  const ipc = ipcLayerFor(edges, (id) => nearestEmittedUnit(id, emitted, nodesById), channelSidesOf(edges));
+  const ipc = ipcLayerFor(edges, (id) => nearestEmitted(id, emitted, nodesById), channelSidesOf(edges));
 
   return { nodes: [...nodeSpecs, ...ipc.nodes], edges: [...edgeSpecs, ...ipc.edges] };
 }
@@ -278,24 +288,6 @@ export function channelSidesOf(edges: GraphEdge[]): Map<string, { out: boolean; 
   return sides;
 }
 
-/** Walk a function endpoint up its containment chain to the scorecard that holds it. */
-function nearestEmittedUnit(
-  nodeId: string,
-  emitted: ReadonlySet<string>,
-  nodesById: Map<string, GraphNode>,
-): string | null {
-  const visited = new Set<string>();
-  let current = nodesById.get(nodeId);
-  while (current && !visited.has(current.id)) {
-    if (emitted.has(current.id)) {
-      return current.id;
-    }
-    visited.add(current.id);
-    current = current.parentId ? nodesById.get(current.parentId) : undefined;
-  }
-  return null;
-}
-
 /** Set each unit spec's `parentId` to its cluster frame, returning the unit→cluster map the edge
  * pass reuses to flag cross-boundary couplings. */
 function assignClusters(clusters: ClusterFrame[], unitSpecs: CompNodeSpec[]): Map<string, string> {
@@ -334,6 +326,9 @@ function couplingEndpoints(couplings: ReturnType<typeof couplingEdges>): Set<str
 /** Above this many unit cards in view, aggregate to package cards instead. Tuned so even a slower
  * engine (Safari/WebKit) pans/zooms smoothly — a few dozen cards, not hundreds. */
 const AGGREGATE_UNIT_THRESHOLD = 120;
+
+/** The default "nothing inline-expanded" set — one shared instance so the default arg is stable. */
+const NONE_EXPANDED: ReadonlySet<string> = new Set();
 
 /** The surviving units within the current root's subtree (all survivors when root is null). */
 function unitsInView(survivors: Set<string>, root: string | null, nodesById: Map<string, GraphNode>): Set<string> {

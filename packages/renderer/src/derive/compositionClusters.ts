@@ -75,6 +75,61 @@ function indexAfterSystem(chain: GraphNode[]): number {
   return chain.length > 0 && chain[0].kind === "system" ? 1 : 0;
 }
 
+/** Where a node lands in a partially-EXPANDED aggregated view: the chain of expanded package frames
+ * it nests under (top-down), then the collapsed group card it rolls into — or `card: null` when the
+ * innermost expanded frame has no deeper package on this path, meaning the node's own unit scorecard
+ * is what shows inside that frame. */
+export interface AggregatePlacement {
+  frames: string[];
+  card: string | null;
+}
+
+/**
+ * Descend from the current root through every expanded group on `nodeId`'s ancestor path: each
+ * expanded group becomes a frame, and `groupUnderRoot` re-runs one level deeper until it reaches a
+ * collapsed group (the visible summary card) or bottoms out (no package below the innermost frame —
+ * the unit itself is the visible card). The `frames.includes` guard also breaks the fixpoint where
+ * `groupUnderRoot`'s nearest-package fallback returns the frame itself.
+ */
+export function placeUnderExpansion(
+  nodeId: string,
+  rootId: string | null,
+  expanded: ReadonlySet<string>,
+  nodesById: Map<string, GraphNode>,
+): AggregatePlacement {
+  const frames: string[] = [];
+  let group = groupUnderRoot(nodeId, rootId, nodesById);
+  while (expanded.has(group) && !frames.includes(group)) {
+    frames.push(group);
+    const deeper = groupUnderRoot(nodeId, group, nodesById);
+    if (deeper === group) {
+      return { frames, card: null };
+    }
+    group = deeper;
+  }
+  return { frames, card: group };
+}
+
+/** Walk a node up its containment chain to the nearest card in `emitted` (itself included);
+ * null when nothing on the chain is drawn. Shared by the unit view (functions → their unit
+ * scorecard) and the aggregated view (any endpoint → its visible unit/package card). */
+export function nearestEmitted(
+  nodeId: string,
+  emitted: ReadonlySet<string>,
+  nodesById: Map<string, GraphNode>,
+): string | null {
+  const visited = new Set<string>();
+  let current = nodesById.get(nodeId);
+  while (current && !visited.has(current.id)) {
+    if (emitted.has(current.id)) {
+      return current.id;
+    }
+    visited.add(current.id);
+    current = current.parentId ? nodesById.get(current.parentId) : undefined;
+  }
+  return null;
+}
+
 /** A cluster's title: the package node's display name, or "(root)" for the package-less fallback.
  * In a LINKED artifact the package sits under a `system` frame node; the title then reads
  * `<system> › <package>` so two systems' identical folder names (src, src) stay tellable apart. */

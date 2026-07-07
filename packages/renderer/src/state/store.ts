@@ -125,6 +125,10 @@ export interface BlueprintState {
   /** The module/package the Service-composition tab is rooted at; null == the whole system. Defaults
    * to the app's first entry module. Only its subtree + 1-hop coupling neighbours are drawn. */
   compRoot: string | null;
+  /** The package cards the AGGREGATED composition view has inline-expanded — each renders as a
+   * frame holding the next level (sub-package cards / unit scorecards) instead of one summary card.
+   * Reset on re-root: a new root is a fresh aggregation altitude. */
+  compExpanded: ReadonlySet<string>;
   /** Whether the composition scorecards show their SOLID metric rows + smell chips. Off == a
    * structure-only view (kind + name), decluttered. Persisted to localStorage across reloads. */
   showSolidMetrics: boolean;
@@ -173,6 +177,7 @@ export interface BlueprintState {
   selectCompMethod(id: NodeId | null): void;
   compMethodRelayout(): Promise<void>;
   setCompRoot(id: string | null): void;
+  toggleCompExpand(id: string): void;
   toggleSolidMetrics(): void;
   setViewMode(mode: ViewMode): void;
   toggleShowTests(): void;
@@ -255,6 +260,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     compMethodRfEdges: [],
     compMethodLayoutStatus: "idle",
     compRoot: defaultCompRoot,
+    compExpanded: new Set<string>(),
     showSolidMetrics: readSolidMetricsPref(),
     rfNodes: [],
     rfEdges: [],
@@ -357,7 +363,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // selected, so a reader can pivot from "who calls this" to "how healthy is the unit it lives in".
     // No guard needed — compRelayout is idempotent, and rooting+selecting is always a fresh view.
     openComposition(unitId) {
-      set({ viewMode: "call", compRoot: unitId, compSelectedId: unitId });
+      set({ viewMode: "call", compRoot: unitId, compExpanded: new Set<string>(), compSelectedId: unitId });
       void get().compRelayout();
     },
 
@@ -472,7 +478,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // stale-seq guard. Reads the raw nodes/edges off the index (built from the artifact); the derive
     // decides which units earn a card and wires their couplings.
     async compRelayout() {
-      const { index, compRoot, showSolidMetrics, showTests } = get();
+      const { index, compRoot, compExpanded, showSolidMetrics, showTests } = get();
       // Tests start hidden, so the FIRST layout excludes test units entirely — on a big repo they
       // can be a third of all cards, and laying out thousands of cards nobody sees is what made
       // the initial view crawl. Once tests have been shown, the layout keeps them (latched), so
@@ -488,7 +494,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // hands it the root.
       const sequence = ++compLayoutSeq;
       set({ compLayoutStatus: "laying-out" });
-      const graph = await deriveCompositionLayout(nodes, edges, compRoot, showSolidMetrics);
+      const graph = await deriveCompositionLayout(nodes, edges, compRoot, showSolidMetrics, compExpanded);
       if (compLayoutSeq !== sequence) {
         return; // a newer layout superseded this one.
       }
@@ -541,7 +547,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (get().compRoot === id) {
         return;
       }
-      set({ compRoot: id, compSelectedId: null, compMethodId: null, compMethodRfNodes: [], compMethodRfEdges: [], compMethodLayoutStatus: "idle" });
+      set({ compRoot: id, compExpanded: new Set<string>(), compSelectedId: null, compMethodId: null, compMethodRfNodes: [], compMethodRfEdges: [], compMethodLayoutStatus: "idle" });
+      void get().compRelayout();
+    },
+
+    // Inline-expand / collapse a package card in the AGGREGATED composition view: an expanded
+    // package renders as a frame holding the next level (sub-package cards / unit scorecards)
+    // while the rest of the overview stays put. Relayouts — the canvas gains/loses cards.
+    toggleCompExpand(id) {
+      const next = new Set(get().compExpanded);
+      if (!next.delete(id)) {
+        next.add(id);
+      }
+      set({ compExpanded: next });
       void get().compRelayout();
     },
 

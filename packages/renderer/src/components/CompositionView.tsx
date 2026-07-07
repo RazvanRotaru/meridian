@@ -69,7 +69,7 @@ export function CompositionView() {
     selectCompUnit(node.id);
   };
 
-  // Clicking a gold IPC wire opens the inspector on the channel(s) it carries; a non-IPC (coupling)
+  // Clicking a magenta IPC wire opens the inspector on the channel(s) it carries; a non-IPC (coupling)
   // wire has no inspector, so it's a no-op. Clears the node selection so only one thing is inspected.
   const onEdgeClick: EdgeMouseHandler<Edge> = (_event, edge) => {
     if ((edge.data as CompRfEdge["data"])?.ipc) {
@@ -198,10 +198,16 @@ function withoutTests(
   edges: CompRfEdge[],
   testIds: ReadonlySet<string>,
 ): { nodes: CompRfNode[]; edges: CompRfEdge[] } {
+  // Walk each survivor's whole frame ancestry: the aggregated view nests frames inside frames, and
+  // a kept child must never reference a dropped parent.
+  const parentOf = new Map(nodes.map((node) => [node.id, node.parentId]));
   const liveClusters = new Set<string>();
   for (const node of nodes) {
-    if (node.type !== "cluster" && !testIds.has(node.id) && node.parentId) {
-      liveClusters.add(node.parentId);
+    if (node.type === "cluster" || testIds.has(node.id)) {
+      continue;
+    }
+    for (let parent = node.parentId; parent && !liveClusters.has(parent); parent = parentOf.get(parent)) {
+      liveClusters.add(parent);
     }
   }
   const keptNodes = nodes.filter((node) =>
@@ -276,7 +282,7 @@ function dimNode(node: CompRfNode): CompRfNode {
 // coverage verdict instead, matching the recoloured rails.
 function miniMapColor(node: Node, coverage: CoverageReport | null): string {
   if (node.type === "channel") {
-    return "#C9A24B"; // the IPC gold, matching the channel cards and wires
+    return "#E06CB0"; // the IPC magenta, matching the channel cards and wires
   }
   if (node.type === "package") {
     const wd = (node.data as { worstDistance?: number })?.worstDistance;

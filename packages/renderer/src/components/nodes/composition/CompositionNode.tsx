@@ -8,7 +8,7 @@
 
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { useBlueprint } from "../../../state/StoreContext";
+import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import { colorForDistance, type ChannelCompData, type CompNodeData } from "../../../derive/compositionGraph";
 import type { PackageSummaryData } from "../../../derive/compositionAggregate";
 import type { CompRfNode } from "../../../layout/compositionElk";
@@ -115,7 +115,7 @@ function glyphForKind(kind: string): string {
 }
 
 /**
- * An IPC channel card: the wire two processes meet on — gold and pill-shaped so it never reads as
+ * An IPC channel card: the wire two processes meet on — magenta and pill-shaped so it never reads as
  * a code unit. Carries the channel key, its protocol tag, and (when a whole side is missing) an
  * honest dangling warning. The selection ring works like a unit's, so clicking one lights its wires.
  */
@@ -148,15 +148,17 @@ function danglingTitle(d: ChannelCompData): string {
 /**
  * A PACKAGE summary card — the aggregated whole-system unit. Rolls a package's units into one card:
  * a health rail by worst distance, the unit/member counts, and a smell tally. Double-click roots the
- * view into it (handled by the view), so it reads as "a folder you can open".
+ * view into it (handled by the view); the ▸ button instead expands it INLINE — the card becomes a
+ * frame holding the next level while the rest of the overview stays put.
  */
 function PackageSummaryNodeImpl({ data }: NodeProps<CompRfNode>) {
   const compSelectedId = useBlueprint((state) => state.compSelectedId);
+  const { toggleCompExpand } = useBlueprintActions();
   const d = data as PackageSummaryData;
   const selected = compSelectedId === d.packageId;
   const health = colorForDistance(d.worstDistance);
   return (
-    <div style={selected ? CARD_SELECTED : CARD} title={`${d.label} — double-click to open its units`}>
+    <div style={selected ? CARD_SELECTED : CARD} title={`${d.label} — ▸ opens the next level inline; double-click roots the view here`}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={{ ...ACCENT_BAR, background: health }} />
@@ -164,6 +166,18 @@ function PackageSummaryNodeImpl({ data }: NodeProps<CompRfNode>) {
         <div style={HEADER}>
           <span style={{ ...GLYPH, color: "#A77BF3" }}>▤</span>
           <span style={LABEL} title={d.label}>{d.label}</span>
+          <button
+            type="button"
+            style={EXPAND_BTN}
+            title="Open this package inline — its sub-packages and units appear in a frame here"
+            onClick={(event) => {
+              event.stopPropagation();
+              toggleCompExpand(d.packageId);
+            }}
+            onDoubleClick={(event) => event.stopPropagation()}
+          >
+            ▸
+          </button>
           <span style={{ ...KIND_TAG, color: "#A77BF3", borderColor: "#A77BF3" }}>PACKAGE</span>
         </div>
         <div style={METRIC_ROW}>
@@ -255,6 +269,21 @@ const KIND_TAG: React.CSSProperties = {
   borderRadius: 3,
   padding: "1px 4px",
 };
+// The inline-expand affordance on a package card — a blue pill sharing BOUNDARY_TAG's palette so
+// every "this navigates" control reads alike.
+const EXPAND_BTN: React.CSSProperties = {
+  flexShrink: 0,
+  fontSize: 10,
+  fontWeight: 700,
+  lineHeight: "14px",
+  color: "#8FB6E3",
+  border: "1px solid #2F4A66",
+  background: "rgba(59,122,192,0.16)",
+  borderRadius: 3,
+  padding: "0 5px",
+  cursor: "pointer",
+  fontFamily: "inherit",
+};
 const METRIC_ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: "#9AA4B2" };
 const PAIR: React.CSSProperties = { display: "inline-flex", alignItems: "baseline", gap: 3 };
 const METRIC_MUTED: React.CSSProperties = { color: "#6C7683" };
@@ -266,7 +295,7 @@ const DISTANCE_VALUE: React.CSSProperties = { fontSize: 15 };
 const CHIP_ROW: React.CSSProperties = { display: "flex", flexWrap: "wrap", gap: 4, marginTop: 1 };
 
 // The channel pill: gold like its wires, rounded so it never reads as a code-unit scorecard.
-const IPC_GOLD = "#C9A24B";
+const IPC_ACCENT = "#E06CB0";
 const CHANNEL_CARD: React.CSSProperties = {
   position: "relative",
   width: "100%",
@@ -277,7 +306,7 @@ const CHANNEL_CARD: React.CSSProperties = {
   gap: 7,
   padding: "0 12px",
   borderRadius: 999,
-  border: `1px dashed ${IPC_GOLD}`,
+  border: `1px dashed ${IPC_ACCENT}`,
   background: "rgba(201,162,75,0.10)",
   fontFamily: MONO,
   overflow: "hidden",
@@ -288,7 +317,7 @@ const CHANNEL_CARD_SELECTED: React.CSSProperties = {
   borderColor: COMP_SELECT_ACCENT,
   boxShadow: `0 0 0 2px ${COMP_SELECT_ACCENT}`,
 };
-const CHANNEL_GLYPH: React.CSSProperties = { fontSize: 12, color: IPC_GOLD, flexShrink: 0 };
+const CHANNEL_GLYPH: React.CSSProperties = { fontSize: 12, color: IPC_ACCENT, flexShrink: 0 };
 const CHANNEL_LABEL: React.CSSProperties = {
   flex: 1,
   minWidth: 0,
@@ -314,8 +343,8 @@ const CHANNEL_TAG: React.CSSProperties = {
   fontSize: 8,
   fontWeight: 700,
   letterSpacing: "0.06em",
-  color: IPC_GOLD,
-  border: `1px solid ${IPC_GOLD}66`,
+  color: IPC_ACCENT,
+  border: `1px solid ${IPC_ACCENT}66`,
   borderRadius: 3,
   padding: "1px 4px",
 };
