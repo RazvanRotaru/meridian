@@ -41,7 +41,6 @@ import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
  */
 export const GHOST_DEPTH_ALL = 99;
 
-
 export type LayoutStatus = "idle" | "laying-out" | "ready" | "error";
 
 /** The source view's state: which node, its fetched code, and the in-flight/error status.
@@ -238,11 +237,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let logicLayoutSeq = 0;
   // Same guard for the composition layout — a newer relayout discards an older in-flight ELK pass.
   let compLayoutSeq = 0;
-  // Whether the composition layout has EVER included test units. Tests start hidden, and laying
-  // out thousands of test cards nobody sees is the single biggest cost on a big repo — so the
-  // first layout excludes them. Turning tests ON pays one relayout and sets this latch; from then
-  // on the layout keeps tests so hiding again is a pure repaint (no reshuffle), as before.
-  let compIncludesTests = false;
   // And for the Module-map layout, so a newer focus change supersedes an older derivation.
   let moduleLayoutSeq = 0;
   // The file import graph, built once on first module-map relayout (the artifact never changes after
@@ -266,9 +260,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     selectedId: null,
     focusId: null,
     viewMode: "call",
-    // Tests start HIDDEN: most reads are about production code, and skipping thousands of test
-    // cards makes the first layout of a big repo dramatically faster. One click brings them in.
-    showTests: false,
+    showTests: true,
     coverageMode: false,
     coverage: null,
     flowRootId: null,
@@ -523,23 +515,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // stale-seq guard. Reads the raw nodes/edges off the index (built from the artifact); the derive
     // decides which units earn a card and wires their couplings.
     async compRelayout() {
-      const { index, compRoot, compExpanded, showSolidMetrics, showTests } = get();
-      // Tests start hidden, so the FIRST layout excludes test units entirely — on a big repo they
-      // can be a third of all cards, and laying out thousands of cards nobody sees is what made
-      // the initial view crawl. Once tests have been shown, the layout keeps them (latched), so
-      // hiding again is a pure repaint and production cards never reshuffle.
-      compIncludesTests = compIncludesTests || showTests;
-      const all = [...index.nodesById.values()];
-      const nodes = compIncludesTests ? all : all.filter((node) => !index.testIds.has(node.id));
-      const edges = compIncludesTests
-        ? index.edges
-        : index.edges.filter((edge) => !index.testIds.has(edge.source) && !index.testIds.has(edge.target));
+      const { index, compRoot, compExpanded, showSolidMetrics } = get();
+      // The layout ALWAYS includes test units, so toggling the Tests filter never moves a production
+      // card — the composition view hides test cards in place (a repaint), it does not re-lay-out.
+      // A giant repo's first layout stays cheap anyway: aggregated altitudes only COUNT test units
+      // inside package summary cards, they never lay the individual cards out.
+      const nodes = [...index.nodesById.values()];
       // deriveCompositionGraph self-decides whether to aggregate (based on how many unit cards the
       // current root's view would draw) and recurses a level deeper on each drill, so the store just
       // hands it the root.
       const sequence = ++compLayoutSeq;
       set({ compLayoutStatus: "laying-out" });
-      const graph = await deriveCompositionLayout(nodes, edges, compRoot, showSolidMetrics, compExpanded);
+      const graph = await deriveCompositionLayout(nodes, index.edges, compRoot, showSolidMetrics, compExpanded);
       if (compLayoutSeq !== sequence) {
         return; // a newer layout superseded this one.
       }
@@ -728,12 +715,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // The composition AND module-map views hide test cards in place (the surface filters the rendered
       // set), so they must NOT re-lay-out — that would reshuffle production cards. The module map's focus
       // is a package/dir node (never test-stranded the way a file root was), so it's purely paint-only
-      // here. Composition still relayouts when its OWN root was stranded inside now-hidden test code, or
-      // when tests are shown for the FIRST time and the latched layout doesn't contain them yet.
+      // here. Composition still relayouts when its OWN root was stranded inside now-hidden test code.
       const paintOnlyMode = viewMode === "call" || viewMode === "modules";
       const compRootChanged = nextCompRoot !== compRoot;
-      const needsTestCards = showTests && !compIncludesTests;
-      if (!paintOnlyMode || compRootChanged || needsTestCards) {
+      if (!paintOnlyMode || compRootChanged) {
         void get().relayout();
       }
     },
@@ -885,4 +870,3 @@ function withAncestorsOf(nodeId: string, index: GraphIndex, expanded: Set<string
   }
   return next;
 }
-

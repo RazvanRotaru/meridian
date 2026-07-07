@@ -145,6 +145,11 @@ export function CompositionView() {
         onEdgeClick={onEdgeClick}
         onPaneClick={() => { selectCompUnit(null); setIpcEdgeId(null); }}
         {...READONLY_CANVAS_PROPS}
+        // Only mount DOM for cards in the viewport. A big system's composition graph is the one
+        // surface that can reach thousands of cards; without culling, React Flow builds DOM for
+        // every one up front, which alone can lock up a slower engine (Safari/WebKit). Scoped here
+        // — not in READONLY_CANVAS_PROPS — so the other surfaces keep their unchanged behaviour.
+        onlyRenderVisibleElements
       >
         <CanvasChrome nodeColor={(node) => miniMapColor(node, coverage)} minimap={nodes.length <= MINIMAP_NODE_CAP} />
         <CoveragePanel />
