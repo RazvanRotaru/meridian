@@ -128,6 +128,10 @@ export interface BlueprintState {
   /** The module/package the Service-composition tab is rooted at; null == the whole system. Defaults
    * to the app's first entry module. Only its subtree + 1-hop coupling neighbours are drawn. */
   compRoot: string | null;
+  /** The package cards the AGGREGATED composition view has inline-expanded — each renders as a
+   * frame holding the next level (sub-package cards / unit scorecards) instead of one summary card.
+   * Reset on re-root: a new root is a fresh aggregation altitude. */
+  compExpanded: ReadonlySet<string>;
   /** Whether the composition scorecards show their SOLID metric rows + smell chips. Off == a
    * structure-only view (kind + name), decluttered. Persisted to localStorage across reloads. */
   showSolidMetrics: boolean;
@@ -150,8 +154,8 @@ export interface BlueprintState {
   /** The selected node ids in the Module map (ctrl/cmd+click accumulates several); empty == none.
    * A repaint-only highlight — no relayout. */
   moduleSelected: Set<string>;
-  /** Group cards the reader expanded IN PLACE (their children nest inside the card), mirroring the
-   * Logic tab's inline expand. A relayout concern — flipping membership re-lays out the nested tree. */
+  /** Legacy URL-restored Module-map expansion ids. The flat map ignores these, but keeping the field
+   * lets old links round-trip without throwing away unrelated navigation state. */
   moduleExpanded: Set<string>;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
@@ -198,6 +202,7 @@ export interface BlueprintState {
   selectCompMethod(id: NodeId | null): void;
   compMethodRelayout(): Promise<void>;
   setCompRoot(id: string | null): void;
+  toggleCompExpand(id: string): void;
   toggleSolidMetrics(): void;
   moduleRelayout(): Promise<void>;
   setModuleFocus(id: string | null): void;
@@ -256,7 +261,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     expanded: new Set<string>(),
     selectedId: null,
     focusId: null,
-    viewMode: "call",
+    viewMode: "modules",
     showTests: true,
     coverageMode: false,
     coverage: null,
@@ -285,6 +290,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     compMethodRfEdges: [],
     compMethodLayoutStatus: "idle",
     compRoot: defaultCompRoot,
+    compExpanded: new Set<string>(),
     showSolidMetrics: readSolidMetricsPref(),
     moduleRfNodes: [],
     moduleRfEdges: [],
@@ -396,7 +402,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // selected, so a reader can pivot from "who calls this" to "how healthy is the unit it lives in".
     // No guard needed — compRelayout is idempotent, and rooting+selecting is always a fresh view.
     openComposition(unitId) {
-      set({ viewMode: "call", compRoot: unitId, compSelectedId: unitId });
+      set({ viewMode: "call", compRoot: unitId, compExpanded: new Set<string>(), compSelectedId: unitId });
       void get().compRelayout();
     },
 
@@ -511,13 +517,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // stale-seq guard. Reads the raw nodes/edges off the index (built from the artifact); the derive
     // decides which units earn a card and wires their couplings.
     async compRelayout() {
-      const { index, compRoot, showSolidMetrics } = get();
+      const { index, compRoot, compExpanded, showSolidMetrics } = get();
       // The layout ALWAYS includes test units, so toggling the Tests filter never moves a production
       // card — the composition view hides test cards in place (a repaint), it does not re-lay-out.
+      // A giant repo's first layout stays cheap anyway: aggregated altitudes only COUNT test units
+      // inside package summary cards, they never lay the individual cards out.
       const nodes = [...index.nodesById.values()];
+      // deriveCompositionGraph self-decides whether to aggregate (based on how many unit cards the
+      // current root's view would draw) and recurses a level deeper on each drill, so the store just
+      // hands it the root.
       const sequence = ++compLayoutSeq;
       set({ compLayoutStatus: "laying-out" });
-      const graph = await deriveCompositionLayout(nodes, index.edges, compRoot, showSolidMetrics);
+      const graph = await deriveCompositionLayout(nodes, index.edges, compRoot, showSolidMetrics, compExpanded);
       if (compLayoutSeq !== sequence) {
         return; // a newer layout superseded this one.
       }
@@ -570,7 +581,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (get().compRoot === id) {
         return;
       }
-      set({ compRoot: id, compSelectedId: null, compMethodId: null, compMethodRfNodes: [], compMethodRfEdges: [], compMethodLayoutStatus: "idle" });
+      set({ compRoot: id, compExpanded: new Set<string>(), compSelectedId: null, compMethodId: null, compMethodRfNodes: [], compMethodRfEdges: [], compMethodLayoutStatus: "idle" });
+      void get().compRelayout();
+    },
+
+    // Inline-expand / collapse a package card in the AGGREGATED composition view: an expanded
+    // package renders as a frame holding the next level (sub-package cards / unit scorecards)
+    // while the rest of the overview stays put. Relayouts — the canvas gains/loses cards.
+    toggleCompExpand(id) {
+      const next = new Set(get().compExpanded);
+      if (!next.delete(id)) {
+        next.add(id);
+      }
+      set({ compExpanded: next });
       void get().compRelayout();
     },
 
@@ -615,8 +638,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().moduleRelayout();
     },
 
-    // Expand/collapse a group card IN PLACE: its children nest inside the card (the coexisting gesture
-    // to double-click's re-root), mirroring the Logic tab. Flip membership, then re-lay out the tree.
+    // Legacy no-op path for older URLs/widgets that still try to flip Module-map expansion state.
+    // The flat map ignores this set, but relayout keeps callers from observing stale derived nodes.
     toggleModuleExpand(nodeId) {
       set({ moduleExpanded: withToggled(get().moduleExpanded, nodeId) });
       void get().moduleRelayout();

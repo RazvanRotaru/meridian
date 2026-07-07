@@ -5,10 +5,11 @@
  */
 
 import { isAbsolute } from "node:path";
-import { Project, type SourceFile } from "ts-morph";
+import { Project, ts, type SourceFile } from "ts-morph";
 import type { ExtractOptions } from "@meridian/core";
 import { DEFAULT_EXCLUDES, isExcluded } from "./glob";
 import { absoluteRoot, relativeToRoot, isUnderRoot } from "./paths";
+import { discoverWorkspacePaths } from "./workspace-paths";
 
 export interface LoadedProject {
   sourceFiles: SourceFile[];
@@ -32,10 +33,22 @@ function fromTsConfig(tsConfigFilePath: string): Project {
   return new Project({ tsConfigFilePath });
 }
 
+// No explicit tsconfig: load by glob, but seed ts-morph with the workspace's own package
+// aliases so cross-package `@scope/pkg` imports resolve to source (not built node_modules
+// `.d.ts`), giving the same in-project graph a tsconfig would. Single-package repos discover
+// no aliases and keep the original plain-glob behaviour.
 function fromGlobs(root: string, include: string[] | undefined): Project {
-  const project = new Project({ compilerOptions: { allowJs: true } });
+  const project = new Project({ compilerOptions: globCompilerOptions(root) });
   project.addSourceFilesAtPaths(include ? anchorToRoot(root, include) : defaultGlobs(root));
   return project;
+}
+
+function globCompilerOptions(root: string): ts.CompilerOptions {
+  const { baseUrl, paths } = discoverWorkspacePaths(root);
+  if (Object.keys(paths).length === 0) {
+    return { allowJs: true };
+  }
+  return { allowJs: true, baseUrl, paths, moduleResolution: ts.ModuleResolutionKind.NodeJs };
 }
 
 // Include globs are relative to the project root, not the process cwd (ts-morph would
