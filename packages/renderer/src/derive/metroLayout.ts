@@ -75,10 +75,21 @@ export function layoutMetro(steps: FlowStep[], flows: LogicFlows, index: GraphIn
     }
   }
 
+  /** A loop is a CONTAINED lane: split up to it, chart the body there, rejoin where iteration ends.
+   * The trunk running on underneath is the honest zero-iteration path — a `for` may never enter. */
   function loop(step: Extract<FlowStep, { kind: "loop" }>, lane: Lane, x: number): number {
-    c.mark({ x, y: lane.y - LOOP_R - 8, kind: "loop", color: FLOW_COLORS.loop, labelSide: -1, name: `↻ ${step.label}` });
-    c.cursor = x + SLOT;
-    return walk(step.body, { y: lane.y, color: FLOW_COLORS.loop, depth: lane.depth + 1, startX: c.cursor }).endX;
+    const laneY = c.clampY(lane.y - laneOffset(lane.depth));
+    const landX = x + SLOT * 0.6;
+    c.mark({ x: landX, y: laneY - LOOP_R - 8, kind: "loop", color: FLOW_COLORS.loop, labelSide: -1, name: `↻ ${step.label}` });
+    c.line(splitTo(x, lane.y, landX, laneY), FLOW_COLORS.loop);
+    c.cursor = landX + SLOT * 0.7; // the ring takes its own slot so body labels never sit under it
+    const r = walk(step.body, { y: laneY, color: FLOW_COLORS.loop, depth: lane.depth + 1, startX: landX });
+    if (!r.terminated) {
+      const mergeX = c.cursor + SLOT * 0.5;
+      c.line(rejoinTo(r.endX, laneY, mergeX, lane.y), FLOW_COLORS.loop);
+      c.cursor = mergeX + SLOT * 0.3;
+    }
+    return c.cursor;
   }
 
   function callback(step: Extract<FlowStep, { kind: "callback" }>, lane: Lane, x: number): void {

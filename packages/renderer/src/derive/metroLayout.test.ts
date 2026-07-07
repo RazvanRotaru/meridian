@@ -93,12 +93,25 @@ describe("layoutMetro", () => {
     expect(spec.stations.some((s) => s.name === "fallback")).toBe(true);
   });
 
-  it("charts a loop as an amber ring above the line with its body inline", () => {
-    const spec = run([{ kind: "loop", label: "× lines", body: [call("reserve")] }]);
+  it("charts a loop as a contained lane — body off the trunk, rejoining where iteration ends", () => {
+    const spec = run([{ kind: "loop", label: "× lines", body: [call("reserve")] }, call("save")]);
     const ring = spec.stations.find((s) => s.kind === "loop");
     expect(ring).toBeTruthy();
     expect(ring!.y).toBeLessThan(BASE_Y); // tangent above the main line
-    expect(spec.stations.some((s) => s.name === "reserve" && s.y === BASE_Y)).toBe(true);
+    const body = spec.stations.find((s) => s.name === "reserve");
+    expect(body).toBeTruthy();
+    expect(body!.y).not.toBe(BASE_Y); // the body lives on the loop lane, NOT the trunk
+    expect(rejoinsToBase(spec)).toHaveLength(1); // the lane hands control back when iteration ends
+    const after = spec.stations.find((s) => s.name === "save");
+    expect(after).toMatchObject({ y: BASE_Y }); // the trunk resumes past the loop…
+    expect(after!.x).toBeGreaterThan(body!.x); // …to the RIGHT of the body, never under it
+  });
+
+  it("dead-ends a loop lane at a body return but still lets the trunk carry on (zero iterations)", () => {
+    const spec = run([{ kind: "loop", label: "× lines", body: [ret("firstBad")] }, call("save")]);
+    expect(rejoinsToBase(spec)).toHaveLength(0); // a returning body never rejoins the trunk
+    expect(spec.stations.some((s) => s.kind === "terminus" && s.name?.includes("firstBad"))).toBe(true);
+    expect(spec.stations.some((s) => s.name === "save" && s.y === BASE_Y)).toBe(true); // 0-iteration path
   });
 
   it("draws no throw lane for try/finally without catch and charts finally exactly once", () => {
