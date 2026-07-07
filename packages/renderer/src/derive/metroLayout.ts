@@ -14,11 +14,11 @@ import { FLOW_COLORS, callDisplay, isTryStep } from "./flowViewModel";
 import { createCanvas } from "./metroCanvas";
 import type { MetroSpec } from "./metroSpec";
 import {
-  BASE_Y, BRANCH_RISE, CATCH_RISE, ENTRY_X, INTERCHANGE_PAD, LOOP_R, MAX_DEPTH, MAX_ELEV_DEPTH,
-  NEST_RISE, SLOT, hline, rejoinTo, splitTo,
+  BASE_Y, BRANCH_RISE, CATCH_RISE, ENTRY_X, INTERCHANGE_PAD, LOOP_RY, MAX_DEPTH, MAX_ELEV_DEPTH,
+  NEST_RISE, SLOT, encloseLoop, hline, rejoinTo, splitTo,
 } from "./metroSpec";
 
-type Lane = { y: number; color: string; depth: number; startX: number; dash?: boolean };
+type Lane = { y: number; color: string; depth: number; startX: number; dash?: boolean; over?: boolean };
 type WalkResult = { terminated: boolean; endX: number };
 type BranchResult = { terminated: boolean; mergeX: number };
 
@@ -56,7 +56,7 @@ export function layoutMetro(steps: FlowStep[], flows: LogicFlows, index: GraphIn
         if (r.terminated) { terminated = true; break; }
       }
     }
-    c.line(hline(lane.startX, Math.max(endX, lane.startX + 1), lane.y), lane.color, { dash: lane.dash });
+    c.line(hline(lane.startX, Math.max(endX, lane.startX + 1), lane.y), lane.color, { dash: lane.dash, over: lane.over });
     return { terminated, endX };
   }
 
@@ -75,21 +75,19 @@ export function layoutMetro(steps: FlowStep[], flows: LogicFlows, index: GraphIn
     }
   }
 
-  /** A loop is a CONTAINED lane: split up to it, chart the body there, rejoin where iteration ends.
-   * The trunk running on underneath is the honest zero-iteration path — a `for` may never enter. */
+  /** A loop is NOT a branch — its body always sits on the execution path; it just repeats. So the
+   * body stays INLINE on the current lane, recolored and painted over the trunk, and one stadium
+   * ring encloses the whole sequence. The trunk running on past it is the zero-iteration path. */
   function loop(step: Extract<FlowStep, { kind: "loop" }>, lane: Lane, x: number): number {
-    const laneY = c.clampY(lane.y - laneOffset(lane.depth));
-    const landX = x + SLOT * 0.6;
-    c.mark({ x: landX, y: laneY - LOOP_R - 8, kind: "loop", color: FLOW_COLORS.loop, labelSide: -1, name: `↻ ${step.label}` });
-    c.line(splitTo(x, lane.y, landX, laneY), FLOW_COLORS.loop);
-    c.cursor = landX + SLOT * 0.7; // the ring takes its own slot so body labels never sit under it
-    const r = walk(step.body, { y: laneY, color: FLOW_COLORS.loop, depth: lane.depth + 1, startX: landX });
-    if (!r.terminated) {
-      const mergeX = c.cursor + SLOT * 0.5;
-      c.line(rejoinTo(r.endX, laneY, mergeX, lane.y), FLOW_COLORS.loop);
-      c.cursor = mergeX + SLOT * 0.3;
-    }
-    return c.cursor;
+    const bodyStart = x + SLOT * 0.35;
+    c.cursor = bodyStart;
+    const r = walk(step.body, { y: lane.y, color: FLOW_COLORS.loop, depth: lane.depth + 1, startX: x, over: true });
+    const right = Math.max(r.endX, bodyStart) + SLOT * 0.35;
+    c.line(hline(x, right, lane.y), FLOW_COLORS.loop, { over: true }); // recolor the FULL enclosed span
+    c.line(encloseLoop(x, right, lane.y, LOOP_RY), FLOW_COLORS.loop, { width: 3, over: true });
+    c.label(x + 4, lane.y - LOOP_RY - 12, `↻ ${step.label}`, FLOW_COLORS.loop);
+    c.cursor = right + SLOT * 0.5;
+    return right;
   }
 
   function callback(step: Extract<FlowStep, { kind: "callback" }>, lane: Lane, x: number): void {

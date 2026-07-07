@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FlowStep, LogicFlows, NodeId } from "@meridian/core";
+import { FLOW_COLORS } from "./flowViewModel";
 import type { GraphIndex } from "../graph/graphIndex";
 import { layoutMetro } from "./metroLayout";
 import { BASE_Y } from "./metroSpec";
@@ -93,23 +94,31 @@ describe("layoutMetro", () => {
     expect(spec.stations.some((s) => s.name === "fallback")).toBe(true);
   });
 
-  it("charts a loop as a contained lane — body off the trunk, rejoining where iteration ends", () => {
-    const spec = run([{ kind: "loop", label: "× lines", body: [call("reserve")] }, call("save")]);
-    const ring = spec.stations.find((s) => s.kind === "loop");
-    expect(ring).toBeTruthy();
-    expect(ring!.y).toBeLessThan(BASE_Y); // tangent above the main line
-    const body = spec.stations.find((s) => s.name === "reserve");
-    expect(body).toBeTruthy();
-    expect(body!.y).not.toBe(BASE_Y); // the body lives on the loop lane, NOT the trunk
-    expect(rejoinsToBase(spec)).toHaveLength(1); // the lane hands control back when iteration ends
+  it("charts a loop inline on the trunk, recolored, with ONE enclosure around the whole body", () => {
+    const spec = run([{ kind: "loop", label: "× lines", body: [call("reserve"), call("audit")] }, call("save")]);
+    // A loop is NOT a branch: the body always sits on the execution path, so no split/rejoin arcs.
+    expect(rejoinsToBase(spec)).toHaveLength(0);
+    const reserve = spec.stations.find((s) => s.name === "reserve");
+    const audit = spec.stations.find((s) => s.name === "audit");
+    expect(reserve).toMatchObject({ y: BASE_Y });
+    expect(audit).toMatchObject({ y: BASE_Y });
+    // The amber body segment must paint OVER the trunk line, or z-order erases the recoloring.
+    expect(spec.lines.some((l) => l.color === FLOW_COLORS.loop && l.over)).toBe(true);
+    // One stadium enclosure (the only arc'd path) surrounds the ENTIRE call sequence.
+    const rings = spec.lines.filter((l) => l.d.includes(" A "));
+    expect(rings).toHaveLength(1);
+    const [, left] = rings[0].d.match(/^M (-?[\d.]+)/)!;
+    expect(Number(left)).toBeLessThan(reserve!.x);
+    expect(spec.labels.some((l) => l.text === "↻ × lines")).toBe(true);
+    // The trunk resumes past the enclosure, to the RIGHT of the last body call.
     const after = spec.stations.find((s) => s.name === "save");
-    expect(after).toMatchObject({ y: BASE_Y }); // the trunk resumes past the loop…
-    expect(after!.x).toBeGreaterThan(body!.x); // …to the RIGHT of the body, never under it
+    expect(after).toMatchObject({ y: BASE_Y });
+    expect(after!.x).toBeGreaterThan(audit!.x);
   });
 
-  it("dead-ends a loop lane at a body return but still lets the trunk carry on (zero iterations)", () => {
+  it("dead-ends inside the enclosure at a body return while the trunk carries on (zero iterations)", () => {
     const spec = run([{ kind: "loop", label: "× lines", body: [ret("firstBad")] }, call("save")]);
-    expect(rejoinsToBase(spec)).toHaveLength(0); // a returning body never rejoins the trunk
+    expect(rejoinsToBase(spec)).toHaveLength(0);
     expect(spec.stations.some((s) => s.kind === "terminus" && s.name?.includes("firstBad"))).toBe(true);
     expect(spec.stations.some((s) => s.name === "save" && s.y === BASE_Y)).toBe(true); // 0-iteration path
   });

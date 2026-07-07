@@ -60,13 +60,10 @@ export function MetroView(props: FlowViewProps) {
   );
 }
 
-/** The SVG mark for one station — dot, double-ring interchange, terminus bar, junction, or loop ring. */
+/** The SVG mark for one station — dot, double-ring interchange, terminus bar, or junction. */
 function Mark({ s, selected }: { s: MetroStation; selected: FlowViewProps["selected"] }) {
   const lit = selected !== null && s.target === selected;
   const halo = lit ? <circle cx={s.x} cy={s.y} r={13} fill="none" stroke={FLOW_COLORS.select} strokeWidth={2} opacity={0.9} /> : null;
-  if (s.kind === "loop") {
-    return <circle cx={s.x} cy={s.y} r={34} fill="none" stroke={s.color} strokeWidth={4} />;
-  }
   if (s.kind === "junction") {
     return <circle cx={s.x} cy={s.y} r={5} fill={s.color} />;
   }
@@ -140,6 +137,7 @@ function Legend() {
   const items: Array<[string, string]> = [
     ["exec line", FLOW_COLORS.ink],
     ["branch split", FLOW_COLORS.branch],
+    ["↻ amber ring = loop body", FLOW_COLORS.loop],
     ["⏱ interchange = awaited", FLOW_COLORS.awaited],
     ["⏎ terminus = return", FLOW_COLORS.exitCap],
     ["dashed violet = fire-and-forget", FLOW_COLORS.detached],

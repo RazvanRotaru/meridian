@@ -71,7 +71,9 @@ export function createCanvas(): MetroCanvas {
         canvas.label(rightEdge - 150, laneY - 15, "still running →", FLOW_COLORS.detached);
         maxY = Math.max(maxY, laneY);
       });
-      return { width: rightEdge + 40, height: Math.max(MIN_HEIGHT, maxY + 60), lines, stations, labels };
+      // Stable-partition so `over` segments (recolored loop bodies) paint on top of the trunk.
+      const ordered = [...lines.filter((line) => !line.over), ...lines.filter((line) => line.over)];
+      return { width: rightEdge + 40, height: Math.max(MIN_HEIGHT, maxY + 60), lines: ordered, stations, labels };
     },
   };
   return canvas;
