@@ -21,7 +21,7 @@ const SELECT_ACCENT = "#6BE38A";
 type ModuleCardRfNode = Node<ModuleCardData, "file">;
 
 function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
-  const selected = useBlueprint((state) => state.moduleSelectedId) === id;
+  const selected = useBlueprint((state) => state.moduleSelected.has(id));
   const accent = CATEGORY_COLOR[data.category];
   return (
     <div style={selected ? CARD_SELECTED : CARD}>
@@ -51,8 +51,7 @@ export const ModuleCardNode = memo(ModuleCardNodeImpl);
 
 /** The node-type registry the Module-map surface hands React Flow (a stable module-level reference).
  * `package` is a group card (a package at the repo overview, a directory one level deeper); `file`
- * is a source file. A group card the reader expands becomes a frame whose children NEST inside it
- * (parentId), so a level can hold nested frames — mirroring the call graph's ContainerNode. */
+ * is a source file. */
 export const moduleNodeTypes = { file: ModuleCardNode, package: PackageOverviewNode };
 
 // Category → accent hue, echoing the palette used across the dark surfaces: entry green (the "you are

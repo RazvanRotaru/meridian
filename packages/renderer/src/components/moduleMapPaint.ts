@@ -62,23 +62,25 @@ function isHidden(node: Node, options: HideOptions): boolean {
 
 /**
  * Anti-clutter emphasis: EVERY wire is dim by default, so a level reads as its cards until the
- * reader points at one. With an active node, its import neighbourhood within `radius` hops lights to
- * full opacity and every node outside it fades. `radius` 1 = direct neighbours (the default reach).
+ * reader points at one. With active nodes selected (ctrl/cmd+click accumulates several), the UNION
+ * of their import neighbourhoods within `radius` hops lights to full opacity and every node outside
+ * it fades. `radius` 1 = direct neighbours (the default reach).
  */
-export function emphasize(nodes: Node[], edges: Edge[], activeId: string | null, radius: number): { nodes: Node[]; edges: Edge[] } {
-  if (activeId === null) {
+export function emphasize(nodes: Node[], edges: Edge[], activeIds: ReadonlySet<string>, radius: number): { nodes: Node[]; edges: Edge[] } {
+  if (activeIds.size === 0) {
     return { nodes, edges: edges.map((edge) => styleEdge(edge, false)) };
   }
-  const near = neighbourhood(edges, activeId, radius);
+  const near = neighbourhood(edges, activeIds, radius);
   const styledEdges = edges.map((edge) => styleEdge(edge, near.has(edge.source) && near.has(edge.target)));
   const styledNodes = nodes.map((node) => (near.has(node.id) ? node : dimNode(node)));
   return { nodes: styledNodes, edges: styledEdges };
 }
 
-/** The active node plus every node within `radius` undirected import hops of it. */
-function neighbourhood(edges: Edge[], activeId: string, radius: number): Set<string> {
-  const reached = new Set<string>([activeId]);
-  let frontier = [activeId];
+/** The active nodes plus every node within `radius` undirected import hops of ANY of them —
+ * a multi-source BFS, so several selections light the union of their reaches. */
+function neighbourhood(edges: Edge[], activeIds: ReadonlySet<string>, radius: number): Set<string> {
+  const reached = new Set<string>(activeIds);
+  let frontier = [...activeIds];
   for (let hop = 0; hop < Math.max(1, radius) && frontier.length > 0; hop += 1) {
     const next: string[] = [];
     for (const edge of edges) {
