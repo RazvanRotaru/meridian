@@ -6,7 +6,7 @@
  */
 
 import { WebError } from "./web-error";
-import { classifyQuery, parseRepoList, parseRepoResult, parseSearchResults, parseUser } from "./github-parse";
+import { classifyQuery, parseBranchList, parseRepoList, parseRepoResult, parseSearchResults, parseUser } from "./github-parse";
 import type { GitHubUser, RepoSummary } from "./github-parse";
 import { interpretTokenResponse, parseDeviceCodeResponse, tokenRedeemBody } from "./github-auth";
 import type { DeviceCode, TokenPoll } from "./github-auth";
@@ -18,6 +18,7 @@ const SCOPE = "repo";
 const REQUEST_TIMEOUT_MS = 10_000;
 const SEARCH_PER_PAGE = 20;
 const LIST_PER_PAGE = 30;
+const BRANCH_PER_PAGE = 100;
 
 export interface GitHubClient {
   requestDeviceCode(): Promise<DeviceCode>;
@@ -25,6 +26,8 @@ export interface GitHubClient {
   getUser(token: string): Promise<GitHubUser>;
   searchRepos(token: string, query: string): Promise<RepoSummary[]>;
   listOwnRepos(token: string): Promise<RepoSummary[]>;
+  /** Tokenless works for public repos, so this takes `undefined` when nobody is signed in. */
+  listBranches(token: string | undefined, fullName: string): Promise<string[]>;
 }
 
 export interface GitHubClientConfig {
@@ -40,6 +43,7 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
     getUser: (token) => getUser(fetchImpl, token),
     searchRepos: (token, query) => searchRepos(fetchImpl, token, query),
     listOwnRepos: (token) => listOwnRepos(fetchImpl, token),
+    listBranches: (token, fullName) => listBranches(fetchImpl, token, fullName),
   };
 }
 
@@ -86,6 +90,20 @@ async function listOwnRepos(fetchImpl: typeof fetch, token: string): Promise<Rep
   return parseRepoList(await getApi(fetchImpl, `${API_ROOT}/user/repos?${params}`, token));
 }
 
+async function listBranches(fetchImpl: typeof fetch, token: string | undefined, fullName: string): Promise<string[]> {
+  const params = new URLSearchParams({ per_page: String(BRANCH_PER_PAGE) });
+  return parseBranchList(await getApi(fetchImpl, `${API_ROOT}/repos/${repoPath(fullName)}/branches?${params}`, token));
+}
+
+/** `owner/repo` -> two encoded URL segments; anything else is rejected before touching a URL. */
+function repoPath(fullName: string): string {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(fullName)) {
+    throw new WebError(400, "repo must be owner/repo");
+  }
+  const [owner, repo] = fullName.split("/");
+  return `${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+}
+
 async function postForm(fetchImpl: typeof fetch, url: string, body: Record<string, string>): Promise<unknown> {
   const response = await withTimeout((signal) =>
     fetchImpl(url, {
@@ -98,7 +116,7 @@ async function postForm(fetchImpl: typeof fetch, url: string, body: Record<strin
   return response.json();
 }
 
-async function getApi(fetchImpl: typeof fetch, url: string, token: string): Promise<unknown> {
+async function getApi(fetchImpl: typeof fetch, url: string, token: string | undefined): Promise<unknown> {
   const response = await apiRequest(fetchImpl, url, token);
   if (!response.ok) {
     throw apiError(response.status);
@@ -117,18 +135,18 @@ async function getApiOrNull(fetchImpl: typeof fetch, url: string, token: string)
   return response.json();
 }
 
-function apiRequest(fetchImpl: typeof fetch, url: string, token: string): Promise<Response> {
-  return withTimeout((signal) =>
-    fetchImpl(url, {
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${token}`,
-        "x-github-api-version": "2022-11-28",
-        "user-agent": "meridian",
-      },
-      signal,
-    }),
-  );
+// The Authorization header is sent only when a token exists — a tokenless call is a legitimate
+// unauthenticated request for public data, and `Bearer undefined` would be a hard 401.
+function apiRequest(fetchImpl: typeof fetch, url: string, token: string | undefined): Promise<Response> {
+  const headers: Record<string, string> = {
+    accept: "application/vnd.github+json",
+    "x-github-api-version": "2022-11-28",
+    "user-agent": "meridian",
+  };
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+  return withTimeout((signal) => fetchImpl(url, { headers, signal }));
 }
 
 function apiError(status: number): WebError {

@@ -22,7 +22,7 @@ import { createGitHubClient } from "./github";
 import type { GitHubClient } from "./github";
 import { SessionStore } from "./session";
 import { assertJsonContentType, assertSameOrigin } from "./web-guards";
-import { handleAuthSession, handleAuthStatus, handleDeviceStart, handleLogout, handleOwnRepos, handleRepoSearch } from "./web-auth";
+import { handleAuthSession, handleAuthStatus, handleBranches, handleDeviceStart, handleLogout, handleOwnRepos, handleRepoSearch } from "./web-auth";
 import { handleGenerate, sendGraph, sendMeta, sendView } from "./web-graph";
 import { sendSource } from "./source-serve";
 
@@ -169,6 +169,10 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
   }
   if (pathname === "/api/repos/mine") {
     await handleOwnRepos(ctx, request, response);
+    return;
+  }
+  if (pathname === "/api/repos/branches") {
+    await handleBranches(ctx, request, response, url.searchParams.get("repo") ?? "");
     return;
   }
   sendJson(response, 404, { error: "unknown endpoint" });

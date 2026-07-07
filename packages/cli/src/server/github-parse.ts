@@ -9,6 +9,7 @@ import { asObject, optionalString, requireString } from "./json-fields";
 const OWNER_REPO = /^[\w.-]+\/[\w.-]+$/;
 const SEARCH_RESULT_LIMIT = 20;
 const LIST_RESULT_LIMIT = 30;
+const BRANCH_RESULT_LIMIT = 100;
 
 export interface RepoSummary {
   fullName: string;
@@ -58,6 +59,21 @@ export function parseRepoList(json: unknown): RepoSummary[] {
     return [];
   }
   return json.slice(0, LIST_RESULT_LIMIT).map((item) => toRepoSummary(asObject(item)));
+}
+
+/** `GET /repos/{owner}/{repo}/branches` responds with an array of `{ name }` objects. */
+export function parseBranchList(json: unknown): string[] {
+  if (!Array.isArray(json)) {
+    return [];
+  }
+  return json.slice(0, BRANCH_RESULT_LIMIT).flatMap((item) => {
+    const name = isObjectLike(item) ? item.name : null;
+    return typeof name === "string" && name.length > 0 ? [name] : [];
+  });
+}
+
+function isObjectLike(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 export function parseUser(json: unknown): GitHubUser {
