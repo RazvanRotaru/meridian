@@ -383,7 +383,7 @@
         left: 0;
         right: 0;
         z-index: 20;
-        max-height: 240px;
+        max-height: 280px;
         overflow-y: auto;
         box-shadow: 0 14px 34px rgba(0, 0, 0, 0.55);
       }
@@ -581,9 +581,15 @@
       .device a {
         color: var(--blue);
       }
+      .code-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        margin-top: 8px;
+      }
       .device code {
         display: inline-block;
-        margin-top: 8px;
         font-family: var(--font-mono);
         font-size: 22px;
         letter-spacing: 0.12em;
@@ -821,7 +827,10 @@
             </div>
             <div class="device" id="device">
               Open <a id="verify-link" target="_blank" rel="noopener noreferrer">github.com/login/device</a> and enter:
-              <br /><code id="usercode"></code>
+              <div class="code-row">
+                <code id="usercode"></code>
+                <button type="button" class="ghost" id="copy-code" hidden>Copy</button>
+              </div>
               <div class="auth-msg" id="device-msg">Waiting for authorization…</div>
             </div>
           </div>
@@ -1047,6 +1056,7 @@
         showDeviceView();
         if (devicePending) return;
         $("usercode").textContent = "";
+        $("copy-code").hidden = true;
         setDeviceMsg("Contacting GitHub…");
         try {
           const res = await apiPost("/api/auth/device");
@@ -1073,6 +1083,8 @@
       function renderDeviceCode(data) {
         animateCardSwap(() => {
           $("usercode").textContent = data.userCode || "";
+          $("copy-code").hidden = !data.userCode;
+          $("copy-code").textContent = "Copy";
           const link = $("verify-link");
           const href = safeGithubUrl(data.verificationUriComplete) || safeGithubUrl(data.verificationUri);
           link.textContent = typeof data.verificationUri === "string" ? data.verificationUri : "github.com/login/device";
@@ -1081,6 +1093,20 @@
           setDeviceMsg("Waiting for authorization…");
         });
       }
+
+      let copyResetTimer = null;
+      $("copy-code").addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText($("usercode").textContent);
+        } catch {
+          return; /* clipboard unavailable — the code stays selectable */
+        }
+        $("copy-code").textContent = "Copied ✓";
+        clearTimeout(copyResetTimer);
+        copyResetTimer = setTimeout(() => {
+          $("copy-code").textContent = "Copy";
+        }, 1600);
+      });
 
       function schedulePoll() {
         clearTimeout(pollTimer);
@@ -1139,9 +1165,11 @@
         if (signedIn && !$("repo").value.trim()) showRecents();
       });
 
+      // The whole cached list, recent first — org repos included without having to search;
+      // the dropdown scrolls.
       function showRecents() {
         activeQuery = null;
-        renderList([{ label: "Your recent repositories", repos: myRepos.slice(0, 7) }]);
+        renderList([{ label: "Your repositories — recent first", repos: myRepos }]);
       }
 
       function matchMine(query) {
