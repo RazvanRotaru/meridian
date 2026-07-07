@@ -1,0 +1,6 @@
+{
+  "name": "orders-api",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Fixture: an express service whose routes are entry ports; linked against checkout-web."
+}

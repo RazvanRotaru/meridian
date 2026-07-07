@@ -61,16 +61,16 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     expect(await statusText(page)).toContain("loaded: staging");
   });
 
-  it("drops test-code units from the composition graph when the Tests toggle is clicked", async () => {
-    const before = await page.locator(".react-flow__node").count();
+  it("starts with tests hidden; the Tests toggle brings them in and hides them again", async () => {
+    const hiddenByDefault = await page.locator(".react-flow__node").count();
+    await page.click('button:has-text("Tests (")');
+    await page.waitForTimeout(900); // first show pays one relayout (the latched layout gains tests)
+    const shown = await page.locator(".react-flow__node").count();
+    expect(shown).toBeGreaterThan(hiddenByDefault); // the test-module scorecards appeared
+    // Hiding again is a pure repaint over the latched layout — same count as the default view.
     await page.click('button:has-text("Tests (")');
     await page.waitForTimeout(700);
-    const hidden = await page.locator(".react-flow__node").count();
-    expect(hidden).toBeLessThan(before); // the test-module scorecards (and their wires) are gone
-    // Toggling back restores them — the graph is filtered, not permanently pruned.
-    await page.click('button:has-text("Tests (")');
-    await page.waitForTimeout(700);
-    expect(await page.locator(".react-flow__node").count()).toBe(before);
+    expect(await page.locator(".react-flow__node").count()).toBe(hiddenByDefault);
   });
 
   it("coverage mode opens the panel with verdicts, reasons, and the summary percentage", async () => {
