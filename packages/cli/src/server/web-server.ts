@@ -12,6 +12,7 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GraphArtifact } from "@meridian/core";
+import type { CommentsByFile } from "./github-comments";
 import { CliError, EXIT } from "../errors";
 import { serveStatic } from "./static-files";
 import type { StaticAssets } from "./static-files";
@@ -22,8 +23,9 @@ import { createGitHubClient } from "./github";
 import type { GitHubClient } from "./github";
 import { SessionStore } from "./session";
 import { assertJsonContentType, assertSameOrigin } from "./web-guards";
-import { handleAuthSession, handleAuthStatus, handleDeviceStart, handleLogout, handleOwnRepos, handleRepoSearch } from "./web-auth";
+import { handleAuthSession, handleAuthStatus, handleBranches, handleDeviceStart, handleLogout, handleOwnRepos, handleRepoSearch } from "./web-auth";
 import { handleGenerate, sendGraph, sendMeta, sendView } from "./web-graph";
+import { sendComments } from "./web-comments";
 import { sendSource } from "./source-serve";
 
 export interface WebServerConfig {
@@ -42,6 +44,8 @@ export interface Context {
   graphs: Map<string, GraphArtifact>;
   /** Per-id source directory retained after a successful generate so `/api/source` can read it. */
   sourceRoots: Map<string, string>;
+  /** Per-id PR review comments grouped by file, captured at generate time. */
+  comments: Map<string, CommentsByFile>;
   /** Temp-clone removers, held until process exit so retained sources are cleaned on shutdown. */
   tempCleanups: Set<() => void>;
   rendererIndex: string;
@@ -69,6 +73,7 @@ function buildContext(config: WebServerConfig): Context {
   const ctx: Context = {
     graphs: new Map(),
     sourceRoots: new Map(),
+    comments: new Map(),
     tempCleanups: new Set(),
     rendererIndex: readFileSync(indexPath, "utf8"),
     landingHtml: landing,
@@ -155,6 +160,10 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
     sendSource(response, ctx.sourceRoots.get(url.searchParams.get("id") ?? "") ?? null, url.searchParams);
     return;
   }
+  if (pathname === "/api/comments") {
+    sendComments(ctx, response, url.searchParams.get("id"));
+    return;
+  }
   if (pathname === "/api/auth/status") {
     await handleAuthStatus(ctx, request, response);
     return;
@@ -169,6 +178,10 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
   }
   if (pathname === "/api/repos/mine") {
     await handleOwnRepos(ctx, request, response);
+    return;
+  }
+  if (pathname === "/api/repos/branches") {
+    await handleBranches(ctx, request, response, url.searchParams.get("repo") ?? "");
     return;
   }
   sendJson(response, 404, { error: "unknown endpoint" });

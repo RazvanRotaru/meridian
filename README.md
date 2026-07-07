@@ -39,6 +39,10 @@ client secret; after approving you also get a **"Your repositories"** picker), o
 never uploaded, logged, or stored. Sign-in ships preconfigured with the project's OAuth app;
 forks can point at their own via `MERIDIAN_GITHUB_CLIENT_ID` or `--github-client-id`.
 
+Graphs generated from a GitHub repo also carry its **PR review comments**: any file that
+reviewers commented on wears a 💬 badge in the viewer, and clicking it lists the comments with
+links back to their pull requests.
+
 ## Gallery
 
 Captured headless on the `shopfront` fixture (a deliberately-tangled TS + React app) and the
@@ -115,7 +119,7 @@ published as JSON Schema at
 | --- | --- |
 | `meridian generate [path]` | Extract a codebase into a graph artifact. `--lang` (auto: `typescript` \| `python`), `-o`, `--depth package\|module\|class\|function`, `--include-external`, `--include`, `--exclude`, `--tsconfig`, `--exclude-tests` (default: tests included, tagged `test`). |
 | `meridian view [graph]` | Serve the renderer on a graph + open the browser. `--port`, `--host`, `--no-open`, `--overlay <file\|mock>`, `--env`. |
-| `meridian web [source]` | Local web UI: paste a **GitHub repo** (`owner/repo` or URL) / local path — clones (`--depth 1`) + extracts + renders. **Sign in with GitHub** (device flow, enabled by default) lists your repositories to pick from; private repos also work via `GITHUB_TOKEN`/`GH_TOKEN` or a local-only token field. `--port`, `--host`, `--no-open`, `--github-client-id`. |
+| `meridian web [source]` | Local web UI: paste a **GitHub repo** (`owner/repo` or URL) / local path — clones (`--depth 1`) + extracts + renders. **Sign in with GitHub** (device flow, enabled by default) lists your repositories to pick from; a **branch picker** fills in once a repo is chosen (public repos list branches signed out too). Private repos also work via `GITHUB_TOKEN`/`GH_TOKEN` or a local-only token field. `--port`, `--host`, `--no-open`, `--github-client-id`. |
 | `meridian mock-telemetry [graph]` | Mint a deterministic mock overlay. **`--env` is required** (no default, never prod); `-o`, `--seed`. |
 | `meridian coverage [graph]` | Terminal report of the same static coverage the renderer overlays: per-class percentages, every uncovered member with its reason. `--fail-under <pct>` makes it a CI gate (exit 3 below threshold). |
 

@@ -11,6 +11,7 @@ import { createBlueprintStore, type BlueprintStore } from "../state/store";
 import { restoreFromUrl, startUrlSync } from "../state/urlSync";
 import { readBootConfig, type BootConfig } from "./bootConfig";
 import { loadArtifact } from "./loadArtifact";
+import { loadComments } from "./loadComments";
 import { loadEnvironments } from "./loadEnvironments";
 
 export interface BootResult {
@@ -23,12 +24,14 @@ export async function bootstrap(): Promise<BootResult> {
   const artifact = await loadArtifact(boot.graphUrl);
   const index = buildGraphIndex(artifact);
   const provider = await buildProvider(boot);
+  const comments = boot.commentsUrl ? await loadComments(boot.commentsUrl) : null;
   const store = createBlueprintStore({
     artifact,
     index,
     provider,
     hasOverlay: boot.hasOverlay,
     sourceUrl: boot.sourceUrl,
+    comments,
   });
   // Restore the navigation state carried in the URL (or fall through to defaults) and run the
   // first layout, then start reflecting the store back into the URL for reload/back/forward.

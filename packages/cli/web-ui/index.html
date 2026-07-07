@@ -11,6 +11,7 @@
     POST /api/auth/logout  -> { signedIn:false }
     GET  /api/repos/search?q= -> { repos: [{ fullName, isPrivate, defaultBranch, description, ownerAvatarUrl }] }
     GET  /api/repos/mine   -> { repos: [same shape] }              (the signed-in user's repos)
+    GET  /api/repos/branches?repo= -> { branches: [name] }         (tokenless works for public repos)
     POST /api/generate     -> { id } | { error }
   On generate success we redirect to /view?id=<id>. Every GitHub-sourced string is written via
   textContent and every URL is https-validated before use — repo names/descriptions are untrusted.
@@ -396,7 +397,10 @@
         <div class="row">
           <div>
             <label for="ref">Branch (optional)</label>
-            <input id="ref" name="ref" placeholder="main" />
+            <!-- A datalist keeps this a free-text field signed out, and becomes a real picker once
+                 the repo's branches load (from a picked result or a typed owner/repo). -->
+            <input id="ref" name="ref" placeholder="main" list="branches" />
+            <datalist id="branches"></datalist>
           </div>
           <div>
             <label for="subdir">Source subfolder (optional)</label>
@@ -428,6 +432,8 @@
       let pollTimer = null;
       let pollDelayMs = 5000;
       let searchTimer = null;
+      let branchTimer = null;
+      let branchRepo = ""; // the repo whose branches currently fill the datalist
 
       // A CLI positional (`meridian web <source>`) is injected as a prefill string.
       const prefill = window.__MERIDIAN_PREFILL__;
@@ -444,6 +450,7 @@
           $("repo").value = chip.dataset.repo;
           $("path").value = "";
           hideResults();
+          loadBranches(chip.dataset.repo);
         });
       }
 
@@ -597,11 +604,17 @@
       }
 
       // --- repo search (only when signed in; the repo field doubles as the search box) ---
+      // Branch loading, unlike search, also runs signed out — public repos list fine tokenless.
       $("repo").addEventListener("input", () => {
-        if (!signedIn) return;
         clearTimeout(searchTimer);
+        clearTimeout(branchTimer);
         const query = $("repo").value.trim();
-        if (!query) return hideResults();
+        if (!query) {
+          clearBranches();
+          return hideResults();
+        }
+        branchTimer = setTimeout(maybeLoadBranches, 400);
+        if (!signedIn) return;
         searchTimer = setTimeout(() => runSearch(query), 250);
       });
 
@@ -652,6 +665,48 @@
         if (typeof repo.defaultBranch === "string") $("ref").placeholder = repo.defaultBranch;
         $("path").value = "";
         hideResults();
+        if (typeof repo.fullName === "string") loadBranches(repo.fullName);
+      }
+
+      // --- branch picker (fills the datalist behind the branch field) ---
+      function maybeLoadBranches() {
+        const slug = $("repo")
+          .value.trim()
+          .replace(/^https?:\/\/github\.com\//i, "")
+          .replace(/\.git$/, "")
+          .replace(/\/$/, "");
+        if (!/^[\w.-]+\/[\w.-]+$/.test(slug)) return clearBranches();
+        if (slug !== branchRepo) loadBranches(slug);
+      }
+
+      async function loadBranches(repo) {
+        branchRepo = repo;
+        try {
+          const res = await apiGet("/api/repos/branches?repo=" + encodeURIComponent(repo));
+          if (branchRepo !== repo) return; // a newer repo superseded this fetch
+          if (!res.ok) return clearBranches();
+          const data = await res.json();
+          renderBranches(Array.isArray(data.branches) ? data.branches : []);
+        } catch {
+          clearBranches();
+        }
+      }
+
+      // Option values are set via the DOM property, so a hostile branch name is never markup.
+      function renderBranches(branches) {
+        const list = $("branches");
+        list.replaceChildren();
+        for (const name of branches) {
+          if (typeof name !== "string") continue;
+          const option = document.createElement("option");
+          option.value = name;
+          list.appendChild(option);
+        }
+      }
+
+      function clearBranches() {
+        branchRepo = "";
+        $("branches").replaceChildren();
       }
 
       function hideResults() {

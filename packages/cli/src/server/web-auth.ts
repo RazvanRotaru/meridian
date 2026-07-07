@@ -81,6 +81,22 @@ export async function handleOwnRepos(ctx: AuthContext, request: IncomingMessage,
   sendJson(response, 200, { repos: await requireGitHub(ctx).listOwnRepos(token) });
 }
 
+/** Branch names for one repo. No sign-in gate — tokenless works for public repos; a session
+ * token, when present, unlocks private ones. */
+export async function handleBranches(
+  ctx: AuthContext,
+  request: IncomingMessage,
+  response: ServerResponse,
+  repo: string,
+): Promise<void> {
+  if (repo.trim() === "") {
+    sendJson(response, 400, { error: "repo query parameter is required" });
+    return;
+  }
+  const token = sessionTokenFor(ctx, request);
+  sendJson(response, 200, { branches: await requireGitHub(ctx).listBranches(token, repo.trim()) });
+}
+
 /** The session token feeding a clone (cookie → session), or undefined when not signed in. */
 export function sessionTokenFor(ctx: AuthContext, request: IncomingMessage): string | undefined {
   const session = ctx.sessions.get(readSessionId(requestHeader(request, "cookie")), Date.now());

@@ -17,11 +17,15 @@ export interface BootConfig {
   preselectedEnv: string | null;
   /** Base URL the renderer GETs to fetch a node's source; null when source isn't available. */
   sourceUrl: string | null;
+  /** URL for PR review comments grouped by file (web mode only); null when unavailable. */
+  commentsUrl: string | null;
   defaultEnv: null;
 }
 
-interface InjectedConfig extends Omit<BootConfig, "defaultEnv"> {
+// `commentsUrl` stays optional here so a boot object from an older server still parses.
+interface InjectedConfig extends Omit<BootConfig, "defaultEnv" | "commentsUrl"> {
   defaultEnv: unknown;
+  commentsUrl?: string | null;
 }
 
 declare global {
@@ -39,6 +43,7 @@ const DEV_FALLBACK: BootConfig = {
   envRequired: true,
   preselectedEnv: null,
   sourceUrl: null,
+  commentsUrl: null,
   defaultEnv: null,
 };
 
@@ -54,5 +59,5 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
   if (injected.defaultEnv !== null) {
     throw new Error("boot contract violation: defaultEnv must never be defaulted (always null)");
   }
-  return { ...injected, defaultEnv: null };
+  return { ...injected, commentsUrl: injected.commentsUrl ?? null, defaultEnv: null };
 }

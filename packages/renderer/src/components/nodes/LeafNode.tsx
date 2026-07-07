@@ -26,12 +26,17 @@ export function LeafNode(props: NodeProps<BlueprintNode>) {
   const isEntry = useBlueprint((state) => state.flowRootId === props.id);
   const sourceUrl = useBlueprint((state) => state.sourceUrl);
   const codeView = useBlueprint((state) => state.codeView);
-  const { showCode, expandCode, closeCode } = useBlueprintActions();
+  const commentCount = useBlueprint((state) => state.comments?.[node.location?.file ?? ""]?.length ?? 0);
+  const { showCode, expandCode, closeCode, openComments } = useBlueprintActions();
   const callable = isCallable(node.kind);
   // Offer the source button only for a callable whose location the server can actually serve.
   const canShowCode = callable && Boolean(node.location) && Boolean(sourceUrl);
   const showingHere = codeView?.node.id === node.id;
   const toggleCode = () => (showingHere ? closeCode() : void showCode(node));
+  // The comments badge shows the FILE's PR-comment count (review comments anchor to files, not
+  // callables); both corner controls present widens the header's reserved right edge.
+  const showComments = commentCount > 0 && Boolean(node.location);
+  const reserveRight = canShowCode && showComments ? 76 : canShowCode || showComments ? 34 : false;
   return (
     // A fragment, not a lone card: the inline panel is a SIBLING of the card so the card's
     // overflow:hidden can't clip it. Both live inside React Flow's node wrapper, which is the
@@ -40,7 +45,14 @@ export function LeafNode(props: NodeProps<BlueprintNode>) {
       <div style={cardStyle(accent, selected, isEntry)}>
         <Handle type="target" position={Position.Left} id="in" style={pinStyle(callable)} />
         {canShowCode ? <CodeButton active={showingHere} onToggle={toggleCode} /> : null}
-        <NodeHeader node={node} accent={accent} entry={isEntry} reserveRight={canShowCode}>
+        {showComments ? (
+          <CommentsButton
+            count={commentCount}
+            offsetRight={canShowCode ? 42 : 8}
+            onOpen={() => openComments(node.location.file)}
+          />
+        ) : null}
+        <NodeHeader node={node} accent={accent} entry={isEntry} reserveRight={reserveRight}>
           <TelemetryBadges metrics={metrics} />
           <CoverageBadge nodeId={props.id} />
         </NodeHeader>
@@ -77,6 +89,29 @@ function CodeButton(props: { active: boolean; onToggle: () => void }) {
       onMouseLeave={() => setHover(false)}
     >
       {"</>"}
+    </button>
+  );
+}
+
+// The 💬 corner control mirrors CodeButton: absolutely positioned, click swallowed off the
+// node's select/dive handlers, opening the file's PR-comments modal.
+function CommentsButton(props: { count: number; offsetRight: number; onOpen: () => void }) {
+  const [hover, setHover] = useState(false);
+  const label = `${props.count} PR review comment${props.count === 1 ? "" : "s"}`;
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      style={{ ...(hover ? CODE_BUTTON_HOVER_STYLE : CODE_BUTTON_STYLE), right: props.offsetRight }}
+      onClick={(event) => {
+        event.stopPropagation();
+        props.onOpen();
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      💬{props.count}
     </button>
   );
 }

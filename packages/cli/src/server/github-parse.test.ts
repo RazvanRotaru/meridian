@@ -5,7 +5,17 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { classifyQuery, parseRepoList, parseRepoResult, parseSearchResults, parseUser } from "./github-parse";
+import { classifyQuery, parseBranchList, parseRepoList, parseRepoResult, parseSearchResults, parseUser } from "./github-parse";
+
+describe("parseBranchList", () => {
+  it("keeps only string names and tolerates junk items", () => {
+    expect(parseBranchList([{ name: "main" }, { name: "dev" }, { name: 3 }, "junk", null])).toEqual(["main", "dev"]);
+  });
+
+  it("returns [] for a non-array (an API error envelope)", () => {
+    expect(parseBranchList({ message: "Not Found" })).toEqual([]);
+  });
+});
 
 describe("classifyQuery", () => {
   it("treats owner/repo and github URLs as an exact lookup", () => {
