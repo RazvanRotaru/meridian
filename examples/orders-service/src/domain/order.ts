@@ -16,7 +16,7 @@ export interface OrderRequest {
   discountCode?: string;
 }
 
-/** A priced, validated order ready to be stored and confirmed. */
+/** A priced, validated order, ready to be stored and confirmed. */
 export interface Order {
   id: string;
   customerId: string;

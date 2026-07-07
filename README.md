@@ -29,7 +29,7 @@ pnpm install && pnpm build
 node packages/cli/dist/bin.js web sindresorhus/ky        # any GitHub owner/repo, URL, or local path
 
 # The CLI way — generate an artifact, then view it
-node packages/cli/dist/bin.js generate ./my-service -o graph.json    # auto-detects TypeScript or Python
+node packages/cli/dist/bin.js generate ./my-service -o graph.json    # auto-detects TypeScript or Python sources
 node packages/cli/dist/bin.js view graph.json --overlay mock --env staging
 ```
 

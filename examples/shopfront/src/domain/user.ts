@@ -1,7 +1,7 @@
 /** A stable user identifier. */
 export type UserId = string;
 
-/** A shipping/billing address. */
+/** A shipping/billing address. Optional until first checkout. */
 export interface Address {
   line1: string;
   city: string;
