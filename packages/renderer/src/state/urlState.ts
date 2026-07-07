@@ -11,6 +11,7 @@
  */
 
 import type { ViewMode } from "../derive/edgeSelection";
+import { SHOW_SERVICE_COMPOSITION } from "../featureFlags";
 
 /** The URL-worthy slice of the store — mirrors the navigation fields of BlueprintState. */
 export interface NavState {
@@ -41,7 +42,7 @@ const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "
 
 /** The navigation state the app boots into — the baseline a restore resets absent keys back to. */
 export const DEFAULT_NAV: NavState = {
-  viewMode: "call",
+  viewMode: "modules",
   focusId: null,
   compRoot: null,
   selectedId: null,
@@ -104,7 +105,7 @@ export function navFrom(state: NavSource): NavState {
 /** Encode to key->value pairs, omitting every field left at its default (keeps URLs minimal). */
 export function encodeNav(nav: NavState): Map<string, string> {
   const out = new Map<string, string>();
-  if (nav.viewMode !== "call") out.set("view", nav.viewMode);
+  if (nav.viewMode !== "modules") out.set("view", nav.viewMode);
   setId(out, "focus", nav.focusId);
   setId(out, "root", nav.compRoot);
   setId(out, "sel", nav.selectedId);
@@ -127,7 +128,12 @@ export function encodeNav(nav: NavState): Map<string, string> {
 export function decodeNav(params: URLSearchParams): Partial<NavState> {
   const out: Partial<NavState> = {};
   const view = params.get("view");
-  if (view === "call" || view === "ui" || view === "logic" || view === "modules") out.viewMode = view;
+  // Service composition ("call") is only honoured from a URL when its build flag is on; otherwise a
+  // stale ?view=call link falls through to the default (Module map) instead of surfacing a hidden lens.
+  const callAllowed = view !== "call" || SHOW_SERVICE_COMPOSITION;
+  if (callAllowed && (view === "call" || view === "ui" || view === "logic" || view === "modules")) {
+    out.viewMode = view;
+  }
   assignId(params, "focus", out, "focusId");
   assignId(params, "root", out, "compRoot");
   assignId(params, "sel", out, "selectedId");

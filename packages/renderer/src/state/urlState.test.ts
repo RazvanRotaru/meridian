@@ -4,7 +4,7 @@ import { DEFAULT_NAV, decodeNav, decodeNavState, encodeNav, isNavigationChange, 
 /** A NavState at every default — the empty starting point the app boots into. */
 function emptyNav(): NavState {
   return {
-    viewMode: "call",
+    viewMode: "modules",
     focusId: null,
     compRoot: null,
     selectedId: null,
@@ -82,8 +82,8 @@ describe("urlState", () => {
       moduleFocus: "ts:packages/autopilot-studioweb",
       hiddenCategories: ["config", "util"],
     };
+    // "modules" is now the default lens, so it is omitted from the URL (and not decoded back).
     expect(roundTrip(nav)).toEqual({
-      viewMode: "modules",
       moduleFocus: "ts:packages/autopilot-studioweb",
       hiddenCategories: ["config", "util"],
     });
@@ -103,13 +103,13 @@ describe("urlState", () => {
       moduleExpanded: ["ts:pkgA", "ts:pkgA/src"],
     };
     expect(encodeNav(nav).get("mexp")).toBe("ts:pkgA,ts:pkgA/src");
-    expect(roundTrip(nav)).toEqual({ viewMode: "modules", moduleExpanded: ["ts:pkgA", "ts:pkgA/src"] });
+    expect(roundTrip(nav)).toEqual({ moduleExpanded: ["ts:pkgA", "ts:pkgA/src"] });
   });
 
   it("round-trips the selection highlight radius (mdepth)", () => {
     const nav: NavState = { ...emptyNav(), viewMode: "modules", moduleRadius: 3 };
     expect(encodeNav(nav).get("mdepth")).toBe("3");
-    expect(roundTrip(nav)).toEqual({ viewMode: "modules", moduleRadius: 3 });
+    expect(roundTrip(nav)).toEqual({ moduleRadius: 3 });
   });
 
   it("preserves foreign params (web-mode id) while owning its own keys", () => {
@@ -183,7 +183,7 @@ describe("urlState", () => {
 /** The store-like shape navFrom reads — all defaults, callers override the field under test. */
 function storeShape() {
   return {
-    viewMode: "call" as const,
+    viewMode: "modules" as const,
     focusId: null,
     compRoot: null,
     selectedId: null,

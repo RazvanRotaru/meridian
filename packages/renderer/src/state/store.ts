@@ -153,8 +153,8 @@ export interface BlueprintState {
   hiddenCategories: Set<ModuleCategory>;
   /** The selected node id in the Module map; null == none. A repaint-only highlight — no relayout. */
   moduleSelectedId: string | null;
-  /** Group cards the reader expanded IN PLACE (their children nest inside the card), mirroring the
-   * Logic tab's inline expand. A relayout concern — flipping membership re-lays out the nested tree. */
+  /** Legacy URL-restored Module-map expansion ids. The flat map ignores these, but keeping the field
+   * lets old links round-trip without throwing away unrelated navigation state. */
   moduleExpanded: Set<string>;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
@@ -259,7 +259,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     expanded: new Set<string>(),
     selectedId: null,
     focusId: null,
-    viewMode: "call",
+    viewMode: "modules",
     showTests: true,
     coverageMode: false,
     coverage: null,
@@ -636,8 +636,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().moduleRelayout();
     },
 
-    // Expand/collapse a group card IN PLACE: its children nest inside the card (the coexisting gesture
-    // to double-click's re-root), mirroring the Logic tab. Flip membership, then re-lay out the tree.
+    // Legacy no-op path for older URLs/widgets that still try to flip Module-map expansion state.
+    // The flat map ignores this set, but relayout keeps callers from observing stale derived nodes.
     toggleModuleExpand(nodeId) {
       set({ moduleExpanded: withToggled(get().moduleExpanded, nodeId) });
       void get().moduleRelayout();

@@ -22,7 +22,7 @@ import { IpcInspector } from "./composition/IpcInspector";
 import { coverageAccent } from "../theme/coverageColors";
 import type { CompRfEdge, CompRfNode } from "../layout/compositionElk";
 import { channelInfoFromId, colorForDistance, type CompNodeData } from "../derive/compositionGraph";
-import { clusterLabel } from "../derive/compositionClusters";
+import { clusterLabel, packageTrailLabel } from "../derive/compositionClusters";
 import type { GraphNode } from "@meridian/core";
 
 export function CompositionView() {
@@ -129,7 +129,9 @@ export function CompositionView() {
   // canvas reads as "broken". Shown only while nothing is on screen yet — a focused relayout of an
   // already-drawn graph keeps the old layout visible instead.
   const isLayingOut = nodes.length === 0 && layoutStatus === "laying-out";
-  const rootLabel = compRoot ? nodesById.get(compRoot)?.displayName ?? compRoot : null;
+  // The full containment trail ("src › aria › app › src"), because a deep monorepo has a folder
+  // named `src` at every level and the leaf name alone doesn't say WHICH one the view is rooted at.
+  const rootLabel = compRoot ? (nodesById.has(compRoot) ? packageTrailLabel(compRoot, nodesById) : compRoot) : null;
 
   return (
     <div style={SURFACE_STYLE}>
