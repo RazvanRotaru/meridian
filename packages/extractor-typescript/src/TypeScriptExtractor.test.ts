@@ -34,6 +34,13 @@ function hasEdge(result: ExtractionResult, kind: string, sourceQn: string, targe
   );
 }
 
+function hasImportEdge(result: ExtractionResult, source: string, target: string): boolean {
+  return result.edges.some(
+    (edge: GraphEdge) =>
+      edge.kind === "imports" && edge.resolution === "resolved" && edge.source === source && edge.target === target,
+  );
+}
+
 function artifactFrom(result: ExtractionResult): GraphArtifact {
   return {
     schemaVersion: "1.0.0",
@@ -78,6 +85,20 @@ describe("TypeScriptExtractor over orders-service", () => {
     for (const target of ["PricingService", "OrderRepository", "EmailService", "OrderService", "OrderRoutes"]) {
       expect(hasEdge(result, "instantiates", "buildOrdersApp", target)).toBe(true);
     }
+  });
+
+  it("emits module->module imports edges for the entry file's dependencies", async () => {
+    const result = await extractFixture();
+    // src/index.ts wires the app together; each `import ... from` is one resolved imports edge.
+    expect(hasImportEdge(result, "ts:src/index.ts", "ts:src/api/orderRoutes.ts")).toBe(true);
+    expect(hasImportEdge(result, "ts:src/index.ts", "ts:src/services/orderService.ts")).toBe(true);
+    expect(hasImportEdge(result, "ts:src/index.ts", "ts:src/pricing/pricingService.ts")).toBe(true);
+    // Type-only imports count too: orderService.ts imports the Order type from the domain module.
+    expect(hasImportEdge(result, "ts:src/services/orderService.ts", "ts:src/domain/order.ts")).toBe(true);
+    // Only in-project targets resolve; every imports edge stays resolved (externals are dropped).
+    const imports = result.edges.filter((edge) => edge.kind === "imports");
+    expect(imports.length).toBeGreaterThan(0);
+    expect(imports.every((edge) => edge.resolution === "resolved")).toBe(true);
   });
 
   it("drops ValidationError extends Error (external) by default, materializes it on demand", async () => {
