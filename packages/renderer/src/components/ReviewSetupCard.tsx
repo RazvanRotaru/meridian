@@ -1,21 +1,13 @@
 /**
  * The PR-review empty state: shown while `affectedFiles` is empty. A reader pastes the changed
- * file paths from a PR (one per line) and applies them, or tries a canned example to see the
- * lens work before they have a real diff at hand.
+ * file paths from a PR (one per line) and applies them, or loads a canned example PR (the picker
+ * below) to see the lens work before they have a real diff at hand.
  */
 
 import { useState } from "react";
 import { parseAffectedInput } from "../derive/changeStatus";
 import { useBlueprintActions } from "../state/StoreContext";
-
-// A `git diff --name-status` sample over the orders-service fixture: an ADDED file, a MODIFIED one,
-// and a REMOVED path (deleted at HEAD, so it has no node — it lands in the side list, not the graph),
-// so "Try an example" shows all three color codes at once.
-const EXAMPLE_INPUT = [
-  "A\tsrc/pricing/pricingService.ts",
-  "M\tsrc/services/orderService.ts",
-  "D\tsrc/notifications/legacyMailer.ts",
-].join("\n");
+import { ExamplePrPicker } from "./ExamplePrPicker";
 
 export function ReviewSetupCard() {
   const { setAffectedFiles } = useBlueprintActions();
@@ -23,10 +15,6 @@ export function ReviewSetupCard() {
 
   const apply = () => {
     const { paths, statusByFile } = parseAffectedInput(text);
-    setAffectedFiles(paths, statusByFile);
-  };
-  const tryExample = () => {
-    const { paths, statusByFile } = parseAffectedInput(EXAMPLE_INPUT);
     setAffectedFiles(paths, statusByFile);
   };
   const canApply = parseAffectedInput(text).paths.length > 0;
@@ -50,10 +38,9 @@ export function ReviewSetupCard() {
           <button type="button" style={applyStyle(canApply)} disabled={!canApply} onClick={apply}>
             Apply
           </button>
-          <button type="button" style={EXAMPLE_BUTTON_STYLE} onClick={tryExample}>
-            Try an example
-          </button>
         </div>
+        <div style={DIVIDER_STYLE} />
+        <ExamplePrPicker />
       </div>
     </div>
   );
@@ -98,16 +85,7 @@ const TEXTAREA_STYLE: React.CSSProperties = {
   padding: "8px 10px",
 };
 const ACTIONS_STYLE: React.CSSProperties = { display: "flex", gap: 8 };
-const EXAMPLE_BUTTON_STYLE: React.CSSProperties = {
-  background: "transparent",
-  color: "#9AA4B2",
-  border: "1px solid #2A2F37",
-  borderRadius: 6,
-  padding: "6px 12px",
-  fontSize: 12,
-  cursor: "pointer",
-  font: "inherit",
-};
+const DIVIDER_STYLE: React.CSSProperties = { height: 1, background: "#2A2F37", margin: "2px 0" };
 
 function applyStyle(enabled: boolean): React.CSSProperties {
   return {
