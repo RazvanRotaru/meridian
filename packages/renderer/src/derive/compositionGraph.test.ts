@@ -33,7 +33,7 @@ function edge(source: string, target: string, kind = "calls"): GraphEdge {
 }
 
 function dataWith(smells: Smell[]): CompNodeData {
-  return { unitId: "u", kind: "class", label: "U", metrics: { smells } as UnitMetrics };
+  return { unitId: "u", kind: "class", label: "U", metrics: { smells } as UnitMetrics, members: [] };
 }
 
 // The unit scorecard ids, sorted — spec.nodes now also holds cluster frame nodes we filter out here.

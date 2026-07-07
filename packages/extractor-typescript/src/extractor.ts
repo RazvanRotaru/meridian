@@ -5,7 +5,7 @@
  * `typescript`.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import type { SourceFile } from "ts-morph";
 import type {
@@ -29,6 +29,7 @@ import { buildLogicFlows } from "./flow-pass";
 import { buildStats } from "./stats";
 
 const NODE_ID_LANGUAGE = "ts";
+const MAX_DETECT_DEPTH = 5;
 
 export class TypeScriptExtractor implements LanguageExtractor {
   readonly language: LanguageTag = "typescript";
@@ -36,16 +37,48 @@ export class TypeScriptExtractor implements LanguageExtractor {
   readonly extensions = [".ts", ".tsx"];
 
   async detect(root: string): Promise<DetectionResult> {
-    const hasTsConfig = existsSync(join(root, "tsconfig.json"));
-    return {
-      matches: hasTsConfig,
-      confidence: hasTsConfig ? 0.9 : 0,
-      reason: hasTsConfig ? "found tsconfig.json" : "no tsconfig.json at root",
-    };
+    return detectTypeScript(root);
   }
 
   async extract(options: ExtractOptions): Promise<ExtractionResult> {
     return runExtraction(options);
+  }
+}
+
+// Mirrors the Python extractor's detection: a marker file at root, else a bounded scan for
+// sources — so pointing at a subfolder of a project (no tsconfig there) still detects.
+function detectTypeScript(root: string): DetectionResult {
+  if (existsSync(join(root, "tsconfig.json"))) {
+    return { matches: true, confidence: 0.9, reason: "found tsconfig.json" };
+  }
+  if (containsTypeScriptFile(root, MAX_DETECT_DEPTH)) {
+    return { matches: true, confidence: 0.6, reason: "found a .ts/.tsx file" };
+  }
+  return { matches: false, confidence: 0, reason: "no tsconfig.json or .ts/.tsx file under root" };
+}
+
+function containsTypeScriptFile(directory: string, depth: number): boolean {
+  if (depth < 0) return false;
+  const entries = readEntries(directory);
+  if (entries.some((entry) => entry.isFile() && isTypeScriptSource(entry.name))) return true;
+  return entries.some(
+    (entry) =>
+      entry.isDirectory() &&
+      entry.name !== "node_modules" &&
+      !entry.name.startsWith(".") &&
+      containsTypeScriptFile(join(directory, entry.name), depth - 1),
+  );
+}
+
+function isTypeScriptSource(name: string): boolean {
+  return (name.endsWith(".ts") || name.endsWith(".tsx")) && !name.endsWith(".d.ts");
+}
+
+function readEntries(directory: string): Dirent[] {
+  try {
+    return readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return [];
   }
 }
 

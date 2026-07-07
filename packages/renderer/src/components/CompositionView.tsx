@@ -16,6 +16,7 @@ import type { CoverageReport } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { compNodeTypes } from "./nodes/composition/CompositionNode";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
+import { CompMethodDrawer } from "./composition/CompMethodDrawer";
 import { CoveragePanel } from "./CoveragePanel";
 import { coverageAccent } from "../theme/coverageColors";
 import type { CompRfEdge, CompRfNode } from "../layout/compositionElk";
@@ -108,6 +109,8 @@ export function CompositionView() {
       </ReactFlow>
       <CompositionBreadcrumb rootId={compRoot} rootLabel={rootLabel} onHome={() => setCompRoot(null)} />
       {isEmpty ? <EmptyCompositionCard /> : null}
+      {/* EXPERIMENT: a member click previews that method's logic flow here, docked over the map. */}
+      <CompMethodDrawer />
     </div>
   );
 }
@@ -213,17 +216,22 @@ function dimNode(node: CompRfNode): CompRfNode {
   return { ...node, style: { ...node.style, opacity: DIM_NODE_OPACITY } };
 }
 
-// The MiniMap gets untyped `Node`s; a cluster frame carries no metrics, so it reads as a neutral
-// panel tone, while each unit dot tints by its health colour — the same green→amber→red story as
-// the cards. In coverage mode the dots echo the coverage verdict instead, matching the recoloured rails.
+// The MiniMap gets untyped `Node`s and, for ONE frame during a cross-view switch, may be handed the
+// PREVIOUS view's nodes — the ReactFlow store is shared app-wide via a single ReactFlowProvider in
+// App.tsx. A cluster frame, and any logic node leaking in mid-switch, carries no `metrics`, so treat
+// anything that isn't a metrics-bearing unit as the neutral panel tone rather than dereferencing a
+// missing `metrics` (which blanked the app on the logic→composition link). A unit dot tints by its
+// health colour — the same green→amber→red story as the cards. In coverage mode the dots echo the
+// coverage verdict instead, matching the recoloured rails.
 function miniMapColor(node: Node, coverage: CoverageReport | null): string {
-  if (node.type === "cluster") {
+  const metrics = (node.data as Partial<CompNodeData>)?.metrics;
+  if (node.type !== "unit" || !metrics) {
     return "#2A313D";
   }
   if (coverage) {
     return coverageAccent(node.id, coverage);
   }
-  return colorForDistance((node.data as CompNodeData).metrics.distance);
+  return colorForDistance(metrics.distance);
 }
 
 /** Shown when the artifact has no composition units to chart (no classes/modules with members or

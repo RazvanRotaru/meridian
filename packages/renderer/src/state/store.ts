@@ -86,6 +86,9 @@ export interface BlueprintState {
   /** How many levels of resolved calls the Logic-flow view inlines in place; 0 == calls are leaf
    * chips (today's behavior). Sticky across open/drill so the reader keeps their chosen depth. */
   logicInlineDepth: number;
+  /** Coverage mode only: whether the tests that directly exercise the charted callable are drawn as
+   * ghost nodes above the flow. A repaint-only flag (the view derives the ghosts), like `logicSelected`. */
+  showLogicTests: boolean;
   /** The selected call TARGET in the Logic-flow view; null == nothing picked. Selection is by
    * target id (not call site), so every same-target call site — the "direct links" — highlights
    * for free. Cleared whenever the charted flow changes so a stale selection can't linger. */
@@ -101,6 +104,9 @@ export interface BlueprintState {
   expandedLogic: Set<string>;
   /** Hide the non-expandable (greyed) building-block leaves in the Logic graph. */
   hideGreyed: boolean;
+  /** Nest consecutive same-owner calls under service frames in the Logic graph. Default OFF (flat):
+   * the framing is opt-in, so the flow reads as plain blocks unless the reader turns it on. */
+  nestByService: boolean;
   /** The laid-out Logic graph (React Flow), recomputed on open/drill/expand/toggle via ELK. */
   logicRfNodes: LogicRfNode[];
   logicRfEdges: LogicRfEdge[];
@@ -112,6 +118,13 @@ export interface BlueprintState {
   compLayoutStatus: LayoutStatus;
   /** The selected composition unit id; null == none. A repaint-only highlight — no relayout. */
   compSelectedId: string | null;
+  /** EXPERIMENT: the callable method whose logic flow is previewed in the composition-tab side
+   * drawer; null == the drawer is closed. Picked by clicking a scorecard member. Its flow is laid
+   * out into `compMethodRf*` behind the `compMethodLayoutSeq` stale guard, mirroring logicRelayout. */
+  compMethodId: NodeId | null;
+  compMethodRfNodes: LogicRfNode[];
+  compMethodRfEdges: LogicRfEdge[];
+  compMethodLayoutStatus: LayoutStatus;
   /** The module/package the Service-composition tab is rooted at; null == the whole system. Defaults
    * to the app's first entry module. Only its subtree + 1-hop coupling neighbours are drawn. */
   compRoot: string | null;
@@ -162,19 +175,24 @@ export interface BlueprintState {
   /** The logic flow charted for a callable, or undefined when it has none (empty body). */
   logicFlowFor(nodeId: string): FlowStep[] | undefined;
   openLogicFlow(nodeId: string): void;
+  openComposition(unitId: string): void;
   drillLogicFlow(nodeId: string): void;
   logicFlowTo(nodeId: string): void;
   diveLogicContainer(id: string, label: string, bodies: FlowPath[]): void;
   logicFocusTo(index: number): void;
   setLogicInlineDepth(depth: number): void;
+  toggleLogicTests(): void;
   setGhostDepth(depth: number): void;
   selectLogicTarget(id: NodeId | null): void;
   togglePinnedFlow(id: NodeId): void;
   toggleLogicExpand(nodeId: string): void;
   toggleHideGreyed(): void;
+  toggleNestByService(): void;
   logicRelayout(): Promise<void>;
   compRelayout(): Promise<void>;
   selectCompUnit(id: string | null): void;
+  selectCompMethod(id: NodeId | null): void;
+  compMethodRelayout(): Promise<void>;
   setCompRoot(id: string | null): void;
   toggleSolidMetrics(): void;
   moduleRelayout(): Promise<void>;
@@ -215,6 +233,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // The file import graph, built once on first module-map relayout (the artifact never changes after
   // boot) and reused for every level — never rebuilt per relayout.
   let moduleGraph: ModuleGraph | null = null;
+  // And for the composition-tab method-preview drawer's logic layout (the EXPERIMENT surface).
+  let compMethodLayoutSeq = 0;
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
   // The composition tab opens on the WHOLE-SYSTEM overview (null root); file-rooting is the explicit
@@ -240,11 +260,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     logicStack: [],
     logicFocus: [],
     logicInlineDepth: 0,
+    showLogicTests: false,
     logicSelected: null,
     ghostDepth: 1,
     pinnedFlows: [],
     expandedLogic: new Set<string>(),
     hideGreyed: false,
+    nestByService: false,
     logicRfNodes: [],
     logicRfEdges: [],
     logicLayoutStatus: "idle",
@@ -252,6 +274,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     compRfEdges: [],
     compLayoutStatus: "idle",
     compSelectedId: null,
+    compMethodId: null,
+    compMethodRfNodes: [],
+    compMethodRfEdges: [],
+    compMethodLayoutStatus: "idle",
     compRoot: defaultCompRoot,
     showSolidMetrics: readSolidMetricsPref(),
     moduleRfNodes: [],
@@ -359,6 +385,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().logicRelayout();
     },
 
+    // The logic→composition link: a call block's owning-unit chip opens that unit HERE, rooted and
+    // selected, so a reader can pivot from "who calls this" to "how healthy is the unit it lives in".
+    // No guard needed — compRelayout is idempotent, and rooting+selecting is always a fresh view.
+    openComposition(unitId) {
+      set({ viewMode: "call", compRoot: unitId, compSelectedId: unitId });
+      void get().compRelayout();
+    },
+
     // Drill from a call node into its target's own flow — push it onto the trail, re-chart from it.
     // A changed callable starts unfocused, so any container dive is dropped.
     drillLogicFlow(nodeId) {
@@ -398,6 +432,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ logicInlineDepth: Math.max(0, Math.min(2, Math.trunc(depth))) });
     },
 
+    // Coverage mode: reveal/hide the tests that directly exercise the charted callable as ghost
+    // nodes above the flow. Repaint only — the view derives the ghosts from this flag + the coverage
+    // report, mirroring how the related-flows ghosts ride selection — so it never relayouts.
+    toggleLogicTests() {
+      set({ showLogicTests: !get().showLogicTests });
+    },
+
     // Set how many hops of indirect callers the "related flows" ghosts reach back. Clamped to
     // 1..GHOST_DEPTH_ALL — 1 == direct callers (today's behavior), 2/3 walk that many hops, and
     // GHOST_DEPTH_ALL means the whole transitive-caller closure. A repaint only — the view recomputes
@@ -431,10 +472,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().logicRelayout();
     },
 
+    // Toggle the service-frame nesting — flat blocks (default) vs consecutive same-owner calls grouped
+    // under service frames. Mirrors toggleHideGreyed: flip the flag, then re-lay out the graph.
+    toggleNestByService() {
+      set({ nestByService: !get().nestByService });
+      void get().logicRelayout();
+    },
+
     // Re-derive the Logic graph for the current root through ELK, behind a stale-seq guard (a newer
     // open/drill/toggle discards an older in-flight layout). A null root clears the graph.
     async logicRelayout() {
-      const { logicRoot, index, artifact, expandedLogic, hideGreyed, logicFocus } = get();
+      const { logicRoot, index, artifact, expandedLogic, hideGreyed, nestByService, logicFocus } = get();
       if (logicRoot === null) {
         set({ logicRfNodes: [], logicRfEdges: [], logicLayoutStatus: "idle" });
         return;
@@ -445,7 +493,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // A container dive charts only the TOP focus entry's bodies; else the whole callable flow.
       const top = logicFocus[logicFocus.length - 1];
       const focus = top ? { id: top.id, bodies: top.bodies } : undefined;
-      const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, { hideGreyed }, focus);
+      const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, { hideGreyed, nestByService }, focus);
       if (logicLayoutSeq !== sequence) {
         return; // a newer layout superseded this one.
       }
@@ -475,14 +523,47 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ compSelectedId: id });
     },
 
+    // EXPERIMENT — the composition→logic PREVIEW link. Pick (or clear with null) the method whose
+    // logic flow the side drawer charts, WITHOUT leaving the composition tab. A single click on a
+    // scorecard member fires this; it's a preview within the tab, not a tab switch (double-click a
+    // member still navigates to the full Logic tab). Kicks the drawer's own ELK relayout.
+    selectCompMethod(id) {
+      if (get().compMethodId === id) {
+        return;
+      }
+      set({ compMethodId: id });
+      void get().compMethodRelayout();
+    },
+
+    // Lay out the previewed method's logic flow into `compMethodRf*`, behind the compMethodLayoutSeq
+    // stale guard (a newer pick discards an older in-flight ELK pass), exactly like logicRelayout.
+    // Reuses the Logic-tab derive with a fresh (all-default) expansion, greyed leaves shown, and no
+    // service nesting — the preview is a fixed at-a-glance read, not the interactive Logic surface. A
+    // null pick (drawer closed) clears the arrays.
+    async compMethodRelayout() {
+      const { compMethodId, index, artifact } = get();
+      if (compMethodId === null) {
+        set({ compMethodRfNodes: [], compMethodRfEdges: [], compMethodLayoutStatus: "idle" });
+        return;
+      }
+      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const sequence = ++compMethodLayoutSeq;
+      set({ compMethodLayoutStatus: "laying-out" });
+      const graph = await deriveLogicLayout(compMethodId, flows, index, new Set<string>(), { hideGreyed: false, nestByService: false });
+      if (compMethodLayoutSeq !== sequence) {
+        return; // a newer pick superseded this one.
+      }
+      set({ compMethodRfNodes: graph.nodes, compMethodRfEdges: graph.edges, compMethodLayoutStatus: "ready" });
+    },
+
     // Re-root the Service-composition graph at a module/package (null == whole system). Clears the
-    // selection (it means nothing in a new rooted view) and re-lays out. A no-op when already there,
-    // matching the store's other navigation guards.
+    // selection AND the method-preview drawer (both mean nothing in a new rooted view) and re-lays
+    // out. A no-op when already there, matching the store's other navigation guards.
     setCompRoot(id) {
       if (get().compRoot === id) {
         return;
       }
-      set({ compRoot: id, compSelectedId: null });
+      set({ compRoot: id, compSelectedId: null, compMethodId: null, compMethodRfNodes: [], compMethodRfEdges: [], compMethodLayoutStatus: "idle" });
       void get().compRelayout();
     },
 

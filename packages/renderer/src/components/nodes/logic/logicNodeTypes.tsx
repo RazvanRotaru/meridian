@@ -15,6 +15,7 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
 import type { LogicNodeData, TerminalData } from "../../../derive/logicGraph";
+import { coverageAccent, coverageVerdict, COVERAGE_COLORS, type CoverageVerdict } from "../../../theme/coverageColors";
 import { CodeInlinePanel } from "../../CodeInlinePanel";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -34,6 +35,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   const sourceUrl = useBlueprint((s) => s.sourceUrl);
   const logicSelected = useBlueprint((s) => s.logicSelected);
   const codeView = useBlueprint((s) => s.codeView);
+  const coverage = useBlueprint((s) => (s.coverageMode ? s.coverage : null));
   const d = data as LogicNodeData;
   const select = selectStateFor(d.targetId, logicSelected);
   // A method call (one made through a receiver / a class method) reads apart from a free function at a
@@ -41,9 +43,18 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   // keeps its teal DECLARATION accent regardless (its declaration-ness dominates), gaining only the
   // glyph — so defs stay visually consistent with their existing treatment.
   const glyph = d.callKind === "method" ? METHOD_GLYPH : "ƒ";
-  const accent = d.definition ? DEF_ACCENT : d.callKind === "method" ? METHOD_ACCENT : BLOCK_ACCENT;
+  // In coverage mode the title bar recolors by the CALLEE's coverage verdict (green/amber/red), so the
+  // exec flow doubles as a coverage map; otherwise it keeps the call/method/def accent.
+  const covAccent = coverage && d.targetId ? coverageAccent(d.targetId, coverage) : null;
+  const accent = covAccent ?? (d.definition ? DEF_ACCENT : d.callKind === "method" ? METHOD_ACCENT : BLOCK_ACCENT);
+  // The explicit per-node coverage signal: a dark-tracked "battery" that reads on ANY title colour
+  // (a coverage-tinted title would swallow a coverage-tinted badge). Only for measured callees.
+  const covVerdict = coverage && d.targetId ? coverageVerdict(d.targetId, coverage) : null;
+  const battery = covVerdict === "covered" || covVerdict === "indirect" || covVerdict === "uncovered"
+    ? <CoverageBattery verdict={covVerdict} />
+    : null;
   if (d.isContainer) {
-    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} select={select} />;
+    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} select={select} badge={battery} />;
   }
   const codeNode = d.targetId ? index.nodesById.get(d.targetId) : undefined;
   const canCode = Boolean(codeNode?.location) && Boolean(sourceUrl);
@@ -69,6 +80,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
           <div style={GREY_TITLE}>
             <span style={GREY_GLYPH}>{glyph}</span>
             <span style={NAME} title={d.label}>{d.label}</span>
+            {battery}
             {codeButton}
           </div>
           {d.provenance ? <div style={GREY_PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.module}</div> : null}
@@ -89,6 +101,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
           <span style={GLYPH}>{glyph}</span>
           <span style={NAME} title={d.label}>{d.label}</span>
           <span style={TITLE_TAIL}>
+            {battery}
             {d.definition ? <span style={DEF_TAG}>def</span> : null}
             {/* Gate on `expandable`: a call block is always expandable here, but a defined callable
                 with no flow of its own is not — so it drops the disclosure rather than dangling a
@@ -99,11 +112,52 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
             {codeButton}
           </span>
         </div>
-        {d.provenance ? <div style={PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.pkg} › {d.provenance.module}</div> : null}
+        {/* A FRAMED block sits inside its service frame, whose title already names the owner — so it
+            drops the provenance line and shows just name + signature. A standalone/external call (or a
+            definition grid cell) keeps its `pkg › module` provenance. */}
+        {!d.framed && d.provenance ? <div style={PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.pkg} › {d.provenance.module}</div> : null}
+        {/* The signature — WHAT the block calls. Definition grid cells are a fixed compact size, so
+            they opt out; only in-flow call blocks carry it. */}
+        {!d.definition && d.signature ? <div style={SIGNATURE} title={d.signature}>{d.signature}</div> : null}
       </div>
       {inline}
     </div>
   );
+}
+
+/**
+ * A SERVICE FRAME: the logic-flow analog of a composition scorecard. Consecutive calls into the same
+ * owning unit nest inside it, so the flat exec chain reads UML-like (containers, like the composition
+ * view). Its title shows the unit — a health dot + kind glyph + name (+ smell marker) + a count of the
+ * calls it frames — health-tinted so the frame's health reads at a glance; DOUBLE-clicking the frame
+ * opens that unit in the Service-composition view (handled by the view, so single click never
+ * navigates). It carries NO exec pins: the white wires thread between the child blocks across frames,
+ * never through the frame itself. The body stays transparent for ELK-placed children.
+ */
+function ServiceGroupNode({ data }: NodeProps<LogicRfNode>) {
+  const d = data as LogicNodeData;
+  const owner = d.owner;
+  if (!owner) {
+    return null; // a service frame is only ever emitted WITH an owner; defensive against a bad spec.
+  }
+  return (
+    <div style={serviceFrameStyle(owner.health)}>
+      <div style={{ ...SERVICE_RAIL, background: owner.health }} />
+      <div style={SERVICE_TITLE} title="Double-click to open in Service composition">
+        <span style={{ ...SERVICE_DOT, background: owner.health }} />
+        <span style={SERVICE_GLYPH}>{unitGlyph(owner.kind)}</span>
+        <span style={NAME} title={owner.label}>{owner.label}</span>
+        {owner.smelly ? <span style={SERVICE_SMELL} title="carries a design smell">⚠</span> : null}
+        <span style={SERVICE_COUNT}>{d.childCount}</span>
+      </div>
+    </div>
+  );
+}
+
+// A compact unit glyph mirroring the scorecards, so a service frame reads as the same kind of thing.
+const UNIT_GLYPH: Record<string, string> = { module: "▤", class: "◆", interface: "◇", object: "❑" };
+function unitGlyph(kind: string): string {
+  return UNIT_GLYPH[kind] ?? "▪";
 }
 
 function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
@@ -173,7 +227,7 @@ function conditionText(label: string): string {
 /** A framed container (expanded call / loop / try): a title bar sits over ELK's reserved top pad;
  * child nodes render in the space below. Collapse is the explicit ▾ button in the title tail — the
  * whole-title click was removed so it no longer fights node selection / double-click-to-dive. */
-function ContainerFrame(props: { accent: string; label: string; glyph: string; onToggle: () => void; provenance: LogicNodeData["provenance"]; select: SelectState }) {
+function ContainerFrame(props: { accent: string; label: string; glyph: string; onToggle: () => void; provenance: LogicNodeData["provenance"]; select: SelectState; badge?: React.ReactNode }) {
   return (
     <div style={selectStyle(frameStyle(props.accent), props.select)}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
@@ -183,6 +237,7 @@ function ContainerFrame(props: { accent: string; label: string; glyph: string; o
         <span style={NAME}>{props.label}</span>
         {props.provenance ? <span style={FRAME_PROV}>{props.provenance.pkg} › {props.provenance.module}</span> : null}
         <span style={TITLE_TAIL}>
+          {props.badge}
           <ExpandButton expanded onToggle={props.onToggle} />
         </span>
       </div>
@@ -196,6 +251,33 @@ function ContainerFrame(props: { accent: string; label: string; glyph: string; o
  * double-click dives — so it stops propagation so the node never also selects/drills/dives on it.
  * ▾ when expanded, ▸ when collapsed.
  */
+/**
+ * The per-node coverage "battery": a dark-tracked mini progress bar (with a battery nub) whose fill
+ * and colour show how well the callee is covered — full green when a test hits it directly, ~60%
+ * amber when tests only reach it through other code, near-empty red when nothing tests it. The dark
+ * track keeps it legible on ANY title colour (a coverage-tinted badge on a coverage-tinted bar
+ * vanished); the verdict rides the hover title and aria-label so it's not colour-only.
+ */
+const BATTERY_FILL_FRACTION: Record<CoverageVerdict, number> = { covered: 1, indirect: 0.6, uncovered: 0.12, test: 0, none: 0 };
+const BATTERY_TITLE: Record<CoverageVerdict, string> = {
+  covered: "Tested directly",
+  indirect: "Reached by tests (via other code)",
+  uncovered: "Untested",
+  test: "Test code",
+  none: "Not measured",
+};
+function CoverageBattery({ verdict }: { verdict: CoverageVerdict }) {
+  const color = COVERAGE_COLORS[verdict];
+  return (
+    <span style={BATTERY_WRAP} title={BATTERY_TITLE[verdict]} aria-label={`Coverage: ${BATTERY_TITLE[verdict]}`}>
+      <span style={BATTERY_TRACK}>
+        <span style={{ ...BATTERY_FILL, width: `${BATTERY_FILL_FRACTION[verdict] * 100}%`, background: color }} />
+      </span>
+      <span style={{ ...BATTERY_NUB, background: color }} />
+    </span>
+  );
+}
+
 function ExpandButton(props: { expanded: boolean; onToggle: () => void }) {
   return (
     <button
@@ -222,24 +304,34 @@ function ExpandButton(props: { expanded: boolean; onToggle: () => void }) {
  * Clicking it switches the canvas to that flow. Its data is minimal — a flow-root id, a display
  * label, a faint file path, and how many hops away it is (`depth`): 1 == direct, higher == indirect.
  */
-export type JumpFlowNodeData = { rootId: string; label: string; file?: string; depth: number };
+export type JumpFlowNodeData = { rootId: string; label: string; file?: string; depth: number; test?: boolean };
 type JumpFlowRfNode = Node<JumpFlowNodeData>;
 
 function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
   const { openLogicFlow } = useBlueprintActions();
   const d = data as JumpFlowNodeData;
+  // A test ghost (Show tests) reads apart from an ordinary caller ghost: violet dashed border + a
+  // "TEST" tag, mirroring the coverage palette's test-code colour, so it's clearly "a test exercising
+  // this method" rather than just another caller. Clicking still opens that node's own flow.
+  const isTest = d.test === true;
+  // A caller ghost is a shortcut into that flow (click to open); a test ghost is read-only context —
+  // it just shows WHICH tests exercise this method, so it takes no click and shows no pointer cursor.
   return (
-    <div style={JUMP_BODY} onClick={() => openLogicFlow(d.rootId)} title={`Open flow: ${d.label}`}>
+    <div style={isTest ? JUMP_TEST_BODY : JUMP_BODY} onClick={isTest ? undefined : () => openLogicFlow(d.rootId)} title={isTest ? `Test: ${d.label}` : `Open flow: ${d.label}`}>
       {/* Target pin on top (a deeper caller's wire lands here) + source pin on the bottom (this
           node's wire drops to the node one hop closer to the selection): the chain wires top→down. */}
       <Handle type="target" position={Position.Top} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Bottom} style={PIN} isConnectable={false} />
       <div style={JUMP_HEAD}>
-        <span style={JUMP_GLYPH}>↗</span>
+        <span style={{ ...JUMP_GLYPH, ...(isTest ? { color: COVERAGE_COLORS.test } : {}) }}>{isTest ? "🧪" : "↗"}</span>
         <span style={NAME} title={d.label}>{d.label}</span>
-        {/* An indirect caller (2+ hops back over the reverse call graph) wears a hop badge so it
-            reads apart from a direct caller; a direct caller (depth 1) needs none. */}
-        {d.depth > 1 ? <span style={JUMP_DEPTH_BADGE} title={`${d.depth} hops away`}>{`↑${d.depth}`}</span> : null}
+        {isTest ? (
+          <span style={JUMP_TEST_TAG}>TEST</span>
+        ) : d.depth > 1 ? (
+          // An indirect caller (2+ hops back over the reverse call graph) wears a hop badge so it
+          // reads apart from a direct caller; a direct caller (depth 1) needs none.
+          <span style={JUMP_DEPTH_BADGE} title={`${d.depth} hops away`}>{`↑${d.depth}`}</span>
+        ) : null}
       </div>
       {d.file ? <div style={JUMP_FILE} title={d.file}>{d.file}</div> : null}
     </div>
@@ -299,7 +391,7 @@ function DefGroupNode({ data }: NodeProps<LogicRfNode>) {
   );
 }
 
-export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: BranchNode, jumpflow: JumpFlowNode, defgroup: DefGroupNode, terminal: TerminalNode };
+export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: BranchNode, jumpflow: JumpFlowNode, defgroup: DefGroupNode, servicegroup: ServiceGroupNode, terminal: TerminalNode };
 
 // Selection is BY TARGET (a target can be called many times): a matched call site rings green so
 // every call of the same target lights up together; while some target is selected, unrelated nodes
@@ -471,6 +563,36 @@ const JUMP_BODY: React.CSSProperties = {
   gap: 2,
   overflow: "hidden",
 };
+// A test ghost: the same detached-shortcut shape as a caller ghost, re-tinted violet so it reads as
+// test code (matching the coverage palette) rather than another caller in the flow.
+const JUMP_TEST_BODY: React.CSSProperties = {
+  width: "100%",
+  height: "100%",
+  boxSizing: "border-box",
+  border: `1px dashed ${COVERAGE_COLORS.test}`,
+  borderRadius: 8,
+  background: "rgba(28,20,45,0.72)",
+  padding: "5px 9px",
+  fontFamily: MONO,
+  color: "#C6BCE0",
+  cursor: "default",
+  display: "flex",
+  flexDirection: "column",
+  gap: 2,
+  overflow: "hidden",
+};
+const JUMP_TEST_TAG: React.CSSProperties = {
+  marginLeft: "auto",
+  flexShrink: 0,
+  fontSize: 8.5,
+  fontWeight: 700,
+  letterSpacing: "0.06em",
+  color: COVERAGE_COLORS.test,
+  border: `1px solid ${COVERAGE_COLORS.test}66`,
+  borderRadius: 3,
+  padding: "0 4px",
+  background: "rgba(163,113,247,0.14)",
+};
 const JUMP_HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600 };
 const JUMP_GLYPH: React.CSSProperties = { fontSize: 10, opacity: 0.8, color: "#7B8695" };
 // The hop badge on an INDIRECT caller ghost: a quiet blue pill pinned at the row's right end, so a
@@ -487,6 +609,24 @@ const JUMP_DEPTH_BADGE: React.CSSProperties = {
   background: "rgba(59,122,192,0.15)",
 };
 const JUMP_FILE: React.CSSProperties = { fontSize: 9, color: "#6C7683", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+
+// The coverage battery: a dark track + colour fill + a small nub, so it reads as a fuel gauge on any
+// title colour. flex-none so it never squeezes the name; the nub is the battery's positive terminal.
+const BATTERY_WRAP: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 1, flexShrink: 0 };
+const BATTERY_TRACK: React.CSSProperties = {
+  width: 30,
+  height: 9,
+  boxSizing: "border-box",
+  borderRadius: 2,
+  background: "#0B0E13",
+  border: "1px solid rgba(0,0,0,0.45)",
+  padding: 1,
+  overflow: "hidden",
+  display: "flex",
+  alignItems: "center",
+};
+const BATTERY_FILL: React.CSSProperties = { height: "100%", borderRadius: 1, minWidth: 2 };
+const BATTERY_NUB: React.CSSProperties = { width: 2, height: 5, borderRadius: 1, opacity: 0.55 };
 
 // The entry/exit end-caps: a compact rounded pill (never a rectangular building block), tinted by its
 // accent. Shared base; the entry keeps its ENTRY tag pinned right, the exit centres its bare caption.
@@ -519,6 +659,50 @@ const TITLE_TAIL: React.CSSProperties = { marginLeft: "auto", display: "flex", a
 const EXPAND_BTN: React.CSSProperties = { border: "none", background: "rgba(0,0,0,0.18)", color: "inherit", borderRadius: 4, padding: "1px 6px", fontSize: 10, lineHeight: 1, fontFamily: MONO, cursor: "pointer" };
 const NAME: React.CSSProperties = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const PROV: React.CSSProperties = { padding: "4px 8px", fontSize: 10, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+// The signature line: dimmer than provenance (secondary detail), mono, one clipped line — the full
+// text rides the hover title so a long signature never widens the block.
+const SIGNATURE: React.CSSProperties = { padding: "0 8px 3px", fontSize: 9.5, color: "#5F6874", fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+// The service frame: a neutral-bordered container (like the composition card) with a health-tinted
+// left rail, hosting the run's call blocks. Body transparent so ELK-placed children render over it.
+function serviceFrameStyle(health: string): React.CSSProperties {
+  return {
+    width: "100%",
+    height: "100%",
+    position: "relative",
+    boxSizing: "border-box",
+    border: "1px solid #2A2F37",
+    borderLeft: `1px solid ${health}`,
+    borderRadius: 10,
+    background: "rgba(18,23,30,0.45)",
+    fontFamily: MONO,
+    overflow: "hidden",
+  };
+}
+// The 3px health rail down the frame's left edge — the composition card's fastest health signal.
+const SERVICE_RAIL: React.CSSProperties = { position: "absolute", left: 0, top: 0, bottom: 0, width: 3 };
+// The title bar is a click-through to the unit in the Service-composition view. Its height (~34px)
+// sits under ELK's 42px container top padding so the child blocks clear it.
+const SERVICE_TITLE: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  width: "100%",
+  height: 34,
+  boxSizing: "border-box",
+  padding: "0 10px 0 12px",
+  border: "none",
+  borderBottom: "1px solid #232935",
+  background: "rgba(255,255,255,0.02)",
+  color: "#C8D3E0",
+  fontFamily: MONO,
+  fontSize: 12,
+  fontWeight: 700,
+};
+const SERVICE_DOT: React.CSSProperties = { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 };
+const SERVICE_GLYPH: React.CSSProperties = { fontSize: 11, opacity: 0.8, flexShrink: 0 };
+const SERVICE_SMELL: React.CSSProperties = { flexShrink: 0, fontSize: 10, color: "#E6B84D" };
+// The count of calls the frame wraps, pinned right (auto margin) so it never crowds the name.
+const SERVICE_COUNT: React.CSSProperties = { marginLeft: "auto", flexShrink: 0, fontSize: 10, fontWeight: 600, color: "#6C7683" };
 // The greyed chip is tight: a compact title (light text on the muted slate so the priority name
 // stays legible) over one small provenance line. Padding/fonts shrink to fit the ~30px chip.
 const GREY_TITLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "2px 6px", background: GREY_ACCENT, color: "#C8D3E0", fontSize: 10, fontWeight: 700, lineHeight: 1.2 };

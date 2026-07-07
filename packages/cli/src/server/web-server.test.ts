@@ -104,9 +104,10 @@ describe("createWebServer auth routes (sign-in not configured)", () => {
     expect(html).toContain('window.__MERIDIAN_AUTH__={"configured":false}');
   });
 
-  it("401s auth status and repo search without a session", async () => {
+  it("401s auth status and repo listing without a session", async () => {
     expect((await fetch(`${base}/api/auth/status`)).status).toBe(401);
     expect((await fetch(`${base}/api/repos/search?q=ky`)).status).toBe(401);
+    expect((await fetch(`${base}/api/repos/mine`)).status).toBe(401);
   });
 
   it("400s device start when no client id is configured", async () => {

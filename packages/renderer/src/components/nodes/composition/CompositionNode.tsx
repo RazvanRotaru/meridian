@@ -14,6 +14,7 @@ import type { CompRfNode } from "../../../layout/compositionElk";
 import { accentForKind } from "../../../theme/kindColors";
 import { coverageAccent } from "../../../theme/coverageColors";
 import { SmellChip } from "../../composition/SmellChip";
+import { CompositionMembers } from "../../composition/CompositionMembers";
 import { CoverageBadge } from "../../CoverageBadge";
 import { ClusterFrameNode } from "./ClusterFrameNode";
 
@@ -76,6 +77,9 @@ function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
           <span style={DISTANCE_LABEL}>D</span>
           <span style={DISTANCE_VALUE}>{metrics.distance}</span>
         </div>
+        {/* The unit's methods — the composition→logic link. A boundary ghost is context only, so it
+            skips the list (matching its faded, non-selectable treatment). */}
+        {!boundary && d.members.length > 0 ? <CompositionMembers members={d.members} /> : null}
         {showMetrics && metrics.smells.length > 0 ? (
           <div style={CHIP_ROW}>
             {metrics.smells.map((smell) => (

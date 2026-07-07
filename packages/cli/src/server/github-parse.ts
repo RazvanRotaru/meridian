@@ -8,6 +8,7 @@ import { asObject, optionalString, requireString } from "./json-fields";
 
 const OWNER_REPO = /^[\w.-]+\/[\w.-]+$/;
 const SEARCH_RESULT_LIMIT = 20;
+const LIST_RESULT_LIMIT = 30;
 
 export interface RepoSummary {
   fullName: string;
@@ -49,6 +50,14 @@ export function parseSearchResults(json: unknown): RepoSummary[] {
     return [];
   }
   return items.slice(0, SEARCH_RESULT_LIMIT).map((item) => toRepoSummary(asObject(item)));
+}
+
+/** `GET /user/repos` responds with a bare array, not search's `{items}` envelope. */
+export function parseRepoList(json: unknown): RepoSummary[] {
+  if (!Array.isArray(json)) {
+    return [];
+  }
+  return json.slice(0, LIST_RESULT_LIMIT).map((item) => toRepoSummary(asObject(item)));
 }
 
 export function parseUser(json: unknown): GitHubUser {
