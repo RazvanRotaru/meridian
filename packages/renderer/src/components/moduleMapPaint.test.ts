@@ -60,6 +60,32 @@ describe("filterVisible — subtree closure", () => {
   });
 });
 
+describe("emphasize — beacon read (a selected call step's definition)", () => {
+  it("withholds the step's dep wire, rings the definition, and flips a ghost's border", () => {
+    const frame = fileNode("ts:svc.ts", { data: { category: "app", isExpanded: true } });
+    const step: Node = { id: "step:ts:svc.ts#S.run:0", type: "step", position: { x: 0, y: 0 }, parentId: "ts:svc.ts", data: { stepKind: "call" } } as Node;
+    const ghost: Node = { id: "ts:pay.ts#Gateway.charge", type: "ghost", position: { x: 0, y: 0 }, data: { label: "Gateway.charge" } } as Node;
+    const dep: Edge = { id: "gdep:step->ghost", source: step.id, target: ghost.id, data: { category: "dep", ghost: true } } as Edge;
+    const other: Edge = { id: "lvl:a->b", source: "ts:svc.ts", target: ghost.id, data: {} } as Edge;
+    const { edges, nodes, beacons } = emphasize([frame, step, ghost], [dep, other], new Set([step.id]), 1);
+    expect(beacons).toEqual(new Set([ghost.id]));
+    expect(edges.find((e) => e.id === dep.id)?.style?.opacity).toBe(0);
+    expect(edges.find((e) => e.id === other.id)?.style?.opacity).not.toBe(0);
+    const ringed = nodes.find((n) => n.id === ghost.id);
+    expect(ringed?.style?.boxShadow).toContain("#6BE38A");
+    expect((ringed?.data as { beacon?: boolean }).beacon).toBe(true);
+  });
+
+  it("keeps every wire and reports no beacons for a non-step selection", () => {
+    const a = fileNode("ts:a.ts");
+    const b = fileNode("ts:b.ts");
+    const wire = edge("ts:a.ts", "ts:b.ts");
+    const { beacons, edges } = emphasize([a, b], [wire], new Set(["ts:a.ts"]), 1);
+    expect(beacons.size).toBe(0);
+    expect(edges[0].style?.opacity).not.toBe(0);
+  });
+});
+
 describe("emphasize — stale selection", () => {
   it("paints as no-selection when the selected id is no longer drawn (frame collapsed)", () => {
     const nodes = [fileNode("ts:a.ts"), fileNode("ts:b.ts")];

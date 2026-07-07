@@ -18,6 +18,9 @@ export type GhostData = {
   label: string;
   context: string;
   ghostKind: string;
+  /** Paint-time flag: this ghost IS a selected call step's definition — its border flips to the
+   * selection colour (the beacon read). Never set at derive time. */
+  beacon?: boolean;
 };
 
 /** A wire between a drawn code node (or step) and a ghost; endpoints are REAL artifact/step ids. */

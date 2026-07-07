@@ -18,8 +18,10 @@ type GhostRfNode = Node<GhostData, "ghost">;
 
 function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
   const selected = useBlueprint((state) => state.moduleSelected.has(id));
+  // A beacon ghost is a selected call step's DEFINITION: its border wears the selection colour.
+  const style = selected ? GHOST_SELECTED : data.beacon ? GHOST_BEACON : GHOST;
   return (
-    <div style={selected ? GHOST_SELECTED : GHOST} title={`${data.label} — off-screen; double-click to reveal it`}>
+    <div style={style} title={`${data.label} — off-screen; double-click to reveal it`}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={HEAD}>
@@ -60,6 +62,7 @@ const GHOST: React.CSSProperties = {
   cursor: "pointer",
 };
 const GHOST_SELECTED: React.CSSProperties = { ...GHOST, borderColor: SELECT_ACCENT, boxShadow: `0 0 0 2px ${SELECT_ACCENT}` };
+const GHOST_BEACON: React.CSSProperties = { ...GHOST, borderColor: SELECT_ACCENT };
 const HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 5, minWidth: 0 };
 const GLYPH: React.CSSProperties = { fontSize: 9.5, flexShrink: 0, opacity: 0.8 };
 const LABEL: React.CSSProperties = {

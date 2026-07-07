@@ -18,6 +18,8 @@ import { moduleNodeTypes, CATEGORY_COLOR } from "./nodes/modulemap/ModuleCardNod
 import { filterVisible, emphasize } from "./moduleMapPaint";
 import { crumbsFor, EmptyModuleMapCard, LevelBreadcrumb } from "./ModuleMapChrome";
 import { CoveragePanel } from "./CoveragePanel";
+import { BeaconArrows } from "./BeaconArrows";
+import { MapLegend } from "./MapLegend";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { accentForKind } from "../theme/kindColors";
 import type { BlockData, ModuleCardData, UnitCardData } from "../derive/moduleLevel";
@@ -44,7 +46,7 @@ export function ModuleMapView() {
     [nodes, edges, hiddenCategories, showTests, showPrivate, index.testIds, index.privateIds],
   );
   // Emphasis is a second pure repaint: dim by default, light the selection's N-hop import reach.
-  const { nodes: styledNodes, edges: styledEdges } = useMemo(
+  const { nodes: styledNodes, edges: styledEdges, beacons } = useMemo(
     () => emphasize(shownNodes, shownEdges, selected, radius),
     [shownNodes, shownEdges, selected, radius],
   );
@@ -101,6 +103,7 @@ export function ModuleMapView() {
         {...READONLY_CANVAS_PROPS}
       >
         <CanvasChrome nodeColor={miniMapColor} />
+        <BeaconArrows targets={beacons} />
       </ReactFlow>
       <LevelBreadcrumb
         focus={effectiveFocus}
@@ -112,6 +115,7 @@ export function ModuleMapView() {
         onCollapseAll={collapseAll}
       />
       {isEmpty ? <EmptyModuleMapCard focus={effectiveFocus} /> : null}
+      <MapLegend />
       <CoveragePanel />
     </div>
   );

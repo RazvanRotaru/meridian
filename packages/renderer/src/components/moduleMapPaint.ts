@@ -97,21 +97,66 @@ const CODE_TYPES: ReadonlySet<string> = new Set(["unit", "block", "step", "ghost
  * `radius` hops lights violet and marches forward; what CALLS it lights green and marches toward
  * it. The radius dial is thus the callers/callees depth for code selections.
  */
-export function emphasize(nodes: Node[], edges: Edge[], activeIds: ReadonlySet<string>, radius: number): { nodes: Node[]; edges: Edge[] } {
+export interface EmphasizedLevel {
+  nodes: Node[];
+  edges: Edge[];
+  /** Definition nodes a SELECTED call step points at — ringed in place, guided to by an edge-of-
+   * screen arrow instead of a drawn wire (see `applyBeacons`). */
+  beacons: Set<string>;
+}
+
+export function emphasize(nodes: Node[], edges: Edge[], activeIds: ReadonlySet<string>, radius: number): EmphasizedLevel {
   // Selections no longer drawn (a frame collapsed, a card filtered away) drop out; none left must
   // read as "nothing selected" — otherwise every node dims with nothing highlighted.
   const typeById = new Map(nodes.map((node) => [node.id, node.type]));
   const active = [...activeIds].filter((id) => typeById.has(id));
   if (active.length === 0) {
-    return { nodes, edges: edges.map((edge) => styleEdge(edge, "none")) };
+    return { nodes, edges: edges.map((edge) => styleEdge(edge, "none")), beacons: new Set() };
   }
   if (active.every((id) => CODE_TYPES.has(typeById.get(id) ?? ""))) {
-    return emphasizeDirected(nodes, edges, active, radius);
+    return applyBeacons(emphasizeDirected(nodes, edges, active, radius), active, typeById);
   }
   const near = neighbourhood(edges, active, radius);
   const styledEdges = edges.map((edge) => styleEdge(edge, near.has(edge.source) && near.has(edge.target) ? "near" : "none"));
   const styledNodes = nodes.map((node) => (near.has(node.id) ? node : dimNode(node)));
-  return { nodes: styledNodes, edges: styledEdges };
+  return applyBeacons({ nodes: styledNodes, edges: styledEdges }, active, typeById);
+}
+
+/**
+ * The BEACON read for a selected call STEP: the wire to its definition is withheld (a straight
+ * edge across the canvas says little), and the definition itself becomes the signal — ringed in
+ * the selection colour wherever its nearest drawn representative is (the real block, the enclosing
+ * frame it folded into, or its ghost card, whose border flips to the selection colour). The view
+ * layers a screen-edge guide arrow on top when the beacon sits outside the viewport.
+ */
+function applyBeacons(level: { nodes: Node[]; edges: Edge[] }, active: readonly string[], typeById: ReadonlyMap<string, string | undefined>): EmphasizedLevel {
+  const selectedSteps = new Set(active.filter((id) => typeById.get(id) === "step"));
+  if (selectedSteps.size === 0) {
+    return { ...level, beacons: new Set() };
+  }
+  const beacons = new Set<string>();
+  const edges = level.edges.map((edge) => {
+    if (isDep(edge) && selectedSteps.has(edge.source)) {
+      beacons.add(edge.target);
+      return { ...edge, animated: false, style: { ...edge.style, opacity: 0 } };
+    }
+    return edge;
+  });
+  if (beacons.size === 0) {
+    return { ...level, edges, beacons };
+  }
+  const nodes = level.nodes.map((node) => (beacons.has(node.id) ? beaconNode(node) : node));
+  return { nodes, edges, beacons };
+}
+
+/** A ringed definition: full presence, selection-colour halo; a ghost also flips its border. */
+function beaconNode(node: Node): Node {
+  const data = node.type === "ghost" ? { ...node.data, beacon: true } : node.data;
+  return {
+    ...node,
+    data,
+    style: { ...node.style, opacity: 1, borderRadius: 8, boxShadow: `0 0 0 2px ${SELECT_ACCENT}` },
+  };
 }
 
 /** The directed read for a code selection: downstream (callees/dependencies) vs upstream (callers)
