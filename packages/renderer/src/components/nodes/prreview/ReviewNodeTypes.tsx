@@ -16,7 +16,7 @@ import {
   type ReviewFileNodeData,
   type ReviewGroupNodeData,
 } from "../../../layout/minimalSubgraphLayout";
-import { REVIEW_COLORS } from "../../../theme/reviewColors";
+import { changeStatusColor, REVIEW_COLORS } from "../../../theme/reviewColors";
 import { CATEGORY_COLOR } from "../modulemap/ModuleCardNode";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -25,20 +25,30 @@ type ReviewFileRfNode = Node<ReviewFileNodeData, typeof REVIEW_FILE_NODE>;
 type ReviewGroupRfNode = Node<ReviewGroupNodeData, typeof REVIEW_GROUP_NODE>;
 
 function ReviewFileNodeImpl({ data }: NodeProps<ReviewFileRfNode>) {
-  const boundary = data.isBoundary;
-  const accent = boundary ? REVIEW_COLORS.boundaryBorder : CATEGORY_COLOR[data.category];
+  // An AFFECTED card is tinted by HOW it changed (accent bar + border + status badge); a boundary
+  // neighbour keeps the neutral faded/dashed context look. The category hue stays on the chip so both
+  // signals — what kind of module, and how it changed — read at once. `status === null` ≡ boundary.
+  const status = data.isBoundary ? null : changeStatusColor(data.changeStatus ?? "modified");
+  const category = CATEGORY_COLOR[data.category];
+  const accent = status ? status.stroke : REVIEW_COLORS.boundaryBorder;
   return (
-    <div style={boundary ? FILE_CARD_BOUNDARY : FILE_CARD}>
+    <div style={status ? { ...FILE_CARD, borderColor: status.stroke } : FILE_CARD_BOUNDARY}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={{ ...ACCENT_BAR, background: accent }} />
       <div style={INNER}>
         <div style={HEADER}>
-          <span style={boundary ? LABEL_BOUNDARY : LABEL} title={data.fullPath}>{data.label}</span>
-          {boundary ? <span style={CTX_BADGE} title="1-hop context / blast-radius neighbour">ctx</span> : null}
+          <span style={status ? LABEL : LABEL_BOUNDARY} title={data.fullPath}>{data.label}</span>
+          {status ? (
+            <span style={{ ...STATUS_BADGE, color: status.stroke, borderColor: status.stroke, background: status.fill }}>
+              {status.label}
+            </span>
+          ) : (
+            <span style={CTX_BADGE} title="1-hop context / blast-radius neighbour">ctx</span>
+          )}
         </div>
         <div style={META}>
-          <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
+          <span style={{ ...CHIP, color: category, borderColor: category }}>{data.category.toUpperCase()}</span>
           <span style={COUNTS} title={`${data.inCount} importer(s) · ${data.outCount} import(s)`}>
             <span style={COUNT_MUTED}>in</span>
             <span style={COUNT_VALUE}>{data.inCount}</span>
@@ -119,6 +129,15 @@ const CTX_BADGE: React.CSSProperties = {
   letterSpacing: "0.06em",
   color: REVIEW_COLORS.boundaryText,
   border: `1px dashed ${REVIEW_COLORS.boundaryBorder}`,
+  borderRadius: 3,
+  padding: "1px 4px",
+};
+const STATUS_BADGE: React.CSSProperties = {
+  flexShrink: 0,
+  fontSize: 8,
+  fontWeight: 700,
+  letterSpacing: "0.06em",
+  border: "1px solid",
   borderRadius: 3,
   padding: "1px 4px",
 };

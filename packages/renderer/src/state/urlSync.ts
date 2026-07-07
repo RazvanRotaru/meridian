@@ -35,11 +35,11 @@ export async function restoreFromUrl(store: BlueprintStore): Promise<void> {
   if (viewMode === "logic") {
     await store.getState().logicRelayout();
   } else if (viewMode === "review") {
-    // Re-run the full review load for the restored file set: match + model + persisted ticks +
-    // layout. setAffectedFiles fires its own (fire-and-forget) relayout; the awaited pass below is
-    // the one that lands (an older in-flight pass is dropped by the seq guard), so the boot render
-    // shows the laid-out subgraph rather than a laying-out flash.
-    store.getState().setAffectedFiles(store.getState().affectedFiles);
+    // Re-run the full review load for the restored file set + status: match + model + persisted
+    // ticks + layout. setAffectedFiles fires its own (fire-and-forget) relayout; the awaited pass
+    // below is the one that lands (an older in-flight pass is dropped by the seq guard), so the boot
+    // render shows the laid-out subgraph rather than a laying-out flash.
+    store.getState().setAffectedFiles(store.getState().affectedFiles, store.getState().changeStatusByFile);
     await store.getState().prReviewRelayout();
   } else {
     await store.getState().relayout();
@@ -126,5 +126,6 @@ function structuralState(nav: NavState): Record<string, unknown> {
     moduleRadius: nav.moduleRadius,
     hiddenCategories: new Set(nav.hiddenCategories),
     affectedFiles: nav.files,
+    changeStatusByFile: nav.statusByFile,
   };
 }

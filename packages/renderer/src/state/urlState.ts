@@ -11,6 +11,7 @@
  */
 
 import type { ViewMode } from "../derive/edgeSelection";
+import { encodeFilesParam, parseFilesParam, type ChangeStatus } from "../derive/changeStatus";
 
 /** The URL-worthy slice of the store — mirrors the navigation fields of BlueprintState. */
 export interface NavState {
@@ -31,8 +32,11 @@ export interface NavState {
   moduleRadius: number;
   /** Module categories painted out of the map — a comma-joined list in the URL. */
   hiddenCategories: string[];
-  /** The PR-review affected-file paths — comma-joined; the runtime source of truth for the lens. */
+  /** The PR-review affected-file paths — the runtime source of truth for the lens. Folded into the
+   * `files` param together with `statusByFile` (a non-modified status gets a short prefix). */
   files: string[];
+  /** Per-file change status keyed by normalized path; an absent entry == "modified". */
+  statusByFile: Record<string, ChangeStatus>;
   environment: string | null;
 }
 
@@ -59,6 +63,7 @@ export const DEFAULT_NAV: NavState = {
   moduleRadius: 1,
   hiddenCategories: [],
   files: [],
+  statusByFile: {},
   environment: null,
 };
 
@@ -79,6 +84,7 @@ interface NavSource {
   moduleRadius: number;
   hiddenCategories: ReadonlySet<string>;
   affectedFiles: readonly string[];
+  changeStatusByFile: Readonly<Record<string, ChangeStatus>>;
   environment: string | null;
 }
 
@@ -101,6 +107,7 @@ export function navFrom(state: NavSource): NavState {
     hiddenCategories: [...state.hiddenCategories].sort(),
     // Preserve the reader's paste order (unlike the sorted sets above) — the list/graph reproduce it.
     files: [...state.affectedFiles],
+    statusByFile: { ...state.changeStatusByFile },
     environment: state.environment,
   };
 }
@@ -122,16 +129,16 @@ export function encodeNav(nav: NavState): Map<string, string> {
   setId(out, "mfocus", nav.moduleFocus);
   if (nav.moduleRadius !== 1) out.set("mdepth", String(nav.moduleRadius));
   setList(out, "mhide", nav.hiddenCategories);
-  setFiles(out, nav.files);
+  setFiles(out, nav.files, nav.statusByFile);
   setId(out, "env", nav.environment);
   return out;
 }
 
-/** Comma-join the affected files, but SKIP the param past ~6KB (the lens shows a share-notice). */
-function setFiles(out: Map<string, string>, files: string[]): void {
+/** Encode the affected files + status into the `files` param, SKIPPING it past ~6KB (share-notice). */
+function setFiles(out: Map<string, string>, files: string[], statusByFile: Record<string, ChangeStatus>): void {
   if (files.length === 0) return;
-  const joined = files.join(",");
-  if (joined.length <= MAX_FILES_PARAM_LENGTH) out.set("files", joined);
+  const encoded = encodeFilesParam(files, statusByFile);
+  if (encoded.length <= MAX_FILES_PARAM_LENGTH) out.set("files", encoded);
 }
 
 /** Decode present keys back into a partial NavState — absent keys stay unset (store keeps default). */
@@ -165,10 +172,16 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   return out;
 }
 
-/** Parse the comma-joined `files` param into a path list (empty entries dropped). */
+/** Parse the `files` param into paths + status; a status map is set only when a non-modified entry
+ * is present, so a legacy prefixless `?files=a,b` decodes to paths-only (status stays default). */
 function assignFiles(params: URLSearchParams, out: Partial<NavState>): void {
   const value = params.get("files");
-  if (value !== null) out.files = value.split(",").filter(Boolean);
+  if (value === null) return;
+  const parsed = parseFilesParam(value);
+  out.files = parsed.paths;
+  if (Object.keys(parsed.statusByFile).length > 0) {
+    out.statusByFile = parsed.statusByFile;
+  }
 }
 
 /** Decode a COMPLETE nav state: present keys override defaults, absent keys reset to default. This

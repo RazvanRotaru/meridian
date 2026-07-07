@@ -9,6 +9,7 @@ import type { Edge, Node } from "@xyflow/react";
 import type { LogicFlows } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { ModuleGraph } from "../derive/moduleGraph";
+import type { ChangeStatus } from "../derive/changeStatus";
 import { buildReviewModel, type BuildReviewModelOptions, type ReviewModel } from "../derive/reviewModel";
 import { matchAffectedFiles } from "../derive/matchAffectedFiles";
 import { affectedNodes } from "../derive/affectedNodes";
@@ -26,10 +27,11 @@ export async function derivePrReviewLayout(
   moduleGraph: ModuleGraph,
   flows: LogicFlows,
   affectedFiles: string[],
+  statusByFile: Record<string, ChangeStatus> = {},
   options: BuildReviewModelOptions = {},
 ): Promise<PrReviewLayout> {
-  const model = buildReviewModel(index, moduleGraph, flows, affectedFiles, options);
-  const { nodes, edges } = await layoutMinimalSubgraph(subgraphSpec(index, moduleGraph, affectedFiles, options));
+  const model = buildReviewModel(index, moduleGraph, flows, affectedFiles, statusByFile, options);
+  const { nodes, edges } = await layoutMinimalSubgraph(subgraphSpec(index, moduleGraph, affectedFiles, statusByFile, options));
   return { model, nodes, edges };
 }
 
@@ -42,9 +44,10 @@ function subgraphSpec(
   index: GraphIndex,
   moduleGraph: ModuleGraph,
   affectedFiles: string[],
+  statusByFile: Record<string, ChangeStatus>,
   options: BuildReviewModelOptions,
 ): MinimalSubgraphSpec {
   const matchedFiles = matchAffectedFiles(index, affectedFiles).matched.map((entry) => entry.file);
   const seedModuleIds = affectedNodes(index, matchedFiles).seedModuleIds;
-  return buildMinimalSubgraph(index, moduleGraph, seedModuleIds, options).spec;
+  return buildMinimalSubgraph(index, moduleGraph, seedModuleIds, options, statusByFile).spec;
 }

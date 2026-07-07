@@ -29,6 +29,7 @@ import { deriveCompositionLayout } from "./deriveCompositionLayout";
 import { deriveModuleLevelLayout } from "./deriveModuleMapLayout";
 import { derivePrReviewLayout } from "./derivePrReviewLayout";
 import type { ReviewModel } from "../derive/reviewModel";
+import type { ChangeStatus } from "../derive/changeStatus";
 import { loadReviewedIds, persistReviewedIds, reviewSessionKey } from "./reviewSession";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import type { ModuleCategory } from "../derive/moduleCategory";
@@ -155,6 +156,9 @@ export interface BlueprintState {
   /** PR-review: the changed file paths driving the lens; empty == the setup card. Source of truth,
    * synced to `?files=`. */
   affectedFiles: string[];
+  /** Per-file PR change status keyed by normalized path; an absent entry == "modified". Rides the
+   * `?files=` param alongside the paths (see urlState.encodeFilesParam). */
+  changeStatusByFile: Record<string, ChangeStatus>;
   /** The derived review model (matched files, ranked affected flows, kept/boundary ids); null until
    * files are set. Rebuilt by `prReviewRelayout`. */
   reviewModel: ReviewModel | null;
@@ -232,7 +236,7 @@ export interface BlueprintState {
   setModuleRadius(radius: number): void;
   toggleCategory(category: ModuleCategory): void;
   selectModule(id: string | null): void;
-  setAffectedFiles(files: string[]): void;
+  setAffectedFiles(files: string[], statusByFile?: Record<string, ChangeStatus>): void;
   prReviewRelayout(): Promise<void>;
   toggleReviewed(rootId: string): void;
   markVisibleReviewed(rootIds: string[]): void;
@@ -340,6 +344,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     hiddenCategories: new Set<ModuleCategory>(),
     moduleSelectedId: null,
     affectedFiles: [],
+    changeStatusByFile: {},
     reviewModel: null,
     reviewedFlowIds: new Set<string>(),
     prReviewRfNodes: [],
@@ -688,12 +693,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ moduleSelectedId: id });
     },
 
-    // Set the PR-review changed-file list — the lens's source of truth. Load the persisted ticks for
-    // this (target, scope) key, drop any stale selection/filter, then relayout (which rebuilds the
-    // model). The `?files=` URL sync rides the store subscription (files are now a NavState field).
-    setAffectedFiles(files) {
+    // Set the PR-review changed-file list + per-file status — the lens's source of truth. An omitted
+    // status map means "all modified" ({}). Load the persisted ticks for this (target, scope) key,
+    // drop any stale selection/filter, then relayout (which rebuilds the model). The `?files=` URL
+    // sync rides the store subscription (files + status are now NavState fields).
+    setAffectedFiles(files, statusByFile = {}) {
       const key = reviewSessionKey(get().artifact.target, get().reviewScopeRef, files);
-      set({ affectedFiles: files, reviewedFlowIds: loadReviewedIds(key), reviewSelectedFlowId: null, reviewListFilterFileId: null });
+      set({ affectedFiles: files, changeStatusByFile: statusByFile, reviewedFlowIds: loadReviewedIds(key), reviewSelectedFlowId: null, reviewListFilterFileId: null });
       void get().prReviewRelayout();
     },
 
@@ -701,12 +707,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // the stale-seq guard (a newer file/boundary change discards an older in-flight pass). The import
     // graph is built once (cached, shared with the Module map) and reused.
     async prReviewRelayout() {
-      const { index, artifact, affectedFiles, reviewHideBoundary } = get();
+      const { index, artifact, affectedFiles, changeStatusByFile, reviewHideBoundary } = get();
       moduleGraph ??= buildModuleGraph(index);
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const sequence = ++prReviewLayoutSeq;
       set({ prReviewLayoutStatus: "laying-out" });
-      const result = await derivePrReviewLayout(index, moduleGraph, flows, affectedFiles, { includeBoundary: !reviewHideBoundary });
+      const result = await derivePrReviewLayout(index, moduleGraph, flows, affectedFiles, changeStatusByFile, { includeBoundary: !reviewHideBoundary });
       if (prReviewLayoutSeq !== sequence) {
         return; // a newer file/boundary change superseded this one.
       }

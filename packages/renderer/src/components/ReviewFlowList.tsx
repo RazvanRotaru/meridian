@@ -16,6 +16,7 @@ import { ReviewUnmatchedBanner } from "./ReviewUnmatchedBanner";
 import { ReviewListHeader } from "./ReviewListHeader";
 import { ReviewFlowRow } from "./ReviewFlowRow";
 import { ReviewNotCoveredSection } from "./ReviewNotCoveredSection";
+import { ReviewRemovedSection } from "./ReviewRemovedSection";
 import { visibleFlows } from "./reviewListFilters";
 
 const EMPTY_FLOWS: readonly RankedReviewFlow[] = [];
@@ -71,6 +72,7 @@ export function ReviewFlowList() {
         ))}
         {shown.length === 0 ? <div style={EMPTY_ROWS_STYLE}>No flows match the current filter.</div> : null}
       </div>
+      <ReviewRemovedSection removed={reviewModel.removed} />
       <ReviewNotCoveredSection notCovered={reviewModel.notCovered} />
     </div>
   );

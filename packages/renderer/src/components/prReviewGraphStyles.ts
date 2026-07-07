@@ -116,13 +116,10 @@ export const LEGEND_ROW_STYLE: React.CSSProperties = {
   fontSize: 11,
   color: "#7B8695",
 };
-export const SWATCH_CHANGED_STYLE: React.CSSProperties = {
-  width: 11,
-  height: 11,
-  borderRadius: 2,
-  background: REVIEW_COLORS.changed,
-  flexShrink: 0,
-};
+/** A solid legend swatch in the given change-status color. */
+export function swatchStyle(color: string): React.CSSProperties {
+  return { width: 11, height: 11, borderRadius: 2, background: color, flexShrink: 0 };
+}
 export const SWATCH_BOUNDARY_STYLE: React.CSSProperties = {
   width: 11,
   height: 11,
@@ -131,4 +128,11 @@ export const SWATCH_BOUNDARY_STYLE: React.CSSProperties = {
   border: `1px dashed ${REVIEW_COLORS.boundaryBorder}`,
   boxSizing: "border-box",
   flexShrink: 0,
+};
+/** The footnote under the legend: removed files have no node — they live in the side list. */
+export const LEGEND_NOTE_STYLE: React.CSSProperties = {
+  maxWidth: 150,
+  fontSize: 10,
+  lineHeight: 1.4,
+  color: "#6C7683",
 };

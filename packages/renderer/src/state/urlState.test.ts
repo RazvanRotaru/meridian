@@ -19,6 +19,7 @@ function emptyNav(): NavState {
     moduleRadius: 1,
     hiddenCategories: [],
     files: [],
+    statusByFile: {},
     environment: null,
   };
 }
@@ -105,6 +106,21 @@ describe("urlState", () => {
   it("round-trips a PR-review view (files param)", () => {
     const nav: NavState = { ...emptyNav(), viewMode: "review", files: ["packages/a/src/x.ts", "packages/b/src/y.ts"] };
     expect(roundTrip(nav)).toEqual({ viewMode: "review", files: ["packages/a/src/x.ts", "packages/b/src/y.ts"] });
+  });
+
+  it("folds per-file change status into the files param and round-trips it", () => {
+    const nav: NavState = {
+      ...emptyNav(),
+      viewMode: "review",
+      files: ["a/x.ts", "a/y.ts", "a/z.ts"],
+      statusByFile: { "a/x.ts": "added", "a/z.ts": "removed" },
+    };
+    expect(encodeNav(nav).get("files")).toBe("a:a/x.ts,a/y.ts,d:a/z.ts");
+    expect(roundTrip(nav)).toEqual({
+      viewMode: "review",
+      files: ["a/x.ts", "a/y.ts", "a/z.ts"],
+      statusByFile: { "a/x.ts": "added", "a/z.ts": "removed" },
+    });
   });
 
   it("opens the review lens when files are present but no explicit view", () => {
@@ -213,6 +229,7 @@ function storeShape() {
     moduleRadius: 1,
     hiddenCategories: new Set<string>(),
     affectedFiles: [] as string[],
+    changeStatusByFile: {} as Record<string, never>,
     environment: null,
   };
 }

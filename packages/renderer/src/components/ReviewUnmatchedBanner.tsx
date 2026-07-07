@@ -15,6 +15,7 @@ import { basename } from "./reviewListText";
 export function ReviewUnmatchedBanner(props: { model: ReviewModel }) {
   const { model } = props;
   const affectedFiles = useBlueprint((state) => state.affectedFiles);
+  const changeStatusByFile = useBlueprint((state) => state.changeStatusByFile);
   const index = useBlueprint((state) => state.index);
   const { setAffectedFiles } = useBlueprintActions();
   const [expanded, setExpanded] = useState(false);
@@ -24,10 +25,13 @@ export function ReviewUnmatchedBanner(props: { model: ReviewModel }) {
     return null;
   }
 
-  const remove = (path: string) => setAffectedFiles(affectedFiles.filter((file) => normalizePath(file) !== path));
+  // Carry the current status map through both edits — dropping it would silently reset every file to
+  // "modified". Stale keys for a removed path are harmless (looked up only for files still present).
+  const remove = (path: string) =>
+    setAffectedFiles(affectedFiles.filter((file) => normalizePath(file) !== path), changeStatusByFile);
   const apply = (path: string, candidateId: string) => {
     const file = index.nodesById.get(candidateId)?.location?.file ?? candidateId;
-    setAffectedFiles(affectedFiles.map((raw) => (normalizePath(raw) === path ? file : raw)));
+    setAffectedFiles(affectedFiles.map((raw) => (normalizePath(raw) === path ? file : raw)), changeStatusByFile);
   };
 
   return (

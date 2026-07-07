@@ -12,6 +12,7 @@ import type { GraphNode } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import { weightKey, type ModuleGraph } from "./moduleGraph";
 import { categorize } from "./moduleCategory";
+import type { ChangeStatus } from "./changeStatus";
 import { normalizePath } from "./matchAffectedFiles";
 import { collapseChains, type ChainCollapse } from "./collapseChains";
 import type { ModuleCardData } from "./moduleLevel";
@@ -25,6 +26,8 @@ export interface MinimalSubgraphNode {
   kind: "group" | "file";
   parentId: string | null;
   isBoundary: boolean;
+  /** The PR change status of an AFFECTED (non-boundary) file; undefined on boundary + group frames. */
+  changeStatus?: ChangeStatus;
   /** Joined path segments when this frame is a collapsed package chain. */
   collapsedLabel?: string;
   data: ModuleCardData | ModulePackageData;
@@ -58,6 +61,7 @@ export function buildMinimalSubgraph(
   moduleGraph: ModuleGraph,
   seedModuleIds: ReadonlySet<string>,
   options: MinimalSubgraphOptions = {},
+  statusByFile: Record<string, ChangeStatus> = {},
 ): MinimalSubgraph {
   const boundary = wantsBoundary(options)
     ? boundaryNeighbors(moduleGraph, seedModuleIds, capOf(options))
@@ -65,7 +69,7 @@ export function buildMinimalSubgraph(
   const keptFileIds = new Set<string>([...seedModuleIds, ...boundary]);
   const { keptNodeIds, fileCountByGroup } = closeOverAncestors(index, keptFileIds);
   const collapse = collapseChains(index, keptNodeIds);
-  const context: NodeContext = { keptNodeIds, boundary, collapse, fileCountByGroup };
+  const context: NodeContext = { keptNodeIds, boundary, collapse, fileCountByGroup, statusByFile };
   return {
     spec: { nodes: buildNodes(index, moduleGraph, context), edges: buildEdges(moduleGraph, seedModuleIds, keptFileIds) },
     keptNodeIds: [...keptNodeIds].sort(),
@@ -134,6 +138,7 @@ interface NodeContext {
   boundary: Set<string>;
   collapse: ChainCollapse;
   fileCountByGroup: Map<string, number>;
+  statusByFile: Record<string, ChangeStatus>;
 }
 
 function buildNodes(index: GraphIndex, graph: ModuleGraph, context: NodeContext): MinimalSubgraphNode[] {
@@ -150,11 +155,14 @@ function buildNodes(index: GraphIndex, graph: ModuleGraph, context: NodeContext)
 
 function fileNode(node: GraphNode, graph: ModuleGraph, context: NodeContext): MinimalSubgraphNode {
   const file = normalizePath(node.location.file);
+  const isBoundary = context.boundary.has(node.id);
   return {
     id: node.id,
     kind: "file",
     parentId: context.collapse.parentById.get(node.id) ?? null,
-    isBoundary: context.boundary.has(node.id),
+    isBoundary,
+    // Only AFFECTED (seed) files carry a change status; a boundary neighbour is unchanged context.
+    changeStatus: isBoundary ? undefined : context.statusByFile[file] ?? "modified",
     data: {
       label: node.displayName,
       fullPath: file,

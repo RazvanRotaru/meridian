@@ -38,9 +38,9 @@ const FLOWS: LogicFlows = {
   "m:svc#compute": [{ kind: "call", label: "help", target: "m:util#help", resolution: "resolved" }],
 };
 
-function model(affectedFiles: string[], options = {}) {
+function model(affectedFiles: string[], options = {}, statusByFile: Record<string, "added" | "modified" | "removed" | "renamed"> = {}) {
   const index = buildGraphIndex({ nodes: NODES, edges: EDGES } as unknown as GraphArtifact);
-  return buildReviewModel(index, buildModuleGraph(index), FLOWS, affectedFiles, options);
+  return buildReviewModel(index, buildModuleGraph(index), FLOWS, affectedFiles, statusByFile, options);
 }
 
 describe("buildReviewModel", () => {
@@ -63,5 +63,18 @@ describe("buildReviewModel", () => {
     const result = model(["src/svc.ts"], { includeBoundary: false });
     expect(result.boundaryNodeIds).toEqual([]);
     expect(result.keptNodeIds).toEqual(["m:svc", "p:root", "p:src"]);
+  });
+
+  it("routes a removed file into `removed`, not `unmatched`", () => {
+    const result = model(["src/svc.ts", "src/gone.ts"], {}, { "src/svc.ts": "modified", "src/gone.ts": "removed" });
+    expect(result.removed).toEqual(["src/gone.ts"]);
+    expect(result.unmatched).toEqual([]);
+    expect(result.matchedFiles).toEqual(["src/svc.ts"]);
+  });
+
+  it("leaves a non-removed no-match in `unmatched` with an empty `removed`", () => {
+    const result = model(["src/svc.ts", "typo/xyz.ts"]);
+    expect(result.removed).toEqual([]);
+    expect(result.unmatched).toEqual(["typo/xyz.ts"]);
   });
 });

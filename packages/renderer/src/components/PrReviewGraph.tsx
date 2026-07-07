@@ -7,7 +7,7 @@
  * pane clears it. A floating panel carries the Hide-boundary toggle and the changed/boundary legend.
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { ReactFlow, type Edge, type Node, type NodeMouseHandler, type ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { reviewNodeTypes } from "./nodes/prreview/ReviewNodeTypes";
@@ -31,7 +31,15 @@ export function PrReviewGraph() {
   const hoverFlowId = useBlueprint((state) => state.reviewHoverFlowId);
   const filterFileId = useBlueprint((state) => state.reviewListFilterFileId);
   const hideBoundary = useBlueprint((state) => state.reviewHideBoundary);
-  const { setReviewListFilter, toggleReviewHideBoundary } = useBlueprintActions();
+  const { selectReviewFlow, setReviewListFilter, toggleReviewHideBoundary } = useBlueprintActions();
+
+  // Clearing the surface: drop the highlighted flow AND the file filter chip in one gesture, so the
+  // graph returns to its whole-view unhighlighted state. Shared by the pane click and the Escape key.
+  const clearSelection = useCallback(() => {
+    selectReviewFlow(null);
+    setReviewListFilter(null);
+  }, [selectReviewFlow, setReviewListFilter]);
+  useClearOnEscape(clearSelection, selectedFlowId !== null || filterFileId !== null);
 
   // rootId -> flow, so a selection/hover resolves to its touched modules in O(1).
   const flowById = useMemo(() => {
@@ -73,7 +81,7 @@ export function PrReviewGraph() {
           rfRef.current = instance;
         }}
         onNodeClick={onNodeClick}
-        onPaneClick={() => setReviewListFilter(null)}
+        onPaneClick={clearSelection}
         {...READONLY_CANVAS_PROPS}
       >
         <CanvasChrome nodeColor={reviewMiniMapColor} />
@@ -121,4 +129,32 @@ function useFitGuards(
       }
     });
   }, [rfRef, nodes, selectedFlowId, selectedFlow]);
+}
+
+/**
+ * Clear the review selection/filter on Escape, but only while something IS highlighted — otherwise
+ * the listener stays off so the key is free for other handlers. Never preventDefault (a modal's own
+ * Escape must still fire); ignore Escape typed into an editable field.
+ */
+function useClearOnEscape(clear: () => void, active: boolean): void {
+  useEffect(() => {
+    if (!active) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !isEditableTarget(event.target)) {
+        clear();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [clear, active]);
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  if (!element) {
+    return false;
+  }
+  return element.tagName === "INPUT" || element.tagName === "TEXTAREA" || element.isContentEditable;
 }

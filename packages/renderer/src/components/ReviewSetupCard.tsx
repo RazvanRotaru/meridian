@@ -5,28 +5,43 @@
  */
 
 import { useState } from "react";
+import { parseAffectedInput } from "../derive/changeStatus";
 import { useBlueprintActions } from "../state/StoreContext";
 
-const EXAMPLE_FILES = ["src/pricing/pricingService.ts", "src/services/orderService.ts"];
+// A `git diff --name-status` sample over the orders-service fixture: an ADDED file, a MODIFIED one,
+// and a REMOVED path (deleted at HEAD, so it has no node — it lands in the side list, not the graph),
+// so "Try an example" shows all three color codes at once.
+const EXAMPLE_INPUT = [
+  "A\tsrc/pricing/pricingService.ts",
+  "M\tsrc/services/orderService.ts",
+  "D\tsrc/notifications/legacyMailer.ts",
+].join("\n");
 
 export function ReviewSetupCard() {
   const { setAffectedFiles } = useBlueprintActions();
   const [text, setText] = useState("");
 
-  const apply = () => setAffectedFiles(linesOf(text));
-  const tryExample = () => setAffectedFiles(EXAMPLE_FILES);
-  const canApply = linesOf(text).length > 0;
+  const apply = () => {
+    const { paths, statusByFile } = parseAffectedInput(text);
+    setAffectedFiles(paths, statusByFile);
+  };
+  const tryExample = () => {
+    const { paths, statusByFile } = parseAffectedInput(EXAMPLE_INPUT);
+    setAffectedFiles(paths, statusByFile);
+  };
+  const canApply = parseAffectedInput(text).paths.length > 0;
 
   return (
     <div style={WRAP_STYLE}>
       <div style={CARD_STYLE}>
         <div style={TITLE_STYLE}>Review a change</div>
         <div style={SUBTITLE_STYLE}>
-          Paste the changed file paths from a PR to isolate the flows worth re-checking.
+          Paste <code>git diff --name-status</code> output (or one path per line) from a PR to isolate
+          the flows worth re-checking. Added / modified / removed files are color-coded.
         </div>
         <textarea
           style={TEXTAREA_STYLE}
-          placeholder="Paste changed file paths, one per line"
+          placeholder="git diff --name-status output, or one changed path per line"
           value={text}
           onChange={(event) => setText(event.target.value)}
           rows={8}
@@ -42,13 +57,6 @@ export function ReviewSetupCard() {
       </div>
     </div>
   );
-}
-
-function linesOf(text: string): string[] {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
 }
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";

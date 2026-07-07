@@ -15,6 +15,7 @@ import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type 
 import type { MinimalSubgraphEdge, MinimalSubgraphNode, MinimalSubgraphSpec } from "../derive/minimalSubgraph";
 import type { ModuleCardData } from "../derive/moduleLevel";
 import type { ModulePackageData } from "../derive/packageOverview";
+import type { ChangeStatus } from "../derive/changeStatus";
 import { arrowMarker } from "../theme/edgeColors";
 import { REVIEW_COLORS } from "../theme/reviewColors";
 
@@ -22,8 +23,9 @@ import { REVIEW_COLORS } from "../theme/reviewColors";
 export const REVIEW_FILE_NODE = "reviewFile";
 export const REVIEW_GROUP_NODE = "reviewGroup";
 
-/** A file card's data: the Module-map file shape plus whether it's a faded boundary neighbour. */
-export type ReviewFileNodeData = ModuleCardData & { isBoundary: boolean };
+/** A file card's data: the Module-map file shape, the boundary flag, and (for an affected card) how
+ * the file changed in the PR — undefined on boundary neighbours (unchanged context). */
+export type ReviewFileNodeData = ModuleCardData & { isBoundary: boolean; changeStatus?: ChangeStatus };
 /** A frame's data: the Module-map package shape plus the joined label of a collapsed chain, if any. */
 export type ReviewGroupNodeData = ModulePackageData & { collapsedLabel?: string };
 export type ReviewNodeData = ReviewFileNodeData | ReviewGroupNodeData;
@@ -86,7 +88,7 @@ function groupData(node: MinimalSubgraphNode): ReviewGroupNodeData {
 }
 
 function fileData(node: MinimalSubgraphNode): ReviewFileNodeData {
-  return { ...(node.data as ModuleCardData), isBoundary: node.isBoundary };
+  return { ...(node.data as ModuleCardData), isBoundary: node.isBoundary, changeStatus: node.changeStatus };
 }
 
 // A boundary-touching wire is the faded context/blast-radius link (thin, dashed, dimmed); an

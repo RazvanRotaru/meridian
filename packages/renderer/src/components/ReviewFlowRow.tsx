@@ -1,8 +1,8 @@
 /**
  * One ranked flow in the PR-review list: a reviewed checkbox, the callable's name and defining
  * file, why it qualifies (changed / calls-into badges), its size, and a jump into the Logic
- * lens. The whole row selects the flow (and highlights it on the graph pane); hovering only
- * highlights, never moves the camera.
+ * lens. The whole row TOGGLES selection of the flow (a second click on the selected row clears it)
+ * and highlights it on the graph pane; hovering only highlights, never moves the camera.
  */
 
 import type { RankedReviewFlow, ReviewReason } from "../derive/reviewFlows";
@@ -19,7 +19,7 @@ export function ReviewFlowRow(props: { flow: RankedReviewFlow; reviewed: boolean
   return (
     <div
       style={rowStyle(selected, reviewed)}
-      onClick={() => selectReviewFlow(flow.rootId)}
+      onClick={() => selectReviewFlow(selected ? null : flow.rootId)}
       onMouseEnter={() => setReviewHoverFlow(flow.rootId)}
       onMouseLeave={() => setReviewHoverFlow(null)}
     >
