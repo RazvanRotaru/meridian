@@ -617,13 +617,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     // Re-root the Service-composition graph at a module/package (null == whole system). Clears the
-    // selection AND the method-preview drawer (both mean nothing in a new rooted view) and re-lays
-    // out. A no-op when already there, matching the store's other navigation guards.
+    // selection, the code view, the aggregate-expand set, and the method-preview drawer — none carry
+    // meaning in a new rooted view — then re-lays out. When the root is unchanged it still clears the
+    // stale selection + code so navigation always returns to the graph first.
     setCompRoot(id) {
-      if (get().compRoot === id) {
+      const sameRoot = get().compRoot === id;
+      // Root navigation should always return to the graph surface; if the root is unchanged, still
+      // clear stale composition selection/code so Cmd+P never appears to jump straight to source.
+      if (sameRoot) {
+        if (get().compSelectedId !== null || get().codeView !== null) {
+          set({ compSelectedId: null, codeView: null });
+        }
         return;
       }
-      set({ compRoot: id, compExpanded: new Set<string>(), compSelectedId: null, compMethodId: null, compMethodRfNodes: [], compMethodRfEdges: [], compMethodLayoutStatus: "idle" });
+      set({ compRoot: id, compExpanded: new Set<string>(), compSelectedId: null, compMethodId: null, compMethodRfNodes: [], compMethodRfEdges: [], compMethodLayoutStatus: "idle", codeView: null });
       void get().compRelayout();
     },
 

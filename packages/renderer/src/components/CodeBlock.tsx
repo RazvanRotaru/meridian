@@ -7,7 +7,7 @@
  * React still escapes as a plain string child.
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 const COLOR = {
   plain: "#C9D3E0",
@@ -64,12 +64,15 @@ export function CodeBlock({
   code,
   maxHeight = 220,
   startLine,
+  changedLines,
 }: {
   code: string;
   maxHeight?: number | string;
   /** When set, a right-aligned line-number gutter is rendered alongside the code, numbering from
    * this line. Omitted → no gutter (the plain highlighted listing). Highlighting is kept either way. */
   startLine?: number;
+  /** Absolute line numbers the diff touched — their gutter numbers go amber (needs the gutter). */
+  changedLines?: ReadonlySet<number>;
 }) {
   // Reset the shared regex's lastIndex per run (it is stateful with the `g` flag) and never let a
   // tokenizing surprise blank the panel — fall back to the raw, still-escaped source.
@@ -84,6 +87,17 @@ export function CodeBlock({
   const highlighted = pieces.map((piece, index) => (
     <span key={index} style={{ color: piece.color }}>{piece.text}</span>
   ));
+  const listingRef = useRef<HTMLDivElement>(null);
+  // Land on the diff: when the listing knows its changed lines, open scrolled to the first one
+  // (minus a little context) instead of the top of the span.
+  useEffect(() => {
+    const container = listingRef.current;
+    if (!container || startLine === undefined || !changedLines || changedLines.size === 0) {
+      return;
+    }
+    const firstChanged = Math.min(...changedLines);
+    container.scrollTop = Math.max(0, (firstChanged - startLine - 3) * LINE_HEIGHT_PX);
+  }, [code, startLine, changedLines]);
   if (startLine === undefined) {
     return <pre style={{ ...PRE_STYLE, maxHeight }}>{highlighted}</pre>;
   }
@@ -91,24 +105,43 @@ export function CodeBlock({
   // same height); the code column owns horizontal scroll (min-width:0 lets it shrink and scroll
   // inside itself) so the fixed-width gutter never slides out of view.
   return (
-    <div style={{ ...LISTING_STYLE, maxHeight }}>
-      <pre style={GUTTER_STYLE} aria-hidden>{lineNumbers(code, startLine)}</pre>
+    <div ref={listingRef} style={{ ...LISTING_STYLE, maxHeight }}>
+      <pre style={GUTTER_STYLE} aria-hidden>{lineNumbers(code, startLine, changedLines)}</pre>
       <pre style={CODE_COLUMN_STYLE}>{highlighted}</pre>
     </div>
   );
 }
 
-// A right-aligned column of consecutive line numbers, one per line of `code`, starting at `startLine`.
-function lineNumbers(code: string, startLine: number): string {
-  return code.split("\n").map((_line, index) => startLine + index).join("\n");
+// A right-aligned column of consecutive line numbers, one per line of `code`, starting at
+// `startLine`. A line the diff touched renders its number amber + a leading ● (the VS-Code-style
+// modified-gutter read); untouched lines keep the muted grey.
+function lineNumbers(code: string, startLine: number, changedLines?: ReadonlySet<number>): React.ReactNode {
+  const lines = code.split("\n");
+  if (!changedLines || changedLines.size === 0) {
+    return lines.map((_line, index) => startLine + index).join("\n");
+  }
+  return lines.map((_line, index) => {
+    const lineNo = startLine + index;
+    const changed = changedLines.has(lineNo);
+    return (
+      <span key={lineNo} style={changed ? CHANGED_LINE_STYLE : undefined}>
+        {changed ? "● " : ""}
+        {lineNo}
+        {"\n"}
+      </span>
+    );
+  });
 }
+
+// Shared by the styles below and the scroll-to-diff math — keep the three in sync.
+const LINE_HEIGHT_PX = 17;
 
 const PRE_STYLE: React.CSSProperties = {
   margin: 0,
   overflow: "auto",
   fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
   fontSize: 11.5,
-  lineHeight: "17px",
+  lineHeight: `${LINE_HEIGHT_PX}px`,
   color: COLOR.plain,
   whiteSpace: "pre",
   tabSize: 2,
@@ -116,11 +149,13 @@ const PRE_STYLE: React.CSSProperties = {
 
 const LISTING_STYLE: React.CSSProperties = {
   display: "flex",
+  alignItems: "flex-start",
   gap: 10,
-  overflow: "auto",
+  overflowY: "auto",
+  overflowX: "hidden",
   fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
   fontSize: 11.5,
-  lineHeight: "17px",
+  lineHeight: `${LINE_HEIGHT_PX}px`,
   tabSize: 2,
 };
 const GUTTER_STYLE: React.CSSProperties = {
@@ -131,6 +166,7 @@ const GUTTER_STYLE: React.CSSProperties = {
   userSelect: "none",
   whiteSpace: "pre",
 };
+const CHANGED_LINE_STYLE: React.CSSProperties = { color: "#E2A33C", fontWeight: 700 };
 const CODE_COLUMN_STYLE: React.CSSProperties = {
   margin: 0,
   flex: 1,
@@ -138,4 +174,5 @@ const CODE_COLUMN_STYLE: React.CSSProperties = {
   color: COLOR.plain,
   whiteSpace: "pre",
   overflowX: "auto",
+  overflowY: "hidden",
 };

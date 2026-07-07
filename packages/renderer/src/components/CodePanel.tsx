@@ -9,10 +9,13 @@
 import { useEffect } from "react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { CodeBlock } from "./CodeBlock";
+import { useChangeSummary, useChangedLines } from "./useChangedLines";
 
 export function CodePanel() {
   const codeView = useBlueprint((state) => state.codeView);
   const { closeCode } = useBlueprintActions();
+  const changedLines = useChangedLines(codeView?.node);
+  const summary = useChangeSummary(codeView?.node);
   const open = codeView?.mode === "modal";
 
   // Escape closes the modal while it's open. Rebinding on `open` keeps the listener off the
@@ -51,6 +54,12 @@ export function CodePanel() {
           <div style={HEADER_TEXT_STYLE}>
             <div style={TITLE_STYLE} title={node.qualifiedName}>{node.displayName}</div>
             <div style={LOCATION_STYLE} title={file}>{`${file}:${range}`}</div>
+            {summary ? (
+              <div style={SUMMARY_ROW_STYLE}>
+                <span style={ADDED_STYLE}>{`+${summary.added} lines`}</span>
+                <span style={DELETED_STYLE}>{`-${summary.deleted} lines`}</span>
+              </div>
+            ) : null}
           </div>
           <button type="button" style={CLOSE_STYLE} onClick={closeCode} aria-label="Close source">
             ×
@@ -59,7 +68,9 @@ export function CodePanel() {
         <div style={BODY_STYLE}>
           {loading ? <div style={STATUS_STYLE}>Loading source…</div> : null}
           {error ? <div style={ERROR_STYLE}>{error}</div> : null}
-          {code !== null ? <CodeBlock code={code} maxHeight="70vh" /> : null}
+          {code !== null ? (
+            <CodeBlock code={code} maxHeight="70vh" startLine={node.location?.startLine} changedLines={changedLines} />
+          ) : null}
           {truncated ? <div style={TRUNCATED_STYLE}>Snippet truncated by the server.</div> : null}
         </div>
       </div>
@@ -112,6 +123,31 @@ const LOCATION_STYLE: React.CSSProperties = {
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
+};
+const SUMMARY_ROW_STYLE: React.CSSProperties = {
+  marginTop: 6,
+  display: "flex",
+  gap: 6,
+  alignItems: "center",
+  flexWrap: "wrap",
+};
+const ADDED_STYLE: React.CSSProperties = {
+  fontSize: 10.5,
+  fontWeight: 700,
+  color: "#56C271",
+  border: "1px solid rgba(86,194,113,0.45)",
+  borderRadius: 4,
+  padding: "1px 6px",
+  background: "rgba(86,194,113,0.1)",
+};
+const DELETED_STYLE: React.CSSProperties = {
+  fontSize: 10.5,
+  fontWeight: 700,
+  color: "#F0787C",
+  border: "1px solid rgba(240,120,124,0.45)",
+  borderRadius: 4,
+  padding: "1px 6px",
+  background: "rgba(240,120,124,0.1)",
 };
 const CLOSE_STYLE: React.CSSProperties = {
   flexShrink: 0,

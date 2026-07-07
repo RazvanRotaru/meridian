@@ -20,13 +20,20 @@ export interface LoadedProject {
 
 export function loadProject(options: ExtractOptions): LoadedProject {
   const root = absoluteRoot(options.root);
-  const project = options.project ? fromTsConfig(options.project) : fromGlobs(root, options.include);
   const excludes = options.exclude ?? DEFAULT_EXCLUDES;
   const relativePathOf = (file: SourceFile) => relativeToRoot(root, file.getFilePath());
-  const sourceFiles = project
-    .getSourceFiles()
-    .filter((file) => isSelectable(file, relativePathOf(file), excludes));
-  return { sourceFiles, relativePathOf, root };
+  const select = (project: Project) =>
+    project.getSourceFiles().filter((file) => isSelectable(file, relativePathOf(file), excludes));
+
+  if (options.project) {
+    const fromConfig = select(fromTsConfig(options.project));
+    // A solution-style tsconfig ("files": [] + references) loads ZERO sources; falling back
+    // to the glob scan keeps monorepo roots extractable instead of writing an empty graph.
+    if (fromConfig.length > 0) {
+      return { sourceFiles: fromConfig, relativePathOf, root };
+    }
+  }
+  return { sourceFiles: select(fromGlobs(root, options.include)), relativePathOf, root };
 }
 
 function fromTsConfig(tsConfigFilePath: string): Project {

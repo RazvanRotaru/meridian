@@ -27,6 +27,7 @@ export interface GenerateOptions extends GlobalOptions {
   includeExternal?: boolean;
   includeUnresolved?: boolean;
   excludeTests?: boolean;
+  changedSince?: string;
 }
 
 export async function runGenerate(path: string, options: GenerateOptions): Promise<void> {
@@ -45,6 +46,7 @@ export async function runGenerate(path: string, options: GenerateOptions): Promi
     includeExternal: options.includeExternal,
     includeUnresolved: options.includeUnresolved,
     excludeTests: options.excludeTests,
+    changedSince: options.changedSince,
     materializeBoundary: true,
   });
   writeJsonAtomic(outPath, result.artifact);
