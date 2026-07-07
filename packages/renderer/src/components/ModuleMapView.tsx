@@ -180,6 +180,9 @@ function miniMapColor(node: Node): string {
   if (node.type === "block") {
     return accentForKind((node.data as BlockData).blockKind);
   }
+  if (node.type === "step") {
+    return "#565E68";
+  }
   return CATEGORY_COLOR[(node.data as ModuleCardData).category];
 }
 

@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
+import type { GraphArtifact, GraphEdge, GraphNode, LogicFlows } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { buildModuleGraph } from "./moduleGraph";
 import { buildBlockDeps } from "./blockDeps";
@@ -57,9 +57,9 @@ function fixture(): { nodes: GraphNode[]; edges: GraphEdge[] } {
   return { nodes, edges };
 }
 
-function treeOf(nodes: GraphNode[], edges: GraphEdge[], focus: string | null, expanded: string[]) {
+function treeOf(nodes: GraphNode[], edges: GraphEdge[], focus: string | null, expanded: string[], flows: LogicFlows = {}) {
   const index = buildGraphIndex({ nodes, edges } as GraphArtifact);
-  return deriveModuleTree(index, focus, new Set(expanded), buildModuleGraph(index), buildBlockDeps(index));
+  return deriveModuleTree(index, focus, new Set(expanded), buildModuleGraph(index), buildBlockDeps(index), flows);
 }
 
 describe("deriveModuleTree — overview (focus null)", () => {
@@ -243,5 +243,47 @@ describe("deriveModuleTree — code level (the merged composition level)", () =>
     const tree = treeOf(nodes, edges, "ts:pkg", []);
     expect(tree.edges.filter((e) => e.category === "dep")).toHaveLength(0);
     expect(tree.edges.filter((e) => e.category === "import")).toHaveLength(1);
+  });
+});
+
+describe("deriveModuleTree — flow steps charted in place (POC)", () => {
+  const FLOWS: LogicFlows = {
+    "ts:pkg/src/svc.ts#OrderService.place": [
+      { kind: "call", label: "validate", target: null, resolution: "unresolved" },
+      { kind: "call", label: "charge", target: "ts:pkg/src/pay.ts#PaymentGateway.charge", resolution: "resolved" },
+      { kind: "loop", label: "for (line of lines)", body: [] },
+    ],
+  };
+
+  it("a callable block with a flow is expandable; expanding charts its steps inside the block frame", () => {
+    const { nodes, edges } = unitFixture();
+    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts", "ts:pkg/src/svc.ts#OrderService.place"], FLOWS);
+    const block = tree.nodes.find((n) => n.id === "ts:pkg/src/svc.ts#OrderService.place");
+    expect(block?.isContainer).toBe(true);
+    expect(block?.isExpanded).toBe(true);
+    const steps = tree.nodes.filter((n) => n.kind === "step");
+    expect(steps.map((n) => n.parentId)).toEqual(Array(3).fill("ts:pkg/src/svc.ts#OrderService.place"));
+    // Execution-order chain: step 0 → 1 → 2.
+    const chain = tree.edges.filter((e) => e.category === "flow").map((e) => `${e.source}->${e.target}`);
+    expect(chain).toEqual([
+      "step:ts:pkg/src/svc.ts#OrderService.place:0->step:ts:pkg/src/svc.ts#OrderService.place:1",
+      "step:ts:pkg/src/svc.ts#OrderService.place:1->step:ts:pkg/src/svc.ts#OrderService.place:2",
+    ]);
+  });
+
+  it("a resolved call step wires OUT to its target's drawn definition, replacing the block-level wire", () => {
+    const { nodes, edges } = unitFixture();
+    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts", "ts:pkg/src/svc.ts#OrderService.place"], FLOWS);
+    const deps = tree.edges.filter((e) => e.category === "dep").map((e) => `${e.source}->${e.target}`);
+    // The step (not the expanded block) is the wire's anchor; the target folds to its file card.
+    expect(deps).toEqual(["step:ts:pkg/src/svc.ts#OrderService.place:1->ts:pkg/src/pay.ts"]);
+  });
+
+  it("a collapsed block keeps its own frame-level dep wire (no steps drawn)", () => {
+    const { nodes, edges } = unitFixture();
+    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts"], FLOWS);
+    expect(tree.nodes.some((n) => n.kind === "step")).toBe(false);
+    const deps = tree.edges.filter((e) => e.category === "dep").map((e) => `${e.source}->${e.target}`);
+    expect(deps).toEqual(["ts:pkg/src/svc.ts#OrderService.place->ts:pkg/src/pay.ts"]);
   });
 });

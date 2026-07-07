@@ -25,6 +25,10 @@ const DIM_EDGE_OPACITY = 0.12;
 // Dependency wires stay faintly readable even unselected, so expanding a file immediately shows
 // where its units' dependencies point.
 const DIM_DEP_OPACITY = 0.3;
+// Execution-order wires between an expanded block's flow steps: quiet, but always readable — they
+// ARE the flow being showcased.
+const FLOW_COLOR = "#7B8695";
+const DIM_FLOW_OPACITY = 0.55;
 const DIM_NODE_OPACITY = 0.28;
 const BASE_WIDTH = 1.5;
 const EMPHASIS_WIDTH = 2.5;
@@ -78,19 +82,88 @@ function isHidden(node: Node, options: HideOptions): boolean {
 
 /**
  * Anti-clutter emphasis: EVERY wire is dim by default, so a level reads as its cards until the
- * reader points at one. With an active node, its import neighbourhood within `radius` hops lights to
- * full opacity and every node outside it fades. `radius` 1 = direct neighbours (the default reach).
+ * reader points at one. Selecting a FILE/PACKAGE lights its import neighbourhood within `radius`
+ * undirected hops (the original behavior). Selecting a CODE node (a unit, block, or flow step)
+ * switches to a DIRECTED read over the dependency/flow wires — Sourcetrail-style: what this code
+ * REACHES within `radius` hops lights violet and marches forward; what CALLS it lights green and
+ * marches toward it. The radius dial is thus the callers/callees depth for code selections.
  */
 export function emphasize(nodes: Node[], edges: Edge[], activeId: string | null, radius: number): { nodes: Node[]; edges: Edge[] } {
   // A selection that is no longer drawn (its frame collapsed, its card filtered away) must read as
   // "nothing selected" — otherwise every node dims with nothing highlighted.
-  if (activeId === null || !nodes.some((node) => node.id === activeId)) {
-    return { nodes, edges: edges.map((edge) => styleEdge(edge, false)) };
+  const active = activeId === null ? undefined : nodes.find((node) => node.id === activeId);
+  if (activeId === null || !active) {
+    return { nodes, edges: edges.map((edge) => styleEdge(edge, "none")) };
+  }
+  if (active.type === "unit" || active.type === "block" || active.type === "step") {
+    return emphasizeDirected(nodes, edges, activeId, radius);
   }
   const near = neighbourhood(edges, activeId, radius);
-  const styledEdges = edges.map((edge) => styleEdge(edge, near.has(edge.source) && near.has(edge.target)));
+  const styledEdges = edges.map((edge) => styleEdge(edge, near.has(edge.source) && near.has(edge.target) ? "near" : "none"));
   const styledNodes = nodes.map((node) => (near.has(node.id) ? node : dimNode(node)));
   return { nodes: styledNodes, edges: styledEdges };
+}
+
+/** The directed read for a code selection: downstream (callees/dependencies) vs upstream (callers)
+ * over the dep + flow wires, each to `radius` hops. Selecting an expanded FRAME means "this code" —
+ * the walk seeds with every node drawn inside it, so its steps' wires light as the frame's own.
+ * Import wires stay part of the backdrop. */
+function emphasizeDirected(nodes: Node[], edges: Edge[], activeId: string, radius: number): { nodes: Node[]; edges: Edge[] } {
+  const seed = withDrawnDescendants(activeId, nodes);
+  const codeEdges = edges.filter((edge) => isDep(edge) || isFlow(edge));
+  const down = directedReach(codeEdges, seed, radius, "forward");
+  const up = directedReach(codeEdges, seed, radius, "reverse");
+  const near = new Set([...seed, ...down.nodes, ...up.nodes]);
+  const styledEdges = edges.map((edge) => {
+    if (down.edges.has(edge.id)) {
+      return styleEdge(edge, "downstream");
+    }
+    if (up.edges.has(edge.id)) {
+      return styleEdge(edge, "upstream");
+    }
+    return styleEdge(edge, "none");
+  });
+  const styledNodes = nodes.map((node) => (near.has(node.id) ? node : dimNode(node)));
+  return { nodes: styledNodes, edges: styledEdges };
+}
+
+/** The selection plus every node drawn inside it (nodes arrive parents-before-children). */
+function withDrawnDescendants(activeId: string, nodes: Node[]): Set<string> {
+  const seed = new Set<string>([activeId]);
+  for (const node of nodes) {
+    if (node.parentId && seed.has(node.parentId)) {
+      seed.add(node.id);
+    }
+  }
+  return seed;
+}
+
+/** BFS over directed edges from the seed set, up to `radius` hops, returning reached nodes + edges. */
+function directedReach(
+  edges: Edge[],
+  seed: ReadonlySet<string>,
+  radius: number,
+  direction: "forward" | "reverse",
+): { nodes: Set<string>; edges: Set<string> } {
+  const reachedNodes = new Set<string>(seed);
+  const reachedEdges = new Set<string>();
+  let frontier = new Set<string>(seed);
+  for (let hop = 0; hop < Math.max(1, radius) && frontier.size > 0; hop += 1) {
+    const next = new Set<string>();
+    for (const edge of edges) {
+      const from = direction === "forward" ? edge.source : edge.target;
+      const to = direction === "forward" ? edge.target : edge.source;
+      if (frontier.has(from)) {
+        reachedEdges.add(edge.id);
+        if (!reachedNodes.has(to)) {
+          reachedNodes.add(to);
+          next.add(to);
+        }
+      }
+    }
+    frontier = next;
+  }
+  return { nodes: reachedNodes, edges: reachedEdges };
 }
 
 /** The active node plus every node within `radius` undirected import hops of it. */
@@ -115,16 +188,44 @@ function pushNeighbour(from: string, to: string, frontier: string[], reached: Se
   }
 }
 
-function styleEdge(edge: Edge, lit: boolean): Edge {
-  const dep = isDep(edge);
-  const color = dep ? DEP_COLOR : isCrossFrame(edge) ? CROSS_FRAME_COLOR : INTERNAL_COLOR;
-  const stroke = lit ? (dep ? DEP_ACCENT : SELECT_ACCENT) : color;
-  const dimOpacity = dep ? DIM_DEP_OPACITY : DIM_EDGE_OPACITY;
+/** How a wire is lit: undirected neighbourhood ("near"), the directed reads, or backdrop ("none"). */
+type EdgeEmphasis = "near" | "downstream" | "upstream" | "none";
+
+function styleEdge(edge: Edge, emphasis: EdgeEmphasis): Edge {
+  const lit = emphasis !== "none";
+  const stroke = lit ? litStroke(edge, emphasis) : baseStroke(edge);
+  // Directed reads MARCH (React Flow's animated dash) so the wire reads as travel, not just reach.
+  const animated = emphasis === "downstream" || emphasis === "upstream";
   return {
     ...edge,
-    style: { stroke, strokeWidth: lit ? EMPHASIS_WIDTH : BASE_WIDTH, opacity: lit ? 1 : dimOpacity },
+    animated,
+    style: { stroke, strokeWidth: lit ? EMPHASIS_WIDTH : BASE_WIDTH, opacity: lit ? 1 : dimOpacity(edge) },
     markerEnd: arrowMarker(stroke, 14),
   };
+}
+
+function litStroke(edge: Edge, emphasis: EdgeEmphasis): string {
+  if (emphasis === "downstream") {
+    return DEP_ACCENT;
+  }
+  if (emphasis === "upstream") {
+    return SELECT_ACCENT;
+  }
+  return isDep(edge) ? DEP_ACCENT : SELECT_ACCENT;
+}
+
+function baseStroke(edge: Edge): string {
+  if (isFlow(edge)) {
+    return FLOW_COLOR;
+  }
+  return isDep(edge) ? DEP_COLOR : isCrossFrame(edge) ? CROSS_FRAME_COLOR : INTERNAL_COLOR;
+}
+
+function dimOpacity(edge: Edge): number {
+  if (isFlow(edge)) {
+    return DIM_FLOW_OPACITY;
+  }
+  return isDep(edge) ? DIM_DEP_OPACITY : DIM_EDGE_OPACITY;
 }
 
 function isCrossFrame(edge: Edge): boolean {
@@ -133,6 +234,10 @@ function isCrossFrame(edge: Edge): boolean {
 
 function isDep(edge: Edge): boolean {
   return (edge.data as { category?: string } | undefined)?.category === "dep";
+}
+
+function isFlow(edge: Edge): boolean {
+  return (edge.data as { category?: string } | undefined)?.category === "flow";
 }
 
 function dimNode(node: Node): Node {

@@ -15,6 +15,7 @@ import type { ModuleCategory } from "../../../derive/moduleCategory";
 import { PackageOverviewNode } from "./PackageOverviewNode";
 import { UnitCardNode } from "./UnitCardNode";
 import { BlockNode } from "./BlockNode";
+import { StepNode } from "./StepNode";
 import { ExpandChevron, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT, TITLE_BAR } from "./frameChrome";
 
 // The file family's frame accent (the module cyan), used when an expanded card turns into a frame.
@@ -78,7 +79,7 @@ export const ModuleCardNode = memo(ModuleCardNodeImpl);
  * `block` is a leaf code block (a method, function, or type definition). A card the reader expands
  * becomes a frame whose children NEST inside it (parentId), so a level can hold nested frames —
  * mirroring the call graph's ContainerNode. */
-export const moduleNodeTypes = { file: ModuleCardNode, package: PackageOverviewNode, unit: UnitCardNode, block: BlockNode };
+export const moduleNodeTypes = { file: ModuleCardNode, package: PackageOverviewNode, unit: UnitCardNode, block: BlockNode, step: StepNode };
 
 // Category → accent hue, echoing the palette used across the dark surfaces: entry green (the "you are
 // here" signal), ui blue, util amber, config violet, app a neutral slate. Exported so the Module-map

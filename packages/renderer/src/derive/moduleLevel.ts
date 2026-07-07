@@ -49,18 +49,27 @@ export function unitData(id: string, index: GraphIndex, memberCount: number): Un
   };
 }
 
-/** A leaf code block: a method inside a unit frame, or a file-level function/type definition.
- * The block IS the dependency anchor — its wires say what this specific code uses. */
+/** A code block: a method inside a unit frame, or a file-level function/type definition.
+ * The block IS the dependency anchor — its wires say what this specific code uses. A block with a
+ * logic flow carries a chevron: expanding charts its flow steps in place (isExpanded → frame). */
 export type BlockData = {
   label: string;
   blockKind: string;
   /** Callable blocks double-click into their logic flow (the map→logic link). */
   callable: boolean;
+  /** The block has a charted logic flow, so it can expand into a flow frame in place. */
+  hasFlow: boolean;
+  isExpanded: boolean;
 };
 
-export function blockData(id: string, index: GraphIndex): BlockData {
+export interface BlockExpansion {
+  hasFlow: boolean;
+  isExpanded: boolean;
+}
+
+export function blockData(id: string, index: GraphIndex, expansion: BlockExpansion): BlockData {
   const kind = index.nodesById.get(id)?.kind ?? "function";
-  return { label: unitLabel(id, index), blockKind: kind, callable: CALLABLE_KINDS.has(kind) };
+  return { label: unitLabel(id, index), blockKind: kind, callable: CALLABLE_KINDS.has(kind), ...expansion };
 }
 
 /** Descend through single-directory levels so a lone `src` box is never a wasted click. */

@@ -6,6 +6,7 @@
  * The import graph is built once and passed in (the store caches it), never rebuilt per relayout.
  */
 
+import type { LogicFlows } from "@meridian/core";
 import type { Edge, Node } from "@xyflow/react";
 import type { GraphIndex } from "../graph/graphIndex";
 import { deriveModuleTree } from "../derive/moduleTree";
@@ -26,8 +27,9 @@ export async function deriveModuleLevelLayout(
   expanded: ReadonlySet<string>,
   graph: ModuleGraph,
   blockDeps: BlockDeps,
+  flows: LogicFlows,
 ): Promise<ModuleLevelLayout> {
-  const tree = deriveModuleTree(index, focus, expanded, graph, blockDeps);
+  const tree = deriveModuleTree(index, focus, expanded, graph, blockDeps, flows);
   const { nodes, edges } = await layoutModuleTree(tree.nodes, tree.edges);
   return { nodes, edges, effectiveFocus: tree.effectiveFocus };
 }

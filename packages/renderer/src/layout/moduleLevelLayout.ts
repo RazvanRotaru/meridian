@@ -13,6 +13,7 @@ import { runElkLayout } from "./elkLayout";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
 import type { ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
 import type { BlockData } from "../derive/moduleLevel";
+import type { StepData } from "../derive/flowSteps";
 
 const GROUP_HEIGHT = 76;
 const GROUP_MIN_WIDTH = 172;
@@ -30,6 +31,10 @@ const BLOCK_MAX_WIDTH = 220;
 const BLOCK_WIDTH_PER_CHAR = 7;
 const BLOCK_BASE_WIDTH = 46;
 const BLOCK_HEIGHT = 30;
+// Flow steps are the smallest shapes on the canvas — one label, quiet.
+const STEP_MIN_WIDTH = 96;
+const STEP_MAX_WIDTH = 190;
+const STEP_HEIGHT = 26;
 
 const ROOT_OPTIONS: Record<string, string> = {
   "elk.algorithm": "layered",
@@ -66,6 +71,9 @@ export async function layoutModuleTree(nodes: VisibleModuleNode[], edges: Module
  * fixed (blocks widen a little with their label). Expanded groups, file frames, and unit frames
  * are ELK-sized around their children. */
 function leafSize(node: VisibleModuleNode): { width: number; height: number } {
+  if (node.kind === "step") {
+    return stepSize(node.data as StepData);
+  }
   if (node.kind === "block") {
     return blockSize(node.data as BlockData);
   }
@@ -81,6 +89,11 @@ function leafSize(node: VisibleModuleNode): { width: number; height: number } {
 function blockSize(data: BlockData): { width: number; height: number } {
   const width = Math.max(BLOCK_MIN_WIDTH, Math.min(BLOCK_MAX_WIDTH, BLOCK_BASE_WIDTH + data.label.length * BLOCK_WIDTH_PER_CHAR));
   return { width, height: BLOCK_HEIGHT };
+}
+
+function stepSize(data: StepData): { width: number; height: number } {
+  const width = Math.max(STEP_MIN_WIDTH, Math.min(STEP_MAX_WIDTH, 40 + data.label.length * 6.5));
+  return { width, height: STEP_HEIGHT };
 }
 
 function fileCountOf(node: VisibleModuleNode): number {

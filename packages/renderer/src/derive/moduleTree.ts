@@ -19,7 +19,7 @@
  * at wherever its definition lives on screen. Pure; no React, no ELK.
  */
 
-import type { GraphEdge, GraphNode } from "@meridian/core";
+import type { GraphEdge, GraphNode, LogicFlows } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import { npmPackageIdOf } from "./compositionClusters";
 import { packageEntryModule, type ModulePackageData } from "./packageOverview";
@@ -27,6 +27,7 @@ import { weightKey, type ModuleGraph } from "./moduleGraph";
 import { basename, blockData, collapseChain, fileData, unitData, type BlockData, type ModuleCardData, type UnitCardData } from "./moduleLevel";
 import { containmentChildren, frontierRoots, subtreeFileCount } from "./moduleFrontier";
 import { BLOCK_KINDS, liftDepEdges, UNIT_CARD_KINDS, type BlockDeps } from "./blockDeps";
+import { emitFlowSteps, type StepData } from "./flowSteps";
 import { liftEdges } from "./liftEdges";
 
 const MODULE_KIND = "module";
@@ -39,12 +40,12 @@ export type ModuleGroupData = ModulePackageData & { isContainer: boolean; isExpa
 export interface VisibleModuleNode {
   id: string;
   parentId: string | null;
-  kind: "package" | "file" | "unit" | "block";
+  kind: "package" | "file" | "unit" | "block" | "step";
   isContainer: boolean;
   isExpanded: boolean;
   depth: number;
   childCount: number;
-  data: ModuleGroupData | ModuleCardData | UnitCardData | BlockData;
+  data: ModuleGroupData | ModuleCardData | UnitCardData | BlockData | StepData;
 }
 
 /** A wire between two visible nodes. `category` "import" is the file/package import graph;
@@ -56,7 +57,7 @@ export interface ModuleTreeEdge {
   target: string;
   weight: number;
   crossFrame: boolean;
-  category: "import" | "dep";
+  category: "import" | "dep" | "flow";
 }
 
 export interface ModuleTree {
@@ -73,17 +74,22 @@ export function deriveModuleTree(
   expanded: ReadonlySet<string>,
   graph: ModuleGraph,
   blockDeps: BlockDeps,
+  flows: LogicFlows,
 ): ModuleTree {
   const effectiveFocus = focus === null ? null : collapseChain(index, focus);
   const roots = frontierRoots(index, effectiveFocus, graph);
-  const skeleton = walk(index, roots, expanded);
+  const walked = walk(index, roots, expanded, flows);
+  const skeleton = walked.skeleton;
   const visibleIds = new Set(skeleton.map((entry) => entry.id));
   const lifted = liftEdges(importEdges(graph), visibleIds, index.parentOf);
-  const nodes = skeleton.map((entry) => finalize(entry, index, graph, lifted));
+  const nodes = skeleton.map((entry) => finalize(entry, index, graph, lifted, walked.stepData));
   const kinds = kindsOf(skeleton);
-  const edges = [...importTreeEdges(lifted, kinds), ...depTreeEdges(blockDeps, visibleIds, index, kinds)].sort((a, b) =>
-    a.id.localeCompare(b.id),
-  );
+  const edges = [
+    ...importTreeEdges(lifted, kinds),
+    ...depTreeEdges(blockDeps, visibleIds, index, kinds, walked.expandedBlocks),
+    ...flowChainEdges(walked),
+    ...stepCallEdges(walked, visibleIds, index),
+  ].sort((a, b) => a.id.localeCompare(b.id));
   return { nodes, edges, effectiveFocus };
 }
 
@@ -100,16 +106,33 @@ function memberChildren(index: GraphIndex, unitId: string): GraphNode[] {
 interface Skeleton {
   id: string;
   parentId: string | null;
-  kind: "package" | "file" | "unit" | "block";
+  kind: "package" | "file" | "unit" | "block" | "step";
   isContainer: boolean;
   isExpanded: boolean;
   depth: number;
   childCount: number;
 }
 
+/** The walk's full yield: the drawn skeletons plus everything the step level adds. */
+interface WalkResult {
+  skeleton: Skeleton[];
+  /** View-only data for each drawn step pseudo-node, keyed by step id. */
+  stepData: Map<string, StepData>;
+  /** Execution-order wires between consecutive steps of each expanded block. */
+  chains: Array<{ id: string; source: string; target: string }>;
+  /** Resolved call steps and their artifact targets (for dep wires to visible definitions). */
+  calls: Array<{ stepId: string; blockId: string; target: string }>;
+  /** Blocks opened into flow frames — their own frame-level dep wires are superseded by step wires. */
+  expandedBlocks: Set<string>;
+}
+
 /** DFS preorder over the containment tree; a group/file descends only when it is in `expanded`. */
-function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>): Skeleton[] {
+function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>, flows: LogicFlows): WalkResult {
   const out: Skeleton[] = [];
+  const stepData = new Map<string, StepData>();
+  const chains: WalkResult["chains"] = [];
+  const calls: WalkResult["calls"] = [];
+  const expandedBlocks = new Set<string>();
   const seen = new Set<string>();
   const visit = (id: string, parentId: string | null, depth: number): void => {
     if (seen.has(id)) {
@@ -140,13 +163,12 @@ function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>)
       decls.forEach((decl) => visitDecl(decl, id, depth + 1));
     }
   };
-  // A unit with members ALWAYS opens as a frame of member blocks — methods are first-class nodes
-  // (the surface logic flows will later chart in place), not rows on a card. Memberless units and
-  // file-level functions/types are leaf blocks.
+  // A unit with members ALWAYS opens as a frame of member blocks — methods are first-class nodes,
+  // not rows on a card. Memberless units and file-level functions/types are leaf blocks.
   const visitDecl = (decl: GraphNode, parentId: string, depth: number): void => {
     seen.add(decl.id);
     if (!UNIT_CARD_KINDS.has(decl.kind)) {
-      out.push({ id: decl.id, parentId, kind: "block", isContainer: false, isExpanded: false, depth, childCount: 0 });
+      visitBlock(decl.id, parentId, depth);
       return;
     }
     const members = memberChildren(index, decl.id);
@@ -154,11 +176,30 @@ function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>)
     out.push({ id: decl.id, parentId, kind: "unit", isContainer: isFrame, isExpanded: isFrame, depth, childCount: members.length });
     members.forEach((member) => {
       seen.add(member.id);
-      out.push({ id: member.id, parentId: decl.id, kind: "block", isContainer: false, isExpanded: false, depth: depth + 1, childCount: 0 });
+      visitBlock(member.id, decl.id, depth + 1);
     });
   };
+  // POC — a callable block WITH a logic flow is itself expandable: opening it turns the block into
+  // a frame whose top-level flow steps chart in place, chained by execution wires.
+  const visitBlock = (id: string, parentId: string, depth: number): void => {
+    const flow = flows[id];
+    const isContainer = (flow?.length ?? 0) > 0;
+    const isExpanded = isContainer && expanded.has(id);
+    out.push({ id, parentId, kind: "block", isContainer, isExpanded, depth, childCount: flow?.length ?? 0 });
+    if (!isExpanded || !flow) {
+      return;
+    }
+    expandedBlocks.add(id);
+    const emission = emitFlowSteps(id, flow);
+    emission.steps.forEach((step) => {
+      stepData.set(step.id, step.data);
+      out.push({ id: step.id, parentId: id, kind: "step", isContainer: false, isExpanded: false, depth: depth + 1, childCount: 0 });
+    });
+    chains.push(...emission.chain);
+    emission.calls.forEach((call) => calls.push({ stepId: call.stepId, blockId: id, target: call.target }));
+  };
   roots.forEach((id) => visit(id, null, 0));
-  return out;
+  return { skeleton: out, stepData, chains, calls, expandedBlocks };
 }
 
 /** Attach the card data each drawn node needs: file cards from the import graph, group cards from
@@ -169,10 +210,13 @@ function finalize(
   index: GraphIndex,
   graph: ModuleGraph,
   lifted: ReturnType<typeof liftEdges>,
+  stepData: ReadonlyMap<string, StepData>,
 ): VisibleModuleNode {
   const data =
-    entry.kind === "block"
-      ? blockData(entry.id, index)
+    entry.kind === "step"
+      ? (stepData.get(entry.id) as StepData)
+      : entry.kind === "block"
+      ? blockData(entry.id, index, { hasFlow: entry.isContainer, isExpanded: entry.isExpanded })
       : entry.kind === "unit"
       ? unitData(entry.id, index, entry.childCount)
       : entry.kind === "file"
@@ -249,17 +293,68 @@ function depTreeEdges(
   visibleIds: ReadonlySet<string>,
   index: GraphIndex,
   kinds: Map<string, Skeleton["kind"]>,
+  expandedBlocks: ReadonlySet<string>,
 ): ModuleTreeEdge[] {
   const isCode = (id: string) => kinds.get(id) === "unit" || kinds.get(id) === "block";
   if (![...kinds.values()].some((kind) => kind === "unit" || kind === "block")) {
     return [];
   }
-  return liftDepEdges(blockDeps, visibleIds, index, isCode).map((edge) => ({
-    id: `dep:${edge.source}->${edge.target}`,
-    source: edge.source,
-    target: edge.target,
-    weight: edge.weight,
+  return liftDepEdges(blockDeps, visibleIds, index, isCode)
+    // An expanded block's calls chart as step wires — the folded frame-level wire would double-draw.
+    .filter((edge) => !expandedBlocks.has(edge.source))
+    .map((edge) => ({
+      id: `dep:${edge.source}->${edge.target}`,
+      source: edge.source,
+      target: edge.target,
+      weight: edge.weight,
+      crossFrame: false,
+      category: "dep" as const,
+    }));
+}
+
+/** Execution-order wires between an expanded block's consecutive steps. */
+function flowChainEdges(walked: WalkResult): ModuleTreeEdge[] {
+  return walked.chains.map((chain) => ({
+    id: chain.id,
+    source: chain.source,
+    target: chain.target,
+    weight: 1,
     crossFrame: false,
-    category: "dep" as const,
+    category: "flow" as const,
   }));
+}
+
+/** A resolved call step's wire OUT to its target's drawn definition (dropped when the target lifts
+ * back into the step's own block — a recursive call needs no wire to its own frame). */
+function stepCallEdges(walked: WalkResult, visibleIds: ReadonlySet<string>, index: GraphIndex): ModuleTreeEdge[] {
+  const edges: ModuleTreeEdge[] = [];
+  for (const call of walked.calls) {
+    const target = nearestVisible(call.target, visibleIds, index);
+    if (target === null || target === call.blockId || index.isWithinFocus(target, call.blockId)) {
+      continue;
+    }
+    edges.push({
+      id: `dep:${call.stepId}->${target}`,
+      source: call.stepId,
+      target,
+      weight: 1,
+      crossFrame: false,
+      category: "dep" as const,
+    });
+  }
+  return edges;
+}
+
+/** Walk parentId up to the nearest drawn ancestor-or-self; null when the chain leaves the canvas. */
+function nearestVisible(startId: string, visibleIds: ReadonlySet<string>, index: GraphIndex): string | null {
+  const seen = new Set<string>();
+  let current: string | null | undefined = startId;
+  while (current && !seen.has(current)) {
+    if (visibleIds.has(current)) {
+      return current;
+    }
+    seen.add(current);
+    current = index.parentOf.get(current) ?? null;
+  }
+  return null;
 }

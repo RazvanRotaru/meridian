@@ -596,12 +596,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // guard. The import graph is built once (cached) and reused for every level. A null focus is the
     // whole-repo package overview; a package focus is its children with imports folded to them.
     async moduleRelayout() {
-      const { index, moduleFocus, moduleExpanded } = get();
+      const { index, moduleFocus, moduleExpanded, artifact } = get();
       moduleGraph ??= buildModuleGraph(index);
       blockDeps ??= buildBlockDeps(index);
+      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
-      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, moduleGraph, blockDeps);
+      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, moduleGraph, blockDeps, flows);
       if (moduleLayoutSeq !== sequence) {
         return; // a newer focus change superseded this one.
       }
