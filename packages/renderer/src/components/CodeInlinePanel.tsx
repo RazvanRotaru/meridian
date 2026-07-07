@@ -14,7 +14,7 @@
 
 import type { CodeView } from "../state/store";
 import { CodeBlock } from "./CodeBlock";
-import { useChangeSummary, useChangedLines } from "./useChangedLines";
+import { useChangeSummary, useChangedLines, useLineChangeKinds } from "./useChangedLines";
 
 export function CodeInlinePanel({
   codeView,
@@ -29,6 +29,7 @@ export function CodeInlinePanel({
 }) {
   const { node, code, loading, error, truncated } = codeView;
   const changedLines = useChangedLines(node);
+  const changedLineKinds = useLineChangeKinds(node);
   const summary = useChangeSummary(node);
   const { file, startLine, endLine } = node.location;
   const range = endLine && endLine !== startLine ? `${startLine}-${endLine}` : String(startLine);
@@ -74,6 +75,7 @@ export function CodeInlinePanel({
             maxHeight={200}
             startLine={showGutter ? node.location?.startLine : undefined}
             changedLines={changedLines}
+            changedLineKinds={changedLineKinds}
           />
         ) : null}
         {truncated ? <div style={TRUNCATED_STYLE}>…truncated</div> : null}

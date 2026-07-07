@@ -8,7 +8,15 @@
  */
 
 import { ExtractorRegistry, collectTestIds, materializeBoundaryNodes, materializeChannels, tagChangedNodes, tagTestNodes } from "@meridian/core";
-import type { ChangedLineStats, ChangedRanges, ExtractOptions, ExtractionResult, GraphArtifact, LanguageExtractor } from "@meridian/core";
+import type {
+  ChangedLineKinds,
+  ChangedLineStats,
+  ChangedRanges,
+  ExtractOptions,
+  ExtractionResult,
+  GraphArtifact,
+  LanguageExtractor,
+} from "@meridian/core";
 import { TypeScriptExtractor } from "@meridian/extractor-typescript";
 import { PythonExtractor } from "@meridian/extractor-python";
 import { CliError, EXIT } from "./errors";
@@ -62,7 +70,7 @@ export async function extractToArtifact(request: PipelineRequest): Promise<Pipel
     name: request.targetName,
     changedSince:
       request.changedSince && changedSince
-        ? { baseRef: request.changedSince, files: changedSince.ranges, stats: changedSince.stats }
+        ? { baseRef: request.changedSince, files: changedSince.ranges, stats: changedSince.stats, kinds: changedSince.kinds }
         : undefined,
   });
   const { warnings } = validateOrThrow(artifact, "generated artifact");
@@ -124,7 +132,7 @@ function channelize(extraction: ExtractionResult): ExtractionResult {
  */
 async function changedRangesFor(
   request: PipelineRequest,
-): Promise<{ ranges: ChangedRanges; stats: ChangedLineStats } | null> {
+): Promise<{ ranges: ChangedRanges; stats: ChangedLineStats; kinds: ChangedLineKinds } | null> {
   if (!request.changedSince) {
     return null;
   }

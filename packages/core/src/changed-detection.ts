@@ -27,6 +27,14 @@ export interface ChangedLineDelta {
 }
 
 export type ChangedLineStats = Record<string, ChangedLineDelta>;
+export type ChangedLineKind = "added" | "modified" | "deleted";
+
+export interface ChangedLineSpan extends LineRange {
+  kind: ChangedLineKind;
+}
+
+/** Changed-line kinds per file, keyed by root-relative path. */
+export type ChangedLineKinds = Record<string, ChangedLineSpan[]>;
 
 /**
  * Return nodes with changed code tagged `"changed"`; untouched nodes pass through by reference.
@@ -101,6 +109,25 @@ export function changedLineStatsFromExtensions(extensions: unknown): ChangedLine
   return stats;
 }
 
+/** Read `extensions.changedSince.kinds` (`{ [file]: [{start,end,kind}] }`) back out defensively. */
+export function changedLineKindsFromExtensions(extensions: unknown): ChangedLineKinds | null {
+  const raw = (extensions as { changedSince?: { kinds?: unknown } } | undefined)?.changedSince?.kinds;
+  if (raw === null || raw === undefined || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const kinds: ChangedLineKinds = {};
+  for (const [file, value] of Object.entries(raw)) {
+    if (!Array.isArray(value)) {
+      continue;
+    }
+    const spans = value.filter(isChangedLineSpan);
+    if (spans.length > 0) {
+      kinds[normalizePath(file)] = spans;
+    }
+  }
+  return kinds;
+}
+
 /** The line delta for one node's file, normalized against windows/posix separators. */
 export function changedLineDeltaForNode(
   stats: ChangedLineStats,
@@ -131,6 +158,31 @@ export function changedLinesWithin(
   return lines;
 }
 
+/** Per-line change kind inside one node span; precedence is deleted > modified > added. */
+export function changedLineKindsWithin(
+  kinds: ChangedLineKinds,
+  file: string,
+  startLine: number,
+  endLine: number | undefined,
+): ReadonlyMap<number, ChangedLineKind> {
+  const lines = new Map<number, ChangedLineKind>();
+  const spans = kinds[normalizePath(file)] ?? [];
+  const last = endLine ?? startLine;
+  for (const span of spans) {
+    for (let line = Math.max(span.start, startLine); line <= Math.min(span.end, last); line += 1) {
+      const current = lines.get(line);
+      if (current === "deleted") {
+        continue;
+      }
+      if (current === "modified" && span.kind === "added") {
+        continue;
+      }
+      lines.set(line, span.kind);
+    }
+  }
+  return lines;
+}
+
 function isLineRange(span: unknown): span is LineRange {
   const candidate = span as { start?: unknown; end?: unknown } | null;
   return typeof candidate?.start === "number" && typeof candidate?.end === "number" && candidate.start <= candidate.end;
@@ -143,6 +195,20 @@ function isChangedLineDelta(value: unknown): value is ChangedLineDelta {
     typeof candidate?.deleted === "number" &&
     candidate.added >= 0 &&
     candidate.deleted >= 0
+  );
+}
+
+function isChangedLineKind(value: unknown): value is ChangedLineKind {
+  return value === "added" || value === "modified" || value === "deleted";
+}
+
+function isChangedLineSpan(value: unknown): value is ChangedLineSpan {
+  const candidate = value as { start?: unknown; end?: unknown; kind?: unknown } | null;
+  return (
+    typeof candidate?.start === "number" &&
+    typeof candidate?.end === "number" &&
+    candidate.start <= candidate.end &&
+    isChangedLineKind(candidate.kind)
   );
 }
 

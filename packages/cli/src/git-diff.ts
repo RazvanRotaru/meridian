@@ -12,7 +12,7 @@
  */
 
 import { spawn } from "node:child_process";
-import type { ChangedLineStats, ChangedRanges, LineRange } from "@meridian/core";
+import type { ChangedLineKinds, ChangedLineSpan, ChangedLineStats, ChangedRanges, LineRange } from "@meridian/core";
 import { CliError, EXIT } from "./errors";
 
 const DIFF_TIMEOUT_MS = 15_000;
@@ -28,7 +28,7 @@ export async function changedRangesSince(absoluteRoot: string, baseRef: string):
 export async function changedSinceMetadata(
   absoluteRoot: string,
   baseRef: string,
-): Promise<{ ranges: ChangedRanges; stats: ChangedLineStats }> {
+): Promise<{ ranges: ChangedRanges; stats: ChangedLineStats; kinds: ChangedLineKinds }> {
   const stdout = await runGitDiff(absoluteRoot, validatedRef(baseRef));
   return parseUnifiedDiffWithStats(stdout);
 }
@@ -53,9 +53,10 @@ export function parseUnifiedDiff(diff: string): ChangedRanges {
   return parseUnifiedDiffWithStats(diff).ranges;
 }
 
-export function parseUnifiedDiffWithStats(diff: string): { ranges: ChangedRanges; stats: ChangedLineStats } {
+export function parseUnifiedDiffWithStats(diff: string): { ranges: ChangedRanges; stats: ChangedLineStats; kinds: ChangedLineKinds } {
   const changed: ChangedRanges = {};
   const stats: ChangedLineStats = {};
+  const kinds: ChangedLineKinds = {};
   let currentFile: string | null = null;
   for (const line of diff.split("\n")) {
     if (line.startsWith("+++ ")) {
@@ -71,9 +72,12 @@ export function parseUnifiedDiffWithStats(diff: string): { ranges: ChangedRanges
       const file = (stats[currentFile] ??= { added: 0, deleted: 0 });
       file.added += hunk.added;
       file.deleted += hunk.deleted;
+      if (hunk.kindSpan) {
+        (kinds[currentFile] ??= []).push(hunk.kindSpan);
+      }
     }
   }
-  return { ranges: changed, stats };
+  return { ranges: changed, stats, kinds };
 }
 
 /** `+++ b/src/x.ts` → `src/x.ts`; `+++ /dev/null` (deleted file) → null. Tab-suffixed names too. */
@@ -86,7 +90,7 @@ function newSidePath(line: string): string | null {
 }
 
 /** `@@ -a,b +c,d @@` → the new-side span; `d` omitted means 1; `d = 0` marks the deletion seam. */
-function parseHunk(line: string): { range: LineRange; added: number; deleted: number } | null {
+function parseHunk(line: string): { range: LineRange; added: number; deleted: number; kindSpan: ChangedLineSpan | null } | null {
   const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
   if (!match) {
     return null;
@@ -96,9 +100,21 @@ function parseHunk(line: string): { range: LineRange; added: number; deleted: nu
   const added = match[4] === undefined ? 1 : Number(match[4]);
   if (added === 0) {
     const seam = Math.max(1, start);
-    return { range: { start: seam, end: seam + 1 }, added, deleted };
+    return {
+      range: { start: seam, end: seam + 1 },
+      added,
+      deleted,
+      kindSpan: { start: seam, end: seam + 1, kind: "deleted" },
+    };
   }
-  return { range: { start: Math.max(1, start), end: Math.max(1, start) + added - 1 }, added, deleted };
+  const from = Math.max(1, start);
+  const to = from + added - 1;
+  return {
+    range: { start: from, end: to },
+    added,
+    deleted,
+    kindSpan: { start: from, end: to, kind: deleted > 0 ? "modified" : "added" },
+  };
 }
 
 function runGitDiff(absoluteRoot: string, ref: string): Promise<string> {

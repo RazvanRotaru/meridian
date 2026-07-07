@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   changedLineDeltaForNode,
+  changedLineKindsFromExtensions,
+  changedLineKindsWithin,
   changedLineStatsFromExtensions,
   changedLinesWithin,
   changedRangesFromExtensions,
@@ -108,6 +110,37 @@ describe("changedLineStatsFromExtensions", () => {
   });
 });
 
+describe("changedLineKindsFromExtensions", () => {
+  it("round-trips per-line kinds and normalizes file separators", () => {
+    const extensions = {
+      changedSince: {
+        kinds: {
+          "src\\a.ts": [{ start: 12, end: 14, kind: "added" }],
+        },
+      },
+    };
+    expect(changedLineKindsFromExtensions(extensions)).toEqual({
+      "src/a.ts": [{ start: 12, end: 14, kind: "added" }],
+    });
+  });
+
+  it("yields null without kinds and skips malformed entries", () => {
+    expect(changedLineKindsFromExtensions(undefined)).toBeNull();
+    expect(changedLineKindsFromExtensions({ changedSince: { files: {} } })).toBeNull();
+    const mixed = {
+      changedSince: {
+        kinds: {
+          "src/a.ts": [{ start: 1, end: 1, kind: "added" }, { start: 2, end: 2, kind: "x" }],
+          "src/b.ts": "junk",
+        },
+      },
+    };
+    expect(changedLineKindsFromExtensions(mixed)).toEqual({
+      "src/a.ts": [{ start: 1, end: 1, kind: "added" }],
+    });
+  });
+});
+
 describe("changedLineDeltaForNode", () => {
   it("returns the node file's line delta with normalized separators", () => {
     const stats: ChangedLineStats = { "src/a.ts": { added: 7, deleted: 3 } };
@@ -132,5 +165,29 @@ describe("changedLinesWithin", () => {
 
   it("normalizes windows-style node paths to the diff's forward slashes", () => {
     expect(changedLinesWithin(ranges, "src\\a.ts", 4, 4)).toEqual(new Set([4]));
+  });
+});
+
+describe("changedLineKindsWithin", () => {
+  const kinds = {
+    "src/a.ts": [
+      { start: 4, end: 4, kind: "added" },
+      { start: 5, end: 6, kind: "modified" },
+      { start: 6, end: 7, kind: "deleted" },
+    ],
+  } as const;
+
+  it("returns per-line kinds intersected with a node span", () => {
+    expect(changedLineKindsWithin(kinds, "src/a.ts", 4, 6)).toEqual(
+      new Map([
+        [4, "added"],
+        [5, "modified"],
+        [6, "deleted"],
+      ]),
+    );
+  });
+
+  it("normalizes windows paths and uses deleted > modified > added precedence", () => {
+    expect(changedLineKindsWithin(kinds, "src\\a.ts", 6, 6)).toEqual(new Map([[6, "deleted"]]));
   });
 });

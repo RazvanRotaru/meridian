@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useMemo, useRef } from "react";
+import type { ChangedLineKind } from "@meridian/core";
 
 const COLOR = {
   plain: "#C9D3E0",
@@ -65,6 +66,7 @@ export function CodeBlock({
   maxHeight = 220,
   startLine,
   changedLines,
+  changedLineKinds,
 }: {
   code: string;
   maxHeight?: number | string;
@@ -73,6 +75,8 @@ export function CodeBlock({
   startLine?: number;
   /** Absolute line numbers the diff touched — their gutter numbers go amber (needs the gutter). */
   changedLines?: ReadonlySet<number>;
+  /** Per-line change kinds (`added`/`modified`/`deleted`) for colored backgrounds/gutter markers. */
+  changedLineKinds?: ReadonlyMap<number, ChangedLineKind>;
 }) {
   // Reset the shared regex's lastIndex per run (it is stateful with the `g` flag) and never let a
   // tokenizing surprise blank the panel — fall back to the raw, still-escaped source.
@@ -84,53 +88,139 @@ export function CodeBlock({
       return [{ text: code, color: COLOR.plain }];
     }
   }, [code]);
-  const highlighted = pieces.map((piece, index) => (
-    <span key={index} style={{ color: piece.color }}>{piece.text}</span>
-  ));
+  const highlightedLines = useMemo(() => splitHighlightedLines(pieces), [pieces]);
   const listingRef = useRef<HTMLDivElement>(null);
   // Land on the diff: when the listing knows its changed lines, open scrolled to the first one
   // (minus a little context) instead of the top of the span.
   useEffect(() => {
     const container = listingRef.current;
-    if (!container || startLine === undefined || !changedLines || changedLines.size === 0) {
+    if (!container || startLine === undefined) {
       return;
     }
-    const firstChanged = Math.min(...changedLines);
+    const firstChanged = firstChangedLine(changedLineKinds, changedLines);
+    if (firstChanged === null) {
+      return;
+    }
     container.scrollTop = Math.max(0, (firstChanged - startLine - 3) * LINE_HEIGHT_PX);
-  }, [code, startLine, changedLines]);
+  }, [code, startLine, changedLines, changedLineKinds]);
   if (startLine === undefined) {
-    return <pre style={{ ...PRE_STYLE, maxHeight }}>{highlighted}</pre>;
+    return <pre style={{ ...PRE_STYLE, maxHeight }}>{renderHighlightedLines(highlightedLines)}</pre>;
   }
   // Gutter mode: the row owns the vertical scroll (numbers and code scroll together, always the
   // same height); the code column owns horizontal scroll (min-width:0 lets it shrink and scroll
   // inside itself) so the fixed-width gutter never slides out of view.
   return (
     <div ref={listingRef} style={{ ...LISTING_STYLE, maxHeight }}>
-      <pre style={GUTTER_STYLE} aria-hidden>{lineNumbers(code, startLine, changedLines)}</pre>
-      <pre style={CODE_COLUMN_STYLE}>{highlighted}</pre>
+      <pre style={GUTTER_STYLE} aria-hidden>{lineNumbers(code, startLine, changedLines, changedLineKinds)}</pre>
+      <pre style={CODE_COLUMN_STYLE}>{renderHighlightedLines(highlightedLines, startLine, changedLineKinds)}</pre>
     </div>
   );
+}
+
+function firstChangedLine(
+  changedLineKinds?: ReadonlyMap<number, ChangedLineKind>,
+  changedLines?: ReadonlySet<number>,
+): number | null {
+  if (changedLineKinds && changedLineKinds.size > 0) {
+    return Math.min(...changedLineKinds.keys());
+  }
+  if (changedLines && changedLines.size > 0) {
+    return Math.min(...changedLines);
+  }
+  return null;
+}
+
+/** Split tokenized pieces into explicit visual rows so code/gutter never desync on wrapped token streams. */
+function splitHighlightedLines(pieces: Piece[]): React.ReactNode[][] {
+  const lines: React.ReactNode[][] = [[]];
+  let key = 0;
+  for (const piece of pieces) {
+    const fragments = piece.text.split("\n");
+    for (let index = 0; index < fragments.length; index += 1) {
+      const text = fragments[index];
+      if (text.length > 0) {
+        lines[lines.length - 1].push(
+          <span key={`tok-${key++}`} style={{ color: piece.color }}>
+            {text}
+          </span>,
+        );
+      }
+      if (index < fragments.length - 1) {
+        lines.push([]);
+      }
+    }
+  }
+  return lines;
+}
+
+function renderHighlightedLines(
+  lines: React.ReactNode[][],
+  startLine?: number,
+  changedLineKinds?: ReadonlyMap<number, ChangedLineKind>,
+): React.ReactNode {
+  return lines.map((line, index) => (
+    <span
+      key={`line-${index}`}
+      style={{
+        ...CODE_LINE_STYLE,
+        ...(lineRowStyle(startLine === undefined ? undefined : changedLineKinds?.get(startLine + index)) ?? {}),
+      }}
+    >
+      {line.length > 0 ? line : " "}
+      {index < lines.length - 1 ? "\n" : ""}
+    </span>
+  ));
 }
 
 // A right-aligned column of consecutive line numbers, one per line of `code`, starting at
 // `startLine`. A line the diff touched renders its number amber + a leading ● (the VS-Code-style
 // modified-gutter read); untouched lines keep the muted grey.
-function lineNumbers(code: string, startLine: number, changedLines?: ReadonlySet<number>): React.ReactNode {
+function lineNumbers(
+  code: string,
+  startLine: number,
+  changedLines?: ReadonlySet<number>,
+  changedLineKinds?: ReadonlyMap<number, ChangedLineKind>,
+): React.ReactNode {
   const lines = code.split("\n");
-  if (!changedLines || changedLines.size === 0) {
+  if ((!changedLines || changedLines.size === 0) && (!changedLineKinds || changedLineKinds.size === 0)) {
     return lines.map((_line, index) => startLine + index).join("\n");
   }
   return lines.map((_line, index) => {
     const lineNo = startLine + index;
-    const changed = changedLines.has(lineNo);
+    const kind = changedLineKinds?.get(lineNo);
+    const changed = changedLines?.has(lineNo) ?? false;
+    const marker = kind === "added" ? "+ " : kind === "deleted" ? "- " : kind === "modified" ? "~ " : changed ? "● " : "";
     return (
-      <span key={lineNo} style={changed ? CHANGED_LINE_STYLE : undefined}>
-        {changed ? "● " : ""}
+      <span key={lineNo} style={kind ? kindGutterStyle(kind) : changed ? CHANGED_LINE_STYLE : undefined}>
+        {marker}
         {lineNo}
         {"\n"}
       </span>
     );
   });
+}
+
+function lineRowStyle(kind: ChangedLineKind | undefined): React.CSSProperties | undefined {
+  if (!kind) {
+    return undefined;
+  }
+  if (kind === "added") {
+    return ADDED_ROW_STYLE;
+  }
+  if (kind === "deleted") {
+    return DELETED_ROW_STYLE;
+  }
+  return MODIFIED_ROW_STYLE;
+}
+
+function kindGutterStyle(kind: ChangedLineKind): React.CSSProperties {
+  if (kind === "added") {
+    return ADDED_GUTTER_STYLE;
+  }
+  if (kind === "deleted") {
+    return DELETED_GUTTER_STYLE;
+  }
+  return MODIFIED_GUTTER_STYLE;
 }
 
 // Shared by the styles below and the scroll-to-diff math — keep the three in sync.
@@ -167,6 +257,22 @@ const GUTTER_STYLE: React.CSSProperties = {
   whiteSpace: "pre",
 };
 const CHANGED_LINE_STYLE: React.CSSProperties = { color: "#E2A33C", fontWeight: 700 };
+const CODE_LINE_STYLE: React.CSSProperties = { display: "block", width: "100%" };
+const ADDED_GUTTER_STYLE: React.CSSProperties = { color: "#56C271", fontWeight: 700 };
+const MODIFIED_GUTTER_STYLE: React.CSSProperties = { color: "#E6B84D", fontWeight: 700 };
+const DELETED_GUTTER_STYLE: React.CSSProperties = { color: "#F0787C", fontWeight: 700 };
+const ADDED_ROW_STYLE: React.CSSProperties = {
+  background: "rgba(86,194,113,0.13)",
+  boxShadow: "inset 2px 0 0 #56C271",
+};
+const MODIFIED_ROW_STYLE: React.CSSProperties = {
+  background: "linear-gradient(90deg, rgba(86,194,113,0.11) 0%, rgba(240,120,124,0.11) 100%)",
+  boxShadow: "inset 2px 0 0 #E6B84D",
+};
+const DELETED_ROW_STYLE: React.CSSProperties = {
+  background: "rgba(240,120,124,0.13)",
+  boxShadow: "inset 2px 0 0 #F0787C",
+};
 const CODE_COLUMN_STYLE: React.CSSProperties = {
   margin: 0,
   flex: 1,

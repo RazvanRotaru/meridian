@@ -7,11 +7,13 @@
 import { useMemo } from "react";
 import {
   changedLineDeltaForNode,
+  changedLineKindsFromExtensions,
+  changedLineKindsWithin,
   changedLineStatsFromExtensions,
   changedLinesWithin,
   changedRangesFromExtensions,
 } from "@meridian/core";
-import type { GraphNode } from "@meridian/core";
+import type { ChangedLineKind, GraphNode } from "@meridian/core";
 import { useBlueprint } from "../state/StoreContext";
 
 // Accepts undefined so a panel can satisfy the rules of hooks and call this before its
@@ -24,6 +26,17 @@ export function useChangedLines(node: GraphNode | undefined): ReadonlySet<number
       return EMPTY;
     }
     return changedLinesWithin(ranges, node.location.file, node.location.startLine, node.location.endLine);
+  }, [extensions, node]);
+}
+
+export function useLineChangeKinds(node: GraphNode | undefined): ReadonlyMap<number, ChangedLineKind> {
+  const extensions = useBlueprint((state) => state.artifact.extensions);
+  return useMemo(() => {
+    const kinds = changedLineKindsFromExtensions(extensions);
+    if (!kinds || !node?.location) {
+      return EMPTY_KINDS;
+    }
+    return changedLineKindsWithin(kinds, node.location.file, node.location.startLine, node.location.endLine);
   }, [extensions, node]);
 }
 
@@ -58,3 +71,4 @@ export function useChangeSummary(node: GraphNode | undefined): NodeChangeSummary
 }
 
 const EMPTY: ReadonlySet<number> = new Set();
+const EMPTY_KINDS: ReadonlyMap<number, ChangedLineKind> = new Map();

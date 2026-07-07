@@ -60,9 +60,22 @@ describe("parseUnifiedDiffWithStats", () => {
     expect(parsed.stats["src/new-name.ts"]).toEqual({ added: 2, deleted: 3 });
   });
 
+  it("classifies line spans as added/modified/deleted for renderer highlighting", () => {
+    const parsed = parseUnifiedDiffWithStats(DIFF);
+    expect(parsed.kinds["src/orderService.ts"]).toEqual([
+      { start: 10, end: 12, kind: "modified" },
+      { start: 31, end: 31, kind: "modified" },
+    ]);
+    expect(parsed.kinds["src/new-name.ts"]).toEqual([
+      { start: 6, end: 7, kind: "added" },
+      { start: 22, end: 23, kind: "deleted" },
+    ]);
+  });
+
   it("skips deleted files because they have no new-side path in the artifact", () => {
     const parsed = parseUnifiedDiffWithStats(DIFF);
     expect(parsed.stats["src/removed.ts"]).toBeUndefined();
+    expect(parsed.kinds["src/removed.ts"]).toBeUndefined();
   });
 });
 

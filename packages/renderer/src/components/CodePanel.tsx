@@ -9,12 +9,13 @@
 import { useEffect } from "react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { CodeBlock } from "./CodeBlock";
-import { useChangeSummary, useChangedLines } from "./useChangedLines";
+import { useChangeSummary, useChangedLines, useLineChangeKinds } from "./useChangedLines";
 
 export function CodePanel() {
   const codeView = useBlueprint((state) => state.codeView);
   const { closeCode } = useBlueprintActions();
   const changedLines = useChangedLines(codeView?.node);
+  const changedLineKinds = useLineChangeKinds(codeView?.node);
   const summary = useChangeSummary(codeView?.node);
   const open = codeView?.mode === "modal";
 
@@ -69,7 +70,13 @@ export function CodePanel() {
           {loading ? <div style={STATUS_STYLE}>Loading source…</div> : null}
           {error ? <div style={ERROR_STYLE}>{error}</div> : null}
           {code !== null ? (
-            <CodeBlock code={code} maxHeight="70vh" startLine={node.location?.startLine} changedLines={changedLines} />
+            <CodeBlock
+              code={code}
+              maxHeight="70vh"
+              startLine={node.location?.startLine}
+              changedLines={changedLines}
+              changedLineKinds={changedLineKinds}
+            />
           ) : null}
           {truncated ? <div style={TRUNCATED_STYLE}>Snippet truncated by the server.</div> : null}
         </div>
