@@ -21,6 +21,7 @@ import { CoveragePanel } from "./CoveragePanel";
 import { coverageAccent } from "../theme/coverageColors";
 import type { CompRfEdge, CompRfNode } from "../layout/compositionElk";
 import { colorForDistance, type CompNodeData } from "../derive/compositionGraph";
+import { packageTrailLabel } from "../derive/compositionClusters";
 
 export function CompositionView() {
   const nodes = useBlueprint((state) => state.compRfNodes);
@@ -88,7 +89,9 @@ export function CompositionView() {
   }, [nodes]);
 
   const isEmpty = nodes.length === 0 && layoutStatus === "ready";
-  const rootLabel = compRoot ? nodesById.get(compRoot)?.displayName ?? compRoot : null;
+  // The full containment trail ("src › aria › app › src"), because a deep monorepo has a folder
+  // named `src` at every level and the leaf name alone doesn't say WHICH one the view is rooted at.
+  const rootLabel = compRoot ? (nodesById.has(compRoot) ? packageTrailLabel(compRoot, nodesById) : compRoot) : null;
 
   return (
     <div style={SURFACE_STYLE}>
