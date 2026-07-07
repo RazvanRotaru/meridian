@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { classifyQuery, parseRepoResult, parseSearchResults, parseUser } from "./github-parse";
+import { classifyQuery, parseRepoList, parseRepoResult, parseSearchResults, parseUser } from "./github-parse";
 
 describe("classifyQuery", () => {
   it("treats owner/repo and github URLs as an exact lookup", () => {
@@ -54,6 +54,19 @@ describe("parseSearchResults", () => {
 
   it("returns an empty list when there are no items", () => {
     expect(parseSearchResults({})).toEqual([]);
+  });
+});
+
+describe("parseRepoList", () => {
+  it("maps a bare array and caps the list at thirty", () => {
+    const items = Array.from({ length: 40 }, (_unused, index) => ({ full_name: `o/r${index}` }));
+    const repos = parseRepoList(items);
+    expect(repos).toHaveLength(30);
+    expect(repos[0].fullName).toBe("o/r0");
+  });
+
+  it("returns an empty list for a non-array body", () => {
+    expect(parseRepoList({ items: [{ full_name: "o/r" }] })).toEqual([]);
   });
 });
 
