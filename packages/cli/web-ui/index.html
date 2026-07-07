@@ -14,21 +14,38 @@
     POST /api/generate     -> { id } | { error }
   On generate success we redirect to /view?id=<id>. Every GitHub-sourced string is written via
   textContent and every URL is https-validated before use — repo names/descriptions are untrusted.
+
+  Design: hero + auth-card over a live Canvas 2D rendering of a Meridian dependency graph
+  (design_handoff_meridian_landing). The card's segmented toggle maps the design's two auth modes
+  to our two real source kinds: "GitHub repo" | "Local path".
 -->
 <html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
     <title>Meridian</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
     <style>
       :root {
-        --bg: #0e1116;
-        --panel: #161b22;
-        --border: #232a33;
-        --accent: #56c271;
+        --bg: #0b0b0f;
         --text: #e6edf3;
-        --muted: #8b98a5;
-        --danger: #f2777a;
+        --muted: #9aa7b4;
+        --muted-2: #8b97a4;
+        --muted-3: #6b7683;
+        --label: #aeb9c4;
+        --green: #3fb950;
+        --blue: #58a6ff;
+        --amber: #e3b341;
+        --red: #f85149;
+        --hairline: rgba(255, 255, 255, 0.09);
+        --font-sans: "Space Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+        --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", monospace;
       }
       * {
         box-sizing: border-box;
@@ -40,189 +57,325 @@
       }
       html,
       body {
-        height: 100%;
         margin: 0;
-      }
-      body {
+        padding: 0;
         background: var(--bg);
+      }
+      /* The page is a fixed flex column (nav + main) so it never scrolls; when content is taller
+         than the viewport, the card scrolls internally instead (see .card-scroll). */
+      body {
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
         color: var(--text);
-        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        font-family: var(--font-sans);
+        overflow: hidden;
+      }
+      ::selection {
+        background: rgba(88, 166, 255, 0.3);
+      }
+      @keyframes gr-rise {
+        from {
+          opacity: 0;
+          transform: translateY(14px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      @keyframes gr-sheen {
+        0% {
+          background-position: 0% 50%;
+        }
+        100% {
+          background-position: 200% 50%;
+        }
+      }
+
+      /* ---- background layers: canvas graph + three scrims that protect the content ---- */
+      #bg {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 0;
+        display: block;
+        opacity: 0.6;
+        filter: blur(0.5px);
+      }
+      .scrim {
+        position: fixed;
+        inset: 0;
+        z-index: 1;
+        pointer-events: none;
+      }
+      .scrim-radial {
+        background: radial-gradient(115% 85% at 22% 32%, rgba(11, 11, 15, 0) 0%, rgba(11, 11, 15, 0.3) 52%, rgba(11, 11, 15, 0.82) 100%);
+      }
+      .scrim-vertical {
+        background: linear-gradient(180deg, rgba(11, 11, 15, 0.55) 0%, rgba(11, 11, 15, 0) 18%, rgba(11, 11, 15, 0) 80%, rgba(11, 11, 15, 0.8) 100%);
+      }
+      .scrim-left {
+        background: linear-gradient(90deg, rgba(11, 11, 15, 0.78) 0%, rgba(11, 11, 15, 0.4) 30%, rgba(11, 11, 15, 0) 52%);
+      }
+
+      /* ---- nav ---- */
+      nav {
+        position: relative;
+        z-index: 3;
+        flex: none;
         display: flex;
         align-items: center;
-        justify-content: center;
-        padding: 24px;
-      }
-      .card {
+        justify-content: space-between;
+        padding: 26px 44px;
+        max-width: 1440px;
         width: 100%;
-        max-width: 520px;
-        background: var(--panel);
-        border: 1px solid var(--border);
-        border-radius: 14px;
-        padding: 32px;
-        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+        margin: 0 auto;
       }
-      h1 {
-        margin: 0;
-        font-size: 30px;
+      .wordmark {
+        font-weight: 700;
+        font-size: 19px;
         letter-spacing: -0.02em;
       }
-      h1 .dot {
-        color: var(--accent);
+      .wordmark .dot {
+        color: var(--green);
+        text-shadow: 0 0 10px rgba(63, 185, 80, 0.8);
       }
-      .subtitle {
-        margin: 6px 0 22px;
-        color: var(--muted);
-        font-size: 15px;
+
+      /* ---- main grid: hero left, auth card right ---- */
+      main {
+        position: relative;
+        z-index: 3;
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: 1.05fr 0.95fr;
+        gap: 60px;
+        align-items: center;
+        max-width: 1280px;
+        width: 100%;
+        margin: 0 auto;
+        padding: 0 44px 24px;
       }
-      label {
-        display: block;
-        font-size: 12px;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
+      .hero {
+        max-width: 560px;
+        animation: gr-rise 0.7s ease both;
+      }
+      .hero h1 {
+        font-size: 58px;
+        line-height: 1.03;
+        letter-spacing: -0.035em;
+        font-weight: 700;
+        margin: 0;
+        text-wrap: balance;
+      }
+      .grad-word {
+        background: linear-gradient(100deg, #3fb950, #58a6ff 55%, #e3b341);
+        background-size: 200% auto;
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        animation: gr-sheen 6s linear infinite;
+      }
+      .hero p {
+        font-size: 18px;
+        line-height: 1.6;
         color: var(--muted);
-        margin: 16px 0 6px;
+        margin: 24px 0 0;
+        max-width: 480px;
+      }
+      .hero em {
+        color: #c9d3de;
+        font-style: normal;
+      }
+
+      /* ---- auth card ---- */
+      .card-wrap {
+        justify-self: end;
+        width: 100%;
+        max-width: 420px;
+        animation: gr-rise 0.7s ease 0.1s both;
+      }
+      .card {
+        position: relative;
+        overflow: hidden;
+        background: linear-gradient(180deg, rgba(22, 23, 29, 0.9), rgba(15, 16, 21, 0.9));
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        border: 1px solid var(--hairline);
+        border-radius: 16px;
+        box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.75), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      }
+      /* Scrolls internally when the card outgrows the viewport, so the page itself never scrolls.
+         The accent bar lives on .card (outside the scroller) and stays pinned. */
+      .card-scroll {
+        max-height: calc(100vh - 130px);
+        overflow-y: auto;
+        padding: 30px 30px 30px 32px;
+      }
+      .card-scroll::-webkit-scrollbar {
+        width: 8px;
+      }
+      .card-scroll::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.12);
+        border-radius: 4px;
+      }
+      .card-accent {
+        position: absolute;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: 4px;
+        background: linear-gradient(180deg, #3fb950, #2ea043);
+      }
+      .card h2 {
+        font-size: 22px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        margin: 0;
+      }
+      .card-subtitle {
+        font-size: 13.5px;
+        color: var(--muted-2);
+        margin: 6px 0 0;
+      }
+      .card-header {
+        margin-bottom: 22px;
+      }
+
+      .toggle {
+        position: relative;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4px;
+        padding: 4px;
+        background: rgba(0, 0, 0, 0.35);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 11px;
+        margin-bottom: 22px;
+      }
+      /* The active-tab pill is one element that slides between the two buttons. */
+      .toggle-thumb {
+        position: absolute;
+        top: 4px;
+        bottom: 4px;
+        left: 4px;
+        width: calc(50% - 6px);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.08);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 4px 12px -6px rgba(0, 0, 0, 0.6);
+        transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      .toggle.path .toggle-thumb {
+        transform: translateX(calc(100% + 4px));
+      }
+      .toggle button {
+        position: relative;
+        z-index: 1;
+        padding: 9px 10px;
+        font-family: var(--font-sans);
+        font-size: 13.5px;
+        font-weight: 600;
+        cursor: pointer;
+        border-radius: 8px;
+        border: none;
+        transition: color 0.15s;
+        color: #7d8894;
+        background: transparent;
+      }
+      .toggle button.active {
+        color: var(--text);
+      }
+
+      form {
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
+        margin: 0;
+      }
+      .fieldset {
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
+      }
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+      }
+      .field > label {
+        font-size: 12.5px;
+        font-weight: 500;
+        color: var(--label);
+        letter-spacing: 0.01em;
+      }
+      .fieldset > .hint {
+        margin: 0;
       }
       input {
         width: 100%;
-        background: var(--bg);
-        border: 1px solid var(--border);
-        border-radius: 9px;
+        padding: 11px 13px;
+        font-family: var(--font-sans);
+        font-size: 14.5px;
         color: var(--text);
-        font-size: 14px;
-        padding: 11px 12px;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 10px;
         outline: none;
-        transition: border-color 0.15s ease;
+        transition: border-color 0.15s, box-shadow 0.15s;
       }
       input:focus {
-        border-color: var(--accent);
+        border-color: var(--blue);
+        box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
       }
       input::placeholder {
-        color: #55606c;
+        color: #4b5563;
+      }
+      input:-webkit-autofill {
+        -webkit-text-fill-color: var(--text);
+        -webkit-box-shadow: 0 0 0 40px #12161d inset;
       }
       .row {
-        display: flex;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
         gap: 12px;
       }
-      .row > div {
-        flex: 1;
-      }
+
       .chips {
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
-        margin-top: 10px;
       }
       .chip {
-        background: transparent;
-        border: 1px solid var(--border);
-        color: var(--muted);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: #7d8894;
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid var(--hairline);
         border-radius: 999px;
-        padding: 5px 11px;
-        font-size: 12px;
+        padding: 4px 10px;
         cursor: pointer;
-        transition: all 0.15s ease;
+        transition: all 0.15s;
       }
       .chip:hover {
-        border-color: var(--accent);
         color: var(--text);
+        border-color: rgba(255, 255, 255, 0.2);
       }
-      button.primary {
-        width: 100%;
-        margin-top: 22px;
-        background: var(--accent);
-        color: #062012;
-        border: 0;
-        border-radius: 9px;
-        padding: 13px;
-        font-size: 15px;
-        font-weight: 650;
-        cursor: pointer;
-        transition: filter 0.15s ease;
-      }
-      button.primary:hover {
-        filter: brightness(1.07);
-      }
-      button.primary:disabled {
-        filter: grayscale(0.4) brightness(0.8);
-        cursor: progress;
-      }
-      button.ghost {
-        background: transparent;
-        border: 1px solid var(--border);
-        color: var(--text);
-        border-radius: 9px;
-        padding: 11px 14px;
-        font-size: 14px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: border-color 0.15s ease;
-      }
-      button.ghost:hover {
-        border-color: var(--accent);
-      }
-      .auth {
-        border: 1px solid var(--border);
-        border-radius: 11px;
-        padding: 16px;
-        margin-bottom: 20px;
-        background: #12171e;
-      }
-      .auth-msg {
-        margin-top: 10px;
-        font-size: 13px;
-        color: var(--muted);
-        min-height: 16px;
-      }
-      .auth-msg.error {
-        color: var(--danger);
-      }
-      .device {
-        margin-top: 12px;
-        font-size: 14px;
-        color: var(--muted);
-        line-height: 1.6;
-      }
-      .device code {
-        display: inline-block;
-        margin-top: 6px;
-        font-size: 20px;
-        letter-spacing: 0.12em;
-        color: var(--text);
-        background: var(--bg);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 6px 12px;
-      }
-      .device a {
-        color: var(--accent);
-      }
-      .me {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-      }
-      .avatar {
-        width: 26px;
-        height: 26px;
-        border-radius: 50%;
-        border: 1px solid var(--border);
-      }
-      .me-login {
-        font-weight: 600;
-        flex: 1;
-      }
-      .results {
-        list-style: none;
-        margin: 8px 0 0;
-        padding: 0;
-        border: 1px solid var(--border);
-        border-radius: 9px;
-        overflow: hidden;
-      }
+
       /* The search dropdown floats OVER the form (an overlay, like every autocomplete) so
          opening it never reflows the page underneath. */
       .search-wrap {
         position: relative;
+      }
+      .results {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 10px;
+        overflow: hidden;
+        background: rgba(13, 14, 18, 0.98);
       }
       .dropdown {
         position: absolute;
@@ -230,9 +383,7 @@
         left: 0;
         right: 0;
         z-index: 20;
-        margin: 0;
-        background: #12171e;
-        max-height: 320px;
+        max-height: 280px;
         overflow-y: auto;
         box-shadow: 0 14px 34px rgba(0, 0, 0, 0.55);
       }
@@ -242,8 +393,9 @@
         text-align: left;
         background: transparent;
         border: 0;
-        border-bottom: 1px solid var(--border);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
         color: var(--text);
+        font-family: var(--font-sans);
         padding: 9px 12px;
         font-size: 13px;
         cursor: pointer;
@@ -252,7 +404,7 @@
         border-bottom: 0;
       }
       .result:hover {
-        background: #1b222c;
+        background: rgba(255, 255, 255, 0.05);
       }
       .result-top {
         display: flex;
@@ -272,162 +424,489 @@
       .result-desc {
         display: block;
         margin-top: 3px;
-        color: var(--muted);
+        color: var(--muted-2);
         font-size: 12px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
       .badge {
-        font-size: 10px;
+        font-family: var(--font-mono);
+        font-size: 9px;
         text-transform: uppercase;
         letter-spacing: 0.05em;
-        color: var(--muted);
-        border: 1px solid var(--border);
-        border-radius: 999px;
-        padding: 1px 7px;
+        color: var(--amber);
+        border: 1px solid rgba(227, 179, 65, 0.4);
+        border-radius: 4px;
+        padding: 1px 6px;
       }
-      .mine {
-        margin-top: 14px;
+      /* Scope headers inside the dropdown ("Your repositories" / "All GitHub"). */
+      .group-label {
+        padding: 8px 12px 4px;
+        font-family: var(--font-mono);
+        font-size: 9.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted-3);
       }
-      .mine-title {
+      .group-label:not(:first-child) {
+        margin-top: 2px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      .group-note {
+        padding: 4px 12px 8px;
         font-size: 12px;
-        color: var(--muted);
-        margin-bottom: 4px;
+        color: var(--muted-3);
       }
-      .mine-list {
-        margin-top: 0;
-        max-height: 300px;
-        overflow-y: auto;
+
+      .hint {
+        margin: 6px 0 0;
+        font-size: 11.5px;
+        line-height: 1.5;
+        color: var(--muted-3);
       }
-      button.primary,
-      button.ghost {
-        font-family: inherit;
+      .hint code {
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        color: var(--muted-2);
       }
+
+      button.primary {
+        margin-top: 6px;
+        padding: 12px;
+        font-family: var(--font-sans);
+        font-weight: 600;
+        font-size: 15px;
+        color: #06210f;
+        background: linear-gradient(180deg, #4cd964, #34b34b);
+        border: none;
+        border-radius: 10px;
+        cursor: pointer;
+        box-shadow: 0 8px 24px -8px rgba(63, 185, 80, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+        transition: transform 0.12s, box-shadow 0.2s, filter 0.15s;
+      }
+      button.primary:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 12px 30px -8px rgba(63, 185, 80, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+      }
+      button.primary:active {
+        transform: translateY(0);
+      }
+      button.primary:disabled {
+        filter: grayscale(0.4) brightness(0.75);
+        cursor: progress;
+        transform: none;
+      }
+
+      .status {
+        min-height: 20px;
+        font-size: 13.5px;
+        margin: 0;
+      }
+      .status.busy {
+        color: var(--muted-2);
+      }
+      .status.error {
+        color: var(--red);
+      }
+
       .divider {
         display: flex;
         align-items: center;
         gap: 12px;
-        margin: 22px 0 4px;
-        color: var(--muted);
-        font-size: 12px;
+        margin: 20px 0;
       }
       .divider::before,
       .divider::after {
         content: "";
         flex: 1;
         height: 1px;
-        background: var(--border);
+        background: rgba(255, 255, 255, 0.08);
       }
-      .hint {
-        margin-top: 6px;
+      .divider span {
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        color: var(--muted-3);
+      }
+
+      /* ---- GitHub sign-in (device flow) below the divider ---- */
+      button.github {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: 11px;
+        font-family: var(--font-mono);
+        font-size: 13.5px;
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.11);
+        border-radius: 10px;
+        cursor: pointer;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      button.github:hover {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.2);
+      }
+      /* The device flow takes over the whole card (see #view-device); Back returns to the form. */
+      .back {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 14px;
+        padding: 0;
+        font-family: var(--font-mono);
         font-size: 12px;
         color: var(--muted);
-      }
-      .status {
-        margin-top: 16px;
-        min-height: 20px;
-        font-size: 14px;
-      }
-      .status.busy {
-        color: var(--muted);
-      }
-      .status.error {
-        color: var(--danger);
-      }
-      .secondary {
-        margin-top: 20px;
-        border-top: 1px solid var(--border);
-        padding-top: 6px;
-      }
-      summary {
+        background: transparent;
+        border: none;
         cursor: pointer;
-        color: var(--muted);
-        font-size: 13px;
-        list-style: none;
+        transition: color 0.15s;
       }
-      summary::-webkit-details-marker {
+      .back:hover {
+        color: var(--text);
+      }
+      .device {
+        font-size: 13px;
+        color: var(--muted);
+        line-height: 1.6;
+        text-align: center;
+        background: rgba(0, 0, 0, 0.3);
+        border: 1px solid var(--hairline);
+        border-radius: 10px;
+        padding: 18px 14px;
+      }
+      .device a {
+        color: var(--blue);
+      }
+      .code-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .device code {
+        display: inline-block;
+        font-family: var(--font-mono);
+        font-size: 22px;
+        letter-spacing: 0.12em;
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        padding: 8px 14px;
+      }
+      .device code:empty {
         display: none;
+      }
+      .auth-msg {
+        margin-top: 8px;
+        font-size: 12.5px;
+        color: var(--muted-2);
+      }
+      .auth-msg:empty {
+        margin-top: 0;
+      }
+      .auth-msg.error {
+        color: var(--red);
+      }
+      .me {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .avatar {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        border: 1px solid var(--hairline);
+      }
+      .me-login {
+        font-weight: 600;
+        font-size: 14px;
+        flex: 1;
+      }
+      button.ghost {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--muted);
+        background: transparent;
+        border: 1px solid var(--hairline);
+        border-radius: 8px;
+        padding: 7px 12px;
+        cursor: pointer;
+        transition: color 0.15s, border-color 0.15s;
+      }
+      button.ghost:hover {
+        color: var(--text);
+        border-color: rgba(255, 255, 255, 0.2);
+      }
+
+      /* Short desktop viewports: tighten vertical rhythm so the card still fits unscrolled. */
+      @media (max-height: 820px) and (min-width: 981px) {
+        nav {
+          padding: 14px 44px;
+        }
+        .hero h1 {
+          font-size: 46px;
+        }
+        .hero p {
+          margin-top: 16px;
+        }
+        .card-scroll {
+          max-height: calc(100vh - 96px);
+          padding: 22px 24px 22px 26px;
+        }
+        .card-header {
+          margin-bottom: 16px;
+        }
+        .toggle {
+          margin-bottom: 16px;
+        }
+        form,
+        .fieldset {
+          gap: 12px;
+        }
+        .divider {
+          margin: 14px 0;
+        }
+      }
+      /* Narrow screens stack hero over card; here the page scrolls normally again. */
+      @media (max-width: 980px) {
+        body {
+          height: auto;
+          min-height: 100vh;
+          overflow: auto;
+          display: block;
+        }
+        main {
+          grid-template-columns: 1fr;
+          gap: 48px;
+          padding: 24px 24px 64px;
+        }
+        nav {
+          padding: 20px 24px;
+        }
+        .hero h1 {
+          font-size: 42px;
+        }
+        .card-wrap {
+          justify-self: stretch;
+          max-width: 480px;
+          margin: 0 auto;
+        }
+        .card-scroll {
+          max-height: none;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .hero,
+        .card-wrap,
+        .grad-word {
+          animation: none;
+        }
+        .toggle-thumb {
+          transition: none;
+        }
       }
     </style>
   </head>
   <body>
-    <main class="card">
-      <h1>Meridian<span class="dot">.</span></h1>
-      <p class="subtitle">Map any codebase's call flow.</p>
+    <canvas id="bg" aria-hidden="true"></canvas>
+    <div class="scrim scrim-radial"></div>
+    <div class="scrim scrim-vertical"></div>
+    <div class="scrim scrim-left"></div>
 
-      <section class="auth" id="auth">
-        <div id="signin-area">
-          <button type="button" class="ghost" id="signin" hidden>Sign in with GitHub</button>
-          <p class="hint" id="auth-disabled" hidden>
-            Sign-in is off — set <code>MERIDIAN_GITHUB_CLIENT_ID</code> (a GitHub OAuth app client id with Device
-            Flow enabled) to browse private repos. Public repos work without it.
-          </p>
-          <div class="device" id="device" hidden>
-            Open <a id="verify-link" target="_blank" rel="noopener noreferrer">github.com/login/device</a> and enter:
-            <br /><code id="usercode"></code>
-            <div class="auth-msg" id="device-msg">Waiting for authorization…</div>
-          </div>
-          <div class="auth-msg" id="auth-msg"></div>
-        </div>
-        <div class="me" id="signedin" hidden>
-          <img class="avatar" id="me-avatar" alt="" hidden />
-          <span class="me-login" id="me-login"></span>
-          <button type="button" class="ghost" id="signout">Sign out</button>
-        </div>
+    <nav>
+      <span class="wordmark">Meridian<span class="dot">.</span></span>
+    </nav>
+
+    <main>
+      <section class="hero">
+        <h1>Read your codebase<br />the way it's <span class="grad-word">connected.</span></h1>
+        <p>
+          Meridian turns files, functions, and dependencies into an explorable graph. Trace a call across the whole
+          repo, spot tangles before they ship, and actually <em>see</em> the structure hiding in your source.
+        </p>
       </section>
 
-      <form id="form" autocomplete="off">
-        <label for="repo">GitHub repository</label>
-        <div class="search-wrap">
-          <input id="repo" name="repo" placeholder="owner/repo  or  https://github.com/owner/repo" />
-          <ul class="results dropdown" id="results" hidden></ul>
-        </div>
-        <div class="chips" id="chips">
-          <button type="button" class="chip" data-repo="sindresorhus/type-fest">sindresorhus/type-fest</button>
-          <button type="button" class="chip" data-repo="sindresorhus/ky">sindresorhus/ky</button>
-        </div>
-
-        <div class="mine" id="mine" hidden>
-          <div class="mine-title">Your repositories</div>
-          <ul class="results mine-list" id="mine-list"></ul>
-        </div>
-
-        <div class="row">
-          <div>
-            <label for="ref">Branch (optional)</label>
-            <input id="ref" name="ref" placeholder="main" />
+      <section class="card-wrap">
+        <div class="card">
+          <div class="card-accent"></div>
+          <div class="card-scroll">
+          <div id="view-form">
+          <div class="card-header">
+            <h2 id="card-title">Map your first repo</h2>
+            <p class="card-subtitle" id="card-subtitle">Point Meridian at a GitHub repository.</p>
           </div>
-          <div>
-            <label for="subdir">Source subfolder (optional)</label>
-            <input id="subdir" name="subdir" placeholder="e.g. src" />
+
+          <div class="toggle" id="toggle" role="tablist">
+            <span class="toggle-thumb" aria-hidden="true"></span>
+            <button type="button" role="tab" id="tab-github" class="active" aria-selected="true">GitHub repo</button>
+            <button type="button" role="tab" id="tab-path" aria-selected="false">Local</button>
+          </div>
+
+          <form id="form" autocomplete="off">
+            <div class="fieldset" id="github-fields">
+              <div class="field">
+                <label for="repo" id="repo-label">Public GitHub repository</label>
+                <div class="search-wrap">
+                  <input id="repo" name="repo" placeholder="owner/repo  or  https://github.com/owner/repo" />
+                  <ul class="results dropdown" id="results" hidden></ul>
+                </div>
+              </div>
+              <div class="chips" id="chips">
+                <button type="button" class="chip" data-repo="sindresorhus/type-fest">sindresorhus/type-fest</button>
+                <button type="button" class="chip" data-repo="sindresorhus/ky">sindresorhus/ky</button>
+              </div>
+
+              <div class="row">
+                <div class="field">
+                  <label for="ref">Branch (optional)</label>
+                  <input id="ref" name="ref" placeholder="main" />
+                </div>
+                <div class="field">
+                  <label for="subdir">Source subfolder (optional)</label>
+                  <input id="subdir" name="subdir" placeholder="e.g. src" />
+                </div>
+              </div>
+
+            </div>
+
+            <div class="fieldset" id="path-fields" hidden>
+              <div class="field">
+                <label for="path">Local path</label>
+                <input id="path" name="path" placeholder="/absolute/or/relative/path/to/a/repo" />
+              </div>
+              <p class="hint">Extraction runs on the server; nothing is uploaded to GitHub.</p>
+            </div>
+
+            <button type="submit" class="primary" id="submit">Generate blueprint</button>
+            <div class="status" id="status"></div>
+          </form>
+
+          <!-- GitHub-only: the whole sign-in block disappears in Local mode. -->
+          <div id="github-auth">
+          <!-- "OR" only makes sense while sign-in is the alternative; it hides once signed in. -->
+          <div class="divider" id="auth-divider"><span>OR</span></div>
+
+          <section id="auth">
+            <div id="signin-area">
+              <button type="button" class="github" id="signin" hidden>
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="#e6edf3" aria-hidden="true">
+                  <path
+                    d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"
+                  />
+                </svg>
+                Sign in with GitHub
+              </button>
+              <p class="hint" id="auth-disabled" hidden>
+                Sign-in is off — set <code>MERIDIAN_GITHUB_CLIENT_ID</code> (a GitHub OAuth app client id with Device
+                Flow enabled) to browse private repos. Public repos work without it.
+              </p>
+              <div class="auth-msg" id="auth-msg"></div>
+            </div>
+            <div class="me" id="signedin" hidden>
+              <img class="avatar" id="me-avatar" alt="" hidden />
+              <span class="me-login" id="me-login"></span>
+              <button type="button" class="ghost" id="signout">Sign out</button>
+            </div>
+          </section>
+          </div>
+          </div>
+
+          <!-- The device sign-in flow replaces the form entirely; Back returns without cancelling. -->
+          <div id="view-device" hidden>
+            <button type="button" class="back" id="device-back">← Back</button>
+            <div class="card-header">
+              <h2>Sign in with GitHub</h2>
+              <p class="card-subtitle">Authorize this device to browse your repositories.</p>
+            </div>
+            <div class="device" id="device">
+              Open <a id="verify-link" target="_blank" rel="noopener noreferrer">github.com/login/device</a> and enter:
+              <div class="code-row">
+                <code id="usercode"></code>
+                <button type="button" class="ghost" id="copy-code" hidden>Copy</button>
+              </div>
+              <div class="auth-msg" id="device-msg">Waiting for authorization…</div>
+            </div>
+          </div>
           </div>
         </div>
-
-        <details class="secondary">
-          <summary>Access token (for private repos, if not signed in)</summary>
-          <label for="token">Access token</label>
-          <input id="token" name="token" type="password" placeholder="ghp_… (optional)" />
-          <p class="hint">Used locally only, for this one clone — or set <code>GITHUB_TOKEN</code> in your shell.</p>
-        </details>
-
-        <button type="submit" class="primary" id="submit">Generate blueprint</button>
-        <div class="status" id="status"></div>
-      </form>
-
-      <div class="divider">or a local path</div>
-      <input id="path" placeholder="/absolute/or/relative/path/to/a/repo" />
-      <p class="hint">Extraction runs on the server; nothing is uploaded to GitHub.</p>
+      </section>
     </main>
 
     <script>
       const $ = (id) => document.getElementById(id);
       const status = $("status");
       const authConfig = window.__MERIDIAN_AUTH__ || { configured: false };
+      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       let signedIn = false;
       let pollTimer = null;
       let pollDelayMs = 5000;
       let searchTimer = null;
+
+      // --- card content swaps: morph the card height and fade the incoming content in, so
+      // toggling modes or views never snaps abruptly ---
+      const cardEl = document.querySelector(".card");
+
+      function animateCardSwap(mutate) {
+        if (reducedMotion) {
+          mutate();
+          return;
+        }
+        const before = cardEl.offsetHeight;
+        mutate();
+        const after = cardEl.offsetHeight;
+        if (before !== after) {
+          cardEl.animate([{ height: before + "px" }, { height: after + "px" }], {
+            duration: 260,
+            easing: "cubic-bezier(0.4, 0, 0.2, 1)",
+          });
+        }
+      }
+
+      function reveal(el) {
+        if (reducedMotion) return;
+        el.animate([{ opacity: 0, transform: "translateY(6px)" }, { opacity: 1, transform: "none" }], {
+          duration: 220,
+          easing: "ease-out",
+        });
+      }
+
+      // --- source mode (the design's segmented toggle): "github" | "path" ---
+      const MODES = {
+        github: { title: "Map your first repo", subtitle: "Point Meridian at a GitHub repository." },
+        path: { title: "Map a local repo", subtitle: "Graph a folder that's already on this machine." },
+      };
+      let mode = "github";
+
+      function setMode(next) {
+        if (mode === next) return;
+        mode = next;
+        const github = next === "github";
+        animateCardSwap(() => {
+          $("github-fields").hidden = !github;
+          $("path-fields").hidden = github;
+          $("github-auth").hidden = !github;
+          $("card-title").textContent = MODES[next].title;
+          $("card-subtitle").textContent = MODES[next].subtitle;
+          setStatus("", "");
+        });
+        reveal(github ? $("github-fields") : $("path-fields"));
+        $("toggle").classList.toggle("path", !github);
+        $("tab-github").classList.toggle("active", github);
+        $("tab-path").classList.toggle("active", !github);
+        $("tab-github").setAttribute("aria-selected", String(github));
+        $("tab-path").setAttribute("aria-selected", String(!github));
+        hideResults();
+      }
+
+      $("tab-github").addEventListener("click", () => setMode("github"));
+      $("tab-path").addEventListener("click", () => setMode("path"));
 
       // A CLI positional (`meridian web <source>`) is injected as a prefill string.
       const prefill = window.__MERIDIAN_PREFILL__;
@@ -436,13 +915,13 @@
           $("repo").value = prefill;
         } else {
           $("path").value = prefill;
+          setMode("path");
         }
       }
 
       for (const chip of document.querySelectorAll(".chip")) {
         chip.addEventListener("click", () => {
           $("repo").value = chip.dataset.repo;
-          $("path").value = "";
           hideResults();
         });
       }
@@ -487,33 +966,52 @@
         el.className = "auth-msg" + (isError ? " error" : "");
       }
 
+      // Signed out there is no search — the field takes an exact public repo. Signed in it
+      // becomes a live search over all repos the token can see, so the label says so.
+      function labelRepoField(isSignedIn) {
+        $("repo-label").textContent = isSignedIn ? "Search GitHub repositories" : "Public GitHub repository";
+        $("repo").placeholder = isSignedIn
+          ? "type to search  or  owner/repo"
+          : "owner/repo  or  https://github.com/owner/repo";
+      }
+
       function showSignedOut() {
         signedIn = false;
+        devicePending = false;
+        $("view-device").hidden = true;
+        $("view-form").hidden = false;
         $("signedin").hidden = true;
         $("signin-area").hidden = false;
-        $("device").hidden = true;
         $("signin").hidden = !authConfig.configured;
         $("auth-disabled").hidden = authConfig.configured;
+        $("auth-divider").hidden = false;
+        labelRepoField(false);
         hideResults();
-        hideMine();
+        myRepos = [];
       }
 
       function showSignedIn(user) {
         signedIn = true;
+        devicePending = false;
         clearTimeout(pollTimer);
-        $("signin-area").hidden = true;
-        $("device").hidden = true;
-        $("signedin").hidden = false;
+        animateCardSwap(() => {
+          $("view-device").hidden = true;
+          $("view-form").hidden = false;
+          $("signin-area").hidden = true;
+          $("signedin").hidden = false;
+          $("auth-divider").hidden = true;
+          labelRepoField(true);
+          $("me-login").textContent = user && user.login ? user.login : "signed in";
+          const avatar = $("me-avatar");
+          const src = user && safeHttpsUrl(user.avatarUrl);
+          if (src) {
+            avatar.src = src;
+            avatar.hidden = false;
+          } else {
+            avatar.hidden = true;
+          }
+        });
         setAuthMsg("");
-        $("me-login").textContent = user && user.login ? user.login : "signed in";
-        const avatar = $("me-avatar");
-        const src = user && safeHttpsUrl(user.avatarUrl);
-        if (src) {
-          avatar.src = src;
-          avatar.hidden = false;
-        } else {
-          avatar.hidden = true;
-        }
         loadMyRepos();
       }
 
@@ -528,38 +1026,87 @@
         }
       }
 
-      // --- device flow ---
-      $("signin").addEventListener("click", startSignIn);
+      // --- device flow: takes over the whole card; Back returns while polling continues, so
+      // authorizing from the GitHub tab still signs the user in from either view ---
+      let devicePending = false;
+
+      $("signin").addEventListener("click", openDeviceView);
+      $("device-back").addEventListener("click", showFormView);
       $("signout").addEventListener("click", signOut);
 
-      async function startSignIn() {
-        setAuthMsg("Contacting GitHub…");
+      function showFormView() {
+        animateCardSwap(() => {
+          $("view-device").hidden = true;
+          $("view-form").hidden = false;
+        });
+        reveal($("view-form"));
+      }
+
+      function showDeviceView() {
+        animateCardSwap(() => {
+          $("view-form").hidden = true;
+          $("view-device").hidden = false;
+        });
+        reveal($("view-device"));
+      }
+
+      // Reopening while a code is still pending shows the same code instead of burning a new one.
+      async function openDeviceView() {
+        setAuthMsg("");
+        showDeviceView();
+        if (devicePending) return;
+        $("usercode").textContent = "";
+        $("copy-code").hidden = true;
+        setDeviceMsg("Contacting GitHub…");
         try {
           const res = await apiPost("/api/auth/device");
           const data = await res.json();
           if (!res.ok) {
-            setAuthMsg(data.error || "Sign-in is unavailable.", true);
+            setDeviceMsg(data.error || "Sign-in is unavailable.", true);
             return;
           }
+          devicePending = true;
           renderDeviceCode(data);
           pollDelayMs = Math.max(Number(data.intervalSeconds) || 5, 4) * 1000;
           schedulePoll();
         } catch {
-          setAuthMsg("Could not reach the server.", true);
+          setDeviceMsg("Could not reach the server.", true);
         }
       }
 
-      function renderDeviceCode(data) {
-        setAuthMsg("");
-        $("device").hidden = false;
-        $("usercode").textContent = data.userCode || "";
-        const link = $("verify-link");
-        const href = safeGithubUrl(data.verificationUriComplete) || safeGithubUrl(data.verificationUri);
-        link.textContent = typeof data.verificationUri === "string" ? data.verificationUri : "github.com/login/device";
-        if (href) link.href = href;
-        else link.removeAttribute("href");
-        $("device-msg").textContent = "Waiting for authorization…";
+      function setDeviceMsg(text, isError) {
+        const el = $("device-msg");
+        el.textContent = text || "";
+        el.className = "auth-msg" + (isError ? " error" : "");
       }
+
+      function renderDeviceCode(data) {
+        animateCardSwap(() => {
+          $("usercode").textContent = data.userCode || "";
+          $("copy-code").hidden = !data.userCode;
+          $("copy-code").textContent = "Copy";
+          const link = $("verify-link");
+          const href = safeGithubUrl(data.verificationUriComplete) || safeGithubUrl(data.verificationUri);
+          link.textContent = typeof data.verificationUri === "string" ? data.verificationUri : "github.com/login/device";
+          if (href) link.href = href;
+          else link.removeAttribute("href");
+          setDeviceMsg("Waiting for authorization…");
+        });
+      }
+
+      let copyResetTimer = null;
+      $("copy-code").addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText($("usercode").textContent);
+        } catch {
+          return; /* clipboard unavailable — the code stays selectable */
+        }
+        $("copy-code").textContent = "Copied ✓";
+        clearTimeout(copyResetTimer);
+        copyResetTimer = setTimeout(() => {
+          $("copy-code").textContent = "Copy";
+        }, 1600);
+      });
 
       function schedulePoll() {
         clearTimeout(pollTimer);
@@ -581,7 +1128,8 @@
 
       function endSignIn(data) {
         clearTimeout(pollTimer);
-        $("device").hidden = true;
+        devicePending = false;
+        showFormView();
         const messages = { expired: "The code expired — try again.", denied: "Sign-in was declined." };
         const fallback = (data && data.message) || "Sign-in failed.";
         setAuthMsg((data && messages[data.status]) || fallback, true);
@@ -593,34 +1141,98 @@
         } catch {
           /* clearing local state is enough */
         }
-        showSignedOut();
+        animateCardSwap(showSignedOut);
       }
 
-      // --- repo search (only when signed in; the repo field doubles as the search box) ---
+      // --- repo picker (signed in): ONE dropdown with two labelled scopes — "Your repositories"
+      // (the complete list, fetched once at sign-in and filtered instantly per keystroke) above
+      // "All GitHub" (the debounced server-side search) ---
+      let myRepos = [];
+      let activeQuery = null;
+
       $("repo").addEventListener("input", () => {
         if (!signedIn) return;
         clearTimeout(searchTimer);
         const query = $("repo").value.trim();
-        if (!query) return hideResults();
+        if (!query) return showRecents();
+        activeQuery = query;
+        renderGroups(query, null);
         searchTimer = setTimeout(() => runSearch(query), 250);
       });
 
-      async function runSearch(query) {
-        try {
-          const res = await apiGet("/api/repos/search?q=" + encodeURIComponent(query));
-          if (!res.ok) return hideResults();
-          const data = await res.json();
-          renderResults(Array.isArray(data.repos) ? data.repos : []);
-        } catch {
-          hideResults();
-        }
+      // An empty focused field previews your most recently pushed repos.
+      $("repo").addEventListener("focus", () => {
+        if (signedIn && !$("repo").value.trim()) showRecents();
+      });
+
+      // The whole cached list, recent first — org repos included without having to search;
+      // the dropdown scrolls.
+      function showRecents() {
+        activeQuery = null;
+        renderList([{ label: "Your repositories — recent first", repos: myRepos }]);
       }
 
-      function renderResults(repos) {
+      function matchMine(query) {
+        const term = query.toLowerCase();
+        return myRepos.filter((repo) => repo.fullName.toLowerCase().includes(term)).slice(0, 5);
+      }
+
+      async function runSearch(query) {
+        let global = [];
+        try {
+          const res = await apiGet("/api/repos/search?q=" + encodeURIComponent(query));
+          if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data.repos)) global = data.repos;
+          }
+        } catch {
+          /* the yours group already rendered; the global group just stays empty */
+        }
+        if (activeQuery === query) renderGroups(query, global);
+      }
+
+      // globalRepos === null means the GitHub search is still in flight.
+      function renderGroups(query, globalRepos) {
+        const mine = matchMine(query);
+        const taken = new Set(mine.map((repo) => repo.fullName));
+        const groups = [];
+        if (mine.length) groups.push({ label: "Your repositories", repos: mine });
+        if (globalRepos === null) {
+          groups.push({ label: "All GitHub", note: "Searching…" });
+        } else {
+          const rest = globalRepos.filter((repo) => !taken.has(repo.fullName)).slice(0, 6);
+          if (rest.length) groups.push({ label: "All GitHub", repos: rest });
+        }
+        if (groups.length === 0) return hideResults();
+        renderList(groups);
+      }
+
+      function renderList(groups) {
         const list = $("results");
         list.replaceChildren();
-        for (const repo of repos) list.appendChild(resultItem(repo));
-        list.hidden = repos.length === 0;
+        let shown = 0;
+        for (const group of groups) {
+          const repos = group.repos || [];
+          if (repos.length === 0 && !group.note) continue;
+          appendPlainItem(list, "group-label", group.label);
+          if (group.note) {
+            appendPlainItem(list, "group-note", group.note);
+            shown++;
+            continue;
+          }
+          for (const repo of repos) {
+            list.appendChild(resultItem(repo));
+            shown++;
+          }
+        }
+        list.hidden = shown === 0;
+      }
+
+      function appendPlainItem(list, className, text) {
+        const item = document.createElement("li");
+        item.className = className;
+        item.textContent = text;
+        list.appendChild(item);
       }
 
       // Built entirely with createElement + textContent: repo names/descriptions are untrusted.
@@ -650,7 +1262,6 @@
       function pickRepo(repo) {
         $("repo").value = typeof repo.fullName === "string" ? repo.fullName : "";
         if (typeof repo.defaultBranch === "string") $("ref").placeholder = repo.defaultBranch;
-        $("path").value = "";
         hideResults();
       }
 
@@ -668,40 +1279,28 @@
         if (event.key === "Escape") hideResults();
       });
 
-      // --- your repositories (shown while signed in; same untrusted-text rules as search) ---
+      // Fetched once per sign-in (the server pages GitHub for the complete owner+collaborator+org
+      // list), then searched client-side so the "Your repositories" group answers every keystroke.
       async function loadMyRepos() {
         try {
           const res = await apiGet("/api/repos/mine");
-          if (!res.ok) return hideMine();
-          const data = await res.json();
-          renderMine(Array.isArray(data.repos) ? data.repos : []);
+          const data = res.ok ? await res.json() : null;
+          myRepos = data && Array.isArray(data.repos) ? data.repos : [];
         } catch {
-          hideMine();
+          myRepos = [];
         }
       }
 
-      function renderMine(repos) {
-        const list = $("mine-list");
-        list.replaceChildren();
-        for (const repo of repos) list.appendChild(resultItem(repo));
-        $("mine").hidden = repos.length === 0;
-      }
-
-      function hideMine() {
-        $("mine-list").replaceChildren();
-        $("mine").hidden = true;
-      }
-
-      // --- generate (unchanged contract: a local path wins, else the repo field is GitHub input) ---
+      // --- generate (the active toggle decides the source kind) ---
       function setStatus(text, kind) {
         status.textContent = text;
         status.className = "status" + (kind ? " " + kind : "");
       }
 
       function buildRequest() {
-        const path = $("path").value.trim();
-        if (path) {
-          return { kind: "path", value: path };
+        if (mode === "path") {
+          const path = $("path").value.trim();
+          return path ? { kind: "path", value: path } : null;
         }
         const repo = $("repo").value.trim();
         if (!repo) {
@@ -710,10 +1309,8 @@
         const body = { kind: "github", value: repo };
         const ref = $("ref").value.trim();
         const subdir = $("subdir").value.trim();
-        const token = $("token").value.trim();
         if (ref) body.ref = ref;
         if (subdir) body.subdir = subdir;
-        if (token) body.token = token;
         return body;
       }
 
@@ -721,7 +1318,7 @@
         event.preventDefault();
         const request = buildRequest();
         if (!request) {
-          setStatus("Enter a GitHub repo or a local path.", "error");
+          setStatus(mode === "path" ? "Enter a path to a local repo." : "Enter a GitHub repository.", "error");
           return;
         }
         hideResults();
@@ -744,6 +1341,337 @@
       });
 
       initAuth();
+
+      // --- the animated graph background (ported from the design handoff; plain Canvas 2D) ---
+      const HEALTH = {
+        good: "#3fb950",
+        warn: "#e3b341",
+        pain: "#f85149",
+      };
+      // A representative Meridian graph (mirrors the orders-service example fixture).
+      const GRAPH = {
+        nodes: [
+          { name: "index.ts", type: "MODULE", health: "good", l1: "members 1 · cohesion 1", l2: "Ce 5 · Ca 0 · I 1 · A 0", d: "0", ax: 0.085, ay: 0.2 },
+          { name: "OrderRoutes", type: "CLASS", health: "warn", l1: "members 5 · cohesion 0.5", l2: "Ce 1 · Ca 1 · I 0.5 · A 0", d: "0.5", ax: 0.3, ay: 0.11 },
+          { name: "orderValidator.ts", type: "MODULE", health: "warn", l1: "members 2 · cohesion 1", l2: "Ce 1 · Ca 1 · I 0.5 · A 0", d: "0.5", ax: 0.585, ay: 0.1 },
+          { name: "OrderService", type: "CLASS", health: "warn", l1: "members 6 · cohesion 0.6", l2: "Ce 4 · Ca 3 · I 0.57 · A 0", d: "0.43", ax: 0.45, ay: 0.35 },
+          { name: "OrderRepository", type: "CLASS", health: "pain", l1: "members 3 · cohesion 0", l2: "Ce 0 · Ca 3 · I 0 · A 0", d: "1", ax: 0.8, ay: 0.3 },
+          { name: "PricingService", type: "CLASS", health: "pain", l1: "members 5 · cohesion 1", l2: "Ce 0 · Ca 4 · I 0 · A 0", d: "1", ax: 0.865, ay: 0.6 },
+          { name: "EmailService", type: "CLASS", health: "pain", l1: "members 3 · cohesion 1", l2: "Ce 0 · Ca 3 · I 0 · A 0", d: "1", ax: 0.7, ay: 0.84 },
+          { name: "orderService.test.ts", type: "MODULE", health: "good", l1: "members 5 · cohesion 1", l2: "Ce 4 · Ca 0 · I 1 · A 0", d: "0", ax: 0.215, ay: 0.78 },
+          { name: "pricingService.test.ts", type: "MODULE", health: "good", l1: "members 4 · cohesion 1", l2: "Ce 1 · Ca 0 · I 1 · A 0", d: "0", ax: 0.45, ay: 0.87 },
+        ],
+        edges: [[0, 1], [0, 3], [1, 3], [1, 2], [3, 2], [3, 4], [3, 5], [3, 6], [7, 3], [7, 4], [8, 5]],
+      };
+      const EDGE_COLOR = "#caa93a";
+      const PULSE_COLOR = "#f2dd93";
+      const CARD_W = 208;
+
+      class GraphBackground {
+        constructor(canvas) {
+          this.canvas = canvas;
+          this.mouse = { x: 0, y: 0, tx: 0, ty: 0 };
+          this.nodes = [];
+          this.edges = [];
+        }
+
+        start() {
+          this.build();
+          if (window.ResizeObserver) {
+            this.resizeObserver = new ResizeObserver(() => this.build());
+            this.resizeObserver.observe(this.canvas);
+          } else {
+            window.addEventListener("resize", () => this.build());
+          }
+          if (reducedMotion) {
+            // A single static frame; re-render once the web fonts land so labels use them.
+            if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => this.renderFrame());
+            return;
+          }
+          window.addEventListener("mousemove", (event) => {
+            this.mouse.tx = (event.clientX - window.innerWidth / 2) / window.innerWidth;
+            this.mouse.ty = (event.clientY - window.innerHeight / 2) / window.innerHeight;
+          });
+          this.loop();
+        }
+
+        // Size the backing store at devicePixelRatio (capped at 2) and render one frame
+        // synchronously: rAF is throttled in background tabs, so it alone can leave a blank canvas.
+        build() {
+          const canvas = this.canvas;
+          const dpr = Math.min(window.devicePixelRatio || 1, 2);
+          const w = canvas.clientWidth || window.innerWidth;
+          const h = canvas.clientHeight || window.innerHeight;
+          if (!w || !h) {
+            requestAnimationFrame(() => this.build());
+            return;
+          }
+          canvas.width = w * dpr;
+          canvas.height = h * dpr;
+          this.ctx = canvas.getContext("2d");
+          this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          this.w = w;
+          this.h = h;
+          this.nodes = GRAPH.nodes.map((node, i) => ({
+            ...node,
+            w: CARD_W,
+            h: 94 + (node.health === "pain" ? 22 : 0),
+            phase: i * 0.9,
+            ampx: 5 + (i % 3) * 2.5,
+            ampy: 6 + (i % 4) * 2,
+            x: node.ax * w,
+            y: node.ay * h,
+          }));
+          this.edges = GRAPH.edges.map((edge, i) => ({ a: edge[0], b: edge[1], ph: (i * 0.13) % 1 }));
+          this.renderFrame();
+        }
+
+        loop() {
+          requestAnimationFrame(() => this.loop());
+          this.renderFrame();
+        }
+
+        renderFrame() {
+          const ctx = this.ctx;
+          if (!ctx) return;
+          const { w, h, nodes } = this;
+          ctx.clearRect(0, 0, w, h);
+
+          this.mouse.x += (this.mouse.tx - this.mouse.x) * 0.05;
+          this.mouse.y += (this.mouse.ty - this.mouse.y) * 0.05;
+          const ox = this.mouse.x * 24;
+          const oy = this.mouse.y * 24;
+
+          const t = performance.now() / 1000;
+          for (const n of nodes) {
+            n.x = n.ax * w + Math.sin(t * 0.45 + n.phase) * n.ampx;
+            n.y = n.ay * h + Math.cos(t * 0.38 + n.phase) * n.ampy;
+          }
+
+          const segments = this.edgeSegments(ox, oy);
+          this.drawEdges(segments, t);
+          this.drawPorts(segments);
+          this.drawPulses(segments, t);
+          for (const n of nodes) this.drawCard(n, ox, oy);
+          ctx.shadowBlur = 0;
+          ctx.globalAlpha = 1;
+        }
+
+        // Edge geometry: cubic-bezier S-curves between card ports (exit one side, enter the other).
+        edgeSegments(ox, oy) {
+          const segments = [];
+          for (const edge of this.edges) {
+            const a = this.nodes[edge.a];
+            const b = this.nodes[edge.b];
+            if (!a || !b) continue;
+            const right = b.x > a.x;
+            const sx = a.x + ox + (right ? a.w / 2 : -a.w / 2);
+            const ex = b.x + ox + (right ? -b.w / 2 : b.w / 2);
+            const sy = a.y + oy;
+            const ey = b.y + oy;
+            const mx = (sx + ex) / 2;
+            segments.push({ sx, sy, ex, ey, c1x: mx, c1y: sy, c2x: mx, c2y: ey, ph: edge.ph });
+          }
+          return segments;
+        }
+
+        drawEdges(segments, t) {
+          const ctx = this.ctx;
+          ctx.setLineDash([5, 6]);
+          ctx.lineDashOffset = -t * 24;
+          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = EDGE_COLOR;
+          ctx.shadowBlur = 6;
+          ctx.shadowColor = EDGE_COLOR;
+          ctx.globalAlpha = 0.72;
+          for (const s of segments) {
+            ctx.beginPath();
+            ctx.moveTo(s.sx, s.sy);
+            ctx.bezierCurveTo(s.c1x, s.c1y, s.c2x, s.c2y, s.ex, s.ey);
+            ctx.stroke();
+          }
+          ctx.shadowBlur = 0;
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 1;
+        }
+
+        drawPorts(segments) {
+          const ctx = this.ctx;
+          for (const s of segments) {
+            ctx.fillStyle = "#8b949e";
+            ctx.globalAlpha = 0.85;
+            ctx.beginPath();
+            ctx.arc(s.sx, s.sy, 2, 0, Math.PI * 2);
+            ctx.fill();
+            const ang = Math.atan2(s.ey - s.c2y, s.ex - s.c2x);
+            ctx.fillStyle = EDGE_COLOR;
+            ctx.globalAlpha = 0.95;
+            ctx.beginPath();
+            ctx.moveTo(s.ex, s.ey);
+            ctx.lineTo(s.ex - 8 * Math.cos(ang - 0.42), s.ey - 8 * Math.sin(ang - 0.42));
+            ctx.lineTo(s.ex - 8 * Math.cos(ang + 0.42), s.ey - 8 * Math.sin(ang + 0.42));
+            ctx.closePath();
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+        }
+
+        // A bright amber dot travels each bezier on a loop — conveys data flow.
+        drawPulses(segments, t) {
+          const ctx = this.ctx;
+          for (const s of segments) {
+            const p = this.bezierPoint(s, (t * 0.2 + s.ph) % 1);
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = EDGE_COLOR;
+            ctx.fillStyle = PULSE_COLOR;
+            ctx.globalAlpha = 0.95;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 2.3, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.shadowBlur = 0;
+          ctx.globalAlpha = 1;
+        }
+
+        bezierPoint(s, t) {
+          const u = 1 - t;
+          return {
+            x: u * u * u * s.sx + 3 * u * u * t * s.c1x + 3 * u * t * t * s.c2x + t * t * t * s.ex,
+            y: u * u * u * s.sy + 3 * u * u * t * s.c1y + 3 * u * t * t * s.c2y + t * t * t * s.ey,
+          };
+        }
+
+        roundRect(x, y, w, h, r) {
+          const ctx = this.ctx;
+          ctx.beginPath();
+          ctx.moveTo(x + r, y);
+          ctx.arcTo(x + w, y, x + w, y + h, r);
+          ctx.arcTo(x + w, y + h, x, y + h, r);
+          ctx.arcTo(x, y + h, x, y, r);
+          ctx.arcTo(x, y, x + w, y, r);
+          ctx.closePath();
+        }
+
+        // One node card: accent bar keyed to health, type icon + badge, name, metrics, D value,
+        // and a red PAIN pill for the worst offenders — a miniature of the real Meridian node UI.
+        drawCard(n, ox, oy) {
+          const ctx = this.ctx;
+          const { w, h } = n;
+          const x0 = n.x + ox - w / 2;
+          const y0 = n.y + oy - h / 2;
+          const health = HEALTH[n.health];
+          this.roundRect(x0, y0, w, h, 10);
+          ctx.globalAlpha = 1;
+          ctx.shadowBlur = 20;
+          ctx.shadowColor = "rgba(0,0,0,0.6)";
+          ctx.fillStyle = "rgba(21,22,28,0.96)";
+          ctx.fill();
+          ctx.shadowBlur = 0;
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = "rgba(255,255,255,0.08)";
+          ctx.stroke();
+          ctx.save();
+          this.roundRect(x0, y0, w, h, 10);
+          ctx.clip();
+          ctx.fillStyle = health;
+          ctx.fillRect(x0, y0, 4, h);
+          ctx.restore();
+          this.drawTypeIcon(n, x0, y0);
+          ctx.textAlign = "left";
+          ctx.textBaseline = "middle";
+          const badgeLeft = this.drawTypeBadge(n, x0, y0);
+          this.drawTitle(n, x0, y0, badgeLeft);
+          ctx.font = "400 10px 'JetBrains Mono', monospace";
+          ctx.fillStyle = "#8b949e";
+          ctx.fillText(n.l1, x0 + 16, y0 + 42);
+          ctx.fillText(n.l2, x0 + 16, y0 + 57);
+          ctx.font = "700 11px 'JetBrains Mono', monospace";
+          ctx.fillStyle = "#6e7681";
+          ctx.fillText("D", x0 + 16, y0 + 76);
+          ctx.fillStyle = health;
+          ctx.fillText(n.d, x0 + 28, y0 + 76);
+          if (n.health === "pain") this.drawPainPill(x0, y0, h);
+          ctx.globalAlpha = 1;
+        }
+
+        drawTypeIcon(n, x0, y0) {
+          const ctx = this.ctx;
+          const ix = x0 + 15;
+          const iy = y0 + 12;
+          if (n.type === "MODULE") {
+            ctx.strokeStyle = "#58a6ff";
+            ctx.globalAlpha = 0.95;
+            ctx.lineWidth = 1.2;
+            this.roundRect(ix, iy, 11, 11, 2);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(ix + 3, iy + 4);
+            ctx.lineTo(ix + 8, iy + 4);
+            ctx.moveTo(ix + 3, iy + 7);
+            ctx.lineTo(ix + 8, iy + 7);
+            ctx.stroke();
+          } else {
+            ctx.save();
+            ctx.translate(ix + 5.5, iy + 5.5);
+            ctx.rotate(Math.PI / 4);
+            ctx.fillStyle = "#e3b341";
+            ctx.globalAlpha = 0.98;
+            ctx.fillRect(-4, -4, 8, 8);
+            ctx.restore();
+          }
+          ctx.globalAlpha = 1;
+        }
+
+        // Returns the badge's left x so the title knows where to stop.
+        drawTypeBadge(n, x0, y0) {
+          const ctx = this.ctx;
+          ctx.font = "600 8.5px 'JetBrains Mono', monospace";
+          const badgeWidth = ctx.measureText(n.type).width + 10;
+          const bx = x0 + n.w - 12 - badgeWidth;
+          const by = y0 + 11;
+          const color = n.type === "MODULE" ? "#58a6ff" : "#e3b341";
+          this.roundRect(bx, by, badgeWidth, 15, 4);
+          ctx.fillStyle = "rgba(0,0,0,0.3)";
+          ctx.fill();
+          ctx.strokeStyle = color;
+          ctx.globalAlpha = 0.55;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = color;
+          ctx.fillText(n.type, bx + 5, by + 8);
+          return bx;
+        }
+
+        drawTitle(n, x0, y0, badgeLeft) {
+          const ctx = this.ctx;
+          ctx.font = "700 12.5px 'JetBrains Mono', monospace";
+          ctx.fillStyle = "#e9eef4";
+          let title = n.name;
+          const maxWidth = badgeLeft - (x0 + 34) - 8;
+          if (ctx.measureText(title).width > maxWidth) {
+            while (title.length > 4 && ctx.measureText(title + "…").width > maxWidth) title = title.slice(0, -1);
+            title += "…";
+          }
+          ctx.fillText(title, x0 + 34, y0 + 18);
+        }
+
+        drawPainPill(x0, y0, h) {
+          const ctx = this.ctx;
+          ctx.font = "700 8.5px 'JetBrains Mono', monospace";
+          const pw = ctx.measureText("PAIN").width + 10;
+          this.roundRect(x0 + 16, y0 + h - 21, pw, 15, 4);
+          ctx.fillStyle = "rgba(248,81,73,0.14)";
+          ctx.fill();
+          ctx.strokeStyle = "rgba(248,81,73,0.5)";
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          ctx.fillStyle = "#f85149";
+          ctx.fillText("PAIN", x0 + 21, y0 + h - 21 + 8);
+        }
+      }
+
+      new GraphBackground($("bg")).start();
     </script>
   </body>
 </html>

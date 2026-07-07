@@ -45,7 +45,7 @@ afterAll(() => {
 describe("createWebServer landing + errors", () => {
   it("serves the landing page with the injected CLI prefill", async () => {
     const html = await (await fetch(`${base}/`)).text();
-    expect(html).toContain("Map any codebase");
+    expect(html).toContain("Read your codebase");
     expect(html).toContain("window.__MERIDIAN_PREFILL__=");
     expect(html).toContain("sindresorhus/type-fest");
   });

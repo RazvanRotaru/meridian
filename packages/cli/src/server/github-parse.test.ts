@@ -58,10 +58,10 @@ describe("parseSearchResults", () => {
 });
 
 describe("parseRepoList", () => {
-  it("maps a bare array and caps the list at thirty", () => {
-    const items = Array.from({ length: 40 }, (_unused, index) => ({ full_name: `o/r${index}` }));
+  it("maps a bare array and caps the list at one page (100)", () => {
+    const items = Array.from({ length: 120 }, (_unused, index) => ({ full_name: `o/r${index}` }));
     const repos = parseRepoList(items);
-    expect(repos).toHaveLength(30);
+    expect(repos).toHaveLength(100);
     expect(repos[0].fullName).toBe("o/r0");
   });
 
