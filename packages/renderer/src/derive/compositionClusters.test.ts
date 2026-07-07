@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { GraphNode } from "@meridian/core";
 import type { Smell, UnitMetrics } from "@meridian/design-metrics";
 import type { CompNodeSpec } from "./compositionGraph";
-import { buildClusters, clusterIdOf, clusterLabel, ROOT_CLUSTER_ID } from "./compositionClusters";
+import { buildClusters, clusterIdOf, clusterLabel, packageTrailLabel, ROOT_CLUSTER_ID } from "./compositionClusters";
 
 function node(id: string, kind: string, parentId?: string, displayName?: string): GraphNode {
   return {
@@ -97,5 +97,29 @@ describe("buildClusters", () => {
     );
     expect(frames[0].smellyCount).toBe(1);
     expect(frames[0].unitIds).toHaveLength(2);
+  });
+});
+
+describe("packageTrailLabel", () => {
+  // The monorepo shape that makes leaf names useless: a `src` at every level.
+  const deep = [
+    node("pkg:src", "package", undefined, "src"),
+    node("pkg:src/aria", "package", "pkg:src", "aria"),
+    node("pkg:src/aria/app", "package", "pkg:src/aria", "app"),
+    node("pkg:src/aria/app/src", "package", "pkg:src/aria/app", "src"),
+    node("ts:src/aria/app/src/x", "module", "pkg:src/aria/app/src", "x.ts"),
+  ];
+
+  it("spells out the whole ancestor trail so identically-named folders stay tellable apart", () => {
+    expect(packageTrailLabel("pkg:src/aria/app/src", indexOf(deep))).toBe("src › aria › app › src");
+  });
+
+  it("includes a non-package node itself but only package/system ancestors above it", () => {
+    expect(packageTrailLabel("ts:src/aria/app/src/x", indexOf(deep))).toBe("src › aria › app › src › x.ts");
+  });
+
+  it("prefixes the system frame in a linked artifact", () => {
+    const linked = [node("sys:web", "system", undefined, "web"), node("pkg:w/src", "package", "sys:web", "src")];
+    expect(packageTrailLabel("pkg:w/src", indexOf(linked))).toBe("web › src");
   });
 });

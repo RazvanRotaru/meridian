@@ -74,6 +74,26 @@ export function clusterLabel(clusterId: string, nodesById: Map<string, GraphNode
 }
 
 /**
+ * The full containment trail of a node as a display label — every `system`/`package` ancestor plus
+ * the node itself, top-down, joined by ›: "src › aria › app › src". The composition breadcrumb uses
+ * it because a deep monorepo names a folder `src` at every level, and the leaf name alone ("src")
+ * says nothing about WHICH one the view is rooted at. Visited-guarded like every walk here.
+ */
+export function packageTrailLabel(nodeId: string, nodesById: Map<string, GraphNode>): string {
+  const names: string[] = [];
+  const visited = new Set<string>();
+  let current = nodesById.get(nodeId);
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    if (current.id === nodeId || current.kind === PACKAGE_KIND || current.kind === "system") {
+      names.push(current.displayName);
+    }
+    current = current.parentId ? nodesById.get(current.parentId) : undefined;
+  }
+  return names.reverse().join(" › ");
+}
+
+/**
  * Fold the surviving unit specs into cluster frames by `clusterIdOf` — every unit lands in exactly
  * one frame, none dropped. Units keep their given (source) order within a frame; frames sort by
  * label (id tie-break) for a stable left-to-right reading. `smellyCount` tallies the units in each
