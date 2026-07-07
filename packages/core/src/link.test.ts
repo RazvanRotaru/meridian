@@ -68,6 +68,8 @@ describe("linkArtifacts", () => {
           { kind: "call", label: "helper()", target: "ts:src/index.ts#helper", resolution: "resolved" },
           { kind: "call", label: "fetch()", target: "ext:node-fetch", resolution: "external" },
           { kind: "loop", label: "for", body: [{ kind: "call", label: "log()", target: null, resolution: "unresolved" }] },
+          { kind: "branch", label: "if bad", paths: [{ label: "then", body: [{ kind: "exit", variant: "throw", label: "boom" }] }] },
+          { kind: "exit", variant: "return", label: null },
         ],
       },
       entryModules: ["ts:src/index.ts"],
@@ -83,6 +85,9 @@ describe("linkArtifacts", () => {
     // ...while a shared-space (ext:) target and a null target pass through untouched.
     expect(steps[1]).toMatchObject({ target: "ext:node-fetch" });
     expect((steps[2] as { body: Array<{ target: string | null }> }).body[0].target).toBeNull();
+    // Exit steps carry no target and no body — they must survive the remap unchanged, at any depth.
+    expect((steps[3] as { paths: Array<{ body: unknown[] }> }).paths[0].body[0]).toEqual({ kind: "exit", variant: "throw", label: "boom" });
+    expect(steps[4]).toEqual({ kind: "exit", variant: "return", label: null });
     // Declared entry modules are namespaced too.
     expect(relinked.entryModules).toEqual(["ts:checkout-web/src/index.ts"]);
   });

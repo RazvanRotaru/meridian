@@ -29,16 +29,26 @@ import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { arrowMarker } from "../theme/edgeColors";
 import { COVERAGE_COLORS } from "../theme/coverageColors";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
-import type { LogicNodeData } from "../derive/logicGraph";
+import type { LogicNodeData, TerminalData } from "../derive/logicGraph";
 import type { GraphIndex } from "../graph/graphIndex";
 import { buildFlowContainmentIndex, transitiveCallers } from "../derive/flowInspect";
+import { AltLogicSurface } from "./logicviews/AltLogicSurface";
+import { LogicViewTabs } from "./logicviews/LogicViewTabs";
 
 export function LogicFlowView() {
   const logicRoot = useBlueprint((state) => state.logicRoot);
+  const logicView = useBlueprint((state) => state.logicView);
   if (logicRoot === null) {
     return <LogicFlowPicker />;
   }
-  return <LogicFlowGraph rootId={logicRoot} />;
+  // Four projections of the SAME flow: the exec-pins graph is the default; metro/blocks/timeline
+  // mount over the same root/trail/selection. The sub-tab strip floats above whichever is on screen.
+  return (
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+      {logicView === "graph" ? <LogicFlowGraph rootId={logicRoot} /> : <AltLogicSurface rootId={logicRoot} mode={logicView} />}
+      <LogicViewTabs />
+    </div>
+  );
 }
 
 /**
@@ -656,7 +666,10 @@ function buildTestGhosts(
 // The MiniMap gets untyped `Node`s; narrow to our logic data and mirror each node type's accent.
 function miniMapColor(node: Node): string {
   if (node.type === "terminal") {
-    return (node.data as { terminal: "entry" | "exit" }).terminal === "entry" ? "#4FB477" : "#8A93A0";
+    const terminal = (node.data as TerminalData).terminal;
+    if (terminal === "entry") return "#4FB477";
+    // A return/throw cap reads hot in the minimap too — same fact, same colour as on canvas.
+    return terminal === "exit" ? "#8A93A0" : "#E06C6C";
   }
   const data = node.data as LogicNodeData;
   if (data.logicKind === "loop") return "#E6B84D";

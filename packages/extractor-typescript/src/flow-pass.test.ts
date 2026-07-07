@@ -108,6 +108,23 @@ export function iterateFrom() {
 }
 function getItems(): string[] { return []; }
 function use(x: string) {}
+
+export async function placeOrder(flag: boolean) {
+  if (!flag) {
+    audit();
+    return reject();
+  }
+  const data = await fetchData();
+  void track(data);
+  send(data).then((r) => log(r));
+  return data;
+}
+function audit() {}
+function reject() { return null; }
+async function fetchData() { return {}; }
+async function track(x: unknown) {}
+async function send(x: unknown) { return x; }
+function log(x: unknown) {}
 `;
 
 // A module whose top-level runs at load: a call, a branch, a loop — plus declarations that do
@@ -166,7 +183,8 @@ function allCallLabels(steps: FlowStep[]): string[] {
   return steps.flatMap((step) => {
     if (step.kind === "call") return [step.label];
     if (step.kind === "loop" || step.kind === "callback") return allCallLabels(step.body);
-    return step.paths.flatMap((path) => allCallLabels(path.body));
+    if (step.kind === "branch") return step.paths.flatMap((path) => allCallLabels(path.body));
+    return [];
   });
 }
 
@@ -226,9 +244,44 @@ describe("logic-flow pass", () => {
       const branch = loop.body[1];
       if (branch.kind === "branch") {
         expect(branch.paths.map((path) => path.label)).toEqual(["then"]);
-        expect(branch.paths[0].body).toEqual([]);
+        // The early return is charted, not swallowed: the then-path visibly EXITS the flow.
+        expect(branch.paths[0].body).toEqual([{ kind: "exit", variant: "return", label: "res" }]);
       }
     }
+  });
+
+  it("charts returns as exit steps and stamps awaited/detached call flags (placeOrder)", () => {
+    const steps = stepsFor("placeOrder") ?? [];
+    expect(steps.map((step) => step.kind)).toEqual(["branch", "call", "call", "call", "call", "callback", "exit"]);
+
+    const guard = steps[0];
+    expect(guard.kind).toBe("branch");
+    if (guard.kind === "branch") {
+      expect(guard.paths.map((path) => path.label)).toEqual(["then"]);
+      expect(guard.paths[0].body.map((step) => step.kind)).toEqual(["call", "call", "exit"]);
+      expect(guard.paths[0].body[2]).toEqual({ kind: "exit", variant: "return", label: "reject()" });
+    }
+
+    expect(steps[1]).toMatchObject({ kind: "call", label: "fetchData", awaited: true });
+    expect(steps[1]).not.toHaveProperty("detached");
+    expect(steps[2]).toMatchObject({ kind: "call", label: "track", detached: true });
+    // `send(data).then(cb)` standing alone is ONE hand-off: the head call carries the detached
+    // flag; the continuation call itself stays unflagged so one statement never fans out into
+    // several detached lanes downstream.
+    expect(steps[3]).toMatchObject({ kind: "call", label: "send", detached: true });
+    expect(steps[4]).toMatchObject({ kind: "call", label: "then" });
+    expect(steps[4]).not.toHaveProperty("detached");
+    expect(steps[5]).toMatchObject({ kind: "callback" });
+    if (steps[5].kind === "callback") {
+      expect(callLabels(steps[5].body)).toEqual(["log"]);
+    }
+    expect(steps[6]).toEqual({ kind: "exit", variant: "return", label: "data" });
+  });
+
+  it("leaves plain synchronous calls unflagged (checkout)", () => {
+    const first = (stepsFor("checkout") ?? [])[0];
+    expect(first).not.toHaveProperty("awaited");
+    expect(first).not.toHaveProperty("detached");
   });
 
   it("charts a module's top-level code as its load-time flow, skipping declarations (boot)", () => {

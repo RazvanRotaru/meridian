@@ -202,7 +202,8 @@ function collectSymbols(artifact: GraphArtifact, nodesById: ReadonlyMap<string, 
       qualifiedName: node.qualifiedName,
       file: node.location?.file ?? "",
       kind: node.kind,
-      stepCount: Array.isArray(steps) ? steps.length : null,
+      // Exit steps are charted control flow, not WORK — the size hint counts only executable steps.
+      stepCount: Array.isArray(steps) ? steps.filter((step) => (step as { kind?: string }).kind !== "exit").length : null,
     });
   }
   entries.sort(byFlowThenName);

@@ -22,6 +22,7 @@ import type { GraphIndex } from "../graph/graphIndex";
 import type { BlueprintEdge, BlueprintNode } from "../layout/rfTypes";
 import type { TelemetryProvider } from "../telemetry/provider";
 import type { ViewMode } from "../derive/edgeSelection";
+import type { LogicViewMode } from "../derive/flowViewModel";
 import { uiFocusTarget } from "../derive/uiFocus";
 import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
@@ -77,6 +78,10 @@ export interface BlueprintState {
   flowDepth: number | null;
   /** The callable whose intra-procedural logic flow the Logic-flow view charts; null == none picked yet. */
   logicRoot: NodeId | null;
+  /** Which PROJECTION of the charted flow is on screen (exec graph / metro / blocks / timeline).
+   * All four render the same flow tree and share root/trail/selection — a pure view switch, sticky
+   * across navigation like ghostDepth. */
+  logicView: LogicViewMode;
   /** The drill trail into logic flows, oldest first — root..current — powering the logic breadcrumb. */
   logicStack: NodeId[];
   /** The DIVE trail INTO control containers, oldest first; each entry re-charts the canvas to show
@@ -190,6 +195,7 @@ export interface BlueprintState {
   logicFocusTo(index: number): void;
   setLogicInlineDepth(depth: number): void;
   toggleLogicTests(): void;
+  setLogicView(mode: LogicViewMode): void;
   setGhostDepth(depth: number): void;
   selectLogicTarget(id: NodeId | null): void;
   togglePinnedFlow(id: NodeId): void;
@@ -268,6 +274,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     flowRootId: null,
     flowDepth: null,
     logicRoot: null,
+    logicView: "graph",
     logicStack: [],
     logicFocus: [],
     logicInlineDepth: 0,
@@ -450,6 +457,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // report, mirroring how the related-flows ghosts ride selection — so it never relayouts.
     toggleLogicTests() {
       set({ showLogicTests: !get().showLogicTests });
+    },
+
+    // Switch which projection of the charted flow is on screen. A pure view switch: root, drill
+    // trail, and selection all stay put, and the exec graph's ELK layout is untouched (it re-mounts
+    // from the already-derived logicRfNodes when switched back).
+    setLogicView(mode) {
+      set({ logicView: mode });
     },
 
     // Set how many hops of indirect callers the "related flows" ghosts reach back. Clamped to

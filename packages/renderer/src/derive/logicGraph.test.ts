@@ -297,3 +297,60 @@ describe("deriveLogicGraph service frames", () => {
     expect(nodes.filter((n) => n.type === "block")).toHaveLength(2);
   });
 });
+
+// The exec-pins upgrade: exit steps dead-end as return caps, terminated branch paths never rejoin
+// the merge, the implicit fall-through gets a labeled synthetic pin, and async flags ride blocks.
+describe("deriveLogicGraph — exits, synthesized else, async flags", () => {
+  const exit = (label: string | null = null): FlowStep => ({ kind: "exit", variant: "return", label });
+
+  it("renders an exit step as a return-cap terminal with no outgoing exec", () => {
+    const flows: LogicFlows = { r: [call("a", "ext:l#a", "external"), exit("res")] };
+    const { nodes, edges } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false });
+    const cap = nodes.find((n) => n.id === "r::1")!;
+    expect(cap.type).toBe("terminal");
+    expect(cap.data).toMatchObject({ terminal: "return", label: "return res" });
+    expect(edges).toContainEqual(expect.objectContaining({ source: "r::0", target: "r::1", kind: "seq" }));
+    expect(edges.filter((e) => e.source === "r::1")).toHaveLength(0);
+  });
+
+  it("does not merge a guard's returning then-path; the synthetic else pin carries the continuation", () => {
+    const guard: FlowStep = { kind: "branch", label: "if bad", paths: [{ label: "then", body: [call("t", "ext:l#t", "external"), exit()] }] };
+    const flows: LogicFlows = { r: [guard, call("after", "ext:l#a", "external")] };
+    const { nodes, edges } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false });
+    const after = nodes.find((n) => n.id === "r::1")!;
+    const capId = "r::0/b0/1";
+    // the then-path's cap never wires onward; only the branch's synthesized else reaches `after`.
+    expect(edges.filter((e) => e.source === capId)).toHaveLength(0);
+    expect(edges).toContainEqual(expect.objectContaining({ source: "r::0", target: after.id, kind: "branch", label: "else" }));
+  });
+
+  it("adds no synthetic pin when the source wrote an explicit else, and 'no match' for a default-less switch", () => {
+    const explicit: FlowStep = { kind: "branch", label: "if c", paths: [{ label: "then", body: [] }, { label: "else", body: [] }] };
+    const one = deriveLogicGraph("r", { r: [explicit, call("a", "ext:l#a", "external")] }, makeIndex([]), NONE, { hideGreyed: false });
+    expect(one.edges.filter((e) => e.source === "r::0" && e.target === "r::1")).toHaveLength(2); // then + else, nothing extra
+    const sw: FlowStep = { kind: "branch", label: "switch x", paths: [{ label: "\"a\"", body: [] }] };
+    const two = deriveLogicGraph("r", { r: [sw, call("a", "ext:l#a", "external")] }, makeIndex([]), NONE, { hideGreyed: false });
+    expect(two.edges).toContainEqual(expect.objectContaining({ source: "r::0", target: "r::1", label: "no match" }));
+  });
+
+  it("omits the synthetic EXIT end-cap when every path already dead-ends at a return", () => {
+    const flows: LogicFlows = { r: [call("a", "ext:l#a", "external"), exit("done")] };
+    const { nodes } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false, withTerminals: true });
+    expect(nodes.some((n) => n.id === "r::entry")).toBe(true);
+    expect(nodes.some((n) => n.id === "r::exit")).toBe(false);
+    const fallthrough = deriveLogicGraph("r", { r: [call("a", "ext:l#a", "external")] }, makeIndex([]), NONE, { hideGreyed: false, withTerminals: true });
+    expect(fallthrough.nodes.some((n) => n.id === "r::exit")).toBe(true);
+  });
+
+  it("carries awaited/detached flags onto call-block data", () => {
+    const flows: LogicFlows = {
+      r: [
+        { kind: "call", label: "save", target: null, resolution: "unresolved", awaited: true },
+        { kind: "call", label: "track", target: null, resolution: "unresolved", detached: true },
+      ],
+    };
+    const { nodes } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false });
+    expect(execData(nodes[0]).awaited).toBe(true);
+    expect(execData(nodes[1]).detached).toBe(true);
+  });
+});
