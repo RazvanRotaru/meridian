@@ -20,6 +20,7 @@ import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { Toolbar } from "./Toolbar";
 import { CoveragePanel } from "./CoveragePanel";
 import { CodePanel } from "./CodePanel";
+import { CommentsPanel } from "./CommentsPanel";
 import { CommandPalette } from "./CommandPalette";
 import { LogicFlowView } from "./LogicFlowView";
 import { CompositionView } from "./CompositionView";
@@ -35,6 +36,7 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
       {viewMode === "call" ? <CompositionView /> : viewMode === "logic" ? <LogicFlowView /> : <FlowCanvas />}
       <Toolbar preselectedEnv={props.preselectedEnv} />
       <CodePanel />
+      <CommentsPanel />
       {/* Global Cmd/Ctrl+P quick-open — mounted here so the shortcut works in every view mode. */}
       <CommandPalette />
     </div>

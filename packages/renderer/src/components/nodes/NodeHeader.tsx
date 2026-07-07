@@ -14,9 +14,10 @@ export function NodeHeader(props: {
   entry?: boolean;
   chevron?: "collapsed" | "expanded";
   onToggle?: () => void;
-  /** Reserve room at the content's right edge for a card control (the leaf's source button) so
-   * the right-aligned kind label never slides under it. */
-  reserveRight?: boolean;
+  /** Reserve room at the content's right edge for card controls (the leaf's source/comments
+   * buttons) so the right-aligned kind label never slides under them. `true` fits one button;
+   * a number is explicit pixels for wider control rows. */
+  reserveRight?: boolean | number;
   children?: ReactNode;
 }) {
   return (
@@ -27,7 +28,7 @@ export function NodeHeader(props: {
       onDoubleClick={swallowDoubleClick}
     >
       <span style={{ ...RAIL_STYLE, background: props.accent }} />
-      <span style={props.reserveRight ? CONTENT_RESERVED_STYLE : CONTENT_STYLE}>
+      <span style={contentStyle(props.reserveRight)}>
         <span style={TITLE_ROW_STYLE}>
           {props.chevron ? <span style={CHEVRON_STYLE}>{glyph(props.chevron)}</span> : null}
           {props.entry ? <span style={ENTRY_PILL_STYLE}>ENTRY</span> : null}
@@ -80,6 +81,13 @@ const RAIL_STYLE: React.CSSProperties = { width: 3, borderRadius: 2, flex: "0 0 
 const CONTENT_STYLE: React.CSSProperties = { flex: "1 1 auto", minWidth: 0 };
 // Clears the ~30px source button pinned to the leaf card's top-right corner.
 const CONTENT_RESERVED_STYLE: React.CSSProperties = { ...CONTENT_STYLE, paddingRight: 34 };
+
+function contentStyle(reserveRight: boolean | number | undefined): React.CSSProperties {
+  if (typeof reserveRight === "number") {
+    return { ...CONTENT_STYLE, paddingRight: reserveRight };
+  }
+  return reserveRight ? CONTENT_RESERVED_STYLE : CONTENT_STYLE;
+}
 const TITLE_ROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "baseline", gap: 6 };
 const CHEVRON_STYLE: React.CSSProperties = { fontSize: 10, opacity: 0.8 };
 const ENTRY_PILL_STYLE: React.CSSProperties = {

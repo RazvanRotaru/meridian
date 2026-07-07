@@ -8,7 +8,7 @@
 
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { useBlueprint } from "../../../state/StoreContext";
+import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import { colorForDistance, type CompNodeData } from "../../../derive/compositionGraph";
 import type { CompRfNode } from "../../../layout/compositionElk";
 import { accentForKind } from "../../../theme/kindColors";
@@ -26,6 +26,7 @@ function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
   const compSelectedId = useBlueprint((state) => state.compSelectedId);
   const coverage = useBlueprint((state) => (state.coverageMode ? state.coverage : null));
   const d = data as CompNodeData;
+  const commentsFile = useCommentsFile(d.unitId);
   const metrics = d.metrics;
   // A boundary (1-hop neighbour of the root) is a faded, click-to-re-root ghost — never the selected
   // unit, so it never wears the green selection ring.
@@ -49,6 +50,7 @@ function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
             <span style={BOUNDARY_TAG} title="Click to root the composition here">▸ ROOT</span>
           ) : null}
           {coverage ? <CoverageBadge nodeId={d.unitId} /> : null}
+          {commentsFile ? <CommentsChip file={commentsFile.file} count={commentsFile.count} /> : null}
           <span style={{ ...KIND_TAG, color: tint, borderColor: tint }}>{d.kind.toUpperCase()}</span>
         </div>
         <div style={METRIC_ROW}>
@@ -80,6 +82,31 @@ function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
         ) : null}
       </div>
     </div>
+  );
+}
+
+/** The unit's file and its PR-comment count, or null when there is nothing to badge. */
+function useCommentsFile(unitId: string): { file: string; count: number } | null {
+  const file = useBlueprint((state) => state.index.nodesById.get(unitId)?.location?.file ?? null);
+  const count = useBlueprint((state) => (file && state.comments ? state.comments[file]?.length ?? 0 : 0));
+  return file !== null && count > 0 ? { file, count } : null;
+}
+
+// stopPropagation keeps the badge click off the canvas's select/re-root node handlers.
+function CommentsChip(props: { file: string; count: number }) {
+  const { openComments } = useBlueprintActions();
+  return (
+    <button
+      type="button"
+      style={COMMENTS_CHIP}
+      title={`${props.count} PR review comment${props.count === 1 ? "" : "s"}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        openComments(props.file);
+      }}
+    >
+      💬 {props.count}
+    </button>
   );
 }
 
@@ -167,6 +194,18 @@ const LABEL: React.CSSProperties = {
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
+};
+const COMMENTS_CHIP: React.CSSProperties = {
+  flexShrink: 0,
+  fontSize: 9,
+  fontWeight: 700,
+  color: "#E3C08F",
+  border: "1px solid #66512F",
+  background: "rgba(192,145,59,0.14)",
+  borderRadius: 999,
+  padding: "1px 6px",
+  cursor: "pointer",
+  fontFamily: "inherit",
 };
 const KIND_TAG: React.CSSProperties = {
   flexShrink: 0,

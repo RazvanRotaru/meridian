@@ -39,6 +39,10 @@ client secret; after approving you also get a **"Your repositories"** picker), o
 never uploaded, logged, or stored. Sign-in ships preconfigured with the project's OAuth app;
 forks can point at their own via `MERIDIAN_GITHUB_CLIENT_ID` or `--github-client-id`.
 
+Graphs generated from a GitHub repo also carry its **PR review comments**: any file that
+reviewers commented on wears a 💬 badge in the viewer, and clicking it lists the comments with
+links back to their pull requests.
+
 ## Gallery
 
 Captured headless on the `shopfront` fixture (a deliberately-tangled TS + React app) and the

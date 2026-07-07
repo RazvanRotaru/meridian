@@ -36,6 +36,7 @@ function bootJson(overlay: OverlaySource, preselectedEnv: string | null, sourceR
     metaUrl: "/api/meta",
     overlayUrl: "/api/overlay",
     sourceUrl: sourceRoot ? "/api/source" : null,
+    commentsUrl: null,
     hasOverlay: hasOverlay(overlay),
     overlayKind: overlayKind(overlay),
     envRequired: hasOverlay(overlay),

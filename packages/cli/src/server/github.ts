@@ -8,6 +8,8 @@
 import { WebError } from "./web-error";
 import { classifyQuery, parseBranchList, parseRepoList, parseRepoResult, parseSearchResults, parseUser } from "./github-parse";
 import type { GitHubUser, RepoSummary } from "./github-parse";
+import { parsePullComments } from "./github-comments";
+import type { PullComment } from "./github-comments";
 import { interpretTokenResponse, parseDeviceCodeResponse, tokenRedeemBody } from "./github-auth";
 import type { DeviceCode, TokenPoll } from "./github-auth";
 
@@ -19,6 +21,7 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const SEARCH_PER_PAGE = 20;
 const LIST_PER_PAGE = 30;
 const BRANCH_PER_PAGE = 100;
+const COMMENTS_PER_PAGE = 100;
 
 export interface GitHubClient {
   requestDeviceCode(): Promise<DeviceCode>;
@@ -26,8 +29,9 @@ export interface GitHubClient {
   getUser(token: string): Promise<GitHubUser>;
   searchRepos(token: string, query: string): Promise<RepoSummary[]>;
   listOwnRepos(token: string): Promise<RepoSummary[]>;
-  /** Tokenless works for public repos, so this takes `undefined` when nobody is signed in. */
+  /** Tokenless works for public repos, so these two take `undefined` when nobody is signed in. */
   listBranches(token: string | undefined, fullName: string): Promise<string[]>;
+  listPullComments(token: string | undefined, fullName: string): Promise<PullComment[]>;
 }
 
 export interface GitHubClientConfig {
@@ -44,6 +48,7 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
     searchRepos: (token, query) => searchRepos(fetchImpl, token, query),
     listOwnRepos: (token) => listOwnRepos(fetchImpl, token),
     listBranches: (token, fullName) => listBranches(fetchImpl, token, fullName),
+    listPullComments: (token, fullName) => listPullComments(fetchImpl, token, fullName),
   };
 }
 
@@ -93,6 +98,12 @@ async function listOwnRepos(fetchImpl: typeof fetch, token: string): Promise<Rep
 async function listBranches(fetchImpl: typeof fetch, token: string | undefined, fullName: string): Promise<string[]> {
   const params = new URLSearchParams({ per_page: String(BRANCH_PER_PAGE) });
   return parseBranchList(await getApi(fetchImpl, `${API_ROOT}/repos/${repoPath(fullName)}/branches?${params}`, token));
+}
+
+/** The newest review comments across the repo's pull requests (open and merged alike). */
+async function listPullComments(fetchImpl: typeof fetch, token: string | undefined, fullName: string): Promise<PullComment[]> {
+  const params = new URLSearchParams({ per_page: String(COMMENTS_PER_PAGE), sort: "created", direction: "desc" });
+  return parsePullComments(await getApi(fetchImpl, `${API_ROOT}/repos/${repoPath(fullName)}/pulls/comments?${params}`, token));
 }
 
 /** `owner/repo` -> two encoded URL segments; anything else is rejected before touching a URL. */

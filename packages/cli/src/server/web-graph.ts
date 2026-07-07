@@ -13,12 +13,16 @@ import { resolveSource } from "./clone";
 import { sendHtml, sendJson } from "./http-response";
 import { injectViewBoot } from "./web-boot";
 import { sessionTokenFor } from "./web-auth";
+import { fetchCommentsFor } from "./web-comments";
 import { artifactId, parseGenerateRequest, readJsonBody } from "./web-request";
 import type { Context } from "./web-server";
 
 export async function handleGenerate(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
   const parsed = parseGenerateRequest(await readJsonBody(request));
   const token = parsed.token ?? sessionTokenFor(ctx, request) ?? process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  // Kicked off before the clone so it overlaps the slow work; it never rejects, so a failed
+  // generate can safely abandon it in flight.
+  const comments = fetchCommentsFor(ctx.github, token, parsed);
   const source = await resolveSource(
     { kind: parsed.kind, value: parsed.value, ref: parsed.ref, subdir: parsed.subdir },
     ctx.cwd,
@@ -40,6 +44,7 @@ export async function handleGenerate(ctx: Context, request: IncomingMessage, res
     const id = artifactId(parsed);
     ctx.graphs.set(id, artifact);
     ctx.sourceRoots.set(id, source.dir);
+    ctx.comments.set(id, await comments);
     ctx.tempCleanups.add(source.cleanup);
     retained = true;
     const counts = { nodes: artifact.nodes.length, edges: artifact.edges.length };

@@ -17,6 +17,7 @@ import type {
   NodeId,
   NodeMetrics,
 } from "@meridian/core";
+import type { CommentsByFile } from "../comments/types";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { BlueprintEdge, BlueprintNode } from "../layout/rfTypes";
 import type { TelemetryProvider } from "../telemetry/provider";
@@ -123,6 +124,11 @@ export interface BlueprintState {
   sourceUrl: string | null;
   /** The open source view (inline panel or modal); null when nothing is being shown. */
   codeView: CodeView | null;
+  /** PR review comments by file (web mode); null when the server shipped none. Loaded once at
+   * boot — node components read it to decide whether to offer a comments control. */
+  comments: CommentsByFile | null;
+  /** The file whose PR comments the modal shows; null == closed. */
+  commentsFile: string | null;
   toggleExpand(nodeId: string): void;
   expandPath(nodeId: string): void;
   collapseAll(): void;
@@ -158,6 +164,8 @@ export interface BlueprintState {
   showCode(node: GraphNode): Promise<void>;
   expandCode(): void;
   closeCode(): void;
+  openComments(file: string): void;
+  closeComments(): void;
   relayout(): Promise<void>;
 }
 
@@ -167,6 +175,7 @@ export interface StoreDependencies {
   provider: TelemetryProvider | null;
   hasOverlay: boolean;
   sourceUrl: string | null;
+  comments: CommentsByFile | null;
 }
 
 export type BlueprintStore = StoreApi<BlueprintState>;
@@ -226,6 +235,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     hasOverlay: dependencies.hasOverlay,
     sourceUrl,
     codeView: null,
+    comments: dependencies.comments,
+    commentsFile: null,
 
     toggleExpand(nodeId) {
       set({ expanded: withToggled(get().expanded, nodeId) });
@@ -567,6 +578,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     closeCode() {
       set({ codeView: null });
+    },
+
+    // Open the PR-comments modal on a file (the badge click). The comments themselves were
+    // loaded once at boot, so this is a pure repaint — no fetch, no relayout.
+    openComments(file) {
+      set({ commentsFile: file });
+    },
+
+    closeComments() {
+      set({ commentsFile: null });
     },
 
     async relayout() {

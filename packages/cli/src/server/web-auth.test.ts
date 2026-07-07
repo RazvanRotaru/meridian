@@ -119,5 +119,6 @@ function neverCalledGitHub(): GitHubClient {
     searchRepos: reject,
     listOwnRepos: reject,
     listBranches: reject,
+    listPullComments: reject,
   };
 }
