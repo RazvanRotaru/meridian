@@ -254,7 +254,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     expanded: new Set<string>(),
     selectedId: null,
     focusId: null,
-    viewMode: "call",
+    viewMode: "modules",
     showTests: true,
     coverageMode: false,
     coverage: null,
