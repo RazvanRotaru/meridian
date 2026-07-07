@@ -749,13 +749,13 @@
           <div class="toggle" id="toggle" role="tablist">
             <span class="toggle-thumb" aria-hidden="true"></span>
             <button type="button" role="tab" id="tab-github" class="active" aria-selected="true">GitHub repo</button>
-            <button type="button" role="tab" id="tab-path" aria-selected="false">Local path</button>
+            <button type="button" role="tab" id="tab-path" aria-selected="false">Local</button>
           </div>
 
           <form id="form" autocomplete="off">
             <div class="fieldset" id="github-fields">
               <div class="field">
-                <label for="repo">GitHub repository</label>
+                <label for="repo" id="repo-label">Public GitHub repository</label>
                 <div class="search-wrap">
                   <input id="repo" name="repo" placeholder="owner/repo  or  https://github.com/owner/repo" />
                   <ul class="results dropdown" id="results" hidden></ul>
@@ -804,6 +804,8 @@
             <div class="status" id="status"></div>
           </form>
 
+          <!-- GitHub-only: the whole sign-in block disappears in Local mode. -->
+          <div id="github-auth">
           <div class="divider"><span>OR</span></div>
 
           <section id="auth">
@@ -828,6 +830,7 @@
               <button type="button" class="ghost" id="signout">Sign out</button>
             </div>
           </section>
+          </div>
           </div>
 
           <!-- The device sign-in flow replaces the form entirely; Back returns without cancelling. -->
@@ -900,6 +903,7 @@
         animateCardSwap(() => {
           $("github-fields").hidden = !github;
           $("path-fields").hidden = github;
+          $("github-auth").hidden = !github;
           $("card-title").textContent = MODES[next].title;
           $("card-subtitle").textContent = MODES[next].subtitle;
           setStatus("", "");
@@ -974,6 +978,15 @@
         el.className = "auth-msg" + (isError ? " error" : "");
       }
 
+      // Signed out there is no search — the field takes an exact public repo. Signed in it
+      // becomes a live search over all repos the token can see, so the label says so.
+      function labelRepoField(isSignedIn) {
+        $("repo-label").textContent = isSignedIn ? "Search GitHub repositories" : "Public GitHub repository";
+        $("repo").placeholder = isSignedIn
+          ? "type to search  or  owner/repo"
+          : "owner/repo  or  https://github.com/owner/repo";
+      }
+
       function showSignedOut() {
         signedIn = false;
         devicePending = false;
@@ -983,6 +996,7 @@
         $("signin-area").hidden = false;
         $("signin").hidden = !authConfig.configured;
         $("auth-disabled").hidden = authConfig.configured;
+        labelRepoField(false);
         hideResults();
         hideMine();
       }
@@ -996,6 +1010,7 @@
           $("view-form").hidden = false;
           $("signin-area").hidden = true;
           $("signedin").hidden = false;
+          labelRepoField(true);
           $("me-login").textContent = user && user.login ? user.login : "signed in";
           const avatar = $("me-avatar");
           const src = user && safeHttpsUrl(user.avatarUrl);
