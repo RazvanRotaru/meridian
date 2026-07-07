@@ -10,6 +10,25 @@ structural composition).
 > one containment level, breadcrumb to **zoom out**. Each level shows the focus's children
 > (sub-dirs as group cards, files as file cards) wired by the import graph *folded to that level*.
 
+## Iteration: inline expand (coexists with zoom)
+
+A group card now also carries a **chevron** that **expands its children nested in place** — the same
+gesture as the Logic-flow tab — so you can open several directories at once without leaving the level.
+Double-click-to-re-root and the breadcrumb are unchanged; the two gestures coexist. Mechanically this
+replaced the flat one-level fold with a **nested containment tree** driven by a `moduleExpanded` set,
+reusing the shared `elkNesting` primitives (`INCLUDE_CHILDREN` on the root only) and `liftEdges` — the
+same engine the call/logic graphs use. Import wires are lifted to the visible frontier: a collapsed
+group swallows its internal imports, and imports leaving the drawn subtree drop, so a view shows only
+the coupling between what is currently on screen.
+
+- New: `derive/moduleTree.ts` (`deriveModuleTree`) replaces `derive/moduleLevel.ts`'s flat
+  `deriveLevel` (that file is now a small helper module); `layout/moduleLevelLayout.ts` is nested;
+  store gains `moduleExpanded` + `toggleModuleExpand`; `?mexp=` deep-links the open set.
+- Deferred: inline-expand descends one level per click (no chain-collapse — double-click still
+  chain-collapses); `emphasize` dims a parent frame's nested children via inherited opacity; the
+  whole-repo overview is still empty for single-package artifacts (keys off the `npm-package` tag —
+  focus into a directory to browse those).
+
 ## Design evolution (why the code has some ghosts)
 
 It started (commits `18dc79a`…`1c59098`) as an **entry-rooted blast-radius** view: pick an entry file,

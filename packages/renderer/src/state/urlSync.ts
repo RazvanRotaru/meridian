@@ -99,7 +99,7 @@ function applyEnvironment(store: BlueprintStore, environment: string | null | un
 }
 
 // The structural fields of a full NavState as a store partial, the Set-valued ones (`expanded`,
-// `hiddenCategories`) rebuilt as Sets. Always the complete set (not a sparse patch) so absent URL
+// `moduleExpanded`, `hiddenCategories`) rebuilt as Sets. Always the complete set (not a sparse patch) so absent URL
 // keys reset to their default. Excludes `environment`, which is apply-only (see restoreFromUrl).
 function structuralState(nav: NavState): Record<string, unknown> {
   return {
@@ -115,6 +115,7 @@ function structuralState(nav: NavState): Record<string, unknown> {
     logicStack: nav.logicStack,
     expanded: new Set(nav.expanded),
     moduleFocus: nav.moduleFocus,
+    moduleExpanded: new Set(nav.moduleExpanded),
     moduleRadius: nav.moduleRadius,
     hiddenCategories: new Set(nav.hiddenCategories),
   };

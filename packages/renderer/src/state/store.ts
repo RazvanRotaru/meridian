@@ -149,6 +149,9 @@ export interface BlueprintState {
   hiddenCategories: Set<ModuleCategory>;
   /** The selected node id in the Module map; null == none. A repaint-only highlight — no relayout. */
   moduleSelectedId: string | null;
+  /** Group cards the reader expanded IN PLACE (their children nest inside the card), mirroring the
+   * Logic tab's inline expand. A relayout concern — flipping membership re-lays out the nested tree. */
+  moduleExpanded: Set<string>;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -197,6 +200,7 @@ export interface BlueprintState {
   toggleSolidMetrics(): void;
   moduleRelayout(): Promise<void>;
   setModuleFocus(id: string | null): void;
+  toggleModuleExpand(nodeId: string): void;
   setModuleRadius(radius: number): void;
   toggleCategory(category: ModuleCategory): void;
   selectModule(id: string | null): void;
@@ -288,6 +292,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleRadius: 1,
     hiddenCategories: new Set<ModuleCategory>(),
     moduleSelectedId: null,
+    moduleExpanded: new Set<string>(),
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -580,11 +585,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // guard. The import graph is built once (cached) and reused for every level. A null focus is the
     // whole-repo package overview; a package focus is its children with imports folded to them.
     async moduleRelayout() {
-      const { index, moduleFocus } = get();
+      const { index, moduleFocus, moduleExpanded } = get();
       moduleGraph ??= buildModuleGraph(index);
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
-      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleGraph);
+      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, moduleGraph);
       if (moduleLayoutSeq !== sequence) {
         return; // a newer focus change superseded this one.
       }
@@ -602,7 +607,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (get().moduleFocus === id) {
         return;
       }
-      set({ moduleFocus: id, moduleSelectedId: null });
+      // A new level is a fresh id space, so the prior expansion set means nothing here — clear it so
+      // the new level opens with only its frontier shown (mirrors logic's reset-on-drill).
+      set({ moduleFocus: id, moduleSelectedId: null, moduleExpanded: new Set<string>() });
+      void get().moduleRelayout();
+    },
+
+    // Expand/collapse a group card IN PLACE: its children nest inside the card (the coexisting gesture
+    // to double-click's re-root), mirroring the Logic tab. Flip membership, then re-lay out the tree.
+    toggleModuleExpand(nodeId) {
+      set({ moduleExpanded: withToggled(get().moduleExpanded, nodeId) });
       void get().moduleRelayout();
     },
 
@@ -642,7 +656,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // from a prior visit. A shared/reloaded deep link is unaffected: it restores via setState on boot
       // (not this click path), so an explicit ?mfocus=… still opens at that level.
       if (mode === "modules") {
-        set({ viewMode: mode, moduleFocus: null });
+        set({ viewMode: mode, moduleFocus: null, moduleExpanded: new Set<string>() });
         void get().moduleRelayout();
         return;
       }
