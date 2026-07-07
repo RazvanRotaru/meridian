@@ -1,17 +1,15 @@
 /**
- * The Module-map's INLINE-EXPANDABLE containment tree, wired by the import graph lifted to the
- * visible frontier. Unlike the old flat one-level fold, this walks the real `parentId` hierarchy
- * from the current focus and emits a NESTED set: a group card that the reader expanded (its id is
- * in `expanded`) yields its children as `parentId`-nested nodes, exactly like the logic-flow tab.
+ * The Module-map's one-level containment view, wired by the import graph lifted to the visible
+ * frontier. The current focus emits a FLAT set: repository root shows the package overview; a
+ * package/directory focus shows only that focus's immediate children after single-dir collapse.
  *
  *   - `focus === null` → the whole-repo overview: the npm packages that own ≥1 file, as top-level
- *     group cards (collapsed → the package graph; expand one to descend into its directories/files).
- *   - a `focus` package/dir → its children (after chain-collapsing a lone `src`), each expandable.
+ *     group cards (the package graph).
+ *   - a `focus` package/dir → its children (after chain-collapsing a lone `src`).
  *
- * Imports are folded to the visible boxes by `liftEdges`: a collapsed group swallows its internal
- * imports (self-loops, dropped) and an import leaving the drawn subtree lifts past the frontier and
- * drops — so a level shows only the coupling between what is currently on screen. Pure; no React,
- * no ELK.
+ * Imports are folded to the visible boxes by `liftEdges`: a group swallows its internal imports
+ * (self-loops, dropped) and an import leaving the drawn level lifts past the frontier and drops, so
+ * a level shows only the coupling between what is currently on screen. Pure; no React, no ELK.
  */
 
 import type { GraphEdge } from "@meridian/core";
@@ -25,11 +23,10 @@ import { liftEdges } from "./liftEdges";
 const MODULE_KIND = "module";
 const PACKAGE_KIND = "package";
 
-/** A group card carries its expansion state so the card can draw a chevron and open into a frame. */
+/** Group cards keep these flags for the shared node renderer; Module map never expands inline. */
 export type ModuleGroupData = ModulePackageData & { isContainer: boolean; isExpanded: boolean };
 
-/** One node in the drawn containment tree, in DFS preorder (parents BEFORE children — React Flow
- * requires a parent to appear first). `parentId` is the drawn parent (null at the frontier root). */
+/** One node in the drawn containment level. `parentId` stays null because Module map is flat. */
 export interface VisibleModuleNode {
   id: string;
   parentId: string | null;
@@ -57,19 +54,19 @@ export interface ModuleTree {
   effectiveFocus: string | null;
 }
 
-/** The containment tree to draw for `(focus, expanded)`: overview when null, else the focus subtree. */
+/** The flat containment level to draw: overview when focus is null, else the focus's children. */
 export function deriveModuleTree(
   index: GraphIndex,
   focus: string | null,
-  expanded: ReadonlySet<string>,
+  _expanded: ReadonlySet<string>,
   graph: ModuleGraph,
 ): ModuleTree {
   const effectiveFocus = focus === null ? null : collapseChain(index, focus);
-  if (effectiveFocus === null && expanded.size === 0) {
+  if (effectiveFocus === null) {
     return collapsedOverviewTree(index);
   }
   const roots = frontierRoots(index, effectiveFocus, graph);
-  const skeleton = walk(index, roots, expanded);
+  const skeleton = walk(index, roots);
   const visibleIds = new Set(skeleton.map((entry) => entry.id));
   const lifted = liftEdges(importEdges(graph), visibleIds, index.parentOf);
   const nodes = skeleton.map((entry) => finalize(entry, index, graph, lifted));
@@ -143,8 +140,8 @@ interface Skeleton {
   childCount: number;
 }
 
-/** DFS preorder over the containment tree; a group descends only when it is in `expanded`. */
-function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>): Skeleton[] {
+/** One flat frontier: roots render as top-level cards; group descendants require double-click zoom. */
+function walk(index: GraphIndex, roots: string[]): Skeleton[] {
   const out: Skeleton[] = [];
   const seen = new Set<string>();
   const visit = (id: string, parentId: string | null, depth: number): void => {
@@ -161,11 +158,7 @@ function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>)
     }
     const children = containmentChildren(index, id);
     const isContainer = children.length > 0;
-    const isExpanded = isContainer && expanded.has(id);
-    out.push({ id, parentId, kind: "package", isContainer, isExpanded, depth, childCount: children.length });
-    if (isExpanded) {
-      children.forEach((child) => visit(child, id, depth + 1));
-    }
+    out.push({ id, parentId, kind: "package", isContainer, isExpanded: false, depth, childCount: children.length });
   };
   roots.forEach((id) => visit(id, null, 0));
   return out;

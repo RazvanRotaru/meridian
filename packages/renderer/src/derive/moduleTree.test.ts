@@ -1,8 +1,8 @@
 /**
- * deriveModuleTree: the Module map's inline-expandable containment tree. focus=null is the npm-package
- * overview; expanding a group nests its children (parentId) in DFS preorder; a collapsed sibling stays
- * folded; imports lift to the visible frontier (internal imports self-loop away). Fixtures are
- * hand-built so each rule is pinned exactly (mirrors moduleLevel.test.ts).
+ * deriveModuleTree: the Module map's flat containment level. focus=null is the npm-package overview;
+ * a package focus shows that package's immediate children after chain-collapse. Expanded ids are
+ * ignored so the map stays a map, not an inline tree. Fixtures are hand-built so each rule is pinned
+ * exactly (mirrors moduleLevel.test.ts).
  */
 
 import { describe, expect, it } from "vitest";
@@ -99,33 +99,23 @@ describe("deriveModuleTree — overview (focus null)", () => {
   });
 });
 
-describe("deriveModuleTree — inline expansion", () => {
-  it("expanding a package nests its child under it, in preorder; siblings stay folded", () => {
+describe("deriveModuleTree — no inline expansion", () => {
+  it("ignores expanded package ids at the repository overview", () => {
     const { nodes, edges } = fixture();
     const tree = treeOf(nodes, edges, null, ["ts:pkgA"]);
-    const ids = tree.nodes.map((n) => n.id);
-    // pkgA appears before its child; pkgB/pkgC descendants are absent (collapsed).
-    expect(ids).toEqual(["ts:pkgA", "ts:pkgA/src", "ts:pkgB", "ts:pkgC"]);
-    const src = tree.nodes.find((n) => n.id === "ts:pkgA/src");
-    expect(src?.parentId).toBe("ts:pkgA");
-    expect(src?.isContainer).toBe(true);
-    expect(src?.isExpanded).toBe(false);
-    expect(tree.nodes.find((n) => n.id === "ts:pkgA")?.isExpanded).toBe(true);
+    expect(tree.nodes.map((n) => n.id)).toEqual(["ts:pkgA", "ts:pkgB", "ts:pkgC"]);
+    expect(tree.nodes.every((n) => n.parentId === null && !n.isExpanded)).toBe(true);
   });
 
-  it("expanding down to files nests file cards and lifts imports to the frontier", () => {
+  it("ignores expanded child ids inside a package focus", () => {
     const { nodes, edges } = fixture();
-    const tree = treeOf(nodes, edges, null, ["ts:pkgA", "ts:pkgA/src"]);
-    const files = tree.nodes.filter((n) => n.kind === "file").map((n) => n.id);
-    expect(files).toEqual(["ts:pkgA/src/index.ts", "ts:pkgA/src/util.ts"]);
-    const cli = tree.nodes.find((n) => n.id === "ts:pkgA/src/cli");
-    expect(cli?.parentId).toBe("ts:pkgA/src");
+    const tree = treeOf(nodes, edges, "ts:pkgA", ["ts:pkgA/src/cli"]);
+    expect(tree.nodes.map((n) => n.id)).toEqual(["ts:pkgA/src/index.ts", "ts:pkgA/src/util.ts", "ts:pkgA/src/cli"]);
+    expect(tree.nodes.every((n) => n.parentId === null && !n.isExpanded)).toBe(true);
     const wires = tree.edges.map((e) => `${e.source}->${e.target}:${e.crossFrame}`);
     // index→util is file↔file cohesion (not crossFrame); index→run lifts to the collapsed cli group.
     expect(wires).toContain("ts:pkgA/src/index.ts->ts:pkgA/src/util.ts:false");
     expect(wires).toContain("ts:pkgA/src/index.ts->ts:pkgA/src/cli:true");
-    // the cross-package import lifts to the still-collapsed pkgB package node.
-    expect(wires).toContain("ts:pkgA/src/index.ts->ts:pkgB:true");
   });
 });
 
