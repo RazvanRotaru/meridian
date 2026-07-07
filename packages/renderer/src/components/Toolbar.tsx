@@ -12,13 +12,18 @@ import { TestsToggle } from "./TestsToggle";
 import { CoverageToggle } from "./CoverageToggle";
 import { FlowSelector } from "./FlowSelector";
 import { CompositionPanel } from "./composition/CompositionPanel";
+import { DepthSlider } from "./DepthSlider";
+import { ModuleCategoryToggles } from "./ModuleCategoryToggles";
 
 export function Toolbar(props: { preselectedEnv: string | null }) {
   const targetName = useBlueprint((state) => state.artifact.target.name);
   const hasOverlay = useBlueprint((state) => state.hasOverlay);
-  // The "call" lens IS the Service-composition surface, so the sidebar swaps the call-flow picker
-  // (meaningless there) for the composition map + refactor worklist; ui/logic keep the FlowSelector.
-  const isComposition = useBlueprint((state) => state.viewMode) === "call";
+  // The sidebar swaps its per-lens controls: "call" (Service composition) gets the composition map +
+  // refactor worklist; "modules" (Module map) gets the selection highlight-radius dial + category
+  // toggles; ui/logic keep the call-flow FlowSelector.
+  const viewMode = useBlueprint((state) => state.viewMode);
+  const isComposition = viewMode === "call";
+  const isModules = viewMode === "modules";
   const collapseAll = useBlueprintActions().collapseAll;
   return (
     <Panel position="top-left">
@@ -35,7 +40,16 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
           <CoverageToggle />
         </div>
         <Breadcrumb />
-        {isComposition ? <CompositionPanel /> : <FlowSelector />}
+        {isComposition ? (
+          <CompositionPanel />
+        ) : isModules ? (
+          <>
+            <DepthSlider />
+            <ModuleCategoryToggles />
+          </>
+        ) : (
+          <FlowSelector />
+        )}
         {hasOverlay ? <EnvSelector preselectedEnv={props.preselectedEnv} /> : null}
       </div>
     </Panel>

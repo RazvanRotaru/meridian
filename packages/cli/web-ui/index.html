@@ -10,6 +10,7 @@
     GET  /api/auth/session -> { configured, signedIn, user? }
     POST /api/auth/logout  -> { signedIn:false }
     GET  /api/repos/search?q= -> { repos: [{ fullName, isPrivate, defaultBranch, description, ownerAvatarUrl }] }
+    GET  /api/repos/mine   -> { repos: [same shape] }              (the signed-in user's repos)
     POST /api/generate     -> { id } | { error }
   On generate success we redirect to /view?id=<id>. Every GitHub-sourced string is written via
   textContent and every URL is https-validated before use — repo names/descriptions are untrusted.
@@ -218,17 +219,32 @@
         border-radius: 9px;
         overflow: hidden;
       }
+      /* The search dropdown floats OVER the form (an overlay, like every autocomplete) so
+         opening it never reflows the page underneath. */
+      .search-wrap {
+        position: relative;
+      }
+      .dropdown {
+        position: absolute;
+        top: calc(100% + 6px);
+        left: 0;
+        right: 0;
+        z-index: 20;
+        margin: 0;
+        background: #12171e;
+        max-height: 320px;
+        overflow-y: auto;
+        box-shadow: 0 14px 34px rgba(0, 0, 0, 0.55);
+      }
       .result {
-        display: flex;
-        align-items: baseline;
-        gap: 8px;
+        display: block;
         width: 100%;
         text-align: left;
         background: transparent;
         border: 0;
         border-bottom: 1px solid var(--border);
         color: var(--text);
-        padding: 10px 12px;
+        padding: 9px 12px;
         font-size: 13px;
         cursor: pointer;
       }
@@ -238,15 +254,29 @@
       .result:hover {
         background: #1b222c;
       }
+      .result-top {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
       .result-name {
         font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .result-top .badge {
+        flex-shrink: 0;
       }
       .result-desc {
+        display: block;
+        margin-top: 3px;
         color: var(--muted);
+        font-size: 12px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        flex: 1;
       }
       .badge {
         font-size: 10px;
@@ -256,6 +286,19 @@
         border: 1px solid var(--border);
         border-radius: 999px;
         padding: 1px 7px;
+      }
+      .mine {
+        margin-top: 14px;
+      }
+      .mine-title {
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      .mine-list {
+        margin-top: 0;
+        max-height: 300px;
+        overflow-y: auto;
       }
       button.primary,
       button.ghost {
@@ -336,11 +379,18 @@
 
       <form id="form" autocomplete="off">
         <label for="repo">GitHub repository</label>
-        <input id="repo" name="repo" placeholder="owner/repo  or  https://github.com/owner/repo" />
-        <ul class="results" id="results" hidden></ul>
+        <div class="search-wrap">
+          <input id="repo" name="repo" placeholder="owner/repo  or  https://github.com/owner/repo" />
+          <ul class="results dropdown" id="results" hidden></ul>
+        </div>
         <div class="chips" id="chips">
           <button type="button" class="chip" data-repo="sindresorhus/type-fest">sindresorhus/type-fest</button>
           <button type="button" class="chip" data-repo="sindresorhus/ky">sindresorhus/ky</button>
+        </div>
+
+        <div class="mine" id="mine" hidden>
+          <div class="mine-title">Your repositories</div>
+          <ul class="results mine-list" id="mine-list"></ul>
         </div>
 
         <div class="row">
@@ -445,6 +495,7 @@
         $("signin").hidden = !authConfig.configured;
         $("auth-disabled").hidden = authConfig.configured;
         hideResults();
+        hideMine();
       }
 
       function showSignedIn(user) {
@@ -463,6 +514,7 @@
         } else {
           avatar.hidden = true;
         }
+        loadMyRepos();
       }
 
       async function initAuth() {
@@ -577,8 +629,11 @@
         const button = document.createElement("button");
         button.type = "button";
         button.className = "result";
-        appendText(button, "result-name", repo.fullName);
-        if (repo.isPrivate) appendText(button, "badge", "private");
+        const top = document.createElement("div");
+        top.className = "result-top";
+        appendText(top, "result-name", repo.fullName);
+        if (repo.isPrivate) appendText(top, "badge", "private");
+        button.appendChild(top);
         if (repo.description) appendText(button, "result-desc", repo.description);
         button.addEventListener("click", () => pickRepo(repo));
         item.appendChild(button);
@@ -603,6 +658,38 @@
         const list = $("results");
         list.replaceChildren();
         list.hidden = true;
+      }
+
+      // The dropdown dismisses like any autocomplete: click away or press Escape.
+      document.addEventListener("click", (event) => {
+        if (!event.target.closest(".search-wrap")) hideResults();
+      });
+      $("repo").addEventListener("keydown", (event) => {
+        if (event.key === "Escape") hideResults();
+      });
+
+      // --- your repositories (shown while signed in; same untrusted-text rules as search) ---
+      async function loadMyRepos() {
+        try {
+          const res = await apiGet("/api/repos/mine");
+          if (!res.ok) return hideMine();
+          const data = await res.json();
+          renderMine(Array.isArray(data.repos) ? data.repos : []);
+        } catch {
+          hideMine();
+        }
+      }
+
+      function renderMine(repos) {
+        const list = $("mine-list");
+        list.replaceChildren();
+        for (const repo of repos) list.appendChild(resultItem(repo));
+        $("mine").hidden = repos.length === 0;
+      }
+
+      function hideMine() {
+        $("mine-list").replaceChildren();
+        $("mine").hidden = true;
       }
 
       // --- generate (unchanged contract: a local path wins, else the repo field is GitHub input) ---

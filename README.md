@@ -33,8 +33,11 @@ node packages/cli/dist/bin.js generate ./my-service -o graph.json    # auto-dete
 node packages/cli/dist/bin.js view graph.json --overlay mock --env staging
 ```
 
-Private repos: set `GITHUB_TOKEN` (or paste a token into the local-only field). It stays on your
-machine and is never uploaded, logged, or stored.
+Private repos: click **Sign in with GitHub** on the landing page (device flow — no password, no
+client secret; after approving you also get a **"Your repositories"** picker), or set
+`GITHUB_TOKEN` / paste a token into the local-only field. Tokens stay on your machine and are
+never uploaded, logged, or stored. Sign-in ships preconfigured with the project's OAuth app;
+forks can point at their own via `MERIDIAN_GITHUB_CLIENT_ID` or `--github-client-id`.
 
 ## Gallery
 
@@ -119,7 +122,7 @@ published as JSON Schema at
 | --- | --- |
 | `meridian generate [path]` | Extract a codebase into a graph artifact. `--lang` (auto: `typescript` \| `python`), `-o`, `--depth package\|module\|class\|function`, `--include-external`, `--include`, `--exclude`, `--tsconfig`, `--exclude-tests` (default: tests included, tagged `test`). |
 | `meridian view [graph]` | Serve the renderer on a graph + open the browser. `--port`, `--host`, `--no-open`, `--overlay <file\|mock>`, `--env`. |
-| `meridian web [source]` | Local web UI: paste a **GitHub repo** (`owner/repo` or URL) / local path — clones (`--depth 1`) + extracts + renders. Private repos via `GITHUB_TOKEN`/`GH_TOKEN` or a local-only token field. `--port`, `--host`, `--no-open`. |
+| `meridian web [source]` | Local web UI: paste a **GitHub repo** (`owner/repo` or URL) / local path — clones (`--depth 1`) + extracts + renders. **Sign in with GitHub** (device flow, enabled by default) lists your repositories to pick from; private repos also work via `GITHUB_TOKEN`/`GH_TOKEN` or a local-only token field. `--port`, `--host`, `--no-open`, `--github-client-id`. |
 | `meridian mock-telemetry [graph]` | Mint a deterministic mock overlay. **`--env` is required** (no default, never prod); `-o`, `--seed`. |
 | `meridian coverage [graph]` | Terminal report of the same static coverage the renderer overlays: per-class percentages, every uncovered member with its reason. `--fail-under <pct>` makes it a CI gate (exit 3 below threshold). |
 | `meridian link <graphs...>` | Join two or more artifacts into one **system graph** via their IPC channel keys — HTTP paths unify onto route templates, electron/queue channels match exactly; dangling channels (nobody answers) stay visible. `-o`, `--name`. |

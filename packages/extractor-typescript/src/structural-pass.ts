@@ -4,12 +4,17 @@
  * plus a file-path -> module index the edge pass uses for top-level call sources.
  */
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { SourceFile } from "ts-morph";
 import { moduleDescriptor, packageDescriptor } from "./descriptor-factory";
 import { emitContainer, type EmitContext } from "./member-emit";
 import type { NodeDescriptor } from "./model";
 import { posixDirname } from "./paths";
 import type { LoadedProject } from "./project-loader";
+
+/** Tags a `package` node whose directory holds a package.json — i.e. the owning npm package root. */
+const NPM_PACKAGE_TAG = "npm-package";
 
 export interface StructuralResult {
   descriptors: NodeDescriptor[];
@@ -23,22 +28,32 @@ export function buildStructure(loaded: LoadedProject, lang: string): StructuralR
     return descriptor;
   };
   const relativePaths = loaded.sourceFiles.map(loaded.relativePathOf);
-  const packageByPath = emitPackages(relativePaths, lang, emit);
+  const packageByPath = emitPackages(relativePaths, loaded.root, lang, emit);
   const moduleByFilePath = emitModules(loaded, lang, packageByPath, emit);
   return { descriptors, moduleByFilePath };
 }
 
 function emitPackages(
   relativePaths: string[],
+  root: string,
   lang: string,
   emit: (descriptor: NodeDescriptor) => NodeDescriptor,
 ): Map<string, NodeDescriptor> {
   const byPath = new Map<string, NodeDescriptor>();
   for (const packagePath of orderedPackagePaths(relativePaths)) {
     const parent = byPath.get(posixDirname(packagePath)) ?? null;
-    byPath.set(packagePath, emit(packageDescriptor(lang, packagePath, parent)));
+    const descriptor = tagNpmPackage(packageDescriptor(lang, packagePath, parent), root, packagePath);
+    byPath.set(packagePath, emit(descriptor));
   }
   return byPath;
+}
+
+/** Mark a package node as an owning npm package when its directory carries a package.json. */
+function tagNpmPackage(descriptor: NodeDescriptor, root: string, packagePath: string): NodeDescriptor {
+  if (existsSync(join(root, packagePath, "package.json"))) {
+    descriptor.tags = [...descriptor.tags, NPM_PACKAGE_TAG];
+  }
+  return descriptor;
 }
 
 function emitModules(

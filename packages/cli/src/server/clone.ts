@@ -8,7 +8,7 @@
  * The spawn itself and stderr-scrubbing live in `git-exec`.
  */
 
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { resolveAgainst } from "../paths";
@@ -78,6 +78,8 @@ export function buildCloneArgs(url: string, targetDir: string, opts: { ref?: str
   if (opts.token) {
     args.push("-c", `http.extraHeader=AUTHORIZATION: basic ${base64Auth(opts.token)}`);
   }
+  // Windows checkout dies at MAX_PATH (260 chars) without this; git on other platforms ignores it.
+  args.push("-c", "core.longpaths=true");
   args.push("clone", "--depth", "1", "--single-branch");
   if (opts.ref) {
     args.push("--branch", opts.ref);
@@ -121,7 +123,9 @@ async function cloneGitHub(request: SourceRequest, token?: string): Promise<Reso
     throw new WebError(400, "branch contains illegal characters");
   }
   const url = parseGitHubSource(request.value);
-  const tmpRoot = mkdtempSync(join(tmpdir(), "blueprint-clone-"));
+  // realpath expands Windows 8.3 short names (a short-form %TEMP% is common). A short-name root
+  // makes ts-morph's long-name file paths look outside the project, and extraction finds nothing.
+  const tmpRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "blueprint-clone-")));
   const removeTmp = () => rmSync(tmpRoot, { recursive: true, force: true });
   // Any failure past the mkdtemp — clone, subdir escape, missing subdir — must remove the temp
   // clone; only a successful resolve hands the cleanup responsibility back to the caller.

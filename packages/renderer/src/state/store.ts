@@ -6,6 +6,7 @@
  */
 
 import { createStore, type StoreApi } from "zustand/vanilla";
+import type { Edge, Node } from "@xyflow/react";
 import { computeCoverage } from "@meridian/core";
 import type {
   CoverageReport,
@@ -25,6 +26,9 @@ import { uiFocusTarget } from "../derive/uiFocus";
 import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
+import { deriveModuleLevelLayout } from "./deriveModuleMapLayout";
+import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
+import type { ModuleCategory } from "../derive/moduleCategory";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
@@ -132,6 +136,24 @@ export interface BlueprintState {
   /** Whether the composition scorecards show their SOLID metric rows + smell chips. Off == a
    * structure-only view (kind + name), decluttered. Persisted to localStorage across reloads. */
   showSolidMetrics: boolean;
+  /** The laid-out Module-map LEVEL graph (one containment level, ELK-laid), recomputed whenever the
+   * "modules" lens is (re)entered or the focus changes. */
+  moduleRfNodes: Node[];
+  moduleRfEdges: Edge[];
+  moduleLayoutStatus: LayoutStatus;
+  /** The package/directory node the Module map is zoomed INTO; null == the whole-repo package overview
+   * (level 0). Double-clicking a group card descends; the breadcrumb ascends. */
+  moduleFocus: string | null;
+  /** The node actually rendered from after chain-collapse (a single-child chain auto-descends); null
+   * == the overview. Read by the surface for the containment breadcrumb. */
+  moduleEffectiveFocus: string | null;
+  /** How many import hops the selection lights up — a PAINT-ONLY highlight radius (never a relayout;
+   * containment, not this, bounds what's drawn). GHOST_DEPTH_ALL == the whole connected neighbourhood. */
+  moduleRadius: number;
+  /** Module categories painted OUT of the map (a render-time filter — never a re-derive). */
+  hiddenCategories: Set<ModuleCategory>;
+  /** The selected node id in the Module map; null == none. A repaint-only highlight — no relayout. */
+  moduleSelectedId: string | null;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -179,6 +201,11 @@ export interface BlueprintState {
   setCompRoot(id: string | null): void;
   toggleCompExpand(id: string): void;
   toggleSolidMetrics(): void;
+  moduleRelayout(): Promise<void>;
+  setModuleFocus(id: string | null): void;
+  setModuleRadius(radius: number): void;
+  toggleCategory(category: ModuleCategory): void;
+  selectModule(id: string | null): void;
   setViewMode(mode: ViewMode): void;
   toggleShowTests(): void;
   toggleCoverageMode(): void;
@@ -212,6 +239,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // first layout excludes them. Turning tests ON pays one relayout and sets this latch; from then
   // on the layout keeps tests so hiding again is a pure repaint (no reshuffle), as before.
   let compIncludesTests = false;
+  // And for the Module-map layout, so a newer focus change supersedes an older derivation.
+  let moduleLayoutSeq = 0;
+  // The file import graph, built once on first module-map relayout (the artifact never changes after
+  // boot) and reused for every level — never rebuilt per relayout.
+  let moduleGraph: ModuleGraph | null = null;
   // And for the composition-tab method-preview drawer's logic layout (the EXPERIMENT surface).
   let compMethodLayoutSeq = 0;
   // Null when the server didn't ship source access — the code drawer is then inert.
@@ -262,6 +294,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     compRoot: defaultCompRoot,
     compExpanded: new Set<string>(),
     showSolidMetrics: readSolidMetricsPref(),
+    moduleRfNodes: [],
+    moduleRfEdges: [],
+    moduleLayoutStatus: "idle",
+    moduleFocus: null,
+    moduleEffectiveFocus: null,
+    moduleRadius: 1,
+    hiddenCategories: new Set<ModuleCategory>(),
+    moduleSelectedId: null,
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -572,6 +612,53 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().compRelayout();
     },
 
+    // Re-derive the Module-map LEVEL for the current focus through ELK, behind the same stale-seq
+    // guard. The import graph is built once (cached) and reused for every level. A null focus is the
+    // whole-repo package overview; a package focus is its children with imports folded to them.
+    async moduleRelayout() {
+      const { index, moduleFocus } = get();
+      moduleGraph ??= buildModuleGraph(index);
+      const sequence = ++moduleLayoutSeq;
+      set({ moduleLayoutStatus: "laying-out" });
+      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleGraph);
+      if (moduleLayoutSeq !== sequence) {
+        return; // a newer focus change superseded this one.
+      }
+      set({
+        moduleRfNodes: layout.nodes,
+        moduleRfEdges: layout.edges,
+        moduleEffectiveFocus: layout.effectiveFocus,
+        moduleLayoutStatus: "ready",
+      });
+    },
+
+    // Zoom the Module map into a package/directory (null == back to the whole-repo overview). Clears
+    // the selection (it means nothing at a new level) and re-lays out. A no-op when already there.
+    setModuleFocus(id) {
+      if (get().moduleFocus === id) {
+        return;
+      }
+      set({ moduleFocus: id, moduleSelectedId: null });
+      void get().moduleRelayout();
+    },
+
+    // Set the selection's highlight radius (clamped 1..GHOST_DEPTH_ALL). PAINT-ONLY: the surface
+    // recomputes the lit neighbourhood in a useMemo, so this deliberately does NOT relayout.
+    setModuleRadius(radius) {
+      set({ moduleRadius: Math.max(1, Math.min(GHOST_DEPTH_ALL, Math.trunc(radius))) });
+    },
+
+    // Show/hide a module category. PAINT-ONLY: the surface filters the category's file cards out in
+    // place, so this deliberately does NOT relayout — positions stay stable.
+    toggleCategory(category) {
+      set({ hiddenCategories: withToggledCategory(get().hiddenCategories, category) });
+    },
+
+    // Select a Module-map node (pass null to clear). A repaint-only highlight — no relayout.
+    selectModule(id) {
+      set({ moduleSelectedId: id });
+    },
+
     // Switching mode re-derives + relayouts like a dive. Entering UI mode dives to the render
     // subtree; leaving it returns to call-flow at the focus you had before (home if none). The
     // logic view is a standalone render (no rfNodes/ELK), so it neither dives nor relayouts, and
@@ -583,6 +670,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       if (mode === "logic") {
         set({ viewMode: mode });
+        return;
+      }
+      // The Module map is a standalone surface (its own ELK level layout), so — like logic — it neither
+      // dives nor touches the graph focus; it just flips the mode and lays its own graph out. Clicking
+      // INTO the lens always opens at the whole-repo package overview (level 0), never a focus inherited
+      // from a prior visit. A shared/reloaded deep link is unaffected: it restores via setState on boot
+      // (not this click path), so an explicit ?mfocus=… still opens at that level.
+      if (mode === "modules") {
+        set({ viewMode: mode, moduleFocus: null });
+        void get().moduleRelayout();
         return;
       }
       if (mode === "ui") {
@@ -603,7 +700,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // composition graph's own selection/root — retreat home first.
     toggleShowTests() {
       const showTests = !get().showTests;
-      const { focusId, selectedId, compSelectedId, compRoot, viewMode, index } = get();
+      const { focusId, selectedId, compSelectedId, compRoot, moduleSelectedId, viewMode, index } = get();
       const strandedById = (id: string | null) => !showTests && id !== null && index.testIds.has(id);
       const nextCompRoot = strandedById(compRoot) ? null : compRoot;
       set({
@@ -612,13 +709,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         selectedId: strandedById(selectedId) ? null : selectedId,
         compSelectedId: strandedById(compSelectedId) ? null : compSelectedId,
         compRoot: nextCompRoot,
+        moduleSelectedId: strandedById(moduleSelectedId) ? null : moduleSelectedId,
       });
-      // The composition view hides test cards in place (CompositionView filters the rendered set),
-      // so it must NOT re-lay-out — that would reshuffle production cards, the very thing we avoid.
-      // Two exceptions relayout anyway: the root changed (it pointed into now-hidden test code), or
-      // tests are being shown for the FIRST time and the latched layout doesn't contain them yet.
+      // The composition AND module-map views hide test cards in place (the surface filters the rendered
+      // set), so they must NOT re-lay-out — that would reshuffle production cards. The module map's focus
+      // is a package/dir node (never test-stranded the way a file root was), so it's purely paint-only
+      // here. Composition still relayouts when its OWN root was stranded inside now-hidden test code, or
+      // when tests are shown for the FIRST time and the latched layout doesn't contain them yet.
+      const paintOnlyMode = viewMode === "call" || viewMode === "modules";
+      const compRootChanged = nextCompRoot !== compRoot;
       const needsTestCards = showTests && !compIncludesTests;
-      if (viewMode !== "call" || nextCompRoot !== compRoot || needsTestCards) {
+      if (!paintOnlyMode || compRootChanged || needsTestCards) {
         void get().relayout();
       }
     },
@@ -716,6 +817,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         await get().compRelayout();
         return;
       }
+      // The Module map is its own surface with a synchronous ring layout; route it to moduleRelayout
+      // (this also runs on a boot/back-forward restore into the "modules" lens). "ui" derives below.
+      if (get().viewMode === "modules") {
+        await get().moduleRelayout();
+        return;
+      }
       const sequence = get().layoutSeq + 1;
       set({ layoutSeq: sequence, layoutStatus: "laying-out" });
       const { index, expanded, focusId, viewMode, flowRootId, flowDepth, showTests } = get();
@@ -736,6 +843,17 @@ function withToggled(expanded: Set<string>, nodeId: string): Set<string> {
     next.delete(nodeId);
   } else {
     next.add(nodeId);
+  }
+  return next;
+}
+
+/** Flip a category's membership in the hidden-category set (typed sibling of `withToggled`). */
+function withToggledCategory(hidden: Set<ModuleCategory>, category: ModuleCategory): Set<ModuleCategory> {
+  const next = new Set(hidden);
+  if (next.has(category)) {
+    next.delete(category);
+  } else {
+    next.add(category);
   }
   return next;
 }

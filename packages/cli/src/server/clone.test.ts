@@ -32,9 +32,18 @@ describe("parseGitHubSource", () => {
 describe("buildCloneArgs", () => {
   it("stays anonymous with no token", () => {
     const args = buildCloneArgs("https://github.com/o/r.git", "/tmp/x", {});
-    expect(args).not.toContain("-c");
     expect(args.join(" ")).not.toContain("http.extraHeader");
-    expect(args).toEqual(["clone", "--depth", "1", "--single-branch", "--", "https://github.com/o/r.git", "/tmp/x"]);
+    expect(args).toEqual([
+      "-c",
+      "core.longpaths=true",
+      "clone",
+      "--depth",
+      "1",
+      "--single-branch",
+      "--",
+      "https://github.com/o/r.git",
+      "/tmp/x",
+    ]);
   });
 
   it("injects an Authorization extraHeader from the token, before the subcommand", () => {

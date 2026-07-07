@@ -1,5 +1,5 @@
 /**
- * The `/api/auth/*` and `/api/repos/search` HTTP handlers — the device-flow orchestration that ties
+ * The `/api/auth/*` and `/api/repos/*` HTTP handlers — the device-flow orchestration that ties
  * the GitHub client to the session store. The token stays server-side: responses carry only the
  * user code, the identity, and whitelisted repo summaries. Poll pacing is enforced here (never
  * trusting the browser's cadence) via the pure `pollDue`/`scheduleRetry`/`applySlowDown` helpers.
@@ -70,6 +70,15 @@ export async function handleRepoSearch(
     return;
   }
   sendJson(response, 200, { repos: await requireGitHub(ctx).searchRepos(token, query) });
+}
+
+export async function handleOwnRepos(ctx: AuthContext, request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const token = sessionTokenFor(ctx, request);
+  if (!token) {
+    sendJson(response, 401, { error: "sign in to list your repositories" });
+    return;
+  }
+  sendJson(response, 200, { repos: await requireGitHub(ctx).listOwnRepos(token) });
 }
 
 /** The session token feeding a clone (cookie → session), or undefined when not signed in. */

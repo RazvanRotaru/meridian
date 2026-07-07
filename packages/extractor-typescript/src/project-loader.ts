@@ -13,6 +13,8 @@ import { absoluteRoot, relativeToRoot, isUnderRoot } from "./paths";
 export interface LoadedProject {
   sourceFiles: SourceFile[];
   relativePathOf: (file: SourceFile) => string;
+  /** Absolute extraction root — the structural pass joins package paths onto it to spot package.json. */
+  root: string;
 }
 
 export function loadProject(options: ExtractOptions): LoadedProject {
@@ -23,7 +25,7 @@ export function loadProject(options: ExtractOptions): LoadedProject {
   const sourceFiles = project
     .getSourceFiles()
     .filter((file) => isSelectable(file, relativePathOf(file), excludes));
-  return { sourceFiles, relativePathOf };
+  return { sourceFiles, relativePathOf, root };
 }
 
 function fromTsConfig(tsConfigFilePath: string): Project {
