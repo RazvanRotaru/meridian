@@ -37,6 +37,8 @@ export interface HideOptions {
   hiddenCategories: ReadonlySet<ModuleCategory>;
   showTests: boolean;
   testIds: ReadonlySet<string>;
+  showPrivate: boolean;
+  privateIds: ReadonlySet<string>;
 }
 
 /**
@@ -65,7 +67,7 @@ function hiddenCardIds(nodes: Node[], options: HideOptions): Set<string> {
       hidden.add(node.id);
       continue;
     }
-    if ((node.type === "file" || node.type === "unit" || node.type === "block") && isHidden(node, options)) {
+    if ((node.type === "file" || node.type === "unit" || node.type === "block" || node.type === "ghost") && isHidden(node, options)) {
       hidden.add(node.id);
     }
   }
@@ -74,6 +76,9 @@ function hiddenCardIds(nodes: Node[], options: HideOptions): Set<string> {
 
 function isHidden(node: Node, options: HideOptions): boolean {
   if (!options.showTests && options.testIds.has(node.id)) {
+    return true;
+  }
+  if (!options.showPrivate && options.privateIds.has(node.id)) {
     return true;
   }
   // Unit cards carry no category of their own; they hide with their file frame (subtree closure).
@@ -95,7 +100,7 @@ export function emphasize(nodes: Node[], edges: Edge[], activeId: string | null,
   if (activeId === null || !active) {
     return { nodes, edges: edges.map((edge) => styleEdge(edge, "none")) };
   }
-  if (active.type === "unit" || active.type === "block" || active.type === "step") {
+  if (active.type === "unit" || active.type === "block" || active.type === "step" || active.type === "ghost") {
     return emphasizeDirected(nodes, edges, activeId, radius);
   }
   const near = neighbourhood(edges, activeId, radius);
@@ -196,10 +201,13 @@ function styleEdge(edge: Edge, emphasis: EdgeEmphasis): Edge {
   const stroke = lit ? litStroke(edge, emphasis) : baseStroke(edge);
   // Directed reads MARCH (React Flow's animated dash) so the wire reads as travel, not just reach.
   const animated = emphasis === "downstream" || emphasis === "upstream";
+  // A ghost wire stays dashed at rest — its far end is off-screen context, not a drawn coupling
+  // (the animated march already dashes, so it takes over while lit).
+  const dash = isGhost(edge) && !animated ? { strokeDasharray: "5 4" } : {};
   return {
     ...edge,
     animated,
-    style: { stroke, strokeWidth: lit ? EMPHASIS_WIDTH : BASE_WIDTH, opacity: lit ? 1 : dimOpacity(edge) },
+    style: { stroke, strokeWidth: lit ? EMPHASIS_WIDTH : BASE_WIDTH, opacity: lit ? 1 : dimOpacity(edge), ...dash },
     markerEnd: arrowMarker(stroke, 14),
   };
 }
@@ -238,6 +246,10 @@ function isDep(edge: Edge): boolean {
 
 function isFlow(edge: Edge): boolean {
   return (edge.data as { category?: string } | undefined)?.category === "flow";
+}
+
+function isGhost(edge: Edge): boolean {
+  return (edge.data as { ghost?: boolean } | undefined)?.ghost === true;
 }
 
 function dimNode(node: Node): Node {

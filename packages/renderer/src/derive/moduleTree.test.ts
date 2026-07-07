@@ -57,9 +57,9 @@ function fixture(): { nodes: GraphNode[]; edges: GraphEdge[] } {
   return { nodes, edges };
 }
 
-function treeOf(nodes: GraphNode[], edges: GraphEdge[], focus: string | null, expanded: string[], flows: LogicFlows = {}, hidePrivate = false) {
+function treeOf(nodes: GraphNode[], edges: GraphEdge[], focus: string | null, expanded: string[], flows: LogicFlows = {}) {
   const index = buildGraphIndex({ nodes, edges } as GraphArtifact);
-  return deriveModuleTree(index, focus, new Set(expanded), buildModuleGraph(index), buildBlockDeps(index), flows, hidePrivate);
+  return deriveModuleTree(index, focus, new Set(expanded), buildModuleGraph(index), buildBlockDeps(index), flows);
 }
 
 describe("deriveModuleTree — overview (focus null)", () => {
@@ -246,32 +246,13 @@ describe("deriveModuleTree — code level (the merged composition level)", () =>
   });
 });
 
-describe("deriveModuleTree — private members (the Private toggle)", () => {
-  function privateFixture(): { nodes: GraphNode[]; edges: GraphEdge[] } {
+describe("deriveModuleTree — private members always derive (the Private toggle is paint-only)", () => {
+  it("draws private members and gives them layout space regardless of any toggle", () => {
     const base = unitFixture();
     const nextId = { ...node("ts:pkg/src/svc.ts#OrderService.nextId", "method", "ts:pkg/src/svc.ts#OrderService", "nextId"), tags: ["private"] } as GraphNode;
-    return {
-      nodes: [...base.nodes, nextId],
-      edges: [...base.edges, callEdge("ts:pkg/src/svc.ts#OrderService.place", "ts:pkg/src/svc.ts#OrderService.nextId")],
-    };
-  }
-
-  it("draws private members by default", () => {
-    const { nodes, edges } = privateFixture();
-    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts"]);
+    const tree = treeOf([...base.nodes, nextId], base.edges, "ts:pkg", ["ts:pkg/src/svc.ts"]);
     expect(tree.nodes.some((n) => n.id === "ts:pkg/src/svc.ts#OrderService.nextId")).toBe(true);
     expect(tree.nodes.find((n) => n.kind === "unit")?.childCount).toBe(2);
-  });
-
-  it("hidePrivate drops the tagged member at DERIVE time and the member count stays honest", () => {
-    const { nodes, edges } = privateFixture();
-    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts"], {}, true);
-    expect(tree.nodes.some((n) => n.id === "ts:pkg/src/svc.ts#OrderService.nextId")).toBe(false);
-    expect(tree.nodes.find((n) => n.kind === "unit")?.childCount).toBe(1);
-    // The place→nextId call lifts to the hidden member's own frame and drops — no wire into the void
-    // and no self-frame wire; the cross-file dep is untouched.
-    const deps = tree.edges.filter((e) => e.category === "dep").map((e) => `${e.source}->${e.target}`);
-    expect(deps).toEqual(["ts:pkg/src/svc.ts#OrderService.place->ts:pkg/src/pay.ts"]);
   });
 });
 
@@ -308,11 +289,94 @@ describe("deriveModuleTree — constructions anchor at the constructor block", (
     expect(deps).toContain("step:ts:pkg/src/svc.ts#OrderService.place:0->ts:pkg/src/pay.ts#PaymentGateway.constructor");
   });
 
+  it("a `new X()` step expands into the CONSTRUCTOR's charted flow (targets resolve through the ctor)", () => {
+    const { nodes, edges } = ctorFixture();
+    const placeId = "ts:pkg/src/svc.ts#OrderService.place";
+    const newStep = `step:${placeId}:0`;
+    const flows: LogicFlows = {
+      [placeId]: [{ kind: "call", label: "PaymentGateway", target: "ts:pkg/src/pay.ts#PaymentGateway", resolution: "resolved" }],
+      "ts:pkg/src/pay.ts#PaymentGateway.constructor": [{ kind: "call", label: "init", target: null, resolution: "unresolved" }],
+    };
+    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts", placeId, newStep], flows);
+    expect(tree.nodes.find((n) => n.id === newStep)?.isContainer).toBe(true);
+    expect(tree.nodes.filter((n) => n.parentId === newStep).map((n) => n.id)).toEqual([`step:${newStep}:0`]);
+  });
+
   it("with the target file collapsed the construction wire still folds to the file card", () => {
     const { nodes, edges } = ctorFixture();
     const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts"]);
     const deps = tree.edges.filter((e) => e.category === "dep").map((e) => `${e.source}->${e.target}`);
     expect(deps).toEqual(["ts:pkg/src/svc.ts#OrderService.place->ts:pkg/src/pay.ts"]);
+  });
+});
+
+describe("deriveModuleTree — ghost relationships (off-screen endpoints)", () => {
+  // pkg{src{orders{svc.ts#OrderService.place}, billing{pay.ts#PaymentGateway.charge}}} — the call
+  // CROSSES directories, so focusing one side leaves the other end off-screen.
+  function ghostFixture(): { nodes: GraphNode[]; edges: GraphEdge[] } {
+    const nodes = [
+      npmPkg("ts:pkg", "pkg"),
+      node("ts:pkg/src", "package", "ts:pkg", "src"),
+      node("ts:pkg/src/orders", "package", "ts:pkg/src", "orders"),
+      node("ts:pkg/src/orders/svc.ts", "module", "ts:pkg/src/orders", "svc.ts"),
+      node("ts:pkg/src/orders/svc.ts#OrderService", "class", "ts:pkg/src/orders/svc.ts", "OrderService"),
+      node("ts:pkg/src/orders/svc.ts#OrderService.place", "method", "ts:pkg/src/orders/svc.ts#OrderService", "place"),
+      node("ts:pkg/src/billing", "package", "ts:pkg/src", "billing"),
+      node("ts:pkg/src/billing/pay.ts", "module", "ts:pkg/src/billing", "pay.ts"),
+      node("ts:pkg/src/billing/pay.ts#PaymentGateway", "class", "ts:pkg/src/billing/pay.ts", "PaymentGateway"),
+      node("ts:pkg/src/billing/pay.ts#PaymentGateway.charge", "method", "ts:pkg/src/billing/pay.ts#PaymentGateway", "charge"),
+    ];
+    const edges = [
+      importEdge("ts:pkg/src/orders/svc.ts", "ts:pkg/src/billing/pay.ts"),
+      callEdge("ts:pkg/src/orders/svc.ts#OrderService.place", "ts:pkg/src/billing/pay.ts#PaymentGateway.charge"),
+    ];
+    return { nodes, edges };
+  }
+
+  it("an off-screen DEPENDENCY charts as a ghost card wired from the drawn call site", () => {
+    const { nodes, edges } = ghostFixture();
+    const tree = treeOf(nodes, edges, "ts:pkg/src/orders", ["ts:pkg/src/orders/svc.ts"]);
+    const ghost = tree.nodes.find((n) => n.kind === "ghost");
+    expect(ghost?.id).toBe("ts:pkg/src/billing/pay.ts#PaymentGateway.charge");
+    expect(ghost?.parentId).toBeNull();
+    const wires = tree.edges.filter((e) => e.ghost).map((e) => `${e.source}->${e.target}`);
+    expect(wires).toEqual(["ts:pkg/src/orders/svc.ts#OrderService.place->ts:pkg/src/billing/pay.ts#PaymentGateway.charge"]);
+    // The lifted dep projection itself drew nothing (the endpoint left the canvas) — only the ghost.
+    expect(tree.edges.filter((e) => e.category === "dep" && !e.ghost)).toHaveLength(0);
+  });
+
+  it("an off-screen CALLER charts as a ghost wired INTO the drawn definition", () => {
+    const { nodes, edges } = ghostFixture();
+    const tree = treeOf(nodes, edges, "ts:pkg/src/billing", ["ts:pkg/src/billing/pay.ts"]);
+    const ghost = tree.nodes.find((n) => n.kind === "ghost");
+    expect(ghost?.id).toBe("ts:pkg/src/orders/svc.ts#OrderService.place");
+    const wires = tree.edges.filter((e) => e.ghost).map((e) => `${e.source}->${e.target}`);
+    expect(wires).toEqual(["ts:pkg/src/orders/svc.ts#OrderService.place->ts:pkg/src/billing/pay.ts#PaymentGateway.charge"]);
+  });
+
+  it("draws no ghost when both endpoints are on screen", () => {
+    const { nodes, edges } = ghostFixture();
+    const tree = treeOf(nodes, edges, "ts:pkg/src", ["ts:pkg/src/orders", "ts:pkg/src/billing", "ts:pkg/src/orders/svc.ts", "ts:pkg/src/billing/pay.ts"]);
+    expect(tree.nodes.some((n) => n.kind === "ghost")).toBe(false);
+  });
+
+  it("an expanded block's off-screen call ghosts from its STEP, not doubled from the frame", () => {
+    const { nodes, edges } = ghostFixture();
+    const flows: LogicFlows = {
+      "ts:pkg/src/orders/svc.ts#OrderService.place": [
+        { kind: "call", label: "charge", target: "ts:pkg/src/billing/pay.ts#PaymentGateway.charge", resolution: "resolved" },
+      ],
+    };
+    const tree = treeOf(nodes, edges, "ts:pkg/src/orders", ["ts:pkg/src/orders/svc.ts", "ts:pkg/src/orders/svc.ts#OrderService.place"], flows);
+    const wires = tree.edges.filter((e) => e.ghost).map((e) => `${e.source}->${e.target}`);
+    expect(wires).toEqual(["step:ts:pkg/src/orders/svc.ts#OrderService.place:0->ts:pkg/src/billing/pay.ts#PaymentGateway.charge"]);
+  });
+
+  it("never ghosts an endpoint the artifact does not know (ext:/unresolved: pseudo-ids)", () => {
+    const { nodes, edges } = ghostFixture();
+    const withExt = [...edges, callEdge("ts:pkg/src/orders/svc.ts#OrderService.place", "ext:stripe#charge")];
+    const tree = treeOf(nodes, withExt, "ts:pkg/src/orders", ["ts:pkg/src/orders/svc.ts"]);
+    expect(tree.nodes.filter((n) => n.kind === "ghost").map((n) => n.id)).toEqual(["ts:pkg/src/billing/pay.ts#PaymentGateway.charge"]);
   });
 });
 
@@ -347,6 +411,44 @@ describe("deriveModuleTree — flow steps charted in place (POC)", () => {
     const deps = tree.edges.filter((e) => e.category === "dep").map((e) => `${e.source}->${e.target}`);
     // The step (not the expanded block) is the wire's anchor; the target folds to its file card.
     expect(deps).toEqual(["step:ts:pkg/src/svc.ts#OrderService.place:1->ts:pkg/src/pay.ts"]);
+  });
+
+  it("a resolved call step with a charted callee flow expands RECURSIVELY — the callee's steps chart inside it", () => {
+    const { nodes, edges } = unitFixture();
+    const placeId = "ts:pkg/src/svc.ts#OrderService.place";
+    const chargeId = "ts:pkg/src/pay.ts#PaymentGateway.charge";
+    const callStep = `step:${placeId}:0`;
+    const flows: LogicFlows = {
+      [placeId]: [{ kind: "call", label: "charge", target: chargeId, resolution: "resolved" }],
+      [chargeId]: [
+        { kind: "call", label: "audit", target: null, resolution: "unresolved" },
+        { kind: "loop", label: "for (attempt of retries)", body: [{ kind: "call", label: "post", target: null, resolution: "unresolved" }] },
+      ],
+    };
+    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts", placeId, callStep], flows);
+    const step = tree.nodes.find((n) => n.id === callStep);
+    expect(step?.isContainer).toBe(true);
+    expect(step?.isExpanded).toBe(true);
+    // The callee's steps nest INSIDE the call step, chained in execution order.
+    expect(tree.nodes.filter((n) => n.parentId === callStep).map((n) => n.id)).toEqual([`step:${callStep}:0`, `step:${callStep}:1`]);
+    const chain = tree.edges.filter((e) => e.category === "flow").map((e) => `${e.source}->${e.target}`);
+    expect(chain).toContain(`step:${callStep}:0->step:${callStep}:1`);
+    // The callee's own loop (a non-empty body) is a container the reader can open one level deeper.
+    expect(tree.nodes.find((n) => n.id === `step:${callStep}:1`)?.isContainer).toBe(true);
+    // The expanded call keeps its wire to the definition — the frame still says where the code lives.
+    const deps = tree.edges.filter((e) => e.category === "dep").map((e) => `${e.source}->${e.target}`);
+    expect(deps).toContain(`${callStep}->ts:pkg/src/pay.ts`);
+  });
+
+  it("a construct step's body unrolls in place when its id joins the expansion set", () => {
+    const { nodes, edges } = unitFixture();
+    const placeId = "ts:pkg/src/svc.ts#OrderService.place";
+    const loopStep = `step:${placeId}:0`;
+    const flows: LogicFlows = {
+      [placeId]: [{ kind: "loop", label: "for (line of lines)", body: [{ kind: "call", label: "priceLine", target: null, resolution: "unresolved" }] }],
+    };
+    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts", placeId, loopStep], flows);
+    expect(tree.nodes.filter((n) => n.parentId === loopStep).map((n) => n.id)).toEqual([`step:${loopStep}:0`]);
   });
 
   it("a collapsed block keeps its own frame-level dep wire (no steps drawn)", () => {

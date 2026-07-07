@@ -1,16 +1,15 @@
 /**
- * The "Private" visibility switch for the Map lens: one click removes every `private`-tagged
- * member block (a class's internal helpers) from the drawn frames, one click brings them back.
- * A DERIVE-level filter — frames resize and member counts stay honest — so flipping it relayouts.
- * Disabled — but still visible, as an honest "none found" — when nothing is tagged private.
+ * The "Private" visibility switch for the Map lens: one click stops painting every `private`-tagged
+ * member block (a class's internal helpers), one click brings them back. PAINT-ONLY, like the Tests
+ * toggle — privates keep their layout space, so toggling never moves a card. Disabled — but still
+ * visible, as an honest "none found" — when nothing is tagged private.
  */
 
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
-import type { BlueprintState } from "../state/store";
 
 export function PrivateToggle() {
   const showPrivate = useBlueprint((state) => state.showPrivate);
-  const privateCount = useBlueprint(countPrivateMembers);
+  const privateCount = useBlueprint((state) => state.index.privateIds.size);
   const togglePrivateMembers = useBlueprintActions().togglePrivateMembers;
   const none = privateCount === 0;
   return (
@@ -25,16 +24,6 @@ export function PrivateToggle() {
       {showPrivate && !none ? "◉" : "◎"} Private {none ? "(none)" : `(${privateCount})`}
     </button>
   );
-}
-
-function countPrivateMembers(state: BlueprintState): number {
-  let count = 0;
-  for (const node of state.index.nodesById.values()) {
-    if (node.tags?.includes("private")) {
-      count += 1;
-    }
-  }
-  return count;
 }
 
 function toggleStyle(active: boolean, disabled: boolean): React.CSSProperties {

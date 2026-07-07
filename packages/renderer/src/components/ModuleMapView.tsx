@@ -33,13 +33,14 @@ export function ModuleMapView() {
   const index = useBlueprint((state) => state.index);
   const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
   const showTests = useBlueprint((state) => state.showTests);
+  const showPrivate = useBlueprint((state) => state.showPrivate);
   const hasExpansions = useBlueprint((state) => state.moduleExpanded.size > 0);
-  const { selectModule, setModuleFocus, openLogicFlow, expandAllModules, collapseAll } = useBlueprintActions();
+  const { selectModule, setModuleFocus, openLogicFlow, revealModule, expandAllModules, collapseAll } = useBlueprintActions();
 
   // Category/test hiding is a pure VISIBILITY filter over the laid-out graph; positions are untouched.
   const { nodes: shownNodes, edges: shownEdges } = useMemo(
-    () => filterVisible(nodes, edges, { hiddenCategories, showTests, testIds: index.testIds }),
-    [nodes, edges, hiddenCategories, showTests, index.testIds],
+    () => filterVisible(nodes, edges, { hiddenCategories, showTests, testIds: index.testIds, showPrivate, privateIds: index.privateIds }),
+    [nodes, edges, hiddenCategories, showTests, showPrivate, index.testIds, index.privateIds],
   );
   // Emphasis is a second pure repaint: dim by default, light the selection's N-hop import reach.
   const { nodes: styledNodes, edges: styledEdges } = useMemo(
@@ -49,10 +50,13 @@ export function ModuleMapView() {
 
   const onNodeClick: NodeMouseHandler<Node> = (_event, node) => selectModule(node.id);
   // Double-click a GROUP card (a package/directory) zooms into it; a callable BLOCK opens its logic
-  // flow (the map→logic link); everything else only selects. The breadcrumb is the way back up.
+  // flow (the map→logic link); a GHOST reveals its off-screen definition (the Map refocuses where it
+  // lives); everything else only selects. The breadcrumb is the way back up.
   const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
     if (node.type === PACKAGE_KIND) {
       setModuleFocus(node.id);
+    } else if (node.type === "ghost") {
+      revealModule(node.id);
     } else if (node.type === "block" && (node.data as BlockData).callable) {
       openLogicFlow(node.id);
     } else {
@@ -121,7 +125,7 @@ function miniMapColor(node: Node): string {
   if (node.type === "block") {
     return accentForKind((node.data as BlockData).blockKind);
   }
-  if (node.type === "step") {
+  if (node.type === "step" || node.type === "ghost") {
     return "#565E68";
   }
   return CATEGORY_COLOR[(node.data as ModuleCardData).category];

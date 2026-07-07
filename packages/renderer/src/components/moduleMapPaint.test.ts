@@ -6,7 +6,16 @@
 
 import { describe, expect, it } from "vitest";
 import type { Edge, Node } from "@xyflow/react";
-import { emphasize, filterVisible } from "./moduleMapPaint";
+import { emphasize, filterVisible, type HideOptions } from "./moduleMapPaint";
+
+/** Baseline options with nothing hidden; tests override the one filter they exercise. */
+const SHOW_ALL: HideOptions = {
+  hiddenCategories: new Set(),
+  showTests: true,
+  testIds: new Set(),
+  showPrivate: true,
+  privateIds: new Set(),
+};
 
 function fileNode(id: string, extra?: Partial<Node>): Node {
   return { id, type: "file", position: { x: 0, y: 0 }, data: { category: "app", isExpanded: false }, ...extra } as Node;
@@ -26,7 +35,7 @@ describe("filterVisible — subtree closure", () => {
     const nodes = [frame, unitNode("ts:t.test.ts#Helper", "ts:t.test.ts"), fileNode("ts:prod.ts")];
     const edges = [edge("ts:t.test.ts", "ts:prod.ts"), edge("ts:t.test.ts#Helper", "ts:prod.ts")];
     const testIds = new Set(["ts:t.test.ts", "ts:t.test.ts#Helper"]);
-    const shown = filterVisible(nodes, edges, { hiddenCategories: new Set(), showTests: false, testIds });
+    const shown = filterVisible(nodes, edges, { ...SHOW_ALL, showTests: false, testIds });
     expect(shown.nodes.map((n) => n.id)).toEqual(["ts:prod.ts"]);
     expect(shown.edges).toEqual([]);
   });
@@ -34,8 +43,20 @@ describe("filterVisible — subtree closure", () => {
   it("hides an expanded file's unit cards with it when its category is toggled off", () => {
     const frame = fileNode("ts:cfg.ts", { data: { category: "config", isExpanded: true } });
     const nodes = [frame, unitNode("ts:cfg.ts#Settings", "ts:cfg.ts"), fileNode("ts:prod.ts")];
-    const shown = filterVisible(nodes, [], { hiddenCategories: new Set(["config"]), showTests: true, testIds: new Set() });
+    const shown = filterVisible(nodes, [], { ...SHOW_ALL, hiddenCategories: new Set(["config"]) });
     expect(shown.nodes.map((n) => n.id)).toEqual(["ts:prod.ts"]);
+  });
+
+  it("hides private blocks (and their wires) in place when the Private toggle is off", () => {
+    const frame = fileNode("ts:svc.ts", { data: { category: "app", isExpanded: true } });
+    const priv: Node = { id: "ts:svc.ts#S.helper", type: "block", position: { x: 0, y: 0 }, parentId: "ts:svc.ts", data: { blockKind: "method" } } as Node;
+    const pub: Node = { id: "ts:svc.ts#S.run", type: "block", position: { x: 0, y: 0 }, parentId: "ts:svc.ts", data: { blockKind: "method" } } as Node;
+    const nodes = [frame, priv, pub];
+    const edges = [edge("ts:svc.ts#S.run", "ts:svc.ts#S.helper")];
+    const shown = filterVisible(nodes, edges, { ...SHOW_ALL, showPrivate: false, privateIds: new Set(["ts:svc.ts#S.helper"]) });
+    // The private block vanishes IN PLACE — the frame and its sibling keep their positions.
+    expect(shown.nodes.map((n) => n.id)).toEqual(["ts:svc.ts", "ts:svc.ts#S.run"]);
+    expect(shown.edges).toEqual([]);
   });
 });
 

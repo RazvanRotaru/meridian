@@ -28,6 +28,7 @@ import { basename, blockData, collapseChain, fileData, unitData, type BlockData,
 import { containmentChildren, frontierRoots, subtreeFileCount } from "./moduleFrontier";
 import { BLOCK_KINDS, constructionTarget, liftDepEdges, UNIT_CARD_KINDS, type BlockDeps } from "./blockDeps";
 import { emitFlowSteps, type StepData } from "./flowSteps";
+import { ghostDepWires, nearestVisible, type GhostData } from "./ghostDeps";
 import { liftEdges } from "./liftEdges";
 
 const MODULE_KIND = "module";
@@ -40,12 +41,12 @@ export type ModuleGroupData = ModulePackageData & { isContainer: boolean; isExpa
 export interface VisibleModuleNode {
   id: string;
   parentId: string | null;
-  kind: "package" | "file" | "unit" | "block" | "step";
+  kind: "package" | "file" | "unit" | "block" | "step" | "ghost";
   isContainer: boolean;
   isExpanded: boolean;
   depth: number;
   childCount: number;
-  data: ModuleGroupData | ModuleCardData | UnitCardData | BlockData | StepData;
+  data: ModuleGroupData | ModuleCardData | UnitCardData | BlockData | StepData | GhostData;
 }
 
 /** A wire between two visible nodes. `category` "import" is the file/package import graph;
@@ -58,6 +59,8 @@ export interface ModuleTreeEdge {
   weight: number;
   crossFrame: boolean;
   category: "import" | "dep" | "flow";
+  /** The far endpoint is a GHOST card (an off-screen definition/caller) — drawn dashed. */
+  ghost?: boolean;
 }
 
 export interface ModuleTree {
@@ -68,8 +71,8 @@ export interface ModuleTree {
 }
 
 /** The containment tree to draw for `(focus, expanded)`: overview when null, else the focus subtree.
- * `hidePrivate` drops `private`-tagged member/declaration blocks at DERIVE time, so frames resize
- * and member counts stay honest (unlike the paint-only category/test filters). */
+ * Private members are ALWAYS derived and laid out — the Private toggle hides them at PAINT time
+ * (like Tests/categories), so every toggle holds positions still and nothing ever reshuffles. */
 export function deriveModuleTree(
   index: GraphIndex,
   focus: string | null,
@@ -77,40 +80,70 @@ export function deriveModuleTree(
   graph: ModuleGraph,
   blockDeps: BlockDeps,
   flows: LogicFlows,
-  hidePrivate = false,
 ): ModuleTree {
   const effectiveFocus = focus === null ? null : collapseChain(index, focus);
   const roots = frontierRoots(index, effectiveFocus, graph);
-  const walked = walk(index, roots, expanded, flows, hidePrivate);
+  const walked = walk(index, roots, expanded, flows);
   const skeleton = walked.skeleton;
   const visibleIds = new Set(skeleton.map((entry) => entry.id));
   const lifted = liftEdges(importEdges(graph), visibleIds, index.parentOf);
   const nodes = skeleton.map((entry) => finalize(entry, index, graph, lifted, walked.stepData));
   const kinds = kindsOf(skeleton);
+  const ghosts = ghostLevel(blockDeps, walked, visibleIds, index, kinds);
   const edges = [
     ...importTreeEdges(lifted, kinds),
     ...depTreeEdges(blockDeps, visibleIds, index, kinds, walked.expandedBlocks),
     ...flowChainEdges(walked),
     ...stepCallEdges(walked, visibleIds, index),
+    ...ghosts.edges,
   ].sort((a, b) => a.id.localeCompare(b.id));
-  return { nodes, edges, effectiveFocus };
+  return { nodes: [...nodes, ...ghosts.nodes], edges, effectiveFocus };
+}
+
+/** Off-screen relationships charted as detached GHOST cards + dashed wires — derived only when a
+ * code node is drawn (the ghosts tell the CODE level's story; file levels keep the import graph). */
+function ghostLevel(
+  blockDeps: BlockDeps,
+  walked: WalkResult,
+  visibleIds: ReadonlySet<string>,
+  index: GraphIndex,
+  kinds: Map<string, Skeleton["kind"]>,
+): { nodes: VisibleModuleNode[]; edges: ModuleTreeEdge[] } {
+  const isCode = (id: string) => kinds.get(id) === "unit" || kinds.get(id) === "block";
+  if (![...kinds.values()].some((kind) => kind === "unit" || kind === "block")) {
+    return { nodes: [], edges: [] };
+  }
+  const emission = ghostDepWires(blockDeps, walked.calls, visibleIds, index, isCode, walked.expandedBlocks);
+  const nodes: VisibleModuleNode[] = [...emission.ghosts.entries()].map(([id, data]) => ({
+    id,
+    parentId: null,
+    kind: "ghost",
+    isContainer: false,
+    isExpanded: false,
+    depth: 0,
+    childCount: 0,
+    data,
+  }));
+  const edges: ModuleTreeEdge[] = emission.wires.map((wire) => ({
+    id: `gdep:${wire.source}->${wire.target}`,
+    source: wire.source,
+    target: wire.target,
+    weight: wire.weight,
+    crossFrame: false,
+    category: "dep",
+    ghost: true,
+  }));
+  return { nodes, edges };
 }
 
 /** A file's drawn declarations — the code level a file card expands to. Source order. */
-function declChildren(index: GraphIndex, fileId: string, hidePrivate: boolean): GraphNode[] {
-  return index
-    .childrenOf(fileId)
-    .filter((child) => (UNIT_CARD_KINDS.has(child.kind) || BLOCK_KINDS.has(child.kind)) && !(hidePrivate && isPrivate(child)));
+function declChildren(index: GraphIndex, fileId: string): GraphNode[] {
+  return index.childrenOf(fileId).filter((child) => UNIT_CARD_KINDS.has(child.kind) || BLOCK_KINDS.has(child.kind));
 }
 
 /** A unit's drawn members: its callable/type children, each a block node inside the frame. */
-function memberChildren(index: GraphIndex, unitId: string, hidePrivate: boolean): GraphNode[] {
-  return index.childrenOf(unitId).filter((child) => BLOCK_KINDS.has(child.kind) && !(hidePrivate && isPrivate(child)));
-}
-
-/** Visibility rides the open `tags` vocabulary — extractors tag members `private`/`public`. */
-function isPrivate(node: GraphNode): boolean {
-  return node.tags?.includes("private") === true;
+function memberChildren(index: GraphIndex, unitId: string): GraphNode[] {
+  return index.childrenOf(unitId).filter((child) => BLOCK_KINDS.has(child.kind));
 }
 
 interface Skeleton {
@@ -137,7 +170,7 @@ interface WalkResult {
 }
 
 /** DFS preorder over the containment tree; a group/file descends only when it is in `expanded`. */
-function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>, flows: LogicFlows, hidePrivate: boolean): WalkResult {
+function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>, flows: LogicFlows): WalkResult {
   const out: Skeleton[] = [];
   const stepData = new Map<string, StepData>();
   const chains: WalkResult["chains"] = [];
@@ -165,7 +198,7 @@ function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>,
     }
   };
   const visitFile = (id: string, parentId: string | null, depth: number): void => {
-    const decls = declChildren(index, id, hidePrivate);
+    const decls = declChildren(index, id);
     const isContainer = decls.length > 0;
     const isExpanded = isContainer && expanded.has(id);
     out.push({ id, parentId, kind: "file", isContainer, isExpanded, depth, childCount: decls.length });
@@ -181,7 +214,7 @@ function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>,
       visitBlock(decl.id, parentId, depth);
       return;
     }
-    const members = memberChildren(index, decl.id, hidePrivate);
+    const members = memberChildren(index, decl.id);
     const isFrame = members.length > 0;
     out.push({ id: decl.id, parentId, kind: "unit", isContainer: isFrame, isExpanded: isFrame, depth, childCount: members.length });
     members.forEach((member) => {
@@ -200,10 +233,21 @@ function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>,
       return;
     }
     expandedBlocks.add(id);
-    const emission = emitFlowSteps(id, flow);
+    // The emission recurses into every step the reader expanded (nested step ids live in the same
+    // `expanded` set), so a call step opens its callee's flow and a construct opens its body. Call
+    // targets resolve constructions to the constructor block, whose flow (and drawn node) is real.
+    const emission = emitFlowSteps(id, flow, flows, expanded, (target) => constructionTarget(target, index));
     emission.steps.forEach((step) => {
       stepData.set(step.id, step.data);
-      out.push({ id: step.id, parentId: id, kind: "step", isContainer: false, isExpanded: false, depth: depth + 1, childCount: 0 });
+      out.push({
+        id: step.id,
+        parentId: step.parentId,
+        kind: "step",
+        isContainer: step.data.isContainer,
+        isExpanded: step.data.isExpanded,
+        depth: depth + step.depth,
+        childCount: 0,
+      });
     });
     chains.push(...emission.chain);
     emission.calls.forEach((call) => calls.push({ stepId: call.stepId, blockId: id, target: call.target }));
@@ -335,12 +379,12 @@ function flowChainEdges(walked: WalkResult): ModuleTreeEdge[] {
 }
 
 /** A resolved call step's wire OUT to its target's drawn definition (dropped when the target lifts
- * back into the step's own block — a recursive call needs no wire to its own frame). A step whose
- * target is a UNIT is a construction (`new X()`), so it anchors at the drawn constructor block. */
+ * back into the step's own block — a recursive call needs no wire to its own frame). Constructions
+ * arrive already resolved to the constructor block (the emitter's resolveTarget). */
 function stepCallEdges(walked: WalkResult, visibleIds: ReadonlySet<string>, index: GraphIndex): ModuleTreeEdge[] {
   const edges: ModuleTreeEdge[] = [];
   for (const call of walked.calls) {
-    const target = nearestVisible(constructionTarget(call.target, index), visibleIds, index);
+    const target = nearestVisible(call.target, visibleIds, index);
     if (target === null || target === call.blockId || index.isWithinFocus(target, call.blockId)) {
       continue;
     }
@@ -354,18 +398,4 @@ function stepCallEdges(walked: WalkResult, visibleIds: ReadonlySet<string>, inde
     });
   }
   return edges;
-}
-
-/** Walk parentId up to the nearest drawn ancestor-or-self; null when the chain leaves the canvas. */
-function nearestVisible(startId: string, visibleIds: ReadonlySet<string>, index: GraphIndex): string | null {
-  const seen = new Set<string>();
-  let current: string | null | undefined = startId;
-  while (current && !seen.has(current)) {
-    if (visibleIds.has(current)) {
-      return current;
-    }
-    seen.add(current);
-    current = index.parentOf.get(current) ?? null;
-  }
-  return null;
 }

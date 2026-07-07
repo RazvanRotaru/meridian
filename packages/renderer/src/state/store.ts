@@ -154,8 +154,8 @@ export interface BlueprintState {
   /** Group cards the reader expanded IN PLACE (their children nest inside the card), mirroring the
    * Logic tab's inline expand. A relayout concern — flipping membership re-lays out the nested tree. */
   moduleExpanded: Set<string>;
-  /** Whether `private`-tagged members are drawn on the Map. A DERIVE-level filter (frames resize and
-   * member counts stay honest), unlike the paint-only category/test toggles. */
+  /** Whether `private`-tagged members are painted on the Map. PAINT-ONLY like Tests/categories —
+   * privates always get their space in the layout, so toggling never reshuffles positions. */
   showPrivate: boolean;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
@@ -206,6 +206,7 @@ export interface BlueprintState {
   moduleRelayout(): Promise<void>;
   setModuleFocus(id: string | null): void;
   toggleModuleExpand(nodeId: string): void;
+  revealModule(nodeId: string): void;
   expandAllModules(): void;
   togglePrivateMembers(): void;
   setModuleRadius(radius: number): void;
@@ -603,13 +604,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // guard. The import graph is built once (cached) and reused for every level. A null focus is the
     // whole-repo package overview; a package focus is its children with imports folded to them.
     async moduleRelayout() {
-      const { index, moduleFocus, moduleExpanded, artifact, showPrivate } = get();
+      const { index, moduleFocus, moduleExpanded, artifact } = get();
       moduleGraph ??= buildModuleGraph(index);
       blockDeps ??= buildBlockDeps(index);
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
-      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, moduleGraph, blockDeps, flows, !showPrivate);
+      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, moduleGraph, blockDeps, flows);
       if (moduleLayoutSeq !== sequence) {
         return; // a newer focus change superseded this one.
       }
@@ -640,19 +641,38 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().moduleRelayout();
     },
 
-    // Expand EVERYTHING reachable from the current level: run the (pure, sync) tree derive to a
-    // fixpoint, adding every drawn container that isn't open yet — each pass reveals the next nesting
-    // level (dirs → files → blocks-with-flows), so the loop terminates when a pass adds nothing. The
-    // expansion set only grows and is bounded by the artifact, so termination is structural.
+    // REVEAL a code node the reader can't see (a ghost card's real definition): refocus the Map at
+    // the directory it lives in, with its file expanded so the symbol is actually drawn, selected.
+    // The Map-native "go to definition" — a deliberate focus jump, so prior expansions reset like
+    // any setModuleFocus navigation.
+    revealModule(nodeId) {
+      const ancestors = get().index.ancestorsOf(nodeId);
+      const file = ancestors.find((node) => node.kind === "module");
+      const directory = [...ancestors].reverse().find((node) => node.kind === "package");
+      set({
+        moduleFocus: directory?.id ?? null,
+        moduleExpanded: new Set<string>(file ? [file.id] : []),
+        moduleSelectedId: nodeId,
+      });
+      void get().moduleRelayout();
+    },
+
+    // Expand EVERYTHING down to the CODE level from the current view: run the (pure, sync) tree
+    // derive to a fixpoint, adding every drawn CONTAINMENT container (dirs → files) that isn't open
+    // yet. Flow frames — function/method blocks and their nested steps — stay closed: charting every
+    // flow at once is noise, and the reader unrolls those one call at a time. The expansion set only
+    // grows and is bounded by the artifact, so termination is structural.
     expandAllModules() {
-      const { index, moduleFocus, artifact, showPrivate } = get();
+      const { index, moduleFocus, artifact } = get();
       moduleGraph ??= buildModuleGraph(index);
       blockDeps ??= buildBlockDeps(index);
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const expanded = new Set(get().moduleExpanded);
       for (;;) {
-        const tree = deriveModuleTree(index, moduleFocus, expanded, moduleGraph, blockDeps, flows, !showPrivate);
-        const fresh = tree.nodes.filter((node) => node.isContainer && !node.isExpanded).map((node) => node.id);
+        const tree = deriveModuleTree(index, moduleFocus, expanded, moduleGraph, blockDeps, flows);
+        const fresh = tree.nodes
+          .filter((node) => node.isContainer && !node.isExpanded && (node.kind === "package" || node.kind === "file"))
+          .map((node) => node.id);
         if (fresh.length === 0) {
           break;
         }
@@ -662,15 +682,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().moduleRelayout();
     },
 
-    // Show/hide `private`-tagged members. A derive-level filter (frames resize), so it relayouts. A
-    // selection about to be hidden retreats first — mirroring toggleShowTests's stranding rule.
+    // Show/hide `private`-tagged members. PAINT-ONLY — privates keep their layout space, the surface
+    // just stops painting them — so positions never reshuffle (the same contract as Tests/categories).
+    // A selection about to be hidden retreats first, mirroring toggleShowTests's stranding rule.
     togglePrivateMembers() {
       const showPrivate = !get().showPrivate;
       const { moduleSelectedId, index } = get();
-      const stranded =
-        !showPrivate && moduleSelectedId !== null && index.nodesById.get(moduleSelectedId)?.tags?.includes("private") === true;
+      const stranded = !showPrivate && moduleSelectedId !== null && index.privateIds.has(moduleSelectedId);
       set({ showPrivate, moduleSelectedId: stranded ? null : moduleSelectedId });
-      void get().moduleRelayout();
     },
 
     // Set the selection's highlight radius (clamped 1..GHOST_DEPTH_ALL). PAINT-ONLY: the surface
