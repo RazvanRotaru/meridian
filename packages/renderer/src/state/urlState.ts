@@ -41,7 +41,7 @@ const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "
 
 /** The navigation state the app boots into — the baseline a restore resets absent keys back to. */
 export const DEFAULT_NAV: NavState = {
-  viewMode: "call",
+  viewMode: "modules",
   focusId: null,
   compRoot: null,
   selectedId: null,
@@ -104,7 +104,7 @@ export function navFrom(state: NavSource): NavState {
 /** Encode to key->value pairs, omitting every field left at its default (keeps URLs minimal). */
 export function encodeNav(nav: NavState): Map<string, string> {
   const out = new Map<string, string>();
-  if (nav.viewMode !== "call") out.set("view", nav.viewMode);
+  if (nav.viewMode !== "modules") out.set("view", nav.viewMode);
   setId(out, "focus", nav.focusId);
   setId(out, "root", nav.compRoot);
   setId(out, "sel", nav.selectedId);

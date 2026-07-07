@@ -17,7 +17,8 @@ import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes, CATEGORY_COLOR } from "./nodes/modulemap/ModuleCardNode";
 import { filterVisible, emphasize } from "./moduleMapPaint";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
-import type { ModuleCardData } from "../derive/moduleLevel";
+import { accentForKind } from "../theme/kindColors";
+import type { ModuleCardData, UnitCardData } from "../derive/moduleLevel";
 import type { GraphIndex } from "../graph/graphIndex";
 
 const PACKAGE_KIND = "package";
@@ -164,11 +165,15 @@ function EmptyModuleMapCard(props: { focus: string | null }) {
   );
 }
 
-// The MiniMap gets untyped `Node`s: a group card reads as a blue package tone, each file dot tints by
-// its category (the same palette as the cards) so a level stays legible at overview zoom.
+// The MiniMap gets untyped `Node`s: a group card reads as a blue package tone, a unit dot tints by
+// its kind, each file dot by its category (the same palette as the cards) so a level stays legible
+// at overview zoom.
 function miniMapColor(node: Node): string {
   if (node.type === PACKAGE_KIND) {
     return "#5B9BE3";
+  }
+  if (node.type === "unit") {
+    return accentForKind((node.data as UnitCardData).unitKind);
   }
   return CATEGORY_COLOR[(node.data as ModuleCardData).category];
 }

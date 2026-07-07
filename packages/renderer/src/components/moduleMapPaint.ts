@@ -13,11 +13,18 @@ import type { ModuleCardData } from "../derive/moduleLevel";
 import type { ModuleCategory } from "../derive/moduleCategory";
 
 // A cross-frame import (a group is involved) is the coupling signal (warm gold); a same-level
-// file↔file import is expected cohesion (a quiet grey that recedes).
+// file↔file import is expected cohesion (a quiet grey that recedes). Unit-dependency wires are
+// violet — a separate story from imports — and light in their own accent so selecting a unit
+// highlights the edges to its service dependencies' DEFINITIONS distinctly.
 const CROSS_FRAME_COLOR = "#C9A24B";
 const INTERNAL_COLOR = "#5B6675";
+const DEP_COLOR = "#7C6FBF";
+const DEP_ACCENT = "#A78BFA";
 const SELECT_ACCENT = "#6BE38A";
 const DIM_EDGE_OPACITY = 0.12;
+// Dependency wires stay faintly readable even unselected, so expanding a file immediately shows
+// where its units' dependencies point.
+const DIM_DEP_OPACITY = 0.3;
 const DIM_NODE_OPACITY = 0.28;
 const BASE_WIDTH = 1.5;
 const EMPHASIS_WIDTH = 2.5;
@@ -31,7 +38,9 @@ export interface HideOptions {
 /**
  * Drop the file cards a filter hides (a category toggled off, or test code with tests hidden) and
  * the wires touching them — WITHOUT moving anything. Group cards are never category-hidden (a
- * directory has no single category), so the level's structure holds.
+ * directory has no single category), so the level's structure holds. Hiding closes over drawn
+ * DESCENDANTS: an expanded file frame that hides takes its nested unit cards with it, so the
+ * toggle's contract holds and React Flow never sees a child whose parent frame vanished.
  */
 export function filterVisible(nodes: Node[], edges: Edge[], options: HideOptions): { nodes: Node[]; edges: Edge[] } {
   const hidden = hiddenCardIds(nodes, options);
@@ -45,8 +54,14 @@ export function filterVisible(nodes: Node[], edges: Edge[], options: HideOptions
 
 function hiddenCardIds(nodes: Node[], options: HideOptions): Set<string> {
   const hidden = new Set<string>();
+  // Nodes arrive parents-before-children (a React Flow requirement), so one pass both applies the
+  // filters and closes hiding over each hidden card's drawn subtree via parentId membership.
   for (const node of nodes) {
-    if (node.type === "file" && isHidden(node, options)) {
+    if (node.parentId && hidden.has(node.parentId)) {
+      hidden.add(node.id);
+      continue;
+    }
+    if ((node.type === "file" || node.type === "unit") && isHidden(node, options)) {
       hidden.add(node.id);
     }
   }
@@ -57,6 +72,7 @@ function isHidden(node: Node, options: HideOptions): boolean {
   if (!options.showTests && options.testIds.has(node.id)) {
     return true;
   }
+  // Unit cards carry no category of their own; they hide with their file frame (subtree closure).
   return options.hiddenCategories.has((node.data as ModuleCardData).category);
 }
 
@@ -66,7 +82,9 @@ function isHidden(node: Node, options: HideOptions): boolean {
  * full opacity and every node outside it fades. `radius` 1 = direct neighbours (the default reach).
  */
 export function emphasize(nodes: Node[], edges: Edge[], activeId: string | null, radius: number): { nodes: Node[]; edges: Edge[] } {
-  if (activeId === null) {
+  // A selection that is no longer drawn (its frame collapsed, its card filtered away) must read as
+  // "nothing selected" — otherwise every node dims with nothing highlighted.
+  if (activeId === null || !nodes.some((node) => node.id === activeId)) {
     return { nodes, edges: edges.map((edge) => styleEdge(edge, false)) };
   }
   const near = neighbourhood(edges, activeId, radius);
@@ -98,17 +116,23 @@ function pushNeighbour(from: string, to: string, frontier: string[], reached: Se
 }
 
 function styleEdge(edge: Edge, lit: boolean): Edge {
-  const color = isCrossFrame(edge) ? CROSS_FRAME_COLOR : INTERNAL_COLOR;
-  const stroke = lit ? SELECT_ACCENT : color;
+  const dep = isDep(edge);
+  const color = dep ? DEP_COLOR : isCrossFrame(edge) ? CROSS_FRAME_COLOR : INTERNAL_COLOR;
+  const stroke = lit ? (dep ? DEP_ACCENT : SELECT_ACCENT) : color;
+  const dimOpacity = dep ? DIM_DEP_OPACITY : DIM_EDGE_OPACITY;
   return {
     ...edge,
-    style: { stroke, strokeWidth: lit ? EMPHASIS_WIDTH : BASE_WIDTH, opacity: lit ? 1 : DIM_EDGE_OPACITY },
+    style: { stroke, strokeWidth: lit ? EMPHASIS_WIDTH : BASE_WIDTH, opacity: lit ? 1 : dimOpacity },
     markerEnd: arrowMarker(stroke, 14),
   };
 }
 
 function isCrossFrame(edge: Edge): boolean {
   return (edge.data as { crossFrame?: boolean } | undefined)?.crossFrame === true;
+}
+
+function isDep(edge: Edge): boolean {
+  return (edge.data as { category?: string } | undefined)?.category === "dep";
 }
 
 function dimNode(node: Node): Node {

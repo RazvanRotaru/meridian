@@ -28,6 +28,7 @@ import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
 import { deriveModuleLevelLayout } from "./deriveModuleMapLayout";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
+import { buildUnitDeps, type UnitDeps } from "../derive/unitDeps";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
@@ -237,6 +238,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // The file import graph, built once on first module-map relayout (the artifact never changes after
   // boot) and reused for every level — never rebuilt per relayout.
   let moduleGraph: ModuleGraph | null = null;
+  // The unit-dependency substrate (class→class coupling), built once for the same reason.
+  let unitDeps: UnitDeps | null = null;
   // And for the composition-tab method-preview drawer's logic layout (the EXPERIMENT surface).
   let compMethodLayoutSeq = 0;
   // Null when the server didn't ship source access — the code drawer is then inert.
@@ -254,7 +257,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     expanded: new Set<string>(),
     selectedId: null,
     focusId: null,
-    viewMode: "call",
+    // The Map (merged module-map + composition) is the default lens.
+    viewMode: "modules",
     showTests: true,
     coverageMode: false,
     coverage: null,
@@ -314,8 +318,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().relayout();
     },
 
+    // Collapse every inline expansion of the ACTIVE surface: the Map's own expansion set on the
+    // modules lens (its primary gesture), the call/ui graph's `expanded` otherwise. relayout()
+    // routes to the right layout pass either way.
     collapseAll() {
-      set({ expanded: new Set<string>() });
+      if (get().viewMode === "modules") {
+        set({ moduleExpanded: new Set<string>(), moduleSelectedId: null });
+      } else {
+        set({ expanded: new Set<string>() });
+      }
       void get().relayout();
     },
 
@@ -587,9 +598,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     async moduleRelayout() {
       const { index, moduleFocus, moduleExpanded } = get();
       moduleGraph ??= buildModuleGraph(index);
+      unitDeps ??= buildUnitDeps(index);
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
-      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, moduleGraph);
+      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, moduleGraph, unitDeps);
       if (moduleLayoutSeq !== sequence) {
         return; // a newer focus change superseded this one.
       }
@@ -786,9 +798,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     async relayout() {
       // The "call" lens IS the Service-composition graph now (not the old call graph), so route its
-      // layout to compRelayout and skip the deriveLayout path entirely. This runs on the boot relayout
-      // (viewMode starts "call") and whenever setViewMode re-enters "call", so composition populates
-      // on first load and on every tab-switch back with no separate trigger. "ui" still derives below.
+      // layout to compRelayout and skip the deriveLayout path entirely. This runs whenever setViewMode
+      // (re-)enters "call" — NOT at boot, which starts on the "modules" lens and routes below — so
+      // composition lays out on first tab-switch in. "ui" still derives below.
       if (get().viewMode === "call") {
         await get().compRelayout();
         return;

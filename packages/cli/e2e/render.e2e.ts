@@ -44,9 +44,21 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     server?.kill("SIGINT");
   });
 
+  it("renders the Map (package overview) as the default lens, with no console/page errors", async () => {
+    // The default "modules" lens is the Map: the whole-repo package overview (group cards).
+    expect(await page.locator(".react-flow__node").count()).toBeGreaterThan(0);
+    expect(await page.locator('button:has-text("Map")').count()).toBe(1);
+    expect(consoleErrors).toEqual([]);
+    expect(pageErrors).toEqual([]);
+  });
+
   it("renders the Service-composition scorecards wired by couplings, with no console/page errors", async () => {
-    // The default "call" lens is the composition graph: unit scorecards drawn at once (no
-    // progressive disclosure) and coupling wires between them.
+    // The composition lens is one click away: unit scorecards drawn at once (no progressive
+    // disclosure) and coupling wires between them.
+    await page.click('button:has-text("Service composition")');
+    // Wait on a composition-only marker (a scorecard's members band), not a raw node count the
+    // outgoing Map lens could also satisfy.
+    await page.waitForSelector('.react-flow__node:has-text("members")');
     expect(await page.locator(".react-flow__node").count()).toBeGreaterThan(5);
     expect(await page.locator(".react-flow__edge").count()).toBeGreaterThan(0);
     expect(consoleErrors).toEqual([]);

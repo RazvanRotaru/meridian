@@ -10,6 +10,7 @@ import type { Edge, Node } from "@xyflow/react";
 import type { GraphIndex } from "../graph/graphIndex";
 import { deriveModuleTree } from "../derive/moduleTree";
 import type { ModuleGraph } from "../derive/moduleGraph";
+import type { UnitDeps } from "../derive/unitDeps";
 import { layoutModuleTree } from "../layout/moduleLevelLayout";
 
 export interface ModuleLevelLayout {
@@ -24,8 +25,9 @@ export async function deriveModuleLevelLayout(
   focus: string | null,
   expanded: ReadonlySet<string>,
   graph: ModuleGraph,
+  unitDeps: UnitDeps,
 ): Promise<ModuleLevelLayout> {
-  const tree = deriveModuleTree(index, focus, expanded, graph);
+  const tree = deriveModuleTree(index, focus, expanded, graph, unitDeps);
   const { nodes, edges } = await layoutModuleTree(tree.nodes, tree.edges);
   return { nodes, edges, effectiveFocus: tree.effectiveFocus };
 }

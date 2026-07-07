@@ -8,10 +8,10 @@ import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import type { ViewMode } from "../derive/edgeSelection";
 
 const SEGMENTS: ReadonlyArray<{ mode: ViewMode; label: string }> = [
+  { mode: "modules", label: "Map" },
   { mode: "call", label: "Service composition" },
   { mode: "ui", label: "UI composition" },
   { mode: "logic", label: "Logic flow" },
-  { mode: "modules", label: "Module map" },
 ];
 
 export function ViewModeToggle() {

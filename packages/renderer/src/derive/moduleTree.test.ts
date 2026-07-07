@@ -9,6 +9,8 @@ import { describe, expect, it } from "vitest";
 import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { buildModuleGraph } from "./moduleGraph";
+import { buildUnitDeps } from "./unitDeps";
+import type { ModuleCardData, UnitCardData } from "./moduleLevel";
 import { deriveModuleTree, type ModuleGroupData } from "./moduleTree";
 
 function node(id: string, kind: string, parentId?: string, displayName?: string): GraphNode {
@@ -57,7 +59,7 @@ function fixture(): { nodes: GraphNode[]; edges: GraphEdge[] } {
 
 function treeOf(nodes: GraphNode[], edges: GraphEdge[], focus: string | null, expanded: string[]) {
   const index = buildGraphIndex({ nodes, edges } as GraphArtifact);
-  return deriveModuleTree(index, focus, new Set(expanded), buildModuleGraph(index));
+  return deriveModuleTree(index, focus, new Set(expanded), buildModuleGraph(index), buildUnitDeps(index));
 }
 
 describe("deriveModuleTree — overview (focus null)", () => {
@@ -124,5 +126,93 @@ describe("deriveModuleTree — package focus", () => {
     // Frontier children in source order (index, util, cli); all top-level (no drawn parent).
     expect(tree.nodes.map((n) => n.id)).toEqual(["ts:pkgA/src/index.ts", "ts:pkgA/src/util.ts", "ts:pkgA/src/cli"]);
     expect(tree.nodes.every((n) => n.parentId === null)).toBe(true);
+  });
+});
+
+function callEdge(source: string, target: string): GraphEdge {
+  return { id: `calls:${source}->${target}`, source, target, kind: "calls", resolution: "resolved" } as GraphEdge;
+}
+
+// pkg{src{svc.ts{OrderService{place}}, pay.ts{PaymentGateway{charge}}}} — place() calls charge().
+function unitFixture(): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const nodes = [
+    npmPkg("ts:pkg", "pkg"),
+    node("ts:pkg/src", "package", "ts:pkg", "src"),
+    node("ts:pkg/src/svc.ts", "module", "ts:pkg/src", "svc.ts"),
+    node("ts:pkg/src/svc.ts#OrderService", "class", "ts:pkg/src/svc.ts", "OrderService"),
+    node("ts:pkg/src/svc.ts#OrderService.place", "method", "ts:pkg/src/svc.ts#OrderService", "place"),
+    node("ts:pkg/src/pay.ts", "module", "ts:pkg/src", "pay.ts"),
+    node("ts:pkg/src/pay.ts#PaymentGateway", "class", "ts:pkg/src/pay.ts", "PaymentGateway"),
+    node("ts:pkg/src/pay.ts#PaymentGateway.charge", "method", "ts:pkg/src/pay.ts#PaymentGateway", "charge"),
+  ];
+  const edges = [
+    importEdge("ts:pkg/src/svc.ts", "ts:pkg/src/pay.ts"),
+    callEdge("ts:pkg/src/svc.ts#OrderService.place", "ts:pkg/src/pay.ts#PaymentGateway.charge"),
+  ];
+  return { nodes, edges };
+}
+
+describe("deriveModuleTree — overview fallback (no npm-package tags)", () => {
+  it("falls back to the topmost directory roots so a single-project artifact is never blank", () => {
+    const nodes = [
+      node("ts:src", "package", undefined, "src"),
+      node("ts:src/a.ts", "module", "ts:src", "a.ts"),
+      node("ts:src/b.ts", "module", "ts:src", "b.ts"),
+    ];
+    const edges = [importEdge("ts:src/a.ts", "ts:src/b.ts")];
+    const tree = treeOf(nodes, edges, null, []);
+    expect(tree.nodes.map((n) => n.id)).toEqual(["ts:src"]);
+    expect(tree.nodes[0].kind).toBe("package");
+  });
+});
+
+describe("deriveModuleTree — unit level (the merged composition level)", () => {
+  it("a file declaring units is a container; collapsed it draws no unit cards", () => {
+    const { nodes, edges } = unitFixture();
+    const tree = treeOf(nodes, edges, "ts:pkg", []);
+    const svc = tree.nodes.find((n) => n.id === "ts:pkg/src/svc.ts");
+    expect(svc?.kind).toBe("file");
+    expect(svc?.isContainer).toBe(true);
+    expect((svc?.data as ModuleCardData).unitCount).toBe(1);
+    expect(tree.nodes.some((n) => n.kind === "unit")).toBe(false);
+  });
+
+  it("expanding a file nests its unit cards with members and dependency units", () => {
+    const { nodes, edges } = unitFixture();
+    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts"]);
+    const unit = tree.nodes.find((n) => n.kind === "unit");
+    expect(unit?.id).toBe("ts:pkg/src/svc.ts#OrderService");
+    expect(unit?.parentId).toBe("ts:pkg/src/svc.ts");
+    const data = unit?.data as UnitCardData;
+    expect(data.label).toBe("OrderService");
+    expect(data.unitKind).toBe("class");
+    expect(data.members).toEqual([{ id: "ts:pkg/src/svc.ts#OrderService.place", name: "place" }]);
+    expect(data.deps).toEqual([{ id: "ts:pkg/src/pay.ts#PaymentGateway", label: "PaymentGateway" }]);
+  });
+
+  it("draws a dep wire from the unit to its dependency's definition, lifted to the visible frontier", () => {
+    const { nodes, edges } = unitFixture();
+    // pay.ts stays collapsed, so the definition wire lands on the pay.ts FILE card.
+    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts"]);
+    const deps = tree.edges.filter((e) => e.category === "dep");
+    expect(deps).toHaveLength(1);
+    expect(deps[0].source).toBe("ts:pkg/src/svc.ts#OrderService");
+    expect(deps[0].target).toBe("ts:pkg/src/pay.ts");
+  });
+
+  it("with both files expanded the dep wire reaches the dependency's own unit card", () => {
+    const { nodes, edges } = unitFixture();
+    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts", "ts:pkg/src/pay.ts"]);
+    const deps = tree.edges.filter((e) => e.category === "dep");
+    expect(deps.map((e) => `${e.source}->${e.target}`)).toEqual([
+      "ts:pkg/src/svc.ts#OrderService->ts:pkg/src/pay.ts#PaymentGateway",
+    ]);
+  });
+
+  it("draws no dep wires while no unit card is on screen (file↔file is the import graph's story)", () => {
+    const { nodes, edges } = unitFixture();
+    const tree = treeOf(nodes, edges, "ts:pkg", []);
+    expect(tree.edges.filter((e) => e.category === "dep")).toHaveLength(0);
+    expect(tree.edges.filter((e) => e.category === "import")).toHaveLength(1);
   });
 });
