@@ -13,6 +13,7 @@ function emptyNav(): NavState {
     flowRootId: null,
     flowDepth: null,
     logicRoot: null,
+    logicView: "graph",
     logicStack: [],
     expanded: [],
     moduleFocus: null,
@@ -32,6 +33,13 @@ describe("urlState", () => {
   it("encodes nothing for the default state", () => {
     expect(encodeNav(emptyNav()).size).toBe(0);
     expect(mergeNavIntoSearch("", emptyNav())).toBe("");
+  });
+
+  it("round-trips the logic sub-view, omitting the default and rejecting junk", () => {
+    const nav: NavState = { ...emptyNav(), viewMode: "logic", logicRoot: "ts:src/a.ts#f", logicView: "metro" };
+    expect(roundTrip(nav).logicView).toBe("metro");
+    expect(encodeNav(emptyNav()).has("lview")).toBe(false);
+    expect(decodeNav(new URLSearchParams("lview=bogus")).logicView).toBeUndefined();
   });
 
   it("round-trips a ui-graph view (focus, selection, expansion)", () => {
@@ -192,6 +200,7 @@ function storeShape() {
     flowRootId: null,
     flowDepth: null,
     logicRoot: null,
+    logicView: "graph" as const,
     logicStack: [] as string[],
     expanded: new Set<string>(),
     moduleFocus: null,

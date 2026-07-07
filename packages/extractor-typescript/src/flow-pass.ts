@@ -15,11 +15,12 @@
  */
 
 import { Node } from "ts-morph";
-import type { CallExpression, NewExpression, SourceFile } from "ts-morph";
+import type { CallExpression, NewExpression, ReturnStatement, SourceFile, ThrowStatement } from "ts-morph";
 import type { FlowStep, LogicFlows } from "@meridian/core";
+import { createCallAnnotator } from "./call-annotations";
 import { inlineCallbackSteps, iterationCall, iterationSteps, jsxHandlerSteps } from "./callback-steps";
 import { controlStep } from "./control-steps";
-import { calleeName } from "./flow-labels";
+import { calleeName, truncate } from "./flow-labels";
 import { bodyOf, type FlowWalker } from "./flow-walker";
 import { resolveTarget } from "./edge-resolve";
 import type { NodeDescriptor } from "./model";
@@ -48,7 +49,9 @@ export function buildLogicFlows(
       continue;
     }
     const steps = stepsOf(descriptor, moduleSourcesById, walker);
-    if (steps.length > 0) {
+    // Exit steps alone don't make a flow worth charting — `function f() { return 0; }` stays
+    // omitted, exactly as it was before returns were charted at all.
+    if (steps.some((step) => step.kind !== "exit")) {
       flows[descriptor.finalId] = steps;
     }
   }
@@ -86,6 +89,7 @@ function createWalker(index: ResolutionIndex): FlowWalker {
     index,
     walk: (node, depth) => walk(node, walker, depth),
     walkBody: (body, depth) => walkBody(body, walker, depth),
+    annotate: createCallAnnotator(),
   };
   return walker;
 }
@@ -112,7 +116,24 @@ function walk(node: Node, walker: FlowWalker, depth: number): FlowStep[] {
   if (Node.isCallExpression(node) || Node.isNewExpression(node)) {
     return callSteps(node, walker, depth);
   }
+  if (Node.isReturnStatement(node) || Node.isThrowStatement(node)) {
+    return exitSteps(node, walker, depth);
+  }
   return descend(node, walker, depth);
+}
+
+// The returned/thrown expression runs FIRST (its calls chart in order), then the path ends: an
+// explicit `exit` step, so downstream views can tell a guard that leaves from a branch that falls
+// through — the difference between "this then-path rejoins" and "the rest is really the else".
+function exitSteps(node: ReturnStatement | ThrowStatement, walker: FlowWalker, depth: number): FlowStep[] {
+  const steps = descend(node, walker, depth);
+  const expression = node.getExpression();
+  steps.push({
+    kind: "exit",
+    variant: Node.isReturnStatement(node) ? "return" : "throw",
+    label: expression ? truncate(expression.getText()) : null,
+  });
+  return steps;
 }
 
 /** Collapse this node to nothing, but keep looking inside it for calls. */
@@ -134,7 +155,7 @@ function callSteps(node: CallExpression | NewExpression, walker: FlowWalker, dep
   const label = calleeName(callee);
   if (label) {
     const resolution = resolveTarget(callee, walker.index);
-    steps.push({ kind: "call", label, target: resolution.resolvedTarget, resolution: resolution.resolution });
+    steps.push({ kind: "call", label, target: resolution.resolvedTarget, resolution: resolution.resolution, ...walker.annotate(node) });
   }
   steps.push(...inlineCallbackSteps(node, label, walker, depth));
   return steps;

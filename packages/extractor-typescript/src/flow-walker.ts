@@ -5,7 +5,9 @@
  */
 
 import { Node } from "ts-morph";
+import type { CallExpression, NewExpression } from "ts-morph";
 import type { FlowStep } from "@meridian/core";
+import type { CallAnnotations } from "./call-annotations";
 import type { ResolutionIndex } from "./resolution-index";
 
 export interface FlowWalker {
@@ -14,6 +16,8 @@ export interface FlowWalker {
   walk(node: Node, depth: number): FlowStep[];
   /** Walk a callable/control BODY: a block statement-by-statement, or a single expression. */
   walkBody(body: Node, depth: number): FlowStep[];
+  /** Awaited/detached flags for a call step (memoized per walker — see call-annotations). */
+  annotate(node: CallExpression | NewExpression): CallAnnotations;
 }
 
 /** The node to walk: a function's block itself, or an arrow/function-expression's body. */

@@ -212,17 +212,18 @@ function allCallLabels(steps: FlowStep[]): string[] {
   return steps.flatMap((step) => {
     if (step.kind === "call") return [step.label];
     if (step.kind === "loop" || step.kind === "callback") return allCallLabels(step.body);
-    return step.paths.flatMap((path) => allCallLabels(path.body));
+    if (step.kind === "branch") return step.paths.flatMap((path) => allCallLabels(path.body));
+    return [];
   });
 }
 
 // Every callback-step label anywhere in a flow tree.
 function collectCallbackLabels(steps: FlowStep[]): string[] {
   return steps.flatMap((step) => {
-    if (step.kind === "call") return [];
     if (step.kind === "callback") return [step.label, ...collectCallbackLabels(step.body)];
     if (step.kind === "loop") return collectCallbackLabels(step.body);
-    return step.paths.flatMap((path) => collectCallbackLabels(path.body));
+    if (step.kind === "branch") return step.paths.flatMap((path) => collectCallbackLabels(path.body));
+    return [];
   });
 }
 
@@ -291,7 +292,8 @@ describe("inline callback bodies (gap C)", () => {
     const steps = flowIn("hooks.tsx", "Dashboard");
     // A hook call is a top-level `call`; its body is a NESTED `callback` step naming the receiver —
     // never a flat sibling, so a handed-over callback is never mistaken for load-time execution.
-    expect(steps.map((step) => step.kind)).toEqual(["call", "callback", "call", "callback", "callback"]);
+    // The trailing `exit` is the component's `return <jsx>`, charted like any other return.
+    expect(steps.map((step) => step.kind)).toEqual(["call", "callback", "call", "callback", "callback", "exit"]);
     const useEffectCallback = steps[1];
     expect(useEffectCallback).toMatchObject({ kind: "callback", label: "callback → useEffect" });
     if (useEffectCallback.kind === "callback") {

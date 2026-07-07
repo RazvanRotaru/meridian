@@ -11,6 +11,7 @@
  */
 
 import type { ViewMode } from "../derive/edgeSelection";
+import { isLogicViewMode, type LogicViewMode } from "../derive/flowViewModel";
 
 /** The URL-worthy slice of the store — mirrors the navigation fields of BlueprintState. */
 export interface NavState {
@@ -23,6 +24,8 @@ export interface NavState {
   flowRootId: string | null;
   flowDepth: number | null;
   logicRoot: string | null;
+  /** The Logic-flow projection on screen (exec graph by default) — see store.logicView. */
+  logicView: LogicViewMode;
   logicStack: string[];
   expanded: string[];
   /** The Module-map focus: the package/dir node zoomed into; null == the whole-repo overview. */
@@ -37,7 +40,7 @@ export interface NavState {
 }
 
 /** Every param key we own — listed once so `mergeNavIntoSearch` can clear them before rewriting. */
-const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "lroot", "lstack", "expand", "mfocus", "mexp", "mdepth", "mhide", "env"] as const;
+const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "lroot", "lview", "lstack", "expand", "mfocus", "mexp", "mdepth", "mhide", "env"] as const;
 
 /** The navigation state the app boots into — the baseline a restore resets absent keys back to. */
 export const DEFAULT_NAV: NavState = {
@@ -50,6 +53,7 @@ export const DEFAULT_NAV: NavState = {
   flowRootId: null,
   flowDepth: null,
   logicRoot: null,
+  logicView: "graph",
   logicStack: [],
   expanded: [],
   moduleFocus: null,
@@ -70,6 +74,7 @@ interface NavSource {
   flowRootId: string | null;
   flowDepth: number | null;
   logicRoot: string | null;
+  logicView: LogicViewMode;
   logicStack: readonly string[];
   expanded: ReadonlySet<string>;
   moduleFocus: string | null;
@@ -91,6 +96,7 @@ export function navFrom(state: NavSource): NavState {
     flowRootId: state.flowRootId,
     flowDepth: state.flowDepth,
     logicRoot: state.logicRoot,
+    logicView: state.logicView,
     logicStack: [...state.logicStack],
     expanded: [...state.expanded].sort(),
     moduleFocus: state.moduleFocus,
@@ -113,6 +119,7 @@ export function encodeNav(nav: NavState): Map<string, string> {
   setId(out, "flow", nav.flowRootId);
   if (nav.flowDepth !== null) out.set("depth", String(nav.flowDepth));
   setId(out, "lroot", nav.logicRoot);
+  if (nav.logicView !== "graph") out.set("lview", nav.logicView);
   setList(out, "lstack", nav.logicStack);
   setList(out, "expand", nav.expanded);
   setId(out, "mfocus", nav.moduleFocus);
@@ -137,6 +144,8 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   const depth = params.get("depth");
   if (depth !== null && !Number.isNaN(Number(depth))) out.flowDepth = Number(depth);
   assignId(params, "lroot", out, "logicRoot");
+  const logicView = params.get("lview");
+  if (logicView !== null && isLogicViewMode(logicView)) out.logicView = logicView;
   assignList(params, "lstack", out, "logicStack");
   assignList(params, "expand", out, "expanded");
   assignId(params, "mfocus", out, "moduleFocus");
@@ -174,6 +183,8 @@ export function isNavigationChange(prev: NavState, next: NavState): boolean {
     prev.moduleFocus !== next.moduleFocus ||
     prev.flowRootId !== next.flowRootId ||
     prev.logicRoot !== next.logicRoot ||
+    // logicView is deliberately absent: a sub-view flip is a presentation change (replaceState,
+    // like a selection), so Back never replays tab switches — or their full-graph relayouts.
     prev.logicStack.join(",") !== next.logicStack.join(",")
   );
 }

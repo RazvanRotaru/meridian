@@ -151,7 +151,7 @@ function collectCallTargets(steps: FlowStep[], targets: Set<string>): void {
       }
     } else if (step.kind === "loop" || step.kind === "callback") {
       collectCallTargets(step.body, targets);
-    } else {
+    } else if (step.kind === "branch") {
       for (const path of step.paths) {
         collectCallTargets(path.body, targets);
       }
