@@ -17,7 +17,8 @@ const API_ROOT = "https://api.github.com";
 const SCOPE = "repo";
 const REQUEST_TIMEOUT_MS = 10_000;
 const SEARCH_PER_PAGE = 20;
-const LIST_PER_PAGE = 30;
+const LIST_PER_PAGE = 100;
+const LIST_MAX_PAGES = 4;
 
 export interface GitHubClient {
   requestDeviceCode(): Promise<DeviceCode>;
@@ -78,12 +79,26 @@ async function fuzzyRepos(fetchImpl: typeof fetch, token: string, term: string):
 }
 
 /**
- * Repos the user owns or was personally invited to, most recently pushed first. Deliberately NOT
- * `organization_member`: busy org repos would bury the user's own under the 30-item cap.
+ * Every repo the token can clone — owned, invited, and organization — most recently pushed first.
+ * The landing page fetches this once per sign-in and searches it client-side, so completeness
+ * matters more than a tight cap; paging stops at LIST_MAX_PAGES (400 repos) as a sanity bound.
  */
 async function listOwnRepos(fetchImpl: typeof fetch, token: string): Promise<RepoSummary[]> {
-  const params = new URLSearchParams({ per_page: String(LIST_PER_PAGE), sort: "pushed", affiliation: "owner,collaborator" });
-  return parseRepoList(await getApi(fetchImpl, `${API_ROOT}/user/repos?${params}`, token));
+  const repos: RepoSummary[] = [];
+  for (let page = 1; page <= LIST_MAX_PAGES; page++) {
+    const params = new URLSearchParams({
+      per_page: String(LIST_PER_PAGE),
+      page: String(page),
+      sort: "pushed",
+      affiliation: "owner,collaborator,organization_member",
+    });
+    const batch = parseRepoList(await getApi(fetchImpl, `${API_ROOT}/user/repos?${params}`, token));
+    repos.push(...batch);
+    if (batch.length < LIST_PER_PAGE) {
+      break;
+    }
+  }
+  return repos;
 }
 
 async function postForm(fetchImpl: typeof fetch, url: string, body: Record<string, string>): Promise<unknown> {
