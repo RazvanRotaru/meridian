@@ -3,7 +3,8 @@
  * EMPHASIZE the wires within N import hops of the active (selected) node. Both are pure over the
  * already laid-out React Flow arrays — positions are NEVER touched, so filtering or highlighting
  * reshuffles nothing. Kept out of the view component so the rules are small, named, and testable.
- * Every level is a flat graph (group + file cards), so there are no nested frames to keep alive.
+ * A group card is never category-hidden (only file cards are), so an expanded frame and its nested
+ * children's parent chain always survive a repaint — React Flow never loses a referenced parent.
  */
 
 import { type Edge, type Node } from "@xyflow/react";

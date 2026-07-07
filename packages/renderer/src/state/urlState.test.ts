@@ -16,6 +16,7 @@ function emptyNav(): NavState {
     logicStack: [],
     expanded: [],
     moduleFocus: null,
+    moduleExpanded: [],
     moduleRadius: 1,
     hiddenCategories: [],
     environment: null,
@@ -93,6 +94,16 @@ describe("urlState", () => {
     expect(encodeNav(nav).has("mfocus")).toBe(false);
     expect(encodeNav(nav).has("mdepth")).toBe(false);
     expect(encodeNav(nav).has("mhide")).toBe(false);
+  });
+
+  it("round-trips the inline-expanded group ids (mexp)", () => {
+    const nav: NavState = {
+      ...emptyNav(),
+      viewMode: "modules",
+      moduleExpanded: ["ts:pkgA", "ts:pkgA/src"],
+    };
+    expect(encodeNav(nav).get("mexp")).toBe("ts:pkgA,ts:pkgA/src");
+    expect(roundTrip(nav)).toEqual({ viewMode: "modules", moduleExpanded: ["ts:pkgA", "ts:pkgA/src"] });
   });
 
   it("round-trips the selection highlight radius (mdepth)", () => {
@@ -184,6 +195,7 @@ function storeShape() {
     logicStack: [] as string[],
     expanded: new Set<string>(),
     moduleFocus: null,
+    moduleExpanded: new Set<string>(),
     moduleRadius: 1,
     hiddenCategories: new Set<string>(),
     environment: null,

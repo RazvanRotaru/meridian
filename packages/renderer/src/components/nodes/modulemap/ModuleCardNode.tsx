@@ -51,7 +51,8 @@ export const ModuleCardNode = memo(ModuleCardNodeImpl);
 
 /** The node-type registry the Module-map surface hands React Flow (a stable module-level reference).
  * `package` is a group card (a package at the repo overview, a directory one level deeper); `file`
- * is a source file. Every level is a FLAT graph of one focus's children — there are no nested frames. */
+ * is a source file. A group card the reader expands becomes a frame whose children NEST inside it
+ * (parentId), so a level can hold nested frames — mirroring the call graph's ContainerNode. */
 export const moduleNodeTypes = { file: ModuleCardNode, package: PackageOverviewNode };
 
 // Category → accent hue, echoing the palette used across the dark surfaces: entry green (the "you are

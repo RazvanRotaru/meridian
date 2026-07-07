@@ -27,6 +27,8 @@ export interface NavState {
   expanded: string[];
   /** The Module-map focus: the package/dir node zoomed into; null == the whole-repo overview. */
   moduleFocus: string | null;
+  /** Group cards expanded in place in the Module map — a comma-joined list of node ids in the URL. */
+  moduleExpanded: string[];
   /** The Module-map selection highlight radius (GHOST_DEPTH_ALL == the whole neighbourhood). */
   moduleRadius: number;
   /** Module categories painted out of the map — a comma-joined list in the URL. */
@@ -35,7 +37,7 @@ export interface NavState {
 }
 
 /** Every param key we own — listed once so `mergeNavIntoSearch` can clear them before rewriting. */
-const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "lroot", "lstack", "expand", "mfocus", "mdepth", "mhide", "env"] as const;
+const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "lroot", "lstack", "expand", "mfocus", "mexp", "mdepth", "mhide", "env"] as const;
 
 /** The navigation state the app boots into — the baseline a restore resets absent keys back to. */
 export const DEFAULT_NAV: NavState = {
@@ -51,6 +53,7 @@ export const DEFAULT_NAV: NavState = {
   logicStack: [],
   expanded: [],
   moduleFocus: null,
+  moduleExpanded: [],
   moduleRadius: 1,
   hiddenCategories: [],
   environment: null,
@@ -70,6 +73,7 @@ interface NavSource {
   logicStack: readonly string[];
   expanded: ReadonlySet<string>;
   moduleFocus: string | null;
+  moduleExpanded: ReadonlySet<string>;
   moduleRadius: number;
   hiddenCategories: ReadonlySet<string>;
   environment: string | null;
@@ -90,6 +94,7 @@ export function navFrom(state: NavSource): NavState {
     logicStack: [...state.logicStack],
     expanded: [...state.expanded].sort(),
     moduleFocus: state.moduleFocus,
+    moduleExpanded: [...state.moduleExpanded].sort(),
     moduleRadius: state.moduleRadius,
     hiddenCategories: [...state.hiddenCategories].sort(),
     environment: state.environment,
@@ -111,6 +116,7 @@ export function encodeNav(nav: NavState): Map<string, string> {
   setList(out, "lstack", nav.logicStack);
   setList(out, "expand", nav.expanded);
   setId(out, "mfocus", nav.moduleFocus);
+  setList(out, "mexp", nav.moduleExpanded);
   if (nav.moduleRadius !== 1) out.set("mdepth", String(nav.moduleRadius));
   setList(out, "mhide", nav.hiddenCategories);
   setId(out, "env", nav.environment);
@@ -134,6 +140,7 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   assignList(params, "lstack", out, "logicStack");
   assignList(params, "expand", out, "expanded");
   assignId(params, "mfocus", out, "moduleFocus");
+  assignList(params, "mexp", out, "moduleExpanded");
   const moduleRadius = params.get("mdepth");
   if (moduleRadius !== null && !Number.isNaN(Number(moduleRadius))) out.moduleRadius = Number(moduleRadius);
   assignList(params, "mhide", out, "hiddenCategories");

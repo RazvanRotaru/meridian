@@ -1,15 +1,17 @@
 /**
- * Lay one Module-map LEVEL out as a flat dependency diagram: ELK `layered` left→right so importers
- * sit left of what they import. Group cards (directories/packages) size by their file count; file
- * cards are fixed. React Flow consumes only the coordinates (it routes its own edges), so `layered`
- * costs nothing on routing. Deterministic — ELK layered is stable and no Math.random/Date is used.
+ * Lay the Module-map's containment tree out as a NESTED dependency diagram: ELK `layered` left→right
+ * so importers sit left of what they import, with expanded group cards recursing as ELK containers
+ * (their children placed INSIDE them, parent-relative — exactly React Flow's parentId semantics).
+ * Built on the shared `elkNesting` primitives, same as the call/logic graphs, so `INCLUDE_CHILDREN`
+ * lives on the ROOT ONLY (setting it per-subgraph throws). Collapsed group cards size by file count;
+ * file cards are fixed. Deterministic — ELK layered is stable and no Math.random/Date is used.
  */
 
-import type { Edge, Node } from "@xyflow/react";
 import type { ElkNode } from "elkjs/lib/elk-api";
+import type { Edge, Node } from "@xyflow/react";
 import { runElkLayout } from "./elkLayout";
-import type { LevelSpec, ModuleCardData } from "../derive/moduleLevel";
-import type { ModulePackageData } from "../derive/packageOverview";
+import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
+import type { ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
 
 const GROUP_HEIGHT = 76;
 const GROUP_MIN_WIDTH = 172;
@@ -18,48 +20,47 @@ const WIDTH_PER_FILE = 3;
 const FILE_WIDTH = 210;
 const FILE_HEIGHT = 54;
 
-const ROOT_OPTIONS = {
+const ROOT_OPTIONS: Record<string, string> = {
   "elk.algorithm": "layered",
   "elk.direction": "RIGHT",
+  "elk.hierarchyHandling": "INCLUDE_CHILDREN",
   "elk.spacing.nodeNode": "44",
   "elk.layered.spacing.nodeNodeBetweenLayers": "120",
   "elk.spacing.edgeNode": "28",
 };
 
-interface Sized {
-  id: string;
-  type: "package" | "file";
-  width: number;
-  height: number;
-  data: ModulePackageData | ModuleCardData;
-}
+// Top padding leaves room for an expanded group's title bar; React Flow draws nothing there itself.
+const CONTAINER_OPTIONS: Record<string, string> = { "elk.padding": "[top=44,left=18,bottom=18,right=18]" };
 
-/** Size every level node, run ELK, and map the placed coordinates back to React Flow nodes/edges. */
-export async function layoutLevel(spec: LevelSpec): Promise<{ nodes: Node[]; edges: Edge[] }> {
-  const sized = sizeNodes(spec);
-  if (sized.length === 0) {
+const adapter: ElkNestAdapter<VisibleModuleNode> = {
+  id: (node) => node.id,
+  parentId: (node) => node.parentId,
+  isContainer: (node) => node.isExpanded,
+  leafSize: (node) => leafSize(node),
+  containerOptions: CONTAINER_OPTIONS,
+};
+
+/** Run ELK over the nested tree and map the placed (parent-relative) coordinates to React Flow. */
+export async function layoutModuleTree(nodes: VisibleModuleNode[], edges: ModuleTreeEdge[]): Promise<{ nodes: Node[]; edges: Edge[] }> {
+  if (nodes.length === 0) {
     return { nodes: [], edges: [] };
   }
-  const laid = await runElkLayout(buildElkGraph(sized, spec));
-  return { nodes: toNodes(sized, laid), edges: spec.edges.map(toEdge) };
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const laid = await runElkLayout(buildNestedElkGraph(nodes, edges, adapter, ROOT_OPTIONS));
+  const placed = emitReactFlowNodes(laid, (elkNode, parentId) => toNode(elkNode, parentId, byId));
+  return { nodes: placed, edges: edges.map(toEdge) };
 }
 
-function sizeNodes(spec: LevelSpec): Sized[] {
-  const groups: Sized[] = spec.groups.map((group) => ({
-    id: group.id,
-    type: "package",
-    width: groupWidth(group.data.fileCount),
-    height: GROUP_HEIGHT,
-    data: group.data,
-  }));
-  const files: Sized[] = spec.files.map((file) => ({
-    id: file.id,
-    type: "file",
-    width: FILE_WIDTH,
-    height: FILE_HEIGHT,
-    data: file.data,
-  }));
-  return [...groups, ...files];
+/** A collapsed group sizes with its file count; a file card is fixed. Expanded groups are ELK-sized. */
+function leafSize(node: VisibleModuleNode): { width: number; height: number } {
+  if (node.kind === "file") {
+    return { width: FILE_WIDTH, height: FILE_HEIGHT };
+  }
+  return { width: groupWidth(fileCountOf(node)), height: GROUP_HEIGHT };
+}
+
+function fileCountOf(node: VisibleModuleNode): number {
+  return (node.data as { fileCount?: number }).fileCount ?? 0;
 }
 
 /** Bigger directories get wider boxes, clamped so the largest can't dwarf the smallest off-screen. */
@@ -67,29 +68,23 @@ function groupWidth(fileCount: number): number {
   return Math.max(GROUP_MIN_WIDTH, Math.min(GROUP_MAX_WIDTH, GROUP_MIN_WIDTH + fileCount * WIDTH_PER_FILE));
 }
 
-function buildElkGraph(sized: Sized[], spec: LevelSpec): ElkNode {
+/** Map one placed ELK node back to a React Flow node, wired to its parent frame when nested. */
+function toNode(elkNode: ElkNode, parentId: string | undefined, byId: Map<string, VisibleModuleNode>): Node | null {
+  const node = byId.get(elkNode.id);
+  if (!node) {
+    return null;
+  }
+  const placement = parentRelativePlacement(elkNode, parentId);
   return {
-    id: "root",
-    layoutOptions: ROOT_OPTIONS,
-    children: sized.map((node) => ({ id: node.id, width: node.width, height: node.height })),
-    edges: spec.edges.map((edge) => ({ id: edge.id, sources: [edge.source], targets: [edge.target] })),
+    id: node.id,
+    type: node.kind,
+    position: placement.position,
+    style: { width: placement.width, height: placement.height },
+    data: node.data,
+    ...(placement.parentId ? { parentId: placement.parentId, extent: placement.extent } : {}),
   };
 }
 
-function toNodes(sized: Sized[], laid: ElkNode): Node[] {
-  const placedById = new Map((laid.children ?? []).map((child) => [child.id, child]));
-  return sized.map((node) => {
-    const placed = placedById.get(node.id);
-    return {
-      id: node.id,
-      type: node.type,
-      position: { x: placed?.x ?? 0, y: placed?.y ?? 0 },
-      style: { width: node.width, height: node.height },
-      data: node.data,
-    };
-  });
-}
-
-function toEdge(edge: LevelSpec["edges"][number]): Edge {
+function toEdge(edge: ModuleTreeEdge): Edge {
   return { id: edge.id, source: edge.source, target: edge.target, data: { weight: edge.weight, crossFrame: edge.crossFrame } };
 }
