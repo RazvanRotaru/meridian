@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { resolveAgainst } from "../paths";
 import { WebError } from "./web-error";
-import { base64Auth, runGitClone } from "./git-exec";
+import { base64Auth, runGit } from "./git-exec";
 
 export { base64Auth };
 
@@ -26,6 +26,8 @@ export interface SourceRequest {
   value: string;
   ref?: string;
   subdir?: string;
+  /** When set, check out `refs/pull/<n>/head` instead of a branch (mutually exclusive with ref). */
+  prNumber?: number;
 }
 
 export interface ResolvedSource {
@@ -88,6 +90,37 @@ export function buildCloneArgs(url: string, targetDir: string, opts: { ref?: str
   return args;
 }
 
+/**
+ * `--branch` cannot name a pull ref, so a PR is fetched by its number: `git fetch origin
+ * refs/pull/<n>/head` (run inside the clone). The token rides the same `http.extraHeader` as the
+ * clone; the ref is built from a validated integer so nothing user-controlled reaches the argv.
+ */
+export function buildPullFetchArgs(prNumber: number, opts: { token?: string }): string[] {
+  assertPullNumber(prNumber);
+  const args: string[] = [];
+  if (opts.token) {
+    args.push("-c", `http.extraHeader=AUTHORIZATION: basic ${base64Auth(opts.token)}`);
+  }
+  args.push("-c", "core.longpaths=true");
+  args.push("fetch", "--depth", "1", "origin", `refs/pull/${prNumber}/head`);
+  return args;
+}
+
+/**
+ * Detach-checkout the just-fetched pull head. `core.longpaths` is repeated (the clone's one-shot
+ * `-c` didn't persist) because this is the worktree write that hits Windows' MAX_PATH, and
+ * `advice.detachedHead=false` mutes git's detached-HEAD warning.
+ */
+export function buildCheckoutArgs(): string[] {
+  return ["-c", "core.longpaths=true", "-c", "advice.detachedHead=false", "checkout", "FETCH_HEAD"];
+}
+
+function assertPullNumber(prNumber: number): void {
+  if (!Number.isInteger(prNumber) || prNumber <= 0) {
+    throw new WebError(400, "invalid pull-request number");
+  }
+}
+
 /** Join a subdir onto the clone root, rejecting any `..` escape out of the repository. */
 export function sanitizeSubdir(cloneDir: string, subdir?: string): string {
   const clean = subdir?.trim();
@@ -130,7 +163,7 @@ async function cloneGitHub(request: SourceRequest, token?: string): Promise<Reso
   // Any failure past the mkdtemp — clone, subdir escape, missing subdir — must remove the temp
   // clone; only a successful resolve hands the cleanup responsibility back to the caller.
   try {
-    await runGitClone(buildCloneArgs(url, tmpRoot, { ref: request.ref, token }), token);
+    await fetchInto(tmpRoot, url, request, token);
     const dir = sanitizeSubdir(tmpRoot, request.subdir);
     if (!isDirectory(dir)) {
       throw new WebError(400, "source subfolder was not found in the repository");
@@ -140,6 +173,20 @@ async function cloneGitHub(request: SourceRequest, token?: string): Promise<Reso
     removeTmp();
     throw error;
   }
+}
+
+/**
+ * A branch source is a single shallow clone. A PR source shallow-clones the default branch, then
+ * fetches `refs/pull/<n>/head` and detach-checks it out — the two-step dance `--branch` can't do.
+ */
+async function fetchInto(dir: string, url: string, request: SourceRequest, token?: string): Promise<void> {
+  if (request.prNumber == null) {
+    await runGit(buildCloneArgs(url, dir, { ref: request.ref, token }), { token });
+    return;
+  }
+  await runGit(buildCloneArgs(url, dir, { token }), { token });
+  await runGit(buildPullFetchArgs(request.prNumber, { token }), { token, cwd: dir });
+  await runGit(buildCheckoutArgs(), { cwd: dir });
 }
 
 function isDirectory(path: string): boolean {

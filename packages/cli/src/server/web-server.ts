@@ -17,6 +17,7 @@ import { serveStatic } from "./static-files";
 import type { StaticAssets } from "./static-files";
 import { WebError } from "./web-error";
 import { injectAuthConfig, injectPrefill } from "./web-boot";
+import type { ReviewBoot } from "./web-boot";
 import { sendHtml, sendJson } from "./http-response";
 import { createGitHubClient } from "./github";
 import type { GitHubClient } from "./github";
@@ -42,6 +43,8 @@ export interface Context {
   graphs: Map<string, GraphArtifact>;
   /** Per-id source directory retained after a successful generate so `/api/source` can read it. */
   sourceRoots: Map<string, string>;
+  /** Per-id PR-review seed (affected files + scope ref) for a graph sourced from a pull request. */
+  reviews: Map<string, ReviewBoot>;
   /** Temp-clone removers, held until process exit so retained sources are cleaned on shutdown. */
   tempCleanups: Set<() => void>;
   rendererIndex: string;
@@ -69,6 +72,7 @@ function buildContext(config: WebServerConfig): Context {
   const ctx: Context = {
     graphs: new Map(),
     sourceRoots: new Map(),
+    reviews: new Map(),
     tempCleanups: new Set(),
     rendererIndex: readFileSync(indexPath, "utf8"),
     landingHtml: landing,

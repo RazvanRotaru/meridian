@@ -9,7 +9,18 @@
 
 const HEAD_CLOSE = "</head>";
 
-export function injectViewBoot(html: string, id: string): string {
+/**
+ * The PR-review seed for a graph generated from a pull-request URL: the changed files (already
+ * stripped to the extraction root) plus the scope ref (`pr<n>`) the renderer keys review state on.
+ */
+export interface ReviewBoot {
+  affectedFiles: string[];
+  reviewScopeRef: string;
+  /** True when GitHub capped the PR's changed-file list (PR_FILES_CAP hit); surfaced as a notice. */
+  truncated?: boolean;
+}
+
+export function injectViewBoot(html: string, id: string, review?: ReviewBoot): string {
   const boot = {
     graphUrl: `/api/graph?id=${id}`,
     metaUrl: `/api/meta?id=${id}`,
@@ -20,6 +31,11 @@ export function injectViewBoot(html: string, id: string): string {
     envRequired: false,
     preselectedEnv: null,
     defaultEnv: null,
+    // Present for every view (empty when not a PR) so the renderer reads one stable shape.
+    affectedFiles: review?.affectedFiles ?? [],
+    reviewScopeRef: review?.reviewScopeRef ?? null,
+    // True only when GitHub truncated the PR's changed-file list; false for every non-PR view.
+    reviewTruncated: review?.truncated ?? false,
   };
   return injectScript(html, `window.__MERIDIAN__=${escapeForScript(JSON.stringify(boot))}`);
 }

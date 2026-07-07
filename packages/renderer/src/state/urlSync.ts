@@ -31,8 +31,16 @@ export async function restoreFromUrl(store: BlueprintStore): Promise<void> {
   store.setState(structuralState(nav));
   // The restored viewMode decides which layout pass runs; "call"/"ui" route through relayout()
   // (compRelayout / deriveLayout), "logic" needs its own ELK pass. This is the boot's first layout.
-  if (store.getState().viewMode === "logic") {
+  const viewMode = store.getState().viewMode;
+  if (viewMode === "logic") {
     await store.getState().logicRelayout();
+  } else if (viewMode === "review") {
+    // Re-run the full review load for the restored file set: match + model + persisted ticks +
+    // layout. setAffectedFiles fires its own (fire-and-forget) relayout; the awaited pass below is
+    // the one that lands (an older in-flight pass is dropped by the seq guard), so the boot render
+    // shows the laid-out subgraph rather than a laying-out flash.
+    store.getState().setAffectedFiles(store.getState().affectedFiles);
+    await store.getState().prReviewRelayout();
   } else {
     await store.getState().relayout();
   }
@@ -117,5 +125,6 @@ function structuralState(nav: NavState): Record<string, unknown> {
     moduleFocus: nav.moduleFocus,
     moduleRadius: nav.moduleRadius,
     hiddenCategories: new Set(nav.hiddenCategories),
+    affectedFiles: nav.files,
   };
 }

@@ -12,6 +12,7 @@ const SEGMENTS: ReadonlyArray<{ mode: ViewMode; label: string }> = [
   { mode: "ui", label: "UI composition" },
   { mode: "logic", label: "Logic flow" },
   { mode: "modules", label: "Module map" },
+  { mode: "review", label: "PR Review" },
 ];
 
 export function ViewModeToggle() {

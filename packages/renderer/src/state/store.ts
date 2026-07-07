@@ -27,6 +27,9 @@ import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
 import { deriveModuleLevelLayout } from "./deriveModuleMapLayout";
+import { derivePrReviewLayout } from "./derivePrReviewLayout";
+import type { ReviewModel } from "../derive/reviewModel";
+import { loadReviewedIds, persistReviewedIds, reviewSessionKey } from "./reviewSession";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
@@ -149,6 +152,35 @@ export interface BlueprintState {
   hiddenCategories: Set<ModuleCategory>;
   /** The selected node id in the Module map; null == none. A repaint-only highlight — no relayout. */
   moduleSelectedId: string | null;
+  /** PR-review: the changed file paths driving the lens; empty == the setup card. Source of truth,
+   * synced to `?files=`. */
+  affectedFiles: string[];
+  /** The derived review model (matched files, ranked affected flows, kept/boundary ids); null until
+   * files are set. Rebuilt by `prReviewRelayout`. */
+  reviewModel: ReviewModel | null;
+  /** Flow-root ids the reader has ticked off, loaded from + persisted to localStorage per scope. */
+  reviewedFlowIds: Set<string>;
+  /** The laid-out minimal containment subgraph (React Flow, nested), recomputed via ELK on file/
+   * boundary change under `prReviewLayoutSeq`. */
+  prReviewRfNodes: Node[];
+  prReviewRfEdges: Edge[];
+  prReviewLayoutStatus: LayoutStatus;
+  /** The flow row selected in the list == focused in the graph; null == none. Shared across panes. */
+  reviewSelectedFlowId: string | null;
+  /** A file-node click sets this list filter chip; null == unfiltered. Never set by boundary/frame. */
+  reviewListFilterFileId: string | null;
+  /** The hovered flow row (highlight only, no camera/dimming); null == none. */
+  reviewHoverFlowId: string | null;
+  /** Hide already-reviewed rows in the list (paint-only). */
+  reviewHideReviewed: boolean;
+  /** Drop the faded 1-hop boundary neighbours from the graph (a relayout — the spec changes). */
+  reviewHideBoundary: boolean;
+  /** The list/graph split ratio (fraction the list pane takes), clamped 0.2..0.8. */
+  reviewSplitRatio: number;
+  /** The review scope id ("pr"+number) when PR-sourced; null keys ticks by the file-set hash. */
+  reviewScopeRef: string | null;
+  /** True when GitHub capped the PR's changed-file list; the review list shows a truncation notice. */
+  reviewTruncated: boolean;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -200,6 +232,18 @@ export interface BlueprintState {
   setModuleRadius(radius: number): void;
   toggleCategory(category: ModuleCategory): void;
   selectModule(id: string | null): void;
+  setAffectedFiles(files: string[]): void;
+  prReviewRelayout(): Promise<void>;
+  toggleReviewed(rootId: string): void;
+  markVisibleReviewed(rootIds: string[]): void;
+  clearVisibleReviewed(rootIds: string[]): void;
+  selectReviewFlow(id: string | null): void;
+  setReviewHoverFlow(id: string | null): void;
+  setReviewListFilter(fileId: string | null): void;
+  toggleReviewHideReviewed(): void;
+  toggleReviewHideBoundary(): void;
+  setReviewSplitRatio(ratio: number): void;
+  openInLogicFlow(callableId: string): void;
   setViewMode(mode: ViewMode): void;
   toggleShowTests(): void;
   toggleCoverageMode(): void;
@@ -217,6 +261,10 @@ export interface StoreDependencies {
   provider: TelemetryProvider | null;
   hasOverlay: boolean;
   sourceUrl: string | null;
+  /** PR-review scope id ("pr"+number) from the boot payload; null keys ticks by the file-set hash. */
+  reviewScopeRef?: string | null;
+  /** True when GitHub capped the PR's changed-file list; drives the review-list truncation notice. */
+  reviewTruncated?: boolean;
 }
 
 export type BlueprintStore = StoreApi<BlueprintState>;
@@ -230,6 +278,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let compLayoutSeq = 0;
   // And for the Module-map layout, so a newer focus change supersedes an older derivation.
   let moduleLayoutSeq = 0;
+  // And for the PR-review minimal-subgraph layout, so a newer file/boundary change supersedes an
+  // older in-flight ELK pass.
+  let prReviewLayoutSeq = 0;
   // The file import graph, built once on first module-map relayout (the artifact never changes after
   // boot) and reused for every level — never rebuilt per relayout.
   let moduleGraph: ModuleGraph | null = null;
@@ -288,6 +339,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleRadius: 1,
     hiddenCategories: new Set<ModuleCategory>(),
     moduleSelectedId: null,
+    affectedFiles: [],
+    reviewModel: null,
+    reviewedFlowIds: new Set<string>(),
+    prReviewRfNodes: [],
+    prReviewRfEdges: [],
+    prReviewLayoutStatus: "idle",
+    reviewSelectedFlowId: null,
+    reviewListFilterFileId: null,
+    reviewHoverFlowId: null,
+    reviewHideReviewed: false,
+    reviewHideBoundary: false,
+    reviewSplitRatio: 0.42,
+    reviewScopeRef: dependencies.reviewScopeRef ?? null,
+    reviewTruncated: dependencies.reviewTruncated ?? false,
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -623,6 +688,88 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ moduleSelectedId: id });
     },
 
+    // Set the PR-review changed-file list — the lens's source of truth. Load the persisted ticks for
+    // this (target, scope) key, drop any stale selection/filter, then relayout (which rebuilds the
+    // model). The `?files=` URL sync rides the store subscription (files are now a NavState field).
+    setAffectedFiles(files) {
+      const key = reviewSessionKey(get().artifact.target, get().reviewScopeRef, files);
+      set({ affectedFiles: files, reviewedFlowIds: loadReviewedIds(key), reviewSelectedFlowId: null, reviewListFilterFileId: null });
+      void get().prReviewRelayout();
+    },
+
+    // Rebuild the review model + lay out the minimal containment subgraph through nested ELK, behind
+    // the stale-seq guard (a newer file/boundary change discards an older in-flight pass). The import
+    // graph is built once (cached, shared with the Module map) and reused.
+    async prReviewRelayout() {
+      const { index, artifact, affectedFiles, reviewHideBoundary } = get();
+      moduleGraph ??= buildModuleGraph(index);
+      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const sequence = ++prReviewLayoutSeq;
+      set({ prReviewLayoutStatus: "laying-out" });
+      const result = await derivePrReviewLayout(index, moduleGraph, flows, affectedFiles, { includeBoundary: !reviewHideBoundary });
+      if (prReviewLayoutSeq !== sequence) {
+        return; // a newer file/boundary change superseded this one.
+      }
+      set({ reviewModel: result.model, prReviewRfNodes: result.nodes, prReviewRfEdges: result.edges, prReviewLayoutStatus: "ready" });
+    },
+
+    // Tick/untick a flow as reviewed, then persist the set. A plain membership flip (withToggled).
+    toggleReviewed(rootId) {
+      set({ reviewedFlowIds: withToggled(get().reviewedFlowIds, rootId) });
+      persistReviewed(get);
+    },
+
+    // Mark every currently-visible (post-filter) flow reviewed — the header checkbox's "check all".
+    markVisibleReviewed(rootIds) {
+      set({ reviewedFlowIds: withAdded(get().reviewedFlowIds, rootIds) });
+      persistReviewed(get);
+    },
+
+    // Clear the reviewed tick from every visible flow — the header checkbox's "uncheck all".
+    clearVisibleReviewed(rootIds) {
+      set({ reviewedFlowIds: withRemoved(get().reviewedFlowIds, rootIds) });
+      persistReviewed(get);
+    },
+
+    // Select a flow (pass null to clear) — the shared list↔graph highlight. Repaint only; the panes
+    // derive the emphasised modules/edges from this + the model's touchedModuleIds.
+    selectReviewFlow(id) {
+      set({ reviewSelectedFlowId: id });
+    },
+
+    // Hover a flow row (pass null to clear) — a highlight WITHOUT a camera move or dimming. Repaint only.
+    setReviewHoverFlow(id) {
+      set({ reviewHoverFlowId: id });
+    },
+
+    // Set/clear the list filter chip a clicked affected file drives. Repaint only (the list filters).
+    setReviewListFilter(fileId) {
+      set({ reviewListFilterFileId: fileId });
+    },
+
+    // Hide/show already-reviewed rows in the list. Paint only — never a relayout.
+    toggleReviewHideReviewed() {
+      set({ reviewHideReviewed: !get().reviewHideReviewed });
+    },
+
+    // Drop/restore the faded 1-hop boundary neighbours in the graph. This changes the subgraph SPEC,
+    // so it relayouts (unlike the paint-only list toggles above).
+    toggleReviewHideBoundary() {
+      set({ reviewHideBoundary: !get().reviewHideBoundary });
+      void get().prReviewRelayout();
+    },
+
+    // Set the list/graph split (fraction the list takes), clamped to a usable band. Repaint only.
+    setReviewSplitRatio(ratio) {
+      set({ reviewSplitRatio: Math.max(0.2, Math.min(0.8, ratio)) });
+    },
+
+    // The review→logic jump (double-click a row / "Open in Logic flow"): reuse openLogicFlow, which
+    // flips to the Logic lens, roots the flow, and lays it out.
+    openInLogicFlow(callableId) {
+      get().openLogicFlow(callableId);
+    },
+
     // Switching mode re-derives + relayouts like a dive. Entering UI mode dives to the render
     // subtree; leaving it returns to call-flow at the focus you had before (home if none). The
     // logic view is a standalone render (no rfNodes/ELK), so it neither dives nor relayouts, and
@@ -644,6 +791,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (mode === "modules") {
         set({ viewMode: mode, moduleFocus: null });
         void get().moduleRelayout();
+        return;
+      }
+      // The PR-review lens is a standalone surface (its own nested ELK subgraph), so — like the Module
+      // map — it just flips the mode and lays its own graph out, leaving the call/UI graph focus alone.
+      // Its file set / ticks are loaded by setAffectedFiles, so this only (re)builds the layout.
+      if (mode === "review") {
+        set({ viewMode: mode });
+        void get().prReviewRelayout();
         return;
       }
       if (mode === "ui") {
@@ -785,6 +940,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         await get().moduleRelayout();
         return;
       }
+      // The PR-review lens lays out its own minimal subgraph; route it to prReviewRelayout so a
+      // generic relayout() (e.g. from a restore) reaches the right pass. "ui" derives below.
+      if (get().viewMode === "review") {
+        await get().prReviewRelayout();
+        return;
+      }
       const sequence = get().layoutSeq + 1;
       set({ layoutSeq: sequence, layoutStatus: "laying-out" });
       const { index, expanded, focusId, viewMode, flowRootId, flowDepth, showTests } = get();
@@ -807,6 +968,27 @@ function withToggled(expanded: Set<string>, nodeId: string): Set<string> {
     next.add(nodeId);
   }
   return next;
+}
+
+/** Add every id to a copy of the set (typed sibling of `withToggled`, for the review "check all"). */
+function withAdded(set: Set<string>, ids: string[]): Set<string> {
+  const next = new Set(set);
+  ids.forEach((id) => next.add(id));
+  return next;
+}
+
+/** Remove every id from a copy of the set (typed sibling of `withToggled`, for the review clear). */
+function withRemoved(set: Set<string>, ids: string[]): Set<string> {
+  const next = new Set(set);
+  ids.forEach((id) => next.delete(id));
+  return next;
+}
+
+/** Persist the active reviewed set for the current (target, scope) key — best-effort localStorage. */
+function persistReviewed(get: () => BlueprintState): void {
+  const { artifact, reviewScopeRef, affectedFiles, reviewedFlowIds } = get();
+  const key = reviewSessionKey(artifact.target, reviewScopeRef, affectedFiles);
+  persistReviewedIds(key, reviewedFlowIds, affectedFiles);
 }
 
 /** Flip a category's membership in the hidden-category set (typed sibling of `withToggled`). */

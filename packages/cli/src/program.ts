@@ -87,7 +87,7 @@ function registerView(program: Command): void {
 function registerWeb(program: Command): void {
   program
     .command("web [source]")
-    .description("Serve a local web UI to clone, extract, and view any repo's call graph")
+    .description("Serve a local web UI to clone, extract, and view any repo's call graph (owner/repo, a git URL, or a pull-request URL)")
     .option("--port <number>", "preferred port (walks forward if busy)", parsePort, 4180)
     .option("--host <host>", "host to bind", "127.0.0.1")
     .option("--no-open", "do not open a browser")

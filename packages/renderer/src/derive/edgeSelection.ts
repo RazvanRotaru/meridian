@@ -7,7 +7,7 @@
 
 import type { GraphEdge } from "@meridian/core";
 
-export type ViewMode = "call" | "ui" | "logic" | "modules";
+export type ViewMode = "call" | "ui" | "logic" | "modules" | "review";
 
 /** The behavioural call graph: everything the extractor emits EXCEPT the React "renders" tree. */
 const CALL_EDGE_KINDS: ReadonlySet<string> = new Set([
@@ -25,9 +25,10 @@ export function selectEdgesForMode(edges: GraphEdge[], mode: ViewMode): GraphEdg
   if (mode === "ui") {
     return edges.filter((edge) => edge.kind === UI_EDGE_KIND);
   }
-  // Logic flow is a per-callable control-flow render and the Module map walks the import graph on its
-  // own surface — neither lifts wires onto the call/UI boxes, so both select nothing here.
-  if (mode === "logic" || mode === "modules") {
+  // Logic flow is a per-callable control-flow render, the Module map walks the import graph on its own
+  // surface, and the PR-review lens lays out its own minimal import subgraph — none lift wires onto the
+  // call/UI boxes, so all three select nothing here.
+  if (mode === "logic" || mode === "modules" || mode === "review") {
     return [];
   }
   return edges.filter((edge) => CALL_EDGE_KINDS.has(edge.kind));

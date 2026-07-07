@@ -24,6 +24,9 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
   const viewMode = useBlueprint((state) => state.viewMode);
   const isComposition = viewMode === "call";
   const isModules = viewMode === "modules";
+  // The PR-review lens is self-contained in its own panes (list + graph), so the sidebar adds no
+  // per-lens controls for it — only the shared ViewModeToggle + env selector below.
+  const isReview = viewMode === "review";
   const collapseAll = useBlueprintActions().collapseAll;
   return (
     <Panel position="top-left">
@@ -47,7 +50,7 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
             <DepthSlider />
             <ModuleCategoryToggles />
           </>
-        ) : (
+        ) : isReview ? null : (
           <FlowSelector />
         )}
         {hasOverlay ? <EnvSelector preselectedEnv={props.preselectedEnv} /> : null}

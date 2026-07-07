@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { base64Auth, buildCloneArgs, parseGitHubSource, sanitizeSubdir } from "./clone";
+import { base64Auth, buildCheckoutArgs, buildCloneArgs, buildPullFetchArgs, parseGitHubSource, sanitizeSubdir } from "./clone";
 import { WebError } from "./web-error";
 
 describe("parseGitHubSource", () => {
@@ -61,6 +61,49 @@ describe("buildCloneArgs", () => {
     expect(buildCloneArgs("u", "d", { ref: "next" })).toContain("--branch");
     expect(buildCloneArgs("u", "d", { ref: "next" })).toContain("next");
     expect(buildCloneArgs("u", "d", {})).not.toContain("--branch");
+  });
+});
+
+describe("buildPullFetchArgs", () => {
+  it("fetches the pull head shallowly with core.longpaths and no token by default", () => {
+    expect(buildPullFetchArgs(42, {})).toEqual([
+      "-c",
+      "core.longpaths=true",
+      "fetch",
+      "--depth",
+      "1",
+      "origin",
+      "refs/pull/42/head",
+    ]);
+  });
+
+  it("puts the Authorization extraHeader before the fetch subcommand and never the raw token", () => {
+    const token = "ghp_secret123";
+    const args = buildPullFetchArgs(7, { token });
+    expect(args[0]).toBe("-c");
+    expect(args[1]).toBe(`http.extraHeader=AUTHORIZATION: basic ${base64Auth(token)}`);
+    expect(args.indexOf("-c")).toBeLessThan(args.indexOf("fetch"));
+    expect(args.join(" ")).not.toContain(token);
+    expect(args[args.length - 1]).toBe("refs/pull/7/head");
+  });
+
+  it("rejects a non-positive or non-integer pull number", () => {
+    expect(() => buildPullFetchArgs(0, {})).toThrow(WebError);
+    expect(() => buildPullFetchArgs(-1, {})).toThrow(WebError);
+    expect(() => buildPullFetchArgs(1.5, {})).toThrow(WebError);
+  });
+});
+
+describe("buildCheckoutArgs", () => {
+  it("detach-checks out FETCH_HEAD with long-path support and no detached-head advice", () => {
+    expect(buildCheckoutArgs()).toEqual([
+      "-c",
+      "core.longpaths=true",
+      "-c",
+      "advice.detachedHead=false",
+      "checkout",
+      "FETCH_HEAD",
+    ]);
   });
 });
 

@@ -17,11 +17,21 @@ export interface BootConfig {
   preselectedEnv: string | null;
   /** Base URL the renderer GETs to fetch a node's source; null when source isn't available. */
   sourceUrl: string | null;
+  /** PR-review seed: the changed files the server injected; empty when not a PR-sourced view. */
+  affectedFiles: string[];
+  /** The review scope id ("pr"+number) when PR-sourced; null keys the ticks by the file-set hash. */
+  reviewScopeRef: string | null;
+  /** True when GitHub capped the PR's changed-file list; the review list surfaces it as a notice. */
+  reviewTruncated: boolean;
   defaultEnv: null;
 }
 
-interface InjectedConfig extends Omit<BootConfig, "defaultEnv"> {
+interface InjectedConfig extends Omit<BootConfig, "defaultEnv" | "affectedFiles" | "reviewScopeRef" | "reviewTruncated"> {
   defaultEnv: unknown;
+  /** Optional — pre-PR servers omit these entirely, so they normalize to []/null/false on read. */
+  affectedFiles?: string[];
+  reviewScopeRef?: string | null;
+  reviewTruncated?: boolean;
 }
 
 declare global {
@@ -39,6 +49,9 @@ const DEV_FALLBACK: BootConfig = {
   envRequired: true,
   preselectedEnv: null,
   sourceUrl: null,
+  affectedFiles: [],
+  reviewScopeRef: null,
+  reviewTruncated: false,
   defaultEnv: null,
 };
 
@@ -54,5 +67,11 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
   if (injected.defaultEnv !== null) {
     throw new Error("boot contract violation: defaultEnv must never be defaulted (always null)");
   }
-  return { ...injected, defaultEnv: null };
+  return {
+    ...injected,
+    defaultEnv: null,
+    affectedFiles: injected.affectedFiles ?? [],
+    reviewScopeRef: injected.reviewScopeRef ?? null,
+    reviewTruncated: injected.reviewTruncated ?? false,
+  };
 }

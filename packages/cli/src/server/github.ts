@@ -2,11 +2,11 @@
  * The GitHub HTTP client: the only place that talks to github.com / api.github.com. Fixed hosts
  * (no user-controlled URL → no SSRF), the token travels in an Authorization header sent server-side
  * only and is never logged, and every request is time-boxed. Response *shaping* is delegated to the
- * pure parsers, so this thin IO layer — like `runGitClone` — is exercised by the live smoke test.
+ * pure parsers, so this thin IO layer — like `runGit` — is exercised by the live smoke test.
  */
 
 import { WebError } from "./web-error";
-import { classifyQuery, parseRepoList, parseRepoResult, parseSearchResults, parseUser } from "./github-parse";
+import { classifyQuery, parsePullRequestFiles, parseRepoList, parseRepoResult, parseSearchResults, parseUser } from "./github-parse";
 import type { GitHubUser, RepoSummary } from "./github-parse";
 import { interpretTokenResponse, parseDeviceCodeResponse, tokenRedeemBody } from "./github-auth";
 import type { DeviceCode, TokenPoll } from "./github-auth";
@@ -18,6 +18,24 @@ const SCOPE = "repo";
 const REQUEST_TIMEOUT_MS = 10_000;
 const SEARCH_PER_PAGE = 20;
 const LIST_PER_PAGE = 30;
+const PR_FILES_PER_PAGE = 100;
+const PR_FILES_CAP = 3000;
+const PR_FILES_MAX_PAGES = PR_FILES_CAP / PR_FILES_PER_PAGE;
+
+export interface PullRequestFilesRequest {
+  owner: string;
+  repo: string;
+  prNumber: number;
+  /** Bearer token; omitted for a public PR (a private one 404s without it). */
+  token?: string;
+}
+
+export interface PullRequestFiles {
+  /** Repo-root-relative filenames, capped at PR_FILES_CAP. */
+  files: string[];
+  /** True when the cap was hit and more files may exist beyond it. */
+  truncated: boolean;
+}
 
 export interface GitHubClient {
   requestDeviceCode(): Promise<DeviceCode>;
@@ -25,6 +43,7 @@ export interface GitHubClient {
   getUser(token: string): Promise<GitHubUser>;
   searchRepos(token: string, query: string): Promise<RepoSummary[]>;
   listOwnRepos(token: string): Promise<RepoSummary[]>;
+  fetchPullRequestFiles(request: PullRequestFilesRequest): Promise<PullRequestFiles>;
 }
 
 export interface GitHubClientConfig {
@@ -40,6 +59,7 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
     getUser: (token) => getUser(fetchImpl, token),
     searchRepos: (token, query) => searchRepos(fetchImpl, token, query),
     listOwnRepos: (token) => listOwnRepos(fetchImpl, token),
+    fetchPullRequestFiles: (request) => fetchPullRequestFiles(fetchImpl, request),
   };
 }
 
@@ -86,6 +106,29 @@ async function listOwnRepos(fetchImpl: typeof fetch, token: string): Promise<Rep
   return parseRepoList(await getApi(fetchImpl, `${API_ROOT}/user/repos?${params}`, token));
 }
 
+/**
+ * The changed-file list for a PR: 100 per page, walking until a short page ends it or the
+ * PR_FILES_CAP is hit. Overflowing the cap (or exhausting the page budget) sets `truncated`.
+ */
+async function fetchPullRequestFiles(fetchImpl: typeof fetch, request: PullRequestFilesRequest): Promise<PullRequestFiles> {
+  const { owner, repo, prNumber, token } = request;
+  const base = `${API_ROOT}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${prNumber}/files`;
+  const files: string[] = [];
+  for (let page = 1; page <= PR_FILES_MAX_PAGES; page++) {
+    const batch = parsePullRequestFiles(await getApi(fetchImpl, `${base}?per_page=${PR_FILES_PER_PAGE}&page=${page}`, token));
+    const room = PR_FILES_CAP - files.length;
+    if (batch.length > room) {
+      for (const file of batch.slice(0, room)) files.push(file.filename);
+      return { files, truncated: true };
+    }
+    for (const file of batch) files.push(file.filename);
+    if (batch.length < PR_FILES_PER_PAGE) {
+      return { files, truncated: false };
+    }
+  }
+  return { files, truncated: true };
+}
+
 async function postForm(fetchImpl: typeof fetch, url: string, body: Record<string, string>): Promise<unknown> {
   const response = await withTimeout((signal) =>
     fetchImpl(url, {
@@ -98,7 +141,7 @@ async function postForm(fetchImpl: typeof fetch, url: string, body: Record<strin
   return response.json();
 }
 
-async function getApi(fetchImpl: typeof fetch, url: string, token: string): Promise<unknown> {
+async function getApi(fetchImpl: typeof fetch, url: string, token?: string): Promise<unknown> {
   const response = await apiRequest(fetchImpl, url, token);
   if (!response.ok) {
     throw apiError(response.status);
@@ -106,7 +149,7 @@ async function getApi(fetchImpl: typeof fetch, url: string, token: string): Prom
   return response.json();
 }
 
-async function getApiOrNull(fetchImpl: typeof fetch, url: string, token: string): Promise<unknown | null> {
+async function getApiOrNull(fetchImpl: typeof fetch, url: string, token?: string): Promise<unknown | null> {
   const response = await apiRequest(fetchImpl, url, token);
   if (response.status === 404) {
     return null;
@@ -117,18 +160,18 @@ async function getApiOrNull(fetchImpl: typeof fetch, url: string, token: string)
   return response.json();
 }
 
-function apiRequest(fetchImpl: typeof fetch, url: string, token: string): Promise<Response> {
-  return withTimeout((signal) =>
-    fetchImpl(url, {
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${token}`,
-        "x-github-api-version": "2022-11-28",
-        "user-agent": "meridian",
-      },
-      signal,
-    }),
-  );
+// The Authorization header is added only when a token is present, so a public PR's files list
+// works anonymously while every signed-in call still carries its Bearer credential.
+function apiRequest(fetchImpl: typeof fetch, url: string, token?: string): Promise<Response> {
+  const headers: Record<string, string> = {
+    accept: "application/vnd.github+json",
+    "x-github-api-version": "2022-11-28",
+    "user-agent": "meridian",
+  };
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+  return withTimeout((signal) => fetchImpl(url, { headers, signal }));
 }
 
 function apiError(status: number): WebError {

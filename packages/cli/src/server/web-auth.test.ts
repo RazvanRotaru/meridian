@@ -66,5 +66,5 @@ function githubListing(repos: RepoSummary[]): GitHubClient {
 
 function neverCalledGitHub(): GitHubClient {
   const reject = () => Promise.reject(new Error("unexpected GitHub call"));
-  return { requestDeviceCode: reject, redeemToken: reject, getUser: reject, searchRepos: reject, listOwnRepos: reject };
+  return { requestDeviceCode: reject, redeemToken: reject, getUser: reject, searchRepos: reject, listOwnRepos: reject, fetchPullRequestFiles: reject };
 }

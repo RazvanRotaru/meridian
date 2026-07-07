@@ -27,6 +27,57 @@ export type RepoQuery =
   | { kind: "exact"; owner: string; repo: string }
   | { kind: "search"; term: string };
 
+export interface PullRequestRef {
+  owner: string;
+  repo: string;
+  prNumber: number;
+}
+
+export interface PullRequestFile {
+  filename: string;
+  status: string;
+}
+
+// Only github.com pull URLs — the files API is api.github.com, so an enterprise/GitLab host is a
+// miss. The number is length-capped so a monstrous digit string can never overflow to a float.
+const PULL_URL = /^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d{1,15})(?:[/?#].*)?$/i;
+
+/** A github.com pull-request URL -> its {owner, repo, prNumber}; anything else is null. */
+export function parsePullRequestUrl(value: string): PullRequestRef | null {
+  const match = PULL_URL.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+  const prNumber = Number(match[3]);
+  if (!Number.isInteger(prNumber) || prNumber <= 0) {
+    return null;
+  }
+  return { owner: match[1], repo: match[2].replace(/\.git$/, ""), prNumber };
+}
+
+/**
+ * Project the `GET /pulls/{n}/files` array to whitelisted {filename, status}. Attacker-controlled
+ * extra fields (patch, blob_url, …) are dropped; a non-object entry or a non-string filename is
+ * skipped rather than thrown so one odd row can't sink the whole page.
+ */
+export function parsePullRequestFiles(json: unknown): PullRequestFile[] {
+  if (!Array.isArray(json)) {
+    return [];
+  }
+  const files: PullRequestFile[] = [];
+  for (const entry of json) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+    const body = entry as Record<string, unknown>;
+    const filename = optionalString(body, "filename");
+    if (filename !== null) {
+      files.push({ filename, status: optionalString(body, "status") ?? "" });
+    }
+  }
+  return files;
+}
+
 /** An `owner/repo` (or github URL) becomes a direct lookup; anything else is a fuzzy search. */
 export function classifyQuery(raw: string): RepoQuery | null {
   const term = raw.trim();

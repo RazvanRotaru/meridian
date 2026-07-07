@@ -31,11 +31,16 @@ export interface NavState {
   moduleRadius: number;
   /** Module categories painted out of the map — a comma-joined list in the URL. */
   hiddenCategories: string[];
+  /** The PR-review affected-file paths — comma-joined; the runtime source of truth for the lens. */
+  files: string[];
   environment: string | null;
 }
 
 /** Every param key we own — listed once so `mergeNavIntoSearch` can clear them before rewriting. */
-const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "lroot", "lstack", "expand", "mfocus", "mdepth", "mhide", "env"] as const;
+const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "lroot", "lstack", "expand", "mfocus", "mdepth", "mhide", "files", "env"] as const;
+
+/** ~6KB cap on the joined `files` param — a longer list skips URL sync (the lens shows a notice). */
+const MAX_FILES_PARAM_LENGTH = 6000;
 
 /** The navigation state the app boots into — the baseline a restore resets absent keys back to. */
 export const DEFAULT_NAV: NavState = {
@@ -53,6 +58,7 @@ export const DEFAULT_NAV: NavState = {
   moduleFocus: null,
   moduleRadius: 1,
   hiddenCategories: [],
+  files: [],
   environment: null,
 };
 
@@ -72,6 +78,7 @@ interface NavSource {
   moduleFocus: string | null;
   moduleRadius: number;
   hiddenCategories: ReadonlySet<string>;
+  affectedFiles: readonly string[];
   environment: string | null;
 }
 
@@ -92,6 +99,8 @@ export function navFrom(state: NavSource): NavState {
     moduleFocus: state.moduleFocus,
     moduleRadius: state.moduleRadius,
     hiddenCategories: [...state.hiddenCategories].sort(),
+    // Preserve the reader's paste order (unlike the sorted sets above) — the list/graph reproduce it.
+    files: [...state.affectedFiles],
     environment: state.environment,
   };
 }
@@ -113,15 +122,30 @@ export function encodeNav(nav: NavState): Map<string, string> {
   setId(out, "mfocus", nav.moduleFocus);
   if (nav.moduleRadius !== 1) out.set("mdepth", String(nav.moduleRadius));
   setList(out, "mhide", nav.hiddenCategories);
+  setFiles(out, nav.files);
   setId(out, "env", nav.environment);
   return out;
+}
+
+/** Comma-join the affected files, but SKIP the param past ~6KB (the lens shows a share-notice). */
+function setFiles(out: Map<string, string>, files: string[]): void {
+  if (files.length === 0) return;
+  const joined = files.join(",");
+  if (joined.length <= MAX_FILES_PARAM_LENGTH) out.set("files", joined);
 }
 
 /** Decode present keys back into a partial NavState — absent keys stay unset (store keeps default). */
 export function decodeNav(params: URLSearchParams): Partial<NavState> {
   const out: Partial<NavState> = {};
+  assignFiles(params, out);
   const view = params.get("view");
-  if (view === "call" || view === "ui" || view === "logic" || view === "modules") out.viewMode = view;
+  if (view === "call" || view === "ui" || view === "logic" || view === "modules" || view === "review") {
+    out.viewMode = view;
+  } else if (out.files && out.files.length > 0) {
+    // A link that carries affected files but no explicit view opens on the review lens (the PR
+    // integration constructs `?files=` without a `?view`); an explicit `?view` always wins.
+    out.viewMode = "review";
+  }
   assignId(params, "focus", out, "focusId");
   assignId(params, "root", out, "compRoot");
   assignId(params, "sel", out, "selectedId");
@@ -139,6 +163,12 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   assignList(params, "mhide", out, "hiddenCategories");
   assignId(params, "env", out, "environment");
   return out;
+}
+
+/** Parse the comma-joined `files` param into a path list (empty entries dropped). */
+function assignFiles(params: URLSearchParams, out: Partial<NavState>): void {
+  const value = params.get("files");
+  if (value !== null) out.files = value.split(",").filter(Boolean);
 }
 
 /** Decode a COMPLETE nav state: present keys override defaults, absent keys reset to default. This
@@ -167,7 +197,8 @@ export function isNavigationChange(prev: NavState, next: NavState): boolean {
     prev.moduleFocus !== next.moduleFocus ||
     prev.flowRootId !== next.flowRootId ||
     prev.logicRoot !== next.logicRoot ||
-    prev.logicStack.join(",") !== next.logicStack.join(",")
+    prev.logicStack.join(",") !== next.logicStack.join(",") ||
+    prev.files.join(",") !== next.files.join(",")
   );
 }
 

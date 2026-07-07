@@ -5,7 +5,15 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { classifyQuery, parseRepoList, parseRepoResult, parseSearchResults, parseUser } from "./github-parse";
+import {
+  classifyQuery,
+  parsePullRequestFiles,
+  parsePullRequestUrl,
+  parseRepoList,
+  parseRepoResult,
+  parseSearchResults,
+  parseUser,
+} from "./github-parse";
 
 describe("classifyQuery", () => {
   it("treats owner/repo and github URLs as an exact lookup", () => {
@@ -67,6 +75,45 @@ describe("parseRepoList", () => {
 
   it("returns an empty list for a non-array body", () => {
     expect(parseRepoList({ items: [{ full_name: "o/r" }] })).toEqual([]);
+  });
+});
+
+describe("parsePullRequestUrl", () => {
+  it("parses a github.com pull URL, tolerating a /files suffix and query/hash", () => {
+    expect(parsePullRequestUrl("https://github.com/UiPath/Autopilot/pull/42")).toEqual({
+      owner: "UiPath",
+      repo: "Autopilot",
+      prNumber: 42,
+    });
+    expect(parsePullRequestUrl("https://github.com/o/r/pull/7/files?w=1#diff")).toEqual({ owner: "o", repo: "r", prNumber: 7 });
+  });
+
+  it("rejects non-pull, non-github, and non-numeric inputs", () => {
+    expect(parsePullRequestUrl("UiPath/Autopilot")).toBeNull();
+    expect(parsePullRequestUrl("https://github.com/o/r")).toBeNull();
+    expect(parsePullRequestUrl("https://github.com/o/r/pull/abc")).toBeNull();
+    expect(parsePullRequestUrl("https://gitlab.com/o/r/pull/1")).toBeNull();
+    expect(parsePullRequestUrl("https://github.com/o/r/pull/0")).toBeNull();
+  });
+});
+
+describe("parsePullRequestFiles", () => {
+  it("keeps only filename + status and ignores attacker-controlled extra fields", () => {
+    const files = parsePullRequestFiles([
+      { filename: "src/a.ts", status: "modified", patch: "@@ evil @@", blob_url: "javascript:alert(1)" },
+      { filename: "src/b.ts", status: "added" },
+    ]);
+    expect(files).toEqual([
+      { filename: "src/a.ts", status: "modified" },
+      { filename: "src/b.ts", status: "added" },
+    ]);
+  });
+
+  it("skips non-object rows and rows without a string filename, and empties a non-array", () => {
+    expect(parsePullRequestFiles([null, 3, { status: "removed" }, { filename: 5 }, { filename: "ok" }])).toEqual([
+      { filename: "ok", status: "" },
+    ]);
+    expect(parsePullRequestFiles({ files: [] })).toEqual([]);
   });
 });
 

@@ -18,6 +18,7 @@ function emptyNav(): NavState {
     moduleFocus: null,
     moduleRadius: 1,
     hiddenCategories: [],
+    files: [],
     environment: null,
   };
 }
@@ -101,6 +102,27 @@ describe("urlState", () => {
     expect(roundTrip(nav)).toEqual({ viewMode: "modules", moduleRadius: 3 });
   });
 
+  it("round-trips a PR-review view (files param)", () => {
+    const nav: NavState = { ...emptyNav(), viewMode: "review", files: ["packages/a/src/x.ts", "packages/b/src/y.ts"] };
+    expect(roundTrip(nav)).toEqual({ viewMode: "review", files: ["packages/a/src/x.ts", "packages/b/src/y.ts"] });
+  });
+
+  it("opens the review lens when files are present but no explicit view", () => {
+    const decoded = decodeNav(new URLSearchParams("files=a/x.ts,b/y.ts"));
+    expect(decoded.viewMode).toBe("review");
+    expect(decoded.files).toEqual(["a/x.ts", "b/y.ts"]);
+  });
+
+  it("lets an explicit view win over the files auto-default", () => {
+    expect(decodeNav(new URLSearchParams("view=modules&files=a/x.ts")).viewMode).toBe("modules");
+  });
+
+  it("skips the files param past the ~6KB share cap", () => {
+    const many = Array.from({ length: 400 }, (_, i) => `packages/app/src/very/deep/module-${i}.ts`);
+    expect(many.join(",").length).toBeGreaterThan(6000);
+    expect(encodeNav({ ...emptyNav(), viewMode: "review", files: many }).has("files")).toBe(false);
+  });
+
   it("preserves foreign params (web-mode id) while owning its own keys", () => {
     const search = mergeNavIntoSearch("id=abc123", { ...emptyNav(), focusId: "ts:m.ts#f" });
     const params = new URLSearchParams(search);
@@ -161,6 +183,10 @@ describe("urlState", () => {
     it("is false for an expansion-only change", () => {
       expect(isNavigationChange(base, { ...base, expanded: ["ts:m.ts#f"] })).toBe(false);
     });
+
+    it("is true when the affected files change", () => {
+      expect(isNavigationChange(base, { ...base, files: ["a/x.ts"] })).toBe(true);
+    });
   });
 
   it("sorts expanded ids so the URL is deterministic regardless of Set order", () => {
@@ -186,6 +212,7 @@ function storeShape() {
     moduleFocus: null,
     moduleRadius: 1,
     hiddenCategories: new Set<string>(),
+    affectedFiles: [] as string[],
     environment: null,
   };
 }
