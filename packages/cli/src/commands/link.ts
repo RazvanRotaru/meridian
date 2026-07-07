@@ -4,8 +4,11 @@
  * `generate` — a validation error throws before anything is written.
  */
 
-import { PORTS_EXTENSION, SCHEMA_VERSION, linkArtifacts } from "@meridian/core";
-import type { GraphArtifact, JsonValue, LinkSource, Port } from "@meridian/core";
+import { LOGIC_FLOW_EXTENSION, PORTS_EXTENSION, SCHEMA_VERSION, linkArtifacts } from "@meridian/core";
+import type { GraphArtifact, JsonValue, LinkSource, LogicFlows, NodeId, Port } from "@meridian/core";
+
+/** Matches the (CLI-local) key `generate` stamps in `artifact-header.ts`; no core constant exists. */
+const ENTRY_MODULES_EXTENSION = "entryModules";
 import { CliError, EXIT } from "../errors";
 import { resolveAgainst, resolveCwd } from "../paths";
 import { readJsonFile, writeJsonAtomic } from "../json-io";
@@ -42,6 +45,8 @@ function loadSource(graphPath: string): LinkSource & { language: string } {
     nodes: artifact.nodes,
     edges: artifact.edges,
     ports: ((artifact.extensions?.[PORTS_EXTENSION] as unknown) ?? []) as Port[],
+    logicFlow: (artifact.extensions?.[LOGIC_FLOW_EXTENSION] as unknown) as LogicFlows | undefined,
+    entryModules: (artifact.extensions?.[ENTRY_MODULES_EXTENSION] as unknown) as NodeId[] | undefined,
     language: artifact.target.language,
   };
 }
@@ -78,8 +83,24 @@ function systemArtifact(
     },
     nodes: linked.nodes,
     edges: linked.edges,
-    extensions: { [PORTS_EXTENSION]: linked.ports as unknown as JsonValue },
+    extensions: linkedExtensions(linked),
   };
+}
+
+/**
+ * The system artifact's extensions: always its ports; the merged logic flows and entry modules only
+ * when non-empty — so a link of artifacts that carried neither stays as lean as it was before, and a
+ * link of code-graph artifacts keeps the Logic-flow view working on the system graph.
+ */
+function linkedExtensions(linked: ReturnType<typeof linkArtifacts>): Record<string, JsonValue> {
+  const extensions: Record<string, JsonValue> = { [PORTS_EXTENSION]: linked.ports as unknown as JsonValue };
+  if (Object.keys(linked.logicFlow).length > 0) {
+    extensions[LOGIC_FLOW_EXTENSION] = linked.logicFlow as unknown as JsonValue;
+  }
+  if (linked.entryModules.length > 0) {
+    extensions[ENTRY_MODULES_EXTENSION] = linked.entryModules as unknown as JsonValue;
+  }
+  return extensions;
 }
 
 function report(

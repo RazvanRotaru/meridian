@@ -60,6 +60,33 @@ describe("linkArtifacts", () => {
     expect(linked.stats.danglingChannels).toBe(1);
   });
 
+  it("merges each source's logic flows and entry modules, namespacing keys and call targets", () => {
+    const withFlows: LinkSource = {
+      ...WEB,
+      logicFlow: {
+        "ts:src/index.ts#load": [
+          { kind: "call", label: "helper()", target: "ts:src/index.ts#helper", resolution: "resolved" },
+          { kind: "call", label: "fetch()", target: "ext:node-fetch", resolution: "external" },
+          { kind: "loop", label: "for", body: [{ kind: "call", label: "log()", target: null, resolution: "unresolved" }] },
+        ],
+      },
+      entryModules: ["ts:src/index.ts"],
+    };
+    const relinked = linkArtifacts([withFlows, API]);
+
+    // The record key is namespaced onto the system-prefixed id...
+    expect(Object.keys(relinked.logicFlow)).toContain("ts:checkout-web/src/index.ts#load");
+    expect(relinked.logicFlow["ts:src/index.ts#load"]).toBeUndefined(); // raw key must not survive
+    const steps = relinked.logicFlow["ts:checkout-web/src/index.ts#load"];
+    // ...as is a resolved in-repo call target...
+    expect(steps[0]).toMatchObject({ target: "ts:checkout-web/src/index.ts#helper" });
+    // ...while a shared-space (ext:) target and a null target pass through untouched.
+    expect(steps[1]).toMatchObject({ target: "ext:node-fetch" });
+    expect((steps[2] as { body: Array<{ target: string | null }> }).body[0].target).toBeNull();
+    // Declared entry modules are namespaced too.
+    expect(relinked.entryModules).toEqual(["ts:checkout-web/src/index.ts"]);
+  });
+
   it("strips per-artifact channels and rebuilds them once over the merged ports", () => {
     // Pre-materialized channel + sends edge in a source must not survive as a duplicate.
     const preChanneled: LinkSource = {
