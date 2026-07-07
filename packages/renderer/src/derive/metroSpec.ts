@@ -8,8 +8,8 @@
 
 import type { NodeId } from "@meridian/core";
 
-/** A station mark. `loop` is the big amber ring; the rest are the transit-map dots/bars/interchanges. */
-export type MetroKind = "station" | "interchange" | "terminus" | "junction" | "loop";
+/** A station mark — the transit-map dots/bars/interchanges. (Loops are enclosures, not marks.) */
+export type MetroKind = "station" | "interchange" | "terminus" | "junction";
 
 export interface MetroStation {
   x: number;
@@ -32,6 +32,8 @@ export interface MetroLine {
   dash?: boolean;
   width?: number;
   arrow?: boolean;
+  /** Paint AFTER the plain lines — a recolored segment riding on top of the trunk (loop bodies). */
+  over?: boolean;
 }
 
 export interface MetroLabel {
@@ -62,7 +64,8 @@ export const MAX_ELEV_DEPTH = 3;
 export const DETACH_Y = BASE_Y + 105;
 export const LANE_GAP = 85;
 export const CATCH_RISE = 105;
-export const LOOP_R = 34;
+/** Vertical half-height of the stadium ring enclosing a loop body. */
+export const LOOP_RY = 72;
 export const MIN_HEIGHT = 620;
 export const MARGIN_X = 100;
 /** Hard recursion guard — pathological trees never blow the stack or the canvas. */
@@ -81,6 +84,11 @@ export function splitTo(x: number, y: number, tx: number, ty: number): string {
 
 /** A rejoin is geometrically the same eased cubic — the alias keeps call sites saying what they mean. */
 export const rejoinTo = splitTo;
+
+/** The stadium ring that encloses a loop's WHOLE body sequence, threaded by the exec line. */
+export function encloseLoop(x0: number, x1: number, y: number, ry: number): string {
+  return `M ${x0} ${y - ry} L ${x1} ${y - ry} A ${ry} ${ry} 0 0 1 ${x1} ${y + ry} L ${x0} ${y + ry} A ${ry} ${ry} 0 0 1 ${x0} ${y - ry} Z`;
+}
 
 /** A hand-off: curves down to a lower lane then runs flat to the right edge (detached / callback). */
 export function departTo(x: number, y: number, ly: number, endX: number): string {
