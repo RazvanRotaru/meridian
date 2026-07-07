@@ -21,7 +21,7 @@ const SELECT_ACCENT = "#6BE38A";
 type ModuleCardRfNode = Node<ModuleCardData, "file">;
 
 function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
-  const selected = useBlueprint((state) => state.moduleSelectedId) === id;
+  const selected = useBlueprint((state) => state.moduleSelected.has(id));
   const accent = CATEGORY_COLOR[data.category];
   return (
     <div style={selected ? CARD_SELECTED : CARD}>

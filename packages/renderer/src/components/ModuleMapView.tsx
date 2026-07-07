@@ -5,7 +5,8 @@
  * out in the store (`moduleRfNodes`/`moduleRfEdges`); this component mounts the read-only <ReactFlow>
  * surface and two pure PAINT steps over the placed graph — never a relayout, so positions hold still:
  *   1. `filterVisible` drops file cards a category/Tests toggle hides (group cards always stay);
- *   2. `emphasize` dims every wire until a node is selected, then lights its N-hop import neighbourhood.
+ *   2. `emphasize` dims every wire until nodes are selected (plain click picks one; ctrl/cmd+click
+ *      accumulates several), then lights the union of their N-hop import neighbourhoods.
  *
  * Navigation is one gesture set: double-click a GROUP card to zoom IN (setModuleFocus); the breadcrumb
  * (the containment trail) zooms OUT. Double-clicking a FILE only selects it (files have no children).
@@ -25,27 +26,31 @@ const PACKAGE_KIND = "package";
 export function ModuleMapView() {
   const nodes = useBlueprint((state) => state.moduleRfNodes);
   const edges = useBlueprint((state) => state.moduleRfEdges);
-  const selectedId = useBlueprint((state) => state.moduleSelectedId);
+  const selected = useBlueprint((state) => state.moduleSelected);
   const layoutStatus = useBlueprint((state) => state.moduleLayoutStatus);
   const effectiveFocus = useBlueprint((state) => state.moduleEffectiveFocus);
   const radius = useBlueprint((state) => state.moduleRadius);
   const index = useBlueprint((state) => state.index);
   const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
   const showTests = useBlueprint((state) => state.showTests);
-  const { selectModule, setModuleFocus } = useBlueprintActions();
+  const { selectModule, toggleModuleSelect, setModuleFocus } = useBlueprintActions();
 
   // Category/test hiding is a pure VISIBILITY filter over the laid-out graph; positions are untouched.
   const { nodes: shownNodes, edges: shownEdges } = useMemo(
     () => filterVisible(nodes, edges, { hiddenCategories, showTests, testIds: index.testIds }),
     [nodes, edges, hiddenCategories, showTests, index.testIds],
   );
-  // Emphasis is a second pure repaint: dim by default, light the selection's N-hop import reach.
+  // Emphasis is a second pure repaint: dim by default, light the union of every selected node's
+  // N-hop import reach.
   const { nodes: styledNodes, edges: styledEdges } = useMemo(
-    () => emphasize(shownNodes, shownEdges, selectedId, radius),
-    [shownNodes, shownEdges, selectedId, radius],
+    () => emphasize(shownNodes, shownEdges, selected, radius),
+    [shownNodes, shownEdges, selected, radius],
   );
 
-  const onNodeClick: NodeMouseHandler<Node> = (_event, node) => selectModule(node.id);
+  // Plain click REPLACES the selection; ctrl/cmd+click toggles the node in/out of it, accumulating
+  // a multi-selection whose combined neighbourhood lights up.
+  const onNodeClick: NodeMouseHandler<Node> = (event, node) =>
+    event.ctrlKey || event.metaKey ? toggleModuleSelect(node.id) : selectModule(node.id);
   // Double-click a GROUP card (a package/directory) zooms into it; a file has no children, so it only
   // selects. The breadcrumb is the way back up — a uniform gesture, no mode switch.
   const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {

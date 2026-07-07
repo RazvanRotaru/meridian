@@ -17,7 +17,7 @@ const PACKAGE_ACCENT = "#5B9BE3";
 type PackageRfNode = Node<ModuleGroupData, "package">;
 
 function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
-  const selected = useBlueprint((state) => state.moduleSelectedId) === id;
+  const selected = useBlueprint((state) => state.moduleSelected.has(id));
   return (
     <div style={selected ? CARD_SELECTED : CARD}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />

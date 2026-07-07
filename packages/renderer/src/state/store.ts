@@ -151,8 +151,9 @@ export interface BlueprintState {
   moduleRadius: number;
   /** Module categories painted OUT of the map (a render-time filter — never a re-derive). */
   hiddenCategories: Set<ModuleCategory>;
-  /** The selected node id in the Module map; null == none. A repaint-only highlight — no relayout. */
-  moduleSelectedId: string | null;
+  /** The selected node ids in the Module map (ctrl/cmd+click accumulates several); empty == none.
+   * A repaint-only highlight — no relayout. */
+  moduleSelected: Set<string>;
   /** Legacy URL-restored Module-map expansion ids. The flat map ignores these, but keeping the field
    * lets old links round-trip without throwing away unrelated navigation state. */
   moduleExpanded: Set<string>;
@@ -209,6 +210,7 @@ export interface BlueprintState {
   setModuleRadius(radius: number): void;
   toggleCategory(category: ModuleCategory): void;
   selectModule(id: string | null): void;
+  toggleModuleSelect(id: string): void;
   setViewMode(mode: ViewMode): void;
   toggleShowTests(): void;
   toggleCoverageMode(): void;
@@ -297,7 +299,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleEffectiveFocus: null,
     moduleRadius: 1,
     hiddenCategories: new Set<ModuleCategory>(),
-    moduleSelectedId: null,
+    moduleSelected: new Set<string>(),
     moduleExpanded: new Set<string>(),
     rfNodes: [],
     rfEdges: [],
@@ -632,7 +634,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       // A new level is a fresh id space, so the prior expansion set means nothing here — clear it so
       // the new level opens with only its frontier shown (mirrors logic's reset-on-drill).
-      set({ moduleFocus: id, moduleSelectedId: null, moduleExpanded: new Set<string>() });
+      set({ moduleFocus: id, moduleSelected: new Set<string>(), moduleExpanded: new Set<string>() });
       void get().moduleRelayout();
     },
 
@@ -655,9 +657,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ hiddenCategories: withToggledCategory(get().hiddenCategories, category) });
     },
 
-    // Select a Module-map node (pass null to clear). A repaint-only highlight — no relayout.
+    // Select a Module-map node, REPLACING the whole selection (pass null to clear) — the plain-click
+    // gesture. A repaint-only highlight — no relayout.
     selectModule(id) {
-      set({ moduleSelectedId: id });
+      set({ moduleSelected: id === null ? new Set<string>() : new Set([id]) });
+    },
+
+    // Flip one Module-map node in/out of the selection WITHOUT touching the rest — the ctrl/cmd+click
+    // gesture that accumulates a multi-selection. Repaint-only, like selectModule.
+    toggleModuleSelect(id) {
+      set({ moduleSelected: withToggled(get().moduleSelected, id) });
     },
 
     // Switching mode re-derives + relayouts like a dive. Entering UI mode dives to the render
@@ -701,7 +710,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // composition graph's own selection/root — retreat home first.
     toggleShowTests() {
       const showTests = !get().showTests;
-      const { focusId, selectedId, compSelectedId, compRoot, moduleSelectedId, viewMode, index } = get();
+      const { focusId, selectedId, compSelectedId, compRoot, moduleSelected, viewMode, index } = get();
       const strandedById = (id: string | null) => !showTests && id !== null && index.testIds.has(id);
       const nextCompRoot = strandedById(compRoot) ? null : compRoot;
       set({
@@ -710,7 +719,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         selectedId: strandedById(selectedId) ? null : selectedId,
         compSelectedId: strandedById(compSelectedId) ? null : compSelectedId,
         compRoot: nextCompRoot,
-        moduleSelectedId: strandedById(moduleSelectedId) ? null : moduleSelectedId,
+        moduleSelected: showTests ? moduleSelected : new Set([...moduleSelected].filter((id) => !index.testIds.has(id))),
       });
       // The composition AND module-map views hide test cards in place (the surface filters the rendered
       // set), so they must NOT re-lay-out — that would reshuffle production cards. The module map's focus
