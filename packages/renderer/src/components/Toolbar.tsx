@@ -9,6 +9,7 @@ import { EnvSelector } from "./EnvSelector";
 import { Breadcrumb } from "./Breadcrumb";
 import { ViewModeToggle } from "./ViewModeToggle";
 import { TestsToggle } from "./TestsToggle";
+import { PrivateToggle } from "./PrivateToggle";
 import { CoverageToggle } from "./CoverageToggle";
 import { FlowSelector } from "./FlowSelector";
 import { CompositionPanel } from "./composition/CompositionPanel";
@@ -37,6 +38,7 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
         <ViewModeToggle />
         <div style={FILTER_ROW_STYLE}>
           <TestsToggle />
+          {isModules ? <PrivateToggle /> : null}
           <CoverageToggle />
         </div>
         <Breadcrumb />

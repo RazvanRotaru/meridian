@@ -9,10 +9,10 @@ import type { ViewMode } from "../derive/edgeSelection";
 import { SHOW_SERVICE_COMPOSITION } from "../featureFlags";
 
 const ALL_SEGMENTS: ReadonlyArray<{ mode: ViewMode; label: string }> = [
+  { mode: "modules", label: "Map" },
   { mode: "call", label: "Service composition" },
   { mode: "ui", label: "UI composition" },
   { mode: "logic", label: "Logic flow" },
-  { mode: "modules", label: "Module map" },
 ];
 
 // Service composition is withheld from the default build (see featureFlags.ts).

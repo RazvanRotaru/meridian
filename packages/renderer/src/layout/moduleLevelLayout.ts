@@ -12,6 +12,9 @@ import type { Edge, Node } from "@xyflow/react";
 import { runElkLayout } from "./elkLayout";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
 import type { ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
+import type { BlockData } from "../derive/moduleLevel";
+import type { StepData } from "../derive/flowSteps";
+import type { GhostData } from "../derive/ghostDeps";
 
 const GROUP_HEIGHT = 76;
 const GROUP_MIN_WIDTH = 172;
@@ -19,6 +22,24 @@ const GROUP_MAX_WIDTH = 320;
 const WIDTH_PER_FILE = 3;
 const FILE_WIDTH = 210;
 const FILE_HEIGHT = 54;
+// A memberless unit is a compact identity card; a unit with members is an ELK container (frame).
+const UNIT_LEAF_WIDTH = 200;
+const UNIT_LEAF_HEIGHT = 42;
+// Code blocks (methods, functions, type definitions) are small fixed nodes sized to one label,
+// widened a little with the label so long names don't clip.
+const BLOCK_MIN_WIDTH = 132;
+const BLOCK_MAX_WIDTH = 220;
+const BLOCK_WIDTH_PER_CHAR = 7;
+const BLOCK_BASE_WIDTH = 46;
+const BLOCK_HEIGHT = 30;
+// Flow steps are the smallest shapes on the canvas — one label, quiet.
+const STEP_MIN_WIDTH = 96;
+const STEP_MAX_WIDTH = 190;
+const STEP_HEIGHT = 26;
+// Ghost cards (off-screen definitions/callers): two lines — qualified name + home file.
+const GHOST_MIN_WIDTH = 150;
+const GHOST_MAX_WIDTH = 250;
+const GHOST_HEIGHT = 42;
 
 const ROOT_OPTIONS: Record<string, string> = {
   "elk.algorithm": "layered",
@@ -51,12 +72,41 @@ export async function layoutModuleTree(nodes: VisibleModuleNode[], edges: Module
   return { nodes: placed, edges: edges.map(toEdge) };
 }
 
-/** A collapsed group sizes with its file count; a file card is fixed. Expanded groups are ELK-sized. */
+/** A collapsed group sizes with its file count; file cards, unit leaf cards, and code blocks are
+ * fixed (blocks widen a little with their label). Expanded groups, file frames, and unit frames
+ * are ELK-sized around their children. */
 function leafSize(node: VisibleModuleNode): { width: number; height: number } {
+  if (node.kind === "ghost") {
+    return ghostSize(node.data as GhostData);
+  }
+  if (node.kind === "step") {
+    return stepSize(node.data as StepData);
+  }
+  if (node.kind === "block") {
+    return blockSize(node.data as BlockData);
+  }
+  if (node.kind === "unit") {
+    return { width: UNIT_LEAF_WIDTH, height: UNIT_LEAF_HEIGHT };
+  }
   if (node.kind === "file") {
     return { width: FILE_WIDTH, height: FILE_HEIGHT };
   }
   return { width: groupWidth(fileCountOf(node)), height: GROUP_HEIGHT };
+}
+
+function blockSize(data: BlockData): { width: number; height: number } {
+  const width = Math.max(BLOCK_MIN_WIDTH, Math.min(BLOCK_MAX_WIDTH, BLOCK_BASE_WIDTH + data.label.length * BLOCK_WIDTH_PER_CHAR));
+  return { width, height: BLOCK_HEIGHT };
+}
+
+function stepSize(data: StepData): { width: number; height: number } {
+  const width = Math.max(STEP_MIN_WIDTH, Math.min(STEP_MAX_WIDTH, 40 + data.label.length * 6.5));
+  return { width, height: STEP_HEIGHT };
+}
+
+function ghostSize(data: GhostData): { width: number; height: number } {
+  const width = Math.max(GHOST_MIN_WIDTH, Math.min(GHOST_MAX_WIDTH, 42 + data.label.length * 6.5));
+  return { width, height: GHOST_HEIGHT };
 }
 
 function fileCountOf(node: VisibleModuleNode): number {
@@ -86,5 +136,10 @@ function toNode(elkNode: ElkNode, parentId: string | undefined, byId: Map<string
 }
 
 function toEdge(edge: ModuleTreeEdge): Edge {
-  return { id: edge.id, source: edge.source, target: edge.target, data: { weight: edge.weight, crossFrame: edge.crossFrame } };
+  return {
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    data: { weight: edge.weight, crossFrame: edge.crossFrame, category: edge.category, ghost: edge.ghost === true },
+  };
 }

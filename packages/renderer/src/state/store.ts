@@ -29,6 +29,8 @@ import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
 import { deriveModuleLevelLayout } from "./deriveModuleMapLayout";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
+import { buildBlockDeps, type BlockDeps } from "../derive/blockDeps";
+import { deriveModuleTree } from "../derive/moduleTree";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
@@ -159,9 +161,12 @@ export interface BlueprintState {
   /** The selected node ids in the Module map (ctrl/cmd+click accumulates several); empty == none.
    * A repaint-only highlight — no relayout. */
   moduleSelected: Set<string>;
-  /** Legacy URL-restored Module-map expansion ids. The flat map ignores these, but keeping the field
-   * lets old links round-trip without throwing away unrelated navigation state. */
+  /** Cards the reader expanded IN PLACE on the Map (files into code, blocks into flow frames,
+   * steps into deeper flows) — one id space, URL-round-tripped. A relayout concern. */
   moduleExpanded: Set<string>;
+  /** Whether `private`-tagged members are painted on the Map. PAINT-ONLY like Tests/categories —
+   * privates always get their space in the layout, so toggling never reshuffles positions. */
+  showPrivate: boolean;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -213,6 +218,9 @@ export interface BlueprintState {
   moduleRelayout(): Promise<void>;
   setModuleFocus(id: string | null): void;
   toggleModuleExpand(nodeId: string): void;
+  revealModule(nodeId: string): void;
+  expandAllModules(): void;
+  togglePrivateMembers(): void;
   setModuleRadius(radius: number): void;
   toggleCategory(category: ModuleCategory): void;
   selectModule(id: string | null): void;
@@ -250,6 +258,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // The file import graph, built once on first module-map relayout (the artifact never changes after
   // boot) and reused for every level — never rebuilt per relayout.
   let moduleGraph: ModuleGraph | null = null;
+  // The code-dependency substrate (coupling edges at their real endpoints), built once too.
+  let blockDeps: BlockDeps | null = null;
   // And for the composition-tab method-preview drawer's logic layout (the EXPERIMENT surface).
   let compMethodLayoutSeq = 0;
   // Null when the server didn't ship source access — the code drawer is then inert.
@@ -267,6 +277,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     expanded: new Set<string>(),
     selectedId: null,
     focusId: null,
+    // The Map (merged module-map + composition) is the default lens.
     viewMode: "modules",
     showTests: true,
     coverageMode: false,
@@ -308,6 +319,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     hiddenCategories: new Set<ModuleCategory>(),
     moduleSelected: new Set<string>(),
     moduleExpanded: new Set<string>(),
+    showPrivate: true,
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -329,8 +341,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().relayout();
     },
 
+    // Collapse every inline expansion of the ACTIVE surface: the Map's own expansion set on the
+    // modules lens (its primary gesture), the call/ui graph's `expanded` otherwise. relayout()
+    // routes to the right layout pass either way.
     collapseAll() {
-      set({ expanded: new Set<string>() });
+      if (get().viewMode === "modules") {
+        set({ moduleExpanded: new Set<string>(), moduleSelected: new Set<string>() });
+      } else {
+        set({ expanded: new Set<string>() });
+      }
       void get().relayout();
     },
 
@@ -624,11 +643,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // guard. The import graph is built once (cached) and reused for every level. A null focus is the
     // whole-repo package overview; a package focus is its children with imports folded to them.
     async moduleRelayout() {
-      const { index, moduleFocus, moduleExpanded } = get();
+      const { index, moduleFocus, moduleExpanded, artifact } = get();
       moduleGraph ??= buildModuleGraph(index);
+      blockDeps ??= buildBlockDeps(index);
+      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
-      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, moduleGraph);
+      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, moduleGraph, blockDeps, flows);
       if (moduleLayoutSeq !== sequence) {
         return; // a newer focus change superseded this one.
       }
@@ -657,6 +678,59 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     toggleModuleExpand(nodeId) {
       set({ moduleExpanded: withToggled(get().moduleExpanded, nodeId) });
       void get().moduleRelayout();
+    },
+
+    // REVEAL a code node the reader can't see (a ghost card's real definition): refocus the Map at
+    // the directory it lives in, with its file expanded so the symbol is actually drawn, selected.
+    // The Map-native "go to definition" — a deliberate focus jump, so prior expansions reset like
+    // any setModuleFocus navigation.
+    revealModule(nodeId) {
+      const ancestors = get().index.ancestorsOf(nodeId);
+      const file = ancestors.find((node) => node.kind === "module");
+      const directory = [...ancestors].reverse().find((node) => node.kind === "package");
+      set({
+        moduleFocus: directory?.id ?? null,
+        moduleExpanded: new Set<string>(file ? [file.id] : []),
+        moduleSelected: new Set([nodeId]),
+      });
+      void get().moduleRelayout();
+    },
+
+    // Expand EVERYTHING down to the CODE level from the current view: run the (pure, sync) tree
+    // derive to a fixpoint, adding every drawn CONTAINMENT container (dirs → files) that isn't open
+    // yet. Flow frames — function/method blocks and their nested steps — stay closed: charting every
+    // flow at once is noise, and the reader unrolls those one call at a time. The expansion set only
+    // grows and is bounded by the artifact, so termination is structural.
+    expandAllModules() {
+      const { index, moduleFocus, artifact } = get();
+      moduleGraph ??= buildModuleGraph(index);
+      blockDeps ??= buildBlockDeps(index);
+      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const expanded = new Set(get().moduleExpanded);
+      for (;;) {
+        const tree = deriveModuleTree(index, moduleFocus, expanded, moduleGraph, blockDeps, flows);
+        const fresh = tree.nodes
+          .filter((node) => node.isContainer && !node.isExpanded && (node.kind === "package" || node.kind === "file"))
+          .map((node) => node.id);
+        if (fresh.length === 0) {
+          break;
+        }
+        fresh.forEach((id) => expanded.add(id));
+      }
+      set({ moduleExpanded: expanded });
+      void get().moduleRelayout();
+    },
+
+    // Show/hide `private`-tagged members. PAINT-ONLY — privates keep their layout space, the surface
+    // just stops painting them — so positions never reshuffle (the same contract as Tests/categories).
+    // A selection about to be hidden retreats first, mirroring toggleShowTests's stranding rule.
+    togglePrivateMembers() {
+      const showPrivate = !get().showPrivate;
+      const { moduleSelected, index } = get();
+      set({
+        showPrivate,
+        moduleSelected: showPrivate ? moduleSelected : new Set([...moduleSelected].filter((id) => !index.privateIds.has(id))),
+      });
     },
 
     // Set the selection's highlight radius (clamped 1..GHOST_DEPTH_ALL). PAINT-ONLY: the surface
@@ -832,9 +906,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     async relayout() {
       // The "call" lens IS the Service-composition graph now (not the old call graph), so route its
-      // layout to compRelayout and skip the deriveLayout path entirely. This runs on the boot relayout
-      // (viewMode starts "call") and whenever setViewMode re-enters "call", so composition populates
-      // on first load and on every tab-switch back with no separate trigger. "ui" still derives below.
+      // layout to compRelayout and skip the deriveLayout path entirely. This runs whenever setViewMode
+      // (re-)enters "call" — NOT at boot, which starts on the "modules" lens and routes below — so
+      // composition lays out on first tab-switch in. "ui" still derives below.
       if (get().viewMode === "call") {
         await get().compRelayout();
         return;

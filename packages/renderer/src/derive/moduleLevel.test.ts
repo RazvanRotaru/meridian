@@ -49,6 +49,8 @@ function fixture(): { nodes: GraphNode[]; edges: GraphEdge[] } {
   return { nodes, edges };
 }
 
+const NO_UNITS = { isContainer: false, isExpanded: false, unitCount: 0 };
+
 function indexOf(nodes: GraphNode[], edges: GraphEdge[]) {
   return buildGraphIndex({ nodes, edges } as GraphArtifact);
 }
@@ -69,7 +71,7 @@ describe("fileData", () => {
   it("reads label/path and the in/out import degrees from the module graph", () => {
     const { nodes, edges } = fixture();
     const index = indexOf(nodes, edges);
-    const data = fileData("ts:pkgA/src/index.ts", buildModuleGraph(index), index, null);
+    const data = fileData("ts:pkgA/src/index.ts", buildModuleGraph(index), index, null, NO_UNITS);
     expect(data.label).toBe("index.ts");
     expect(data.fullPath).toBe("pkgA/src/index.ts");
     expect(data.outCount).toBe(2); // imports util.ts and pkgB/b.ts
@@ -80,7 +82,7 @@ describe("fileData", () => {
   it("flags the package entry module as an entry card", () => {
     const { nodes, edges } = fixture();
     const index = indexOf(nodes, edges);
-    const data = fileData("ts:pkgA/src/index.ts", buildModuleGraph(index), index, "ts:pkgA/src/index.ts");
+    const data = fileData("ts:pkgA/src/index.ts", buildModuleGraph(index), index, "ts:pkgA/src/index.ts", NO_UNITS);
     expect(data.isEntry).toBe(true);
     expect(data.category).toBe("entry");
   });

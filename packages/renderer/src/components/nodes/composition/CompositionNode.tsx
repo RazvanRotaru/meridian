@@ -12,7 +12,7 @@ import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import { colorForDistance, type ChannelCompData, type CompNodeData } from "../../../derive/compositionGraph";
 import type { PackageSummaryData } from "../../../derive/compositionAggregate";
 import type { CompRfNode } from "../../../layout/compositionElk";
-import { accentForKind } from "../../../theme/kindColors";
+import { accentForKind, glyphForKind } from "../../../theme/kindColors";
 import { coverageAccent } from "../../../theme/coverageColors";
 import { SmellChip } from "../../composition/SmellChip";
 import { CompositionMembers } from "../../composition/CompositionMembers";
@@ -101,17 +101,6 @@ function MetricPair(props: { label: string; value: number; title: string }) {
       <span style={METRIC_VALUE}>{props.value}</span>
     </span>
   );
-}
-
-// A compact kind glyph so a card reads as class/module/interface/object before the tag is scanned.
-const KIND_GLYPH: Record<string, string> = {
-  module: "▤",
-  class: "◆",
-  interface: "◇",
-  object: "❑",
-};
-function glyphForKind(kind: string): string {
-  return KIND_GLYPH[kind] ?? "▪";
 }
 
 /**

@@ -17,6 +17,8 @@ export interface GraphIndex {
   edges: GraphEdge[];
   /** Every test-code node (tag or path heuristic), closed over containment — the hide-tests set. */
   testIds: Set<string>;
+  /** Every `private`-tagged node (the open tags vocabulary) — the Map's hide-privates set. */
+  privateIds: Set<string>;
   isContainer(nodeId: string): boolean;
   /** Ordered children of a node (source order); the roots of a dive-in focus scope. */
   childrenOf(nodeId: string): GraphNode[];
@@ -38,6 +40,7 @@ export function buildGraphIndex(artifact: GraphArtifact): GraphIndex {
     outEdges: groupOutEdges(artifact.edges),
     edges: artifact.edges,
     testIds: collectTestIds(artifact.nodes),
+    privateIds: new Set(artifact.nodes.filter((node) => node.tags?.includes("private")).map((node) => node.id)),
     isContainer: (nodeId) => (childrenByParent.get(nodeId)?.length ?? 0) > 0,
     childrenOf: (nodeId) => childrenByParent.get(nodeId) ?? [],
     ancestorsOf: (nodeId) => ancestorsOf(nodeId, nodesById, parentOf),

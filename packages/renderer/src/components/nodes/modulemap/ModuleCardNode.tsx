@@ -1,9 +1,10 @@
 /**
- * A file card for the Module-map lens: one source file (meridian `module`) as a compact card showing
+ * A file card for the Map lens: one source file (meridian `module`) as a compact card showing
  * its name, a category chip (UI / Utilities / Config / App), and its afferent/efferent import counts.
- * The blast-radius root wears an "ENTRY" badge. Adapted from the composition scorecard's dark styling
- * but stripped to the essentials a file needs. A green ring marks the selected card — read from the
- * store, mirroring how the composition and logic nodes show their selection.
+ * The blast-radius root wears an "ENTRY" badge. A file that declares units (classes/interfaces/
+ * objects) carries the same chevron as a group card: expanding turns the card into a transparent
+ * frame whose unit cards nest inside — the merged Service-composition level. A green ring marks the
+ * selected card — read from the store, mirroring how the composition and logic nodes show theirs.
  */
 
 import { memo } from "react";
@@ -12,17 +13,40 @@ import { useBlueprint } from "../../../state/StoreContext";
 import type { ModuleCardData } from "../../../derive/moduleLevel";
 import type { ModuleCategory } from "../../../derive/moduleCategory";
 import { PackageOverviewNode } from "./PackageOverviewNode";
+import { UnitCardNode } from "./UnitCardNode";
+import { BlockNode } from "./BlockNode";
+import { StepNode } from "./StepNode";
+import { GhostNode } from "./GhostNode";
+import { ExpandChevron, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT, TITLE_BAR } from "./frameChrome";
 
-const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
-// The green shared with the emphasized import wires, so a card's ring and its lit edges read as one
-// highlight (mirrors the composition tab's COMP_SELECT_ACCENT).
-const SELECT_ACCENT = "#6BE38A";
+// The file family's frame accent (the module cyan), used when an expanded card turns into a frame.
+const FILE_FRAME_ACCENT = "#3FB7C4";
 
 type ModuleCardRfNode = Node<ModuleCardData, "file">;
 
 function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
   const selected = useBlueprint((state) => state.moduleSelected.has(id));
   const accent = CATEGORY_COLOR[data.category];
+  const chevron = data.isContainer ? (
+    <ExpandChevron id={id} isExpanded={data.isExpanded} collapsedTitle={`Expand — ${data.unitCount} declaration(s) in this file`} />
+  ) : null;
+  const entryBadge = data.isEntry ? <span style={ENTRY_BADGE} title="Blast-radius root">ENTRY</span> : null;
+
+  if (data.isExpanded) {
+    return (
+      <div style={selected ? frameSelectedStyle(FILE_FRAME_ACCENT) : frameStyle(FILE_FRAME_ACCENT)}>
+        <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+        <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+        <div style={TITLE_BAR}>
+          {chevron}
+          <span style={LABEL} title={data.fullPath}>{data.label}</span>
+          {entryBadge}
+          <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={selected ? CARD_SELECTED : CARD}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
@@ -30,8 +54,9 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
       <div style={{ ...ACCENT_BAR, background: accent }} />
       <div style={INNER}>
         <div style={HEADER}>
+          {chevron}
           <span style={LABEL} title={data.fullPath}>{data.label}</span>
-          {data.isEntry ? <span style={ENTRY_BADGE} title="Blast-radius root">ENTRY</span> : null}
+          {entryBadge}
         </div>
         <div style={META}>
           <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
@@ -49,10 +74,13 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
 
 export const ModuleCardNode = memo(ModuleCardNodeImpl);
 
-/** The node-type registry the Module-map surface hands React Flow (a stable module-level reference).
+/** The node-type registry the Map surface hands React Flow (a stable module-level reference).
  * `package` is a group card (a package at the repo overview, a directory one level deeper); `file`
- * is a source file. */
-export const moduleNodeTypes = { file: ModuleCardNode, package: PackageOverviewNode };
+ * is a source file; `unit` is a class/interface/object frame nested inside an expanded file frame;
+ * `block` is a leaf code block (a method, function, or type definition). A card the reader expands
+ * becomes a frame whose children NEST inside it (parentId), so a level can hold nested frames —
+ * mirroring the call graph's ContainerNode. */
+export const moduleNodeTypes = { file: ModuleCardNode, package: PackageOverviewNode, unit: UnitCardNode, block: BlockNode, step: StepNode, ghost: GhostNode };
 
 // Category → accent hue, echoing the palette used across the dark surfaces: entry green (the "you are
 // here" signal), ui blue, util amber, config violet, app a neutral slate. Exported so the Module-map
@@ -64,8 +92,6 @@ export const CATEGORY_COLOR: Record<ModuleCategory, string> = {
   config: "#A78BFA",
   app: "#8A94A3",
 };
-
-const PIN: React.CSSProperties = { width: 6, height: 6, background: "#C8D3E0", border: "none", minWidth: 0, minHeight: 0 };
 
 const CARD: React.CSSProperties = {
   position: "relative",
