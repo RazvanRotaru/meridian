@@ -1,8 +1,9 @@
 /**
- * The Module-map highlight-radius dial: with a node selected, it sets how many import hops out from
- * that node light up (its import neighbourhood at this level). PAINT-ONLY — it never relayouts; the
- * surface recomputes the lit set in a useMemo. Hidden until a node is selected (radius means nothing
- * without a focus of attention). Positions 1..MAX_HOPS are literal hops; one past the end is "All".
+ * The Module-map highlight-radius dial: with nodes selected, it sets how many import hops out from
+ * EACH selected node light up (the union of their neighbourhoods at this level). PAINT-ONLY — it
+ * never relayouts; the surface recomputes the lit set in a useMemo. Hidden until at least one node
+ * is selected (radius means nothing without a focus of attention). Positions 1..MAX_HOPS are literal
+ * hops; one past the end is "All".
  */
 
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
@@ -13,10 +14,10 @@ const ALL_POSITION = MAX_HOPS + 1;
 
 export function DepthSlider() {
   const radius = useBlueprint((state) => state.moduleRadius);
-  const selectedId = useBlueprint((state) => state.moduleSelectedId);
+  const selectedCount = useBlueprint((state) => state.moduleSelected.size);
   const setModuleRadius = useBlueprintActions().setModuleRadius;
 
-  if (selectedId === null) {
+  if (selectedCount === 0) {
     return null;
   }
   const isAll = radius >= GHOST_DEPTH_ALL;
