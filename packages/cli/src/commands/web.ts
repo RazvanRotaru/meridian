@@ -20,6 +20,13 @@ export interface WebOptions extends GlobalOptions {
   githubClientId?: string;
 }
 
+/**
+ * The project's own OAuth app registration (Device Flow enabled; maintained by the meridian
+ * owners). A client id is public by design — the device flow uses no secret. Forks that want
+ * their own app identity override via --github-client-id or MERIDIAN_GITHUB_CLIENT_ID.
+ */
+const DEFAULT_GITHUB_CLIENT_ID = "Ov23liC6UQi42iShRkP4";
+
 export async function runWeb(source: string | undefined, options: WebOptions): Promise<void> {
   const reporter = new Reporter(options);
   const cwd = resolveCwd(options.cwd);
@@ -28,7 +35,7 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
     webUiPath: webUiPath(),
     cwd,
     source,
-    githubClientId: options.githubClientId ?? process.env.MERIDIAN_GITHUB_CLIENT_ID,
+    githubClientId: options.githubClientId ?? process.env.MERIDIAN_GITHUB_CLIENT_ID ?? DEFAULT_GITHUB_CLIENT_ID,
   });
   await serve(
     server,

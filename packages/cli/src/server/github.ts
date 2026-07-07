@@ -6,7 +6,7 @@
  */
 
 import { WebError } from "./web-error";
-import { classifyQuery, parseRepoResult, parseSearchResults, parseUser } from "./github-parse";
+import { classifyQuery, parseRepoList, parseRepoResult, parseSearchResults, parseUser } from "./github-parse";
 import type { GitHubUser, RepoSummary } from "./github-parse";
 import { interpretTokenResponse, parseDeviceCodeResponse, tokenRedeemBody } from "./github-auth";
 import type { DeviceCode, TokenPoll } from "./github-auth";
@@ -17,12 +17,14 @@ const API_ROOT = "https://api.github.com";
 const SCOPE = "repo";
 const REQUEST_TIMEOUT_MS = 10_000;
 const SEARCH_PER_PAGE = 20;
+const LIST_PER_PAGE = 30;
 
 export interface GitHubClient {
   requestDeviceCode(): Promise<DeviceCode>;
   redeemToken(deviceCode: string): Promise<TokenPoll>;
   getUser(token: string): Promise<GitHubUser>;
   searchRepos(token: string, query: string): Promise<RepoSummary[]>;
+  listOwnRepos(token: string): Promise<RepoSummary[]>;
 }
 
 export interface GitHubClientConfig {
@@ -37,6 +39,7 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
     redeemToken: (deviceCode) => redeemToken(fetchImpl, config.clientId, deviceCode),
     getUser: (token) => getUser(fetchImpl, token),
     searchRepos: (token, query) => searchRepos(fetchImpl, token, query),
+    listOwnRepos: (token) => listOwnRepos(fetchImpl, token),
   };
 }
 
@@ -72,6 +75,15 @@ async function exactRepo(fetchImpl: typeof fetch, token: string, owner: string, 
 async function fuzzyRepos(fetchImpl: typeof fetch, token: string, term: string): Promise<RepoSummary[]> {
   const params = new URLSearchParams({ q: term, per_page: String(SEARCH_PER_PAGE), sort: "updated" });
   return parseSearchResults(await getApi(fetchImpl, `${API_ROOT}/search/repositories?${params}`, token));
+}
+
+/**
+ * Repos the user owns or was personally invited to, most recently pushed first. Deliberately NOT
+ * `organization_member`: busy org repos would bury the user's own under the 30-item cap.
+ */
+async function listOwnRepos(fetchImpl: typeof fetch, token: string): Promise<RepoSummary[]> {
+  const params = new URLSearchParams({ per_page: String(LIST_PER_PAGE), sort: "pushed", affiliation: "owner,collaborator" });
+  return parseRepoList(await getApi(fetchImpl, `${API_ROOT}/user/repos?${params}`, token));
 }
 
 async function postForm(fetchImpl: typeof fetch, url: string, body: Record<string, string>): Promise<unknown> {
