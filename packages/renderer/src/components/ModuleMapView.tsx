@@ -18,7 +18,7 @@ import { moduleNodeTypes, CATEGORY_COLOR } from "./nodes/modulemap/ModuleCardNod
 import { filterVisible, emphasize } from "./moduleMapPaint";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { accentForKind } from "../theme/kindColors";
-import type { ModuleCardData, UnitCardData } from "../derive/moduleLevel";
+import type { BlockData, ModuleCardData, UnitCardData } from "../derive/moduleLevel";
 import type { GraphIndex } from "../graph/graphIndex";
 
 const PACKAGE_KIND = "package";
@@ -33,7 +33,7 @@ export function ModuleMapView() {
   const index = useBlueprint((state) => state.index);
   const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
   const showTests = useBlueprint((state) => state.showTests);
-  const { selectModule, setModuleFocus } = useBlueprintActions();
+  const { selectModule, setModuleFocus, openLogicFlow } = useBlueprintActions();
 
   // Category/test hiding is a pure VISIBILITY filter over the laid-out graph; positions are untouched.
   const { nodes: shownNodes, edges: shownEdges } = useMemo(
@@ -47,11 +47,13 @@ export function ModuleMapView() {
   );
 
   const onNodeClick: NodeMouseHandler<Node> = (_event, node) => selectModule(node.id);
-  // Double-click a GROUP card (a package/directory) zooms into it; a file has no children, so it only
-  // selects. The breadcrumb is the way back up — a uniform gesture, no mode switch.
+  // Double-click a GROUP card (a package/directory) zooms into it; a callable BLOCK opens its logic
+  // flow (the map→logic link); everything else only selects. The breadcrumb is the way back up.
   const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
     if (node.type === PACKAGE_KIND) {
       setModuleFocus(node.id);
+    } else if (node.type === "block" && (node.data as BlockData).callable) {
+      openLogicFlow(node.id);
     } else {
       selectModule(node.id);
     }
@@ -165,15 +167,18 @@ function EmptyModuleMapCard(props: { focus: string | null }) {
   );
 }
 
-// The MiniMap gets untyped `Node`s: a group card reads as a blue package tone, a unit dot tints by
-// its kind, each file dot by its category (the same palette as the cards) so a level stays legible
-// at overview zoom.
+// The MiniMap gets untyped `Node`s: a group card reads as a blue package tone, unit/block dots tint
+// by their kind, each file dot by its category (the same palette as the cards) so a level stays
+// legible at overview zoom.
 function miniMapColor(node: Node): string {
   if (node.type === PACKAGE_KIND) {
     return "#5B9BE3";
   }
   if (node.type === "unit") {
     return accentForKind((node.data as UnitCardData).unitKind);
+  }
+  if (node.type === "block") {
+    return accentForKind((node.data as BlockData).blockKind);
   }
   return CATEGORY_COLOR[(node.data as ModuleCardData).category];
 }

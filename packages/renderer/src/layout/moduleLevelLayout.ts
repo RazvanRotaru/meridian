@@ -12,7 +12,7 @@ import type { Edge, Node } from "@xyflow/react";
 import { runElkLayout } from "./elkLayout";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
 import type { ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
-import type { UnitCardData } from "../derive/moduleLevel";
+import type { BlockData } from "../derive/moduleLevel";
 
 const GROUP_HEIGHT = 76;
 const GROUP_MIN_WIDTH = 172;
@@ -20,15 +20,16 @@ const GROUP_MAX_WIDTH = 320;
 const WIDTH_PER_FILE = 3;
 const FILE_WIDTH = 210;
 const FILE_HEIGHT = 54;
-// Unit cards size with their content: header + a methods band + a uses band (UnitCardNode's rows).
-export const UNIT_MEMBERS_SHOWN = 5;
-export const UNIT_DEPS_SHOWN = 3;
-const UNIT_WIDTH = 216;
-const UNIT_HEADER_HEIGHT = 40;
-const UNIT_SECTION_HEADER = 16;
-const UNIT_ROW_HEIGHT = 15;
-const UNIT_MORE_HEIGHT = 12;
-const UNIT_PADDING = 12;
+// A memberless unit is a compact identity card; a unit with members is an ELK container (frame).
+const UNIT_LEAF_WIDTH = 200;
+const UNIT_LEAF_HEIGHT = 42;
+// Code blocks (methods, functions, type definitions) are small fixed nodes sized to one label,
+// widened a little with the label so long names don't clip.
+const BLOCK_MIN_WIDTH = 132;
+const BLOCK_MAX_WIDTH = 220;
+const BLOCK_WIDTH_PER_CHAR = 7;
+const BLOCK_BASE_WIDTH = 46;
+const BLOCK_HEIGHT = 30;
 
 const ROOT_OPTIONS: Record<string, string> = {
   "elk.algorithm": "layered",
@@ -61,11 +62,15 @@ export async function layoutModuleTree(nodes: VisibleModuleNode[], edges: Module
   return { nodes: placed, edges: edges.map(toEdge) };
 }
 
-/** A collapsed group sizes with its file count; a file card is fixed; a unit card sizes with its
- * member/dependency rows. Expanded groups and file frames are ELK-sized around their children. */
+/** A collapsed group sizes with its file count; file cards, unit leaf cards, and code blocks are
+ * fixed (blocks widen a little with their label). Expanded groups, file frames, and unit frames
+ * are ELK-sized around their children. */
 function leafSize(node: VisibleModuleNode): { width: number; height: number } {
+  if (node.kind === "block") {
+    return blockSize(node.data as BlockData);
+  }
   if (node.kind === "unit") {
-    return unitSize(node.data as UnitCardData);
+    return { width: UNIT_LEAF_WIDTH, height: UNIT_LEAF_HEIGHT };
   }
   if (node.kind === "file") {
     return { width: FILE_WIDTH, height: FILE_HEIGHT };
@@ -73,17 +78,9 @@ function leafSize(node: VisibleModuleNode): { width: number; height: number } {
   return { width: groupWidth(fileCountOf(node)), height: GROUP_HEIGHT };
 }
 
-/** Reserve exactly the bands UnitCardNode draws, so the card never clips its rows. */
-function unitSize(data: UnitCardData): { width: number; height: number } {
-  return { width: UNIT_WIDTH, height: UNIT_HEADER_HEIGHT + bandHeight(data.members.length, UNIT_MEMBERS_SHOWN) + bandHeight(data.deps.length, UNIT_DEPS_SHOWN) + UNIT_PADDING };
-}
-
-function bandHeight(count: number, cap: number): number {
-  if (count === 0) {
-    return 0;
-  }
-  const shown = Math.min(count, cap);
-  return UNIT_SECTION_HEADER + shown * UNIT_ROW_HEIGHT + (count > cap ? UNIT_MORE_HEIGHT : 0);
+function blockSize(data: BlockData): { width: number; height: number } {
+  const width = Math.max(BLOCK_MIN_WIDTH, Math.min(BLOCK_MAX_WIDTH, BLOCK_BASE_WIDTH + data.label.length * BLOCK_WIDTH_PER_CHAR));
+  return { width, height: BLOCK_HEIGHT };
 }
 
 function fileCountOf(node: VisibleModuleNode): number {

@@ -28,7 +28,7 @@ import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
 import { deriveModuleLevelLayout } from "./deriveModuleMapLayout";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
-import { buildUnitDeps, type UnitDeps } from "../derive/unitDeps";
+import { buildBlockDeps, type BlockDeps } from "../derive/blockDeps";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
@@ -238,8 +238,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // The file import graph, built once on first module-map relayout (the artifact never changes after
   // boot) and reused for every level — never rebuilt per relayout.
   let moduleGraph: ModuleGraph | null = null;
-  // The unit-dependency substrate (class→class coupling), built once for the same reason.
-  let unitDeps: UnitDeps | null = null;
+  // The code-dependency substrate (coupling edges at their real endpoints), built once too.
+  let blockDeps: BlockDeps | null = null;
   // And for the composition-tab method-preview drawer's logic layout (the EXPERIMENT surface).
   let compMethodLayoutSeq = 0;
   // Null when the server didn't ship source access — the code drawer is then inert.
@@ -598,10 +598,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     async moduleRelayout() {
       const { index, moduleFocus, moduleExpanded } = get();
       moduleGraph ??= buildModuleGraph(index);
-      unitDeps ??= buildUnitDeps(index);
+      blockDeps ??= buildBlockDeps(index);
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
-      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, moduleGraph, unitDeps);
+      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, moduleGraph, blockDeps);
       if (moduleLayoutSeq !== sequence) {
         return; // a newer focus change superseded this one.
       }

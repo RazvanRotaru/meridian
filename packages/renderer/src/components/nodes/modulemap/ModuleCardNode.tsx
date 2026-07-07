@@ -14,6 +14,7 @@ import type { ModuleCardData } from "../../../derive/moduleLevel";
 import type { ModuleCategory } from "../../../derive/moduleCategory";
 import { PackageOverviewNode } from "./PackageOverviewNode";
 import { UnitCardNode } from "./UnitCardNode";
+import { BlockNode } from "./BlockNode";
 import { ExpandChevron, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT, TITLE_BAR } from "./frameChrome";
 
 // The file family's frame accent (the module cyan), used when an expanded card turns into a frame.
@@ -25,7 +26,7 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
   const selected = useBlueprint((state) => state.moduleSelectedId) === id;
   const accent = CATEGORY_COLOR[data.category];
   const chevron = data.isContainer ? (
-    <ExpandChevron id={id} isExpanded={data.isExpanded} collapsedTitle={`Expand — ${data.unitCount} unit(s) declared here`} />
+    <ExpandChevron id={id} isExpanded={data.isExpanded} collapsedTitle={`Expand — ${data.unitCount} declaration(s) in this file`} />
   ) : null;
   const entryBadge = data.isEntry ? <span style={ENTRY_BADGE} title="Blast-radius root">ENTRY</span> : null;
 
@@ -73,10 +74,11 @@ export const ModuleCardNode = memo(ModuleCardNodeImpl);
 
 /** The node-type registry the Map surface hands React Flow (a stable module-level reference).
  * `package` is a group card (a package at the repo overview, a directory one level deeper); `file`
- * is a source file; `unit` is a class/interface/object nested inside an expanded file frame. A
- * card the reader expands becomes a frame whose children NEST inside it (parentId), so a level can
- * hold nested frames — mirroring the call graph's ContainerNode. */
-export const moduleNodeTypes = { file: ModuleCardNode, package: PackageOverviewNode, unit: UnitCardNode };
+ * is a source file; `unit` is a class/interface/object frame nested inside an expanded file frame;
+ * `block` is a leaf code block (a method, function, or type definition). A card the reader expands
+ * becomes a frame whose children NEST inside it (parentId), so a level can hold nested frames —
+ * mirroring the call graph's ContainerNode. */
+export const moduleNodeTypes = { file: ModuleCardNode, package: PackageOverviewNode, unit: UnitCardNode, block: BlockNode };
 
 // Category → accent hue, echoing the palette used across the dark surfaces: entry green (the "you are
 // here" signal), ui blue, util amber, config violet, app a neutral slate. Exported so the Module-map

@@ -61,7 +61,7 @@ function hiddenCardIds(nodes: Node[], options: HideOptions): Set<string> {
       hidden.add(node.id);
       continue;
     }
-    if ((node.type === "file" || node.type === "unit") && isHidden(node, options)) {
+    if ((node.type === "file" || node.type === "unit" || node.type === "block") && isHidden(node, options)) {
       hidden.add(node.id);
     }
   }

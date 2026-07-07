@@ -8,11 +8,11 @@ import { parseNodeId } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { ModuleGraph } from "./moduleGraph";
 import { categorize, type ModuleCategory } from "./moduleCategory";
-import { unitLabel, type UnitDep, type UnitDeps } from "./unitDeps";
+import { unitLabel } from "./blockDeps";
 
 const MODULE_KIND = "module";
 const PACKAGE_KIND = "package";
-const MEMBER_KINDS: ReadonlySet<string> = new Set(["function", "method"]);
+const CALLABLE_KINDS: ReadonlySet<string> = new Set(["function", "method"]);
 
 // `type` (not interface) so it carries @xyflow/react's implicit index signature on Node<T>.
 export type ModuleCardData = {
@@ -29,27 +29,38 @@ export type ModuleCardData = {
   unitCount: number;
 };
 
-/** A unit card: one class/interface/object, its callable members (each a logic-flow link), and the
- * units it depends on (the "service dependencies" its wires point at). */
+/** A unit's identity strip: one class/interface/object. With members it renders as a FRAME whose
+ * method nodes nest inside (isFrame); memberless it is a compact leaf card. No metric rows, no
+ * uses list — dependencies are the wires' story, not the card's. */
 export type UnitCardData = {
   label: string;
   unitKind: string;
-  members: Array<{ id: string; name: string }>;
-  deps: UnitDep[];
+  memberCount: number;
+  isFrame: boolean;
 };
 
-/** The card data for one unit node: name, kind, callable members, and its dependency units. */
-export function unitData(id: string, index: GraphIndex, unitDeps: UnitDeps): UnitCardData {
-  const node = index.nodesById.get(id);
+/** The card data for one unit node — identity only. */
+export function unitData(id: string, index: GraphIndex, memberCount: number): UnitCardData {
   return {
     label: unitLabel(id, index),
-    unitKind: node?.kind ?? "class",
-    members: index
-      .childrenOf(id)
-      .filter((child) => MEMBER_KINDS.has(child.kind))
-      .map((child) => ({ id: child.id, name: unitLabel(child.id, index) })),
-    deps: unitDeps.depsByUnit.get(id) ?? [],
+    unitKind: index.nodesById.get(id)?.kind ?? "class",
+    memberCount,
+    isFrame: memberCount > 0,
   };
+}
+
+/** A leaf code block: a method inside a unit frame, or a file-level function/type definition.
+ * The block IS the dependency anchor — its wires say what this specific code uses. */
+export type BlockData = {
+  label: string;
+  blockKind: string;
+  /** Callable blocks double-click into their logic flow (the map→logic link). */
+  callable: boolean;
+};
+
+export function blockData(id: string, index: GraphIndex): BlockData {
+  const kind = index.nodesById.get(id)?.kind ?? "function";
+  return { label: unitLabel(id, index), blockKind: kind, callable: CALLABLE_KINDS.has(kind) };
 }
 
 /** Descend through single-directory levels so a lone `src` box is never a wasted click. */

@@ -7,25 +7,26 @@
  *   - `focus === null` → the whole-repo overview: the npm packages that own ≥1 file, as top-level
  *     group cards (collapsed → the package graph; expand one to descend into its directories/files).
  *   - a `focus` package/dir → its children (after chain-collapsing a lone `src`), each expandable.
- *   - a FILE card holding class/interface/object declarations expands one level further: its UNIT
- *     cards nest inside the file frame (the merged Service-composition level of the Map).
+ *   - a FILE card holding declarations expands into the CODE level (the merged Service-composition
+ *     level of the Map): a class/interface/object becomes a unit FRAME whose method nodes nest
+ *     inside it; file-level functions and type definitions sit beside it as leaf BLOCK nodes.
  *
  * Imports are folded to the visible boxes by `liftEdges`: a collapsed group swallows its internal
  * imports (self-loops, dropped) and an import leaving the drawn subtree lifts past the frontier and
- * drops — so a level shows only the coupling between what is currently on screen. Unit-dependency
- * wires (calls/instantiates/extends/implements between units) join the edge set whenever a unit
- * card is drawn, pointing at wherever each dependency's definition lives on screen. Pure; no React,
- * no ELK.
+ * drops — so a level shows only the coupling between what is currently on screen. Code-dependency
+ * wires (calls/instantiates/extends/implements at their REAL endpoints) join the edge set whenever
+ * a code node is drawn, so a wire starts at the specific block that uses the dependency and points
+ * at wherever its definition lives on screen. Pure; no React, no ELK.
  */
 
-import type { GraphEdge } from "@meridian/core";
+import type { GraphEdge, GraphNode } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import { npmPackageIdOf } from "./compositionClusters";
 import { packageEntryModule, type ModulePackageData } from "./packageOverview";
 import { weightKey, type ModuleGraph } from "./moduleGraph";
-import { basename, collapseChain, fileData, unitData, type ModuleCardData, type UnitCardData } from "./moduleLevel";
+import { basename, blockData, collapseChain, fileData, unitData, type BlockData, type ModuleCardData, type UnitCardData } from "./moduleLevel";
 import { containmentChildren, frontierRoots, subtreeFileCount } from "./moduleFrontier";
-import { liftDepEdges, UNIT_CARD_KINDS, type UnitDeps } from "./unitDeps";
+import { BLOCK_KINDS, liftDepEdges, UNIT_CARD_KINDS, type BlockDeps } from "./blockDeps";
 import { liftEdges } from "./liftEdges";
 
 const MODULE_KIND = "module";
@@ -38,17 +39,17 @@ export type ModuleGroupData = ModulePackageData & { isContainer: boolean; isExpa
 export interface VisibleModuleNode {
   id: string;
   parentId: string | null;
-  kind: "package" | "file" | "unit";
+  kind: "package" | "file" | "unit" | "block";
   isContainer: boolean;
   isExpanded: boolean;
   depth: number;
   childCount: number;
-  data: ModuleGroupData | ModuleCardData | UnitCardData;
+  data: ModuleGroupData | ModuleCardData | UnitCardData | BlockData;
 }
 
 /** A wire between two visible nodes. `category` "import" is the file/package import graph;
- * "dep" is a unit-dependency wire (it touches at least one drawn unit card). `crossFrame` = a
- * group is involved (coupling gold). */
+ * "dep" is a code-dependency wire (it touches at least one drawn unit frame or block). `crossFrame`
+ * = a group is involved (coupling gold). */
 export interface ModuleTreeEdge {
   id: string;
   source: string;
@@ -71,33 +72,35 @@ export function deriveModuleTree(
   focus: string | null,
   expanded: ReadonlySet<string>,
   graph: ModuleGraph,
-  unitDeps: UnitDeps,
+  blockDeps: BlockDeps,
 ): ModuleTree {
   const effectiveFocus = focus === null ? null : collapseChain(index, focus);
   const roots = frontierRoots(index, effectiveFocus, graph);
   const skeleton = walk(index, roots, expanded);
   const visibleIds = new Set(skeleton.map((entry) => entry.id));
   const lifted = liftEdges(importEdges(graph), visibleIds, index.parentOf);
-  const nodes = skeleton.map((entry) => finalize(entry, index, graph, lifted, unitDeps));
+  const nodes = skeleton.map((entry) => finalize(entry, index, graph, lifted));
   const kinds = kindsOf(skeleton);
-  const edges = [...importTreeEdges(lifted, kinds), ...depTreeEdges(unitDeps, visibleIds, index, kinds)].sort((a, b) =>
+  const edges = [...importTreeEdges(lifted, kinds), ...depTreeEdges(blockDeps, visibleIds, index, kinds)].sort((a, b) =>
     a.id.localeCompare(b.id),
   );
   return { nodes, edges, effectiveFocus };
 }
 
-/** A file's unit (class/interface/object) children — the one-deeper level a file card expands to. */
-function unitChildren(index: GraphIndex, fileId: string): string[] {
-  return index
-    .childrenOf(fileId)
-    .filter((child) => UNIT_CARD_KINDS.has(child.kind))
-    .map((child) => child.id);
+/** A file's drawn declarations — the code level a file card expands to. Source order. */
+function declChildren(index: GraphIndex, fileId: string): GraphNode[] {
+  return index.childrenOf(fileId).filter((child) => UNIT_CARD_KINDS.has(child.kind) || BLOCK_KINDS.has(child.kind));
+}
+
+/** A unit's drawn members: its callable/type children, each a block node inside the frame. */
+function memberChildren(index: GraphIndex, unitId: string): GraphNode[] {
+  return index.childrenOf(unitId).filter((child) => BLOCK_KINDS.has(child.kind));
 }
 
 interface Skeleton {
   id: string;
   parentId: string | null;
-  kind: "package" | "file" | "unit";
+  kind: "package" | "file" | "unit" | "block";
   isContainer: boolean;
   isExpanded: boolean;
   depth: number;
@@ -129,16 +132,30 @@ function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>)
     }
   };
   const visitFile = (id: string, parentId: string | null, depth: number): void => {
-    const units = unitChildren(index, id);
-    const isContainer = units.length > 0;
+    const decls = declChildren(index, id);
+    const isContainer = decls.length > 0;
     const isExpanded = isContainer && expanded.has(id);
-    out.push({ id, parentId, kind: "file", isContainer, isExpanded, depth, childCount: units.length });
+    out.push({ id, parentId, kind: "file", isContainer, isExpanded, depth, childCount: decls.length });
     if (isExpanded) {
-      units.forEach((unit) => {
-        seen.add(unit);
-        out.push({ id: unit, parentId: id, kind: "unit", isContainer: false, isExpanded: false, depth: depth + 1, childCount: 0 });
-      });
+      decls.forEach((decl) => visitDecl(decl, id, depth + 1));
     }
+  };
+  // A unit with members ALWAYS opens as a frame of member blocks — methods are first-class nodes
+  // (the surface logic flows will later chart in place), not rows on a card. Memberless units and
+  // file-level functions/types are leaf blocks.
+  const visitDecl = (decl: GraphNode, parentId: string, depth: number): void => {
+    seen.add(decl.id);
+    if (!UNIT_CARD_KINDS.has(decl.kind)) {
+      out.push({ id: decl.id, parentId, kind: "block", isContainer: false, isExpanded: false, depth, childCount: 0 });
+      return;
+    }
+    const members = memberChildren(index, decl.id);
+    const isFrame = members.length > 0;
+    out.push({ id: decl.id, parentId, kind: "unit", isContainer: isFrame, isExpanded: isFrame, depth, childCount: members.length });
+    members.forEach((member) => {
+      seen.add(member.id);
+      out.push({ id: member.id, parentId: decl.id, kind: "block", isContainer: false, isExpanded: false, depth: depth + 1, childCount: 0 });
+    });
   };
   roots.forEach((id) => visit(id, null, 0));
   return out;
@@ -146,17 +163,18 @@ function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>)
 
 /** Attach the card data each drawn node needs: file cards from the import graph, group cards from
  * the subtree file tally and the lifted-edge frontier degree (Ca/Ce among what is on screen),
- * unit cards from their members + dependency units. */
+ * unit frames and code blocks from their identity (name + kind — deps are the wires' story). */
 function finalize(
   entry: Skeleton,
   index: GraphIndex,
   graph: ModuleGraph,
   lifted: ReturnType<typeof liftEdges>,
-  unitDeps: UnitDeps,
 ): VisibleModuleNode {
   const data =
-    entry.kind === "unit"
-      ? unitData(entry.id, index, unitDeps)
+    entry.kind === "block"
+      ? blockData(entry.id, index)
+      : entry.kind === "unit"
+      ? unitData(entry.id, index, entry.childCount)
       : entry.kind === "file"
         ? fileData(entry.id, graph, index, entryFor(entry.id, index), {
             isContainer: entry.isContainer,
@@ -208,12 +226,12 @@ function importEdges(graph: ModuleGraph): GraphEdge[] {
   return edges;
 }
 
-function kindsOf(skeleton: Skeleton[]): Map<string, "package" | "file" | "unit"> {
+function kindsOf(skeleton: Skeleton[]): Map<string, Skeleton["kind"]> {
   return new Map(skeleton.map((entry) => [entry.id, entry.kind]));
 }
 
 /** Lifted import wires as level edges, flagged crossFrame when either endpoint is a group card. */
-function importTreeEdges(lifted: ReturnType<typeof liftEdges>, kinds: Map<string, "package" | "file" | "unit">): ModuleTreeEdge[] {
+function importTreeEdges(lifted: ReturnType<typeof liftEdges>, kinds: Map<string, Skeleton["kind"]>): ModuleTreeEdge[] {
   return lifted.map((edge) => ({
     id: `lvl:${edge.source}->${edge.target}`,
     source: edge.source,
@@ -224,19 +242,19 @@ function importTreeEdges(lifted: ReturnType<typeof liftEdges>, kinds: Map<string
   }));
 }
 
-/** Unit-dependency wires projected onto the frontier — derived only when a unit card is on screen
- * (the common no-units level skips the whole projection). */
+/** Code-dependency wires projected onto the frontier — derived only when a code node (a unit frame
+ * or a block) is on screen (the common no-code level skips the whole projection). */
 function depTreeEdges(
-  unitDeps: UnitDeps,
+  blockDeps: BlockDeps,
   visibleIds: ReadonlySet<string>,
   index: GraphIndex,
-  kinds: Map<string, "package" | "file" | "unit">,
+  kinds: Map<string, Skeleton["kind"]>,
 ): ModuleTreeEdge[] {
-  const isUnit = (id: string) => kinds.get(id) === "unit";
-  if (![...kinds.values()].includes("unit")) {
+  const isCode = (id: string) => kinds.get(id) === "unit" || kinds.get(id) === "block";
+  if (![...kinds.values()].some((kind) => kind === "unit" || kind === "block")) {
     return [];
   }
-  return liftDepEdges(unitDeps, visibleIds, index, isUnit).map((edge) => ({
+  return liftDepEdges(blockDeps, visibleIds, index, isCode).map((edge) => ({
     id: `dep:${edge.source}->${edge.target}`,
     source: edge.source,
     target: edge.target,

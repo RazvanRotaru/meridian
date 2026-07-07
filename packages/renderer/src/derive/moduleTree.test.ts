@@ -9,8 +9,8 @@ import { describe, expect, it } from "vitest";
 import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { buildModuleGraph } from "./moduleGraph";
-import { buildUnitDeps } from "./unitDeps";
-import type { ModuleCardData, UnitCardData } from "./moduleLevel";
+import { buildBlockDeps } from "./blockDeps";
+import type { BlockData, ModuleCardData, UnitCardData } from "./moduleLevel";
 import { deriveModuleTree, type ModuleGroupData } from "./moduleTree";
 
 function node(id: string, kind: string, parentId?: string, displayName?: string): GraphNode {
@@ -59,7 +59,7 @@ function fixture(): { nodes: GraphNode[]; edges: GraphEdge[] } {
 
 function treeOf(nodes: GraphNode[], edges: GraphEdge[], focus: string | null, expanded: string[]) {
   const index = buildGraphIndex({ nodes, edges } as GraphArtifact);
-  return deriveModuleTree(index, focus, new Set(expanded), buildModuleGraph(index), buildUnitDeps(index));
+  return deriveModuleTree(index, focus, new Set(expanded), buildModuleGraph(index), buildBlockDeps(index));
 }
 
 describe("deriveModuleTree — overview (focus null)", () => {
@@ -166,50 +166,79 @@ describe("deriveModuleTree — overview fallback (no npm-package tags)", () => {
   });
 });
 
-describe("deriveModuleTree — unit level (the merged composition level)", () => {
-  it("a file declaring units is a container; collapsed it draws no unit cards", () => {
+describe("deriveModuleTree — code level (the merged composition level)", () => {
+  it("a file declaring code is a container; collapsed it draws no code nodes", () => {
     const { nodes, edges } = unitFixture();
     const tree = treeOf(nodes, edges, "ts:pkg", []);
     const svc = tree.nodes.find((n) => n.id === "ts:pkg/src/svc.ts");
     expect(svc?.kind).toBe("file");
     expect(svc?.isContainer).toBe(true);
     expect((svc?.data as ModuleCardData).unitCount).toBe(1);
-    expect(tree.nodes.some((n) => n.kind === "unit")).toBe(false);
+    expect(tree.nodes.some((n) => n.kind === "unit" || n.kind === "block")).toBe(false);
   });
 
-  it("expanding a file nests its unit cards with members and dependency units", () => {
+  it("expanding a file opens each unit as a FRAME whose methods are nested block nodes", () => {
     const { nodes, edges } = unitFixture();
     const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts"]);
     const unit = tree.nodes.find((n) => n.kind === "unit");
     expect(unit?.id).toBe("ts:pkg/src/svc.ts#OrderService");
     expect(unit?.parentId).toBe("ts:pkg/src/svc.ts");
-    const data = unit?.data as UnitCardData;
-    expect(data.label).toBe("OrderService");
-    expect(data.unitKind).toBe("class");
-    expect(data.members).toEqual([{ id: "ts:pkg/src/svc.ts#OrderService.place", name: "place" }]);
-    expect(data.deps).toEqual([{ id: "ts:pkg/src/pay.ts#PaymentGateway", label: "PaymentGateway" }]);
+    expect(unit?.isExpanded).toBe(true); // a unit with members is always an open frame
+    expect((unit?.data as UnitCardData).isFrame).toBe(true);
+    const method = tree.nodes.find((n) => n.kind === "block");
+    expect(method?.id).toBe("ts:pkg/src/svc.ts#OrderService.place");
+    expect(method?.parentId).toBe("ts:pkg/src/svc.ts#OrderService");
+    const data = method?.data as BlockData;
+    expect(data.label).toBe("place");
+    expect(data.callable).toBe(true);
   });
 
-  it("draws a dep wire from the unit to its dependency's definition, lifted to the visible frontier", () => {
+  it("attaches the dep wire to the METHOD block that makes the call, lifted to the definition", () => {
     const { nodes, edges } = unitFixture();
-    // pay.ts stays collapsed, so the definition wire lands on the pay.ts FILE card.
+    // pay.ts stays collapsed, so the definition wire lands on the pay.ts FILE card — but its
+    // source is the place() block itself, not the class.
     const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts"]);
     const deps = tree.edges.filter((e) => e.category === "dep");
     expect(deps).toHaveLength(1);
-    expect(deps[0].source).toBe("ts:pkg/src/svc.ts#OrderService");
+    expect(deps[0].source).toBe("ts:pkg/src/svc.ts#OrderService.place");
     expect(deps[0].target).toBe("ts:pkg/src/pay.ts");
   });
 
-  it("with both files expanded the dep wire reaches the dependency's own unit card", () => {
+  it("with both files expanded the wire runs block to block (call site to definition's method)", () => {
     const { nodes, edges } = unitFixture();
     const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts", "ts:pkg/src/pay.ts"]);
     const deps = tree.edges.filter((e) => e.category === "dep");
     expect(deps.map((e) => `${e.source}->${e.target}`)).toEqual([
-      "ts:pkg/src/svc.ts#OrderService->ts:pkg/src/pay.ts#PaymentGateway",
+      "ts:pkg/src/svc.ts#OrderService.place->ts:pkg/src/pay.ts#PaymentGateway.charge",
     ]);
   });
 
-  it("draws no dep wires while no unit card is on screen (file↔file is the import graph's story)", () => {
+  it("renders a file-level function as a sibling block and anchors its deps to it", () => {
+    const { nodes, edges } = unitFixture();
+    const extra = [
+      ...nodes,
+      node("ts:pkg/src/svc.ts#helper", "function", "ts:pkg/src/svc.ts", "helper"),
+    ];
+    const extraEdges = [...edges, callEdge("ts:pkg/src/svc.ts#helper", "ts:pkg/src/pay.ts#PaymentGateway.charge")];
+    const tree = treeOf(extra, extraEdges, "ts:pkg", ["ts:pkg/src/svc.ts"]);
+    const helper = tree.nodes.find((n) => n.id === "ts:pkg/src/svc.ts#helper");
+    expect(helper?.kind).toBe("block");
+    expect(helper?.parentId).toBe("ts:pkg/src/svc.ts");
+    const deps = tree.edges.filter((e) => e.category === "dep").map((e) => `${e.source}->${e.target}`);
+    expect(deps).toContain("ts:pkg/src/svc.ts#helper->ts:pkg/src/pay.ts");
+  });
+
+  it("renders a memberless unit as a leaf identity card, not a frame", () => {
+    const { nodes, edges } = unitFixture();
+    const extra = [...nodes, node("ts:pkg/src/svc.ts#ApiResponse", "interface", "ts:pkg/src/svc.ts", "ApiResponse")];
+    const tree = treeOf(extra, edges, "ts:pkg", ["ts:pkg/src/svc.ts"]);
+    const iface = tree.nodes.find((n) => n.id === "ts:pkg/src/svc.ts#ApiResponse");
+    expect(iface?.kind).toBe("unit");
+    expect(iface?.isExpanded).toBe(false);
+    expect((iface?.data as UnitCardData).isFrame).toBe(false);
+  });
+
+  it("draws no dep wires while no code node is on screen (file↔file is the import graph's story)", () => {
     const { nodes, edges } = unitFixture();
     const tree = treeOf(nodes, edges, "ts:pkg", []);
     expect(tree.edges.filter((e) => e.category === "dep")).toHaveLength(0);
