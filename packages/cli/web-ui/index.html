@@ -440,34 +440,25 @@
         border-radius: 4px;
         padding: 1px 6px;
       }
-      .mine-title {
-        font-size: 12.5px;
-        font-weight: 500;
-        color: var(--label);
-        letter-spacing: 0.01em;
-        margin-bottom: 7px;
+      /* Scope headers inside the dropdown ("Your repositories" / "All GitHub"). */
+      .group-label {
+        padding: 8px 12px 4px;
+        font-family: var(--font-mono);
+        font-size: 9.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted-3);
       }
-      .mine-list {
-        max-height: 220px;
-        overflow-y: auto;
+      .group-label:not(:first-child) {
+        margin-top: 2px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      .group-note {
+        padding: 4px 12px 8px;
+        font-size: 12px;
+        color: var(--muted-3);
       }
 
-      details summary {
-        cursor: pointer;
-        color: var(--muted-3);
-        font-size: 12.5px;
-        list-style: none;
-        transition: color 0.15s;
-      }
-      details summary:hover {
-        color: var(--label);
-      }
-      details summary::-webkit-details-marker {
-        display: none;
-      }
-      details[open] summary {
-        margin-bottom: 10px;
-      }
       .hint {
         margin: 6px 0 0;
         font-size: 11.5px;
@@ -766,11 +757,6 @@
                 <button type="button" class="chip" data-repo="sindresorhus/ky">sindresorhus/ky</button>
               </div>
 
-              <div id="mine" hidden>
-                <div class="mine-title">Your repositories</div>
-                <ul class="results mine-list" id="mine-list"></ul>
-              </div>
-
               <div class="row">
                 <div class="field">
                   <label for="ref">Branch (optional)</label>
@@ -782,14 +768,6 @@
                 </div>
               </div>
 
-              <details>
-                <summary>Access token (for private repos, if not signed in)</summary>
-                <div class="field">
-                  <label for="token">Access token</label>
-                  <input id="token" name="token" type="password" placeholder="ghp_… (optional)" />
-                </div>
-                <p class="hint">Used locally only, for this one clone — or set <code>GITHUB_TOKEN</code> in your shell.</p>
-              </details>
             </div>
 
             <div class="fieldset" id="path-fields" hidden>
@@ -806,7 +784,8 @@
 
           <!-- GitHub-only: the whole sign-in block disappears in Local mode. -->
           <div id="github-auth">
-          <div class="divider"><span>OR</span></div>
+          <!-- "OR" only makes sense while sign-in is the alternative; it hides once signed in. -->
+          <div class="divider" id="auth-divider"><span>OR</span></div>
 
           <section id="auth">
             <div id="signin-area">
@@ -996,9 +975,10 @@
         $("signin-area").hidden = false;
         $("signin").hidden = !authConfig.configured;
         $("auth-disabled").hidden = authConfig.configured;
+        $("auth-divider").hidden = false;
         labelRepoField(false);
         hideResults();
-        hideMine();
+        myRepos = [];
       }
 
       function showSignedIn(user) {
@@ -1010,6 +990,7 @@
           $("view-form").hidden = false;
           $("signin-area").hidden = true;
           $("signedin").hidden = false;
+          $("auth-divider").hidden = true;
           labelRepoField(true);
           $("me-login").textContent = user && user.login ? user.login : "signed in";
           const avatar = $("me-avatar");
@@ -1137,31 +1118,93 @@
         animateCardSwap(showSignedOut);
       }
 
-      // --- repo search (only when signed in; the repo field doubles as the search box) ---
+      // --- repo picker (signed in): ONE dropdown with two labelled scopes — "Your repositories"
+      // (the complete list, fetched once at sign-in and filtered instantly per keystroke) above
+      // "All GitHub" (the debounced server-side search) ---
+      let myRepos = [];
+      let activeQuery = null;
+
       $("repo").addEventListener("input", () => {
         if (!signedIn) return;
         clearTimeout(searchTimer);
         const query = $("repo").value.trim();
-        if (!query) return hideResults();
+        if (!query) return showRecents();
+        activeQuery = query;
+        renderGroups(query, null);
         searchTimer = setTimeout(() => runSearch(query), 250);
       });
 
-      async function runSearch(query) {
-        try {
-          const res = await apiGet("/api/repos/search?q=" + encodeURIComponent(query));
-          if (!res.ok) return hideResults();
-          const data = await res.json();
-          renderResults(Array.isArray(data.repos) ? data.repos : []);
-        } catch {
-          hideResults();
-        }
+      // An empty focused field previews your most recently pushed repos.
+      $("repo").addEventListener("focus", () => {
+        if (signedIn && !$("repo").value.trim()) showRecents();
+      });
+
+      function showRecents() {
+        activeQuery = null;
+        renderList([{ label: "Your recent repositories", repos: myRepos.slice(0, 7) }]);
       }
 
-      function renderResults(repos) {
+      function matchMine(query) {
+        const term = query.toLowerCase();
+        return myRepos.filter((repo) => repo.fullName.toLowerCase().includes(term)).slice(0, 5);
+      }
+
+      async function runSearch(query) {
+        let global = [];
+        try {
+          const res = await apiGet("/api/repos/search?q=" + encodeURIComponent(query));
+          if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data.repos)) global = data.repos;
+          }
+        } catch {
+          /* the yours group already rendered; the global group just stays empty */
+        }
+        if (activeQuery === query) renderGroups(query, global);
+      }
+
+      // globalRepos === null means the GitHub search is still in flight.
+      function renderGroups(query, globalRepos) {
+        const mine = matchMine(query);
+        const taken = new Set(mine.map((repo) => repo.fullName));
+        const groups = [];
+        if (mine.length) groups.push({ label: "Your repositories", repos: mine });
+        if (globalRepos === null) {
+          groups.push({ label: "All GitHub", note: "Searching…" });
+        } else {
+          const rest = globalRepos.filter((repo) => !taken.has(repo.fullName)).slice(0, 6);
+          if (rest.length) groups.push({ label: "All GitHub", repos: rest });
+        }
+        if (groups.length === 0) return hideResults();
+        renderList(groups);
+      }
+
+      function renderList(groups) {
         const list = $("results");
         list.replaceChildren();
-        for (const repo of repos) list.appendChild(resultItem(repo));
-        list.hidden = repos.length === 0;
+        let shown = 0;
+        for (const group of groups) {
+          const repos = group.repos || [];
+          if (repos.length === 0 && !group.note) continue;
+          appendPlainItem(list, "group-label", group.label);
+          if (group.note) {
+            appendPlainItem(list, "group-note", group.note);
+            shown++;
+            continue;
+          }
+          for (const repo of repos) {
+            list.appendChild(resultItem(repo));
+            shown++;
+          }
+        }
+        list.hidden = shown === 0;
+      }
+
+      function appendPlainItem(list, className, text) {
+        const item = document.createElement("li");
+        item.className = className;
+        item.textContent = text;
+        list.appendChild(item);
       }
 
       // Built entirely with createElement + textContent: repo names/descriptions are untrusted.
@@ -1208,30 +1251,16 @@
         if (event.key === "Escape") hideResults();
       });
 
-      // --- your repositories (shown while signed in; same untrusted-text rules as search) ---
+      // Fetched once per sign-in (the server pages GitHub for the complete owner+collaborator+org
+      // list), then searched client-side so the "Your repositories" group answers every keystroke.
       async function loadMyRepos() {
         try {
           const res = await apiGet("/api/repos/mine");
-          if (!res.ok) return hideMine();
-          const data = await res.json();
-          renderMine(Array.isArray(data.repos) ? data.repos : []);
+          const data = res.ok ? await res.json() : null;
+          myRepos = data && Array.isArray(data.repos) ? data.repos : [];
         } catch {
-          hideMine();
+          myRepos = [];
         }
-      }
-
-      function renderMine(repos) {
-        animateCardSwap(() => {
-          const list = $("mine-list");
-          list.replaceChildren();
-          for (const repo of repos) list.appendChild(resultItem(repo));
-          $("mine").hidden = repos.length === 0;
-        });
-      }
-
-      function hideMine() {
-        $("mine-list").replaceChildren();
-        $("mine").hidden = true;
       }
 
       // --- generate (the active toggle decides the source kind) ---
@@ -1252,10 +1281,8 @@
         const body = { kind: "github", value: repo };
         const ref = $("ref").value.trim();
         const subdir = $("subdir").value.trim();
-        const token = $("token").value.trim();
         if (ref) body.ref = ref;
         if (subdir) body.subdir = subdir;
-        if (token) body.token = token;
         return body;
       }
 
