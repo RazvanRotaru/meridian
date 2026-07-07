@@ -61,11 +61,15 @@
         padding: 0;
         background: var(--bg);
       }
+      /* The page is a fixed flex column (nav + main) so it never scrolls; when content is taller
+         than the viewport, the card scrolls internally instead (see .card-scroll). */
       body {
-        min-height: 100vh;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
         color: var(--text);
         font-family: var(--font-sans);
-        overflow-x: hidden;
+        overflow: hidden;
       }
       ::selection {
         background: rgba(88, 166, 255, 0.3);
@@ -120,73 +124,39 @@
       nav {
         position: relative;
         z-index: 3;
+        flex: none;
         display: flex;
         align-items: center;
         justify-content: space-between;
         padding: 26px 44px;
         max-width: 1440px;
+        width: 100%;
         margin: 0 auto;
-      }
-      .brand {
-        display: flex;
-        align-items: center;
-        gap: 11px;
-      }
-      .logo {
-        position: relative;
-        width: 30px;
-        height: 30px;
-      }
-      .logo svg {
-        position: absolute;
-        inset: 0;
-      }
-      .logo i {
-        position: absolute;
-        border-radius: 50%;
-      }
-      .logo .dot-green {
-        width: 8px;
-        height: 8px;
-        background: var(--green);
-        box-shadow: 0 0 12px var(--green);
-        top: 2px;
-        left: 2px;
-      }
-      .logo .dot-blue {
-        width: 7px;
-        height: 7px;
-        background: var(--blue);
-        box-shadow: 0 0 12px var(--blue);
-        bottom: 3px;
-        right: 1px;
-      }
-      .logo .dot-amber {
-        width: 6px;
-        height: 6px;
-        background: var(--amber);
-        box-shadow: 0 0 12px var(--amber);
-        bottom: 4px;
-        left: 3px;
       }
       .wordmark {
         font-weight: 700;
         font-size: 19px;
         letter-spacing: -0.02em;
       }
+      .wordmark .dot {
+        color: var(--green);
+        text-shadow: 0 0 10px rgba(63, 185, 80, 0.8);
+      }
 
       /* ---- main grid: hero left, auth card right ---- */
       main {
         position: relative;
         z-index: 3;
+        flex: 1;
+        min-height: 0;
         display: grid;
         grid-template-columns: 1.05fr 0.95fr;
         gap: 60px;
         align-items: center;
         max-width: 1280px;
+        width: 100%;
         margin: 0 auto;
-        padding: 40px 44px 80px;
-        min-height: calc(100vh - 82px);
+        padding: 0 44px 24px;
       }
       .hero {
         max-width: 560px;
@@ -235,8 +205,21 @@
         -webkit-backdrop-filter: blur(16px);
         border: 1px solid var(--hairline);
         border-radius: 16px;
-        padding: 30px 30px 30px 32px;
         box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.75), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      }
+      /* Scrolls internally when the card outgrows the viewport, so the page itself never scrolls.
+         The accent bar lives on .card (outside the scroller) and stays pinned. */
+      .card-scroll {
+        max-height: calc(100vh - 130px);
+        overflow-y: auto;
+        padding: 30px 30px 30px 32px;
+      }
+      .card-scroll::-webkit-scrollbar {
+        width: 8px;
+      }
+      .card-scroll::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.12);
+        border-radius: 4px;
       }
       .card-accent {
         position: absolute;
@@ -262,6 +245,7 @@
       }
 
       .toggle {
+        position: relative;
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 4px;
@@ -271,7 +255,24 @@
         border-radius: 11px;
         margin-bottom: 22px;
       }
+      /* The active-tab pill is one element that slides between the two buttons. */
+      .toggle-thumb {
+        position: absolute;
+        top: 4px;
+        bottom: 4px;
+        left: 4px;
+        width: calc(50% - 6px);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.08);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 4px 12px -6px rgba(0, 0, 0, 0.6);
+        transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      .toggle.path .toggle-thumb {
+        transform: translateX(calc(100% + 4px));
+      }
       .toggle button {
+        position: relative;
+        z-index: 1;
         padding: 9px 10px;
         font-family: var(--font-sans);
         font-size: 13.5px;
@@ -279,14 +280,12 @@
         cursor: pointer;
         border-radius: 8px;
         border: none;
-        transition: all 0.15s;
+        transition: color 0.15s;
         color: #7d8894;
         background: transparent;
       }
       .toggle button.active {
         color: var(--text);
-        background: rgba(255, 255, 255, 0.08);
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 4px 12px -6px rgba(0, 0, 0, 0.6);
       }
 
       form {
@@ -560,8 +559,25 @@
         background: rgba(255, 255, 255, 0.08);
         border-color: rgba(255, 255, 255, 0.2);
       }
+      /* The device flow takes over the whole card (see #view-device); Back returns to the form. */
+      .back {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 14px;
+        padding: 0;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--muted);
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        transition: color 0.15s;
+      }
+      .back:hover {
+        color: var(--text);
+      }
       .device {
-        margin-top: 10px;
         font-size: 13px;
         color: var(--muted);
         line-height: 1.6;
@@ -569,7 +585,7 @@
         background: rgba(0, 0, 0, 0.3);
         border: 1px solid var(--hairline);
         border-radius: 10px;
-        padding: 14px;
+        padding: 18px 14px;
       }
       .device a {
         color: var(--blue);
@@ -578,13 +594,16 @@
         display: inline-block;
         margin-top: 8px;
         font-family: var(--font-mono);
-        font-size: 18px;
+        font-size: 22px;
         letter-spacing: 0.12em;
         color: var(--text);
         background: rgba(255, 255, 255, 0.04);
         border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 8px;
-        padding: 6px 12px;
+        padding: 8px 14px;
+      }
+      .device code:empty {
+        display: none;
       }
       .auth-msg {
         margin-top: 8px;
@@ -629,7 +648,43 @@
         border-color: rgba(255, 255, 255, 0.2);
       }
 
+      /* Short desktop viewports: tighten vertical rhythm so the card still fits unscrolled. */
+      @media (max-height: 820px) and (min-width: 981px) {
+        nav {
+          padding: 14px 44px;
+        }
+        .hero h1 {
+          font-size: 46px;
+        }
+        .hero p {
+          margin-top: 16px;
+        }
+        .card-scroll {
+          max-height: calc(100vh - 96px);
+          padding: 22px 24px 22px 26px;
+        }
+        .card-header {
+          margin-bottom: 16px;
+        }
+        .toggle {
+          margin-bottom: 16px;
+        }
+        form,
+        .fieldset {
+          gap: 12px;
+        }
+        .divider {
+          margin: 14px 0;
+        }
+      }
+      /* Narrow screens stack hero over card; here the page scrolls normally again. */
       @media (max-width: 980px) {
+        body {
+          height: auto;
+          min-height: 100vh;
+          overflow: auto;
+          display: block;
+        }
         main {
           grid-template-columns: 1fr;
           gap: 48px;
@@ -646,12 +701,18 @@
           max-width: 480px;
           margin: 0 auto;
         }
+        .card-scroll {
+          max-height: none;
+        }
       }
       @media (prefers-reduced-motion: reduce) {
         .hero,
         .card-wrap,
         .grad-word {
           animation: none;
+        }
+        .toggle-thumb {
+          transition: none;
         }
       }
     </style>
@@ -663,17 +724,7 @@
     <div class="scrim scrim-left"></div>
 
     <nav>
-      <div class="brand">
-        <div class="logo" aria-hidden="true">
-          <svg width="30" height="30" viewBox="0 0 30 30">
-            <line x1="6" y1="6" x2="26" y2="24" stroke="rgba(255,255,255,0.18)" stroke-width="1" />
-            <line x1="6" y1="6" x2="7" y2="24" stroke="rgba(255,255,255,0.18)" stroke-width="1" />
-            <line x1="7" y1="24" x2="26" y2="24" stroke="rgba(255,255,255,0.18)" stroke-width="1" />
-          </svg>
-          <i class="dot-green"></i><i class="dot-blue"></i><i class="dot-amber"></i>
-        </div>
-        <span class="wordmark">Meridian</span>
-      </div>
+      <span class="wordmark">Meridian<span class="dot">.</span></span>
     </nav>
 
     <main>
@@ -688,12 +739,15 @@
       <section class="card-wrap">
         <div class="card">
           <div class="card-accent"></div>
+          <div class="card-scroll">
+          <div id="view-form">
           <div class="card-header">
             <h2 id="card-title">Map your first repo</h2>
             <p class="card-subtitle" id="card-subtitle">Point Meridian at a GitHub repository.</p>
           </div>
 
-          <div class="toggle" role="tablist">
+          <div class="toggle" id="toggle" role="tablist">
+            <span class="toggle-thumb" aria-hidden="true"></span>
             <button type="button" role="tab" id="tab-github" class="active" aria-selected="true">GitHub repo</button>
             <button type="button" role="tab" id="tab-path" aria-selected="false">Local path</button>
           </div>
@@ -766,11 +820,6 @@
                 Sign-in is off — set <code>MERIDIAN_GITHUB_CLIENT_ID</code> (a GitHub OAuth app client id with Device
                 Flow enabled) to browse private repos. Public repos work without it.
               </p>
-              <div class="device" id="device" hidden>
-                Open <a id="verify-link" target="_blank" rel="noopener noreferrer">github.com/login/device</a> and enter:
-                <br /><code id="usercode"></code>
-                <div class="auth-msg" id="device-msg">Waiting for authorization…</div>
-              </div>
               <div class="auth-msg" id="auth-msg"></div>
             </div>
             <div class="me" id="signedin" hidden>
@@ -779,6 +828,22 @@
               <button type="button" class="ghost" id="signout">Sign out</button>
             </div>
           </section>
+          </div>
+
+          <!-- The device sign-in flow replaces the form entirely; Back returns without cancelling. -->
+          <div id="view-device" hidden>
+            <button type="button" class="back" id="device-back">← Back</button>
+            <div class="card-header">
+              <h2>Sign in with GitHub</h2>
+              <p class="card-subtitle">Authorize this device to browse your repositories.</p>
+            </div>
+            <div class="device" id="device">
+              Open <a id="verify-link" target="_blank" rel="noopener noreferrer">github.com/login/device</a> and enter:
+              <br /><code id="usercode"></code>
+              <div class="auth-msg" id="device-msg">Waiting for authorization…</div>
+            </div>
+          </div>
+          </div>
         </div>
       </section>
     </main>
@@ -793,6 +858,34 @@
       let pollDelayMs = 5000;
       let searchTimer = null;
 
+      // --- card content swaps: morph the card height and fade the incoming content in, so
+      // toggling modes or views never snaps abruptly ---
+      const cardEl = document.querySelector(".card");
+
+      function animateCardSwap(mutate) {
+        if (reducedMotion) {
+          mutate();
+          return;
+        }
+        const before = cardEl.offsetHeight;
+        mutate();
+        const after = cardEl.offsetHeight;
+        if (before !== after) {
+          cardEl.animate([{ height: before + "px" }, { height: after + "px" }], {
+            duration: 260,
+            easing: "cubic-bezier(0.4, 0, 0.2, 1)",
+          });
+        }
+      }
+
+      function reveal(el) {
+        if (reducedMotion) return;
+        el.animate([{ opacity: 0, transform: "translateY(6px)" }, { opacity: 1, transform: "none" }], {
+          duration: 220,
+          easing: "ease-out",
+        });
+      }
+
       // --- source mode (the design's segmented toggle): "github" | "path" ---
       const MODES = {
         github: { title: "Map your first repo", subtitle: "Point Meridian at a GitHub repository." },
@@ -801,17 +894,22 @@
       let mode = "github";
 
       function setMode(next) {
+        if (mode === next) return;
         mode = next;
         const github = next === "github";
-        $("github-fields").hidden = !github;
-        $("path-fields").hidden = github;
+        animateCardSwap(() => {
+          $("github-fields").hidden = !github;
+          $("path-fields").hidden = github;
+          $("card-title").textContent = MODES[next].title;
+          $("card-subtitle").textContent = MODES[next].subtitle;
+          setStatus("", "");
+        });
+        reveal(github ? $("github-fields") : $("path-fields"));
+        $("toggle").classList.toggle("path", !github);
         $("tab-github").classList.toggle("active", github);
         $("tab-path").classList.toggle("active", !github);
         $("tab-github").setAttribute("aria-selected", String(github));
         $("tab-path").setAttribute("aria-selected", String(!github));
-        $("card-title").textContent = MODES[next].title;
-        $("card-subtitle").textContent = MODES[next].subtitle;
-        setStatus("", "");
         hideResults();
       }
 
@@ -878,9 +976,11 @@
 
       function showSignedOut() {
         signedIn = false;
+        devicePending = false;
+        $("view-device").hidden = true;
+        $("view-form").hidden = false;
         $("signedin").hidden = true;
         $("signin-area").hidden = false;
-        $("device").hidden = true;
         $("signin").hidden = !authConfig.configured;
         $("auth-disabled").hidden = authConfig.configured;
         hideResults();
@@ -889,20 +989,24 @@
 
       function showSignedIn(user) {
         signedIn = true;
+        devicePending = false;
         clearTimeout(pollTimer);
-        $("signin-area").hidden = true;
-        $("device").hidden = true;
-        $("signedin").hidden = false;
+        animateCardSwap(() => {
+          $("view-device").hidden = true;
+          $("view-form").hidden = false;
+          $("signin-area").hidden = true;
+          $("signedin").hidden = false;
+          $("me-login").textContent = user && user.login ? user.login : "signed in";
+          const avatar = $("me-avatar");
+          const src = user && safeHttpsUrl(user.avatarUrl);
+          if (src) {
+            avatar.src = src;
+            avatar.hidden = false;
+          } else {
+            avatar.hidden = true;
+          }
+        });
         setAuthMsg("");
-        $("me-login").textContent = user && user.login ? user.login : "signed in";
-        const avatar = $("me-avatar");
-        const src = user && safeHttpsUrl(user.avatarUrl);
-        if (src) {
-          avatar.src = src;
-          avatar.hidden = false;
-        } else {
-          avatar.hidden = true;
-        }
         loadMyRepos();
       }
 
@@ -917,39 +1021,69 @@
         }
       }
 
-      // --- device flow ---
-      $("signin").addEventListener("click", startSignIn);
+      // --- device flow: takes over the whole card; Back returns while polling continues, so
+      // authorizing from the GitHub tab still signs the user in from either view ---
+      let devicePending = false;
+
+      $("signin").addEventListener("click", openDeviceView);
+      $("device-back").addEventListener("click", showFormView);
       $("signout").addEventListener("click", signOut);
 
-      async function startSignIn() {
-        setAuthMsg("Contacting GitHub…");
+      function showFormView() {
+        animateCardSwap(() => {
+          $("view-device").hidden = true;
+          $("view-form").hidden = false;
+        });
+        reveal($("view-form"));
+      }
+
+      function showDeviceView() {
+        animateCardSwap(() => {
+          $("view-form").hidden = true;
+          $("view-device").hidden = false;
+        });
+        reveal($("view-device"));
+      }
+
+      // Reopening while a code is still pending shows the same code instead of burning a new one.
+      async function openDeviceView() {
+        setAuthMsg("");
+        showDeviceView();
+        if (devicePending) return;
+        $("usercode").textContent = "";
+        setDeviceMsg("Contacting GitHub…");
         try {
           const res = await apiPost("/api/auth/device");
           const data = await res.json();
           if (!res.ok) {
-            setAuthMsg(data.error || "Sign-in is unavailable.", true);
+            setDeviceMsg(data.error || "Sign-in is unavailable.", true);
             return;
           }
+          devicePending = true;
           renderDeviceCode(data);
           pollDelayMs = Math.max(Number(data.intervalSeconds) || 5, 4) * 1000;
           schedulePoll();
         } catch {
-          setAuthMsg("Could not reach the server.", true);
+          setDeviceMsg("Could not reach the server.", true);
         }
       }
 
-      // The sign-in button stays visible above the code: clicking it again issues a fresh code,
-      // which is the only escape hatch while GitHub still considers the old one pending.
+      function setDeviceMsg(text, isError) {
+        const el = $("device-msg");
+        el.textContent = text || "";
+        el.className = "auth-msg" + (isError ? " error" : "");
+      }
+
       function renderDeviceCode(data) {
-        setAuthMsg("");
-        $("device").hidden = false;
-        $("usercode").textContent = data.userCode || "";
-        const link = $("verify-link");
-        const href = safeGithubUrl(data.verificationUriComplete) || safeGithubUrl(data.verificationUri);
-        link.textContent = typeof data.verificationUri === "string" ? data.verificationUri : "github.com/login/device";
-        if (href) link.href = href;
-        else link.removeAttribute("href");
-        $("device-msg").textContent = "Waiting for authorization…";
+        animateCardSwap(() => {
+          $("usercode").textContent = data.userCode || "";
+          const link = $("verify-link");
+          const href = safeGithubUrl(data.verificationUriComplete) || safeGithubUrl(data.verificationUri);
+          link.textContent = typeof data.verificationUri === "string" ? data.verificationUri : "github.com/login/device";
+          if (href) link.href = href;
+          else link.removeAttribute("href");
+          setDeviceMsg("Waiting for authorization…");
+        });
       }
 
       function schedulePoll() {
@@ -972,8 +1106,8 @@
 
       function endSignIn(data) {
         clearTimeout(pollTimer);
-        $("device").hidden = true;
-        $("signin").hidden = !authConfig.configured;
+        devicePending = false;
+        showFormView();
         const messages = { expired: "The code expired — try again.", denied: "Sign-in was declined." };
         const fallback = (data && data.message) || "Sign-in failed.";
         setAuthMsg((data && messages[data.status]) || fallback, true);
@@ -985,7 +1119,7 @@
         } catch {
           /* clearing local state is enough */
         }
-        showSignedOut();
+        animateCardSwap(showSignedOut);
       }
 
       // --- repo search (only when signed in; the repo field doubles as the search box) ---
@@ -1072,10 +1206,12 @@
       }
 
       function renderMine(repos) {
-        const list = $("mine-list");
-        list.replaceChildren();
-        for (const repo of repos) list.appendChild(resultItem(repo));
-        $("mine").hidden = repos.length === 0;
+        animateCardSwap(() => {
+          const list = $("mine-list");
+          list.replaceChildren();
+          for (const repo of repos) list.appendChild(resultItem(repo));
+          $("mine").hidden = repos.length === 0;
+        });
       }
 
       function hideMine() {
