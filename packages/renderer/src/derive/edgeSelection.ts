@@ -9,17 +9,13 @@ import type { GraphEdge } from "@meridian/core";
 
 export type ViewMode = "call" | "ui" | "logic" | "modules";
 
-/** The behavioural call graph: everything the extractor emits EXCEPT the React "renders" tree.
- * IPC hops (`sends`/`handles`, routed through channel pseudo-nodes) belong here — an exit port
- * IS behaviour, and including both halves lets a flow trace across a process boundary. */
+/** The behavioural call graph: everything the extractor emits EXCEPT the React "renders" tree. */
 const CALL_EDGE_KINDS: ReadonlySet<string> = new Set([
   "calls",
   "instantiates",
   "extends",
   "implements",
   "references",
-  "sends",
-  "handles",
 ]);
 
 /** The single kind that expresses React component composition (JSX child rendering). */

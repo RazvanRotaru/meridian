@@ -9,16 +9,9 @@ import { MarkerType } from "@xyflow/react";
 
 export const WIRE_COLOR = "#7C8696";
 export const RENDERS_WIRE = "#61DAFB";
-/** IPC hops (`sends`/`handles` through a channel node): magenta — its OWN colour, distinct from the
- * gold used for cross-package code coupling, so "leaves the process" never reads as "imports another
- * package". The only animated wire on the composition canvas, so IPC traffic is unmistakable. */
-export const IPC_WIRE = "#E06CB0";
 
 export function wireColorForKind(kind: string): string {
-  if (kind === "renders") {
-    return RENDERS_WIRE;
-  }
-  return kind === "sends" || kind === "handles" ? IPC_WIRE : WIRE_COLOR;
+  return kind === "renders" ? RENDERS_WIRE : WIRE_COLOR;
 }
 
 /** The closed arrowhead a laid-out edge terminates in, coloured to match its wire. */

@@ -3,21 +3,18 @@
  * scorecards, so the canvas reads as "what's in each package". Styled after logic's DefGroupNode —
  * a translucent panel with a subtle border and a header bar carrying the package (folder) label, a
  * "N units" count, and, when the package holds design smells, a small red "N⚠" marker so a troubled
- * package is spottable at a glance. The frame body is passive (the scorecards React Flow parents to
- * it render OVER it); an AGGREGATED view's inline-expanded frame (`data.expanded`) additionally
- * carries a ▾ header button that collapses it back to its package summary card.
+ * package is spottable at a glance. Purely passive: the def scorecards React Flow parents to it
+ * render OVER its transparent body; the frame itself has no click behaviour.
  */
 
 import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
-import { useBlueprintActions } from "../../../state/StoreContext";
 import type { ClusterNodeData } from "../../../derive/compositionGraph";
 import type { CompRfNode } from "../../../layout/compositionElk";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
 function ClusterFrameNodeImpl({ data }: NodeProps<CompRfNode>) {
-  const { toggleCompExpand } = useBlueprintActions();
   const d = data as ClusterNodeData;
   return (
     <div style={FRAME}>
@@ -27,20 +24,6 @@ function ClusterFrameNodeImpl({ data }: NodeProps<CompRfNode>) {
         <span style={COUNT}>{`${d.unitCount} ${d.unitCount === 1 ? "unit" : "units"}`}</span>
         {d.smellyCount > 0 ? (
           <span style={SMELL_BADGE} title={`${d.smellyCount} unit(s) with design smells`}>{`${d.smellyCount}⚠`}</span>
-        ) : null}
-        {d.expanded ? (
-          <button
-            type="button"
-            style={COLLAPSE_BTN}
-            title="Collapse this package back to its summary card"
-            onClick={(event) => {
-              event.stopPropagation();
-              toggleCompExpand(d.clusterId);
-            }}
-            onDoubleClick={(event) => event.stopPropagation()}
-          >
-            ▾
-          </button>
         ) : null}
       </div>
     </div>
@@ -92,18 +75,4 @@ const SMELL_BADGE: React.CSSProperties = {
   borderRadius: 3,
   padding: "1px 5px",
   background: "rgba(229,72,77,0.14)",
-};
-// Mirrors the package card's ▸ expand pill so open/close read as the same control family.
-const COLLAPSE_BTN: React.CSSProperties = {
-  flexShrink: 0,
-  fontSize: 10,
-  fontWeight: 700,
-  lineHeight: "14px",
-  color: "#8FB6E3",
-  border: "1px solid #2F4A66",
-  background: "rgba(59,122,192,0.16)",
-  borderRadius: 3,
-  padding: "0 5px",
-  cursor: "pointer",
-  fontFamily: "inherit",
 };

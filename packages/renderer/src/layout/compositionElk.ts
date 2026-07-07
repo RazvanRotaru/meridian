@@ -8,13 +8,12 @@
 
 import { type Edge, type Node } from "@xyflow/react";
 import type { ElkNode } from "elkjs/lib/elk-api";
-import type { ChannelCompData, ClusterNodeData, CompEdgeSpec, CompNodeData, CompNodeSpec, CompNodeType, CompositionGraphSpec, IpcChannelDetail } from "../derive/compositionGraph";
-import type { PackageSummaryData } from "../derive/compositionAggregate";
-import { arrowMarker, IPC_WIRE } from "../theme/edgeColors";
+import type { ClusterNodeData, CompEdgeSpec, CompNodeData, CompNodeSpec, CompNodeType, CompositionGraphSpec } from "../derive/compositionGraph";
+import { arrowMarker } from "../theme/edgeColors";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
 
-export type CompRfNode = Node<CompNodeData | ClusterNodeData | ChannelCompData | PackageSummaryData, CompNodeType>;
-export type CompRfEdgeData = { inheritanceOnly: boolean; crossBoundary: boolean; ipc?: boolean; ipcChannels?: IpcChannelDetail[] };
+export type CompRfNode = Node<CompNodeData | ClusterNodeData, CompNodeType>;
+export type CompRfEdgeData = { inheritanceOnly: boolean; crossBoundary: boolean };
 export type CompRfEdge = Edge<CompRfEdgeData>;
 export interface CompositionReactFlowGraph {
   nodes: CompRfNode[];
@@ -74,10 +73,13 @@ function toReactFlowNode(elkNode: ElkNode, parentId: string | undefined, spec: C
   };
 }
 
-// The wire treatments, in priority order. Only IPC animates — it's the one "flowing over the wire"
-// relationship — so animation alone signals IPC. Coupling that CROSSES a package boundary is the
-// packaging signal: gold, SOLID, static (previously animated, which made it read as dashed and thus
-// indistinguishable from IPC). Inheritance is dashed violet; same-package coupling a quiet grey.
+// The three wire treatments, in priority order — all sharing the Logic-flow wire feel (2px stroke +
+// a matching arrowhead) so the two graph surfaces read as one, while keeping their semantic colours.
+// An inheritance-only pair reads DISTINCT — dashed violet — because extends/implements is a different
+// relationship from ordinary use. A SAME-cluster wire is expected cohesion: a quiet grey that recedes
+// without washing out. A wire that CROSSES a frame boundary is the packaging (Common-Closure) signal,
+// so it's the warm gold signal colour at full opacity and ANIMATED — a flowing thread, like Logic's
+// exec wire.
 const INHERITANCE_COLOR = "#A78BFA";
 const INTERNAL_COLOR = "#5B6675";
 const CROSS_BOUNDARY_COLOR = "#C9A24B";
@@ -91,17 +93,11 @@ interface EdgeStroke {
 }
 
 function strokeFor(edge: CompEdgeSpec): EdgeStroke {
-  // IPC leaves the process: its own magenta, dashed, and the ONLY animated wire — so it can never be
-  // mistaken for a code coupling.
-  if (edge.ipc) {
-    return { color: IPC_WIRE, width: 2, opacity: 1, dashed: true, animated: true };
-  }
   if (edge.inheritanceOnly) {
     return { color: INHERITANCE_COLOR, width: 2, opacity: 1, dashed: true, animated: false };
   }
-  // Cross-package coupling: gold, SOLID, static (no longer animated → no longer reads as dashes).
   if (edge.crossBoundary) {
-    return { color: CROSS_BOUNDARY_COLOR, width: 2, opacity: 1, dashed: false, animated: false };
+    return { color: CROSS_BOUNDARY_COLOR, width: 2, opacity: 1, dashed: false, animated: true };
   }
   return { color: INTERNAL_COLOR, width: 2, opacity: 0.7, dashed: false, animated: false };
 }
@@ -120,6 +116,6 @@ function toReactFlowEdge(edge: CompEdgeSpec): CompRfEdge {
       ...(stroke.dashed ? { strokeDasharray: "5 4" } : {}),
     },
     markerEnd: arrowMarker(stroke.color, 16),
-    data: { inheritanceOnly: edge.inheritanceOnly, crossBoundary: edge.crossBoundary, ipc: edge.ipc, ipcChannels: edge.ipcChannels },
+    data: { inheritanceOnly: edge.inheritanceOnly, crossBoundary: edge.crossBoundary },
   };
 }

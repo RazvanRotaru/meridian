@@ -16,5 +16,3 @@ export * from "./assembly";
 export * from "./boundary";
 export * from "./test-detection";
 export * from "./coverage";
-export * from "./ports";
-export * from "./link";

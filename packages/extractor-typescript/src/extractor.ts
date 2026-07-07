@@ -15,7 +15,6 @@ import type {
   ExtractionResult,
   LanguageExtractor,
   LanguageTag,
-  Port,
 } from "@meridian/core";
 import type { NodeDescriptor } from "./model";
 import { loadProject, type LoadedProject } from "./project-loader";
@@ -27,7 +26,6 @@ import { collectImportEdges } from "./import-pass";
 import { buildEdges, type EdgeBuildResult } from "./edge-build";
 import { collapseToDepth } from "./depth-collapse";
 import { buildLogicFlows } from "./flow-pass";
-import { collectPorts } from "./ports-pass";
 import { buildStats } from "./stats";
 
 const NODE_ID_LANGUAGE = "ts";
@@ -100,7 +98,6 @@ async function runExtraction(options: ExtractOptions): Promise<ExtractionResult>
   const collapsed = collapseToDepth(buildGraphNodes(descriptors), built.edges, options.depth ?? "function");
   const keepIds = new Set(collapsed.nodes.map((node) => node.id));
   const flows = buildLogicFlows(descriptors, index, keepIds, moduleSourcesById(loaded, moduleByFilePath));
-  const ports = portsWithin(collectPorts(loaded, index, moduleByFilePath), keepIds, loaded, moduleByFilePath);
   appendDropDiagnostics(diagnostics, built);
   const stats = buildStats({
     files: loaded.sourceFiles.length,
@@ -109,31 +106,7 @@ async function runExtraction(options: ExtractOptions): Promise<ExtractionResult>
     externalCallsDropped: built.externalCallsDropped,
     unresolvedCalls: built.unresolvedCalls,
   });
-  const result: ExtractionResult = { language: "typescript", nodes: collapsed.nodes, edges: collapsed.edges, stats, diagnostics, flows };
-  if (ports.length > 0) {
-    result.ports = ports;
-  }
-  return result;
-}
-
-// A port must reference a SURVIVING node: when `--depth` collapsed the owning callable away,
-// reattribute the port to its file's module node (which survives at every depth above package).
-function portsWithin(
-  ports: Port[],
-  keepIds: ReadonlySet<string>,
-  loaded: LoadedProject,
-  moduleByFilePath: Map<string, NodeDescriptor>,
-): Port[] {
-  const moduleIdByRelPath = new Map<string, string>();
-  for (const sourceFile of loaded.sourceFiles) {
-    const moduleNode = moduleByFilePath.get(sourceFile.getFilePath());
-    if (moduleNode) {
-      moduleIdByRelPath.set(loaded.relativePathOf(sourceFile), moduleNode.finalId);
-    }
-  }
-  return ports
-    .map((port) => (keepIds.has(port.nodeId) ? port : { ...port, nodeId: moduleIdByRelPath.get(port.callSite.file) ?? "" }))
-    .filter((port) => keepIds.has(port.nodeId));
+  return { language: "typescript", nodes: collapsed.nodes, edges: collapsed.edges, stats, diagnostics, flows };
 }
 
 // Key each surviving module's SourceFile by its node id, so the flow pass can chart the

@@ -10,8 +10,7 @@
 import type { GraphEdge, GraphNode } from "@meridian/core";
 import { buildUnitIndex, computeCompositionMetrics, couplingEdges, groupMembersByUnit, type UnitMetrics } from "@meridian/design-metrics";
 import { computeRootedView } from "./compositionRoot";
-import { buildClusters, nearestEmitted, type ClusterFrame } from "./compositionClusters";
-import { aggregateByPackage, type PackageSummaryData } from "./compositionAggregate";
+import { buildClusters, type ClusterFrame } from "./compositionClusters";
 
 // A `type` (not an interface) so it satisfies React Flow's `Node<T extends Record<string, unknown>>`
 // constraint — an interface lacks the implicit index signature (mirrors logic's LogicNodeData).
@@ -39,21 +38,9 @@ export type ClusterNodeData = {
   label: string;
   unitCount: number;
   smellyCount: number;
-  /** True on a package the AGGREGATED view has inline-expanded — the frame header then offers the
-   * collapse (▾) control. Absent on the unit view's passive frames. */
-  expanded?: boolean;
 };
 
-// An IPC channel card's data: the channel key two processes meet on, plus its honesty flag —
-// `dangling` says one whole side is missing ("out-only": someone sends, nobody answers).
-export type ChannelCompData = {
-  channelId: string;
-  label: string;
-  protocol: string;
-  dangling: "out-only" | "in-only" | null;
-};
-
-export type CompNodeType = "unit" | "cluster" | "channel" | "package";
+export type CompNodeType = "unit" | "cluster";
 
 // A single spec type spans both node kinds (mirrors logic's LogicNodeSpec): a "unit" carries its
 // scorecard size and a cluster `parentId`; a "cluster" frame is a container ELK sizes, so it omits
@@ -63,17 +50,9 @@ export interface CompNodeSpec {
   type: CompNodeType;
   width?: number;
   height?: number;
-  /** The cluster frame this node nests in (undefined for a top-level node; the aggregated view
-   * nests frames inside frames, so an expanded sub-package frame carries one too). */
+  /** The cluster frame this unit nests in (undefined for a frame itself). */
   parentId?: string;
-  data: CompNodeData | ClusterNodeData | ChannelCompData | PackageSummaryData;
-}
-
-/** One channel an IPC wire carries — shown in the inspector when the wire is clicked. */
-export interface IpcChannelDetail {
-  channel: string;
-  protocol: string;
-  dangling: "out-only" | "in-only" | null;
+  data: CompNodeData | ClusterNodeData;
 }
 
 export interface CompEdgeSpec {
@@ -83,28 +62,6 @@ export interface CompEdgeSpec {
   inheritanceOnly: boolean;
   /** True when the pair sits in DIFFERENT clusters — the packaging / Common-Closure signal. */
   crossBoundary: boolean;
-  /** An IPC hop (a `sends`/`handles` half through a channel card) — drawn as the magenta wire. */
-  ipc?: boolean;
-  /** The channel(s) this IPC wire represents — one in the unit view, many on an aggregated wire. */
-  ipcChannels?: IpcChannelDetail[];
-}
-
-/** Recover a channel's display key + protocol from its `ipc:<protocol>/<slug>` id (core's grammar). */
-export function channelInfoFromId(id: string): { channel: string; protocol: string } {
-  const body = id.startsWith("ipc:") ? id.slice(4) : id;
-  const slash = body.indexOf("/");
-  const protocol = slash === -1 ? "ipc" : body.slice(0, slash);
-  const channel = (slash === -1 ? body : body.slice(slash + 1)).replace(/\+/g, " ").replace(/%23/g, "#");
-  return { channel, protocol };
-}
-
-/** A channel's full inspector detail from its id + which sides it has anywhere in the artifact. */
-export function channelDetailFromId(id: string, sides: Map<string, { out: boolean; in: boolean }>): IpcChannelDetail {
-  const side = sides.get(id);
-  return {
-    ...channelInfoFromId(id),
-    dangling: side && !side.in ? "out-only" : side && !side.out ? "in-only" : null,
-  };
 }
 
 export interface CompositionGraphSpec {
@@ -120,43 +77,18 @@ export interface CompositionGraphSpec {
  * A non-null `root` (a module/package node id) narrows the graph to a ROOTED view: only the units
  * the root contains plus their 1-hop coupling neighbours (the latter flagged `boundary` and drawn
  * faded so a click can re-root there). `root === null` is the unchanged whole-system view.
- *
- * `aggregate` (whole-system only) rolls every unit up to its PACKAGE — one summary card each,
- * hundreds not thousands — so a giant repo lays out and reads. Double-clicking a package roots
- * there, dropping back to unit scorecards; a package in `expanded` instead opens INLINE as a frame
- * holding the next level (see compositionAggregate).
  */
-export function deriveCompositionGraph(
-  nodes: GraphNode[],
-  edges: GraphEdge[],
-  root: string | null = null,
-  showMetrics = true,
-  expanded: ReadonlySet<string> = NONE_EXPANDED,
-): CompositionGraphSpec {
+export function deriveCompositionGraph(nodes: GraphNode[], edges: GraphEdge[], root: string | null = null, showMetrics = true): CompositionGraphSpec {
   const metrics = computeCompositionMetrics(nodes, edges);
   const couplings = couplingEdges(nodes, edges);
   const coupled = couplingEndpoints(couplings);
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
-  const survivors = survivingUnits(metrics, coupled);
-
-  // Recursive progressive disclosure: if the units in view (whole-system, or the rooted subtree)
-  // still exceed what the canvas can paint interactively, aggregate to the package cards ONE LEVEL
-  // below the current root. Each drill re-roots a level deeper until a package is small enough to
-  // show its unit scorecards. This is what keeps a giant repo interactive in a slower engine.
-  const inView = unitsInView(survivors, root, nodesById);
-  if (inView.size > AGGREGATE_UNIT_THRESHOLD) {
-    // Only an inline-expanded frame ever shows real scorecards at this altitude, so the member
-    // partition (needed to size + fill them) is computed only when something is expanded.
-    const membersByUnit = expanded.size > 0 ? groupMembersByUnit(nodes, buildUnitIndex(nodes)) : new Map<string, GraphNode[]>();
-    const unitCard = (unitId: string) => unitNode(metrics.get(unitId)!, false, showMetrics, membersByUnit.get(unitId) ?? []);
-    return aggregateByPackage(edges, metrics, couplings, inView, nodesById, root, expanded, unitCard);
-  }
-
   // The unit → members partition, reused per card so a scorecard can list the methods it holds.
   const membersByUnit = groupMembersByUnit(nodes, buildUnitIndex(nodes));
 
   // The whole-system survivor set drives both views; a root then restricts it to its subtree + the
   // 1-hop neighbours, keeping the root's own unit even if it would otherwise be dropped.
+  const survivors = survivingUnits(metrics, coupled);
   const view = computeRootedView(root, survivors, root !== null && metrics.has(root), couplings, nodesById);
 
   const unitSpecs: CompNodeSpec[] = [];
@@ -178,7 +110,7 @@ export function deriveCompositionGraph(
   // A coupling endpoint is always a unit with a metrics entry, so both ends are emitted; the guard
   // is defensive against a pair that somehow references a dropped unit. A pair spanning two frames
   // is the packaging signal the layout emphasizes.
-  const edgeSpecs: CompEdgeSpec[] = couplings
+  const edgeSpecs = couplings
     .filter((edge) => emitted.has(edge.source) && emitted.has(edge.target))
     .map((edge) => ({
       id: `couple:${edge.source}->${edge.target}`,
@@ -188,104 +120,7 @@ export function deriveCompositionGraph(
       crossBoundary: clusterOf.get(edge.source) !== clusterOf.get(edge.target),
     }));
 
-  // The IPC layer: channel cards wired by the artifact's sends/handles edges, each function
-  // endpoint lifted to its nearest emitted UNIT (the scorecard that holds it).
-  const ipc = ipcLayerFor(edges, (id) => nearestEmitted(id, emitted, nodesById), channelSidesOf(edges));
-
-  return { nodes: [...nodeSpecs, ...ipc.nodes], edges: [...edgeSpecs, ...ipc.edges] };
-}
-
-// The channel card geometry: a compact pill — wide enough for "GET /api/orders/:id" plus tags.
-const CHANNEL_WIDTH = 220;
-const CHANNEL_HEIGHT = 46;
-
-/**
- * Project the artifact's IPC hops onto the composition canvas: each `sends`/`handles` edge has a
- * function endpoint and a channel endpoint — `resolve` lifts the function endpoint to the visible
- * card that owns it (a UNIT in the drilled-in view, a PACKAGE in the aggregated view), the channel
- * becomes a top-level card, and each hop becomes a gold wire. A channel missing a whole side keeps
- * an honest `dangling` flag. Shared by the unit view and the package aggregation so both agree.
- */
-export function ipcLayerFor(
-  edges: GraphEdge[],
-  resolve: (nodeId: string) => string | null,
-  sides: Map<string, { out: boolean; in: boolean }>,
-): { nodes: CompNodeSpec[]; edges: CompEdgeSpec[] } {
-  const channelSpecs = new Map<string, CompNodeSpec>();
-  const edgeSpecs = new Map<string, CompEdgeSpec>();
-  const channelById = channelNodesById(edges, sides);
-  for (const edge of edges) {
-    if (edge.kind !== "sends" && edge.kind !== "handles") {
-      continue;
-    }
-    const outbound = edge.kind === "sends";
-    const channelNode = channelById.get(outbound ? edge.target : edge.source);
-    const owner = resolve(outbound ? edge.source : edge.target);
-    if (!channelNode || !owner) {
-      continue;
-    }
-    if (!channelSpecs.has(channelNode.id)) {
-      channelSpecs.set(channelNode.id, channelNode.spec);
-    }
-    const source = outbound ? owner : channelNode.id;
-    const target = outbound ? channelNode.id : owner;
-    const channelData = channelNode.spec.data as ChannelCompData;
-    edgeSpecs.set(`ipc:${source}->${target}`, {
-      id: `ipc:${source}->${target}`,
-      source,
-      target,
-      inheritanceOnly: false,
-      crossBoundary: false,
-      ipc: true,
-      ipcChannels: [{ channel: channelData.label, protocol: channelData.protocol, dangling: channelData.dangling }],
-    });
-  }
-  return { nodes: [...channelSpecs.values()], edges: [...edgeSpecs.values()] };
-}
-
-/** The channel-node id → its card spec, derived once. A channel node isn't in nodesById in the
- * aggregate path's world (it reads only edges), so its id + protocol come off the edge's channel id. */
-function channelNodesById(edges: GraphEdge[], sides: Map<string, { out: boolean; in: boolean }>): Map<string, { id: string; spec: CompNodeSpec }> {
-  const byId = new Map<string, { id: string; spec: CompNodeSpec }>();
-  for (const edge of edges) {
-    if (edge.kind !== "sends" && edge.kind !== "handles") {
-      continue;
-    }
-    const id = edge.kind === "sends" ? edge.target : edge.source;
-    if (!byId.has(id)) {
-      byId.set(id, { id, spec: channelSpecFromId(id, sides.get(id)) });
-    }
-  }
-  return byId;
-}
-
-// A channel id is `ipc:<protocol>/<slug>` — recover the protocol and display label from it, so the
-// aggregate path needn't carry the channel GraphNodes. Matches core's channelNodeId grammar.
-function channelSpecFromId(id: string, sides: { out: boolean; in: boolean } | undefined): CompNodeSpec {
-  const { channel, protocol } = channelInfoFromId(id);
-  const data: ChannelCompData = {
-    channelId: id,
-    label: channel,
-    protocol,
-    dangling: sides && !sides.in ? "out-only" : sides && !sides.out ? "in-only" : null,
-  };
-  return { id, type: "channel", width: CHANNEL_WIDTH, height: CHANNEL_HEIGHT, data };
-}
-
-/** Which sides each channel has ANYWHERE in the artifact (not just the visible subset). */
-export function channelSidesOf(edges: GraphEdge[]): Map<string, { out: boolean; in: boolean }> {
-  const sides = new Map<string, { out: boolean; in: boolean }>();
-  for (const edge of edges) {
-    if (edge.kind !== "sends" && edge.kind !== "handles") {
-      continue;
-    }
-    const channelId = edge.kind === "sends" ? edge.target : edge.source;
-    const entry = sides.get(channelId) ?? { out: false, in: false };
-    if (edge.kind === "sends") entry.out = true;
-    else entry.in = true;
-    sides.set(channelId, entry);
-  }
-  return sides;
+  return { nodes: nodeSpecs, edges: edgeSpecs };
 }
 
 /** Set each unit spec's `parentId` to its cluster frame, returning the unit→cluster map the edge
@@ -321,41 +156,6 @@ function couplingEndpoints(couplings: ReturnType<typeof couplingEdges>): Set<str
     ids.add(edge.target);
   }
   return ids;
-}
-
-/** Above this many unit cards in view, aggregate to package cards instead. Tuned so even a slower
- * engine (Safari/WebKit) pans/zooms smoothly — a few dozen cards, not hundreds. */
-const AGGREGATE_UNIT_THRESHOLD = 120;
-
-/** The default "nothing inline-expanded" set — one shared instance so the default arg is stable. */
-const NONE_EXPANDED: ReadonlySet<string> = new Set();
-
-/** The surviving units within the current root's subtree (all survivors when root is null). */
-function unitsInView(survivors: Set<string>, root: string | null, nodesById: Map<string, GraphNode>): Set<string> {
-  if (root === null) {
-    return survivors;
-  }
-  const inView = new Set<string>();
-  for (const id of survivors) {
-    if (isWithin(id, root, nodesById)) {
-      inView.add(id);
-    }
-  }
-  return inView;
-}
-
-/** Whether `nodeId` is `root` or lies in its subtree (walks parentId, cycle-guarded). */
-function isWithin(nodeId: string, root: string, nodesById: Map<string, GraphNode>): boolean {
-  const seen = new Set<string>();
-  let current: GraphNode | undefined = nodesById.get(nodeId);
-  while (current && !seen.has(current.id)) {
-    if (current.id === root) {
-      return true;
-    }
-    seen.add(current.id);
-    current = current.parentId ? nodesById.get(current.parentId) : undefined;
-  }
-  return false;
 }
 
 /** The units carrying weight: ≥1 member OR ≥1 coupling wire — the whole-system scorecard set. */

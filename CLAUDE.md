@@ -25,7 +25,7 @@ packages/extractor-typescript  ts-morph adapter (TS/TSX incl. JSX renders edges)
 packages/extractor-python      spawns a bundled stdlib-ast analyzer (python/*.py) + a TS adapter.
 packages/design-metrics        pure graph→metrics: Martin's Ca/Ce/I/A/D + LCOM4 cohesion, design
                                smells, worst-first ranking, and per-unit diagnosis/advice. No React.
-packages/cli                   commander CLI: generate / view / web / mock-telemetry / coverage / link.
+packages/cli                   commander CLI: generate / view / web / mock-telemetry / coverage.
 packages/renderer              React 19 + @xyflow/react + elkjs SPA (Vite); consumes @meridian/design-metrics.
 examples/{orders-service, orders-service-py, shopfront}   fixtures used by golden + e2e tests.
 knowledge/adr/0001-...md       THE contract decision. Read it before touching the schema.
@@ -46,12 +46,6 @@ knowledge/adr/0001-...md       THE contract decision. Read it before touching th
   mirrors it (env selector mandatory, `defaultEnv` always null).
 - Extractors are **pure graph producers** — they return nodes/edges, NOT the artifact header. The CLI
   (`extract-pipeline.ts` → `artifact-header.ts`) stamps schemaVersion/generator/target/telemetry.
-- **IPC is a join over string channels** (ADR 0002): extractors report typed `ports`
-  (`extensions.ports`; channel read ONLY from literals — dynamic == `channel: null`, never guessed);
-  matching ends join through `ipc:` channel pseudo-nodes (`sends`/`handles` edges, core/ports.ts).
-  `meridian link` merges artifacts into a system graph — ids namespaced per source under `sys:`
-  frames, `ext:`/`unresolved:`/`ipc:` deliberately shared; concrete HTTP exits unify onto entry
-  route templates (core/link.ts).
 - **Test code is IN the graph by default**, tagged `"test"` via the open `tags` vocabulary (no schema
   change; tagging happens language-agnostically in `extract-pipeline.ts`, heuristics in core's
   `test-detection.ts`). `generate --exclude-tests` drops it; the renderer's Tests toggle hides it;
@@ -74,7 +68,6 @@ node packages/cli/dist/bin.js generate examples/orders-service -o /tmp/g.json
 node packages/cli/dist/bin.js view /tmp/g.json --overlay mock --env staging
 node packages/cli/dist/bin.js web sindresorhus/ky
 node packages/cli/dist/bin.js coverage /tmp/g.json --fail-under 60   # static coverage CI gate
-node packages/cli/dist/bin.js link /tmp/web.json /tmp/api.json -o /tmp/system.json  # IPC system graph
 ```
 
 `meridian view`/`web` serve the renderer from `packages/cli/renderer-dist` — after changing the
