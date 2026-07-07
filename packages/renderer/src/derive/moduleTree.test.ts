@@ -70,10 +70,23 @@ describe("deriveModuleTree — overview (focus null)", () => {
     expect(tree.nodes.every((n) => n.isContainer && !n.isExpanded)).toBe(true);
   });
 
-  it("group fileCount counts the whole subtree's source files", () => {
+  it("group fileCount counts the owning package's source files", () => {
     const { nodes, edges } = fixture();
     const pkgA = treeOf(nodes, edges, null, []).nodes.find((n) => n.id === "ts:pkgA");
     expect((pkgA?.data as ModuleGroupData).fileCount).toBe(3); // index, util, run
+  });
+
+  it("uses the package-overview ownership fold for collapsed root package counts", () => {
+    const nodes = [
+      npmPkg("ts:outer", "outer"),
+      node("ts:outer/root.ts", "module", "ts:outer", "root.ts"),
+      npmPkg("ts:outer/inner", "inner", "ts:outer"),
+      node("ts:outer/inner/leaf.ts", "module", "ts:outer/inner", "leaf.ts"),
+    ];
+    const edges = [importEdge("ts:outer/root.ts", "ts:outer/inner/leaf.ts")];
+    const byId = new Map(treeOf(nodes, edges, null, []).nodes.map((n) => [n.id, n.data as ModuleGroupData]));
+    expect(byId.get("ts:outer")).toMatchObject({ fileCount: 1, ce: 1, ca: 0 });
+    expect(byId.get("ts:outer/inner")).toMatchObject({ fileCount: 1, ce: 0, ca: 1 });
   });
 
   it("collapsed packages couple as package→package wires; internal imports self-loop away", () => {

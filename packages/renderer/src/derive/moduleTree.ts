@@ -17,7 +17,7 @@
 import type { GraphEdge } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import { npmPackageIdOf } from "./compositionClusters";
-import { packageEntryModule, type ModulePackageData } from "./packageOverview";
+import { derivePackageOverview, packageEntryModule, type ModulePackageData, type PackageOverviewSpec } from "./packageOverview";
 import { weightKey, type ModuleGraph } from "./moduleGraph";
 import { basename, collapseChain, fileData, type ModuleCardData } from "./moduleLevel";
 import { liftEdges } from "./liftEdges";
@@ -65,12 +65,44 @@ export function deriveModuleTree(
   graph: ModuleGraph,
 ): ModuleTree {
   const effectiveFocus = focus === null ? null : collapseChain(index, focus);
+  if (effectiveFocus === null && expanded.size === 0) {
+    return collapsedOverviewTree(index);
+  }
   const roots = frontierRoots(index, effectiveFocus, graph);
   const skeleton = walk(index, roots, expanded);
   const visibleIds = new Set(skeleton.map((entry) => entry.id));
   const lifted = liftEdges(importEdges(graph), visibleIds, index.parentOf);
   const nodes = skeleton.map((entry) => finalize(entry, index, graph, lifted));
   return { nodes, edges: toTreeEdges(lifted, kindsOf(skeleton)), effectiveFocus };
+}
+
+/** Repository level, unexpanded: keep the dedicated package-overview fold that built this view. */
+function collapsedOverviewTree(index: GraphIndex): ModuleTree {
+  const overview = derivePackageOverview(index);
+  return {
+    nodes: overview.nodes.map((node) => overviewNode(node, index)),
+    edges: overview.edges.map(overviewEdge),
+    effectiveFocus: null,
+  };
+}
+
+function overviewNode(node: PackageOverviewSpec["nodes"][number], index: GraphIndex): VisibleModuleNode {
+  const childCount = containmentChildren(index, node.id).length;
+  const isContainer = childCount > 0;
+  return {
+    id: node.id,
+    parentId: null,
+    kind: "package",
+    isContainer,
+    isExpanded: false,
+    depth: 0,
+    childCount,
+    data: { ...node.data, isContainer, isExpanded: false },
+  };
+}
+
+function overviewEdge(edge: PackageOverviewSpec["edges"][number]): ModuleTreeEdge {
+  return { id: `lvl:${edge.source}->${edge.target}`, source: edge.source, target: edge.target, weight: edge.weight, crossFrame: true };
 }
 
 /** The top-level nodes of the drawn level: npm packages at the overview, else the focus's children. */
