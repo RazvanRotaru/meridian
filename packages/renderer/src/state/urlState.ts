@@ -25,19 +25,17 @@ export interface NavState {
   logicRoot: string | null;
   logicStack: string[];
   expanded: string[];
-  /** The Module-map root file; null == the resolved default entry. */
-  moduleRoot: string | null;
-  /** The Module-map import-hop depth (GHOST_DEPTH_ALL == the whole radius). */
-  moduleDepth: number;
+  /** The Module-map focus: the package/dir node zoomed into; null == the whole-repo overview. */
+  moduleFocus: string | null;
+  /** The Module-map selection highlight radius (GHOST_DEPTH_ALL == the whole neighbourhood). */
+  moduleRadius: number;
   /** Module categories painted out of the map — a comma-joined list in the URL. */
   hiddenCategories: string[];
-  /** The Module map's whole-repo PACKAGE overview is on (vs the entry-rooted file view). */
-  moduleOverview: boolean;
   environment: string | null;
 }
 
 /** Every param key we own — listed once so `mergeNavIntoSearch` can clear them before rewriting. */
-const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "lroot", "lstack", "expand", "mroot", "mdepth", "mhide", "mov", "env"] as const;
+const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "lroot", "lstack", "expand", "mfocus", "mdepth", "mhide", "env"] as const;
 
 /** The navigation state the app boots into — the baseline a restore resets absent keys back to. */
 export const DEFAULT_NAV: NavState = {
@@ -52,10 +50,9 @@ export const DEFAULT_NAV: NavState = {
   logicRoot: null,
   logicStack: [],
   expanded: [],
-  moduleRoot: null,
-  moduleDepth: 1,
+  moduleFocus: null,
+  moduleRadius: 1,
   hiddenCategories: [],
-  moduleOverview: false,
   environment: null,
 };
 
@@ -72,10 +69,9 @@ interface NavSource {
   logicRoot: string | null;
   logicStack: readonly string[];
   expanded: ReadonlySet<string>;
-  moduleRoot: string | null;
-  moduleDepth: number;
+  moduleFocus: string | null;
+  moduleRadius: number;
   hiddenCategories: ReadonlySet<string>;
-  moduleOverview: boolean;
   environment: string | null;
 }
 
@@ -93,10 +89,9 @@ export function navFrom(state: NavSource): NavState {
     logicRoot: state.logicRoot,
     logicStack: [...state.logicStack],
     expanded: [...state.expanded].sort(),
-    moduleRoot: state.moduleRoot,
-    moduleDepth: state.moduleDepth,
+    moduleFocus: state.moduleFocus,
+    moduleRadius: state.moduleRadius,
     hiddenCategories: [...state.hiddenCategories].sort(),
-    moduleOverview: state.moduleOverview,
     environment: state.environment,
   };
 }
@@ -115,10 +110,9 @@ export function encodeNav(nav: NavState): Map<string, string> {
   setId(out, "lroot", nav.logicRoot);
   setList(out, "lstack", nav.logicStack);
   setList(out, "expand", nav.expanded);
-  setId(out, "mroot", nav.moduleRoot);
-  if (nav.moduleDepth !== 1) out.set("mdepth", String(nav.moduleDepth));
+  setId(out, "mfocus", nav.moduleFocus);
+  if (nav.moduleRadius !== 1) out.set("mdepth", String(nav.moduleRadius));
   setList(out, "mhide", nav.hiddenCategories);
-  if (nav.moduleOverview) out.set("mov", "1");
   setId(out, "env", nav.environment);
   return out;
 }
@@ -139,11 +133,10 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   assignId(params, "lroot", out, "logicRoot");
   assignList(params, "lstack", out, "logicStack");
   assignList(params, "expand", out, "expanded");
-  assignId(params, "mroot", out, "moduleRoot");
-  const moduleDepth = params.get("mdepth");
-  if (moduleDepth !== null && !Number.isNaN(Number(moduleDepth))) out.moduleDepth = Number(moduleDepth);
+  assignId(params, "mfocus", out, "moduleFocus");
+  const moduleRadius = params.get("mdepth");
+  if (moduleRadius !== null && !Number.isNaN(Number(moduleRadius))) out.moduleRadius = Number(moduleRadius);
   assignList(params, "mhide", out, "hiddenCategories");
-  if (params.get("mov") === "1") out.moduleOverview = true;
   assignId(params, "env", out, "environment");
   return out;
 }
@@ -171,8 +164,7 @@ export function isNavigationChange(prev: NavState, next: NavState): boolean {
     prev.viewMode !== next.viewMode ||
     prev.focusId !== next.focusId ||
     prev.compRoot !== next.compRoot ||
-    prev.moduleRoot !== next.moduleRoot ||
-    prev.moduleOverview !== next.moduleOverview ||
+    prev.moduleFocus !== next.moduleFocus ||
     prev.flowRootId !== next.flowRootId ||
     prev.logicRoot !== next.logicRoot ||
     prev.logicStack.join(",") !== next.logicStack.join(",")

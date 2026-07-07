@@ -1,83 +1,30 @@
 /**
- * The Module-map derive pipeline behind one call: resolve the effective root, walk the FULL import
- * blast radius to learn its true diameter, then lay out the (optionally depth-capped) spec. Kept
- * pure of store concerns so the store can wrap it in a stale-layout guard, exactly like
- * `deriveCompositionLayout`.
- *
- * Depth is a relayout parameter (fewer rings ⇒ fewer nodes), but the SLIDER'S ceiling must stay the
- * unbounded diameter — otherwise capping depth would shrink the max and strand the reader at a low
- * depth. So we always derive the full radius once for `maxDepth`, and only re-derive capped when the
- * chosen depth is actually below it.
+ * The Module-map level pipeline behind one call: derive the containment level for the current focus
+ * (the package overview when null, else the focus's children with imports folded to them), then lay
+ * it out with ELK. Kept pure of store concerns so the store can wrap it in a stale-layout guard,
+ * exactly like `deriveCompositionLayout`. The import graph is built once and passed in (the store
+ * caches it), never rebuilt per relayout.
  */
 
 import type { Edge, Node } from "@xyflow/react";
-import type { GraphArtifact } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
-import { deriveModuleMap, type ModuleMapSpec } from "../derive/moduleMap";
-import { resolveModuleRoot } from "../derive/moduleGraph";
-import { derivePackageOverview } from "../derive/packageOverview";
-import { layoutModuleMap } from "../layout/moduleRingLayout";
-import { layoutPackageOverview } from "../layout/packageOverviewLayout";
+import { deriveLevel } from "../derive/moduleLevel";
+import type { ModuleGraph } from "../derive/moduleGraph";
+import { layoutLevel } from "../layout/moduleLevelLayout";
 
-export interface ModuleMapLayout {
+export interface ModuleLevelLayout {
   nodes: Node[];
   edges: Edge[];
-  /** The module actually walked from (may differ from the request when it self-healed); null == none. */
-  effectiveRoot: string | null;
-  /** The unbounded max hop-depth from the root — the depth slider's stable ceiling. */
-  maxDepth: number;
+  /** The node actually rendered from after chain-collapse; null == the repo-level overview. */
+  effectiveFocus: string | null;
 }
 
-/** The CLI-declared app entry module ids, read defensively from the loose extensions record. */
-export function readEntryModules(artifact: GraphArtifact): string[] {
-  const declared = artifact.extensions?.entryModules as unknown as string[] | undefined;
-  return Array.isArray(declared) ? declared : [];
-}
-
-export function deriveModuleMapLayout(
+export async function deriveModuleLevelLayout(
   index: GraphIndex,
-  moduleRoot: string | null,
-  // The requested depth cap, or `null` for the whole radius (the "All" position). Passing the store's
-  // GHOST_DEPTH_ALL sentinel as a plain number would silently cap a >sentinel-deep chain, so the
-  // store maps "All" to null before calling — keeping the walk truly unbounded.
-  moduleDepth: number | null,
-  entryModules: string[],
-): ModuleMapLayout {
-  const requestedRoot = moduleRoot ?? resolveModuleRoot(index, entryModules);
-  if (requestedRoot === null) {
-    return emptyLayout();
-  }
-  const full = deriveModuleMap(index, { rootId: requestedRoot, maxDepth: null, entryModules });
-  if (full.rootId === null) {
-    return emptyLayout();
-  }
-  const spec = specForDepth(index, full, moduleDepth, entryModules);
-  const { nodes, edges } = layoutModuleMap(spec);
-  return { nodes, edges, effectiveRoot: full.rootId, maxDepth: full.maxObservedDepth };
-}
-
-/** The full radius when the depth is unbounded or already reaches it, else a fresh capped derivation. */
-function specForDepth(
-  index: GraphIndex,
-  full: ModuleMapSpec,
-  moduleDepth: number | null,
-  entryModules: string[],
-): ModuleMapSpec {
-  if (moduleDepth === null || moduleDepth >= full.maxObservedDepth) {
-    return full;
-  }
-  return deriveModuleMap(index, { rootId: full.rootId as string, maxDepth: moduleDepth, entryModules });
-}
-
-function emptyLayout(): ModuleMapLayout {
-  return { nodes: [], edges: [], effectiveRoot: null, maxDepth: 0 };
-}
-
-/**
- * The whole-repository PACKAGE overview: every npm package collapsed to one node, cross-package
- * imports aggregated, laid out as an ELK dependency diagram. Root-independent (it spans the whole
- * artifact), so it ignores the blast-radius root/depth entirely.
- */
-export async function derivePackageOverviewLayout(index: GraphIndex): Promise<{ nodes: Node[]; edges: Edge[] }> {
-  return layoutPackageOverview(derivePackageOverview(index));
+  focus: string | null,
+  graph: ModuleGraph,
+): Promise<ModuleLevelLayout> {
+  const spec = deriveLevel(index, focus, graph);
+  const { nodes, edges } = await layoutLevel(spec);
+  return { nodes, edges, effectiveFocus: spec.effectiveFocus };
 }

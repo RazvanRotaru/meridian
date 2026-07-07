@@ -14,20 +14,16 @@ import { FlowSelector } from "./FlowSelector";
 import { CompositionPanel } from "./composition/CompositionPanel";
 import { DepthSlider } from "./DepthSlider";
 import { ModuleCategoryToggles } from "./ModuleCategoryToggles";
-import { ModuleOverviewToggle } from "./ModuleOverviewToggle";
 
 export function Toolbar(props: { preselectedEnv: string | null }) {
   const targetName = useBlueprint((state) => state.artifact.target.name);
   const hasOverlay = useBlueprint((state) => state.hasOverlay);
   // The sidebar swaps its per-lens controls: "call" (Service composition) gets the composition map +
-  // refactor worklist; "modules" (Module map) gets the import-depth slider + category toggles;
-  // ui/logic keep the call-flow FlowSelector.
+  // refactor worklist; "modules" (Module map) gets the selection highlight-radius dial + category
+  // toggles; ui/logic keep the call-flow FlowSelector.
   const viewMode = useBlueprint((state) => state.viewMode);
   const isComposition = viewMode === "call";
   const isModules = viewMode === "modules";
-  // In the whole-repo package overview the depth slider is meaningless (the graph spans every package,
-  // not a hop radius), so it's hidden; the Packages⇄Files toggle stays as the scope switch.
-  const moduleOverview = useBlueprint((state) => state.moduleOverview);
   const collapseAll = useBlueprintActions().collapseAll;
   return (
     <Panel position="top-left">
@@ -48,8 +44,7 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
           <CompositionPanel />
         ) : isModules ? (
           <>
-            <ModuleOverviewToggle />
-            {moduleOverview ? null : <DepthSlider />}
+            <DepthSlider />
             <ModuleCategoryToggles />
           </>
         ) : (

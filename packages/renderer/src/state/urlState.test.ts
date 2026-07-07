@@ -15,10 +15,9 @@ function emptyNav(): NavState {
     logicRoot: null,
     logicStack: [],
     expanded: [],
-    moduleRoot: null,
-    moduleDepth: 1,
+    moduleFocus: null,
+    moduleRadius: 1,
     hiddenCategories: [],
-    moduleOverview: false,
     environment: null,
   };
 }
@@ -75,33 +74,31 @@ describe("urlState", () => {
     expect(roundTrip({ ...emptyNav(), environment: "staging" })).toEqual({ environment: "staging" });
   });
 
-  it("round-trips a module-map view (root, depth, hidden categories)", () => {
+  it("round-trips a module-map view (focus + hidden categories)", () => {
     const nav: NavState = {
       ...emptyNav(),
       viewMode: "modules",
-      moduleRoot: "ts:src/app.ts",
-      moduleDepth: 3,
+      moduleFocus: "ts:packages/autopilot-studioweb",
       hiddenCategories: ["config", "util"],
     };
     expect(roundTrip(nav)).toEqual({
       viewMode: "modules",
-      moduleRoot: "ts:src/app.ts",
-      moduleDepth: 3,
+      moduleFocus: "ts:packages/autopilot-studioweb",
       hiddenCategories: ["config", "util"],
     });
   });
 
-  it("omits module-map keys at their defaults (depth 1, no hidden categories)", () => {
-    const nav: NavState = { ...emptyNav(), viewMode: "modules", moduleDepth: 1, hiddenCategories: [] };
+  it("omits module-map keys at their defaults (radius 1, no focus, no hidden categories)", () => {
+    const nav: NavState = { ...emptyNav(), viewMode: "modules", moduleRadius: 1, hiddenCategories: [] };
+    expect(encodeNav(nav).has("mfocus")).toBe(false);
     expect(encodeNav(nav).has("mdepth")).toBe(false);
     expect(encodeNav(nav).has("mhide")).toBe(false);
   });
 
-  it("round-trips the whole-repo package overview flag (mov)", () => {
-    const nav: NavState = { ...emptyNav(), viewMode: "modules", moduleOverview: true };
-    expect(encodeNav(nav).get("mov")).toBe("1");
-    expect(roundTrip(nav)).toEqual({ viewMode: "modules", moduleOverview: true });
-    expect(encodeNav({ ...emptyNav(), viewMode: "modules" }).has("mov")).toBe(false);
+  it("round-trips the selection highlight radius (mdepth)", () => {
+    const nav: NavState = { ...emptyNav(), viewMode: "modules", moduleRadius: 3 };
+    expect(encodeNav(nav).get("mdepth")).toBe("3");
+    expect(roundTrip(nav)).toEqual({ viewMode: "modules", moduleRadius: 3 });
   });
 
   it("preserves foreign params (web-mode id) while owning its own keys", () => {
@@ -186,10 +183,9 @@ function storeShape() {
     logicRoot: null,
     logicStack: [] as string[],
     expanded: new Set<string>(),
-    moduleRoot: null,
-    moduleDepth: 1,
+    moduleFocus: null,
+    moduleRadius: 1,
     hiddenCategories: new Set<string>(),
-    moduleOverview: false,
     environment: null,
   };
 }

@@ -26,8 +26,8 @@ import { uiFocusTarget } from "../derive/uiFocus";
 import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
-import { deriveModuleMapLayout, derivePackageOverviewLayout, readEntryModules } from "./deriveModuleMapLayout";
-import { packageEntryModule } from "../derive/packageOverview";
+import { deriveModuleLevelLayout } from "./deriveModuleMapLayout";
+import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
@@ -118,29 +118,24 @@ export interface BlueprintState {
   /** Whether the composition scorecards show their SOLID metric rows + smell chips. Off == a
    * structure-only view (kind + name), decluttered. Persisted to localStorage across reloads. */
   showSolidMetrics: boolean;
-  /** The laid-out Module-map graph (concentric import rings), recomputed synchronously whenever the
-   * "modules" lens is (re)entered or its root/depth changes. */
+  /** The laid-out Module-map LEVEL graph (one containment level, ELK-laid), recomputed whenever the
+   * "modules" lens is (re)entered or the focus changes. */
   moduleRfNodes: Node[];
   moduleRfEdges: Edge[];
   moduleLayoutStatus: LayoutStatus;
-  /** The file the Module map is rooted (blast-radius centred) at; null == resolve the default entry. */
-  moduleRoot: string | null;
-  /** The module actually walked from once `moduleRoot`/defaults resolve; null == none found. Read by
-   * the surface for the "rooted at" breadcrumb and the depth slider's ceiling. */
-  moduleEffectiveRoot: string | null;
-  /** The unbounded max import hop-depth from the root — the depth slider's stable upper bound. */
-  moduleMaxDepth: number;
-  /** How many import hops out from the root the map draws; GHOST_DEPTH_ALL == the whole radius. */
-  moduleDepth: number;
-  /** Module categories painted OUT of the map (a render-time filter — never a re-derive; the full
-   * blast radius is always walked so a hidden `util` can't sever the path past it). */
+  /** The package/directory node the Module map is zoomed INTO; null == the whole-repo package overview
+   * (level 0). Double-clicking a group card descends; the breadcrumb ascends. */
+  moduleFocus: string | null;
+  /** The node actually rendered from after chain-collapse (a single-child chain auto-descends); null
+   * == the overview. Read by the surface for the containment breadcrumb. */
+  moduleEffectiveFocus: string | null;
+  /** How many import hops the selection lights up — a PAINT-ONLY highlight radius (never a relayout;
+   * containment, not this, bounds what's drawn). GHOST_DEPTH_ALL == the whole connected neighbourhood. */
+  moduleRadius: number;
+  /** Module categories painted OUT of the map (a render-time filter — never a re-derive). */
   hiddenCategories: Set<ModuleCategory>;
-  /** The selected file card id in the Module map; null == none. A repaint-only highlight — no relayout. */
+  /** The selected node id in the Module map; null == none. A repaint-only highlight — no relayout. */
   moduleSelectedId: string | null;
-  /** Whole-repository PACKAGE overview: each npm package collapsed to one node with aggregated
-   * cross-package import wires (a monorepo's "root at the repo" view). false == the entry-rooted file
-   * blast radius. Independent of moduleRoot/moduleDepth (the overview spans the whole artifact). */
-  moduleOverview: boolean;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -183,12 +178,10 @@ export interface BlueprintState {
   setCompRoot(id: string | null): void;
   toggleSolidMetrics(): void;
   moduleRelayout(): Promise<void>;
-  setModuleRoot(id: string | null): void;
-  setModuleDepth(depth: number): void;
+  setModuleFocus(id: string | null): void;
+  setModuleRadius(radius: number): void;
   toggleCategory(category: ModuleCategory): void;
   selectModule(id: string | null): void;
-  setModuleOverview(on: boolean): void;
-  drillIntoPackage(packageId: string): void;
   setViewMode(mode: ViewMode): void;
   toggleShowTests(): void;
   toggleCoverageMode(): void;
@@ -217,8 +210,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let logicLayoutSeq = 0;
   // Same guard for the composition layout — a newer relayout discards an older in-flight ELK pass.
   let compLayoutSeq = 0;
-  // And for the Module-map layout, so a newer root/depth change supersedes an older derivation.
+  // And for the Module-map layout, so a newer focus change supersedes an older derivation.
   let moduleLayoutSeq = 0;
+  // The file import graph, built once on first module-map relayout (the artifact never changes after
+  // boot) and reused for every level — never rebuilt per relayout.
+  let moduleGraph: ModuleGraph | null = null;
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
   // The composition tab opens on the WHOLE-SYSTEM overview (null root); file-rooting is the explicit
@@ -261,13 +257,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleRfNodes: [],
     moduleRfEdges: [],
     moduleLayoutStatus: "idle",
-    moduleRoot: null,
-    moduleEffectiveRoot: null,
-    moduleMaxDepth: 0,
-    moduleDepth: 1,
+    moduleFocus: null,
+    moduleEffectiveFocus: null,
+    moduleRadius: 1,
     hiddenCategories: new Set<ModuleCategory>(),
     moduleSelectedId: null,
-    moduleOverview: false,
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -501,100 +495,51 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().compRelayout();
     },
 
-    // Re-derive the Module map for the current root + depth, behind the same stale-seq guard. The
-    // derivation is synchronous; the await yields one microtask so a concurrent root/depth change can
-    // bump the seq and discard this pass — matching compRelayout's guarded flow.
+    // Re-derive the Module-map LEVEL for the current focus through ELK, behind the same stale-seq
+    // guard. The import graph is built once (cached) and reused for every level. A null focus is the
+    // whole-repo package overview; a package focus is its children with imports folded to them.
     async moduleRelayout() {
-      const { index, artifact, moduleRoot, moduleDepth, moduleOverview } = get();
+      const { index, moduleFocus } = get();
+      moduleGraph ??= buildModuleGraph(index);
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
-      // Whole-repo overview: a package-level graph (root/depth-independent, ELK-laid) rather than the
-      // entry-rooted file rings. There is no single walked root, so the breadcrumb/depth are cleared.
-      if (moduleOverview) {
-        const overview = await derivePackageOverviewLayout(index);
-        if (moduleLayoutSeq !== sequence) {
-          return;
-        }
-        set({
-          moduleRfNodes: overview.nodes,
-          moduleRfEdges: overview.edges,
-          moduleEffectiveRoot: null,
-          moduleMaxDepth: 0,
-          moduleLayoutStatus: "ready",
-        });
-        return;
-      }
-      await Promise.resolve();
-      // "All" (the GHOST_DEPTH_ALL sentinel) means the whole radius — pass null so the walk is truly
-      // unbounded rather than capped at the sentinel's numeric value.
-      const depthCap = moduleDepth >= GHOST_DEPTH_ALL ? null : moduleDepth;
-      const layout = deriveModuleMapLayout(index, moduleRoot, depthCap, readEntryModules(artifact));
+      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleGraph);
       if (moduleLayoutSeq !== sequence) {
-        return; // a newer root/depth change superseded this one.
+        return; // a newer focus change superseded this one.
       }
       set({
         moduleRfNodes: layout.nodes,
         moduleRfEdges: layout.edges,
-        moduleEffectiveRoot: layout.effectiveRoot,
-        moduleMaxDepth: layout.maxDepth,
+        moduleEffectiveFocus: layout.effectiveFocus,
         moduleLayoutStatus: "ready",
       });
     },
 
-    // Re-root the Module map at a file (null == fall back to the resolved default entry). Clears the
-    // selection (it means nothing in a new radius) and re-lays out. A no-op when already there.
-    setModuleRoot(id) {
-      if (get().moduleRoot === id) {
+    // Zoom the Module map into a package/directory (null == back to the whole-repo overview). Clears
+    // the selection (it means nothing at a new level) and re-lays out. A no-op when already there.
+    setModuleFocus(id) {
+      if (get().moduleFocus === id) {
         return;
       }
-      set({ moduleRoot: id, moduleSelectedId: null });
+      set({ moduleFocus: id, moduleSelectedId: null });
       void get().moduleRelayout();
     },
 
-    // Set how many import hops out the map draws (clamped 1..GHOST_DEPTH_ALL). Fewer hops means fewer
-    // rings, so it IS a relayout — but the slider's ceiling stays the unbounded diameter (see
-    // deriveModuleMapLayout), so dialing down never strands the reader at a low depth.
-    setModuleDepth(depth) {
-      const next = Math.max(1, Math.min(GHOST_DEPTH_ALL, Math.trunc(depth)));
-      if (get().moduleDepth === next) {
-        return;
-      }
-      set({ moduleDepth: next });
-      void get().moduleRelayout();
+    // Set the selection's highlight radius (clamped 1..GHOST_DEPTH_ALL). PAINT-ONLY: the surface
+    // recomputes the lit neighbourhood in a useMemo, so this deliberately does NOT relayout.
+    setModuleRadius(radius) {
+      set({ moduleRadius: Math.max(1, Math.min(GHOST_DEPTH_ALL, Math.trunc(radius))) });
     },
 
-    // Show/hide a module category. PAINT-ONLY: the surface filters the category's cards out in place,
-    // so this deliberately does NOT relayout — the full blast radius stays walked and positions stable.
+    // Show/hide a module category. PAINT-ONLY: the surface filters the category's file cards out in
+    // place, so this deliberately does NOT relayout — positions stay stable.
     toggleCategory(category) {
       set({ hiddenCategories: withToggledCategory(get().hiddenCategories, category) });
     },
 
-    // Select a Module-map file card (pass null to clear). A repaint-only highlight — no relayout.
+    // Select a Module-map node (pass null to clear). A repaint-only highlight — no relayout.
     selectModule(id) {
       set({ moduleSelectedId: id });
-    },
-
-    // Flip between the whole-repo PACKAGE overview and the entry-rooted file view. Clears the selection
-    // (a package id means nothing in the file view and vice versa) and re-lays out. A no-op if unchanged.
-    setModuleOverview(on) {
-      if (get().moduleOverview === on) {
-        return;
-      }
-      set({ moduleOverview: on, moduleSelectedId: null });
-      void get().moduleRelayout();
-    },
-
-    // Drill from an overview package into its files: leave the overview and re-root the blast radius at
-    // that package's entry module (index/main…), opening at the clean depth-1 default. A package with no
-    // module leaves the root null (the file view then self-heals to the resolved default entry).
-    drillIntoPackage(packageId) {
-      set({
-        moduleOverview: false,
-        moduleSelectedId: null,
-        moduleRoot: packageEntryModule(get().index, packageId),
-        moduleDepth: 1,
-      });
-      void get().moduleRelayout();
     },
 
     // Switching mode re-derives + relayouts like a dive. Entering UI mode dives to the render
@@ -610,14 +555,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({ viewMode: mode });
         return;
       }
-      // The Module map is a standalone surface (its own synchronous ring layout), so — like logic — it
-      // neither dives nor touches the graph focus; it just flips the mode and lays its own graph out.
-      // Clicking INTO the lens always opens it at the clean depth-1 default (entry + direct imports),
-      // never a wide depth inherited from a prior visit — the first paint must not be the full-radius
-      // clutter. A shared/reloaded deep link is unaffected: it restores via setState on boot (not this
-      // click path), so an explicit ?mdepth=N still opens at N.
+      // The Module map is a standalone surface (its own ELK level layout), so — like logic — it neither
+      // dives nor touches the graph focus; it just flips the mode and lays its own graph out. Clicking
+      // INTO the lens always opens at the whole-repo package overview (level 0), never a focus inherited
+      // from a prior visit. A shared/reloaded deep link is unaffected: it restores via setState on boot
+      // (not this click path), so an explicit ?mfocus=… still opens at that level.
       if (mode === "modules") {
-        set({ viewMode: mode, moduleDepth: 1 });
+        set({ viewMode: mode, moduleFocus: null });
         void get().moduleRelayout();
         return;
       }
@@ -639,10 +583,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // composition graph's own selection/root — retreat home first.
     toggleShowTests() {
       const showTests = !get().showTests;
-      const { focusId, selectedId, compSelectedId, compRoot, moduleRoot, moduleSelectedId, viewMode, index } = get();
+      const { focusId, selectedId, compSelectedId, compRoot, moduleSelectedId, viewMode, index } = get();
       const strandedById = (id: string | null) => !showTests && id !== null && index.testIds.has(id);
       const nextCompRoot = strandedById(compRoot) ? null : compRoot;
-      const nextModuleRoot = strandedById(moduleRoot) ? null : moduleRoot;
       set({
         showTests,
         focusId: strandedById(focusId) ? null : focusId,
@@ -650,15 +593,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         compSelectedId: strandedById(compSelectedId) ? null : compSelectedId,
         compRoot: nextCompRoot,
         moduleSelectedId: strandedById(moduleSelectedId) ? null : moduleSelectedId,
-        moduleRoot: nextModuleRoot,
       });
-      // The composition AND module-map views hide test cards in place (the surface filters the
-      // rendered set), so they must NOT re-lay-out — that would reshuffle production cards, the very
-      // thing we avoid. They only relayout when their OWN root changed (it was rooted inside now-hidden
-      // test code). Every other surface still relayouts to drop the hidden subtree.
+      // The composition AND module-map views hide test cards in place (the surface filters the rendered
+      // set), so they must NOT re-lay-out — that would reshuffle production cards. The module map's focus
+      // is a package/dir node (never test-stranded the way a file root was), so it's purely paint-only
+      // here. Composition still relayouts when its OWN root was stranded inside now-hidden test code.
       const paintOnlyMode = viewMode === "call" || viewMode === "modules";
-      const rootChanged = nextCompRoot !== compRoot || nextModuleRoot !== moduleRoot;
-      if (!paintOnlyMode || rootChanged) {
+      const compRootChanged = nextCompRoot !== compRoot;
+      if (!paintOnlyMode || compRootChanged) {
         void get().relayout();
       }
     },

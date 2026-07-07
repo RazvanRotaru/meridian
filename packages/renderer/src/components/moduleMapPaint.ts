@@ -1,17 +1,18 @@
 /**
- * Paint-time transforms for the Module-map surface: HIDE cards by category / test-status, and
- * EMPHASIZE the wires around the active (selected or hovered) card. Both are pure over the already
- * laid-out React Flow arrays — positions are NEVER touched, so filtering or highlighting reshuffles
- * nothing. Kept out of the view component so the rules are small, named, and unit-testable.
+ * Paint-time transforms for the Module-map surface: HIDE file cards by category / test-status, and
+ * EMPHASIZE the wires within N import hops of the active (selected) node. Both are pure over the
+ * already laid-out React Flow arrays — positions are NEVER touched, so filtering or highlighting
+ * reshuffles nothing. Kept out of the view component so the rules are small, named, and testable.
+ * Every level is a flat graph (group + file cards), so there are no nested frames to keep alive.
  */
 
 import { type Edge, type Node } from "@xyflow/react";
 import { arrowMarker } from "../theme/edgeColors";
-import type { ModuleCardData } from "../derive/moduleMap";
+import type { ModuleCardData } from "../derive/moduleLevel";
 import type { ModuleCategory } from "../derive/moduleCategory";
 
-// A cross-package import is the coupling signal (warm gold, mirroring composition's cross-boundary
-// wire); a same-frame import is expected cohesion (a quiet grey that recedes).
+// A cross-frame import (a group is involved) is the coupling signal (warm gold); a same-level
+// file↔file import is expected cohesion (a quiet grey that recedes).
 const CROSS_FRAME_COLOR = "#C9A24B";
 const INTERNAL_COLOR = "#5B6675";
 const SELECT_ACCENT = "#6BE38A";
@@ -27,17 +28,17 @@ export interface HideOptions {
 }
 
 /**
- * Drop the file cards a filter hides (a category toggled off, or test code with tests hidden), the
- * wires touching them, and any frame left with no visible card — WITHOUT moving anything. A frame
- * survives as long as one of its file children does, so a kept card never points at a removed parent.
+ * Drop the file cards a filter hides (a category toggled off, or test code with tests hidden) and
+ * the wires touching them — WITHOUT moving anything. Group cards are never category-hidden (a
+ * directory has no single category), so the level's structure holds.
  */
 export function filterVisible(nodes: Node[], edges: Edge[], options: HideOptions): { nodes: Node[]; edges: Edge[] } {
-  const hiddenCards = hiddenCardIds(nodes, options);
-  const liveFrames = liveFrameIds(nodes, hiddenCards);
-  const keptNodes = nodes.filter((node) =>
-    node.type === "frame" ? liveFrames.has(node.id) : !hiddenCards.has(node.id),
-  );
-  const keptEdges = edges.filter((edge) => !hiddenCards.has(edge.source) && !hiddenCards.has(edge.target));
+  const hidden = hiddenCardIds(nodes, options);
+  if (hidden.size === 0) {
+    return { nodes, edges };
+  }
+  const keptNodes = nodes.filter((node) => !hidden.has(node.id));
+  const keptEdges = edges.filter((edge) => !hidden.has(edge.source) && !hidden.has(edge.target));
   return { nodes: keptNodes, edges: keptEdges };
 }
 
@@ -58,48 +59,41 @@ function isHidden(node: Node, options: HideOptions): boolean {
   return options.hiddenCategories.has((node.data as ModuleCardData).category);
 }
 
-function liveFrameIds(nodes: Node[], hiddenCards: ReadonlySet<string>): Set<string> {
-  const live = new Set<string>();
-  for (const node of nodes) {
-    if (node.type === "file" && !hiddenCards.has(node.id) && node.parentId) {
-      live.add(node.parentId);
-    }
-  }
-  return live;
-}
-
 /**
- * Anti-clutter emphasis: EVERY wire is dim by default, so the map reads as cards until the reader
- * points at one. With an active card, its incident wires light to full opacity and every file card
- * NOT one hop away fades — its import neighbourhood stands out. Frames never dim.
+ * Anti-clutter emphasis: EVERY wire is dim by default, so a level reads as its cards until the
+ * reader points at one. With an active node, its import neighbourhood within `radius` hops lights to
+ * full opacity and every node outside it fades. `radius` 1 = direct neighbours (the default reach).
  */
-export function emphasize(nodes: Node[], edges: Edge[], activeId: string | null): { nodes: Node[]; edges: Edge[] } {
-  const styledEdges = edges.map((edge) => styleEdge(edge, activeId !== null && isIncident(edge, activeId)));
+export function emphasize(nodes: Node[], edges: Edge[], activeId: string | null, radius: number): { nodes: Node[]; edges: Edge[] } {
   if (activeId === null) {
-    return { nodes, edges: styledEdges };
+    return { nodes, edges: edges.map((edge) => styleEdge(edge, false)) };
   }
-  const connected = connectedIds(edges, activeId);
-  const styledNodes = nodes.map((node) =>
-    node.type === "frame" || connected.has(node.id) ? node : dimNode(node),
-  );
+  const near = neighbourhood(edges, activeId, radius);
+  const styledEdges = edges.map((edge) => styleEdge(edge, near.has(edge.source) && near.has(edge.target)));
+  const styledNodes = nodes.map((node) => (near.has(node.id) ? node : dimNode(node)));
   return { nodes: styledNodes, edges: styledEdges };
 }
 
-function isIncident(edge: Edge, id: string): boolean {
-  return edge.source === id || edge.target === id;
+/** The active node plus every node within `radius` undirected import hops of it. */
+function neighbourhood(edges: Edge[], activeId: string, radius: number): Set<string> {
+  const reached = new Set<string>([activeId]);
+  let frontier = [activeId];
+  for (let hop = 0; hop < Math.max(1, radius) && frontier.length > 0; hop += 1) {
+    const next: string[] = [];
+    for (const edge of edges) {
+      pushNeighbour(edge.source, edge.target, frontier, reached, next);
+      pushNeighbour(edge.target, edge.source, frontier, reached, next);
+    }
+    frontier = next;
+  }
+  return reached;
 }
 
-/** The active card plus every card one import hop away (either direction) — its neighbourhood. */
-function connectedIds(edges: Edge[], activeId: string): Set<string> {
-  const ids = new Set<string>([activeId]);
-  for (const edge of edges) {
-    if (edge.source === activeId) {
-      ids.add(edge.target);
-    } else if (edge.target === activeId) {
-      ids.add(edge.source);
-    }
+function pushNeighbour(from: string, to: string, frontier: string[], reached: Set<string>, next: string[]): void {
+  if (frontier.includes(from) && !reached.has(to)) {
+    reached.add(to);
+    next.push(to);
   }
-  return ids;
 }
 
 function styleEdge(edge: Edge, lit: boolean): Edge {

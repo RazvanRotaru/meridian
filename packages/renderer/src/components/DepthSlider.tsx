@@ -1,40 +1,42 @@
 /**
- * The Module-map depth dial: a real range slider that trims how many import hops out from the root
- * the map draws. Positions 1..maxObservedDepth are literal hop counts; one extra position past the
- * end is "All" (the whole blast radius), mapped to the GHOST_DEPTH_ALL sentinel. The slider's ceiling
- * is the UNBOUNDED diameter (moduleMaxDepth), so dialing down never shrinks the range and strands the
- * reader at a low depth.
+ * The Module-map highlight-radius dial: with a node selected, it sets how many import hops out from
+ * that node light up (its import neighbourhood at this level). PAINT-ONLY — it never relayouts; the
+ * surface recomputes the lit set in a useMemo. Hidden until a node is selected (radius means nothing
+ * without a focus of attention). Positions 1..MAX_HOPS are literal hops; one past the end is "All".
  */
 
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { GHOST_DEPTH_ALL } from "../state/store";
 
+const MAX_HOPS = 4;
+const ALL_POSITION = MAX_HOPS + 1;
+
 export function DepthSlider() {
-  const moduleDepth = useBlueprint((state) => state.moduleDepth);
-  const moduleMaxDepth = useBlueprint((state) => state.moduleMaxDepth);
-  const setModuleDepth = useBlueprintActions().setModuleDepth;
+  const radius = useBlueprint((state) => state.moduleRadius);
+  const selectedId = useBlueprint((state) => state.moduleSelectedId);
+  const setModuleRadius = useBlueprintActions().setModuleRadius;
 
-  const maxHop = Math.max(1, moduleMaxDepth);
-  const allPosition = maxHop + 1;
-  const isAll = moduleDepth >= GHOST_DEPTH_ALL;
-  const position = isAll ? allPosition : Math.min(Math.max(1, moduleDepth), maxHop);
-
-  const onChange = (value: number) => setModuleDepth(value >= allPosition ? GHOST_DEPTH_ALL : value);
+  if (selectedId === null) {
+    return null;
+  }
+  const isAll = radius >= GHOST_DEPTH_ALL;
+  const position = isAll ? ALL_POSITION : Math.min(Math.max(1, radius), MAX_HOPS);
+  const onChange = (value: number) => setModuleRadius(value >= ALL_POSITION ? GHOST_DEPTH_ALL : value);
 
   return (
-    <section style={SECTION_STYLE} aria-label="Import depth">
+    <section style={SECTION_STYLE} aria-label="Highlight radius">
       <div style={HEADER_ROW_STYLE}>
-        <span style={HEADER_STYLE}>Import depth</span>
+        <span style={HEADER_STYLE}>Highlight radius</span>
         <span style={VALUE_STYLE}>{isAll ? "All" : position}</span>
       </div>
       <input
         style={SLIDER_STYLE}
         type="range"
         min={1}
-        max={allPosition}
+        max={ALL_POSITION}
         step={1}
         value={position}
-        aria-valuetext={isAll ? "All hops" : `${position} hop(s)`}
+        aria-valuetext={isAll ? "All connected hops" : `${position} hop(s)`}
         onChange={(event) => onChange(Number(event.target.value))}
       />
       <div style={SCALE_STYLE}>

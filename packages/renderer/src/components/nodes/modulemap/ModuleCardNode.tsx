@@ -9,9 +9,8 @@
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
-import type { ModuleCardData } from "../../../derive/moduleMap";
+import type { ModuleCardData } from "../../../derive/moduleLevel";
 import type { ModuleCategory } from "../../../derive/moduleCategory";
-import { ModuleFrameNode } from "./ModuleFrameNode";
 import { PackageOverviewNode } from "./PackageOverviewNode";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -51,8 +50,9 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
 export const ModuleCardNode = memo(ModuleCardNodeImpl);
 
 /** The node-type registry the Module-map surface hands React Flow (a stable module-level reference).
- * `file`/`frame` are the entry-rooted file view; `package` is the whole-repo overview's collapsed node. */
-export const moduleNodeTypes = { file: ModuleCardNode, frame: ModuleFrameNode, package: PackageOverviewNode };
+ * `package` is a group card (a package at the repo overview, a directory one level deeper); `file`
+ * is a source file. Every level is a FLAT graph of one focus's children — there are no nested frames. */
+export const moduleNodeTypes = { file: ModuleCardNode, package: PackageOverviewNode };
 
 // Category → accent hue, echoing the palette used across the dark surfaces: entry green (the "you are
 // here" signal), ui blue, util amber, config violet, app a neutral slate. Exported so the Module-map
