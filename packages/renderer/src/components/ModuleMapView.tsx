@@ -16,10 +16,10 @@ import { ReactFlow, type Edge, type Node, type NodeMouseHandler, type ReactFlowI
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes, CATEGORY_COLOR } from "./nodes/modulemap/ModuleCardNode";
 import { filterVisible, emphasize } from "./moduleMapPaint";
+import { crumbsFor, EmptyModuleMapCard, LevelBreadcrumb } from "./ModuleMapChrome";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { accentForKind } from "../theme/kindColors";
 import type { BlockData, ModuleCardData, UnitCardData } from "../derive/moduleLevel";
-import type { GraphIndex } from "../graph/graphIndex";
 
 const PACKAGE_KIND = "package";
 
@@ -33,7 +33,8 @@ export function ModuleMapView() {
   const index = useBlueprint((state) => state.index);
   const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
   const showTests = useBlueprint((state) => state.showTests);
-  const { selectModule, setModuleFocus, openLogicFlow } = useBlueprintActions();
+  const hasExpansions = useBlueprint((state) => state.moduleExpanded.size > 0);
+  const { selectModule, setModuleFocus, openLogicFlow, expandAllModules, collapseAll } = useBlueprintActions();
 
   // Category/test hiding is a pure VISIBILITY filter over the laid-out graph; positions are untouched.
   const { nodes: shownNodes, edges: shownEdges } = useMemo(
@@ -95,74 +96,14 @@ export function ModuleMapView() {
       </ReactFlow>
       <LevelBreadcrumb
         focus={effectiveFocus}
-        packageCount={effectiveFocus === null ? nodes.length : 0}
+        packageCount={effectiveFocus === null ? nodes.filter((node) => !node.parentId).length : 0}
         crumbs={crumbsFor(effectiveFocus, index)}
+        hasExpansions={hasExpansions}
         onFocus={setModuleFocus}
+        onExpandAll={expandAllModules}
+        onCollapseAll={collapseAll}
       />
       {isEmpty ? <EmptyModuleMapCard focus={effectiveFocus} /> : null}
-    </div>
-  );
-}
-
-interface Crumb {
-  id: string;
-  label: string;
-}
-
-/** The containment trail from the repo down to the focus: the package-node ancestors (inclusive). */
-function crumbsFor(focus: string | null, index: GraphIndex): Crumb[] {
-  if (focus === null) {
-    return [];
-  }
-  return index
-    .ancestorsOf(focus)
-    .filter((node) => node.kind === PACKAGE_KIND)
-    .map((node) => ({ id: node.id, label: node.displayName ?? node.id }));
-}
-
-/**
- * The zoom trail: "Repository" (level 0) then each package/directory you descended into. Every
- * segment but the last is a button that zooms back to that level; the last is the current level.
- * Mirrors the call lens's Breadcrumb so the lenses read as one control language.
- */
-function LevelBreadcrumb(props: { focus: string | null; packageCount: number; crumbs: Crumb[]; onFocus: (id: string | null) => void }) {
-  const atRoot = props.focus === null;
-  return (
-    <nav style={BREADCRUMB_STYLE} aria-label="Containment level">
-      {atRoot ? (
-        <span style={CRUMB_CURRENT_STYLE} aria-current="page">Repository — {props.packageCount} packages</span>
-      ) : (
-        <button type="button" style={CRUMB_STYLE} onClick={() => props.onFocus(null)}>Repository</button>
-      )}
-      {props.crumbs.map((crumb, i) => {
-        const isLast = i === props.crumbs.length - 1;
-        return (
-          <span key={crumb.id} style={SEG_WRAP}>
-            <span style={CRUMB_SEP_STYLE} aria-hidden>›</span>
-            {isLast ? (
-              <span style={CRUMB_CURRENT_STYLE} aria-current="page" title={crumb.id}>{crumb.label}</span>
-            ) : (
-              <button type="button" style={CRUMB_STYLE} title={crumb.id} onClick={() => props.onFocus(crumb.id)}>{crumb.label}</button>
-            )}
-          </span>
-        );
-      })}
-    </nav>
-  );
-}
-
-/** Shown when a level is empty — a focus with no in-project files, so the lens is never a silent blank. */
-function EmptyModuleMapCard(props: { focus: string | null }) {
-  return (
-    <div style={EMPTY_WRAP_STYLE}>
-      <div style={EMPTY_CARD_STYLE}>
-        <span style={EMPTY_MARK_STYLE}>∅</span>
-        <span>
-          {props.focus === null
-            ? "No npm packages with resolved imports in this artifact."
-            : "Nothing in-project here — this directory's files import only external packages, or it has none."}
-        </span>
-      </div>
     </div>
   );
 }
@@ -187,54 +128,3 @@ function miniMapColor(node: Node): string {
 }
 
 const SURFACE_STYLE: React.CSSProperties = { position: "absolute", inset: 0, background: "#0E1116" };
-const BREADCRUMB_STYLE: React.CSSProperties = {
-  position: "absolute",
-  top: 16,
-  left: 340,
-  zIndex: 5,
-  display: "flex",
-  alignItems: "center",
-  gap: 2,
-  border: "1px solid #2A2F37",
-  borderRadius: 8,
-  background: "rgba(18,23,30,0.92)",
-  padding: "4px 8px",
-  maxWidth: "60vw",
-  overflow: "hidden",
-};
-const SEG_WRAP: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 2, minWidth: 0 };
-const CRUMB_STYLE: React.CSSProperties = {
-  background: "transparent",
-  border: "none",
-  padding: "2px 4px",
-  borderRadius: 4,
-  cursor: "pointer",
-  font: "inherit",
-  fontSize: 13,
-  color: "#9AA4B2",
-};
-const CRUMB_CURRENT_STYLE: React.CSSProperties = { ...CRUMB_STYLE, color: "#E6EDF3", fontWeight: 600, cursor: "default" };
-const CRUMB_SEP_STYLE: React.CSSProperties = { color: "#4B535F", fontSize: 13 };
-const EMPTY_WRAP_STYLE: React.CSSProperties = {
-  position: "absolute",
-  inset: 0,
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  pointerEvents: "none",
-  padding: "0 48px",
-};
-const EMPTY_CARD_STYLE: React.CSSProperties = {
-  pointerEvents: "auto",
-  display: "flex",
-  alignItems: "center",
-  gap: 12,
-  maxWidth: 520,
-  border: "1px dashed #2A2F37",
-  borderRadius: 10,
-  background: "#12171E",
-  padding: "16px 18px",
-  fontSize: 13,
-  color: "#7B8695",
-};
-const EMPTY_MARK_STYLE: React.CSSProperties = { fontSize: 22, opacity: 0.5 };

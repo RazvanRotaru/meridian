@@ -29,6 +29,7 @@ import { deriveCompositionLayout } from "./deriveCompositionLayout";
 import { deriveModuleLevelLayout } from "./deriveModuleMapLayout";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import { buildBlockDeps, type BlockDeps } from "../derive/blockDeps";
+import { deriveModuleTree } from "../derive/moduleTree";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
@@ -153,6 +154,9 @@ export interface BlueprintState {
   /** Group cards the reader expanded IN PLACE (their children nest inside the card), mirroring the
    * Logic tab's inline expand. A relayout concern — flipping membership re-lays out the nested tree. */
   moduleExpanded: Set<string>;
+  /** Whether `private`-tagged members are drawn on the Map. A DERIVE-level filter (frames resize and
+   * member counts stay honest), unlike the paint-only category/test toggles. */
+  showPrivate: boolean;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -202,6 +206,8 @@ export interface BlueprintState {
   moduleRelayout(): Promise<void>;
   setModuleFocus(id: string | null): void;
   toggleModuleExpand(nodeId: string): void;
+  expandAllModules(): void;
+  togglePrivateMembers(): void;
   setModuleRadius(radius: number): void;
   toggleCategory(category: ModuleCategory): void;
   selectModule(id: string | null): void;
@@ -297,6 +303,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     hiddenCategories: new Set<ModuleCategory>(),
     moduleSelectedId: null,
     moduleExpanded: new Set<string>(),
+    showPrivate: true,
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -596,13 +603,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // guard. The import graph is built once (cached) and reused for every level. A null focus is the
     // whole-repo package overview; a package focus is its children with imports folded to them.
     async moduleRelayout() {
-      const { index, moduleFocus, moduleExpanded, artifact } = get();
+      const { index, moduleFocus, moduleExpanded, artifact, showPrivate } = get();
       moduleGraph ??= buildModuleGraph(index);
       blockDeps ??= buildBlockDeps(index);
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
-      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, moduleGraph, blockDeps, flows);
+      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, moduleGraph, blockDeps, flows, !showPrivate);
       if (moduleLayoutSeq !== sequence) {
         return; // a newer focus change superseded this one.
       }
@@ -630,6 +637,39 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // to double-click's re-root), mirroring the Logic tab. Flip membership, then re-lay out the tree.
     toggleModuleExpand(nodeId) {
       set({ moduleExpanded: withToggled(get().moduleExpanded, nodeId) });
+      void get().moduleRelayout();
+    },
+
+    // Expand EVERYTHING reachable from the current level: run the (pure, sync) tree derive to a
+    // fixpoint, adding every drawn container that isn't open yet — each pass reveals the next nesting
+    // level (dirs → files → blocks-with-flows), so the loop terminates when a pass adds nothing. The
+    // expansion set only grows and is bounded by the artifact, so termination is structural.
+    expandAllModules() {
+      const { index, moduleFocus, artifact, showPrivate } = get();
+      moduleGraph ??= buildModuleGraph(index);
+      blockDeps ??= buildBlockDeps(index);
+      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const expanded = new Set(get().moduleExpanded);
+      for (;;) {
+        const tree = deriveModuleTree(index, moduleFocus, expanded, moduleGraph, blockDeps, flows, !showPrivate);
+        const fresh = tree.nodes.filter((node) => node.isContainer && !node.isExpanded).map((node) => node.id);
+        if (fresh.length === 0) {
+          break;
+        }
+        fresh.forEach((id) => expanded.add(id));
+      }
+      set({ moduleExpanded: expanded });
+      void get().moduleRelayout();
+    },
+
+    // Show/hide `private`-tagged members. A derive-level filter (frames resize), so it relayouts. A
+    // selection about to be hidden retreats first — mirroring toggleShowTests's stranding rule.
+    togglePrivateMembers() {
+      const showPrivate = !get().showPrivate;
+      const { moduleSelectedId, index } = get();
+      const stranded =
+        !showPrivate && moduleSelectedId !== null && index.nodesById.get(moduleSelectedId)?.tags?.includes("private") === true;
+      set({ showPrivate, moduleSelectedId: stranded ? null : moduleSelectedId });
       void get().moduleRelayout();
     },
 

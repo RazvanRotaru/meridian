@@ -57,9 +57,9 @@ function fixture(): { nodes: GraphNode[]; edges: GraphEdge[] } {
   return { nodes, edges };
 }
 
-function treeOf(nodes: GraphNode[], edges: GraphEdge[], focus: string | null, expanded: string[], flows: LogicFlows = {}) {
+function treeOf(nodes: GraphNode[], edges: GraphEdge[], focus: string | null, expanded: string[], flows: LogicFlows = {}, hidePrivate = false) {
   const index = buildGraphIndex({ nodes, edges } as GraphArtifact);
-  return deriveModuleTree(index, focus, new Set(expanded), buildModuleGraph(index), buildBlockDeps(index), flows);
+  return deriveModuleTree(index, focus, new Set(expanded), buildModuleGraph(index), buildBlockDeps(index), flows, hidePrivate);
 }
 
 describe("deriveModuleTree — overview (focus null)", () => {
@@ -243,6 +243,76 @@ describe("deriveModuleTree — code level (the merged composition level)", () =>
     const tree = treeOf(nodes, edges, "ts:pkg", []);
     expect(tree.edges.filter((e) => e.category === "dep")).toHaveLength(0);
     expect(tree.edges.filter((e) => e.category === "import")).toHaveLength(1);
+  });
+});
+
+describe("deriveModuleTree — private members (the Private toggle)", () => {
+  function privateFixture(): { nodes: GraphNode[]; edges: GraphEdge[] } {
+    const base = unitFixture();
+    const nextId = { ...node("ts:pkg/src/svc.ts#OrderService.nextId", "method", "ts:pkg/src/svc.ts#OrderService", "nextId"), tags: ["private"] } as GraphNode;
+    return {
+      nodes: [...base.nodes, nextId],
+      edges: [...base.edges, callEdge("ts:pkg/src/svc.ts#OrderService.place", "ts:pkg/src/svc.ts#OrderService.nextId")],
+    };
+  }
+
+  it("draws private members by default", () => {
+    const { nodes, edges } = privateFixture();
+    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts"]);
+    expect(tree.nodes.some((n) => n.id === "ts:pkg/src/svc.ts#OrderService.nextId")).toBe(true);
+    expect(tree.nodes.find((n) => n.kind === "unit")?.childCount).toBe(2);
+  });
+
+  it("hidePrivate drops the tagged member at DERIVE time and the member count stays honest", () => {
+    const { nodes, edges } = privateFixture();
+    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts"], {}, true);
+    expect(tree.nodes.some((n) => n.id === "ts:pkg/src/svc.ts#OrderService.nextId")).toBe(false);
+    expect(tree.nodes.find((n) => n.kind === "unit")?.childCount).toBe(1);
+    // The place→nextId call lifts to the hidden member's own frame and drops — no wire into the void
+    // and no self-frame wire; the cross-file dep is untouched.
+    const deps = tree.edges.filter((e) => e.category === "dep").map((e) => `${e.source}->${e.target}`);
+    expect(deps).toEqual(["ts:pkg/src/svc.ts#OrderService.place->ts:pkg/src/pay.ts"]);
+  });
+});
+
+describe("deriveModuleTree — constructions anchor at the constructor block", () => {
+  function ctorFixture(): { nodes: GraphNode[]; edges: GraphEdge[] } {
+    const base = unitFixture();
+    return {
+      nodes: [...base.nodes, node("ts:pkg/src/pay.ts#PaymentGateway.constructor", "method", "ts:pkg/src/pay.ts#PaymentGateway", "constructor")],
+      edges: [
+        ...base.edges,
+        { id: "inst:place->gw", source: "ts:pkg/src/svc.ts#OrderService.place", target: "ts:pkg/src/pay.ts#PaymentGateway", kind: "instantiates", resolution: "resolved" } as GraphEdge,
+      ],
+    };
+  }
+
+  it("an instantiates edge retargets to the class's drawn constructor block", () => {
+    const { nodes, edges } = ctorFixture();
+    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts", "ts:pkg/src/pay.ts"]);
+    const deps = tree.edges.filter((e) => e.category === "dep").map((e) => `${e.source}->${e.target}`);
+    expect(deps).toContain("ts:pkg/src/svc.ts#OrderService.place->ts:pkg/src/pay.ts#PaymentGateway.constructor");
+    // No parallel wire onto the class frame itself.
+    expect(deps).not.toContain("ts:pkg/src/svc.ts#OrderService.place->ts:pkg/src/pay.ts#PaymentGateway");
+  });
+
+  it("a `new X()` flow step wires to the constructor block, not the class frame", () => {
+    const { nodes, edges } = ctorFixture();
+    const flows: LogicFlows = {
+      "ts:pkg/src/svc.ts#OrderService.place": [
+        { kind: "call", label: "PaymentGateway", target: "ts:pkg/src/pay.ts#PaymentGateway", resolution: "resolved" },
+      ],
+    };
+    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts", "ts:pkg/src/pay.ts", "ts:pkg/src/svc.ts#OrderService.place"], flows);
+    const deps = tree.edges.filter((e) => e.category === "dep").map((e) => `${e.source}->${e.target}`);
+    expect(deps).toContain("step:ts:pkg/src/svc.ts#OrderService.place:0->ts:pkg/src/pay.ts#PaymentGateway.constructor");
+  });
+
+  it("with the target file collapsed the construction wire still folds to the file card", () => {
+    const { nodes, edges } = ctorFixture();
+    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts"]);
+    const deps = tree.edges.filter((e) => e.category === "dep").map((e) => `${e.source}->${e.target}`);
+    expect(deps).toEqual(["ts:pkg/src/svc.ts#OrderService.place->ts:pkg/src/pay.ts"]);
   });
 });
 

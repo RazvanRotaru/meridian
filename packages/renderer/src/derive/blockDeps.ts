@@ -26,9 +26,28 @@ export interface BlockDeps {
   edges: GraphEdge[];
 }
 
-/** Filter the artifact's coupling edges once (the store caches the result). */
+/** Filter the artifact's coupling edges once (the store caches the result). An `instantiates`
+ * edge retargets to the class's own constructor block — `new X()` IS a call to the ctor, so the
+ * wire should land on that block when it is drawn (lifting folds it back to the frame otherwise). */
 export function buildBlockDeps(index: GraphIndex): BlockDeps {
-  return { edges: index.edges.filter((edge) => COUPLING_KINDS.has(edge.kind)) };
+  const edges = index.edges
+    .filter((edge) => COUPLING_KINDS.has(edge.kind))
+    .map((edge) => (edge.kind === "instantiates" ? { ...edge, target: constructionTarget(edge.target, index) } : edge));
+  return { edges };
+}
+
+/** What each language names its initializer (the open-vocabulary equivalent of `constructor`). */
+const CONSTRUCTOR_NAMES: ReadonlySet<string> = new Set(["constructor", "__init__"]);
+
+/** Where a CONSTRUCTION really lands: the unit's own constructor block when it has one, else the
+ * unit itself. Non-unit targets pass through untouched, so this is safe on any call target. */
+export function constructionTarget(targetId: string, index: GraphIndex): string {
+  const target = index.nodesById.get(targetId);
+  if (!target || !UNIT_CARD_KINDS.has(target.kind)) {
+    return targetId;
+  }
+  const ctor = index.childrenOf(targetId).find((child) => BLOCK_KINDS.has(child.kind) && CONSTRUCTOR_NAMES.has(unitLabel(child.id, index)));
+  return ctor?.id ?? targetId;
 }
 
 /** A visible-frontier dependency wire, ready for the level's edge set. */
