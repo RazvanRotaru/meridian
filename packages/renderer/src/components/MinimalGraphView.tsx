@@ -7,22 +7,23 @@
  * back to the seed base. A floating panel names the seed count, resets, and closes (Escape too —
  * closing returns to the level with the selection kept, so the reader can adjust and rebuild).
  *
- * Gestures on a file card: single-click selects it (drives the Map's own selection/green ring) — but
- * that plain click is DEBOUNCED (mirroring the Module map) so a double-click wins instead of the
- * first click repainting the graph out from under it. Clicking a directional [+n] stub expands ONE
- * direction (never debounced). Double-clicking a card NAVIGATES into the node exactly like the Module
- * map: it cancels the pending select, closes the overlay (which covers the Map), and focuses the Map
- * on that node (`setModuleFocus`) — no more double-click expansion.
+ * Gestures ARE the Module map's own, via the shared `useModuleNodeInteractions` hook — so they're
+ * identical to the Map by construction: single-click selects (DEBOUNCED, so a double-click wins),
+ * ctrl/cmd toggles the selection, a pane-click clears it, and a double-click NAVIGATES into the node
+ * exactly like the Map (the overlay just closes first, since it covers the Map, so the navigation
+ * surfaces). The only page-specific gestures are the directional [+n] stub single-click (expand ONE
+ * direction, never debounced) and Escape/Close (back to the level with the selection kept).
  */
 
 import { useEffect, useMemo, useRef } from "react";
-import { ReactFlow, type Edge, type Node, type NodeMouseHandler, type ReactFlowInstance } from "@xyflow/react";
+import { ReactFlow, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
 import { MinimalStubNode } from "./nodes/modulemap/MinimalStubNode";
 import { emphasize } from "./moduleMapPaint";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
+import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { MINIMAL_STUB_NODE } from "../layout/minimalSubgraphLayout";
 import type { MinimalStubData } from "../derive/minimalSubgraph";
 import { minimalMiniMapColor, SURFACE_STYLE, PANEL_STYLE, buttonStyle } from "./minimalGraphStyles";
@@ -34,10 +35,6 @@ const overlayNodeTypes = { ...moduleNodeTypes, [MINIMAL_STUB_NODE]: MinimalStubN
 // the smaller dim (min wins), a LIT ghost still recedes to this opacity — the ghost read is preserved.
 const GHOST_OPACITY = 0.62;
 
-// The same click-debounce window the Module map uses: a plain single-click waits this long before it
-// selects, so a double-click cancels it and expands instead of the first click repainting the graph.
-const SELECT_CLICK_DELAY_MS = 250;
-
 export function MinimalGraphView() {
   const nodes = useBlueprint((state) => state.minimalRfNodes);
   const edges = useBlueprint((state) => state.minimalRfEdges);
@@ -46,19 +43,31 @@ export function MinimalGraphView() {
   const highlightMode = useBlueprint((state) => state.highlightMode);
   const seedCount = useBlueprint((state) => state.minimalSeedIds.length);
   const grown = useBlueprint((state) => state.minimalKeptIds.length > 0 || state.minimalExpanded.length > 0);
-  const { closeMinimalGraph, expandMinimal, resetMinimalGraph, selectModule, toggleModuleSelect, setModuleFocus } = useBlueprintActions();
-  const pendingSelectTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null);
-  const pendingSelectId = useRef<string | null>(null);
+  const { closeMinimalGraph, expandMinimal, resetMinimalGraph } = useBlueprintActions();
 
   useClearOnEscape(closeMinimalGraph, true);
 
-  const clearPendingSelect = () => {
-    if (pendingSelectTimer.current !== null) {
-      window.clearTimeout(pendingSelectTimer.current);
-    }
-    pendingSelectTimer.current = null;
-    pendingSelectId.current = null;
-  };
+  // Interactions ARE the Module map's own (shared hook), so selection/toggle/navigate stay identical.
+  // The overlay only injects its page-specific bits: the [+n] stub single-click expands one direction
+  // (fully handled, skips select), and a double-click closes the overlay first so the Map's navigate
+  // surfaces. Stubs have no navigate meaning, so their double-click is fully handled (a no-op).
+  const { onNodeClick, onNodeDoubleClick, onPaneClick } = useModuleNodeInteractions({
+    onBeforeClick: (_event, node) => {
+      if (node.type === MINIMAL_STUB_NODE) {
+        const stub = node.data as MinimalStubData;
+        expandMinimal(stub.sourceId, stub.direction);
+        return true;
+      }
+      return false;
+    },
+    onBeforeDoubleClick: (_event, node) => {
+      if (node.type === MINIMAL_STUB_NODE) {
+        return true;
+      }
+      closeMinimalGraph();
+      return false;
+    },
+  });
 
   // Reuse the Module map's shared `emphasize` for edge + selection paint, but it only understands the
   // file-import graph — the [+n] stubs and their tethers must pass through untouched. So split those
@@ -73,57 +82,6 @@ export function MinimalGraphView() {
     const ghostLayered = emphasized.nodes.map((node) => (isGhost(node) ? dimGhost(node) : node));
     return { nodes: [...ghostLayered, ...stubNodes], edges: [...emphasized.edges, ...stubEdges] };
   }, [nodes, edges, selected, radius, highlightMode]);
-
-  // Clicking a [+n] stub reveals that node's hidden neighbours in that direction (and, when the stub
-  // sits on a ghost, commits the ghost) — immediately, since stubs have no double-click meaning.
-  // Clicking a file card drives the SAME store selection the Module map does, so the green ring lights
-  // up here too: ctrl/cmd toggles immediately, but a plain click is DEBOUNCED (the Map's own idiom) so
-  // a double-click cancels it — its emphasize repaint won't fire before the native double-click lands.
-  const onNodeClick: NodeMouseHandler<Node> = (event, node) => {
-    if (node.type === MINIMAL_STUB_NODE) {
-      const stub = node.data as MinimalStubData;
-      expandMinimal(stub.sourceId, stub.direction);
-      return;
-    }
-    if (event.ctrlKey || event.metaKey) {
-      clearPendingSelect();
-      toggleModuleSelect(node.id);
-      return;
-    }
-    clearPendingSelect();
-    pendingSelectId.current = node.id;
-    pendingSelectTimer.current = window.setTimeout(() => {
-      selectModule(node.id);
-      pendingSelectTimer.current = null;
-      pendingSelectId.current = null;
-    }, SELECT_CLICK_DELAY_MS);
-  };
-
-  // Double-clicking a file card NAVIGATES into it exactly like the Module map's double-click: it drills
-  // the real Map onto that node via `setModuleFocus`. Since the overlay covers the Map, close it first
-  // so the navigation surfaces, and cancel the pending single-click select so it doesn't also fire.
-  // Stubs have no navigate meaning (their single-click already expands one direction), so ignore them.
-  // READONLY_CANVAS_PROPS disables zoom-on-double-click, so this gesture never fights the canvas.
-  const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
-    if (node.type === MINIMAL_STUB_NODE) {
-      return;
-    }
-    clearPendingSelect();
-    closeMinimalGraph();
-    setModuleFocus(node.id);
-  };
-
-  // Clear any pending single-click select on unmount so a queued timeout can't fire after teardown.
-  useEffect(
-    () => () => {
-      if (pendingSelectTimer.current !== null) {
-        window.clearTimeout(pendingSelectTimer.current);
-      }
-      pendingSelectTimer.current = null;
-      pendingSelectId.current = null;
-    },
-    [],
-  );
 
   // Fit once per LAYOUT (build / expand / reset) — the same guard idiom as the sibling surfaces.
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
@@ -145,7 +103,7 @@ export function MinimalGraphView() {
         nodeTypes={overlayNodeTypes}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
-        onPaneClick={() => selectModule(null)}
+        onPaneClick={onPaneClick}
         onInit={(instance) => {
           rfRef.current = instance;
         }}

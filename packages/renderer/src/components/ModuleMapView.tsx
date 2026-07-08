@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useMemo, useRef } from "react";
-import { ReactFlow, type Edge, type Node, type NodeMouseHandler, type ReactFlowInstance } from "@xyflow/react";
+import { ReactFlow, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes, CATEGORY_COLOR } from "./nodes/modulemap/ModuleCardNode";
 import { filterVisible, emphasize } from "./moduleMapPaint";
@@ -21,13 +21,13 @@ import { CoveragePanel } from "./CoveragePanel";
 import { BeaconArrows } from "./BeaconArrows";
 import { MapLegend } from "./MapLegend";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
+import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { MinimalGraphView } from "./MinimalGraphView";
 import { accentForKind } from "../theme/kindColors";
 import type { BlockData, ModuleCardData, UnitCardData } from "../derive/moduleLevel";
 
 const PACKAGE_KIND = "package";
 const FILE_KIND = "file";
-const SELECT_CLICK_DELAY_MS = 250;
 
 export function ModuleMapView() {
   const nodes = useBlueprint((state) => state.moduleRfNodes);
@@ -41,21 +41,9 @@ export function ModuleMapView() {
   const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
   const showTests = useBlueprint((state) => state.showTests);
   const showPrivate = useBlueprint((state) => state.showPrivate);
-  const viewMode = useBlueprint((state) => state.viewMode);
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
-  const {
-    selectModule,
-    toggleModuleSelect,
-    buildMinimalGraph,
-    setModuleFocus,
-    toggleModuleExpand,
-    openLogicFlow,
-    revealModule,
-    expandModuleChildren,
-    collapseModuleChildren,
-  } = useBlueprintActions();
-  const pendingSelectTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null);
-  const pendingSelectId = useRef<string | null>(null);
+  const { buildMinimalGraph, setModuleFocus, expandModuleChildren, collapseModuleChildren } = useBlueprintActions();
+  const { onNodeClick, onNodeDoubleClick, onPaneClick } = useModuleNodeInteractions();
 
   // Category/test hiding is a pure VISIBILITY filter over the laid-out graph; positions are untouched.
   const { nodes: shownNodes, edges: shownEdges } = useMemo(
@@ -69,60 +57,6 @@ export function ModuleMapView() {
     [shownNodes, shownEdges, selected, radius, highlightMode],
   );
 
-  const clearPendingSelect = () => {
-    if (pendingSelectTimer.current !== null) {
-      window.clearTimeout(pendingSelectTimer.current);
-    }
-    pendingSelectTimer.current = null;
-    pendingSelectId.current = null;
-  };
-  const flushPendingSelect = () => {
-    const pendingId = pendingSelectId.current;
-    if (pendingId === null) {
-      return;
-    }
-    clearPendingSelect();
-    selectModule(pendingId);
-  };
-
-  // Emphasis repaints replace the node array; deferring plain selection keeps nested parent-relative
-  // hit targets stable long enough for React Flow to assemble the native double-click on the node.
-  const onNodeClick: NodeMouseHandler<Node> = (event, node) => {
-    if (event.ctrlKey || event.metaKey) {
-      flushPendingSelect();
-      toggleModuleSelect(node.id);
-      return;
-    }
-    clearPendingSelect();
-    pendingSelectId.current = node.id;
-    pendingSelectTimer.current = window.setTimeout(() => {
-      selectModule(node.id);
-      pendingSelectTimer.current = null;
-      pendingSelectId.current = null;
-    }, SELECT_CLICK_DELAY_MS);
-  };
-  // Double-click a package/file card zooms into it; a callable BLOCK opens its logic
-  // flow (the map→logic link); a GHOST reveals its off-screen definition (the Map refocuses where it
-  // lives); everything else only selects. The breadcrumb is the way back up.
-  const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
-    clearPendingSelect();
-    if (node.type === PACKAGE_KIND && viewMode === "call") {
-      toggleModuleExpand(node.id);
-    } else if (viewMode !== "call" && (node.type === PACKAGE_KIND || node.type === FILE_KIND)) {
-      setModuleFocus(node.id);
-    } else if (node.type === "ghost") {
-      revealModule(node.id);
-    } else if (node.type === "block" && (node.data as BlockData).callable) {
-      openLogicFlow(node.id);
-    } else {
-      selectModule(node.id);
-    }
-  };
-  const onPaneClick = () => {
-    clearPendingSelect();
-    selectModule(null);
-  };
-
   // Fit once per RELAYOUT (a focus change): `moduleRfNodes` only changes when the level does, so
   // clearing the guard on `effectiveFocus` re-fits the fresh level to the viewport. Category toggles
   // and radius are paint-only (they never change `nodes`), so they correctly do NOT trigger a refit.
@@ -131,16 +65,6 @@ export function ModuleMapView() {
   useEffect(() => {
     fitted.current = false;
   }, [effectiveFocus]);
-  useEffect(
-    () => () => {
-      if (pendingSelectTimer.current !== null) {
-        window.clearTimeout(pendingSelectTimer.current);
-      }
-      pendingSelectTimer.current = null;
-      pendingSelectId.current = null;
-    },
-    [],
-  );
   useEffect(() => {
     if (!rfRef.current || nodes.length === 0 || fitted.current) {
       return;
