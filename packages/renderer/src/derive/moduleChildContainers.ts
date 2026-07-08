@@ -1,6 +1,6 @@
 import type { ModuleTree, VisibleModuleNode } from "./moduleTree";
 
-type ChildContainerKind = "package" | "file" | "block";
+type ChildContainerKind = "package" | "file" | "unit" | "block";
 
 export function moduleChildContainerIds(tree: ModuleTree, containerId: string | null): string[] {
   const byParent = childrenByParent(tree.nodes);
@@ -8,12 +8,7 @@ export function moduleChildContainerIds(tree: ModuleTree, containerId: string | 
 }
 
 function childContainerIdsOf(byParent: ReadonlyMap<string | null, VisibleModuleNode[]>, containerId: string | null): string[] {
-  return (byParent.get(containerId) ?? []).flatMap((node) => {
-    if (node.kind === "unit") {
-      return childContainerIdsOf(byParent, node.id);
-    }
-    return isChildContainer(node) ? [node.id] : [];
-  });
+  return (byParent.get(containerId) ?? []).filter(isChildContainer).map((node) => node.id);
 }
 
 function childrenByParent(nodes: readonly VisibleModuleNode[]): Map<string | null, VisibleModuleNode[]> {
@@ -34,5 +29,5 @@ function isChildContainer(node: VisibleModuleNode): boolean {
 }
 
 function isChildContainerKind(kind: VisibleModuleNode["kind"]): kind is ChildContainerKind {
-  return kind === "package" || kind === "file" || kind === "block";
+  return kind === "package" || kind === "file" || kind === "unit" || kind === "block";
 }

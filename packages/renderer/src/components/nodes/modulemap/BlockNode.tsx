@@ -1,5 +1,5 @@
 /**
- * A code block for the Map lens: one method inside a unit frame, or a file-level function/type
+ * A code block for the Map lens: one method inside an expanded unit frame, or a file-level function/type
  * definition. The block is the DEPENDENCY ANCHOR — its wires say what this specific code uses —
  * and the unit of navigation: double-clicking a callable block opens its logic flow (the map→logic
  * link). A block WITH a charted flow also carries the chevron: expanding it charts the flow's steps

@@ -29,7 +29,7 @@ import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
 import { deriveModuleLevelLayout } from "./deriveModuleMapLayout";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
-import { buildBlockDeps, type BlockDeps } from "../derive/blockDeps";
+import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/blockDeps";
 import { deriveModuleTree } from "../derive/moduleTree";
 import { moduleChildContainerIds } from "../derive/moduleChildContainers";
 import type { ModuleCategory } from "../derive/moduleCategory";
@@ -683,23 +683,31 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     // REVEAL a code node the reader can't see (a ghost card's real definition): refocus the Map at
-    // the directory it lives in, with its file expanded so the symbol is actually drawn, selected.
+    // the directory it lives in, with its file/unit chain expanded so the symbol is actually drawn.
     // The Map-native "go to definition" — a deliberate focus jump, so prior expansions reset like
     // any setModuleFocus navigation.
     revealModule(nodeId) {
       const ancestors = get().index.ancestorsOf(nodeId);
       const file = ancestors.find((node) => node.kind === "module");
+      const unit = ancestors.find((node) => UNIT_CARD_KINDS.has(node.kind));
       const directory = [...ancestors].reverse().find((node) => node.kind === "package");
+      const expanded = new Set<string>();
+      if (file) {
+        expanded.add(file.id);
+      }
+      if (unit) {
+        expanded.add(unit.id);
+      }
       set({
         moduleFocus: directory?.id ?? null,
-        moduleExpanded: new Set<string>(file ? [file.id] : []),
+        moduleExpanded: expanded,
         moduleSelected: new Set([nodeId]),
       });
       void get().moduleRelayout();
     },
 
     // Expand one containment level under the target. `null` means the current view frontier; a
-    // frame id means that expanded frame's visible package/file/block child containers.
+    // frame id means that expanded frame's visible package/file/unit/block child containers.
     expandModuleChildren(containerId) {
       const { index, moduleFocus, artifact } = get();
       const graph = moduleGraph ?? (moduleGraph = buildModuleGraph(index));
@@ -712,8 +720,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().moduleRelayout();
     },
 
-    // Collapse only direct child package/file/block frames; deeper expansion ids deliberately remain,
-    // so re-opening a parent restores the reader's deeper manual state.
+    // Collapse only direct child package/file/unit/block frames; deeper expansion ids deliberately
+    // remain, so re-opening a parent restores the reader's deeper manual state.
     collapseModuleChildren(containerId) {
       const { index, moduleFocus, artifact } = get();
       const graph = moduleGraph ?? (moduleGraph = buildModuleGraph(index));

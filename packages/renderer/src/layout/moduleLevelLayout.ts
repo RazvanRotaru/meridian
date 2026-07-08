@@ -12,7 +12,7 @@ import type { Edge, Node } from "@xyflow/react";
 import { runElkLayout } from "./elkLayout";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
 import type { ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
-import type { BlockData } from "../derive/moduleLevel";
+import type { BlockData, UnitCardData } from "../derive/moduleLevel";
 import type { StepData } from "../derive/flowSteps";
 import type { GhostData } from "../derive/ghostDeps";
 
@@ -22,9 +22,10 @@ const GROUP_MAX_WIDTH = 320;
 const WIDTH_PER_FILE = 3;
 const FILE_WIDTH = 210;
 const FILE_HEIGHT = 54;
-// A memberless unit is a compact identity card; a unit with members is an ELK container (frame).
+// A memberless unit is compact; a collapsed memberful unit mirrors the file-card height.
 const UNIT_LEAF_WIDTH = 200;
 const UNIT_LEAF_HEIGHT = 42;
+const UNIT_CONTAINER_CARD_HEIGHT = 54;
 // Code blocks (methods, functions, type definitions) are small fixed nodes sized to one label,
 // widened a little with the label so long names don't clip.
 const BLOCK_MIN_WIDTH = 132;
@@ -72,9 +73,9 @@ export async function layoutModuleTree(nodes: VisibleModuleNode[], edges: Module
   return { nodes: placed, edges: edges.map(toEdge) };
 }
 
-/** A collapsed group sizes with its file count; file cards, unit leaf cards, and code blocks are
- * fixed (blocks widen a little with their label). Expanded groups, file frames, and unit frames
- * are ELK-sized around their children. */
+/** A collapsed group sizes with its file count; file cards, unit cards, and code blocks are fixed
+ * (blocks widen a little with their label). Expanded groups, file frames, and unit frames are
+ * ELK-sized around their children. */
 function leafSize(node: VisibleModuleNode): { width: number; height: number } {
   if (node.kind === "ghost") {
     return ghostSize(node.data as GhostData);
@@ -86,7 +87,7 @@ function leafSize(node: VisibleModuleNode): { width: number; height: number } {
     return blockSize(node.data as BlockData);
   }
   if (node.kind === "unit") {
-    return { width: UNIT_LEAF_WIDTH, height: UNIT_LEAF_HEIGHT };
+    return unitSize(node.data as UnitCardData);
   }
   if (node.kind === "file") {
     return { width: FILE_WIDTH, height: FILE_HEIGHT };
@@ -97,6 +98,10 @@ function leafSize(node: VisibleModuleNode): { width: number; height: number } {
 function blockSize(data: BlockData): { width: number; height: number } {
   const width = Math.max(BLOCK_MIN_WIDTH, Math.min(BLOCK_MAX_WIDTH, BLOCK_BASE_WIDTH + data.label.length * BLOCK_WIDTH_PER_CHAR));
   return { width, height: BLOCK_HEIGHT };
+}
+
+function unitSize(data: UnitCardData): { width: number; height: number } {
+  return { width: UNIT_LEAF_WIDTH, height: data.isContainer ? UNIT_CONTAINER_CARD_HEIGHT : UNIT_LEAF_HEIGHT };
 }
 
 function stepSize(data: StepData): { width: number; height: number } {
@@ -141,5 +146,7 @@ function toEdge(edge: ModuleTreeEdge): Edge {
     source: edge.source,
     target: edge.target,
     data: { weight: edge.weight, crossFrame: edge.crossFrame, category: edge.category, ghost: edge.ghost === true },
+    // Edge hit-paths sit above nested frames' title bars and steal button clicks; Map edges are non-interactive.
+    interactionWidth: 0,
   };
 }

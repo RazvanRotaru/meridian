@@ -80,26 +80,26 @@ describe("moduleChildContainerIds", () => {
     expect(moduleChildContainerIds(tree, "ts:pkgA")).toEqual(["ts:pkgA/src"]);
   });
 
-  it("returns file child block containers through transparent units", () => {
+  it("returns direct file child containers, including units but not their members", () => {
     const { nodes, edges, flows } = codeFixture();
-    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts"], flows);
+    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts", "ts:pkg/src/svc.ts#OrderService"], flows);
     expect(tree.nodes.filter((n) => n.parentId === "ts:pkg/src/svc.ts").map((n) => n.kind)).toEqual(["unit", "block"]);
     expect(moduleChildContainerIds(tree, "ts:pkg/src/svc.ts")).toEqual([
-      "ts:pkg/src/svc.ts#OrderService.place",
+      "ts:pkg/src/svc.ts#OrderService",
       "ts:pkg/src/svc.ts#helper",
     ]);
   });
 
   it("returns unit child block containers", () => {
     const { nodes, edges, flows } = codeFixture();
-    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts"], flows);
+    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts", "ts:pkg/src/svc.ts#OrderService"], flows);
     expect(moduleChildContainerIds(tree, "ts:pkg/src/svc.ts#OrderService")).toEqual(["ts:pkg/src/svc.ts#OrderService.place"]);
   });
 
   it("never returns flow steps as child containers", () => {
     const { nodes, edges, flows } = codeFixture();
     const placeId = "ts:pkg/src/svc.ts#OrderService.place";
-    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts", placeId], flows);
+    const tree = treeOf(nodes, edges, "ts:pkg", ["ts:pkg/src/svc.ts", "ts:pkg/src/svc.ts#OrderService", placeId], flows);
     expect(tree.nodes.some((n) => n.kind === "step" && n.parentId === placeId)).toBe(true);
     expect(moduleChildContainerIds(tree, placeId)).toEqual([]);
   });

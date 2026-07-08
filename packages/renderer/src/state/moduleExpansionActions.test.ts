@@ -47,17 +47,24 @@ function freshStore(): BlueprintStore {
 }
 
 describe("module-map expansion actions", () => {
-  it("expandModuleChildren accepts a file id and reaches through unit frames", () => {
+  it("expandModuleChildren accepts a file id and expands direct unit cards", () => {
     const store = freshStore();
     store.setState({ moduleFocus: "ts:pkg", moduleExpanded: new Set([FILE_ID]) });
     store.getState().expandModuleChildren(FILE_ID);
-    expect(store.getState().moduleExpanded).toEqual(new Set([FILE_ID, METHOD_ID, HELPER_ID]));
+    expect(store.getState().moduleExpanded).toEqual(new Set([FILE_ID, UNIT_ID, HELPER_ID]));
   });
 
   it("expandModuleChildren accepts a unit id", () => {
     const store = freshStore();
-    store.setState({ moduleFocus: "ts:pkg", moduleExpanded: new Set([FILE_ID]) });
+    store.setState({ moduleFocus: "ts:pkg", moduleExpanded: new Set([FILE_ID, UNIT_ID]) });
     store.getState().expandModuleChildren(UNIT_ID);
-    expect(store.getState().moduleExpanded).toEqual(new Set([FILE_ID, METHOD_ID]));
+    expect(store.getState().moduleExpanded).toEqual(new Set([FILE_ID, UNIT_ID, METHOD_ID]));
+  });
+
+  it("revealModule expands the owning file and unit for hidden member definitions", () => {
+    const store = freshStore();
+    store.getState().revealModule(METHOD_ID);
+    expect(store.getState().moduleExpanded).toEqual(new Set([FILE_ID, UNIT_ID]));
+    expect(store.getState().moduleSelected).toEqual(new Set([METHOD_ID]));
   });
 });

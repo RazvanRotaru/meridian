@@ -33,10 +33,9 @@ describe("deriveModuleTree — file focus", () => {
     ];
     const tree = treeOf(nodes, [], "ts:pkg/src/svc.ts");
     expect(tree.effectiveFocus).toBe("ts:pkg/src/svc.ts");
-    expect(tree.nodes.map((n) => ({ id: n.id, kind: n.kind, parentId: n.parentId }))).toEqual([
-      { id: "ts:pkg/src/svc.ts#OrderService", kind: "unit", parentId: null },
-      { id: "ts:pkg/src/svc.ts#OrderService.place", kind: "block", parentId: "ts:pkg/src/svc.ts#OrderService" },
-      { id: "ts:pkg/src/svc.ts#helper", kind: "block", parentId: null },
+    expect(tree.nodes.map((n) => ({ id: n.id, kind: n.kind, parentId: n.parentId, isExpanded: n.isExpanded }))).toEqual([
+      { id: "ts:pkg/src/svc.ts#OrderService", kind: "unit", parentId: null, isExpanded: false },
+      { id: "ts:pkg/src/svc.ts#helper", kind: "block", parentId: null, isExpanded: false },
     ]);
   });
 });

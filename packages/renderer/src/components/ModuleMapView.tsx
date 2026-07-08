@@ -189,7 +189,7 @@ function miniMapColor(node: Node): string {
 
 function isExpandedMapContainer(node: Node): boolean {
   return (
-    (node.type === PACKAGE_KIND || node.type === FILE_KIND || node.type === "block") &&
+    (node.type === PACKAGE_KIND || node.type === FILE_KIND || node.type === "unit" || node.type === "block") &&
     (node.data as { isExpanded?: boolean }).isExpanded === true
   );
 }

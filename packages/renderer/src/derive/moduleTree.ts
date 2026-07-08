@@ -8,8 +8,8 @@
  *     group cards (collapsed → the package graph; expand one to descend into its directories/files).
  *   - a `focus` package/dir → its children (after chain-collapsing a lone `src`), each expandable.
  *   - a FILE card holding declarations expands into the CODE level (the merged Service-composition
- *     level of the Map): a class/interface/object becomes a unit FRAME whose method nodes nest
- *     inside it; file-level functions and type definitions sit beside it as leaf BLOCK nodes.
+ *     level of the Map): a class/interface/object becomes a unit card that can expand into a frame
+ *     for its method nodes; file-level functions and type definitions sit beside it as BLOCK nodes.
  *
  * Imports are folded to the visible boxes by `liftEdges`: a collapsed group swallows its internal
  * imports (self-loops, dropped) and an import leaving the drawn subtree lifts past the frontier and
@@ -50,8 +50,8 @@ export interface VisibleModuleNode {
 }
 
 /** A wire between two visible nodes. `category` "import" is the file/package import graph;
- * "dep" is a code-dependency wire (it touches at least one drawn unit frame or block). `crossFrame`
- * = a group is involved (coupling gold). */
+ * "dep" is a code-dependency wire (it touches at least one drawn unit card/frame or block).
+ * `crossFrame` = a group is involved (coupling gold). */
 export interface ModuleTreeEdge {
   id: string;
   source: string;
@@ -215,8 +215,8 @@ function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>,
       decls.forEach((decl) => visitDecl(decl, id, depth + 1));
     }
   };
-  // A unit with members ALWAYS opens as a frame of member blocks — methods are first-class nodes,
-  // not rows on a card. Memberless units and file-level functions/types are leaf blocks.
+  // A unit with members is a real container: collapsed it is a card, expanded it frames its member
+  // blocks. Memberless units and file-level functions/types remain leaf cards/blocks.
   const visitDecl = (decl: GraphNode, parentId: string | null, depth: number): void => {
     seen.add(decl.id);
     if (!UNIT_CARD_KINDS.has(decl.kind)) {
@@ -224,12 +224,15 @@ function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>,
       return;
     }
     const members = memberChildren(index, decl.id);
-    const isFrame = members.length > 0;
-    out.push({ id: decl.id, parentId, kind: "unit", isContainer: isFrame, isExpanded: isFrame, depth, childCount: members.length });
-    members.forEach((member) => {
-      seen.add(member.id);
-      visitBlock(member.id, decl.id, depth + 1);
-    });
+    const isContainer = members.length > 0;
+    const isExpanded = isContainer && expanded.has(decl.id);
+    out.push({ id: decl.id, parentId, kind: "unit", isContainer, isExpanded, depth, childCount: members.length });
+    if (isExpanded) {
+      members.forEach((member) => {
+        seen.add(member.id);
+        visitBlock(member.id, decl.id, depth + 1);
+      });
+    }
   };
   // POC — a callable block WITH a logic flow is itself expandable: opening it turns the block into
   // a frame whose top-level flow steps chart in place, chained by execution wires.
@@ -267,7 +270,7 @@ function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>,
 
 /** Attach the card data each drawn node needs: file cards from the import graph, group cards from
  * the subtree file tally and the lifted-edge frontier degree (Ca/Ce among what is on screen),
- * unit frames and code blocks from their identity (name + kind — deps are the wires' story). */
+ * unit cards/frames and code blocks from their identity (name + kind — deps are the wires' story). */
 function finalize(
   entry: Skeleton,
   index: GraphIndex,
@@ -282,7 +285,11 @@ function finalize(
       : entry.kind === "block"
       ? blockData(entry.id, index, { hasFlow: entry.isContainer, isExpanded: entry.isExpanded })
       : entry.kind === "unit"
-      ? unitData(entry.id, index, entry.childCount)
+      ? unitData(entry.id, index, {
+          memberCount: entry.childCount,
+          isContainer: entry.isContainer,
+          isExpanded: entry.isExpanded,
+        })
       : entry.kind === "file"
         ? fileData(entry.id, graph, index, entryFor(entry.id, index), {
             isContainer: entry.isContainer,
@@ -366,8 +373,8 @@ function importTreeEdges(lifted: ReturnType<typeof liftEdges>, kinds: Map<string
   }));
 }
 
-/** Code-dependency wires projected onto the frontier — derived only when a code node (a unit frame
- * or a block) is on screen (the common no-code level skips the whole projection). */
+/** Code-dependency wires projected onto the frontier — derived only when a code node (a unit card,
+ * unit frame, or block) is on screen (the common no-code level skips the whole projection). */
 function depTreeEdges(
   blockDeps: BlockDeps,
   visibleIds: ReadonlySet<string>,

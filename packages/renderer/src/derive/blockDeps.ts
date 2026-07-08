@@ -3,8 +3,8 @@
  * instantiates / extends / implements), kept at their real endpoints so a wire can attach to the
  * SPECIFIC code block that uses the dependency — a method, a function, a type definition — not to
  * the class as a whole. Projected onto the visible frontier per level by `liftEdges`: with a
- * method node drawn the wire starts at that method; with only the class frame drawn it folds to
- * the frame; the target lands wherever the dependency's DEFINITION currently lives on screen.
+ * method node drawn the wire starts at that method; with only the class card/frame drawn it folds
+ * to that unit; the target lands wherever the dependency's DEFINITION currently lives on screen.
  * Built once per artifact (the store caches it beside the import graph). Pure; no React, no ELK.
  */
 
@@ -14,11 +14,11 @@ import { COUPLING_KINDS } from "@meridian/design-metrics";
 import type { GraphIndex } from "../graph/graphIndex";
 import { liftEdges } from "./liftEdges";
 
-/** The kinds that earn a unit frame in the Map (composition's UNIT_KINDS minus `module` — a file is
+/** The kinds that earn a unit card in the Map (composition's UNIT_KINDS minus `module` — a file is
  * already a card of its own in this lens). */
 export const UNIT_CARD_KINDS: ReadonlySet<string> = new Set(["class", "interface", "object"]);
 
-/** The leaf code blocks drawn inside a file or unit frame: callables and type definitions. */
+/** The leaf code blocks drawn inside a file or expanded unit frame: callables and type definitions. */
 export const BLOCK_KINDS: ReadonlySet<string> = new Set(["function", "method", "typeAlias", "enum"]);
 
 export interface BlockDeps {
@@ -59,8 +59,8 @@ export interface LiftedDepEdge {
 
 /**
  * Project the coupling edges onto the visible boxes, keeping only wires that TOUCH a drawn code
- * node — a unit frame or a block (file↔file pairs are the import graph's story, not this one) —
- * and dropping frame edges (an endpoint that lifted into the other's own containment chain).
+ * node — a unit card/frame or a block (file↔file pairs are the import graph's story, not this one)
+ * — and dropping frame edges (an endpoint that lifted into the other's own containment chain).
  * Aggregates the per-kind lifted edges to one wire per ordered pair, summing weight.
  */
 export function liftDepEdges(

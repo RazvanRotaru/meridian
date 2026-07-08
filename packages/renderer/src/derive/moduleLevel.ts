@@ -29,27 +29,36 @@ export type ModuleCardData = {
   unitCount: number;
 };
 
-/** A unit's identity strip: one class/interface/object. With members it renders as a FRAME whose
- * method nodes nest inside (isFrame); memberless it is a compact leaf card. No metric rows, no
- * uses list — dependencies are the wires' story, not the card's. */
+/** A unit's identity strip: one class/interface/object. With members it can expand into a FRAME
+ * whose method nodes nest inside; memberless it is a compact leaf card. No uses list —
+ * dependencies are the wires' story, not the card's. */
 export type UnitCardData = {
   label: string;
   unitKind: string;
   memberCount: number;
+  isContainer: boolean;
+  isExpanded: boolean;
+  /** Current visual mode: true only when the unit is expanded into a frame. */
   isFrame: boolean;
 };
 
-/** The card data for one unit node — identity only. */
-export function unitData(id: string, index: GraphIndex, memberCount: number): UnitCardData {
+export interface UnitExpansion {
+  memberCount: number;
+  isContainer: boolean;
+  isExpanded: boolean;
+}
+
+/** The card data for one unit node — identity plus its inline-expansion affordance. */
+export function unitData(id: string, index: GraphIndex, expansion: UnitExpansion): UnitCardData {
   return {
     label: unitLabel(id, index),
     unitKind: index.nodesById.get(id)?.kind ?? "class",
-    memberCount,
-    isFrame: memberCount > 0,
+    ...expansion,
+    isFrame: expansion.isExpanded,
   };
 }
 
-/** A code block: a method inside a unit frame, or a file-level function/type definition.
+/** A code block: a method inside an expanded unit frame, or a file-level function/type definition.
  * The block IS the dependency anchor — its wires say what this specific code uses. A block with a
  * logic flow carries a chevron: expanding charts its flow steps in place (isExpanded → frame). */
 export type BlockData = {
