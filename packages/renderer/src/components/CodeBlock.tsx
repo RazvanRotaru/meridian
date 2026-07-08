@@ -65,14 +65,17 @@ export function CodeBlock({
   code,
   maxHeight = 220,
   startLine,
+  showGutter = false,
   changedLines,
   changedLineKinds,
 }: {
   code: string;
   maxHeight?: number | string;
-  /** When set, a right-aligned line-number gutter is rendered alongside the code, numbering from
-   * this line. Omitted → no gutter (the plain highlighted listing). Highlighting is kept either way. */
+  /** The span's absolute first line. Anchors the diff paint (rows map to `changedLineKinds`) and the
+   * scroll-to-first-change; independent of the gutter. Omitted → a plain listing, no diff paint. */
   startLine?: number;
+  /** Render the right-aligned line-number gutter (needs `startLine`). Off → coloured rows, no numbers. */
+  showGutter?: boolean;
   /** Absolute line numbers the diff touched — their gutter numbers go amber (needs the gutter). */
   changedLines?: ReadonlySet<number>;
   /** Per-line change kinds (`added`/`modified`/`deleted`) for colored backgrounds/gutter markers. */
@@ -106,12 +109,13 @@ export function CodeBlock({
   if (startLine === undefined) {
     return <pre style={{ ...PRE_STYLE, maxHeight }}>{renderHighlightedLines(highlightedLines)}</pre>;
   }
-  // Gutter mode: the row owns the vertical scroll (numbers and code scroll together, always the
-  // same height); the code column owns horizontal scroll (min-width:0 lets it shrink and scroll
-  // inside itself) so the fixed-width gutter never slides out of view.
+  // A known startLine maps the diff kinds onto ROWS (coloured backgrounds + inset bar) regardless of
+  // the gutter — so a logic-flow panel with no line numbers still paints its added/deleted lines.
+  // The row owns vertical scroll (numbers + code scroll together); the code column owns horizontal
+  // scroll (min-width:0 lets it shrink) so the fixed-width gutter never slides out of view.
   return (
     <div ref={listingRef} style={{ ...LISTING_STYLE, maxHeight }}>
-      <pre style={GUTTER_STYLE} aria-hidden>{lineNumbers(code, startLine, changedLines, changedLineKinds)}</pre>
+      {showGutter ? <pre style={GUTTER_STYLE} aria-hidden>{lineNumbers(code, startLine, changedLines, changedLineKinds)}</pre> : null}
       <pre style={CODE_COLUMN_STYLE}>{renderHighlightedLines(highlightedLines, startLine, changedLineKinds)}</pre>
     </div>
   );

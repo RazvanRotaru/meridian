@@ -6,10 +6,8 @@
 
 import { useMemo } from "react";
 import {
-  changedLineDeltaForNode,
   changedLineKindsFromExtensions,
   changedLineKindsWithin,
-  changedLineStatsFromExtensions,
   changedLinesWithin,
   changedRangesFromExtensions,
 } from "@meridian/core";
@@ -41,32 +39,43 @@ export function useLineChangeKinds(node: GraphNode | undefined): ReadonlyMap<num
 }
 
 export interface NodeChangeSummary {
+  /** Added OR modified lines within THIS node's span — the highlighted content rows the panel shows. */
   added: number;
+  /** Deleted lines within the node's span. */
   deleted: number;
+  /** Total changed lines within the span (added-or-modified + deleted). */
   touched: number;
 }
 
-/** Added/deleted summary for a node's file (plus touched lines in the node span), or null untouched. */
+/**
+ * Node-SCOPED change summary: added-or-modified vs deleted lines WITHIN this node's own span, so the
+ * chip's numbers match the coloured rows the panel actually renders — not the whole file's churn (the
+ * old file-level delta claimed "+51" on a function that changed nothing). Null when the span is clean.
+ */
 export function useChangeSummary(node: GraphNode | undefined): NodeChangeSummary | null {
   const extensions = useBlueprint((state) => state.artifact.extensions);
   return useMemo(() => {
     if (!node?.location) {
       return null;
     }
-    const ranges = changedRangesFromExtensions(extensions);
-    const touched = ranges
-      ? changedLinesWithin(ranges, node.location.file, node.location.startLine, node.location.endLine).size
-      : 0;
-    const stats = changedLineStatsFromExtensions(extensions);
-    const delta = stats ? changedLineDeltaForNode(stats, node) : null;
-    if (!delta && touched === 0) {
-      return null;
+    const { file, startLine, endLine } = node.location;
+    const kinds = changedLineKindsFromExtensions(extensions);
+    if (kinds) {
+      let added = 0;
+      let deleted = 0;
+      for (const kind of changedLineKindsWithin(kinds, file, startLine, endLine).values()) {
+        if (kind === "deleted") {
+          deleted += 1;
+        } else {
+          added += 1; // added OR modified — both render as highlighted content rows
+        }
+      }
+      return added === 0 && deleted === 0 ? null : { added, deleted, touched: added + deleted };
     }
-    return {
-      added: delta?.added ?? touched,
-      deleted: delta?.deleted ?? 0,
-      touched,
-    };
+    // Older artifact: ranges but no per-line kinds — fall back to a plain touched count.
+    const ranges = changedRangesFromExtensions(extensions);
+    const touched = ranges ? changedLinesWithin(ranges, file, startLine, endLine).size : 0;
+    return touched === 0 ? null : { added: touched, deleted: 0, touched };
   }, [extensions, node]);
 }
 

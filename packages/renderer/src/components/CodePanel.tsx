@@ -74,6 +74,7 @@ export function CodePanel() {
               code={code}
               maxHeight="70vh"
               startLine={node.location?.startLine}
+              showGutter
               changedLines={changedLines}
               changedLineKinds={changedLineKinds}
             />

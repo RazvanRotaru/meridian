@@ -73,7 +73,8 @@ export function CodeInlinePanel({
           <CodeBlock
             code={code}
             maxHeight={200}
-            startLine={showGutter ? node.location?.startLine : undefined}
+            startLine={node.location?.startLine}
+            showGutter={showGutter}
             changedLines={changedLines}
             changedLineKinds={changedLineKinds}
           />
