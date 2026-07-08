@@ -19,6 +19,8 @@ const PACKAGE_ACCENT = "#5B9BE3";
 
 type PackageRfNode = Node<ModuleGroupData, "package">;
 
+type PackageMetaData = Pick<ModuleGroupData, "fileCount" | "ca" | "ce">;
+
 function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
   const selected = useBlueprint((state) => state.moduleSelected.has(id));
   const diff = useNodeDiff(id);
@@ -29,10 +31,10 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
       <div style={borderFor(frameStyle(PACKAGE_ACCENT), frameSelectedStyle(PACKAGE_ACCENT), selected, diff)}>
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-        <FrameTitleBar actionsId={id} chevron={chevron}>
+        <FrameTitleBar actionsId={id} chevron={chevron} readOnly={data.readOnly}>
           <span style={TITLE_LABEL} title={id}>{data.label}</span>
           <DeltaChip diff={diff} />
-          <Meta data={data} />
+          <Meta data={data} hideCoupling={data.readOnly} />
         </FrameTitleBar>
       </div>
     );
@@ -55,17 +57,20 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
   );
 }
 
-/** File count + cross-package fan-in/out — shown compact in a title bar, block in a collapsed card. */
-function Meta({ data }: { data: ModuleGroupData }) {
+/** File count + cross-package fan-in/out — shown compact in a title bar, block in a collapsed card.
+ * `hideCoupling` drops the uses/used-by pair when the counts aren't meaningful (a filtered subgraph). */
+function Meta({ data, hideCoupling }: { data: PackageMetaData; hideCoupling?: boolean }) {
   return (
     <div style={META}>
       <span style={FILES} title={`${data.fileCount} source file(s)`}>{data.fileCount} files</span>
-      <span style={COUNTS} title={`imports ${data.ce} · imported by ${data.ca}`}>
-        <span style={COUNT_MUTED}>uses</span>
-        <span style={COUNT_VALUE}>{data.ce}</span>
-        <span style={COUNT_MUTED}>used by</span>
-        <span style={COUNT_VALUE}>{data.ca}</span>
-      </span>
+      {hideCoupling ? null : (
+        <span style={COUNTS} title={`imports ${data.ce} · imported by ${data.ca}`}>
+          <span style={COUNT_MUTED}>uses</span>
+          <span style={COUNT_VALUE}>{data.ce}</span>
+          <span style={COUNT_MUTED}>used by</span>
+          <span style={COUNT_VALUE}>{data.ca}</span>
+        </span>
+      )}
     </div>
   );
 }

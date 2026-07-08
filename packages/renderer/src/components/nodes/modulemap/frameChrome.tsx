@@ -9,13 +9,25 @@ import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 export const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 export const SELECT_ACCENT = "#6BE38A";
 
-/** Shared title strip for every expanded Module-map container frame. */
-export function FrameTitleBar({ actionsId, chevron, children }: { actionsId: string; chevron?: React.ReactNode; children: React.ReactNode }) {
+/** Shared title strip for every expanded Module-map container frame. `readOnly` drops the
+ * expand/collapse actions for a presentational frame (the minimal-graph overlay), whose store
+ * actions would otherwise mutate the underlying Map's expansion state. */
+export function FrameTitleBar({
+  actionsId,
+  chevron,
+  readOnly,
+  children,
+}: {
+  actionsId: string;
+  chevron?: React.ReactNode;
+  readOnly?: boolean;
+  children: React.ReactNode;
+}) {
   return (
     <div style={TITLE_BAR}>
       {chevron}
       {children}
-      <FrameLevelActions id={actionsId} />
+      {readOnly ? null : <FrameLevelActions id={actionsId} />}
     </div>
   );
 }

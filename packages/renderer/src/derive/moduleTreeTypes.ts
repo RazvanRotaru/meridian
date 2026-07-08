@@ -3,7 +3,13 @@ import type { GhostData } from "./ghostDeps";
 import type { BlockData, ModuleCardData, UnitCardData } from "./moduleLevel";
 import type { ModulePackageData } from "./packageOverview";
 
-export type ModuleGroupData = ModulePackageData & { isContainer: boolean; isExpanded: boolean };
+export type ModuleGroupData = ModulePackageData & {
+  isContainer: boolean;
+  isExpanded: boolean;
+  /** A presentational frame (the minimal-graph overlay): no expand/collapse actions, no package
+   * coupling counts (they aren't computed for a filtered subgraph). Absent on the real Map. */
+  readOnly?: boolean;
+};
 
 /** One node in the drawn containment tree, in DFS preorder (parents BEFORE children — React Flow
  * requires a parent to appear first). `parentId` is the drawn parent (null at the frontier root). */
