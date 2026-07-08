@@ -12,11 +12,13 @@ import { useBlueprint } from "../../../state/StoreContext";
 import { accentForKind, glyphForKind } from "../../../theme/kindColors";
 import type { UnitCardData } from "../../../derive/moduleLevel";
 import { ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
+import { borderFor, DeltaChip, useNodeDiff } from "./changed";
 
 type UnitRfNode = Node<UnitCardData, "unit">;
 
 function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
   const selected = useBlueprint((state) => state.moduleSelected.has(id));
+  const diff = useNodeDiff(id);
   const accent = accentForKind(data.unitKind);
   const chevron = data.isContainer ? (
     <ExpandChevron id={id} isExpanded={data.isExpanded} collapsedTitle={`Expand — ${data.memberCount} member(s) in this unit`} />
@@ -27,12 +29,13 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
       <span style={{ ...GLYPH, color: accent }}>{glyphForKind(data.unitKind)}</span>
       <span style={LABEL} title={id}>{data.label}</span>
       <span style={{ ...KIND_CHIP, color: accent, borderColor: accent }}>{data.unitKind.toUpperCase()}</span>
+      <DeltaChip diff={diff} />
     </>
   );
 
   if (data.isFrame) {
     return (
-      <div style={selected ? frameSelectedStyle(accent) : frameStyle(accent)}>
+      <div style={borderFor(frameStyle(accent), frameSelectedStyle(accent), selected, diff)}>
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
         <FrameTitleBar actionsId={id} chevron={chevron}>{identity}</FrameTitleBar>
@@ -62,7 +65,7 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
   }
 
   return (
-    <div style={selected ? CARD_SELECTED : CARD}>
+    <div style={borderFor(CARD, CARD_SELECTED, selected, diff)}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={{ ...ACCENT_BAR, background: accent }} />

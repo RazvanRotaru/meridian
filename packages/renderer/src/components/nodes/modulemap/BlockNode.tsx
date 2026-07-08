@@ -13,36 +13,40 @@ import { useBlueprint } from "../../../state/StoreContext";
 import { accentForKind } from "../../../theme/kindColors";
 import type { BlockData } from "../../../derive/moduleLevel";
 import { ExpandChevron, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
+import { borderFor, DeltaChip, useNodeDiff } from "./changed";
 
 type BlockRfNode = Node<BlockData, "block">;
 
 function BlockNodeImpl({ id, data }: NodeProps<BlockRfNode>) {
   const selected = useBlueprint((state) => state.moduleSelected.has(id));
+  const diff = useNodeDiff(id);
   const accent = accentForKind(data.blockKind);
   const chevron = data.hasFlow ? <ExpandChevron id={id} isExpanded={data.isExpanded} collapsedTitle="Expand — chart this flow in place" /> : null;
   const title = data.callable ? `${data.label} — double-click to open its logic flow` : data.label;
 
   if (data.isExpanded) {
     return (
-      <div style={selected ? frameSelectedStyle(accent) : frameStyle(accent)}>
+      <div style={borderFor(frameStyle(accent), frameSelectedStyle(accent), selected, diff)}>
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
         <div style={TITLE_BAR} title={title}>
           {chevron}
           <span style={{ ...GLYPH, color: accent }}>ƒ</span>
           <span style={FRAME_LABEL}>{data.label}</span>
+          <DeltaChip diff={diff} />
         </div>
       </div>
     );
   }
 
   return (
-    <div style={selected ? BLOCK_SELECTED : BLOCK} title={title}>
+    <div style={borderFor(BLOCK, BLOCK_SELECTED, selected, diff)} title={title}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       {chevron}
       <span style={{ ...GLYPH, color: accent }}>{data.callable ? "ƒ" : "τ"}</span>
       <span style={LABEL}>{data.label}</span>
+      <DeltaChip diff={diff} />
     </div>
   );
 }
