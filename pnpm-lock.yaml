@@ -24,6 +24,12 @@ importers:
         specifier: ^4.1.9
         version: 4.1.9(@types/node@26.0.1)(vite@8.1.0(@types/node@26.0.1)(esbuild@0.27.7)(tsx@4.22.4))
 
+  examples/checkout-web: {}
+
+  examples/desktop-notes: {}
+
+  examples/orders-api: {}
+
   examples/orders-service: {}
 
   examples/shopfront:

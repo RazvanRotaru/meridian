@@ -9,7 +9,7 @@ import {
   collectChangedIds,
   tagChangedNodes,
 } from "./changed-detection";
-import type { ChangedLineStats, ChangedRanges, GraphNode } from "./index";
+import type { ChangedLineKinds, ChangedLineStats, ChangedRanges, GraphNode } from "./index";
 
 function node(id: string, kind: string, file: string, startLine: number, endLine?: number): GraphNode {
   return { id, kind, qualifiedName: id, displayName: id, location: { file, startLine, endLine } };
@@ -169,13 +169,13 @@ describe("changedLinesWithin", () => {
 });
 
 describe("changedLineKindsWithin", () => {
-  const kinds = {
+  const kinds: ChangedLineKinds = {
     "src/a.ts": [
       { start: 4, end: 4, kind: "added" },
       { start: 5, end: 6, kind: "modified" },
       { start: 6, end: 7, kind: "deleted" },
     ],
-  } as const;
+  };
 
   it("returns per-line kinds intersected with a node span", () => {
     expect(changedLineKindsWithin(kinds, "src/a.ts", 4, 6)).toEqual(
