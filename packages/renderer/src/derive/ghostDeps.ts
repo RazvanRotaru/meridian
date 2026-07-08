@@ -23,11 +23,14 @@ export type GhostData = {
   beacon?: boolean;
 };
 
-/** A wire between a drawn code node (or step) and a ghost; endpoints are REAL artifact/step ids. */
+/** A wire between a drawn code node (or step) and a ghost; endpoints are REAL artifact/step ids.
+ * `kind` is the underlying coupling kind (calls / instantiates / extends / implements / references)
+ * so an off-level dependency wears the same per-relationship colour as an on-level one. */
 export interface GhostWire {
   source: string;
   target: string;
   weight: number;
+  kind: string;
 }
 
 export interface GhostEmission {
@@ -53,18 +56,18 @@ export function ghostDepWires(
 ): GhostEmission {
   const ghosts = new Map<string, GhostData>();
   const byPair = new Map<string, GhostWire>();
-  const add = (source: string, target: string, ghostId: string, weight: number): void => {
+  const add = (source: string, target: string, ghostId: string, weight: number, kind: string): void => {
     const node = index.nodesById.get(ghostId);
     if (!node) {
       return; // ext:/unresolved: pseudo-ids have no definition to chart.
     }
     ghosts.set(ghostId, ghostData(node));
-    const key = `${source} ${target}`;
+    const key = `${source} ${target} ${kind}`;
     const existing = byPair.get(key);
     if (existing) {
       existing.weight += weight;
     } else {
-      byPair.set(key, { source, target, weight });
+      byPair.set(key, { source, target, weight, kind });
     }
   };
   for (const edge of blockDeps.edges) {
@@ -73,18 +76,18 @@ export function ghostDepWires(
     const weight = edge.weight ?? 1;
     if (sourceVisible !== null && targetVisible === null && isCode(sourceVisible) && !expandedBlocks.has(sourceVisible)) {
       const anchor = serviceAnchor(edge.target, index);
-      add(sourceVisible, anchor, anchor, weight);
+      add(sourceVisible, anchor, anchor, weight, edge.kind);
     }
     if (targetVisible !== null && sourceVisible === null && isCode(targetVisible)) {
       const anchor = serviceAnchor(edge.source, index);
-      add(anchor, targetVisible, anchor, weight);
+      add(anchor, targetVisible, anchor, weight, edge.kind);
     }
   }
   // Step-call targets arrive already resolved (constructions point at the constructor block).
   for (const call of calls) {
     if (nearestVisible(call.target, visibleIds, index) === null) {
       const anchor = serviceAnchor(call.target, index);
-      add(call.stepId, anchor, anchor, 1);
+      add(call.stepId, anchor, anchor, 1, "calls");
     }
   }
   return { ghosts, wires: [...byPair.values()] };

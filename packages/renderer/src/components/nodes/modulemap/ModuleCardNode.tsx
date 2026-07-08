@@ -11,13 +11,12 @@ import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
 import type { ModuleCardData } from "../../../derive/moduleLevel";
-import type { ModuleCategory } from "../../../derive/moduleCategory";
 import { PackageOverviewNode } from "./PackageOverviewNode";
 import { UnitCardNode } from "./UnitCardNode";
 import { BlockNode } from "./BlockNode";
 import { StepNode } from "./StepNode";
 import { GhostNode } from "./GhostNode";
-import { ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
+import { cardSelectedStyle, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, DeltaChip, useNodeDiff } from "./changed";
 
 // The file family's frame accent (the module cyan), used when an expanded card turns into a frame.
@@ -28,7 +27,9 @@ type ModuleCardRfNode = Node<ModuleCardData, "file">;
 function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
   const selected = useBlueprint((state) => state.moduleSelected.has(id));
   const diff = useNodeDiff(id);
-  const accent = CATEGORY_COLOR[data.category];
+  // Every file wears the neutral file-family accent; its CATEGORY is carried by the text chip alone,
+  // so category never competes for a hue with the relationship (caller/callee) or kind palettes.
+  const accent = FILE_FRAME_ACCENT;
   const chevron = data.isContainer ? (
     <ExpandChevron id={id} isExpanded={data.isExpanded} collapsedTitle={`Expand — ${data.unitCount} declaration(s) in this file`} />
   ) : null;
@@ -50,7 +51,7 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
   }
 
   return (
-    <div style={borderFor(CARD, CARD_SELECTED, selected, diff)}>
+    <div style={borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff)}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={{ ...ACCENT_BAR, background: accent }} />
@@ -85,17 +86,6 @@ export const ModuleCardNode = memo(ModuleCardNodeImpl);
  * mirroring the call graph's ContainerNode. */
 export const moduleNodeTypes = { file: ModuleCardNode, package: PackageOverviewNode, unit: UnitCardNode, block: BlockNode, step: StepNode, ghost: GhostNode };
 
-// Category → accent hue, echoing the palette used across the dark surfaces: entry green (the "you are
-// here" signal), ui blue, util amber, config violet, app a neutral slate. Exported so the Module-map
-// MiniMap tints its file dots with the same palette as the cards.
-export const CATEGORY_COLOR: Record<ModuleCategory, string> = {
-  entry: "#56C271",
-  ui: "#5B9BE3",
-  util: "#C9A24B",
-  config: "#A78BFA",
-  app: "#8A94A3",
-};
-
 const CARD: React.CSSProperties = {
   position: "relative",
   width: "100%",
@@ -106,12 +96,6 @@ const CARD: React.CSSProperties = {
   background: "#12171E",
   overflow: "hidden",
   fontFamily: MONO,
-};
-// The selection ring is an outset box-shadow, so overflow:hidden on the card never clips it.
-const CARD_SELECTED: React.CSSProperties = {
-  ...CARD,
-  borderColor: SELECT_ACCENT,
-  boxShadow: `0 0 0 2px ${SELECT_ACCENT}`,
 };
 const ACCENT_BAR: React.CSSProperties = { position: "absolute", left: 0, top: 0, bottom: 0, width: 4 };
 const INNER: React.CSSProperties = {

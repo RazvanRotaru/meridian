@@ -26,6 +26,7 @@ import { ghostDepWires } from "./ghostDeps";
 import { liftEdges } from "./liftEdges";
 import { createCodeWalk, depWireEdges, flowChainEdges, stepCallEdges, visitCode, type CodeWalk, type Skeleton } from "./codeWalk";
 import { finalizeModuleNode, foldById, importEdges, importTreeEdges } from "./moduleTreeData";
+import { ipcTreeEdges } from "./moduleIpc";
 import type { ModuleTree, ModuleTreeEdge, VisibleModuleNode } from "./moduleTreeTypes";
 export type { ModuleGroupData, ModuleTree, ModuleTreeEdge, VisibleModuleNode } from "./moduleTreeTypes";
 
@@ -54,23 +55,34 @@ export function deriveModuleTree(
   const nodes = skeleton.map((entry) => finalizeModuleNode(entry, index, graph, lifted, walked.stepData, overviewFold));
   const kinds = kindsOf(skeleton);
   const ghosts = ghostLevel(blockDeps, walked, visibleIds, index, kinds);
-  const isCode = (id: string) => kinds.get(id) === "unit" || kinds.get(id) === "block";
+  // A dependency wire anchors to a drawn unit/block OR a FILE card — so a COLLAPSED file still shows
+  // its typed deps (folded onto the card), not just when you expand it to code. Group/package cards
+  // are excluded, keeping the repo overview an import-only story.
+  const isDepAnchor = (id: string) => isDepAnchorKind(kinds.get(id));
   const edges = [
     ...importTreeEdges(lifted, kinds),
     // An expanded block's calls chart as step wires in codeWalk — its folded frame-level dependency
     // wire would double-draw the same relationship, so depWireEdges receives expandedBlocks.
-    ...depWireEdges(blockDeps, visibleIds, index, isCode, walked.expandedBlocks),
+    ...depWireEdges(blockDeps, visibleIds, index, isDepAnchor, walked.expandedBlocks),
     ...flowChainEdges(walked),
     // Step call targets resolve constructions to the constructor block, and recursive calls drop
     // when the target lifts back into their own block frame.
     ...stepCallEdges(walked, visibleIds, index),
+    // IPC hops (sends/handles joined through channels) folded onto the drawn level, like imports.
+    ...ipcTreeEdges(index, visibleIds),
     ...ghosts.edges,
   ].sort((a, b) => a.id.localeCompare(b.id));
   return { nodes: [...nodes, ...ghosts.nodes], edges, effectiveFocus };
 }
 
-/** Off-screen relationships charted as detached GHOST cards + dashed wires — derived only when a
- * code node is drawn (the ghosts tell the CODE level's story; file levels keep the import graph). */
+/** Off-screen relationships charted as detached GHOST cards + dashed wires — for every drawn dep
+ * anchor (a unit/block, or a FILE card whose off-level typed deps fold onto it). */
+/** A drawn box a dependency wire may anchor to: a code node (unit/block) or a file card — never a
+ * package/directory group, so the repo overview stays an import-only story. */
+function isDepAnchorKind(kind: Skeleton["kind"] | undefined): boolean {
+  return kind === "unit" || kind === "block" || kind === "file";
+}
+
 function ghostLevel(
   blockDeps: BlockDeps,
   walked: CodeWalk,
@@ -78,11 +90,11 @@ function ghostLevel(
   index: GraphIndex,
   kinds: Map<string, Skeleton["kind"]>,
 ): { nodes: VisibleModuleNode[]; edges: ModuleTreeEdge[] } {
-  const isCode = (id: string) => kinds.get(id) === "unit" || kinds.get(id) === "block";
-  if (![...kinds.values()].some((kind) => kind === "unit" || kind === "block")) {
+  const isDepAnchor = (id: string) => isDepAnchorKind(kinds.get(id));
+  if (![...kinds.values()].some(isDepAnchorKind)) {
     return { nodes: [], edges: [] };
   }
-  const emission = ghostDepWires(blockDeps, walked.calls, visibleIds, index, isCode, walked.expandedBlocks);
+  const emission = ghostDepWires(blockDeps, walked.calls, visibleIds, index, isDepAnchor, walked.expandedBlocks);
   const nodes: VisibleModuleNode[] = [...emission.ghosts.entries()].map(([id, data]) => ({
     id,
     parentId: null,
@@ -94,12 +106,13 @@ function ghostLevel(
     data,
   }));
   const edges: ModuleTreeEdge[] = emission.wires.map((wire) => ({
-    id: `gdep:${wire.source}->${wire.target}`,
+    id: `gdep:${wire.kind}:${wire.source}->${wire.target}`,
     source: wire.source,
     target: wire.target,
     weight: wire.weight,
     crossFrame: false,
     category: "dep",
+    depKind: wire.kind,
     ghost: true,
   }));
   return { nodes, edges };

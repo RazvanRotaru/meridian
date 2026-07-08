@@ -1,13 +1,26 @@
 /**
- * The Map's LEGEND: a collapsed pill that expands into the lens's vocabulary — what each card
- * shape, step glyph, wire colour, and highlight read means. Pure presentation over constants that
- * mirror the real palette (moduleMapPaint / the node components); nothing here computes.
+ * The Map's LEGEND: a collapsed pill that expands into the lens's vocabulary. It reads its colours
+ * and glyphs from the SAME sources the canvas paints from — `kindColors` (card accents + glyphs),
+ * `mapPalette` (wires + flow-step tints), and `edgeColors` (the caller/callee relationship hues) —
+ * so a swatch can never drift from what's on screen. Contextual sections only appear when they apply:
+ * Flow steps once a callable is unrolled, Selection reads once something is selected.
  */
 
 import { useState } from "react";
-import { CALLEE_WIRE, CALLER_WIRE } from "../theme/edgeColors";
+import { CALLER_WIRE, IPC_WIRE } from "../theme/edgeColors";
+import { accentForKind } from "../theme/kindColors";
+import { CALL_RESOLVED, CONSTRUCT, IMPORT_CROSS, IMPORT_SIBLING, REL_COLORS } from "../theme/mapPalette";
 
-export function MapLegend() {
+const FILE_ACCENT = accentForKind("module");
+
+interface MapLegendProps {
+  /** A callable is unrolled, so flow-step cards are on the canvas. */
+  hasSteps: boolean;
+  /** Something is selected, so the caller/callee reads are lit. */
+  hasSelection: boolean;
+}
+
+export function MapLegend({ hasSteps, hasSelection }: MapLegendProps) {
   const [open, setOpen] = useState(false);
   if (!open) {
     return (
@@ -23,30 +36,35 @@ export function MapLegend() {
         <button type="button" style={CLOSE} onClick={() => setOpen(false)} title="Close">✕</button>
       </div>
       <Section title="Cards">
-        <Row swatch={<Box color="#5B9BE3" />} text="package / directory — double-click to zoom in, chevron to expand in place" />
-        <Row swatch={<Box color="#3FB7C4" />} text="file — expands into its classes, functions, and types" />
-        <Row swatch={<Glyph text="◆" color="#C9A24B" />} text="class / interface / object — an open frame of its members" />
-        <Row swatch={<Glyph text="ƒ" color={CALLER_WIRE} />} text="method / function — expands into its logic flow; double-click opens the Logic tab" />
-        <Row swatch={<Glyph text="τ" color={CALLEE_WIRE} />} text="type definition — a dependency anchor, nothing to unroll" />
+        <Row swatch={<Box color={accentForKind("package")} />} text="package / directory — double-click to zoom in, chevron to expand in place" />
+        <Row swatch={<Box color={FILE_ACCENT} />} text="file — expands into its declarations; its category is on the chip (UI / Utilities / Config)" />
+        <Row swatch={<Glyph text="◆ ◇ ❑ τ" color={accentForKind("class")} />} text="class / interface / object / type — amber; the glyph tells which" />
+        <Row swatch={<Glyph text="ƒ" color={accentForKind("function")} />} text="method / function — double-click opens its logic flow" />
         <Row swatch={<Dashed />} text="ghost — a definition/caller NOT on this level; double-click reveals it" />
       </Section>
-      <Section title="Flow steps">
-        <Row swatch={<Glyph text="→" color="#5E74C6" />} text="call (blue = resolved, grey = unresolved); expandable when its flow is charted" />
-        <Row swatch={<Glyph text="↻ ⑂ λ" color="#C9A24B" />} text="loop / branch / callback — expand to unroll the body" />
-        <Row swatch={<Glyph text="⏎" color="#C9A24B" />} text="return / throw — this path ends here" />
+      <Section title="Wires — by relationship (toggle each in the toolbar)">
+        <Row swatch={<Line color={REL_COLORS.calls} />} text="calls — a behavioural call" />
+        <Row swatch={<Line color={REL_COLORS.instantiates} />} text="constructs — new X()" />
+        <Row swatch={<Line color={REL_COLORS.extends} />} text="extends — class / interface inheritance" />
+        <Row swatch={<Line color={REL_COLORS.implements} />} text="implements — a contract" />
+        <Row swatch={<Line color={REL_COLORS.references} />} text="references — a type used in a signature / type position" />
+        <Row swatch={<Line color={IMPORT_CROSS} />} text="import — gold crosses a directory boundary; grey within one" />
+        <Row swatch={<Line color={IPC_WIRE} />} text="IPC — joined over a channel (leaves the process)" />
+        <Row swatch={<Line color={IMPORT_SIBLING} dashed />} text="dashed — the far end is off this level" />
       </Section>
-      <Section title="Wires">
-        <Row swatch={<Line color="#5B6675" />} text="import between siblings" />
-        <Row swatch={<Line color="#C9A24B" />} text="import crossing a directory boundary (coupling)" />
-        <Row swatch={<Line color="#7C6FBF" />} text="code dependency — from the exact block to its definition" />
-        <Row swatch={<Line color="#7B8695" />} text="execution order between flow steps" />
-        <Row swatch={<Line color="#7C6FBF" dashed />} text="to/from a ghost (the other end is off this level)" />
-      </Section>
-      <Section title="Selection reads">
-        <Row swatch={<Line color={CALLEE_WIRE} />} text="marching violet — what the selection reaches (callees)" />
-        <Row swatch={<Line color={CALLER_WIRE} />} text="marching green — who reaches the selection (callers); ctrl/cmd+click adds to the selection" />
-        <Row swatch={<Ring />} text="green ring — a selected call step's DEFINITION; an edge-of-screen ➤ guides to it when out of view" />
-      </Section>
+      {hasSteps ? (
+        <Section title="Flow steps">
+          <Row swatch={<Glyph text="→" color={CALL_RESOLVED} />} text="call (blue = resolved, grey = unresolved); expandable when its flow is charted" />
+          <Row swatch={<Glyph text="↻ ⑂ λ" color={CONSTRUCT} />} text="loop / branch / callback — expand to unroll the body" />
+          <Row swatch={<Glyph text="⏎" color={CONSTRUCT} />} text="return / throw — this path ends here" />
+        </Section>
+      ) : null}
+      {hasSelection ? (
+        <Section title="When you select">
+          <Row swatch={<Line color="#C8D3E0" />} text="a node's wires BRIGHTEN (keeping their colour), everything else dims; the arrow shows direction. ctrl/cmd+click adds to the selection" />
+          <Row swatch={<Ring />} text="green ring — a selected call step's definition; an edge-of-screen ➤ guides to it when off view" />
+        </Section>
+      ) : null}
     </div>
   );
 }

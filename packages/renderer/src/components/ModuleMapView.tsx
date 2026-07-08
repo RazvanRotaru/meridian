@@ -14,8 +14,8 @@
 import { useEffect, useMemo, useRef } from "react";
 import { ReactFlow, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
-import { moduleNodeTypes, CATEGORY_COLOR } from "./nodes/modulemap/ModuleCardNode";
-import { filterVisible, emphasize } from "./moduleMapPaint";
+import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
+import { filterVisible, filterRelKinds, emphasize } from "./moduleMapPaint";
 import { crumbsFor, EmptyModuleMapCard, LevelBreadcrumb } from "./ModuleMapChrome";
 import { CoveragePanel } from "./CoveragePanel";
 import { BeaconArrows } from "./BeaconArrows";
@@ -24,7 +24,7 @@ import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { MinimalGraphView } from "./MinimalGraphView";
 import { accentForKind } from "../theme/kindColors";
-import type { BlockData, ModuleCardData, UnitCardData } from "../derive/moduleLevel";
+import type { BlockData, UnitCardData } from "../derive/moduleLevel";
 
 const PACKAGE_KIND = "package";
 
@@ -38,6 +38,7 @@ export function ModuleMapView() {
   const highlightMode = useBlueprint((state) => state.highlightMode);
   const index = useBlueprint((state) => state.index);
   const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
+  const hiddenRelKinds = useBlueprint((state) => state.hiddenRelKinds);
   const showTests = useBlueprint((state) => state.showTests);
   const showPrivate = useBlueprint((state) => state.showPrivate);
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
@@ -45,10 +46,13 @@ export function ModuleMapView() {
   const { onNodeClick, onNodeDoubleClick, onPaneClick } = useModuleNodeInteractions();
 
   // Category/test hiding is a pure VISIBILITY filter over the laid-out graph; positions are untouched.
-  const { nodes: shownNodes, edges: shownEdges } = useMemo(
+  const { nodes: shownNodes, edges: visibleEdges } = useMemo(
     () => filterVisible(nodes, edges, { hiddenCategories, showTests, testIds: index.testIds, showPrivate, privateIds: index.privateIds }),
     [nodes, edges, hiddenCategories, showTests, showPrivate, index.testIds, index.privateIds],
   );
+  // A second pure paint filter: drop the wires whose relationship kind is toggled off.
+  const shownEdges = useMemo(() => filterRelKinds(visibleEdges, hiddenRelKinds), [visibleEdges, hiddenRelKinds]);
+  const hasExpansions = useMemo(() => shownNodes.some(isExpandedMapContainer), [shownNodes]);
   // Emphasis is a second pure repaint: dim by default, light the selection's N-hop import reach.
   const { nodes: styledNodes, edges: styledEdges, beacons } = useMemo(
     () => emphasize(shownNodes, shownEdges, selected, radius, highlightMode),
@@ -108,7 +112,7 @@ export function ModuleMapView() {
       />
       {selected.size >= 1 ? <BuildMinimalGraphButton count={selected.size} onBuild={buildMinimalGraph} /> : null}
       {isEmpty ? <EmptyModuleMapCard focus={effectiveFocus} /> : null}
-      <MapLegend />
+      <MapLegend hasSteps={shownNodes.some((node) => node.type === "step")} hasSelection={selected.size > 0} />
       <CoveragePanel />
     </div>
   );
@@ -139,7 +143,8 @@ function miniMapColor(node: Node): string {
   if (node.type === "step" || node.type === "ghost") {
     return "#565E68";
   }
-  return CATEGORY_COLOR[(node.data as ModuleCardData).category];
+  // File dots wear the neutral file-family accent (category lives on the card's text chip, not a hue).
+  return accentForKind("module");
 }
 
 const SURFACE_STYLE: React.CSSProperties = { position: "absolute", inset: 0, background: "#0E1116" };

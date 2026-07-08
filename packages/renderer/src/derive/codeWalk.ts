@@ -151,12 +151,13 @@ export function depWireEdges(
     // An expanded block's calls chart as step wires — the folded frame-level wire would double-draw.
     .filter((edge) => !expandedBlocks.has(edge.source))
     .map((edge) => ({
-      id: `dep:${edge.source}->${edge.target}`,
+      id: `dep:${edge.kind}:${edge.source}->${edge.target}`,
       source: edge.source,
       target: edge.target,
       weight: edge.weight,
       crossFrame: false,
       category: "dep" as const,
+      depKind: edge.kind,
     }));
 }
 

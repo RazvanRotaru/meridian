@@ -15,6 +15,7 @@ import { FlowSelector } from "./FlowSelector";
 import { CompositionPanel } from "./composition/CompositionPanel";
 import { DepthSlider } from "./DepthSlider";
 import { ModuleCategoryToggles } from "./ModuleCategoryToggles";
+import { RelationshipToggles } from "./RelationshipToggles";
 import { HighlightModeToggle } from "./HighlightModeToggle";
 
 export function Toolbar(props: { preselectedEnv: string | null }) {
@@ -87,6 +88,7 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
           <>
             <DepthSlider />
             <ModuleCategoryToggles />
+            <RelationshipToggles />
           </>
         ) : isPrs ? null : (
           <FlowSelector />

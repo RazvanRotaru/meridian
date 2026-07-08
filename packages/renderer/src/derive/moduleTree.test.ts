@@ -270,10 +270,14 @@ describe("deriveModuleTree — code level (the merged composition level)", () =>
     expect(iface?.data as UnitCardData).toMatchObject({ memberCount: 0, isContainer: false, isExpanded: false, isFrame: false });
   });
 
-  it("draws no dep wires while no code node is on screen (file↔file is the import graph's story)", () => {
+  it("folds a file's typed deps onto its card even while collapsed (alongside the import wire)", () => {
     const { nodes, edges } = unitFixture();
     const tree = treeOf(nodes, edges, "ts:pkg", []);
-    expect(tree.edges.filter((e) => e.category === "dep")).toHaveLength(0);
+    const deps = tree.edges.filter((e) => e.category === "dep");
+    // A COLLAPSED file card now shows its typed deps folded onto it — not only when expanded to code.
+    expect(deps.length).toBeGreaterThan(0);
+    expect(deps.every((e) => typeof e.depKind === "string")).toBe(true);
+    // …without swallowing the import graph: the file↔file import wire is still there too.
     expect(tree.edges.filter((e) => e.category === "import")).toHaveLength(1);
   });
 });
@@ -338,7 +342,9 @@ describe("deriveModuleTree — constructions anchor at the constructor block", (
     const { nodes, edges } = ctorFixture();
     const tree = treeOf(nodes, edges, "ts:pkg", [SVC_FILE_ID, ORDER_UNIT_ID]);
     const deps = tree.edges.filter((e) => e.category === "dep").map((e) => `${e.source}->${e.target}`);
-    expect(deps).toEqual([`${PLACE_ID}->${PAY_FILE_ID}`]);
+    // Dep wires are now per-KIND, so a call + a construction between the same pair fold to the file
+    // card as two distinct (colourable, toggleable) wires — every one still lands on the file.
+    expect(new Set(deps)).toEqual(new Set([`${PLACE_ID}->${PAY_FILE_ID}`]));
   });
 });
 

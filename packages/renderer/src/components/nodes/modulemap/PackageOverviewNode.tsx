@@ -11,7 +11,7 @@ import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
 import type { ModuleGroupData } from "../../../derive/moduleTree";
-import { ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
+import { cardSelectedStyle, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, DeltaChip, useNodeDiff } from "./changed";
 
 // A neutral package hue — the cross-package coupling gold lives on the wires, not the boxes.
@@ -41,7 +41,7 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
   }
 
   return (
-    <div style={borderFor(CARD, CARD_SELECTED, selected, diff)}>
+    <div style={borderFor(CARD, cardSelectedStyle(CARD, PACKAGE_ACCENT), selected, diff)}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={{ ...ACCENT_BAR, background: PACKAGE_ACCENT }} />
@@ -88,7 +88,6 @@ const CARD: React.CSSProperties = {
   overflow: "hidden",
   fontFamily: MONO,
 };
-const CARD_SELECTED: React.CSSProperties = { ...CARD, borderColor: SELECT_ACCENT, boxShadow: `0 0 0 2px ${SELECT_ACCENT}` };
 const TITLE_LABEL: React.CSSProperties = {
   flex: 1,
   minWidth: 0,

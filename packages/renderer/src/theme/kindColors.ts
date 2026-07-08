@@ -6,17 +6,22 @@
  * neutral accent rather than crashing — the schema's vocabularies are intentionally open.
  */
 
+// Green and violet are RESERVED for relationships (caller/callee wires + selection reads); node
+// kinds never wear them, so a hue means one thing. Structural containers are cool (blue/teal),
+// type-shaped kinds share a warm amber ramp, callables are a distinct yellow.
 const KIND_COLORS: Record<string, string> = {
-  package: "#A77BF3",
+  package: "#5B9BE3",
   module: "#3FB7C4",
   namespace: "#3FB7C4",
+  // Every type-shaped declaration shares ONE amber; the glyph (◆ ◇ ❑ τ) tells class from interface
+  // from object from type — colour doesn't need to repeat what the glyph already says.
   class: "#E0A33E",
-  object: "#D98E5A",
-  interface: "#C57BD6",
+  object: "#E0A33E",
+  interface: "#E0A33E",
   enum: "#E0A33E",
-  typeAlias: "#C57BD6",
-  function: "#56C271",
-  method: "#56C271",
+  typeAlias: "#E0A33E",
+  function: "#E3C36B",
+  method: "#E3C36B",
   // Boundary nodes read as muted grey — they are outside the analyzed code.
   external: "#6E7681",
   unresolved: "#565E68",

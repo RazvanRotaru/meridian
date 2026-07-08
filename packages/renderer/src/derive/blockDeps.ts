@@ -50,18 +50,22 @@ export function constructionTarget(targetId: string, index: GraphIndex): string 
   return ctor?.id ?? targetId;
 }
 
-/** A visible-frontier dependency wire, ready for the level's edge set. */
+/** A visible-frontier dependency wire, ready for the level's edge set. `kind` is the underlying
+ * coupling kind (calls / instantiates / extends / implements / references) so the paint layer can
+ * colour and the toggles can filter per relationship type. */
 export interface LiftedDepEdge {
   source: string;
   target: string;
   weight: number;
+  kind: string;
 }
 
 /**
  * Project the coupling edges onto the visible boxes, keeping only wires that TOUCH a drawn code
  * node — a unit card/frame or a block (file↔file pairs are the import graph's story, not this one)
  * — and dropping frame edges (an endpoint that lifted into the other's own containment chain).
- * Aggregates the per-kind lifted edges to one wire per ordered pair, summing weight.
+ * Aggregates per ordered pair AND kind (so a call and a reference between the same two boxes stay
+ * distinct wires — each can wear its own colour and toggle), summing weight within a kind.
  */
 export function liftDepEdges(
   blockDeps: BlockDeps,
@@ -74,12 +78,12 @@ export function liftDepEdges(
     .filter((edge) => isCode(edge.source) || isCode(edge.target))
     .filter((edge) => !index.isWithinFocus(edge.source, edge.target) && !index.isWithinFocus(edge.target, edge.source));
   for (const edge of lifted) {
-    const key = `${edge.source} ${edge.target}`;
+    const key = `${edge.source} ${edge.target} ${edge.kind}`;
     const existing = byPair.get(key);
     if (existing) {
       existing.weight += edge.weight;
     } else {
-      byPair.set(key, { source: edge.source, target: edge.target, weight: edge.weight });
+      byPair.set(key, { source: edge.source, target: edge.target, weight: edge.weight, kind: edge.kind });
     }
   }
   return [...byPair.values()];

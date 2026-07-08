@@ -183,6 +183,9 @@ export interface BlueprintState {
   highlightMode: HighlightMode;
   /** Module categories painted OUT of the map (a render-time filter — never a re-derive). */
   hiddenCategories: Set<ModuleCategory>;
+  /** Relationship kinds painted OUT of the map (calls / instantiates / extends / implements /
+   * references / imports / ipc) — a render-time filter, so isolating one kind is instant. */
+  hiddenRelKinds: Set<string>;
   /** The selected node ids in the Module map (ctrl/cmd+click accumulates several); empty == none.
    * A repaint-only highlight — no relayout. */
   moduleSelected: Set<string>;
@@ -287,6 +290,7 @@ export interface BlueprintState {
   setModuleRadius(radius: number): void;
   toggleHighlightMode(): void;
   toggleCategory(category: ModuleCategory): void;
+  toggleRelKind(kind: string): void;
   selectModule(id: string | null): void;
   toggleModuleSelect(id: string): void;
   buildMinimalGraph(): void;
@@ -409,6 +413,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleRadius: 1,
     highlightMode: "node",
     hiddenCategories: new Set<ModuleCategory>(),
+    hiddenRelKinds: new Set<string>(),
     moduleSelected: new Set<string>(),
     moduleExpanded: new Set<string>(),
     showPrivate: true,
@@ -956,6 +961,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // place, so this deliberately does NOT relayout — positions stay stable.
     toggleCategory(category) {
       set({ hiddenCategories: withToggledCategory(get().hiddenCategories, category) });
+    },
+
+    // Show/hide a relationship kind's wires. PAINT-ONLY, like the category filter — no relayout.
+    toggleRelKind(kind) {
+      set({ hiddenRelKinds: withToggled(get().hiddenRelKinds, kind) });
     },
 
     // Select a Module-map node, REPLACING the whole selection (pass null to clear) — the plain-click

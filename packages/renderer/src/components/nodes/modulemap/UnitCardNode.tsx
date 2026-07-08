@@ -11,7 +11,7 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
 import { accentForKind, glyphForKind } from "../../../theme/kindColors";
 import type { UnitCardData } from "../../../derive/moduleLevel";
-import { CodeButton, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
+import { cardSelectedStyle, CodeButton, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, DeltaChip, useNodeDiff } from "./changed";
 
 type UnitRfNode = Node<UnitCardData, "unit">;
@@ -45,7 +45,7 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
 
   if (data.isContainer) {
     return (
-      <div style={selected ? CARD_SELECTED : CARD}>
+      <div style={borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff)}>
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
         <div style={{ ...ACCENT_BAR, background: accent }} />
@@ -65,7 +65,7 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
   }
 
   return (
-    <div style={borderFor(CARD, CARD_SELECTED, selected, diff)}>
+    <div style={borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff)}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={{ ...ACCENT_BAR, background: accent }} />
@@ -90,7 +90,6 @@ const CARD: React.CSSProperties = {
   overflow: "hidden",
   fontFamily: MONO,
 };
-const CARD_SELECTED: React.CSSProperties = { ...CARD, borderColor: SELECT_ACCENT, boxShadow: `0 0 0 2px ${SELECT_ACCENT}` };
 const ACCENT_BAR: React.CSSProperties = { position: "absolute", left: 0, top: 0, bottom: 0, width: 4 };
 const INNER: React.CSSProperties = { display: "flex", alignItems: "center", gap: 7, height: "100%", padding: "0 10px 0 12px" };
 const INNER_STACK: React.CSSProperties = {

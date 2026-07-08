@@ -69,7 +69,9 @@ describe("emphasize — beacon read (a selected call step's definition)", () => 
     const other: Edge = { id: "lvl:a->b", source: "ts:svc.ts", target: ghost.id, data: {} } as Edge;
     const { edges, nodes, beacons } = emphasize([frame, step, ghost], [dep, other], new Set([step.id]), 1, "reach");
     expect(beacons).toEqual(new Set([ghost.id]));
-    expect(edges.find((e) => e.id === dep.id)?.style?.opacity).toBe(0);
+    // The withheld beacon wire is now dropped entirely (dep wires only stay while lit), not kept at
+    // opacity 0 — the definition still shows because it's ringed as a beacon.
+    expect(edges.find((e) => e.id === dep.id)).toBeUndefined();
     expect(edges.find((e) => e.id === other.id)?.style?.opacity).not.toBe(0);
     const ringed = nodes.find((n) => n.id === ghost.id);
     expect(ringed?.style?.boxShadow).toContain("#6BE38A");

@@ -9,29 +9,22 @@
  */
 
 import { type Edge, type Node } from "@xyflow/react";
-import { arrowMarker, CALLEE_WIRE, CALLER_WIRE } from "../theme/edgeColors";
+import { arrowMarker, CALLER_WIRE, IPC_WIRE } from "../theme/edgeColors";
+import { IMPORT_CROSS, IMPORT_SIBLING, relColor } from "../theme/mapPalette";
 
-// A cross-frame import (a group is involved) is the coupling signal (warm gold); a same-level
-// file↔file import is expected cohesion (a quiet grey that recedes). Unit-dependency wires are
-// violet — a separate story from imports.
-const CROSS_FRAME_COLOR = "#C9A24B";
-const INTERNAL_COLOR = "#5B6675";
-const DEP_COLOR = "#7C6FBF";
-// Lit dependency/callee wires and selection/caller wires use the app-wide caller-green /
-// callee-violet convention exported from the theme.
-const DEP_ACCENT = CALLEE_WIRE;
+// Wire colour = relationship TYPE (see baseStroke), the same whether or not it is selected.
+const CROSS_FRAME_COLOR = IMPORT_CROSS;
+const REST_COLOR = IMPORT_SIBLING;
+// The one green left: the beacon RING around a selected call step's definition (a node halo, not a
+// wire colour) — see applyBeacons/beaconNode.
 const SELECT_ACCENT = CALLER_WIRE;
-// Import wires are the backdrop, but at 0.12 they vanished on the near-black canvas — the map read
-// as floating cards with no structure. Keep them subordinate to a lit wire (opacity 1) while still
-// legible at rest, so the level's coupling is visible before the reader points at anything.
+// Import wires are the backdrop: kept legible at rest (0.4) so a level's coupling shows before the
+// reader points at anything — a lit wire (opacity 1) still clearly wins.
 const DIM_EDGE_OPACITY = 0.4;
-// Code-dependency wires share the at-rest floor with imports so a level's coupling reads uniformly
-// before selection; expanding a file immediately shows where its units' dependencies point.
 const DIM_DEP_OPACITY = 0.4;
-// Execution-order wires between an expanded block's flow steps: quiet, but always readable — they
-// ARE the flow being showcased.
-const FLOW_COLOR = "#7B8695";
 const DIM_FLOW_OPACITY = 0.55;
+// IPC stays clearly readable even unselected — crossing the process boundary is a signal worth seeing.
+const DIM_IPC_OPACITY = 0.55;
 const DIM_NODE_OPACITY = 0.28;
 const BASE_WIDTH = 1.5;
 const EMPHASIS_WIDTH = 2.5;
@@ -65,19 +58,37 @@ export function emphasize(nodes: Node[], edges: Edge[], activeIds: ReadonlySet<s
   const typeById = new Map(nodes.map((node) => [node.id, node.type]));
   const active = [...activeIds].filter((id) => typeById.has(id));
   if (active.length === 0) {
-    return { nodes, edges: edges.map((edge) => styleEdge(edge, "none")), beacons: new Set() };
+    return pruneUnlitDeps({ nodes, edges: edges.map((edge) => styleEdge(edge, "none")), beacons: new Set() });
   }
   if (mode === "node") {
-    return applyBeacons(emphasizeIncident(nodes, edges, active), active, typeById);
+    return pruneUnlitDeps(applyBeacons(emphasizeIncident(nodes, edges, active), active, typeById));
   }
   if (active.every((id) => CODE_TYPES.has(typeById.get(id) ?? ""))) {
-    return applyBeacons(emphasizeDirected(nodes, edges, active, radius), active, typeById);
+    return pruneUnlitDeps(applyBeacons(emphasizeDirected(nodes, edges, active, radius), active, typeById));
   }
   const near = neighbourhood(edges, active, radius);
   const styledEdges = edges.map((edge) => styleEdge(edge, near.has(edge.source) && near.has(edge.target) ? "near" : "none"));
   const styledNodes = nodes.map((node) => (near.has(node.id) ? node : dimNode(node)));
-  return applyBeacons({ nodes: styledNodes, edges: styledEdges }, active, typeById);
+  return pruneUnlitDeps(applyBeacons({ nodes: styledNodes, edges: styledEdges }, active, typeById));
 }
+
+/**
+ * Typed dep wires are DETAIL, not backdrop: keep one only while it is LIT (touches the selection),
+ * so an unselected graph reads as cards + the import/IPC structure — not a web of every dependency.
+ * Imports / IPC / flow always stay. Ghost cards left with no wire drop too (beacons excepted).
+ */
+function pruneUnlitDeps(level: EmphasizedLevel): EmphasizedLevel {
+  const edges = level.edges.filter((edge) => !isDep(edge) || isLit(edge));
+  const kept = new Set<string>();
+  for (const edge of edges) {
+    kept.add(edge.source);
+    kept.add(edge.target);
+  }
+  const nodes = level.nodes.filter((node) => node.type !== "ghost" || kept.has(node.id) || level.beacons.has(node.id));
+  return { ...level, nodes, edges };
+}
+
+const isLit = (edge: Edge): boolean => (edge.style as { opacity?: number } | undefined)?.opacity === 1;
 
 function emphasizeIncident(nodes: Node[], edges: Edge[], activeIds: readonly string[]): { nodes: Node[]; edges: Edge[] } {
   const seed = withDrawnDescendants(activeIds, nodes);
@@ -186,26 +197,30 @@ type EdgeEmphasis = "near" | "downstream" | "upstream" | "none";
 
 function styleEdge(edge: Edge, emphasis: EdgeEmphasis): Edge {
   const lit = emphasis !== "none";
-  const stroke = lit ? litStroke(edge, emphasis) : baseStroke(edge);
-  const animated = emphasis === "downstream" || emphasis === "upstream";
-  const dash = isGhost(edge) && !animated ? { strokeDasharray: "5 4" } : {};
-  return { ...edge, animated, style: { stroke, strokeWidth: lit ? EMPHASIS_WIDTH : BASE_WIDTH, opacity: lit ? 1 : dimOpacity(edge), ...dash }, markerEnd: arrowMarker(stroke, 14) };
+  // A wire ALWAYS keeps its relationship colour — selection never recolours it. Being selected reads
+  // by brightening + thickening (and dimming everything else); direction is the arrowhead's job. Dash
+  // means exactly one thing: the far end is off this level (a ghost).
+  const stroke = baseStroke(edge);
+  const dash = isGhost(edge) ? { strokeDasharray: "5 4" } : {};
+  return { ...edge, animated: false, style: { stroke, strokeWidth: lit ? EMPHASIS_WIDTH : BASE_WIDTH, opacity: lit ? 1 : dimOpacity(edge), ...dash }, markerEnd: arrowMarker(stroke, 14) };
 }
 
-function litStroke(edge: Edge, emphasis: EdgeEmphasis): string {
-  if (emphasis === "downstream") return DEP_ACCENT;
-  if (emphasis === "upstream") return SELECT_ACCENT;
-  return isDep(edge) ? DEP_ACCENT : SELECT_ACCENT;
-}
-
+// Colour tells the relationship TYPE, at rest AND when selected: IPC magenta, each code-dependency
+// kind its own hue (calls / instantiates / extends / implements / references), a boundary-crossing
+// import gold, everything else a quiet grey.
 function baseStroke(edge: Edge): string {
-  if (isFlow(edge)) return FLOW_COLOR;
-  return isDep(edge) ? DEP_COLOR : isCrossFrame(edge) ? CROSS_FRAME_COLOR : INTERNAL_COLOR;
+  if (isIpc(edge)) return IPC_WIRE;
+  const rel = relColor(depKindOf(edge));
+  if (rel) return rel;
+  return isCrossFrame(edge) ? CROSS_FRAME_COLOR : REST_COLOR;
 }
 
-const dimOpacity = (edge: Edge): number => (isFlow(edge) ? DIM_FLOW_OPACITY : isDep(edge) ? DIM_DEP_OPACITY : DIM_EDGE_OPACITY);
+const dimOpacity = (edge: Edge): number =>
+  isIpc(edge) ? DIM_IPC_OPACITY : isFlow(edge) ? DIM_FLOW_OPACITY : isDep(edge) ? DIM_DEP_OPACITY : DIM_EDGE_OPACITY;
 const isCrossFrame = (edge: Edge): boolean => (edge.data as { crossFrame?: boolean } | undefined)?.crossFrame === true;
 const isDep = (edge: Edge): boolean => (edge.data as { category?: string } | undefined)?.category === "dep";
 const isFlow = (edge: Edge): boolean => (edge.data as { category?: string } | undefined)?.category === "flow";
+const isIpc = (edge: Edge): boolean => (edge.data as { category?: string } | undefined)?.category === "ipc";
+const depKindOf = (edge: Edge): string | undefined => (edge.data as { depKind?: string } | undefined)?.depKind;
 const isGhost = (edge: Edge): boolean => (edge.data as { ghost?: boolean } | undefined)?.ghost === true;
 const dimNode = (node: Node): Node => ({ ...node, style: { ...node.style, opacity: DIM_NODE_OPACITY } });
