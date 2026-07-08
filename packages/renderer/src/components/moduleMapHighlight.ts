@@ -21,10 +21,13 @@ const DEP_COLOR = "#7C6FBF";
 // callee-violet convention exported from the theme.
 const DEP_ACCENT = CALLEE_WIRE;
 const SELECT_ACCENT = CALLER_WIRE;
-const DIM_EDGE_OPACITY = 0.12;
-// Dependency wires stay faintly readable even unselected, so expanding a file immediately shows
-// where its units' dependencies point.
-const DIM_DEP_OPACITY = 0.3;
+// Import wires are the backdrop, but at 0.12 they vanished on the near-black canvas — the map read
+// as floating cards with no structure. Keep them subordinate to a lit wire (opacity 1) while still
+// legible at rest, so the level's coupling is visible before the reader points at anything.
+const DIM_EDGE_OPACITY = 0.4;
+// Code-dependency wires share the at-rest floor with imports so a level's coupling reads uniformly
+// before selection; expanding a file immediately shows where its units' dependencies point.
+const DIM_DEP_OPACITY = 0.4;
 // Execution-order wires between an expanded block's flow steps: quiet, but always readable — they
 // ARE the flow being showcased.
 const FLOW_COLOR = "#7B8695";
