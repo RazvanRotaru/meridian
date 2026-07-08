@@ -24,9 +24,11 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
   // refactor worklist; "modules" (Module map) gets the selection highlight-radius dial + category
   // toggles; ui/logic keep the call-flow FlowSelector.
   const viewMode = useBlueprint((state) => state.viewMode);
+  const flowExplorerOpen = useBlueprint((state) => state.flowExplorerOpen);
   const isComposition = viewMode === "call";
   const isModules = viewMode === "modules";
-  const collapseAll = useBlueprintActions().collapseAll;
+  const showFlowToggle = viewMode === "ui" || viewMode === "modules";
+  const { collapseAll, toggleFlowExplorer } = useBlueprintActions();
   return (
     <Panel position="top-left">
       <div style={PANEL_STYLE}>
@@ -42,6 +44,16 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
           {isModules || isComposition ? <HighlightModeToggle /> : null}
           {isModules ? <PrivateToggle /> : null}
           <CoverageToggle />
+          {showFlowToggle ? (
+            <button
+              type="button"
+              style={flowToggleStyle(flowExplorerOpen)}
+              aria-pressed={flowExplorerOpen}
+              onClick={toggleFlowExplorer}
+            >
+              Flows
+            </button>
+          ) : null}
         </div>
         <Breadcrumb />
         {isComposition ? (
@@ -95,3 +107,15 @@ const RESET_STYLE: React.CSSProperties = {
   fontSize: 12,
   cursor: "pointer",
 };
+
+function flowToggleStyle(active: boolean): React.CSSProperties {
+  return {
+    background: active ? "#1F2530" : "#1A1F27",
+    color: active ? "#E6EDF3" : "#9AA4B2",
+    border: `1px solid ${active ? "#56C271" : "#2A2F37"}`,
+    borderRadius: 6,
+    padding: "4px 10px",
+    fontSize: 12,
+    cursor: "pointer",
+  };
+}

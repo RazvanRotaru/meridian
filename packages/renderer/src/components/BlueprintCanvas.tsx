@@ -8,7 +8,15 @@
  * mode, dotted background, coloured MiniMap.
  */
 
-import { ReactFlow, ReactFlowProvider, type Node, type NodeMouseHandler } from "@xyflow/react";
+import { useEffect, useMemo, useRef } from "react";
+import {
+  ReactFlow,
+  ReactFlowProvider,
+  useNodesInitialized,
+  type Node,
+  type NodeMouseHandler,
+  type ReactFlowInstance,
+} from "@xyflow/react";
 import { accentForKind } from "../theme/kindColors";
 import { coverageAccent } from "../theme/coverageColors";
 import type { CoverageReport } from "@meridian/core";
@@ -24,6 +32,12 @@ import { CodePanel } from "./CodePanel";
 import { CommandPalette } from "./CommandPalette";
 import { LogicFlowView } from "./LogicFlowView";
 import { ModuleMapView } from "./ModuleMapView";
+import { FlowExplorerPanel } from "./flowexplorer/FlowExplorerPanel";
+import { FlowPane } from "./flowexplorer/FlowPane";
+import { emphasizeFlow, renderedIdsForFlowEmphasis } from "./flowEmphasisPaint";
+import { selectionKey } from "./flowexplorer/flowSelection";
+
+const FLOW_CANVAS_PROPS = { ...READONLY_CANVAS_PROPS, fitView: false } as const;
 
 // The Logic-flow view is a plain nested-div render, not a React Flow surface, so it swaps in for
 // <ReactFlow> whole. Toolbar (the tab toggle + sidebar) and the modal CodePanel stay mounted in
@@ -32,36 +46,98 @@ import { ModuleMapView } from "./ModuleMapView";
 export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
   const viewMode = useBlueprint((state) => state.viewMode);
   return (
-    <div style={{ position: "relative", width: "100%", height: "100%" }}>
-      {/* Each view is its OWN ReactFlow surface; keying a fresh provider per mode gives each its own
-          React Flow store, so a tab switch can never bleed the previous surface's nodes into the next
-          one's first render (which crashed its MiniMap nodeColor on foreign-shaped data). The
-          always-mounted Toolbar's <Panel> keeps using the outer App-level provider. */}
-      <ReactFlowProvider key={viewMode}>
-        {viewMode === "call" ? (
-          <ModuleMapView />
-        ) : viewMode === "logic" ? (
-          <LogicFlowView />
-        ) : viewMode === "modules" ? (
-          <ModuleMapView />
-        ) : (
-          <FlowCanvas />
-        )}
-      </ReactFlowProvider>
-      <Toolbar preselectedEnv={props.preselectedEnv} />
-      <CodePanel />
-      {/* Global Cmd/Ctrl+P quick-open — mounted here so the shortcut works in every view mode. */}
-      <CommandPalette />
+    <div style={SHELL_STYLE}>
+      <FlowExplorerPanel />
+      <div style={MAIN_STYLE}>
+        {/* Each view is its OWN ReactFlow surface; keying a fresh provider per mode gives each its own
+            React Flow store, so a tab switch can never bleed the previous surface's nodes into the next
+            one's first render (which crashed its MiniMap nodeColor on foreign-shaped data). The
+            always-mounted Toolbar's <Panel> keeps using the outer App-level provider. */}
+        <ReactFlowProvider key={viewMode}>
+          {viewMode === "call" ? (
+            <ModuleMapView />
+          ) : viewMode === "logic" ? (
+            <LogicFlowView />
+          ) : viewMode === "modules" ? (
+            <ModuleMapView />
+          ) : (
+            <FlowCanvas />
+          )}
+        </ReactFlowProvider>
+        <Toolbar preselectedEnv={props.preselectedEnv} />
+        <CodePanel />
+        {/* Global Cmd/Ctrl+P quick-open — mounted here so the shortcut works in every view mode. */}
+        <CommandPalette />
+      </div>
+      <FlowPane />
     </div>
   );
 }
 
 // The call/UI graph surface: a controlled, read-only React Flow canvas driven by the store.
 function FlowCanvas() {
-  const nodes = useBlueprint((state) => state.rfNodes);
-  const edges = useBlueprint((state) => state.rfEdges);
+  const rawNodes = useBlueprint((state) => state.rfNodes);
+  const rawEdges = useBlueprint((state) => state.rfEdges);
+  const flowEmphasis = useBlueprint((state) => state.flowEmphasis);
+  const flowSelection = useBlueprint((state) => state.flowSelection);
+  const layoutStatus = useBlueprint((state) => state.layoutStatus);
+  const parentOf = useBlueprint((state) => state.index.parentOf);
   const coverage = useBlueprint((state) => (state.coverageMode ? state.coverage : null));
   const { select, diveInto, openLogicFlow } = useBlueprintActions();
+  const { nodes, edges } = useMemo(
+    () => emphasizeFlow(rawNodes, rawEdges, flowEmphasis),
+    [rawNodes, rawEdges, flowEmphasis],
+  );
+  const nodesInitialized = useNodesInitialized();
+  const rfRef = useRef<ReactFlowInstance<BlueprintNode, BlueprintEdge> | null>(null);
+  const initialFitDone = useRef(false);
+  const fitKey = selectionKey(flowSelection);
+  const latestFitKey = useRef(fitKey);
+  const pendingFit = useRef<{ key: string; requestedOnNodes: readonly BlueprintNode[] } | null>(null);
+  useEffect(() => {
+    latestFitKey.current = fitKey;
+  }, [fitKey]);
+  useEffect(() => {
+    pendingFit.current = flowSelection === null ? null : { key: fitKey, requestedOnNodes: rawNodes };
+  }, [fitKey, flowSelection]);
+  useEffect(() => {
+    const request = pendingFit.current;
+    if (
+      !rfRef.current ||
+      !nodesInitialized ||
+      !request ||
+      request.key !== fitKey ||
+      layoutStatus !== "ready" ||
+      request.requestedOnNodes === rawNodes
+    ) {
+      return;
+    }
+    const targetIds = renderedIdsForFlowEmphasis(rawNodes, flowEmphasis, parentOf);
+    pendingFit.current = null;
+    if (targetIds.length === 0) {
+      return;
+    }
+    const targetNodes = targetIds.map((id) => ({ id }));
+    const requestKey = request.key;
+    requestAnimationFrame(() => {
+      if (latestFitKey.current !== requestKey) {
+        return;
+      }
+      void rfRef.current?.fitView({ nodes: targetNodes, padding: 0.2, maxZoom: 1, duration: 400 });
+    });
+  }, [fitKey, layoutStatus, nodesInitialized, rawNodes]);
+  useEffect(() => {
+    if (!rfRef.current || !nodesInitialized || initialFitDone.current || flowSelection !== null || rawNodes.length === 0) {
+      return;
+    }
+    initialFitDone.current = true;
+    requestAnimationFrame(() => {
+      if (latestFitKey.current !== "none") {
+        return;
+      }
+      void rfRef.current?.fitView({ padding: 0.2, minZoom: 0.01 });
+    });
+  }, [flowSelection, nodesInitialized, rawNodes]);
   const onNodeClick: NodeMouseHandler<BlueprintNode> = (_event, node) => select(node.id);
   // Double-clicking a container's frame dives INTO it (Unreal-Blueprints black-box drill-down).
   // Header double-clicks stop propagation, so they never reach here. A leaf callable instead
@@ -81,10 +157,13 @@ function FlowCanvas() {
       edges={edges}
       nodeTypes={nodeTypes}
       edgeTypes={edgeTypes}
+      onInit={(instance) => {
+        rfRef.current = instance;
+      }}
       onNodeClick={onNodeClick}
       onNodeDoubleClick={onNodeDoubleClick}
       onPaneClick={() => select(null)}
-      {...READONLY_CANVAS_PROPS}
+      {...FLOW_CANVAS_PROPS}
     >
       <CanvasChrome nodeColor={(node) => miniMapColor(node, coverage)} />
       <CoveragePanel />
@@ -100,3 +179,19 @@ function miniMapColor(node: Node, coverage: CoverageReport | null): string {
   }
   return accentForKind((node.data as BlueprintNodeData).node.kind);
 }
+
+const SHELL_STYLE: React.CSSProperties = {
+  position: "relative",
+  width: "100%",
+  height: "100%",
+  display: "flex",
+  minWidth: 0,
+  overflow: "hidden",
+};
+
+const MAIN_STYLE: React.CSSProperties = {
+  position: "relative",
+  flex: 1,
+  minWidth: 0,
+  height: "100%",
+};

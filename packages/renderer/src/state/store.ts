@@ -22,10 +22,12 @@ import type { GraphIndex } from "../graph/graphIndex";
 import type { BlueprintEdge, BlueprintNode } from "../layout/rfTypes";
 import type { TelemetryProvider } from "../telemetry/provider";
 import type { ViewMode } from "../derive/edgeSelection";
+import { relatedNodeIds, type FlowSelectionRef } from "../derive/flowBlocks";
 import type { LogicViewMode } from "../derive/flowViewModel";
 import { uiFocusTarget } from "../derive/uiFocus";
 import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
+import { deriveFlowPaneLayout } from "./deriveFlowPaneLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
 import { deriveModuleLevelLayout, type ModuleLevelLayout } from "./deriveModuleMapLayout";
 import { deriveServiceLevelLayout } from "./deriveServiceMapLayout";
@@ -36,6 +38,7 @@ import { deriveServiceTree } from "../derive/serviceClusterTree";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import type { HighlightMode } from "../components/moduleMapPaint";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
+import { moduleRevealStateFor, withAncestorsOf, withAncestorsOfMany } from "./flowExplorer";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
 
@@ -117,6 +120,13 @@ export interface BlueprintState {
   /** Nest consecutive same-owner calls under service frames in the Logic graph. Default OFF (flat):
    * the framing is opt-in, so the flow reads as plain blocks unless the reader turns it on. */
   nestByService: boolean;
+  /** Phase-1 Code flows explorer state: selection/emphasis are shared by the future tree and panes. */
+  flowExplorerOpen: boolean;
+  flowSelection: FlowSelectionRef | null;
+  flowEmphasis: Set<string>;
+  flowPaneRfNodes: LogicRfNode[];
+  flowPaneRfEdges: LogicRfEdge[];
+  flowPaneLayoutStatus: LayoutStatus;
   /** The laid-out Logic graph (React Flow), recomputed on open/drill/expand/toggle via ELK. */
   logicRfNodes: LogicRfNode[];
   logicRfEdges: LogicRfEdge[];
@@ -187,6 +197,7 @@ export interface BlueprintState {
   codeView: CodeView | null;
   toggleExpand(nodeId: string): void;
   expandPath(nodeId: string): void;
+  expandPaths(nodeIds: string[]): void;
   collapseAll(): void;
   select(nodeId: string | null): void;
   diveInto(nodeId: string): void;
@@ -195,6 +206,9 @@ export interface BlueprintState {
   isolateFlow(nodeId: string): void;
   clearFlow(): void;
   setFlowDepth(depth: number | null): void;
+  toggleFlowExplorer(): void;
+  selectFlowEntry(ref: FlowSelectionRef | null): void;
+  flowPaneRelayout(): Promise<void>;
   /** The logic flow charted for a callable, or undefined when it has none (empty body). */
   logicFlowFor(nodeId: string): FlowStep[] | undefined;
   openLogicFlow(nodeId: string): void;
@@ -268,6 +282,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let blockDeps: BlockDeps | null = null;
   // And for the composition-tab method-preview drawer's logic layout (the EXPERIMENT surface).
   let compMethodLayoutSeq = 0;
+  // Same guard for the Code flows explorer's embedded flow preview pane.
+  let flowPaneLayoutSeq = 0;
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
   // The composition tab opens on the WHOLE-SYSTEM overview (null root); file-rooting is the explicit
@@ -302,6 +318,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     expandedLogic: new Set<string>(),
     hideGreyed: false,
     nestByService: false,
+    flowExplorerOpen: false,
+    flowSelection: null,
+    flowEmphasis: new Set<string>(),
+    flowPaneRfNodes: [],
+    flowPaneRfEdges: [],
+    flowPaneLayoutStatus: "idle",
     logicRfNodes: [],
     logicRfEdges: [],
     logicLayoutStatus: "idle",
@@ -345,6 +367,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     expandPath(nodeId) {
       set({ expanded: withAncestorsOf(nodeId, get().index, get().expanded) });
+      void get().relayout();
+    },
+
+    expandPaths(nodeIds) {
+      set({ expanded: withAncestorsOfMany(nodeIds, get().index, get().expanded) });
       void get().relayout();
     },
 
@@ -412,6 +439,69 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       set({ flowDepth: depth });
       void get().relayout();
+    },
+
+    toggleFlowExplorer() {
+      const flowExplorerOpen = !get().flowExplorerOpen;
+      set(flowExplorerOpen
+        ? { flowExplorerOpen }
+        : {
+            flowExplorerOpen,
+            flowSelection: null,
+            flowEmphasis: new Set<string>(),
+            flowPaneRfNodes: [],
+            flowPaneRfEdges: [],
+            flowPaneLayoutStatus: "idle",
+          });
+    },
+
+    selectFlowEntry(ref) {
+      if (ref === null) {
+        set({
+          flowSelection: null,
+          flowEmphasis: new Set<string>(),
+          flowPaneRfNodes: [],
+          flowPaneRfEdges: [],
+          flowPaneLayoutStatus: "idle",
+        });
+        return;
+      }
+      const { artifact, index, viewMode } = get();
+      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const related = relatedNodeIds(index, flows, ref);
+      set({ flowSelection: ref, flowEmphasis: related });
+      if (viewMode === "ui") {
+        get().expandPaths([...related]);
+      } else if (viewMode === "modules") {
+        const reveal = moduleRevealStateFor([...related], index);
+        if (reveal) {
+          set({
+            moduleFocus: reveal.moduleFocus,
+            moduleExpanded: reveal.moduleExpanded,
+            moduleSelected: reveal.moduleSelected,
+          });
+          void get().moduleRelayout();
+        } else {
+          set({ moduleSelected: new Set<string>() });
+        }
+      }
+      void get().flowPaneRelayout();
+    },
+
+    async flowPaneRelayout() {
+      const { flowSelection, index, artifact } = get();
+      if (flowSelection === null) {
+        set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
+        return;
+      }
+      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const sequence = ++flowPaneLayoutSeq;
+      set({ flowPaneLayoutStatus: "laying-out" });
+      const graph = await deriveFlowPaneLayout(flowSelection, flows, index);
+      if (flowPaneLayoutSeq !== sequence) {
+        return;
+      }
+      set({ flowPaneRfNodes: graph.nodes, flowPaneRfEdges: graph.edges, flowPaneLayoutStatus: "ready" });
     },
 
     // The logic flow charted for a callable id: read straight from the artifact extension, keyed
@@ -963,20 +1053,6 @@ function withToggledCategory(hidden: Set<ModuleCategory>, category: ModuleCatego
     next.delete(category);
   } else {
     next.add(category);
-  }
-  return next;
-}
-
-/** Expand every container on the path to `nodeId` so a deep target becomes visible at once. */
-function withAncestorsOf(nodeId: string, index: GraphIndex, expanded: Set<string>): Set<string> {
-  const next = new Set(expanded);
-  const visited = new Set<string>();
-  let current: string | null | undefined = index.isContainer(nodeId) ? nodeId : index.parentOf.get(nodeId);
-  // A separate visited set (not `next`, which is pre-seeded) terminates on a parentId cycle.
-  while (current && !visited.has(current)) {
-    visited.add(current);
-    next.add(current);
-    current = index.parentOf.get(current);
   }
   return next;
 }

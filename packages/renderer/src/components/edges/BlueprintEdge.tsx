@@ -30,7 +30,7 @@ export function BlueprintEdge(props: EdgeProps<BlueprintEdgeType>) {
       id={props.id}
       path={path}
       markerEnd={props.markerEnd}
-      style={wireStyle(color, props.data?.weight ?? 1, resolved, incident, dimmed)}
+      style={wireStyle(color, props.data?.weight ?? 1, resolved, incident, dimmed, props.style)}
       label={isRenders ? "renders" : undefined}
       labelX={labelX}
       labelY={labelY}
@@ -45,6 +45,7 @@ function wireStyle(
   resolved: boolean,
   incident: boolean,
   dimmed: boolean,
+  override: React.CSSProperties | undefined,
 ): React.CSSProperties {
   if (incident) {
     return {
@@ -52,6 +53,7 @@ function wireStyle(
       strokeWidth: Math.max(2.5, strokeWidthForWeight(weight)),
       strokeDasharray: resolved ? undefined : "5 4",
       opacity: 1,
+      ...override,
     };
   }
   return {
@@ -59,6 +61,7 @@ function wireStyle(
     strokeWidth: strokeWidthForWeight(weight),
     strokeDasharray: resolved ? undefined : "5 4",
     opacity: dimmed ? 0.12 : resolved ? 0.95 : 0.5,
+    ...override,
   };
 }
 

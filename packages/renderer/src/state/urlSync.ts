@@ -36,6 +36,9 @@ export async function restoreFromUrl(store: BlueprintStore): Promise<void> {
   } else {
     await store.getState().relayout();
   }
+  if (nav.flowSelection) {
+    store.getState().selectFlowEntry(nav.flowSelection);
+  }
   applyEnvironment(store, nav.environment);
   prevNav = navFrom(store.getState());
 }
@@ -111,6 +114,12 @@ function structuralState(nav: NavState): Record<string, unknown> {
     logicSelected: nav.logicSelected,
     flowRootId: nav.flowRootId,
     flowDepth: nav.flowDepth,
+    flowExplorerOpen: nav.flowExplorerOpen,
+    flowSelection: null,
+    flowEmphasis: new Set<string>(),
+    flowPaneRfNodes: [],
+    flowPaneRfEdges: [],
+    flowPaneLayoutStatus: "idle",
     logicRoot: nav.logicRoot,
     logicView: nav.logicView,
     logicStack: nav.logicStack,

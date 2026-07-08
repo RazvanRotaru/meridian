@@ -11,6 +11,7 @@
  */
 
 import type { ViewMode } from "../derive/edgeSelection";
+import type { FlowSelectionRef, FlowBlockSegment } from "../derive/flowBlocks";
 import { isLogicViewMode, type LogicViewMode } from "../derive/flowViewModel";
 import { SHOW_SERVICE_COMPOSITION } from "../featureFlags";
 import type { HighlightMode } from "../components/moduleMapPaint";
@@ -25,6 +26,8 @@ export interface NavState {
   logicSelected: string | null;
   flowRootId: string | null;
   flowDepth: number | null;
+  flowExplorerOpen: boolean;
+  flowSelection: FlowSelectionRef | null;
   logicRoot: string | null;
   /** The Logic-flow projection on screen (exec graph by default) — see store.logicView. */
   logicView: LogicViewMode;
@@ -44,7 +47,7 @@ export interface NavState {
 }
 
 /** Every param key we own — listed once so `mergeNavIntoSearch` can clear them before rewriting. */
-const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "lroot", "lview", "lstack", "expand", "mfocus", "mexp", "mdepth", "hmode", "mhide", "env"] as const;
+const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "fexp", "fsel", "lroot", "lview", "lstack", "expand", "mfocus", "mexp", "mdepth", "hmode", "mhide", "env"] as const;
 
 /** The navigation state the app boots into — the baseline a restore resets absent keys back to. */
 export const DEFAULT_NAV: NavState = {
@@ -56,6 +59,8 @@ export const DEFAULT_NAV: NavState = {
   logicSelected: null,
   flowRootId: null,
   flowDepth: null,
+  flowExplorerOpen: false,
+  flowSelection: null,
   logicRoot: null,
   logicView: "graph",
   logicStack: [],
@@ -79,6 +84,8 @@ interface NavSource {
   logicSelected: string | null;
   flowRootId: string | null;
   flowDepth: number | null;
+  flowExplorerOpen: boolean;
+  flowSelection: FlowSelectionRef | null;
   logicRoot: string | null;
   logicView: LogicViewMode;
   logicStack: readonly string[];
@@ -103,6 +110,8 @@ export function navFrom(state: NavSource): NavState {
     logicSelected: state.logicSelected,
     flowRootId: state.flowRootId,
     flowDepth: state.flowDepth,
+    flowExplorerOpen: state.flowExplorerOpen,
+    flowSelection: cloneFlowSelection(state.flowSelection),
     logicRoot: state.logicRoot,
     logicView: state.logicView,
     logicStack: [...state.logicStack],
@@ -127,6 +136,8 @@ export function encodeNav(nav: NavState): Map<string, string> {
   setId(out, "lsel", nav.logicSelected);
   setId(out, "flow", nav.flowRootId);
   if (nav.flowDepth !== null) out.set("depth", String(nav.flowDepth));
+  if (nav.flowExplorerOpen) out.set("fexp", "1");
+  if (nav.flowSelection !== null) out.set("fsel", encodeFlowSelection(nav.flowSelection));
   setId(out, "lroot", nav.logicRoot);
   if (nav.logicView !== "graph") out.set("lview", nav.logicView);
   setList(out, "lstack", nav.logicStack);
@@ -159,6 +170,9 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   assignId(params, "flow", out, "flowRootId");
   const depth = params.get("depth");
   if (depth !== null && !Number.isNaN(Number(depth))) out.flowDepth = Number(depth);
+  if (params.get("fexp") === "1") out.flowExplorerOpen = true;
+  const flowSelection = decodeFlowSelection(params.get("fsel"));
+  if (flowSelection) out.flowSelection = flowSelection;
   assignId(params, "lroot", out, "logicRoot");
   const logicView = params.get("lview");
   if (logicView !== null && isLogicViewMode(logicView)) out.logicView = logicView;
@@ -206,6 +220,76 @@ export function isNavigationChange(prev: NavState, next: NavState): boolean {
     // like a selection), so Back never replays tab switches — or their full-graph relayouts.
     prev.logicStack.join(",") !== next.logicStack.join(",")
   );
+}
+
+function encodeFlowSelection(ref: FlowSelectionRef): string {
+  return `${encodeURIComponent(ref.rootId)}@${ref.blockPath.map(encodeSegment).join(".")}`;
+}
+
+function decodeFlowSelection(value: string | null): FlowSelectionRef | null {
+  if (value === null) {
+    return null;
+  }
+  const at = value.indexOf("@");
+  if (at <= 0) {
+    return null;
+  }
+  const rootId = decodeRootId(value.slice(0, at));
+  const blockPath = decodeBlockPath(value.slice(at + 1));
+  return rootId && blockPath ? { rootId, blockPath } : null;
+}
+
+function cloneFlowSelection(ref: FlowSelectionRef | null): FlowSelectionRef | null {
+  return ref ? { rootId: ref.rootId, blockPath: ref.blockPath.map((segment) => ({ ...segment })) } : null;
+}
+
+function encodeSegment(segment: FlowBlockSegment): string {
+  return segment.path === undefined ? String(segment.step) : `${segment.step}-${segment.path}`;
+}
+
+function decodeRootId(value: string): string | null {
+  try {
+    const rootId = decodeURIComponent(value);
+    return rootId.length > 0 ? rootId : null;
+  } catch {
+    return null;
+  }
+}
+
+function decodeBlockPath(value: string): FlowBlockSegment[] | null {
+  if (value === "") {
+    return [];
+  }
+  const path: FlowBlockSegment[] = [];
+  for (const segmentValue of value.split(".")) {
+    const segment = decodeSegment(segmentValue);
+    if (segment === null) {
+      return null;
+    }
+    path.push(segment);
+  }
+  return path;
+}
+
+function decodeSegment(value: string): FlowBlockSegment | null {
+  const parts = value.split("-");
+  if (parts.length > 2) {
+    return null;
+  }
+  const step = decodeIndex(parts[0]);
+  if (step === null) {
+    return null;
+  }
+  if (parts[1] === undefined) {
+    return { step };
+  }
+  const path = decodeIndex(parts[1]);
+  return path === null ? null : { step, path };
+}
+
+function decodeIndex(value: string): number | null {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function setId(out: Map<string, string>, key: string, value: string | null): void {
