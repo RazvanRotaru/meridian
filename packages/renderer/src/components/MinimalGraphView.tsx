@@ -10,9 +10,9 @@
  * Gestures on a file card: single-click selects it (drives the Map's own selection/green ring) — but
  * that plain click is DEBOUNCED (mirroring the Module map) so a double-click wins instead of the
  * first click repainting the graph out from under it. Clicking a directional [+n] stub expands ONE
- * direction (never debounced), and double-clicking a card expands BOTH directions at once by calling
- * the existing `expandMinimal` action twice (in + out) — no separate both-directions action —
- * revealing all its hidden importers + imports and committing it if it was a ghost.
+ * direction (never debounced). Double-clicking a card NAVIGATES into the node exactly like the Module
+ * map: it cancels the pending select, closes the overlay (which covers the Map), and focuses the Map
+ * on that node (`setModuleFocus`) — no more double-click expansion.
  */
 
 import { useEffect, useMemo, useRef } from "react";
@@ -46,7 +46,7 @@ export function MinimalGraphView() {
   const highlightMode = useBlueprint((state) => state.highlightMode);
   const seedCount = useBlueprint((state) => state.minimalSeedIds.length);
   const grown = useBlueprint((state) => state.minimalKeptIds.length > 0 || state.minimalExpanded.length > 0);
-  const { closeMinimalGraph, expandMinimal, resetMinimalGraph, selectModule, toggleModuleSelect } = useBlueprintActions();
+  const { closeMinimalGraph, expandMinimal, resetMinimalGraph, selectModule, toggleModuleSelect, setModuleFocus } = useBlueprintActions();
   const pendingSelectTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const pendingSelectId = useRef<string | null>(null);
 
@@ -99,19 +99,18 @@ export function MinimalGraphView() {
     }, SELECT_CLICK_DELAY_MS);
   };
 
-  // Double-clicking a file card fully expands it — reveals its hidden neighbours in BOTH directions at
-  // once (and commits it if it was a ghost) by calling the shared `expandMinimal` action twice; the
-  // relayout stale guard makes the second win. Cancel the pending single-click select first so it
-  // doesn't fire. Stubs have no both-directions meaning, so ignore them (a stub's single-click already
-  // expands its one direction). READONLY_CANVAS_PROPS disables zoom-on-double-click, so this gesture
-  // never fights the canvas.
+  // Double-clicking a file card NAVIGATES into it exactly like the Module map's double-click: it drills
+  // the real Map onto that node via `setModuleFocus`. Since the overlay covers the Map, close it first
+  // so the navigation surfaces, and cancel the pending single-click select so it doesn't also fire.
+  // Stubs have no navigate meaning (their single-click already expands one direction), so ignore them.
+  // READONLY_CANVAS_PROPS disables zoom-on-double-click, so this gesture never fights the canvas.
   const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
     if (node.type === MINIMAL_STUB_NODE) {
       return;
     }
     clearPendingSelect();
-    expandMinimal(node.id, "in");
-    expandMinimal(node.id, "out");
+    closeMinimalGraph();
+    setModuleFocus(node.id);
   };
 
   // Clear any pending single-click select on unmount so a queued timeout can't fire after teardown.
