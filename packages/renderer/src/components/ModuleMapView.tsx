@@ -27,7 +27,6 @@ import { accentForKind } from "../theme/kindColors";
 import type { BlockData, ModuleCardData, UnitCardData } from "../derive/moduleLevel";
 
 const PACKAGE_KIND = "package";
-const FILE_KIND = "file";
 
 export function ModuleMapView() {
   const nodes = useBlueprint((state) => state.moduleRfNodes);
@@ -42,7 +41,7 @@ export function ModuleMapView() {
   const showTests = useBlueprint((state) => state.showTests);
   const showPrivate = useBlueprint((state) => state.showPrivate);
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
-  const { buildMinimalGraph, setModuleFocus, expandModuleChildren, collapseModuleChildren } = useBlueprintActions();
+  const { buildMinimalGraph, setModuleFocus } = useBlueprintActions();
   const { onNodeClick, onNodeDoubleClick, onPaneClick } = useModuleNodeInteractions();
 
   // Category/test hiding is a pure VISIBILITY filter over the laid-out graph; positions are untouched.
@@ -50,7 +49,6 @@ export function ModuleMapView() {
     () => filterVisible(nodes, edges, { hiddenCategories, showTests, testIds: index.testIds, showPrivate, privateIds: index.privateIds }),
     [nodes, edges, hiddenCategories, showTests, showPrivate, index.testIds, index.privateIds],
   );
-  const hasExpansions = useMemo(() => shownNodes.some(isExpandedMapContainer), [shownNodes]);
   // Emphasis is a second pure repaint: dim by default, light the selection's N-hop import reach.
   const { nodes: styledNodes, edges: styledEdges, beacons } = useMemo(
     () => emphasize(shownNodes, shownEdges, selected, radius, highlightMode),
@@ -106,10 +104,7 @@ export function ModuleMapView() {
         focus={effectiveFocus}
         packageCount={effectiveFocus === null ? nodes.filter((node) => !node.parentId).length : 0}
         crumbs={crumbsFor(effectiveFocus, index)}
-        hasExpansions={hasExpansions}
         onFocus={setModuleFocus}
-        onExpandAll={() => expandModuleChildren(null)}
-        onCollapseAll={() => collapseModuleChildren(null)}
       />
       {selected.size >= 1 ? <BuildMinimalGraphButton count={selected.size} onBuild={buildMinimalGraph} /> : null}
       {isEmpty ? <EmptyModuleMapCard focus={effectiveFocus} /> : null}
@@ -145,13 +140,6 @@ function miniMapColor(node: Node): string {
     return "#565E68";
   }
   return CATEGORY_COLOR[(node.data as ModuleCardData).category];
-}
-
-function isExpandedMapContainer(node: Node): boolean {
-  return (
-    (node.type === PACKAGE_KIND || node.type === FILE_KIND || node.type === "unit" || node.type === "block") &&
-    (node.data as { isExpanded?: boolean }).isExpanded === true
-  );
 }
 
 const SURFACE_STYLE: React.CSSProperties = { position: "absolute", inset: 0, background: "#0E1116" };

@@ -13,7 +13,6 @@
 import type { ViewMode } from "../derive/edgeSelection";
 import type { FlowSelectionRef, FlowBlockSegment } from "../derive/flowBlocks";
 import { isLogicViewMode, type LogicViewMode } from "../derive/flowViewModel";
-import { SHOW_SERVICE_COMPOSITION } from "../featureFlags";
 import type { HighlightMode } from "../components/moduleMapPaint";
 import type { PrsTab } from "./prTypes";
 
@@ -177,10 +176,7 @@ export function encodeNav(nav: NavState): Map<string, string> {
 export function decodeNav(params: URLSearchParams): Partial<NavState> {
   const out: Partial<NavState> = {};
   const view = params.get("view");
-  // Service composition ("call") is only honoured from a URL when its build flag is on; otherwise a
-  // stale ?view=call link falls through to the default (Module map) instead of surfacing a hidden lens.
-  const callAllowed = view !== "call" || SHOW_SERVICE_COMPOSITION;
-  if (callAllowed && (view === "call" || view === "ui" || view === "logic" || view === "modules" || view === "prs")) {
+  if (view === "call" || view === "ui" || view === "logic" || view === "modules" || view === "prs") {
     out.viewMode = view;
   }
   assignId(params, "focus", out, "focusId");

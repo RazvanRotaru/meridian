@@ -23,7 +23,8 @@ Unreal-Blueprints-style (calls, branches, loops, drill-in, ⌘P symbol search).
 ## Quickstart
 
 ```bash
-pnpm install && pnpm build
+pnpm install && pnpm build     # build all packages and stage the web renderer
+pnpm start                     # launch the web UI and open the landing page in your browser
 
 # The web way — paste a repo, see its graph (self-hosted; nothing is uploaded)
 node packages/cli/dist/bin.js web sindresorhus/ky        # any GitHub owner/repo, URL, or local path
