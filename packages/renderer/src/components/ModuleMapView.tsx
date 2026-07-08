@@ -37,14 +37,14 @@ export function ModuleMapView() {
   const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
   const showTests = useBlueprint((state) => state.showTests);
   const showPrivate = useBlueprint((state) => state.showPrivate);
-  const hasExpansions = useBlueprint((state) => state.moduleExpanded.size > 0);
-  const { selectModule, toggleModuleSelect, setModuleFocus, openLogicFlow, revealModule, expandAllModules, collapseAll } = useBlueprintActions();
+  const { selectModule, toggleModuleSelect, setModuleFocus, openLogicFlow, revealModule, expandModuleChildren, collapseModuleChildren } = useBlueprintActions();
 
   // Category/test hiding is a pure VISIBILITY filter over the laid-out graph; positions are untouched.
   const { nodes: shownNodes, edges: shownEdges } = useMemo(
     () => filterVisible(nodes, edges, { hiddenCategories, showTests, testIds: index.testIds, showPrivate, privateIds: index.privateIds }),
     [nodes, edges, hiddenCategories, showTests, showPrivate, index.testIds, index.privateIds],
   );
+  const hasExpansions = useMemo(() => shownNodes.some(isExpandedPackageOrFile), [shownNodes]);
   // Emphasis is a second pure repaint: dim by default, light the selection's N-hop import reach.
   const { nodes: styledNodes, edges: styledEdges, beacons } = useMemo(
     () => emphasize(shownNodes, shownEdges, selected, radius),
@@ -111,8 +111,8 @@ export function ModuleMapView() {
         crumbs={crumbsFor(effectiveFocus, index)}
         hasExpansions={hasExpansions}
         onFocus={setModuleFocus}
-        onExpandAll={expandAllModules}
-        onCollapseAll={collapseAll}
+        onExpandAll={() => expandModuleChildren(null)}
+        onCollapseAll={() => collapseModuleChildren(null)}
       />
       {isEmpty ? <EmptyModuleMapCard focus={effectiveFocus} /> : null}
       <MapLegend />
@@ -138,6 +138,10 @@ function miniMapColor(node: Node): string {
     return "#565E68";
   }
   return CATEGORY_COLOR[(node.data as ModuleCardData).category];
+}
+
+function isExpandedPackageOrFile(node: Node): boolean {
+  return (node.type === "package" || node.type === "file") && (node.data as { isExpanded?: boolean }).isExpanded === true;
 }
 
 const SURFACE_STYLE: React.CSSProperties = { position: "absolute", inset: 0, background: "#0E1116" };

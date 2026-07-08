@@ -29,6 +29,39 @@ export function ExpandChevron({ id, isExpanded, collapsedTitle }: { id: string; 
   );
 }
 
+/** One-level controls for an expanded package frame's direct package/file children. */
+export function FrameLevelActions({ id }: { id: string }) {
+  const { expandModuleChildren, collapseModuleChildren } = useBlueprintActions();
+  return (
+    <span style={FRAME_ACTIONS}>
+      <button
+        type="button"
+        style={FRAME_ACTION}
+        title="Expand each child card"
+        aria-label="Expand child cards"
+        onClick={(event) => {
+          event.stopPropagation();
+          expandModuleChildren(id);
+        }}
+      >
+        ⊞
+      </button>
+      <button
+        type="button"
+        style={FRAME_ACTION}
+        title="Collapse child cards"
+        aria-label="Collapse child cards"
+        onClick={(event) => {
+          event.stopPropagation();
+          collapseModuleChildren(id);
+        }}
+      >
+        ⊟
+      </button>
+    </span>
+  );
+}
+
 /** An expanded card's near-transparent frame, tinted by the card family's accent. */
 export function frameStyle(accent: string): React.CSSProperties {
   return {
@@ -76,3 +109,5 @@ const CHEVRON: React.CSSProperties = {
   font: "inherit",
   fontSize: 11,
 };
+const FRAME_ACTIONS: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 2, flexShrink: 0 };
+const FRAME_ACTION: React.CSSProperties = { ...CHEVRON, width: 18, fontSize: 12 };

@@ -11,7 +11,7 @@ import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
 import type { ModuleGroupData } from "../../../derive/moduleTree";
-import { ExpandChevron, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT, TITLE_BAR } from "./frameChrome";
+import { ExpandChevron, FrameLevelActions, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT, TITLE_BAR } from "./frameChrome";
 
 // A neutral package hue — the cross-package coupling gold lives on the wires, not the boxes.
 const PACKAGE_ACCENT = "#5B9BE3";
@@ -31,6 +31,7 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
           {chevron}
           <span style={TITLE_LABEL} title={id}>{data.label}</span>
           <Meta data={data} />
+          <FrameLevelActions id={id} />
         </div>
       </div>
     );

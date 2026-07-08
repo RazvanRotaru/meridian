@@ -25,8 +25,8 @@ export function crumbsFor(focus: string | null, index: GraphIndex): Crumb[] {
 /**
  * The zoom trail: "Repository" (level 0) then each package/directory you descended into. Every
  * segment but the last is a button that zooms back to that level; the last is the current level.
- * The right-hand cluster expands EVERY container reachable from this level (dirs → files → flows)
- * or collapses them all back to the frontier. Mirrors the call lens's Breadcrumb control language.
+ * The right-hand cluster opens or closes one level of package/file cards at the current frontier.
+ * Mirrors the call lens's Breadcrumb control language.
  */
 export function LevelBreadcrumb(props: {
   focus: string | null;
@@ -59,14 +59,21 @@ export function LevelBreadcrumb(props: {
         );
       })}
       <span style={DIVIDER} aria-hidden />
-      <button type="button" style={ACTION_STYLE} title="Expand every card on this level, all the way down" onClick={props.onExpandAll}>
+      <button
+        type="button"
+        style={ACTION_STYLE}
+        title="Expand each card on this level"
+        aria-label="Expand cards on this level"
+        onClick={props.onExpandAll}
+      >
         ⊞ Expand all
       </button>
       <button
         type="button"
         style={props.hasExpansions ? ACTION_STYLE : ACTION_DISABLED_STYLE}
         disabled={!props.hasExpansions}
-        title={props.hasExpansions ? "Collapse every expanded card back to this level" : "Nothing is expanded"}
+        title={props.hasExpansions ? "Collapse the cards on this level" : "Nothing is expanded on this level"}
+        aria-label="Collapse cards on this level"
         onClick={props.onCollapseAll}
       >
         ⊟ Collapse all

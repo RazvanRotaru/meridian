@@ -31,6 +31,7 @@ import { deriveModuleLevelLayout } from "./deriveModuleMapLayout";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import { buildBlockDeps, type BlockDeps } from "../derive/blockDeps";
 import { deriveModuleTree } from "../derive/moduleTree";
+import { moduleChildContainerIds } from "../derive/moduleChildContainers";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
@@ -219,7 +220,8 @@ export interface BlueprintState {
   setModuleFocus(id: string | null): void;
   toggleModuleExpand(nodeId: string): void;
   revealModule(nodeId: string): void;
-  expandAllModules(): void;
+  expandModuleChildren(containerId: string | null): void;
+  collapseModuleChildren(containerId: string | null): void;
   togglePrivateMembers(): void;
   setModuleRadius(radius: number): void;
   toggleCategory(category: ModuleCategory): void;
@@ -696,27 +698,30 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().moduleRelayout();
     },
 
-    // Expand EVERYTHING down to the CODE level from the current view: run the (pure, sync) tree
-    // derive to a fixpoint, adding every drawn CONTAINMENT container (dirs → files) that isn't open
-    // yet. Flow frames — function/method blocks and their nested steps — stay closed: charting every
-    // flow at once is noise, and the reader unrolls those one call at a time. The expansion set only
-    // grows and is bounded by the artifact, so termination is structural.
-    expandAllModules() {
+    // Expand one containment level under the target. `null` means the current view frontier, while
+    // a package id means that expanded package frame's visible children.
+    expandModuleChildren(containerId) {
       const { index, moduleFocus, artifact } = get();
-      moduleGraph ??= buildModuleGraph(index);
-      blockDeps ??= buildBlockDeps(index);
+      const graph = moduleGraph ?? (moduleGraph = buildModuleGraph(index));
+      const deps = blockDeps ?? (blockDeps = buildBlockDeps(index));
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const expanded = new Set(get().moduleExpanded);
-      for (;;) {
-        const tree = deriveModuleTree(index, moduleFocus, expanded, moduleGraph, blockDeps, flows);
-        const fresh = tree.nodes
-          .filter((node) => node.isContainer && !node.isExpanded && (node.kind === "package" || node.kind === "file"))
-          .map((node) => node.id);
-        if (fresh.length === 0) {
-          break;
-        }
-        fresh.forEach((id) => expanded.add(id));
-      }
+      const tree = deriveModuleTree(index, moduleFocus, expanded, graph, deps, flows);
+      moduleChildContainerIds(tree, containerId).forEach((id) => expanded.add(id));
+      set({ moduleExpanded: expanded });
+      void get().moduleRelayout();
+    },
+
+    // Collapse only direct child package/file frames; deeper expansion ids deliberately remain, so
+    // re-opening a parent restores the reader's deeper manual state.
+    collapseModuleChildren(containerId) {
+      const { index, moduleFocus, artifact } = get();
+      const graph = moduleGraph ?? (moduleGraph = buildModuleGraph(index));
+      const deps = blockDeps ?? (blockDeps = buildBlockDeps(index));
+      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const expanded = new Set(get().moduleExpanded);
+      const tree = deriveModuleTree(index, moduleFocus, expanded, graph, deps, flows);
+      moduleChildContainerIds(tree, containerId).forEach((id) => expanded.delete(id));
       set({ moduleExpanded: expanded });
       void get().moduleRelayout();
     },
