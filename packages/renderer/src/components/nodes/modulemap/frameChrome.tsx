@@ -21,23 +21,26 @@ export function FrameTitleBar({ actionsId, chevron, children }: { actionsId: str
 }
 
 /**
- * The `</>` source button a Map leaf (function level and below) carries: opens the code modal, whose
- * gutter marks the diff lines (+ added / − deleted / ~ modified). Renders only when the node has a
- * source location AND the server is serving source (`sourceUrl`), so it never dangles a dead button.
+ * The `</>` diff button a CHANGED Map leaf (function level and below) carries: opens the code modal
+ * scrolled to the diff, whose gutter + rows mark the changed lines (+ added / − deleted / ~ modified).
+ * Gated to changed nodes on purpose — an unchanged node has nothing to show, so a `</>` there would
+ * just open plain source and leave the reader hunting for a "+/-" that isn't there. Also needs a
+ * source location AND the server serving source (`sourceUrl`), so it never dangles a dead button.
  */
 export function CodeButton({ id }: { id: string }) {
   const node = useBlueprint((state) => state.index.nodesById.get(id));
   const sourceUrl = useBlueprint((state) => state.sourceUrl);
+  const changed = useBlueprint((state) => state.index.changedIds.has(id));
   const { showCode, expandCode } = useBlueprintActions();
-  if (!node?.location || !sourceUrl) {
+  if (!changed || !node?.location || !sourceUrl) {
     return null;
   }
   return (
     <button
       type="button"
       style={CODE_BTN}
-      title="View source — changed lines marked + / −"
-      aria-label="View source"
+      title="View the diff — changed lines marked + / − / ~"
+      aria-label="View diff"
       onClick={(event) => {
         event.stopPropagation();
         void showCode(node);

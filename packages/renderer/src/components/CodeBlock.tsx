@@ -266,16 +266,16 @@ const ADDED_GUTTER_STYLE: React.CSSProperties = { color: "#56C271", fontWeight: 
 const MODIFIED_GUTTER_STYLE: React.CSSProperties = { color: "#E6B84D", fontWeight: 700 };
 const DELETED_GUTTER_STYLE: React.CSSProperties = { color: "#F0787C", fontWeight: 700 };
 const ADDED_ROW_STYLE: React.CSSProperties = {
-  background: "rgba(86,194,113,0.13)",
-  boxShadow: "inset 2px 0 0 #56C271",
+  background: "rgba(86,194,113,0.20)",
+  boxShadow: "inset 3px 0 0 #56C271",
 };
 const MODIFIED_ROW_STYLE: React.CSSProperties = {
-  background: "linear-gradient(90deg, rgba(86,194,113,0.11) 0%, rgba(240,120,124,0.11) 100%)",
-  boxShadow: "inset 2px 0 0 #E6B84D",
+  background: "rgba(230,184,77,0.18)",
+  boxShadow: "inset 3px 0 0 #E6B84D",
 };
 const DELETED_ROW_STYLE: React.CSSProperties = {
-  background: "rgba(240,120,124,0.13)",
-  boxShadow: "inset 2px 0 0 #F0787C",
+  background: "rgba(240,120,124,0.20)",
+  boxShadow: "inset 3px 0 0 #F0787C",
 };
 const CODE_COLUMN_STYLE: React.CSSProperties = {
   margin: 0,
