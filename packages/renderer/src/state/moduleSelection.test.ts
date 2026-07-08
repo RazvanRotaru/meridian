@@ -93,6 +93,33 @@ describe("minimal-graph overlay navigation", () => {
     expect(withBuiltGraph().getState().minimalSeedIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
   });
 
+  it("expandMinimal records the expansion and commits its source to the kept (persistent) set", () => {
+    const store = withBuiltGraph();
+    store.getState().expandMinimal("ts:src/a.ts", "out");
+    expect(store.getState().minimalExpanded).toEqual([{ id: "ts:src/a.ts", direction: "out" }]);
+    expect(store.getState().minimalKeptIds).toEqual(["ts:src/a.ts"]);
+    // The same direction twice is a no-op.
+    store.getState().expandMinimal("ts:src/a.ts", "out");
+    expect(store.getState().minimalExpanded).toHaveLength(1);
+  });
+
+  it("resetMinimalGraph drops all growth back to the seed base but keeps the overlay open", () => {
+    const store = withBuiltGraph();
+    store.getState().expandMinimal("ts:src/a.ts", "out");
+    store.getState().resetMinimalGraph();
+    expect(store.getState().minimalExpanded).toEqual([]);
+    expect(store.getState().minimalKeptIds).toEqual([]);
+    expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
+  });
+
+  it("a fresh build resets any prior growth", () => {
+    const store = withBuiltGraph();
+    store.getState().expandMinimal("ts:src/a.ts", "out");
+    store.getState().buildMinimalGraph();
+    expect(store.getState().minimalExpanded).toEqual([]);
+    expect(store.getState().minimalKeptIds).toEqual([]);
+  });
+
   it("closeMinimalGraph clears the overlay but keeps the selection for a rebuild", () => {
     const store = withBuiltGraph();
     store.getState().closeMinimalGraph();
@@ -102,7 +129,9 @@ describe("minimal-graph overlay navigation", () => {
 
   it("leaving the Map lens closes the overlay (it never lingers behind another tab)", () => {
     const store = withBuiltGraph();
+    store.getState().expandMinimal("ts:src/a.ts", "out");
     store.getState().setViewMode("logic");
     expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().minimalExpanded).toEqual([]);
   });
 });

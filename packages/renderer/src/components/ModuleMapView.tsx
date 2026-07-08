@@ -187,7 +187,7 @@ export function ModuleMapView() {
         onExpandAll={() => expandModuleChildren(null)}
         onCollapseAll={() => collapseModuleChildren(null)}
       />
-      {selected.size >= 2 ? <BuildMinimalGraphButton count={selected.size} onBuild={buildMinimalGraph} /> : null}
+      {selected.size >= 1 ? <BuildMinimalGraphButton count={selected.size} onBuild={buildMinimalGraph} /> : null}
       {isEmpty ? <EmptyModuleMapCard focus={effectiveFocus} /> : null}
       <MapLegend />
       <CoveragePanel />
@@ -195,7 +195,7 @@ export function ModuleMapView() {
   );
 }
 
-/** The floating action a 2+ multi-selection reveals: build the selection's minimal graph overlay. */
+/** The floating action a selection (one card or more) reveals: build its minimal graph overlay. */
 function BuildMinimalGraphButton(props: { count: number; onBuild: () => void }) {
   return (
     <button type="button" style={BUILD_BUTTON_STYLE} onClick={props.onBuild}>

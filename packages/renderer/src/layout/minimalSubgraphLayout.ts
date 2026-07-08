@@ -1,39 +1,39 @@
 /**
  * Lay out a MinimalSubgraphSpec with ELK and map it to React Flow — the analog of `moduleLevelLayout`,
  * but NESTED: package/collapsed-chain frames recurse as ELK containers with title-bar padding, file
- * cards are leaves at a fixed size. The nesting, the root-only `hierarchyHandling` contract and the
+ * cards and [+n] stubs are leaves. The nesting, the root-only `hierarchyHandling` contract and the
  * parent-relative mapping live in `elkNesting`; this module only supplies the adapter, layout options
  * and edge styling. It reuses the Module-map's OWN card components (`moduleNodeTypes`): file leaves
- * render as read-only `file` cards, containment frames as read-only `package` frames. Boundary file
- * cards carry a dimming `style` and boundary-touching wires a `toBoundary` flag so the overlay reads
- * the faded 1-hop context. Deterministic — ELK layered is stable, no Math.random/Date.
+ * render as read-only `file` cards, containment frames as read-only `package` frames; a `minimalStub`
+ * is the directional [+n] expander. Ghost-tier files dim in place. Deterministic — ELK layered is
+ * stable, no Math.random/Date.
  */
 
 import type { Edge, Node } from "@xyflow/react";
 import type { ElkNode } from "elkjs/lib/elk-api";
 import { runElkLayout } from "./elkLayout";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
-import type { MinimalSubgraphEdge, MinimalSubgraphNode, MinimalSubgraphSpec } from "../derive/minimalSubgraph";
+import type { MinimalStubData, MinimalSubgraphEdge, MinimalSubgraphNode, MinimalSubgraphSpec } from "../derive/minimalSubgraph";
 import type { ModuleCardData } from "../derive/moduleLevel";
 import type { ModulePackageData } from "../derive/packageOverview";
 import type { ModuleGroupData } from "../derive/moduleTreeTypes";
 import { arrowMarker } from "../theme/edgeColors";
 
-/** An import wire's data: its multiplicity and whether it touches a boundary node (paint faded). */
-export interface MinimalEdgeData {
-  weight: number;
-  toBoundary: boolean;
-}
+/** The React Flow node type the overlay registers on top of `moduleNodeTypes` for the [+n] expanders. */
+export const MINIMAL_STUB_NODE = "minimalStub";
 
 const FILE_WIDTH = 210;
 const FILE_HEIGHT = 54;
+const STUB_WIDTH = 48;
+const STUB_HEIGHT = 30;
 
-// Quiet dark import wires; a boundary-touching one is thinner + dashed + dimmed (faded context).
+// Quiet dark import wires; a stub tether is fainter still. Ghost files dim to this opacity.
 const EDGE_COLOR = "#3A424E";
-const BOUNDARY_OPACITY = 0.5;
+const STUB_EDGE_COLOR = "#2A313C";
+const GHOST_OPACITY = 0.45;
 
-// Layered left→right so importers sit left of what they import, with root-only INCLUDE_CHILDREN so a
-// wire routes across frame boundaries. Mirrors the composition/logic surfaces so the lenses feel alike.
+// Layered left→right so importers sit left of what they import (and [+in] stubs sit left, [+out]
+// right), with root-only INCLUDE_CHILDREN so a wire routes across frame boundaries.
 const ROOT_LAYOUT_OPTIONS: Record<string, string> = {
   "elk.algorithm": "layered",
   "elk.direction": "RIGHT",
@@ -52,7 +52,7 @@ const adapter: ElkNestAdapter<MinimalSubgraphNode> = {
   id: (node) => node.id,
   parentId: (node) => node.parentId,
   isContainer: (node) => node.kind === "group",
-  leafSize: () => ({ width: FILE_WIDTH, height: FILE_HEIGHT }),
+  leafSize: (node) => (node.kind === "stub" ? { width: STUB_WIDTH, height: STUB_HEIGHT } : { width: FILE_WIDTH, height: FILE_HEIGHT }),
   containerOptions: CONTAINER_LAYOUT_OPTIONS,
 };
 
@@ -63,31 +63,30 @@ export async function layoutMinimalSubgraph(spec: MinimalSubgraphSpec): Promise<
   }
   const laid = await runElkLayout(buildNestedElkGraph(spec.nodes, spec.edges, adapter, ROOT_LAYOUT_OPTIONS));
   const specById = new Map(spec.nodes.map((node) => [node.id, node]));
-  const boundaryIds = new Set(spec.nodes.filter((node) => node.isBoundary).map((node) => node.id));
   const nodes = emitReactFlowNodes(laid, (elkNode, parentId) => {
     const node = specById.get(elkNode.id);
     return node ? toRfNode(elkNode, parentId, node) : null;
   });
-  return { nodes, edges: spec.edges.map((edge) => toRfEdge(edge, boundaryIds)) };
+  return { nodes, edges: spec.edges.map(toRfEdge) };
 }
 
-// The overlay reuses the Module-map card components, so a group is a read-only `package` frame and a
-// file a `file` card. Boundary neighbours dim in place (no bespoke variant — the "render plain" rule).
+// A file is a Map `file` card (ghost tier dimmed in place), a group a read-only `package` frame, a
+// stub the directional [+n] expander. Emphasis (the seed's selection ring) comes from the store, so
+// only the ghost dim needs a style here.
 function toRfNode(elkNode: ElkNode, parentId: string | undefined, node: MinimalSubgraphNode): Node {
+  const placement = parentRelativePlacement(elkNode, parentId);
   if (node.kind === "group") {
-    return {
-      id: node.id,
-      type: "package",
-      ...parentRelativePlacement(elkNode, parentId),
-      data: groupData(node),
-    };
+    return { id: node.id, type: "package", ...placement, data: groupData(node) };
+  }
+  if (node.kind === "stub") {
+    return { id: node.id, type: MINIMAL_STUB_NODE, ...placement, data: node.data as MinimalStubData };
   }
   return {
     id: node.id,
     type: "file",
-    ...parentRelativePlacement(elkNode, parentId),
+    ...placement,
     data: node.data as ModuleCardData,
-    ...(node.isBoundary ? { style: { opacity: BOUNDARY_OPACITY } } : {}),
+    ...(node.tier === "ghost" ? { style: { opacity: GHOST_OPACITY } } : {}),
   };
 }
 
@@ -96,21 +95,22 @@ function groupData(node: MinimalSubgraphNode): ModuleGroupData {
   return { ...(node.data as ModulePackageData), isContainer: false, isExpanded: true, readOnly: true };
 }
 
-// A boundary-touching wire is the faded context/blast-radius link (thin, dashed, dimmed); an
-// affected↔affected wire is the solid signal.
-function toRfEdge(edge: MinimalSubgraphEdge, boundaryIds: ReadonlySet<string>): Edge {
-  const toBoundary = boundaryIds.has(edge.source) || boundaryIds.has(edge.target);
+function toRfEdge(edge: MinimalSubgraphEdge): Edge {
+  if (edge.kind === "stub") {
+    return {
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      style: { stroke: STUB_EDGE_COLOR, strokeWidth: 1, strokeDasharray: "2 3", opacity: 0.6 },
+      selectable: false,
+    };
+  }
   return {
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    style: {
-      stroke: EDGE_COLOR,
-      strokeWidth: toBoundary ? 1 : 1.5,
-      opacity: toBoundary ? 0.5 : 0.85,
-      ...(toBoundary ? { strokeDasharray: "4 3" } : {}),
-    },
+    style: { stroke: EDGE_COLOR, strokeWidth: 1.5, opacity: 0.85 },
     markerEnd: arrowMarker(EDGE_COLOR, 14),
-    data: { weight: edge.weight, toBoundary } satisfies MinimalEdgeData,
+    data: { weight: edge.weight },
   };
 }

@@ -1,14 +1,14 @@
 /**
- * The minimal containment subgraph: ancestor-union minimality (unrelated packages stay out), 1-hop
- * boundary neighbors in BOTH directions with a per-seed cap and a toggle, import wires restricted to
- * affected<->affected and affected<->boundary (never boundary<->boundary), and the collapsed frame.
+ * The minimal subgraph the overlay grows: seeds + their always-shown 1-hop ring as PERSISTENT nodes,
+ * directional [+n] stubs on any node with hidden neighbours, GHOST nodes revealed by an expansion,
+ * and the collapsed containment frame. Import wires connect any two visible files.
  */
 
 import { describe, expect, it } from "vitest";
 import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { buildModuleGraph } from "./moduleGraph";
-import { buildMinimalSubgraph, type MinimalSubgraphNode } from "./minimalSubgraph";
+import { buildMinimalSubgraph, type ExpansionEntry, type MinimalStubData, type MinimalSubgraphNode } from "./minimalSubgraph";
 
 function pkg(id: string, name: string, parentId: string | null): GraphNode {
   return { id, kind: "package", qualifiedName: id, displayName: name, parentId, location: { file: name, startLine: 1 } } as GraphNode;
@@ -22,84 +22,82 @@ function importEdge(source: string, target: string): GraphEdge {
   return { id: `imports:${source}->${target}`, source, target, kind: "imports", resolution: "resolved" } as GraphEdge;
 }
 
-function build(nodes: GraphNode[], edges: GraphEdge[], seeds: string[], options = {}) {
+function build(nodes: GraphNode[], edges: GraphEdge[], seeds: string[], kept: string[] = [], expanded: ExpansionEntry[] = []) {
   const index = buildGraphIndex({ nodes, edges } as unknown as GraphArtifact);
-  return buildMinimalSubgraph(index, buildModuleGraph(index), new Set(seeds), options);
+  return buildMinimalSubgraph(index, buildModuleGraph(index), new Set(seeds), new Set(kept), expanded);
 }
 
-function byId(nodes: MinimalSubgraphNode[], id: string): MinimalSubgraphNode {
-  const found = nodes.find((node) => node.id === id);
-  if (!found) throw new Error(`missing node ${id}`);
-  return found;
+function nodeById(nodes: MinimalSubgraphNode[], id: string): MinimalSubgraphNode | undefined {
+  return nodes.find((node) => node.id === id);
 }
 
+// a → b → c → d, and e → a. (source imports target.)
 const NODES = [
   pkg("p:root", "root", null),
   pkg("p:src", "src", "p:root"),
-  pkg("p:lib", "lib", "p:root"),
   mod("m:a", "src/a.ts", "p:src"),
   mod("m:b", "src/b.ts", "p:src"),
   mod("m:c", "src/c.ts", "p:src"),
-  mod("m:d", "lib/d.ts", "p:lib"),
+  mod("m:d", "src/d.ts", "p:src"),
+  mod("m:e", "src/e.ts", "p:src"),
 ];
-// a imports b (context), c imports a (blast radius), b imports c (boundary<->boundary), d isolated.
-const EDGES = [importEdge("m:a", "m:b"), importEdge("m:c", "m:a"), importEdge("m:b", "m:c")];
+const EDGES = [importEdge("m:a", "m:b"), importEdge("m:b", "m:c"), importEdge("m:c", "m:d"), importEdge("m:e", "m:a")];
 
 describe("buildMinimalSubgraph", () => {
-  it("keeps only the affected subtree plus its boundary — unrelated packages stay out", () => {
-    const result = build(NODES, EDGES, ["m:a"]);
-    expect(result.keptNodeIds).toEqual(["m:a", "m:b", "m:c", "p:root", "p:src"]);
-    expect(result.boundaryNodeIds).toEqual(["m:b", "m:c"]);
+  it("shows a seed plus its full 1-hop ring as persistent, nothing deeper", () => {
+    const { nodes } = build(NODES, EDGES, ["m:a"]);
+    expect(nodeById(nodes, "m:a")?.tier).toBe("seed");
+    expect(nodeById(nodes, "m:b")?.tier).toBe("persistent"); // a imports b
+    expect(nodeById(nodes, "m:e")?.tier).toBe("persistent"); // e imports a
+    expect(nodeById(nodes, "m:c")).toBeUndefined(); // 2 hops out, not shown
   });
 
-  it("pulls boundary neighbors from both import directions and flags them", () => {
-    const nodes = build(NODES, EDGES, ["m:a"]).spec.nodes;
-    expect(byId(nodes, "m:a").isBoundary).toBe(false);
-    expect(byId(nodes, "m:b").isBoundary).toBe(true); // a -> b (imported context)
-    expect(byId(nodes, "m:c").isBoundary).toBe(true); // c -> a (importer / blast radius)
+  it("puts a directional [+n] stub on a node with hidden neighbours, none where all are shown", () => {
+    const { nodes } = build(NODES, EDGES, ["m:a"]);
+    // b's import of c is hidden → an out-stub with count 1; b's importer (a) is shown → no in-stub.
+    const bOut = nodeById(nodes, "stub:m:b|out");
+    expect((bOut?.data as MinimalStubData).count).toBe(1);
+    expect(nodeById(nodes, "stub:m:b|in")).toBeUndefined();
+    // a's whole 1-hop is shown → no stubs on the seed at all.
+    expect(nodeById(nodes, "stub:m:a|out")).toBeUndefined();
+    expect(nodeById(nodes, "stub:m:a|in")).toBeUndefined();
   });
 
-  it("folds only affected-touching import wires and drops boundary<->boundary", () => {
-    const edges = build(NODES, EDGES, ["m:a"]).spec.edges;
-    expect(edges.map((edge) => edge.id)).toEqual(["min:m:a->m:b", "min:m:c->m:a"]);
+  it("draws import wires only between two visible files", () => {
+    const { edges } = build(NODES, EDGES, ["m:a"]);
+    const imports = edges.filter((edge) => edge.kind === "import").map((edge) => edge.id);
+    expect(imports).toContain("min:m:e->m:a");
+    expect(imports).toContain("min:m:a->m:b");
+    expect(imports).not.toContain("min:m:b->m:c"); // c is not visible
   });
 
-  it("collapses the lone package chain into one frame with the joined label", () => {
-    const nodes = build(NODES, EDGES, ["m:a"]).spec.nodes;
-    expect(nodes.some((node) => node.id === "p:root")).toBe(false);
-    const frame = byId(nodes, "p:src");
-    expect(frame.kind).toBe("group");
-    expect(frame.collapsedLabel).toBe("root/src");
-    expect(frame.parentId).toBeNull();
-    expect((frame.data as { fileCount: number }).fileCount).toBe(3);
-    expect(byId(nodes, "m:a").parentId).toBe("p:src");
+  it("reveals an expansion's neighbours as ghosts, one hop past the frontier", () => {
+    const { nodes } = build(NODES, EDGES, ["m:a"], [], [{ id: "m:b", direction: "out" }]);
+    expect(nodeById(nodes, "m:c")?.tier).toBe("ghost"); // b's out-neighbour, revealed
+    expect(nodeById(nodes, "m:d")).toBeUndefined(); // still one hop further
+    // The freshly-revealed ghost carries its own outward stub.
+    expect((nodeById(nodes, "stub:m:c|out")?.data as MinimalStubData).count).toBe(1);
   });
 
-  it("caps boundary fan-out per seed", () => {
-    const nodes = [mod("m:s", "s.ts", null), ...[1, 2, 3, 4, 5].map((n) => mod(`m:n${n}`, `n${n}.ts`, null))];
-    const edges = [1, 2, 3, 4, 5].map((n) => importEdge("m:s", `m:n${n}`));
-    const result = build(nodes, edges, ["m:s"], { boundaryCap: 2 });
-    expect(result.boundaryNodeIds).toEqual(["m:n1", "m:n2"]);
+  it("renders a drilled-through ghost as persistent (kept), its neighbour as the new ghost", () => {
+    const { nodes } = build(NODES, EDGES, ["m:a"], ["m:c"], [
+      { id: "m:b", direction: "out" },
+      { id: "m:c", direction: "out" },
+    ]);
+    expect(nodeById(nodes, "m:c")?.tier).toBe("persistent"); // committed by drilling through it
+    expect(nodeById(nodes, "m:d")?.tier).toBe("ghost"); // c's newly-revealed neighbour
   });
 
-  it("balances the cap so importers (blast radius) survive many context imports that sort first", () => {
-    const nodes = [mod("m:s", "s.ts", null), ...["a1", "a2", "a3", "z1"].map((n) => mod(`m:${n}`, `${n}.ts`, null))];
-    // seed imports 3 context files (all sort before the importer); z1 imports the seed (blast radius).
-    const edges = [
-      importEdge("m:s", "m:a1"),
-      importEdge("m:s", "m:a2"),
-      importEdge("m:s", "m:a3"),
-      importEdge("m:z1", "m:s"),
-    ];
-    const result = build(nodes, edges, ["m:s"], { boundaryCap: 2 });
-    expect(result.boundaryNodeIds).toContain("m:z1"); // the importer is not starved by the earlier-sorting imports
-    expect(result.boundaryNodeIds).toHaveLength(2); // still honors the per-seed cap
+  it("resets to the seed base when there are no expansions", () => {
+    const { nodes } = build(NODES, EDGES, ["m:a"]);
+    const files = nodes.filter((node) => node.kind === "file").map((node) => node.id).sort();
+    expect(files).toEqual(["m:a", "m:b", "m:e"]);
   });
 
-  it("omits boundary entirely when includeBoundary is false", () => {
-    const result = build(NODES, EDGES, ["m:a"], { includeBoundary: false });
-    expect(result.boundaryNodeIds).toEqual([]);
-    expect(result.keptNodeIds).toEqual(["m:a", "p:root", "p:src"]);
-    expect(result.spec.edges).toEqual([]);
+  it("nests visible files under a collapsed containment frame", () => {
+    const { nodes } = build(NODES, EDGES, ["m:a"]);
+    const frame = nodes.find((node) => node.kind === "group");
+    expect(frame?.collapsedLabel).toBe("root/src");
+    expect(nodeById(nodes, "m:a")?.parentId).toBe(frame?.id);
   });
 });

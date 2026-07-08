@@ -134,10 +134,12 @@ function structuralState(nav: NavState): Record<string, unknown> {
     logicStack: nav.logicStack,
     expanded: new Set(nav.expanded),
     moduleFocus: nav.moduleFocus,
-    // Reset the overlay to the URL's state; a restore that carries no seeds closes it (empty +
-    // cleared nodes), one that carries seeds reopens it (restoreFromUrl then rebuilds the nodes).
+    // Reset the overlay to the URL's state; a restore that carries no seeds closes it, one that
+    // carries seeds reopens it at the seed base (restoreFromUrl then rebuilds the nodes). The grown
+    // state is ephemeral, so it always resets — a restore never reproduces committed ghosts.
     minimalSeedIds: nav.minimalSeedIds,
-    minimalHideBoundary: nav.minimalHideBoundary,
+    minimalKeptIds: [],
+    minimalExpanded: [],
     minimalRfNodes: [],
     minimalRfEdges: [],
     minimalLayoutStatus: "idle",

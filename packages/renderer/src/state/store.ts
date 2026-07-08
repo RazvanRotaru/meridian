@@ -32,6 +32,7 @@ import { deriveCompositionLayout } from "./deriveCompositionLayout";
 import { deriveModuleLevelLayout, type ModuleLevelLayout } from "./deriveModuleMapLayout";
 import { deriveServiceLevelLayout } from "./deriveServiceMapLayout";
 import { deriveMinimalGraphLayout } from "./deriveMinimalGraphLayout";
+import type { Direction, ExpansionEntry } from "../derive/minimalSubgraph";
 import { seedModuleIdsFor } from "../derive/selectionSeeds";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/blockDeps";
@@ -190,13 +191,16 @@ export interface BlueprintState {
   /** The seed file-module ids of the OPEN minimal-graph overlay; empty == the overlay is closed and
    * the Module-map level canvas shows. Set by buildMinimalGraph from the expanded selection. */
   minimalSeedIds: string[];
-  /** The laid-out minimal containment subgraph for the selection overlay (nested ELK, no diff
-   * semantics), under its own stale-seq guard. */
+  /** Ghost files the reader committed by drilling through them (expanding a ghost promotes it to
+   * PERSISTENT). Unioned with the seeds' always-shown 1-hop ring to form the committed graph. */
+  minimalKeptIds: string[];
+  /** Directional expansions applied to the overlay — each reveals a node's `direction` neighbours as
+   * ghosts. Ephemeral exploration state; "Reset" empties it (and minimalKeptIds) back to the base. */
+  minimalExpanded: ExpansionEntry[];
+  /** The laid-out minimal subgraph for the overlay (nested ELK), under its own stale-seq guard. */
   minimalRfNodes: Node[];
   minimalRfEdges: Edge[];
   minimalLayoutStatus: LayoutStatus;
-  /** Drop the faded 1-hop boundary neighbours from the overlay (a relayout — the spec changes). */
-  minimalHideBoundary: boolean;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -274,7 +278,8 @@ export interface BlueprintState {
   toggleModuleSelect(id: string): void;
   buildMinimalGraph(): void;
   closeMinimalGraph(): void;
-  toggleMinimalHideBoundary(): void;
+  expandMinimal(sourceId: string, direction: Direction): void;
+  resetMinimalGraph(): void;
   minimalRelayout(): Promise<void>;
   setViewMode(mode: ViewMode): void;
   toggleShowTests(): void;
@@ -395,10 +400,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleExpanded: new Set<string>(),
     showPrivate: true,
     minimalSeedIds: [],
+    minimalKeptIds: [],
+    minimalExpanded: [],
     minimalRfNodes: [],
     minimalRfEdges: [],
     minimalLayoutStatus: "idle",
-    minimalHideBoundary: false,
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -946,13 +952,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     // The "Build minimal graph" action: expand the current selection to its seed file modules (a
     // group card contributes its whole containment subtree) and open the overlay on their minimal
-    // containment subgraph. Inert when the selection expands to no file module.
+    // subgraph (seeds + their always-shown 1-hop ring). A fresh build resets any prior growth.
+    // Inert when the selection expands to no file module.
     buildMinimalGraph() {
       const seeds = seedModuleIdsFor(get().index, [...get().moduleSelected]);
       if (seeds.length === 0) {
         return;
       }
-      set({ minimalSeedIds: seeds });
+      set({ minimalSeedIds: seeds, minimalKeptIds: [], minimalExpanded: [] });
       void get().minimalRelayout();
     },
 
@@ -961,29 +968,45 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // pass still in flight, so a slow layout can't repopulate the arrays after the close.
     closeMinimalGraph() {
       minimalLayoutSeq += 1;
-      set({ minimalSeedIds: [], minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
+      set({ minimalSeedIds: [], minimalKeptIds: [], minimalExpanded: [], minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
     },
 
-    // Drop/restore the faded 1-hop boundary neighbours in the overlay. The spec changes, so it
-    // relayouts.
-    toggleMinimalHideBoundary() {
-      set({ minimalHideBoundary: !get().minimalHideBoundary });
+    // Reveal a node's hidden neighbours in one direction as ghosts (the [+n] stub click). Drilling
+    // through a GHOST commits it: adding the source to minimalKeptIds promotes it to persistent (a
+    // no-op when it was already persistent). The spec changes, so it relayouts.
+    expandMinimal(sourceId, direction) {
+      const { minimalExpanded, minimalKeptIds } = get();
+      if (minimalExpanded.some((entry) => entry.id === sourceId && entry.direction === direction)) {
+        return; // already expanded this way.
+      }
+      const keptIds = minimalKeptIds.includes(sourceId) ? minimalKeptIds : [...minimalKeptIds, sourceId];
+      set({ minimalExpanded: [...minimalExpanded, { id: sourceId, direction }], minimalKeptIds: keptIds });
       void get().minimalRelayout();
     },
 
-    // Lay out the selection's minimal subgraph through the shared minimal-graph pass (no status map
-    // — a selection carries no diff semantics), behind its own stale-seq guard.
+    // Reset the overlay to its base: drop every ghost AND every committed expansion, back to the
+    // seeds + their 1-hop ring. A no-op when nothing has been grown.
+    resetMinimalGraph() {
+      if (get().minimalKeptIds.length === 0 && get().minimalExpanded.length === 0) {
+        return;
+      }
+      set({ minimalKeptIds: [], minimalExpanded: [] });
+      void get().minimalRelayout();
+    },
+
+    // Lay out the overlay's subgraph (seeds + 1-hop base + committed + expansions) through the shared
+    // minimal-graph pass, behind its own stale-seq guard.
     async minimalRelayout() {
-      const { index, minimalSeedIds, minimalHideBoundary } = get();
+      const { index, minimalSeedIds, minimalKeptIds, minimalExpanded } = get();
       if (minimalSeedIds.length === 0) {
         return;
       }
       moduleGraph ??= buildModuleGraph(index);
       const sequence = ++minimalLayoutSeq;
       set({ minimalLayoutStatus: "laying-out" });
-      const layout = await deriveMinimalGraphLayout(index, moduleGraph, new Set(minimalSeedIds), { includeBoundary: !minimalHideBoundary });
+      const layout = await deriveMinimalGraphLayout(index, moduleGraph, new Set(minimalSeedIds), new Set(minimalKeptIds), minimalExpanded);
       if (minimalLayoutSeq !== sequence) {
-        return; // a newer build/toggle superseded this one.
+        return; // a newer build/expand/reset superseded this one.
       }
       set({ minimalRfNodes: layout.nodes, minimalRfEdges: layout.edges, minimalLayoutStatus: "ready" });
     },
@@ -1007,7 +1030,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // lingers hidden behind another tab (and the URL's `mgraph` clears with the switch).
       if (get().minimalSeedIds.length > 0) {
         minimalLayoutSeq += 1;
-        set({ minimalSeedIds: [], minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
+        set({ minimalSeedIds: [], minimalKeptIds: [], minimalExpanded: [], minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
       }
       if (mode === "logic") {
         set({ viewMode: mode });

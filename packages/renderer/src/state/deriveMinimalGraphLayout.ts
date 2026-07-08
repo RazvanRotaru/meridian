@@ -1,14 +1,13 @@
 /**
- * THE minimal-graph feature entry: given any set of seed file-module ids, build the minimal
- * containment subgraph (ancestor union + capped 1-hop import boundary) and lay it out with nested
- * ELK, rendered by the Module-map's own card components. Pure of store concerns, exactly like
- * `deriveModuleMapLayout`.
+ * THE minimal-graph feature entry: build the overlay subgraph from its seeds (+ their always-shown
+ * 1-hop ring), the committed ghosts, and the directional expansions, then lay it out with nested ELK,
+ * rendered by the Module-map's own card components. Pure of store concerns, like `deriveModuleMapLayout`.
  */
 
 import type { Edge, Node } from "@xyflow/react";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { ModuleGraph } from "../derive/moduleGraph";
-import { buildMinimalSubgraph, type MinimalSubgraphOptions } from "../derive/minimalSubgraph";
+import { buildMinimalSubgraph, type ExpansionEntry } from "../derive/minimalSubgraph";
 import { layoutMinimalSubgraph } from "../layout/minimalSubgraphLayout";
 
 export interface MinimalGraphLayout {
@@ -20,8 +19,9 @@ export async function deriveMinimalGraphLayout(
   index: GraphIndex,
   moduleGraph: ModuleGraph,
   seedModuleIds: ReadonlySet<string>,
-  options: MinimalSubgraphOptions = {},
+  keptIds: ReadonlySet<string>,
+  expanded: readonly ExpansionEntry[],
 ): Promise<MinimalGraphLayout> {
-  const spec = buildMinimalSubgraph(index, moduleGraph, seedModuleIds, options).spec;
+  const spec = buildMinimalSubgraph(index, moduleGraph, seedModuleIds, keptIds, expanded);
   return layoutMinimalSubgraph(spec);
 }

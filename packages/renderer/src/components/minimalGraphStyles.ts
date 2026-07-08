@@ -1,22 +1,24 @@
 /**
  * The minimal-graph overlay's shared styles + MiniMap tint, split out of `MinimalGraphView` to keep
- * the component small. Package frames tint blue, files take their category hue — the same reading
- * order (and the same `CATEGORY_COLOR` palette) as the Module map the overlay is built from.
+ * the component small. Package frames tint blue, files take their category hue, [+n] stubs a muted
+ * grey — the same reading order (and `CATEGORY_COLOR` palette) as the Module map the overlay grows from.
  */
 
 import type { Node } from "@xyflow/react";
 import type { ModuleCardData } from "../derive/moduleLevel";
 import { CATEGORY_COLOR } from "./nodes/modulemap/ModuleCardNode";
+import { MINIMAL_STUB_NODE } from "../layout/minimalSubgraphLayout";
 
 const PACKAGE_TINT = "#5B9BE3";
-// The active-toggle amber, matching the Map's "changed" accent family.
-const TOGGLE_ACTIVE_ACCENT = "#E3B341";
-const TOGGLE_ACTIVE_BG = "rgba(227,179,65,0.14)";
+const STUB_TINT = "#3A4452";
 
-/** MiniMap tint: package frames blue, else the file's category hue. */
+/** MiniMap tint: package frames blue, [+n] stubs muted grey, else the file's category hue. */
 export function minimalMiniMapColor(node: Node): string {
   if (node.type === "package") {
     return PACKAGE_TINT;
+  }
+  if (node.type === MINIMAL_STUB_NODE) {
+    return STUB_TINT;
   }
   return CATEGORY_COLOR[(node.data as ModuleCardData).category];
 }
@@ -37,7 +39,7 @@ export const PANEL_STYLE: React.CSSProperties = {
   padding: "10px 12px",
 };
 
-const TOGGLE_STYLE: React.CSSProperties = {
+const BUTTON_STYLE: React.CSSProperties = {
   background: "transparent",
   border: "1px solid #2A2F37",
   borderRadius: 6,
@@ -48,13 +50,18 @@ const TOGGLE_STYLE: React.CSSProperties = {
   fontWeight: 600,
   color: "#9AA4B2",
 };
-const TOGGLE_ACTIVE_STYLE: React.CSSProperties = {
-  borderColor: TOGGLE_ACTIVE_ACCENT,
-  background: TOGGLE_ACTIVE_BG,
+const BUTTON_ACTIVE_STYLE: React.CSSProperties = {
+  borderColor: "#E3B341",
+  background: "rgba(227,179,65,0.14)",
   color: "#E6EDF3",
 };
+const BUTTON_DISABLED_STYLE: React.CSSProperties = { opacity: 0.4, cursor: "default" };
 
-/** Merge the mode-toggle base with its active (aria-pressed) accent. */
-export function toggleStyle(active: boolean): React.CSSProperties {
-  return active ? { ...TOGGLE_STYLE, ...TOGGLE_ACTIVE_STYLE } : TOGGLE_STYLE;
+/** A panel button: base, plus an active (aria-pressed) accent and/or a disabled dim. */
+export function buttonStyle(active: boolean, disabled: boolean): React.CSSProperties {
+  return {
+    ...BUTTON_STYLE,
+    ...(active ? BUTTON_ACTIVE_STYLE : {}),
+    ...(disabled ? BUTTON_DISABLED_STYLE : {}),
+  };
 }

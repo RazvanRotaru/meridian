@@ -20,7 +20,6 @@ function emptyNav(): NavState {
     expanded: [],
     moduleFocus: null,
     minimalSeedIds: [],
-    minimalHideBoundary: false,
     moduleExpanded: [],
     moduleRadius: 1,
     highlightMode: "node",
@@ -150,25 +149,15 @@ describe("urlState", () => {
     expect(roundTrip(nav)).toEqual({ moduleRadius: 3 });
   });
 
-  it("round-trips the open minimal-graph overlay seeds (mgraph) and boundary toggle (mgnb)", () => {
-    const nav: NavState = {
-      ...emptyNav(),
-      viewMode: "modules",
-      minimalSeedIds: ["ts:src/a.ts", "ts:src/b.ts"],
-      minimalHideBoundary: true,
-    };
+  it("round-trips the open minimal-graph overlay seeds (mgraph)", () => {
+    const nav: NavState = { ...emptyNav(), viewMode: "modules", minimalSeedIds: ["ts:src/a.ts", "ts:src/b.ts"] };
     expect(encodeNav(nav).get("mgraph")).toBe("ts:src/a.ts,ts:src/b.ts");
-    expect(encodeNav(nav).get("mgnb")).toBe("1");
-    expect(roundTrip(nav)).toEqual({
-      minimalSeedIds: ["ts:src/a.ts", "ts:src/b.ts"],
-      minimalHideBoundary: true,
-    });
+    expect(roundTrip(nav)).toEqual({ minimalSeedIds: ["ts:src/a.ts", "ts:src/b.ts"] });
   });
 
-  it("omits the minimal-graph keys when the overlay is closed", () => {
-    const nav: NavState = { ...emptyNav(), viewMode: "modules", minimalSeedIds: [], minimalHideBoundary: false };
+  it("omits the minimal-graph seed key when the overlay is closed", () => {
+    const nav: NavState = { ...emptyNav(), viewMode: "modules", minimalSeedIds: [] };
     expect(encodeNav(nav).has("mgraph")).toBe(false);
-    expect(encodeNav(nav).has("mgnb")).toBe(false);
   });
 
   it("round-trips the non-default highlight mode (hmode)", () => {
@@ -254,11 +243,6 @@ describe("urlState", () => {
       expect(isNavigationChange(open, base)).toBe(true);
     });
 
-    it("is false for a boundary-toggle-only change (a presentation flip)", () => {
-      const open = { ...base, minimalSeedIds: ["ts:src/a.ts"] };
-      expect(isNavigationChange(open, { ...open, minimalHideBoundary: true })).toBe(false);
-    });
-
     it("is false for a selection-only change", () => {
       expect(isNavigationChange(base, { ...base, selectedId: "ts:m.ts#f" })).toBe(false);
     });
@@ -293,7 +277,6 @@ function storeShape() {
     expanded: new Set<string>(),
     moduleFocus: null,
     minimalSeedIds: [] as string[],
-    minimalHideBoundary: false,
     moduleExpanded: new Set<string>(),
     moduleRadius: 1,
     highlightMode: "node" as const,
