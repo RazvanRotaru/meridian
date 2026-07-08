@@ -13,7 +13,7 @@ import { branchKindOf, exitLabel, parseNodeId, syntheticFallThroughLabel } from 
 import type { GraphIndex } from "../graph/graphIndex";
 import { baseName, callDisplay } from "./flowViewModel";
 import type { LogicOwner, OwnerLookup } from "./logicOwner";
-import { clamp } from "../layout/measure";
+import { clamp, monoTextWidth } from "../layout/measure";
 
 /** No owner/signature enrichment — the default when a caller (e.g. a unit test) supplies no lookup. */
 const NO_OWNER: OwnerLookup = () => null;
@@ -253,7 +253,7 @@ class LogicGraphBuilder {
     const entry = this.index.nodesById.get(this.rootId);
     const entryId = `${this.rootId}::entry`;
     const entryData: TerminalData = { targetId: null, isContainer: false, terminal: "entry", label: entry?.displayName ?? baseName(parseNodeId(this.rootId).modulePath) };
-    this.nodes.push({ id: entryId, parentId: null, type: "terminal", data: entryData, width: TERMINAL_WIDTH, height: TERMINAL_HEIGHT });
+    this.nodes.push({ id: entryId, parentId: null, type: "terminal", data: entryData, width: entryTerminalWidth(entryData.label), height: TERMINAL_HEIGHT });
     this.pushEdge(entryId, firstId, "seq");
     // No trailing exec pins means every path already dead-ended at its own return/throw cap — a
     // synthetic EXIT would float unconnected, so it only exists when something falls through to it.
@@ -587,10 +587,35 @@ function firstSegment(path: string): string {
 // logicNodeTypes) and the laid-out box stay in lockstep. The owner is now the enclosing service
 // frame, not a per-block row, so a block only grows for its signature.
 const SIGNATURE_ROW_H = 16;
-// Entry/exit end-caps are compact fixed-size pills — they carry no provenance or disclosure, so
-// unlike call blocks their width doesn't track label length.
+// End-caps are compact pills — no provenance or disclosure. The EXIT cap only ever says "EXIT", so it
+// keeps a fixed width; the ENTRY cap wears the flow's own callable name (+ an ENTRY tag), so it sizes
+// to that name rather than clipping it.
 const TERMINAL_WIDTH = 150;
 const TERMINAL_HEIGHT = 46;
+const ENTRY_MIN_WIDTH = 150;
+const ENTRY_MAX_WIDTH = 460;
+const ENTRY_CHROME = 92; // border + padding (14+14) + glyph + two 8px gaps + the ENTRY tag pill
+
+/** The ENTRY end-cap's width: its callable name plus the fixed chrome of the pill and its ENTRY tag. */
+function entryTerminalWidth(label: string): number {
+  return roundedClamp(ENTRY_MIN_WIDTH, ENTRY_MAX_WIDTH, ENTRY_CHROME + monoTextWidth(label, 12));
+}
+
+// A call block's title is `glyph + name + a right-aligned tail` (the expand toggle, the </> code
+// button, and occasionally an async / coverage badge). The name must clear the glyph, the padding, and
+// that tail, so the box is sized to fit the whole name rather than truncating it under the buttons.
+const BLOCK_TITLE_FONT = 12;
+const BLOCK_TITLE_CHROME = 40; // title padding (8+8) + border (2) + glyph (~10) + two 6px gaps
+const BLOCK_TITLE_TAIL = 58; // room for the expand + </> buttons (async / coverage badges ride here too)
+const BLOCK_MIN_WIDTH = 190;
+const BLOCK_MAX_WIDTH = 460;
+// A greyed leaf stays a compact chip — its 30px height already reads as "leaf, no flow" — but its name
+// is priority and must never clip, so its width still tracks the name plus its smaller tail.
+const GREY_TITLE_FONT = 10;
+const GREY_TITLE_CHROME = 30; // title padding (6+6) + border (2) + glyph (~8) + two 4px gaps
+const GREY_TITLE_TAIL = 34; // room for the </> button (+ an occasional async badge)
+const GREY_MIN_WIDTH = 96;
+const GREY_MAX_WIDTH = 320;
 
 function sizeFor(
   label: string,
@@ -605,11 +630,11 @@ function sizeFor(
     return { width: 72, height: 56 };
   }
   if (greyed) {
-    // A small chip: clearly smaller than an expandable block so size alone signals "leaf, no flow".
-    return { width: roundedClamp(88, 150, 22 + label.length * 5.6), height: 30 };
+    // A small chip, but sized so the priority name never clips under its tail.
+    return { width: roundedClamp(GREY_MIN_WIDTH, GREY_MAX_WIDTH, GREY_TITLE_CHROME + monoTextWidth(label, GREY_TITLE_FONT) + GREY_TITLE_TAIL), height: 30 };
   }
-  // Base clears the title + provenance; the signature row adds its band so the block never clips it.
-  return { width: roundedClamp(190, 360, 44 + label.length * 7.2), height: 66 + (hasSignature ? SIGNATURE_ROW_H : 0) };
+  // Fit glyph + name + the title tail; the signature row adds its band below so it never clips either.
+  return { width: roundedClamp(BLOCK_MIN_WIDTH, BLOCK_MAX_WIDTH, BLOCK_TITLE_CHROME + monoTextWidth(label, BLOCK_TITLE_FONT) + BLOCK_TITLE_TAIL), height: 66 + (hasSignature ? SIGNATURE_ROW_H : 0) };
 }
 
 function roundedClamp(min: number, max: number, value: number): number {
