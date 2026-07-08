@@ -250,6 +250,7 @@ function frameSpec(cluster: ServiceCluster, frameId: string, isExpanded: boolean
     expanded: isExpanded,
     collapsedCount: isExpanded ? 0 : cluster.memberIds.length - 1,
     collapsible: cluster.memberIds.length > 1,
+    unitIds: cluster.memberIds,
   };
   // No width/height, no parentId: ELK sizes a container from its children, and a frame is a root.
   return { id: frameId, type: "cluster", data };
