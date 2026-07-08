@@ -11,7 +11,7 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
 import { accentForKind, glyphForKind } from "../../../theme/kindColors";
 import type { UnitCardData } from "../../../derive/moduleLevel";
-import { frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
+import { FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
 
 type UnitRfNode = Node<UnitCardData, "unit">;
 
@@ -32,7 +32,7 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
       <div style={selected ? frameSelectedStyle(accent) : frameStyle(accent)}>
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-        <div style={TITLE_BAR}>{identity}</div>
+        <FrameTitleBar actionsId={id}>{identity}</FrameTitleBar>
       </div>
     );
   }
@@ -63,16 +63,6 @@ const CARD: React.CSSProperties = {
 const CARD_SELECTED: React.CSSProperties = { ...CARD, borderColor: SELECT_ACCENT, boxShadow: `0 0 0 2px ${SELECT_ACCENT}` };
 const ACCENT_BAR: React.CSSProperties = { position: "absolute", left: 0, top: 0, bottom: 0, width: 4 };
 const INNER: React.CSSProperties = { display: "flex", alignItems: "center", gap: 7, height: "100%", padding: "0 10px 0 12px" };
-// A slightly shorter title bar than the file/package frames — a unit frame is an inner structure.
-const TITLE_BAR: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 7,
-  height: 28,
-  padding: "0 10px",
-  borderBottom: "1px solid #232935",
-  background: "rgba(23,29,38,0.9)",
-};
 const GLYPH: React.CSSProperties = { fontSize: 11, flexShrink: 0 };
 const LABEL: React.CSSProperties = {
   flex: 1,

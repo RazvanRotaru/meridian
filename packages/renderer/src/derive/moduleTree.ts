@@ -186,8 +186,13 @@ function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>,
       return; // a parentId cycle (tolerated by the lenient viewer) must not spin forever.
     }
     seen.add(id);
-    if (index.nodesById.get(id)?.kind === MODULE_KIND) {
+    const graphNode = index.nodesById.get(id);
+    if (graphNode?.kind === MODULE_KIND) {
       visitFile(id, parentId, depth);
+      return;
+    }
+    if (graphNode && (UNIT_CARD_KINDS.has(graphNode.kind) || BLOCK_KINDS.has(graphNode.kind))) {
+      visitDecl(graphNode, parentId, depth);
       return;
     }
     if (subtreeFileCount(index, id) === 0) {
@@ -212,7 +217,7 @@ function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>,
   };
   // A unit with members ALWAYS opens as a frame of member blocks — methods are first-class nodes,
   // not rows on a card. Memberless units and file-level functions/types are leaf blocks.
-  const visitDecl = (decl: GraphNode, parentId: string, depth: number): void => {
+  const visitDecl = (decl: GraphNode, parentId: string | null, depth: number): void => {
     seen.add(decl.id);
     if (!UNIT_CARD_KINDS.has(decl.kind)) {
       visitBlock(decl.id, parentId, depth);
@@ -228,7 +233,7 @@ function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>,
   };
   // POC — a callable block WITH a logic flow is itself expandable: opening it turns the block into
   // a frame whose top-level flow steps chart in place, chained by execution wires.
-  const visitBlock = (id: string, parentId: string, depth: number): void => {
+  const visitBlock = (id: string, parentId: string | null, depth: number): void => {
     const flow = flows[id];
     const isContainer = (flow?.length ?? 0) > 0;
     const isExpanded = isContainer && expanded.has(id);

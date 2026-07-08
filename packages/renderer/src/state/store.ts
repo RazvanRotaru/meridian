@@ -698,8 +698,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().moduleRelayout();
     },
 
-    // Expand one containment level under the target. `null` means the current view frontier, while
-    // a package id means that expanded package frame's visible children.
+    // Expand one containment level under the target. `null` means the current view frontier; a
+    // frame id means that expanded frame's visible package/file/block child containers.
     expandModuleChildren(containerId) {
       const { index, moduleFocus, artifact } = get();
       const graph = moduleGraph ?? (moduleGraph = buildModuleGraph(index));
@@ -712,8 +712,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().moduleRelayout();
     },
 
-    // Collapse only direct child package/file frames; deeper expansion ids deliberately remain, so
-    // re-opening a parent restores the reader's deeper manual state.
+    // Collapse only direct child package/file/block frames; deeper expansion ids deliberately remain,
+    // so re-opening a parent restores the reader's deeper manual state.
     collapseModuleChildren(containerId) {
       const { index, moduleFocus, artifact } = get();
       const graph = moduleGraph ?? (moduleGraph = buildModuleGraph(index));

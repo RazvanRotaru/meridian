@@ -11,14 +11,14 @@ export interface Crumb {
   label: string;
 }
 
-/** The containment trail from the repo down to the focus: the package-node ancestors (inclusive). */
+/** The containment trail from the repo down to the focus: package/file ancestors inclusive. */
 export function crumbsFor(focus: string | null, index: GraphIndex): Crumb[] {
   if (focus === null) {
     return [];
   }
   return index
     .ancestorsOf(focus)
-    .filter((node) => node.kind === "package")
+    .filter((node) => node.kind === "package" || node.kind === "module")
     .map((node) => ({ id: node.id, label: node.displayName ?? node.id }));
 }
 
@@ -66,7 +66,7 @@ export function LevelBreadcrumb(props: {
         aria-label="Expand cards on this level"
         onClick={props.onExpandAll}
       >
-        ⊞ Expand all
+        Expand all
       </button>
       <button
         type="button"
@@ -76,7 +76,7 @@ export function LevelBreadcrumb(props: {
         aria-label="Collapse cards on this level"
         onClick={props.onCollapseAll}
       >
-        ⊟ Collapse all
+        Collapse all
       </button>
     </nav>
   );
