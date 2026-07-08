@@ -41,6 +41,7 @@ export interface CodeWalkContext {
   index: GraphIndex;
   expanded: ReadonlySet<string>;
   flows: LogicFlows;
+  unitsAlwaysOpen?: boolean;
 }
 
 export function createCodeWalk(): CodeWalk {
@@ -91,13 +92,16 @@ function visitFile(id: string, parentId: string | null, depth: number, ctx: Code
   }
 }
 
-/** A unit with members ALWAYS opens as a frame of member blocks — methods are first-class nodes,
+/** A unit with members can open as a frame of member blocks — methods are first-class nodes,
  * not rows on a card. Memberless units and file-level functions/types are leaf blocks. */
 function visitDecl(decl: GraphNode, parentId: string | null, depth: number, ctx: CodeWalkContext, walk: CodeWalk): void {
   const members = memberChildren(ctx.index, decl.id);
-  const isFrame = members.length > 0;
-  walk.skeleton.push({ id: decl.id, parentId, kind: "unit", isContainer: isFrame, isExpanded: isFrame, depth, childCount: members.length });
-  members.forEach((member) => visitCode(member.id, decl.id, depth + 1, ctx, walk));
+  const isContainer = members.length > 0;
+  const isExpanded = isContainer && (ctx.unitsAlwaysOpen === true || ctx.expanded.has(decl.id));
+  walk.skeleton.push({ id: decl.id, parentId, kind: "unit", isContainer, isExpanded, depth, childCount: members.length });
+  if (isExpanded) {
+    members.forEach((member) => visitCode(member.id, decl.id, depth + 1, ctx, walk));
+  }
 }
 
 /** POC — a callable block WITH a logic flow is itself expandable: opening it turns the block into

@@ -30,8 +30,9 @@ import { deriveCompositionLayout } from "./deriveCompositionLayout";
 import { deriveModuleLevelLayout, type ModuleLevelLayout } from "./deriveModuleMapLayout";
 import { deriveServiceLevelLayout } from "./deriveServiceMapLayout";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
-import { buildBlockDeps, type BlockDeps } from "../derive/blockDeps";
+import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/blockDeps";
 import { deriveModuleTree } from "../derive/moduleTree";
+import { moduleChildContainerIds } from "../derive/moduleChildContainers";
 import { deriveServiceTree } from "../derive/serviceClusterTree";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import type { HighlightMode } from "../components/moduleMapPaint";
@@ -224,7 +225,8 @@ export interface BlueprintState {
   setModuleFocus(id: string | null): void;
   toggleModuleExpand(nodeId: string): void;
   revealModule(nodeId: string): void;
-  expandAllModules(): void;
+  expandModuleChildren(containerId: string | null): void;
+  collapseModuleChildren(containerId: string | null): void;
   togglePrivateMembers(): void;
   setModuleRadius(radius: number): void;
   toggleHighlightMode(): void;
@@ -694,45 +696,60 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     // REVEAL a code node the reader can't see (a ghost card's real definition): refocus the Map at
-    // the directory it lives in, with its file expanded so the symbol is actually drawn, selected.
+    // the directory it lives in, with its file/unit chain expanded so the symbol is actually drawn.
     // The Map-native "go to definition" — a deliberate focus jump, so prior expansions reset like
     // any setModuleFocus navigation.
     revealModule(nodeId) {
       const ancestors = get().index.ancestorsOf(nodeId);
       const file = ancestors.find((node) => node.kind === "module");
+      const unit = ancestors.find((node) => UNIT_CARD_KINDS.has(node.kind));
       const directory = [...ancestors].reverse().find((node) => node.kind === "package");
+      const expanded = new Set<string>();
+      if (file) {
+        expanded.add(file.id);
+      }
+      if (unit) {
+        expanded.add(unit.id);
+      }
       set({
         moduleFocus: directory?.id ?? null,
-        moduleExpanded: new Set<string>(file ? [file.id] : []),
+        moduleExpanded: expanded,
         moduleSelected: new Set([nodeId]),
       });
       void get().moduleRelayout();
     },
 
-    // Expand EVERYTHING down to the CODE level from the current view: run the (pure, sync) tree
-    // derive to a fixpoint, adding every drawn CONTAINMENT container (dirs → files) that isn't open
-    // yet. Flow frames — function/method blocks and their nested steps — stay closed: charting every
-    // flow at once is noise, and the reader unrolls those one call at a time. The expansion set only
-    // grows and is bounded by the artifact, so termination is structural.
-    expandAllModules() {
+    // Expand one containment level under the target. `null` means the current view frontier; a
+    // frame id means that expanded frame's visible package/file/unit/block child containers. The
+    // active module surface decides whether that frontier is the folder Map or the Service lens.
+    expandModuleChildren(containerId) {
       const { index, moduleFocus, artifact, viewMode } = get();
       const graph = (moduleGraph ??= buildModuleGraph(index));
       const deps = (blockDeps ??= buildBlockDeps(index));
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const expanded = new Set(get().moduleExpanded);
-      for (;;) {
-        const tree =
-          viewMode === "call"
-            ? deriveServiceTree(index, expanded, graph, deps, flows)
-            : deriveModuleTree(index, moduleFocus, expanded, graph, deps, flows);
-        const fresh = tree.nodes
-          .filter((node) => node.isContainer && !node.isExpanded && (node.kind === "package" || node.kind === "file"))
-          .map((node) => node.id);
-        if (fresh.length === 0) {
-          break;
-        }
-        fresh.forEach((id) => expanded.add(id));
-      }
+      const tree =
+        viewMode === "call"
+          ? deriveServiceTree(index, expanded, graph, deps, flows)
+          : deriveModuleTree(index, moduleFocus, expanded, graph, deps, flows);
+      moduleChildContainerIds(tree, containerId).forEach((id) => expanded.add(id));
+      set({ moduleExpanded: expanded });
+      void get().moduleRelayout();
+    },
+
+    // Collapse only direct child package/file/unit/block frames; deeper expansion ids deliberately
+    // remain, so re-opening a parent restores the reader's deeper manual state.
+    collapseModuleChildren(containerId) {
+      const { index, moduleFocus, artifact, viewMode } = get();
+      const graph = (moduleGraph ??= buildModuleGraph(index));
+      const deps = (blockDeps ??= buildBlockDeps(index));
+      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const expanded = new Set(get().moduleExpanded);
+      const tree =
+        viewMode === "call"
+          ? deriveServiceTree(index, expanded, graph, deps, flows)
+          : deriveModuleTree(index, moduleFocus, expanded, graph, deps, flows);
+      moduleChildContainerIds(tree, containerId).forEach((id) => expanded.delete(id));
       set({ moduleExpanded: expanded });
       void get().moduleRelayout();
     },

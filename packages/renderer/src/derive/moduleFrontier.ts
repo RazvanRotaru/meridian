@@ -5,6 +5,7 @@
  */
 
 import type { GraphIndex } from "../graph/graphIndex";
+import { BLOCK_KINDS, UNIT_CARD_KINDS } from "./blockDeps";
 import { npmPackageIdOf } from "./compositionClusters";
 import type { ModuleGraph } from "./moduleGraph";
 
@@ -15,6 +16,9 @@ const PACKAGE_KIND = "package";
 export function frontierRoots(index: GraphIndex, effectiveFocus: string | null, graph: ModuleGraph): string[] {
   if (effectiveFocus === null) {
     return overviewPackages(index, graph);
+  }
+  if (index.nodesById.get(effectiveFocus)?.kind === MODULE_KIND) {
+    return codeChildren(index, effectiveFocus);
   }
   return containmentChildren(index, effectiveFocus);
 }
@@ -51,6 +55,14 @@ export function containmentChildren(index: GraphIndex, nodeId: string): string[]
   return index
     .childrenOf(nodeId)
     .filter((child) => child.kind === PACKAGE_KIND || child.kind === MODULE_KIND)
+    .map((child) => child.id);
+}
+
+/** A focused file starts directly at the declarations its expanded frame would have shown. */
+function codeChildren(index: GraphIndex, fileId: string): string[] {
+  return index
+    .childrenOf(fileId)
+    .filter((child) => UNIT_CARD_KINDS.has(child.kind) || BLOCK_KINDS.has(child.kind))
     .map((child) => child.id);
 }
 

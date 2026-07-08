@@ -55,7 +55,8 @@ function serviceWalk(
   flows: LogicFlows,
 ): CodeWalk {
   const walk = createCodeWalk();
-  const ctx = { index, expanded, flows };
+  // The Service lens has always shown unit members inside service frames; only the folder Map gates units.
+  const ctx = { index, expanded, flows, unitsAlwaysOpen: true };
   for (const cluster of [...clustering.clusters].sort((a, b) => a.leadId.localeCompare(b.leadId))) {
     const frameId = frameIdOf(cluster.leadId);
     const isExpanded = isOpen(cluster, expanded);
@@ -93,7 +94,11 @@ function finalize(
             unitCount: entry.childCount,
           })
         : entry.kind === "unit"
-          ? unitData(entry.id, index, entry.childCount)
+          ? unitData(entry.id, index, {
+              memberCount: entry.childCount,
+              isContainer: entry.isContainer,
+              isExpanded: entry.isExpanded,
+            })
           : entry.kind === "block"
             ? blockData(entry.id, index, { hasFlow: entry.isContainer, isExpanded: entry.isExpanded })
             : (walk.stepData.get(entry.id) as StepData);

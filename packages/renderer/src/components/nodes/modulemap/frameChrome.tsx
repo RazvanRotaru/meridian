@@ -9,6 +9,17 @@ import { useBlueprintActions } from "../../../state/StoreContext";
 export const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 export const SELECT_ACCENT = "#6BE38A";
 
+/** Shared title strip for every expanded Module-map container frame. */
+export function FrameTitleBar({ actionsId, chevron, children }: { actionsId: string; chevron?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div style={TITLE_BAR}>
+      {chevron}
+      {children}
+      <FrameLevelActions id={actionsId} />
+    </div>
+  );
+}
+
 /** The in-place expand/collapse chevron; stops propagation so it never also selects the card. */
 export function ExpandChevron({ id, isExpanded, collapsedTitle }: { id: string; isExpanded: boolean; collapsedTitle?: string }) {
   const toggleModuleExpand = useBlueprintActions().toggleModuleExpand;
@@ -26,6 +37,39 @@ export function ExpandChevron({ id, isExpanded, collapsedTitle }: { id: string; 
     >
       {isExpanded ? "▾" : "▸"}
     </button>
+  );
+}
+
+/** One-level controls for an expanded frame's direct toggleable child containers. */
+export function FrameLevelActions({ id }: { id: string }) {
+  const { expandModuleChildren, collapseModuleChildren } = useBlueprintActions();
+  return (
+    <span style={FRAME_ACTIONS}>
+      <button
+        type="button"
+        style={FRAME_ACTION}
+        title="Expand each child card in this frame"
+        aria-label="Expand child cards in this frame"
+        onClick={(event) => {
+          event.stopPropagation();
+          expandModuleChildren(id);
+        }}
+      >
+        Expand all
+      </button>
+      <button
+        type="button"
+        style={FRAME_ACTION}
+        title="Collapse child cards in this frame"
+        aria-label="Collapse child cards in this frame"
+        onClick={(event) => {
+          event.stopPropagation();
+          collapseModuleChildren(id);
+        }}
+      >
+        Collapse all
+      </button>
+    </span>
   );
 }
 
@@ -75,4 +119,17 @@ const CHEVRON: React.CSSProperties = {
   cursor: "pointer",
   font: "inherit",
   fontSize: 11,
+};
+const FRAME_ACTIONS: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 2, flexShrink: 0 };
+const FRAME_ACTION: React.CSSProperties = {
+  background: "transparent",
+  border: "none",
+  borderRadius: 4,
+  color: "#9AA4B2",
+  cursor: "pointer",
+  font: "inherit",
+  fontSize: 11,
+  lineHeight: "14px",
+  padding: "2px 4px",
+  whiteSpace: "nowrap",
 };

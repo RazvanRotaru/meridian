@@ -27,7 +27,11 @@ export function finalizeModuleNode(
       : entry.kind === "block"
       ? blockData(entry.id, index, { hasFlow: entry.isContainer, isExpanded: entry.isExpanded })
       : entry.kind === "unit"
-      ? unitData(entry.id, index, entry.childCount)
+      ? unitData(entry.id, index, {
+          memberCount: entry.childCount,
+          isContainer: entry.isContainer,
+          isExpanded: entry.isExpanded,
+        })
       : entry.kind === "file"
         ? fileData(entry.id, graph, index, entryFor(entry.id, index), {
             isContainer: entry.isContainer,

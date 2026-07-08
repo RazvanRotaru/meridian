@@ -17,7 +17,7 @@ import { UnitCardNode } from "./UnitCardNode";
 import { BlockNode } from "./BlockNode";
 import { StepNode } from "./StepNode";
 import { GhostNode } from "./GhostNode";
-import { ExpandChevron, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT, TITLE_BAR } from "./frameChrome";
+import { ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
 
 // The file family's frame accent (the module cyan), used when an expanded card turns into a frame.
 const FILE_FRAME_ACCENT = "#3FB7C4";
@@ -37,12 +37,11 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
       <div style={selected ? frameSelectedStyle(FILE_FRAME_ACCENT) : frameStyle(FILE_FRAME_ACCENT)}>
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-        <div style={TITLE_BAR}>
-          {chevron}
+        <FrameTitleBar actionsId={id} chevron={chevron}>
           <span style={LABEL} title={data.fullPath}>{data.label}</span>
           {entryBadge}
           <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
-        </div>
+        </FrameTitleBar>
       </div>
     );
   }

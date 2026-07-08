@@ -20,8 +20,9 @@ import type { GhostData } from "../derive/ghostDeps";
 
 const GROUP_HEIGHT = 76;
 const FILE_HEIGHT = 54;
-// A memberless unit is a compact identity card; a unit with members is an ELK container (frame).
+// A memberless unit is compact; a collapsed memberful unit mirrors the file-card height.
 const UNIT_LEAF_HEIGHT = 42;
+const UNIT_CONTAINER_CARD_HEIGHT = 54;
 
 // Group/file/unit cards size to their content — the mono label, any badges, and the metric row — so a
 // long component name is never clipped. Clamped to a readable floor and a ceiling that still fits any
@@ -140,9 +141,14 @@ function fileSize(data: ModuleCardData): { width: number; height: number } {
   return { width: cardWidth(FILE_CHROME + Math.max(header, meta)), height: FILE_HEIGHT };
 }
 
-/** A memberless unit identity card: glyph + name + a kind chip, all on one row. */
+/** A unit identity card: memberless units use one row; collapsed memberful units add a meta row. */
 function unitSize(data: UnitCardData): { width: number; height: number } {
   const chip = pillWidth(data.unitKind.toUpperCase(), CHIP_FONT, { letterSpacing: CHIP_LETTER_SPACING });
+  if (data.isContainer) {
+    const header = CHEVRON_WIDTH + HEADER_GAP + UNIT_GLYPH_WIDTH + HEADER_GAP + monoTextWidth(data.label, 12.5);
+    const meta = chip + META_GAP + monoTextWidth(`${data.memberCount} members`, 10.5);
+    return { width: cardWidth(UNIT_CHROME + Math.max(header, meta)), height: UNIT_CONTAINER_CARD_HEIGHT };
+  }
   const content = UNIT_GLYPH_WIDTH + UNIT_ROW_GAP + monoTextWidth(data.label, 12.5) + UNIT_ROW_GAP + chip;
   return { width: cardWidth(UNIT_CHROME + content), height: UNIT_LEAF_HEIGHT };
 }
@@ -194,5 +200,7 @@ function toEdge(edge: ModuleTreeEdge): Edge {
     source: edge.source,
     target: edge.target,
     data: { weight: edge.weight, crossFrame: edge.crossFrame, category: edge.category, ghost: edge.ghost === true },
+    // Edge hit-paths sit above nested frames' title bars and steal button clicks; Map edges are non-interactive.
+    interactionWidth: 0,
   };
 }

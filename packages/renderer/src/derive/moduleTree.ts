@@ -6,8 +6,9 @@
  *
  *   - `focus === null` → the whole-repo overview: npm packages that own at least one file.
  *   - a `focus` package/dir → its children, after chain-collapsing a lone `src`.
- *   - a FILE card expands through `codeWalk`: classes/interfaces/objects become unit frames,
- *     methods/functions/types become block cards, and flow-bearing blocks can unroll into steps.
+ *   - a focused/expanded FILE enters `codeWalk`: classes/interfaces/objects become unit cards that
+ *     expand into member frames, file-level functions/types become block cards, and flow-bearing
+ *     blocks can unroll into steps.
  *
  * Imports are folded to visible boxes by `liftEdges`; code dependencies and step wires delegate to
  * `codeWalk`, so the Map and Service lenses render file/decl/block/step subtrees identically.
@@ -20,7 +21,7 @@ import { type ModulePackageData } from "./packageOverview";
 import { type ModuleGraph } from "./moduleGraph";
 import { collapseChain } from "./moduleLevel";
 import { containmentChildren, frontierRoots, subtreeFileCount } from "./moduleFrontier";
-import { type BlockDeps } from "./blockDeps";
+import { BLOCK_KINDS, type BlockDeps, UNIT_CARD_KINDS } from "./blockDeps";
 import { ghostDepWires } from "./ghostDeps";
 import { liftEdges } from "./liftEdges";
 import { createCodeWalk, depWireEdges, flowChainEdges, stepCallEdges, visitCode, type CodeWalk, type Skeleton } from "./codeWalk";
@@ -29,7 +30,6 @@ import type { ModuleTree, ModuleTreeEdge, VisibleModuleNode } from "./moduleTree
 export type { ModuleGroupData, ModuleTree, ModuleTreeEdge, VisibleModuleNode } from "./moduleTreeTypes";
 
 const MODULE_KIND = "module";
-
 /** The containment tree to draw for `(focus, expanded)`: overview when null, else the focus subtree.
  * Private members are ALWAYS derived and laid out — the Private toggle hides them at PAINT time
  * (like Tests/categories), so every toggle holds positions still and nothing ever reshuffles. */
@@ -109,7 +109,8 @@ function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>,
   const walked = createCodeWalk();
   const ctx = { index, expanded, flows };
   const visit = (id: string, parentId: string | null, depth: number): void => {
-    if (index.nodesById.get(id)?.kind === MODULE_KIND) {
+    const graphNode = index.nodesById.get(id);
+    if (graphNode?.kind === MODULE_KIND || (graphNode && (UNIT_CARD_KINDS.has(graphNode.kind) || BLOCK_KINDS.has(graphNode.kind)))) {
       visitCode(id, parentId, depth, ctx, walked);
       return;
     }
