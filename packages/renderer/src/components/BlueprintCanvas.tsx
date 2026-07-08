@@ -48,28 +48,30 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
   return (
     <div style={SHELL_STYLE}>
       <FlowExplorerPanel />
-      <div style={MAIN_STYLE}>
-        {/* Each view is its OWN ReactFlow surface; keying a fresh provider per mode gives each its own
-            React Flow store, so a tab switch can never bleed the previous surface's nodes into the next
-            one's first render (which crashed its MiniMap nodeColor on foreign-shaped data). The
-            always-mounted Toolbar's <Panel> keeps using the outer App-level provider. */}
-        <ReactFlowProvider key={viewMode}>
-          {viewMode === "call" ? (
-            <ModuleMapView />
-          ) : viewMode === "logic" ? (
-            <LogicFlowView />
-          ) : viewMode === "modules" ? (
-            <ModuleMapView />
-          ) : (
-            <FlowCanvas />
-          )}
-        </ReactFlowProvider>
-        <Toolbar preselectedEnv={props.preselectedEnv} />
-        <CodePanel />
-        {/* Global Cmd/Ctrl+P quick-open — mounted here so the shortcut works in every view mode. */}
-        <CommandPalette />
+      <div style={CANVAS_REGION_STYLE}>
+        <div style={MAIN_STYLE}>
+          {/* Each view is its OWN ReactFlow surface; keying a fresh provider per mode gives each its own
+              React Flow store, so a tab switch can never bleed the previous surface's nodes into the next
+              one's first render (which crashed its MiniMap nodeColor on foreign-shaped data). The
+              always-mounted Toolbar's <Panel> keeps using the outer App-level provider. */}
+          <ReactFlowProvider key={viewMode}>
+            {viewMode === "call" ? (
+              <ModuleMapView />
+            ) : viewMode === "logic" ? (
+              <LogicFlowView />
+            ) : viewMode === "modules" ? (
+              <ModuleMapView />
+            ) : (
+              <FlowCanvas />
+            )}
+          </ReactFlowProvider>
+          <Toolbar preselectedEnv={props.preselectedEnv} />
+          <CodePanel />
+          {/* Global Cmd/Ctrl+P quick-open — mounted here so the shortcut works in every view mode. */}
+          <CommandPalette />
+        </div>
+        <FlowPane />
       </div>
-      <FlowPane />
     </div>
   );
 }
@@ -189,9 +191,6 @@ const SHELL_STYLE: React.CSSProperties = {
   overflow: "hidden",
 };
 
-const MAIN_STYLE: React.CSSProperties = {
-  position: "relative",
-  flex: 1,
-  minWidth: 0,
-  height: "100%",
-};
+const CANVAS_REGION_STYLE: React.CSSProperties = { flex: 1, minWidth: 0, height: "100%", display: "flex", flexDirection: "column" };
+
+const MAIN_STYLE: React.CSSProperties = { position: "relative", flex: 1, minWidth: 0, minHeight: 0 };

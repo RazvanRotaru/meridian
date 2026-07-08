@@ -124,15 +124,16 @@ function miniMapColor(node: Node): string {
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
 const DRAWER: React.CSSProperties = {
-  width: "42%",
-  minWidth: 360,
-  maxWidth: 640,
-  height: "100%",
+  width: "100%",
+  minWidth: 0,
+  flex: "0 0 40%",
+  minHeight: 240,
+  maxHeight: "55%",
   display: "flex",
   flexDirection: "column",
   background: "#0B0E13",
-  borderLeft: "1px solid #222732",
-  boxShadow: "-12px 0 32px rgba(0,0,0,0.35)",
+  borderTop: "1px solid #222732",
+  boxShadow: "0 -12px 32px rgba(0,0,0,0.35)",
   color: "#D6DEE9",
 };
 
@@ -166,17 +167,7 @@ const OPEN_BUTTON: React.CSSProperties = {
   fontSize: 12,
   cursor: "pointer",
 };
-const CLOSE: React.CSSProperties = {
-  width: 22,
-  height: 22,
-  border: "1px solid #2A313D",
-  borderRadius: 5,
-  background: "transparent",
-  color: "#9AA4B2",
-  cursor: "pointer",
-  fontSize: 11,
-  lineHeight: 1,
-};
+const CLOSE: React.CSSProperties = { width: 22, height: 22, border: "1px solid #2A313D", borderRadius: 5, background: "transparent", color: "#9AA4B2", cursor: "pointer", fontSize: 11, lineHeight: 1 };
 const BREADCRUMBS: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, minWidth: 0 };
 const CRUMB_GROUP: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, minWidth: 0 };
 const CRUMB_SEP: React.CSSProperties = { color: "#4E5867", fontSize: 12 };
