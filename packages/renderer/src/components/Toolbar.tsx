@@ -29,15 +29,32 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
   const isModules = viewMode === "modules";
   const isPrs = viewMode === "prs";
   const showFlowToggle = viewMode === "ui" || viewMode === "modules";
-  const { collapseAll, toggleFlowExplorer } = useBlueprintActions();
+  const { expandAll, collapseAll, toggleFlowExplorer } = useBlueprintActions();
   return (
     <Panel position="top-left">
       <div style={PANEL_STYLE}>
         <div style={TITLE_ROW_STYLE}>
           <strong style={TITLE_STYLE} title={targetName}>{targetName}</strong>
-          <button type="button" style={RESET_STYLE} onClick={collapseAll}>
-            Collapse all
-          </button>
+          {isPrs ? null : (
+            <span style={EXPAND_GROUP_STYLE}>
+              <button
+                type="button"
+                style={RESET_STYLE}
+                title="Expand the selection one level — or the whole view when nothing is selected"
+                onClick={expandAll}
+              >
+                Expand all
+              </button>
+              <button
+                type="button"
+                style={RESET_STYLE}
+                title="Collapse the selection one level — or the whole view when nothing is selected"
+                onClick={collapseAll}
+              >
+                Collapse all
+              </button>
+            </span>
+          )}
         </div>
         <ViewModeToggle />
         {isPrs ? null : (
@@ -92,6 +109,7 @@ const PANEL_STYLE: React.CSSProperties = {
   maxWidth: 300,
 };
 const TITLE_ROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 12 };
+const EXPAND_GROUP_STYLE: React.CSSProperties = { marginLeft: "auto", display: "flex", gap: 6 };
 const FILTER_ROW_STYLE: React.CSSProperties = { display: "flex", gap: 6 };
 const TITLE_STYLE: React.CSSProperties = {
   fontSize: 14,
@@ -103,7 +121,6 @@ const TITLE_STYLE: React.CSSProperties = {
   minWidth: 0,
 };
 const RESET_STYLE: React.CSSProperties = {
-  marginLeft: "auto",
   background: "#1A1F27",
   color: "#9AA4B2",
   border: "1px solid #2A2F37",

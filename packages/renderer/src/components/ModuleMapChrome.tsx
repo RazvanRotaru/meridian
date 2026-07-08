@@ -25,17 +25,14 @@ export function crumbsFor(focus: string | null, index: GraphIndex): Crumb[] {
 /**
  * The zoom trail: "Repository" (level 0) then each package/directory you descended into. Every
  * segment but the last is a button that zooms back to that level; the last is the current level.
- * The right-hand cluster opens or closes one level of package/file cards at the current frontier.
- * Mirrors the call lens's Breadcrumb control language.
+ * Expand/collapse-all now lives in the top-left toolbar (scoped to the selection or root), so this
+ * is purely the containment trail. Mirrors the call lens's Breadcrumb control language.
  */
 export function LevelBreadcrumb(props: {
   focus: string | null;
   packageCount: number;
   crumbs: Crumb[];
-  hasExpansions: boolean;
   onFocus: (id: string | null) => void;
-  onExpandAll: () => void;
-  onCollapseAll: () => void;
 }) {
   const atRoot = props.focus === null;
   return (
@@ -58,26 +55,6 @@ export function LevelBreadcrumb(props: {
           </span>
         );
       })}
-      <span style={DIVIDER} aria-hidden />
-      <button
-        type="button"
-        style={ACTION_STYLE}
-        title="Expand each card on this level"
-        aria-label="Expand cards on this level"
-        onClick={props.onExpandAll}
-      >
-        Expand all
-      </button>
-      <button
-        type="button"
-        style={props.hasExpansions ? ACTION_STYLE : ACTION_DISABLED_STYLE}
-        disabled={!props.hasExpansions}
-        title={props.hasExpansions ? "Collapse the cards on this level" : "Nothing is expanded on this level"}
-        aria-label="Collapse cards on this level"
-        onClick={props.onCollapseAll}
-      >
-        Collapse all
-      </button>
     </nav>
   );
 }
@@ -126,9 +103,6 @@ const CRUMB_STYLE: React.CSSProperties = {
 };
 const CRUMB_CURRENT_STYLE: React.CSSProperties = { ...CRUMB_STYLE, color: "#E6EDF3", fontWeight: 600, cursor: "default" };
 const CRUMB_SEP_STYLE: React.CSSProperties = { color: "#4B535F", fontSize: 13 };
-const DIVIDER: React.CSSProperties = { width: 1, alignSelf: "stretch", margin: "2px 6px", background: "#2A2F37" };
-const ACTION_STYLE: React.CSSProperties = { ...CRUMB_STYLE, whiteSpace: "nowrap", fontSize: 12 };
-const ACTION_DISABLED_STYLE: React.CSSProperties = { ...ACTION_STYLE, color: "#565E68", cursor: "default" };
 const EMPTY_WRAP_STYLE: React.CSSProperties = {
   position: "absolute",
   inset: 0,
