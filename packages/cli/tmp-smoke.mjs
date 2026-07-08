@@ -20,6 +20,7 @@ const ghosts = await page.$$eval(".react-flow__node", (ns) => ns.map((n) => n.ge
 // multi-select: ctrl+click two blocks, both selected
 await page.click('[data-id="ts:src/services/orderService.ts#OrderService.getOrder"]');
 await page.click('[data-id="ts:src/services/orderService.ts#OrderService.constructor"]', { modifiers: ["Control"] });
+await page.waitForTimeout(400);
 const selCount = await page.$$eval(".react-flow__node div", (ds) => ds.filter((d) => d.style.boxShadow.includes("107, 227, 138")).length);
 console.log("multi-select highlighted nodes:", selCount, "| steps drawn:", await page.$$eval('[data-id^="step:"]', n => n.length), "| errors:", errors.length ? errors : "none");
 await page.screenshot({ path: "/home/orocismaru/.claude/jobs/838247ac/tmp/verify-merge.png" });
