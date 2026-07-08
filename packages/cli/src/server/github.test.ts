@@ -11,6 +11,21 @@ function repoPage(count: number, offset: number): unknown[] {
   return Array.from({ length: count }, (_unused, index) => ({ full_name: `org/repo-${offset + index}` }));
 }
 
+function prPage(count: number, offset: number): unknown[] {
+  return Array.from({ length: count }, (_unused, index) => ({
+    number: offset + index + 1,
+    title: `PR ${offset + index + 1}`,
+    user: { login: "daria" },
+    head: { ref: `branch-${offset + index + 1}` },
+    updated_at: "2026-07-08T12:00:00Z",
+    state: "open",
+  }));
+}
+
+function filePage(count: number, offset: number): unknown[] {
+  return Array.from({ length: count }, (_unused, index) => ({ filename: `src/file-${offset + index}.ts`, status: "modified" }));
+}
+
 function fetchReturningPages(pages: unknown[][], seenUrls: string[]): typeof fetch {
   return (async (url: string | URL | Request) => {
     seenUrls.push(String(url));
@@ -48,5 +63,40 @@ describe("listOwnRepos", () => {
     const client = createGitHubClient({ clientId: "Iv1.test", fetchImpl: fetchReturningPages(fullPages, seenUrls) });
     expect(await client.listOwnRepos("token")).toHaveLength(400);
     expect(seenUrls).toHaveLength(4);
+  });
+});
+
+describe("listPullRequests", () => {
+  it("returns hasMore when GitHub gives a full PR page", async () => {
+    const seenUrls: string[] = [];
+    const client = createGitHubClient({ clientId: "Iv1.test", fetchImpl: fetchReturningPages([prPage(30, 0)], seenUrls) });
+    const result = await client.listPullRequests({ owner: "org", repo: "repo", state: "open", page: 2, token: "token" });
+    expect(result.hasMore).toBe(true);
+    expect(result.prs).toHaveLength(30);
+    expect(seenUrls[0]).toContain("/repos/org/repo/pulls?");
+    expect(seenUrls[0]).toContain("state=open");
+    expect(seenUrls[0]).toContain("per_page=30");
+    expect(seenUrls[0]).toContain("page=2");
+  });
+
+  it("stops hasMore on a short PR page", async () => {
+    const seenUrls: string[] = [];
+    const client = createGitHubClient({ clientId: "Iv1.test", fetchImpl: fetchReturningPages([prPage(2, 0)], seenUrls) });
+    await expect(client.listPullRequests({ owner: "org", repo: "repo", state: "closed", page: 1 })).resolves.toMatchObject({ hasMore: false });
+  });
+});
+
+describe("fetchPullRequestFiles", () => {
+  it("caps returned files at 3000 and marks the result truncated", async () => {
+    const seenUrls: string[] = [];
+    const pages = Array.from({ length: 30 }, (_unused, index) => filePage(100, index * 100));
+    const client = createGitHubClient({ clientId: "Iv1.test", fetchImpl: fetchReturningPages(pages, seenUrls) });
+    const result = await client.fetchPullRequestFiles({ owner: "org", repo: "repo", prNumber: 42, token: "token" });
+    expect(result.files).toHaveLength(3000);
+    expect(result.truncated).toBe(true);
+    expect(seenUrls).toHaveLength(30);
+    expect(seenUrls[29]).toContain("/repos/org/repo/pulls/42/files?");
+    expect(seenUrls[29]).toContain("per_page=100");
+    expect(seenUrls[29]).toContain("page=30");
   });
 });

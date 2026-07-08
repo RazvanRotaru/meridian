@@ -12,6 +12,8 @@ function emptyNav(): NavState {
     logicSelected: null,
     flowRootId: null,
     flowDepth: null,
+    flowExplorerOpen: false,
+    flowSelection: null,
     logicRoot: null,
     logicView: "graph",
     logicStack: [],
@@ -21,6 +23,8 @@ function emptyNav(): NavState {
     moduleRadius: 1,
     highlightMode: "node",
     hiddenCategories: [],
+    prsTab: "open",
+    prSelected: null,
     environment: null,
   };
 }
@@ -84,6 +88,25 @@ describe("urlState", () => {
     expect(roundTrip(nav)).toEqual({ flowRootId: "ts:m.ts#entry", flowDepth: 3 });
   });
 
+  it("round-trips the flow explorer open state and selected block ref", () => {
+    const nav: NavState = {
+      ...emptyNav(),
+      flowExplorerOpen: true,
+      flowSelection: { rootId: "ts:src/a.ts#run", blockPath: [{ step: 3 }, { step: 4, path: 1 }] },
+    };
+    expect(encodeNav(nav).get("fexp")).toBe("1");
+    expect(encodeNav(nav).get("fsel")).toBe("ts%3Asrc%2Fa.ts%23run@3.4-1");
+    expect(roundTrip(nav)).toEqual({
+      flowExplorerOpen: true,
+      flowSelection: { rootId: "ts:src/a.ts#run", blockPath: [{ step: 3 }, { step: 4, path: 1 }] },
+    });
+  });
+
+  it("ignores invalid flow explorer selection refs", () => {
+    expect(decodeNav(new URLSearchParams("fsel=missing-at")).flowSelection).toBeUndefined();
+    expect(decodeNav(new URLSearchParams("fsel=ts%253Am%2523f@1-nope")).flowSelection).toBeUndefined();
+  });
+
   it("round-trips a selected environment", () => {
     expect(roundTrip({ ...emptyNav(), environment: "staging" })).toEqual({ environment: "staging" });
   });
@@ -130,6 +153,20 @@ describe("urlState", () => {
     expect(encodeNav(nav).get("hmode")).toBe("reach");
     expect(roundTrip(nav)).toEqual({ highlightMode: "reach" });
     expect(decodeNav(new URLSearchParams("hmode=bogus")).highlightMode).toBeUndefined();
+  });
+
+  it("round-trips the PR browser view, tab, and selected PR number", () => {
+    const nav: NavState = { ...emptyNav(), viewMode: "prs", prsTab: "closed", prSelected: 76 };
+    expect(encodeNav(nav).get("view")).toBe("prs");
+    expect(encodeNav(nav).get("prstate")).toBe("closed");
+    expect(encodeNav(nav).get("prn")).toBe("76");
+    expect(roundTrip(nav)).toEqual({ viewMode: "prs", prsTab: "closed", prSelected: 76 });
+  });
+
+  it("rejects invalid PR URL params", () => {
+    expect(decodeNav(new URLSearchParams("prstate=merged")).prsTab).toBeUndefined();
+    expect(decodeNav(new URLSearchParams("prn=0")).prSelected).toBeUndefined();
+    expect(decodeNav(new URLSearchParams("prn=abc")).prSelected).toBeUndefined();
   });
 
   it("preserves foreign params (web-mode id) while owning its own keys", () => {
@@ -211,6 +248,8 @@ function storeShape() {
     logicSelected: null,
     flowRootId: null,
     flowDepth: null,
+    flowExplorerOpen: false,
+    flowSelection: null,
     logicRoot: null,
     logicView: "graph" as const,
     logicStack: [] as string[],
@@ -220,6 +259,8 @@ function storeShape() {
     moduleRadius: 1,
     highlightMode: "node" as const,
     hiddenCategories: new Set<string>(),
+    prsTab: "open" as const,
+    prSelected: null,
     environment: null,
   };
 }

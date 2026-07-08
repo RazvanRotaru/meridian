@@ -13,6 +13,7 @@ const ALL_SEGMENTS: ReadonlyArray<{ mode: ViewMode; label: string }> = [
   { mode: "call", label: "Service composition" },
   { mode: "ui", label: "UI composition" },
   { mode: "logic", label: "Logic flow" },
+  { mode: "prs", label: "PRs" },
 ];
 
 // Service composition is withheld from the default build (see featureFlags.ts).

@@ -22,10 +22,12 @@ import type { GraphIndex } from "../graph/graphIndex";
 import type { BlueprintEdge, BlueprintNode } from "../layout/rfTypes";
 import type { TelemetryProvider } from "../telemetry/provider";
 import type { ViewMode } from "../derive/edgeSelection";
+import { relatedNodeIds, type FlowSelectionRef } from "../derive/flowBlocks";
 import type { LogicViewMode } from "../derive/flowViewModel";
 import { uiFocusTarget } from "../derive/uiFocus";
 import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
+import { deriveFlowPaneLayout } from "./deriveFlowPaneLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
 import { deriveModuleLevelLayout, type ModuleLevelLayout } from "./deriveModuleMapLayout";
 import { deriveServiceLevelLayout } from "./deriveServiceMapLayout";
@@ -34,11 +36,14 @@ import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/block
 import { deriveModuleTree } from "../derive/moduleTree";
 import { moduleChildContainerIds } from "../derive/moduleChildContainers";
 import { deriveServiceTree } from "../derive/serviceClusterTree";
+import { matchPrFilesToModules } from "../derive/prFileMatch";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import type { HighlightMode } from "../components/moduleMapPaint";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
+import { moduleRevealStateFor, withAncestorsOf, withAncestorsOfMany } from "./flowExplorer";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
+import { PRS_UNAVAILABLE_ERROR, type PrChangedFile, type PrFilesResponse, type PrListResponse, type PrSummary, type PrsTab } from "./prTypes";
 
 /**
  * The "All" setting for the related-flows depth dial: a depth larger than any real call-graph chain.
@@ -118,6 +123,13 @@ export interface BlueprintState {
   /** Nest consecutive same-owner calls under service frames in the Logic graph. Default OFF (flat):
    * the framing is opt-in, so the flow reads as plain blocks unless the reader turns it on. */
   nestByService: boolean;
+  /** Phase-1 Code flows explorer state: selection/emphasis are shared by the future tree and panes. */
+  flowExplorerOpen: boolean;
+  flowSelection: FlowSelectionRef | null;
+  flowEmphasis: Set<string>;
+  flowPaneRfNodes: LogicRfNode[];
+  flowPaneRfEdges: LogicRfEdge[];
+  flowPaneLayoutStatus: LayoutStatus;
   /** The laid-out Logic graph (React Flow), recomputed on open/drill/expand/toggle via ELK. */
   logicRfNodes: LogicRfNode[];
   logicRfEdges: LogicRfEdge[];
@@ -184,10 +196,22 @@ export interface BlueprintState {
   /** Base URL for on-demand source fetches; null when the server ships no source access. Node
    * components read it to decide whether to offer a "show source" control. */
   sourceUrl: string | null;
+  /** PR API endpoints derived from the graph artifact URL; 404/network means this session lacks PRs. */
+  prsUrl: string;
+  prFilesUrl: string;
+  prsTab: PrsTab;
+  prsList: Record<PrsTab, PrSummary[] | null>;
+  prsHasMore: Record<PrsTab, boolean>;
+  prsLoading: boolean;
+  prsError: string | null;
+  prSelected: number | null;
+  prFiles: PrChangedFile[] | null;
+  prFilesTruncated: boolean;
   /** The open source view (inline panel or modal); null when nothing is being shown. */
   codeView: CodeView | null;
   toggleExpand(nodeId: string): void;
   expandPath(nodeId: string): void;
+  expandPaths(nodeIds: string[]): void;
   collapseAll(): void;
   select(nodeId: string | null): void;
   diveInto(nodeId: string): void;
@@ -196,6 +220,9 @@ export interface BlueprintState {
   isolateFlow(nodeId: string): void;
   clearFlow(): void;
   setFlowDepth(depth: number | null): void;
+  toggleFlowExplorer(): void;
+  selectFlowEntry(ref: FlowSelectionRef | null): void;
+  flowPaneRelayout(): Promise<void>;
   /** The logic flow charted for a callable, or undefined when it has none (empty body). */
   logicFlowFor(nodeId: string): FlowStep[] | undefined;
   openLogicFlow(nodeId: string): void;
@@ -241,6 +268,10 @@ export interface BlueprintState {
   showCode(node: GraphNode): Promise<void>;
   expandCode(): void;
   closeCode(): void;
+  setPrsTab(tab: PrsTab): void;
+  loadPrs(page?: number): Promise<void>;
+  selectPr(number: number | null): Promise<void>;
+  reviewPrInGraph(): void;
   relayout(): Promise<void>;
 }
 
@@ -250,6 +281,8 @@ export interface StoreDependencies {
   provider: TelemetryProvider | null;
   hasOverlay: boolean;
   sourceUrl: string | null;
+  prsUrl: string;
+  prFilesUrl: string;
 }
 
 export type BlueprintStore = StoreApi<BlueprintState>;
@@ -270,8 +303,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let blockDeps: BlockDeps | null = null;
   // And for the composition-tab method-preview drawer's logic layout (the EXPERIMENT surface).
   let compMethodLayoutSeq = 0;
+  // Same guard for the Code flows explorer's embedded flow preview pane.
+  let flowPaneLayoutSeq = 0;
+  // PR list/file fetches are independent async lanes; newer requests win when the reader switches.
+  let prsListSeq = 0;
+  let prFilesSeq = 0;
+  const prsNextPage: Record<PrsTab, number> = { open: 1, closed: 1 };
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
+  const prsUrl = dependencies.prsUrl;
+  const prFilesUrl = dependencies.prFilesUrl;
   // The composition tab opens on the WHOLE-SYSTEM overview (null root); file-rooting is the explicit
   // focus tool (⌘P / click a boundary or frame). Auto-rooting at the declared entry module proved a
   // poor default — a React entry (e.g. main.tsx) is a thin bootstrap with no cross-unit coupling, so
@@ -304,6 +345,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     expandedLogic: new Set<string>(),
     hideGreyed: false,
     nestByService: false,
+    flowExplorerOpen: false,
+    flowSelection: null,
+    flowEmphasis: new Set<string>(),
+    flowPaneRfNodes: [],
+    flowPaneRfEdges: [],
+    flowPaneLayoutStatus: "idle",
     logicRfNodes: [],
     logicRfEdges: [],
     logicLayoutStatus: "idle",
@@ -338,6 +385,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     provider: dependencies.provider,
     hasOverlay: dependencies.hasOverlay,
     sourceUrl,
+    prsUrl,
+    prFilesUrl,
+    prsTab: "open",
+    prsList: { open: null, closed: null },
+    prsHasMore: { open: false, closed: false },
+    prsLoading: false,
+    prsError: null,
+    prSelected: null,
+    prFiles: null,
+    prFilesTruncated: false,
     codeView: null,
 
     toggleExpand(nodeId) {
@@ -347,6 +404,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     expandPath(nodeId) {
       set({ expanded: withAncestorsOf(nodeId, get().index, get().expanded) });
+      void get().relayout();
+    },
+
+    expandPaths(nodeIds) {
+      set({ expanded: withAncestorsOfMany(nodeIds, get().index, get().expanded) });
       void get().relayout();
     },
 
@@ -414,6 +476,69 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       set({ flowDepth: depth });
       void get().relayout();
+    },
+
+    toggleFlowExplorer() {
+      const flowExplorerOpen = !get().flowExplorerOpen;
+      set(flowExplorerOpen
+        ? { flowExplorerOpen }
+        : {
+            flowExplorerOpen,
+            flowSelection: null,
+            flowEmphasis: new Set<string>(),
+            flowPaneRfNodes: [],
+            flowPaneRfEdges: [],
+            flowPaneLayoutStatus: "idle",
+          });
+    },
+
+    selectFlowEntry(ref) {
+      if (ref === null) {
+        set({
+          flowSelection: null,
+          flowEmphasis: new Set<string>(),
+          flowPaneRfNodes: [],
+          flowPaneRfEdges: [],
+          flowPaneLayoutStatus: "idle",
+        });
+        return;
+      }
+      const { artifact, index, viewMode } = get();
+      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const related = relatedNodeIds(index, flows, ref);
+      set({ flowSelection: ref, flowEmphasis: related });
+      if (viewMode === "ui") {
+        get().expandPaths([...related]);
+      } else if (viewMode === "modules") {
+        const reveal = moduleRevealStateFor([...related], index);
+        if (reveal) {
+          set({
+            moduleFocus: reveal.moduleFocus,
+            moduleExpanded: reveal.moduleExpanded,
+            moduleSelected: reveal.moduleSelected,
+          });
+          void get().moduleRelayout();
+        } else {
+          set({ moduleSelected: new Set<string>() });
+        }
+      }
+      void get().flowPaneRelayout();
+    },
+
+    async flowPaneRelayout() {
+      const { flowSelection, index, artifact } = get();
+      if (flowSelection === null) {
+        set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
+        return;
+      }
+      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const sequence = ++flowPaneLayoutSeq;
+      set({ flowPaneLayoutStatus: "laying-out" });
+      const graph = await deriveFlowPaneLayout(flowSelection, flows, index);
+      if (flowPaneLayoutSeq !== sequence) {
+        return;
+      }
+      set({ flowPaneRfNodes: graph.nodes, flowPaneRfEdges: graph.edges, flowPaneLayoutStatus: "ready" });
     },
 
     // The logic flow charted for a callable id: read straight from the artifact extension, keyed
@@ -815,6 +940,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({ viewMode: mode });
         return;
       }
+      if (mode === "prs") {
+        set({ viewMode: mode });
+        if (get().prsList[get().prsTab] === null) {
+          void get().loadPrs(1);
+        }
+        return;
+      }
       // The Map ("modules") and Service-composition ("call") lenses SHARE the module slice — same
       // view, same layout, different tree. Clicking INTO either always opens at its own top level,
       // never a focus inherited from a prior visit. A shared/reloaded deep link is unaffected: it
@@ -948,10 +1080,99 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ codeView: null });
     },
 
+    setPrsTab(tab) {
+      if (get().prsTab === tab) {
+        return;
+      }
+      set({ prsTab: tab, prsError: null, prSelected: null, prFiles: null, prFilesTruncated: false });
+      if (get().prsList[tab] === null) {
+        void get().loadPrs(1);
+      }
+    },
+
+    async loadPrs(page) {
+      const tab = get().prsTab;
+      const pageToLoad = page ?? prsNextPage[tab];
+      const sequence = ++prsListSeq;
+      set({ prsLoading: true, prsError: null });
+      try {
+        const url = new URL(prsUrl, requestOrigin());
+        url.searchParams.set("state", tab);
+        url.searchParams.set("page", String(pageToLoad));
+        const response = await fetch(url, { credentials: "same-origin" });
+        if (prsListSeq !== sequence) {
+          return;
+        }
+        if (!response.ok) {
+          set({ prsLoading: false, prsError: await errorMessage(response) });
+          return;
+        }
+        const data = (await response.json()) as PrListResponse;
+        if (prsListSeq !== sequence) {
+          return;
+        }
+        const current = get().prsList[tab];
+        const existing = pageToLoad === 1 || current === null ? [] : current;
+        prsNextPage[tab] = pageToLoad + 1;
+        set({
+          prsList: { ...get().prsList, [tab]: mergePrSummaries(existing, data.prs) },
+          prsHasMore: { ...get().prsHasMore, [tab]: data.hasMore },
+          prsLoading: false,
+          prsError: null,
+        });
+      } catch {
+        if (prsListSeq === sequence) {
+          set({ prsLoading: false, prsError: PRS_UNAVAILABLE_ERROR });
+        }
+      }
+    },
+
+    async selectPr(number) {
+      const sequence = ++prFilesSeq;
+      if (number === null) {
+        set({ prSelected: null, prFiles: null, prFilesTruncated: false, prsLoading: false, prsError: null });
+        return;
+      }
+      set({ prSelected: number, prFiles: null, prFilesTruncated: false, prsLoading: true, prsError: null });
+      try {
+        const url = new URL(prFilesUrl, requestOrigin());
+        url.searchParams.set("n", String(number));
+        const response = await fetch(url, { credentials: "same-origin" });
+        if (prFilesSeq !== sequence || get().prSelected !== number) {
+          return;
+        }
+        if (!response.ok) {
+          set({ prsLoading: false, prsError: await errorMessage(response) });
+          return;
+        }
+        const data = (await response.json()) as PrFilesResponse;
+        if (prFilesSeq !== sequence || get().prSelected !== number) {
+          return;
+        }
+        set({ prFiles: data.files, prFilesTruncated: data.truncated, prsLoading: false, prsError: null });
+      } catch {
+        if (prFilesSeq === sequence && get().prSelected === number) {
+          set({ prsLoading: false, prsError: PRS_UNAVAILABLE_ERROR });
+        }
+      }
+    },
+
+    reviewPrInGraph() {
+      const files = get().prFiles ?? [];
+      const matchedIds = unique(matchPrFilesToModules(files, get().index.nodesById.values()).map((match) => match.moduleId));
+      get().setViewMode("ui");
+      set({ flowSelection: null, flowEmphasis: new Set(matchedIds) });
+      get().expandPaths(matchedIds);
+    },
+
     async relayout() {
       // The "call" lens IS the Map surface fed a service-cluster tree now (not the old scorecard
       // composition graph), so it routes to the SAME moduleRelayout as "modules" — the branch by
       // viewMode lives inside moduleRelayout itself. "ui" still derives below.
+      if (get().viewMode === "prs") {
+        set({ layoutStatus: "idle" });
+        return;
+      }
       if (get().viewMode === "call" || get().viewMode === "modules") {
         await get().moduleRelayout();
         return;
@@ -991,16 +1212,33 @@ function withToggledCategory(hidden: Set<ModuleCategory>, category: ModuleCatego
   return next;
 }
 
-/** Expand every container on the path to `nodeId` so a deep target becomes visible at once. */
-function withAncestorsOf(nodeId: string, index: GraphIndex, expanded: Set<string>): Set<string> {
-  const next = new Set(expanded);
-  const visited = new Set<string>();
-  let current: string | null | undefined = index.isContainer(nodeId) ? nodeId : index.parentOf.get(nodeId);
-  // A separate visited set (not `next`, which is pre-seeded) terminates on a parentId cycle.
-  while (current && !visited.has(current)) {
-    visited.add(current);
-    next.add(current);
-    current = index.parentOf.get(current);
+function requestOrigin(): string {
+  return typeof window === "undefined" ? "http://meridian.local" : window.location.origin;
+}
+
+async function errorMessage(response: Response): Promise<string> {
+  if (response.status === 404) {
+    return PRS_UNAVAILABLE_ERROR;
   }
-  return next;
+  try {
+    const data = (await response.json()) as { error?: unknown };
+    return typeof data.error === "string" && data.error.length > 0 ? data.error : "Could not load pull requests.";
+  } catch {
+    return "Could not load pull requests.";
+  }
+}
+
+function mergePrSummaries(existing: readonly PrSummary[], incoming: readonly PrSummary[]): PrSummary[] {
+  const byNumber = new Map<number, PrSummary>();
+  for (const pr of existing) {
+    byNumber.set(pr.number, pr);
+  }
+  for (const pr of incoming) {
+    byNumber.set(pr.number, pr);
+  }
+  return [...byNumber.values()];
+}
+
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values)];
 }

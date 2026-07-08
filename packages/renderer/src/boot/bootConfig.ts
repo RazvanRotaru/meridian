@@ -20,6 +20,11 @@ export interface BootConfig {
   defaultEnv: null;
 }
 
+export interface PrApiUrls {
+  prsUrl: string;
+  prFilesUrl: string;
+}
+
 interface InjectedConfig extends Omit<BootConfig, "defaultEnv"> {
   defaultEnv: unknown;
 }
@@ -50,9 +55,27 @@ export function readBootConfig(): BootConfig {
   return assertNeverDefaulted(injected);
 }
 
+export function prApiUrlsFromGraphUrl(graphUrl: string): PrApiUrls {
+  const graph = new URL(graphUrl, "http://meridian.local");
+  const id = graph.searchParams.get("id");
+  return {
+    prsUrl: apiUrl("/api/prs", id),
+    prFilesUrl: apiUrl("/api/prs/files", id),
+  };
+}
+
 function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
   if (injected.defaultEnv !== null) {
     throw new Error("boot contract violation: defaultEnv must never be defaulted (always null)");
   }
   return { ...injected, defaultEnv: null };
+}
+
+function apiUrl(path: string, id: string | null): string {
+  const params = new URLSearchParams();
+  if (id) {
+    params.set("id", id);
+  }
+  const search = params.toString();
+  return search ? `${path}?${search}` : path;
 }
