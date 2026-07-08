@@ -13,6 +13,7 @@
 import type { ViewMode } from "../derive/edgeSelection";
 import { isLogicViewMode, type LogicViewMode } from "../derive/flowViewModel";
 import { SHOW_SERVICE_COMPOSITION } from "../featureFlags";
+import type { HighlightMode } from "../components/moduleMapPaint";
 
 /** The URL-worthy slice of the store — mirrors the navigation fields of BlueprintState. */
 export interface NavState {
@@ -35,13 +36,15 @@ export interface NavState {
   moduleExpanded: string[];
   /** The Module-map selection highlight radius (GHOST_DEPTH_ALL == the whole neighbourhood). */
   moduleRadius: number;
+  /** The Module-map selection emphasis mode; "node" is omitted because it is the default. */
+  highlightMode: HighlightMode;
   /** Module categories painted out of the map — a comma-joined list in the URL. */
   hiddenCategories: string[];
   environment: string | null;
 }
 
 /** Every param key we own — listed once so `mergeNavIntoSearch` can clear them before rewriting. */
-const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "lroot", "lview", "lstack", "expand", "mfocus", "mexp", "mdepth", "mhide", "env"] as const;
+const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "lroot", "lview", "lstack", "expand", "mfocus", "mexp", "mdepth", "hmode", "mhide", "env"] as const;
 
 /** The navigation state the app boots into — the baseline a restore resets absent keys back to. */
 export const DEFAULT_NAV: NavState = {
@@ -60,6 +63,8 @@ export const DEFAULT_NAV: NavState = {
   moduleFocus: null,
   moduleExpanded: [],
   moduleRadius: 1,
+  /** Node-only incident-wire highlighting is the default; radius reach is opt-in. */
+  highlightMode: "node",
   hiddenCategories: [],
   environment: null,
 };
@@ -81,6 +86,8 @@ interface NavSource {
   moduleFocus: string | null;
   moduleExpanded: ReadonlySet<string>;
   moduleRadius: number;
+  /** Module-map selection emphasis mode, mirrored into `hmode` only when non-default. */
+  highlightMode: HighlightMode;
   hiddenCategories: ReadonlySet<string>;
   environment: string | null;
 }
@@ -103,6 +110,7 @@ export function navFrom(state: NavSource): NavState {
     moduleFocus: state.moduleFocus,
     moduleExpanded: [...state.moduleExpanded].sort(),
     moduleRadius: state.moduleRadius,
+    highlightMode: state.highlightMode,
     hiddenCategories: [...state.hiddenCategories].sort(),
     environment: state.environment,
   };
@@ -126,6 +134,8 @@ export function encodeNav(nav: NavState): Map<string, string> {
   setId(out, "mfocus", nav.moduleFocus);
   setList(out, "mexp", nav.moduleExpanded);
   if (nav.moduleRadius !== 1) out.set("mdepth", String(nav.moduleRadius));
+  /** `hmode=node` is the baseline; only persist reach mode so default URLs stay short. */
+  if (nav.highlightMode !== "node") out.set("hmode", nav.highlightMode);
   setList(out, "mhide", nav.hiddenCategories);
   setId(out, "env", nav.environment);
   return out;
@@ -158,6 +168,9 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   assignList(params, "mexp", out, "moduleExpanded");
   const moduleRadius = params.get("mdepth");
   if (moduleRadius !== null && !Number.isNaN(Number(moduleRadius))) out.moduleRadius = Number(moduleRadius);
+  /** Accept only the two known highlight modes; junk leaves the store default intact. */
+  const highlightMode = params.get("hmode");
+  if (highlightMode === "reach" || highlightMode === "node") out.highlightMode = highlightMode;
   assignList(params, "mhide", out, "hiddenCategories");
   assignId(params, "env", out, "environment");
   return out;

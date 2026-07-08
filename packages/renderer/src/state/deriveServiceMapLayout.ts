@@ -4,7 +4,10 @@
  * so the effective focus always stays null.
  */
 
+import type { LogicFlows } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
+import type { BlockDeps } from "../derive/blockDeps";
+import type { ModuleGraph } from "../derive/moduleGraph";
 import { deriveServiceTree } from "../derive/serviceClusterTree";
 import { layoutModuleTree } from "../layout/moduleLevelLayout";
 import type { ModuleLevelLayout } from "./deriveModuleMapLayout";
@@ -12,8 +15,11 @@ import type { ModuleLevelLayout } from "./deriveModuleMapLayout";
 export async function deriveServiceLevelLayout(
   index: GraphIndex,
   expanded: ReadonlySet<string>,
+  graph: ModuleGraph,
+  blockDeps: BlockDeps,
+  flows: LogicFlows,
 ): Promise<ModuleLevelLayout> {
-  const tree = deriveServiceTree([...index.nodesById.values()], index.edges, expanded);
+  const tree = deriveServiceTree(index, expanded, graph, blockDeps, flows);
   if (tree.nodes.length === 0) {
     return { nodes: [], edges: [], effectiveFocus: null };
   }

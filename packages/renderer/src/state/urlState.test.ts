@@ -19,6 +19,7 @@ function emptyNav(): NavState {
     moduleFocus: null,
     moduleExpanded: [],
     moduleRadius: 1,
+    highlightMode: "node",
     hiddenCategories: [],
     environment: null,
   };
@@ -124,6 +125,13 @@ describe("urlState", () => {
     expect(roundTrip(nav)).toEqual({ moduleRadius: 3 });
   });
 
+  it("round-trips the non-default highlight mode (hmode)", () => {
+    const nav: NavState = { ...emptyNav(), viewMode: "modules", highlightMode: "reach" };
+    expect(encodeNav(nav).get("hmode")).toBe("reach");
+    expect(roundTrip(nav)).toEqual({ highlightMode: "reach" });
+    expect(decodeNav(new URLSearchParams("hmode=bogus")).highlightMode).toBeUndefined();
+  });
+
   it("preserves foreign params (web-mode id) while owning its own keys", () => {
     const search = mergeNavIntoSearch("id=abc123", { ...emptyNav(), focusId: "ts:m.ts#f" });
     const params = new URLSearchParams(search);
@@ -210,6 +218,7 @@ function storeShape() {
     moduleFocus: null,
     moduleExpanded: new Set<string>(),
     moduleRadius: 1,
+    highlightMode: "node" as const,
     hiddenCategories: new Set<string>(),
     environment: null,
   };

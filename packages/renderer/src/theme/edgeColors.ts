@@ -9,6 +9,10 @@ import { MarkerType } from "@xyflow/react";
 
 export const WIRE_COLOR = "#7C8696";
 export const RENDERS_WIRE = "#61DAFB";
+/** App-wide caller-green/callee-violet convention shared by Map emphasis and the Logic surface's
+ * selection accent, so upstream/downstream reads do not drift between lenses. */
+export const CALLER_WIRE = "#6BE38A";
+export const CALLEE_WIRE = "#A78BFA";
 /** IPC hops (`sends`/`handles` through a channel node): magenta — its OWN colour, distinct from the
  * gold used for cross-package code coupling, so "leaves the process" never reads as "imports another
  * package". The only animated wire on the composition canvas, so IPC traffic is unmistakable. */

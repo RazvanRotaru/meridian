@@ -33,6 +33,7 @@ export function ModuleMapView() {
   const layoutStatus = useBlueprint((state) => state.moduleLayoutStatus);
   const effectiveFocus = useBlueprint((state) => state.moduleEffectiveFocus);
   const radius = useBlueprint((state) => state.moduleRadius);
+  const highlightMode = useBlueprint((state) => state.highlightMode);
   const index = useBlueprint((state) => state.index);
   const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
   const showTests = useBlueprint((state) => state.showTests);
@@ -48,8 +49,8 @@ export function ModuleMapView() {
   );
   // Emphasis is a second pure repaint: dim by default, light the selection's N-hop import reach.
   const { nodes: styledNodes, edges: styledEdges, beacons } = useMemo(
-    () => emphasize(shownNodes, shownEdges, selected, radius),
-    [shownNodes, shownEdges, selected, radius],
+    () => emphasize(shownNodes, shownEdges, selected, radius, highlightMode),
+    [shownNodes, shownEdges, selected, radius, highlightMode],
   );
 
   // Plain click REPLACES the selection; ctrl/cmd+click toggles the node in/out of it, accumulating

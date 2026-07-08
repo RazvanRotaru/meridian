@@ -34,6 +34,7 @@ import { buildBlockDeps, type BlockDeps } from "../derive/blockDeps";
 import { deriveModuleTree } from "../derive/moduleTree";
 import { deriveServiceTree } from "../derive/serviceClusterTree";
 import type { ModuleCategory } from "../derive/moduleCategory";
+import type { HighlightMode } from "../components/moduleMapPaint";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
@@ -158,6 +159,8 @@ export interface BlueprintState {
   /** How many import hops the selection lights up — a PAINT-ONLY highlight radius (never a relayout;
    * containment, not this, bounds what's drawn). GHOST_DEPTH_ALL == the whole connected neighbourhood. */
   moduleRadius: number;
+  /** Whether Module-map selection lights incident node wires only, or the full radius-based reach. */
+  highlightMode: HighlightMode;
   /** Module categories painted OUT of the map (a render-time filter — never a re-derive). */
   hiddenCategories: Set<ModuleCategory>;
   /** The selected node ids in the Module map (ctrl/cmd+click accumulates several); empty == none.
@@ -224,6 +227,7 @@ export interface BlueprintState {
   expandAllModules(): void;
   togglePrivateMembers(): void;
   setModuleRadius(radius: number): void;
+  toggleHighlightMode(): void;
   toggleCategory(category: ModuleCategory): void;
   selectModule(id: string | null): void;
   toggleModuleSelect(id: string): void;
@@ -318,6 +322,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleFocus: null,
     moduleEffectiveFocus: null,
     moduleRadius: 1,
+    highlightMode: "node",
     hiddenCategories: new Set<ModuleCategory>(),
     moduleSelected: new Set<string>(),
     moduleExpanded: new Set<string>(),
@@ -649,14 +654,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const { index, moduleFocus, moduleExpanded, artifact, viewMode } = get();
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
+      const graph = (moduleGraph ??= buildModuleGraph(index));
+      const deps = (blockDeps ??= buildBlockDeps(index));
+      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       let layout: ModuleLevelLayout;
       if (viewMode === "call") {
-        layout = await deriveServiceLevelLayout(index, moduleExpanded);
+        layout = await deriveServiceLevelLayout(index, moduleExpanded, graph, deps, flows);
       } else {
-        moduleGraph ??= buildModuleGraph(index);
-        blockDeps ??= buildBlockDeps(index);
-        const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
-        layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, moduleGraph, blockDeps, flows);
+        layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, graph, deps, flows);
       }
       if (moduleLayoutSeq !== sequence) {
         return; // a newer focus change superseded this one.
@@ -711,25 +716,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // grows and is bounded by the artifact, so termination is structural.
     expandAllModules() {
       const { index, moduleFocus, artifact, viewMode } = get();
-      // On the service-cluster lens, "everything" is every multi-member cluster frame. Derive the
-      // collapsed tree once: expanding a cluster only adds unit cards, never more group nodes.
-      if (viewMode === "call") {
-        const tree = deriveServiceTree([...index.nodesById.values()], index.edges, new Set<string>());
-        const expanded = new Set<string>(
-          tree.nodes
-            .filter((node) => node.kind === "package" && node.isContainer)
-            .map((node) => node.id),
-        );
-        set({ moduleExpanded: expanded });
-        void get().moduleRelayout();
-        return;
-      }
-      moduleGraph ??= buildModuleGraph(index);
-      blockDeps ??= buildBlockDeps(index);
+      const graph = (moduleGraph ??= buildModuleGraph(index));
+      const deps = (blockDeps ??= buildBlockDeps(index));
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const expanded = new Set(get().moduleExpanded);
       for (;;) {
-        const tree = deriveModuleTree(index, moduleFocus, expanded, moduleGraph, blockDeps, flows);
+        const tree =
+          viewMode === "call"
+            ? deriveServiceTree(index, expanded, graph, deps, flows)
+            : deriveModuleTree(index, moduleFocus, expanded, graph, deps, flows);
         const fresh = tree.nodes
           .filter((node) => node.isContainer && !node.isExpanded && (node.kind === "package" || node.kind === "file"))
           .map((node) => node.id);
@@ -758,6 +753,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // recomputes the lit neighbourhood in a useMemo, so this deliberately does NOT relayout.
     setModuleRadius(radius) {
       set({ moduleRadius: Math.max(1, Math.min(GHOST_DEPTH_ALL, Math.trunc(radius))) });
+    },
+
+    // Paint-only: switches how the already-laid-out Module map interprets selection emphasis.
+    toggleHighlightMode() {
+      set({ highlightMode: get().highlightMode === "reach" ? "node" : "reach" });
     },
 
     // Show/hide a module category. PAINT-ONLY: the surface filters the category's file cards out in
