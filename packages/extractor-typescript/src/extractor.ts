@@ -7,7 +7,6 @@
 
 import { existsSync, readdirSync, type Dirent } from "node:fs";
 import { join } from "node:path";
-import type { SourceFile } from "ts-morph";
 import type {
   DetectionResult,
   ExtractOptions,
@@ -15,22 +14,29 @@ import type {
   ExtractionResult,
   LanguageExtractor,
   LanguageTag,
-  Port,
 } from "@meridian/core";
-import type { NodeDescriptor } from "./model";
-import { loadProject, type LoadedProject } from "./project-loader";
+import { loadProject } from "./project-loader";
 import { buildStructure } from "./structural-pass";
 import { assignFinalIds, buildGraphNodes } from "./finalize-nodes";
 import { buildResolutionIndex } from "./resolution-index";
 import { collectRawEdges } from "./edge-pass";
 import { collectImportEdges } from "./import-pass";
-import { buildEdges, type EdgeBuildResult } from "./edge-build";
+import { buildEdges } from "./edge-build";
 import { collapseToDepth } from "./depth-collapse";
 import { buildLogicFlows } from "./flow-pass";
 import { collectPorts } from "./ports-pass";
 import { buildStats } from "./stats";
+import {
+  NODE_ID_LANGUAGE,
+  appendDropDiagnostics,
+  moduleIdsByRelPath,
+  moduleSourcesById,
+  portsWithin,
+} from "./extract-common";
+import { extractPerPackage } from "./extract-per-package";
+import { absoluteRoot } from "./paths";
+import { discoverWorkspaceUnits } from "./workspace-units";
 
-const NODE_ID_LANGUAGE = "ts";
 const MAX_DETECT_DEPTH = 5;
 
 export class TypeScriptExtractor implements LanguageExtractor {
@@ -89,6 +95,28 @@ export function createTypeScriptExtractor(): TypeScriptExtractor {
 }
 
 async function runExtraction(options: ExtractOptions): Promise<ExtractionResult> {
+  const workspace = multiPackageWorkspace(options);
+  if (workspace) {
+    return extractPerPackage(options, workspace);
+  }
+  return runSingleProjectExtraction(options);
+}
+
+/**
+ * Route multi-package workspaces (no explicit tsconfig or include globs) to per-package
+ * extraction: one bounded project per package instead of one whole-workspace program, which
+ * on large monorepos is the difference between a flat memory profile and heap exhaustion.
+ */
+function multiPackageWorkspace(options: ExtractOptions) {
+  if (options.project || options.include) {
+    return null; // an explicit program definition wins; the caller asked for exactly that scope
+  }
+  const workspace = discoverWorkspaceUnits(absoluteRoot(options.root));
+  const namedUnits = workspace.units.filter((unit) => unit.name !== null);
+  return namedUnits.length >= 2 ? workspace : null;
+}
+
+function runSingleProjectExtraction(options: ExtractOptions): ExtractionResult {
   const loaded = loadProject(options);
   const diagnostics: ExtractionDiagnostic[] = [];
   const { descriptors, moduleByFilePath } = buildStructure(loaded, NODE_ID_LANGUAGE);
@@ -100,7 +128,7 @@ async function runExtraction(options: ExtractOptions): Promise<ExtractionResult>
   const collapsed = collapseToDepth(buildGraphNodes(descriptors), built.edges, options.depth ?? "function");
   const keepIds = new Set(collapsed.nodes.map((node) => node.id));
   const flows = buildLogicFlows(descriptors, index, keepIds, moduleSourcesById(loaded, moduleByFilePath));
-  const ports = portsWithin(collectPorts(loaded, index, moduleByFilePath), keepIds, loaded, moduleByFilePath);
+  const ports = portsWithin(collectPorts(loaded, index, moduleByFilePath), keepIds, moduleIdsByRelPath(loaded, moduleByFilePath));
   appendDropDiagnostics(diagnostics, built);
   const stats = buildStats({
     files: loaded.sourceFiles.length,
@@ -114,49 +142,4 @@ async function runExtraction(options: ExtractOptions): Promise<ExtractionResult>
     result.ports = ports;
   }
   return result;
-}
-
-// A port must reference a SURVIVING node: when `--depth` collapsed the owning callable away,
-// reattribute the port to its file's module node (which survives at every depth above package).
-function portsWithin(
-  ports: Port[],
-  keepIds: ReadonlySet<string>,
-  loaded: LoadedProject,
-  moduleByFilePath: Map<string, NodeDescriptor>,
-): Port[] {
-  const moduleIdByRelPath = new Map<string, string>();
-  for (const sourceFile of loaded.sourceFiles) {
-    const moduleNode = moduleByFilePath.get(sourceFile.getFilePath());
-    if (moduleNode) {
-      moduleIdByRelPath.set(loaded.relativePathOf(sourceFile), moduleNode.finalId);
-    }
-  }
-  return ports
-    .map((port) => (keepIds.has(port.nodeId) ? port : { ...port, nodeId: moduleIdByRelPath.get(port.callSite.file) ?? "" }))
-    .filter((port) => keepIds.has(port.nodeId));
-}
-
-// Key each surviving module's SourceFile by its node id, so the flow pass can chart the
-// module's load-time top-level statements. Descriptors carry no SourceFile; we match by path.
-function moduleSourcesById(
-  loaded: LoadedProject,
-  moduleByFilePath: Map<string, NodeDescriptor>,
-): Map<string, SourceFile> {
-  const byId = new Map<string, SourceFile>();
-  for (const sourceFile of loaded.sourceFiles) {
-    const moduleNode = moduleByFilePath.get(sourceFile.getFilePath());
-    if (moduleNode) {
-      byId.set(moduleNode.finalId, sourceFile);
-    }
-  }
-  return byId;
-}
-
-function appendDropDiagnostics(diagnostics: ExtractionDiagnostic[], built: EdgeBuildResult): void {
-  if (built.externalCallsDropped > 0) {
-    diagnostics.push({ severity: "warn", message: `dropped ${built.externalCallsDropped} external call edge(s)` });
-  }
-  if (built.unresolvedCalls > 0) {
-    diagnostics.push({ severity: "warn", message: `${built.unresolvedCalls} unresolved call(s)` });
-  }
 }
