@@ -10,7 +10,7 @@
 
 import type { GraphNode } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
-import type { BlockDeps } from "./blockDeps";
+import { UNIT_CARD_KINDS, type BlockDeps } from "./blockDeps";
 
 /** What a ghost card shows: the symbol's qualified name, its home file, and its kind (glyph tint).
  * A type alias (not an interface) so it satisfies React Flow's Record-typed node-data constraint. */
@@ -72,19 +72,42 @@ export function ghostDepWires(
     const targetVisible = nearestVisible(edge.target, visibleIds, index);
     const weight = edge.weight ?? 1;
     if (sourceVisible !== null && targetVisible === null && isCode(sourceVisible) && !expandedBlocks.has(sourceVisible)) {
-      add(sourceVisible, edge.target, edge.target, weight);
+      const anchor = serviceAnchor(edge.target, index);
+      add(sourceVisible, anchor, anchor, weight);
     }
     if (targetVisible !== null && sourceVisible === null && isCode(targetVisible)) {
-      add(edge.source, targetVisible, edge.source, weight);
+      const anchor = serviceAnchor(edge.source, index);
+      add(anchor, targetVisible, anchor, weight);
     }
   }
   // Step-call targets arrive already resolved (constructions point at the constructor block).
   for (const call of calls) {
     if (nearestVisible(call.target, visibleIds, index) === null) {
-      add(call.stepId, call.target, call.target, 1);
+      const anchor = serviceAnchor(call.target, index);
+      add(call.stepId, anchor, anchor, 1);
     }
   }
   return { ghosts, wires: [...byPair.values()] };
+}
+
+/**
+ * The SERVICE a ghost should read as: a member block (constructor / method) lifts to its owning
+ * class / interface / object, so an off-level dependency ghosts as `BlobFileSystem`, not
+ * `BlobFileSystem.constructor` — and every member dep on the same unit folds into one ghost card.
+ * A standalone function (no unit ancestor, e.g. a bare module-level callable) passes through
+ * unchanged, staying a function ghost. The result is always a real artifact id (never parallel).
+ */
+function serviceAnchor(id: string, index: GraphIndex): string {
+  const seen = new Set<string>();
+  let current: string | null | undefined = id;
+  while (current && !seen.has(current)) {
+    if (UNIT_CARD_KINDS.has(index.nodesById.get(current)?.kind ?? "")) {
+      return current;
+    }
+    seen.add(current);
+    current = index.parentOf.get(current) ?? null;
+  }
+  return id;
 }
 
 /** Walk parentId up to the nearest drawn ancestor-or-self; null when the chain leaves the canvas. */
