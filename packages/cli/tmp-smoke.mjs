@@ -8,7 +8,9 @@ await page.goto("http://127.0.0.1:4941", { waitUntil: "networkidle" });
 await page.waitForSelector(".react-flow__node");
 await page.dblclick('[data-id="ts:src"]');
 await page.waitForSelector('[data-id="ts:src/services"]');
-await page.click("text=⊞ Expand all");
+await page.dblclick('[data-id="ts:src/services"]');
+await page.waitForSelector('[data-id="ts:src/services/orderService.ts"]');
+await page.click('nav[aria-label="Containment level"] button[aria-label="Expand cards on this level"]');
 await page.waitForSelector('[data-id="ts:src/services/orderService.ts#OrderService.placeOrder"]');
 await page.waitForTimeout(600);
 // steps stay closed; blocks expandable; open placeOrder then a step inside it

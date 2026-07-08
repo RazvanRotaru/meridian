@@ -10,7 +10,7 @@ await page.dblclick('[data-id="ts:src"]');
 await page.waitForSelector('[data-id="ts:src/services"]');
 await page.dblclick('[data-id="ts:src/services"]');
 await page.waitForSelector('[data-id="ts:src/services/orderService.ts"]');
-await page.click("text=⊞ Expand all");
+await page.click('nav[aria-label="Containment level"] button[aria-label="Expand cards on this level"]');
 await page.waitForSelector('[data-id="ts:src/services/orderService.ts#OrderService.placeOrder"]');
 // open placeOrder's flow, then SELECT its second step (the resolved PricingService.price call)
 await page.click('[data-id="ts:src/services/orderService.ts#OrderService.placeOrder"] button');
