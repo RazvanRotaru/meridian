@@ -28,6 +28,8 @@ import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
 import { deriveModuleLevelLayout } from "./deriveModuleMapLayout";
+import { deriveServiceLevelLayout } from "./deriveServiceMapLayout";
+import { deriveServiceTree } from "../derive/serviceClusterTree";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import { buildBlockDeps, type BlockDeps } from "../derive/blockDeps";
 import { deriveModuleTree } from "../derive/moduleTree";
@@ -341,11 +343,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().relayout();
     },
 
-    // Collapse every inline expansion of the ACTIVE surface: the Map's own expansion set on the
-    // modules lens (its primary gesture), the call/ui graph's `expanded` otherwise. relayout()
-    // routes to the right layout pass either way.
+    // Collapse every inline expansion of the ACTIVE surface: the module slice's expansion set on
+    // both module-surface lenses (the folder Map AND the service-cluster "call" tab), the ui
+    // graph's `expanded` otherwise. relayout() routes to the right layout pass either way.
     collapseAll() {
-      if (get().viewMode === "modules") {
+      if (get().viewMode === "modules" || get().viewMode === "call") {
         set({ moduleExpanded: new Set<string>(), moduleSelected: new Set<string>() });
       } else {
         set({ expanded: new Set<string>() });
@@ -639,17 +641,23 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().compRelayout();
     },
 
-    // Re-derive the Module-map LEVEL for the current focus through ELK, behind the same stale-seq
-    // guard. The import graph is built once (cached) and reused for every level. A null focus is the
-    // whole-repo package overview; a package focus is its children with imports folded to them.
+    // Re-derive the Module-surface LEVEL through ELK, behind the same stale-seq guard. BOTH lenses
+    // write this slice: the "call" lens feeds the same view a SERVICE-CLUSTER tree (no zoom/focus),
+    // while "modules" derives the folder containment level for the current focus. The import graph
+    // is built once (cached) and reused for every folder level.
     async moduleRelayout() {
-      const { index, moduleFocus, moduleExpanded, artifact } = get();
-      moduleGraph ??= buildModuleGraph(index);
-      blockDeps ??= buildBlockDeps(index);
-      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const { index, moduleFocus, moduleExpanded, artifact, viewMode } = get();
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
-      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, moduleGraph, blockDeps, flows);
+      let layout;
+      if (viewMode === "call") {
+        layout = await deriveServiceLevelLayout(index, moduleExpanded);
+      } else {
+        moduleGraph ??= buildModuleGraph(index);
+        blockDeps ??= buildBlockDeps(index);
+        const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+        layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, moduleGraph, blockDeps, flows);
+      }
       if (moduleLayoutSeq !== sequence) {
         return; // a newer focus change superseded this one.
       }
@@ -673,8 +681,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().moduleRelayout();
     },
 
-    // Legacy no-op path for older URLs/widgets that still try to flip Module-map expansion state.
-    // The flat map ignores this set, but relayout keeps callers from observing stale derived nodes.
+    // Expand/collapse a card of the module surface IN PLACE (the service tab's cluster frames, the
+    // Map's inline file/block expansions). A relayout concern — the canvas gains/loses nested cards.
     toggleModuleExpand(nodeId) {
       set({ moduleExpanded: withToggled(get().moduleExpanded, nodeId) });
       void get().moduleRelayout();
@@ -702,7 +710,22 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // flow at once is noise, and the reader unrolls those one call at a time. The expansion set only
     // grows and is bounded by the artifact, so termination is structural.
     expandAllModules() {
-      const { index, moduleFocus, artifact } = get();
+      const { index, moduleFocus, artifact, viewMode } = get();
+      // On the service-cluster lens, "everything" is every cluster frame: derive the collapsed tree
+      // once (its group set is expansion-independent) and open all of them. Member unit cards are
+      // leaves, so no fixpoint is needed here.
+      if (viewMode === "call") {
+        const tree = deriveServiceTree([...index.nodesById.values()], index.edges, new Set<string>());
+        const expanded = new Set(get().moduleExpanded);
+        for (const node of tree.nodes) {
+          if (node.kind === "package") {
+            expanded.add(node.id);
+          }
+        }
+        set({ moduleExpanded: expanded });
+        void get().moduleRelayout();
+        return;
+      }
       moduleGraph ??= buildModuleGraph(index);
       blockDeps ??= buildBlockDeps(index);
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
@@ -770,13 +793,21 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({ viewMode: mode });
         return;
       }
-      // The Module map is a standalone surface (its own ELK level layout), so — like logic — it neither
-      // dives nor touches the graph focus; it just flips the mode and lays its own graph out. Clicking
-      // INTO the lens always opens at the whole-repo package overview (level 0), never a focus inherited
-      // from a prior visit. A shared/reloaded deep link is unaffected: it restores via setState on boot
-      // (not this click path), so an explicit ?mfocus=… still opens at that level.
-      if (mode === "modules") {
-        set({ viewMode: mode, moduleFocus: null, moduleExpanded: new Set<string>() });
+      // The Map ("modules") and Service-composition ("call") lenses SHARE the module slice — same
+      // view, same layout, different tree. Clicking INTO either always opens at its own top level
+      // (never a focus inherited from a prior visit), and crossing between the two families ALSO
+      // resets the selection: cluster/unit ids from one organizing principle mean nothing in the
+      // other, so stale ids must not leak. A shared/reloaded deep link is unaffected: it restores
+      // via setState on boot (not this click path), so an explicit ?mfocus=… still opens there.
+      if (mode === "modules" || mode === "call") {
+        const crossingFamilies = previous === "modules" || previous === "call";
+        const resetSelection = mode === "call" || crossingFamilies;
+        set({
+          viewMode: mode,
+          moduleFocus: null,
+          moduleExpanded: new Set<string>(),
+          ...(resetSelection ? { moduleSelected: new Set<string>() } : {}),
+        });
         void get().moduleRelayout();
         return;
       }
@@ -905,12 +936,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     async relayout() {
-      // The "call" lens IS the Service-composition graph now (not the old call graph), so route its
-      // layout to compRelayout and skip the deriveLayout path entirely. This runs whenever setViewMode
-      // (re-)enters "call" — NOT at boot, which starts on the "modules" lens and routes below — so
-      // composition lays out on first tab-switch in. "ui" still derives below.
+      // The "call" lens IS the Map surface fed a service-cluster tree now (not the old scorecard
+      // composition graph), so it routes to the SAME moduleRelayout as "modules" — the branch by
+      // viewMode lives inside moduleRelayout itself. "ui" still derives below.
       if (get().viewMode === "call") {
-        await get().compRelayout();
+        await get().moduleRelayout();
         return;
       }
       // The Module map is its own surface with a synchronous ring layout; route it to moduleRelayout

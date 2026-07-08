@@ -22,9 +22,16 @@ const SERVICE_RE = /(?:service|manager|facade|orchestrator|coordinator|engine|us
 // Helper names only refine role metadata / seed selection — they never gate the clustering itself.
 const HELPER_RE = /(?:store|repository|repo|dao|client|provider|adapter|mapper|model|entity|dto|cache|factory|builder|validator|serializer|parser|formatter|config|options|settings|utils?|helper|logger|queue|emitter|middleware|guard|policy|strategy)s?$/i;
 
-interface Cluster {
+export interface Cluster {
   leadId: string;
   memberIds: string[];
+}
+
+/** The clustering result other lenses (the service-tab tree) reuse: the clusters themselves plus
+ * the member→lead index that lifts any coupling endpoint to its owning cluster. */
+export interface ServiceClustering {
+  clusters: Cluster[];
+  leadOf: Map<string, string>;
 }
 
 export function deriveServiceCompositionGraph(
@@ -36,19 +43,27 @@ export function deriveServiceCompositionGraph(
   const metrics = computeCompositionMetrics(nodes, edges);
   const couplings = couplingEdges(nodes, edges);
   const membersByUnit = groupMembersByUnit(nodes, buildUnitIndex(nodes));
-  const survivors = survivingUnits(metrics, couplings);
-  if (survivors.size === 0) {
+  const { clusters, leadOf } = clusterServices(metrics, couplings);
+  if (clusters.length === 0) {
     return { nodes: [], edges: [] };
   }
+  return emitSpecs(clusters, leadOf, metrics, membersByUnit, couplings, expanded, showMetrics);
+}
 
+/** The pure clustering pipeline (role classification → seed selection → efferent-BFS ownership →
+ * per-folder synthetic clusters for the unreached), exported so the service-tab tree derive can
+ * share the exact same grouping without re-deriving CompNodeSpecs. */
+export function clusterServices(metrics: Map<string, UnitMetrics>, couplings: ReturnType<typeof couplingEdges>): ServiceClustering {
+  const survivors = survivingUnits(metrics, couplings);
+  if (survivors.size === 0) {
+    return { clusters: [], leadOf: new Map() };
+  }
   const adjacency = efferentAdjacency(couplings);
   const efferentDegree = (id: string) => adjacency.get(id)?.length ?? 0;
   const seeds = selectSeeds(survivors, metrics, efferentDegree);
   const clusterOf = assignOwnership(seeds, adjacency, survivors, metrics);
   const clusters = buildClusters(seeds, clusterOf, survivors, metrics, efferentDegree);
-  const leadOf = leadIndex(clusters);
-
-  return emitSpecs(clusters, leadOf, metrics, membersByUnit, couplings, expanded, showMetrics);
+  return { clusters, leadOf: leadIndex(clusters) };
 }
 
 /** Units carrying weight: ≥1 member OR sitting on ≥1 coupling wire — the only units we cluster. */
