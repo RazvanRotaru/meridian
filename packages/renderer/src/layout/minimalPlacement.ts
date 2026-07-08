@@ -34,8 +34,10 @@ export const FILE_WIDTH = 210;
 export const FILE_HEIGHT = 54;
 export const STUB_WIDTH = 48;
 export const STUB_HEIGHT = 30;
-export const GAP_X = 90;
-export const GAP_Y = 24;
+export const GAP_X = 220;
+export const GAP_Y = 70;
+/** Modest offset so [+n] stubs still hug their source card, independent of the wide inter-column GAP_X. */
+export const STUB_GAP = 40;
 
 const V_STEP = FILE_HEIGHT + GAP_Y;
 
@@ -60,9 +62,10 @@ function placeCapturedFiles(input: PlacementInput, placed: Map<string, PlacedRec
   }
 }
 
-/** Step B — grow the placed set: any unplaced file with a placed import-neighbour lands beside it,
- * right if the neighbour imports it, left if it imports the neighbour, at the nearest free vertical
- * slot. Repeat until a full pass places nothing (the connected frontier is exhausted). */
+/** Step B — grow the placed set: any unplaced file with placed import-neighbours lands flow-aware
+ * against ALL of them — left of its leftmost importee if it imports any, else right of its rightmost
+ * importer — at the nearest free vertical slot. Repeat until a full pass places nothing (the
+ * connected frontier is exhausted). */
 function placeConnectedFiles(input: PlacementInput, placed: Map<string, PlacedRect>): void {
   const { out, in: inbound } = adjacency(input.importEdges);
   const ordered = [...input.fileIds].sort();
@@ -73,11 +76,11 @@ function placeConnectedFiles(input: PlacementInput, placed: Map<string, PlacedRe
       if (placed.has(id)) {
         continue;
       }
-      const anchor = placedNeighbour(id, out, inbound, placed);
-      if (!anchor) {
+      const target = placementTarget(id, out, inbound, placed);
+      if (!target) {
         continue;
       }
-      placed.set(id, placeBeside(anchor.rect, anchor.rightward, placed));
+      placed.set(id, placeAt(target.x, target.refY, placed));
       progressed = true;
     }
   }
@@ -105,7 +108,7 @@ function placeStubs(stubs: readonly PlacementStub[], placed: Map<string, PlacedR
     if (!source) {
       continue; // a stub whose source never got placed has nowhere to hang.
     }
-    const x = stub.direction === "in" ? source.x - STUB_WIDTH - GAP_X / 2 : source.x + source.width + GAP_X / 2;
+    const x = stub.direction === "in" ? source.x - STUB_WIDTH - STUB_GAP : source.x + source.width + STUB_GAP;
     const y = source.y + source.height / 2 - STUB_HEIGHT / 2;
     result[stub.id] = { x, y, width: STUB_WIDTH, height: STUB_HEIGHT };
   }
@@ -132,37 +135,70 @@ function addEdge(map: Map<string, Set<string>>, key: string, value: string): voi
   map.set(key, set);
 }
 
-/** The smallest-id placed import-neighbour of `id`, and whether it should sit to `id`'s left (P→id)
- * or... — `rightward` is true when the anchor imports `id` (anchor P → id, so id goes right of P). */
-function placedNeighbour(
+/** The target column x + reference row y for an unplaced `id`, computed from ALL its placed
+ * import-neighbours so it flows left-to-right. A file imports its importees, so it's their caller and
+ * sits LEFT of the leftmost of them; failing that, it's a callee of its importers and sits RIGHT of
+ * the rightmost of them. A node with both placed importees and importers prefers the importees branch
+ * (left of its leftmost import) — a caller reads before what it calls. Null ⇒ no placed neighbour yet
+ * (left for the disconnected-column step). Deterministic: id-sorted, x-ties broken by smallest id. */
+function placementTarget(
   id: string,
   out: Map<string, Set<string>>,
   inbound: Map<string, Set<string>>,
   placed: Map<string, PlacedRect>,
-): { rect: PlacedRect; rightward: boolean } | null {
-  const importers = inbound.get(id) ?? new Set<string>(); // p → id
-  const importees = out.get(id) ?? new Set<string>(); // id → p
-  const candidates = [...new Set([...importers, ...importees])].filter((p) => placed.has(p)).sort();
-  const p = candidates[0];
-  if (!p) {
-    return null;
+): { x: number; refY: number } | null {
+  const importees = [...(out.get(id) ?? [])].filter((p) => placed.has(p)); // id → p
+  if (importees.length > 0) {
+    const rect = placed.get(leftmost(importees, placed))!;
+    return { x: rect.x - FILE_WIDTH - GAP_X, refY: rect.y };
   }
-  // p → id ⇒ id sits to the RIGHT of p; otherwise id → p ⇒ id sits to its LEFT.
-  return { rect: placed.get(p)!, rightward: importers.has(p) };
+  const importers = [...(inbound.get(id) ?? [])].filter((p) => placed.has(p)); // p → id
+  if (importers.length > 0) {
+    const rect = placed.get(rightmost(importers, placed))!;
+    return { x: rect.x + rect.width + GAP_X, refY: rect.y };
+  }
+  return null;
 }
 
-/** A rect one column to the right (or left) of the anchor, at the nearest vertical slot near the
- * anchor's y that no already-placed rect occupies (try level, then down, then up, alternating). */
-function placeBeside(anchor: PlacedRect, rightward: boolean, placed: Map<string, PlacedRect>): PlacedRect {
-  const x = rightward ? anchor.x + anchor.width + GAP_X : anchor.x - FILE_WIDTH - GAP_X;
+/** The placed id with the smallest left edge; x-ties broken by smallest id (ascending scan, replace
+ * on strict `<`). */
+function leftmost(ids: readonly string[], placed: Map<string, PlacedRect>): string {
+  const sorted = [...ids].sort();
+  let best = sorted[0];
+  for (const id of sorted) {
+    if (placed.get(id)!.x < placed.get(best)!.x) {
+      best = id;
+    }
+  }
+  return best;
+}
+
+/** The placed id with the largest right edge; x-ties broken by smallest id (ascending scan, replace
+ * on strict `>`). */
+function rightmost(ids: readonly string[], placed: Map<string, PlacedRect>): string {
+  const sorted = [...ids].sort();
+  let best = sorted[0];
+  for (const id of sorted) {
+    const rect = placed.get(id)!;
+    const bestRect = placed.get(best)!;
+    if (rect.x + rect.width > bestRect.x + bestRect.width) {
+      best = id;
+    }
+  }
+  return best;
+}
+
+/** A rect at the fixed column `x`, at the nearest vertical slot near `refY` that no already-placed
+ * rect occupies (try level, then down, then up, alternating). */
+function placeAt(x: number, refY: number, placed: Map<string, PlacedRect>): PlacedRect {
   const rects = [...placed.values()];
   for (const offset of verticalOffsets(rects.length + 4)) {
-    const rect: PlacedRect = { x, y: anchor.y + offset, width: FILE_WIDTH, height: FILE_HEIGHT };
+    const rect: PlacedRect = { x, y: refY + offset, width: FILE_WIDTH, height: FILE_HEIGHT };
     if (!rects.some((other) => overlaps(rect, other))) {
       return rect;
     }
   }
-  return { x, y: anchor.y, width: FILE_WIDTH, height: FILE_HEIGHT };
+  return { x, y: refY, width: FILE_WIDTH, height: FILE_HEIGHT };
 }
 
 /** 0, +step, -step, +2·step, -2·step, … — level first, then stack downward, then upward. */
