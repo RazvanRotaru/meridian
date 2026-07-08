@@ -1157,12 +1157,22 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
+    // Reviewing a PR lands on the Map (the spatial home view), focused on the touched modules'
+    // common package with each matched module expanded into view and selected. Files that match
+    // nothing (docs, config) simply contribute no modules; zero matches means the plain overview.
     reviewPrInGraph() {
       const files = get().prFiles ?? [];
       const matchedIds = unique(matchPrFilesToModules(files, get().index.nodesById.values()).map((match) => match.moduleId));
-      get().setViewMode("ui");
-      set({ flowSelection: null, flowEmphasis: new Set(matchedIds) });
-      get().expandPaths(matchedIds);
+      const reveal = moduleRevealStateFor(matchedIds, get().index);
+      set({
+        viewMode: "modules",
+        flowSelection: null,
+        flowEmphasis: new Set<string>(),
+        moduleFocus: reveal?.moduleFocus ?? null,
+        moduleExpanded: reveal?.moduleExpanded ?? new Set<string>(),
+        moduleSelected: reveal?.moduleSelected ?? new Set<string>(),
+      });
+      void get().moduleRelayout();
     },
 
     async relayout() {
