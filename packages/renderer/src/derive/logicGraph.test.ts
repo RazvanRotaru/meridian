@@ -4,7 +4,7 @@ import type { GraphNode } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import { collectModuleDefinitions, definitionNodeData, deriveLogicGraph, deriveLogicGraphFromBodies, type LogicNodeData } from "./logicGraph";
 
-/** A GraphIndex stub: deriveLogicGraph only reads nodesById + ancestorsOf. */
+/** A GraphIndex stub: deriveLogicGraph reads nodesById + ancestorsOf + changedIds (entry-cap diff). */
 function makeIndex(entries: Array<{ id: string; name: string; kind: string; parentId: string | null }>): GraphIndex {
   const nodesById = new Map<string, GraphNode>(
     entries.map((e) => [
@@ -32,7 +32,7 @@ function makeIndex(entries: Array<{ id: string; name: string; kind: string; pare
     return path.reverse();
   };
   const childrenOf = (id: string): GraphNode[] => childrenByParent.get(id) ?? [];
-  return { nodesById, ancestorsOf, childrenOf } as unknown as GraphIndex;
+  return { nodesById, ancestorsOf, childrenOf, changedIds: new Set<string>() } as unknown as GraphIndex;
 }
 
 const call = (label: string, target: string | null, resolution: EdgeResolution): FlowStep => ({ kind: "call", label, target, resolution });

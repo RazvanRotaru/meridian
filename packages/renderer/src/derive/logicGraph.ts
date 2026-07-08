@@ -73,6 +73,9 @@ export type TerminalData = {
   /** `entry`/`exit` frame the whole flow; `return`/`throw` are MID-FLOW caps a path dead-ends at. */
   terminal: "entry" | "exit" | "return" | "throw";
   label: string;
+  /** The charted callable is itself in the PR's diff — set on the ENTRY cap so a drilled-into changed
+   * function announces the diff even when none of its own calls target changed code. */
+  changed?: boolean;
 };
 
 export interface LogicNodeSpec {
@@ -252,7 +255,7 @@ class LogicGraphBuilder {
   private addTerminals(firstId: string, lastExits: Exit[]): void {
     const entry = this.index.nodesById.get(this.rootId);
     const entryId = `${this.rootId}::entry`;
-    const entryData: TerminalData = { targetId: null, isContainer: false, terminal: "entry", label: entry?.displayName ?? baseName(parseNodeId(this.rootId).modulePath) };
+    const entryData: TerminalData = { targetId: null, isContainer: false, terminal: "entry", label: entry?.displayName ?? baseName(parseNodeId(this.rootId).modulePath), changed: this.index.changedIds.has(this.rootId) };
     this.nodes.push({ id: entryId, parentId: null, type: "terminal", data: entryData, width: entryTerminalWidth(entryData.label), height: TERMINAL_HEIGHT });
     this.pushEdge(entryId, firstId, "seq");
     // No trailing exec pins means every path already dead-ended at its own return/throw cap — a
