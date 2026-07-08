@@ -14,7 +14,9 @@ export const TEST_TAG = "test";
 /** Directory segments that mark everything beneath them as test code. */
 const TEST_DIR_SEGMENTS = new Set([
   "__tests__",
+  "__test__",
   "__mocks__",
+  "__mock__",
   "test",
   "tests",
   "e2e",
@@ -31,13 +33,25 @@ const TEST_FILE_PATTERNS = [
   /(^|\/)conftest\.py$/,
 ];
 
+/**
+ * Compound test-support DIRECTORY/package names the exact-segment set can't catch: a hyphen-delimited
+ * `e2e`/`test(s)`/`testbench`/`testkit` token — e.g. `autopilot-delegate-e2e-testbench`, `web-tests`.
+ * Token-scoped (bounded by `^`/`-`/`$`) so a word that merely CONTAINS the letters, like `latest`,
+ * never matches.
+ */
+const TEST_DIR_PATTERN = /(^|-)(e2e|tests?|testbench|testkit)(-|$)/i;
+
 export function isTestPath(file: string): boolean {
   const normalized = file.replace(/\\/g, "/");
   if (TEST_FILE_PATTERNS.some((pattern) => pattern.test(normalized))) {
     return true;
   }
-  // Only parent segments count as directories; the last segment is the file itself.
-  return normalized.split("/").slice(0, -1).some((segment) => TEST_DIR_SEGMENTS.has(segment));
+  // Only parent segments count as directories; the last segment is the file itself. Match
+  // case-insensitively so a `QA/E2E/…` or `Tests/…` tree is caught the same as its lower-cased form.
+  return normalized
+    .split("/")
+    .slice(0, -1)
+    .some((segment) => TEST_DIR_SEGMENTS.has(segment.toLowerCase()) || TEST_DIR_PATTERN.test(segment));
 }
 
 export function isTestNode(node: GraphNode): boolean {

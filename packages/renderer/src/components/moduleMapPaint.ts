@@ -46,20 +46,31 @@ function hiddenCardIds(nodes: Node[], options: HideOptions): Set<string> {
       hidden.add(node.id);
       continue;
     }
-    if ((node.type === "file" || node.type === "unit" || node.type === "block" || node.type === "ghost") && isHidden(node, options)) {
+    if (isCardHidden(node, options)) {
       hidden.add(node.id);
     }
   }
   return hidden;
 }
 
-function isHidden(node: Node, options: HideOptions): boolean {
+// A group/`package` card is never CATEGORY-hidden (a directory has no single category), but it DOES
+// hide with the Tests/Private toggle when it is WHOLLY test/private code. `testIds`/`privateIds` are
+// closed over containment, so a package appears there only when ALL its descendants qualify — hiding
+// the card then takes its (equally test/private) drawn subtree with it, so no child is orphaned.
+function isCardHidden(node: Node, options: HideOptions): boolean {
+  if (node.type === "package") {
+    return toggledOff(node, options);
+  }
+  if (node.type === "file" || node.type === "unit" || node.type === "block" || node.type === "ghost") {
+    return toggledOff(node, options) || options.hiddenCategories.has((node.data as ModuleCardData).category);
+  }
+  return false;
+}
+
+// The Tests/Private toggles (category is handled only for the card types that carry one).
+function toggledOff(node: Node, options: HideOptions): boolean {
   if (!options.showTests && options.testIds.has(node.id)) {
     return true;
   }
-  if (!options.showPrivate && options.privateIds.has(node.id)) {
-    return true;
-  }
-  // Unit cards carry no category of their own; they hide with their file frame (subtree closure).
-  return options.hiddenCategories.has((node.data as ModuleCardData).category);
+  return !options.showPrivate && options.privateIds.has(node.id);
 }
