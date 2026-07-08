@@ -67,7 +67,7 @@ describe("emphasize — beacon read (a selected call step's definition)", () => 
     const ghost: Node = { id: "ts:pay.ts#Gateway.charge", type: "ghost", position: { x: 0, y: 0 }, data: { label: "Gateway.charge" } } as Node;
     const dep: Edge = { id: "gdep:step->ghost", source: step.id, target: ghost.id, data: { category: "dep", ghost: true } } as Edge;
     const other: Edge = { id: "lvl:a->b", source: "ts:svc.ts", target: ghost.id, data: {} } as Edge;
-    const { edges, nodes, beacons } = emphasize([frame, step, ghost], [dep, other], new Set([step.id]), 1);
+    const { edges, nodes, beacons } = emphasize([frame, step, ghost], [dep, other], new Set([step.id]), 1, "reach");
     expect(beacons).toEqual(new Set([ghost.id]));
     expect(edges.find((e) => e.id === dep.id)?.style?.opacity).toBe(0);
     expect(edges.find((e) => e.id === other.id)?.style?.opacity).not.toBe(0);
@@ -80,7 +80,7 @@ describe("emphasize — beacon read (a selected call step's definition)", () => 
     const a = fileNode("ts:a.ts");
     const b = fileNode("ts:b.ts");
     const wire = edge("ts:a.ts", "ts:b.ts");
-    const { beacons, edges } = emphasize([a, b], [wire], new Set(["ts:a.ts"]), 1);
+    const { beacons, edges } = emphasize([a, b], [wire], new Set(["ts:a.ts"]), 1, "reach");
     expect(beacons.size).toBe(0);
     expect(edges[0].style?.opacity).not.toBe(0);
   });
@@ -90,7 +90,7 @@ describe("emphasize — stale selection", () => {
   it("paints as no-selection when the selected id is no longer drawn (frame collapsed)", () => {
     const nodes = [fileNode("ts:a.ts"), fileNode("ts:b.ts")];
     const edges = [edge("ts:a.ts", "ts:b.ts")];
-    const { nodes: styled } = emphasize(nodes, edges, new Set(["ts:a.ts#Gone"]), 1);
+    const { nodes: styled } = emphasize(nodes, edges, new Set(["ts:a.ts#Gone"]), 1, "reach");
     // No node dims: the vanished selection must not fade the whole level.
     expect(styled.every((node) => node.style?.opacity === undefined)).toBe(true);
   });

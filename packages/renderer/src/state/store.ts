@@ -27,11 +27,14 @@ import { uiFocusTarget } from "../derive/uiFocus";
 import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
-import { deriveModuleLevelLayout } from "./deriveModuleMapLayout";
+import { deriveModuleLevelLayout, type ModuleLevelLayout } from "./deriveModuleMapLayout";
+import { deriveServiceLevelLayout } from "./deriveServiceMapLayout";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import { buildBlockDeps, type BlockDeps } from "../derive/blockDeps";
 import { deriveModuleTree } from "../derive/moduleTree";
+import { deriveServiceTree } from "../derive/serviceClusterTree";
 import type { ModuleCategory } from "../derive/moduleCategory";
+import type { HighlightMode } from "../components/moduleMapPaint";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
@@ -156,6 +159,8 @@ export interface BlueprintState {
   /** How many import hops the selection lights up — a PAINT-ONLY highlight radius (never a relayout;
    * containment, not this, bounds what's drawn). GHOST_DEPTH_ALL == the whole connected neighbourhood. */
   moduleRadius: number;
+  /** Whether Module-map selection lights incident node wires only, or the full radius-based reach. */
+  highlightMode: HighlightMode;
   /** Module categories painted OUT of the map (a render-time filter — never a re-derive). */
   hiddenCategories: Set<ModuleCategory>;
   /** The selected node ids in the Module map (ctrl/cmd+click accumulates several); empty == none.
@@ -222,6 +227,7 @@ export interface BlueprintState {
   expandAllModules(): void;
   togglePrivateMembers(): void;
   setModuleRadius(radius: number): void;
+  toggleHighlightMode(): void;
   toggleCategory(category: ModuleCategory): void;
   selectModule(id: string | null): void;
   toggleModuleSelect(id: string): void;
@@ -316,6 +322,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleFocus: null,
     moduleEffectiveFocus: null,
     moduleRadius: 1,
+    highlightMode: "node",
     hiddenCategories: new Set<ModuleCategory>(),
     moduleSelected: new Set<string>(),
     moduleExpanded: new Set<string>(),
@@ -341,11 +348,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().relayout();
     },
 
-    // Collapse every inline expansion of the ACTIVE surface: the Map's own expansion set on the
-    // modules lens (its primary gesture), the call/ui graph's `expanded` otherwise. relayout()
-    // routes to the right layout pass either way.
+    // Collapse every inline expansion of the ACTIVE surface: the module slice's expansion set on
+    // both module-surface lenses (the folder Map AND the service-cluster "call" tab), the ui
+    // graph's `expanded` otherwise. relayout() routes to the right layout pass either way.
     collapseAll() {
-      if (get().viewMode === "modules") {
+      if (get().viewMode === "modules" || get().viewMode === "call") {
         set({ moduleExpanded: new Set<string>(), moduleSelected: new Set<string>() });
       } else {
         set({ expanded: new Set<string>() });
@@ -639,17 +646,23 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().compRelayout();
     },
 
-    // Re-derive the Module-map LEVEL for the current focus through ELK, behind the same stale-seq
-    // guard. The import graph is built once (cached) and reused for every level. A null focus is the
-    // whole-repo package overview; a package focus is its children with imports folded to them.
+    // Re-derive the Module-surface LEVEL through ELK, behind the same stale-seq guard. BOTH lenses
+    // write this slice: the "call" lens feeds the same view a SERVICE-CLUSTER tree (no zoom/focus),
+    // while "modules" derives the folder containment level for the current focus. The import graph
+    // is built once (cached) and reused for every folder level.
     async moduleRelayout() {
-      const { index, moduleFocus, moduleExpanded, artifact } = get();
-      moduleGraph ??= buildModuleGraph(index);
-      blockDeps ??= buildBlockDeps(index);
-      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const { index, moduleFocus, moduleExpanded, artifact, viewMode } = get();
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
-      const layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, moduleGraph, blockDeps, flows);
+      const graph = (moduleGraph ??= buildModuleGraph(index));
+      const deps = (blockDeps ??= buildBlockDeps(index));
+      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      let layout: ModuleLevelLayout;
+      if (viewMode === "call") {
+        layout = await deriveServiceLevelLayout(index, moduleExpanded, graph, deps, flows);
+      } else {
+        layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, graph, deps, flows);
+      }
       if (moduleLayoutSeq !== sequence) {
         return; // a newer focus change superseded this one.
       }
@@ -673,8 +686,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().moduleRelayout();
     },
 
-    // Legacy no-op path for older URLs/widgets that still try to flip Module-map expansion state.
-    // The flat map ignores this set, but relayout keeps callers from observing stale derived nodes.
+    // Expand/collapse a card of the module surface IN PLACE (the service tab's cluster frames, the
+    // Map's inline file/block expansions). A relayout concern — the canvas gains/loses nested cards.
     toggleModuleExpand(nodeId) {
       set({ moduleExpanded: withToggled(get().moduleExpanded, nodeId) });
       void get().moduleRelayout();
@@ -702,13 +715,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // flow at once is noise, and the reader unrolls those one call at a time. The expansion set only
     // grows and is bounded by the artifact, so termination is structural.
     expandAllModules() {
-      const { index, moduleFocus, artifact } = get();
-      moduleGraph ??= buildModuleGraph(index);
-      blockDeps ??= buildBlockDeps(index);
+      const { index, moduleFocus, artifact, viewMode } = get();
+      const graph = (moduleGraph ??= buildModuleGraph(index));
+      const deps = (blockDeps ??= buildBlockDeps(index));
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const expanded = new Set(get().moduleExpanded);
       for (;;) {
-        const tree = deriveModuleTree(index, moduleFocus, expanded, moduleGraph, blockDeps, flows);
+        const tree =
+          viewMode === "call"
+            ? deriveServiceTree(index, expanded, graph, deps, flows)
+            : deriveModuleTree(index, moduleFocus, expanded, graph, deps, flows);
         const fresh = tree.nodes
           .filter((node) => node.isContainer && !node.isExpanded && (node.kind === "package" || node.kind === "file"))
           .map((node) => node.id);
@@ -737,6 +753,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // recomputes the lit neighbourhood in a useMemo, so this deliberately does NOT relayout.
     setModuleRadius(radius) {
       set({ moduleRadius: Math.max(1, Math.min(GHOST_DEPTH_ALL, Math.trunc(radius))) });
+    },
+
+    // Paint-only: switches how the already-laid-out Module map interprets selection emphasis.
+    toggleHighlightMode() {
+      set({ highlightMode: get().highlightMode === "reach" ? "node" : "reach" });
     },
 
     // Show/hide a module category. PAINT-ONLY: the surface filters the category's file cards out in
@@ -770,13 +791,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({ viewMode: mode });
         return;
       }
-      // The Module map is a standalone surface (its own ELK level layout), so — like logic — it neither
-      // dives nor touches the graph focus; it just flips the mode and lays its own graph out. Clicking
-      // INTO the lens always opens at the whole-repo package overview (level 0), never a focus inherited
-      // from a prior visit. A shared/reloaded deep link is unaffected: it restores via setState on boot
-      // (not this click path), so an explicit ?mfocus=… still opens at that level.
-      if (mode === "modules") {
-        set({ viewMode: mode, moduleFocus: null, moduleExpanded: new Set<string>() });
+      // The Map ("modules") and Service-composition ("call") lenses SHARE the module slice — same
+      // view, same layout, different tree. Clicking INTO either always opens at its own top level,
+      // never a focus inherited from a prior visit. A shared/reloaded deep link is unaffected: it
+      // restores via setState on boot (not this click path), so an explicit ?mfocus=… still opens.
+      if (mode === "modules" || mode === "call") {
+        set({ viewMode: mode, moduleFocus: null, moduleExpanded: new Set<string>(), moduleSelected: new Set<string>() });
         void get().moduleRelayout();
         return;
       }
@@ -905,17 +925,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     async relayout() {
-      // The "call" lens IS the Service-composition graph now (not the old call graph), so route its
-      // layout to compRelayout and skip the deriveLayout path entirely. This runs whenever setViewMode
-      // (re-)enters "call" — NOT at boot, which starts on the "modules" lens and routes below — so
-      // composition lays out on first tab-switch in. "ui" still derives below.
-      if (get().viewMode === "call") {
-        await get().compRelayout();
-        return;
-      }
-      // The Module map is its own surface with a synchronous ring layout; route it to moduleRelayout
-      // (this also runs on a boot/back-forward restore into the "modules" lens). "ui" derives below.
-      if (get().viewMode === "modules") {
+      // The "call" lens IS the Map surface fed a service-cluster tree now (not the old scorecard
+      // composition graph), so it routes to the SAME moduleRelayout as "modules" — the branch by
+      // viewMode lives inside moduleRelayout itself. "ui" still derives below.
+      if (get().viewMode === "call" || get().viewMode === "modules") {
         await get().moduleRelayout();
         return;
       }

@@ -118,6 +118,7 @@ function structuralState(nav: NavState): Record<string, unknown> {
     moduleFocus: nav.moduleFocus,
     moduleExpanded: new Set(nav.moduleExpanded),
     moduleRadius: nav.moduleRadius,
+    highlightMode: nav.highlightMode,
     hiddenCategories: new Set(nav.hiddenCategories),
   };
 }

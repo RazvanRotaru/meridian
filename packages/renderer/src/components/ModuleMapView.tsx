@@ -33,12 +33,14 @@ export function ModuleMapView() {
   const layoutStatus = useBlueprint((state) => state.moduleLayoutStatus);
   const effectiveFocus = useBlueprint((state) => state.moduleEffectiveFocus);
   const radius = useBlueprint((state) => state.moduleRadius);
+  const highlightMode = useBlueprint((state) => state.highlightMode);
   const index = useBlueprint((state) => state.index);
   const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
   const showTests = useBlueprint((state) => state.showTests);
   const showPrivate = useBlueprint((state) => state.showPrivate);
   const hasExpansions = useBlueprint((state) => state.moduleExpanded.size > 0);
-  const { selectModule, toggleModuleSelect, setModuleFocus, openLogicFlow, revealModule, expandAllModules, collapseAll } = useBlueprintActions();
+  const viewMode = useBlueprint((state) => state.viewMode);
+  const { selectModule, toggleModuleSelect, setModuleFocus, toggleModuleExpand, openLogicFlow, revealModule, expandAllModules, collapseAll } = useBlueprintActions();
 
   // Category/test hiding is a pure VISIBILITY filter over the laid-out graph; positions are untouched.
   const { nodes: shownNodes, edges: shownEdges } = useMemo(
@@ -47,20 +49,24 @@ export function ModuleMapView() {
   );
   // Emphasis is a second pure repaint: dim by default, light the selection's N-hop import reach.
   const { nodes: styledNodes, edges: styledEdges, beacons } = useMemo(
-    () => emphasize(shownNodes, shownEdges, selected, radius),
-    [shownNodes, shownEdges, selected, radius],
+    () => emphasize(shownNodes, shownEdges, selected, radius, highlightMode),
+    [shownNodes, shownEdges, selected, radius, highlightMode],
   );
 
   // Plain click REPLACES the selection; ctrl/cmd+click toggles the node in/out of it, accumulating
   // a multi-selection whose combined reach lights up.
   const onNodeClick: NodeMouseHandler<Node> = (event, node) =>
     event.ctrlKey || event.metaKey ? toggleModuleSelect(node.id) : selectModule(node.id);
-  // Double-click a GROUP card (a package/directory) zooms into it; a callable BLOCK opens its logic
-  // flow (the map→logic link); a GHOST reveals its off-screen definition (the Map refocuses where it
-  // lives); everything else only selects. The breadcrumb is the way back up.
+  // Double-click a GROUP card: on the folder Map it zooms into it; on the service-cluster ("call")
+  // lens clusters are the top level, so it expands the cluster IN PLACE instead. A callable BLOCK
+  // opens its logic flow (the map→logic link); a GHOST reveals its off-screen definition.
   const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
     if (node.type === PACKAGE_KIND) {
-      setModuleFocus(node.id);
+      if (viewMode === "call") {
+        toggleModuleExpand(node.id);
+      } else {
+        setModuleFocus(node.id);
+      }
     } else if (node.type === "ghost") {
       revealModule(node.id);
     } else if (node.type === "block" && (node.data as BlockData).callable) {

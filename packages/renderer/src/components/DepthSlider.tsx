@@ -15,9 +15,10 @@ const ALL_POSITION = MAX_HOPS + 1;
 export function DepthSlider() {
   const radius = useBlueprint((state) => state.moduleRadius);
   const selectedCount = useBlueprint((state) => state.moduleSelected.size);
+  const highlightMode = useBlueprint((state) => state.highlightMode);
   const setModuleRadius = useBlueprintActions().setModuleRadius;
 
-  if (selectedCount === 0) {
+  if (selectedCount === 0 || highlightMode === "node") {
     return null;
   }
   const isAll = radius >= GHOST_DEPTH_ALL;
