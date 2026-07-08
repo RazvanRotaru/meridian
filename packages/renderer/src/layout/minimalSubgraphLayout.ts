@@ -14,7 +14,8 @@
  */
 
 import type { Edge, Node } from "@xyflow/react";
-import { placeMinimalNodes, type PlacedRect } from "./minimalPlacement";
+import { placeMinimalNodes, placeStubs, type PlacedRect, type PlacementStub } from "./minimalPlacement";
+import { reflowMinimalFiles } from "./minimalReflow";
 import { layoutModuleTree } from "./moduleLevelLayout";
 import type { MinimalStubData, MinimalSubgraphEdge, MinimalSubgraphNode, MinimalSubgraphSpec, MinimalTier } from "../derive/minimalSubgraph";
 import type { MinimalExpansion } from "../derive/minimalExpansion";
@@ -46,14 +47,14 @@ export async function layoutMinimalSubgraph(
   }
   const files = spec.nodes.filter((node) => node.kind === "file");
   const stubs = spec.nodes.filter((node) => node.kind === "stub");
+  const stubDescriptors = stubs.map((node) => stubDescriptor(node));
+  const importEdges = spec.edges.filter((edge) => edge.kind === "import").map((edge) => ({ source: edge.source, target: edge.target }));
   const laidByFile = await layoutExpansions(spec.expansions);
-  const placement = placeMinimalNodes({
-    fileIds: files.map((node) => node.id),
-    stubs: stubs.map((node) => stubDescriptor(node)),
-    importEdges: spec.edges.filter((edge) => edge.kind === "import").map((edge) => ({ source: edge.source, target: edge.target })),
-    basePositions,
-    sizeOverrides: frameSizes(laidByFile),
-  });
+  const seed = placeMinimalNodes({ fileIds: files.map((node) => node.id), stubs: stubDescriptors, importEdges, basePositions, sizeOverrides: frameSizes(laidByFile) });
+  // Constraint: with NO expanded frame the captured-position mirror (`seed`) is returned UNCHANGED —
+  // the reflow is never reached. With one, an interactive-layered ELK pass opens spacing around the
+  // grown frames while preserving the arrangement (see `minimalReflow`).
+  const placement = laidByFile.size > 0 ? await reflowAroundFrames(files, stubDescriptors, importEdges, seed) : seed;
   const { nodes, edges } = emitFiles(files, placement, laidByFile);
   for (const stub of stubs) {
     const rect = placement[stub.id];
@@ -64,6 +65,18 @@ export async function layoutMinimalSubgraph(
   const placedIds = new Set(nodes.map((node) => node.id));
   const importWires = spec.edges.filter((edge) => placedIds.has(edge.source) && placedIds.has(edge.target)).map(toRfEdge);
   return { nodes, edges: [...importWires, ...edges] };
+}
+
+/** Expanded state only: reflow the file rects with position-seeded interactive-layered ELK (opens
+ * spacing, keeps arrangement), then re-hang the stubs against the reflowed files. */
+async function reflowAroundFrames(
+  files: MinimalSubgraphNode[],
+  stubs: PlacementStub[],
+  importEdges: { source: string; target: string }[],
+  seed: Record<string, PlacedRect>,
+): Promise<Record<string, PlacedRect>> {
+  const fileRects = await reflowMinimalFiles(files.map((file) => file.id), seed, importEdges);
+  return { ...fileRects, ...placeStubs(stubs, fileRects) };
 }
 
 /** Run the Map's per-file nested-ELK pass over each expanded file's subtree, keyed by file id. */

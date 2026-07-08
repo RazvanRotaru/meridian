@@ -52,8 +52,7 @@ export function placeMinimalNodes(input: PlacementInput): Record<string, PlacedR
   placeConnectedFiles(input, placed);
   placeDisconnectedFiles(input, placed);
   const result: Record<string, PlacedRect> = Object.fromEntries(placed);
-  placeStubs(input.stubs, placed, result);
-  return result;
+  return { ...result, ...placeStubs(input.stubs, result) };
 }
 
 /** The rendered size of a file box: its expanded-frame override when present, else the file-card
@@ -113,17 +112,21 @@ function placeDisconnectedFiles(input: PlacementInput, placed: Map<string, Place
   }
 }
 
-/** Step C — each stub sits beside its source: in→left, out→right, vertically centred on the source. */
-function placeStubs(stubs: readonly PlacementStub[], placed: Map<string, PlacedRect>, result: Record<string, PlacedRect>): void {
+/** Step C — each stub sits beside its source: in→left, out→right, vertically centred on the source.
+ * Pure over the placed FILE rects, so it re-hangs stubs identically whether the files came from the
+ * flat mirror or the expanded-state ELK reflow (a stub whose source never got placed is dropped). */
+export function placeStubs(stubs: readonly PlacementStub[], fileRects: Record<string, PlacedRect>): Record<string, PlacedRect> {
+  const rects: Record<string, PlacedRect> = {};
   for (const stub of stubs) {
-    const source = placed.get(stub.sourceId);
+    const source = fileRects[stub.sourceId];
     if (!source) {
       continue; // a stub whose source never got placed has nowhere to hang.
     }
     const x = stub.direction === "in" ? source.x - STUB_WIDTH - STUB_GAP : source.x + source.width + STUB_GAP;
     const y = source.y + source.height / 2 - STUB_HEIGHT / 2;
-    result[stub.id] = { x, y, width: STUB_WIDTH, height: STUB_HEIGHT };
+    rects[stub.id] = { x, y, width: STUB_WIDTH, height: STUB_HEIGHT };
   }
+  return rects;
 }
 
 interface Adjacency {
