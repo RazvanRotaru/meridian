@@ -6,6 +6,13 @@
  * cards revealed by clicking a stub. Drilling through a ghost commits it; "Reset" drops all growth
  * back to the seed base. A floating panel names the seed count, resets, and closes (Escape too —
  * closing returns to the level with the selection kept, so the reader can adjust and rebuild).
+ *
+ * Gestures on a file card: single-click selects it (drives the Map's own selection/green ring) — but
+ * that plain click is DEBOUNCED (mirroring the Module map) so a double-click wins instead of the
+ * first click repainting the graph out from under it. Clicking a directional [+n] stub expands ONE
+ * direction (never debounced), and double-clicking a card expands BOTH directions at once by calling
+ * the existing `expandMinimal` action twice (in + out) — no separate both-directions action —
+ * revealing all its hidden importers + imports and committing it if it was a ghost.
  */
 
 import { useEffect, useMemo, useRef } from "react";
@@ -27,6 +34,10 @@ const overlayNodeTypes = { ...moduleNodeTypes, [MINIMAL_STUB_NODE]: MinimalStubN
 // the smaller dim (min wins), a LIT ghost still recedes to this opacity — the ghost read is preserved.
 const GHOST_OPACITY = 0.62;
 
+// The same click-debounce window the Module map uses: a plain single-click waits this long before it
+// selects, so a double-click cancels it and expands instead of the first click repainting the graph.
+const SELECT_CLICK_DELAY_MS = 250;
+
 export function MinimalGraphView() {
   const nodes = useBlueprint((state) => state.minimalRfNodes);
   const edges = useBlueprint((state) => state.minimalRfEdges);
@@ -36,8 +47,18 @@ export function MinimalGraphView() {
   const seedCount = useBlueprint((state) => state.minimalSeedIds.length);
   const grown = useBlueprint((state) => state.minimalKeptIds.length > 0 || state.minimalExpanded.length > 0);
   const { closeMinimalGraph, expandMinimal, resetMinimalGraph, selectModule, toggleModuleSelect } = useBlueprintActions();
+  const pendingSelectTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const pendingSelectId = useRef<string | null>(null);
 
   useClearOnEscape(closeMinimalGraph, true);
+
+  const clearPendingSelect = () => {
+    if (pendingSelectTimer.current !== null) {
+      window.clearTimeout(pendingSelectTimer.current);
+    }
+    pendingSelectTimer.current = null;
+    pendingSelectId.current = null;
+  };
 
   // Reuse the Module map's shared `emphasize` for edge + selection paint, but it only understands the
   // file-import graph — the [+n] stubs and their tethers must pass through untouched. So split those
@@ -54,8 +75,10 @@ export function MinimalGraphView() {
   }, [nodes, edges, selected, radius, highlightMode]);
 
   // Clicking a [+n] stub reveals that node's hidden neighbours in that direction (and, when the stub
-  // sits on a ghost, commits the ghost). Clicking a file card drives the SAME store selection the
-  // Module map does, so the green ring lights up here too: ctrl/cmd toggles, plain click replaces.
+  // sits on a ghost, commits the ghost) — immediately, since stubs have no double-click meaning.
+  // Clicking a file card drives the SAME store selection the Module map does, so the green ring lights
+  // up here too: ctrl/cmd toggles immediately, but a plain click is DEBOUNCED (the Map's own idiom) so
+  // a double-click cancels it — its emphasize repaint won't fire before the native double-click lands.
   const onNodeClick: NodeMouseHandler<Node> = (event, node) => {
     if (node.type === MINIMAL_STUB_NODE) {
       const stub = node.data as MinimalStubData;
@@ -63,11 +86,45 @@ export function MinimalGraphView() {
       return;
     }
     if (event.ctrlKey || event.metaKey) {
+      clearPendingSelect();
       toggleModuleSelect(node.id);
       return;
     }
-    selectModule(node.id);
+    clearPendingSelect();
+    pendingSelectId.current = node.id;
+    pendingSelectTimer.current = window.setTimeout(() => {
+      selectModule(node.id);
+      pendingSelectTimer.current = null;
+      pendingSelectId.current = null;
+    }, SELECT_CLICK_DELAY_MS);
   };
+
+  // Double-clicking a file card fully expands it — reveals its hidden neighbours in BOTH directions at
+  // once (and commits it if it was a ghost) by calling the shared `expandMinimal` action twice; the
+  // relayout stale guard makes the second win. Cancel the pending single-click select first so it
+  // doesn't fire. Stubs have no both-directions meaning, so ignore them (a stub's single-click already
+  // expands its one direction). READONLY_CANVAS_PROPS disables zoom-on-double-click, so this gesture
+  // never fights the canvas.
+  const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
+    if (node.type === MINIMAL_STUB_NODE) {
+      return;
+    }
+    clearPendingSelect();
+    expandMinimal(node.id, "in");
+    expandMinimal(node.id, "out");
+  };
+
+  // Clear any pending single-click select on unmount so a queued timeout can't fire after teardown.
+  useEffect(
+    () => () => {
+      if (pendingSelectTimer.current !== null) {
+        window.clearTimeout(pendingSelectTimer.current);
+      }
+      pendingSelectTimer.current = null;
+      pendingSelectId.current = null;
+    },
+    [],
+  );
 
   // Fit once per LAYOUT (build / expand / reset) — the same guard idiom as the sibling surfaces.
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
@@ -88,6 +145,7 @@ export function MinimalGraphView() {
         edges={paintedEdges}
         nodeTypes={overlayNodeTypes}
         onNodeClick={onNodeClick}
+        onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={() => selectModule(null)}
         onInit={(instance) => {
           rfRef.current = instance;
