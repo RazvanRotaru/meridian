@@ -12,7 +12,7 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
 import { accentForKind } from "../../../theme/kindColors";
 import type { BlockData } from "../../../derive/moduleLevel";
-import { ExpandChevron, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
+import { CodeButton, ExpandChevron, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
 import { borderFor, DeltaChip, useNodeDiff } from "./changed";
 
 type BlockRfNode = Node<BlockData, "block">;
@@ -34,6 +34,7 @@ function BlockNodeImpl({ id, data }: NodeProps<BlockRfNode>) {
           <span style={{ ...GLYPH, color: accent }}>ƒ</span>
           <span style={FRAME_LABEL}>{data.label}</span>
           <DeltaChip diff={diff} />
+          <CodeButton id={id} />
         </div>
       </div>
     );
@@ -47,6 +48,7 @@ function BlockNodeImpl({ id, data }: NodeProps<BlockRfNode>) {
       <span style={{ ...GLYPH, color: accent }}>{data.callable ? "ƒ" : "τ"}</span>
       <span style={LABEL}>{data.label}</span>
       <DeltaChip diff={diff} />
+      <CodeButton id={id} />
     </div>
   );
 }

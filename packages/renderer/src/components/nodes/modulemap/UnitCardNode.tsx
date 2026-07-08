@@ -11,7 +11,7 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
 import { accentForKind, glyphForKind } from "../../../theme/kindColors";
 import type { UnitCardData } from "../../../derive/moduleLevel";
-import { ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
+import { CodeButton, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
 import { borderFor, DeltaChip, useNodeDiff } from "./changed";
 
 type UnitRfNode = Node<UnitCardData, "unit">;
@@ -69,7 +69,10 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={{ ...ACCENT_BAR, background: accent }} />
-      <div style={INNER}>{identity}</div>
+      <div style={INNER}>
+        {identity}
+        <CodeButton id={id} />
+      </div>
     </div>
   );
 }

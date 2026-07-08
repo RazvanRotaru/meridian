@@ -4,7 +4,7 @@
  * the file card can't drift apart on the expand affordance or the frame treatment.
  */
 
-import { useBlueprintActions } from "../../../state/StoreContext";
+import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 
 export const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 export const SELECT_ACCENT = "#6BE38A";
@@ -19,6 +19,50 @@ export function FrameTitleBar({ actionsId, chevron, children }: { actionsId: str
     </div>
   );
 }
+
+/**
+ * The `</>` source button a Map leaf (function level and below) carries: opens the code modal, whose
+ * gutter marks the diff lines (+ added / − deleted / ~ modified). Renders only when the node has a
+ * source location AND the server is serving source (`sourceUrl`), so it never dangles a dead button.
+ */
+export function CodeButton({ id }: { id: string }) {
+  const node = useBlueprint((state) => state.index.nodesById.get(id));
+  const sourceUrl = useBlueprint((state) => state.sourceUrl);
+  const { showCode, expandCode } = useBlueprintActions();
+  if (!node?.location || !sourceUrl) {
+    return null;
+  }
+  return (
+    <button
+      type="button"
+      style={CODE_BTN}
+      title="View source — changed lines marked + / −"
+      aria-label="View source"
+      onClick={(event) => {
+        event.stopPropagation();
+        void showCode(node);
+        expandCode();
+      }}
+      onDoubleClick={(event) => event.stopPropagation()}
+    >
+      {"</>"}
+    </button>
+  );
+}
+
+const CODE_BTN: React.CSSProperties = {
+  flexShrink: 0,
+  border: "1px solid #2A3140",
+  background: "rgba(0,0,0,0.25)",
+  color: "#9AA4B2",
+  borderRadius: 4,
+  padding: "0 4px",
+  fontSize: 9,
+  lineHeight: "15px",
+  fontFamily: MONO,
+  cursor: "pointer",
+};
+
 
 /** The in-place expand/collapse chevron; stops propagation so it never also selects the card. */
 export function ExpandChevron({ id, isExpanded, collapsedTitle }: { id: string; isExpanded: boolean; collapsedTitle?: string }) {
