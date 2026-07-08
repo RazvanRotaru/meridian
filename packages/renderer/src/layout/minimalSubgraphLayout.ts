@@ -11,17 +11,13 @@ import type { Edge, Node } from "@xyflow/react";
 import { placeMinimalNodes, type PlacedRect } from "./minimalPlacement";
 import type { MinimalStubData, MinimalSubgraphEdge, MinimalSubgraphNode, MinimalSubgraphSpec } from "../derive/minimalSubgraph";
 import type { ModuleCardData } from "../derive/moduleLevel";
-import { arrowMarker } from "../theme/edgeColors";
 
 /** The React Flow node type the overlay registers on top of `moduleNodeTypes` for the [+n] expanders. */
 export const MINIMAL_STUB_NODE = "minimalStub";
 
-// Import wires mirror the Module map's at-rest coupling colours (gold cross-package, grey same-
-// package); a stub tether is fainter still. Ghost files dim to this opacity — legible, still distinct.
-const CROSS_PACKAGE_COLOR = "#C9A24B";
-const SAME_PACKAGE_COLOR = "#5B6675";
+// A stub tether is styled here (it stays untouched by the component's emphasis pass). Import wires
+// carry only map-shaped `data` — the component's `emphasize` colours them by coupling / selection.
 const STUB_EDGE_COLOR = "#2A313C";
-const GHOST_OPACITY = 0.62;
 
 /** Mirror the map: place each visible file at its captured spot (others relative), flat, then wire. */
 export function layoutMinimalSubgraph(
@@ -62,15 +58,15 @@ function stubDescriptor(node: MinimalSubgraphNode): { id: string; sourceId: stri
   return { id: node.id, sourceId: data.sourceId, direction: data.direction };
 }
 
-// A file is the Map's own `file` card at an absolute position; ghost tier dims in place. Emphasis (the
-// seed's selection ring) comes from the store, so only the ghost dim needs a style here.
+// A file is the Map's own `file` card at an absolute position. It carries its `tier` so the component
+// can dim ghosts UNDER the shared `emphasize` selection paint (no opacity is baked here anymore).
 function toFileNode(node: MinimalSubgraphNode, rect: PlacedRect): Node {
   return {
     id: node.id,
     type: "file",
     position: { x: rect.x, y: rect.y },
-    style: { width: rect.width, height: rect.height, ...(node.tier === "ghost" ? { opacity: GHOST_OPACITY } : {}) },
-    data: node.data as ModuleCardData,
+    style: { width: rect.width, height: rect.height },
+    data: { ...(node.data as ModuleCardData), tier: node.tier },
   };
 }
 
@@ -94,13 +90,12 @@ function toRfEdge(edge: MinimalSubgraphEdge): Edge {
       selectable: false,
     };
   }
-  const stroke = edge.crossPackage ? CROSS_PACKAGE_COLOR : SAME_PACKAGE_COLOR;
+  // No baked stroke/marker: the component's `emphasize` styles import wires by coupling at rest and
+  // lights the selection's neighbourhood. `data` is the map's edge shape emphasize reads.
   return {
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    style: { stroke, strokeWidth: 1.5, opacity: 0.5 },
-    markerEnd: arrowMarker(stroke, 14),
-    data: { weight: edge.weight },
+    data: { weight: edge.weight, crossFrame: edge.crossPackage ?? false, category: "import", ghost: false },
   };
 }

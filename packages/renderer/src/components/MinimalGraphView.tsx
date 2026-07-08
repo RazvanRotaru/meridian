@@ -8,11 +8,12 @@
  * closing returns to the level with the selection kept, so the reader can adjust and rebuild).
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { ReactFlow, type Edge, type Node, type NodeMouseHandler, type ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
 import { MinimalStubNode } from "./nodes/modulemap/MinimalStubNode";
+import { emphasize } from "./moduleMapPaint";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { MINIMAL_STUB_NODE } from "../layout/minimalSubgraphLayout";
@@ -22,14 +23,35 @@ import { minimalMiniMapColor, SURFACE_STYLE, PANEL_STYLE, buttonStyle } from "./
 // The Map's own card components plus the overlay-only [+n] expander (a stable module-level reference).
 const overlayNodeTypes = { ...moduleNodeTypes, [MINIMAL_STUB_NODE]: MinimalStubNode };
 
+// A ghost-tier file dims to this at rest. Layered UNDER `emphasize`: an emphasize-dimmed ghost keeps
+// the smaller dim (min wins), a LIT ghost still recedes to this opacity — the ghost read is preserved.
+const GHOST_OPACITY = 0.62;
+
 export function MinimalGraphView() {
   const nodes = useBlueprint((state) => state.minimalRfNodes);
   const edges = useBlueprint((state) => state.minimalRfEdges);
+  const selected = useBlueprint((state) => state.moduleSelected);
+  const radius = useBlueprint((state) => state.moduleRadius);
+  const highlightMode = useBlueprint((state) => state.highlightMode);
   const seedCount = useBlueprint((state) => state.minimalSeedIds.length);
   const grown = useBlueprint((state) => state.minimalKeptIds.length > 0 || state.minimalExpanded.length > 0);
   const { closeMinimalGraph, expandMinimal, resetMinimalGraph, selectModule, toggleModuleSelect } = useBlueprintActions();
 
   useClearOnEscape(closeMinimalGraph, true);
+
+  // Reuse the Module map's shared `emphasize` for edge + selection paint, but it only understands the
+  // file-import graph — the [+n] stubs and their tethers must pass through untouched. So split those
+  // out, run emphasize on files + import wires only, then re-append the stubs. The page's ghost dim is
+  // layered UNDER emphasize's selection dim (min wins, so a lit ghost still recedes to GHOST_OPACITY).
+  const { nodes: paintedNodes, edges: paintedEdges } = useMemo(() => {
+    const fileNodes = nodes.filter((node) => node.type === "file");
+    const stubNodes = nodes.filter((node) => node.type === MINIMAL_STUB_NODE);
+    const importEdges = edges.filter((edge) => (edge.data as { category?: string } | undefined)?.category === "import");
+    const stubEdges = edges.filter((edge) => (edge.data as { category?: string } | undefined)?.category !== "import");
+    const emphasized = emphasize(fileNodes, importEdges, selected, radius, highlightMode);
+    const ghostLayered = emphasized.nodes.map((node) => (isGhost(node) ? dimGhost(node) : node));
+    return { nodes: [...ghostLayered, ...stubNodes], edges: [...emphasized.edges, ...stubEdges] };
+  }, [nodes, edges, selected, radius, highlightMode]);
 
   // Clicking a [+n] stub reveals that node's hidden neighbours in that direction (and, when the stub
   // sits on a ghost, commits the ghost). Clicking a file card drives the SAME store selection the
@@ -62,8 +84,8 @@ export function MinimalGraphView() {
   return (
     <div style={SURFACE_STYLE}>
       <ReactFlow<Node, Edge>
-        nodes={nodes}
-        edges={edges}
+        nodes={paintedNodes}
+        edges={paintedEdges}
         nodeTypes={overlayNodeTypes}
         onNodeClick={onNodeClick}
         onPaneClick={() => selectModule(null)}
@@ -87,6 +109,15 @@ export function MinimalGraphView() {
       </div>
     </div>
   );
+}
+
+const isGhost = (node: Node): boolean => (node.data as { tier?: string } | undefined)?.tier === "ghost";
+
+// Dim a ghost card, keeping whatever smaller opacity emphasize already applied (a dimmed non-neighbour
+// stays dim; a lit ghost drops to GHOST_OPACITY so the ghost tier still reads).
+function dimGhost(node: Node): Node {
+  const existing = (node.style?.opacity as number | undefined) ?? 1;
+  return { ...node, style: { ...node.style, opacity: Math.min(existing, GHOST_OPACITY) } };
 }
 
 // Top-RIGHT, because the Module map keeps its main Toolbar floating top-left over this overlay.
