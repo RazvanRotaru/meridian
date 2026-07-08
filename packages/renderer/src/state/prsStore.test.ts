@@ -65,16 +65,28 @@ describe("PR store slice", () => {
     expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/prs?id=artifact-1&state=open&page=1");
   });
 
-  it("reviews PR files by emphasizing matched modules in the UI graph", () => {
+  it("reviews PR files by revealing matched modules on the Map", () => {
     const store = freshStore();
     store.setState({
+      viewMode: "prs",
       prFiles: [{ path: "repo/src/a.ts", status: "modified" }],
       flowSelection: { rootId: "stale", blockPath: [] },
+      flowEmphasis: new Set(["stale"]),
     });
     store.getState().reviewPrInGraph();
-    expect(store.getState().viewMode).toBe("ui");
+    expect(store.getState().viewMode).toBe("modules");
     expect(store.getState().flowSelection).toBeNull();
-    expect(store.getState().flowEmphasis).toEqual(new Set(["ts:src/a.ts"]));
-    expect(store.getState().expanded).toEqual(new Set(["ts:src"]));
+    expect(store.getState().flowEmphasis).toEqual(new Set());
+    expect(store.getState().moduleFocus).toBe("ts:src");
+    expect(store.getState().moduleSelected).toEqual(new Set(["ts:src/a.ts"]));
+  });
+
+  it("review with no matched modules still lands on the Map overview", () => {
+    const store = freshStore();
+    store.setState({ viewMode: "prs", prFiles: [{ path: "docs/readme.md", status: "modified" }] });
+    store.getState().reviewPrInGraph();
+    expect(store.getState().viewMode).toBe("modules");
+    expect(store.getState().moduleFocus).toBeNull();
+    expect(store.getState().moduleSelected).toEqual(new Set());
   });
 });
