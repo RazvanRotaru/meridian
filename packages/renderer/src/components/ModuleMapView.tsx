@@ -21,6 +21,7 @@ import { CoveragePanel } from "./CoveragePanel";
 import { BeaconArrows } from "./BeaconArrows";
 import { MapLegend } from "./MapLegend";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
+import { MinimalGraphView } from "./MinimalGraphView";
 import { accentForKind } from "../theme/kindColors";
 import type { BlockData, ModuleCardData, UnitCardData } from "../derive/moduleLevel";
 
@@ -41,9 +42,11 @@ export function ModuleMapView() {
   const showTests = useBlueprint((state) => state.showTests);
   const showPrivate = useBlueprint((state) => state.showPrivate);
   const viewMode = useBlueprint((state) => state.viewMode);
+  const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const {
     selectModule,
     toggleModuleSelect,
+    buildMinimalGraph,
     setModuleFocus,
     toggleModuleExpand,
     openLogicFlow,
@@ -148,6 +151,16 @@ export function ModuleMapView() {
 
   const isEmpty = nodes.length === 0 && layoutStatus === "ready";
 
+  // The built minimal graph REPLACES the level canvas while open (after every hook above, so the
+  // hook order is stable across open/close). Closing returns here with the selection intact.
+  if (minimalOpen) {
+    return (
+      <div style={SURFACE_STYLE}>
+        <MinimalGraphView />
+      </div>
+    );
+  }
+
   return (
     <div style={SURFACE_STYLE}>
       <ReactFlow<Node, Edge>
@@ -174,10 +187,20 @@ export function ModuleMapView() {
         onExpandAll={() => expandModuleChildren(null)}
         onCollapseAll={() => collapseModuleChildren(null)}
       />
+      {selected.size >= 2 ? <BuildMinimalGraphButton count={selected.size} onBuild={buildMinimalGraph} /> : null}
       {isEmpty ? <EmptyModuleMapCard focus={effectiveFocus} /> : null}
       <MapLegend />
       <CoveragePanel />
     </div>
+  );
+}
+
+/** The floating action a 2+ multi-selection reveals: build the selection's minimal graph overlay. */
+function BuildMinimalGraphButton(props: { count: number; onBuild: () => void }) {
+  return (
+    <button type="button" style={BUILD_BUTTON_STYLE} onClick={props.onBuild}>
+      Build minimal graph ({props.count})
+    </button>
   );
 }
 
@@ -208,3 +231,20 @@ function isExpandedMapContainer(node: Node): boolean {
 }
 
 const SURFACE_STYLE: React.CSSProperties = { position: "absolute", inset: 0, background: "#0E1116" };
+// Floats bottom-center over the canvas; the emphasis green ties it to the selected cards' rings.
+const BUILD_BUTTON_STYLE: React.CSSProperties = {
+  position: "absolute",
+  bottom: 24,
+  left: "50%",
+  transform: "translateX(-50%)",
+  zIndex: 5,
+  border: "1px solid #2F5C3B",
+  borderRadius: 8,
+  background: "rgba(86,194,113,0.16)",
+  padding: "8px 16px",
+  cursor: "pointer",
+  font: "inherit",
+  fontSize: 13,
+  fontWeight: 700,
+  color: "#6BE38A",
+};

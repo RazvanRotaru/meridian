@@ -31,6 +31,8 @@ import { deriveFlowPaneLayout } from "./deriveFlowPaneLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
 import { deriveModuleLevelLayout, type ModuleLevelLayout } from "./deriveModuleMapLayout";
 import { deriveServiceLevelLayout } from "./deriveServiceMapLayout";
+import { deriveMinimalGraphLayout } from "./deriveMinimalGraphLayout";
+import { seedModuleIdsFor } from "../derive/selectionSeeds";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/blockDeps";
 import { deriveModuleTree } from "../derive/moduleTree";
@@ -185,6 +187,16 @@ export interface BlueprintState {
   /** Whether `private`-tagged members are painted on the Map. PAINT-ONLY like Tests/categories —
    * privates always get their space in the layout, so toggling never reshuffles positions. */
   showPrivate: boolean;
+  /** The seed file-module ids of the OPEN minimal-graph overlay; empty == the overlay is closed and
+   * the Module-map level canvas shows. Set by buildMinimalGraph from the expanded selection. */
+  minimalSeedIds: string[];
+  /** The laid-out minimal containment subgraph for the selection overlay (nested ELK, no diff
+   * semantics), under its own stale-seq guard. */
+  minimalRfNodes: Node[];
+  minimalRfEdges: Edge[];
+  minimalLayoutStatus: LayoutStatus;
+  /** Drop the faded 1-hop boundary neighbours from the overlay (a relayout — the spec changes). */
+  minimalHideBoundary: boolean;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -260,6 +272,10 @@ export interface BlueprintState {
   toggleCategory(category: ModuleCategory): void;
   selectModule(id: string | null): void;
   toggleModuleSelect(id: string): void;
+  buildMinimalGraph(): void;
+  closeMinimalGraph(): void;
+  toggleMinimalHideBoundary(): void;
+  minimalRelayout(): Promise<void>;
   setViewMode(mode: ViewMode): void;
   toggleShowTests(): void;
   toggleCoverageMode(): void;
@@ -296,6 +312,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let compLayoutSeq = 0;
   // And for the Module-map layout, so a newer focus change supersedes an older derivation.
   let moduleLayoutSeq = 0;
+  // And for the Module-map selection's minimal-graph overlay (its own surface, its own guard).
+  let minimalLayoutSeq = 0;
   // The file import graph, built once on first module-map relayout (the artifact never changes after
   // boot) and reused for every level — never rebuilt per relayout.
   let moduleGraph: ModuleGraph | null = null;
@@ -376,6 +394,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleSelected: new Set<string>(),
     moduleExpanded: new Set<string>(),
     showPrivate: true,
+    minimalSeedIds: [],
+    minimalRfNodes: [],
+    minimalRfEdges: [],
+    minimalLayoutStatus: "idle",
+    minimalHideBoundary: false,
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -919,6 +942,50 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // gesture. A repaint-only highlight — no relayout.
     selectModule(id) {
       set({ moduleSelected: id === null ? new Set<string>() : new Set([id]) });
+    },
+
+    // The "Build minimal graph" action: expand the current selection to its seed file modules (a
+    // group card contributes its whole containment subtree) and open the overlay on their minimal
+    // containment subgraph. Inert when the selection expands to no file module.
+    buildMinimalGraph() {
+      const seeds = seedModuleIdsFor(get().index, [...get().moduleSelected]);
+      if (seeds.length === 0) {
+        return;
+      }
+      set({ minimalSeedIds: seeds });
+      void get().minimalRelayout();
+    },
+
+    // Close the overlay back to the Module-map level canvas. The selection is kept, so the reader
+    // can adjust it and rebuild without re-picking every card. Bumping the seq discards any ELK
+    // pass still in flight, so a slow layout can't repopulate the arrays after the close.
+    closeMinimalGraph() {
+      minimalLayoutSeq += 1;
+      set({ minimalSeedIds: [], minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
+    },
+
+    // Drop/restore the faded 1-hop boundary neighbours in the overlay. The spec changes, so it
+    // relayouts.
+    toggleMinimalHideBoundary() {
+      set({ minimalHideBoundary: !get().minimalHideBoundary });
+      void get().minimalRelayout();
+    },
+
+    // Lay out the selection's minimal subgraph through the shared minimal-graph pass (no status map
+    // — a selection carries no diff semantics), behind its own stale-seq guard.
+    async minimalRelayout() {
+      const { index, minimalSeedIds, minimalHideBoundary } = get();
+      if (minimalSeedIds.length === 0) {
+        return;
+      }
+      moduleGraph ??= buildModuleGraph(index);
+      const sequence = ++minimalLayoutSeq;
+      set({ minimalLayoutStatus: "laying-out" });
+      const layout = await deriveMinimalGraphLayout(index, moduleGraph, new Set(minimalSeedIds), { includeBoundary: !minimalHideBoundary });
+      if (minimalLayoutSeq !== sequence) {
+        return; // a newer build/toggle superseded this one.
+      }
+      set({ minimalRfNodes: layout.nodes, minimalRfEdges: layout.edges, minimalLayoutStatus: "ready" });
     },
 
     // Flip one Module-map node in/out of the selection WITHOUT touching the rest — the ctrl/cmd+click
