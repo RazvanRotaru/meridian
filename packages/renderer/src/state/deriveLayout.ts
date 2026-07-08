@@ -29,14 +29,15 @@ export async function deriveLayout(
   hidden: ReadonlySet<string> = new Set(),
   flow: FlowScope | null = null,
 ): Promise<ReactFlowGraph> {
+  const effectiveHidden = withModeHidden(index, viewMode, hidden);
   if (flow && index.nodesById.has(flow.rootId)) {
-    return deriveFlowLayout(index, viewMode, flow, hidden);
+    return deriveFlowLayout(index, viewMode, flow, effectiveHidden);
   }
-  const visible = computeVisible(index, expanded, focusId, hidden);
+  const visible = computeVisible(index, expanded, focusId, effectiveHidden);
   const edges = scopeEdges(selectEdgesForMode(index.edges, viewMode), focusId, index).filter(
     // An edge touching a hidden node must not lift to the node's visible ancestor — that
     // would re-draw the hidden code's calls as coming from its package. It disappears with it.
-    (edge) => !hidden.has(edge.source) && !hidden.has(edge.target),
+    (edge) => !effectiveHidden.has(edge.source) && !effectiveHidden.has(edge.target),
   );
   const liftedEdges = liftEdges(edges, visibleIdSet(visible), index.parentOf);
   const elkGraph = buildElkGraph(visible, liftedEdges);
@@ -62,6 +63,23 @@ async function deriveFlowLayout(
   const liftedEdges = liftEdges(edges, visibleIdSet(visible), index.parentOf);
   const laidOut = await runElkLayout(buildElkGraph(visible, liftedEdges));
   return toReactFlow(laidOut, byId(visible), liftedEdges);
+}
+
+// UI composition draws the React render tree; IPC channel pseudo-nodes carry only `sends`/`handles`
+// wires (the service graph), never `renders`. Left in, every channel is an orphan card — hundreds of
+// them stack into one disconnected column that reads as a blank canvas. So the UI mode hides them,
+// folding the channel ids into the caller's hidden set (which also lifts any edge that touched one).
+export function withModeHidden(index: GraphIndex, viewMode: ViewMode, hidden: ReadonlySet<string>): ReadonlySet<string> {
+  if (viewMode !== "ui") {
+    return hidden;
+  }
+  const merged = new Set(hidden);
+  for (const node of index.nodesById.values()) {
+    if (node.kind === "channel") {
+      merged.add(node.id);
+    }
+  }
+  return merged;
 }
 
 // While focused, keep only edges wholly inside the box; a wire leaving the subtree is dropped
