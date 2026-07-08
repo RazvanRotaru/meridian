@@ -4,17 +4,15 @@
  * context, files importing it = blast radius) as faded boundary nodes, capped per seed. Boundary
  * ancestors join the union too. Import wires are folded to seed<->seed and seed<->boundary only
  * (never boundary<->boundary). Single-child package chains collapse AFTER the union + boundary. The
- * result is a nested (parentId) spec the layout stage lays out with ELK. Construction is
- * consumer-agnostic — the PR-review lens stamps its per-file change statuses on afterwards
- * (`stampChangeStatuses`); the Module-map selection feature uses the spec as-is. Pure; no React, no
- * ELK. Reuses the module import graph and the Module-map card-data shapes.
+ * result is a nested (parentId) spec the layout stage lays out with ELK. Pure; no React, no ELK.
+ * Reuses the module import graph and the Module-map card-data shapes so the overlay can render with
+ * the Map's own card components.
  */
 
 import type { GraphNode } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import { weightKey, type ModuleGraph } from "./moduleGraph";
 import { categorize } from "./moduleCategory";
-import type { ChangeStatus } from "./changeStatus";
 import { normalizePath } from "./matchAffectedFiles";
 import { collapseChains, type ChainCollapse } from "./collapseChains";
 import type { ModuleCardData } from "./moduleLevel";
@@ -28,9 +26,6 @@ export interface MinimalSubgraphNode {
   kind: "group" | "file";
   parentId: string | null;
   isBoundary: boolean;
-  /** How a SEED file changed — stamped by the PR-review lens (`stampChangeStatuses`), never here.
-   * Undefined on boundary + group frames, and on every node of a non-review minimal graph. */
-  changeStatus?: ChangeStatus;
   /** Joined path segments when this frame is a collapsed package chain. */
   collapsedLabel?: string;
   data: ModuleCardData | ModulePackageData;
@@ -77,21 +72,6 @@ export function buildMinimalSubgraph(
     keptNodeIds: [...keptNodeIds].sort(),
     boundaryNodeIds: [...boundary].sort(),
   };
-}
-
-/**
- * The PR-review decoration over a built spec: tint every SEED (non-boundary) file card with how the
- * PR changed it, an absent entry defaulting to "modified" (the `?files=` contract). Kept out of
- * construction so a non-review minimal graph carries no diff semantics at all.
- */
-export function stampChangeStatuses(spec: MinimalSubgraphSpec, statusByFile: Record<string, ChangeStatus>): MinimalSubgraphSpec {
-  const stamp = (node: MinimalSubgraphNode): MinimalSubgraphNode => {
-    if (node.kind !== "file" || node.isBoundary) {
-      return node;
-    }
-    return { ...node, changeStatus: statusByFile[(node.data as ModuleCardData).fullPath] ?? "modified" };
-  };
-  return { nodes: spec.nodes.map(stamp), edges: spec.edges };
 }
 
 function wantsBoundary(options: MinimalSubgraphOptions): boolean {

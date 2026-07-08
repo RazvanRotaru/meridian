@@ -1,21 +1,24 @@
 /**
  * The minimal-graph overlay's shared styles + MiniMap tint, split out of `MinimalGraphView` to keep
- * the component small. Package frames tint blue, boundary files muted, and everything else takes
- * the file's category hue — the same reading order as the Module map it was built from.
+ * the component small. Package frames tint blue, files take their category hue — the same reading
+ * order (and the same `CATEGORY_COLOR` palette) as the Module map the overlay is built from.
  */
 
 import type { Node } from "@xyflow/react";
-import { REVIEW_COLORS } from "../theme/reviewColors";
-import { REVIEW_GROUP_NODE, type ReviewFileNodeData } from "../layout/minimalSubgraphLayout";
+import type { ModuleCardData } from "../derive/moduleLevel";
 import { CATEGORY_COLOR } from "./nodes/modulemap/ModuleCardNode";
 
-/** MiniMap tint: package frames blue, boundary files muted, else the file's category hue. */
-export function reviewMiniMapColor(node: Node): string {
-  if (node.type === REVIEW_GROUP_NODE) {
-    return "#5B9BE3";
+const PACKAGE_TINT = "#5B9BE3";
+// The active-toggle amber, matching the Map's "changed" accent family.
+const TOGGLE_ACTIVE_ACCENT = "#E3B341";
+const TOGGLE_ACTIVE_BG = "rgba(227,179,65,0.14)";
+
+/** MiniMap tint: package frames blue, else the file's category hue. */
+export function minimalMiniMapColor(node: Node): string {
+  if (node.type === "package") {
+    return PACKAGE_TINT;
   }
-  const data = node.data as ReviewFileNodeData;
-  return data.isBoundary ? REVIEW_COLORS.boundaryBorder : CATEGORY_COLOR[data.category];
+  return CATEGORY_COLOR[(node.data as ModuleCardData).category];
 }
 
 export const SURFACE_STYLE: React.CSSProperties = { position: "relative", width: "100%", height: "100%", background: "#0E1116" };
@@ -46,8 +49,8 @@ const TOGGLE_STYLE: React.CSSProperties = {
   color: "#9AA4B2",
 };
 const TOGGLE_ACTIVE_STYLE: React.CSSProperties = {
-  borderColor: REVIEW_COLORS.changed,
-  background: REVIEW_COLORS.changedBg,
+  borderColor: TOGGLE_ACTIVE_ACCENT,
+  background: TOGGLE_ACTIVE_BG,
   color: "#E6EDF3",
 };
 

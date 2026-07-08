@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { buildModuleGraph } from "./moduleGraph";
-import { buildMinimalSubgraph, stampChangeStatuses, type MinimalSubgraphNode } from "./minimalSubgraph";
+import { buildMinimalSubgraph, type MinimalSubgraphNode } from "./minimalSubgraph";
 
 function pkg(id: string, name: string, parentId: string | null): GraphNode {
   return { id, kind: "package", qualifiedName: id, displayName: name, parentId, location: { file: name, startLine: 1 } } as GraphNode;
@@ -101,26 +101,5 @@ describe("buildMinimalSubgraph", () => {
     expect(result.boundaryNodeIds).toEqual([]);
     expect(result.keptNodeIds).toEqual(["m:a", "p:root", "p:src"]);
     expect(result.spec.edges).toEqual([]);
-  });
-
-  it("constructs without change statuses — diff semantics are a review-side stamp", () => {
-    const nodes = build(NODES, EDGES, ["m:a"]).spec.nodes;
-    expect(nodes.every((node) => node.changeStatus === undefined)).toBe(true);
-  });
-});
-
-describe("stampChangeStatuses", () => {
-  it("tints seed files by the status map, defaulting absent entries to modified", () => {
-    const spec = build(NODES, EDGES, ["m:a", "m:b"], { includeBoundary: false }).spec;
-    const stamped = stampChangeStatuses(spec, { "src/a.ts": "added" });
-    expect(byId(stamped.nodes, "m:a").changeStatus).toBe("added");
-    expect(byId(stamped.nodes, "m:b").changeStatus).toBe("modified");
-  });
-
-  it("never stamps boundary neighbours or group frames", () => {
-    const spec = build(NODES, EDGES, ["m:a"]).spec;
-    const stamped = stampChangeStatuses(spec, {});
-    expect(byId(stamped.nodes, "m:b").changeStatus).toBeUndefined(); // boundary context
-    expect(byId(stamped.nodes, "p:src").changeStatus).toBeUndefined(); // containment frame
   });
 });

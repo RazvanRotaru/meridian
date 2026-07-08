@@ -1,19 +1,20 @@
 /**
  * The minimal-graph OVERLAY: the Module-map's "Build minimal graph" result as its own read-only
- * React Flow surface, replacing the level canvas while open. It reuses the PR-review pane's node
- * components and nested-ELK layout but carries no diff semantics — seed cards render plain, their
- * faded 1-hop import boundary as "ctx". A floating panel names the seed count, toggles the boundary,
- * and closes the overlay (Escape works too — closing returns to the level with the selection kept,
- * so the reader can adjust the set and rebuild).
+ * React Flow surface, replacing the level canvas while open. It reuses the Module-map's OWN card
+ * components (`moduleNodeTypes`) and nested-ELK layout — the minimal graph is just the map filtered
+ * to a selection: seed cards render plain (the seeds keep their green selection ring), their faded
+ * 1-hop import boundary dimmed. A floating panel names the seed count, toggles the boundary, and
+ * closes the overlay (Escape works too — closing returns to the level with the selection kept, so
+ * the reader can adjust the set and rebuild).
  */
 
 import { useEffect, useRef } from "react";
 import { ReactFlow, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
-import { reviewNodeTypes } from "./nodes/prreview/ReviewNodeTypes";
+import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
-import { reviewMiniMapColor, SURFACE_STYLE, PANEL_STYLE, toggleStyle } from "./minimalGraphStyles";
+import { minimalMiniMapColor, SURFACE_STYLE, PANEL_STYLE, toggleStyle } from "./minimalGraphStyles";
 
 export function MinimalGraphView() {
   const nodes = useBlueprint((state) => state.minimalRfNodes);
@@ -41,13 +42,13 @@ export function MinimalGraphView() {
       <ReactFlow<Node, Edge>
         nodes={nodes}
         edges={edges}
-        nodeTypes={reviewNodeTypes}
+        nodeTypes={moduleNodeTypes}
         onInit={(instance) => {
           rfRef.current = instance;
         }}
         {...READONLY_CANVAS_PROPS}
       >
-        <CanvasChrome nodeColor={reviewMiniMapColor} />
+        <CanvasChrome nodeColor={minimalMiniMapColor} />
       </ReactFlow>
       <div style={MINIMAL_PANEL_STYLE}>
         <span style={TITLE_STYLE}>

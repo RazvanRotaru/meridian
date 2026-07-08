@@ -1,11 +1,12 @@
 /**
- * Lay out a MinimalSubgraphSpec with ELK and map it to React Flow — the PR-review analog of
- * `moduleLevelLayout`, but NESTED: package/collapsed-chain frames recurse as ELK containers with
- * title-bar padding, file cards are leaves at a fixed size. The nesting, the root-only
- * `hierarchyHandling` contract and the parent-relative mapping live in `elkNesting`; this module only
- * supplies the review adapter, layout options and edge styling. Boundary file cards carry an
- * `isBoundary` flag and boundary-touching wires a `toBoundary` flag so the graph pane can render the
- * faded 1-hop context dimmed + dashed. Deterministic — ELK layered is stable, no Math.random/Date.
+ * Lay out a MinimalSubgraphSpec with ELK and map it to React Flow — the analog of `moduleLevelLayout`,
+ * but NESTED: package/collapsed-chain frames recurse as ELK containers with title-bar padding, file
+ * cards are leaves at a fixed size. The nesting, the root-only `hierarchyHandling` contract and the
+ * parent-relative mapping live in `elkNesting`; this module only supplies the adapter, layout options
+ * and edge styling. It reuses the Module-map's OWN card components (`moduleNodeTypes`): file leaves
+ * render as read-only `file` cards, containment frames as read-only `package` frames. Boundary file
+ * cards carry a dimming `style` and boundary-touching wires a `toBoundary` flag so the overlay reads
+ * the faded 1-hop context. Deterministic — ELK layered is stable, no Math.random/Date.
  */
 
 import type { Edge, Node } from "@xyflow/react";
@@ -15,25 +16,21 @@ import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type 
 import type { MinimalSubgraphEdge, MinimalSubgraphNode, MinimalSubgraphSpec } from "../derive/minimalSubgraph";
 import type { ModuleCardData } from "../derive/moduleLevel";
 import type { ModulePackageData } from "../derive/packageOverview";
-import type { ChangeStatus } from "../derive/changeStatus";
+import type { ModuleGroupData } from "../derive/moduleTreeTypes";
 import { arrowMarker } from "../theme/edgeColors";
-import { REVIEW_COLORS } from "../theme/reviewColors";
 
-/** The React Flow node type keys the graph pane registers (its own review-aware card components). */
-export const REVIEW_FILE_NODE = "reviewFile";
-export const REVIEW_GROUP_NODE = "reviewGroup";
-
-/** A file card's data: the Module-map file shape, the boundary flag, and (for an affected card) how
- * the file changed in the PR — undefined on boundary neighbours (unchanged context). */
-export type ReviewFileNodeData = ModuleCardData & { isBoundary: boolean; changeStatus?: ChangeStatus };
-/** A frame's data: the Module-map package shape plus the joined label of a collapsed chain, if any. */
-export type ReviewGroupNodeData = ModulePackageData & { collapsedLabel?: string };
-export type ReviewNodeData = ReviewFileNodeData | ReviewGroupNodeData;
 /** An import wire's data: its multiplicity and whether it touches a boundary node (paint faded). */
-export type ReviewEdgeData = { weight: number; toBoundary: boolean };
+export interface MinimalEdgeData {
+  weight: number;
+  toBoundary: boolean;
+}
 
 const FILE_WIDTH = 210;
 const FILE_HEIGHT = 54;
+
+// Quiet dark import wires; a boundary-touching one is thinner + dashed + dimmed (faded context).
+const EDGE_COLOR = "#3A424E";
+const BOUNDARY_OPACITY = 0.5;
 
 // Layered left→right so importers sit left of what they import, with root-only INCLUDE_CHILDREN so a
 // wire routes across frame boundaries. Mirrors the composition/logic surfaces so the lenses feel alike.
@@ -74,25 +71,33 @@ export async function layoutMinimalSubgraph(spec: MinimalSubgraphSpec): Promise<
   return { nodes, edges: spec.edges.map((edge) => toRfEdge(edge, boundaryIds)) };
 }
 
+// The overlay reuses the Module-map card components, so a group is a read-only `package` frame and a
+// file a `file` card. Boundary neighbours dim in place (no bespoke variant — the "render plain" rule).
 function toRfNode(elkNode: ElkNode, parentId: string | undefined, node: MinimalSubgraphNode): Node {
+  if (node.kind === "group") {
+    return {
+      id: node.id,
+      type: "package",
+      ...parentRelativePlacement(elkNode, parentId),
+      data: groupData(node),
+    };
+  }
   return {
     id: node.id,
-    type: node.kind === "group" ? REVIEW_GROUP_NODE : REVIEW_FILE_NODE,
+    type: "file",
     ...parentRelativePlacement(elkNode, parentId),
-    data: node.kind === "group" ? groupData(node) : fileData(node),
+    data: node.data as ModuleCardData,
+    ...(node.isBoundary ? { style: { opacity: BOUNDARY_OPACITY } } : {}),
   };
 }
 
-function groupData(node: MinimalSubgraphNode): ReviewGroupNodeData {
-  return { ...(node.data as ModulePackageData), collapsedLabel: node.collapsedLabel };
-}
-
-function fileData(node: MinimalSubgraphNode): ReviewFileNodeData {
-  return { ...(node.data as ModuleCardData), isBoundary: node.isBoundary, changeStatus: node.changeStatus };
+/** A containment frame rendered by the Map's `PackageOverviewNode`: always an expanded, read-only frame. */
+function groupData(node: MinimalSubgraphNode): ModuleGroupData {
+  return { ...(node.data as ModulePackageData), isContainer: false, isExpanded: true, readOnly: true };
 }
 
 // A boundary-touching wire is the faded context/blast-radius link (thin, dashed, dimmed); an
-// affected↔affected wire is the solid signal. The graph pane re-paints emphasis on row selection.
+// affected↔affected wire is the solid signal.
 function toRfEdge(edge: MinimalSubgraphEdge, boundaryIds: ReadonlySet<string>): Edge {
   const toBoundary = boundaryIds.has(edge.source) || boundaryIds.has(edge.target);
   return {
@@ -100,12 +105,12 @@ function toRfEdge(edge: MinimalSubgraphEdge, boundaryIds: ReadonlySet<string>): 
     source: edge.source,
     target: edge.target,
     style: {
-      stroke: REVIEW_COLORS.edge,
+      stroke: EDGE_COLOR,
       strokeWidth: toBoundary ? 1 : 1.5,
       opacity: toBoundary ? 0.5 : 0.85,
       ...(toBoundary ? { strokeDasharray: "4 3" } : {}),
     },
-    markerEnd: arrowMarker(REVIEW_COLORS.edge, 14),
-    data: { weight: edge.weight, toBoundary } satisfies ReviewEdgeData,
+    markerEnd: arrowMarker(EDGE_COLOR, 14),
+    data: { weight: edge.weight, toBoundary } satisfies MinimalEdgeData,
   };
 }
