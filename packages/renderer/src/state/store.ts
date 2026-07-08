@@ -23,6 +23,8 @@ import type { BlueprintEdge, BlueprintNode } from "../layout/rfTypes";
 import type { TelemetryProvider } from "../telemetry/provider";
 import type { ViewMode } from "../derive/edgeSelection";
 import { relatedNodeIds, type FlowSelectionRef } from "../derive/flowBlocks";
+import { computeVisible } from "../derive/computeVisible";
+import { idsToExpand, idsToCollapse, type ExpandableNode } from "../derive/scopedExpansion";
 import type { LogicViewMode } from "../derive/flowViewModel";
 import { uiFocusTarget } from "../derive/uiFocus";
 import { deriveLayout } from "./deriveLayout";
@@ -212,6 +214,11 @@ export interface BlueprintState {
   toggleExpand(nodeId: string): void;
   expandPath(nodeId: string): void;
   expandPaths(nodeIds: string[]): void;
+  /** Reveal one more containment level within the current selection (or the whole view / root
+   * container when nothing is selected). Surface-aware: Map, UI graph, and Logic graph each. */
+  expandAll(): void;
+  /** Fully collapse the current selection (or the whole view / root container when nothing is
+   * selected) — closes every open container in scope in one click. Surface-aware. */
   collapseAll(): void;
   select(nodeId: string | null): void;
   diveInto(nodeId: string): void;
@@ -412,16 +419,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().relayout();
     },
 
-    // Collapse every inline expansion of the ACTIVE surface: the module slice's expansion set on
-    // both module-surface lenses (the folder Map AND the service-cluster "call" tab), the ui
-    // graph's `expanded` otherwise. relayout() routes to the right layout pass either way.
+    // Reveal one more containment level, scoped to the current selection (or the whole view when
+    // nothing is selected). Each surface reads its own visible frontier + selection and folds the
+    // ids scopedExpansion picks into its own expansion set — see applyScoped below.
+    expandAll() {
+      applyScoped(get, set, () => (moduleGraph ??= buildModuleGraph(get().index)), () => (blockDeps ??= buildBlockDeps(get().index)), idsToExpand, "open");
+    },
+
+    // Fully collapse the same scope: close every open container within it in one click.
     collapseAll() {
-      if (get().viewMode === "modules" || get().viewMode === "call") {
-        set({ moduleExpanded: new Set<string>(), moduleSelected: new Set<string>() });
-      } else {
-        set({ expanded: new Set<string>() });
-      }
-      void get().relayout();
+      applyScoped(get, set, () => (moduleGraph ??= buildModuleGraph(get().index)), () => (blockDeps ??= buildBlockDeps(get().index)), idsToCollapse, "close");
     },
 
     select(nodeId) {
@@ -1209,6 +1216,107 @@ function withToggled(expanded: Set<string>, nodeId: string): Set<string> {
     next.add(nodeId);
   }
   return next;
+}
+
+/** Flip every id in `ids` in/out of the set — the batch sibling of `withToggled`, used by the
+ * Logic surface whose expansion set is XOR-from-default (toggling an id forces the opposite state). */
+function withToggledMany(expanded: ReadonlySet<string>, ids: readonly string[]): Set<string> {
+  const next = new Set(expanded);
+  for (const id of ids) {
+    if (!next.delete(id)) {
+      next.add(id);
+    }
+  }
+  return next;
+}
+
+type ScopedPick = (nodes: readonly ExpandableNode[], scope: readonly (string | null)[]) => string[];
+
+/**
+ * The shared body of `expandAll`/`collapseAll`: read the active surface's visible frontier and
+ * selection, let `pick` (idsToExpand reveals one level / idsToCollapse closes all open in scope)
+ * choose the ids, then fold them into that surface's own expansion set — a plain add/remove on the
+ * Map + UI graph, an XOR toggle on the Logic graph (its set is default-relative, so forcing a node
+ * to the picked state is a flip). No selection ⇒ `[null]` scope ≡ the root container.
+ */
+function applyScoped(
+  get: BlueprintStore["getState"],
+  set: (partial: Partial<BlueprintState>) => void,
+  getGraph: () => ModuleGraph,
+  getDeps: () => BlockDeps,
+  pick: ScopedPick,
+  mode: "open" | "close",
+): void {
+  const state = get();
+  if (state.viewMode === "modules" || state.viewMode === "call") {
+    const scope = state.moduleSelected.size ? [...state.moduleSelected] : [null];
+    const ids = pick(moduleTreeNodes(state, getGraph(), getDeps()), scope);
+    if (ids.length === 0) {
+      return;
+    }
+    set({ moduleExpanded: foldIds(state.moduleExpanded, ids, mode) });
+    void get().moduleRelayout();
+  } else if (state.viewMode === "ui") {
+    const scope = state.selectedId !== null ? [state.selectedId] : [null];
+    const ids = pick(uiVisibleNodes(state), scope);
+    if (ids.length === 0) {
+      return;
+    }
+    set({ expanded: foldIds(state.expanded, ids, mode) });
+    void get().relayout();
+  } else if (state.viewMode === "logic") {
+    const ids = pick(logicVisibleNodes(state), [null]);
+    if (ids.length === 0) {
+      return;
+    }
+    set({ expandedLogic: withToggledMany(state.expandedLogic, ids) });
+    void get().logicRelayout();
+  }
+  // "prs" has no containment to expand — deliberately a no-op.
+}
+
+/** Add (open) or remove (close) `ids` in a plain expansion set. */
+function foldIds(expanded: ReadonlySet<string>, ids: readonly string[], mode: "open" | "close"): Set<string> {
+  const next = new Set(expanded);
+  for (const id of ids) {
+    if (mode === "open") {
+      next.add(id);
+    } else {
+      next.delete(id);
+    }
+  }
+  return next;
+}
+
+/** The Map surface's visible frontier as `ExpandableNode`s (the folder Map or service-cluster tree). */
+function moduleTreeNodes(state: BlueprintState, graph: ModuleGraph, deps: BlockDeps): ExpandableNode[] {
+  const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+  const tree =
+    state.viewMode === "call"
+      ? deriveServiceTree(state.index, state.moduleExpanded, graph, deps, flows)
+      : deriveModuleTree(state.index, state.moduleFocus, state.moduleExpanded, graph, deps, flows);
+  return tree.nodes;
+}
+
+/** The UI call-flow graph's visible frontier as `ExpandableNode`s. */
+function uiVisibleNodes(state: BlueprintState): ExpandableNode[] {
+  const hidden = state.showTests ? new Set<string>() : state.index.testIds;
+  return computeVisible(state.index, state.expanded, state.focusId, hidden).map((visible) => ({
+    id: visible.id,
+    parentId: visible.node.parentId ?? null,
+    isContainer: visible.isContainer,
+    isExpanded: visible.isExpanded,
+  }));
+}
+
+/** The Logic graph's laid-out nodes as `ExpandableNode`s — expandable flags stand in for containment. */
+function logicVisibleNodes(state: BlueprintState): ExpandableNode[] {
+  return state.logicRfNodes
+    .filter((rfNode) => typeof (rfNode.data as { expandable?: unknown }).expandable === "boolean")
+    .map((rfNode) => {
+      const data = rfNode.data as { expandable: boolean; isExpanded?: boolean };
+      return { id: rfNode.id, parentId: rfNode.parentId ?? null, isContainer: data.expandable, isExpanded: data.isExpanded === true };
+    });
 }
 
 /** Flip a category's membership in the hidden-category set (typed sibling of `withToggled`). */
