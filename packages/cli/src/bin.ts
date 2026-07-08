@@ -9,10 +9,12 @@
 import { CommanderError } from "commander";
 import { buildProgram } from "./program";
 import { CliError, EXIT } from "./errors";
+import { ensureHeadroom } from "./heap";
 
 main();
 
 function main(): void {
+  ensureHeadroom(process.argv); // re-execs generate/web with a larger heap, then never returns here
   const program = buildProgram();
   program.parseAsync(process.argv).catch(handleError);
 }
