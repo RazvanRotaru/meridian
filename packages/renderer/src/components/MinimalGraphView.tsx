@@ -27,17 +27,24 @@ export function MinimalGraphView() {
   const edges = useBlueprint((state) => state.minimalRfEdges);
   const seedCount = useBlueprint((state) => state.minimalSeedIds.length);
   const grown = useBlueprint((state) => state.minimalKeptIds.length > 0 || state.minimalExpanded.length > 0);
-  const { closeMinimalGraph, expandMinimal, resetMinimalGraph } = useBlueprintActions();
+  const { closeMinimalGraph, expandMinimal, resetMinimalGraph, selectModule, toggleModuleSelect } = useBlueprintActions();
 
   useClearOnEscape(closeMinimalGraph, true);
 
   // Clicking a [+n] stub reveals that node's hidden neighbours in that direction (and, when the stub
-  // sits on a ghost, commits the ghost). Every other node is inert on this read-only surface.
-  const onNodeClick: NodeMouseHandler<Node> = (_event, node) => {
+  // sits on a ghost, commits the ghost). Clicking a file card drives the SAME store selection the
+  // Module map does, so the green ring lights up here too: ctrl/cmd toggles, plain click replaces.
+  const onNodeClick: NodeMouseHandler<Node> = (event, node) => {
     if (node.type === MINIMAL_STUB_NODE) {
       const stub = node.data as MinimalStubData;
       expandMinimal(stub.sourceId, stub.direction);
+      return;
     }
+    if (event.ctrlKey || event.metaKey) {
+      toggleModuleSelect(node.id);
+      return;
+    }
+    selectModule(node.id);
   };
 
   // Fit once per LAYOUT (build / expand / reset) — the same guard idiom as the sibling surfaces.
@@ -59,6 +66,7 @@ export function MinimalGraphView() {
         edges={edges}
         nodeTypes={overlayNodeTypes}
         onNodeClick={onNodeClick}
+        onPaneClick={() => selectModule(null)}
         onInit={(instance) => {
           rfRef.current = instance;
         }}

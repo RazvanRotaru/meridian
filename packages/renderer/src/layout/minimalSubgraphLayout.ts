@@ -16,10 +16,12 @@ import { arrowMarker } from "../theme/edgeColors";
 /** The React Flow node type the overlay registers on top of `moduleNodeTypes` for the [+n] expanders. */
 export const MINIMAL_STUB_NODE = "minimalStub";
 
-// Quiet dark import wires; a stub tether is fainter still. Ghost files dim to this opacity.
-const EDGE_COLOR = "#3A424E";
+// Import wires mirror the Module map's at-rest coupling colours (gold cross-package, grey same-
+// package); a stub tether is fainter still. Ghost files dim to this opacity — legible, still distinct.
+const CROSS_PACKAGE_COLOR = "#C9A24B";
+const SAME_PACKAGE_COLOR = "#5B6675";
 const STUB_EDGE_COLOR = "#2A313C";
-const GHOST_OPACITY = 0.45;
+const GHOST_OPACITY = 0.62;
 
 /** Mirror the map: place each visible file at its captured spot (others relative), flat, then wire. */
 export function layoutMinimalSubgraph(
@@ -92,12 +94,13 @@ function toRfEdge(edge: MinimalSubgraphEdge): Edge {
       selectable: false,
     };
   }
+  const stroke = edge.crossPackage ? CROSS_PACKAGE_COLOR : SAME_PACKAGE_COLOR;
   return {
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    style: { stroke: EDGE_COLOR, strokeWidth: 1.5, opacity: 0.85 },
-    markerEnd: arrowMarker(EDGE_COLOR, 14),
+    style: { stroke, strokeWidth: 1.5, opacity: 0.5 },
+    markerEnd: arrowMarker(stroke, 14),
     data: { weight: edge.weight },
   };
 }

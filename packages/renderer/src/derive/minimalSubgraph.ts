@@ -54,6 +54,8 @@ export interface MinimalSubgraphEdge {
   weight: number;
   /** "import" wires connect two visible files; "stub" wires tether a [+n] to its source file. */
   kind: "import" | "stub";
+  /** import edges only: true when source and target sit in different package frames (gold-coloured). */
+  crossPackage?: boolean;
 }
 
 export interface MinimalSubgraphSpec {
@@ -83,7 +85,7 @@ export function buildMinimalSubgraph(
   const stubs = computeStubs(graph, visible);
   return {
     nodes: [...buildContainmentNodes(index, graph, keptNodeIds, context), ...stubNodes(stubs, collapse)],
-    edges: [...importEdges(graph, visible), ...stubEdges(stubs)],
+    edges: [...importEdges(index, graph, visible), ...stubEdges(stubs)],
   };
 }
 
@@ -245,17 +247,33 @@ function stubNodes(stubs: readonly MinimalStubData[], collapse: ChainCollapse): 
   }));
 }
 
-/** Import wires between two visible files (folded to one per ordered pair, self-loops dropped). */
-function importEdges(graph: ModuleGraph, visible: ReadonlySet<string>): MinimalSubgraphEdge[] {
+/** Import wires between two visible files (folded to one per ordered pair, self-loops dropped).
+ * Each carries `crossPackage` — do the two files live under different package frames? — so the
+ * overlay can colour cross-package wires gold like the Module map, same-package wires grey. */
+function importEdges(index: GraphIndex, graph: ModuleGraph, visible: ReadonlySet<string>): MinimalSubgraphEdge[] {
   const edges: MinimalSubgraphEdge[] = [];
   for (const source of [...visible].sort()) {
+    const sourcePackage = nearestPackage(index, source);
     for (const target of [...(graph.out.get(source) ?? [])].sort()) {
       if (source !== target && visible.has(target)) {
-        edges.push({ id: `min:${source}->${target}`, source, target, weight: graph.weight.get(weightKey(source, target)) ?? 1, kind: "import" });
+        const crossPackage = sourcePackage !== nearestPackage(index, target);
+        edges.push({ id: `min:${source}->${target}`, source, target, weight: graph.weight.get(weightKey(source, target)) ?? 1, kind: "import", crossPackage });
       }
     }
   }
   return edges;
+}
+
+/** The id of the file's nearest package-kind ancestor (null when it has none). `ancestorsOf` is
+ * root..self, so the LAST package entry is the closest one to the file. */
+function nearestPackage(index: GraphIndex, id: string): string | null {
+  const ancestors = index.ancestorsOf(id);
+  for (let i = ancestors.length - 1; i >= 0; i -= 1) {
+    if (ancestors[i].kind === "package") {
+      return ancestors[i].id;
+    }
+  }
+  return null;
 }
 
 /** A faint tether from each [+n] stub to its source (in points into the file, out points out). */

@@ -81,6 +81,28 @@ describe("buildMinimalSubgraph", () => {
     expect(imports).not.toContain("min:m:b->m:c"); // c is not visible
   });
 
+  it("flags an import wire crossPackage when its two files sit in different package frames", () => {
+    // a lives in p:src, x lives in a sibling package p:lib; a imports x → a cross-package wire.
+    const nodes = [
+      pkg("p:root", "root", null),
+      pkg("p:src", "src", "p:root"),
+      pkg("p:lib", "lib", "p:root"),
+      mod("m:a", "src/a.ts", "p:src"),
+      mod("m:x", "lib/x.ts", "p:lib"),
+    ];
+    const edges = [importEdge("m:a", "m:x")];
+    const built = build(nodes, edges, ["m:a"]);
+    const cross = built.edges.find((edge) => edge.id === "min:m:a->m:x");
+    expect(cross?.crossPackage).toBe(true);
+  });
+
+  it("leaves a same-package import wire's crossPackage false", () => {
+    // All fixture files live in p:src, so a→b is same-package.
+    const { edges } = build(NODES, EDGES, ["m:a"]);
+    const same = edges.find((edge) => edge.id === "min:m:a->m:b");
+    expect(same?.crossPackage).toBe(false);
+  });
+
   it("reveals an expansion's neighbours as ghosts, one hop past the frontier", () => {
     const { nodes } = build(NODES, EDGES, ["m:a"], [], [{ id: "m:b", direction: "out" }]);
     expect(nodeById(nodes, "m:c")?.tier).toBe("ghost"); // b's out-neighbour, revealed
