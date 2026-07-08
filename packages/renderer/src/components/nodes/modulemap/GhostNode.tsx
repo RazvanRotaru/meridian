@@ -12,20 +12,22 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
 import { accentForKind, glyphForKind } from "../../../theme/kindColors";
 import type { GhostData } from "../../../derive/ghostDeps";
-import { MONO, PIN, SELECT_ACCENT } from "./frameChrome";
+import { cardSelectedStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
 
 type GhostRfNode = Node<GhostData, "ghost">;
 
 function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
   const selected = useBlueprint((state) => state.moduleSelected.has(id));
-  // A beacon ghost is a selected call step's DEFINITION: its border wears the selection colour.
-  const style = selected ? GHOST_SELECTED : data.beacon ? GHOST_BEACON : GHOST;
+  const accent = accentForKind(data.ghostKind);
+  // Plain selection wears the ghost's OWN accent (heavier); a BEACON — a selected call step's
+  // definition — keeps the green marker so it stands out as the thing pointed at.
+  const style = selected ? cardSelectedStyle(GHOST, accent) : data.beacon ? GHOST_BEACON : GHOST;
   return (
     <div style={style} title={`${data.label} — off-screen; double-click to reveal it`}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={HEAD}>
-        <span style={{ ...GLYPH, color: accentForKind(data.ghostKind) }}>{ghostGlyph(data.ghostKind)}</span>
+        <span style={{ ...GLYPH, color: accent }}>{ghostGlyph(data.ghostKind)}</span>
         <span style={LABEL}>{data.label}</span>
       </div>
       {data.context ? <div style={CONTEXT}>{data.context}</div> : null}
@@ -61,7 +63,6 @@ const GHOST: React.CSSProperties = {
   overflow: "hidden",
   cursor: "pointer",
 };
-const GHOST_SELECTED: React.CSSProperties = { ...GHOST, borderColor: SELECT_ACCENT, boxShadow: `0 0 0 2px ${SELECT_ACCENT}` };
 const GHOST_BEACON: React.CSSProperties = { ...GHOST, borderColor: SELECT_ACCENT };
 const HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 5, minWidth: 0 };
 const GLYPH: React.CSSProperties = { fontSize: 9.5, flexShrink: 0, opacity: 0.8 };

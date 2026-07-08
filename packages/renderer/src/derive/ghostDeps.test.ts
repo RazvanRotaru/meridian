@@ -65,11 +65,12 @@ describe("ghostDepWires — service-level ghosts", () => {
     expect(emission.ghosts.get("ts:svc/s.ts#Svc")?.ghostKind).toBe("class");
   });
 
-  it("folds a class's constructor + method deps into one ghost wire", () => {
+  it("folds a class's members into ONE service ghost card, with a wire per relationship kind", () => {
     const toSvc = emission.wires.filter((wire) => wire.target === "ts:svc/s.ts#Svc");
-    expect(toSvc).toHaveLength(1);
-    expect(toSvc[0].source).toBe("ts:cons/c.ts#use");
-    expect(toSvc[0].weight).toBe(2); // instantiates(→ctor) + calls(→mount) summed
+    // One ghost CARD for the class, but the constructor (instantiates) and the method call (calls)
+    // stay distinct wires so each can wear its own colour / be toggled.
+    expect(toSvc.every((w) => w.source === "ts:cons/c.ts#use")).toBe(true);
+    expect(toSvc.map((w) => w.kind).sort()).toEqual(["calls", "instantiates"]);
   });
 
   it("leaves a bare module-level function as its own ghost (no unit to lift to)", () => {

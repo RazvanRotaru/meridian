@@ -37,6 +37,26 @@ export function filterVisible(nodes: Node[], edges: Edge[], options: HideOptions
   return { nodes: keptNodes, edges: keptEdges };
 }
 
+/** The relationship-toggle key an edge answers to; null = always shown (execution-order flow). */
+function relKeyOf(edge: Edge): string | null {
+  const data = edge.data as { category?: string; depKind?: string } | undefined;
+  if (data?.category === "dep") return data.depKind ?? "calls";
+  if (data?.category === "import") return "imports";
+  if (data?.category === "ipc") return "ipc";
+  return null;
+}
+
+/** Drop the wires whose relationship kind is toggled off — a pure paint filter, positions untouched. */
+export function filterRelKinds(edges: Edge[], hidden: ReadonlySet<string>): Edge[] {
+  if (hidden.size === 0) {
+    return edges;
+  }
+  return edges.filter((edge) => {
+    const key = relKeyOf(edge);
+    return key === null || !hidden.has(key);
+  });
+}
+
 function hiddenCardIds(nodes: Node[], options: HideOptions): Set<string> {
   const hidden = new Set<string>();
   // Nodes arrive parents-before-children (a React Flow requirement), so one pass both applies the

@@ -12,18 +12,17 @@ import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
 import type { StepData } from "../../../derive/flowSteps";
-import { ExpandChevron, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
+import { cardSelectedStyle, ExpandChevron, MONO, PIN } from "./frameChrome";
+import { CALL_RESOLVED, CALL_UNRESOLVED, CONSTRUCT } from "../../../theme/mapPalette";
 
 const STEP_GLYPH: Record<StepData["stepKind"], string> = { call: "→", loop: "↻", branch: "⑂", callback: "λ", exit: "⏎" };
-// Calls tint by resolution (resolved = the wire-out blue, unresolved = muted); constructs are amber.
-const CALL_COLOR = "#5E74C6";
-const CONSTRUCT_COLOR = "#C9A24B";
 
 type StepRfNode = Node<StepData, "step">;
 
 function StepNodeImpl({ id, data }: NodeProps<StepRfNode>) {
   const selected = useBlueprint((state) => state.moduleSelected.has(id));
-  const glyphColor = data.stepKind === "call" ? (data.resolved ? CALL_COLOR : "#565E68") : CONSTRUCT_COLOR;
+  // Calls tint by resolution (resolved = wire-out blue, unresolved = muted); constructs are amber.
+  const glyphColor = data.stepKind === "call" ? (data.resolved ? CALL_RESOLVED : CALL_UNRESOLVED) : CONSTRUCT;
   const chevron = data.isContainer ? (
     <ExpandChevron
       id={id}
@@ -34,7 +33,7 @@ function StepNodeImpl({ id, data }: NodeProps<StepRfNode>) {
 
   if (data.isExpanded) {
     return (
-      <div style={selected ? FRAME_SELECTED : FRAME}>
+      <div style={selected ? cardSelectedStyle(FRAME, glyphColor) : FRAME}>
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
         <div style={TITLE_BAR} title={data.label}>
@@ -47,7 +46,7 @@ function StepNodeImpl({ id, data }: NodeProps<StepRfNode>) {
   }
 
   return (
-    <div style={selected ? STEP_SELECTED : STEP} title={data.label}>
+    <div style={selected ? cardSelectedStyle(STEP, glyphColor) : STEP} title={data.label}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       {chevron}
@@ -72,7 +71,6 @@ const STEP: React.CSSProperties = {
   background: "#161C25",
   fontFamily: MONO,
 };
-const STEP_SELECTED: React.CSSProperties = { ...STEP, borderColor: SELECT_ACCENT, boxShadow: `0 0 0 2px ${SELECT_ACCENT}` };
 // An expanded step is the innermost frame species: a hair quieter than a block's flow frame.
 const FRAME: React.CSSProperties = {
   width: "100%",
@@ -83,7 +81,6 @@ const FRAME: React.CSSProperties = {
   background: "rgba(22,28,37,0.5)",
   fontFamily: MONO,
 };
-const FRAME_SELECTED: React.CSSProperties = { ...FRAME, borderColor: SELECT_ACCENT, boxShadow: `0 0 0 2px ${SELECT_ACCENT}` };
 const TITLE_BAR: React.CSSProperties = {
   display: "flex",
   alignItems: "center",

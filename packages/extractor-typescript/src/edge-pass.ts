@@ -50,8 +50,33 @@ function collectBehaviouralEdges(
   for (const expression of sourceFile.getDescendantsOfKind(SyntaxKind.NewExpression)) {
     addCallableEdge(expression, calleeOf(expression), "instantiates", relPath, index, moduleByFilePath, diagnostics, edges);
   }
+  collectReferenceEdges(sourceFile, relPath, index, moduleByFilePath, diagnostics, edges);
   collectRenderEdges(sourceFile, relPath, index, moduleByFilePath, diagnostics, edges);
 }
+
+/**
+ * Type dependencies: a symbol used in a TYPE POSITION — a parameter or return annotation, a property
+ * type, a type argument (`Promise<FsReadFileResult>`) — becomes a `references` edge from the enclosing
+ * callable (or the module, for a top-level type) to that type's definition. This is what makes a
+ * types/protocol module read as USED: `foo(req: FsReadFileRequest)` couples `foo` to the interface
+ * even though it never calls or extends it. `extends`/`implements` live in heritage clauses (not
+ * TypeReference nodes), so they never double-count here; built-in/lib types resolve external and drop.
+ */
+function collectReferenceEdges(
+  sourceFile: { getDescendantsOfKind(kind: SyntaxKind): Node[] },
+  relPath: string,
+  index: ResolutionIndex,
+  moduleByFilePath: Map<string, NodeDescriptor>,
+  diagnostics: ExtractionDiagnostic[],
+  edges: RawEdge[],
+): void {
+  for (const ref of sourceFile.getDescendantsOfKind(SyntaxKind.TypeReference)) {
+    addCallableEdge(ref, typeNameOf(ref), "references", relPath, index, moduleByFilePath, diagnostics, edges);
+  }
+}
+
+/** A TypeReference's name node (`FsReadFileResult`, or the `A.B` entity), the thing to resolve. */
+const typeNameOf = (node: Node): Node => (node as unknown as { getTypeName(): Node }).getTypeName();
 
 // Both JSX element forms; an element is exactly one of them, so walking both never double-counts.
 const JSX_ELEMENT_KINDS = [SyntaxKind.JsxOpeningElement, SyntaxKind.JsxSelfClosingElement] as const;

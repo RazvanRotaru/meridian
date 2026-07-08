@@ -12,7 +12,7 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
 import { accentForKind } from "../../../theme/kindColors";
 import type { BlockData } from "../../../derive/moduleLevel";
-import { CodeButton, ExpandChevron, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
+import { cardSelectedStyle, CodeButton, ExpandChevron, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, DeltaChip, useNodeDiff } from "./changed";
 
 type BlockRfNode = Node<BlockData, "block">;
@@ -41,7 +41,7 @@ function BlockNodeImpl({ id, data }: NodeProps<BlockRfNode>) {
   }
 
   return (
-    <div style={borderFor(BLOCK, BLOCK_SELECTED, selected, diff)} title={title}>
+    <div style={borderFor(BLOCK, cardSelectedStyle(BLOCK, accent), selected, diff)} title={title}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       {chevron}
@@ -69,7 +69,6 @@ const BLOCK: React.CSSProperties = {
   fontFamily: MONO,
   cursor: "pointer",
 };
-const BLOCK_SELECTED: React.CSSProperties = { ...BLOCK, borderColor: SELECT_ACCENT, boxShadow: `0 0 0 2px ${SELECT_ACCENT}` };
 // A flow frame's title strip is slimmer than a unit frame's — it's the innermost nesting level.
 const TITLE_BAR: React.CSSProperties = {
   display: "flex",

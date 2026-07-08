@@ -33,7 +33,10 @@ export interface ModuleTreeEdge {
   target: string;
   weight: number;
   crossFrame: boolean;
-  category: "import" | "dep" | "flow";
+  category: "import" | "dep" | "flow" | "ipc";
+  /** For `dep` wires: the underlying coupling kind (calls / instantiates / extends / implements /
+   * references), so the paint layer colours per relationship type and the toggles filter by it. */
+  depKind?: string;
   /** The far endpoint is a GHOST card (an off-screen definition/caller) — drawn dashed. */
   ghost?: boolean;
 }

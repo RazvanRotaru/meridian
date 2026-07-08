@@ -147,8 +147,15 @@ export function frameStyle(accent: string): React.CSSProperties {
   };
 }
 
+// Selection reads as the card's OWN accent, just heavier — a 2px solid border (vs the 1px faint one
+// at rest) plus a soft accent halo. No separate selection colour, so a hue always means one thing.
 export function frameSelectedStyle(accent: string): React.CSSProperties {
-  return { ...frameStyle(accent), borderColor: SELECT_ACCENT, boxShadow: `0 0 0 2px ${SELECT_ACCENT}` };
+  return { ...frameStyle(accent), border: `2px solid ${accent}`, boxShadow: `0 0 0 2px ${accent}55` };
+}
+
+/** The same "own accent, heavier" selection treatment for a COLLAPSED card (given its base style). */
+export function cardSelectedStyle(base: React.CSSProperties, accent: string): React.CSSProperties {
+  return { ...base, borderColor: accent, boxShadow: `0 0 0 2px ${accent}` };
 }
 
 export const TITLE_BAR: React.CSSProperties = {
