@@ -32,6 +32,8 @@ import { deriveCompositionLayout } from "./deriveCompositionLayout";
 import { deriveModuleLevelLayout, type ModuleLevelLayout } from "./deriveModuleMapLayout";
 import { deriveServiceLevelLayout } from "./deriveServiceMapLayout";
 import { deriveMinimalGraphLayout } from "./deriveMinimalGraphLayout";
+import { captureMapPositions } from "./mapPositions";
+import type { PlacedRect } from "../layout/minimalPlacement";
 import type { Direction, ExpansionEntry } from "../derive/minimalSubgraph";
 import { seedModuleIdsFor } from "../derive/selectionSeeds";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
@@ -197,7 +199,11 @@ export interface BlueprintState {
   /** Directional expansions applied to the overlay — each reveals a node's `direction` neighbours as
    * ghosts. Ephemeral exploration state; "Reset" empties it (and minimalKeptIds) back to the base. */
   minimalExpanded: ExpansionEntry[];
-  /** The laid-out minimal subgraph for the overlay (nested ELK), under its own stale-seq guard. */
+  /** The Module map's on-screen file positions, captured (absolute) when the overlay is BUILT, so the
+   * overlay mirrors them: a captured file sits at its exact map spot, growth is placed around it.
+   * Captured once at build (never on expand/reset) so placed nodes never jump; cleared on close. */
+  minimalBasePositions: Record<string, PlacedRect>;
+  /** The laid-out minimal subgraph for the overlay (flat, mirroring the map), under its own stale-seq guard. */
   minimalRfNodes: Node[];
   minimalRfEdges: Edge[];
   minimalLayoutStatus: LayoutStatus;
@@ -402,6 +408,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     minimalSeedIds: [],
     minimalKeptIds: [],
     minimalExpanded: [],
+    minimalBasePositions: {},
     minimalRfNodes: [],
     minimalRfEdges: [],
     minimalLayoutStatus: "idle",
@@ -959,7 +966,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (seeds.length === 0) {
         return;
       }
-      set({ minimalSeedIds: seeds, minimalKeptIds: [], minimalExpanded: [] });
+      // Snapshot the map's current on-screen file positions ONCE, at build — the overlay mirrors them,
+      // and re-capturing on growth would let already-placed cards jump.
+      set({ minimalSeedIds: seeds, minimalKeptIds: [], minimalExpanded: [], minimalBasePositions: captureMapPositions(get().moduleRfNodes) });
       void get().minimalRelayout();
     },
 
@@ -968,7 +977,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // pass still in flight, so a slow layout can't repopulate the arrays after the close.
     closeMinimalGraph() {
       minimalLayoutSeq += 1;
-      set({ minimalSeedIds: [], minimalKeptIds: [], minimalExpanded: [], minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
+      set({ minimalSeedIds: [], minimalKeptIds: [], minimalExpanded: [], minimalBasePositions: {}, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
     },
 
     // Reveal a node's hidden neighbours in one direction as ghosts (the [+n] stub click). Drilling
@@ -997,14 +1006,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Lay out the overlay's subgraph (seeds + 1-hop base + committed + expansions) through the shared
     // minimal-graph pass, behind its own stale-seq guard.
     async minimalRelayout() {
-      const { index, minimalSeedIds, minimalKeptIds, minimalExpanded } = get();
+      const { index, minimalSeedIds, minimalKeptIds, minimalExpanded, minimalBasePositions } = get();
       if (minimalSeedIds.length === 0) {
         return;
       }
       moduleGraph ??= buildModuleGraph(index);
       const sequence = ++minimalLayoutSeq;
       set({ minimalLayoutStatus: "laying-out" });
-      const layout = await deriveMinimalGraphLayout(index, moduleGraph, new Set(minimalSeedIds), new Set(minimalKeptIds), minimalExpanded);
+      const layout = await deriveMinimalGraphLayout(index, moduleGraph, new Set(minimalSeedIds), new Set(minimalKeptIds), minimalExpanded, minimalBasePositions);
       if (minimalLayoutSeq !== sequence) {
         return; // a newer build/expand/reset superseded this one.
       }
@@ -1030,7 +1039,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // lingers hidden behind another tab (and the URL's `mgraph` clears with the switch).
       if (get().minimalSeedIds.length > 0) {
         minimalLayoutSeq += 1;
-        set({ minimalSeedIds: [], minimalKeptIds: [], minimalExpanded: [], minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
+        set({ minimalSeedIds: [], minimalKeptIds: [], minimalExpanded: [], minimalBasePositions: {}, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
       }
       if (mode === "logic") {
         set({ viewMode: mode });

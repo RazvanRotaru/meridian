@@ -1,7 +1,8 @@
 /**
  * The minimal-graph overlay's shared styles + MiniMap tint, split out of `MinimalGraphView` to keep
- * the component small. Package frames tint blue, files take their category hue, [+n] stubs a muted
- * grey — the same reading order (and `CATEGORY_COLOR` palette) as the Module map the overlay grows from.
+ * the component small. The overlay is FLAT (no package frames): files take their category hue, [+n]
+ * stubs a muted grey — the same reading order (and `CATEGORY_COLOR` palette) as the Module map the
+ * overlay mirrors.
  */
 
 import type { Node } from "@xyflow/react";
@@ -9,14 +10,10 @@ import type { ModuleCardData } from "../derive/moduleLevel";
 import { CATEGORY_COLOR } from "./nodes/modulemap/ModuleCardNode";
 import { MINIMAL_STUB_NODE } from "../layout/minimalSubgraphLayout";
 
-const PACKAGE_TINT = "#5B9BE3";
 const STUB_TINT = "#3A4452";
 
-/** MiniMap tint: package frames blue, [+n] stubs muted grey, else the file's category hue. */
+/** MiniMap tint: [+n] stubs muted grey, else the file's category hue. */
 export function minimalMiniMapColor(node: Node): string {
-  if (node.type === "package") {
-    return PACKAGE_TINT;
-  }
   if (node.type === MINIMAL_STUB_NODE) {
     return STUB_TINT;
   }
