@@ -8,7 +8,9 @@
  *   2. `emphasize` dims every wire until a node is selected, then lights its N-hop import neighbourhood.
  *
  * Navigation is one gesture set: double-click a GROUP card to zoom IN (setModuleFocus); the breadcrumb
- * (the containment trail) zooms OUT. Double-clicking a FILE only selects it (files have no children).
+ * (the containment trail) zooms OUT. Double-clicking a FILE dives past containment into the logic
+ * lens rooted at that module — its functions grid (openLogicFlow); toggling back to Modules returns
+ * to this level.
  */
 
 import { useEffect, useMemo, useRef } from "react";
@@ -55,15 +57,16 @@ export function ModuleMapView() {
   // a multi-selection whose combined reach lights up.
   const onNodeClick: NodeMouseHandler<Node> = (event, node) =>
     event.ctrlKey || event.metaKey ? toggleModuleSelect(node.id) : selectModule(node.id);
-  // Double-click a GROUP card (a package/directory) zooms into it; a callable BLOCK opens its logic
-  // flow (the map→logic link); a GHOST reveals its off-screen definition (the Map refocuses where it
-  // lives); everything else only selects. The breadcrumb is the way back up.
+  // Double-click a GROUP card (a package/directory) zooms into it; a GHOST reveals its off-screen
+  // definition (the Map refocuses where it lives); a FILE or callable BLOCK dives one lens deeper —
+  // the logic view rooted there (a file's def-grid lists its functions; the Modules toggle returns
+  // to this level). Everything else only selects. The breadcrumb is the way back up.
   const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
     if (node.type === PACKAGE_KIND) {
       setModuleFocus(node.id);
     } else if (node.type === "ghost") {
       revealModule(node.id);
-    } else if (node.type === "block" && (node.data as BlockData).callable) {
+    } else if (node.type === "file" || (node.type === "block" && (node.data as BlockData).callable)) {
       openLogicFlow(node.id);
     } else {
       selectModule(node.id);

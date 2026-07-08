@@ -771,12 +771,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       // The Module map is a standalone surface (its own ELK level layout), so — like logic — it neither
-      // dives nor touches the graph focus; it just flips the mode and lays its own graph out. Clicking
-      // INTO the lens always opens at the whole-repo package overview (level 0), never a focus inherited
-      // from a prior visit. A shared/reloaded deep link is unaffected: it restores via setState on boot
-      // (not this click path), so an explicit ?mfocus=… still opens at that level.
+      // dives nor touches the graph focus; it just flips the mode and lays its own graph out. Returning
+      // FROM the logic lens keeps the map level and expansions: a logic visit never touches
+      // moduleFocus/moduleExpanded, so the map is exactly where you left it — whether the flow was
+      // opened by a file-card double-click, the Logic tab, Cmd+P, or a caller ghost, and consistently
+      // with URL restores (boot/popstate write the same reactive fields). Entering from call/ui still
+      // opens at the whole-repo package overview (level 0), never a focus inherited from a prior visit.
       if (mode === "modules") {
-        set({ viewMode: mode, moduleFocus: null, moduleExpanded: new Set<string>() });
+        if (previous === "logic") {
+          set({ viewMode: mode });
+        } else {
+          set({ viewMode: mode, moduleFocus: null, moduleExpanded: new Set<string>() });
+        }
         void get().moduleRelayout();
         return;
       }

@@ -9,7 +9,8 @@ import { useBlueprintActions } from "../../../state/StoreContext";
 export const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 export const SELECT_ACCENT = "#6BE38A";
 
-/** The in-place expand/collapse chevron; stops propagation so it never also selects the card. */
+/** The in-place expand/collapse chevron; stops propagation (click AND double-click, which browsers
+ * fire separately) so an impatient double-click never also selects the card or dives into a lens. */
 export function ExpandChevron({ id, isExpanded, collapsedTitle }: { id: string; isExpanded: boolean; collapsedTitle?: string }) {
   const toggleModuleExpand = useBlueprintActions().toggleModuleExpand;
   const label = isExpanded ? "Collapse" : "Expand";
@@ -23,6 +24,7 @@ export function ExpandChevron({ id, isExpanded, collapsedTitle }: { id: string; 
         event.stopPropagation();
         toggleModuleExpand(id);
       }}
+      onDoubleClick={(event) => event.stopPropagation()}
     >
       {isExpanded ? "▾" : "▸"}
     </button>
