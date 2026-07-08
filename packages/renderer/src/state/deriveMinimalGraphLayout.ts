@@ -25,6 +25,7 @@ export async function deriveMinimalGraphLayout(
   expanded: readonly ExpansionEntry[],
   basePositions: Record<string, PlacedRect>,
 ): Promise<MinimalGraphLayout> {
-  const spec = buildMinimalSubgraph(index, moduleGraph, seedModuleIds, keptIds, expanded);
+  const onMapIds = new Set(Object.keys(basePositions));
+  const spec = buildMinimalSubgraph(index, moduleGraph, seedModuleIds, keptIds, expanded, onMapIds);
   return layoutMinimalSubgraph(spec, basePositions);
 }

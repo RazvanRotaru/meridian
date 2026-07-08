@@ -22,9 +22,12 @@ function importEdge(source: string, target: string): GraphEdge {
   return { id: `imports:${source}->${target}`, source, target, kind: "imports", resolution: "resolved" } as GraphEdge;
 }
 
-function build(nodes: GraphNode[], edges: GraphEdge[], seeds: string[], kept: string[] = [], expanded: ExpansionEntry[] = []) {
+function build(nodes: GraphNode[], edges: GraphEdge[], seeds: string[], kept: string[] = [], expanded: ExpansionEntry[] = [], onMap?: string[]) {
   const index = buildGraphIndex({ nodes, edges } as unknown as GraphArtifact);
-  return buildMinimalSubgraph(index, buildModuleGraph(index), new Set(seeds), new Set(kept), expanded);
+  // Default onMap to every module node in the fixture, so the auto 1-hop ring behaves as if the whole
+  // fixture was on the Module map. Callers pass an explicit subset to exercise the on-map restriction.
+  const onMapIds = new Set(onMap ?? nodes.filter((node) => node.kind === "module").map((node) => node.id));
+  return buildMinimalSubgraph(index, buildModuleGraph(index), new Set(seeds), new Set(kept), expanded, onMapIds);
 }
 
 function nodeById(nodes: MinimalSubgraphNode[], id: string): MinimalSubgraphNode | undefined {
@@ -50,6 +53,13 @@ describe("buildMinimalSubgraph", () => {
     expect(nodeById(nodes, "m:b")?.tier).toBe("ghost"); // a imports b
     expect(nodeById(nodes, "m:e")?.tier).toBe("ghost"); // e imports a
     expect(nodeById(nodes, "m:c")).toBeUndefined(); // 2 hops out, not shown
+  });
+
+  it("restricts the seed's auto 1-hop ring to neighbours that were on the Module map", () => {
+    // Only a and b were on the map; e imports a but is off-map, so it must not auto-show.
+    const { nodes } = build(NODES, EDGES, ["m:a"], [], [], ["m:a", "m:b"]);
+    expect(nodeById(nodes, "m:b")?.tier).toBe("ghost"); // on-map neighbour still shown
+    expect(nodeById(nodes, "m:e")).toBeUndefined(); // off-map neighbour excluded from the auto ring
   });
 
   it("puts a directional [+n] stub on a node with hidden neighbours, none where all are shown", () => {

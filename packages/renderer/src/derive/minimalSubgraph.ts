@@ -3,9 +3,11 @@
  *   - SEED     — the picked node (the Map cards that were selected); the only initially-permanent node.
  *   - PERSISTENT — a ghost the reader drilled through, which commits it (auto-promotes to persistent).
  *                  The committed graph, alongside the seeds.
- *   - GHOST    — the seed's always-shown 1-hop import ring (both directions), plus any neighbour
- *                revealed by clicking a node's directional [+] stub, one hop past the persistent
- *                frontier. Tentative: "Clear expansions" drops the revealed ghosts.
+ *   - GHOST    — the seed's 1-hop neighbours that were VISIBLE on the Module map (the on-map ring),
+ *                plus any neighbour revealed by clicking a node's directional [+] stub, one hop past
+ *                the persistent frontier. The auto ring is restricted to on-map neighbours, but
+ *                expansions are UNRESTRICTED — that's how the reader deliberately goes off-map.
+ *                Tentative: "Clear expansions" drops the revealed ghosts.
  * A node whose import neighbours aren't all shown carries directional STUB nodes: a [+n] on the left
  * for hidden importers ("in"), a [+n] on the right for hidden imports ("out"). Files nest in their
  * ancestor package frames (single-child chains collapse). Pure; no React, no ELK. Reuses the module
@@ -71,9 +73,10 @@ export function buildMinimalSubgraph(
   seedIds: ReadonlySet<string>,
   keptIds: ReadonlySet<string> = new Set(),
   expanded: readonly ExpansionEntry[] = [],
+  onMapIds: ReadonlySet<string> = new Set(),
 ): MinimalSubgraphSpec {
   const persistent = collectPersistent(index, seedIds, keptIds);
-  const visible = collectVisible(index, graph, seedIds, persistent, expanded);
+  const visible = collectVisible(index, graph, seedIds, persistent, expanded, onMapIds);
   const { keptNodeIds, fileCountByGroup } = closeOverAncestors(index, visible);
   const collapse = collapseChains(index, keptNodeIds);
   const context: NodeContext = { seedIds, persistent, visible, collapse, fileCountByGroup };
@@ -101,16 +104,17 @@ function collectPersistent(index: GraphIndex, seedIds: ReadonlySet<string>, kept
   return persistent;
 }
 
-/** All visible files: the persistent set, the seed's always-shown 1-hop ring (both directions,
- * rendered as ghosts), and each expansion's revealed direction-neighbours (also ghosts). */
-function collectVisible(index: GraphIndex, graph: ModuleGraph, seedIds: ReadonlySet<string>, persistent: ReadonlySet<string>, expanded: readonly ExpansionEntry[]): Set<string> {
+/** All visible files: the persistent set, the seed's 1-hop ring restricted to on-map neighbours
+ * (rendered as ghosts), and each expansion's revealed direction-neighbours (also ghosts, and
+ * UNRESTRICTED — expansions deliberately reach past what was on the map). */
+function collectVisible(index: GraphIndex, graph: ModuleGraph, seedIds: ReadonlySet<string>, persistent: ReadonlySet<string>, expanded: readonly ExpansionEntry[], onMapIds: ReadonlySet<string>): Set<string> {
   const visible = new Set<string>(persistent);
   for (const seed of seedIds) {
     if (!isModule(index, seed)) {
       continue;
     }
     for (const neighbor of bothNeighbors(graph, seed)) {
-      if (isModule(index, neighbor)) {
+      if (isModule(index, neighbor) && onMapIds.has(neighbor)) {
         visible.add(neighbor);
       }
     }
