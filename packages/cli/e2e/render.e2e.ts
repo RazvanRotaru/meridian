@@ -53,11 +53,6 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
   });
 
   it("renders the Service-composition scorecards wired by couplings, with no console/page errors", async () => {
-    // The composition lens is withheld from the default build (featureFlags.ts); when the segment
-    // is absent this build has nothing to assert here.
-    if ((await page.locator('button:has-text("Service composition")').count()) === 0) {
-      return;
-    }
     await page.click('button:has-text("Service composition")');
     // Wait on a composition-only marker (a scorecard's members band), not a raw node count the
     // outgoing Map lens could also satisfy.
