@@ -1,10 +1,11 @@
 /**
  * The minimal subgraph the overlay renders, in three tiers grown from a seed selection:
- *   - SEED     — the built-from selection (the Map cards that were picked).
- *   - PERSISTENT — the always-shown 1-hop import ring around the seeds, plus any ghost the reader
- *                  drilled through (which auto-promotes to persistent). The committed graph.
- *   - GHOST    — a neighbour revealed by clicking a node's directional [+] stub, one hop past the
- *                persistent frontier. Tentative: "Clear expansions" drops every ghost.
+ *   - SEED     — the picked node (the Map cards that were selected); the only initially-permanent node.
+ *   - PERSISTENT — a ghost the reader drilled through, which commits it (auto-promotes to persistent).
+ *                  The committed graph, alongside the seeds.
+ *   - GHOST    — the seed's always-shown 1-hop import ring (both directions), plus any neighbour
+ *                revealed by clicking a node's directional [+] stub, one hop past the persistent
+ *                frontier. Tentative: "Clear expansions" drops the revealed ghosts.
  * A node whose import neighbours aren't all shown carries directional STUB nodes: a [+n] on the left
  * for hidden importers ("in"), a [+n] on the right for hidden imports ("out"). Files nest in their
  * ancestor package frames (single-child chains collapse). Pure; no React, no ELK. Reuses the module
@@ -71,8 +72,8 @@ export function buildMinimalSubgraph(
   keptIds: ReadonlySet<string> = new Set(),
   expanded: readonly ExpansionEntry[] = [],
 ): MinimalSubgraphSpec {
-  const persistent = collectPersistent(index, graph, seedIds, keptIds);
-  const visible = collectVisible(index, graph, persistent, expanded);
+  const persistent = collectPersistent(index, seedIds, keptIds);
+  const visible = collectVisible(index, graph, seedIds, persistent, expanded);
   const { keptNodeIds, fileCountByGroup } = closeOverAncestors(index, visible);
   const collapse = collapseChains(index, keptNodeIds);
   const context: NodeContext = { seedIds, persistent, visible, collapse, fileCountByGroup };
@@ -83,17 +84,13 @@ export function buildMinimalSubgraph(
   };
 }
 
-/** Persistent files: the seeds, their full 1-hop import ring (both directions), and drilled-through
- * ghosts. Always shown; survives "Clear expansions". */
-function collectPersistent(index: GraphIndex, graph: ModuleGraph, seedIds: ReadonlySet<string>, keptIds: ReadonlySet<string>): Set<string> {
+/** Persistent files: the seeds and any ghost the reader drilled through (committed). The seed's
+ * 1-hop ring is NOT persistent — it renders as ghosts until drilled through. */
+function collectPersistent(index: GraphIndex, seedIds: ReadonlySet<string>, keptIds: ReadonlySet<string>): Set<string> {
   const persistent = new Set<string>();
   for (const seed of seedIds) {
-    if (!isModule(index, seed)) {
-      continue;
-    }
-    persistent.add(seed);
-    for (const neighbor of bothNeighbors(graph, seed)) {
-      persistent.add(neighbor);
+    if (isModule(index, seed)) {
+      persistent.add(seed);
     }
   }
   for (const kept of keptIds) {
@@ -104,9 +101,20 @@ function collectPersistent(index: GraphIndex, graph: ModuleGraph, seedIds: Reado
   return persistent;
 }
 
-/** All visible files: persistent plus each expansion's revealed direction-neighbours (the ghosts). */
-function collectVisible(index: GraphIndex, graph: ModuleGraph, persistent: ReadonlySet<string>, expanded: readonly ExpansionEntry[]): Set<string> {
+/** All visible files: the persistent set, the seed's always-shown 1-hop ring (both directions,
+ * rendered as ghosts), and each expansion's revealed direction-neighbours (also ghosts). */
+function collectVisible(index: GraphIndex, graph: ModuleGraph, seedIds: ReadonlySet<string>, persistent: ReadonlySet<string>, expanded: readonly ExpansionEntry[]): Set<string> {
   const visible = new Set<string>(persistent);
+  for (const seed of seedIds) {
+    if (!isModule(index, seed)) {
+      continue;
+    }
+    for (const neighbor of bothNeighbors(graph, seed)) {
+      if (isModule(index, neighbor)) {
+        visible.add(neighbor);
+      }
+    }
+  }
   for (const { id, direction } of expanded) {
     if (!visible.has(id)) {
       continue; // an expansion whose source is no longer shown is inert.

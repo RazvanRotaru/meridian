@@ -1,7 +1,7 @@
 /**
- * The minimal subgraph the overlay grows: seeds + their always-shown 1-hop ring as PERSISTENT nodes,
- * directional [+n] stubs on any node with hidden neighbours, GHOST nodes revealed by an expansion,
- * and the collapsed containment frame. Import wires connect any two visible files.
+ * The minimal subgraph the overlay grows: a SEED (the only permanent node) + its always-shown 1-hop
+ * ring as GHOST nodes, directional [+n] stubs on any node with hidden neighbours, further GHOST nodes
+ * revealed by an expansion, and the collapsed containment frame. Import wires connect any two visible files.
  */
 
 import { describe, expect, it } from "vitest";
@@ -44,11 +44,11 @@ const NODES = [
 const EDGES = [importEdge("m:a", "m:b"), importEdge("m:b", "m:c"), importEdge("m:c", "m:d"), importEdge("m:e", "m:a")];
 
 describe("buildMinimalSubgraph", () => {
-  it("shows a seed plus its full 1-hop ring as persistent, nothing deeper", () => {
+  it("shows a seed (the only permanent node) with its full 1-hop ring as ghosts", () => {
     const { nodes } = build(NODES, EDGES, ["m:a"]);
     expect(nodeById(nodes, "m:a")?.tier).toBe("seed");
-    expect(nodeById(nodes, "m:b")?.tier).toBe("persistent"); // a imports b
-    expect(nodeById(nodes, "m:e")?.tier).toBe("persistent"); // e imports a
+    expect(nodeById(nodes, "m:b")?.tier).toBe("ghost"); // a imports b
+    expect(nodeById(nodes, "m:e")?.tier).toBe("ghost"); // e imports a
     expect(nodeById(nodes, "m:c")).toBeUndefined(); // 2 hops out, not shown
   });
 
