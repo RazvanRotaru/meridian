@@ -39,6 +39,9 @@ export async function restoreFromUrl(store: BlueprintStore): Promise<void> {
   if (nav.flowSelection) {
     store.getState().selectFlowEntry(nav.flowSelection);
   }
+  if (nav.prSelected !== null) {
+    void store.getState().selectPr(nav.prSelected);
+  }
   applyEnvironment(store, nav.environment);
   prevNav = navFrom(store.getState());
 }
@@ -129,5 +132,11 @@ function structuralState(nav: NavState): Record<string, unknown> {
     moduleRadius: nav.moduleRadius,
     highlightMode: nav.highlightMode,
     hiddenCategories: new Set(nav.hiddenCategories),
+    prsTab: nav.prsTab,
+    prSelected: null,
+    prFiles: null,
+    prFilesTruncated: false,
+    prsLoading: false,
+    prsError: null,
   };
 }

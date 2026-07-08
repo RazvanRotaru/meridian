@@ -27,6 +27,7 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
   const flowExplorerOpen = useBlueprint((state) => state.flowExplorerOpen);
   const isComposition = viewMode === "call";
   const isModules = viewMode === "modules";
+  const isPrs = viewMode === "prs";
   const showFlowToggle = viewMode === "ui" || viewMode === "modules";
   const { collapseAll, toggleFlowExplorer } = useBlueprintActions();
   return (
@@ -39,23 +40,27 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
           </button>
         </div>
         <ViewModeToggle />
-        <div style={FILTER_ROW_STYLE}>
-          <TestsToggle />
-          {isModules || isComposition ? <HighlightModeToggle /> : null}
-          {isModules ? <PrivateToggle /> : null}
-          <CoverageToggle />
-          {showFlowToggle ? (
-            <button
-              type="button"
-              style={flowToggleStyle(flowExplorerOpen)}
-              aria-pressed={flowExplorerOpen}
-              onClick={toggleFlowExplorer}
-            >
-              Flows
-            </button>
-          ) : null}
-        </div>
-        <Breadcrumb />
+        {isPrs ? null : (
+          <>
+            <div style={FILTER_ROW_STYLE}>
+              <TestsToggle />
+              {isModules || isComposition ? <HighlightModeToggle /> : null}
+              {isModules ? <PrivateToggle /> : null}
+              <CoverageToggle />
+              {showFlowToggle ? (
+                <button
+                  type="button"
+                  style={flowToggleStyle(flowExplorerOpen)}
+                  aria-pressed={flowExplorerOpen}
+                  onClick={toggleFlowExplorer}
+                >
+                  Flows
+                </button>
+              ) : null}
+            </div>
+            <Breadcrumb />
+          </>
+        )}
         {isComposition ? (
           <>
             <DepthSlider />
@@ -66,10 +71,10 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
             <DepthSlider />
             <ModuleCategoryToggles />
           </>
-        ) : (
+        ) : isPrs ? null : (
           <FlowSelector />
         )}
-        {hasOverlay ? <EnvSelector preselectedEnv={props.preselectedEnv} /> : null}
+        {hasOverlay && !isPrs ? <EnvSelector preselectedEnv={props.preselectedEnv} /> : null}
       </div>
     </Panel>
   );

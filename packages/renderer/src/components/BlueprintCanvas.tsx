@@ -8,11 +8,10 @@
  * mode, dotted background, coloured MiniMap.
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
-  useNodesInitialized,
   type Node,
   type NodeMouseHandler,
   type ReactFlowInstance,
@@ -35,9 +34,10 @@ import { ModuleMapView } from "./ModuleMapView";
 import { FlowExplorerPanel } from "./flowexplorer/FlowExplorerPanel";
 import { FlowPane } from "./flowexplorer/FlowPane";
 import { emphasizeFlow, renderedIdsForFlowEmphasis } from "./flowEmphasisPaint";
-import { selectionKey } from "./flowexplorer/flowSelection";
+import { PrsView } from "./prs/PrsView";
 
 const FLOW_CANVAS_PROPS = { ...READONLY_CANVAS_PROPS, fitView: false } as const;
+const EMPTY_FLOW_EMPHASIS_KEY = "none";
 
 // The Logic-flow view is a plain nested-div render, not a React Flow surface, so it swaps in for
 // <ReactFlow> whole. Toolbar (the tab toggle + sidebar) and the modal CodePanel stay mounted in
@@ -61,6 +61,8 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
               <LogicFlowView />
             ) : viewMode === "modules" ? (
               <ModuleMapView />
+            ) : viewMode === "prs" ? (
+              <PrsView />
             ) : (
               <FlowCanvas />
             )}
@@ -90,56 +92,47 @@ function FlowCanvas() {
     () => emphasizeFlow(rawNodes, rawEdges, flowEmphasis),
     [rawNodes, rawEdges, flowEmphasis],
   );
-  const nodesInitialized = useNodesInitialized();
-  const rfRef = useRef<ReactFlowInstance<BlueprintNode, BlueprintEdge> | null>(null);
+  const [rfInstance, setRfInstance] = useState<ReactFlowInstance<BlueprintNode, BlueprintEdge> | null>(null);
   const initialFitDone = useRef(false);
-  const fitKey = selectionKey(flowSelection);
-  const latestFitKey = useRef(fitKey);
-  const pendingFit = useRef<{ key: string; requestedOnNodes: readonly BlueprintNode[] } | null>(null);
+  const fitKey = useMemo(
+    () => (flowEmphasis.size === 0 ? EMPTY_FLOW_EMPHASIS_KEY : JSON.stringify([...flowEmphasis].sort())),
+    [flowEmphasis],
+  );
+  const appliedFitKey = useRef(EMPTY_FLOW_EMPHASIS_KEY);
   useEffect(() => {
-    latestFitKey.current = fitKey;
-  }, [fitKey]);
-  useEffect(() => {
-    pendingFit.current = flowSelection === null ? null : { key: fitKey, requestedOnNodes: rawNodes };
-  }, [fitKey, flowSelection]);
-  useEffect(() => {
-    const request = pendingFit.current;
+    if (fitKey === EMPTY_FLOW_EMPHASIS_KEY) {
+      appliedFitKey.current = EMPTY_FLOW_EMPHASIS_KEY;
+      return;
+    }
     if (
-      !rfRef.current ||
-      !nodesInitialized ||
-      !request ||
-      request.key !== fitKey ||
+      !rfInstance ||
       layoutStatus !== "ready" ||
-      request.requestedOnNodes === rawNodes
+      rawNodes.length === 0 ||
+      appliedFitKey.current === fitKey
     ) {
       return;
     }
     const targetIds = renderedIdsForFlowEmphasis(rawNodes, flowEmphasis, parentOf);
-    pendingFit.current = null;
     if (targetIds.length === 0) {
       return;
     }
-    const targetNodes = targetIds.map((id) => ({ id }));
-    const requestKey = request.key;
-    requestAnimationFrame(() => {
-      if (latestFitKey.current !== requestKey) {
-        return;
-      }
-      void rfRef.current?.fitView({ nodes: targetNodes, padding: 0.2, maxZoom: 1, duration: 400 });
-    });
-  }, [fitKey, layoutStatus, nodesInitialized, rawNodes]);
+    appliedFitKey.current = fitKey;
+    void rfInstance.fitView({ nodes: targetIds.map((id) => ({ id })), padding: 0.2, minZoom: 0.35, maxZoom: 1, duration: 400 });
+  }, [fitKey, flowEmphasis, layoutStatus, parentOf, rawNodes, rfInstance]);
   useEffect(() => {
-    if (!rfRef.current || !nodesInitialized || initialFitDone.current || flowSelection !== null || rawNodes.length === 0) {
+    if (
+      !rfInstance ||
+      layoutStatus !== "ready" ||
+      initialFitDone.current ||
+      flowSelection !== null ||
+      fitKey !== EMPTY_FLOW_EMPHASIS_KEY ||
+      rawNodes.length === 0
+    ) {
       return;
     }
     initialFitDone.current = true;
-    requestAnimationFrame(() => {
-      if (latestFitKey.current !== "none") {
-        return;
-      }
-      void rfRef.current?.fitView({ padding: 0.2, minZoom: 0.01 });
-    });
-  }, [flowSelection, nodesInitialized, rawNodes]);
+    void rfInstance.fitView({ padding: 0.2, minZoom: 0.01 });
+  }, [fitKey, flowSelection, layoutStatus, rawNodes, rfInstance]);
   const onNodeClick: NodeMouseHandler<BlueprintNode> = (_event, node) => select(node.id);
   // Double-clicking a container's frame dives INTO it (Unreal-Blueprints black-box drill-down).
   // Header double-clicks stop propagation, so they never reach here. A leaf callable instead
@@ -160,7 +153,7 @@ function FlowCanvas() {
       nodeTypes={nodeTypes}
       edgeTypes={edgeTypes}
       onInit={(instance) => {
-        rfRef.current = instance;
+        setRfInstance(instance);
       }}
       onNodeClick={onNodeClick}
       onNodeDoubleClick={onNodeDoubleClick}

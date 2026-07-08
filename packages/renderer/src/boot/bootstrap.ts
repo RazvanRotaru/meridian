@@ -9,7 +9,7 @@ import { createHttpTelemetryProvider } from "../telemetry/httpProvider";
 import type { TelemetryProvider } from "../telemetry/provider";
 import { createBlueprintStore, type BlueprintStore } from "../state/store";
 import { restoreFromUrl, startUrlSync } from "../state/urlSync";
-import { readBootConfig, type BootConfig } from "./bootConfig";
+import { prApiUrlsFromGraphUrl, readBootConfig, type BootConfig } from "./bootConfig";
 import { loadArtifact } from "./loadArtifact";
 import { loadEnvironments } from "./loadEnvironments";
 
@@ -23,12 +23,15 @@ export async function bootstrap(): Promise<BootResult> {
   const artifact = await loadArtifact(boot.graphUrl);
   const index = buildGraphIndex(artifact);
   const provider = await buildProvider(boot);
+  const prApi = prApiUrlsFromGraphUrl(boot.graphUrl);
   const store = createBlueprintStore({
     artifact,
     index,
     provider,
     hasOverlay: boot.hasOverlay,
     sourceUrl: boot.sourceUrl,
+    prsUrl: prApi.prsUrl,
+    prFilesUrl: prApi.prFilesUrl,
   });
   // Restore the navigation state carried in the URL (or fall through to defaults) and run the
   // first layout, then start reflecting the store back into the URL for reload/back/forward.

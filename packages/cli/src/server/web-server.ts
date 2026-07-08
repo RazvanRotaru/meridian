@@ -1,12 +1,3 @@
-/**
- * The pure HTTP server factory for `meridian web`.
- *
- * Returns an unbound `http.Server` so routing is unit-testable without a port or a browser. It holds
- * an in-memory Map of generated graphs (one per submitted source) plus the sign-in session store;
- * the renderer bundle is served UNCHANGED and only the injected `window.__MERIDIAN__` differs per
- * graph. Graph creation/serving lives in `web-graph`; the sign-in flow in `web-auth`.
- */
-
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
@@ -24,6 +15,8 @@ import { SessionStore } from "./session";
 import { assertJsonContentType, assertSameOrigin } from "./web-guards";
 import { handleAuthSession, handleAuthStatus, handleDeviceStart, handleLogout, handleOwnRepos, handleRepoSearch } from "./web-auth";
 import { handleGenerate, sendGraph, sendMeta, sendView } from "./web-graph";
+import { handlePullRequestFiles, handlePullRequests } from "./web-prs";
+import type { ArtifactSource } from "./web-source";
 import { sendSource } from "./source-serve";
 
 export interface WebServerConfig {
@@ -42,6 +35,8 @@ export interface Context {
   graphs: Map<string, GraphArtifact>;
   /** Per-id source directory retained after a successful generate so `/api/source` can read it. */
   sourceRoots: Map<string, string>;
+  /** Per-id original source metadata retained for GitHub PR listing. */
+  sources: Map<string, ArtifactSource>;
   /** Temp-clone removers, held until process exit so retained sources are cleaned on shutdown. */
   tempCleanups: Set<() => void>;
   rendererIndex: string;
@@ -69,6 +64,7 @@ function buildContext(config: WebServerConfig): Context {
   const ctx: Context = {
     graphs: new Map(),
     sourceRoots: new Map(),
+    sources: new Map(),
     tempCleanups: new Set(),
     rendererIndex: readFileSync(indexPath, "utf8"),
     landingHtml: landing,
@@ -153,6 +149,14 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
   }
   if (pathname === "/api/source") {
     sendSource(response, ctx.sourceRoots.get(url.searchParams.get("id") ?? "") ?? null, url.searchParams);
+    return;
+  }
+  if (pathname === "/api/prs") {
+    await handlePullRequests(ctx, request, response, url.searchParams);
+    return;
+  }
+  if (pathname === "/api/prs/files") {
+    await handlePullRequestFiles(ctx, request, response, url.searchParams);
     return;
   }
   if (pathname === "/api/auth/status") {

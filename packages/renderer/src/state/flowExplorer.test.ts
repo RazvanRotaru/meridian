@@ -33,7 +33,15 @@ const ARTIFACT: GraphArtifact = {
 
 function freshStore() {
   const index = buildGraphIndex(ARTIFACT);
-  return createBlueprintStore({ artifact: ARTIFACT, index, provider: null, hasOverlay: false, sourceUrl: null });
+  return createBlueprintStore({
+    artifact: ARTIFACT,
+    index,
+    provider: null,
+    hasOverlay: false,
+    sourceUrl: null,
+    prsUrl: "/api/prs",
+    prFilesUrl: "/api/prs/files",
+  });
 }
 
 describe("flow explorer store slice", () => {

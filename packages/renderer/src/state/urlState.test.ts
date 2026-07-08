@@ -23,6 +23,8 @@ function emptyNav(): NavState {
     moduleRadius: 1,
     highlightMode: "node",
     hiddenCategories: [],
+    prsTab: "open",
+    prSelected: null,
     environment: null,
   };
 }
@@ -153,6 +155,20 @@ describe("urlState", () => {
     expect(decodeNav(new URLSearchParams("hmode=bogus")).highlightMode).toBeUndefined();
   });
 
+  it("round-trips the PR browser view, tab, and selected PR number", () => {
+    const nav: NavState = { ...emptyNav(), viewMode: "prs", prsTab: "closed", prSelected: 76 };
+    expect(encodeNav(nav).get("view")).toBe("prs");
+    expect(encodeNav(nav).get("prstate")).toBe("closed");
+    expect(encodeNav(nav).get("prn")).toBe("76");
+    expect(roundTrip(nav)).toEqual({ viewMode: "prs", prsTab: "closed", prSelected: 76 });
+  });
+
+  it("rejects invalid PR URL params", () => {
+    expect(decodeNav(new URLSearchParams("prstate=merged")).prsTab).toBeUndefined();
+    expect(decodeNav(new URLSearchParams("prn=0")).prSelected).toBeUndefined();
+    expect(decodeNav(new URLSearchParams("prn=abc")).prSelected).toBeUndefined();
+  });
+
   it("preserves foreign params (web-mode id) while owning its own keys", () => {
     const search = mergeNavIntoSearch("id=abc123", { ...emptyNav(), focusId: "ts:m.ts#f" });
     const params = new URLSearchParams(search);
@@ -243,6 +259,8 @@ function storeShape() {
     moduleRadius: 1,
     highlightMode: "node" as const,
     hiddenCategories: new Set<string>(),
+    prsTab: "open" as const,
+    prSelected: null,
     environment: null,
   };
 }

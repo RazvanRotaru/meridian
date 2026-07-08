@@ -15,6 +15,7 @@ import type { FlowSelectionRef, FlowBlockSegment } from "../derive/flowBlocks";
 import { isLogicViewMode, type LogicViewMode } from "../derive/flowViewModel";
 import { SHOW_SERVICE_COMPOSITION } from "../featureFlags";
 import type { HighlightMode } from "../components/moduleMapPaint";
+import type { PrsTab } from "./prTypes";
 
 /** The URL-worthy slice of the store — mirrors the navigation fields of BlueprintState. */
 export interface NavState {
@@ -43,11 +44,14 @@ export interface NavState {
   highlightMode: HighlightMode;
   /** Module categories painted out of the map — a comma-joined list in the URL. */
   hiddenCategories: string[];
+  /** The active PR list tab and selected PR number, when the PR browser is open. */
+  prsTab: PrsTab;
+  prSelected: number | null;
   environment: string | null;
 }
 
 /** Every param key we own — listed once so `mergeNavIntoSearch` can clear them before rewriting. */
-const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "fexp", "fsel", "lroot", "lview", "lstack", "expand", "mfocus", "mexp", "mdepth", "hmode", "mhide", "env"] as const;
+const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "fexp", "fsel", "lroot", "lview", "lstack", "expand", "mfocus", "mexp", "mdepth", "hmode", "mhide", "prstate", "prn", "env"] as const;
 
 /** The navigation state the app boots into — the baseline a restore resets absent keys back to. */
 export const DEFAULT_NAV: NavState = {
@@ -71,6 +75,8 @@ export const DEFAULT_NAV: NavState = {
   /** Node-only incident-wire highlighting is the default; radius reach is opt-in. */
   highlightMode: "node",
   hiddenCategories: [],
+  prsTab: "open",
+  prSelected: null,
   environment: null,
 };
 
@@ -96,6 +102,8 @@ interface NavSource {
   /** Module-map selection emphasis mode, mirrored into `hmode` only when non-default. */
   highlightMode: HighlightMode;
   hiddenCategories: ReadonlySet<string>;
+  prsTab: PrsTab;
+  prSelected: number | null;
   environment: string | null;
 }
 
@@ -121,6 +129,8 @@ export function navFrom(state: NavSource): NavState {
     moduleRadius: state.moduleRadius,
     highlightMode: state.highlightMode,
     hiddenCategories: [...state.hiddenCategories].sort(),
+    prsTab: state.prsTab,
+    prSelected: state.prSelected,
     environment: state.environment,
   };
 }
@@ -148,6 +158,8 @@ export function encodeNav(nav: NavState): Map<string, string> {
   /** `hmode=node` is the baseline; only persist reach mode so default URLs stay short. */
   if (nav.highlightMode !== "node") out.set("hmode", nav.highlightMode);
   setList(out, "mhide", nav.hiddenCategories);
+  if (nav.prsTab !== "open") out.set("prstate", nav.prsTab);
+  if (nav.prSelected !== null) out.set("prn", String(nav.prSelected));
   setId(out, "env", nav.environment);
   return out;
 }
@@ -159,7 +171,7 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   // Service composition ("call") is only honoured from a URL when its build flag is on; otherwise a
   // stale ?view=call link falls through to the default (Module map) instead of surfacing a hidden lens.
   const callAllowed = view !== "call" || SHOW_SERVICE_COMPOSITION;
-  if (callAllowed && (view === "call" || view === "ui" || view === "logic" || view === "modules")) {
+  if (callAllowed && (view === "call" || view === "ui" || view === "logic" || view === "modules" || view === "prs")) {
     out.viewMode = view;
   }
   assignId(params, "focus", out, "focusId");
@@ -186,6 +198,12 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   const highlightMode = params.get("hmode");
   if (highlightMode === "reach" || highlightMode === "node") out.highlightMode = highlightMode;
   assignList(params, "mhide", out, "hiddenCategories");
+  const prsTab = params.get("prstate");
+  if (prsTab === "open" || prsTab === "closed") out.prsTab = prsTab;
+  const prSelected = params.get("prn");
+  if (prSelected !== null && Number.isInteger(Number(prSelected)) && Number(prSelected) > 0) {
+    out.prSelected = Number(prSelected);
+  }
   assignId(params, "env", out, "environment");
   return out;
 }
