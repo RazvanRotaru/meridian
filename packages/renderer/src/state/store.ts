@@ -454,9 +454,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     collapseAll() {
       if (get().viewMode === "modules" || get().viewMode === "call") {
         set({ moduleExpanded: new Set<string>(), moduleSelected: new Set<string>() });
-      } else {
-        set({ expanded: new Set<string>() });
+        // The minimal-graph overlay shares `moduleExpanded`, so collapsing there re-lays the overlay,
+        // not the covered Map (whose relayout the reader can't see).
+        void relayoutActiveModuleSurface(get);
+        return;
       }
+      set({ expanded: new Set<string>() });
       void get().relayout();
     },
 
@@ -860,7 +863,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Map's inline file/block expansions). A relayout concern — the canvas gains/loses nested cards.
     toggleModuleExpand(nodeId) {
       set({ moduleExpanded: withToggled(get().moduleExpanded, nodeId) });
-      void get().moduleRelayout();
+      void relayoutActiveModuleSurface(get);
     },
 
     // REVEAL a code node the reader can't see (a ghost card's real definition): refocus the Map at
@@ -902,7 +905,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           : deriveModuleTree(index, moduleFocus, expanded, graph, deps, flows);
       moduleChildContainerIds(tree, containerId).forEach((id) => expanded.add(id));
       set({ moduleExpanded: expanded });
-      void get().moduleRelayout();
+      void relayoutActiveModuleSurface(get);
     },
 
     // Collapse only direct child package/file/unit/block frames; deeper expansion ids deliberately
@@ -919,7 +922,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           : deriveModuleTree(index, moduleFocus, expanded, graph, deps, flows);
       moduleChildContainerIds(tree, containerId).forEach((id) => expanded.delete(id));
       set({ moduleExpanded: expanded });
-      void get().moduleRelayout();
+      void relayoutActiveModuleSurface(get);
     },
 
     // Show/hide `private`-tagged members. PAINT-ONLY — privates keep their layout space, the surface
@@ -1006,14 +1009,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Lay out the overlay's subgraph (seeds + 1-hop base + committed + expansions) through the shared
     // minimal-graph pass, behind its own stale-seq guard.
     async minimalRelayout() {
-      const { index, minimalSeedIds, minimalKeptIds, minimalExpanded, minimalBasePositions } = get();
+      const { index, minimalSeedIds, minimalKeptIds, minimalExpanded, minimalBasePositions, moduleExpanded, artifact } = get();
       if (minimalSeedIds.length === 0) {
         return;
       }
       moduleGraph ??= buildModuleGraph(index);
+      const deps = (blockDeps ??= buildBlockDeps(index));
+      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const sequence = ++minimalLayoutSeq;
       set({ minimalLayoutStatus: "laying-out" });
-      const layout = await deriveMinimalGraphLayout(index, moduleGraph, new Set(minimalSeedIds), new Set(minimalKeptIds), minimalExpanded, minimalBasePositions);
+      const layout = await deriveMinimalGraphLayout(index, moduleGraph, new Set(minimalSeedIds), new Set(minimalKeptIds), minimalExpanded, minimalBasePositions, {
+        moduleExpanded,
+        blockDeps: deps,
+        flows,
+      });
       if (minimalLayoutSeq !== sequence) {
         return; // a newer build/expand/reset superseded this one.
       }
@@ -1304,6 +1313,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ rfNodes: graph.nodes, rfEdges: graph.edges, layoutStatus: "ready" });
     },
   }));
+}
+
+/** Route an in-place expansion relayout to whichever module surface is showing: the minimal-graph
+ * overlay when it is open (it shares the one `moduleExpanded` id space), else the Module map beneath.
+ * Relaying out the covered Map instead would be work the reader can't see. */
+function relayoutActiveModuleSurface(get: () => BlueprintState): Promise<void> {
+  return get().minimalSeedIds.length > 0 ? get().minimalRelayout() : get().moduleRelayout();
 }
 
 function withToggled(expanded: Set<string>, nodeId: string): Set<string> {

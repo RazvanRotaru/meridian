@@ -11,11 +11,17 @@ import { CATEGORY_COLOR } from "./nodes/modulemap/ModuleCardNode";
 import { MINIMAL_STUB_NODE } from "../layout/minimalSubgraphLayout";
 
 const STUB_TINT = "#3A4452";
+// An expanded file's nested declarations (unit/block/step) share a muted code tint on the MiniMap —
+// they carry no file `category`, and the reader navigates by the file frames, not their innards.
+const CHILD_TINT = "#4A5568";
 
-/** MiniMap tint: [+n] stubs muted grey, else the file's category hue. */
+/** MiniMap tint: [+n] stubs muted grey, nested declarations a muted code tint, else the file's hue. */
 export function minimalMiniMapColor(node: Node): string {
   if (node.type === MINIMAL_STUB_NODE) {
     return STUB_TINT;
+  }
+  if (node.type !== "file") {
+    return CHILD_TINT;
   }
   return CATEGORY_COLOR[(node.data as ModuleCardData).category];
 }

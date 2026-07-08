@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { buildModuleGraph } from "./moduleGraph";
+import type { ModuleCardData } from "./moduleLevel";
 import { buildMinimalSubgraph, type ExpansionEntry, type MinimalStubData, type MinimalSubgraphNode } from "./minimalSubgraph";
 
 function pkg(id: string, name: string, parentId: string | null): GraphNode {
@@ -16,6 +17,10 @@ function pkg(id: string, name: string, parentId: string | null): GraphNode {
 
 function mod(id: string, file: string, parentId: string | null): GraphNode {
   return { id, kind: "module", qualifiedName: id, displayName: id, parentId, location: { file, startLine: 1 } } as GraphNode;
+}
+
+function fn(id: string, name: string, parentId: string): GraphNode {
+  return { id, kind: "function", qualifiedName: id, displayName: name, parentId, location: { file: name, startLine: 1 } } as GraphNode;
 }
 
 function importEdge(source: string, target: string): GraphEdge {
@@ -131,5 +136,50 @@ describe("buildMinimalSubgraph", () => {
     const frame = nodes.find((node) => node.kind === "group");
     expect(frame?.collapsedLabel).toBe("root/src");
     expect(nodeById(nodes, "m:a")?.parentId).toBe(frame?.id);
+  });
+});
+
+// a.ts declares foo() and bar() and imports b.ts — so a's card is an expandable container.
+const CODE_NODES = [
+  pkg("p:root", "root", null),
+  pkg("p:src", "src", "p:root"),
+  mod("m:a", "src/a.ts", "p:src"),
+  mod("m:b", "src/b.ts", "p:src"),
+  fn("fn:foo", "foo", "m:a"),
+  fn("fn:bar", "bar", "m:a"),
+];
+const CODE_EDGES = [importEdge("m:a", "m:b")];
+
+function buildExpanded(expandedIds: string[]) {
+  const index = buildGraphIndex({ nodes: CODE_NODES, edges: CODE_EDGES } as unknown as GraphArtifact);
+  const graph = buildModuleGraph(index);
+  const onMapIds = new Set(CODE_NODES.filter((node) => node.kind === "module").map((node) => node.id));
+  return buildMinimalSubgraph(index, graph, new Set(["m:a"]), new Set(), [], onMapIds, {
+    expanded: new Set(expandedIds),
+    blockDeps: { edges: [] },
+    flows: {},
+  });
+}
+
+describe("buildMinimalSubgraph — in-place file expansion", () => {
+  it("marks a file that declares code as an expandable container", () => {
+    const data = nodeById(buildExpanded([]).nodes, "m:a")?.data as ModuleCardData;
+    expect(data.isContainer).toBe(true);
+    expect(data.unitCount).toBe(2);
+    expect(data.isExpanded).toBe(false);
+  });
+
+  it("yields an expanded file's declarations as nested nodes parented to the file", () => {
+    const spec = buildExpanded(["m:a"]);
+    expect((nodeById(spec.nodes, "m:a")?.data as ModuleCardData).isExpanded).toBe(true);
+    const expansion = spec.expansions.find((exp) => exp.fileId === "m:a");
+    expect(expansion?.nodes[0].id).toBe("m:a"); // the frame node leads (parents before children)
+    expect(expansion?.nodes.find((node) => node.id === "fn:foo")?.parentId).toBe("m:a");
+    expect(expansion?.nodes.find((node) => node.id === "fn:bar")?.parentId).toBe("m:a");
+  });
+
+  it("drops the nested children when the file collapses again", () => {
+    expect(buildExpanded(["m:a"]).expansions).toHaveLength(1);
+    expect(buildExpanded([]).expansions).toHaveLength(0);
   });
 });

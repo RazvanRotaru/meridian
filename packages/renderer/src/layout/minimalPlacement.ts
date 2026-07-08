@@ -28,6 +28,10 @@ export interface PlacementInput {
   importEdges: { source: string; target: string }[];
   /** Absolute map positions captured at build, keyed by file id. */
   basePositions: Record<string, PlacedRect>;
+  /** EXPANDED files render as frames, not cards: their real (ELK-sized) width/height, keyed by file
+   * id, so a taller frame keeps its captured top-left yet reserves its full box — [+n] stubs hang off
+   * its bottom and neighbour files step past it instead of overlapping. */
+  sizeOverrides?: Record<string, { width: number; height: number }>;
 }
 
 export const FILE_WIDTH = 210;
@@ -52,12 +56,19 @@ export function placeMinimalNodes(input: PlacementInput): Record<string, PlacedR
   return result;
 }
 
-/** Step A — a file with a captured map position lands exactly there, at its captured size. */
+/** The rendered size of a file box: its expanded-frame override when present, else the file-card
+ * default. A captured file keeps its captured position but grows to the frame size when expanded. */
+function sizeOf(id: string, input: PlacementInput): { width: number; height: number } {
+  return input.sizeOverrides?.[id] ?? { width: FILE_WIDTH, height: FILE_HEIGHT };
+}
+
+/** Step A — a file with a captured map position lands exactly there, at its captured (or frame) size. */
 function placeCapturedFiles(input: PlacementInput, placed: Map<string, PlacedRect>): void {
   for (const id of input.fileIds) {
     const base = input.basePositions[id];
     if (base) {
-      placed.set(id, { ...base });
+      const override = input.sizeOverrides?.[id];
+      placed.set(id, override ? { x: base.x, y: base.y, ...override } : { ...base });
     }
   }
 }
@@ -80,7 +91,7 @@ function placeConnectedFiles(input: PlacementInput, placed: Map<string, PlacedRe
       if (!target) {
         continue;
       }
-      placed.set(id, placeAt(target.x, target.refY, placed));
+      placed.set(id, placeAt(target.x, target.refY, placed, sizeOf(id, input)));
       progressed = true;
     }
   }
@@ -96,8 +107,9 @@ function placeDisconnectedFiles(input: PlacementInput, placed: Map<string, Place
   const x = box.maxX + GAP_X;
   let y = box.minY;
   for (const id of remaining) {
-    placed.set(id, { x, y, width: FILE_WIDTH, height: FILE_HEIGHT });
-    y += V_STEP;
+    const size = sizeOf(id, input);
+    placed.set(id, { x, y, ...size });
+    y += size.height + GAP_Y;
   }
 }
 
@@ -189,16 +201,17 @@ function rightmost(ids: readonly string[], placed: Map<string, PlacedRect>): str
 }
 
 /** A rect at the fixed column `x`, at the nearest vertical slot near `refY` that no already-placed
- * rect occupies (try level, then down, then up, alternating). */
-function placeAt(x: number, refY: number, placed: Map<string, PlacedRect>): PlacedRect {
+ * rect occupies (try level, then down, then up, alternating). Sized to the file's own box (a frame
+ * when expanded), so its overlap test reserves the taller footprint. */
+function placeAt(x: number, refY: number, placed: Map<string, PlacedRect>, size: { width: number; height: number }): PlacedRect {
   const rects = [...placed.values()];
   for (const offset of verticalOffsets(rects.length + 4)) {
-    const rect: PlacedRect = { x, y: refY + offset, width: FILE_WIDTH, height: FILE_HEIGHT };
+    const rect: PlacedRect = { x, y: refY + offset, ...size };
     if (!rects.some((other) => overlaps(rect, other))) {
       return rect;
     }
   }
-  return { x, y: refY, width: FILE_WIDTH, height: FILE_HEIGHT };
+  return { x, y: refY, ...size };
 }
 
 /** 0, +step, -step, +2·step, -2·step, … — level first, then stack downward, then upward. */

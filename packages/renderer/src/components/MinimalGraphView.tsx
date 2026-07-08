@@ -31,6 +31,9 @@ import { minimalMiniMapColor, SURFACE_STYLE, PANEL_STYLE, buttonStyle } from "./
 // The Map's own card components plus the overlay-only [+n] expander (a stable module-level reference).
 const overlayNodeTypes = { ...moduleNodeTypes, [MINIMAL_STUB_NODE]: MinimalStubNode };
 
+// The nested-declaration node types an expanded file frame holds (drawn by the Map's own components).
+const CHILD_NODE_TYPES: ReadonlySet<string> = new Set(["unit", "block", "step"]);
+
 // A ghost-tier file dims to this at rest. Layered UNDER `emphasize`: an emphasize-dimmed ghost keeps
 // the smaller dim (min wins), a LIT ghost still recedes to this opacity — the ghost read is preserved.
 const GHOST_OPACITY = 0.62;
@@ -76,11 +79,14 @@ export function MinimalGraphView() {
   const { nodes: paintedNodes, edges: paintedEdges } = useMemo(() => {
     const fileNodes = nodes.filter((node) => node.type === "file");
     const stubNodes = nodes.filter((node) => node.type === MINIMAL_STUB_NODE);
+    // An expanded file's nested declarations (unit/block/step) live INSIDE frames — emphasize only
+    // understands the file-import graph, so they pass through untouched, after their parent frames.
+    const childNodes = nodes.filter((node) => CHILD_NODE_TYPES.has(node.type ?? ""));
     const importEdges = edges.filter((edge) => (edge.data as { category?: string } | undefined)?.category === "import");
     const stubEdges = edges.filter((edge) => (edge.data as { category?: string } | undefined)?.category !== "import");
     const emphasized = emphasize(fileNodes, importEdges, selected, radius, highlightMode);
     const ghostLayered = emphasized.nodes.map((node) => (isGhost(node) ? dimGhost(node) : node));
-    return { nodes: [...ghostLayered, ...stubNodes], edges: [...emphasized.edges, ...stubEdges] };
+    return { nodes: [...ghostLayered, ...childNodes, ...stubNodes], edges: [...emphasized.edges, ...stubEdges] };
   }, [nodes, edges, selected, radius, highlightMode]);
 
   // Fit once per LAYOUT (build / expand / reset) — the same guard idiom as the sibling surfaces.

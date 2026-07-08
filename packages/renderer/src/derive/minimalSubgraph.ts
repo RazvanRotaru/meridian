@@ -14,7 +14,7 @@
  * import graph and the Module-map card-data shapes so the overlay renders with the Map's own cards.
  */
 
-import type { GraphNode } from "@meridian/core";
+import type { GraphNode, LogicFlows } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import { weightKey, type ModuleGraph } from "./moduleGraph";
 import { categorize } from "./moduleCategory";
@@ -22,6 +22,8 @@ import { normalizePath } from "./matchAffectedFiles";
 import { collapseChains, type ChainCollapse } from "./collapseChains";
 import type { ModuleCardData } from "./moduleLevel";
 import type { ModulePackageData } from "./packageOverview";
+import type { BlockDeps } from "./blockDeps";
+import { walkFileCode, type FileCodeWalk, type MinimalExpansion } from "./minimalExpansion";
 
 const MODULE_KIND = "module";
 
@@ -61,6 +63,16 @@ export interface MinimalSubgraphEdge {
 export interface MinimalSubgraphSpec {
   nodes: MinimalSubgraphNode[];
   edges: MinimalSubgraphEdge[];
+  /** One entry per EXPANDED visible file: its nested code subtree, for the per-file frame layout. */
+  expansions: MinimalExpansion[];
+}
+
+/** The code-walk inputs needed to make file cards containers and expand them in place — the SAME
+ * `expanded` set the Map uses, plus the block-dependency + logic-flow substrates its walk reads. */
+export interface CodeContext {
+  expanded: ReadonlySet<string>;
+  blockDeps: BlockDeps;
+  flows: LogicFlows;
 }
 
 /** One clicked directional expansion — reveals `id`'s `direction` neighbours as ghosts. */
@@ -69,6 +81,8 @@ export interface ExpansionEntry {
   direction: Direction;
 }
 
+const NO_CODE: CodeContext = { expanded: new Set(), blockDeps: { edges: [] }, flows: {} };
+
 export function buildMinimalSubgraph(
   index: GraphIndex,
   graph: ModuleGraph,
@@ -76,17 +90,30 @@ export function buildMinimalSubgraph(
   keptIds: ReadonlySet<string> = new Set(),
   expanded: readonly ExpansionEntry[] = [],
   onMapIds: ReadonlySet<string> = new Set(),
+  code: CodeContext = NO_CODE,
 ): MinimalSubgraphSpec {
   const persistent = collectPersistent(index, seedIds, keptIds);
   const visible = collectVisible(index, graph, seedIds, persistent, expanded, onMapIds);
   const { keptNodeIds, fileCountByGroup } = closeOverAncestors(index, visible);
   const collapse = collapseChains(index, keptNodeIds);
-  const context: NodeContext = { seedIds, persistent, visible, collapse, fileCountByGroup };
+  const walks = walkVisibleFiles(index, graph, visible, code);
+  const context: NodeContext = { seedIds, persistent, visible, collapse, fileCountByGroup, walks };
   const stubs = computeStubs(graph, visible);
   return {
     nodes: [...buildContainmentNodes(index, graph, keptNodeIds, context), ...stubNodes(stubs, collapse)],
     edges: [...importEdges(index, graph, visible), ...stubEdges(stubs)],
+    expansions: [...walks.values()].map((walk) => walk.expansion).filter((exp): exp is MinimalExpansion => exp !== null),
   };
+}
+
+/** Walk every visible file's code once (with the shared `expanded` set): the file card reads its
+ * container facts from here, and an expanded file also carries its drawn subtree. */
+function walkVisibleFiles(index: GraphIndex, graph: ModuleGraph, visible: ReadonlySet<string>, code: CodeContext): Map<string, FileCodeWalk> {
+  const walks = new Map<string, FileCodeWalk>();
+  for (const id of visible) {
+    walks.set(id, walkFileCode(id, index, graph, code.expanded, code.blockDeps, code.flows));
+  }
+  return walks;
 }
 
 /** Persistent files: the seeds and any ghost the reader drilled through (committed). The seed's
@@ -140,6 +167,7 @@ interface NodeContext {
   visible: ReadonlySet<string>;
   collapse: ChainCollapse;
   fileCountByGroup: Map<string, number>;
+  walks: Map<string, FileCodeWalk>;
 }
 
 /** Ancestor-close the visible files (root..file inclusive) and tally visible files per ancestor frame. */
@@ -171,6 +199,9 @@ function buildContainmentNodes(index: GraphIndex, graph: ModuleGraph, keptNodeId
 
 function fileNode(node: GraphNode, graph: ModuleGraph, context: NodeContext): MinimalSubgraphNode {
   const file = normalizePath(node.location.file);
+  // Container facts (chevron + expand-in-place) come from the SAME code walk the Map uses, so a file
+  // card gains its chevron and opens into its declarations exactly like the Module map's card.
+  const walk = context.walks.get(node.id);
   return {
     id: node.id,
     kind: "file",
@@ -183,10 +214,9 @@ function fileNode(node: GraphNode, graph: ModuleGraph, context: NodeContext): Mi
       inCount: graph.in.get(node.id)?.size ?? 0,
       outCount: graph.out.get(node.id)?.size ?? 0,
       isEntry: false,
-      // The overlay is read-only: file cards never expand in place, so no container affordance.
-      isContainer: false,
-      isExpanded: false,
-      unitCount: 0,
+      isContainer: walk?.isContainer ?? false,
+      isExpanded: walk?.isExpanded ?? false,
+      unitCount: walk?.unitCount ?? 0,
     },
   };
 }
