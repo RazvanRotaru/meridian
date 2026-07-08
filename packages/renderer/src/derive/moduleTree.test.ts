@@ -350,10 +350,11 @@ describe("deriveModuleTree — ghost relationships (off-screen endpoints)", () =
     const { nodes, edges } = ghostFixture();
     const tree = treeOf(nodes, edges, "ts:pkg/src/orders", ["ts:pkg/src/orders/svc.ts"]);
     const ghost = tree.nodes.find((n) => n.kind === "ghost");
-    expect(ghost?.id).toBe("ts:pkg/src/billing/pay.ts#PaymentGateway.charge");
+    // The ghost reads at SERVICE granularity: the off-level `charge` method lifts to its class.
+    expect(ghost?.id).toBe("ts:pkg/src/billing/pay.ts#PaymentGateway");
     expect(ghost?.parentId).toBeNull();
     const wires = tree.edges.filter((e) => e.ghost).map((e) => `${e.source}->${e.target}`);
-    expect(wires).toEqual(["ts:pkg/src/orders/svc.ts#OrderService.place->ts:pkg/src/billing/pay.ts#PaymentGateway.charge"]);
+    expect(wires).toEqual(["ts:pkg/src/orders/svc.ts#OrderService.place->ts:pkg/src/billing/pay.ts#PaymentGateway"]);
     // The lifted dep projection itself drew nothing (the endpoint left the canvas) — only the ghost.
     expect(tree.edges.filter((e) => e.category === "dep" && !e.ghost)).toHaveLength(0);
   });
@@ -362,9 +363,10 @@ describe("deriveModuleTree — ghost relationships (off-screen endpoints)", () =
     const { nodes, edges } = ghostFixture();
     const tree = treeOf(nodes, edges, "ts:pkg/src/billing", ["ts:pkg/src/billing/pay.ts"]);
     const ghost = tree.nodes.find((n) => n.kind === "ghost");
-    expect(ghost?.id).toBe("ts:pkg/src/orders/svc.ts#OrderService.place");
+    // The off-level CALLER lifts to its class too, so the ghost reads as the service.
+    expect(ghost?.id).toBe("ts:pkg/src/orders/svc.ts#OrderService");
     const wires = tree.edges.filter((e) => e.ghost).map((e) => `${e.source}->${e.target}`);
-    expect(wires).toEqual(["ts:pkg/src/orders/svc.ts#OrderService.place->ts:pkg/src/billing/pay.ts#PaymentGateway.charge"]);
+    expect(wires).toEqual(["ts:pkg/src/orders/svc.ts#OrderService->ts:pkg/src/billing/pay.ts#PaymentGateway.charge"]);
   });
 
   it("draws no ghost when both endpoints are on screen", () => {
@@ -382,14 +384,14 @@ describe("deriveModuleTree — ghost relationships (off-screen endpoints)", () =
     };
     const tree = treeOf(nodes, edges, "ts:pkg/src/orders", ["ts:pkg/src/orders/svc.ts", "ts:pkg/src/orders/svc.ts#OrderService.place"], flows);
     const wires = tree.edges.filter((e) => e.ghost).map((e) => `${e.source}->${e.target}`);
-    expect(wires).toEqual(["step:ts:pkg/src/orders/svc.ts#OrderService.place:0->ts:pkg/src/billing/pay.ts#PaymentGateway.charge"]);
+    expect(wires).toEqual(["step:ts:pkg/src/orders/svc.ts#OrderService.place:0->ts:pkg/src/billing/pay.ts#PaymentGateway"]);
   });
 
   it("never ghosts an endpoint the artifact does not know (ext:/unresolved: pseudo-ids)", () => {
     const { nodes, edges } = ghostFixture();
     const withExt = [...edges, callEdge("ts:pkg/src/orders/svc.ts#OrderService.place", "ext:stripe#charge")];
     const tree = treeOf(nodes, withExt, "ts:pkg/src/orders", ["ts:pkg/src/orders/svc.ts"]);
-    expect(tree.nodes.filter((n) => n.kind === "ghost").map((n) => n.id)).toEqual(["ts:pkg/src/billing/pay.ts#PaymentGateway.charge"]);
+    expect(tree.nodes.filter((n) => n.kind === "ghost").map((n) => n.id)).toEqual(["ts:pkg/src/billing/pay.ts#PaymentGateway"]);
   });
 });
 
