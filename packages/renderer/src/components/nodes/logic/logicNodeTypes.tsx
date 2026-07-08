@@ -98,7 +98,12 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   const stop = (e: React.MouseEvent) => e.stopPropagation();
   // </> now TOGGLES the compact inline view instead of jumping straight to the modal: a second
   // click on the block that's already showing closes it; the modal is reached from the box's ⤢.
-  const toggleCode = () => (showingInline ? closeCode() : void showCode(codeNode!));
+  // Open the source straight in the big centered modal (the readable diff surface, scrolled to the
+  // first change) instead of a cramped inline box that clips wide lines and buries the diff.
+  const toggleCode = () => {
+    void showCode(codeNode!);
+    expandCode();
+  };
   const codeButton = canCode && codeNode ? (
     <button type="button" style={CODE_BTN} title="view source" onClick={(e) => { stop(e); toggleCode(); }}>{"</>"}</button>
   ) : null;

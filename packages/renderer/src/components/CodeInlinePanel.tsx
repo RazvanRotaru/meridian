@@ -72,7 +72,7 @@ export function CodeInlinePanel({
         {code !== null ? (
           <CodeBlock
             code={code}
-            maxHeight={200}
+            maxHeight={340}
             startLine={node.location?.startLine}
             showGutter={showGutter}
             changedLines={changedLines}
@@ -90,8 +90,8 @@ const PANEL_STYLE: React.CSSProperties = {
   top: "100%",
   left: 0,
   marginTop: 6,
-  width: 460,
-  maxWidth: "60vw",
+  width: 640,
+  maxWidth: "74vw",
   zIndex: 20,
   background: "#0E1116",
   border: "1px solid #2A2F37",

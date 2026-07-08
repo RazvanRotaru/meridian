@@ -35,7 +35,12 @@ export function LeafNode(props: NodeProps<BlueprintNode>) {
   // a changed spec); the server truncates oversized spans, so non-callables are safe to offer.
   const canShowCode = Boolean(node.location) && Boolean(sourceUrl);
   const showingHere = codeView?.node.id === node.id;
-  const toggleCode = () => (showingHere ? closeCode() : void showCode(node));
+  // Open the source straight in the big centered modal (readable, scrolled to the first change)
+  // rather than a cramped inline box that clips wide lines and buries the diff.
+  const toggleCode = () => {
+    void showCode(node);
+    expandCode();
+  };
   return (
     // A fragment, not a lone card: the inline panel is a SIBLING of the card so the card's
     // overflow:hidden can't clip it. Both live inside React Flow's node wrapper, which is the
