@@ -36,6 +36,12 @@ export async function restoreFromUrl(store: BlueprintStore): Promise<void> {
   } else {
     await store.getState().relayout();
   }
+  // The minimal-graph overlay is restored state too: rebuild its nodes when the URL carried seeds so
+  // a reload / back-forward into an open overlay reproduces it (structuralState already cleared it
+  // when the URL carried none).
+  if (store.getState().minimalSeedIds.length > 0) {
+    await store.getState().minimalRelayout();
+  }
   if (nav.flowSelection) {
     store.getState().selectFlowEntry(nav.flowSelection);
   }
@@ -128,6 +134,13 @@ function structuralState(nav: NavState): Record<string, unknown> {
     logicStack: nav.logicStack,
     expanded: new Set(nav.expanded),
     moduleFocus: nav.moduleFocus,
+    // Reset the overlay to the URL's state; a restore that carries no seeds closes it (empty +
+    // cleared nodes), one that carries seeds reopens it (restoreFromUrl then rebuilds the nodes).
+    minimalSeedIds: nav.minimalSeedIds,
+    minimalHideBoundary: nav.minimalHideBoundary,
+    minimalRfNodes: [],
+    minimalRfEdges: [],
+    minimalLayoutStatus: "idle",
     moduleExpanded: new Set(nav.moduleExpanded),
     moduleRadius: nav.moduleRadius,
     highlightMode: nav.highlightMode,

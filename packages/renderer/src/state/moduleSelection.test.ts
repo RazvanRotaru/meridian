@@ -79,3 +79,30 @@ describe("module-map selection set", () => {
     expect(store.getState().moduleSelected).toEqual(new Set(["ts:src/a.ts"]));
   });
 });
+
+describe("minimal-graph overlay navigation", () => {
+  function withBuiltGraph(): BlueprintStore {
+    const store = freshStore();
+    store.getState().toggleModuleSelect("ts:src/a.ts");
+    store.getState().toggleModuleSelect("ts:src/b.ts");
+    store.getState().buildMinimalGraph();
+    return store;
+  }
+
+  it("buildMinimalGraph opens the overlay from the selection's file modules", () => {
+    expect(withBuiltGraph().getState().minimalSeedIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
+  });
+
+  it("closeMinimalGraph clears the overlay but keeps the selection for a rebuild", () => {
+    const store = withBuiltGraph();
+    store.getState().closeMinimalGraph();
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().moduleSelected.size).toBe(2);
+  });
+
+  it("leaving the Map lens closes the overlay (it never lingers behind another tab)", () => {
+    const store = withBuiltGraph();
+    store.getState().setViewMode("logic");
+    expect(store.getState().minimalSeedIds).toEqual([]);
+  });
+});

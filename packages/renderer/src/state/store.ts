@@ -1003,6 +1003,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (previous === mode) {
         return;
       }
+      // The minimal-graph overlay is a Map-only surface; leaving the lens closes it so it never
+      // lingers hidden behind another tab (and the URL's `mgraph` clears with the switch).
+      if (get().minimalSeedIds.length > 0) {
+        minimalLayoutSeq += 1;
+        set({ minimalSeedIds: [], minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
+      }
       if (mode === "logic") {
         set({ viewMode: mode });
         return;
