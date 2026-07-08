@@ -1,8 +1,8 @@
-import type { ModuleTree, VisibleModuleNode } from "./moduleTree";
+import type { VisibleModuleNode } from "./moduleTree";
 
 type ChildContainerKind = "package" | "file" | "unit" | "block";
 
-export function moduleChildContainerIds(tree: ModuleTree, containerId: string | null): string[] {
+export function moduleChildContainerIds(tree: { nodes: readonly VisibleModuleNode[] }, containerId: string | null): string[] {
   const byParent = childrenByParent(tree.nodes);
   return childContainerIdsOf(byParent, containerId);
 }

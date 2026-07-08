@@ -1,9 +1,9 @@
 /**
  * The canvas shell. It hosts the always-mounted Toolbar (tab toggle + sidebar), the modal
  * CodePanel, and the global Cmd/Ctrl+P CommandPalette, and swaps its main surface by view mode:
- * "call" is the Service-composition scorecard graph (CompositionView); "ui" is the React
- * composition call graph (FlowCanvas); "logic" is the intra-procedural LogicFlowView; "modules" is
- * the import blast-radius Module-map (ModuleMapView). All are read-only React Flow surfaces — not
+ * "call" is the Service-composition lens — the Map surface (ModuleMapView) fed a service-cluster
+ * tree; "ui" is the React composition call graph (FlowCanvas); "logic" is the intra-procedural
+ * LogicFlowView; "modules" is the folder Module-map. All are read-only React Flow surfaces — not
  * draggable/connectable, selectable (selection driven into the store via onNodeClick), dark color
  * mode, dotted background, coloured MiniMap.
  */
@@ -23,7 +23,6 @@ import { CoveragePanel } from "./CoveragePanel";
 import { CodePanel } from "./CodePanel";
 import { CommandPalette } from "./CommandPalette";
 import { LogicFlowView } from "./LogicFlowView";
-import { CompositionView } from "./CompositionView";
 import { ModuleMapView } from "./ModuleMapView";
 
 // The Logic-flow view is a plain nested-div render, not a React Flow surface, so it swaps in for
@@ -40,7 +39,7 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
           always-mounted Toolbar's <Panel> keeps using the outer App-level provider. */}
       <ReactFlowProvider key={viewMode}>
         {viewMode === "call" ? (
-          <CompositionView />
+          <ModuleMapView />
         ) : viewMode === "logic" ? (
           <LogicFlowView />
         ) : viewMode === "modules" ? (

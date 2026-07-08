@@ -5,6 +5,7 @@
  */
 
 import { useState } from "react";
+import { CALLEE_WIRE, CALLER_WIRE } from "../theme/edgeColors";
 
 export function MapLegend() {
   const [open, setOpen] = useState(false);
@@ -25,8 +26,8 @@ export function MapLegend() {
         <Row swatch={<Box color="#5B9BE3" />} text="package / directory — double-click to zoom in, chevron to expand in place" />
         <Row swatch={<Box color="#3FB7C4" />} text="file — expands into its classes, functions, and types" />
         <Row swatch={<Glyph text="◆" color="#C9A24B" />} text="class / interface / object — an open frame of its members" />
-        <Row swatch={<Glyph text="ƒ" color="#6BE38A" />} text="method / function — expands into its logic flow; double-click opens the Logic tab" />
-        <Row swatch={<Glyph text="τ" color="#A78BFA" />} text="type definition — a dependency anchor, nothing to unroll" />
+        <Row swatch={<Glyph text="ƒ" color={CALLER_WIRE} />} text="method / function — expands into its logic flow; double-click opens the Logic tab" />
+        <Row swatch={<Glyph text="τ" color={CALLEE_WIRE} />} text="type definition — a dependency anchor, nothing to unroll" />
         <Row swatch={<Dashed />} text="ghost — a definition/caller NOT on this level; double-click reveals it" />
       </Section>
       <Section title="Flow steps">
@@ -42,8 +43,8 @@ export function MapLegend() {
         <Row swatch={<Line color="#7C6FBF" dashed />} text="to/from a ghost (the other end is off this level)" />
       </Section>
       <Section title="Selection reads">
-        <Row swatch={<Line color="#A78BFA" />} text="marching violet — what the selection reaches (callees), to the highlight radius" />
-        <Row swatch={<Line color="#6BE38A" />} text="marching green — who reaches the selection (callers); ctrl/cmd+click adds to the selection" />
+        <Row swatch={<Line color={CALLEE_WIRE} />} text="marching violet — what the selection reaches (callees)" />
+        <Row swatch={<Line color={CALLER_WIRE} />} text="marching green — who reaches the selection (callers); ctrl/cmd+click adds to the selection" />
         <Row swatch={<Ring />} text="green ring — a selected call step's DEFINITION; an edge-of-screen ➤ guides to it when out of view" />
       </Section>
     </div>
@@ -77,7 +78,7 @@ function Dashed() {
 }
 
 function Ring() {
-  return <span style={{ display: "inline-block", width: 12, height: 10, borderRadius: 2, border: "1px solid #2A3140", boxShadow: "0 0 0 2px #6BE38A", background: "#1B222D" }} />;
+  return <span style={{ display: "inline-block", width: 12, height: 10, borderRadius: 2, border: "1px solid #2A3140", boxShadow: `0 0 0 2px ${CALLER_WIRE}`, background: "#1B222D" }} />;
 }
 
 function Glyph(props: { text: string; color: string }) {

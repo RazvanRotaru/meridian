@@ -28,6 +28,27 @@ function ClusterFrameNodeImpl({ data }: NodeProps<CompRfNode>) {
         {d.smellyCount > 0 ? (
           <span style={SMELL_BADGE} title={`${d.smellyCount} unit(s) with design smells`}>{`${d.smellyCount}⚠`}</span>
         ) : null}
+        {d.collapsible && !d.expanded ? (
+          <>
+            {d.collapsedCount ? (
+              <span style={SUBSVC_BADGE} title={`${d.collapsedCount} sub-service(s) hidden`}>
+                {`+${d.collapsedCount} sub-services`}
+              </span>
+            ) : null}
+            <button
+              type="button"
+              style={COLLAPSE_BTN}
+              title="Expand this service to show the sub-services it is composed of"
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleCompExpand(d.clusterId);
+              }}
+              onDoubleClick={(event) => event.stopPropagation()}
+            >
+              ▸
+            </button>
+          </>
+        ) : null}
         {d.expanded ? (
           <button
             type="button"
@@ -92,6 +113,19 @@ const SMELL_BADGE: React.CSSProperties = {
   borderRadius: 3,
   padding: "1px 5px",
   background: "rgba(229,72,77,0.14)",
+};
+// The count of composed sub-services hidden behind a collapsed lead — a quiet neutral pill so it
+// reads as metadata, not an alert (the smell badge owns red).
+const SUBSVC_BADGE: React.CSSProperties = {
+  flexShrink: 0,
+  fontSize: 9.5,
+  fontWeight: 600,
+  letterSpacing: "0.03em",
+  color: "#8B95A3",
+  border: "1px solid #2A313D",
+  borderRadius: 3,
+  padding: "1px 5px",
+  background: "rgba(139,149,163,0.10)",
 };
 // Mirrors the package card's ▸ expand pill so open/close read as the same control family.
 const COLLAPSE_BTN: React.CSSProperties = {

@@ -35,11 +35,22 @@ export function ModuleMapView() {
   const layoutStatus = useBlueprint((state) => state.moduleLayoutStatus);
   const effectiveFocus = useBlueprint((state) => state.moduleEffectiveFocus);
   const radius = useBlueprint((state) => state.moduleRadius);
+  const highlightMode = useBlueprint((state) => state.highlightMode);
   const index = useBlueprint((state) => state.index);
   const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
   const showTests = useBlueprint((state) => state.showTests);
   const showPrivate = useBlueprint((state) => state.showPrivate);
-  const { selectModule, toggleModuleSelect, setModuleFocus, openLogicFlow, revealModule, expandModuleChildren, collapseModuleChildren } = useBlueprintActions();
+  const viewMode = useBlueprint((state) => state.viewMode);
+  const {
+    selectModule,
+    toggleModuleSelect,
+    setModuleFocus,
+    toggleModuleExpand,
+    openLogicFlow,
+    revealModule,
+    expandModuleChildren,
+    collapseModuleChildren,
+  } = useBlueprintActions();
   const pendingSelectTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const pendingSelectId = useRef<string | null>(null);
 
@@ -51,8 +62,8 @@ export function ModuleMapView() {
   const hasExpansions = useMemo(() => shownNodes.some(isExpandedMapContainer), [shownNodes]);
   // Emphasis is a second pure repaint: dim by default, light the selection's N-hop import reach.
   const { nodes: styledNodes, edges: styledEdges, beacons } = useMemo(
-    () => emphasize(shownNodes, shownEdges, selected, radius),
-    [shownNodes, shownEdges, selected, radius],
+    () => emphasize(shownNodes, shownEdges, selected, radius, highlightMode),
+    [shownNodes, shownEdges, selected, radius, highlightMode],
   );
 
   const clearPendingSelect = () => {
@@ -92,7 +103,9 @@ export function ModuleMapView() {
   // lives); everything else only selects. The breadcrumb is the way back up.
   const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
     clearPendingSelect();
-    if (node.type === PACKAGE_KIND || node.type === FILE_KIND) {
+    if (node.type === PACKAGE_KIND && viewMode === "call") {
+      toggleModuleExpand(node.id);
+    } else if (viewMode !== "call" && (node.type === PACKAGE_KIND || node.type === FILE_KIND)) {
       setModuleFocus(node.id);
     } else if (node.type === "ghost") {
       revealModule(node.id);

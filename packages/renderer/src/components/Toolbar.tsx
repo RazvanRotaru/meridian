@@ -15,6 +15,7 @@ import { FlowSelector } from "./FlowSelector";
 import { CompositionPanel } from "./composition/CompositionPanel";
 import { DepthSlider } from "./DepthSlider";
 import { ModuleCategoryToggles } from "./ModuleCategoryToggles";
+import { HighlightModeToggle } from "./HighlightModeToggle";
 
 export function Toolbar(props: { preselectedEnv: string | null }) {
   const targetName = useBlueprint((state) => state.artifact.target.name);
@@ -38,12 +39,16 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
         <ViewModeToggle />
         <div style={FILTER_ROW_STYLE}>
           <TestsToggle />
+          {isModules || isComposition ? <HighlightModeToggle /> : null}
           {isModules ? <PrivateToggle /> : null}
           <CoverageToggle />
         </div>
         <Breadcrumb />
         {isComposition ? (
-          <CompositionPanel />
+          <>
+            <DepthSlider />
+            <CompositionPanel />
+          </>
         ) : isModules ? (
           <>
             <DepthSlider />
