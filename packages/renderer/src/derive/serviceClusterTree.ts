@@ -1,100 +1,113 @@
 /**
- * The Service-composition tab's containment tree, emitted in the Map's EXACT shapes
- * (`VisibleModuleNode`/`ModuleTreeEdge`) so the same ModuleMapView, node components, paint passes,
- * and ELK layout render it unchanged. Only the organizing principle differs from the folder map:
- * top-level "package" group cards are SERVICE CLUSTERS (a lead service + the helper sub-services
- * it is composed of, per serviceComposition's clustering); expanding a cluster nests its member
- * unit cards inside its frame; wires are unit couplings lifted to the visible representatives.
- * Pure; no React, no ELK.
+ * Service-composition as a Module-map lens: service clusters become expandable in-place group
+ * cards, so the "call" tab can reuse the Map's layout, chrome, node components, and paint passes.
+ * The only difference from the folder map is the derive: lead services own helper sub-services,
+ * and dependency couplings lift to each cluster's visible representative.
  */
 
 import type { GraphEdge, GraphNode } from "@meridian/core";
-import { buildUnitIndex, computeCompositionMetrics, couplingEdges, groupMembersByUnit, type UnitMetrics } from "@meridian/design-metrics";
-import { clusterServices, type Cluster } from "./serviceComposition";
+import { deriveServiceClusters, type ServiceCluster, type ServiceClustering } from "./serviceComposition";
 import type { ModuleGroupData, ModuleTreeEdge, VisibleModuleNode } from "./moduleTree";
 import type { UnitCardData } from "./moduleLevel";
 
-type Couplings = ReturnType<typeof couplingEdges>;
+type Couplings = ServiceClustering["couplings"];
 
-/** A cluster frame's node id — namespaced like the composition view's, so it can never collide
- * with a real unit id in the shared `moduleExpanded` set. */
-const frameIdOf = (leadId: string): string => `svc:${leadId}`;
-
-/** The service-cluster tree for `expanded`: one group card per cluster (collapsed by default),
- * member unit cards nested inside each expanded cluster, dependency wires between the visible cards. */
 export function deriveServiceTree(
   nodes: GraphNode[],
   edges: GraphEdge[],
   expanded: ReadonlySet<string>,
 ): { nodes: VisibleModuleNode[]; edges: ModuleTreeEdge[] } {
-  const metrics = computeCompositionMetrics(nodes, edges);
-  const couplings = couplingEdges(nodes, edges);
-  const { clusters, leadOf } = clusterServices(metrics, couplings);
-  if (clusters.length === 0) {
+  const clustering = deriveServiceClusters(nodes, edges);
+  if (clustering.clusters.length === 0) {
     return { nodes: [], edges: [] };
   }
-  const membersByUnit = groupMembersByUnit(nodes, buildUnitIndex(nodes));
-  const degrees = clusterDegrees(couplings, leadOf);
-  // Group cards BEFORE unit cards — React Flow requires a parent ahead of its children. Clusters
-  // arrive sorted by lead id and members sorted within, so the emission is deterministic.
-  const groups = clusters.map((cluster) => groupNode(cluster, metrics, degrees, expanded));
-  const units = clusters.flatMap((cluster) => memberNodes(cluster, metrics, membersByUnit, expanded));
-  return { nodes: [...groups, ...units], edges: dependencyEdges(couplings, leadOf, expanded) };
+  const degrees = clusterDegrees(clustering.couplings, clustering.leadOf);
+  return {
+    nodes: visibleNodes(clustering, degrees, expanded),
+    edges: dependencyEdges(clustering, expanded),
+  };
 }
 
-/** One cluster's group card, wearing the Map's group-card data (Ca/Ce here count DISTINCT peer
- * clusters, the service-level coupling the collapsed overview should read as). */
+function visibleNodes(
+  clustering: ServiceClustering,
+  degrees: ClusterDegrees,
+  expanded: ReadonlySet<string>,
+): VisibleModuleNode[] {
+  const out: VisibleModuleNode[] = [];
+  for (const cluster of clustering.clusters) {
+    out.push(groupNode(cluster, clustering, degrees, expanded));
+    if (isOpen(cluster, expanded)) {
+      for (const unitId of cluster.memberIds) {
+        out.push(memberNode(unitId, frameIdOf(cluster.leadId), clustering));
+      }
+    }
+  }
+  return out;
+}
+
 function groupNode(
-  cluster: Cluster,
-  metrics: Map<string, UnitMetrics>,
+  cluster: ServiceCluster,
+  clustering: ServiceClustering,
   degrees: ClusterDegrees,
   expanded: ReadonlySet<string>,
 ): VisibleModuleNode {
-  const frameId = frameIdOf(cluster.leadId);
-  const isContainer = cluster.memberIds.length > 1;
-  const isExpanded = expanded.has(frameId);
+  const memberCount = cluster.memberIds.length;
+  const isContainer = memberCount > 1;
+  const isExpanded = isOpen(cluster, expanded);
+  const metric = clustering.metrics.get(cluster.leadId);
   const data: ModuleGroupData = {
-    label: metrics.get(cluster.leadId)?.displayName ?? cluster.leadId,
-    fileCount: cluster.memberIds.length,
+    label: metric?.displayName ?? cluster.leadId,
+    fileCount: memberCount,
     ca: degrees.ca.get(cluster.leadId)?.size ?? 0,
     ce: degrees.ce.get(cluster.leadId)?.size ?? 0,
     isContainer,
     isExpanded,
   };
-  return { id: frameId, parentId: null, kind: "package", isContainer, isExpanded, depth: 0, childCount: cluster.memberIds.length, data };
+  return {
+    id: frameIdOf(cluster.leadId),
+    parentId: null,
+    kind: "package",
+    isContainer,
+    isExpanded,
+    depth: 0,
+    childCount: memberCount,
+    data,
+  };
 }
 
-/** An expanded cluster's member unit cards, nested inside its frame; a collapsed cluster emits none. */
-function memberNodes(
-  cluster: Cluster,
-  metrics: Map<string, UnitMetrics>,
-  membersByUnit: Map<string, GraphNode[]>,
-  expanded: ReadonlySet<string>,
-): VisibleModuleNode[] {
-  const frameId = frameIdOf(cluster.leadId);
-  if (!expanded.has(frameId)) {
-    return [];
-  }
-  return cluster.memberIds.map((unitId) => {
-    const metric = metrics.get(unitId);
-    const data: UnitCardData = {
-      label: metric?.displayName ?? unitId,
-      unitKind: metric?.kind ?? "class",
-      memberCount: membersByUnit.get(unitId)?.length ?? 0,
-      isFrame: false,
-    };
-    return { id: unitId, parentId: frameId, kind: "unit" as const, isContainer: false, isExpanded: false, depth: 1, childCount: 0, data };
-  });
+function memberNode(unitId: string, frameId: string, clustering: ServiceClustering): VisibleModuleNode {
+  const metric = clustering.metrics.get(unitId);
+  const data: UnitCardData = {
+    label: metric?.displayName ?? unitId,
+    unitKind: metric?.kind ?? "class",
+    memberCount: metric?.members ?? 0,
+    isFrame: false,
+  };
+  return {
+    id: unitId,
+    parentId: frameId,
+    kind: "unit",
+    isContainer: false,
+    isExpanded: false,
+    depth: 1,
+    childCount: 0,
+    data,
+  };
+}
+
+function isOpen(cluster: ServiceCluster, expanded: ReadonlySet<string>): boolean {
+  return cluster.memberIds.length > 1 && expanded.has(frameIdOf(cluster.leadId));
+}
+
+function frameIdOf(leadId: string): string {
+  return `svc:${leadId}`;
 }
 
 interface ClusterDegrees {
-  /** lead id → the distinct peer clusters depending on it (afferent). */
   ca: Map<string, Set<string>>;
-  /** lead id → the distinct peer clusters it depends on (efferent). */
   ce: Map<string, Set<string>>;
 }
 
-/** Fold unit couplings up to cluster pairs to count each cluster's distinct in/out neighbours. */
 function clusterDegrees(couplings: Couplings, leadOf: Map<string, string>): ClusterDegrees {
   const ca = new Map<string, Set<string>>();
   const ce = new Map<string, Set<string>>();
@@ -119,42 +132,29 @@ function addTo(map: Map<string, Set<string>>, from: string, to: string): void {
   }
 }
 
-/**
- * One wire per visible pair. Each coupling endpoint lifts to its VISIBLE representative — its own
- * unit card when its cluster is open, else the cluster's group card. Self-loops (both ends on the
- * same card) drop; pairs aggregate by summing one per underlying coupling. `crossFrame` tracks the
- * TRUE clusters of the underlying units, not their reps, so it stays honest under collapse.
- */
-function dependencyEdges(couplings: Couplings, leadOf: Map<string, string>, expanded: ReadonlySet<string>): ModuleTreeEdge[] {
-  const repOf = (id: string): string | null => {
-    const lead = leadOf.get(id);
-    if (lead === undefined) {
-      return null; // not a surviving unit — its couplings never chart.
-    }
-    const frameId = frameIdOf(lead);
-    return expanded.has(frameId) ? id : frameId;
-  };
+function dependencyEdges(clustering: ServiceClustering, expanded: ReadonlySet<string>): ModuleTreeEdge[] {
+  const openLeads = new Set(clustering.clusters.filter((cluster) => isOpen(cluster, expanded)).map((cluster) => cluster.leadId));
   const byPair = new Map<string, ModuleTreeEdge>();
-  for (const edge of couplings) {
-    const source = repOf(edge.source);
-    const target = repOf(edge.target);
-    if (source === null || target === null || source === target) {
+  for (const edge of clustering.couplings) {
+    const sourceLead = clustering.leadOf.get(edge.source);
+    const targetLead = clustering.leadOf.get(edge.target);
+    if (sourceLead === undefined || targetLead === undefined) {
+      continue;
+    }
+    const source = openLeads.has(sourceLead) ? edge.source : frameIdOf(sourceLead);
+    const target = openLeads.has(targetLead) ? edge.target : frameIdOf(targetLead);
+    if (source === target) {
       continue;
     }
     const key = `${source}->${target}`;
+    const crossFrame = sourceLead !== targetLead;
     const existing = byPair.get(key);
     if (existing) {
       existing.weight += 1;
-      continue;
+      existing.crossFrame = existing.crossFrame || crossFrame;
+    } else {
+      byPair.set(key, { id: `dep:${key}`, source, target, weight: 1, crossFrame, category: "dep" });
     }
-    byPair.set(key, {
-      id: `dep:${key}`,
-      source,
-      target,
-      weight: 1,
-      crossFrame: leadOf.get(edge.source) !== leadOf.get(edge.target),
-      category: "dep",
-    });
   }
   return [...byPair.values()].sort((a, b) => a.id.localeCompare(b.id));
 }

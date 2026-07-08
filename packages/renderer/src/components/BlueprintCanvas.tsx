@@ -39,8 +39,6 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
           always-mounted Toolbar's <Panel> keeps using the outer App-level provider. */}
       <ReactFlowProvider key={viewMode}>
         {viewMode === "call" ? (
-          // The Service-composition tab IS the Map surface fed a service-cluster tree by the store —
-          // same node components, same interactions; only the derive differs (see moduleRelayout).
           <ModuleMapView />
         ) : viewMode === "logic" ? (
           <LogicFlowView />

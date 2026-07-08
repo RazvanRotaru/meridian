@@ -38,7 +38,7 @@ export function ModuleMapView() {
   const showTests = useBlueprint((state) => state.showTests);
   const showPrivate = useBlueprint((state) => state.showPrivate);
   const hasExpansions = useBlueprint((state) => state.moduleExpanded.size > 0);
-  const viewMode = useBlueprint((s) => s.viewMode);
+  const viewMode = useBlueprint((state) => state.viewMode);
   const { selectModule, toggleModuleSelect, setModuleFocus, toggleModuleExpand, openLogicFlow, revealModule, expandAllModules, collapseAll } = useBlueprintActions();
 
   // Category/test hiding is a pure VISIBILITY filter over the laid-out graph; positions are untouched.
@@ -57,10 +57,8 @@ export function ModuleMapView() {
   const onNodeClick: NodeMouseHandler<Node> = (event, node) =>
     event.ctrlKey || event.metaKey ? toggleModuleSelect(node.id) : selectModule(node.id);
   // Double-click a GROUP card: on the folder Map it zooms into it; on the service-cluster ("call")
-  // lens clusters are the top level — there is no deeper level to zoom to — so it expands the
-  // cluster IN PLACE instead. A callable BLOCK opens its logic flow (the map→logic link); a GHOST
-  // reveals its off-screen definition (the Map refocuses where it lives); everything else only
-  // selects. The breadcrumb is the way back up.
+  // lens clusters are the top level, so it expands the cluster IN PLACE instead. A callable BLOCK
+  // opens its logic flow (the map→logic link); a GHOST reveals its off-screen definition.
   const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
     if (node.type === PACKAGE_KIND) {
       if (viewMode === "call") {

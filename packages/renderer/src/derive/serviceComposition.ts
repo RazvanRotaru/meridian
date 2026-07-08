@@ -22,16 +22,19 @@ const SERVICE_RE = /(?:service|manager|facade|orchestrator|coordinator|engine|us
 // Helper names only refine role metadata / seed selection — they never gate the clustering itself.
 const HELPER_RE = /(?:store|repository|repo|dao|client|provider|adapter|mapper|model|entity|dto|cache|factory|builder|validator|serializer|parser|formatter|config|options|settings|utils?|helper|logger|queue|emitter|middleware|guard|policy|strategy)s?$/i;
 
-export interface Cluster {
+export interface ServiceCluster {
   leadId: string;
   memberIds: string[];
 }
 
-/** The clustering result other lenses (the service-tab tree) reuse: the clusters themselves plus
- * the member→lead index that lifts any coupling endpoint to its owning cluster. */
+/** The shared intermediate service-cluster derive: scorecard specs and the Module-map service lens
+ * both read this so the ownership algorithm cannot drift between the two surfaces. */
 export interface ServiceClustering {
-  clusters: Cluster[];
+  clusters: ServiceCluster[];
   leadOf: Map<string, string>;
+  metrics: Map<string, UnitMetrics>;
+  membersByUnit: Map<string, GraphNode[]>;
+  couplings: ReturnType<typeof couplingEdges>;
 }
 
 export function deriveServiceCompositionGraph(
@@ -40,30 +43,30 @@ export function deriveServiceCompositionGraph(
   expanded: ReadonlySet<string> = NONE_EXPANDED,
   showMetrics = true,
 ): CompositionGraphSpec {
-  const metrics = computeCompositionMetrics(nodes, edges);
-  const couplings = couplingEdges(nodes, edges);
-  const membersByUnit = groupMembersByUnit(nodes, buildUnitIndex(nodes));
-  const { clusters, leadOf } = clusterServices(metrics, couplings);
+  const { clusters, leadOf, metrics, membersByUnit, couplings } = deriveServiceClusters(nodes, edges);
   if (clusters.length === 0) {
     return { nodes: [], edges: [] };
   }
+
   return emitSpecs(clusters, leadOf, metrics, membersByUnit, couplings, expanded, showMetrics);
 }
 
-/** The pure clustering pipeline (role classification → seed selection → efferent-BFS ownership →
- * per-folder synthetic clusters for the unreached), exported so the service-tab tree derive can
- * share the exact same grouping without re-deriving CompNodeSpecs. */
-export function clusterServices(metrics: Map<string, UnitMetrics>, couplings: ReturnType<typeof couplingEdges>): ServiceClustering {
+export function deriveServiceClusters(nodes: GraphNode[], edges: GraphEdge[]): ServiceClustering {
+  const metrics = computeCompositionMetrics(nodes, edges);
+  const couplings = couplingEdges(nodes, edges);
+  const membersByUnit = groupMembersByUnit(nodes, buildUnitIndex(nodes));
   const survivors = survivingUnits(metrics, couplings);
   if (survivors.size === 0) {
-    return { clusters: [], leadOf: new Map() };
+    return { clusters: [], leadOf: new Map(), metrics, membersByUnit, couplings };
   }
+
   const adjacency = efferentAdjacency(couplings);
   const efferentDegree = (id: string) => adjacency.get(id)?.length ?? 0;
   const seeds = selectSeeds(survivors, metrics, efferentDegree);
   const clusterOf = assignOwnership(seeds, adjacency, survivors, metrics);
   const clusters = buildClusters(seeds, clusterOf, survivors, metrics, efferentDegree);
-  return { clusters, leadOf: leadIndex(clusters) };
+  const leadOf = leadIndex(clusters);
+  return { clusters, leadOf, metrics, membersByUnit, couplings };
 }
 
 /** Units carrying weight: ≥1 member OR sitting on ≥1 coupling wire — the only units we cluster. */
@@ -177,7 +180,7 @@ function pickOwner(node: string, owners: string[], metrics: Map<string, UnitMetr
 
 /** Seed clusters (lead + everything it owns) plus synthetic per-folder clusters for the survivors no
  * seed ever reached — each led by the folder's busiest member. All clusters are sorted by lead id. */
-function buildClusters(seeds: Set<string>, clusterOf: Map<string, string>, survivors: Set<string>, metrics: Map<string, UnitMetrics>, degree: (id: string) => number): Cluster[] {
+function buildClusters(seeds: Set<string>, clusterOf: Map<string, string>, survivors: Set<string>, metrics: Map<string, UnitMetrics>, degree: (id: string) => number): ServiceCluster[] {
   const bySeed = new Map<string, string[]>();
   for (const seed of seeds) {
     bySeed.set(seed, [seed]);
@@ -187,7 +190,7 @@ function buildClusters(seeds: Set<string>, clusterOf: Map<string, string>, survi
       bySeed.get(seed)!.push(id);
     }
   }
-  const clusters: Cluster[] = [...bySeed.entries()].map(([leadId, members]) => ({ leadId, memberIds: members.slice().sort() }));
+  const clusters: ServiceCluster[] = [...bySeed.entries()].map(([leadId, members]) => ({ leadId, memberIds: members.slice().sort() }));
 
   const unreachable = [...survivors].filter((id) => !clusterOf.has(id));
   const byFolder = new Map<string, string[]>();
@@ -203,7 +206,7 @@ function buildClusters(seeds: Set<string>, clusterOf: Map<string, string>, survi
 }
 
 /** Every member id → its cluster's lead id, the key the wire pass reuses for cross-boundary + rep. */
-function leadIndex(clusters: Cluster[]): Map<string, string> {
+function leadIndex(clusters: ServiceCluster[]): Map<string, string> {
   const leadOf = new Map<string, string>();
   for (const cluster of clusters) {
     for (const id of cluster.memberIds) {
@@ -214,7 +217,7 @@ function leadIndex(clusters: Cluster[]): Map<string, string> {
 }
 
 function emitSpecs(
-  clusters: Cluster[],
+  clusters: ServiceCluster[],
   leadOf: Map<string, string>,
   metrics: Map<string, UnitMetrics>,
   membersByUnit: Map<string, GraphNode[]>,
@@ -237,7 +240,7 @@ function emitSpecs(
   return { nodes: [...frames, ...units], edges: wireSpecs(couplings, leadOf, expanded) };
 }
 
-function frameSpec(cluster: Cluster, frameId: string, isExpanded: boolean, metrics: Map<string, UnitMetrics>): CompNodeSpec {
+function frameSpec(cluster: ServiceCluster, frameId: string, isExpanded: boolean, metrics: Map<string, UnitMetrics>): CompNodeSpec {
   const smellyCount = cluster.memberIds.filter((id) => metrics.get(id)!.smells.length > 0).length;
   const data: ClusterNodeData = {
     clusterId: frameId,

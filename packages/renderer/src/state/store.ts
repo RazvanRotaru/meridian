@@ -27,12 +27,12 @@ import { uiFocusTarget } from "../derive/uiFocus";
 import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
-import { deriveModuleLevelLayout } from "./deriveModuleMapLayout";
+import { deriveModuleLevelLayout, type ModuleLevelLayout } from "./deriveModuleMapLayout";
 import { deriveServiceLevelLayout } from "./deriveServiceMapLayout";
-import { deriveServiceTree } from "../derive/serviceClusterTree";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import { buildBlockDeps, type BlockDeps } from "../derive/blockDeps";
 import { deriveModuleTree } from "../derive/moduleTree";
+import { deriveServiceTree } from "../derive/serviceClusterTree";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
@@ -649,7 +649,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const { index, moduleFocus, moduleExpanded, artifact, viewMode } = get();
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
-      let layout;
+      let layout: ModuleLevelLayout;
       if (viewMode === "call") {
         layout = await deriveServiceLevelLayout(index, moduleExpanded);
       } else {
@@ -711,17 +711,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // grows and is bounded by the artifact, so termination is structural.
     expandAllModules() {
       const { index, moduleFocus, artifact, viewMode } = get();
-      // On the service-cluster lens, "everything" is every cluster frame: derive the collapsed tree
-      // once (its group set is expansion-independent) and open all of them. Member unit cards are
-      // leaves, so no fixpoint is needed here.
+      // On the service-cluster lens, "everything" is every multi-member cluster frame. Derive the
+      // collapsed tree once: expanding a cluster only adds unit cards, never more group nodes.
       if (viewMode === "call") {
         const tree = deriveServiceTree([...index.nodesById.values()], index.edges, new Set<string>());
-        const expanded = new Set(get().moduleExpanded);
-        for (const node of tree.nodes) {
-          if (node.kind === "package") {
-            expanded.add(node.id);
-          }
-        }
+        const expanded = new Set<string>(
+          tree.nodes
+            .filter((node) => node.kind === "package" && node.isContainer)
+            .map((node) => node.id),
+        );
         set({ moduleExpanded: expanded });
         void get().moduleRelayout();
         return;
@@ -794,20 +792,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       // The Map ("modules") and Service-composition ("call") lenses SHARE the module slice — same
-      // view, same layout, different tree. Clicking INTO either always opens at its own top level
-      // (never a focus inherited from a prior visit), and crossing between the two families ALSO
-      // resets the selection: cluster/unit ids from one organizing principle mean nothing in the
-      // other, so stale ids must not leak. A shared/reloaded deep link is unaffected: it restores
-      // via setState on boot (not this click path), so an explicit ?mfocus=… still opens there.
+      // view, same layout, different tree. Clicking INTO either always opens at its own top level,
+      // never a focus inherited from a prior visit. A shared/reloaded deep link is unaffected: it
+      // restores via setState on boot (not this click path), so an explicit ?mfocus=… still opens.
       if (mode === "modules" || mode === "call") {
-        const crossingFamilies = previous === "modules" || previous === "call";
-        const resetSelection = mode === "call" || crossingFamilies;
-        set({
-          viewMode: mode,
-          moduleFocus: null,
-          moduleExpanded: new Set<string>(),
-          ...(resetSelection ? { moduleSelected: new Set<string>() } : {}),
-        });
+        set({ viewMode: mode, moduleFocus: null, moduleExpanded: new Set<string>(), moduleSelected: new Set<string>() });
         void get().moduleRelayout();
         return;
       }
@@ -939,13 +928,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // The "call" lens IS the Map surface fed a service-cluster tree now (not the old scorecard
       // composition graph), so it routes to the SAME moduleRelayout as "modules" — the branch by
       // viewMode lives inside moduleRelayout itself. "ui" still derives below.
-      if (get().viewMode === "call") {
-        await get().moduleRelayout();
-        return;
-      }
-      // The Module map is its own surface with a synchronous ring layout; route it to moduleRelayout
-      // (this also runs on a boot/back-forward restore into the "modules" lens). "ui" derives below.
-      if (get().viewMode === "modules") {
+      if (get().viewMode === "call" || get().viewMode === "modules") {
         await get().moduleRelayout();
         return;
       }
