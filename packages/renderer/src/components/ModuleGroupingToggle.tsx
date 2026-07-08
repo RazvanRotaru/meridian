@@ -5,7 +5,7 @@ export function ModuleGroupingToggle() {
   const grouping = useBlueprint((state) => state.moduleGrouping);
   const setModuleGrouping = useBlueprintActions().setModuleGrouping;
   return (
-    <section style={SECTION_STYLE} aria-label="Module overview grouping">
+    <section style={SECTION_STYLE} aria-label="Service composition overview grouping">
       <span style={HEADER_STYLE}>Overview mode</span>
       <div style={ROW_STYLE} role="group">
         {MODULE_GROUPINGS.map((mode) => (

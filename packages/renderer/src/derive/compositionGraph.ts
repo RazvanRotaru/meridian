@@ -10,8 +10,9 @@
 import type { GraphEdge, GraphNode } from "@meridian/core";
 import { buildUnitIndex, computeCompositionMetrics, couplingEdges, groupMembersByUnit, type UnitMetrics } from "@meridian/design-metrics";
 import { computeRootedView } from "./compositionRoot";
-import { buildClusters, nearestEmitted, type ClusterFrame } from "./compositionClusters";
+import { buildClusters, nearestEmitted, npmPackageIdOf, type ClusterFrame } from "./compositionClusters";
 import { aggregateByPackage, type PackageSummaryData } from "./compositionAggregate";
+import type { ModuleGrouping } from "./moduleGrouping";
 
 // A `type` (not an interface) so it satisfies React Flow's `Node<T extends Record<string, unknown>>`
 // constraint — an interface lacks the implicit index signature (mirrors logic's LogicNodeData).
@@ -112,6 +113,11 @@ export interface CompositionGraphSpec {
   edges: CompEdgeSpec[];
 }
 
+export interface CompositionOverviewOptions {
+  grouping?: ModuleGrouping;
+  entryIds?: readonly string[];
+}
+
 /**
  * Every unit that carries weight — has ≥1 member OR sits on ≥1 coupling wire — as a sized
  * scorecard, plus the peer wires between them. An empty, uncoupled unit is dropped so the canvas
@@ -132,6 +138,7 @@ export function deriveCompositionGraph(
   root: string | null = null,
   showMetrics = true,
   expanded: ReadonlySet<string> = NONE_EXPANDED,
+  overview: CompositionOverviewOptions = {},
 ): CompositionGraphSpec {
   const metrics = computeCompositionMetrics(nodes, edges);
   const couplings = couplingEdges(nodes, edges);
@@ -149,7 +156,8 @@ export function deriveCompositionGraph(
     // partition (needed to size + fill them) is computed only when something is expanded.
     const membersByUnit = expanded.size > 0 ? groupMembersByUnit(nodes, buildUnitIndex(nodes)) : new Map<string, GraphNode[]>();
     const unitCard = (unitId: string) => unitNode(metrics.get(unitId)!, false, showMetrics, membersByUnit.get(unitId) ?? []);
-    return aggregateByPackage(edges, metrics, couplings, inView, nodesById, root, expanded, unitCard);
+    const spec = aggregateByPackage(edges, metrics, couplings, inView, nodesById, root, expanded, unitCard);
+    return root === null ? applyApplicationsOverview(spec, nodesById, overview) : spec;
   }
 
   // The unit → members partition, reused per card so a scorecard can list the methods it holds.
@@ -192,7 +200,84 @@ export function deriveCompositionGraph(
   // endpoint lifted to its nearest emitted UNIT (the scorecard that holds it).
   const ipc = ipcLayerFor(edges, (id) => nearestEmitted(id, emitted, nodesById), channelSidesOf(edges));
 
-  return { nodes: [...nodeSpecs, ...ipc.nodes], edges: [...edgeSpecs, ...ipc.edges] };
+  const spec = { nodes: [...nodeSpecs, ...ipc.nodes], edges: [...edgeSpecs, ...ipc.edges] };
+  return root === null ? applyApplicationsOverview(spec, nodesById, overview) : spec;
+}
+
+function applyApplicationsOverview(
+  spec: CompositionGraphSpec,
+  nodesById: Map<string, GraphNode>,
+  overview: CompositionOverviewOptions,
+): CompositionGraphSpec {
+  if (overview.grouping !== "applications") {
+    return spec;
+  }
+  const packageCards = new Set(
+    spec.nodes
+      .filter((node) => node.type === "package" || node.type === "cluster")
+      .map((node) => node.id),
+  );
+  const keepPackages = applicationRootPackages(nodesById, packageCards, overview.entryIds ?? []);
+  if (keepPackages.size === 0) {
+    return spec;
+  }
+  const nodeType = new Map(spec.nodes.map((node) => [node.id, node.type]));
+  const keep = new Set<string>(keepPackages);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const node of spec.nodes) {
+      if (node.parentId && keep.has(node.parentId) && !keep.has(node.id)) {
+        keep.add(node.id);
+        grew = true;
+      }
+    }
+  }
+  for (const edge of spec.edges) {
+    if (keep.has(edge.source) && nodeType.get(edge.target) === "channel") {
+      keep.add(edge.target);
+    }
+    if (keep.has(edge.target) && nodeType.get(edge.source) === "channel") {
+      keep.add(edge.source);
+    }
+  }
+  const nodes = spec.nodes.filter((node) => keep.has(node.id));
+  const kept = new Set(nodes.map((node) => node.id));
+  const edges = spec.edges.filter((edge) => kept.has(edge.source) && kept.has(edge.target));
+  return { nodes, edges };
+}
+
+function applicationRootPackages(
+  nodesById: Map<string, GraphNode>,
+  packageIds: ReadonlySet<string>,
+  entryIds: readonly string[],
+): Set<string> {
+  const anchors = [...new Set(entryIds.map((id) => packageAnchor(id, nodesById)).filter((id): id is string => id !== null && packageIds.has(id)))];
+  if (anchors.length === 0) {
+    return new Set<string>();
+  }
+  const anchorSet = new Set(anchors);
+  return new Set(anchors.filter((id) => !hasAnchorAncestor(id, anchorSet, nodesById)));
+}
+
+function packageAnchor(id: string, nodesById: Map<string, GraphNode>): string | null {
+  if (nodesById.get(id)?.kind === "package") {
+    return id;
+  }
+  return npmPackageIdOf(id, nodesById);
+}
+
+function hasAnchorAncestor(id: string, anchors: ReadonlySet<string>, nodesById: Map<string, GraphNode>): boolean {
+  const seen = new Set<string>();
+  let current = nodesById.get(id)?.parentId ?? null;
+  while (current && !seen.has(current)) {
+    if (anchors.has(current)) {
+      return true;
+    }
+    seen.add(current);
+    current = nodesById.get(current)?.parentId ?? null;
+  }
+  return false;
 }
 
 // The channel card geometry: a compact pill — wide enough for "GET /api/orders/:id" plus tags.

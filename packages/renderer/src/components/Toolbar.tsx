@@ -20,9 +20,9 @@ import { ModuleGroupingToggle } from "./ModuleGroupingToggle";
 export function Toolbar(props: { preselectedEnv: string | null }) {
   const targetName = useBlueprint((state) => state.artifact.target.name);
   const hasOverlay = useBlueprint((state) => state.hasOverlay);
-  // The sidebar swaps its per-lens controls: "call" (Service composition) gets the composition map +
-  // refactor worklist; "modules" (Module map) gets the selection highlight-radius dial + category
-  // toggles; ui/logic keep the call-flow FlowSelector.
+  // The sidebar swaps its per-lens controls: "call" (Service composition) gets the overview toggle +
+  // composition map/worklist; "modules" (Module map) gets the selection highlight-radius dial +
+  // category toggles; ui/logic keep the call-flow FlowSelector.
   const viewMode = useBlueprint((state) => state.viewMode);
   const isComposition = viewMode === "call";
   const isModules = viewMode === "modules";
@@ -44,10 +44,12 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
         </div>
         <Breadcrumb />
         {isComposition ? (
-          <CompositionPanel />
-        ) : isModules ? (
           <>
             <ModuleGroupingToggle />
+            <CompositionPanel />
+          </>
+        ) : isModules ? (
+          <>
             <DepthSlider />
             <ModuleCategoryToggles />
           </>

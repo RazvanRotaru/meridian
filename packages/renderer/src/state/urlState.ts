@@ -12,6 +12,7 @@
 
 import type { ViewMode } from "../derive/edgeSelection";
 import { isLogicViewMode, type LogicViewMode } from "../derive/flowViewModel";
+import type { ModuleGrouping } from "../derive/moduleGrouping";
 import { SHOW_SERVICE_COMPOSITION } from "../featureFlags";
 
 /** The URL-worthy slice of the store — mirrors the navigation fields of BlueprintState. */
@@ -31,6 +32,8 @@ export interface NavState {
   expanded: string[];
   /** The Module-map focus: the package/dir node zoomed into; null == the whole-repo overview. */
   moduleFocus: string | null;
+  /** Service-composition overview grouping strategy (`packages` / `applications`). */
+  moduleGrouping: ModuleGrouping;
   /** Group cards expanded in place in the Module map — a comma-joined list of node ids in the URL. */
   moduleExpanded: string[];
   /** The Module-map selection highlight radius (GHOST_DEPTH_ALL == the whole neighbourhood). */
@@ -41,7 +44,7 @@ export interface NavState {
 }
 
 /** Every param key we own — listed once so `mergeNavIntoSearch` can clear them before rewriting. */
-const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "lroot", "lview", "lstack", "expand", "mfocus", "mexp", "mdepth", "mhide", "env"] as const;
+const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "lroot", "lview", "lstack", "expand", "mfocus", "mgroup", "mexp", "mdepth", "mhide", "env"] as const;
 
 /** The navigation state the app boots into — the baseline a restore resets absent keys back to. */
 export const DEFAULT_NAV: NavState = {
@@ -58,6 +61,7 @@ export const DEFAULT_NAV: NavState = {
   logicStack: [],
   expanded: [],
   moduleFocus: null,
+  moduleGrouping: "packages",
   moduleExpanded: [],
   moduleRadius: 1,
   hiddenCategories: [],
@@ -79,6 +83,7 @@ interface NavSource {
   logicStack: readonly string[];
   expanded: ReadonlySet<string>;
   moduleFocus: string | null;
+  moduleGrouping: ModuleGrouping;
   moduleExpanded: ReadonlySet<string>;
   moduleRadius: number;
   hiddenCategories: ReadonlySet<string>;
@@ -101,6 +106,7 @@ export function navFrom(state: NavSource): NavState {
     logicStack: [...state.logicStack],
     expanded: [...state.expanded].sort(),
     moduleFocus: state.moduleFocus,
+    moduleGrouping: state.moduleGrouping,
     moduleExpanded: [...state.moduleExpanded].sort(),
     moduleRadius: state.moduleRadius,
     hiddenCategories: [...state.hiddenCategories].sort(),
@@ -124,6 +130,7 @@ export function encodeNav(nav: NavState): Map<string, string> {
   setList(out, "lstack", nav.logicStack);
   setList(out, "expand", nav.expanded);
   setId(out, "mfocus", nav.moduleFocus);
+  if (nav.moduleGrouping !== "packages") out.set("mgroup", nav.moduleGrouping);
   setList(out, "mexp", nav.moduleExpanded);
   if (nav.moduleRadius !== 1) out.set("mdepth", String(nav.moduleRadius));
   setList(out, "mhide", nav.hiddenCategories);
@@ -155,6 +162,8 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   assignList(params, "lstack", out, "logicStack");
   assignList(params, "expand", out, "expanded");
   assignId(params, "mfocus", out, "moduleFocus");
+  const moduleGrouping = params.get("mgroup");
+  if (moduleGrouping === "packages" || moduleGrouping === "applications") out.moduleGrouping = moduleGrouping;
   assignList(params, "mexp", out, "moduleExpanded");
   const moduleRadius = params.get("mdepth");
   if (moduleRadius !== null && !Number.isNaN(Number(moduleRadius))) out.moduleRadius = Number(moduleRadius);
@@ -187,6 +196,7 @@ export function isNavigationChange(prev: NavState, next: NavState): boolean {
     prev.focusId !== next.focusId ||
     prev.compRoot !== next.compRoot ||
     prev.moduleFocus !== next.moduleFocus ||
+    prev.moduleGrouping !== next.moduleGrouping ||
     prev.flowRootId !== next.flowRootId ||
     prev.logicRoot !== next.logicRoot ||
     // logicView is deliberately absent: a sub-view flip is a presentation change (replaceState,

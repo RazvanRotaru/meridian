@@ -105,7 +105,7 @@ describe("urlState", () => {
   it("round-trips module-map grouping (mgroup)", () => {
     const nav: NavState = { ...emptyNav(), viewMode: "modules", moduleGrouping: "applications" };
     expect(encodeNav(nav).get("mgroup")).toBe("applications");
-    expect(roundTrip(nav)).toEqual({ viewMode: "modules", moduleGrouping: "applications" });
+    expect(roundTrip(nav)).toEqual({ moduleGrouping: "applications" });
   });
 
   it("omits module-map keys at their defaults (radius 1, no focus, no hidden categories)", () => {

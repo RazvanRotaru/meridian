@@ -32,6 +32,7 @@ import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import { buildBlockDeps, type BlockDeps } from "../derive/blockDeps";
 import { deriveModuleTree } from "../derive/moduleTree";
 import type { ModuleCategory } from "../derive/moduleCategory";
+import type { ModuleGrouping } from "../derive/moduleGrouping";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
@@ -147,6 +148,8 @@ export interface BlueprintState {
   moduleRfNodes: Node[];
   moduleRfEdges: Edge[];
   moduleLayoutStatus: LayoutStatus;
+  /** Service-composition overview grouping: package-wide vs entry-root application anchors. */
+  moduleGrouping: ModuleGrouping;
   /** The package/directory node the Module map is zoomed INTO; null == the whole-repo package overview
    * (level 0). Double-clicking a group card descends; the breadcrumb ascends. */
   moduleFocus: string | null;
@@ -216,6 +219,7 @@ export interface BlueprintState {
   toggleCompExpand(id: string): void;
   toggleSolidMetrics(): void;
   moduleRelayout(): Promise<void>;
+  setModuleGrouping(grouping: ModuleGrouping): void;
   setModuleFocus(id: string | null): void;
   toggleModuleExpand(nodeId: string): void;
   revealModule(nodeId: string): void;
@@ -313,6 +317,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleRfNodes: [],
     moduleRfEdges: [],
     moduleLayoutStatus: "idle",
+    moduleGrouping: "packages",
     moduleFocus: null,
     moduleEffectiveFocus: null,
     moduleRadius: 1,
@@ -550,7 +555,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // stale-seq guard. Reads the raw nodes/edges off the index (built from the artifact); the derive
     // decides which units earn a card and wires their couplings.
     async compRelayout() {
-      const { index, compRoot, compExpanded, showSolidMetrics } = get();
+      const { index, artifact, compRoot, compExpanded, showSolidMetrics, moduleGrouping } = get();
       // The layout ALWAYS includes test units, so toggling the Tests filter never moves a production
       // card — the composition view hides test cards in place (a repaint), it does not re-lay-out.
       // A giant repo's first layout stays cheap anyway: aggregated altitudes only COUNT test units
@@ -561,7 +566,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // hands it the root.
       const sequence = ++compLayoutSeq;
       set({ compLayoutStatus: "laying-out" });
-      const graph = await deriveCompositionLayout(nodes, index.edges, compRoot, showSolidMetrics, compExpanded);
+      const entryIds = (artifact.extensions?.entryModules ?? []) as string[];
+      const graph = await deriveCompositionLayout(
+        nodes,
+        index.edges,
+        compRoot,
+        showSolidMetrics,
+        compExpanded,
+        { grouping: moduleGrouping, entryIds },
+      );
       if (compLayoutSeq !== sequence) {
         return; // a newer layout superseded this one.
       }
@@ -661,6 +674,23 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       });
     },
 
+    // Switch Service-composition overview grouping (`Packages` / `Applications`) and re-open the
+    // whole-system view so the comparison stays apples-to-apples.
+    setModuleGrouping(grouping) {
+      if (get().moduleGrouping === grouping) {
+        return;
+      }
+      set({
+        moduleGrouping: grouping,
+        compRoot: null,
+        compSelectedId: null,
+        compMethodId: null,
+        compMethodRfNodes: [],
+        compMethodRfEdges: [],
+        compMethodLayoutStatus: "idle",
+      });
+      void get().compRelayout();
+    },
     // Zoom the Module map into a package/directory (null == back to the whole-repo overview). Clears
     // the selection (it means nothing at a new level) and re-lays out. A no-op when already there.
     setModuleFocus(id) {

@@ -28,6 +28,10 @@ function node(id: string, kind: string, parentId?: string): GraphNode {
   } as GraphNode;
 }
 
+function npmPackage(id: string, parentId?: string): GraphNode {
+  return { ...node(id, "package", parentId), tags: ["npm-package"] } as GraphNode;
+}
+
 function edge(source: string, target: string, kind = "calls"): GraphEdge {
   return { id: `${kind}:${source}->${target}`, source, target, kind } as GraphEdge;
 }
@@ -133,6 +137,27 @@ describe("deriveCompositionGraph rooting", () => {
     const spec = deriveCompositionGraph(nodes, [], "ts:x");
     expect(unitIds(spec.nodes)).toEqual(["ts:x"]);
     expect(unitData(spec.nodes, "ts:x")?.boundary).toBeFalsy();
+  });
+
+  it("applications overview keeps only entry-root packages when root is null", () => {
+    const nodes = [
+      node("ts:repo", "package"),
+      npmPackage("ts:app", "ts:repo"),
+      npmPackage("ts:lib", "ts:repo"),
+      node("ts:app/mod.ts", "module", "ts:app"),
+      node("ts:app/mod.ts#run", "function", "ts:app/mod.ts"),
+      node("ts:lib/util.ts", "module", "ts:lib"),
+      node("ts:lib/util.ts#helper", "function", "ts:lib/util.ts"),
+    ];
+    const spec = deriveCompositionGraph(
+      nodes,
+      [edge("ts:app/mod.ts#run", "ts:lib/util.ts#helper")],
+      null,
+      true,
+      new Set<string>(),
+      { grouping: "applications", entryIds: ["ts:app/mod.ts"] },
+    );
+    expect(unitIds(spec.nodes)).toEqual(["ts:app/mod.ts"]);
   });
 });
 

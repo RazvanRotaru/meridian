@@ -5,7 +5,7 @@
  */
 
 import type { GraphEdge, GraphNode } from "@meridian/core";
-import { deriveCompositionGraph, type CompNodeSpec } from "../derive/compositionGraph";
+import { deriveCompositionGraph, type CompNodeSpec, type CompositionOverviewOptions } from "../derive/compositionGraph";
 import { buildCompositionElkGraph, toReactFlowComposition, type CompositionReactFlowGraph } from "../layout/compositionElk";
 import { runElkLayout } from "../layout/elkLayout";
 
@@ -15,8 +15,9 @@ export async function deriveCompositionLayout(
   root: string | null = null,
   showMetrics = true,
   expanded: ReadonlySet<string> = new Set(),
+  overview: CompositionOverviewOptions = {},
 ): Promise<CompositionReactFlowGraph> {
-  const spec = deriveCompositionGraph(nodes, edges, root, showMetrics, expanded);
+  const spec = deriveCompositionGraph(nodes, edges, root, showMetrics, expanded, overview);
   if (spec.nodes.length === 0) {
     return { nodes: [], edges: [] };
   }
