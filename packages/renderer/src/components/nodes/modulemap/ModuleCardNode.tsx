@@ -18,6 +18,7 @@ import { BlockNode } from "./BlockNode";
 import { StepNode } from "./StepNode";
 import { GhostNode } from "./GhostNode";
 import { ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
+import { borderFor, DeltaChip, useNodeDiff } from "./changed";
 
 // The file family's frame accent (the module cyan), used when an expanded card turns into a frame.
 const FILE_FRAME_ACCENT = "#3FB7C4";
@@ -26,6 +27,7 @@ type ModuleCardRfNode = Node<ModuleCardData, "file">;
 
 function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
   const selected = useBlueprint((state) => state.moduleSelected.has(id));
+  const diff = useNodeDiff(id);
   const accent = CATEGORY_COLOR[data.category];
   const chevron = data.isContainer ? (
     <ExpandChevron id={id} isExpanded={data.isExpanded} collapsedTitle={`Expand — ${data.unitCount} declaration(s) in this file`} />
@@ -34,12 +36,13 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
 
   if (data.isExpanded) {
     return (
-      <div style={selected ? frameSelectedStyle(FILE_FRAME_ACCENT) : frameStyle(FILE_FRAME_ACCENT)}>
+      <div style={borderFor(frameStyle(FILE_FRAME_ACCENT), frameSelectedStyle(FILE_FRAME_ACCENT), selected, diff)}>
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
         <FrameTitleBar actionsId={id} chevron={chevron}>
           <span style={LABEL} title={data.fullPath}>{data.label}</span>
           {entryBadge}
+          <DeltaChip diff={diff} />
           <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
         </FrameTitleBar>
       </div>
@@ -47,7 +50,7 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
   }
 
   return (
-    <div style={selected ? CARD_SELECTED : CARD}>
+    <div style={borderFor(CARD, CARD_SELECTED, selected, diff)}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={{ ...ACCENT_BAR, background: accent }} />
@@ -56,6 +59,7 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
           {chevron}
           <span style={LABEL} title={data.fullPath}>{data.label}</span>
           {entryBadge}
+          <DeltaChip diff={diff} />
         </div>
         <div style={META}>
           <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>

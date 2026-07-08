@@ -6,6 +6,7 @@
 
 import { useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { isChangedNode } from "@meridian/core";
 import { accentForKind } from "../../theme/kindColors";
 import { coverageAccent } from "../../theme/coverageColors";
 import { ellipsize } from "../../theme/displayName";
@@ -16,6 +17,7 @@ import { CodeInlinePanel } from "../CodeInlinePanel";
 import { NodeHeader } from "./NodeHeader";
 import { TelemetryBadges } from "../TelemetryBadges";
 import { CoverageBadge } from "../CoverageBadge";
+import { CHANGED_ACCENT, ChangedBadge } from "../ChangedBadge";
 
 export function LeafNode(props: NodeProps<BlueprintNode>) {
   const node = props.data.node;
@@ -28,21 +30,29 @@ export function LeafNode(props: NodeProps<BlueprintNode>) {
   const codeView = useBlueprint((state) => state.codeView);
   const { showCode, expandCode, closeCode } = useBlueprintActions();
   const callable = isCallable(node.kind);
-  // Offer the source button only for a callable whose location the server can actually serve.
-  const canShowCode = callable && Boolean(node.location) && Boolean(sourceUrl);
+  const changed = isChangedNode(node);
+  // Any located leaf can show its source (a childless module = the whole file — the way to read
+  // a changed spec); the server truncates oversized spans, so non-callables are safe to offer.
+  const canShowCode = Boolean(node.location) && Boolean(sourceUrl);
   const showingHere = codeView?.node.id === node.id;
-  const toggleCode = () => (showingHere ? closeCode() : void showCode(node));
+  // Open the source straight in the big centered modal (readable, scrolled to the first change)
+  // rather than a cramped inline box that clips wide lines and buries the diff.
+  const toggleCode = () => {
+    void showCode(node);
+    expandCode();
+  };
   return (
     // A fragment, not a lone card: the inline panel is a SIBLING of the card so the card's
     // overflow:hidden can't clip it. Both live inside React Flow's node wrapper, which is the
     // positioned box the panel's top:100% anchors to (it exactly equals the card's box).
     <>
-      <div style={cardStyle(accent, selected, isEntry)}>
+      <div style={cardStyle(accent, selected, isEntry, changed)}>
         <Handle type="target" position={Position.Left} id="in" style={pinStyle(callable)} />
         {canShowCode ? <CodeButton active={showingHere} onToggle={toggleCode} /> : null}
         <NodeHeader node={node} accent={accent} entry={isEntry} reserveRight={canShowCode}>
           <TelemetryBadges metrics={metrics} />
           <CoverageBadge nodeId={props.id} />
+          <ChangedBadge node={node} />
         </NodeHeader>
         <div style={BODY_STYLE}>
           {node.summary ? <div style={SUMMARY_STYLE}>{ellipsize(node.summary, 96)}</div> : null}
@@ -81,20 +91,24 @@ function CodeButton(props: { active: boolean; onToggle: () => void }) {
   );
 }
 
-function cardStyle(accent: string, selected: boolean, isEntry: boolean): React.CSSProperties {
+// Ring precedence: entry > selected > changed — the flow root and an explicit selection both
+// out-rank the always-on diff highlight.
+function cardStyle(accent: string, selected: boolean, isEntry: boolean, changed: boolean): React.CSSProperties {
   return {
     position: "relative",
     width: "100%",
     height: "100%",
     boxSizing: "border-box",
     borderRadius: 10,
-    border: isEntry ? "2px solid #56C271" : `1px solid ${selected ? accent : "#2A2F37"}`,
-    background: "#161A21",
+    border: isEntry ? "2px solid #56C271" : `1px solid ${selected ? accent : changed ? CHANGED_ACCENT : "#2A2F37"}`,
+    background: changed ? "#1D1912" : "#161A21",
     boxShadow: isEntry
       ? "0 0 0 3px rgba(86,194,113,0.30)"
       : selected
         ? `0 0 0 1px ${accent}66`
-        : "0 1px 2px rgba(0,0,0,0.4)",
+        : changed
+          ? `0 0 0 1px ${CHANGED_ACCENT}44`
+          : "0 1px 2px rgba(0,0,0,0.4)",
     overflow: "hidden",
   };
 }

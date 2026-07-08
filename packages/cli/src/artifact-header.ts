@@ -8,13 +8,26 @@
 
 import { basename } from "node:path";
 import { LOGIC_FLOW_EXTENSION, PORTS_EXTENSION, SCHEMA_VERSION } from "@meridian/core";
-import type { ExtractionResult, GraphArtifact, GraphNode, JsonValue, LanguageTag } from "@meridian/core";
+import type {
+  ChangedLineKinds,
+  ChangedLineStats,
+  ChangedRanges,
+  ExtractionResult,
+  GraphArtifact,
+  GraphNode,
+  JsonValue,
+  LanguageTag,
+} from "@meridian/core";
 import { nowIso } from "./clock";
 import { entryModulesExtension } from "./entry-points";
 import { generatorVersion } from "./version";
 
 /** Free-form extension key: the repo's declared application entry points, best-first (NodeId[]). */
 const ENTRY_MODULES_EXTENSION = "entryModules";
+
+/** Free-form extension key: `{ baseRef, files, stats, kinds }` when generated with `--changed-since` —
+ * the base ref plus per-file diff metadata (ranges, +/− totals, line kinds) for viewer markings/chips. */
+const CHANGED_SINCE_EXTENSION = "changedSince";
 
 const TELEMETRY_CONTRACT: GraphArtifact["telemetry"] = {
   joinKey: "node.id",
@@ -29,6 +42,8 @@ export interface HeaderInputs {
   extraction: ExtractionResult;
   /** Display name for the artifact; defaults to the root's basename (web passes the repo label). */
   name?: string;
+  /** The `--changed-since` base ref + per-file line ranges/+− totals/line kinds for renderer diff UI. */
+  changedSince?: { baseRef: string; files: ChangedRanges; stats: ChangedLineStats; kinds: ChangedLineKinds };
 }
 
 export function buildArtifact(inputs: HeaderInputs): GraphArtifact {
@@ -69,6 +84,9 @@ function extensionsFor(inputs: HeaderInputs): Record<string, JsonValue> {
   const entryModules = entryModulesExtension(inputs.absoluteRoot, moduleNodesOf(inputs.extraction));
   if (entryModules) {
     extensions[ENTRY_MODULES_EXTENSION] = entryModules;
+  }
+  if (inputs.changedSince) {
+    extensions[CHANGED_SINCE_EXTENSION] = inputs.changedSince as unknown as JsonValue;
   }
   return extensions;
 }

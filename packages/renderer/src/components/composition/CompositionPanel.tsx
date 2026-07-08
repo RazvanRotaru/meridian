@@ -36,6 +36,7 @@ export function CompositionPanel() {
 
   // The active unit's metrics drive the diagnosis; null when nothing is focused or the root isn't a unit.
   const activeUnit = activeId ? metrics.get(activeId) ?? null : null;
+  const activeNode = activeId ? index.nodesById.get(activeId) ?? null : null;
 
   // A row navigates the canvas (re-root) AND fixes the selection highlight so the row + the card ring
   // agree; the scatter dot just re-roots (selection follows via the guard above).
@@ -55,7 +56,7 @@ export function CompositionPanel() {
       >
         {showMetrics ? "Hide metrics" : "Show metrics"}
       </button>
-      <UnitDiagnosisPanel unit={activeUnit} />
+      <UnitDiagnosisPanel unit={activeUnit} node={activeNode} />
       {showMetrics ? (
         <section style={SECTION_STYLE} aria-label="Main sequence">
           <div style={HEADER_STYLE}>Main sequence</div>

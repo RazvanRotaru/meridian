@@ -5,7 +5,7 @@
  * index keys everything by that id verbatim and never mints a parallel identifier.
  */
 
-import { collectTestIds } from "@meridian/core";
+import { collectChangedIds, collectTestIds } from "@meridian/core";
 import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
 
 export interface GraphIndex {
@@ -19,6 +19,10 @@ export interface GraphIndex {
   testIds: Set<string>;
   /** Every `private`-tagged node (the open tags vocabulary) — the Map's hide-privates set. */
   privateIds: Set<string>;
+  /** Every node tagged "changed" (`--changed-since`) — the exact edits, no containment closure. */
+  changedIds: Set<string>;
+  /** Changed nodes strictly inside each container, so a COLLAPSED ancestor can hint at them. */
+  changedDescendants: Map<string, number>;
   isContainer(nodeId: string): boolean;
   /** Ordered children of a node (source order); the roots of a dive-in focus scope. */
   childrenOf(nodeId: string): GraphNode[];
@@ -32,6 +36,7 @@ export function buildGraphIndex(artifact: GraphArtifact): GraphIndex {
   const nodesById = indexById(artifact.nodes);
   const childrenByParent = groupByParent(artifact.nodes);
   const parentOf = mapParents(artifact.nodes);
+  const changedIds = collectChangedIds(artifact.nodes);
   return {
     nodesById,
     childrenByParent,
@@ -41,11 +46,31 @@ export function buildGraphIndex(artifact: GraphArtifact): GraphIndex {
     edges: artifact.edges,
     testIds: collectTestIds(artifact.nodes),
     privateIds: new Set(artifact.nodes.filter((node) => node.tags?.includes("private")).map((node) => node.id)),
+    changedIds,
+    changedDescendants: countChangedDescendants(changedIds, parentOf),
     isContainer: (nodeId) => (childrenByParent.get(nodeId)?.length ?? 0) > 0,
     childrenOf: (nodeId) => childrenByParent.get(nodeId) ?? [],
     ancestorsOf: (nodeId) => ancestorsOf(nodeId, nodesById, parentOf),
     isWithinFocus: (focusId, nodeId) => isWithinFocus(focusId, nodeId, parentOf),
   };
+}
+
+/** Bubble each changed node up its parent chain so collapsed ancestors can count what they hide. */
+function countChangedDescendants(
+  changedIds: Set<string>,
+  parentOf: ReadonlyMap<string, string | null>,
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const changedId of changedIds) {
+    const seen = new Set<string>([changedId]);
+    let current = parentOf.get(changedId) ?? null;
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      counts.set(current, (counts.get(current) ?? 0) + 1);
+      current = parentOf.get(current) ?? null;
+    }
+  }
+  return counts;
 }
 
 /** Walk parentId up to a root, collecting nodes, then reverse to root..id order. */

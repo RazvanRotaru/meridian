@@ -7,11 +7,20 @@
  * caller can persist or serve a half-formed graph.
  */
 
-import { ExtractorRegistry, collectTestIds, materializeBoundaryNodes, materializeChannels, tagTestNodes } from "@meridian/core";
-import type { ExtractOptions, ExtractionResult, GraphArtifact, LanguageExtractor } from "@meridian/core";
+import { ExtractorRegistry, collectTestIds, materializeBoundaryNodes, materializeChannels, tagChangedNodes, tagTestNodes } from "@meridian/core";
+import type {
+  ChangedLineKinds,
+  ChangedLineStats,
+  ChangedRanges,
+  ExtractOptions,
+  ExtractionResult,
+  GraphArtifact,
+  LanguageExtractor,
+} from "@meridian/core";
 import { TypeScriptExtractor } from "@meridian/extractor-typescript";
 import { PythonExtractor } from "@meridian/extractor-python";
 import { CliError, EXIT } from "./errors";
+import { changedSinceMetadata } from "./git-diff";
 import { rootRelativeToCwd } from "./paths";
 import { buildArtifact } from "./artifact-header";
 import { validateOrThrow } from "./validation";
@@ -30,6 +39,8 @@ export interface PipelineRequest {
   materializeBoundary: boolean;
   /** Drop test code from the artifact entirely (`--exclude-tests`); default is include + tag. */
   excludeTests?: boolean;
+  /** Tag nodes the PR changed (git diff --merge-base <ref> vs the working tree) `"changed"`. */
+  changedSince?: string;
   /** Display name for the artifact; the web flow passes the repo label so the title isn't a temp dir. */
   targetName?: string;
 }
@@ -44,7 +55,10 @@ export interface PipelineResult {
 export async function extractToArtifact(request: PipelineRequest): Promise<PipelineResult> {
   const extractor = await selectExtractor(request.absoluteRoot, request.language);
   const raw = await runExtract(extractor, request);
-  const classified = channelize(classifyTests(raw, request.excludeTests ?? false));
+  const changedSince = await changedRangesFor(request);
+  const classified = channelize(
+    classifyChanges(classifyTests(raw, request.excludeTests ?? false), changedSince?.ranges ?? null),
+  );
   const extraction = request.materializeBoundary
     ? { ...classified, nodes: materializeBoundaryNodes(classified.nodes, classified.edges) }
     : classified;
@@ -54,6 +68,10 @@ export async function extractToArtifact(request: PipelineRequest): Promise<Pipel
     language: extraction.language,
     extraction,
     name: request.targetName,
+    changedSince:
+      request.changedSince && changedSince
+        ? { baseRef: request.changedSince, files: changedSince.ranges, stats: changedSince.stats, kinds: changedSince.kinds }
+        : undefined,
   });
   const { warnings } = validateOrThrow(artifact, "generated artifact");
   return { extractor, extraction, artifact, warnings };
@@ -104,6 +122,29 @@ function channelize(extraction: ExtractionResult): ExtractionResult {
   const ports = rawPorts.filter((port) => known.has(port.nodeId));
   const { nodes, edges } = materializeChannels(extraction.nodes, extraction.edges, ports);
   return { ...extraction, nodes, edges, ports };
+}
+
+/**
+ * The changed line ranges for `--changed-since <ref>` (a PR's diff), or null without the flag.
+ * Fails closed like the rest of the pipeline — a bad ref or a non-repo root aborts the generate.
+ * The ranges both tag nodes (below) and persist into `extensions.changedSince` so viewers can
+ * mark the exact lines.
+ */
+async function changedRangesFor(
+  request: PipelineRequest,
+): Promise<{ ranges: ChangedRanges; stats: ChangedLineStats; kinds: ChangedLineKinds } | null> {
+  if (!request.changedSince) {
+    return null;
+  }
+  return changedSinceMetadata(request.absoluteRoot, request.changedSince);
+}
+
+/** Tag the nodes the diff touched: core joins the ranges onto node spans (tags compose with "test"). */
+function classifyChanges(extraction: ExtractionResult, ranges: ChangedRanges | null): ExtractionResult {
+  if (!ranges) {
+    return extraction;
+  }
+  return { ...extraction, nodes: tagChangedNodes(extraction.nodes, ranges) };
 }
 
 async function runExtract(extractor: LanguageExtractor, request: PipelineRequest): Promise<ExtractionResult> {
