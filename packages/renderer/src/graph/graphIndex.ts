@@ -55,6 +55,30 @@ export function buildGraphIndex(artifact: GraphArtifact): GraphIndex {
   };
 }
 
+/**
+ * Overwrite the "changed" set at runtime, in place, and rebuild changedDescendants to match. A GitHub
+ * PR review reuses the same `--changed-since` channel every card already paints from: computing the
+ * modified code blocks (diff hunks ∩ node ranges) and pushing them here makes the Map + minimal
+ * overlay ring exactly those blocks amber, for free. Mutating the one index object every card reads
+ * means the next store `set()` re-runs their `changedIds.has(id)` selectors and repaints.
+ */
+export function applyChangedIds(index: GraphIndex, changedIds: Iterable<string>): void {
+  index.changedIds.clear();
+  for (const id of changedIds) {
+    index.changedIds.add(id);
+  }
+  index.changedDescendants.clear();
+  for (const changedId of index.changedIds) {
+    const seen = new Set<string>([changedId]);
+    let current = index.parentOf.get(changedId) ?? null;
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      index.changedDescendants.set(current, (index.changedDescendants.get(current) ?? 0) + 1);
+      current = index.parentOf.get(current) ?? null;
+    }
+  }
+}
+
 /** Bubble each changed node up its parent chain so collapsed ancestors can count what they hide. */
 function countChangedDescendants(
   changedIds: Set<string>,

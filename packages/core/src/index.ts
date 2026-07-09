@@ -19,3 +19,6 @@ export * from "./changed-detection";
 export * from "./coverage";
 export * from "./ports";
 export * from "./link";
+export * from "./review";
+export * from "./affected-nodes";
+export * from "./affected-flows";

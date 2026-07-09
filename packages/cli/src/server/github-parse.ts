@@ -4,6 +4,7 @@
  * response fields — only these typed projections leave the server, and only over `textContent`.
  */
 
+import type { LineRange } from "@meridian/core";
 import { asObject, numberOr, optionalString, requireNumber, requireString } from "./json-fields";
 
 const OWNER_REPO = /^[\w.-]+\/[\w.-]+$/;
@@ -43,6 +44,10 @@ export interface PrFile {
   status: "added" | "modified" | "removed" | "renamed";
   additions: number;
   deletions: number;
+  /** New-side changed line ranges parsed from the file's unified-diff patch; omitted when GitHub
+   * ships no patch (binary, or a diff too large to include) ⇒ downstream treats the whole file as
+   * changed. Lets the PR-review graph name the exact code blocks a PR touched, not just the files. */
+  hunks?: LineRange[];
 }
 
 export type RepoQuery =
@@ -139,12 +144,38 @@ function toPrSummary(body: Record<string, unknown>): PrSummary {
 }
 
 function toPrFile(body: Record<string, unknown>): PrFile {
-  return {
+  const file: PrFile = {
     path: requireString(body, "filename"),
     status: prFileStatus(body.status),
     additions: Math.max(0, Math.trunc(numberOr(body.additions, 0))),
     deletions: Math.max(0, Math.trunc(numberOr(body.deletions, 0))),
   };
+  const patch = optionalString(body, "patch");
+  const hunks = patch ? parsePatchHunks(patch) : [];
+  if (hunks.length > 0) {
+    file.hunks = hunks;
+  }
+  return file;
+}
+
+/**
+ * New-side changed line ranges from a unified-diff patch, read from its hunk headers alone
+ * (`@@ -a,b +c,d @@`): `c` is the new-side start, `d` the line count (absent ⇒ 1). A `+c,0` header
+ * is a pure deletion — anchored to a 1-line span at `c` so a delete-only edit still names the block
+ * it sits in (mirrors the local `meridian review` diff parser). Ranges are 1-based and inclusive.
+ */
+export function parsePatchHunks(patch: string): LineRange[] {
+  const ranges: LineRange[] = [];
+  for (const line of patch.split("\n")) {
+    const match = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (!match) {
+      continue;
+    }
+    const start = Number(match[1]);
+    const count = match[2] === undefined ? 1 : Number(match[2]);
+    ranges.push(count === 0 ? { start, end: start + 1 } : { start, end: start + count - 1 });
+  }
+  return ranges;
 }
 
 function prFileStatus(status: unknown): PrFile["status"] {

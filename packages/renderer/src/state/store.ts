@@ -7,8 +7,9 @@
 
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { Edge, Node } from "@xyflow/react";
-import { computeCoverage } from "@meridian/core";
+import { computeAffectedNodes, computeCoverage, unmappedChangedFiles } from "@meridian/core";
 import type {
+  ChangedFile,
   CoverageReport,
   FlowPath,
   FlowStep,
@@ -18,7 +19,8 @@ import type {
   NodeId,
   NodeMetrics,
 } from "@meridian/core";
-import type { GraphIndex } from "../graph/graphIndex";
+import { applyChangedIds, type GraphIndex } from "../graph/graphIndex";
+import { matchAffectedFiles } from "../derive/matchAffectedFiles";
 import type { BlueprintEdge, BlueprintNode } from "../layout/rfTypes";
 import type { TelemetryProvider } from "../telemetry/provider";
 import type { ViewMode } from "../derive/edgeSelection";
@@ -43,7 +45,6 @@ import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/block
 import { deriveModuleTree } from "../derive/moduleTree";
 import { moduleChildContainerIds } from "../derive/moduleChildContainers";
 import { deriveServiceTree } from "../derive/serviceClusterTree";
-import { matchPrFilesToModules } from "../derive/prFileMatch";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import type { HighlightMode } from "../components/moduleMapPaint";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
@@ -51,6 +52,9 @@ import { moduleRevealStateFor, withAncestorsOf, withAncestorsOfMany } from "./fl
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
 import { PRS_UNAVAILABLE_ERROR, type PrChangedFile, type PrFilesResponse, type PrListResponse, type PrSummary, type PrsTab } from "./prTypes";
+import { deriveReviewData, deriveReviewDataFromContext, applyTick, type ReviewData } from "../derive/reviewData";
+import { readReviewProgress, writeReviewProgress, clearReviewProgress, type ReviewTick } from "./reviewTicksPref";
+import { reviewContextFromPrFiles } from "../derive/prReviewContext";
 
 /**
  * The "All" setting for the related-flows depth dial: a depth larger than any real call-graph chain.
@@ -212,6 +216,20 @@ export interface BlueprintState {
   minimalRfNodes: Node[];
   minimalRfEdges: Edge[];
   minimalLayoutStatus: LayoutStatus;
+  /** The parsed PR-review data (affected-flow rows + flow trees); null hides the review surface.
+   * Sourced EITHER from a `meridian review` artifact extension, OR built at runtime from a GitHub PR
+   * (selectPr → reviewPrInGraph). */
+  review: ReviewData | null;
+  /** Artifact node ids that are affected — the coupling set between the graph and the flow panel. */
+  reviewAffectedIds: Set<string>;
+  /** Changed files that mapped to no code block (deleted / not-extracted / edits outside any block). */
+  reviewUnmapped: ChangedFile[];
+  /** Per-flow review progress, keyed by flowId, persisted to localStorage under the reviewKey. */
+  reviewTicks: Record<string, ReviewTick>;
+  /** The graph node ids lit by a panel hover; null == nothing hovered (all blocks full strength). */
+  reviewLitNodeIds: Set<string> | null;
+  /** The selected review block/flow id; drives the graph selection ring and the panel row highlight. */
+  reviewSelectedId: string | null;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -307,6 +325,10 @@ export interface BlueprintState {
   expandMinimal(sourceId: string, direction: Direction): void;
   resetMinimalGraph(): void;
   minimalRelayout(): Promise<void>;
+  setReviewLit(ids: Set<string> | null): void;
+  selectReviewNode(id: string | null): void;
+  toggleReviewTick(flowId: string): void;
+  resetReviewTicks(): void;
   setViewMode(mode: ViewMode): void;
   toggleShowTests(): void;
   toggleCoverageMode(): void;
@@ -358,6 +380,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let prsListSeq = 0;
   let prFilesSeq = 0;
   const prsNextPage: Record<PrsTab, number> = { open: 1, closed: 1 };
+  // The parsed review payload from a `meridian review` artifact (null when the artifact carries no
+  // valid `review` extension — e.g. a plain `web`/`view` session). Computed once (the artifact never
+  // changes after boot); a GitHub PR opened via reviewPrInGraph can later populate `review` at runtime.
+  const review = deriveReviewData(dependencies.artifact, dependencies.index);
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
   const prsUrl = dependencies.prsUrl;
@@ -375,7 +401,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     expanded: new Set<string>(),
     selectedId: null,
     focusId: null,
-    // The Map (merged module-map + composition) is the default lens.
+    // A `meridian review` artifact opens straight on the review surface; everything else (plain
+    // `view`, or a `web` GitHub session) opens on the Map — the default lens.
     viewMode: "modules",
     showTests: true,
     coverageMode: false,
@@ -433,6 +460,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     minimalRfNodes: [],
     minimalRfEdges: [],
     minimalLayoutStatus: "idle",
+    review,
+    reviewAffectedIds: new Set<string>(),
+    reviewUnmapped: [],
+    reviewTicks: review ? readReviewProgress(review.context.reviewKey).ticks : {},
+    reviewLitNodeIds: null,
+    reviewSelectedId: null,
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -1076,6 +1109,37 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ moduleSelected: withToggled(get().moduleSelected, id) });
     },
 
+    // Paint-only: light a set of graph node ids (from a panel hover); null clears back to full strength.
+    setReviewLit(ids) {
+      set({ reviewLitNodeIds: ids });
+    },
+
+    // Select a review block (from the graph or the panel); also lights it so the coupling reads as one.
+    selectReviewNode(id) {
+      set({ reviewSelectedId: id, reviewLitNodeIds: id === null ? null : new Set([id]) });
+    },
+
+    // Toggle a flow's reviewed tick and persist the whole record under the reviewKey.
+    toggleReviewTick(flowId) {
+      const { review, reviewTicks } = get();
+      const row = review?.rows.find((candidate) => candidate.flow.flowId === flowId);
+      if (!review || !row) {
+        return;
+      }
+      const next = applyTick(reviewTicks, row, "toggle", new Date().toISOString());
+      set({ reviewTicks: next });
+      writeReviewProgress(review.context.reviewKey, { version: 1, ticks: next });
+    },
+
+    resetReviewTicks() {
+      const { review } = get();
+      if (!review) {
+        return;
+      }
+      clearReviewProgress(review.context.reviewKey);
+      set({ reviewTicks: {} });
+    },
+
     // Switching mode re-derives + relayouts like a dive. Entering UI mode dives to the render
     // subtree; leaving it returns to call-flow at the focus you had before (home if none). The
     // logic view is a standalone render (no rfNodes/ELK), so it neither dives nor relayouts, and
@@ -1312,23 +1376,66 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // Reviewing a PR lands on the Map (the spatial home view), focused on the touched modules'
-    // common package with each matched module expanded into view and selected. Files that match
-    // nothing (docs, config) simply contribute no modules; zero matches means the plain overview.
+    // Reviewing a PR lands on main's Module-map minimal-graph surface, seeded from the PR's changed
+    // FILES and pre-expanded into their code blocks. The modified blocks (diff hunks ∩ node ranges)
+    // are pushed into the shared `changedIds` channel so the cards ring exactly them amber, and the
+    // affected logic flows fill the hierarchical panel beside the overlay. Same review CONTEXT a
+    // `meridian review` artifact carries — only the render surface is main's, not a bespoke graph.
     reviewPrInGraph() {
-      const files = get().prFiles ?? [];
-      const matchedIds = unique(matchPrFilesToModules(files, get().index.nodesById.values()).map((match) => match.moduleId));
-      const reveal = moduleRevealStateFor(matchedIds, get().index);
-      set({
-        viewMode: "modules",
-        prReviewed: get().prSelected,
-        flowSelection: null,
-        flowEmphasis: new Set<string>(),
-        moduleFocus: reveal?.moduleFocus ?? null,
-        moduleExpanded: reveal?.moduleExpanded ?? new Set<string>(),
-        moduleSelected: reveal?.moduleSelected ?? new Set<string>(),
+      const { prFiles, prSelected, prsList, artifact, index } = get();
+      if (prSelected === null) {
+        return;
+      }
+      const summary = [...(prsList.open ?? []), ...(prsList.closed ?? [])].find((pr) => pr.number === prSelected);
+      const context = reviewContextFromPrFiles({
+        prNumber: prSelected,
+        headRef: summary?.headRef ?? null,
+        scopeId: prFilesUrl,
+        files: prFiles ?? [],
       });
+      const review = deriveReviewDataFromContext(context, artifact, index);
+      // The modified code blocks (hunks ∩ node ranges); repaint main's changed-node channel to THIS PR
+      // so the Map + minimal overlay ring the edited blocks amber (reused `--changed-since` highlight).
+      const affected = computeAffectedNodes(artifact.nodes, context.changedFiles);
+      applyChangedIds(index, affected.map((node) => node.nodeId));
+      // Seed the minimal graph from the changed FILES (seeds must be module ids).
+      const seeds = [...new Set(matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched.map((match) => match.moduleId))].sort();
+      // Pre-expand every container on the path to each changed block (file → class) so the modified
+      // methods surface as their own amber cards instead of a collapsed "N members" class.
+      const expanded = new Set<string>(seeds);
+      for (const node of affected) {
+        for (const ancestor of index.ancestorsOf(node.nodeId)) {
+          if (ancestor.id !== node.nodeId && index.isContainer(ancestor.id)) {
+            expanded.add(ancestor.id);
+          }
+        }
+      }
+      minimalLayoutSeq += 1;
+      set({
+        review,
+        prReviewed: prSelected,
+        reviewTicks: readReviewProgress(context.reviewKey).ticks,
+        reviewAffectedIds: new Set(affected.map((node) => node.nodeId)),
+        reviewUnmapped: unmappedChangedFiles(affected, context.changedFiles),
+        reviewLitNodeIds: null,
+        reviewSelectedId: null,
+        viewMode: "modules",
+        moduleFocus: null,
+        moduleSelected: new Set<string>(),
+        moduleExpanded: expanded,
+        minimalSeedIds: seeds,
+        minimalKeptIds: [],
+        minimalExpanded: [],
+        minimalBasePositions: {},
+        minimalRfNodes: [],
+        minimalRfEdges: [],
+        minimalLayoutStatus: seeds.length > 0 ? "laying-out" : "idle",
+      });
+      // Lay out the underlying Map (correct if the reader closes the overlay) and, when seeded, the overlay.
       void get().moduleRelayout();
+      if (seeds.length > 0) {
+        void get().minimalRelayout();
+      }
     },
 
     async relayout() {
@@ -1514,8 +1621,4 @@ function mergePrSummaries(existing: readonly PrSummary[], incoming: readonly PrS
     byNumber.set(pr.number, pr);
   }
   return [...byNumber.values()];
-}
-
-function unique(values: readonly string[]): string[] {
-  return [...new Set(values)];
 }
