@@ -1,9 +1,8 @@
 /**
  * GHOST cards are laid out OFF the ELK core: the drawn (non-ghost) tree keeps its ELK layer layout
- * while every ghost hangs in a fan BESIDE its anchor (the drawn node its wire touches). These tests pin
- * that contract — ghosts are root nodes just past their anchor's edge, an OUTGOING ghost fans RIGHT and
- * an INCOMING ghost fans LEFT, none overlap — and the hard regression: with NO ghost the output is
- * unchanged.
+ * while every ghost drops at the nearest overlap-free spot BESIDE its anchor. These tests pin the hard
+ * contract — a ghost NEVER overlaps a real card or another ghost, an OUTGOING ghost sits to the anchor's
+ * RIGHT and an INCOMING ghost to its LEFT — and the regression: with NO ghost the output is unchanged.
  */
 
 import { describe, expect, it } from "vitest";
@@ -53,22 +52,24 @@ function rectOf(node: { position: { x: number; y: number }; style?: unknown }): 
 function overlaps(a: Rect, b: Rect): boolean {
   return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
 }
-describe("layoutModuleTree ghost fans", () => {
-  it("keeps the ELK core ghost-free and emits ghosts as root nodes just past their anchor", async () => {
+const centerX = (r: Rect): number => r.x + r.width / 2;
+
+describe("layoutModuleTree ghost placement", () => {
+  it("keeps the ELK core ghost-free and emits ghosts as root nodes clear of the core", async () => {
     const nodes = [fileNode("f:a"), fileNode("f:b"), ghostNode("g:x")];
     const edges = [importEdge("f:a", "f:b"), ghostWire("f:a", "g:x")];
     const { nodes: laid } = await layoutModuleTree(nodes, edges);
 
-    const anchor = rectOf(laid.find((node) => node.id === "f:a")!);
     const ghost = laid.find((node) => node.id === "g:x")!;
     // Emitted as a ROOT node typed "ghost" — never nested, never fed to ELK.
     expect(ghost.type).toBe("ghost");
     expect(ghost.parentId).toBeUndefined();
-    // OUTGOING dependency (wire drawn→ghost) sits just past its ANCHOR's right edge — beside it, not far.
-    expect(rectOf(ghost).x).toBeGreaterThanOrEqual(anchor.x + anchor.width);
+    // It overlaps NEITHER real card.
+    const core = laid.filter((node) => node.type !== "ghost").map(rectOf);
+    expect(core.every((card) => !overlaps(rectOf(ghost), card))).toBe(true);
   });
 
-  it("fans outgoing ghosts right of the anchor and incoming ghosts left", async () => {
+  it("puts outgoing ghosts right of the anchor and incoming ghosts left, overlapping nothing", async () => {
     const nodes = [fileNode("f:a"), ghostNode("g:out"), ghostNode("g:in")];
     // g:out is an OUTGOING dependency (drawn→ghost, RIGHT); g:in is an INCOMING caller (ghost→drawn, LEFT).
     const edges = [ghostWire("f:a", "g:out"), ghostWire("g:in", "f:a")];
@@ -77,18 +78,28 @@ describe("layoutModuleTree ghost fans", () => {
     const anchor = rectOf(laid.find((node) => node.id === "f:a")!);
     const out = rectOf(laid.find((node) => node.id === "g:out")!);
     const inc = rectOf(laid.find((node) => node.id === "g:in")!);
-    expect(out.x).toBeGreaterThanOrEqual(anchor.x + anchor.width); // right, past the anchor's right edge
-    expect(inc.x + inc.width).toBeLessThanOrEqual(anchor.x); // left, past the anchor's left edge
+    expect(centerX(out)).toBeGreaterThan(centerX(anchor)); // right side
+    expect(centerX(inc)).toBeLessThan(centerX(anchor)); // left side
+    expect(overlaps(out, anchor)).toBe(false);
+    expect(overlaps(inc, anchor)).toBe(false);
   });
 
-  it("never overlaps two ghosts in a fan", async () => {
-    const nodes = [fileNode("f:a"), ghostNode("g:1"), ghostNode("g:2"), ghostNode("g:3")];
-    const edges = [ghostWire("f:a", "g:1"), ghostWire("f:a", "g:2"), ghostWire("f:a", "g:3")];
+  it("never overlaps a ghost with a real card or another ghost, even when crowded", async () => {
+    // A tight cluster of real cards plus several ghosts off one anchor — every ghost must find clear air.
+    const nodes = [fileNode("f:a"), fileNode("f:b"), fileNode("f:c"), ghostNode("g:1"), ghostNode("g:2"), ghostNode("g:3"), ghostNode("g:4")];
+    const edges = [
+      importEdge("f:a", "f:b"),
+      importEdge("f:b", "f:c"),
+      ghostWire("f:a", "g:1"),
+      ghostWire("f:a", "g:2"),
+      ghostWire("f:a", "g:3"),
+      ghostWire("f:a", "g:4"),
+    ];
     const { nodes: laid } = await layoutModuleTree(nodes, edges);
-    const ghosts = laid.filter((node) => node.type === "ghost").map(rectOf);
-    for (let i = 0; i < ghosts.length; i += 1) {
-      for (let j = i + 1; j < ghosts.length; j += 1) {
-        expect(overlaps(ghosts[i], ghosts[j])).toBe(false);
+    const rects = laid.map(rectOf);
+    for (let i = 0; i < laid.length; i += 1) {
+      for (let j = i + 1; j < laid.length; j += 1) {
+        expect(overlaps(rects[i], rects[j])).toBe(false);
       }
     }
   });

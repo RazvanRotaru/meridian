@@ -1,14 +1,14 @@
 /**
  * Off-ELK placement for Module-map GHOST cards. A ghost is the off-level far end of a code-dependency
  * wire (an off-screen definition or caller); feeding it to ELK gives it a layer slot and pushes the
- * real frames apart, so instead we lay the core out with ELK and then hang each ghost RIGHT BESIDE the
- * drawn node its wire touches (its ANCHOR) — close enough to stay on screen, never banished to the far
- * edge of a big graph.
+ * real frames apart, so instead we lay the core out with ELK and then drop each ghost at the NEAREST
+ * CLEAR SPOT beside the drawn node its wire touches (its ANCHOR).
  *
- * A node's ghosts form a small vertical fan just off the anchor: an OUTGOING dependency (wire
- * drawn→ghost) fans to the anchor's RIGHT, an INCOMING caller (wire ghost→drawn) to its LEFT. Ghosts of
- * the same anchor are centred on it; ghosts are pushed down past any already-placed ghost so no two
- * overlap. Pure: id-sorted, no clock/random.
+ * "Nearest clear" is the whole game: a ghost MUST NOT overlap any real card or another ghost, but it
+ * should sit as close to its anchor as an overlap-free spot allows — never a far banished band, never
+ * on top of a neighbour. From the anchor's side (OUTGOING dependency → RIGHT, INCOMING caller → LEFT) we
+ * scan vertical slots at the anchor's row, then step outward one column at a time, taking the first spot
+ * that clears everything placed so far. Pure: id-sorted, no clock/random.
  */
 
 import type { Node } from "@xyflow/react";
@@ -16,10 +16,14 @@ import type { ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
 import type { GhostData } from "../derive/ghostDeps";
 import { ghostSize } from "./moduleLevelLayout";
 
-// Horizontal clearance between the anchor card and its ghost fan, and the vertical gap between stacked
-// ghosts. Small, so ghosts sit next to the node they belong to (a short pan at most, not a far band).
-const GAP = 52;
-const V_GAP = 22;
+// The first column sits GAP past the anchor's edge; a blocked column steps COL_STEP farther out. Vertical
+// slots step by the ghost's height + V_GAP, scanning up to MAX_DY above/below the anchor row before the
+// column is abandoned. The caps are generous safety bounds — a clear spot is almost always found early.
+const GAP = 40;
+const COL_STEP = 150;
+const V_GAP = 20;
+const MAX_DY = 6000;
+const MAX_COLS = 600;
 
 interface Rect {
   x: number;
@@ -32,16 +36,12 @@ interface Anchoring {
   anchorId: string;
   direction: Direction;
 }
-interface Group {
-  anchor: Rect;
-  direction: Direction;
-  ghosts: VisibleModuleNode[];
-}
 
 /**
- * Place every ghost in a fan beside its anchor. `coreNodes` are the ELK-laid React Flow nodes
- * (positions are parent-relative inside frames); ghosts are emitted as ROOT nodes at absolute
- * positions next to the anchor's edge, pushed down so no two ghosts overlap.
+ * Place every ghost at the nearest overlap-free spot beside its anchor. `coreNodes` are the ELK-laid
+ * React Flow nodes (positions are parent-relative inside frames); ghosts are emitted as ROOT nodes at
+ * absolute positions. `occupied` seeds with EVERY core card, so a ghost never lands on the graph, and
+ * grows with each placed ghost, so no two ghosts overlap either.
  */
 export function placeGhostBands(ghosts: VisibleModuleNode[], ghostWires: ModuleTreeEdge[], coreNodes: Node[]): Node[] {
   if (ghosts.length === 0 || coreNodes.length === 0) {
@@ -49,59 +49,52 @@ export function placeGhostBands(ghosts: VisibleModuleNode[], ghostWires: ModuleT
   }
   const anchoring = anchoringByGhost(ghostWires, new Set(ghosts.map((ghost) => ghost.id)));
   const rects = anchorRects(coreNodes);
-  const groups = groupByAnchor(ghosts, anchoring, rects);
-  const placed: Rect[] = [];
+  const occupied: Rect[] = [...rects.values()];
   const out: Node[] = [];
-  for (const key of [...groups.keys()].sort()) {
-    const group = groups.get(key)!;
-    out.push(...placeFan(group, placed));
-  }
-  return out;
-}
-
-/** Group a direction's ghosts under their shared anchor, so each anchor's ghosts fan together. */
-function groupByAnchor(ghosts: VisibleModuleNode[], anchoring: Map<string, Anchoring>, rects: Map<string, Rect>): Map<string, Group> {
-  const groups = new Map<string, Group>();
-  for (const ghost of ghosts) {
+  for (const ghost of sortForPlacement(ghosts, anchoring)) {
     const anchor = anchoring.get(ghost.id);
-    const rect = anchor ? rects.get(anchor.anchorId) : undefined;
-    if (!anchor || !rect) {
+    const anchorRect = anchor ? rects.get(anchor.anchorId) : undefined;
+    if (!anchor || !anchorRect) {
       continue; // an unwired ghost (pruned at paint) or one whose anchor isn't drawn has nowhere to hang.
     }
-    const key = `${anchor.anchorId}|${anchor.direction}`;
-    (groups.get(key) ?? setGet(groups, key, { anchor: rect, direction: anchor.direction, ghosts: [] })).ghosts.push(ghost);
-  }
-  return groups;
-}
-
-/** Stack a group's ghosts in a column beside the anchor, centred on it, each pushed below any overlap. */
-function placeFan(group: Group, placed: Rect[]): Node[] {
-  const ghosts = [...group.ghosts].sort((a, b) => a.id.localeCompare(b.id));
-  const sizes = ghosts.map((ghost) => ghostSize(ghost.data as GhostData));
-  const total = sizes.reduce((sum, size) => sum + size.height, 0) + V_GAP * (ghosts.length - 1);
-  let y = group.anchor.y + group.anchor.height / 2 - total / 2;
-  const out: Node[] = [];
-  ghosts.forEach((ghost, i) => {
-    const size = sizes[i];
-    const x = group.direction === "right" ? group.anchor.x + group.anchor.width + GAP : group.anchor.x - GAP - size.width;
-    const rect = pushBelow({ x, y, ...size }, placed);
-    placed.push(rect);
+    const rect = nearestClearSpot(anchorRect, anchor.direction, ghostSize(ghost.data as GhostData), occupied);
+    occupied.push(rect);
     out.push(toGhostNode(ghost, rect));
-    y = rect.y + size.height + V_GAP;
-  });
+  }
   return out;
 }
 
-/** Slide a rect straight down until it clears every already-placed ghost (keeps the fan's column x). */
-function pushBelow(rect: Rect, placed: Rect[]): Rect {
-  let candidate = rect;
-  let guard = 0;
-  while (guard < 1000 && placed.some((other) => overlaps(candidate, other))) {
-    const blocker = placed.find((other) => overlaps(candidate, other))!;
-    candidate = { ...candidate, y: blocker.y + blocker.height + V_GAP };
-    guard += 1;
+/** Sort by (anchorId, direction, id) so the greedy placement — and its resolved layout — is stable. */
+function sortForPlacement(ghosts: VisibleModuleNode[], anchoring: Map<string, Anchoring>): VisibleModuleNode[] {
+  return [...ghosts].sort((a, b) => {
+    const ax = anchoring.get(a.id);
+    const bx = anchoring.get(b.id);
+    return (ax?.anchorId ?? "").localeCompare(bx?.anchorId ?? "") || (ax?.direction ?? "").localeCompare(bx?.direction ?? "") || a.id.localeCompare(b.id);
+  });
+}
+
+/**
+ * The first spot on the anchor's side that overlaps nothing. Column 0 sits GAP past the anchor edge; at
+ * each column we scan vertical slots out from the anchor's row (0, +v, -v, …) and take the first free
+ * one, else step to the next column farther out. Guarantees an overlap-free result, as near as possible.
+ */
+function nearestClearSpot(anchor: Rect, direction: Direction, size: { width: number; height: number }, occupied: Rect[]): Rect {
+  const sign = direction === "right" ? 1 : -1;
+  const rowY = anchor.y + anchor.height / 2 - size.height / 2;
+  const firstX = direction === "right" ? anchor.x + anchor.width + GAP : anchor.x - GAP - size.width;
+  const step = size.height + V_GAP;
+  for (let col = 0; col < MAX_COLS; col += 1) {
+    const x = firstX + sign * col * COL_STEP;
+    for (let dy = 0; dy <= MAX_DY; dy += step) {
+      for (const y of dy === 0 ? [rowY] : [rowY + dy, rowY - dy]) {
+        const rect = { x, y, ...size };
+        if (!occupied.some((other) => overlaps(rect, other))) {
+          return rect;
+        }
+      }
+    }
   }
-  return candidate;
+  return { x: firstX + sign * MAX_COLS * COL_STEP, y: rowY, ...size };
 }
 
 /**
@@ -137,11 +130,6 @@ function push(map: Map<string, string[]>, ghostId: string, anchorId: string): vo
   const list = map.get(ghostId) ?? [];
   list.push(anchorId);
   map.set(ghostId, list);
-}
-
-function setGet<K, V>(map: Map<K, V>, key: K, value: V): V {
-  map.set(key, value);
-  return value;
 }
 
 /** Absolute rect of every core node, keyed by id (positions are parent-relative inside frames). */
@@ -186,7 +174,7 @@ function overlaps(a: Rect, b: Rect): boolean {
   return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
 }
 
-/** Emit a ghost as a ROOT React Flow node at its fan spot; `data` is passed through untouched. */
+/** Emit a ghost as a ROOT React Flow node at its spot; `data` is passed through untouched. */
 function toGhostNode(ghost: VisibleModuleNode, rect: Rect): Node {
   return {
     id: ghost.id,
