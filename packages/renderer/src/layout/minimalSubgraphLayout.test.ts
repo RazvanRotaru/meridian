@@ -43,7 +43,7 @@ function specFor(expanded: string[]) {
   const index = buildGraphIndex({ nodes: NODES, edges: EDGES } as unknown as GraphArtifact);
   const graph = buildModuleGraph(index);
   const onMap = new Set(["m:a", "m:b"]);
-  return buildMinimalSubgraph(index, graph, new Set(["m:a"]), new Set(), [], onMap, {
+  return buildMinimalSubgraph(index, graph, new Set(["m:a"]), new Set(["m:a"]), onMap, {
     expanded: new Set(expanded),
     blockDeps: { edges: [] },
     flows: {},
@@ -83,25 +83,6 @@ describe("layoutMinimalSubgraph", () => {
       for (let j = i + 1; j < files.length; j += 1) {
         expect(overlaps(rectOf(files[i]), rectOf(files[j]))).toBe(false);
       }
-    }
-  });
-
-  it("re-hangs a stub against its source's reflowed position", async () => {
-    // b imports nothing shown outward but a→b means b has a hidden importee (c-less here); ensure any
-    // emitted stub sits flush beside its (reflowed) source rather than the stale seed spot.
-    const base: Record<string, PlacedRect> = {
-      "m:a": { x: 0, y: 0, width: 210, height: 54 },
-      "m:b": { x: 50, y: 0, width: 210, height: 54 },
-    };
-    const { nodes } = await layoutMinimalSubgraph(specFor(["m:a"]), base);
-    for (const stub of nodes.filter((node) => node.type === "minimalStub")) {
-      const sourceId = (stub.data as { sourceId: string }).sourceId;
-      const source = nodes.find((node) => node.id === sourceId);
-      expect(source).toBeDefined();
-      const s = rectOf(source!);
-      const st = rectOf(stub);
-      // vertically centred on its source
-      expect(st.y + st.height / 2).toBeCloseTo(s.y + s.height / 2, 1);
     }
   });
 });

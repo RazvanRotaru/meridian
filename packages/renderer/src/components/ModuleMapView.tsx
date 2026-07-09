@@ -119,11 +119,11 @@ export function ModuleMapView() {
   );
 }
 
-/** The floating action a selection (one card or more) reveals: build its minimal graph overlay. */
+/** The floating action a selection (one card or more) reveals: extract it into the curated overlay. */
 function BuildMinimalGraphButton(props: { count: number; onBuild: () => void }) {
   return (
     <button type="button" style={BUILD_BUTTON_STYLE} onClick={props.onBuild}>
-      Build minimal graph ({props.count})
+      Extract selection ({props.count})
     </button>
   );
 }

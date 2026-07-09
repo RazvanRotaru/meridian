@@ -4,8 +4,8 @@
  * of a user selection. Every changed node lifts to its nearest owning file (`module`); those files are
  * the seeds. There are no captured map positions here, so `basePositions` is empty — the layout places
  * the changed files fresh. It is a CLOSED set: ONLY the changed files (and the nodes inside them), never
- * a neighbour ring and never a [+n] expander — `stubs: false` off, and the empty base positions already
- * suppress the on-map ring. A post-pass marks each changed/seed node so the view can paint a change ring
+ * a neighbour ring. The empty on-map set (from the empty base positions) leaves the ghost ring empty, so
+ * members = origin = the changed files and nothing reaches outward. A post-pass marks each changed/seed node so the view can paint a change ring
  * regardless of the inner node component. Pure; no React, no store.
  */
 
@@ -33,12 +33,10 @@ export async function derivePrMinimalGraph(prIndex: GraphIndex, prArtifact: Grap
   const layout = await deriveMinimalGraphLayout(
     prIndex,
     moduleGraph,
-    new Set(seedIds),
-    new Set(), // no drilled-through (kept) ghosts
-    [], // no directional expansions
-    {}, // no captured map positions — place the changed files fresh
+    new Set(seedIds), // members = the changed files
+    new Set(seedIds), // origin = the changed files (all seed-tier)
+    {}, // no captured map positions — place the changed files fresh, and (empty on-map set) NO ghosts
     { moduleExpanded: new Set(), blockDeps: buildBlockDeps(prIndex), flows },
-    { stubs: false }, // ONLY the changed files — no [+n] expanders, no reach outward
   );
   const seedSet = new Set(seedIds);
   const nodes = layout.nodes.map((node) => markChanged(node, prIndex.changedIds, seedSet));
