@@ -1,16 +1,17 @@
 /**
- * The `/api/repos/mine` handler. The load-bearing guarantees: the session cookie is the only
- * credential (no cookie -> 401 without ever touching GitHub), and a signed-in session forwards
- * only the whitelisted repo summaries — never the token.
+ * `/api/repos/mine` + `/api/auth/session`. The load-bearing guarantees: with no usable token at all
+ * (no session, no env, no gh fallback) `/api/repos/mine` 401s without ever touching GitHub; a `gh`
+ * fallback token signs the UI in and lists repos WITHOUT an interactive session; and the token itself
+ * is never forwarded — only the whitelisted repo summaries and identity are.
  */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { handleOwnRepos } from "./web-auth";
+import { handleAuthSession, handleOwnRepos } from "./web-auth";
 import type { AuthContext } from "./web-auth";
 import { SessionStore, markAuthorized } from "./session";
 import type { GitHubClient } from "./github";
-import type { RepoSummary } from "./github-parse";
+import type { GitHubUser, RepoSummary } from "./github-parse";
 
 const REPO: RepoSummary = {
   fullName: "daria/meridian-playground",
@@ -20,8 +21,20 @@ const REPO: RepoSummary = {
   ownerAvatarUrl: null,
 };
 
+const GH_USER: GitHubUser = { login: "iulia", avatarUrl: null };
+
 describe("handleOwnRepos", () => {
-  it("401s without a session and never calls GitHub", async () => {
+  const saved = { GITHUB_TOKEN: process.env.GITHUB_TOKEN, GH_TOKEN: process.env.GH_TOKEN };
+  beforeEach(() => {
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.GH_TOKEN;
+  });
+  afterEach(() => {
+    restoreEnv("GITHUB_TOKEN", saved.GITHUB_TOKEN);
+    restoreEnv("GH_TOKEN", saved.GH_TOKEN);
+  });
+
+  it("401s without any usable token and never calls GitHub", async () => {
     const ctx: AuthContext = { sessions: new SessionStore(), github: neverCalledGitHub() };
     const captured = capturedResponse();
     await handleOwnRepos(ctx, requestWith(undefined), captured.response);
@@ -38,6 +51,40 @@ describe("handleOwnRepos", () => {
     await handleOwnRepos(ctx, requestWith(`meridian_sid=${id}`), captured.response);
     expect(captured.status()).toBe(200);
     expect(JSON.parse(captured.body())).toEqual({ repos: [REPO] });
+  });
+
+  it("lists repos via the gh fallback token — no interactive session needed", async () => {
+    const ctx: AuthContext = { sessions: new SessionStore(), github: githubListing([REPO]), fallbackToken: "gho_gh_cli" };
+    const captured = capturedResponse();
+    await handleOwnRepos(ctx, requestWith(undefined), captured.response);
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body())).toEqual({ repos: [REPO] });
+  });
+});
+
+describe("handleAuthSession", () => {
+  const saved = { GITHUB_TOKEN: process.env.GITHUB_TOKEN, GH_TOKEN: process.env.GH_TOKEN };
+  beforeEach(() => {
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.GH_TOKEN;
+  });
+  afterEach(() => {
+    restoreEnv("GITHUB_TOKEN", saved.GITHUB_TOKEN);
+    restoreEnv("GH_TOKEN", saved.GH_TOKEN);
+  });
+
+  it("reports signed-out when there's no token anywhere", () => {
+    const ctx: AuthContext = { sessions: new SessionStore(), github: neverCalledGitHub() };
+    const captured = capturedResponse();
+    handleAuthSession(ctx, requestWith(undefined), captured.response);
+    expect(JSON.parse(captured.body())).toEqual({ configured: true, signedIn: false, user: null });
+  });
+
+  it("reports signed-in as the gh fallback user without any session", () => {
+    const ctx: AuthContext = { sessions: new SessionStore(), github: neverCalledGitHub(), fallbackToken: "gho_gh_cli", fallbackUser: GH_USER };
+    const captured = capturedResponse();
+    handleAuthSession(ctx, requestWith(undefined), captured.response);
+    expect(JSON.parse(captured.body())).toEqual({ configured: true, signedIn: true, user: GH_USER });
   });
 });
 
@@ -75,4 +122,12 @@ function neverCalledGitHub(): GitHubClient {
     listPullRequests: reject,
     fetchPullRequestFiles: reject,
   };
+}
+
+function restoreEnv(key: "GITHUB_TOKEN" | "GH_TOKEN", value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
+  }
 }

@@ -3,7 +3,8 @@
  * a source into an artifact kept under a deterministic id; `/api/graph|meta` and `/view` read it
  * back, and the extracted source dir is retained under the same id so `/api/source` can serve code
  * slices. The clone token is resolved by precedence — an explicit pasted token, else the signed-in
- * session's token, else the environment — so sign-in and manual tokens both feed the vetted path.
+ * session's token, else the environment, else the local `gh` CLI login — so sign-in, manual tokens,
+ * and an existing gh session all feed the vetted path.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
