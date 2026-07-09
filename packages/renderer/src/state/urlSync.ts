@@ -139,6 +139,7 @@ function structuralState(nav: NavState): Record<string, unknown> {
     // nodes). The curated (promoted/demoted) state is ephemeral — a restore never reproduces it.
     minimalSeedIds: nav.minimalSeedIds,
     minimalMemberIds: [...nav.minimalSeedIds],
+    minimalArrange: false,
     minimalRfNodes: [],
     minimalRfEdges: [],
     minimalLayoutStatus: "idle",

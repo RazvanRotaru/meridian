@@ -35,6 +35,7 @@ export async function deriveMinimalGraphLayout(
   originIds: ReadonlySet<string>,
   basePositions: Record<string, PlacedRect>,
   code: MinimalCodeInputs,
+  arrange = false,
 ): Promise<MinimalGraphLayout> {
   const onMapIds = new Set(Object.keys(basePositions));
   const spec = buildMinimalSubgraph(index, moduleGraph, memberIds, originIds, onMapIds, {
@@ -42,5 +43,5 @@ export async function deriveMinimalGraphLayout(
     blockDeps: code.blockDeps,
     flows: code.flows,
   });
-  return layoutMinimalSubgraph(spec, basePositions);
+  return layoutMinimalSubgraph(spec, basePositions, arrange);
 }

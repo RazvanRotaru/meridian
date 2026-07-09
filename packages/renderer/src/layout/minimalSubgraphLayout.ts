@@ -14,8 +14,9 @@
  */
 
 import type { Edge, Node } from "@xyflow/react";
-import { placeMinimalNodes, type PlacedRect } from "./minimalPlacement";
+import { placeMinimalNodes, FILE_WIDTH, FILE_HEIGHT, type PlacedRect } from "./minimalPlacement";
 import { reflowMinimalFiles } from "./minimalReflow";
+import { arrangeMinimalCards } from "./minimalArrange";
 import { layoutModuleTree } from "./moduleLevelLayout";
 import type { MinimalSubgraphEdge, MinimalSubgraphNode, MinimalSubgraphSpec, MinimalTier } from "../derive/minimalSubgraph";
 import type { MinimalExpansion } from "../derive/minimalExpansion";
@@ -35,6 +36,7 @@ interface LaidExpansion {
 export async function layoutMinimalSubgraph(
   spec: MinimalSubgraphSpec,
   basePositions: Record<string, PlacedRect>,
+  arrange = false,
 ): Promise<{ nodes: Node[]; edges: Edge[] }> {
   if (spec.nodes.length === 0) {
     return { nodes: [], edges: [] };
@@ -44,15 +46,45 @@ export async function layoutMinimalSubgraph(
   const cards = spec.nodes.filter((node) => node.tier !== null);
   const importEdges = spec.edges.map((edge) => ({ source: edge.source, target: edge.target }));
   const laidByFile = await layoutExpansions(spec.expansions);
-  const seed = placeMinimalNodes({ fileIds: cards.map((node) => node.id), stubs: [], importEdges, basePositions, sizeOverrides: frameSizes(laidByFile) });
-  // Constraint: with NO expanded frame the captured-position mirror (`seed`) is returned UNCHANGED —
-  // the reflow is never reached. With one, an interactive-layered ELK pass opens spacing around the
-  // grown frames while preserving the arrangement (see `minimalReflow`).
-  const placement = laidByFile.size > 0 ? await reflowMinimalFiles(cards.map((card) => card.id), seed, importEdges) : seed;
+  // Mirror path overrides sizes ONLY for expanded frames (captured cards keep their captured size — the
+  // byte-for-byte mirror). Arrange path needs every card's real size so ELK reserves the right footprint.
+  const placement = arrange
+    ? await arrangeMinimalCards(cards.map((card) => card.id), cardSizes(cards, laidByFile), importEdges)
+    : await mirrorPlacement(cards, importEdges, basePositions, frameSizes(laidByFile), laidByFile.size > 0);
   const { nodes, edges } = emitCards(cards, placement, laidByFile);
   const placedIds = new Set(nodes.map((node) => node.id));
   const importWires = spec.edges.filter((edge) => placedIds.has(edge.source) && placedIds.has(edge.target)).map(toRfEdge);
   return { nodes, edges: [...importWires, ...edges] };
+}
+
+// A group (package) leaf card renders wider/taller than a file card; size it so both placement paths
+// reserve its real footprint (else neighbours crowd it).
+const GROUP_WIDTH = 300;
+const GROUP_HEIGHT = 60;
+
+/** The rendered size of every leaf card: an expanded file's ELK frame size, else a group card's wider
+ * package box, else the file-card default. Feeds both placement paths so spacing matches the render. */
+function cardSizes(cards: MinimalSubgraphNode[], laidByFile: Map<string, LaidExpansion>): Record<string, { width: number; height: number }> {
+  const frames = frameSizes(laidByFile);
+  const sizes: Record<string, { width: number; height: number }> = {};
+  for (const card of cards) {
+    sizes[card.id] = frames[card.id] ?? (card.kind === "group" ? { width: GROUP_WIDTH, height: GROUP_HEIGHT } : { width: FILE_WIDTH, height: FILE_HEIGHT });
+  }
+  return sizes;
+}
+
+/** The map-mirror placement: captured cards at their exact map spot, the rest relative. With NO expanded
+ * frame the mirror is returned UNCHANGED; with one, an interactive-layered ELK pass opens spacing around
+ * the grown frames while preserving the arrangement (see `minimalReflow`). */
+async function mirrorPlacement(
+  cards: MinimalSubgraphNode[],
+  importEdges: { source: string; target: string }[],
+  basePositions: Record<string, PlacedRect>,
+  sizes: Record<string, { width: number; height: number }>,
+  hasExpansion: boolean,
+): Promise<Record<string, PlacedRect>> {
+  const seed = placeMinimalNodes({ fileIds: cards.map((card) => card.id), stubs: [], importEdges, basePositions, sizeOverrides: sizes });
+  return hasExpansion ? reflowMinimalFiles(cards.map((card) => card.id), seed, importEdges) : seed;
 }
 
 /** Run the Map's per-file nested-ELK pass over each expanded file's subtree, keyed by file id. */

@@ -16,7 +16,7 @@
  */
 
 import { useEffect, useMemo, useRef } from "react";
-import { ReactFlow, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
+import { ReactFlow, NodeToolbar, Position, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
 import { emphasize } from "./moduleMapPaint";
@@ -59,7 +59,7 @@ export function MinimalGraphView({ override }: { override?: MinimalGraphOverride
   const radius = useBlueprint((state) => state.moduleRadius);
   const highlightMode = useBlueprint((state) => state.highlightMode);
   const grown = useBlueprint((state) => !sameIds(state.minimalMemberIds, state.minimalSeedIds));
-  const { closeMinimalGraph, promoteMinimalGhost, resetMinimalGraph } = useBlueprintActions();
+  const { closeMinimalGraph, promoteMinimalGhost, resetMinimalGraph, rearrangeMinimalGraph } = useBlueprintActions();
 
   // In override (PR) mode the diff owns the graph, title, and close; the Module map's store fields
   // are read (hook order stays stable) but do not drive the surface.
@@ -71,25 +71,18 @@ export function MinimalGraphView({ override }: { override?: MinimalGraphOverride
   useClearOnEscape(close, true);
 
   // Interactions ARE the Module map's own (shared hook), so selection/toggle/navigate stay identical.
-  // The overlay only injects its page-specific bits: a GHOST single-click promotes it into the members
-  // (fully handled, skips select), and a double-click closes the overlay first so the Map's navigate
-  // surfaces. A ghost double-click is suppressed (return true) so curating never navigates away.
+  // A plain click NEVER promotes a ghost — promotion is the explicit [+] button on each ghost below, so
+  // curation is deliberate. A double-click closes the overlay first so the Map's navigate surfaces.
   const { onNodeClick, onNodeDoubleClick, onPaneClick } = useModuleNodeInteractions({
-    onBeforeClick: (_event, node) => {
-      if (isGhost(node)) {
-        promoteMinimalGhost(node.id);
-        return true;
-      }
-      return false;
-    },
-    onBeforeDoubleClick: (_event, node) => {
-      if (isGhost(node)) {
-        return true;
-      }
+    onBeforeDoubleClick: () => {
       closeMinimalGraph();
       return false;
     },
   });
+
+  // Each ghost carries an explicit [+] add affordance (a NodeToolbar pinned to it). Override/PR mode has
+  // no ghosts, so none render there.
+  const ghostIds = useMemo(() => (interactive ? nodes.filter(isGhost).map((node) => node.id) : []), [interactive, nodes]);
 
   // Reuse the Module map's shared `emphasize` for edge + selection paint. It understands the file/
   // package import graph, so run it over the map cards + import wires; an expanded file's nested
@@ -130,11 +123,23 @@ export function MinimalGraphView({ override }: { override?: MinimalGraphOverride
         {...READONLY_CANVAS_PROPS}
       >
         <CanvasChrome nodeColor={minimalMiniMapColor} />
+        {ghostIds.map((id) => (
+          <NodeToolbar key={id} nodeId={id} isVisible position={Position.Top} align="center" offset={6}>
+            <button type="button" style={ADD_GHOST_STYLE} onClick={() => promoteMinimalGhost(id)} title="Add this node to the graph">
+              ＋ Add
+            </button>
+          </NodeToolbar>
+        ))}
       </ReactFlow>
       <div style={MINIMAL_PANEL_STYLE}>
         <span style={TITLE_STYLE}>
           {override ? override.title : "Extracted selection"}
         </span>
+        {interactive ? (
+          <button type="button" style={buttonStyle(false, false)} onClick={rearrangeMinimalGraph} title="Lay the current nodes out compactly, ignoring their map positions">
+            Re-arrange
+          </button>
+        ) : null}
         {interactive ? (
           <button type="button" style={buttonStyle(false, !grown)} onClick={resetMinimalGraph} disabled={!grown} title="Restore the working set to the original selection">
             Reset
@@ -170,3 +175,17 @@ function dimGhost(node: Node): Node {
 // Top-RIGHT, because the Module map keeps its main Toolbar floating top-left over this overlay.
 const MINIMAL_PANEL_STYLE: React.CSSProperties = { ...PANEL_STYLE, left: "auto", right: 16 };
 const TITLE_STYLE: React.CSSProperties = { fontSize: 12, fontWeight: 700, color: "#E6EDF3" };
+
+// The explicit "add this ghost" affordance, pinned above each ghost card by its NodeToolbar. A green
+// accent reads as "grow the graph", distinct from the neutral panel buttons.
+const ADD_GHOST_STYLE: React.CSSProperties = {
+  border: "1px solid #2F6F43",
+  borderRadius: 6,
+  background: "rgba(46,111,67,0.9)",
+  color: "#EAF6EE",
+  padding: "3px 9px",
+  fontSize: 11,
+  fontWeight: 700,
+  cursor: "pointer",
+  boxShadow: "0 2px 6px rgba(0,0,0,0.35)",
+};

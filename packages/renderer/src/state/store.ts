@@ -206,6 +206,10 @@ export interface BlueprintState {
    * overlay mirrors them: a captured file sits at its exact map spot, growth is placed around it.
    * Captured once at build (never on expand/reset) so placed nodes never jump; cleared on close. */
   minimalBasePositions: Record<string, PlacedRect>;
+  /** When true, the overlay ABANDONS the captured map-mirror and lays the current cards out fresh with a
+   * tidy left→right ELK pass (the "Re-arrange" action) — the fix for members that mirror far-apart map
+   * spots. Stays on (so promote/demote keep the tidy layout) until the overlay is rebuilt or closed. */
+  minimalArrange: boolean;
   /** The laid-out minimal subgraph for the overlay (flat, mirroring the map), under its own stale-seq guard. */
   minimalRfNodes: Node[];
   minimalRfEdges: Edge[];
@@ -316,6 +320,7 @@ export interface BlueprintState {
   promoteMinimalGhost(id: string): void;
   demoteMinimalMember(id: string): void;
   resetMinimalGraph(): void;
+  rearrangeMinimalGraph(): void;
   minimalRelayout(): Promise<void>;
   setViewMode(mode: ViewMode): void;
   toggleShowTests(): void;
@@ -452,6 +457,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     minimalSeedIds: [],
     minimalMemberIds: [],
     minimalBasePositions: {},
+    minimalArrange: false,
     minimalRfNodes: [],
     minimalRfEdges: [],
     minimalLayoutStatus: "idle",
@@ -1040,7 +1046,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       // Snapshot the map's current on-screen card positions ONCE, at build — the overlay mirrors them,
       // and re-capturing on curation would let already-placed cards jump.
-      set({ minimalSeedIds: origin, minimalMemberIds: origin, minimalBasePositions: captureMapPositions(get().moduleRfNodes) });
+      set({ minimalSeedIds: origin, minimalMemberIds: origin, minimalBasePositions: captureMapPositions(get().moduleRfNodes), minimalArrange: false });
       void get().minimalRelayout();
     },
 
@@ -1049,7 +1055,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // pass still in flight, so a slow layout can't repopulate the arrays after the close.
     closeMinimalGraph() {
       minimalLayoutSeq += 1;
-      set({ minimalSeedIds: [], minimalMemberIds: [], minimalBasePositions: {}, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
+      set({ minimalSeedIds: [], minimalMemberIds: [], minimalBasePositions: {}, minimalArrange: false, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
     },
 
     // Promote a GHOST into the working member set (the ghost single-click). The ghost ring is then
@@ -1086,10 +1092,22 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().minimalRelayout();
     },
 
+    // Re-arrange: drop the captured map-mirror and lay the current cards out fresh (tidy left→right ELK),
+    // so members that mirror far-apart map spots snap into a compact, in-view graph. Stays on so later
+    // curation keeps the tidy layout. A no-op when already arranged.
+    rearrangeMinimalGraph() {
+      if (get().minimalArrange) {
+        return;
+      }
+      set({ minimalArrange: true });
+      void get().minimalRelayout();
+    },
+
     // Lay out the overlay's curated subgraph (members + their on-map ghost ring) through the shared
-    // minimal-graph pass, behind its own stale-seq guard.
+    // minimal-graph pass, behind its own stale-seq guard. `minimalArrange` picks the fresh ELK layout
+    // over the map-mirror.
     async minimalRelayout() {
-      const { index, minimalSeedIds, minimalMemberIds, minimalBasePositions, moduleExpanded, artifact } = get();
+      const { index, minimalSeedIds, minimalMemberIds, minimalBasePositions, minimalArrange, moduleExpanded, artifact } = get();
       if (minimalMemberIds.length === 0) {
         return;
       }
@@ -1102,7 +1120,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleExpanded,
         blockDeps: deps,
         flows,
-      });
+      }, minimalArrange);
       if (minimalLayoutSeq !== sequence) {
         return; // a newer build/promote/demote/reset superseded this one.
       }
@@ -1128,7 +1146,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // lingers hidden behind another tab (and the URL's `mgraph` clears with the switch).
       if (get().minimalSeedIds.length > 0) {
         minimalLayoutSeq += 1;
-        set({ minimalSeedIds: [], minimalMemberIds: [], minimalBasePositions: {}, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
+        set({ minimalSeedIds: [], minimalMemberIds: [], minimalBasePositions: {}, minimalArrange: false, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
       }
       if (mode === "logic") {
         set({ viewMode: mode });
