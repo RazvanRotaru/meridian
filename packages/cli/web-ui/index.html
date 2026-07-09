@@ -342,27 +342,6 @@
         gap: 12px;
       }
 
-      .chips {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-      }
-      .chip {
-        font-family: var(--font-mono);
-        font-size: 11px;
-        color: #7d8894;
-        background: rgba(255, 255, 255, 0.02);
-        border: 1px solid var(--hairline);
-        border-radius: 999px;
-        padding: 4px 10px;
-        cursor: pointer;
-        transition: all 0.15s;
-      }
-      .chip:hover {
-        color: var(--text);
-        border-color: rgba(255, 255, 255, 0.2);
-      }
-
       /* The search dropdown floats OVER the form (an overlay, like every autocomplete) so
          opening it never reflows the page underneath. */
       .search-wrap {
@@ -758,10 +737,6 @@
                   <ul class="results dropdown" id="results" hidden></ul>
                 </div>
               </div>
-              <div class="chips" id="chips">
-                <button type="button" class="chip" data-repo="sindresorhus/type-fest">sindresorhus/type-fest</button>
-                <button type="button" class="chip" data-repo="sindresorhus/ky">sindresorhus/ky</button>
-              </div>
 
               <div class="row">
                 <div class="field">
@@ -917,13 +892,6 @@
           $("path").value = prefill;
           setMode("path");
         }
-      }
-
-      for (const chip of document.querySelectorAll(".chip")) {
-        chip.addEventListener("click", () => {
-          $("repo").value = chip.dataset.repo;
-          hideResults();
-        });
       }
 
       // --- server calls (always same-origin, JSON on POST) ---
