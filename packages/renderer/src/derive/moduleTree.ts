@@ -55,20 +55,16 @@ export function deriveModuleTree(
   const nodes = skeleton.map((entry) => finalizeModuleNode(entry, index, graph, lifted, walked.stepData, overviewFold));
   const kinds = kindsOf(skeleton);
   const ghosts = ghostLevel(blockDeps, walked, visibleIds, index, kinds);
-  // A dependency wire anchors to a drawn unit/block OR a FILE card — so a COLLAPSED file still shows
-  // its typed deps (folded onto the card), not just when you expand it to code. Group/package cards
-  // are excluded, keeping the repo overview an import-only story.
   const isDepAnchor = (id: string) => isDepAnchorKind(kinds.get(id));
   const edges = [
     ...importTreeEdges(lifted, kinds),
-    // An expanded block's calls chart as step wires in codeWalk — its folded frame-level dependency
-    // wire would double-draw the same relationship, so depWireEdges receives expandedBlocks.
+    // Code-level dep wires: anchored to file/unit/block cards (the detailed intra-package view).
     ...depWireEdges(blockDeps, visibleIds, index, isDepAnchor, walked.expandedBlocks),
+    // Package-level dep wires: typed relationships (calls/extends/etc.) LIFTED to packages so the
+    // repo overview shows more than just imports. Only emitted when packages are on screen.
+    ...packageDepEdges(blockDeps, visibleIds, index, kinds),
     ...flowChainEdges(walked),
-    // Step call targets resolve constructions to the constructor block, and recursive calls drop
-    // when the target lifts back into their own block frame.
     ...stepCallEdges(walked, visibleIds, index),
-    // IPC hops (sends/handles joined through channels) folded onto the drawn level, like imports.
     ...ipcTreeEdges(index, visibleIds),
     ...ghosts.edges,
   ].sort((a, b) => a.id.localeCompare(b.id));
@@ -77,10 +73,53 @@ export function deriveModuleTree(
 
 /** Off-screen relationships charted as detached GHOST cards + dashed wires — for every drawn dep
  * anchor (a unit/block, or a FILE card whose off-level typed deps fold onto it). */
-/** A drawn box a dependency wire may anchor to: a code node (unit/block) or a file card — never a
- * package/directory group, so the repo overview stays an import-only story. */
+/** A drawn box a dependency wire may anchor to: code nodes and file cards — package groups use
+ * the separate `packageDepEdges` path which lifts deps cleanly without code-level restrictions. */
 function isDepAnchorKind(kind: Skeleton["kind"] | undefined): boolean {
   return kind === "unit" || kind === "block" || kind === "file";
+}
+
+/**
+ * Typed dep relationships (calls/extends/implements/references) LIFTED to the package level.
+ * Only emits edges when at least one package-kind node is visible — the repo overview.
+ * Uses `liftEdges` directly (like ipcTreeEdges) without the code-level restrictions of
+ * `liftDepEdges`, so inter-package relationships always surface.
+ */
+/** The coupling edge kinds to lift between packages (same set as @meridian/design-metrics). */
+const PKG_DEP_KINDS: ReadonlySet<string> = new Set(["calls", "instantiates", "extends", "implements", "references"]);
+
+function packageDepEdges(
+  _blockDeps: BlockDeps,
+  visibleIds: ReadonlySet<string>,
+  index: GraphIndex,
+  kinds: Map<string, Skeleton["kind"]>,
+): ModuleTreeEdge[] {
+  // Only emit at levels where packages are drawn (the repo overview / mid-level directory views).
+  if (![...kinds.values()].some((k) => k === "package")) return [];
+  const packageIds = new Set([...kinds.entries()].filter(([, k]) => k === "package").map(([id]) => id));
+  // Use index.edges directly — bypass blockDeps which has lazy-init timing issues in some paths.
+  const couplingEdges = index.edges.filter((e) => PKG_DEP_KINDS.has(e.kind));
+  // Lift every coupling edge to the visible frontier — liftEdges drops self-loops (intra-package).
+  const lifted = liftEdges(couplingEdges, visibleIds, index.parentOf);
+  // Keep only edges where BOTH endpoints landed on a package (skip file-to-file at this level —
+  // those are handled by depWireEdges). Aggregate by source+target+kind, summing weight.
+  const byKey = new Map<string, { source: string; target: string; kind: string; weight: number }>();
+  for (const edge of lifted) {
+    if (!packageIds.has(edge.source) || !packageIds.has(edge.target)) continue;
+    const key = `${edge.kind}@${edge.source}|${edge.target}`;
+    const existing = byKey.get(key);
+    if (existing) { existing.weight += edge.weight; }
+    else { byKey.set(key, { source: edge.source, target: edge.target, kind: edge.kind, weight: edge.weight }); }
+  }
+  return [...byKey.values()].map((e) => ({
+    id: `pdep:${e.kind}:${e.source}->${e.target}`,
+    source: e.source,
+    target: e.target,
+    weight: e.weight,
+    crossFrame: true, // always cross-package at this level
+    category: "dep" as const,
+    depKind: e.kind,
+  }));
 }
 
 function ghostLevel(

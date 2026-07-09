@@ -57,6 +57,29 @@ export function filterRelKinds(edges: Edge[], hidden: ReadonlySet<string>): Edge
   });
 }
 
+/**
+ * Suppress import edges between a pair that already has a typed dep edge. If file A calls/extends/
+ * references file B, the import A→B is redundant visual noise — the dep edge carries more meaning.
+ * Only bare imports (pairs with NO dep edge) survive.
+ */
+export function suppressRedundantImports(edges: Edge[]): Edge[] {
+  // Collect all source→target pairs that have at least one dep edge.
+  const depPairs = new Set<string>();
+  for (const edge of edges) {
+    const data = edge.data as { category?: string } | undefined;
+    if (data?.category === "dep") {
+      depPairs.add(`${edge.source}→${edge.target}`);
+      depPairs.add(`${edge.target}→${edge.source}`); // bidirectional suppression
+    }
+  }
+  if (depPairs.size === 0) return edges;
+  return edges.filter((edge) => {
+    const data = edge.data as { category?: string } | undefined;
+    if (data?.category !== "import") return true;
+    return !depPairs.has(`${edge.source}→${edge.target}`);
+  });
+}
+
 function hiddenCardIds(nodes: Node[], options: HideOptions): Set<string> {
   const hidden = new Set<string>();
   // Nodes arrive parents-before-children (a React Flow requirement), so one pass both applies the

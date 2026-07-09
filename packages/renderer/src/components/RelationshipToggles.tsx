@@ -12,7 +12,8 @@ import { Pill } from "./controlpanel/panelKit";
 
 export function RelationshipToggles() {
   const hiddenRelKinds = useBlueprint((state) => state.hiddenRelKinds);
-  const toggleRelKind = useBlueprintActions().toggleRelKind;
+  const { toggleRelKind } = useBlueprintActions();
+
   return (
     <div style={ROW_STYLE} role="group" aria-label="Relationship kinds">
       {RELATIONSHIP_KINDS.map(({ key, label, color }) => {

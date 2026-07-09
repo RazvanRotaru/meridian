@@ -1,20 +1,9 @@
 /**
- * The Map lens's WIRE and FLOW-STEP palette — the single source of truth shared by the paint layer
- * (`moduleMapHighlight`), the flow-step cards (`StepNode`), and the legend (`MapLegend`), so a colour
- * can never mean one thing on the canvas and show another in the key. Relationship/selection hues
- * (violet = reaches/callee, green = reached-by/caller) live in `edgeColors` and are reserved for that.
+ * The Map lens's WIRE palette. Each relationship kind gets its own distinct colour; IPC uses
+ * the magenta from edgeColors. Imports are suppressed when a dep edge exists between the pair;
+ * bare imports use a neutral gold.
  */
 
-// Resting wire colour: every wire is a quiet grey at rest, EXCEPT an import that crosses a directory
-// boundary, which goes gold — the one coupling signal worth a hue before you select anything. The
-// selection reads (violet/green) are the only other coloured wires; nothing else spends colour.
-export const IMPORT_SIBLING = "#5B6675"; // the resting grey shared by every wire (import / dep / flow)
-export const IMPORT_CROSS = "#C9A24B"; // import crossing a directory boundary — the coupling signal
-
-// A distinct hue per code-dependency KIND, shown at rest so the reader can tell a call from an
-// inheritance from a type reference at a glance (toggles isolate one kind). Deliberately avoids the
-// reserved relationship greens/violets (caller/callee selection), the coupling gold, and the IPC
-// magenta. Imports keep their own grey/gold; only these `dep`-category kinds are coloured here.
 export const REL_COLORS: Record<string, string> = {
   calls: "#5E74C6", // blue — a behavioural call
   instantiates: "#E08A5A", // orange — `new X()`
@@ -26,6 +15,10 @@ export const REL_COLORS: Record<string, string> = {
 export function relColor(kind: string | undefined): string | null {
   return kind && kind in REL_COLORS ? REL_COLORS[kind] : null;
 }
+
+// Bare imports (no dep edge between the pair) — neutral, unobtrusive.
+export const IMPORT_CROSS = "#C9A24B";
+export const IMPORT_SIBLING = "#8B7A3F";
 
 // Flow-step glyph tints (inside an expanded callable's charted logic).
 export const CALL_RESOLVED = "#5E74C6"; // a resolved call step

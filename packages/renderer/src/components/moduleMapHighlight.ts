@@ -73,19 +73,19 @@ export function emphasize(nodes: Node[], edges: Edge[], activeIds: ReadonlySet<s
 }
 
 /**
- * Typed dep wires are DETAIL, not backdrop: keep one only while it is LIT (touches the selection),
- * so an unselected graph reads as cards + the import/IPC structure — not a web of every dependency.
- * Imports / IPC / flow always stay. Ghost cards left with no wire drop too (beacons excepted).
+ * Dep wires are now the PRIMARY visual layer — always visible (dimmed at rest, lit on selection).
+ * Visibility is controlled entirely by the relationship-toggle filter upstream (filterRelKinds).
+ * Ghost nodes that lost ALL edges (because every connected edge was toggled off) still drop to
+ * avoid orphan stubs cluttering the canvas.
  */
 function pruneUnlitDeps(level: EmphasizedLevel): EmphasizedLevel {
-  const edges = level.edges.filter((edge) => !isDep(edge) || isLit(edge));
   const kept = new Set<string>();
-  for (const edge of edges) {
+  for (const edge of level.edges) {
     kept.add(edge.source);
     kept.add(edge.target);
   }
   const nodes = level.nodes.filter((node) => node.type !== "ghost" || kept.has(node.id) || level.beacons.has(node.id));
-  return { ...level, nodes, edges };
+  return { ...level, nodes, edges: level.edges };
 }
 
 const isLit = (edge: Edge): boolean => (edge.style as { opacity?: number } | undefined)?.opacity === 1;
@@ -201,7 +201,8 @@ function styleEdge(edge: Edge, emphasis: EdgeEmphasis): Edge {
   // by brightening + thickening (and dimming everything else); direction is the arrowhead's job. Dash
   // means exactly one thing: the far end is off this level (a ghost).
   const stroke = baseStroke(edge);
-  const dash = isGhost(edge) ? { strokeDasharray: "5 4" } : {};
+  // Dashed = crosses a package boundary; solid = stays within the same package.
+  const dash = isCrossFrame(edge) ? { strokeDasharray: "5 4" } : {};
   return { ...edge, animated: false, style: { stroke, strokeWidth: lit ? EMPHASIS_WIDTH : BASE_WIDTH, opacity: lit ? 1 : dimOpacity(edge), ...dash }, markerEnd: arrowMarker(stroke, 14) };
 }
 
