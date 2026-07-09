@@ -28,16 +28,19 @@ export function CodeInlinePanel({
   showGutter?: boolean;
 }) {
   const { node, code, loading, error, truncated } = codeView;
-  const changedLines = useChangedLines(node);
-  const changedLineKinds = useLineChangeKinds(node);
-  const summary = useChangeSummary(node);
+  const wholeFile = codeView.wholeFile ?? false;
+  const changedLines = useChangedLines(node, wholeFile);
+  const changedLineKinds = useLineChangeKinds(node, wholeFile);
+  const summary = useChangeSummary(node, wholeFile);
   const { file, startLine, endLine } = node.location;
+  const baseLine = codeView.baseLine ?? startLine;
   const range = endLine && endLine !== startLine ? `${startLine}-${endLine}` : String(startLine);
+  const location = wholeFile ? file : `${file}:${range}`;
   const stop = (event: React.SyntheticEvent) => event.stopPropagation();
   return (
     <div style={PANEL_STYLE} onClick={stop} onDoubleClick={stop} onMouseDown={stop}>
       <div style={HEADER_STYLE}>
-        <span style={LOCATION_STYLE} title={file}>{`${file}:${range}`}</span>
+        <span style={LOCATION_STYLE} title={file}>{location}</span>
         {summary ? (
           <span style={SUMMARY_STYLE}>{`+${summary.added}  -${summary.deleted}`}</span>
         ) : null}
@@ -73,7 +76,7 @@ export function CodeInlinePanel({
           <CodeBlock
             code={code}
             maxHeight={340}
-            startLine={node.location?.startLine}
+            startLine={baseLine}
             showGutter={showGutter}
             changedLines={changedLines}
             changedLineKinds={changedLineKinds}

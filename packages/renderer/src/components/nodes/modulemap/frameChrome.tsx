@@ -34,7 +34,8 @@ export function FrameTitleBar({
 
 /**
  * The `</>` diff button a CHANGED Map leaf (function level and below) carries: opens the code modal
- * scrolled to the diff, whose gutter + rows mark the changed lines (+ added / − deleted / ~ modified).
+ * on the WHOLE file, auto-scrolled to the first change, with every changed line marked in the gutter
+ * + rows (+ added / − deleted / ~ modified) — so the reader sees the change in its full file context.
  * Gated to changed nodes on purpose — an unchanged node has nothing to show, so a `</>` there would
  * just open plain source and leave the reader hunting for a "+/-" that isn't there. Also needs a
  * source location AND the server serving source (`sourceUrl`), so it never dangles a dead button.
@@ -55,7 +56,7 @@ export function CodeButton({ id }: { id: string }) {
       aria-label="View diff"
       onClick={(event) => {
         event.stopPropagation();
-        void showCode(node);
+        void showCode(node, { wholeFile: true });
         expandCode();
       }}
       onDoubleClick={(event) => event.stopPropagation()}
