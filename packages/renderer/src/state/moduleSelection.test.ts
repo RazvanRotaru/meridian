@@ -73,9 +73,10 @@ describe("module-map selection set", () => {
 
   it("hiding tests strands test ids out of the selection but keeps production picks", () => {
     const store = freshStore();
+    store.getState().toggleShowTests(); // tests are hidden by default — reveal them so a test id is pickable
     store.getState().toggleModuleSelect("ts:src/a.ts");
     store.getState().toggleModuleSelect("ts:src/a.test.ts");
-    store.getState().toggleShowTests();
+    store.getState().toggleShowTests(); // hide again — the test id is stranded out of the selection
     expect(store.getState().moduleSelected).toEqual(new Set(["ts:src/a.ts"]));
   });
 });

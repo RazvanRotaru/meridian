@@ -12,6 +12,7 @@ import type { ElkNode } from "elkjs/lib/elk-api";
 import type { Edge, Node } from "@xyflow/react";
 import { runElkLayout } from "./elkLayout";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
+import { placeGhostBands } from "./ghostBandPlacement";
 import { clamp, countsRowWidth, monoTextWidth, pillWidth } from "./measure";
 import type { ModuleGroupData, ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
 import type { BlockData, ModuleCardData, UnitCardData } from "../derive/moduleLevel";
@@ -96,10 +97,18 @@ export async function layoutModuleTree(nodes: VisibleModuleNode[], edges: Module
   if (nodes.length === 0) {
     return { nodes: [], edges: [] };
   }
-  const byId = new Map(nodes.map((node) => [node.id, node]));
-  const laid = await runElkLayout(buildNestedElkGraph(nodes, edges, adapter, ROOT_OPTIONS));
+  // GHOST cards (off-level far ends of dependency wires) are kept OUT of ELK — feeding them in gives
+  // them layer slots and shoves the real frames apart. The core lays out unchanged; ghosts hang beside
+  // it (see `ghostBandPlacement`, then repositioned selection-relative at paint time). No ghosts ⇒
+  // bit-identical to before.
+  const core = nodes.filter((node) => node.kind !== "ghost");
+  const ghosts = nodes.filter((node) => node.kind === "ghost");
+  const coreEdges = edges.filter((edge) => edge.ghost !== true);
+  const byId = new Map(core.map((node) => [node.id, node]));
+  const laid = await runElkLayout(buildNestedElkGraph(core, coreEdges, adapter, ROOT_OPTIONS));
   const placed = emitReactFlowNodes(laid, (elkNode, parentId) => toNode(elkNode, parentId, byId));
-  return { nodes: placed, edges: edges.map(toEdge) };
+  const banded = ghosts.length > 0 ? placeGhostBands(ghosts, edges.filter((edge) => edge.ghost === true), placed) : [];
+  return { nodes: [...placed, ...banded], edges: edges.map(toEdge) };
 }
 
 /** Every leaf card sizes to its own content so a long name is never clipped: blocks/steps/ghosts
@@ -178,7 +187,7 @@ function stepSize(data: StepData): { width: number; height: number } {
 }
 
 /** A ghost card stacks a name over a faint home-file line; size to the wider of the two. */
-function ghostSize(data: GhostData): { width: number; height: number } {
+export function ghostSize(data: GhostData): { width: number; height: number } {
   const head = CODE_GLYPH_WIDTH + GHOST_ROW_GAP + monoTextWidth(data.label, 11);
   const context = data.context ? monoTextWidth(data.context, 9) : 0;
   return { width: Math.round(clamp(GHOST_MIN_WIDTH, GHOST_MAX_WIDTH, GHOST_CHROME + Math.max(head, context))), height: GHOST_HEIGHT };

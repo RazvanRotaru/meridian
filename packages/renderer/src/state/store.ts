@@ -414,7 +414,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // A `meridian review` artifact opens straight on the review surface; everything else (plain
     // `view`, or a `web` GitHub session) opens on the Map — the default lens.
     viewMode: "modules",
-    showTests: true,
+    // Tests are hidden by default — rarely what the reader is here for, and always in the graph (the
+    // Tests toggle reveals them), so nothing is lost. Tagged ids come from `index.testIds`.
+    showTests: false,
     coverageMode: false,
     coverage: null,
     flowRootId: null,
