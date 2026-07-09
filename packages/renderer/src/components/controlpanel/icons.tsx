@@ -81,3 +81,12 @@ export function ExternalLinkIcon({ size = 15 }: IconProps) {
     </svg>
   );
 }
+
+/** Maximise — open the full-page view. Two opposing diagonal arrows to the corners. */
+export function MaximizeIcon({ size = 15 }: IconProps) {
+  return (
+    <svg {...svgProps(size)}>
+      <path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" />
+    </svg>
+  );
+}

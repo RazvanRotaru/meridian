@@ -9,7 +9,7 @@ import { useEffect, useState } from "react";
 import { PRS_UNAVAILABLE_ERROR, type PrSummary } from "../../state/prTypes";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { CountBadge, hexAlpha, TOKENS } from "./panelKit";
-import { PullRequestIcon } from "./icons";
+import { MaximizeIcon, PullRequestIcon } from "./icons";
 import { PrReviewCard } from "./PrReviewCard";
 
 const ACTIVE_HUE = "#388BFD";
@@ -21,7 +21,7 @@ export function PrReviewSection() {
   const loading = useBlueprint((state) => state.prsLoading);
   const error = useBlueprint((state) => state.prsError);
   const selected = useBlueprint((state) => state.prSelected);
-  const { loadPrs, selectPr, reviewPrInGraph } = useBlueprintActions();
+  const { loadPrs, selectPr, reviewPrInGraph, setViewMode } = useBlueprintActions();
 
   const unavailable = error === PRS_UNAVAILABLE_ERROR && open === null;
 
@@ -56,16 +56,21 @@ export function PrReviewSection() {
 
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      <button type="button" style={barStyle(expanded)} onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
-        <span style={{ display: "inline-flex", color: expanded ? ACTIVE_HUE : TOKENS.textMuted }}>
-          <PullRequestIcon size={15} />
-        </span>
-        <span style={LABEL_STYLE}>PR review</span>
-        <span style={{ flex: 1 }} />
-        {!unavailable && open !== null ? (
-          <CountBadge style={badgeToneStyle(expanded)}>{hasMore ? `${count}+` : count} open</CountBadge>
-        ) : null}
-      </button>
+      <div style={barStyle(expanded)}>
+        <button type="button" style={TOGGLE_STYLE} onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+          <span style={{ display: "inline-flex", color: expanded ? ACTIVE_HUE : TOKENS.textMuted }}>
+            <PullRequestIcon size={15} />
+          </span>
+          <span style={LABEL_STYLE}>PR review</span>
+          <span style={{ flex: 1 }} />
+          {!unavailable && open !== null ? (
+            <CountBadge style={badgeToneStyle(expanded)}>{hasMore ? `${count}+` : count} open</CountBadge>
+          ) : null}
+        </button>
+        <button type="button" style={maxButtonStyle(expanded)} title="Open the full Pull requests page" onClick={() => setViewMode("prs")}>
+          <MaximizeIcon size={14} />
+        </button>
+      </div>
 
       {expanded ? <ExpandedBody unavailable={unavailable} open={open} current={current} index={index} total={count} onStep={step} onReview={reviewPrInGraph} /> : null}
     </section>
@@ -104,19 +109,48 @@ const HINT_STYLE: React.CSSProperties = {
   background: "#0D1117",
 };
 
+const TOGGLE_STYLE: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 9,
+  flex: 1,
+  minWidth: 0,
+  border: "none",
+  background: "transparent",
+  padding: 0,
+  cursor: "pointer",
+  font: "inherit",
+  textAlign: "left",
+  color: TOKENS.text,
+};
+
 function barStyle(expanded: boolean): React.CSSProperties {
   return {
     display: "flex",
     alignItems: "center",
-    gap: 9,
+    gap: 6,
     width: "100%",
-    padding: "11px 12px",
+    padding: "9px 8px 9px 12px",
     borderRadius: 10,
     border: `1px solid ${expanded ? hexAlpha(ACTIVE_HUE, 0.55) : TOKENS.surfaceBorder}`,
     background: expanded ? hexAlpha(ACTIVE_HUE, 0.08) : TOKENS.surface,
+  };
+}
+
+function maxButtonStyle(expanded: boolean): React.CSSProperties {
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 28,
+    height: 28,
+    flexShrink: 0,
+    borderRadius: 7,
+    border: "none",
+    background: "transparent",
+    color: expanded ? ACTIVE_HUE : TOKENS.textMuted,
     cursor: "pointer",
-    font: "inherit",
-    textAlign: "left",
+    padding: 0,
   };
 }
 
