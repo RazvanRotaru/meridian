@@ -25,11 +25,14 @@ export interface Rect {
   width: number;
   height: number;
 }
-type Side = "left" | "right";
+// LEFT = ghosts that IMPORT the selection (its callers); RIGHT = ghosts it imports (its dependencies) —
+// the reader's left-to-right "who calls this → this → what it calls" convention.
+export type Side = "left" | "right";
 
-/** One ghost to place: its id, its anchor's absolute centre, and its own card size. */
+/** One ghost to place: its id, its side (by import direction), its anchor's absolute centre, its size. */
 export interface GhostItem {
   id: string;
+  side: Side;
   anchorCx: number;
   anchorCy: number;
   width: number;
@@ -37,25 +40,20 @@ export interface GhostItem {
 }
 
 /**
- * The core: position each ghost in a COMPACT COLUMN just outside `box`, on the side (left/right) nearest
- * its anchor — vertical, because a stack of wide file cards is far tidier than a row that runs off the
- * screen. Ghosts on a side are ordered by their anchor's Y and packed downward so none overlap. Returns
- * each ghost's top-left by id. Being outside the box, a ghost never overlaps a card inside it.
+ * The core: position each ghost in a COMPACT COLUMN just outside `box`, on the side its import direction
+ * dictates (importers left, dependencies right) — vertical, because a stack of wide file cards is far
+ * tidier than a row that runs off screen. Ghosts on a side are ordered by their anchor's Y and packed
+ * downward so none overlap. Returns each ghost's top-left by id; outside the box, never on a card inside.
  */
 export function bandGhostsOutside(box: Rect, items: GhostItem[]): Map<string, { x: number; y: number }> {
   const bySide: Record<Side, GhostItem[]> = { left: [], right: [] };
   for (const item of items) {
-    bySide[nearerSide(item.anchorCx, box)].push(item);
+    bySide[item.side].push(item);
   }
   const out = new Map<string, { x: number; y: number }>();
   packColumn(bySide.left, "left", box, out);
   packColumn(bySide.right, "right", box, out);
   return out;
-}
-
-/** The vertical box edge (left/right) closest to an anchor — the side its column leaves the box on. */
-function nearerSide(cx: number, box: Rect): Side {
-  return cx - box.x <= box.x + box.width - cx ? "left" : "right";
 }
 
 /** A column just past the side, ghosts ordered by anchor Y and packed downward so none overlap. */
@@ -87,13 +85,13 @@ export function placeGhostBands(ghosts: VisibleModuleNode[], ghostWires: ModuleT
   const sizeById = new Map(ghosts.map((ghost) => [ghost.id, ghostSize(ghost.data as GhostData)]));
   const items: GhostItem[] = [];
   for (const ghost of ghosts) {
-    const anchorId = anchoring.get(ghost.id);
-    const anchor = anchorId ? rects.get(anchorId) : undefined;
-    if (!anchor) {
+    const info = anchoring.get(ghost.id);
+    const anchor = info ? rects.get(info.anchorId) : undefined;
+    if (!info || !anchor) {
       continue;
     }
     const size = sizeById.get(ghost.id)!;
-    items.push({ id: ghost.id, anchorCx: anchor.x + anchor.width / 2, anchorCy: anchor.y + anchor.height / 2, ...size });
+    items.push({ id: ghost.id, side: info.side, anchorCx: anchor.x + anchor.width / 2, anchorCy: anchor.y + anchor.height / 2, ...size });
   }
   const positions = bandGhostsOutside(box, items);
   return ghosts
@@ -105,21 +103,31 @@ export function placeGhostBands(ghosts: VisibleModuleNode[], ghostWires: ModuleT
     .filter((node): node is Node => node !== null);
 }
 
-/** The drawn anchor for each ghost — the smallest drawn id its wire touches (deterministic). */
-function anchoringByGhost(ghostWires: ModuleTreeEdge[], ghostIds: ReadonlySet<string>): Map<string, string> {
-  const anchors = new Map<string, string[]>();
+/**
+ * Per ghost, its anchor (the drawn node its wire touches) and its SIDE by import direction: a wire
+ * drawn→ghost means the selection imports the ghost (a DEPENDENCY → right); ghost→drawn means the ghost
+ * imports the selection (a CALLER → left). A ghost seen both ways takes the majority (tie → right).
+ */
+function anchoringByGhost(ghostWires: ModuleTreeEdge[], ghostIds: ReadonlySet<string>): Map<string, { anchorId: string; side: Side }> {
+  const dependencyOf = new Map<string, string[]>(); // drawn→ghost: anchors that import the ghost (RIGHT)
+  const callerOf = new Map<string, string[]>(); //     ghost→drawn: anchors the ghost imports    (LEFT)
   for (const wire of ghostWires) {
     if (ghostIds.has(wire.target)) {
-      push(anchors, wire.target, wire.source);
+      push(dependencyOf, wire.target, wire.source);
     } else if (ghostIds.has(wire.source)) {
-      push(anchors, wire.source, wire.target);
+      push(callerOf, wire.source, wire.target);
     }
   }
-  const anchoring = new Map<string, string>();
-  for (const [ghostId, drawn] of anchors) {
-    if (drawn.length > 0) {
-      anchoring.set(ghostId, [...drawn].sort()[0]);
+  const anchoring = new Map<string, { anchorId: string; side: Side }>();
+  for (const ghostId of ghostIds) {
+    const dep = dependencyOf.get(ghostId) ?? [];
+    const call = callerOf.get(ghostId) ?? [];
+    if (dep.length === 0 && call.length === 0) {
+      continue;
     }
+    const side: Side = dep.length >= call.length ? "right" : "left";
+    const anchors = side === "right" ? dep : call;
+    anchoring.set(ghostId, { anchorId: [...anchors].sort()[0], side });
   }
   return anchoring;
 }

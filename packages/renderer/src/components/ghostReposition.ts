@@ -7,7 +7,7 @@
  */
 
 import type { Edge, Node } from "@xyflow/react";
-import { bandGhostsOutside, boundingBoxOf, absoluteRectOf, type GhostItem } from "../layout/ghostBandPlacement";
+import { bandGhostsOutside, boundingBoxOf, absoluteRectOf, type GhostItem, type Side } from "../layout/ghostBandPlacement";
 
 // A core node counts as LIT (part of the selection's neighbourhood) unless the emphasis pass dimmed it.
 const LIT_OPACITY_FLOOR = 0.5;
@@ -28,14 +28,14 @@ export function repositionLitGhosts(nodes: Node[], edges: Edge[]): Node[] {
   const anchorOf = anchorByGhost(edges, ghostIds, byId);
   const items: GhostItem[] = [];
   for (const ghost of ghosts) {
-    const anchorId = anchorOf.get(ghost.id);
-    const anchor = anchorId ? byId.get(anchorId) : undefined;
-    if (!anchor) {
+    const info = anchorOf.get(ghost.id);
+    const anchor = info ? byId.get(info.anchorId) : undefined;
+    if (!info || !anchor) {
       continue; // no lit drawn anchor — leave the ghost where layout put it.
     }
     const rect = absoluteRectOf(anchor, byId);
     const size = sizeOf(ghost);
-    items.push({ id: ghost.id, anchorCx: rect.x + rect.width / 2, anchorCy: rect.y + rect.height / 2, ...size });
+    items.push({ id: ghost.id, side: info.side, anchorCx: rect.x + rect.width / 2, anchorCy: rect.y + rect.height / 2, ...size });
   }
   const positions = bandGhostsOutside(box, items);
   return nodes.map((node) => {
@@ -44,21 +44,31 @@ export function repositionLitGhosts(nodes: Node[], edges: Edge[]): Node[] {
   });
 }
 
-/** Each ghost's anchor: the smallest-id drawn node its wire touches (ghosts are root, so wires reach them). */
-function anchorByGhost(edges: Edge[], ghostIds: ReadonlySet<string>, byId: ReadonlyMap<string, Node>): Map<string, string> {
-  const drawn = new Map<string, string[]>();
+/**
+ * Per ghost, its drawn anchor and its SIDE by import direction: a wire drawn→ghost means the selection
+ * imports the ghost (a DEPENDENCY → right); ghost→drawn means the ghost imports the selection (a CALLER
+ * → left). A ghost seen both ways takes the majority (tie → right). Anchor = smallest drawn id on the side.
+ */
+function anchorByGhost(edges: Edge[], ghostIds: ReadonlySet<string>, byId: ReadonlyMap<string, Node>): Map<string, { anchorId: string; side: Side }> {
+  const dependencyOf = new Map<string, string[]>(); // drawn→ghost (RIGHT)
+  const callerOf = new Map<string, string[]>(); //     ghost→drawn (LEFT)
   for (const edge of edges) {
-    if (ghostIds.has(edge.source) && byId.has(edge.target) && !ghostIds.has(edge.target)) {
-      add(drawn, edge.source, edge.target);
-    } else if (ghostIds.has(edge.target) && byId.has(edge.source) && !ghostIds.has(edge.source)) {
-      add(drawn, edge.target, edge.source);
+    if (ghostIds.has(edge.target) && byId.has(edge.source) && !ghostIds.has(edge.source)) {
+      add(dependencyOf, edge.target, edge.source);
+    } else if (ghostIds.has(edge.source) && byId.has(edge.target) && !ghostIds.has(edge.target)) {
+      add(callerOf, edge.source, edge.target);
     }
   }
-  const anchor = new Map<string, string>();
-  for (const [ghostId, anchors] of drawn) {
-    if (anchors.length > 0) {
-      anchor.set(ghostId, [...anchors].sort()[0]);
+  const anchor = new Map<string, { anchorId: string; side: Side }>();
+  for (const ghostId of ghostIds) {
+    const dep = dependencyOf.get(ghostId) ?? [];
+    const call = callerOf.get(ghostId) ?? [];
+    if (dep.length === 0 && call.length === 0) {
+      continue;
     }
+    const side: Side = dep.length >= call.length ? "right" : "left";
+    const anchors = side === "right" ? dep : call;
+    anchor.set(ghostId, { anchorId: [...anchors].sort()[0], side });
   }
   return anchor;
 }
