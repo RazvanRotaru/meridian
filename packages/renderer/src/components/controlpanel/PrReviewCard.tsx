@@ -8,7 +8,7 @@ import { useMemo } from "react";
 import type { PrChangedFile, PrSummary } from "../../state/prTypes";
 import { useBlueprint } from "../../state/StoreContext";
 import { Divider, hexAlpha, TOKENS } from "./panelKit";
-import { ChevronLeftIcon, ChevronRightIcon, ExternalLinkIcon } from "./icons";
+import { ExternalLinkIcon } from "./icons";
 
 const NUMBER_HUE = "#7DD3FC";
 const OPEN_HUE = "#56C271";
@@ -17,9 +17,6 @@ const DEL_HUE = "#F85149";
 
 export function PrReviewCard(props: {
   pr: PrSummary;
-  index: number;
-  total: number;
-  onStep: (delta: number) => void;
   onReview: () => void;
 }) {
   const files = useBlueprint((state) => state.prFiles);
@@ -27,7 +24,6 @@ export function PrReviewCard(props: {
   const loading = useBlueprint((state) => state.prsLoading);
   const reviewed = useBlueprint((state) => state.prReviewed === props.pr.number);
   const stats = useMemo(() => sumStats(files), [files]);
-  const canStep = props.total > 1;
 
   return (
     <div style={CARD_STYLE}>
@@ -38,17 +34,6 @@ export function PrReviewCard(props: {
           {props.pr.draft ? "draft" : props.pr.state}
         </span>
         <span style={{ flex: 1 }} />
-        {canStep ? (
-          <div style={PAGER_STYLE}>
-            <button type="button" style={STEP_STYLE} title="Previous pull request" onClick={() => props.onStep(-1)}>
-              <ChevronLeftIcon size={15} />
-            </button>
-            <span style={PAGER_TEXT_STYLE}>{props.index + 1}/{props.total}</span>
-            <button type="button" style={STEP_STYLE} title="Next pull request" onClick={() => props.onStep(1)}>
-              <ChevronRightIcon size={15} />
-            </button>
-          </div>
-        ) : null}
         {props.pr.url ? (
           <a style={LINK_STYLE} href={props.pr.url} target="_blank" rel="noreferrer" title="Open on GitHub">
             <ExternalLinkIcon size={14} />
@@ -138,20 +123,6 @@ const CARD_STYLE: React.CSSProperties = {
   background: "#0D1117",
 };
 const TOP_ROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
-const PAGER_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 2 };
-const PAGER_TEXT_STYLE: React.CSSProperties = { fontSize: 11, color: TOKENS.textMuted, minWidth: 28, textAlign: "center" };
-const STEP_STYLE: React.CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  width: 20,
-  height: 20,
-  padding: 0,
-  border: "none",
-  background: "transparent",
-  color: TOKENS.textMuted,
-  cursor: "pointer",
-};
 const LINK_STYLE: React.CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
