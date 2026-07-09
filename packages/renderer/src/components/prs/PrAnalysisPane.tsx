@@ -7,8 +7,6 @@
 
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { PrSummary } from "../../state/prTypes";
-import { AffectedFlowList } from "../prreview/AffectedFlowList";
-import { PrMinimalCanvas } from "./PrMinimalCanvas";
 
 type Stage = "clone" | "checkout" | "extract";
 
@@ -69,20 +67,10 @@ function Failure({ prNumber }: { prNumber: number | null }) {
   );
 }
 
+// On "ready" the diff opens full-screen (PrDiffOverlay covers the whole PR view); this note is what
+// sits behind it, so closing the overlay lands on a clear affordance to reopen the same diff.
 function Result({ prNumber }: { prNumber: number | null }) {
-  const nodes = useBlueprint((state) => state.prMinimalRfNodes);
-  const edges = useBlueprint((state) => state.prMinimalRfEdges);
-  const flows = useBlueprint((state) => state.prAffectedFlows);
-  return (
-    <div style={RESULT}>
-      <div style={GRAPH_WRAP}>
-        <PrMinimalCanvas key={prNumber ?? "pr"} nodes={nodes} edges={edges} />
-      </div>
-      <div style={FLOWS_WRAP}>
-        <AffectedFlowList flows={flows} />
-      </div>
-    </div>
-  );
+  return <Hint>{`PR #${prNumber} diff is open full-screen — press Esc to return.`}</Hint>;
 }
 
 function Hint({ children }: { children: string }) {
@@ -137,9 +125,6 @@ const RETRY: React.CSSProperties = {
   cursor: "pointer",
   fontWeight: 600,
 };
-const RESULT: React.CSSProperties = { height: "100%", minHeight: 0, display: "grid", gridTemplateRows: "1fr minmax(120px, 34%)", gap: 12 };
-const GRAPH_WRAP: React.CSSProperties = { minHeight: 0, border: "1px solid #2A2F37", borderRadius: 10, overflow: "hidden", background: "#0B0F14" };
-const FLOWS_WRAP: React.CSSProperties = { minHeight: 0, overflowY: "auto", border: "1px solid #2A2F37", borderRadius: 10, background: "#0E1116" };
 const HINT_WRAP: React.CSSProperties = { height: "100%", display: "grid", placeItems: "center" };
 const HINT_CARD: React.CSSProperties = { maxWidth: 380, border: "1px dashed #2A2F37", borderRadius: 8, padding: 18, color: "#8B949E", background: "#0E1116", fontSize: 14, textAlign: "center" };
 

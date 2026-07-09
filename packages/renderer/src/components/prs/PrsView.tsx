@@ -9,6 +9,7 @@ import { useEffect } from "react";
 import { PRS_UNAVAILABLE_ERROR, type PrSummary, type PrsTab } from "../../state/prTypes";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { PrAnalysisPane } from "./PrAnalysisPane";
+import { PrDiffOverlay } from "./PrDiffOverlay";
 
 export function PrsView() {
   const tab = useBlueprint((state) => state.prsTab);
@@ -17,6 +18,7 @@ export function PrsView() {
   const loading = useBlueprint((state) => state.prsLoading);
   const error = useBlueprint((state) => state.prsError);
   const analyzing = useBlueprint((state) => state.prAnalyzePrNumber);
+  const analyzeReady = useBlueprint((state) => state.prAnalyzeStatus === "ready");
   const { setPrsTab, loadPrs, analyzePr } = useBlueprintActions();
 
   useEffect(() => {
@@ -68,6 +70,7 @@ export function PrsView() {
           <PrAnalysisPane />
         </div>
       </section>
+      {analyzeReady ? <PrDiffOverlay /> : null}
     </div>
   );
 }
@@ -114,7 +117,7 @@ function relativeUpdatedAt(value: string): string {
   return `Updated ${Math.round(hours / 24)}d ago`;
 }
 
-const PAGE_STYLE: React.CSSProperties = { width: "100%", height: "100%", background: "#080B10", color: "#E6EDF3" };
+const PAGE_STYLE: React.CSSProperties = { position: "relative", width: "100%", height: "100%", background: "#080B10", color: "#E6EDF3" };
 const CONTENT_STYLE: React.CSSProperties = { height: "100%", padding: "28px 28px 28px 340px", boxSizing: "border-box" };
 const CENTER_STYLE: React.CSSProperties = { height: "100%", display: "grid", placeItems: "center", paddingLeft: 300 };
 const HINT_CARD_STYLE: React.CSSProperties = { maxWidth: 440, border: "1px solid #2A2F37", borderRadius: 8, padding: 18, background: "#0E1116", color: "#C9D1D9", fontSize: 14 };

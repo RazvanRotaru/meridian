@@ -38,9 +38,23 @@ const CHILD_NODE_TYPES: ReadonlySet<string> = new Set(["unit", "block", "step"])
 // the smaller dim (min wins), a LIT ghost still recedes to this opacity — the ghost read is preserved.
 const GHOST_OPACITY = 0.62;
 
-export function MinimalGraphView() {
-  const nodes = useBlueprint((state) => state.minimalRfNodes);
-  const edges = useBlueprint((state) => state.minimalRfEdges);
+/**
+ * Reuse the overlay to frame a DIFFERENT graph full-screen (the PR diff). When `override` is passed
+ * the surface renders those nodes/edges, the panel names `title` (e.g. the current PR) with a single
+ * Close, and Escape/Close route to `onClose` — the Module-map store path is bypassed and its
+ * click/navigate/expand gestures are detached (a read-only diff view). Absent, everything below is the
+ * Module map's own store-driven overlay, unchanged.
+ */
+export interface MinimalGraphOverride {
+  nodes: Node[];
+  edges: Edge[];
+  title: string;
+  onClose: () => void;
+}
+
+export function MinimalGraphView({ override }: { override?: MinimalGraphOverride } = {}) {
+  const storeNodes = useBlueprint((state) => state.minimalRfNodes);
+  const storeEdges = useBlueprint((state) => state.minimalRfEdges);
   const selected = useBlueprint((state) => state.moduleSelected);
   const radius = useBlueprint((state) => state.moduleRadius);
   const highlightMode = useBlueprint((state) => state.highlightMode);
@@ -48,7 +62,14 @@ export function MinimalGraphView() {
   const grown = useBlueprint((state) => state.minimalKeptIds.length > 0 || state.minimalExpanded.length > 0);
   const { closeMinimalGraph, expandMinimal, resetMinimalGraph } = useBlueprintActions();
 
-  useClearOnEscape(closeMinimalGraph, true);
+  // In override (PR) mode the diff owns the graph, title, and close; the Module map's store fields
+  // are read (hook order stays stable) but do not drive the surface.
+  const nodes = override?.nodes ?? storeNodes;
+  const edges = override?.edges ?? storeEdges;
+  const interactive = override === undefined;
+  const close = override?.onClose ?? closeMinimalGraph;
+
+  useClearOnEscape(close, true);
 
   // Interactions ARE the Module map's own (shared hook), so selection/toggle/navigate stay identical.
   // The overlay only injects its page-specific bits: the [+n] stub single-click expands one direction
@@ -107,9 +128,9 @@ export function MinimalGraphView() {
         nodes={paintedNodes}
         edges={paintedEdges}
         nodeTypes={overlayNodeTypes}
-        onNodeClick={onNodeClick}
-        onNodeDoubleClick={onNodeDoubleClick}
-        onPaneClick={onPaneClick}
+        onNodeClick={interactive ? onNodeClick : undefined}
+        onNodeDoubleClick={interactive ? onNodeDoubleClick : undefined}
+        onPaneClick={interactive ? onPaneClick : undefined}
         onInit={(instance) => {
           rfRef.current = instance;
         }}
@@ -119,12 +140,14 @@ export function MinimalGraphView() {
       </ReactFlow>
       <div style={MINIMAL_PANEL_STYLE}>
         <span style={TITLE_STYLE}>
-          Minimal graph — {seedCount} seed {seedCount === 1 ? "file" : "files"}
+          {override ? override.title : `Minimal graph — ${seedCount} seed ${seedCount === 1 ? "file" : "files"}`}
         </span>
-        <button type="button" style={buttonStyle(false, !grown)} onClick={resetMinimalGraph} disabled={!grown} title="Drop all expansions, back to the seed base">
-          Reset
-        </button>
-        <button type="button" style={buttonStyle(false, false)} onClick={closeMinimalGraph} title="Back to the Module map (Esc)">
+        {interactive ? (
+          <button type="button" style={buttonStyle(false, !grown)} onClick={resetMinimalGraph} disabled={!grown} title="Drop all expansions, back to the seed base">
+            Reset
+          </button>
+        ) : null}
+        <button type="button" style={buttonStyle(false, false)} onClick={close} title={override ? "Back to the PR list (Esc)" : "Back to the Module map (Esc)"}>
           ✕ Close
         </button>
       </div>
