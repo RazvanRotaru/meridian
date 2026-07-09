@@ -9,6 +9,7 @@ import type { ViewMode } from "../derive/edgeSelection";
 import { SHOW_SERVICE_COMPOSITION } from "../featureFlags";
 
 const ALL_SEGMENTS: ReadonlyArray<{ mode: ViewMode; label: string }> = [
+  { mode: "review", label: "PR review" },
   { mode: "call", label: "Service composition" },
   { mode: "ui", label: "UI composition" },
   { mode: "logic", label: "Logic flow" },
@@ -20,10 +21,14 @@ const SEGMENTS = ALL_SEGMENTS.filter((s) => s.mode !== "call" || SHOW_SERVICE_CO
 
 export function ViewModeToggle() {
   const viewMode = useBlueprint((state) => state.viewMode);
+  // The "PR review" tab appears ONLY for an artifact stamped by `meridian review` (data-gated) —
+  // every other view is pixel-identical to before when there is no review payload.
+  const hasReview = useBlueprint((state) => state.review !== null);
   const setViewMode = useBlueprintActions().setViewMode;
+  const segments = SEGMENTS.filter((s) => s.mode !== "review" || hasReview);
   return (
     <div style={GROUP_STYLE} role="group" aria-label="View mode">
-      {SEGMENTS.map((segment) => (
+      {segments.map((segment) => (
         <button
           key={segment.mode}
           type="button"

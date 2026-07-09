@@ -9,6 +9,7 @@ import { createStore, type StoreApi } from "zustand/vanilla";
 import type { Edge, Node } from "@xyflow/react";
 import { computeCoverage } from "@meridian/core";
 import type {
+  ChangedFile,
   CoverageReport,
   FlowPath,
   FlowStep,
@@ -33,6 +34,9 @@ import type { ModuleCategory } from "../derive/moduleCategory";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
+import { deriveReviewData, applyTick, type ReviewData } from "../derive/reviewData";
+import { deriveReviewNodeLayout } from "./deriveReviewNodeLayout";
+import { readReviewProgress, writeReviewProgress, clearReviewProgress, type ReviewTick } from "./reviewTicksPref";
 
 /**
  * The "All" setting for the related-flows depth dial: a depth larger than any real call-graph chain.
@@ -162,6 +166,22 @@ export interface BlueprintState {
   /** Legacy URL-restored Module-map expansion ids. The flat map ignores these, but keeping the field
    * lets old links round-trip without throwing away unrelated navigation state. */
   moduleExpanded: Set<string>;
+  /** The parsed PR-review data (checklist rows + flow trees); null hides the "PR review" tab entirely. */
+  review: ReviewData | null;
+  /** The laid-out minimal review graph (code-block nodes + file/class frames), recomputed via ELK. */
+  reviewRfNodes: Node[];
+  reviewRfEdges: Edge[];
+  reviewLayoutStatus: LayoutStatus;
+  /** Artifact node ids that are affected — the coupling set between the graph and the flow panel. */
+  reviewAffectedIds: Set<string>;
+  /** Changed files that mapped to no code block (deleted / not-extracted / edits outside any block). */
+  reviewUnmapped: ChangedFile[];
+  /** Per-flow review progress, keyed by flowId, persisted to localStorage under the reviewKey. */
+  reviewTicks: Record<string, ReviewTick>;
+  /** The graph node ids lit by a panel hover; null == nothing hovered (all blocks full strength). */
+  reviewLitNodeIds: Set<string> | null;
+  /** The selected review block/flow id; drives the graph selection ring and the panel row highlight. */
+  reviewSelectedId: string | null;
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -217,6 +237,11 @@ export interface BlueprintState {
   toggleCategory(category: ModuleCategory): void;
   selectModule(id: string | null): void;
   toggleModuleSelect(id: string): void;
+  reviewRelayout(): Promise<void>;
+  setReviewLit(ids: Set<string> | null): void;
+  selectReviewNode(id: string | null): void;
+  toggleReviewTick(flowId: string): void;
+  resetReviewTicks(): void;
   setViewMode(mode: ViewMode): void;
   toggleShowTests(): void;
   toggleCoverageMode(): void;
@@ -252,6 +277,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let moduleGraph: ModuleGraph | null = null;
   // And for the composition-tab method-preview drawer's logic layout (the EXPERIMENT surface).
   let compMethodLayoutSeq = 0;
+  // And for the PR-review code-block graph, so a stale ELK pass never overwrites a newer one.
+  let reviewLayoutSeq = 0;
+  // The parsed review payload (null when the artifact carries no valid `review` extension). Computed
+  // once — the artifact never changes after boot — and it gates the whole "PR review" tab on/off.
+  const review = deriveReviewData(dependencies.artifact, dependencies.index);
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
   // The composition tab opens on the WHOLE-SYSTEM overview (null root); file-rooting is the explicit
@@ -267,7 +297,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     expanded: new Set<string>(),
     selectedId: null,
     focusId: null,
-    viewMode: "modules",
+    // An artifact stamped by `meridian review` opens straight on the review graph; everything else
+    // opens on the Module map as before.
+    viewMode: review ? "review" : "modules",
     showTests: true,
     coverageMode: false,
     coverage: null,
@@ -308,6 +340,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     hiddenCategories: new Set<ModuleCategory>(),
     moduleSelected: new Set<string>(),
     moduleExpanded: new Set<string>(),
+    review,
+    reviewRfNodes: [],
+    reviewRfEdges: [],
+    reviewLayoutStatus: "idle",
+    reviewAffectedIds: new Set<string>(),
+    reviewUnmapped: [],
+    reviewTicks: review ? readReviewProgress(review.context.reviewKey).ticks : {},
+    reviewLitNodeIds: null,
+    reviewSelectedId: null,
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -683,6 +724,59 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ moduleSelected: withToggled(get().moduleSelected, id) });
     },
 
+    // Lay the minimal code-block review graph out via ELK, behind the stale guard. A no-op when the
+    // artifact carries no review data (the tab is hidden anyway).
+    async reviewRelayout() {
+      const { index, review } = get();
+      if (!review) {
+        return;
+      }
+      const sequence = ++reviewLayoutSeq;
+      set({ reviewLayoutStatus: "laying-out" });
+      const layout = await deriveReviewNodeLayout(index, review.context.changedFiles);
+      if (reviewLayoutSeq !== sequence) {
+        return; // a newer relayout superseded this one.
+      }
+      set({
+        reviewRfNodes: layout.nodes,
+        reviewRfEdges: layout.edges,
+        reviewAffectedIds: layout.affectedIds,
+        reviewUnmapped: layout.unmapped,
+        reviewLayoutStatus: "ready",
+      });
+    },
+
+    // Paint-only: light a set of graph node ids (from a panel hover); null clears back to full strength.
+    setReviewLit(ids) {
+      set({ reviewLitNodeIds: ids });
+    },
+
+    // Select a review block (from the graph or the panel); also lights it so the coupling reads as one.
+    selectReviewNode(id) {
+      set({ reviewSelectedId: id, reviewLitNodeIds: id === null ? null : new Set([id]) });
+    },
+
+    // Toggle a flow's reviewed tick and persist the whole record under the reviewKey.
+    toggleReviewTick(flowId) {
+      const { review, reviewTicks } = get();
+      const row = review?.rows.find((candidate) => candidate.flow.flowId === flowId);
+      if (!review || !row) {
+        return;
+      }
+      const next = applyTick(reviewTicks, row, "toggle", new Date().toISOString());
+      set({ reviewTicks: next });
+      writeReviewProgress(review.context.reviewKey, { version: 1, ticks: next });
+    },
+
+    resetReviewTicks() {
+      const { review } = get();
+      if (!review) {
+        return;
+      }
+      clearReviewProgress(review.context.reviewKey);
+      set({ reviewTicks: {} });
+    },
+
     // Switching mode re-derives + relayouts like a dive. Entering UI mode dives to the render
     // subtree; leaving it returns to call-flow at the focus you had before (home if none). The
     // logic view is a standalone render (no rfNodes/ELK), so it neither dives nor relayouts, and
@@ -704,6 +798,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (mode === "modules") {
         set({ viewMode: mode, moduleFocus: null, moduleExpanded: new Set<string>() });
         void get().moduleRelayout();
+        return;
+      }
+      // The review graph is a standalone ELK surface like the module map; flip the mode and lay it out
+      // once (re-entry keeps the graph as left, so a relayout only runs when the canvas is empty).
+      if (mode === "review") {
+        set({ viewMode: mode });
+        if (get().reviewRfNodes.length === 0) {
+          void get().reviewRelayout();
+        }
         return;
       }
       if (mode === "ui") {

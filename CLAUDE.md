@@ -25,7 +25,7 @@ packages/extractor-typescript  ts-morph adapter (TS/TSX incl. JSX renders edges)
 packages/extractor-python      spawns a bundled stdlib-ast analyzer (python/*.py) + a TS adapter.
 packages/design-metrics        pure graph→metrics: Martin's Ca/Ce/I/A/D + LCOM4 cohesion, design
                                smells, worst-first ranking, and per-unit diagnosis/advice. No React.
-packages/cli                   commander CLI: generate / view / web / mock-telemetry / coverage / link.
+packages/cli                   commander CLI: generate / view / web / mock-telemetry / coverage / link / review.
 packages/renderer              React 19 + @xyflow/react + elkjs SPA (Vite); consumes @meridian/design-metrics.
 examples/{orders-service, orders-service-py, shopfront}   fixtures used by golden + e2e tests.
 knowledge/adr/0001-...md       THE contract decision. Read it before touching the schema.
@@ -59,6 +59,20 @@ knowledge/adr/0001-...md       THE contract decision. Read it before touching th
   execution edges only — unresolved calls from tests are a reported caveat, never counted.
 - `validateArtifact` is two-tier (zod shape + cross-array invariants). `generate` fails **closed**
   (writes nothing on error); `view`/`web` are lenient (warn-level) so a new extractor isn't blocked.
+- **PR review rides `extensions.review`** (core/review.ts): `meridian review` extracts the working
+  tree and diffs it vs `merge-base(--base, HEAD)`, stamping the changed files AND their new-side
+  changed **line ranges** (`ChangedFile.hunks`; git plumbing in `cli/src/review/`). Hunks are what
+  make review **node-level, not file-level**: `computeAffectedNodes` (core/affected-nodes.ts) keeps
+  only the code blocks whose `location` overlaps a hunk (whole-file fallback when hunks are absent —
+  an untracked add or `--changed`). No `review` extension ⇒ the tab is hidden and the renderer is
+  pixel-identical to today. The renderer's data-gated "PR review" tab derives everything else itself:
+  a **minimal graph of the affected blocks** (function/method leaves nested under class/file frames
+  by `parentId`, induced call edges between leaves — `derive/reviewNodeGraph.ts`, ELK via
+  `state/deriveReviewNodeLayout.ts`) and a **hierarchical flow side panel** (the touched logic flows
+  from `computeAffectedFlows`, each rendered as its `FlowStep` tree; the "edited" chip marks flows
+  whose owner block is on the graph). Per-flow ticks live in localStorage keyed by `reviewKey`,
+  fingerprinted by flow shape (a flow edited after review goes amber "stale") — NEVER in the artifact
+  or URL. Graph↔panel couple by node id (hover a flow lights its blocks; click selects).
 
 ## Commands
 
@@ -75,6 +89,7 @@ node packages/cli/dist/bin.js view /tmp/g.json --overlay mock --env staging
 node packages/cli/dist/bin.js web sindresorhus/ky
 node packages/cli/dist/bin.js coverage /tmp/g.json --fail-under 60   # static coverage CI gate
 node packages/cli/dist/bin.js link /tmp/web.json /tmp/api.json -o /tmp/system.json  # IPC system graph
+node packages/cli/dist/bin.js review examples/orders-service --base origin/main       # PR-review view of the working tree
 ```
 
 `meridian view`/`web` serve the renderer from `packages/cli/renderer-dist` — after changing the

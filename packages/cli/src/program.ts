@@ -19,6 +19,8 @@ import { runLink } from "./commands/link";
 import type { LinkOptions } from "./commands/link";
 import { runWeb } from "./commands/web";
 import type { WebOptions } from "./commands/web";
+import { runReview } from "./commands/review";
+import type { ReviewOptions } from "./commands/review";
 
 const DEPTH_CHOICES = ["package", "module", "class", "function"];
 
@@ -40,6 +42,7 @@ export function buildProgram(): Command {
   registerWeb(program);
   registerCoverage(program);
   registerLink(program);
+  registerReview(program);
   return program;
 }
 
@@ -115,6 +118,21 @@ function registerLink(program: Command): void {
     .option("-o, --out <file>", "linked artifact output path", "meridian.system.json")
     .option("--name <name>", "display name for the linked system (default: the joined source names)")
     .action((graphs, _options, command) => runLink(graphs, command.optsWithGlobals() as LinkOptions));
+}
+
+function registerReview(program: Command): void {
+  program
+    .command("review [path]")
+    .description("Extract the working tree, diff it against a base ref, and serve the PR-review view")
+    .option("--port <number>", "preferred port (walks forward if busy)", parsePort, 4173)
+    .option("--host <host>", "host to bind", "127.0.0.1")
+    .option("--no-open", "do not open a browser")
+    .option("--base <ref>", "base ref to diff against (default: origin/HEAD → origin/main → main …)")
+    .option("--changed <files...>", "explicit changed files (extraction-root-relative); skips git diff")
+    .option("--pr <label>", "review-identity label for tick scope (CI escape hatch)")
+    .option("--lang <language>", "language extractor (default: auto-detect by source files)")
+    .option("-o, --out <file>", "also persist the stamped artifact to this path")
+    .action((path, _options, command) => runReview(path ?? ".", command.optsWithGlobals() as ReviewOptions));
 }
 
 function parsePort(value: string): number {

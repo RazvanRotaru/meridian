@@ -138,7 +138,7 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   // Service composition ("call") is only honoured from a URL when its build flag is on; otherwise a
   // stale ?view=call link falls through to the default (Module map) instead of surfacing a hidden lens.
   const callAllowed = view !== "call" || SHOW_SERVICE_COMPOSITION;
-  if (callAllowed && (view === "call" || view === "ui" || view === "logic" || view === "modules")) {
+  if (callAllowed && (view === "call" || view === "ui" || view === "logic" || view === "modules" || view === "review")) {
     out.viewMode = view;
   }
   assignId(params, "focus", out, "focusId");

@@ -25,6 +25,7 @@ import { CommandPalette } from "./CommandPalette";
 import { LogicFlowView } from "./LogicFlowView";
 import { CompositionView } from "./CompositionView";
 import { ModuleMapView } from "./ModuleMapView";
+import { ReviewView } from "./ReviewView";
 
 // The Logic-flow view is a plain nested-div render, not a React Flow surface, so it swaps in for
 // <ReactFlow> whole. Toolbar (the tab toggle + sidebar) and the modal CodePanel stay mounted in
@@ -39,7 +40,9 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
           one's first render (which crashed its MiniMap nodeColor on foreign-shaped data). The
           always-mounted Toolbar's <Panel> keeps using the outer App-level provider. */}
       <ReactFlowProvider key={viewMode}>
-        {viewMode === "call" ? (
+        {viewMode === "review" ? (
+          <ReviewView />
+        ) : viewMode === "call" ? (
           <CompositionView />
         ) : viewMode === "logic" ? (
           <LogicFlowView />

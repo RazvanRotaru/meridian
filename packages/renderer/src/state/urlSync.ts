@@ -23,16 +23,26 @@ export async function restoreFromUrl(store: BlueprintStore): Promise<void> {
   if (typeof window === "undefined") {
     return;
   }
-  const nav = decodeNavState(new URLSearchParams(window.location.search));
+  const params = new URLSearchParams(window.location.search);
+  const nav = decodeNavState(params);
+  // A review artifact opens on the "PR review" tab by default — but only when the URL didn't pin a
+  // view explicitly (a shared ?view=… link still wins). `decodeNavState` can't know about the review
+  // payload, so the review-aware default lands here, where the store is available.
+  if (!params.has("view") && store.getState().review !== null) {
+    nav.viewMode = "review";
+  }
   // Apply the COMPLETE structural state (not just the keys the URL carried) so a back/forward to a
   // sparser URL resets fields the previous state had set — otherwise a dive/selection never undoes.
   // `environment` is deliberately excluded: nulling telemetry on every restore is undesirable, so it
   // is apply-only via applyEnvironment below.
   store.setState(structuralState(nav));
   // The restored viewMode decides which layout pass runs; "call"/"ui" route through relayout()
-  // (compRelayout / deriveLayout), "logic" needs its own ELK pass. This is the boot's first layout.
+  // (compRelayout / deriveLayout), "logic" and "review" each need their own ELK pass. This is the
+  // boot's first layout.
   if (store.getState().viewMode === "logic") {
     await store.getState().logicRelayout();
+  } else if (store.getState().viewMode === "review") {
+    await store.getState().reviewRelayout();
   } else {
     await store.getState().relayout();
   }
@@ -68,7 +78,16 @@ export function startUrlSync(store: BlueprintStore): () => void {
 // the store's non-navigation writes — layout, telemetry — since those don't move any NavState field).
 function writeUrl(store: BlueprintStore): void {
   const nav = navFrom(store.getState());
-  const search = mergeNavIntoSearch(window.location.search, nav);
+  let search = mergeNavIntoSearch(window.location.search, nav);
+  // For a review artifact an absent `?view` restores to the "PR review" tab (the review-aware default
+  // in restoreFromUrl), not to the global "modules" default. `encodeNav` omits `view` for modules, so
+  // without this the Module map (and any other view encoded as absence) would bounce back to review on
+  // reload/forward-nav. Pin the view explicitly so every view round-trips.
+  if (store.getState().review !== null && !new URLSearchParams(search).has("view")) {
+    const params = new URLSearchParams(search);
+    params.set("view", nav.viewMode);
+    search = params.toString();
+  }
   const url = `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`;
   const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   if (url === current) {
