@@ -1,8 +1,9 @@
 /**
  * The LENS segmented control — the "separate viewer" switch. Selecting a segment flips the store's
  * viewMode, which re-derives the graph (different edge kinds) and, for UI, dives to the React render
- * subtree. Pull requests are no longer a lens here — they live in the control panel's PR review
- * section — so this offers the four graph lenses only.
+ * subtree. The "PRs" segment opens the pull-request review surface (list a repo's PRs, analyze one
+ * into a minimal graph of its modified nodes + affected logic flows); it only has data under a
+ * GitHub-sourced `meridian web` session and shows an honest empty state otherwise.
  */
 
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
@@ -13,6 +14,7 @@ const SEGMENTS: ReadonlyArray<{ mode: ViewMode; label: string }> = [
   { mode: "call", label: "Service" },
   { mode: "ui", label: "UI" },
   { mode: "logic", label: "Logic" },
+  { mode: "prs", label: "PRs" },
 ];
 
 export function ViewModeToggle() {

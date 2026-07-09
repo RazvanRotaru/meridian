@@ -23,6 +23,10 @@ export interface BootConfig {
 export interface PrApiUrls {
   prsUrl: string;
   prFilesUrl: string;
+  /** The fixed PR-impact analyze endpoint. */
+  analyzeUrl: string;
+  /** The current artifact id parsed from the graph URL — the analyze POST body's `id`. */
+  graphId: string | null;
 }
 
 interface InjectedConfig extends Omit<BootConfig, "defaultEnv"> {
@@ -61,6 +65,8 @@ export function prApiUrlsFromGraphUrl(graphUrl: string): PrApiUrls {
   return {
     prsUrl: apiUrl("/api/prs", id),
     prFilesUrl: apiUrl("/api/prs/files", id),
+    analyzeUrl: "/api/pr/analyze",
+    graphId: id,
   };
 }
 

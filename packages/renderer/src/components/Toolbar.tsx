@@ -1,8 +1,8 @@
 /**
  * The top-left control panel: project identity + expand/collapse, the mandatory environment gate
- * (only when the artifact ships an overlay), the collapsible PR review, and the lens / overlay /
- * category / relationship controls. Categories, relationships and the module-only dials show on the
- * module surface (Map + Service); the composition worklist rides along on the Service lens.
+ * (only when the artifact ships an overlay), and the lens / overlay / category / relationship
+ * controls. Categories, relationships and the module-only dials show on the module surface
+ * (Map + Service); the composition worklist rides along on the Service lens.
  */
 
 import type { ReactNode } from "react";
@@ -17,7 +17,6 @@ import { DepthSlider } from "./DepthSlider";
 import { ModuleCategoryToggles } from "./ModuleCategoryToggles";
 import { RelationshipToggles } from "./RelationshipToggles";
 import { ControlPanelHeader } from "./controlpanel/ControlPanelHeader";
-import { PrReviewSection } from "./controlpanel/PrReviewSection";
 import { OverlaysSection } from "./controlpanel/OverlaysSection";
 import { Divider, SectionLabel, TOKENS } from "./controlpanel/panelKit";
 
@@ -42,9 +41,6 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
             <EnvSelector preselectedEnv={props.preselectedEnv} />
           </>
         ) : null}
-
-        <Divider />
-        <PrReviewSection />
 
         <Divider />
         <Group label="Lens">

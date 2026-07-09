@@ -1,7 +1,14 @@
+/**
+ * The Pull Requests page: a left list of PRs and, on the right, the impact analysis of the one the
+ * reader picks. Selecting a PR runs `analyzePr` — clone → checkout → extract → a minimal graph of the
+ * modified modules plus the directly-affected logic flows (rendered by PrAnalysisPane). The list
+ * reuses the existing /api/prs plumbing (loadPrs / setPrsTab / prsList).
+ */
+
 import { useEffect } from "react";
 import { PRS_UNAVAILABLE_ERROR, type PrSummary, type PrsTab } from "../../state/prTypes";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import { PrDetailPanel } from "./PrDetailPanel";
+import { PrAnalysisPane } from "./PrAnalysisPane";
 
 export function PrsView() {
   const tab = useBlueprint((state) => state.prsTab);
@@ -9,8 +16,8 @@ export function PrsView() {
   const hasMore = useBlueprint((state) => state.prsHasMore[state.prsTab]);
   const loading = useBlueprint((state) => state.prsLoading);
   const error = useBlueprint((state) => state.prsError);
-  const selected = useBlueprint((state) => state.prSelected);
-  const { setPrsTab, loadPrs, selectPr } = useBlueprintActions();
+  const analyzing = useBlueprint((state) => state.prAnalyzePrNumber);
+  const { setPrsTab, loadPrs, analyzePr } = useBlueprintActions();
 
   useEffect(() => {
     if (prs === null && !loading && error === null) {
@@ -38,13 +45,7 @@ export function PrsView() {
           </div>
           <div style={SEGMENT_STYLE} role="group" aria-label="Pull request state">
             {(["open", "closed"] as const).map((state) => (
-              <button
-                key={state}
-                type="button"
-                style={tabButtonStyle(tab === state)}
-                aria-pressed={tab === state}
-                onClick={() => setPrsTab(state)}
-              >
+              <button key={state} type="button" style={tabButtonStyle(tab === state)} aria-pressed={tab === state} onClick={() => setPrsTab(state)}>
                 {state === "open" ? "Open" : "Closed"}
               </button>
             ))}
@@ -55,7 +56,7 @@ export function PrsView() {
             {prs === null && loading ? <SkeletonList /> : null}
             {prs !== null && prs.length === 0 ? <div style={EMPTY_STYLE}>No {tab} pull requests.</div> : null}
             {prs?.map((pr) => (
-              <PrCard key={pr.number} pr={pr} active={selected === pr.number} onSelect={() => void selectPr(pr.number)} />
+              <PrCard key={pr.number} pr={pr} active={analyzing === pr.number} onSelect={() => void analyzePr(pr)} />
             ))}
             {error && error !== PRS_UNAVAILABLE_ERROR ? <div style={ERROR_STYLE}>{error}</div> : null}
             {prs !== null && hasMore ? (
@@ -64,7 +65,7 @@ export function PrsView() {
               </button>
             ) : null}
           </div>
-          <PrDetailPanel />
+          <PrAnalysisPane />
         </div>
       </section>
     </div>
@@ -121,7 +122,7 @@ const HEADER_STYLE: React.CSSProperties = { display: "flex", alignItems: "center
 const TITLE_STYLE: React.CSSProperties = { margin: 0, fontSize: 22, lineHeight: "28px", color: "#F0F6FC" };
 const SUBTITLE_STYLE: React.CSSProperties = { marginTop: 4, fontSize: 13, color: "#8B949E" };
 const SEGMENT_STYLE: React.CSSProperties = { display: "flex", gap: 2, padding: 2, border: "1px solid #2A2F37", borderRadius: 8, background: "#0E1116" };
-const BODY_STYLE: React.CSSProperties = { minHeight: 0, height: "calc(100% - 56px)", display: "grid", gridTemplateColumns: "minmax(320px, 0.95fr) minmax(360px, 1.05fr)", gap: 18 };
+const BODY_STYLE: React.CSSProperties = { minHeight: 0, height: "calc(100% - 56px)", display: "grid", gridTemplateColumns: "minmax(300px, 360px) minmax(0, 1fr)", gap: 18 };
 const LIST_STYLE: React.CSSProperties = { minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 10, paddingRight: 4 };
 const CARD_TOP_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
 const NUMBER_STYLE: React.CSSProperties = { color: "#7DD3FC", fontSize: 12, fontWeight: 700 };

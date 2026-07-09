@@ -43,7 +43,8 @@ import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/block
 import { deriveModuleTree } from "../derive/moduleTree";
 import { moduleChildContainerIds } from "../derive/moduleChildContainers";
 import { deriveServiceTree } from "../derive/serviceClusterTree";
-import { matchPrFilesToModules } from "../derive/prFileMatch";
+import { streamPrAnalysis, buildPrAnalysis } from "./prAnalysis";
+import type { AffectedFlow } from "../derive/affectedFlows";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import type { HighlightMode } from "../components/moduleMapPaint";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
@@ -238,8 +239,19 @@ export interface BlueprintState {
   prSelected: number | null;
   prFiles: PrChangedFile[] | null;
   prFilesTruncated: boolean;
-  /** The PR whose changed files are currently highlighted in the graph (via "review in graph"). */
-  prReviewed: number | null;
+  /** PR-impact analysis: the streaming clone→checkout→extract lifecycle of the selected PR. */
+  prAnalyzeStatus: "idle" | "running" | "ready" | "error";
+  /** The stage of the in-flight analyze stream; null when idle/ready/error. */
+  prAnalyzeStage: "clone" | "checkout" | "extract" | null;
+  /** A human message when the analyze failed; null otherwise. */
+  prAnalyzeError: string | null;
+  /** The PR being (or last) analyzed — drives the left list's active highlight. */
+  prAnalyzePrNumber: number | null;
+  /** The laid-out minimal graph of the analyzed PR's modified modules (read-only React Flow). */
+  prMinimalRfNodes: Node[];
+  prMinimalRfEdges: Edge[];
+  /** The logic flows the analyzed PR's change set directly affects. */
+  prAffectedFlows: AffectedFlow[];
   /** The open source view (inline panel or modal); null when nothing is being shown. */
   codeView: CodeView | null;
   toggleExpand(nodeId: string): void;
@@ -318,7 +330,8 @@ export interface BlueprintState {
   setPrsTab(tab: PrsTab): void;
   loadPrs(page?: number): Promise<void>;
   selectPr(number: number | null): Promise<void>;
-  reviewPrInGraph(): void;
+  analyzePr(pr: PrSummary): Promise<void>;
+  clearPrAnalysis(): void;
   relayout(): Promise<void>;
 }
 
@@ -330,6 +343,12 @@ export interface StoreDependencies {
   sourceUrl: string | null;
   prsUrl: string;
   prFilesUrl: string;
+  /** POST endpoint for PR-impact analysis; defaults to the fixed "/api/pr/analyze" route. */
+  analyzeUrl?: string;
+  /** The current GitHub artifact id — the analyze POST body's `id`. Null when the session has none. */
+  graphId?: string | null;
+  /** The graph-fetch URL template; the analyzed PR graph loads by swapping its `id`. */
+  graphUrl?: string;
 }
 
 export type BlueprintStore = StoreApi<BlueprintState>;
@@ -354,14 +373,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let compMethodLayoutSeq = 0;
   // Same guard for the Code flows explorer's embedded flow preview pane.
   let flowPaneLayoutSeq = 0;
-  // PR list/file fetches are independent async lanes; newer requests win when the reader switches.
+  // PR list/file fetches and PR-impact analysis are independent async lanes; newer requests win when
+  // the reader switches PRs mid-stream.
   let prsListSeq = 0;
   let prFilesSeq = 0;
+  let prAnalyzeSeq = 0;
   const prsNextPage: Record<PrsTab, number> = { open: 1, closed: 1 };
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
   const prsUrl = dependencies.prsUrl;
   const prFilesUrl = dependencies.prFilesUrl;
+  const analyzeUrl = dependencies.analyzeUrl ?? "/api/pr/analyze";
+  // Null when this session has no GitHub artifact id — PR analysis can't run and reports so.
+  const analyzeGraphId = dependencies.graphId ?? null;
+  const graphFetchUrl = dependencies.graphUrl ?? "";
   // The composition tab opens on the WHOLE-SYSTEM overview (null root); file-rooting is the explicit
   // focus tool (⌘P / click a boundary or frame). Auto-rooting at the declared entry module proved a
   // poor default — a React entry (e.g. main.tsx) is a thin bootstrap with no cross-unit coupling, so
@@ -453,7 +478,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prSelected: null,
     prFiles: null,
     prFilesTruncated: false,
-    prReviewed: null,
+    prAnalyzeStatus: "idle",
+    prAnalyzeStage: null,
+    prAnalyzeError: null,
+    prAnalyzePrNumber: null,
+    prMinimalRfNodes: [],
+    prMinimalRfEdges: [],
+    prAffectedFlows: [],
     codeView: null,
 
     toggleExpand(nodeId) {
@@ -1312,23 +1343,66 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // Reviewing a PR lands on the Map (the spatial home view), focused on the touched modules'
-    // common package with each matched module expanded into view and selected. Files that match
-    // nothing (docs, config) simply contribute no modules; zero matches means the plain overview.
-    reviewPrInGraph() {
-      const files = get().prFiles ?? [];
-      const matchedIds = unique(matchPrFilesToModules(files, get().index.nodesById.values()).map((match) => match.moduleId));
-      const reveal = moduleRevealStateFor(matchedIds, get().index);
+    // Analyze a PR's impact: POST the clone→checkout→extract request, stream its NDJSON stages into
+    // `prAnalyzeStage`, then on "done" load the freshly-extracted PR graph, derive its minimal graph
+    // of modified modules + the directly-affected logic flows, and surface them. A stale-seq guard
+    // drops an older run when the reader picks another PR mid-stream.
+    async analyzePr(pr) {
+      const sequence = ++prAnalyzeSeq;
       set({
-        viewMode: "modules",
-        prReviewed: get().prSelected,
-        flowSelection: null,
-        flowEmphasis: new Set<string>(),
-        moduleFocus: reveal?.moduleFocus ?? null,
-        moduleExpanded: reveal?.moduleExpanded ?? new Set<string>(),
-        moduleSelected: reveal?.moduleSelected ?? new Set<string>(),
+        prAnalyzeStatus: "running",
+        prAnalyzeStage: "clone",
+        prAnalyzeError: null,
+        prAnalyzePrNumber: pr.number,
+        prMinimalRfNodes: [],
+        prMinimalRfEdges: [],
+        prAffectedFlows: [],
       });
-      void get().moduleRelayout();
+      if (analyzeGraphId === null) {
+        set({ prAnalyzeStatus: "error", prAnalyzeStage: null, prAnalyzeError: PR_ANALYZE_UNAVAILABLE });
+        return;
+      }
+      try {
+        const request = { id: analyzeGraphId, prNumber: pr.number, baseRef: pr.baseRef, headRef: pr.headRef };
+        const graphId = await streamPrAnalysis(analyzeUrl, request, (stage) => {
+          if (prAnalyzeSeq === sequence) {
+            set({ prAnalyzeStage: stage });
+          }
+        });
+        if (prAnalyzeSeq !== sequence) {
+          return; // a newer analyze superseded this one.
+        }
+        const analysis = await buildPrAnalysis(graphFetchUrl, graphId);
+        if (prAnalyzeSeq !== sequence) {
+          return;
+        }
+        set({
+          prMinimalRfNodes: analysis.nodes,
+          prMinimalRfEdges: analysis.edges,
+          prAffectedFlows: analysis.flows,
+          prAnalyzeStatus: "ready",
+          prAnalyzeStage: null,
+        });
+      } catch (error) {
+        if (prAnalyzeSeq === sequence) {
+          set({ prAnalyzeStatus: "error", prAnalyzeStage: null, prAnalyzeError: analyzeErrorMessage(error) });
+        }
+      }
+    },
+
+    // Reset the analyze slice back to idle/empty (the back affordance, and switching away from PRs).
+    // Bumping the seq discards any stream/derive still in flight so it can't repopulate after close.
+    clearPrAnalysis() {
+      prAnalyzeSeq += 1;
+      set({
+        prAnalyzeStatus: "idle",
+        prAnalyzeStage: null,
+        prAnalyzeError: null,
+        prAnalyzePrNumber: null,
+        prMinimalRfNodes: [],
+        prMinimalRfEdges: [],
+        prAffectedFlows: [],
+      });
     },
 
     async relayout() {
@@ -1516,6 +1590,8 @@ function mergePrSummaries(existing: readonly PrSummary[], incoming: readonly PrS
   return [...byNumber.values()];
 }
 
-function unique(values: readonly string[]): string[] {
-  return [...new Set(values)];
+const PR_ANALYZE_UNAVAILABLE = "Pull request analysis needs a GitHub-sourced session.";
+
+function analyzeErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message.length > 0 ? error.message : "PR analysis failed.";
 }
