@@ -1,14 +1,13 @@
 /**
  * Off-ELK placement for Module-map GHOST cards. A ghost is the off-level far end of a code-dependency
- * wire (an off-screen definition or caller); feeding it to ELK gives it a layer slot and pushes the
- * real frames apart, so instead we lay the core out with ELK and then hang every ghost in a band
- * COMPLETELY OUTSIDE the core's bounding box — a ghost must NEVER sit inside the graph's perimeter, on
- * top of a card or in a gap between cards.
+ * wire (an off-screen definition or caller). It must NEVER sit inside the graph's perimeter — on a card
+ * or in a gap — so ghosts hang just OUTSIDE a bounding box, each past the box edge NEAREST its anchor so
+ * a left-hand node's ghosts don't fly across a wide graph.
  *
- * Direction picks the side: an OUTGOING dependency (wire drawn→ghost) bands just past the RIGHT edge, an
- * INCOMING caller (wire ghost→drawn) just past the LEFT edge. Within a band ghosts are ordered by their
- * anchor's Y so each sits across from the node it belongs to, and packed downward so no two overlap.
- * Being outside the box, a ghost can never overlap a real card. Pure: id-sorted, no clock/random.
+ * `bandGhostsOutside` is the reusable core (place ids past a box, by anchor). At LAYOUT time
+ * `placeGhostBands` runs it over the whole level as a fallback; the real placement is SELECTION-RELATIVE
+ * and happens at PAINT time (see components/ghostReposition), where only the few lit ghosts exist and
+ * the box is the small lit subgraph — so a node's ghosts land right beside it. Pure: id-sorted, no random.
  */
 
 import type { Node } from "@xyflow/react";
@@ -16,33 +15,67 @@ import type { ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
 import type { GhostData } from "../derive/ghostDeps";
 import { ghostSize } from "./moduleLevelLayout";
 
-// Clearance between the core's bounding box and the ghost band, and the vertical gap between stacked
-// ghosts. Small, so the band sits just OUTSIDE the perimeter rather than banished far away.
-const GAP = 60;
+// Clearance between the box and the ghost column, and the vertical gap between stacked ghosts.
+const GAP = 56;
 const V_GAP = 20;
 
-interface Rect {
+export interface Rect {
   x: number;
   y: number;
   width: number;
   height: number;
 }
-type Direction = "right" | "left";
-interface Anchoring {
-  anchorId: string;
-  direction: Direction;
-}
-interface BandEntry {
-  ghost: VisibleModuleNode;
-  anchorY: number;
-  size: { width: number; height: number };
+type Side = "left" | "right";
+
+/** One ghost to place: its id, its anchor's absolute centre, and its own card size. */
+export interface GhostItem {
+  id: string;
+  anchorCx: number;
+  anchorCy: number;
+  width: number;
+  height: number;
 }
 
 /**
- * Place every ghost in a band OUTSIDE the core's bounding box. `coreNodes` are the ELK-laid React Flow
- * nodes (positions are parent-relative inside frames); ghosts are emitted as ROOT nodes just past the
- * core's left/right edge, so they can never overlap the graph, and packed within the band so no two
- * ghosts overlap either.
+ * The core: position each ghost in a COMPACT COLUMN just outside `box`, on the side (left/right) nearest
+ * its anchor — vertical, because a stack of wide file cards is far tidier than a row that runs off the
+ * screen. Ghosts on a side are ordered by their anchor's Y and packed downward so none overlap. Returns
+ * each ghost's top-left by id. Being outside the box, a ghost never overlaps a card inside it.
+ */
+export function bandGhostsOutside(box: Rect, items: GhostItem[]): Map<string, { x: number; y: number }> {
+  const bySide: Record<Side, GhostItem[]> = { left: [], right: [] };
+  for (const item of items) {
+    bySide[nearerSide(item.anchorCx, box)].push(item);
+  }
+  const out = new Map<string, { x: number; y: number }>();
+  packColumn(bySide.left, "left", box, out);
+  packColumn(bySide.right, "right", box, out);
+  return out;
+}
+
+/** The vertical box edge (left/right) closest to an anchor — the side its column leaves the box on. */
+function nearerSide(cx: number, box: Rect): Side {
+  return cx - box.x <= box.x + box.width - cx ? "left" : "right";
+}
+
+/** A column just past the side, ghosts ordered by anchor Y and packed downward so none overlap. */
+function packColumn(items: GhostItem[], side: Side, box: Rect, out: Map<string, { x: number; y: number }>): void {
+  items.sort((a, b) => a.anchorCy - b.anchorCy || a.id.localeCompare(b.id));
+  const maxWidth = items.reduce((max, item) => Math.max(max, item.width), 0);
+  let cursor = -Infinity;
+  for (const item of items) {
+    // Right edge of the left column aligns just past the box's left edge; the right column starts just
+    // past its right edge — so a column reads as one tidy stack, not a ragged edge.
+    const x = side === "right" ? box.x + box.width + GAP : box.x - GAP - maxWidth;
+    const y = Math.max(item.anchorCy - item.height / 2, cursor);
+    cursor = y + item.height + V_GAP;
+    out.set(item.id, { x, y });
+  }
+}
+
+/**
+ * Layout-time fallback: band every ghost outside the whole level's box (mostly hidden at rest and
+ * overridden by the paint-time, selection-relative placement). Emits ghosts as ROOT React Flow nodes.
  */
 export function placeGhostBands(ghosts: VisibleModuleNode[], ghostWires: ModuleTreeEdge[], coreNodes: Node[]): Node[] {
   if (ghosts.length === 0 || coreNodes.length === 0) {
@@ -50,80 +83,43 @@ export function placeGhostBands(ghosts: VisibleModuleNode[], ghostWires: ModuleT
   }
   const anchoring = anchoringByGhost(ghostWires, new Set(ghosts.map((ghost) => ghost.id)));
   const rects = anchorRects(coreNodes);
-  const box = boundingBox([...rects.values()]);
-  const right: BandEntry[] = [];
-  const left: BandEntry[] = [];
+  const box = boundingBoxOf([...rects.values()]);
+  const sizeById = new Map(ghosts.map((ghost) => [ghost.id, ghostSize(ghost.data as GhostData)]));
+  const items: GhostItem[] = [];
   for (const ghost of ghosts) {
-    const anchor = anchoring.get(ghost.id);
-    const anchorRect = anchor ? rects.get(anchor.anchorId) : undefined;
-    if (!anchor || !anchorRect) {
-      continue; // an unwired ghost (pruned at paint) or one whose anchor isn't drawn has nowhere to hang.
-    }
-    const entry: BandEntry = { ghost, anchorY: anchorRect.y + anchorRect.height / 2, size: ghostSize(ghost.data as GhostData) };
-    (anchor.direction === "right" ? right : left).push(entry);
-  }
-  return [...placeBand(right, "right", box), ...placeBand(left, "left", box)];
-}
-
-/**
- * Stack a band's ghosts in one column just outside the box, ordered by anchor Y so each sits across from
- * its anchor. Each ghost wants its anchor's row but is pushed below the previous ghost so the column
- * never overlaps — a monotonic pack (entries are Y-sorted, so the cursor only moves down).
- */
-function placeBand(entries: BandEntry[], direction: Direction, box: Rect): Node[] {
-  entries.sort((a, b) => a.anchorY - b.anchorY || a.ghost.id.localeCompare(b.ghost.id));
-  const out: Node[] = [];
-  let cursorY = -Infinity;
-  for (const entry of entries) {
-    const { size } = entry;
-    const x = direction === "right" ? box.x + box.width + GAP : box.x - GAP - size.width;
-    const y = Math.max(entry.anchorY - size.height / 2, cursorY);
-    cursorY = y + size.height + V_GAP;
-    out.push(toGhostNode(entry.ghost, { x, y, ...size }));
-  }
-  return out;
-}
-
-/** The absolute bounding box enclosing every core node. */
-function boundingBox(rects: Rect[]): Rect {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const rect of rects) {
-    minX = Math.min(minX, rect.x);
-    minY = Math.min(minY, rect.y);
-    maxX = Math.max(maxX, rect.x + rect.width);
-    maxY = Math.max(maxY, rect.y + rect.height);
-  }
-  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
-}
-
-/**
- * The anchor + side for each ghost. A ghost wire drawn→ghost is an OUTGOING dependency (RIGHT); a
- * ghost→drawn wire is an INCOMING caller (LEFT). A ghost reachable from both sides takes the side with
- * more wires (tie → right); its anchor is the smallest drawn id on that side.
- */
-function anchoringByGhost(ghostWires: ModuleTreeEdge[], ghostIds: ReadonlySet<string>): Map<string, Anchoring> {
-  const rightAnchors = new Map<string, string[]>();
-  const leftAnchors = new Map<string, string[]>();
-  for (const wire of ghostWires) {
-    if (ghostIds.has(wire.target)) {
-      push(rightAnchors, wire.target, wire.source);
-    } else if (ghostIds.has(wire.source)) {
-      push(leftAnchors, wire.source, wire.target);
-    }
-  }
-  const anchoring = new Map<string, Anchoring>();
-  for (const ghostId of ghostIds) {
-    const right = rightAnchors.get(ghostId) ?? [];
-    const left = leftAnchors.get(ghostId) ?? [];
-    if (right.length === 0 && left.length === 0) {
+    const anchorId = anchoring.get(ghost.id);
+    const anchor = anchorId ? rects.get(anchorId) : undefined;
+    if (!anchor) {
       continue;
     }
-    const direction: Direction = right.length >= left.length ? "right" : "left";
-    const anchors = direction === "right" ? right : left;
-    anchoring.set(ghostId, { anchorId: [...anchors].sort()[0], direction });
+    const size = sizeById.get(ghost.id)!;
+    items.push({ id: ghost.id, anchorCx: anchor.x + anchor.width / 2, anchorCy: anchor.y + anchor.height / 2, ...size });
+  }
+  const positions = bandGhostsOutside(box, items);
+  return ghosts
+    .map((ghost) => {
+      const pos = positions.get(ghost.id);
+      const size = sizeById.get(ghost.id)!;
+      return pos ? toGhostNode(ghost, { ...pos, ...size }) : null;
+    })
+    .filter((node): node is Node => node !== null);
+}
+
+/** The drawn anchor for each ghost — the smallest drawn id its wire touches (deterministic). */
+function anchoringByGhost(ghostWires: ModuleTreeEdge[], ghostIds: ReadonlySet<string>): Map<string, string> {
+  const anchors = new Map<string, string[]>();
+  for (const wire of ghostWires) {
+    if (ghostIds.has(wire.target)) {
+      push(anchors, wire.target, wire.source);
+    } else if (ghostIds.has(wire.source)) {
+      push(anchors, wire.source, wire.target);
+    }
+  }
+  const anchoring = new Map<string, string>();
+  for (const [ghostId, drawn] of anchors) {
+    if (drawn.length > 0) {
+      anchoring.set(ghostId, [...drawn].sort()[0]);
+    }
   }
   return anchoring;
 }
@@ -136,16 +132,16 @@ function push(map: Map<string, string[]>, ghostId: string, anchorId: string): vo
 
 /** Absolute rect of every core node, keyed by id (positions are parent-relative inside frames). */
 function anchorRects(coreNodes: Node[]): Map<string, Rect> {
+  const byId = new Map(coreNodes.map((node) => [node.id, node]));
   const rects = new Map<string, Rect>();
   for (const node of coreNodes) {
-    rects.set(node.id, absoluteRect(node, coreNodes));
+    rects.set(node.id, absoluteRectOf(node, byId));
   }
   return rects;
 }
 
-/** A core node's absolute rect: sum `position` up the `parentId` chain, size from `style`. */
-function absoluteRect(node: Node, coreNodes: Node[]): Rect {
-  const byId = ABS_CACHE.get(coreNodes) ?? cacheById(coreNodes);
+/** A node's absolute rect: sum `position` up the `parentId` chain, size from `style`. */
+export function absoluteRectOf(node: Node, byId: ReadonlyMap<string, Node>): Rect {
   let x = node.position.x;
   let y = node.position.y;
   let parentId = node.parentId;
@@ -164,12 +160,19 @@ function absoluteRect(node: Node, coreNodes: Node[]): Rect {
   return { x, y, width: style.width ?? 0, height: style.height ?? 0 };
 }
 
-// Memoise the id lookup per node array so the O(n) absolute walk isn't O(n²) over rebuilds.
-const ABS_CACHE = new WeakMap<Node[], Map<string, Node>>();
-function cacheById(coreNodes: Node[]): Map<string, Node> {
-  const byId = new Map(coreNodes.map((node) => [node.id, node]));
-  ABS_CACHE.set(coreNodes, byId);
-  return byId;
+/** The bounding box enclosing every rect. */
+export function boundingBoxOf(rects: Rect[]): Rect {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const rect of rects) {
+    minX = Math.min(minX, rect.x);
+    minY = Math.min(minY, rect.y);
+    maxX = Math.max(maxX, rect.x + rect.width);
+    maxY = Math.max(maxY, rect.y + rect.height);
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
 /** Emit a ghost as a ROOT React Flow node at its spot; `data` is passed through untouched. */
@@ -182,5 +185,3 @@ function toGhostNode(ghost: VisibleModuleNode, rect: Rect): Node {
     data: ghost.data,
   };
 }
-
-export type { Rect as GhostRect };

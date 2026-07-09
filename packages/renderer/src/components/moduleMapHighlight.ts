@@ -11,6 +11,7 @@
 import { type Edge, type Node } from "@xyflow/react";
 import { arrowMarker, CALLER_WIRE, IPC_WIRE } from "../theme/edgeColors";
 import { IMPORT_CROSS, IMPORT_SIBLING, relColor } from "../theme/mapPalette";
+import { repositionLitGhosts } from "./ghostReposition";
 
 // Wire colour = relationship TYPE (see baseStroke), the same whether or not it is selected.
 const CROSS_FRAME_COLOR = IMPORT_CROSS;
@@ -85,7 +86,9 @@ function pruneUnlitDeps(level: EmphasizedLevel): EmphasizedLevel {
     kept.add(edge.target);
   }
   const nodes = level.nodes.filter((node) => node.type !== "ghost" || kept.has(node.id) || level.beacons.has(node.id));
-  return { ...level, nodes, edges };
+  // The few surviving ghosts get placed SELECTION-RELATIVE now (beside the lit selection), not at their
+  // far global layout spot — every emphasis path ends here, so this is the one place to do it.
+  return { ...level, nodes: repositionLitGhosts(nodes, edges), edges };
 }
 
 const isLit = (edge: Edge): boolean => (edge.style as { opacity?: number } | undefined)?.opacity === 1;
