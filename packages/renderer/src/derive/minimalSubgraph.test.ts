@@ -1,6 +1,6 @@
 /**
  * The minimal subgraph the overlay grows: a SEED (the only permanent node) + its always-shown 1-hop
- * ring as GHOST nodes, directional [+n] stubs on any node with hidden neighbours, further GHOST nodes
+ * ring as GHOST nodes, a single [+n] stub on any node with hidden neighbours, further GHOST nodes
  * revealed by an expansion, and the collapsed containment frame. Import wires connect any two visible files.
  */
 
@@ -9,7 +9,7 @@ import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { buildModuleGraph } from "./moduleGraph";
 import type { ModuleCardData } from "./moduleLevel";
-import { buildMinimalSubgraph, type ExpansionEntry, type MinimalStubData, type MinimalSubgraphNode } from "./minimalSubgraph";
+import { buildMinimalSubgraph, type MinimalStubData, type MinimalSubgraphNode } from "./minimalSubgraph";
 
 function pkg(id: string, name: string, parentId: string | null): GraphNode {
   return { id, kind: "package", qualifiedName: id, displayName: name, parentId, location: { file: name, startLine: 1 } } as GraphNode;
@@ -27,7 +27,7 @@ function importEdge(source: string, target: string): GraphEdge {
   return { id: `imports:${source}->${target}`, source, target, kind: "imports", resolution: "resolved" } as GraphEdge;
 }
 
-function build(nodes: GraphNode[], edges: GraphEdge[], seeds: string[], kept: string[] = [], expanded: ExpansionEntry[] = [], onMap?: string[]) {
+function build(nodes: GraphNode[], edges: GraphEdge[], seeds: string[], kept: string[] = [], expanded: string[] = [], onMap?: string[]) {
   const index = buildGraphIndex({ nodes, edges } as unknown as GraphArtifact);
   // Default onMap to every module node in the fixture, so the auto 1-hop ring behaves as if the whole
   // fixture was on the Module map. Callers pass an explicit subset to exercise the on-map restriction.
@@ -67,15 +67,13 @@ describe("buildMinimalSubgraph", () => {
     expect(nodeById(nodes, "m:e")).toBeUndefined(); // off-map neighbour excluded from the auto ring
   });
 
-  it("puts a directional [+n] stub on a node with hidden neighbours, none where all are shown", () => {
+  it("puts one [+n] stub on a node with hidden neighbours, none where all are shown", () => {
     const { nodes } = build(NODES, EDGES, ["m:a"]);
-    // b's import of c is hidden → an out-stub with count 1; b's importer (a) is shown → no in-stub.
-    const bOut = nodeById(nodes, "stub:m:b|out");
-    expect((bOut?.data as MinimalStubData).count).toBe(1);
-    expect(nodeById(nodes, "stub:m:b|in")).toBeUndefined();
-    // a's whole 1-hop is shown → no stubs on the seed at all.
-    expect(nodeById(nodes, "stub:m:a|out")).toBeUndefined();
-    expect(nodeById(nodes, "stub:m:a|in")).toBeUndefined();
+    // b's import of c is hidden → one stub with count 1 (b's importer a is already shown).
+    expect((nodeById(nodes, "stub:m:b")?.data as MinimalStubData).count).toBe(1);
+    // a's and e's whole 1-hop is shown → no stubs on them.
+    expect(nodeById(nodes, "stub:m:a")).toBeUndefined();
+    expect(nodeById(nodes, "stub:m:e")).toBeUndefined();
   });
 
   it("draws import wires only between two visible files", () => {
@@ -109,20 +107,35 @@ describe("buildMinimalSubgraph", () => {
   });
 
   it("reveals an expansion's neighbours as ghosts, one hop past the frontier", () => {
-    const { nodes } = build(NODES, EDGES, ["m:a"], [], [{ id: "m:b", direction: "out" }]);
-    expect(nodeById(nodes, "m:c")?.tier).toBe("ghost"); // b's out-neighbour, revealed
+    const { nodes } = build(NODES, EDGES, ["m:a"], [], ["m:b"]);
+    expect(nodeById(nodes, "m:c")?.tier).toBe("ghost"); // b's hidden neighbour, revealed
     expect(nodeById(nodes, "m:d")).toBeUndefined(); // still one hop further
-    // The freshly-revealed ghost carries its own outward stub.
-    expect((nodeById(nodes, "stub:m:c|out")?.data as MinimalStubData).count).toBe(1);
+    // The freshly-revealed ghost carries its own stub.
+    expect((nodeById(nodes, "stub:m:c")?.data as MinimalStubData).count).toBe(1);
   });
 
   it("renders a drilled-through ghost as persistent (kept), its neighbour as the new ghost", () => {
-    const { nodes } = build(NODES, EDGES, ["m:a"], ["m:c"], [
-      { id: "m:b", direction: "out" },
-      { id: "m:c", direction: "out" },
-    ]);
+    const { nodes } = build(NODES, EDGES, ["m:a"], ["m:c"], ["m:b", "m:c"]);
     expect(nodeById(nodes, "m:c")?.tier).toBe("persistent"); // committed by drilling through it
     expect(nodeById(nodes, "m:d")?.tier).toBe("ghost"); // c's newly-revealed neighbour
+  });
+
+  it("reveals a file's hidden importer AND importee in one expansion (both directions at once)", () => {
+    // s → f, u → f, f → w: seeding s shows only f (its lone import). f then has a hidden importer (u)
+    // and a hidden importee (w) — one stub, count 2 — and expanding f reveals BOTH.
+    const nodes = [
+      pkg("p:root", "root", null),
+      pkg("p:src", "src", "p:root"),
+      mod("m:s", "src/s.ts", "p:src"),
+      mod("m:f", "src/f.ts", "p:src"),
+      mod("m:u", "src/u.ts", "p:src"),
+      mod("m:w", "src/w.ts", "p:src"),
+    ];
+    const edges = [importEdge("m:s", "m:f"), importEdge("m:u", "m:f"), importEdge("m:f", "m:w")];
+    expect((nodeById(build(nodes, edges, ["m:s"]).nodes, "stub:m:f")?.data as MinimalStubData).count).toBe(2);
+    const expanded = build(nodes, edges, ["m:s"], [], ["m:f"]);
+    expect(nodeById(expanded.nodes, "m:u")?.tier).toBe("ghost"); // hidden importer, revealed
+    expect(nodeById(expanded.nodes, "m:w")?.tier).toBe("ghost"); // hidden importee, revealed
   });
 
   it("resets to the seed base when there are no expansions", () => {

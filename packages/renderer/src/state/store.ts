@@ -36,7 +36,6 @@ import { deriveServiceLevelLayout } from "./deriveServiceMapLayout";
 import { deriveMinimalGraphLayout } from "./deriveMinimalGraphLayout";
 import { captureMapPositions } from "./mapPositions";
 import type { PlacedRect } from "../layout/minimalPlacement";
-import type { Direction, ExpansionEntry } from "../derive/minimalSubgraph";
 import { seedModuleIdsFor } from "../derive/selectionSeeds";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/blockDeps";
@@ -201,9 +200,10 @@ export interface BlueprintState {
   /** Ghost files the reader committed by drilling through them (expanding a ghost promotes it to
    * PERSISTENT). Unioned with the seeds' always-shown 1-hop ring to form the committed graph. */
   minimalKeptIds: string[];
-  /** Directional expansions applied to the overlay — each reveals a node's `direction` neighbours as
-   * ghosts. Ephemeral exploration state; "Reset" empties it (and minimalKeptIds) back to the base. */
-  minimalExpanded: ExpansionEntry[];
+  /** Source file ids whose [+n] stub was clicked — each reveals ALL of that file's hidden import
+   * neighbours (both directions) as ghosts. Ephemeral exploration state; "Reset" empties it (and
+   * minimalKeptIds) back to the base. */
+  minimalExpanded: string[];
   /** The Module map's on-screen file positions, captured (absolute) when the overlay is BUILT, so the
    * overlay mirrors them: a captured file sits at its exact map spot, growth is placed around it.
    * Captured once at build (never on expand/reset) so placed nodes never jump; cleared on close. */
@@ -300,7 +300,7 @@ export interface BlueprintState {
   toggleModuleSelect(id: string): void;
   buildMinimalGraph(): void;
   closeMinimalGraph(): void;
-  expandMinimal(sourceId: string, direction: Direction): void;
+  expandMinimal(sourceId: string): void;
   resetMinimalGraph(): void;
   minimalRelayout(): Promise<void>;
   setViewMode(mode: ViewMode): void;
@@ -1010,16 +1010,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ minimalSeedIds: [], minimalKeptIds: [], minimalExpanded: [], minimalBasePositions: {}, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
     },
 
-    // Reveal a node's hidden neighbours in one direction as ghosts (the [+n] stub click). Drilling
-    // through a GHOST commits it: adding the source to minimalKeptIds promotes it to persistent (a
-    // no-op when it was already persistent). The spec changes, so it relayouts.
-    expandMinimal(sourceId, direction) {
+    // Reveal ALL of a node's hidden import neighbours (both directions) as ghosts (the [+n] stub
+    // click). Drilling through a GHOST commits it: adding the source to minimalKeptIds promotes it to
+    // persistent (a no-op when it was already persistent). The spec changes, so it relayouts.
+    expandMinimal(sourceId) {
       const { minimalExpanded, minimalKeptIds } = get();
-      if (minimalExpanded.some((entry) => entry.id === sourceId && entry.direction === direction)) {
-        return; // already expanded this way.
+      if (minimalExpanded.includes(sourceId)) {
+        return; // already expanded.
       }
       const keptIds = minimalKeptIds.includes(sourceId) ? minimalKeptIds : [...minimalKeptIds, sourceId];
-      set({ minimalExpanded: [...minimalExpanded, { id: sourceId, direction }], minimalKeptIds: keptIds });
+      set({ minimalExpanded: [...minimalExpanded, sourceId], minimalKeptIds: keptIds });
       void get().minimalRelayout();
     },
 

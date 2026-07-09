@@ -1,7 +1,7 @@
 /**
  * The minimal-graph OVERLAY: the Module-map's "Build minimal graph" result as its own read-only
  * React Flow surface, replacing the level canvas while open. It reuses the Module-map's OWN card
- * components (`moduleNodeTypes`) plus a directional [+n] stub, and grows in three tiers: SEED cards
+ * components (`moduleNodeTypes`) plus a single [+n] stub per file, and grows in three tiers: SEED cards
  * (the picked files, keeping their green ring), the always-shown PERSISTENT 1-hop ring, and GHOST
  * cards revealed by clicking a stub. Drilling through a ghost commits it; "Reset" drops all growth
  * back to the seed base. A floating panel names the seed count, resets, and closes (Escape too —
@@ -11,8 +11,8 @@
  * identical to the Map by construction: single-click selects (DEBOUNCED, so a double-click wins),
  * ctrl/cmd toggles the selection, a pane-click clears it, and a double-click NAVIGATES into the node
  * exactly like the Map (the overlay just closes first, since it covers the Map, so the navigation
- * surfaces). The only page-specific gestures are the directional [+n] stub single-click (expand ONE
- * direction, never debounced) and Escape/Close (back to the level with the selection kept).
+ * surfaces). The only page-specific gestures are the [+n] stub single-click (reveal ALL of a file's
+ * hidden import neighbours, never debounced) and Escape/Close (back to the level with the selection kept).
  */
 
 import { useEffect, useMemo, useRef } from "react";
@@ -51,14 +51,14 @@ export function MinimalGraphView() {
   useClearOnEscape(closeMinimalGraph, true);
 
   // Interactions ARE the Module map's own (shared hook), so selection/toggle/navigate stay identical.
-  // The overlay only injects its page-specific bits: the [+n] stub single-click expands one direction
-  // (fully handled, skips select), and a double-click closes the overlay first so the Map's navigate
-  // surfaces. Stubs have no navigate meaning, so their double-click is fully handled (a no-op).
+  // The overlay only injects its page-specific bits: the [+n] stub single-click reveals all of a file's
+  // hidden neighbours (fully handled, skips select), and a double-click closes the overlay first so the
+  // Map's navigate surfaces. Stubs have no navigate meaning, so their double-click is fully handled (a no-op).
   const { onNodeClick, onNodeDoubleClick, onPaneClick } = useModuleNodeInteractions({
     onBeforeClick: (_event, node) => {
       if (node.type === MINIMAL_STUB_NODE) {
         const stub = node.data as MinimalStubData;
-        expandMinimal(stub.sourceId, stub.direction);
+        expandMinimal(stub.sourceId);
         return true;
       }
       return false;

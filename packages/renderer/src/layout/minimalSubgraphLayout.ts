@@ -3,7 +3,7 @@
  * every file the map had on screen keeps its exact captured map position (`basePositions`), and the
  * rest — off-map neighbours, later expansions, and the [+n] stubs — is placed relative to a connected
  * placed node (see `minimalPlacement`). File cards reuse the Map's OWN `file` card (ghost-tier dims in
- * place), a `minimalStub` is the directional [+n] expander.
+ * place), a `minimalStub` is the single all-neighbours [+n] expander.
  *
  * The one exception to the flat mirror is IN-PLACE expansion: an expanded file becomes a frame whose
  * declarations nest inside. To size that frame and place its children WITHOUT reshuffling the rest, we
@@ -139,9 +139,9 @@ function anchorExpansion(laidNodes: Node[], fileId: string, tier: MinimalTier | 
   );
 }
 
-function stubDescriptor(node: MinimalSubgraphNode): { id: string; sourceId: string; direction: "in" | "out" } {
+function stubDescriptor(node: MinimalSubgraphNode): { id: string; sourceId: string } {
   const data = node.data as MinimalStubData;
-  return { id: node.id, sourceId: data.sourceId, direction: data.direction };
+  return { id: node.id, sourceId: data.sourceId };
 }
 
 // A file is the Map's own `file` card at an absolute position. It carries its `tier` so the component

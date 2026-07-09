@@ -1,8 +1,8 @@
 /**
- * The minimal-graph overlay's directional [+n] expander. A tiny pill tethered to a file card: the
- * "in" stub sits left (hidden importers), the "out" stub right (hidden imports), n = the exact hidden
- * count. Clicking it (handled by the overlay's onNodeClick) reveals those neighbours as ghosts.
- * Pure props → visuals; it carries the source id + direction the overlay's handler reads.
+ * The minimal-graph overlay's [+n] expander. A tiny pill tethered to a file card: n = the count of
+ * that file's hidden import neighbours across BOTH directions (importers + imports). Clicking it
+ * (handled by the overlay's onNodeClick) reveals them ALL as ghosts. Pure props → visuals; it carries
+ * the source id the overlay's handler reads.
  */
 
 import { memo } from "react";
@@ -14,7 +14,7 @@ const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 type MinimalStubRfNode = Node<MinimalStubData, "minimalStub">;
 
 function MinimalStubNodeImpl({ data }: NodeProps<MinimalStubRfNode>) {
-  const title = data.direction === "in" ? `${data.count} more importer(s) — click to reveal` : `${data.count} more import(s) — click to reveal`;
+  const title = `${data.count} more import neighbour(s) — click to reveal`;
   return (
     <div style={STUB} title={title} aria-label={title}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />

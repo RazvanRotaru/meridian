@@ -13,12 +13,9 @@ export interface PlacedRect {
   height: number;
 }
 
-export type StubDirection = "in" | "out";
-
 export interface PlacementStub {
   id: string;
   sourceId: string;
-  direction: StubDirection;
 }
 
 export interface PlacementInput {
@@ -112,9 +109,11 @@ function placeDisconnectedFiles(input: PlacementInput, placed: Map<string, Place
   }
 }
 
-/** Step C — each stub sits beside its source: in→left, out→right, vertically centred on the source.
- * Pure over the placed FILE rects, so it re-hangs stubs identically whether the files came from the
- * flat mirror or the expanded-state ELK reflow (a stub whose source never got placed is dropped). */
+/** Step C — the single stub hangs to the RIGHT of its source, vertically centred on it. Right is a
+ * neutral side (directionality is gone — the stub reveals importers AND imports), and it keeps clear
+ * of the file's own card. Pure over the placed FILE rects, so it re-hangs stubs identically whether
+ * the files came from the flat mirror or the expanded-state ELK reflow (a stub whose source never got
+ * placed is dropped). */
 export function placeStubs(stubs: readonly PlacementStub[], fileRects: Record<string, PlacedRect>): Record<string, PlacedRect> {
   const rects: Record<string, PlacedRect> = {};
   for (const stub of stubs) {
@@ -122,7 +121,7 @@ export function placeStubs(stubs: readonly PlacementStub[], fileRects: Record<st
     if (!source) {
       continue; // a stub whose source never got placed has nowhere to hang.
     }
-    const x = stub.direction === "in" ? source.x - STUB_WIDTH - STUB_GAP : source.x + source.width + STUB_GAP;
+    const x = source.x + source.width + STUB_GAP;
     const y = source.y + source.height / 2 - STUB_HEIGHT / 2;
     rects[stub.id] = { x, y, width: STUB_WIDTH, height: STUB_HEIGHT };
   }
