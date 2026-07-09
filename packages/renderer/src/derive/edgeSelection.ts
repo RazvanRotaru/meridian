@@ -7,7 +7,7 @@
 
 import type { GraphEdge } from "@meridian/core";
 
-export type ViewMode = "call" | "ui" | "logic" | "modules" | "prs";
+export type ViewMode = "call" | "ui" | "logic" | "modules" | "prs" | "review";
 
 /** The behavioural call graph: everything the extractor emits EXCEPT the React "renders" tree.
  * IPC hops (`sends`/`handles`, routed through channel pseudo-nodes) belong here — an exit port
@@ -31,7 +31,7 @@ export function selectEdgesForMode(edges: GraphEdge[], mode: ViewMode): GraphEdg
   }
   // Logic flow and PR review are DOM renders, and the Module map walks the import graph on its own
   // surface — none lifts wires onto the call/UI boxes, so they select nothing here.
-  if (mode === "logic" || mode === "modules" || mode === "prs") {
+  if (mode === "logic" || mode === "modules" || mode === "prs" || mode === "review") {
     return [];
   }
   return edges.filter((edge) => CALL_EDGE_KINDS.has(edge.kind));

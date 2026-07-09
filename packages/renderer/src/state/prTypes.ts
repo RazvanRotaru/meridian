@@ -1,3 +1,5 @@
+import type { LineRange } from "@meridian/core";
+
 export type PrsTab = "open" | "closed";
 
 export type PrFileStatus = "added" | "modified" | "removed" | "renamed";
@@ -19,6 +21,11 @@ export interface PrChangedFile {
   status: PrFileStatus;
   additions: number;
   deletions: number;
+  /** New-side changed line ranges parsed from the file's unified-diff patch; absent ⇒ the whole
+   * file is treated as changed. Lets the PR-review graph name the exact touched code blocks. */
+  hunks?: LineRange[];
+  /** Renames only: the pre-image path (display-only — never matched against nodes). */
+  previousPath?: string;
 }
 
 export interface PrListResponse {
