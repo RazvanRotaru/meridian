@@ -44,7 +44,6 @@ import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/block
 import { deriveModuleTree } from "../derive/moduleTree";
 import { moduleChildContainerIds } from "../derive/moduleChildContainers";
 import { deriveServiceTree } from "../derive/serviceClusterTree";
-import { matchPrFilesToModules } from "../derive/prFileMatch";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import type { HighlightMode } from "../components/moduleMapPaint";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
@@ -52,9 +51,10 @@ import { moduleRevealStateFor, withAncestorsOf, withAncestorsOfMany } from "./fl
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
 import { PRS_UNAVAILABLE_ERROR, type PrChangedFile, type PrFilesResponse, type PrListResponse, type PrSummary, type PrsTab } from "./prTypes";
-import { deriveReviewData, applyTick, type ReviewData } from "../derive/reviewData";
+import { deriveReviewData, deriveReviewDataFromContext, applyTick, type ReviewData } from "../derive/reviewData";
 import { deriveReviewNodeLayout } from "./deriveReviewNodeLayout";
 import { readReviewProgress, writeReviewProgress, clearReviewProgress, type ReviewTick } from "./reviewTicksPref";
+import { reviewContextFromPrFiles } from "../derive/prReviewContext";
 
 /**
  * The "All" setting for the related-flows depth dial: a depth larger than any real call-graph chain.
@@ -1403,22 +1403,40 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // Reviewing a PR lands on the Map (the spatial home view), focused on the touched modules'
-    // common package with each matched module expanded into view and selected. Files that match
-    // nothing (docs, config) simply contribute no modules; zero matches means the plain overview.
+    // Reviewing a PR builds the SAME review context a `meridian review` artifact carries (from the
+    // PR's changed files + patch hunks), then lands on the PR-review deep-dive: the minimal
+    // affected-code-block graph plus the hierarchical flow panel. This populates `review` at runtime,
+    // which reveals the "PR review" tab. A PR that touches no extracted code block still switches over
+    // — the graph shows its empty state and the panel lists the unmapped files.
     reviewPrInGraph() {
-      const files = get().prFiles ?? [];
-      const matchedIds = unique(matchPrFilesToModules(files, get().index.nodesById.values()).map((match) => match.moduleId));
-      const reveal = moduleRevealStateFor(matchedIds, get().index);
-      set({
-        viewMode: "modules",
-        flowSelection: null,
-        flowEmphasis: new Set<string>(),
-        moduleFocus: reveal?.moduleFocus ?? null,
-        moduleExpanded: reveal?.moduleExpanded ?? new Set<string>(),
-        moduleSelected: reveal?.moduleSelected ?? new Set<string>(),
+      const { prFiles, prSelected, prsList, artifact, index } = get();
+      if (prSelected === null) {
+        return;
+      }
+      const summary = [...(prsList.open ?? []), ...(prsList.closed ?? [])].find((pr) => pr.number === prSelected);
+      const context = reviewContextFromPrFiles({
+        prNumber: prSelected,
+        headRef: summary?.headRef ?? null,
+        scopeId: prFilesUrl,
+        files: prFiles ?? [],
       });
-      void get().moduleRelayout();
+      const review = deriveReviewDataFromContext(context, artifact, index);
+      // Invalidate any in-flight review layout and clear the previous PR's graph so reviewRelayout
+      // rebuilds from scratch (re-entry no longer short-circuits on a stale non-empty canvas).
+      reviewLayoutSeq += 1;
+      set({
+        review,
+        reviewTicks: readReviewProgress(context.reviewKey).ticks,
+        reviewRfNodes: [],
+        reviewRfEdges: [],
+        reviewAffectedIds: new Set<string>(),
+        reviewUnmapped: [],
+        reviewLitNodeIds: null,
+        reviewSelectedId: null,
+        reviewLayoutStatus: "idle",
+        viewMode: "review",
+      });
+      void get().reviewRelayout();
     },
 
     async relayout() {
@@ -1604,8 +1622,4 @@ function mergePrSummaries(existing: readonly PrSummary[], incoming: readonly PrS
     byNumber.set(pr.number, pr);
   }
   return [...byNumber.values()];
-}
-
-function unique(values: readonly string[]): string[] {
-  return [...new Set(values)];
 }

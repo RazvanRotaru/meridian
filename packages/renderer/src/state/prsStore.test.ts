@@ -65,28 +65,41 @@ describe("PR store slice", () => {
     expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/prs?id=artifact-1&state=open&page=1");
   });
 
-  it("reviews PR files by revealing matched modules on the Map", () => {
+  it("reviews a PR into the affected-code-block review surface", () => {
     const store = freshStore();
     store.setState({
       viewMode: "prs",
-      prFiles: [{ path: "repo/src/a.ts", status: "modified" }],
-      flowSelection: { rootId: "stale", blockPath: [] },
-      flowEmphasis: new Set(["stale"]),
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles: [{ path: "src/a.ts", status: "modified", hunks: [{ start: 1, end: 3 }] }],
     });
     store.getState().reviewPrInGraph();
-    expect(store.getState().viewMode).toBe("modules");
-    expect(store.getState().flowSelection).toBeNull();
-    expect(store.getState().flowEmphasis).toEqual(new Set());
-    expect(store.getState().moduleFocus).toBe("ts:src");
-    expect(store.getState().moduleSelected).toEqual(new Set(["ts:src/a.ts"]));
+    const state = store.getState();
+    expect(state.viewMode).toBe("review");
+    expect(state.review).not.toBeNull();
+    // The PR's changed files become the review context verbatim (path + status + patch hunks).
+    expect(state.review?.context.changedFiles).toEqual([
+      { path: "src/a.ts", status: "modified", hunks: [{ start: 1, end: 3 }] },
+    ]);
+    // The tick-scope key carries the PR number; the head branch rides along for display.
+    expect(state.review?.context.reviewKey).toContain("pr-7");
+    expect(state.review?.context.headRef).toBe("feature");
   });
 
-  it("review with no matched modules still lands on the Map overview", () => {
+  it("maps a removed PR file to a deleted change and still enters review", () => {
     const store = freshStore();
-    store.setState({ viewMode: "prs", prFiles: [{ path: "docs/readme.md", status: "modified" }] });
+    store.setState({ viewMode: "prs", prSelected: 9, prFiles: [{ path: "src/gone.ts", status: "removed" }] });
     store.getState().reviewPrInGraph();
-    expect(store.getState().viewMode).toBe("modules");
-    expect(store.getState().moduleFocus).toBeNull();
-    expect(store.getState().moduleSelected).toEqual(new Set());
+    const state = store.getState();
+    expect(state.viewMode).toBe("review");
+    expect(state.review?.context.changedFiles).toEqual([{ path: "src/gone.ts", status: "deleted" }]);
+  });
+
+  it("does nothing when no PR is selected", () => {
+    const store = freshStore();
+    store.setState({ viewMode: "prs", prSelected: null, prFiles: [{ path: "src/a.ts", status: "modified" }] });
+    store.getState().reviewPrInGraph();
+    expect(store.getState().viewMode).toBe("prs");
+    expect(store.getState().review).toBeNull();
   });
 });

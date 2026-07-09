@@ -40,6 +40,19 @@ export function deriveReviewData(artifact: GraphArtifact, index: GraphIndex): Re
   if (!context) {
     return null;
   }
+  return deriveReviewDataFromContext(context, artifact, index);
+}
+
+/**
+ * Same derivation from an EXPLICIT context rather than the artifact extension — the join point for a
+ * runtime review source (a GitHub PR opened via `reviewPrInGraph`, whose changed files carry patch
+ * hunks). The affected-flow predicate and the flow trees still come from the loaded artifact.
+ */
+export function deriveReviewDataFromContext(
+  context: ReviewContext,
+  artifact: GraphArtifact,
+  index: GraphIndex,
+): ReviewData {
   const flows = readLogicFlows(artifact);
   const changedSet = changedPathSet(context.changedFiles);
   const affected = computeAffectedFlows(artifact.nodes, flows, changedSet);

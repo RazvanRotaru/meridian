@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyQuery,
+  parsePatchHunks,
   parsePullRequestFiles,
   parsePullRequestList,
   parseRepoList,
@@ -111,6 +112,37 @@ describe("parsePullRequestFiles", () => {
       { path: "src/changed.ts", status: "modified" },
       { path: "src/weird.ts", status: "modified" },
     ]);
+  });
+
+  it("carries parsed patch hunks and the rename pre-image, but never raw patch text", () => {
+    expect(
+      parsePullRequestFiles([
+        {
+          filename: "src/a.ts",
+          status: "renamed",
+          previous_filename: "src/old.ts",
+          patch: "@@ -1,2 +1,4 @@\n-old\n+new\n+more\n@@ -10,0 +12,2 @@\n+x\n+y\n secret-context",
+        },
+      ]),
+    ).toEqual([
+      { path: "src/a.ts", status: "renamed", previousPath: "src/old.ts", hunks: [{ start: 1, end: 4 }, { start: 12, end: 13 }] },
+    ]);
+  });
+});
+
+describe("parsePatchHunks", () => {
+  it("reads new-side ranges from hunk headers, anchoring pure deletions to a 1-line span", () => {
+    expect(
+      parsePatchHunks("@@ -3,4 +3,6 @@ context\n body\n@@ -20,3 +25,0 @@\n-gone\n@@ -40 +50 @@\n+one"),
+    ).toEqual([
+      { start: 3, end: 8 }, // +3,6 → lines 3..8
+      { start: 25, end: 26 }, // +25,0 pure deletion → anchored [25, 26]
+      { start: 50, end: 50 }, // +50 (count omitted ⇒ 1) → single line 50
+    ]);
+  });
+
+  it("returns no ranges for a patch with no hunk headers", () => {
+    expect(parsePatchHunks("just some text, no @@ markers")).toEqual([]);
   });
 });
 
