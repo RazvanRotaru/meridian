@@ -16,7 +16,7 @@
  */
 
 import { useEffect, useMemo, useRef } from "react";
-import { ReactFlow, NodeToolbar, Position, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
+import { ReactFlow, ViewportPortal, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
 import { emphasize } from "./moduleMapPaint";
@@ -80,9 +80,9 @@ export function MinimalGraphView({ override }: { override?: MinimalGraphOverride
     },
   });
 
-  // Each ghost carries an explicit [+] add affordance (a NodeToolbar pinned to it). Override/PR mode has
-  // no ghosts, so none render there.
-  const ghostIds = useMemo(() => (interactive ? nodes.filter(isGhost).map((node) => node.id) : []), [interactive, nodes]);
+  // Each ghost carries an explicit + add affordance, drawn in CANVAS coordinates (via ViewportPortal) so
+  // it scales with zoom exactly like the node it sits on. Override/PR mode has no ghosts, so none render.
+  const ghostRects = useMemo(() => (interactive ? nodes.filter(isGhost).map(ghostRect) : []), [interactive, nodes]);
 
   // Reuse the Module map's shared `emphasize` for edge + selection paint. It understands the file/
   // package import graph, so run it over the map cards + import wires; an expanded file's nested
@@ -123,13 +123,15 @@ export function MinimalGraphView({ override }: { override?: MinimalGraphOverride
         {...READONLY_CANVAS_PROPS}
       >
         <CanvasChrome nodeColor={minimalMiniMapColor} />
-        {ghostIds.map((id) => (
-          <NodeToolbar key={id} nodeId={id} isVisible position={Position.Top} align="end" offset={-11}>
-            <button type="button" style={ADD_GHOST_STYLE} onClick={() => promoteMinimalGhost(id)} title="Add to the graph" aria-label="Add to the graph">
-              +
-            </button>
-          </NodeToolbar>
-        ))}
+        <ViewportPortal>
+          {ghostRects.map((rect) => (
+            <div key={rect.id} style={ghostAddWrap(rect)}>
+              <button type="button" style={ADD_GHOST_STYLE} onClick={() => promoteMinimalGhost(rect.id)} title="Add to the graph" aria-label="Add to the graph">
+                +
+              </button>
+            </div>
+          ))}
+        </ViewportPortal>
       </ReactFlow>
       <div style={MINIMAL_PANEL_STYLE}>
         <span style={TITLE_STYLE}>
@@ -155,6 +157,22 @@ export function MinimalGraphView({ override }: { override?: MinimalGraphOverride
 }
 
 const isGhost = (node: Node): boolean => (node.data as { tier?: string } | undefined)?.tier === "ghost";
+
+// The + add button's size in FLOW units — so ViewportPortal scales it with the node at every zoom.
+const ADD_SIZE = 20;
+type GhostCorner = { id: string; x: number; y: number };
+
+// A ghost's top-right corner in absolute flow coords (overlay cards are flat, so position IS absolute).
+function ghostRect(node: Node): GhostCorner {
+  const width = ((node.style ?? {}) as { width?: number }).width ?? 0;
+  return { id: node.id, x: node.position.x + width, y: node.position.y };
+}
+
+// Centre the + on that corner (half in / half out). left/top:0 + translate is the ViewportPortal idiom;
+// it applies the canvas zoom/pan transform, so a flow-unit-sized child scales with the graph.
+function ghostAddWrap(corner: GhostCorner): React.CSSProperties {
+  return { position: "absolute", left: 0, top: 0, transform: `translate(${corner.x - ADD_SIZE / 2}px, ${corner.y - ADD_SIZE / 2}px)`, pointerEvents: "all" };
+}
 
 // Order-independent equality of two id lists — Reset is disabled while members still equal the origin.
 function sameIds(a: readonly string[], b: readonly string[]): boolean {

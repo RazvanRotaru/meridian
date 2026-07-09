@@ -1,12 +1,13 @@
 /**
  * Off-ELK placement for Module-map GHOST cards. A ghost is the off-level far end of a code-dependency
  * wire (an off-screen definition or caller); feeding it to ELK gives it a layer slot and pushes the
- * real frames apart, so instead we lay the core out with ELK and then hang every ghost in a BAND
- * COMPLETELY OUTSIDE the core's bounding box — never intermixed with, or overlapping, the real graph.
+ * real frames apart, so instead we lay the core out with ELK and then hang each ghost RIGHT BESIDE the
+ * drawn node its wire touches (its ANCHOR) — close enough to stay on screen, never banished to the far
+ * edge of a big graph.
  *
- * Direction encodes the wire's meaning: an OUTGOING dependency (wire drawn→ghost) lands in the RIGHT
- * band (just past the core's right edge), an INCOMING caller (wire ghost→drawn) in the LEFT band. Within
- * a band the ghosts stack in a single column ordered by their anchor's Y, greedily packed so none
+ * A node's ghosts form a small vertical fan just off the anchor: an OUTGOING dependency (wire
+ * drawn→ghost) fans to the anchor's RIGHT, an INCOMING caller (wire ghost→drawn) to its LEFT. Ghosts of
+ * the same anchor are centred on it; ghosts are pushed down past any already-placed ghost so no two
  * overlap. Pure: id-sorted, no clock/random.
  */
 
@@ -15,10 +16,10 @@ import type { ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
 import type { GhostData } from "../derive/ghostDeps";
 import { ghostSize } from "./moduleLevelLayout";
 
-// Horizontal clearance between the core's bounding box and the ghost band, and the vertical gap
-// between stacked ghosts in a band.
-const BAND_GAP = 140;
-const V_GAP = 24;
+// Horizontal clearance between the anchor card and its ghost fan, and the vertical gap between stacked
+// ghosts. Small, so ghosts sit next to the node they belong to (a short pan at most, not a far band).
+const GAP = 52;
+const V_GAP = 22;
 
 interface Rect {
   x: number;
@@ -31,58 +32,81 @@ interface Anchoring {
   anchorId: string;
   direction: Direction;
 }
-interface BandEntry {
-  ghost: VisibleModuleNode;
-  anchorY: number;
+interface Group {
+  anchor: Rect;
+  direction: Direction;
+  ghosts: VisibleModuleNode[];
 }
 
 /**
- * Place every ghost in a band OUTSIDE the core. `coreNodes` are the ELK-laid React Flow nodes
+ * Place every ghost in a fan beside its anchor. `coreNodes` are the ELK-laid React Flow nodes
  * (positions are parent-relative inside frames); ghosts are emitted as ROOT nodes at absolute
- * positions past the core's left/right edge, so they never overlap the graph or each other.
+ * positions next to the anchor's edge, pushed down so no two ghosts overlap.
  */
 export function placeGhostBands(ghosts: VisibleModuleNode[], ghostWires: ModuleTreeEdge[], coreNodes: Node[]): Node[] {
   if (ghosts.length === 0 || coreNodes.length === 0) {
     return [];
   }
   const anchoring = anchoringByGhost(ghostWires, new Set(ghosts.map((ghost) => ghost.id)));
-  const centers = anchorCenters(coreNodes);
-  const box = boundingBox(coreNodes);
-  const right: BandEntry[] = [];
-  const left: BandEntry[] = [];
-  for (const ghost of ghosts) {
-    const anchor = anchoring.get(ghost.id);
-    if (!anchor) {
-      continue; // an unwired ghost never renders (pruned at paint) — nothing to anchor.
-    }
-    const anchorY = centers.get(anchor.anchorId)?.y ?? box.y;
-    (anchor.direction === "right" ? right : left).push({ ghost, anchorY });
-  }
-  return [...placeBand(right, "right", box), ...placeBand(left, "left", box)];
-}
-
-/**
- * Stack a band's ghosts in one column just outside the core, ordered by anchor Y. Each ghost wants to
- * sit at its anchor's row but is pushed down past the previous ghost so the column never overlaps —
- * a monotonic greedy pack (entries are Y-sorted first, so the cursor only moves down).
- */
-function placeBand(entries: BandEntry[], direction: Direction, box: Rect): Node[] {
-  entries.sort((a, b) => a.anchorY - b.anchorY || a.ghost.id.localeCompare(b.ghost.id));
+  const rects = anchorRects(coreNodes);
+  const groups = groupByAnchor(ghosts, anchoring, rects);
+  const placed: Rect[] = [];
   const out: Node[] = [];
-  let cursorY = box.y;
-  for (const { ghost, anchorY } of entries) {
-    const size = ghostSize(ghost.data as GhostData);
-    const x = direction === "right" ? box.x + box.width + BAND_GAP : box.x - BAND_GAP - size.width;
-    const y = Math.max(anchorY - size.height / 2, cursorY);
-    cursorY = y + size.height + V_GAP;
-    out.push(toGhostNode(ghost, { x, y, ...size }));
+  for (const key of [...groups.keys()].sort()) {
+    const group = groups.get(key)!;
+    out.push(...placeFan(group, placed));
   }
   return out;
 }
 
+/** Group a direction's ghosts under their shared anchor, so each anchor's ghosts fan together. */
+function groupByAnchor(ghosts: VisibleModuleNode[], anchoring: Map<string, Anchoring>, rects: Map<string, Rect>): Map<string, Group> {
+  const groups = new Map<string, Group>();
+  for (const ghost of ghosts) {
+    const anchor = anchoring.get(ghost.id);
+    const rect = anchor ? rects.get(anchor.anchorId) : undefined;
+    if (!anchor || !rect) {
+      continue; // an unwired ghost (pruned at paint) or one whose anchor isn't drawn has nowhere to hang.
+    }
+    const key = `${anchor.anchorId}|${anchor.direction}`;
+    (groups.get(key) ?? setGet(groups, key, { anchor: rect, direction: anchor.direction, ghosts: [] })).ghosts.push(ghost);
+  }
+  return groups;
+}
+
+/** Stack a group's ghosts in a column beside the anchor, centred on it, each pushed below any overlap. */
+function placeFan(group: Group, placed: Rect[]): Node[] {
+  const ghosts = [...group.ghosts].sort((a, b) => a.id.localeCompare(b.id));
+  const sizes = ghosts.map((ghost) => ghostSize(ghost.data as GhostData));
+  const total = sizes.reduce((sum, size) => sum + size.height, 0) + V_GAP * (ghosts.length - 1);
+  let y = group.anchor.y + group.anchor.height / 2 - total / 2;
+  const out: Node[] = [];
+  ghosts.forEach((ghost, i) => {
+    const size = sizes[i];
+    const x = group.direction === "right" ? group.anchor.x + group.anchor.width + GAP : group.anchor.x - GAP - size.width;
+    const rect = pushBelow({ x, y, ...size }, placed);
+    placed.push(rect);
+    out.push(toGhostNode(ghost, rect));
+    y = rect.y + size.height + V_GAP;
+  });
+  return out;
+}
+
+/** Slide a rect straight down until it clears every already-placed ghost (keeps the fan's column x). */
+function pushBelow(rect: Rect, placed: Rect[]): Rect {
+  let candidate = rect;
+  let guard = 0;
+  while (guard < 1000 && placed.some((other) => overlaps(candidate, other))) {
+    const blocker = placed.find((other) => overlaps(candidate, other))!;
+    candidate = { ...candidate, y: blocker.y + blocker.height + V_GAP };
+    guard += 1;
+  }
+  return candidate;
+}
+
 /**
- * The anchor + side for each ghost. A ghost wire drawn→ghost is an OUTGOING dependency (RIGHT band);
- * ghost→drawn is an INCOMING caller (LEFT band). A ghost reachable from both sides takes the side with
+ * The anchor + side for each ghost. A ghost wire drawn→ghost is an OUTGOING dependency (RIGHT); a
+ * ghost→drawn wire is an INCOMING caller (LEFT). A ghost reachable from both sides takes the side with
  * more wires (tie → right); its anchor is the smallest drawn id on that side.
  */
 function anchoringByGhost(ghostWires: ModuleTreeEdge[], ghostIds: ReadonlySet<string>): Map<string, Anchoring> {
@@ -115,30 +139,18 @@ function push(map: Map<string, string[]>, ghostId: string, anchorId: string): vo
   map.set(ghostId, list);
 }
 
-/** Absolute CENTER-Y of every core node, keyed by id (positions are parent-relative inside frames). */
-function anchorCenters(coreNodes: Node[]): Map<string, { y: number }> {
-  const centers = new Map<string, { y: number }>();
-  for (const node of coreNodes) {
-    const rect = absoluteRect(node, coreNodes);
-    centers.set(node.id, { y: rect.y + rect.height / 2 });
-  }
-  return centers;
+function setGet<K, V>(map: Map<K, V>, key: K, value: V): V {
+  map.set(key, value);
+  return value;
 }
 
-/** The absolute bounding box of every core node. */
-function boundingBox(coreNodes: Node[]): Rect {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
+/** Absolute rect of every core node, keyed by id (positions are parent-relative inside frames). */
+function anchorRects(coreNodes: Node[]): Map<string, Rect> {
+  const rects = new Map<string, Rect>();
   for (const node of coreNodes) {
-    const rect = absoluteRect(node, coreNodes);
-    minX = Math.min(minX, rect.x);
-    minY = Math.min(minY, rect.y);
-    maxX = Math.max(maxX, rect.x + rect.width);
-    maxY = Math.max(maxY, rect.y + rect.height);
+    rects.set(node.id, absoluteRect(node, coreNodes));
   }
-  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  return rects;
 }
 
 /** A core node's absolute rect: sum `position` up the `parentId` chain, size from `style`. */
@@ -170,7 +182,11 @@ function cacheById(coreNodes: Node[]): Map<string, Node> {
   return byId;
 }
 
-/** Emit a ghost as a ROOT React Flow node at its band spot; `data` is passed through untouched. */
+function overlaps(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+/** Emit a ghost as a ROOT React Flow node at its fan spot; `data` is passed through untouched. */
 function toGhostNode(ghost: VisibleModuleNode, rect: Rect): Node {
   return {
     id: ghost.id,

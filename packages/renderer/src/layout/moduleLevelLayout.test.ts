@@ -1,8 +1,9 @@
 /**
  * GHOST cards are laid out OFF the ELK core: the drawn (non-ghost) tree keeps its ELK layer layout
- * while every ghost hangs in a band COMPLETELY OUTSIDE the core's bounding box. These tests pin that
- * contract — ghosts are root nodes past the core's edge, an OUTGOING ghost bands RIGHT and an INCOMING
- * ghost bands LEFT, none overlap — and the hard regression: with NO ghost the output is unchanged.
+ * while every ghost hangs in a fan BESIDE its anchor (the drawn node its wire touches). These tests pin
+ * that contract — ghosts are root nodes just past their anchor's edge, an OUTGOING ghost fans RIGHT and
+ * an INCOMING ghost fans LEFT, none overlap — and the hard regression: with NO ghost the output is
+ * unchanged.
  */
 
 import { describe, expect, it } from "vitest";
@@ -52,39 +53,35 @@ function rectOf(node: { position: { x: number; y: number }; style?: unknown }): 
 function overlaps(a: Rect, b: Rect): boolean {
   return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
 }
-function coreBox(nodes: { type?: string; position: { x: number; y: number }; style?: unknown }[]): { minX: number; maxX: number } {
-  const core = nodes.filter((node) => node.type !== "ghost").map(rectOf);
-  return { minX: Math.min(...core.map((r) => r.x)), maxX: Math.max(...core.map((r) => r.x + r.width)) };
-}
-
-describe("layoutModuleTree ghost bands", () => {
-  it("keeps the ELK core ghost-free and emits ghosts as root nodes OUTSIDE the core box", async () => {
+describe("layoutModuleTree ghost fans", () => {
+  it("keeps the ELK core ghost-free and emits ghosts as root nodes just past their anchor", async () => {
     const nodes = [fileNode("f:a"), fileNode("f:b"), ghostNode("g:x")];
     const edges = [importEdge("f:a", "f:b"), ghostWire("f:a", "g:x")];
     const { nodes: laid } = await layoutModuleTree(nodes, edges);
 
+    const anchor = rectOf(laid.find((node) => node.id === "f:a")!);
     const ghost = laid.find((node) => node.id === "g:x")!;
     // Emitted as a ROOT node typed "ghost" — never nested, never fed to ELK.
     expect(ghost.type).toBe("ghost");
     expect(ghost.parentId).toBeUndefined();
-    // OUTGOING dependency (wire drawn→ghost) bands past the core's RIGHT edge — fully outside.
-    expect(rectOf(ghost).x).toBeGreaterThanOrEqual(coreBox(laid).maxX);
+    // OUTGOING dependency (wire drawn→ghost) sits just past its ANCHOR's right edge — beside it, not far.
+    expect(rectOf(ghost).x).toBeGreaterThanOrEqual(anchor.x + anchor.width);
   });
 
-  it("bands outgoing ghosts right of the core and incoming ghosts left, all outside the box", async () => {
+  it("fans outgoing ghosts right of the anchor and incoming ghosts left", async () => {
     const nodes = [fileNode("f:a"), ghostNode("g:out"), ghostNode("g:in")];
     // g:out is an OUTGOING dependency (drawn→ghost, RIGHT); g:in is an INCOMING caller (ghost→drawn, LEFT).
     const edges = [ghostWire("f:a", "g:out"), ghostWire("g:in", "f:a")];
     const { nodes: laid } = await layoutModuleTree(nodes, edges);
 
-    const box = coreBox(laid);
+    const anchor = rectOf(laid.find((node) => node.id === "f:a")!);
     const out = rectOf(laid.find((node) => node.id === "g:out")!);
     const inc = rectOf(laid.find((node) => node.id === "g:in")!);
-    expect(out.x).toBeGreaterThanOrEqual(box.maxX); // right band, past the right edge
-    expect(inc.x + inc.width).toBeLessThanOrEqual(box.minX); // left band, past the left edge
+    expect(out.x).toBeGreaterThanOrEqual(anchor.x + anchor.width); // right, past the anchor's right edge
+    expect(inc.x + inc.width).toBeLessThanOrEqual(anchor.x); // left, past the anchor's left edge
   });
 
-  it("never overlaps two ghosts in a band", async () => {
+  it("never overlaps two ghosts in a fan", async () => {
     const nodes = [fileNode("f:a"), ghostNode("g:1"), ghostNode("g:2"), ghostNode("g:3")];
     const edges = [ghostWire("f:a", "g:1"), ghostWire("f:a", "g:2"), ghostWire("f:a", "g:3")];
     const { nodes: laid } = await layoutModuleTree(nodes, edges);
