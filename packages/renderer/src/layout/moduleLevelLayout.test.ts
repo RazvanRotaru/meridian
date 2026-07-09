@@ -52,10 +52,13 @@ function rectOf(node: { position: { x: number; y: number }; style?: unknown }): 
 function overlaps(a: Rect, b: Rect): boolean {
   return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
 }
-const centerX = (r: Rect): number => r.x + r.width / 2;
+function coreBox(nodes: { type?: string; position: { x: number; y: number }; style?: unknown }[]): { minX: number; maxX: number } {
+  const core = nodes.filter((node) => node.type !== "ghost").map(rectOf);
+  return { minX: Math.min(...core.map((r) => r.x)), maxX: Math.max(...core.map((r) => r.x + r.width)) };
+}
 
 describe("layoutModuleTree ghost placement", () => {
-  it("keeps the ELK core ghost-free and emits ghosts as root nodes clear of the core", async () => {
+  it("keeps the ELK core ghost-free and emits ghosts as root nodes OUTSIDE the core's perimeter", async () => {
     const nodes = [fileNode("f:a"), fileNode("f:b"), ghostNode("g:x")];
     const edges = [importEdge("f:a", "f:b"), ghostWire("f:a", "g:x")];
     const { nodes: laid } = await layoutModuleTree(nodes, edges);
@@ -64,24 +67,21 @@ describe("layoutModuleTree ghost placement", () => {
     // Emitted as a ROOT node typed "ghost" — never nested, never fed to ELK.
     expect(ghost.type).toBe("ghost");
     expect(ghost.parentId).toBeUndefined();
-    // It overlaps NEITHER real card.
-    const core = laid.filter((node) => node.type !== "ghost").map(rectOf);
-    expect(core.every((card) => !overlaps(rectOf(ghost), card))).toBe(true);
+    // An OUTGOING dependency bands past the core's RIGHT edge — fully outside the perimeter, never inside.
+    expect(rectOf(ghost).x).toBeGreaterThanOrEqual(coreBox(laid).maxX);
   });
 
-  it("puts outgoing ghosts right of the anchor and incoming ghosts left, overlapping nothing", async () => {
+  it("bands outgoing ghosts right of the perimeter and incoming ghosts left of it", async () => {
     const nodes = [fileNode("f:a"), ghostNode("g:out"), ghostNode("g:in")];
     // g:out is an OUTGOING dependency (drawn→ghost, RIGHT); g:in is an INCOMING caller (ghost→drawn, LEFT).
     const edges = [ghostWire("f:a", "g:out"), ghostWire("g:in", "f:a")];
     const { nodes: laid } = await layoutModuleTree(nodes, edges);
 
-    const anchor = rectOf(laid.find((node) => node.id === "f:a")!);
+    const box = coreBox(laid);
     const out = rectOf(laid.find((node) => node.id === "g:out")!);
     const inc = rectOf(laid.find((node) => node.id === "g:in")!);
-    expect(centerX(out)).toBeGreaterThan(centerX(anchor)); // right side
-    expect(centerX(inc)).toBeLessThan(centerX(anchor)); // left side
-    expect(overlaps(out, anchor)).toBe(false);
-    expect(overlaps(inc, anchor)).toBe(false);
+    expect(out.x).toBeGreaterThanOrEqual(box.maxX); // right band, past the right edge
+    expect(inc.x + inc.width).toBeLessThanOrEqual(box.minX); // left band, past the left edge
   });
 
   it("never overlaps a ghost with a real card or another ghost, even when crowded", async () => {
