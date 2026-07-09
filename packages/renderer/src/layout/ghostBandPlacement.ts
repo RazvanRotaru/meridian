@@ -56,18 +56,24 @@ export function bandGhostsOutside(box: Rect, items: GhostItem[]): Map<string, { 
   return out;
 }
 
-/** A column just past the side, ghosts ordered by anchor Y and packed downward so none overlap. */
+/**
+ * A column just past the side, ordered by anchor Y and CENTRED on the anchors' mean Y — so a tall column
+ * grows up AND down, leveraging the empty space above and below the graph instead of only stacking
+ * downward off screen. Ghosts never overlap (fixed pitch). One column x, so it reads as a tidy stack.
+ */
 function packColumn(items: GhostItem[], side: Side, box: Rect, out: Map<string, { x: number; y: number }>): void {
+  if (items.length === 0) {
+    return;
+  }
   items.sort((a, b) => a.anchorCy - b.anchorCy || a.id.localeCompare(b.id));
   const maxWidth = items.reduce((max, item) => Math.max(max, item.width), 0);
-  let cursor = -Infinity;
+  const totalHeight = items.reduce((sum, item) => sum + item.height, 0) + V_GAP * (items.length - 1);
+  const meanAnchorY = items.reduce((sum, item) => sum + item.anchorCy, 0) / items.length;
+  const x = side === "right" ? box.x + box.width + GAP : box.x - GAP - maxWidth;
+  let y = meanAnchorY - totalHeight / 2;
   for (const item of items) {
-    // Right edge of the left column aligns just past the box's left edge; the right column starts just
-    // past its right edge — so a column reads as one tidy stack, not a ragged edge.
-    const x = side === "right" ? box.x + box.width + GAP : box.x - GAP - maxWidth;
-    const y = Math.max(item.anchorCy - item.height / 2, cursor);
-    cursor = y + item.height + V_GAP;
     out.set(item.id, { x, y });
+    y += item.height + V_GAP;
   }
 }
 

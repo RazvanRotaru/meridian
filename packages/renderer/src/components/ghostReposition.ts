@@ -38,10 +38,97 @@ export function repositionLitGhosts(nodes: Node[], edges: Edge[]): Node[] {
     items.push({ id: ghost.id, side: info.side, anchorCx: rect.x + rect.width / 2, anchorCy: rect.y + rect.height / 2, ...size });
   }
   const positions = bandGhostsOutside(box, items);
+  nudgeClearOfEdges(items, positions, coreSegments(edges, ghostIds, byId));
   return nodes.map((node) => {
     const pos = positions.get(node.id);
     return pos ? { ...node, position: pos, parentId: undefined } : node;
   });
+}
+
+// Best-effort: slide each side's column FURTHER out (in whole steps) until no ghost in it crosses a
+// wire between two drawn nodes — the whole column moves together so it stays a tidy stack. Bounded, so a
+// column boxed in by wires stops after a few steps rather than flying away.
+const SHIFT_STEP = 150;
+const MAX_SHIFTS = 10;
+
+function nudgeClearOfEdges(items: GhostItem[], positions: Map<string, { x: number; y: number }>, segments: Segment[]): void {
+  if (segments.length === 0) {
+    return;
+  }
+  for (const side of ["left", "right"] as const) {
+    const sideItems = items.filter((item) => item.side === side);
+    const dir = side === "right" ? 1 : -1;
+    let shift = 0;
+    for (let step = 0; step <= MAX_SHIFTS; step += 1) {
+      shift = step * SHIFT_STEP * dir;
+      const clear = sideItems.every((item) => {
+        const pos = positions.get(item.id);
+        return !pos || !segments.some((seg) => segmentHitsRect(seg, { x: pos.x + shift, y: pos.y, width: item.width, height: item.height }));
+      });
+      if (clear) {
+        break;
+      }
+    }
+    if (shift !== 0) {
+      for (const item of sideItems) {
+        const pos = positions.get(item.id);
+        if (pos) {
+          positions.set(item.id, { x: pos.x + shift, y: pos.y });
+        }
+      }
+    }
+  }
+}
+
+type Segment = [{ x: number; y: number }, { x: number; y: number }];
+
+/** Segments for every LIT wire between two DRAWN nodes (a ghost's own wire is skipped — it may cross). */
+function coreSegments(edges: Edge[], ghostIds: ReadonlySet<string>, byId: ReadonlyMap<string, Node>): Segment[] {
+  const segments: Segment[] = [];
+  for (const edge of edges) {
+    if (ghostIds.has(edge.source) || ghostIds.has(edge.target)) {
+      continue;
+    }
+    const source = byId.get(edge.source);
+    const target = byId.get(edge.target);
+    if (source && target) {
+      segments.push([centerOf(source, byId), centerOf(target, byId)]);
+    }
+  }
+  return segments;
+}
+
+function centerOf(node: Node, byId: ReadonlyMap<string, Node>): { x: number; y: number } {
+  const rect = absoluteRectOf(node, byId);
+  return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+}
+
+/** Does a segment touch a rect? True if an endpoint is inside, or the segment crosses any rect edge. */
+function segmentHitsRect(seg: Segment, rect: { x: number; y: number; width: number; height: number }): boolean {
+  const [a, b] = seg;
+  if (pointInRect(a, rect) || pointInRect(b, rect)) {
+    return true;
+  }
+  const tl = { x: rect.x, y: rect.y };
+  const tr = { x: rect.x + rect.width, y: rect.y };
+  const bl = { x: rect.x, y: rect.y + rect.height };
+  const br = { x: rect.x + rect.width, y: rect.y + rect.height };
+  return segmentsCross(a, b, tl, tr) || segmentsCross(a, b, tr, br) || segmentsCross(a, b, br, bl) || segmentsCross(a, b, bl, tl);
+}
+
+const pointInRect = (p: { x: number; y: number }, r: { x: number; y: number; width: number; height: number }): boolean =>
+  p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height;
+
+type P = { x: number; y: number };
+const cross = (o: P, a: P, b: P): number => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+
+/** Standard segment-segment intersection via orientation signs. */
+function segmentsCross(a: P, b: P, c: P, d: P): boolean {
+  const d1 = cross(c, d, a);
+  const d2 = cross(c, d, b);
+  const d3 = cross(a, b, c);
+  const d4 = cross(a, b, d);
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
 }
 
 /**
