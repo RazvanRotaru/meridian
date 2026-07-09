@@ -21,6 +21,8 @@ export interface AuthContext {
   github: GitHubClient | null;
   /** Last-resort token resolved once at boot (the `gh` CLI login); below env vars in precedence. */
   fallbackToken?: string;
+  /** Identity behind `fallbackToken`, resolved once at boot so the UI can show "signed in as …". */
+  fallbackUser?: GitHubUser;
 }
 
 export async function handleDeviceStart(ctx: AuthContext, response: ServerResponse): Promise<void> {
@@ -57,7 +59,14 @@ export function handleLogout(ctx: AuthContext, request: IncomingMessage, respons
 
 export function handleAuthSession(ctx: AuthContext, request: IncomingMessage, response: ServerResponse): void {
   const session = ctx.sessions.get(readSessionId(requestHeader(request, "cookie")), Date.now());
-  sendJson(response, 200, { configured: ctx.github !== null, signedIn: Boolean(session?.token), user: session?.user ?? null });
+  // Signed-in from the UI's view means "there's a usable token" — an interactive session OR an
+  // ambient env/gh token — so a `gh`-logged-in user gets the signed-in UI (search, own repos)
+  // without the device flow. `user` stays null for the ambient case (no identity is fetched).
+  sendJson(response, 200, {
+    configured: ctx.github !== null,
+    signedIn: Boolean(githubTokenFor(ctx, request)),
+    user: session?.user ?? ctx.fallbackUser ?? null,
+  });
 }
 
 export async function handleRepoSearch(
@@ -66,7 +75,7 @@ export async function handleRepoSearch(
   response: ServerResponse,
   query: string,
 ): Promise<void> {
-  const token = sessionTokenFor(ctx, request);
+  const token = githubTokenFor(ctx, request);
   if (!token) {
     sendJson(response, 401, { error: "sign in to search repositories" });
     return;
@@ -75,7 +84,7 @@ export async function handleRepoSearch(
 }
 
 export async function handleOwnRepos(ctx: AuthContext, request: IncomingMessage, response: ServerResponse): Promise<void> {
-  const token = sessionTokenFor(ctx, request);
+  const token = githubTokenFor(ctx, request);
   if (!token) {
     sendJson(response, 401, { error: "sign in to list your repositories" });
     return;

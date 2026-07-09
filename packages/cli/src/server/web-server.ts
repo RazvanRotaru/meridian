@@ -11,6 +11,7 @@ import { injectAuthConfig, injectPrefill } from "./web-boot";
 import { sendHtml, sendJson } from "./http-response";
 import { createGitHubClient } from "./github";
 import type { GitHubClient } from "./github";
+import type { GitHubUser } from "./github-parse";
 import { SessionStore } from "./session";
 import { assertJsonContentType, assertSameOrigin } from "./web-guards";
 import { handleAuthSession, handleAuthStatus, handleDeviceStart, handleLogout, handleOwnRepos, handleRepoSearch } from "./web-auth";
@@ -31,6 +32,8 @@ export interface WebServerConfig {
   githubClientId?: string;
   /** Last-resort token (the `gh` CLI login) used when no env token or session is present. */
   fallbackToken?: string;
+  /** Identity behind `fallbackToken`, so the signed-in UI can name the gh-logged-in user. */
+  fallbackUser?: GitHubUser;
 }
 
 export interface Context {
@@ -49,6 +52,8 @@ export interface Context {
   github: GitHubClient | null;
   /** Last-resort token (the `gh` CLI login), below env vars in `githubTokenFor` precedence. */
   fallbackToken?: string;
+  /** Identity behind `fallbackToken`, surfaced by `/api/auth/session` as the signed-in user. */
+  fallbackUser?: GitHubUser;
 }
 
 export function createWebServer(config: WebServerConfig): Server {
@@ -78,6 +83,7 @@ function buildContext(config: WebServerConfig): Context {
     sessions: new SessionStore(),
     github,
     fallbackToken: config.fallbackToken,
+    fallbackUser: config.fallbackUser,
   };
   cleanRetainedSourcesOnExit(ctx);
   return ctx;

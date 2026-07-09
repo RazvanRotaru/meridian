@@ -11,6 +11,8 @@ import { resolveCwd } from "../paths";
 import { Reporter } from "../reporter";
 import type { GlobalOptions } from "../reporter";
 import { createWebServer } from "../server/web-server";
+import { createGitHubClient } from "../server/github";
+import type { GitHubUser } from "../server/github-parse";
 import { resolveGhCliToken } from "../server/gh-cli-token";
 import { serve } from "../server/serve";
 
@@ -31,13 +33,16 @@ const DEFAULT_GITHUB_CLIENT_ID = "Ov23liC6UQi42iShRkP4";
 export async function runWeb(source: string | undefined, options: WebOptions): Promise<void> {
   const reporter = new Reporter(options);
   const cwd = resolveCwd(options.cwd);
+  const githubClientId = options.githubClientId ?? process.env.MERIDIAN_GITHUB_CLIENT_ID ?? DEFAULT_GITHUB_CLIENT_ID;
+  const fallback = await resolveFallbackAuth(githubClientId, reporter);
   const server = createWebServer({
     rendererRoot: rendererRoot(),
     webUiPath: webUiPath(),
     cwd,
     source,
-    githubClientId: options.githubClientId ?? process.env.MERIDIAN_GITHUB_CLIENT_ID ?? DEFAULT_GITHUB_CLIENT_ID,
-    fallbackToken: await resolveFallbackToken(reporter),
+    githubClientId,
+    fallbackToken: fallback.token,
+    fallbackUser: fallback.user,
   });
   await serve(
     server,
@@ -47,20 +52,33 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
 }
 
 /**
- * A GitHub token to fall back to when the request carries no session and no GITHUB_TOKEN/GH_TOKEN:
- * the `gh` CLI's own login. This survives server restarts (unlike the in-memory session), so a gh
- * user reaches clone + PR review without signing in each time. An explicit env token still wins, so
- * we don't even spawn gh when one is set.
+ * The ambient credential to sign the UI in with when there's no interactive session and no
+ * GITHUB_TOKEN/GH_TOKEN: the `gh` CLI's own login. `gh` persists its token in the OS keychain, so
+ * reusing it means a signed-in-with-gh user reaches search + own repos + clone + PR review WITHOUT
+ * the device flow, and it survives restarts (unlike the in-memory session). An explicit env token
+ * still wins, so we don't even spawn gh when one is set.
  */
-async function resolveFallbackToken(reporter: Reporter): Promise<string | undefined> {
+async function resolveFallbackAuth(clientId: string, reporter: Reporter): Promise<{ token?: string; user?: GitHubUser }> {
   if (process.env.GITHUB_TOKEN || process.env.GH_TOKEN) {
-    return undefined;
+    return {};
   }
   const token = await resolveGhCliToken();
-  if (token) {
-    reporter.info("GitHub: using your `gh` CLI login — no sign-in needed (run `gh auth logout` to disable)");
+  if (!token) {
+    return {};
   }
-  return token;
+  const user = await fetchUserQuietly(clientId, token);
+  const who = user?.login ? ` as ${user.login}` : "";
+  reporter.info(`GitHub: signed in with your \`gh\` CLI login${who} — no sign-in needed (run \`gh auth logout\` to disable)`);
+  return { token, user };
+}
+
+/** Best-effort identity for the gh token; offline / API hiccup just yields no name (still signed in). */
+async function fetchUserQuietly(clientId: string, token: string): Promise<GitHubUser | undefined> {
+  try {
+    return await createGitHubClient({ clientId }).getUser(token);
+  } catch {
+    return undefined;
+  }
 }
 
 /** The renderer bundle sits next to `dist/bin.js` after `copy-renderer`. */
