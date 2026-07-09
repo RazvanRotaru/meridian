@@ -52,7 +52,6 @@ export function ModuleMapView() {
   );
   // A second pure paint filter: drop the wires whose relationship kind is toggled off.
   const shownEdges = useMemo(() => filterRelKinds(visibleEdges, hiddenRelKinds), [visibleEdges, hiddenRelKinds]);
-  const hasExpansions = useMemo(() => shownNodes.some(isExpandedMapContainer), [shownNodes]);
   // Emphasis is a second pure repaint: dim by default, light the selection's N-hop import reach.
   const { nodes: styledNodes, edges: styledEdges, beacons } = useMemo(
     () => emphasize(shownNodes, shownEdges, selected, radius, highlightMode),
