@@ -18,6 +18,7 @@ import type { BlueprintNode, BlueprintEdge, BlueprintNodeData } from "../layout/
 import { nodeTypes } from "./nodes/nodeTypes";
 import { edgeTypes } from "./edges/edgeTypes";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
+import { useRecenter } from "./canvas/useRecenter";
 import { Toolbar } from "./Toolbar";
 import { CoveragePanel } from "./CoveragePanel";
 import { CodePanel } from "./CodePanel";
@@ -62,7 +63,9 @@ function FlowCanvas() {
   const nodes = useBlueprint((state) => state.rfNodes);
   const edges = useBlueprint((state) => state.rfEdges);
   const coverage = useBlueprint((state) => (state.coverageMode ? state.coverage : null));
+  const selectedId = useBlueprint((state) => state.selectedId);
   const { select, diveInto, openLogicFlow } = useBlueprintActions();
+  useRecenter(selectedId ? [selectedId] : []);
   const onNodeClick: NodeMouseHandler<BlueprintNode> = (_event, node) => select(node.id);
   // Double-clicking a container's frame dives INTO it (Unreal-Blueprints black-box drill-down).
   // Header double-clicks stop propagation, so they never reach here. A leaf callable instead

@@ -18,6 +18,7 @@ import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes, CATEGORY_COLOR } from "./nodes/modulemap/ModuleCardNode";
 import { filterVisible, emphasize } from "./moduleMapPaint";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
+import { useRecenter } from "./canvas/useRecenter";
 import type { ModuleCardData } from "../derive/moduleLevel";
 import type { GraphIndex } from "../graph/graphIndex";
 
@@ -34,6 +35,7 @@ export function ModuleMapView() {
   const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
   const showTests = useBlueprint((state) => state.showTests);
   const { selectModule, toggleModuleSelect, setModuleFocus } = useBlueprintActions();
+  useRecenter(useMemo(() => [...selected], [selected]));
 
   // Category/test hiding is a pure VISIBILITY filter over the laid-out graph; positions are untouched.
   const { nodes: shownNodes, edges: shownEdges } = useMemo(

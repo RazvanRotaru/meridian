@@ -16,6 +16,7 @@ import type { CoverageReport } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { compNodeTypes } from "./nodes/composition/CompositionNode";
 import { CanvasChrome, MINIMAP_NODE_CAP, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
+import { useRecenter } from "./canvas/useRecenter";
 import { CompMethodDrawer } from "./composition/CompMethodDrawer";
 import { CoveragePanel } from "./CoveragePanel";
 import { IpcInspector } from "./composition/IpcInspector";
@@ -36,6 +37,7 @@ export function CompositionView() {
   const showTests = useBlueprint((state) => state.showTests);
   const testIds = useBlueprint((state) => state.index.testIds);
   const { selectCompUnit, setCompRoot } = useBlueprintActions();
+  useRecenter(selectedId ? [selectedId] : []);
   // The clicked IPC wire whose channels the inspector lists; view-local (a pure repaint, like the
   // node selection). Cleared whenever a node or the pane is clicked, or the layout changes.
   const [ipcEdgeId, setIpcEdgeId] = useState<string | null>(null);
