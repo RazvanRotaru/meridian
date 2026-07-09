@@ -190,6 +190,10 @@ export interface BlueprintState {
   moduleRadius: number;
   /** Whether Module-map selection lights incident node wires only, or the full radius-based reach. */
   highlightMode: HighlightMode;
+  /** Whether cross-container edges merge into thick "highway" bundles on the Map. PAINT-ONLY like the
+   * other Map toggles — off draws every edge individually. A selected node's own wires always draw
+   * individually regardless, so you can read its links out of the highway they'd otherwise join. */
+  showHighways: boolean;
   /** Module categories painted OUT of the map (a render-time filter — never a re-derive). */
   hiddenCategories: Set<ModuleCategory>;
   /** Relationship kinds painted OUT of the map (calls / instantiates / extends / implements /
@@ -319,6 +323,7 @@ export interface BlueprintState {
   togglePrivateMembers(): void;
   setModuleRadius(radius: number): void;
   toggleHighlightMode(): void;
+  toggleHighways(): void;
   toggleCategory(category: ModuleCategory): void;
   toggleRelKind(kind: string): void;
   resetCategoryFilter(): void;
@@ -453,6 +458,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleEffectiveFocus: null,
     moduleRadius: 1,
     highlightMode: "node",
+    showHighways: true,
     hiddenCategories: new Set<ModuleCategory>(),
     hiddenRelKinds: new Set<string>(),
     moduleSelected: new Set<string>(),
@@ -1011,6 +1017,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Paint-only: switches how the already-laid-out Module map interprets selection emphasis.
     toggleHighlightMode() {
       set({ highlightMode: get().highlightMode === "reach" ? "node" : "reach" });
+    },
+
+    // Merge/unmerge cross-container edges into highway bundles. PAINT-ONLY — the Map re-bundles in a
+    // useMemo, no relayout.
+    toggleHighways() {
+      set({ showHighways: !get().showHighways });
     },
 
     // Show/hide a module category. PAINT-ONLY: the surface filters the category's file cards out in

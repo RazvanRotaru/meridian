@@ -17,9 +17,11 @@ const ROOT_LAYOUT_OPTIONS: Record<string, string> = {
   "elk.algorithm": "layered",
   "elk.direction": "RIGHT",
   "elk.hierarchyHandling": "INCLUDE_CHILDREN",
-  "elk.layered.spacing.nodeNodeBetweenLayers": "64",
-  "elk.spacing.nodeNode": "34",
+  "elk.layered.spacing.nodeNodeBetweenLayers": "48",
+  "elk.spacing.nodeNode": "28",
   "elk.padding": "[top=28,left=28,bottom=28,right=28]",
+  "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
+  "elk.layered.compaction.postCompaction.strategy": "EDGE_LENGTH",
 };
 
 // Top padding leaves room for the container's title bar; React Flow draws nothing there itself.
