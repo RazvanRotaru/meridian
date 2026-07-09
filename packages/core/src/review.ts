@@ -11,24 +11,18 @@
  */
 
 import type { GraphArtifact } from "./types";
+import type { LineRange } from "./changed-detection";
 
 /** Key of the review extension inside GraphArtifact.extensions. */
 export const REVIEW_EXTENSION = "review";
 
 export type ChangeStatus = "added" | "modified" | "deleted" | "renamed";
 
-/**
- * A run of changed lines on the NEW (post-image) side of a file, 1-based and inclusive. These are
- * the diff's `@@ … +start,count @@` hunks, projected to line ranges. They join to `node.location`
- * (which is also post-image, since we extract the same working tree the diff describes) so the
- * renderer can name the exact CODE BLOCKS a PR touched, not just the files. Absent hunks (an
- * untracked add, an explicit `--changed` file, or a diff we couldn't parse) mean "treat the whole
- * file as changed" — the honest, non-lossy fallback.
- */
-export interface LineRange {
-  start: number;
-  end: number;
-}
+// `LineRange` (an inclusive 1-based `{start,end}` span) is shared with the change-detection
+// subsystem — re-exported here so review consumers can import it alongside the review types.
+// A `ChangedFile.hunks` entry is one such span on the NEW (post-image) side of a file, taken from
+// the diff's `@@ … +start,count @@` hunks; absent hunks mean "treat the whole file as changed".
+export type { LineRange };
 
 export interface ChangedFile {
   /** POSIX path relative to the EXTRACTION root — the same base as node.location.file. */
