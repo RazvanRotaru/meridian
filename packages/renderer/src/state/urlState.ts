@@ -176,7 +176,14 @@ export function encodeNav(nav: NavState): Map<string, string> {
 export function decodeNav(params: URLSearchParams): Partial<NavState> {
   const out: Partial<NavState> = {};
   const view = params.get("view");
-  if (view === "call" || view === "ui" || view === "logic" || view === "modules" || view === "prs") {
+  if (
+    view === "call" ||
+    view === "ui" ||
+    view === "logic" ||
+    view === "modules" ||
+    view === "prs" ||
+    view === "review"
+  ) {
     out.viewMode = view;
   }
   assignId(params, "focus", out, "focusId");

@@ -23,6 +23,6 @@ export function rootRelativeToCwd(cwd: string, absoluteRoot: string): string {
   return toPosix(relativePath);
 }
 
-function toPosix(nativePath: string): string {
+export function toPosix(nativePath: string): string {
   return sep === "/" ? nativePath : nativePath.split(sep).join("/");
 }

@@ -36,6 +36,7 @@ import { FlowExplorerPanel } from "./flowexplorer/FlowExplorerPanel";
 import { FlowPane } from "./flowexplorer/FlowPane";
 import { emphasizeFlow, renderedIdsForFlowEmphasis } from "./flowEmphasisPaint";
 import { PrsView } from "./prs/PrsView";
+import { ReviewView } from "./ReviewView";
 
 const FLOW_CANVAS_PROPS = { ...READONLY_CANVAS_PROPS, fitView: false } as const;
 const EMPTY_FLOW_EMPHASIS_KEY = "none";
@@ -56,7 +57,9 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
               one's first render (which crashed its MiniMap nodeColor on foreign-shaped data). The
               always-mounted Toolbar's <Panel> keeps using the outer App-level provider. */}
           <ReactFlowProvider key={viewMode}>
-            {viewMode === "call" ? (
+            {viewMode === "review" ? (
+              <ReviewView />
+            ) : viewMode === "call" ? (
               <ModuleMapView />
             ) : viewMode === "logic" ? (
               <LogicFlowView />

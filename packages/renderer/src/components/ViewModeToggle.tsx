@@ -13,14 +13,21 @@ const SEGMENTS: ReadonlyArray<{ mode: ViewMode; label: string }> = [
   { mode: "ui", label: "UI composition" },
   { mode: "logic", label: "Logic flow" },
   { mode: "prs", label: "PRs" },
+  // The "PR review" deep-dive tab is data-gated (see hasReview below): it appears for a
+  // `meridian review` artifact, or once a GitHub PR has been opened in the graph.
+  { mode: "review", label: "PR review" },
 ];
 
 export function ViewModeToggle() {
   const viewMode = useBlueprint((state) => state.viewMode);
+  // The "PR review" tab appears ONLY for an artifact stamped by `meridian review` (data-gated) —
+  // every other view is pixel-identical to before when there is no review payload.
+  const hasReview = useBlueprint((state) => state.review !== null);
   const setViewMode = useBlueprintActions().setViewMode;
+  const segments = SEGMENTS.filter((s) => s.mode !== "review" || hasReview);
   return (
     <div style={GROUP_STYLE} role="group" aria-label="View mode">
-      {SEGMENTS.map((segment) => (
+      {segments.map((segment) => (
         <button
           key={segment.mode}
           type="button"
