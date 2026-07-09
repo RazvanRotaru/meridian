@@ -238,6 +238,8 @@ export interface BlueprintState {
   prSelected: number | null;
   prFiles: PrChangedFile[] | null;
   prFilesTruncated: boolean;
+  /** The PR whose changed files are currently highlighted in the graph (via "review in graph"). */
+  prReviewed: number | null;
   /** The open source view (inline panel or modal); null when nothing is being shown. */
   codeView: CodeView | null;
   toggleExpand(nodeId: string): void;
@@ -296,6 +298,8 @@ export interface BlueprintState {
   toggleHighlightMode(): void;
   toggleCategory(category: ModuleCategory): void;
   toggleRelKind(kind: string): void;
+  resetCategoryFilter(): void;
+  resetRelationshipFilter(): void;
   selectModule(id: string | null): void;
   toggleModuleSelect(id: string): void;
   buildMinimalGraph(): void;
@@ -449,6 +453,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prSelected: null,
     prFiles: null,
     prFilesTruncated: false,
+    prReviewed: null,
     codeView: null,
 
     toggleExpand(nodeId) {
@@ -981,6 +986,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ hiddenRelKinds: withToggled(get().hiddenRelKinds, kind) });
     },
 
+    // Clear the category / relationship filters back to "show everything". PAINT-ONLY — no relayout.
+    resetCategoryFilter() {
+      set({ hiddenCategories: new Set<ModuleCategory>() });
+    },
+
+    resetRelationshipFilter() {
+      set({ hiddenRelKinds: new Set<string>() });
+    },
+
     // Select a Module-map node, REPLACING the whole selection (pass null to clear) — the plain-click
     // gesture. A repaint-only highlight — no relayout.
     selectModule(id) {
@@ -1307,6 +1321,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const reveal = moduleRevealStateFor(matchedIds, get().index);
       set({
         viewMode: "modules",
+        prReviewed: get().prSelected,
         flowSelection: null,
         flowEmphasis: new Set<string>(),
         moduleFocus: reveal?.moduleFocus ?? null,

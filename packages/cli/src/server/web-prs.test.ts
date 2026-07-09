@@ -52,7 +52,7 @@ describe("PR routes", () => {
     );
     expect(captured.status()).toBe(200);
     expect(JSON.parse(captured.body())).toEqual({
-      prs: [{ number: 1, title: "Fix", author: "daria", headRef: "fix", updatedAt: "2026-07-08T12:00:00Z", draft: false, state: "open" }],
+      prs: [{ number: 1, title: "Fix", author: "daria", headRef: "fix", baseRef: "", updatedAt: "2026-07-08T12:00:00Z", draft: false, state: "open", url: "" }],
       hasMore: false,
     });
     expect(seenAuth).toEqual(["Bearer gho_secret"]);
@@ -101,8 +101,8 @@ describe("PR routes", () => {
     expect(captured.status()).toBe(200);
     expect(JSON.parse(captured.body())).toEqual({
       files: [
-        { path: "src/a.ts", status: "modified" },
-        { path: "package.json", status: "renamed" },
+        { path: "src/a.ts", status: "modified", additions: 0, deletions: 0 },
+        { path: "package.json", status: "renamed", additions: 0, deletions: 0 },
       ],
       truncated: false,
     });
