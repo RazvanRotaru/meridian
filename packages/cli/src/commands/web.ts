@@ -11,6 +11,7 @@ import { resolveCwd } from "../paths";
 import { Reporter } from "../reporter";
 import type { GlobalOptions } from "../reporter";
 import { createWebServer } from "../server/web-server";
+import { resolveGhCliToken } from "../server/gh-cli-token";
 import { serve } from "../server/serve";
 
 export interface WebOptions extends GlobalOptions {
@@ -36,12 +37,30 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
     cwd,
     source,
     githubClientId: options.githubClientId ?? process.env.MERIDIAN_GITHUB_CLIENT_ID ?? DEFAULT_GITHUB_CLIENT_ID,
+    fallbackToken: await resolveFallbackToken(reporter),
   });
   await serve(
     server,
     { host: options.host, startPort: options.port, openBrowser: options.open, label: "Blueprint web UI" },
     reporter,
   );
+}
+
+/**
+ * A GitHub token to fall back to when the request carries no session and no GITHUB_TOKEN/GH_TOKEN:
+ * the `gh` CLI's own login. This survives server restarts (unlike the in-memory session), so a gh
+ * user reaches clone + PR review without signing in each time. An explicit env token still wins, so
+ * we don't even spawn gh when one is set.
+ */
+async function resolveFallbackToken(reporter: Reporter): Promise<string | undefined> {
+  if (process.env.GITHUB_TOKEN || process.env.GH_TOKEN) {
+    return undefined;
+  }
+  const token = await resolveGhCliToken();
+  if (token) {
+    reporter.info("GitHub: using your `gh` CLI login — no sign-in needed (run `gh auth logout` to disable)");
+  }
+  return token;
 }
 
 /** The renderer bundle sits next to `dist/bin.js` after `copy-renderer`. */

@@ -19,6 +19,8 @@ export interface AuthContext {
   sessions: SessionStore;
   /** The GitHub client, or null when no client id was configured (sign-in disabled). */
   github: GitHubClient | null;
+  /** Last-resort token resolved once at boot (the `gh` CLI login); below env vars in precedence. */
+  fallbackToken?: string;
 }
 
 export async function handleDeviceStart(ctx: AuthContext, response: ServerResponse): Promise<void> {
@@ -88,7 +90,7 @@ export function sessionTokenFor(ctx: AuthContext, request: IncomingMessage): str
 }
 
 export function githubTokenFor(ctx: AuthContext, request: IncomingMessage, explicitToken?: string): string | undefined {
-  return explicitToken ?? sessionTokenFor(ctx, request) ?? process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  return explicitToken ?? sessionTokenFor(ctx, request) ?? process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ctx.fallbackToken;
 }
 
 async function pollStatus(

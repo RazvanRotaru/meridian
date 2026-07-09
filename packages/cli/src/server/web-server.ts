@@ -29,6 +29,8 @@ export interface WebServerConfig {
   source?: string;
   /** GitHub OAuth app client id enabling Device Flow sign-in; absent → sign-in disabled. */
   githubClientId?: string;
+  /** Last-resort token (the `gh` CLI login) used when no env token or session is present. */
+  fallbackToken?: string;
 }
 
 export interface Context {
@@ -45,6 +47,8 @@ export interface Context {
   cwd: string;
   sessions: SessionStore;
   github: GitHubClient | null;
+  /** Last-resort token (the `gh` CLI login), below env vars in `githubTokenFor` precedence. */
+  fallbackToken?: string;
 }
 
 export function createWebServer(config: WebServerConfig): Server {
@@ -73,6 +77,7 @@ function buildContext(config: WebServerConfig): Context {
     cwd: config.cwd,
     sessions: new SessionStore(),
     github,
+    fallbackToken: config.fallbackToken,
   };
   cleanRetainedSourcesOnExit(ctx);
   return ctx;
