@@ -30,6 +30,7 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
       <span style={LABEL} title={id}>{data.label}</span>
       <span style={{ ...KIND_CHIP, color: accent, borderColor: accent }}>{data.unitKind.toUpperCase()}</span>
       <DeltaChip diff={diff} />
+      <CodeButton id={id} />
     </>
   );
 
@@ -54,6 +55,8 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
             {chevron}
             <span style={{ ...GLYPH, color: accent }}>{glyphForKind(data.unitKind)}</span>
             <span style={LABEL} title={id}>{data.label}</span>
+            <DeltaChip diff={diff} />
+            <CodeButton id={id} />
           </div>
           <div style={META}>
             <span style={{ ...KIND_CHIP, color: accent, borderColor: accent }}>{data.unitKind.toUpperCase()}</span>
@@ -71,7 +74,6 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
       <div style={{ ...ACCENT_BAR, background: accent }} />
       <div style={INNER}>
         {identity}
-        <CodeButton id={id} />
       </div>
     </div>
   );

@@ -16,7 +16,7 @@ import { UnitCardNode } from "./UnitCardNode";
 import { BlockNode } from "./BlockNode";
 import { StepNode } from "./StepNode";
 import { GhostNode } from "./GhostNode";
-import { cardSelectedStyle, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
+import { cardSelectedStyle, CodeButton, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, DeltaChip, useNodeDiff } from "./changed";
 
 // The file family's frame accent (the module cyan), used when an expanded card turns into a frame.
@@ -44,6 +44,7 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
           <span style={LABEL} title={data.fullPath}>{data.label}</span>
           {entryBadge}
           <DeltaChip diff={diff} />
+          <CodeButton id={id} />
           <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
         </FrameTitleBar>
       </div>
@@ -61,6 +62,7 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
           <span style={LABEL} title={data.fullPath}>{data.label}</span>
           {entryBadge}
           <DeltaChip diff={diff} />
+          <CodeButton id={id} />
         </div>
         <div style={META}>
           <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
