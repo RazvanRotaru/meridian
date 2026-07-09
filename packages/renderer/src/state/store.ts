@@ -31,12 +31,9 @@ import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveFlowPaneLayout } from "./deriveFlowPaneLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
-import { deriveModuleLevelLayout, type ModuleLevelLayout } from "./deriveModuleMapLayout";
+import { deriveModuleLevelLayout, deriveSeedGraphLayout, type ModuleLevelLayout } from "./deriveModuleMapLayout";
 import { deriveServiceLevelLayout } from "./deriveServiceMapLayout";
-import { deriveMinimalGraphLayout } from "./deriveMinimalGraphLayout";
-import { captureMapPositions } from "./mapPositions";
-import type { PlacedRect } from "../layout/minimalPlacement";
-import type { Direction, ExpansionEntry } from "../derive/minimalSubgraph";
+import { captureMapPositions, captureLaidPositions } from "./mapPositions";
 import { seedModuleIdsFor } from "../derive/selectionSeeds";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/blockDeps";
@@ -196,19 +193,19 @@ export interface BlueprintState {
    * privates always get their space in the layout, so toggling never reshuffles positions. */
   showPrivate: boolean;
   /** The seed file-module ids of the OPEN minimal-graph overlay; empty == the overlay is closed and
-   * the Module-map level canvas shows. Set by buildMinimalGraph from the expanded selection. */
+   * the Module-map level canvas shows. Set by buildMinimalGraph from the expanded selection. The
+   * overlay is a Map surface whose ROOT CONTAINER is these files (+ the revealed set) instead of a
+   * folder frontier — so it shows the same cards, off-level ghosts, chevrons, and ELK as the Map. */
   minimalSeedIds: string[];
-  /** Ghost files the reader committed by drilling through them (expanding a ghost promotes it to
-   * PERSISTENT). Unioned with the seeds' always-shown 1-hop ring to form the committed graph. */
-  minimalKeptIds: string[];
-  /** Directional expansions applied to the overlay — each reveals a node's `direction` neighbours as
-   * ghosts. Ephemeral exploration state; "Reset" empties it (and minimalKeptIds) back to the base. */
-  minimalExpanded: ExpansionEntry[];
-  /** The Module map's on-screen file positions, captured (absolute) when the overlay is BUILT, so the
-   * overlay mirrors them: a captured file sits at its exact map spot, growth is placed around it.
-   * Captured once at build (never on expand/reset) so placed nodes never jump; cleared on close. */
-  minimalBasePositions: Record<string, PlacedRect>;
-  /** The laid-out minimal subgraph for the overlay (flat, mirroring the map), under its own stale-seq guard. */
+  /** Files pulled into the overlay by double-clicking a ghost (the Map's "reveal", in place): the
+   * ghost's owning file joins the root container and draws as a real card with its own ghosts.
+   * "Reset" empties this back to the seed base. */
+  minimalRevealedIds: string[];
+  /** Absolute positions that SEED the overlay's ELK pass: the Map's card spots at build (the seamless
+   * transition), then the overlay's own laid-out spots after each relayout so growth never jumps. A
+   * node with no entry (a fresh ghost) is placed beside its anchor. Cleared on close. */
+  minimalBasePositions: Record<string, { x: number; y: number }>;
+  /** The laid-out minimal graph for the overlay, under its own stale-seq guard. */
   minimalRfNodes: Node[];
   minimalRfEdges: Edge[];
   minimalLayoutStatus: LayoutStatus;
@@ -300,7 +297,7 @@ export interface BlueprintState {
   toggleModuleSelect(id: string): void;
   buildMinimalGraph(): void;
   closeMinimalGraph(): void;
-  expandMinimal(sourceId: string, direction: Direction): void;
+  revealMinimalNode(ghostId: string): void;
   resetMinimalGraph(): void;
   minimalRelayout(): Promise<void>;
   setViewMode(mode: ViewMode): void;
@@ -423,8 +420,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleExpanded: new Set<string>(),
     showPrivate: true,
     minimalSeedIds: [],
-    minimalKeptIds: [],
-    minimalExpanded: [],
+    minimalRevealedIds: [],
     minimalBasePositions: {},
     minimalRfNodes: [],
     minimalRfEdges: [],
@@ -924,7 +920,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const tree =
         viewMode === "call"
           ? deriveServiceTree(index, expanded, graph, deps, flows)
-          : deriveModuleTree(index, moduleFocus, expanded, graph, deps, flows);
+          : deriveModuleTree(index, { kind: "focus", focus: moduleFocus }, expanded, graph, deps, flows);
       moduleChildContainerIds(tree, containerId).forEach((id) => expanded.add(id));
       set({ moduleExpanded: expanded });
       void relayoutActiveModuleSurface(get);
@@ -941,7 +937,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const tree =
         viewMode === "call"
           ? deriveServiceTree(index, expanded, graph, deps, flows)
-          : deriveModuleTree(index, moduleFocus, expanded, graph, deps, flows);
+          : deriveModuleTree(index, { kind: "focus", focus: moduleFocus }, expanded, graph, deps, flows);
       moduleChildContainerIds(tree, containerId).forEach((id) => expanded.delete(id));
       set({ moduleExpanded: expanded });
       void relayoutActiveModuleSurface(get);
@@ -988,17 +984,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     // The "Build minimal graph" action: expand the current selection to its seed file modules (a
-    // group card contributes its whole containment subtree) and open the overlay on their minimal
-    // subgraph (seeds + their always-shown 1-hop ring). A fresh build resets any prior growth.
-    // Inert when the selection expands to no file module.
+    // group card contributes its whole containment subtree) and open the overlay — the SAME Map
+    // surface, its root container seeded by these files instead of a folder frontier. A fresh build
+    // resets any prior growth. Inert when the selection expands to no file module.
     buildMinimalGraph() {
       const seeds = seedModuleIdsFor(get().index, [...get().moduleSelected]);
       if (seeds.length === 0) {
         return;
       }
-      // Snapshot the map's current on-screen file positions ONCE, at build — the overlay mirrors them,
-      // and re-capturing on growth would let already-placed cards jump.
-      set({ minimalSeedIds: seeds, minimalKeptIds: [], minimalExpanded: [], minimalBasePositions: captureMapPositions(get().moduleRfNodes) });
+      // Seed ELK with the map's current card positions so the seeds open exactly where they were —
+      // the seamless transition. Later relayouts re-seed from the overlay's own spots (minimalRelayout).
+      // Select the seed files (not whatever card was picked, which may be a package the bare-card
+      // overlay never draws) so their off-level ghosts light immediately — the Map's ghosts show for
+      // the selection's reach, so an empty selection would prune every ghost wire.
+      set({ minimalSeedIds: seeds, minimalRevealedIds: [], minimalBasePositions: captureMapPositions(get().moduleRfNodes), moduleSelected: new Set(seeds) });
       void get().minimalRelayout();
     },
 
@@ -1007,53 +1006,59 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // pass still in flight, so a slow layout can't repopulate the arrays after the close.
     closeMinimalGraph() {
       minimalLayoutSeq += 1;
-      set({ minimalSeedIds: [], minimalKeptIds: [], minimalExpanded: [], minimalBasePositions: {}, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
+      set({ minimalSeedIds: [], minimalRevealedIds: [], minimalBasePositions: {}, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
     },
 
-    // Reveal a node's hidden neighbours in one direction as ghosts (the [+n] stub click). Drilling
-    // through a GHOST commits it: adding the source to minimalKeptIds promotes it to persistent (a
-    // no-op when it was already persistent). The spec changes, so it relayouts.
-    expandMinimal(sourceId, direction) {
-      const { minimalExpanded, minimalKeptIds } = get();
-      if (minimalExpanded.some((entry) => entry.id === sourceId && entry.direction === direction)) {
-        return; // already expanded this way.
-      }
-      const keptIds = minimalKeptIds.includes(sourceId) ? minimalKeptIds : [...minimalKeptIds, sourceId];
-      set({ minimalExpanded: [...minimalExpanded, { id: sourceId, direction }], minimalKeptIds: keptIds });
-      void get().minimalRelayout();
-    },
-
-    // Reset the overlay to its base: drop every ghost AND every committed expansion, back to the
-    // seeds + their 1-hop ring. A no-op when nothing has been grown.
-    resetMinimalGraph() {
-      if (get().minimalKeptIds.length === 0 && get().minimalExpanded.length === 0) {
+    // Double-click a ghost to REVEAL it (the Map's "reveal", in place): the ghost's owning file joins
+    // the root container and re-draws as a real card. SELECTS that file (a drawn node) so its own
+    // off-level ghosts light — the Map's emphasis prunes ghost wires that no selection lights, so the
+    // revealed card must be the new selection for its dependencies to show. Inert when already shown.
+    revealMinimalNode(ghostId) {
+      const file = get().index.ancestorsOf(ghostId).find((node) => node.kind === "module");
+      const fileId = file?.id ?? ghostId;
+      const { minimalSeedIds, minimalRevealedIds } = get();
+      if (minimalSeedIds.includes(fileId) || minimalRevealedIds.includes(fileId)) {
+        set({ moduleSelected: new Set([fileId]) });
         return;
       }
-      set({ minimalKeptIds: [], minimalExpanded: [] });
+      set({ minimalRevealedIds: [...minimalRevealedIds, fileId], moduleSelected: new Set([fileId]) });
       void get().minimalRelayout();
     },
 
-    // Lay out the overlay's subgraph (seeds + 1-hop base + committed + expansions) through the shared
-    // minimal-graph pass, behind its own stale-seq guard.
+    // Reset the overlay to its seed base: drop every revealed file, back to the picked seeds. A no-op
+    // when nothing has been revealed. (Chevron expansions live in the shared moduleExpanded set.)
+    resetMinimalGraph() {
+      if (get().minimalRevealedIds.length === 0) {
+        return;
+      }
+      set({ minimalRevealedIds: [] });
+      void get().minimalRelayout();
+    },
+
+    // Lay out the overlay through the SAME level pipeline as the Map, its root container being the
+    // seed + revealed files. Seeds ELK from the captured positions, then re-captures the laid-out
+    // spots so a later expand/reveal never jumps what is already placed. Own stale-seq guard.
     async minimalRelayout() {
-      const { index, minimalSeedIds, minimalKeptIds, minimalExpanded, minimalBasePositions, moduleExpanded, artifact } = get();
+      const { index, minimalSeedIds, minimalRevealedIds, minimalBasePositions, moduleExpanded, artifact } = get();
       if (minimalSeedIds.length === 0) {
         return;
       }
-      moduleGraph ??= buildModuleGraph(index);
+      const graph = (moduleGraph ??= buildModuleGraph(index));
       const deps = (blockDeps ??= buildBlockDeps(index));
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const roots = new Set([...minimalSeedIds, ...minimalRevealedIds]);
       const sequence = ++minimalLayoutSeq;
       set({ minimalLayoutStatus: "laying-out" });
-      const layout = await deriveMinimalGraphLayout(index, moduleGraph, new Set(minimalSeedIds), new Set(minimalKeptIds), minimalExpanded, minimalBasePositions, {
-        moduleExpanded,
-        blockDeps: deps,
-        flows,
-      });
+      const layout = await deriveSeedGraphLayout(index, roots, moduleExpanded, graph, deps, flows, minimalBasePositions);
       if (minimalLayoutSeq !== sequence) {
-        return; // a newer build/expand/reset superseded this one.
+        return; // a newer build/reveal/reset/expand superseded this one.
       }
-      set({ minimalRfNodes: layout.nodes, minimalRfEdges: layout.edges, minimalLayoutStatus: "ready" });
+      set({
+        minimalRfNodes: layout.nodes,
+        minimalRfEdges: layout.edges,
+        minimalBasePositions: captureLaidPositions(layout.nodes),
+        minimalLayoutStatus: "ready",
+      });
     },
 
     // Flip one Module-map node in/out of the selection WITHOUT touching the rest — the ctrl/cmd+click
@@ -1075,7 +1080,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // lingers hidden behind another tab (and the URL's `mgraph` clears with the switch).
       if (get().minimalSeedIds.length > 0) {
         minimalLayoutSeq += 1;
-        set({ minimalSeedIds: [], minimalKeptIds: [], minimalExpanded: [], minimalBasePositions: {}, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
+        set({ minimalSeedIds: [], minimalRevealedIds: [], minimalBasePositions: {}, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
       }
       if (mode === "logic") {
         set({ viewMode: mode });
@@ -1432,13 +1437,20 @@ function foldIds(expanded: ReadonlySet<string>, ids: readonly string[], mode: "o
   return next;
 }
 
-/** The Map surface's visible frontier as `ExpandableNode`s (the folder Map or service-cluster tree). */
+/** The open minimal-graph overlay's root-container ids (seeds + revealed), or null when it is closed. */
+function minimalRootIds(state: BlueprintState): string[] | null {
+  return state.minimalSeedIds.length === 0 ? null : [...state.minimalSeedIds, ...state.minimalRevealedIds];
+}
+
+/** The Map surface's visible frontier as `ExpandableNode`s — the folder Map, the service-cluster
+ * tree, or (when the minimal-graph overlay covers the Map) its explicit seed set. */
 function moduleTreeNodes(state: BlueprintState, graph: ModuleGraph, deps: BlockDeps): ExpandableNode[] {
   const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+  const roots = minimalRootIds(state);
   const tree =
     state.viewMode === "call"
       ? deriveServiceTree(state.index, state.moduleExpanded, graph, deps, flows)
-      : deriveModuleTree(state.index, state.moduleFocus, state.moduleExpanded, graph, deps, flows);
+      : deriveModuleTree(state.index, roots ? { kind: "explicit", ids: roots } : { kind: "focus", focus: state.moduleFocus }, state.moduleExpanded, graph, deps, flows);
   return tree.nodes;
 }
 

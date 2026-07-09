@@ -59,7 +59,7 @@ function fixture(): { nodes: GraphNode[]; edges: GraphEdge[] } {
 
 function treeOf(nodes: GraphNode[], edges: GraphEdge[], focus: string | null, expanded: string[], flows: LogicFlows = {}) {
   const index = buildGraphIndex({ nodes, edges } as GraphArtifact);
-  return deriveModuleTree(index, focus, new Set(expanded), buildModuleGraph(index), buildBlockDeps(index), flows);
+  return deriveModuleTree(index, { kind: "focus", focus }, new Set(expanded), buildModuleGraph(index), buildBlockDeps(index), flows);
 }
 
 describe("deriveModuleTree — overview (focus null)", () => {
@@ -508,5 +508,29 @@ describe("deriveModuleTree — flow steps charted in place (POC)", () => {
     expect(tree.nodes.some((n) => n.kind === "step")).toBe(false);
     const deps = tree.edges.filter((e) => e.category === "dep").map((e) => `${e.source}->${e.target}`);
     expect(deps).toEqual([`${PLACE_ID}->${PAY_FILE_ID}`]);
+  });
+});
+
+describe("deriveModuleTree — explicit roots (the minimal-graph root container)", () => {
+  function seedTreeOf(nodes: GraphNode[], edges: GraphEdge[], ids: string[]) {
+    const index = buildGraphIndex({ nodes, edges } as GraphArtifact);
+    return deriveModuleTree(index, { kind: "explicit", ids }, new Set(), buildModuleGraph(index), buildBlockDeps(index), {});
+  }
+
+  it("draws the seeds as BARE top-level file cards — no package/directory frames", () => {
+    const { nodes, edges } = fixture();
+    const tree = seedTreeOf(nodes, edges, ["ts:pkgA/src/index.ts", "ts:pkgA/src/util.ts", "ts:pkgB/src/b.ts"]);
+    expect(tree.nodes.every((n) => n.kind === "file")).toBe(true);
+    expect(tree.nodes.every((n) => n.parentId === null)).toBe(true);
+    expect(tree.nodes.map((n) => n.id).sort()).toEqual(["ts:pkgA/src/index.ts", "ts:pkgA/src/util.ts", "ts:pkgB/src/b.ts"]);
+    expect(tree.effectiveFocus).toBeNull();
+  });
+
+  it("keeps import wires between two visible seeds and drops those leaving the set", () => {
+    const { nodes, edges } = fixture();
+    const tree = seedTreeOf(nodes, edges, ["ts:pkgA/src/index.ts", "ts:pkgA/src/util.ts", "ts:pkgB/src/b.ts"]);
+    const wires = tree.edges.filter((e) => e.category === "import").map((e) => `${e.source}->${e.target}`).sort();
+    // index→util and index→b are between visible seeds; index→run.ts (not a seed) lifts to nothing and drops.
+    expect(wires).toEqual(["ts:pkgA/src/index.ts->ts:pkgA/src/util.ts", "ts:pkgA/src/index.ts->ts:pkgB/src/b.ts"]);
   });
 });

@@ -18,7 +18,7 @@ function node(id: string, kind: string, parentId?: string, displayName?: string)
 
 function treeOf(nodes: GraphNode[], edges: GraphEdge[], focus: string | null) {
   const index = buildGraphIndex({ nodes, edges } as GraphArtifact);
-  return deriveModuleTree(index, focus, new Set(), buildModuleGraph(index), buildBlockDeps(index), {});
+  return deriveModuleTree(index, { kind: "focus", focus }, new Set(), buildModuleGraph(index), buildBlockDeps(index), {});
 }
 
 describe("deriveModuleTree — file focus", () => {

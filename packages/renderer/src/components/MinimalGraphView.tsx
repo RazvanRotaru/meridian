@@ -1,95 +1,64 @@
 /**
  * The minimal-graph OVERLAY: the Module-map's "Build minimal graph" result as its own read-only
- * React Flow surface, replacing the level canvas while open. It reuses the Module-map's OWN card
- * components (`moduleNodeTypes`) plus a directional [+n] stub, and grows in three tiers: SEED cards
- * (the picked files, keeping their green ring), the always-shown PERSISTENT 1-hop ring, and GHOST
- * cards revealed by clicking a stub. Drilling through a ghost commits it; "Reset" drops all growth
- * back to the seed base. A floating panel names the seed count, resets, and closes (Escape too —
- * closing returns to the level with the selection kept, so the reader can adjust and rebuild).
+ * React Flow surface, replacing the level canvas while open. It is the SAME Map surface — the Map's
+ * own cards (`moduleNodeTypes`), the shared paint pipeline (`useModuleSurfacePaint`), the shared
+ * interaction hook, the same ELK — differing ONLY in its root container: the picked seed files (plus
+ * any file revealed by drilling a ghost) instead of a folder frontier. So it shows off-level code
+ * GHOSTS and expandable file chevrons exactly like the Map, with no bespoke stubs or rings.
  *
- * Gestures ARE the Module map's own, via the shared `useModuleNodeInteractions` hook — so they're
- * identical to the Map by construction: single-click selects (DEBOUNCED, so a double-click wins),
- * ctrl/cmd toggles the selection, a pane-click clears it, and a double-click NAVIGATES into the node
- * exactly like the Map (the overlay just closes first, since it covers the Map, so the navigation
- * surfaces). The only page-specific gestures are the directional [+n] stub single-click (expand ONE
- * direction, never debounced) and Escape/Close (back to the level with the selection kept).
+ * Gestures ARE the Module map's own via `useModuleNodeInteractions`, so selection/emphasis stay
+ * identical by construction. The overlay only redirects double-click, which on the Map would navigate
+ * away: a GHOST reveals its owning file IN PLACE (grows the root container), a package/file card
+ * expands in place, everything else falls through to the Map's handling (a callable block still opens
+ * its logic flow). Escape / Close returns to the level with the selection kept, so the reader can
+ * adjust and rebuild.
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { ReactFlow, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
-import { MinimalStubNode } from "./nodes/modulemap/MinimalStubNode";
-import { emphasize } from "./moduleMapPaint";
+import { miniMapColor } from "./ModuleMapView";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
-import { MINIMAL_STUB_NODE } from "../layout/minimalSubgraphLayout";
-import type { MinimalStubData } from "../derive/minimalSubgraph";
-import { minimalMiniMapColor, SURFACE_STYLE, PANEL_STYLE, buttonStyle } from "./minimalGraphStyles";
+import { useModuleSurfacePaint } from "./canvas/useModuleSurfacePaint";
+import { BeaconArrows } from "./BeaconArrows";
+import { SURFACE_STYLE, PANEL_STYLE, buttonStyle } from "./minimalGraphStyles";
 
-// The Map's own card components plus the overlay-only [+n] expander (a stable module-level reference).
-const overlayNodeTypes = { ...moduleNodeTypes, [MINIMAL_STUB_NODE]: MinimalStubNode };
-
-// The nested-declaration node types an expanded file frame holds (drawn by the Map's own components).
-const CHILD_NODE_TYPES: ReadonlySet<string> = new Set(["unit", "block", "step"]);
-
-// A ghost-tier file dims to this at rest. Layered UNDER `emphasize`: an emphasize-dimmed ghost keeps
-// the smaller dim (min wins), a LIT ghost still recedes to this opacity — the ghost read is preserved.
-const GHOST_OPACITY = 0.62;
+const PACKAGE_KIND = "package";
+const FILE_KIND = "file";
 
 export function MinimalGraphView() {
   const nodes = useBlueprint((state) => state.minimalRfNodes);
   const edges = useBlueprint((state) => state.minimalRfEdges);
-  const selected = useBlueprint((state) => state.moduleSelected);
-  const radius = useBlueprint((state) => state.moduleRadius);
-  const highlightMode = useBlueprint((state) => state.highlightMode);
   const seedCount = useBlueprint((state) => state.minimalSeedIds.length);
-  const grown = useBlueprint((state) => state.minimalKeptIds.length > 0 || state.minimalExpanded.length > 0);
-  const { closeMinimalGraph, expandMinimal, resetMinimalGraph } = useBlueprintActions();
+  const grown = useBlueprint((state) => state.minimalRevealedIds.length > 0);
+  const { closeMinimalGraph, revealMinimalNode, resetMinimalGraph, toggleModuleExpand } = useBlueprintActions();
 
   useClearOnEscape(closeMinimalGraph, true);
 
-  // Interactions ARE the Module map's own (shared hook), so selection/toggle/navigate stay identical.
-  // The overlay only injects its page-specific bits: the [+n] stub single-click expands one direction
-  // (fully handled, skips select), and a double-click closes the overlay first so the Map's navigate
-  // surfaces. Stubs have no navigate meaning, so their double-click is fully handled (a no-op).
+  const { nodes: paintedNodes, edges: paintedEdges, beacons } = useModuleSurfacePaint(nodes, edges);
+
+  // Interactions ARE the Module map's own, so selection/toggle stay identical. Only double-click is
+  // redirected: on the Map a ghost/file would navigate the level away, which the overlay covers — so
+  // a ghost reveals its file in place, a package/file expands in place, and anything else (a callable
+  // block → logic flow) falls through to the shared handler.
   const { onNodeClick, onNodeDoubleClick, onPaneClick } = useModuleNodeInteractions({
-    onBeforeClick: (_event, node) => {
-      if (node.type === MINIMAL_STUB_NODE) {
-        const stub = node.data as MinimalStubData;
-        expandMinimal(stub.sourceId, stub.direction);
-        return true;
-      }
-      return false;
-    },
     onBeforeDoubleClick: (_event, node) => {
-      if (node.type === MINIMAL_STUB_NODE) {
+      if (node.type === "ghost") {
+        revealMinimalNode(node.id);
         return true;
       }
-      closeMinimalGraph();
+      if (node.type === PACKAGE_KIND || node.type === FILE_KIND) {
+        toggleModuleExpand(node.id);
+        return true;
+      }
       return false;
     },
   });
 
-  // Reuse the Module map's shared `emphasize` for edge + selection paint, but it only understands the
-  // file-import graph — the [+n] stubs and their tethers must pass through untouched. So split those
-  // out, run emphasize on files + import wires only, then re-append the stubs. The page's ghost dim is
-  // layered UNDER emphasize's selection dim (min wins, so a lit ghost still recedes to GHOST_OPACITY).
-  const { nodes: paintedNodes, edges: paintedEdges } = useMemo(() => {
-    const fileNodes = nodes.filter((node) => node.type === "file");
-    const stubNodes = nodes.filter((node) => node.type === MINIMAL_STUB_NODE);
-    // An expanded file's nested declarations (unit/block/step) live INSIDE frames — emphasize only
-    // understands the file-import graph, so they pass through untouched, after their parent frames.
-    const childNodes = nodes.filter((node) => CHILD_NODE_TYPES.has(node.type ?? ""));
-    const importEdges = edges.filter((edge) => (edge.data as { category?: string } | undefined)?.category === "import");
-    const stubEdges = edges.filter((edge) => (edge.data as { category?: string } | undefined)?.category !== "import");
-    const emphasized = emphasize(fileNodes, importEdges, selected, radius, highlightMode);
-    const ghostLayered = emphasized.nodes.map((node) => (isGhost(node) ? dimGhost(node) : node));
-    return { nodes: [...ghostLayered, ...childNodes, ...stubNodes], edges: [...emphasized.edges, ...stubEdges] };
-  }, [nodes, edges, selected, radius, highlightMode]);
-
-  // Fit once per LAYOUT (build / expand / reset) — the same guard idiom as the sibling surfaces.
+  // Fit once per LAYOUT (build / reveal / reset / expand) — the same guard idiom as the sibling surfaces.
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const laidRef = useRef<Node[] | null>(null);
   useEffect(() => {
@@ -106,7 +75,7 @@ export function MinimalGraphView() {
       <ReactFlow<Node, Edge>
         nodes={paintedNodes}
         edges={paintedEdges}
-        nodeTypes={overlayNodeTypes}
+        nodeTypes={moduleNodeTypes}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={onPaneClick}
@@ -115,13 +84,14 @@ export function MinimalGraphView() {
         }}
         {...READONLY_CANVAS_PROPS}
       >
-        <CanvasChrome nodeColor={minimalMiniMapColor} />
+        <CanvasChrome nodeColor={miniMapColor} />
+        <BeaconArrows targets={beacons} />
       </ReactFlow>
       <div style={MINIMAL_PANEL_STYLE}>
         <span style={TITLE_STYLE}>
           Minimal graph — {seedCount} seed {seedCount === 1 ? "file" : "files"}
         </span>
-        <button type="button" style={buttonStyle(false, !grown)} onClick={resetMinimalGraph} disabled={!grown} title="Drop all expansions, back to the seed base">
+        <button type="button" style={buttonStyle(false, !grown)} onClick={resetMinimalGraph} disabled={!grown} title="Drop all revealed files, back to the seed base">
           Reset
         </button>
         <button type="button" style={buttonStyle(false, false)} onClick={closeMinimalGraph} title="Back to the Module map (Esc)">
@@ -130,15 +100,6 @@ export function MinimalGraphView() {
       </div>
     </div>
   );
-}
-
-const isGhost = (node: Node): boolean => (node.data as { tier?: string } | undefined)?.tier === "ghost";
-
-// Dim a ghost card, keeping whatever smaller opacity emphasize already applied (a dimmed non-neighbour
-// stays dim; a lit ghost drops to GHOST_OPACITY so the ghost tier still reads).
-function dimGhost(node: Node): Node {
-  const existing = (node.style?.opacity as number | undefined) ?? 1;
-  return { ...node, style: { ...node.style, opacity: Math.min(existing, GHOST_OPACITY) } };
 }
 
 // Top-RIGHT, because the Module map keeps its main Toolbar floating top-left over this overlay.
