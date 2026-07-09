@@ -1228,6 +1228,11 @@
       }
 
       function pickRepo(repo) {
+        // Cancel any in-flight/pending search first: a slow /api/repos/search that resolves AFTER the
+        // click would otherwise re-render the dropdown (its query still matched activeQuery), reopening
+        // it and appearing to drop the pick. Nulling activeQuery makes that late render a no-op.
+        clearTimeout(searchTimer);
+        activeQuery = null;
         $("repo").value = typeof repo.fullName === "string" ? repo.fullName : "";
         if (typeof repo.defaultBranch === "string") $("ref").placeholder = repo.defaultBranch;
         hideResults();
