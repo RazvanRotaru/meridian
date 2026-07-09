@@ -15,7 +15,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { ReactFlow, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
-import { filterVisible, filterRelKinds, emphasize } from "./moduleMapPaint";
+import { filterVisible, filterRelKinds, suppressRedundantImports, emphasize } from "./moduleMapPaint";
 import { crumbsFor, EmptyModuleMapCard, LevelBreadcrumb } from "./ModuleMapChrome";
 import { CoveragePanel } from "./CoveragePanel";
 import { BeaconArrows } from "./BeaconArrows";
@@ -52,8 +52,8 @@ export function ModuleMapView() {
     () => filterVisible(nodes, edges, { hiddenCategories, showTests, testIds: index.testIds, showPrivate, privateIds: index.privateIds }),
     [nodes, edges, hiddenCategories, showTests, showPrivate, index.testIds, index.privateIds],
   );
-  // A second pure paint filter: drop the wires whose relationship kind is toggled off.
-  const shownEdges = useMemo(() => filterRelKinds(visibleEdges, hiddenRelKinds), [visibleEdges, hiddenRelKinds]);
+  // A second pure paint filter: suppress redundant imports (covered by dep edges) then drop toggled-off kinds.
+  const shownEdges = useMemo(() => filterRelKinds(suppressRedundantImports(visibleEdges), hiddenRelKinds), [visibleEdges, hiddenRelKinds]);
   // Emphasis is a second pure repaint: dim by default, light the selection's N-hop import reach.
   const { nodes: styledNodes, edges: styledEdges, beacons } = useMemo(
     () => emphasize(shownNodes, shownEdges, selected, radius, highlightMode),
