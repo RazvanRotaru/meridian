@@ -405,7 +405,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     focusId: null,
     // The Map (merged module-map + composition) is the default lens.
     viewMode: "modules",
-    showTests: true,
+    // Tests are hidden by default — they're rarely what the reader is here for, and they're always in
+    // the graph (the Tests toggle reveals them) so nothing is lost. Tagged ids come from `index.testIds`.
+    showTests: false,
     coverageMode: false,
     coverage: null,
     flowRootId: null,
