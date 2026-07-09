@@ -36,6 +36,9 @@ export function collectPorts(
     const relPath = loaded.relativePathOf(sourceFile);
     const names = importNames(sourceFile);
     const apps = expressAppNames(sourceFile, names.express);
+    if (!fileMightHavePorts(sourceFile, names, apps)) {
+      continue;
+    }
     for (const call of sourceFile.getDescendantsOfKind(SyntaxKind.CallExpression)) {
       const port = matchCall(call, names, apps, relPath, index, moduleByFilePath);
       if (port) {
@@ -44,6 +47,20 @@ export function collectPorts(
     }
   }
   return ports;
+}
+
+/**
+ * A file can only yield a port if it imports a matched library (electron/axios/express) OR names one
+ * of the import-less triggers (`fetch`, `webContents.send`). Everything else can't match — so skip
+ * the expensive full-AST call walk. A substring hit is conservative (over-includes, never misses a
+ * real port), keeping the output identical while sparing IPC-free files (the majority) the scan.
+ */
+function fileMightHavePorts(sourceFile: SourceFile, names: ImportNames, apps: ReadonlySet<string>): boolean {
+  if (names.ipcRenderer.size > 0 || names.ipcMain.size > 0 || names.axios.size > 0 || apps.size > 0) {
+    return true;
+  }
+  const text = sourceFile.getFullText();
+  return text.includes("fetch") || text.includes("webContents");
 }
 
 /** The local names each matched library was imported under (aliases included). */
@@ -107,15 +124,19 @@ function matchCall(
   moduleByFilePath: Map<string, NodeDescriptor>,
 ): Port | null {
   const callee = call.getExpression();
-  const position = lineColOf(call);
-  const emit = (direction: "in" | "out", protocol: string, channel: string | null, label: string): Port => ({
-    nodeId: owningNodeId(call, index, moduleByFilePath),
-    direction,
-    protocol,
-    channel,
-    label: label.slice(0, LABEL_CAP),
-    callSite: { file: relPath, line: position.line, col: position.column },
-  });
+  // Position is resolved only when a match actually emits — most calls fall through to `return null`,
+  // and lineColOf (via getStart's trivia scan) was ~a quarter of total extract time when eager.
+  const emit = (direction: "in" | "out", protocol: string, channel: string | null, label: string): Port => {
+    const position = lineColOf(call);
+    return {
+      nodeId: owningNodeId(call, index, moduleByFilePath),
+      direction,
+      protocol,
+      channel,
+      label: label.slice(0, LABEL_CAP),
+      callSite: { file: relPath, line: position.line, col: position.column },
+    };
+  };
 
   // fetch("/api/x", { method: "POST" }) — the global, no import to anchor on.
   if (Node.isIdentifier(callee) && callee.getText() === "fetch" && call.getArguments().length > 0) {
