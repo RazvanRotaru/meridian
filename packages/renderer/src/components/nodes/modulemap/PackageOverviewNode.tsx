@@ -1,31 +1,55 @@
 /**
- * A group card for the Module map: one npm package (at the overview) or directory (deeper) showing
- * its name, file count, and import fan-in/out (Ca/Ce). Double-clicking the card re-roots into it
- * (handled by the surface). A green ring marks the selection, read from the store.
+ * A group card for the Map lens: one npm package (at the overview) or directory (deeper) showing
+ * its name, file count, and import fan-in/out (Ca/Ce). A container card carries a chevron that
+ * EXPANDS it in place — collapsed it is a solid box; expanded it becomes a transparent titled frame
+ * whose body lets React Flow draw the nested children inside it, exactly like the call graph's
+ * ContainerNode. Double-clicking the card still re-roots into it (handled by the surface); the
+ * chevron is the coexisting inline gesture. A green ring marks the selection, read from the store.
  */
 
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
 import type { ModuleGroupData } from "../../../derive/moduleTree";
+import { cardSelectedStyle, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
+import { borderFor, DeltaChip, useNodeDiff } from "./changed";
 
-const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
-const SELECT_ACCENT = "#6BE38A";
 // A neutral package hue — the cross-package coupling gold lives on the wires, not the boxes.
 const PACKAGE_ACCENT = "#5B9BE3";
 
 type PackageRfNode = Node<ModuleGroupData, "package">;
 
+type PackageMetaData = Pick<ModuleGroupData, "fileCount" | "ca" | "ce">;
+
 function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
   const selected = useBlueprint((state) => state.moduleSelected.has(id));
+  const diff = useNodeDiff(id);
+  const chevron = data.isContainer ? <ExpandChevron id={id} isExpanded={data.isExpanded} /> : null;
+
+  if (data.isExpanded) {
+    return (
+      <div style={borderFor(frameStyle(PACKAGE_ACCENT), frameSelectedStyle(PACKAGE_ACCENT), selected, diff)}>
+        <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+        <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+        <FrameTitleBar actionsId={id} chevron={chevron} readOnly={data.readOnly}>
+          <span style={TITLE_LABEL} title={id}>{data.label}</span>
+          <DeltaChip diff={diff} />
+          <Meta data={data} hideCoupling={data.readOnly} />
+        </FrameTitleBar>
+      </div>
+    );
+  }
+
   return (
-    <div style={selected ? CARD_SELECTED : CARD}>
+    <div style={borderFor(CARD, cardSelectedStyle(CARD, PACKAGE_ACCENT), selected, diff)}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={{ ...ACCENT_BAR, background: PACKAGE_ACCENT }} />
       <div style={INNER}>
         <div style={HEADER}>
+          {chevron}
           <span style={LABEL} title={id}>{data.label}</span>
+          <DeltaChip diff={diff} />
         </div>
         <Meta data={data} />
       </div>
@@ -33,24 +57,26 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
   );
 }
 
-/** File count + cross-package fan-in/out — shown compact in a title bar, block in a collapsed card. */
-function Meta({ data }: { data: ModuleGroupData }) {
+/** File count + cross-package fan-in/out — shown compact in a title bar, block in a collapsed card.
+ * `hideCoupling` drops the uses/used-by pair when the counts aren't meaningful (a filtered subgraph). */
+function Meta({ data, hideCoupling }: { data: PackageMetaData; hideCoupling?: boolean }) {
   return (
     <div style={META}>
       <span style={FILES} title={`${data.fileCount} source file(s)`}>{data.fileCount} files</span>
-      <span style={COUNTS} title={`imports ${data.ce} · imported by ${data.ca}`}>
-        <span style={COUNT_MUTED}>uses</span>
-        <span style={COUNT_VALUE}>{data.ce}</span>
-        <span style={COUNT_MUTED}>used by</span>
-        <span style={COUNT_VALUE}>{data.ca}</span>
-      </span>
+      {hideCoupling ? null : (
+        <span style={COUNTS} title={`imports ${data.ce} · imported by ${data.ca}`}>
+          <span style={COUNT_MUTED}>uses</span>
+          <span style={COUNT_VALUE}>{data.ce}</span>
+          <span style={COUNT_MUTED}>used by</span>
+          <span style={COUNT_VALUE}>{data.ca}</span>
+        </span>
+      )}
     </div>
   );
 }
 
 export const PackageOverviewNode = memo(PackageOverviewNodeImpl);
 
-const PIN: React.CSSProperties = { width: 6, height: 6, background: "#C8D3E0", border: "none", minWidth: 0, minHeight: 0 };
 const CARD: React.CSSProperties = {
   position: "relative",
   width: "100%",
@@ -62,7 +88,16 @@ const CARD: React.CSSProperties = {
   overflow: "hidden",
   fontFamily: MONO,
 };
-const CARD_SELECTED: React.CSSProperties = { ...CARD, borderColor: SELECT_ACCENT, boxShadow: `0 0 0 2px ${SELECT_ACCENT}` };
+const TITLE_LABEL: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  fontSize: 12.5,
+  fontWeight: 700,
+  color: "#E6EDF3",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
 const ACCENT_BAR: React.CSSProperties = { position: "absolute", left: 0, top: 0, bottom: 0, width: 4 };
 const INNER: React.CSSProperties = {
   display: "flex",

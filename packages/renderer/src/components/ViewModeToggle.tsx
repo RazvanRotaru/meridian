@@ -6,17 +6,14 @@
 
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import type { ViewMode } from "../derive/edgeSelection";
-import { SHOW_SERVICE_COMPOSITION } from "../featureFlags";
 
-const ALL_SEGMENTS: ReadonlyArray<{ mode: ViewMode; label: string }> = [
+const SEGMENTS: ReadonlyArray<{ mode: ViewMode; label: string }> = [
+  { mode: "modules", label: "Map" },
   { mode: "call", label: "Service composition" },
   { mode: "ui", label: "UI composition" },
   { mode: "logic", label: "Logic flow" },
-  { mode: "modules", label: "Module map" },
+  { mode: "prs", label: "PRs" },
 ];
-
-// Service composition is withheld from the default build (see featureFlags.ts).
-const SEGMENTS = ALL_SEGMENTS.filter((s) => s.mode !== "call" || SHOW_SERVICE_COMPOSITION);
 
 export function ViewModeToggle() {
   const viewMode = useBlueprint((state) => state.viewMode);

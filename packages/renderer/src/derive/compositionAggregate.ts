@@ -37,6 +37,8 @@ interface FrameAccum {
   depth: number;
   unitCount: number;
   smellyCount: number;
+  /** The units folded into this frame — powers the frame's changed-recursive (Δ) badge. */
+  unitIds: string[];
 }
 
 /**
@@ -193,8 +195,9 @@ function ipcCardEdges(
 /** Fold one unit into every expanded frame on its placement path, creating frames on first sight. */
 function tallyFrames(path: string[], metric: UnitMetrics, frames: Map<string, FrameAccum>): void {
   for (let i = 0; i < path.length; i += 1) {
-    const accum = frames.get(path[i]) ?? { id: path[i], parent: path[i - 1], depth: i, unitCount: 0, smellyCount: 0 };
+    const accum = frames.get(path[i]) ?? { id: path[i], parent: path[i - 1], depth: i, unitCount: 0, smellyCount: 0, unitIds: [] };
     accum.unitCount += 1;
+    accum.unitIds.push(metric.id);
     if (metric.smells.length > 0) {
       accum.smellyCount += 1;
     }
@@ -208,6 +211,7 @@ function frameNode(frame: FrameAccum, nodesById: Map<string, GraphNode>): CompNo
     label: clusterLabel(frame.id, nodesById),
     unitCount: frame.unitCount,
     smellyCount: frame.smellyCount,
+    unitIds: frame.unitIds,
     expanded: true,
   };
   // No width/height: ELK sizes the frame from the cards inside it, exactly like the unit view's.

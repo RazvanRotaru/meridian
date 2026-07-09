@@ -4,12 +4,14 @@
  * response fields — only these typed projections leave the server, and only over `textContent`.
  */
 
-import { asObject, optionalString, requireString } from "./json-fields";
+import { asObject, optionalString, requireNumber, requireString } from "./json-fields";
 
 const OWNER_REPO = /^[\w.-]+\/[\w.-]+$/;
 const SEARCH_RESULT_LIMIT = 20;
 /** One full page of `GET /user/repos` — the pagination loop in github.ts caps the total. */
 const LIST_RESULT_LIMIT = 100;
+const PR_LIST_RESULT_LIMIT = 30;
+const PR_FILE_RESULT_LIMIT = 100;
 
 export interface RepoSummary {
   fullName: string;
@@ -22,6 +24,21 @@ export interface RepoSummary {
 export interface GitHubUser {
   login: string;
   avatarUrl: string | null;
+}
+
+export interface PrSummary {
+  number: number;
+  title: string;
+  author: string;
+  headRef: string;
+  updatedAt: string;
+  draft: boolean;
+  state: "open" | "closed";
+}
+
+export interface PrFile {
+  path: string;
+  status: "added" | "modified" | "removed" | "renamed";
 }
 
 export type RepoQuery =
@@ -61,6 +78,20 @@ export function parseRepoList(json: unknown): RepoSummary[] {
   return json.slice(0, LIST_RESULT_LIMIT).map((item) => toRepoSummary(asObject(item)));
 }
 
+export function parsePullRequestList(json: unknown): PrSummary[] {
+  if (!Array.isArray(json)) {
+    return [];
+  }
+  return json.slice(0, PR_LIST_RESULT_LIMIT).map((item) => toPrSummary(asObject(item)));
+}
+
+export function parsePullRequestFiles(json: unknown): PrFile[] {
+  if (!Array.isArray(json)) {
+    return [];
+  }
+  return json.slice(0, PR_FILE_RESULT_LIMIT).map((item) => toPrFile(asObject(item)));
+}
+
 export function parseUser(json: unknown): GitHubUser {
   const body = asObject(json);
   return { login: requireString(body, "login"), avatarUrl: httpsOrNull(optionalString(body, "avatar_url")) };
@@ -87,6 +118,32 @@ function toRepoSummary(body: Record<string, unknown>): RepoSummary {
     description: optionalString(body, "description"),
     ownerAvatarUrl: httpsOrNull(optionalString(owner, "avatar_url")),
   };
+}
+
+function toPrSummary(body: Record<string, unknown>): PrSummary {
+  return {
+    number: Math.trunc(requireNumber(body, "number")),
+    title: requireString(body, "title"),
+    author: requireString(asObject(body.user ?? {}), "login"),
+    headRef: requireString(asObject(body.head ?? {}), "ref"),
+    updatedAt: requireString(body, "updated_at"),
+    draft: body.draft === true,
+    state: body.state === "closed" ? "closed" : "open",
+  };
+}
+
+function toPrFile(body: Record<string, unknown>): PrFile {
+  return { path: requireString(body, "filename"), status: prFileStatus(body.status) };
+}
+
+function prFileStatus(status: unknown): PrFile["status"] {
+  if (status === "added" || status === "modified" || status === "removed" || status === "renamed") {
+    return status;
+  }
+  if (status === "copied") {
+    return "added";
+  }
+  return "modified";
 }
 
 /** Only https URLs survive; a `javascript:`/`data:` avatar becomes null before it can be an src. */

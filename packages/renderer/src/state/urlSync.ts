@@ -36,6 +36,18 @@ export async function restoreFromUrl(store: BlueprintStore): Promise<void> {
   } else {
     await store.getState().relayout();
   }
+  // The minimal-graph overlay is restored state too: rebuild its nodes when the URL carried seeds so
+  // a reload / back-forward into an open overlay reproduces it (structuralState already cleared it
+  // when the URL carried none).
+  if (store.getState().minimalSeedIds.length > 0) {
+    await store.getState().minimalRelayout();
+  }
+  if (nav.flowSelection) {
+    store.getState().selectFlowEntry(nav.flowSelection);
+  }
+  if (nav.prSelected !== null) {
+    void store.getState().selectPr(nav.prSelected);
+  }
   applyEnvironment(store, nav.environment);
   prevNav = navFrom(store.getState());
 }
@@ -111,13 +123,35 @@ function structuralState(nav: NavState): Record<string, unknown> {
     logicSelected: nav.logicSelected,
     flowRootId: nav.flowRootId,
     flowDepth: nav.flowDepth,
+    flowExplorerOpen: nav.flowExplorerOpen,
+    flowSelection: null,
+    flowEmphasis: new Set<string>(),
+    flowPaneRfNodes: [],
+    flowPaneRfEdges: [],
+    flowPaneLayoutStatus: "idle",
     logicRoot: nav.logicRoot,
     logicView: nav.logicView,
     logicStack: nav.logicStack,
     expanded: new Set(nav.expanded),
     moduleFocus: nav.moduleFocus,
+    // Reset the overlay to the URL's state; a restore that carries no seeds closes it, one that
+    // carries seeds reopens it at the seed base (restoreFromUrl then rebuilds the nodes). The grown
+    // state is ephemeral, so it always resets — a restore never reproduces committed ghosts.
+    minimalSeedIds: nav.minimalSeedIds,
+    minimalKeptIds: [],
+    minimalExpanded: [],
+    minimalRfNodes: [],
+    minimalRfEdges: [],
+    minimalLayoutStatus: "idle",
     moduleExpanded: new Set(nav.moduleExpanded),
     moduleRadius: nav.moduleRadius,
+    highlightMode: nav.highlightMode,
     hiddenCategories: new Set(nav.hiddenCategories),
+    prsTab: nav.prsTab,
+    prSelected: null,
+    prFiles: null,
+    prFilesTruncated: false,
+    prsLoading: false,
+    prsError: null,
   };
 }

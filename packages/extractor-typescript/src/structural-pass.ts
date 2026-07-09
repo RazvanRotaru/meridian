@@ -28,7 +28,7 @@ export function buildStructure(loaded: LoadedProject, lang: string): StructuralR
     return descriptor;
   };
   const relativePaths = loaded.sourceFiles.map(loaded.relativePathOf);
-  const packageByPath = emitPackages(relativePaths, loaded.root, lang, emit);
+  const packageByPath = emitPackages(relativePaths, loaded.root, lang, emit, loaded.memberPaths);
   const moduleByFilePath = emitModules(loaded, lang, packageByPath, emit);
   return { descriptors, moduleByFilePath };
 }
@@ -38,19 +38,34 @@ function emitPackages(
   root: string,
   lang: string,
   emit: (descriptor: NodeDescriptor) => NodeDescriptor,
+  memberPaths: ReadonlySet<string> | undefined,
 ): Map<string, NodeDescriptor> {
   const byPath = new Map<string, NodeDescriptor>();
   for (const packagePath of orderedPackagePaths(relativePaths)) {
     const parent = byPath.get(posixDirname(packagePath)) ?? null;
-    const descriptor = tagNpmPackage(packageDescriptor(lang, packagePath, parent), root, packagePath);
+    const descriptor = tagNpmPackage(packageDescriptor(lang, packagePath, parent), root, packagePath, memberPaths);
     byPath.set(packagePath, emit(descriptor));
   }
   return byPath;
 }
 
-/** Mark a package node as an owning npm package when its directory carries a package.json. */
-function tagNpmPackage(descriptor: NodeDescriptor, root: string, packagePath: string): NodeDescriptor {
-  if (existsSync(join(root, packagePath, "package.json"))) {
+/**
+ * Mark a package node as an npm-package BOUNDARY (the overview's package cards). When the repo's
+ * manifests declared a member set, ONLY those dirs are boundaries — so a package.json nested inside a
+ * member (scaffolding, generated tools) folds into the member instead of splitting off its own card,
+ * and a workspace-root container (its members ARE the boundaries) stays transparent. Absent a member
+ * set (a plain package), fall back to "any dir with a package.json".
+ */
+function tagNpmPackage(
+  descriptor: NodeDescriptor,
+  root: string,
+  packagePath: string,
+  memberPaths: ReadonlySet<string> | undefined,
+): NodeDescriptor {
+  const isBoundary = memberPaths
+    ? memberPaths.has(packagePath)
+    : existsSync(join(root, packagePath, "package.json"));
+  if (isBoundary) {
     descriptor.tags = [...descriptor.tags, NPM_PACKAGE_TAG];
   }
   return descriptor;

@@ -56,6 +56,7 @@ function registerGenerate(program: Command): void {
     .option("--include-external", "keep external (library/builtin) call targets as boundary nodes")
     .option("--include-unresolved", "keep dynamic/unresolved call targets as boundary nodes")
     .option("--exclude-tests", "drop test files from the graph (default: include them, tagged 'test')")
+    .option("--changed-since <ref>", "tag nodes changed since the merge-base with <ref> (a PR's diff) 'changed'")
     .action((path, _options, command) => runGenerate(path ?? ".", command.optsWithGlobals() as GenerateOptions));
 }
 

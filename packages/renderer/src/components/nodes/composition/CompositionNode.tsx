@@ -12,12 +12,14 @@ import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import { colorForDistance, type ChannelCompData, type CompNodeData } from "../../../derive/compositionGraph";
 import type { PackageSummaryData } from "../../../derive/compositionAggregate";
 import type { CompRfNode } from "../../../layout/compositionElk";
-import { accentForKind } from "../../../theme/kindColors";
+import { accentForKind, glyphForKind } from "../../../theme/kindColors";
 import { coverageAccent } from "../../../theme/coverageColors";
 import { SmellChip } from "../../composition/SmellChip";
 import { CompositionMembers } from "../../composition/CompositionMembers";
 import { CoverageBadge } from "../../CoverageBadge";
+import { CHANGED_ACCENT } from "../../ChangedBadge";
 import { ClusterFrameNode } from "./ClusterFrameNode";
+import { useChangeSummary } from "../../useChangedLines";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 // The green shared with the emphasized coupling wires so the node ring and the edge glow read as
@@ -34,12 +36,28 @@ function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
   // unit, so it never wears the green selection ring.
   const boundary = d.boundary === true;
   const selected = compSelectedId === d.unitId && !boundary;
+  const changed = useBlueprint((state) => state.index.changedIds.has(d.unitId));
+  const changedDescendants = useBlueprint((state) => state.index.changedDescendants.get(d.unitId) ?? 0);
+  // A composition unit should expose diff navigation when either it OR anything inside it changed.
+  const hasDiff = changed || changedDescendants > 0;
+  const unitNode = useBlueprint((state) => (hasDiff ? state.index.nodesById.get(d.unitId) : undefined));
+  const changeSummary = useChangeSummary(unitNode);
+  const { showCode, expandCode } = useBlueprintActions();
+  // The Δ chip is the diff's entry point: straight to the source modal, whose gutter marks the
+  // changed lines. stopPropagation keeps the click from also selecting/re-rooting the card.
+  const openDiff = (event: React.MouseEvent) => {
+    event.stopPropagation();
+    if (unitNode) {
+      void showCode(unitNode);
+      expandCode();
+    }
+  };
   // Coverage mode repaints the health rail by test-coverage verdict (green/amber/red/violet), so the
   // same scorecards tell the coverage story; otherwise the rail keeps its distance-from-main-sequence hue.
   const health = coverage ? coverageAccent(d.unitId, coverage) : colorForDistance(metrics.distance);
   const tint = accentForKind(d.kind);
   return (
-    <div style={boundary ? CARD_BOUNDARY : selected ? CARD_SELECTED : CARD}>
+    <div style={boundary ? CARD_BOUNDARY : selected ? CARD_SELECTED : hasDiff ? CARD_CHANGED : CARD}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       {/* The health rail stays crisp on a boundary card so the neighbour's health still reads. */}
@@ -52,6 +70,16 @@ function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
             <span style={BOUNDARY_TAG} title="Click to root the composition here">▸ ROOT</span>
           ) : null}
           {coverage ? <CoverageBadge nodeId={d.unitId} /> : null}
+          {hasDiff ? (
+            <button
+              type="button"
+              style={CHANGED_TAG}
+              title={changed ? "Changed in this diff — click to see the changed lines" : "Contains changed code — click to see the changed lines"}
+              onClick={openDiff}
+            >
+              {changeSummary ? `+${changeSummary.added} -${changeSummary.deleted}` : "Δ diff"}
+            </button>
+          ) : null}
           <span style={{ ...KIND_TAG, color: tint, borderColor: tint }}>{d.kind.toUpperCase()}</span>
         </div>
         {showMetrics ? (
@@ -101,17 +129,6 @@ function MetricPair(props: { label: string; value: number; title: string }) {
       <span style={METRIC_VALUE}>{props.value}</span>
     </span>
   );
-}
-
-// A compact kind glyph so a card reads as class/module/interface/object before the tag is scanned.
-const KIND_GLYPH: Record<string, string> = {
-  module: "▤",
-  class: "◆",
-  interface: "◇",
-  object: "❑",
-};
-function glyphForKind(kind: string): string {
-  return KIND_GLYPH[kind] ?? "▪";
 }
 
 /**
@@ -218,6 +235,12 @@ const CARD_SELECTED: React.CSSProperties = {
   borderColor: COMP_SELECT_ACCENT,
   boxShadow: `0 0 0 2px ${COMP_SELECT_ACCENT}`,
 };
+// A changed card keeps the amber ring subtler than selection so the two never compete.
+const CARD_CHANGED: React.CSSProperties = {
+  ...CARD,
+  borderColor: CHANGED_ACCENT,
+  boxShadow: `0 0 0 1px ${CHANGED_ACCENT}44`,
+};
 // A boundary neighbour reads as a ghost: dashed border + darker fill say "context, not part of the
 // root"; its body dims (below) while the accent rail stays lit. Clicking it re-roots there.
 const CARD_BOUNDARY: React.CSSProperties = {
@@ -283,6 +306,22 @@ const EXPAND_BTN: React.CSSProperties = {
   padding: "0 5px",
   cursor: "pointer",
   fontFamily: "inherit",
+};
+// The amber diff marker, sized like KIND_TAG so the header chips read as one row. A button:
+// clicking it opens the source modal with the changed lines marked.
+const CHANGED_TAG: React.CSSProperties = {
+  flexShrink: 0,
+  fontSize: 8,
+  fontWeight: 700,
+  letterSpacing: "0.06em",
+  fontFamily: "inherit",
+  lineHeight: 1.4,
+  color: CHANGED_ACCENT,
+  border: `1px solid ${CHANGED_ACCENT}66`,
+  background: `${CHANGED_ACCENT}1A`,
+  borderRadius: 3,
+  padding: "1px 4px",
+  cursor: "pointer",
 };
 const METRIC_ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: "#9AA4B2" };
 const PAIR: React.CSSProperties = { display: "inline-flex", alignItems: "baseline", gap: 3 };

@@ -10,7 +10,12 @@ import { spawn } from "node:child_process";
 export function openInBrowser(url: string): void {
   const [command, ...args] = openerCommand(url);
   try {
-    spawn(command, args, { stdio: "ignore", detached: true }).unref();
+    const child = spawn(command, args, { stdio: "ignore", detached: true });
+    // A missing opener (headless box: no `xdg-open`) surfaces ASYNChronously as an 'error' event,
+    // which the try/catch below cannot reach — left unhandled it crashes the whole server. Swallow
+    // it here so serving stays load-bearing; the URL was already printed to stderr.
+    child.on("error", () => {});
+    child.unref();
   } catch {
     // Headless environments have no opener; the URL was already printed to stderr.
   }

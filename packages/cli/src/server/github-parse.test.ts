@@ -5,7 +5,15 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { classifyQuery, parseRepoList, parseRepoResult, parseSearchResults, parseUser } from "./github-parse";
+import {
+  classifyQuery,
+  parsePullRequestFiles,
+  parsePullRequestList,
+  parseRepoList,
+  parseRepoResult,
+  parseSearchResults,
+  parseUser,
+} from "./github-parse";
 
 describe("classifyQuery", () => {
   it("treats owner/repo and github URLs as an exact lookup", () => {
@@ -67,6 +75,42 @@ describe("parseRepoList", () => {
 
   it("returns an empty list for a non-array body", () => {
     expect(parseRepoList({ items: [{ full_name: "o/r" }] })).toEqual([]);
+  });
+});
+
+describe("parsePullRequestList", () => {
+  it("projects PRs to the whitelisted renderer shape", () => {
+    const prs = parsePullRequestList([
+      {
+        number: 7,
+        title: "Ship PR tab",
+        user: { login: "daria", html_url: "https://evil.example" },
+        head: { ref: "feature/prs", sha: "abc" },
+        updated_at: "2026-07-08T12:00:00Z",
+        draft: true,
+        state: "open",
+        body: "not forwarded",
+      },
+    ]);
+    expect(prs).toEqual([
+      { number: 7, title: "Ship PR tab", author: "daria", headRef: "feature/prs", updatedAt: "2026-07-08T12:00:00Z", draft: true, state: "open" },
+    ]);
+  });
+});
+
+describe("parsePullRequestFiles", () => {
+  it("projects filenames and maps non-renderer statuses", () => {
+    expect(
+      parsePullRequestFiles([
+        { filename: "src/new.ts", status: "copied", patch: "secret" },
+        { filename: "src/changed.ts", status: "changed" },
+        { filename: "src/weird.ts", status: "unknown" },
+      ]),
+    ).toEqual([
+      { path: "src/new.ts", status: "added" },
+      { path: "src/changed.ts", status: "modified" },
+      { path: "src/weird.ts", status: "modified" },
+    ]);
   });
 });
 

@@ -14,6 +14,9 @@ const SINGLE_STAR = String.fromCharCode(2);
 export const DEFAULT_EXCLUDES = [
   "**/node_modules/**",
   "**/dist/**",
+  "**/out/**",
+  "**/build/**",
+  "**/coverage/**",
   "**/*.d.ts",
 ];
 

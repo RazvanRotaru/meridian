@@ -23,7 +23,6 @@ import {
 import type { CoverageReport, GraphArtifact, GraphNode, LogicFlows, NodeId } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { GHOST_DEPTH_ALL } from "../state/store";
-import { SHOW_SERVICE_COMPOSITION } from "../featureFlags";
 import { logicNodeTypes, SELECT_ACCENT, type JumpFlowNodeData } from "./nodes/logic/logicNodeTypes";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { arrowMarker } from "../theme/edgeColors";
@@ -84,11 +83,9 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
       return;
     }
     // A service frame carries no exec target — double-click opens its unit in the Service-composition
-    // view (single click is a no-op, so navigation is never accidental). When that lens is withheld
-    // from the build (see featureFlags.ts) the gesture is inert so it can't strand a reader on a
-    // hidden view.
+    // view (single click is a no-op, so navigation is never accidental).
     if (node.type === "servicegroup") {
-      if (data.owner && SHOW_SERVICE_COMPOSITION) {
+      if (data.owner) {
         openComposition(data.owner.unitId);
       }
       return;

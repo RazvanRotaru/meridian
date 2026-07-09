@@ -5,7 +5,8 @@
  */
 
 import type { GraphEdge, GraphNode } from "@meridian/core";
-import { deriveCompositionGraph, type CompNodeSpec } from "../derive/compositionGraph";
+import { type CompNodeSpec } from "../derive/compositionGraph";
+import { deriveServiceCompositionGraph } from "../derive/serviceComposition";
 import { buildCompositionElkGraph, toReactFlowComposition, type CompositionReactFlowGraph } from "../layout/compositionElk";
 import { runElkLayout } from "../layout/elkLayout";
 
@@ -16,7 +17,9 @@ export async function deriveCompositionLayout(
   showMetrics = true,
   expanded: ReadonlySet<string> = new Set(),
 ): Promise<CompositionReactFlowGraph> {
-  const spec = deriveCompositionGraph(nodes, edges, root, showMetrics, expanded);
+  // `root` is unused by the service-centric POC (kept in the signature so the store call is unchanged).
+  void root;
+  const spec = deriveServiceCompositionGraph(nodes, edges, expanded, showMetrics);
   if (spec.nodes.length === 0) {
     return { nodes: [], edges: [] };
   }

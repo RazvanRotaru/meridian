@@ -42,6 +42,14 @@ export type ClusterNodeData = {
   /** True on a package the AGGREGATED view has inline-expanded — the frame header then offers the
    * collapse (▾) control. Absent on the unit view's passive frames. */
   expanded?: boolean;
+  /** Service-composition view: how many sub-services stay hidden while the cluster is collapsed —
+   * drives the "+N sub-services" badge. Absent on the package-cluster path. */
+  collapsedCount?: number;
+  /** Service-composition view: whether the cluster holds more than its lead, so the frame offers the
+   * ▸ expand / ▾ collapse controls at all. Absent on the package-cluster path. */
+  collapsible?: boolean;
+  /** Unit ids inside this cluster (for runtime badges/highlights such as changed-recursive). */
+  unitIds: string[];
 };
 
 // An IPC channel card's data: the channel key two processes meet on, plus its honesty flag —
@@ -309,6 +317,7 @@ function clusterNode(cluster: ClusterFrame): CompNodeSpec {
     label: cluster.label,
     unitCount: cluster.unitIds.length,
     smellyCount: cluster.smellyCount,
+    unitIds: cluster.unitIds,
   };
   // No width/height, no parentId: ELK sizes a container from its children, and a frame is a root.
   return { id: cluster.id, type: "cluster", data };

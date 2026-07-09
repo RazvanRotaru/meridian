@@ -13,20 +13,54 @@ import type { NodeProps } from "@xyflow/react";
 import { useBlueprintActions } from "../../../state/StoreContext";
 import type { ClusterNodeData } from "../../../derive/compositionGraph";
 import type { CompRfNode } from "../../../layout/compositionElk";
+import { useBlueprint } from "../../../state/StoreContext";
+import { CHANGED_ACCENT } from "../../ChangedBadge";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
 function ClusterFrameNodeImpl({ data }: NodeProps<CompRfNode>) {
   const { toggleCompExpand } = useBlueprintActions();
   const d = data as ClusterNodeData;
+  const changedUnits = useBlueprint((state) => {
+    let count = 0;
+    for (const unitId of d.unitIds) {
+      if (state.index.changedIds.has(unitId) || (state.index.changedDescendants.get(unitId) ?? 0) > 0) {
+        count += 1;
+      }
+    }
+    return count;
+  });
+  const hasDiff = changedUnits > 0;
   return (
-    <div style={FRAME}>
-      <div style={TITLE}>
+    <div style={hasDiff ? FRAME_CHANGED : FRAME}>
+      <div style={hasDiff ? TITLE_CHANGED : TITLE}>
         <span style={PKG_GLYPH}>◗</span>
         <span style={LABEL} title={d.label}>{d.label}</span>
         <span style={COUNT}>{`${d.unitCount} ${d.unitCount === 1 ? "unit" : "units"}`}</span>
+        {hasDiff ? <span style={DIFF_BADGE}>{`Δ ${changedUnits}`}</span> : null}
         {d.smellyCount > 0 ? (
           <span style={SMELL_BADGE} title={`${d.smellyCount} unit(s) with design smells`}>{`${d.smellyCount}⚠`}</span>
+        ) : null}
+        {d.collapsible && !d.expanded ? (
+          <>
+            {d.collapsedCount ? (
+              <span style={SUBSVC_BADGE} title={`${d.collapsedCount} sub-service(s) hidden`}>
+                {`+${d.collapsedCount} sub-services`}
+              </span>
+            ) : null}
+            <button
+              type="button"
+              style={COLLAPSE_BTN}
+              title="Expand this service to show the sub-services it is composed of"
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleCompExpand(d.clusterId);
+              }}
+              onDoubleClick={(event) => event.stopPropagation()}
+            >
+              ▸
+            </button>
+          </>
         ) : null}
         {d.expanded ? (
           <button
@@ -60,6 +94,12 @@ const FRAME: React.CSSProperties = {
   background: "rgba(20,25,33,0.45)",
   fontFamily: MONO,
 };
+const FRAME_CHANGED: React.CSSProperties = {
+  ...FRAME,
+  borderColor: CHANGED_ACCENT,
+  background: "rgba(226,163,60,0.08)",
+  boxShadow: `0 0 0 1px ${CHANGED_ACCENT}44`,
+};
 // A 42px title matches CONTAINER_LAYOUT_OPTIONS' top padding so the child scorecards clear it.
 const TITLE: React.CSSProperties = {
   display: "flex",
@@ -73,6 +113,10 @@ const TITLE: React.CSSProperties = {
   fontSize: 12,
   fontWeight: 700,
 };
+const TITLE_CHANGED: React.CSSProperties = {
+  ...TITLE,
+  borderBottom: `1px solid ${CHANGED_ACCENT}55`,
+};
 const PKG_GLYPH: React.CSSProperties = { fontSize: 12, flexShrink: 0, color: "#A77BF3" };
 const LABEL: React.CSSProperties = {
   flex: 1,
@@ -82,6 +126,17 @@ const LABEL: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 const COUNT: React.CSSProperties = { flexShrink: 0, fontSize: 10, fontWeight: 600, color: "#6C7683" };
+const DIFF_BADGE: React.CSSProperties = {
+  flexShrink: 0,
+  fontSize: 9.5,
+  fontWeight: 700,
+  letterSpacing: "0.04em",
+  color: CHANGED_ACCENT,
+  border: `1px solid ${CHANGED_ACCENT}66`,
+  borderRadius: 3,
+  padding: "1px 5px",
+  background: `${CHANGED_ACCENT}1A`,
+};
 const SMELL_BADGE: React.CSSProperties = {
   flexShrink: 0,
   fontSize: 9.5,
@@ -92,6 +147,19 @@ const SMELL_BADGE: React.CSSProperties = {
   borderRadius: 3,
   padding: "1px 5px",
   background: "rgba(229,72,77,0.14)",
+};
+// The count of composed sub-services hidden behind a collapsed lead — a quiet neutral pill so it
+// reads as metadata, not an alert (the smell badge owns red).
+const SUBSVC_BADGE: React.CSSProperties = {
+  flexShrink: 0,
+  fontSize: 9.5,
+  fontWeight: 600,
+  letterSpacing: "0.03em",
+  color: "#8B95A3",
+  border: "1px solid #2A313D",
+  borderRadius: 3,
+  padding: "1px 5px",
+  background: "rgba(139,149,163,0.10)",
 };
 // Mirrors the package card's ▸ expand pill so open/close read as the same control family.
 const COLLAPSE_BTN: React.CSSProperties = {

@@ -12,13 +12,14 @@ import { extractToArtifact } from "../extract-pipeline";
 import { resolveSource } from "./clone";
 import { sendHtml, sendJson } from "./http-response";
 import { injectViewBoot } from "./web-boot";
-import { sessionTokenFor } from "./web-auth";
+import { githubTokenFor } from "./web-auth";
 import { artifactId, parseGenerateRequest, readJsonBody } from "./web-request";
 import type { Context } from "./web-server";
+import { artifactSourceFor } from "./web-source";
 
 export async function handleGenerate(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
   const parsed = parseGenerateRequest(await readJsonBody(request));
-  const token = parsed.token ?? sessionTokenFor(ctx, request) ?? process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  const token = githubTokenFor(ctx, request, parsed.token);
   const source = await resolveSource(
     { kind: parsed.kind, value: parsed.value, ref: parsed.ref, subdir: parsed.subdir },
     ctx.cwd,
@@ -40,6 +41,7 @@ export async function handleGenerate(ctx: Context, request: IncomingMessage, res
     const id = artifactId(parsed);
     ctx.graphs.set(id, artifact);
     ctx.sourceRoots.set(id, source.dir);
+    ctx.sources.set(id, artifactSourceFor(parsed));
     ctx.tempCleanups.add(source.cleanup);
     retained = true;
     const counts = { nodes: artifact.nodes.length, edges: artifact.edges.length };

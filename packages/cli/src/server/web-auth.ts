@@ -87,6 +87,10 @@ export function sessionTokenFor(ctx: AuthContext, request: IncomingMessage): str
   return session?.token ?? undefined;
 }
 
+export function githubTokenFor(ctx: AuthContext, request: IncomingMessage, explicitToken?: string): string | undefined {
+  return explicitToken ?? sessionTokenFor(ctx, request) ?? process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+}
+
 async function pollStatus(
   ctx: AuthContext,
   session: Session,

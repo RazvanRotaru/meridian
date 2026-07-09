@@ -10,6 +10,9 @@ build/
 # Generated blueprint artifacts (keep examples reproducible, ignore ad-hoc runs)
 *.meridian.json
 /tmp-graph.json
+# Default `generate` output name (and the --changed-since variant) — ad-hoc local runs
+meridian.graph.json
+meridian.graph*.json
 
 # Renderer build (and the copy bundled into the CLI at pack time)
 packages/renderer/dist/

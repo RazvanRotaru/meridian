@@ -43,4 +43,8 @@ describe("selectEdgesForMode", () => {
   it("'logic' lifts NO edges — it is a per-callable control-flow render, not an edge graph", () => {
     expect(selectEdgesForMode(MIXED, "logic")).toEqual([]);
   });
+
+  it("'prs' lifts NO edges — it is a DOM review surface, not an edge graph", () => {
+    expect(selectEdgesForMode(MIXED, "prs")).toEqual([]);
+  });
 });

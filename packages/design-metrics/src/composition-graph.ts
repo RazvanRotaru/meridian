@@ -13,7 +13,7 @@ export const UNIT_KINDS: ReadonlySet<string> = new Set(["class", "interface", "o
 export const MEMBER_KINDS: ReadonlySet<string> = new Set(["function", "method"]);
 
 /** Edge kinds that express a dependency between units (references/imports are ignored for v1). */
-export const COUPLING_KINDS: ReadonlySet<string> = new Set(["calls", "instantiates", "extends", "implements"]);
+export const COUPLING_KINDS: ReadonlySet<string> = new Set(["calls", "instantiates", "extends", "implements", "references"]);
 
 const EXTERNAL_PREFIXES = ["ext:", "unresolved:"] as const;
 

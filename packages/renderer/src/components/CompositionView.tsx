@@ -36,7 +36,9 @@ export function CompositionView() {
   const coverage = useBlueprint((state) => (state.coverageMode ? state.coverage : null));
   const showTests = useBlueprint((state) => state.showTests);
   const testIds = useBlueprint((state) => state.index.testIds);
-  const { selectCompUnit, setCompRoot } = useBlueprintActions();
+  const changedIds = useBlueprint((state) => state.index.changedIds);
+  const changedDescendants = useBlueprint((state) => state.index.changedDescendants);
+  const { selectCompUnit, setCompRoot, showCode, expandCode } = useBlueprintActions();
   useRecenter(selectedId ? [selectedId] : []);
   // The clicked IPC wire whose channels the inspector lists; view-local (a pure repaint, like the
   // node selection). Cleared whenever a node or the pane is clicked, or the layout changes.
@@ -68,7 +70,16 @@ export function CompositionView() {
       selectCompUnit(null);
       return;
     }
+    const alreadySelected = selectedId === node.id;
     selectCompUnit(node.id);
+    // First click = select (navigation). Second click on the same changed unit = open diff.
+    if (alreadySelected && (changedIds.has(node.id) || (changedDescendants.get(node.id) ?? 0) > 0)) {
+      const graphNode = nodesById.get(node.id);
+      if (graphNode?.location) {
+        void showCode(graphNode);
+        expandCode();
+      }
+    }
   };
 
   // Clicking a magenta IPC wire opens the inspector on the channel(s) it carries; a non-IPC (coupling)

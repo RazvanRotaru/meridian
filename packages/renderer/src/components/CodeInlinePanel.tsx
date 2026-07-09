@@ -14,6 +14,7 @@
 
 import type { CodeView } from "../state/store";
 import { CodeBlock } from "./CodeBlock";
+import { useChangeSummary, useChangedLines, useLineChangeKinds } from "./useChangedLines";
 
 export function CodeInlinePanel({
   codeView,
@@ -27,6 +28,9 @@ export function CodeInlinePanel({
   showGutter?: boolean;
 }) {
   const { node, code, loading, error, truncated } = codeView;
+  const changedLines = useChangedLines(node);
+  const changedLineKinds = useLineChangeKinds(node);
+  const summary = useChangeSummary(node);
   const { file, startLine, endLine } = node.location;
   const range = endLine && endLine !== startLine ? `${startLine}-${endLine}` : String(startLine);
   const stop = (event: React.SyntheticEvent) => event.stopPropagation();
@@ -34,6 +38,9 @@ export function CodeInlinePanel({
     <div style={PANEL_STYLE} onClick={stop} onDoubleClick={stop} onMouseDown={stop}>
       <div style={HEADER_STYLE}>
         <span style={LOCATION_STYLE} title={file}>{`${file}:${range}`}</span>
+        {summary ? (
+          <span style={SUMMARY_STYLE}>{`+${summary.added}  -${summary.deleted}`}</span>
+        ) : null}
         <button
           type="button"
           style={ICON_STYLE}
@@ -63,7 +70,14 @@ export function CodeInlinePanel({
         {loading ? <div style={STATUS_STYLE}>Loading…</div> : null}
         {error ? <div style={ERROR_STYLE}>{error}</div> : null}
         {code !== null ? (
-          <CodeBlock code={code} maxHeight={200} startLine={showGutter ? node.location?.startLine : undefined} />
+          <CodeBlock
+            code={code}
+            maxHeight={340}
+            startLine={node.location?.startLine}
+            showGutter={showGutter}
+            changedLines={changedLines}
+            changedLineKinds={changedLineKinds}
+          />
         ) : null}
         {truncated ? <div style={TRUNCATED_STYLE}>…truncated</div> : null}
       </div>
@@ -76,8 +90,8 @@ const PANEL_STYLE: React.CSSProperties = {
   top: "100%",
   left: 0,
   marginTop: 6,
-  width: 460,
-  maxWidth: "60vw",
+  width: 640,
+  maxWidth: "74vw",
   zIndex: 20,
   background: "#0E1116",
   border: "1px solid #2A2F37",
@@ -103,6 +117,16 @@ const LOCATION_STYLE: React.CSSProperties = {
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
+};
+const SUMMARY_STYLE: React.CSSProperties = {
+  flexShrink: 0,
+  fontSize: 10,
+  fontWeight: 700,
+  color: "#E2A33C",
+  border: "1px solid rgba(226,163,60,0.55)",
+  borderRadius: 4,
+  padding: "1px 5px",
+  background: "rgba(226,163,60,0.12)",
 };
 const ICON_STYLE: React.CSSProperties = {
   flexShrink: 0,

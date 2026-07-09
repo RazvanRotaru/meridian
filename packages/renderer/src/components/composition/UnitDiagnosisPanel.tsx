@@ -5,13 +5,16 @@
  */
 
 import { diagnoseUnit, type Tone, type UnitMetrics } from "@meridian/design-metrics";
+import type { GraphNode } from "@meridian/core";
+import { useBlueprintActions } from "../../state/StoreContext";
+import { useChangeSummary } from "../useChangedLines";
 
-export function UnitDiagnosisPanel(props: { unit: UnitMetrics | null }) {
+export function UnitDiagnosisPanel(props: { unit: UnitMetrics | null; node: GraphNode | null }) {
   return (
     <section style={SECTION_STYLE} aria-label="Diagnosis">
       <div style={HEADER_STYLE}>Diagnosis</div>
       {props.unit ? (
-        <Diagnosis unit={props.unit} />
+        <Diagnosis unit={props.unit} node={props.node} />
       ) : (
         <div style={META_STYLE}>Select a card or worklist row to see its scores explained and what to do.</div>
       )}
@@ -19,9 +22,12 @@ export function UnitDiagnosisPanel(props: { unit: UnitMetrics | null }) {
   );
 }
 
-function Diagnosis({ unit }: { unit: UnitMetrics }) {
+function Diagnosis({ unit, node }: { unit: UnitMetrics; node: GraphNode | null }) {
   const diagnosis = diagnoseUnit(unit);
   const tone = TONE_COLOR[diagnosis.tone];
+  const { showCode, expandCode } = useBlueprintActions();
+  const summary = useChangeSummary(node ?? undefined);
+  const canOpen = Boolean(node?.location);
   return (
     <div style={BODY_STYLE}>
       <div style={VERDICT_STYLE}>
@@ -43,6 +49,28 @@ function Diagnosis({ unit }: { unit: UnitMetrics }) {
             ))}
           </ul>
         </>
+      ) : null}
+      {summary ? (
+        <div style={CHANGE_BOX_STYLE}>
+          <div style={CHANGE_HEADER_STYLE}>Diff</div>
+          <div style={CHANGE_ROW_STYLE}>
+            <span style={ADDED_STYLE}>{`+${summary.added} lines`}</span>
+            <span style={DELETED_STYLE}>{`-${summary.deleted} lines`}</span>
+            {summary.touched > 0 ? <span style={TOUCHED_STYLE}>{`${summary.touched} highlighted`}</span> : null}
+            {canOpen && node ? (
+              <button
+                type="button"
+                style={OPEN_STYLE}
+                onClick={() => {
+                  void showCode(node);
+                  expandCode();
+                }}
+              >
+                Open Diff
+              </button>
+            ) : null}
+          </div>
+        </div>
       ) : null}
     </div>
   );
@@ -92,3 +120,55 @@ const LIST_STYLE: React.CSSProperties = {
 };
 const FINDING_STYLE: React.CSSProperties = { fontSize: 11, color: "#9AA4B2", lineHeight: 1.4 };
 const SUGGESTION_STYLE: React.CSSProperties = { fontSize: 11, color: "#C8D3E0", lineHeight: 1.4 };
+const CHANGE_BOX_STYLE: React.CSSProperties = {
+  marginTop: 2,
+  padding: "7px 8px",
+  borderRadius: 8,
+  border: "1px solid #5A4A24",
+  background: "rgba(230,184,77,0.08)",
+  display: "flex",
+  flexDirection: "column",
+  gap: 5,
+};
+const CHANGE_HEADER_STYLE: React.CSSProperties = {
+  fontSize: 10,
+  textTransform: "uppercase",
+  letterSpacing: "0.06em",
+  color: "#B99A53",
+};
+const CHANGE_ROW_STYLE: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  flexWrap: "wrap",
+};
+const ADDED_STYLE: React.CSSProperties = {
+  fontSize: 10.5,
+  fontWeight: 700,
+  color: "#56C271",
+  border: "1px solid rgba(86,194,113,0.45)",
+  borderRadius: 4,
+  padding: "1px 5px",
+  background: "rgba(86,194,113,0.1)",
+};
+const DELETED_STYLE: React.CSSProperties = {
+  fontSize: 10.5,
+  fontWeight: 700,
+  color: "#F0787C",
+  border: "1px solid rgba(240,120,124,0.45)",
+  borderRadius: 4,
+  padding: "1px 5px",
+  background: "rgba(240,120,124,0.1)",
+};
+const TOUCHED_STYLE: React.CSSProperties = { fontSize: 10.5, color: "#C8D3E0" };
+const OPEN_STYLE: React.CSSProperties = {
+  marginLeft: "auto",
+  fontSize: 10.5,
+  fontWeight: 600,
+  color: "#E2A33C",
+  border: "1px solid rgba(226,163,60,0.55)",
+  borderRadius: 5,
+  padding: "2px 7px",
+  background: "rgba(226,163,60,0.14)",
+  cursor: "pointer",
+};

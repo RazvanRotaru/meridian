@@ -15,6 +15,7 @@ export * from "./extractor";
 export * from "./assembly";
 export * from "./boundary";
 export * from "./test-detection";
+export * from "./changed-detection";
 export * from "./coverage";
 export * from "./ports";
 export * from "./link";

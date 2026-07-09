@@ -18,8 +18,40 @@ import type { LogicNodeData, TerminalData } from "../../../derive/logicGraph";
 import { FLOW_COLORS } from "../../../derive/flowViewModel";
 import { coverageAccent, coverageVerdict, COVERAGE_COLORS, type CoverageVerdict } from "../../../theme/coverageColors";
 import { CodeInlinePanel } from "../../CodeInlinePanel";
+import { CHANGED_ACCENT } from "../../ChangedBadge";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
+
+/** The amber "Δ" a logic node wears when its call target — or the charted callable — is in the PR's
+ * diff: the same signal the Map and composition lenses paint, carried into the flow so navigating
+ * Map → Logic never loses the diff. */
+function ChangedTag() {
+  return (
+    <span style={CHANGED_TAG_STYLE} title="changed in this PR">
+      Δ
+    </span>
+  );
+}
+
+// Layer an amber diff ring over a node's base style, unless selection already owns the ring.
+function withChanged(base: React.CSSProperties, changed: boolean, select: SelectState): React.CSSProperties {
+  if (!changed || select === "selected") {
+    return base;
+  }
+  return { ...base, borderColor: CHANGED_ACCENT, boxShadow: `0 0 0 1px ${CHANGED_ACCENT}66` };
+}
+
+const CHANGED_TAG_STYLE: React.CSSProperties = {
+  flexShrink: 0,
+  fontSize: 9,
+  fontWeight: 700,
+  letterSpacing: "0.04em",
+  color: CHANGED_ACCENT,
+  border: `1px solid ${CHANGED_ACCENT}66`,
+  background: `${CHANGED_ACCENT}1A`,
+  borderRadius: 3,
+  padding: "0 4px",
+};
 
 function ExecPins() {
   return (
@@ -39,6 +71,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   const coverage = useBlueprint((s) => (s.coverageMode ? s.coverage : null));
   const d = data as LogicNodeData;
   const select = selectStateFor(d.targetId, logicSelected);
+  const changed = d.targetId ? index.changedIds.has(d.targetId) : false;
   // A method call (one made through a receiver / a class method) reads apart from a free function at a
   // glance: a distinct glyph, and a small indigo shift off the blue call accent. A "defined here" node
   // keeps its teal DECLARATION accent regardless (its declaration-ness dominates), gaining only the
@@ -55,7 +88,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
     ? <CoverageBattery verdict={covVerdict} />
     : null;
   if (d.isContainer) {
-    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} select={select} badge={battery} />;
+    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} select={select} badge={battery} changed={changed} />;
   }
   const codeNode = d.targetId ? index.nodesById.get(d.targetId) : undefined;
   const canCode = Boolean(codeNode?.location) && Boolean(sourceUrl);
@@ -65,7 +98,12 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   const stop = (e: React.MouseEvent) => e.stopPropagation();
   // </> now TOGGLES the compact inline view instead of jumping straight to the modal: a second
   // click on the block that's already showing closes it; the modal is reached from the box's ⤢.
-  const toggleCode = () => (showingInline ? closeCode() : void showCode(codeNode!));
+  // Open the source straight in the big centered modal (the readable diff surface, scrolled to the
+  // first change) instead of a cramped inline box that clips wide lines and buries the diff.
+  const toggleCode = () => {
+    void showCode(codeNode!);
+    expandCode();
+  };
   const codeButton = canCode && codeNode ? (
     <button type="button" style={CODE_BTN} title="view source" onClick={(e) => { stop(e); toggleCode(); }}>{"</>"}</button>
   ) : null;
@@ -76,13 +114,14 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   if (d.greyed) {
     return (
       <div style={WRAP}>
-        <div style={selectStyle(GREY_BODY, select)}>
+        <div style={withChanged(selectStyle(GREY_BODY, select), changed, select)}>
           <ExecPins />
           <div style={GREY_TITLE}>
             <span style={GREY_GLYPH}>{glyph}</span>
             <span style={NAME} title={d.label}>{d.label}</span>
             <AsyncBadge d={d} />
             {battery}
+            {changed ? <ChangedTag /> : null}
             {codeButton}
           </div>
           {d.provenance ? <div style={GREY_PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.module}</div> : null}
@@ -97,7 +136,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   // The relative WRAP (not clipped) hosts the clipped body PLUS the inline box hanging below it.
   return (
     <div style={WRAP}>
-      <div style={selectStyle(BODY, select)}>
+      <div style={withChanged(selectStyle(BODY, select), changed, select)}>
         <ExecPins />
         <div style={titleStyle(accent)}>
           <span style={GLYPH}>{glyph}</span>
@@ -105,6 +144,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
           <span style={TITLE_TAIL}>
             <AsyncBadge d={d} />
             {battery}
+            {changed ? <ChangedTag /> : null}
             {d.definition ? <span style={DEF_TAG}>def</span> : null}
             {/* Gate on `expandable`: a call block is always expandable here, but a defined callable
                 with no flow of its own is not — so it drops the disclosure rather than dangling a
@@ -230,9 +270,9 @@ function conditionText(label: string): string {
 /** A framed container (expanded call / loop / try): a title bar sits over ELK's reserved top pad;
  * child nodes render in the space below. Collapse is the explicit ▾ button in the title tail — the
  * whole-title click was removed so it no longer fights node selection / double-click-to-dive. */
-function ContainerFrame(props: { accent: string; label: string; glyph: string; onToggle: () => void; provenance: LogicNodeData["provenance"]; select: SelectState; badge?: React.ReactNode }) {
+function ContainerFrame(props: { accent: string; label: string; glyph: string; onToggle: () => void; provenance: LogicNodeData["provenance"]; select: SelectState; badge?: React.ReactNode; changed?: boolean }) {
   return (
-    <div style={selectStyle(frameStyle(props.accent), props.select)}>
+    <div style={withChanged(selectStyle(frameStyle(props.accent), props.select), props.changed ?? false, props.select)}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={frameTitleStyle(props.accent)}>
@@ -241,6 +281,7 @@ function ContainerFrame(props: { accent: string; label: string; glyph: string; o
         {props.provenance ? <span style={FRAME_PROV}>{props.provenance.pkg} › {props.provenance.module}</span> : null}
         <span style={TITLE_TAIL}>
           {props.badge}
+          {props.changed ? <ChangedTag /> : null}
           <ExpandButton expanded onToggle={props.onToggle} />
         </span>
       </div>
@@ -328,6 +369,7 @@ type JumpFlowRfNode = Node<JumpFlowNodeData>;
 function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
   const { openLogicFlow } = useBlueprintActions();
   const d = data as JumpFlowNodeData;
+  const changed = useBlueprint((s) => s.index.changedIds.has(d.rootId));
   // A test ghost (Show tests) reads apart from an ordinary caller ghost: violet dashed border + a
   // "TEST" tag, mirroring the coverage palette's test-code colour, so it's clearly "a test exercising
   // this method" rather than just another caller. Clicking still opens that node's own flow.
@@ -335,7 +377,7 @@ function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
   // A caller ghost is a shortcut into that flow (click to open); a test ghost is read-only context —
   // it just shows WHICH tests exercise this method, so it takes no click and shows no pointer cursor.
   return (
-    <div style={isTest ? JUMP_TEST_BODY : JUMP_BODY} onClick={isTest ? undefined : () => openLogicFlow(d.rootId)} title={isTest ? `Test: ${d.label}` : `Open flow: ${d.label}`}>
+    <div style={withChanged(isTest ? JUMP_TEST_BODY : JUMP_BODY, changed, "none")} onClick={isTest ? undefined : () => openLogicFlow(d.rootId)} title={isTest ? `Test: ${d.label}` : `Open flow: ${d.label}`}>
       {/* Target pin on top (a deeper caller's wire lands here) + source pin on the bottom (this
           node's wire drops to the node one hop closer to the selection): the chain wires top→down. */}
       <Handle type="target" position={Position.Top} style={PIN} isConnectable={false} />
@@ -350,6 +392,7 @@ function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
           // reads apart from a direct caller; a direct caller (depth 1) needs none.
           <span style={JUMP_DEPTH_BADGE} title={`${d.depth} hops away`}>{`↑${d.depth}`}</span>
         ) : null}
+        {changed ? <ChangedTag /> : null}
       </div>
       {d.file ? <div style={JUMP_FILE} title={d.file}>{d.file}</div> : null}
     </div>
@@ -368,11 +411,12 @@ function TerminalNode({ data }: NodeProps<LogicRfNode>) {
   const d = data as TerminalData;
   if (d.terminal === "entry") {
     return (
-      <div style={ENTRY_BODY} title={`Flow entry: ${d.label}`}>
+      <div style={withChanged(ENTRY_BODY, d.changed === true, "none")} title={`Flow entry: ${d.label}`}>
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
         <span style={TERMINAL_GLYPH}>▶</span>
         <span style={NAME} title={d.label}>{d.label}</span>
+        {d.changed === true ? <ChangedTag /> : null}
         <span style={ENTRY_TAG}>ENTRY</span>
       </div>
     );
