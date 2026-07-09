@@ -24,6 +24,7 @@ import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { useRecenter } from "./canvas/useRecenter";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { MinimalGraphView } from "./MinimalGraphView";
+import { ReviewFlowPanel } from "./review/ReviewFlowPanel";
 import { accentForKind } from "../theme/kindColors";
 import type { BlockData, UnitCardData } from "../derive/moduleLevel";
 
@@ -79,11 +80,18 @@ export function ModuleMapView() {
   const isEmpty = nodes.length === 0 && layoutStatus === "ready";
 
   // The built minimal graph REPLACES the level canvas while open (after every hook above, so the
-  // hook order is stable across open/close). Closing returns here with the selection intact.
+  // hook order is stable across open/close). Closing returns here with the selection intact. When a
+  // PR review seeded the graph, ReviewFlowPanel rides on the right (it self-hides when review is null,
+  // i.e. a minimal graph the reader built by hand from a Map selection).
   if (minimalOpen) {
     return (
       <div style={SURFACE_STYLE}>
-        <MinimalGraphView />
+        <div style={REVIEW_SPLIT_STYLE}>
+          <div style={REVIEW_GRAPH_STYLE}>
+            <MinimalGraphView />
+          </div>
+          <ReviewFlowPanel />
+        </div>
       </div>
     );
   }
@@ -149,6 +157,9 @@ function miniMapColor(node: Node): string {
 }
 
 const SURFACE_STYLE: React.CSSProperties = { position: "absolute", inset: 0, background: "#0E1116" };
+// PR-review split: the minimal-graph overlay flexes to fill, the flow panel takes its fixed rail on the right.
+const REVIEW_SPLIT_STYLE: React.CSSProperties = { position: "absolute", inset: 0, display: "flex" };
+const REVIEW_GRAPH_STYLE: React.CSSProperties = { position: "relative", flex: 1, minWidth: 0 };
 // Floats bottom-center over the canvas; the emphasis green ties it to the selected cards' rings.
 const BUILD_BUTTON_STYLE: React.CSSProperties = {
   position: "absolute",

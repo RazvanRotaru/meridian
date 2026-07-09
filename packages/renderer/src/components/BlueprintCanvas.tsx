@@ -36,7 +36,6 @@ import { FlowExplorerPanel } from "./flowexplorer/FlowExplorerPanel";
 import { FlowPane } from "./flowexplorer/FlowPane";
 import { emphasizeFlow, renderedIdsForFlowEmphasis } from "./flowEmphasisPaint";
 import { PrsView } from "./prs/PrsView";
-import { ReviewView } from "./ReviewView";
 
 const FLOW_CANVAS_PROPS = { ...READONLY_CANVAS_PROPS, fitView: false } as const;
 const EMPTY_FLOW_EMPHASIS_KEY = "none";
@@ -63,8 +62,6 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
               <LogicFlowView />
             ) : viewMode === "modules" ? (
               <ModuleMapView />
-            ) : viewMode === "review" ? (
-              <ReviewView />
             ) : viewMode === "prs" ? (
               <PrsView />
             ) : (

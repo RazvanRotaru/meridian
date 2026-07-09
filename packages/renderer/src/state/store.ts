@@ -7,7 +7,7 @@
 
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { Edge, Node } from "@xyflow/react";
-import { computeCoverage } from "@meridian/core";
+import { computeAffectedNodes, computeCoverage, unmappedChangedFiles } from "@meridian/core";
 import type {
   ChangedFile,
   CoverageReport,
@@ -19,7 +19,8 @@ import type {
   NodeId,
   NodeMetrics,
 } from "@meridian/core";
-import type { GraphIndex } from "../graph/graphIndex";
+import { applyChangedIds, type GraphIndex } from "../graph/graphIndex";
+import { matchAffectedFiles } from "../derive/matchAffectedFiles";
 import type { BlueprintEdge, BlueprintNode } from "../layout/rfTypes";
 import type { TelemetryProvider } from "../telemetry/provider";
 import type { ViewMode } from "../derive/edgeSelection";
@@ -52,7 +53,6 @@ import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
 import { PRS_UNAVAILABLE_ERROR, type PrChangedFile, type PrFilesResponse, type PrListResponse, type PrSummary, type PrsTab } from "./prTypes";
 import { deriveReviewData, deriveReviewDataFromContext, applyTick, type ReviewData } from "../derive/reviewData";
-import { deriveReviewNodeLayout } from "./deriveReviewNodeLayout";
 import { readReviewProgress, writeReviewProgress, clearReviewProgress, type ReviewTick } from "./reviewTicksPref";
 import { reviewContextFromPrFiles } from "../derive/prReviewContext";
 
@@ -220,10 +220,6 @@ export interface BlueprintState {
    * Sourced EITHER from a `meridian review` artifact extension, OR built at runtime from a GitHub PR
    * (selectPr → reviewPrInGraph). */
   review: ReviewData | null;
-  /** The laid-out minimal review graph (code-block nodes + file/class frames), recomputed via ELK. */
-  reviewRfNodes: Node[];
-  reviewRfEdges: Edge[];
-  reviewLayoutStatus: LayoutStatus;
   /** Artifact node ids that are affected — the coupling set between the graph and the flow panel. */
   reviewAffectedIds: Set<string>;
   /** Changed files that mapped to no code block (deleted / not-extracted / edits outside any block). */
@@ -329,7 +325,6 @@ export interface BlueprintState {
   expandMinimal(sourceId: string, direction: Direction): void;
   resetMinimalGraph(): void;
   minimalRelayout(): Promise<void>;
-  reviewRelayout(): Promise<void>;
   setReviewLit(ids: Set<string> | null): void;
   selectReviewNode(id: string | null): void;
   toggleReviewTick(flowId: string): void;
@@ -385,8 +380,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let prsListSeq = 0;
   let prFilesSeq = 0;
   const prsNextPage: Record<PrsTab, number> = { open: 1, closed: 1 };
-  // And for the PR-review code-block graph, so a stale ELK pass never overwrites a newer one.
-  let reviewLayoutSeq = 0;
   // The parsed review payload from a `meridian review` artifact (null when the artifact carries no
   // valid `review` extension — e.g. a plain `web`/`view` session). Computed once (the artifact never
   // changes after boot); a GitHub PR opened via reviewPrInGraph can later populate `review` at runtime.
@@ -410,7 +403,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     focusId: null,
     // A `meridian review` artifact opens straight on the review surface; everything else (plain
     // `view`, or a `web` GitHub session) opens on the Map — the default lens.
-    viewMode: review ? "review" : "modules",
+    viewMode: "modules",
     showTests: true,
     coverageMode: false,
     coverage: null,
@@ -468,9 +461,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     minimalRfEdges: [],
     minimalLayoutStatus: "idle",
     review,
-    reviewRfNodes: [],
-    reviewRfEdges: [],
-    reviewLayoutStatus: "idle",
     reviewAffectedIds: new Set<string>(),
     reviewUnmapped: [],
     reviewTicks: review ? readReviewProgress(review.context.reviewKey).ticks : {},
@@ -1119,28 +1109,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ moduleSelected: withToggled(get().moduleSelected, id) });
     },
 
-    // Lay the minimal code-block review graph out via ELK, behind the stale guard. A no-op when there
-    // is no review data (the surface is hidden anyway).
-    async reviewRelayout() {
-      const { index, review } = get();
-      if (!review) {
-        return;
-      }
-      const sequence = ++reviewLayoutSeq;
-      set({ reviewLayoutStatus: "laying-out" });
-      const layout = await deriveReviewNodeLayout(index, review.context.changedFiles);
-      if (reviewLayoutSeq !== sequence) {
-        return; // a newer relayout superseded this one.
-      }
-      set({
-        reviewRfNodes: layout.nodes,
-        reviewRfEdges: layout.edges,
-        reviewAffectedIds: layout.affectedIds,
-        reviewUnmapped: layout.unmapped,
-        reviewLayoutStatus: "ready",
-      });
-    },
-
     // Paint-only: light a set of graph node ids (from a panel hover); null clears back to full strength.
     setReviewLit(ids) {
       set({ reviewLitNodeIds: ids });
@@ -1205,15 +1173,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (mode === "modules" || mode === "call") {
         set({ viewMode: mode, moduleFocus: null, moduleExpanded: new Set<string>(), moduleSelected: new Set<string>() });
         void get().moduleRelayout();
-        return;
-      }
-      // The review graph is a standalone ELK surface like the module map; flip the mode and lay it out
-      // once (re-entry keeps the graph as left, so a relayout only runs when the canvas is empty).
-      if (mode === "review") {
-        set({ viewMode: mode });
-        if (get().reviewRfNodes.length === 0) {
-          void get().reviewRelayout();
-        }
         return;
       }
       if (mode === "ui") {
@@ -1417,11 +1376,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // Reviewing a PR builds the SAME review context a `meridian review` artifact carries (from the
-    // PR's changed files + patch hunks), then lands on the PR-review deep-dive: the minimal
-    // affected-code-block graph plus the hierarchical flow panel. This populates `review` at runtime,
-    // which reveals the review surface. A PR that touches no extracted code block still switches over —
-    // the graph shows its empty state and the panel lists the unmapped files.
+    // Reviewing a PR lands on main's Module-map minimal-graph surface, seeded from the PR's changed
+    // FILES and pre-expanded into their code blocks. The modified blocks (diff hunks ∩ node ranges)
+    // are pushed into the shared `changedIds` channel so the cards ring exactly them amber, and the
+    // affected logic flows fill the hierarchical panel beside the overlay. Same review CONTEXT a
+    // `meridian review` artifact carries — only the render surface is main's, not a bespoke graph.
     reviewPrInGraph() {
       const { prFiles, prSelected, prsList, artifact, index } = get();
       if (prSelected === null) {
@@ -1435,23 +1394,48 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         files: prFiles ?? [],
       });
       const review = deriveReviewDataFromContext(context, artifact, index);
-      // Invalidate any in-flight review layout and clear the previous PR's graph so reviewRelayout
-      // rebuilds from scratch (re-entry no longer short-circuits on a stale non-empty canvas).
-      reviewLayoutSeq += 1;
+      // The modified code blocks (hunks ∩ node ranges); repaint main's changed-node channel to THIS PR
+      // so the Map + minimal overlay ring the edited blocks amber (reused `--changed-since` highlight).
+      const affected = computeAffectedNodes(artifact.nodes, context.changedFiles);
+      applyChangedIds(index, affected.map((node) => node.nodeId));
+      // Seed the minimal graph from the changed FILES (seeds must be module ids).
+      const seeds = [...new Set(matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched.map((match) => match.moduleId))].sort();
+      // Pre-expand every container on the path to each changed block (file → class) so the modified
+      // methods surface as their own amber cards instead of a collapsed "N members" class.
+      const expanded = new Set<string>(seeds);
+      for (const node of affected) {
+        for (const ancestor of index.ancestorsOf(node.nodeId)) {
+          if (ancestor.id !== node.nodeId && index.isContainer(ancestor.id)) {
+            expanded.add(ancestor.id);
+          }
+        }
+      }
+      minimalLayoutSeq += 1;
       set({
         review,
         prReviewed: prSelected,
         reviewTicks: readReviewProgress(context.reviewKey).ticks,
-        reviewRfNodes: [],
-        reviewRfEdges: [],
-        reviewAffectedIds: new Set<string>(),
-        reviewUnmapped: [],
+        reviewAffectedIds: new Set(affected.map((node) => node.nodeId)),
+        reviewUnmapped: unmappedChangedFiles(affected, context.changedFiles),
         reviewLitNodeIds: null,
         reviewSelectedId: null,
-        reviewLayoutStatus: "idle",
-        viewMode: "review",
+        viewMode: "modules",
+        moduleFocus: null,
+        moduleSelected: new Set<string>(),
+        moduleExpanded: expanded,
+        minimalSeedIds: seeds,
+        minimalKeptIds: [],
+        minimalExpanded: [],
+        minimalBasePositions: {},
+        minimalRfNodes: [],
+        minimalRfEdges: [],
+        minimalLayoutStatus: seeds.length > 0 ? "laying-out" : "idle",
       });
-      void get().reviewRelayout();
+      // Lay out the underlying Map (correct if the reader closes the overlay) and, when seeded, the overlay.
+      void get().moduleRelayout();
+      if (seeds.length > 0) {
+        void get().minimalRelayout();
+      }
     },
 
     async relayout() {
