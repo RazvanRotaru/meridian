@@ -10,9 +10,16 @@ current PR; the directly-affected logic flows sit in a docked side panel.
 
 ## Decisions (confirmed)
 
-- **Reuse `MinimalGraphView` directly** (not a forked shell).
+- **Reuse `MinimalGraphView` directly** (not a forked shell). `PrMinimalCanvas` and the PR-specific
+  node components are deleted — the PR renders through the one component.
 - **Keep the `PRs` lens list** as the selection panel; selection still runs `analyzePr` and shows
   the clone/checkout/extract step panel while running.
+- **The PR minimal graph is a CLOSED set.** It shows ONLY the changed files (and the nodes inside
+  them) — never a neighbour ring, never a `[+n]` expander. The minimal graph view must never expand
+  or compute an outward subset from the selection; that the changed files + their inner nodes form a
+  subset of the whole graph is incidental. Implemented via `buildMinimalSubgraph`'s new additive
+  `{ stubs: false }` option (the empty base positions already suppress the on-map ring), plus the
+  read-only override that detaches the expand gestures.
 
 ## Changes
 

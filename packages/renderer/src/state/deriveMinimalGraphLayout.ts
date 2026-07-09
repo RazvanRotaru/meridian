@@ -10,7 +10,7 @@ import type { Edge, Node } from "@xyflow/react";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { ModuleGraph } from "../derive/moduleGraph";
 import type { BlockDeps } from "../derive/blockDeps";
-import { buildMinimalSubgraph, type ExpansionEntry } from "../derive/minimalSubgraph";
+import { buildMinimalSubgraph, type ExpansionEntry, type MinimalSubgraphOptions } from "../derive/minimalSubgraph";
 import { layoutMinimalSubgraph } from "../layout/minimalSubgraphLayout";
 import type { PlacedRect } from "../layout/minimalPlacement";
 
@@ -35,12 +35,18 @@ export async function deriveMinimalGraphLayout(
   expanded: readonly ExpansionEntry[],
   basePositions: Record<string, PlacedRect>,
   code: MinimalCodeInputs,
+  options: MinimalSubgraphOptions = {},
 ): Promise<MinimalGraphLayout> {
   const onMapIds = new Set(Object.keys(basePositions));
-  const spec = buildMinimalSubgraph(index, moduleGraph, seedModuleIds, keptIds, expanded, onMapIds, {
-    expanded: code.moduleExpanded,
-    blockDeps: code.blockDeps,
-    flows: code.flows,
-  });
+  const spec = buildMinimalSubgraph(
+    index,
+    moduleGraph,
+    seedModuleIds,
+    keptIds,
+    expanded,
+    onMapIds,
+    { expanded: code.moduleExpanded, blockDeps: code.blockDeps, flows: code.flows },
+    options,
+  );
   return layoutMinimalSubgraph(spec, basePositions);
 }

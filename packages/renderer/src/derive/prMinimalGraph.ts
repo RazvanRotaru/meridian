@@ -3,7 +3,9 @@
  * (`buildMinimalSubgraph` + `layoutMinimalSubgraph`), but SEEDED from the PR's changed modules instead
  * of a user selection. Every changed node lifts to its nearest owning file (`module`); those files are
  * the seeds. There are no captured map positions here, so `basePositions` is empty — the layout places
- * the changed files fresh. A post-pass marks each changed/seed node so the view can paint a change ring
+ * the changed files fresh. It is a CLOSED set: ONLY the changed files (and the nodes inside them), never
+ * a neighbour ring and never a [+n] expander — `stubs: false` off, and the empty base positions already
+ * suppress the on-map ring. A post-pass marks each changed/seed node so the view can paint a change ring
  * regardless of the inner node component. Pure; no React, no store.
  */
 
@@ -36,6 +38,7 @@ export async function derivePrMinimalGraph(prIndex: GraphIndex, prArtifact: Grap
     [], // no directional expansions
     {}, // no captured map positions — place the changed files fresh
     { moduleExpanded: new Set(), blockDeps: buildBlockDeps(prIndex), flows },
+    { stubs: false }, // ONLY the changed files — no [+n] expanders, no reach outward
   );
   const seedSet = new Set(seedIds);
   const nodes = layout.nodes.map((node) => markChanged(node, prIndex.changedIds, seedSet));

@@ -83,6 +83,13 @@ export interface ExpansionEntry {
 
 const NO_CODE: CodeContext = { expanded: new Set(), blockDeps: { edges: [] }, flows: {} };
 
+/** Build-shape knobs. `stubs` (default on) draws a [+n] expander per hidden-neighbour direction —
+ * turn it OFF for a graph that must show ONLY its seeds (+ their inner nodes) with no reach outward,
+ * i.e. no neighbour ring and no way to expand (the PR diff). */
+export interface MinimalSubgraphOptions {
+  stubs?: boolean;
+}
+
 export function buildMinimalSubgraph(
   index: GraphIndex,
   graph: ModuleGraph,
@@ -91,6 +98,7 @@ export function buildMinimalSubgraph(
   expanded: readonly ExpansionEntry[] = [],
   onMapIds: ReadonlySet<string> = new Set(),
   code: CodeContext = NO_CODE,
+  options: MinimalSubgraphOptions = {},
 ): MinimalSubgraphSpec {
   const persistent = collectPersistent(index, seedIds, keptIds);
   const visible = collectVisible(index, graph, seedIds, persistent, expanded, onMapIds);
@@ -98,7 +106,7 @@ export function buildMinimalSubgraph(
   const collapse = collapseChains(index, keptNodeIds);
   const walks = walkVisibleFiles(index, graph, visible, code);
   const context: NodeContext = { seedIds, persistent, visible, collapse, fileCountByGroup, walks };
-  const stubs = computeStubs(graph, visible);
+  const stubs = options.stubs === false ? [] : computeStubs(graph, visible);
   return {
     nodes: [...buildContainmentNodes(index, graph, keptNodeIds, context), ...stubNodes(stubs, collapse)],
     edges: [...importEdges(index, graph, visible), ...stubEdges(stubs)],
