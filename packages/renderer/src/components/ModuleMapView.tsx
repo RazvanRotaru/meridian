@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useMemo, useRef } from "react";
-import { ReactFlow, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
+import { ReactFlow, type Edge, type EdgeTypes, type Node, type ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
 import { filterVisible, filterRelKinds, suppressRedundantImports, emphasize } from "./moduleMapPaint";
@@ -26,9 +26,14 @@ import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { MinimalGraphView } from "./MinimalGraphView";
 import { ReviewFlowPanel } from "./review/ReviewFlowPanel";
 import { accentForKind } from "../theme/kindColors";
+import { bundleEdges, BUNDLE_EDGE_TYPE } from "../layout/edgeBundling";
+import { BundledEdge } from "./edges/BundledEdge";
 import type { BlockData, UnitCardData } from "../derive/moduleLevel";
 
 const PACKAGE_KIND = "package";
+
+/** Custom edge types: the "bundle" type renders highway edges for parallel-edge groups. */
+const moduleEdgeTypes: EdgeTypes = { [BUNDLE_EDGE_TYPE]: BundledEdge };
 
 export function ModuleMapView() {
   const nodes = useBlueprint((state) => state.moduleRfNodes);
@@ -43,6 +48,7 @@ export function ModuleMapView() {
   const hiddenRelKinds = useBlueprint((state) => state.hiddenRelKinds);
   const showTests = useBlueprint((state) => state.showTests);
   const showPrivate = useBlueprint((state) => state.showPrivate);
+  const showHighways = useBlueprint((state) => state.showHighways);
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const { buildMinimalGraph, setModuleFocus } = useBlueprintActions();
   const { onNodeClick, onNodeDoubleClick, onPaneClick } = useModuleNodeInteractions();
@@ -59,6 +65,13 @@ export function ModuleMapView() {
   const { nodes: styledNodes, edges: styledEdges, beacons } = useMemo(
     () => emphasize(shownNodes, shownEdges, selected, radius, highlightMode),
     [shownNodes, shownEdges, selected, radius, highlightMode],
+  );
+  // Visual Highways: merge cross-container edges into thick bundled "highway" curves. Off draws every
+  // edge individually; a selected node's own wires always draw individually so its links read out of
+  // the highway they'd otherwise join.
+  const bundledEdges = useMemo(
+    () => (showHighways ? bundleEdges(styledEdges, styledNodes, selected) : styledEdges),
+    [showHighways, styledEdges, styledNodes, selected],
   );
 
   // Fit once per RELAYOUT (a focus change): `moduleRfNodes` only changes when the level does, so
@@ -100,8 +113,9 @@ export function ModuleMapView() {
     <div style={SURFACE_STYLE}>
       <ReactFlow<Node, Edge>
         nodes={styledNodes}
-        edges={styledEdges}
+        edges={bundledEdges}
         nodeTypes={moduleNodeTypes}
+        edgeTypes={moduleEdgeTypes}
         onInit={(instance) => {
           rfRef.current = instance;
         }}
