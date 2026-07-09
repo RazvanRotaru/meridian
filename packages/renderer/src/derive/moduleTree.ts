@@ -31,27 +31,40 @@ import type { ModuleTree, ModuleTreeEdge, VisibleModuleNode } from "./moduleTree
 export type { ModuleGroupData, ModuleTree, ModuleTreeEdge, VisibleModuleNode } from "./moduleTreeTypes";
 
 const MODULE_KIND = "module";
-/** The containment tree to draw for `(focus, expanded)`: overview when null, else the focus subtree.
- * Private members are ALWAYS derived and laid out — the Private toggle hides them at PAINT time
- * (like Tests/categories), so every toggle holds positions still and nothing ever reshuffles. */
+
+/**
+ * What seeds a level's ROOT CONTAINER — the one knob that distinguishes the map-family surfaces.
+ *   - `focus`    — the folder Map: the whole-repo package overview (focus null) or a focus's children.
+ *   - `explicit` — an arbitrary picked set (the minimal graph's seed files, as bare top-level cards).
+ * Everything downstream — the code walk, lifted imports, off-level ghosts, ELK — is identical; only
+ * these roots differ, which is why a `deriveModuleTree` call serves both surfaces.
+ */
+export type ModuleRoots =
+  | { readonly kind: "focus"; readonly focus: string | null }
+  | { readonly kind: "explicit"; readonly ids: readonly string[] };
+
+/** The containment tree to draw for `(roots, expanded)`: the folder level for a focus, or an
+ * explicit picked set as top-level cards. Private members are ALWAYS derived and laid out — the
+ * Private toggle hides them at PAINT time (like Tests/categories), so every toggle holds positions
+ * still and nothing ever reshuffles. */
 export function deriveModuleTree(
   index: GraphIndex,
-  focus: string | null,
+  roots: ModuleRoots,
   expanded: ReadonlySet<string>,
   graph: ModuleGraph,
   blockDeps: BlockDeps,
   flows: LogicFlows,
 ): ModuleTree {
-  const effectiveFocus = focus === null ? null : collapseChain(index, focus);
-  const roots = frontierRoots(index, effectiveFocus, graph);
-  const walked = walk(index, roots, expanded, flows);
+  const { rootIds, effectiveFocus, isOverview } = resolveRoots(index, roots, graph);
+  const walked = walk(index, rootIds, expanded, flows);
   const skeleton = walked.skeleton;
   const visibleIds = new Set(skeleton.map((entry) => entry.id));
   const lifted = liftEdges(importEdges(graph), visibleIds, index.parentOf);
   // At the repo overview, root package cards wear the OWNERSHIP-fold numbers (each file counts once,
   // toward its nearest npm package) so nested packages never double-count — main's dedicated
-  // package-overview fold, kept through the expandable walk.
-  const overviewFold = effectiveFocus === null ? foldById(index) : new Map<string, ModulePackageData>();
+  // package-overview fold, kept through the expandable walk. An explicit-root level holds no package
+  // cards, so it never needs the fold.
+  const overviewFold = isOverview ? foldById(index) : new Map<string, ModulePackageData>();
   const nodes = skeleton.map((entry) => finalizeModuleNode(entry, index, graph, lifted, walked.stepData, overviewFold));
   const kinds = kindsOf(skeleton);
   const ghosts = ghostLevel(blockDeps, walked, visibleIds, index, kinds);
@@ -73,6 +86,21 @@ export function deriveModuleTree(
     ...ghosts.edges,
   ].sort((a, b) => a.id.localeCompare(b.id));
   return { nodes: [...nodes, ...ghosts.nodes], edges, effectiveFocus };
+}
+
+/** Turn a root-container spec into the level's top-level node ids: a focus resolves through
+ * chain-collapse to the folder frontier; an explicit set IS the frontier (drawn as bare top-level
+ * cards, ELK placing them freely). `effectiveFocus` drives the breadcrumb — always null off a focus. */
+function resolveRoots(
+  index: GraphIndex,
+  roots: ModuleRoots,
+  graph: ModuleGraph,
+): { rootIds: string[]; effectiveFocus: string | null; isOverview: boolean } {
+  if (roots.kind === "explicit") {
+    return { rootIds: [...roots.ids], effectiveFocus: null, isOverview: false };
+  }
+  const effectiveFocus = roots.focus === null ? null : collapseChain(index, roots.focus);
+  return { rootIds: frontierRoots(index, effectiveFocus, graph), effectiveFocus, isOverview: effectiveFocus === null };
 }
 
 /** Off-screen relationships charted as detached GHOST cards + dashed wires — for every drawn dep

@@ -73,6 +73,22 @@ const ROOT_OPTIONS: Record<string, string> = {
   "elk.spacing.edgeNode": "28",
 };
 
+// SEEDED layout (the minimal-graph surface): every phase that could re-order top-level nodes reads
+// the seed x/y instead, so cards carried over from the Map keep their captured arrangement and only
+// open spacing to fit new ghosts — the seamless map→minimal transition. Same spacing as the Map.
+const SEEDED_ROOT_OPTIONS: Record<string, string> = {
+  ...ROOT_OPTIONS,
+  "elk.interactive": "true",
+  "elk.layered.nodePlacement.strategy": "INTERACTIVE",
+  "elk.layered.crossingMinimization.strategy": "INTERACTIVE",
+  "elk.layered.cycleBreaking.strategy": "INTERACTIVE",
+};
+
+// How far a freshly-revealed neighbour (no captured position) starts from its anchor before ELK opens
+// spacing: dependencies step RIGHT (downstream), off-level callers step LEFT, siblings stack DOWN.
+const SEED_STEP_X = 320;
+const SEED_STACK_Y = 80;
+
 // Top padding leaves room for an expanded group's title bar; React Flow draws nothing there itself.
 const CONTAINER_OPTIONS: Record<string, string> = { "elk.padding": "[top=44,left=18,bottom=18,right=18]" };
 
@@ -84,15 +100,93 @@ const adapter: ElkNestAdapter<VisibleModuleNode> = {
   containerOptions: CONTAINER_OPTIONS,
 };
 
-/** Run ELK over the nested tree and map the placed (parent-relative) coordinates to React Flow. */
-export async function layoutModuleTree(nodes: VisibleModuleNode[], edges: ModuleTreeEdge[]): Promise<{ nodes: Node[]; edges: Edge[] }> {
+/**
+ * Run ELK over the nested tree and map the placed (parent-relative) coordinates to React Flow. When
+ * `seedPositions` is given (the minimal-graph surface), ELK runs INTERACTIVE from those top-level
+ * coordinates — carried-over cards hold their captured spots, new neighbours are seeded beside their
+ * anchor and merely spaced apart — instead of a fresh layered arrangement.
+ */
+export async function layoutModuleTree(
+  nodes: VisibleModuleNode[],
+  edges: ModuleTreeEdge[],
+  seedPositions?: Record<string, { x: number; y: number }>,
+): Promise<{ nodes: Node[]; edges: Edge[] }> {
   if (nodes.length === 0) {
     return { nodes: [], edges: [] };
   }
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  const laid = await runElkLayout(buildNestedElkGraph(nodes, edges, adapter, ROOT_OPTIONS));
+  const seeded = seedPositions !== undefined && Object.keys(seedPositions).length > 0;
+  const graph = buildNestedElkGraph(nodes, edges, adapter, seeded ? SEEDED_ROOT_OPTIONS : ROOT_OPTIONS);
+  if (seeded) {
+    seedTopLevelPositions(graph.children ?? [], edges, seedPositions);
+  }
+  const laid = await runElkLayout(graph);
   const placed = emitReactFlowNodes(laid, (elkNode, parentId) => toNode(elkNode, parentId, byId));
   return { nodes: placed, edges: edges.map(toEdge) };
+}
+
+/** Give every top-level ELK node a starting coordinate so INTERACTIVE layering honours the captured
+ * arrangement: carried-over cards use their captured position; a new node steps off a placed
+ * neighbour (a dependency to its RIGHT, an off-level caller to its LEFT, stacked when several share
+ * one anchor). Repeated over a few passes so a chain (a revealed file, then ITS ghost) settles. */
+function seedTopLevelPositions(
+  roots: ElkNode[],
+  edges: ModuleTreeEdge[],
+  seedPositions: Record<string, { x: number; y: number }>,
+): void {
+  const placed = new Map<string, { x: number; y: number }>();
+  for (const root of roots) {
+    const seed = seedPositions[root.id];
+    if (seed) {
+      root.x = seed.x;
+      root.y = seed.y;
+      placed.set(root.id, seed);
+    }
+  }
+  const stackAt = new Map<string, number>();
+  for (let pass = 0; pass < 4 && placed.size < roots.length; pass += 1) {
+    for (const root of roots) {
+      if (placed.has(root.id)) {
+        continue;
+      }
+      const anchor = placedNeighbour(root.id, edges, placed);
+      if (!anchor) {
+        continue;
+      }
+      const base = placed.get(anchor.id) as { x: number; y: number };
+      const k = stackAt.get(anchor.id) ?? 0;
+      stackAt.set(anchor.id, k + 1);
+      const spot = { x: anchor.side === "left" ? base.x - SEED_STEP_X : base.x + SEED_STEP_X, y: base.y + k * SEED_STACK_Y };
+      root.x = spot.x;
+      root.y = spot.y;
+      placed.set(root.id, spot);
+    }
+  }
+  // Anything still unplaced (no path to a captured card) fans out to the right of the seeded cloud.
+  const rightEdge = Math.max(0, ...[...placed.values()].map((p) => p.x)) + SEED_STEP_X;
+  let overflow = 0;
+  for (const root of roots) {
+    if (placed.has(root.id)) {
+      continue;
+    }
+    root.x = rightEdge;
+    root.y = overflow * SEED_STACK_Y;
+    overflow += 1;
+  }
+}
+
+/** The nearest already-placed node an edge ties this one to, and which side it belongs on: a node we
+ * DEPEND ON (we are the edge source) sits to our right, so we sit to ITS left, and vice-versa. */
+function placedNeighbour(id: string, edges: ModuleTreeEdge[], placed: ReadonlyMap<string, unknown>): { id: string; side: "left" | "right" } | null {
+  for (const edge of edges) {
+    if (edge.source === id && placed.has(edge.target)) {
+      return { id: edge.target, side: "left" };
+    }
+    if (edge.target === id && placed.has(edge.source)) {
+      return { id: edge.source, side: "right" };
+    }
+  }
+  return null;
 }
 
 /** Every leaf card sizes to its own content so a long name is never clipped: blocks/steps/ghosts

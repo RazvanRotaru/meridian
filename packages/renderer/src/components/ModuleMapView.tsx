@@ -15,7 +15,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { ReactFlow, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
-import { filterVisible, filterRelKinds, emphasize } from "./moduleMapPaint";
+import { useModuleSurfacePaint } from "./canvas/useModuleSurfacePaint";
 import { crumbsFor, EmptyModuleMapCard, LevelBreadcrumb } from "./ModuleMapChrome";
 import { CoveragePanel } from "./CoveragePanel";
 import { BeaconArrows } from "./BeaconArrows";
@@ -35,30 +35,15 @@ export function ModuleMapView() {
   const selected = useBlueprint((state) => state.moduleSelected);
   const layoutStatus = useBlueprint((state) => state.moduleLayoutStatus);
   const effectiveFocus = useBlueprint((state) => state.moduleEffectiveFocus);
-  const radius = useBlueprint((state) => state.moduleRadius);
-  const highlightMode = useBlueprint((state) => state.highlightMode);
   const index = useBlueprint((state) => state.index);
-  const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
-  const hiddenRelKinds = useBlueprint((state) => state.hiddenRelKinds);
-  const showTests = useBlueprint((state) => state.showTests);
-  const showPrivate = useBlueprint((state) => state.showPrivate);
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const { buildMinimalGraph, setModuleFocus } = useBlueprintActions();
   const { onNodeClick, onNodeDoubleClick, onPaneClick } = useModuleNodeInteractions();
   useRecenter(useMemo(() => [...selected], [selected]));
 
-  // Category/test hiding is a pure VISIBILITY filter over the laid-out graph; positions are untouched.
-  const { nodes: shownNodes, edges: visibleEdges } = useMemo(
-    () => filterVisible(nodes, edges, { hiddenCategories, showTests, testIds: index.testIds, showPrivate, privateIds: index.privateIds }),
-    [nodes, edges, hiddenCategories, showTests, showPrivate, index.testIds, index.privateIds],
-  );
-  // A second pure paint filter: drop the wires whose relationship kind is toggled off.
-  const shownEdges = useMemo(() => filterRelKinds(visibleEdges, hiddenRelKinds), [visibleEdges, hiddenRelKinds]);
-  // Emphasis is a second pure repaint: dim by default, light the selection's N-hop import reach.
-  const { nodes: styledNodes, edges: styledEdges, beacons } = useMemo(
-    () => emphasize(shownNodes, shownEdges, selected, radius, highlightMode),
-    [shownNodes, shownEdges, selected, radius, highlightMode],
-  );
+  // The shared Map paint pipeline: category/Tests/Private visibility, relationship-kind filtering, and
+  // the selection's N-hop emphasis — three pure repaints over the laid-out graph (positions untouched).
+  const { nodes: styledNodes, edges: styledEdges, beacons } = useModuleSurfacePaint(nodes, edges);
 
   // Fit once per RELAYOUT (a focus change): `moduleRfNodes` only changes when the level does, so
   // clearing the guard on `effectiveFocus` re-fits the fresh level to the viewport. Category toggles
@@ -113,7 +98,7 @@ export function ModuleMapView() {
       />
       {selected.size >= 1 ? <BuildMinimalGraphButton count={selected.size} onBuild={buildMinimalGraph} /> : null}
       {isEmpty ? <EmptyModuleMapCard focus={effectiveFocus} /> : null}
-      <MapLegend hasSteps={shownNodes.some((node) => node.type === "step")} hasSelection={selected.size > 0} />
+      <MapLegend hasSteps={styledNodes.some((node) => node.type === "step")} hasSelection={selected.size > 0} />
       <CoveragePanel />
     </div>
   );
@@ -130,8 +115,8 @@ function BuildMinimalGraphButton(props: { count: number; onBuild: () => void }) 
 
 // The MiniMap gets untyped `Node`s: a group card reads as a blue package tone, unit/block dots tint
 // by their kind, each file dot by its category (the same palette as the cards) so a level stays
-// legible at overview zoom.
-function miniMapColor(node: Node): string {
+// legible at overview zoom. Exported so the minimal-graph overlay tints its MiniMap identically.
+export function miniMapColor(node: Node): string {
   if (node.type === PACKAGE_KIND) {
     return "#5B9BE3";
   }

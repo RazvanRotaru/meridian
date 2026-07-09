@@ -27,7 +27,7 @@ function importEdge(source: string, target: string): GraphEdge {
 
 function treeOf(nodes: GraphNode[], edges: GraphEdge[], focus: string | null, expanded: string[], flows: LogicFlows = {}) {
   const index = buildGraphIndex({ nodes, edges } as GraphArtifact);
-  return deriveModuleTree(index, focus, new Set(expanded), buildModuleGraph(index), buildBlockDeps(index), flows);
+  return deriveModuleTree(index, { kind: "focus", focus }, new Set(expanded), buildModuleGraph(index), buildBlockDeps(index), flows);
 }
 
 function packageFixture(): { nodes: GraphNode[]; edges: GraphEdge[] } {

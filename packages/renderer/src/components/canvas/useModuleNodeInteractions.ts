@@ -79,10 +79,12 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
   // map→logic link); a GHOST reveals its off-screen definition (the Map refocuses where it lives);
   // everything else only selects. The breadcrumb is the way back up.
   const onNodeDoubleClick: NodeMouseHandler<Node> = (event, node) => {
+    // A double-click ALWAYS cancels the pending single-click select first (before any override), so a
+    // queued select can't fire 250ms later and clobber a selection the override just set (e.g. reveal).
+    clearPendingSelect();
     if (overrides.onBeforeDoubleClick?.(event, node)) {
       return;
     }
-    clearPendingSelect();
     if (node.type === PACKAGE_KIND && viewMode === "call") {
       toggleModuleExpand(node.id);
     } else if (viewMode !== "call" && (node.type === PACKAGE_KIND || node.type === FILE_KIND)) {
