@@ -12,7 +12,7 @@ import type { ElkNode } from "elkjs/lib/elk-api";
 import type { Edge, Node } from "@xyflow/react";
 import { runElkLayout } from "./elkLayout";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
-import { placeGhostRing } from "./ghostRingPlacement";
+import { placeGhostBands } from "./ghostBandPlacement";
 import { clamp, countsRowWidth, monoTextWidth, pillWidth } from "./measure";
 import type { ModuleGroupData, ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
 import type { BlockData, ModuleCardData, UnitCardData } from "../derive/moduleLevel";
@@ -89,8 +89,8 @@ const adapter: ElkNestAdapter<VisibleModuleNode> = {
  * Run ELK over the nested tree and map the placed (parent-relative) coordinates to React Flow.
  * GHOST cards (the off-level far ends of dependency wires) are kept OUT of ELK — feeding them in
  * gives them layer slots and shoves the real frames apart. Instead the core lays out unchanged and
- * ghosts hang on rings around the drawn nodes they touch (see `ghostRingPlacement`). With no ghosts
- * this is bit-identical to the pre-ring layout, so the ghost-free minimal-overlay reuse is untouched.
+ * ghosts hang in bands COMPLETELY OUTSIDE the core's bounding box (see `ghostBandPlacement`). With no
+ * ghosts this is bit-identical to the pre-band layout, so the ghost-free minimal-overlay reuse is untouched.
  */
 export async function layoutModuleTree(nodes: VisibleModuleNode[], edges: ModuleTreeEdge[]): Promise<{ nodes: Node[]; edges: Edge[] }> {
   if (nodes.length === 0) {
@@ -102,8 +102,8 @@ export async function layoutModuleTree(nodes: VisibleModuleNode[], edges: Module
   const byId = new Map(core.map((node) => [node.id, node]));
   const laid = await runElkLayout(buildNestedElkGraph(core, coreEdges, adapter, ROOT_OPTIONS));
   const placed = emitReactFlowNodes(laid, (elkNode, parentId) => toNode(elkNode, parentId, byId));
-  const ringed = ghosts.length > 0 ? placeGhostRing(ghosts, edges.filter((edge) => edge.ghost === true), placed) : [];
-  return { nodes: [...placed, ...ringed], edges: edges.map(toEdge) };
+  const banded = ghosts.length > 0 ? placeGhostBands(ghosts, edges.filter((edge) => edge.ghost === true), placed) : [];
+  return { nodes: [...placed, ...banded], edges: edges.map(toEdge) };
 }
 
 /** Every leaf card sizes to its own content so a long name is never clipped: blocks/steps/ghosts
@@ -182,7 +182,7 @@ function stepSize(data: StepData): { width: number; height: number } {
 }
 
 /** A ghost card stacks a name over a faint home-file line; size to the wider of the two. Exported so
- * the off-ELK ring placement (`ghostRingPlacement`) sizes each ghost identically to the leaf pass. */
+ * the off-ELK band placement (`ghostBandPlacement`) sizes each ghost identically to the leaf pass. */
 export function ghostSize(data: GhostData): { width: number; height: number } {
   const head = CODE_GLYPH_WIDTH + GHOST_ROW_GAP + monoTextWidth(data.label, 11);
   const context = data.context ? monoTextWidth(data.context, 9) : 0;

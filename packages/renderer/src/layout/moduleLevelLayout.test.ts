@@ -1,15 +1,14 @@
 /**
  * GHOST cards are laid out OFF the ELK core: the drawn (non-ghost) tree keeps its ELK layer layout
- * while every ghost hangs on a ring at a fixed radius from the drawn node its wire touches. These
- * tests pin that contract — ghosts are root nodes at ~equal radius, an OUTGOING ghost rings RIGHT and
- * an INCOMING ghost rings LEFT — and the hard regression: with NO ghost the output is unchanged.
+ * while every ghost hangs in a band COMPLETELY OUTSIDE the core's bounding box. These tests pin that
+ * contract — ghosts are root nodes past the core's edge, an OUTGOING ghost bands RIGHT and an INCOMING
+ * ghost bands LEFT, none overlap — and the hard regression: with NO ghost the output is unchanged.
  */
 
 import { describe, expect, it } from "vitest";
 import type { GhostData } from "../derive/ghostDeps";
 import type { ModuleCardData } from "../derive/moduleLevel";
 import type { ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
-import { GHOST_RING_RADIUS } from "./ghostRingPlacement";
 import { layoutModuleTree } from "./moduleLevelLayout";
 
 function fileNode(id: string): VisibleModuleNode {
@@ -40,45 +39,52 @@ function ghostWire(source: string, target: string): ModuleTreeEdge {
   return { id: `gdep:calls:${source}->${target}`, source, target, weight: 1, crossFrame: false, category: "dep", depKind: "calls", ghost: true };
 }
 
-const center = (node: { position: { x: number; y: number }; style?: unknown }): { x: number; y: number } => {
+interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+function rectOf(node: { position: { x: number; y: number }; style?: unknown }): Rect {
   const style = (node.style ?? {}) as { width?: number; height?: number };
-  return { x: node.position.x + (style.width ?? 0) / 2, y: node.position.y + (style.height ?? 0) / 2 };
-};
-const dist = (a: { x: number; y: number }, b: { x: number; y: number }): number => Math.hypot(a.x - b.x, a.y - b.y);
+  return { x: node.position.x, y: node.position.y, width: style.width ?? 0, height: style.height ?? 0 };
+}
+function overlaps(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+}
+function coreBox(nodes: { type?: string; position: { x: number; y: number }; style?: unknown }[]): { minX: number; maxX: number } {
+  const core = nodes.filter((node) => node.type !== "ghost").map(rectOf);
+  return { minX: Math.min(...core.map((r) => r.x)), maxX: Math.max(...core.map((r) => r.x + r.width)) };
+}
 
-describe("layoutModuleTree ghost rings", () => {
-  it("keeps the ELK core ghost-free and emits ghosts as root nodes at the ring radius from their anchor", async () => {
+describe("layoutModuleTree ghost bands", () => {
+  it("keeps the ELK core ghost-free and emits ghosts as root nodes OUTSIDE the core box", async () => {
     const nodes = [fileNode("f:a"), fileNode("f:b"), ghostNode("g:x")];
     const edges = [importEdge("f:a", "f:b"), ghostWire("f:a", "g:x")];
     const { nodes: laid } = await layoutModuleTree(nodes, edges);
 
-    const anchor = laid.find((node) => node.id === "f:a")!;
     const ghost = laid.find((node) => node.id === "g:x")!;
     // Emitted as a ROOT node typed "ghost" — never nested, never fed to ELK.
     expect(ghost.type).toBe("ghost");
     expect(ghost.parentId).toBeUndefined();
-    // A ghost is a code-dep far end, not an ELK layer: it sits on the ring, not left/right of the core.
-    expect(dist(center(ghost), center(anchor))).toBeCloseTo(GHOST_RING_RADIUS, 3);
-    // OUTGOING dependency (wire drawn→ghost) rings to the anchor's RIGHT.
-    expect(center(ghost).x).toBeGreaterThan(center(anchor).x);
+    // OUTGOING dependency (wire drawn→ghost) bands past the core's RIGHT edge — fully outside.
+    expect(rectOf(ghost).x).toBeGreaterThanOrEqual(coreBox(laid).maxX);
   });
 
-  it("rings ghosts of the same anchor at an equal radius on the correct side by wire direction", async () => {
+  it("bands outgoing ghosts right of the core and incoming ghosts left, all outside the box", async () => {
     const nodes = [fileNode("f:a"), ghostNode("g:out"), ghostNode("g:in")];
     // g:out is an OUTGOING dependency (drawn→ghost, RIGHT); g:in is an INCOMING caller (ghost→drawn, LEFT).
     const edges = [ghostWire("f:a", "g:out"), ghostWire("g:in", "f:a")];
     const { nodes: laid } = await layoutModuleTree(nodes, edges);
 
-    const anchor = center(laid.find((node) => node.id === "f:a")!);
-    const out = center(laid.find((node) => node.id === "g:out")!);
-    const inc = center(laid.find((node) => node.id === "g:in")!);
-    expect(dist(out, anchor)).toBeCloseTo(GHOST_RING_RADIUS, 3);
-    expect(dist(inc, anchor)).toBeCloseTo(GHOST_RING_RADIUS, 3);
-    expect(out.x).toBeGreaterThan(anchor.x); // right arc
-    expect(inc.x).toBeLessThan(anchor.x); // left arc
+    const box = coreBox(laid);
+    const out = rectOf(laid.find((node) => node.id === "g:out")!);
+    const inc = rectOf(laid.find((node) => node.id === "g:in")!);
+    expect(out.x).toBeGreaterThanOrEqual(box.maxX); // right band, past the right edge
+    expect(inc.x + inc.width).toBeLessThanOrEqual(box.minX); // left band, past the left edge
   });
 
-  it("never overlaps two ghosts sharing an anchor", async () => {
+  it("never overlaps two ghosts in a band", async () => {
     const nodes = [fileNode("f:a"), ghostNode("g:1"), ghostNode("g:2"), ghostNode("g:3")];
     const edges = [ghostWire("f:a", "g:1"), ghostWire("f:a", "g:2"), ghostWire("f:a", "g:3")];
     const { nodes: laid } = await layoutModuleTree(nodes, edges);
@@ -99,17 +105,3 @@ describe("layoutModuleTree ghost rings", () => {
     expect(laidEdges).toHaveLength(1);
   });
 });
-
-interface Rect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-function rectOf(node: { position: { x: number; y: number }; style?: unknown }): Rect {
-  const style = (node.style ?? {}) as { width?: number; height?: number };
-  return { x: node.position.x, y: node.position.y, width: style.width ?? 0, height: style.height ?? 0 };
-}
-function overlaps(a: Rect, b: Rect): boolean {
-  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
-}

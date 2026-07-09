@@ -124,9 +124,9 @@ export function MinimalGraphView({ override }: { override?: MinimalGraphOverride
       >
         <CanvasChrome nodeColor={minimalMiniMapColor} />
         {ghostIds.map((id) => (
-          <NodeToolbar key={id} nodeId={id} isVisible position={Position.Top} align="center" offset={6}>
-            <button type="button" style={ADD_GHOST_STYLE} onClick={() => promoteMinimalGhost(id)} title="Add this node to the graph">
-              ＋ Add
+          <NodeToolbar key={id} nodeId={id} isVisible position={Position.Top} align="end" offset={-11}>
+            <button type="button" style={ADD_GHOST_STYLE} onClick={() => promoteMinimalGhost(id)} title="Add to the graph" aria-label="Add to the graph">
+              +
             </button>
           </NodeToolbar>
         ))}
@@ -176,16 +176,20 @@ function dimGhost(node: Node): Node {
 const MINIMAL_PANEL_STYLE: React.CSSProperties = { ...PANEL_STYLE, left: "auto", right: 16 };
 const TITLE_STYLE: React.CSSProperties = { fontSize: 12, fontWeight: 700, color: "#E6EDF3" };
 
-// The explicit "add this ghost" affordance, pinned above each ghost card by its NodeToolbar. A green
-// accent reads as "grow the graph", distinct from the neutral panel buttons.
+// The subtle "add this ghost" affordance: a small round + straddling the ghost card's top-right corner
+// (half in, half out), not a loud button. Neutral until hovered so it stays quiet among many ghosts.
 const ADD_GHOST_STYLE: React.CSSProperties = {
-  border: "1px solid #2F6F43",
-  borderRadius: 6,
-  background: "rgba(46,111,67,0.9)",
-  color: "#EAF6EE",
-  padding: "3px 9px",
-  fontSize: 11,
+  width: 20,
+  height: 20,
+  borderRadius: "50%",
+  display: "grid",
+  placeItems: "center",
+  border: "1px solid #3A4452",
+  background: "#1B222C",
+  color: "#AEB8C4",
+  fontSize: 15,
   fontWeight: 700,
+  lineHeight: 1,
   cursor: "pointer",
-  boxShadow: "0 2px 6px rgba(0,0,0,0.35)",
+  boxShadow: "0 1px 3px rgba(0,0,0,0.45)",
 };
