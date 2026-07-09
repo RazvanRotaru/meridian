@@ -88,8 +88,6 @@ function pruneUnlitDeps(level: EmphasizedLevel): EmphasizedLevel {
   return { ...level, nodes, edges: level.edges };
 }
 
-const isLit = (edge: Edge): boolean => (edge.style as { opacity?: number } | undefined)?.opacity === 1;
-
 function emphasizeIncident(nodes: Node[], edges: Edge[], activeIds: readonly string[]): { nodes: Node[]; edges: Edge[] } {
   const seed = withDrawnDescendants(activeIds, nodes);
   const litNodes = new Set(seed);
@@ -223,5 +221,4 @@ const isDep = (edge: Edge): boolean => (edge.data as { category?: string } | und
 const isFlow = (edge: Edge): boolean => (edge.data as { category?: string } | undefined)?.category === "flow";
 const isIpc = (edge: Edge): boolean => (edge.data as { category?: string } | undefined)?.category === "ipc";
 const depKindOf = (edge: Edge): string | undefined => (edge.data as { depKind?: string } | undefined)?.depKind;
-const isGhost = (edge: Edge): boolean => (edge.data as { ghost?: boolean } | undefined)?.ghost === true;
 const dimNode = (node: Node): Node => ({ ...node, style: { ...node.style, opacity: DIM_NODE_OPACITY } });
