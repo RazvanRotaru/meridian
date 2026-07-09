@@ -95,17 +95,17 @@ describe("minimal-graph overlay navigation", () => {
 
   it("expandMinimal records the expansion and commits its source to the kept (persistent) set", () => {
     const store = withBuiltGraph();
-    store.getState().expandMinimal("ts:src/a.ts", "out");
-    expect(store.getState().minimalExpanded).toEqual([{ id: "ts:src/a.ts", direction: "out" }]);
+    store.getState().expandMinimal("ts:src/a.ts");
+    expect(store.getState().minimalExpanded).toEqual(["ts:src/a.ts"]);
     expect(store.getState().minimalKeptIds).toEqual(["ts:src/a.ts"]);
-    // The same direction twice is a no-op.
-    store.getState().expandMinimal("ts:src/a.ts", "out");
+    // Expanding the same source twice is a no-op.
+    store.getState().expandMinimal("ts:src/a.ts");
     expect(store.getState().minimalExpanded).toHaveLength(1);
   });
 
   it("resetMinimalGraph drops all growth back to the seed base but keeps the overlay open", () => {
     const store = withBuiltGraph();
-    store.getState().expandMinimal("ts:src/a.ts", "out");
+    store.getState().expandMinimal("ts:src/a.ts");
     store.getState().resetMinimalGraph();
     expect(store.getState().minimalExpanded).toEqual([]);
     expect(store.getState().minimalKeptIds).toEqual([]);
@@ -114,7 +114,7 @@ describe("minimal-graph overlay navigation", () => {
 
   it("a fresh build resets any prior growth", () => {
     const store = withBuiltGraph();
-    store.getState().expandMinimal("ts:src/a.ts", "out");
+    store.getState().expandMinimal("ts:src/a.ts");
     store.getState().buildMinimalGraph();
     expect(store.getState().minimalExpanded).toEqual([]);
     expect(store.getState().minimalKeptIds).toEqual([]);
@@ -129,7 +129,7 @@ describe("minimal-graph overlay navigation", () => {
 
   it("leaving the Map lens closes the overlay (it never lingers behind another tab)", () => {
     const store = withBuiltGraph();
-    store.getState().expandMinimal("ts:src/a.ts", "out");
+    store.getState().expandMinimal("ts:src/a.ts");
     store.getState().setViewMode("logic");
     expect(store.getState().minimalSeedIds).toEqual([]);
     expect(store.getState().minimalExpanded).toEqual([]);

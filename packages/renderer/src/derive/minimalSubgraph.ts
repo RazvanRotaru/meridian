@@ -4,14 +4,15 @@
  *   - PERSISTENT — a ghost the reader drilled through, which commits it (auto-promotes to persistent).
  *                  The committed graph, alongside the seeds.
  *   - GHOST    — the seed's 1-hop neighbours that were VISIBLE on the Module map (the on-map ring),
- *                plus any neighbour revealed by clicking a node's directional [+] stub, one hop past
- *                the persistent frontier. The auto ring is restricted to on-map neighbours, but
+ *                plus every neighbour revealed by clicking a node's [+] stub, one hop past the
+ *                persistent frontier. The auto ring is restricted to on-map neighbours, but
  *                expansions are UNRESTRICTED — that's how the reader deliberately goes off-map.
  *                Tentative: "Clear expansions" drops the revealed ghosts.
- * A node whose import neighbours aren't all shown carries directional STUB nodes: a [+n] on the left
- * for hidden importers ("in"), a [+n] on the right for hidden imports ("out"). Files nest in their
- * ancestor package frames (single-child chains collapse). Pure; no React, no ELK. Reuses the module
- * import graph and the Module-map card-data shapes so the overlay renders with the Map's own cards.
+ * A node whose import neighbours aren't all shown carries ONE STUB: a single [+n] whose n is the count
+ * of hidden import neighbours in BOTH directions (importers + imports, deduped); clicking it reveals
+ * them all at once. Files nest in their ancestor package frames (single-child chains collapse). Pure;
+ * no React, no ELK. Reuses the module import graph and the Module-map card-data shapes so the overlay
+ * renders with the Map's own cards.
  */
 
 import type { GraphNode, LogicFlows } from "@meridian/core";
@@ -27,14 +28,13 @@ import { walkFileCode, type FileCodeWalk, type MinimalExpansion } from "./minima
 
 const MODULE_KIND = "module";
 
-export type Direction = "in" | "out";
 export type MinimalTier = "seed" | "persistent" | "ghost";
 
-/** A directional [+n] expander: the hidden-neighbour count in one direction off a source file.
- * `type` (not interface) so it carries @xyflow/react's implicit index signature on Node<T>. */
+/** A single [+n] expander: the count of a source file's hidden import neighbours across BOTH
+ * directions (importers + imports, deduped). `type` (not interface) so it carries @xyflow/react's
+ * implicit index signature on Node<T>. */
 export type MinimalStubData = {
   sourceId: string;
-  direction: Direction;
   count: number;
 };
 
@@ -75,12 +75,6 @@ export interface CodeContext {
   flows: LogicFlows;
 }
 
-/** One clicked directional expansion — reveals `id`'s `direction` neighbours as ghosts. */
-export interface ExpansionEntry {
-  id: string;
-  direction: Direction;
-}
-
 const NO_CODE: CodeContext = { expanded: new Set(), blockDeps: { edges: [] }, flows: {} };
 
 export function buildMinimalSubgraph(
@@ -88,7 +82,7 @@ export function buildMinimalSubgraph(
   graph: ModuleGraph,
   seedIds: ReadonlySet<string>,
   keptIds: ReadonlySet<string> = new Set(),
-  expanded: readonly ExpansionEntry[] = [],
+  expanded: readonly string[] = [],
   onMapIds: ReadonlySet<string> = new Set(),
   code: CodeContext = NO_CODE,
 ): MinimalSubgraphSpec {
@@ -134,9 +128,9 @@ function collectPersistent(index: GraphIndex, seedIds: ReadonlySet<string>, kept
 }
 
 /** All visible files: the persistent set, the seed's 1-hop ring restricted to on-map neighbours
- * (rendered as ghosts), and each expansion's revealed direction-neighbours (also ghosts, and
+ * (rendered as ghosts), and each expansion's revealed neighbours in BOTH directions (also ghosts, and
  * UNRESTRICTED — expansions deliberately reach past what was on the map). */
-function collectVisible(index: GraphIndex, graph: ModuleGraph, seedIds: ReadonlySet<string>, persistent: ReadonlySet<string>, expanded: readonly ExpansionEntry[], onMapIds: ReadonlySet<string>): Set<string> {
+function collectVisible(index: GraphIndex, graph: ModuleGraph, seedIds: ReadonlySet<string>, persistent: ReadonlySet<string>, expanded: readonly string[], onMapIds: ReadonlySet<string>): Set<string> {
   const visible = new Set<string>(persistent);
   for (const seed of seedIds) {
     if (!isModule(index, seed)) {
@@ -148,11 +142,11 @@ function collectVisible(index: GraphIndex, graph: ModuleGraph, seedIds: Readonly
       }
     }
   }
-  for (const { id, direction } of expanded) {
+  for (const id of expanded) {
     if (!visible.has(id)) {
       continue; // an expansion whose source is no longer shown is inert.
     }
-    for (const neighbor of directionNeighbors(graph, id, direction)) {
+    for (const neighbor of bothNeighbors(graph, id)) {
       if (isModule(index, neighbor)) {
         visible.add(neighbor);
       }
@@ -240,33 +234,26 @@ function groupNode(node: GraphNode, context: NodeContext): MinimalSubgraphNode {
   };
 }
 
-/** For each visible file, a [+n] descriptor per direction that still has hidden neighbours. */
+/** For each visible file, a SINGLE [+n] descriptor when it has any hidden import neighbour — n counts
+ * the DISTINCT hidden neighbours across both directions (a file that both imports and is imported by
+ * the source counts once). No stub when every neighbour is already shown. */
 function computeStubs(graph: ModuleGraph, visible: ReadonlySet<string>): MinimalStubData[] {
   const stubs: MinimalStubData[] = [];
   for (const id of [...visible].sort()) {
-    const inHidden = countHidden(graph.in.get(id), visible);
-    if (inHidden > 0) {
-      stubs.push({ sourceId: id, direction: "in", count: inHidden });
+    const hidden = new Set<string>();
+    for (const neighbor of bothNeighbors(graph, id)) {
+      if (!visible.has(neighbor)) {
+        hidden.add(neighbor);
+      }
     }
-    const outHidden = countHidden(graph.out.get(id), visible);
-    if (outHidden > 0) {
-      stubs.push({ sourceId: id, direction: "out", count: outHidden });
+    if (hidden.size > 0) {
+      stubs.push({ sourceId: id, count: hidden.size });
     }
   }
   return stubs;
 }
 
-function countHidden(neighbors: ReadonlySet<string> | undefined, visible: ReadonlySet<string>): number {
-  let hidden = 0;
-  for (const neighbor of neighbors ?? []) {
-    if (!visible.has(neighbor)) {
-      hidden += 1;
-    }
-  }
-  return hidden;
-}
-
-/** A stub sits in its source file's frame; ELK's edge places it left (in) or right (out) of it. */
+/** A stub sits in its source file's frame, hung beside it by placement. */
 function stubNodes(stubs: readonly MinimalStubData[], collapse: ChainCollapse): MinimalSubgraphNode[] {
   return stubs.map((stub) => ({
     id: stubId(stub),
@@ -306,17 +293,16 @@ function nearestPackage(index: GraphIndex, id: string): string | null {
   return null;
 }
 
-/** A faint tether from each [+n] stub to its source (in points into the file, out points out). */
+/** A faint tether from each source file to its [+n] stub. */
 function stubEdges(stubs: readonly MinimalStubData[]): MinimalSubgraphEdge[] {
   return stubs.map((stub) => {
     const id = stubId(stub);
-    const [source, target] = stub.direction === "in" ? [id, stub.sourceId] : [stub.sourceId, id];
-    return { id: `stubedge:${id}`, source, target, weight: 1, kind: "stub" as const };
+    return { id: `stubedge:${id}`, source: stub.sourceId, target: id, weight: 1, kind: "stub" as const };
   });
 }
 
 function stubId(stub: MinimalStubData): string {
-  return `stub:${stub.sourceId}|${stub.direction}`;
+  return `stub:${stub.sourceId}`;
 }
 
 function isModule(index: GraphIndex, id: string): boolean {
@@ -325,8 +311,4 @@ function isModule(index: GraphIndex, id: string): boolean {
 
 function bothNeighbors(graph: ModuleGraph, id: string): string[] {
   return [...(graph.in.get(id) ?? []), ...(graph.out.get(id) ?? [])];
-}
-
-function directionNeighbors(graph: ModuleGraph, id: string, direction: Direction): ReadonlySet<string> {
-  return (direction === "in" ? graph.in.get(id) : graph.out.get(id)) ?? new Set<string>();
 }

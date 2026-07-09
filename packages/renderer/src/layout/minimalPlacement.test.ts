@@ -120,25 +120,21 @@ describe("placeMinimalNodes", () => {
     expect(placed.lonely.x).toBe(FILE_WIDTH + GAP_X);
   });
 
-  it("hangs an out-stub to the right and an in-stub to the left of its source, vertically centred", () => {
+  it("hangs the single stub to the right of its source, vertically centred", () => {
     const input: PlacementInput = {
       fileIds: ["a"],
-      stubs: [
-        { id: "s-out", sourceId: "a", direction: "out" },
-        { id: "s-in", sourceId: "a", direction: "in" },
-      ],
+      stubs: [{ id: "s", sourceId: "a" }],
       importEdges: [],
       basePositions: { a: { x: 0, y: 0, width: 200, height: 60 } },
     };
     const placed = placeMinimalNodes(input);
-    expect(placed["s-out"]).toEqual({ x: 200 + STUB_GAP, y: 60 / 2 - STUB_HEIGHT / 2, width: STUB_WIDTH, height: STUB_HEIGHT });
-    expect(placed["s-in"]).toEqual({ x: 0 - STUB_WIDTH - STUB_GAP, y: 60 / 2 - STUB_HEIGHT / 2, width: STUB_WIDTH, height: STUB_HEIGHT });
+    expect(placed["s"]).toEqual({ x: 200 + STUB_GAP, y: 60 / 2 - STUB_HEIGHT / 2, width: STUB_WIDTH, height: STUB_HEIGHT });
   });
 
   it("skips a stub whose source was never placed", () => {
     const input: PlacementInput = {
       fileIds: [],
-      stubs: [{ id: "s", sourceId: "missing", direction: "out" }],
+      stubs: [{ id: "s", sourceId: "missing" }],
       importEdges: [],
       basePositions: {},
     };
