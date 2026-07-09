@@ -14,9 +14,10 @@ import { useChangeSummary, useChangedLines, useLineChangeKinds } from "./useChan
 export function CodePanel() {
   const codeView = useBlueprint((state) => state.codeView);
   const { closeCode } = useBlueprintActions();
-  const changedLines = useChangedLines(codeView?.node);
-  const changedLineKinds = useLineChangeKinds(codeView?.node);
-  const summary = useChangeSummary(codeView?.node);
+  const wholeFile = codeView?.wholeFile ?? false;
+  const changedLines = useChangedLines(codeView?.node, wholeFile);
+  const changedLineKinds = useLineChangeKinds(codeView?.node, wholeFile);
+  const summary = useChangeSummary(codeView?.node, wholeFile);
   const open = codeView?.mode === "modal";
 
   // Escape closes the modal while it's open. Rebinding on `open` keeps the listener off the
@@ -39,7 +40,12 @@ export function CodePanel() {
   }
   const { node, code, loading, error, truncated } = codeView;
   const { file, startLine, endLine } = node.location;
+  const baseLine = codeView.baseLine ?? startLine;
+  // Whole-file view titles by the file and lands on the first change, so the node's own span in the
+  // subtitle would be misleading; show just the file path instead.
+  const title = wholeFile ? (file.split("/").pop() ?? file) : node.displayName;
   const range = endLine && endLine !== startLine ? `${startLine}-${endLine}` : String(startLine);
+  const location = wholeFile ? file : `${file}:${range}`;
 
   // A backdrop click closes; clicks inside the panel are swallowed so they don't reach it.
   return (
@@ -53,8 +59,8 @@ export function CodePanel() {
       >
         <header style={HEADER_STYLE}>
           <div style={HEADER_TEXT_STYLE}>
-            <div style={TITLE_STYLE} title={node.qualifiedName}>{node.displayName}</div>
-            <div style={LOCATION_STYLE} title={file}>{`${file}:${range}`}</div>
+            <div style={TITLE_STYLE} title={node.qualifiedName}>{title}</div>
+            <div style={LOCATION_STYLE} title={file}>{location}</div>
             {summary ? (
               <div style={SUMMARY_ROW_STYLE}>
                 <span style={ADDED_STYLE}>{`+${summary.added} lines`}</span>
@@ -73,7 +79,7 @@ export function CodePanel() {
             <CodeBlock
               code={code}
               maxHeight="70vh"
-              startLine={node.location?.startLine}
+              startLine={baseLine}
               showGutter
               changedLines={changedLines}
               changedLineKinds={changedLineKinds}

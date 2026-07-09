@@ -7,7 +7,7 @@
 
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { Edge, Node } from "@xyflow/react";
-import { computeAffectedNodes, computeCoverage, unmappedChangedFiles } from "@meridian/core";
+import { computeAffectedNodes, computeCoverage, unmappedChangedFiles, type ChangedLineSpan, type LineRange } from "@meridian/core";
 import type {
   ChangedFile,
   CoverageReport,
@@ -77,6 +77,11 @@ export interface CodeView {
   mode: "inline" | "modal";
   /** The server capped the snippet; the panel shows a note when set. */
   truncated?: boolean;
+  /** First line number of `code`: the node's start for a node slice, 1 when the whole file is shown.
+   * Anchors the gutter numbers and the diff paint; defaults to the node's start when absent. */
+  baseLine?: number;
+  /** The whole file is shown (scrolled to the first change) rather than just the node's own span. */
+  wholeFile?: boolean;
 }
 
 export interface BlueprintState {
@@ -334,7 +339,7 @@ export interface BlueprintState {
   toggleCoverageMode(): void;
   setEnvironment(environment: string): void;
   refreshTelemetry(): Promise<void>;
-  showCode(node: GraphNode): Promise<void>;
+  showCode(node: GraphNode, opts?: { wholeFile?: boolean }): Promise<void>;
   expandCode(): void;
   closeCode(): void;
   setPrsTab(tab: PrsTab): void;
@@ -1244,23 +1249,31 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // ships no source access or the node has no location. A race guard drops the result if a newer
     // click (a different node) has since taken over the view; the mode is preserved across the
     // fetch so a mid-flight expand-to-modal is not clobbered when the code lands.
-    async showCode(node) {
+    async showCode(node, opts) {
       if (!sourceUrl || !node.location) {
         return;
       }
-      set({ codeView: { node, code: null, loading: true, error: null, mode: "inline" } });
+      // Whole-file view (the diff `</>`) shows the entire file scrolled to the first change; a node
+      // slice shows just the span. baseLine is the code's first line — 1 for a whole file.
+      const wholeFile = opts?.wholeFile ?? false;
+      const baseLine = wholeFile ? 1 : node.location.startLine;
+      set({ codeView: { node, code: null, loading: true, error: null, mode: "inline", baseLine, wholeFile } });
       try {
         const url = new URL(sourceUrl, window.location.origin);
         url.searchParams.set("file", node.location.file);
-        url.searchParams.set("start", String(node.location.startLine));
-        url.searchParams.set("end", String(node.location.endLine ?? node.location.startLine));
+        // Omitting start/end makes the server return the whole file (it defaults missing bounds to
+        // 1..EOF); a node slice sends the span explicitly.
+        if (!wholeFile) {
+          url.searchParams.set("start", String(node.location.startLine));
+          url.searchParams.set("end", String(node.location.endLine ?? node.location.startLine));
+        }
         const res = await fetch(url, { credentials: "same-origin" });
         if (get().codeView?.node.id !== node.id) {
           return;
         }
         const mode = get().codeView?.mode ?? "inline";
         if (!res.ok) {
-          set({ codeView: { node, code: null, loading: false, error: "Could not load source.", mode } });
+          set({ codeView: { node, code: null, loading: false, error: "Could not load source.", mode, baseLine, wholeFile } });
           return;
         }
         const data = await res.json();
@@ -1275,6 +1288,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             error: null,
             truncated: data.truncated,
             mode: get().codeView?.mode ?? "inline",
+            baseLine: data.startLine ?? baseLine,
+            wholeFile,
           },
         });
       } catch {
@@ -1282,7 +1297,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           return;
         }
         const mode = get().codeView?.mode ?? "inline";
-        set({ codeView: { node, code: null, loading: false, error: "Could not load source.", mode } });
+        set({ codeView: { node, code: null, loading: false, error: "Could not load source.", mode, baseLine, wholeFile } });
       }
     },
 
@@ -1399,7 +1414,31 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const affected = computeAffectedNodes(artifact.nodes, context.changedFiles);
       applyChangedIds(index, affected.map((node) => node.nodeId));
       // Seed the minimal graph from the changed FILES (seeds must be module ids).
-      const seeds = [...new Set(matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched.map((match) => match.moduleId))].sort();
+      const matchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
+      const seeds = [...new Set(matchedFiles.map((match) => match.moduleId))].sort();
+      // Join the PR's line-level diff into the shared changedSince channel, keyed by each changed
+      // file's node.location.file, so the code panel's </> shows the added lines highlighted (green)
+      // over the block-level review — the "see the whole file's +/- diff" ask, straight from PR hunks.
+      const hunksByPath = new Map(context.changedFiles.map((file) => [file.path, file.hunks]));
+      const changedFiles: Record<string, LineRange[]> = {};
+      const changedKinds: Record<string, ChangedLineSpan[]> = {};
+      for (const match of matchedFiles) {
+        const hunks = hunksByPath.get(match.path);
+        const locFile = index.nodesById.get(match.moduleId)?.location?.file;
+        if (hunks && hunks.length > 0 && locFile) {
+          changedFiles[locFile] = hunks.map((hunk) => ({ start: hunk.start, end: hunk.end }));
+          changedKinds[locFile] = hunks.map((hunk) => ({ start: hunk.start, end: hunk.end, kind: "added" as const }));
+        }
+      }
+      // extensions is a strict JsonValue; the ranges/spans are plain JSON, so cast the assembled
+      // artifact back to its type rather than widen JsonValue.
+      const reviewedArtifact = {
+        ...artifact,
+        extensions: {
+          ...(artifact.extensions as Record<string, unknown> | undefined),
+          changedSince: { baseRef: `pr#${prSelected}`, files: changedFiles, kinds: changedKinds },
+        },
+      } as unknown as typeof artifact;
       // Pre-expand every container on the path to each changed block (file → class) so the modified
       // methods surface as their own amber cards instead of a collapsed "N members" class.
       const expanded = new Set<string>(seeds);
@@ -1412,6 +1451,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       minimalLayoutSeq += 1;
       set({
+        artifact: reviewedArtifact,
         review,
         prReviewed: prSelected,
         reviewTicks: readReviewProgress(context.reviewKey).ticks,

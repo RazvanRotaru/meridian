@@ -63,6 +63,13 @@ const GHOST_HEIGHT = 42;
 const GHOST_ROW_GAP = 5;
 const GHOST_CHROME = 2 + 9 + 9; // border + inner padding (left 9 + right 9)
 const CODE_GLYPH_WIDTH = 9; // the ƒ / τ / kind glyph on code + ghost cards
+// Every located card (file, unit, block) now trails a `</>` code button, and a changed one also a
+// "Δ n" chip. Reserve room for both in the label row so a long name is never crowded out — the clip
+// the reader hit on `f cons…` / `f _ensu…`. Δ is over-reserved on unchanged cards (the layout can't
+// see the diff sets), a small, safe cost that guarantees nothing clips.
+const CODE_BTN_WIDTH = pillWidth("</>", 9, { padX: 4 });
+const DELTA_CHIP_WIDTH = pillWidth("Δ 99", CHIP_FONT, { padX: 4, letterSpacing: CHIP_LETTER_SPACING });
+const TRAILING_BADGES = HEADER_GAP + DELTA_CHIP_WIDTH + HEADER_GAP + CODE_BTN_WIDTH;
 
 const ROOT_OPTIONS: Record<string, string> = {
   "elk.algorithm": "layered",
@@ -133,7 +140,7 @@ function groupSize(data: ModuleGroupData): { width: number; height: number } {
 function fileSize(data: ModuleCardData): { width: number; height: number } {
   const chevron = data.isContainer ? CHEVRON_WIDTH + HEADER_GAP : 0;
   const entry = data.isEntry ? HEADER_GAP + pillWidth("ENTRY", CHIP_FONT, { letterSpacing: CHIP_LETTER_SPACING }) : 0;
-  const header = chevron + monoTextWidth(data.label, 12.5) + entry;
+  const header = chevron + monoTextWidth(data.label, 12.5) + entry + TRAILING_BADGES;
   const meta =
     pillWidth(data.category.toUpperCase(), CHIP_FONT, { letterSpacing: CHIP_LETTER_SPACING }) +
     META_GAP +
@@ -145,11 +152,11 @@ function fileSize(data: ModuleCardData): { width: number; height: number } {
 function unitSize(data: UnitCardData): { width: number; height: number } {
   const chip = pillWidth(data.unitKind.toUpperCase(), CHIP_FONT, { letterSpacing: CHIP_LETTER_SPACING });
   if (data.isContainer) {
-    const header = CHEVRON_WIDTH + HEADER_GAP + UNIT_GLYPH_WIDTH + HEADER_GAP + monoTextWidth(data.label, 12.5);
+    const header = CHEVRON_WIDTH + HEADER_GAP + UNIT_GLYPH_WIDTH + HEADER_GAP + monoTextWidth(data.label, 12.5) + TRAILING_BADGES;
     const meta = chip + META_GAP + monoTextWidth(`${data.memberCount} members`, 10.5);
     return { width: cardWidth(UNIT_CHROME + Math.max(header, meta)), height: UNIT_CONTAINER_CARD_HEIGHT };
   }
-  const content = UNIT_GLYPH_WIDTH + UNIT_ROW_GAP + monoTextWidth(data.label, 12.5) + UNIT_ROW_GAP + chip;
+  const content = UNIT_GLYPH_WIDTH + UNIT_ROW_GAP + monoTextWidth(data.label, 12.5) + UNIT_ROW_GAP + chip + TRAILING_BADGES;
   return { width: cardWidth(UNIT_CHROME + content), height: UNIT_LEAF_HEIGHT };
 }
 
@@ -160,7 +167,7 @@ function cardWidth(content: number): number {
 
 function blockSize(data: BlockData): { width: number; height: number } {
   const chevron = data.hasFlow ? CHEVRON_WIDTH + BLOCK_ROW_GAP : 0;
-  const content = chevron + CODE_GLYPH_WIDTH + BLOCK_ROW_GAP + monoTextWidth(data.label, 11.5);
+  const content = chevron + CODE_GLYPH_WIDTH + BLOCK_ROW_GAP + monoTextWidth(data.label, 11.5) + TRAILING_BADGES;
   return { width: Math.round(clamp(BLOCK_MIN_WIDTH, BLOCK_MAX_WIDTH, BLOCK_CHROME + content)), height: BLOCK_HEIGHT };
 }
 

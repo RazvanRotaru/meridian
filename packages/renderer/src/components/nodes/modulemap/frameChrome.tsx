@@ -33,29 +33,29 @@ export function FrameTitleBar({
 }
 
 /**
- * The `</>` diff button a CHANGED Map leaf (function level and below) carries: opens the code modal
- * scrolled to the diff, whose gutter + rows mark the changed lines (+ added / − deleted / ~ modified).
- * Gated to changed nodes on purpose — an unchanged node has nothing to show, so a `</>` there would
- * just open plain source and leave the reader hunting for a "+/-" that isn't there. Also needs a
- * source location AND the server serving source (`sourceUrl`), so it never dangles a dead button.
+ * The `</>` code button every located Map node (file, class/interface, function/method) carries:
+ * opens the code modal on the WHOLE file, auto-scrolled to the first change when there is one, with
+ * changed lines marked in the gutter + rows (+ added / − deleted / ~ modified). Shown for changed
+ * AND unchanged nodes — the reader wants to open any file/class/function's source, not just the
+ * diffed ones. Needs a source location AND the server serving source (`sourceUrl`), so it never
+ * dangles a dead button; a directory/package node has no location and correctly gets none.
  */
 export function CodeButton({ id }: { id: string }) {
   const node = useBlueprint((state) => state.index.nodesById.get(id));
   const sourceUrl = useBlueprint((state) => state.sourceUrl);
-  const changed = useBlueprint((state) => state.index.changedIds.has(id));
   const { showCode, expandCode } = useBlueprintActions();
-  if (!changed || !node?.location || !sourceUrl) {
+  if (!node?.location || !sourceUrl) {
     return null;
   }
   return (
     <button
       type="button"
       style={CODE_BTN}
-      title="View the diff — changed lines marked + / − / ~"
-      aria-label="View diff"
+      title="View source — changed lines marked + / − / ~"
+      aria-label="View source"
       onClick={(event) => {
         event.stopPropagation();
-        void showCode(node);
+        void showCode(node, { wholeFile: true });
         expandCode();
       }}
       onDoubleClick={(event) => event.stopPropagation()}
