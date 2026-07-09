@@ -20,7 +20,7 @@ import { ReactFlow, type Edge, type Node, type ReactFlowInstance } from "@xyflow
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
 import { MinimalStubNode } from "./nodes/modulemap/MinimalStubNode";
-import { emphasize } from "./moduleMapPaint";
+import { emphasize, filterRelKinds } from "./moduleMapPaint";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
@@ -44,6 +44,7 @@ export function MinimalGraphView() {
   const selected = useBlueprint((state) => state.moduleSelected);
   const radius = useBlueprint((state) => state.moduleRadius);
   const highlightMode = useBlueprint((state) => state.highlightMode);
+  const hiddenRelKinds = useBlueprint((state) => state.hiddenRelKinds);
   const seedCount = useBlueprint((state) => state.minimalSeedIds.length);
   const grown = useBlueprint((state) => state.minimalKeptIds.length > 0 || state.minimalExpanded.length > 0);
   const { closeMinimalGraph, expandMinimal, resetMinimalGraph } = useBlueprintActions();
@@ -84,10 +85,13 @@ export function MinimalGraphView() {
     const childNodes = nodes.filter((node) => CHILD_NODE_TYPES.has(node.type ?? ""));
     const importEdges = edges.filter((edge) => (edge.data as { category?: string } | undefined)?.category === "import");
     const stubEdges = edges.filter((edge) => (edge.data as { category?: string } | undefined)?.category !== "import");
-    const emphasized = emphasize(fileNodes, importEdges, selected, radius, highlightMode);
+    // Honour the relationship toggles: drop import wires whose kind is toggled off (same filter the
+    // Module map applies), so the legend's enable/disable controls also govern the minimal graph.
+    const filteredImports = filterRelKinds(importEdges, hiddenRelKinds);
+    const emphasized = emphasize(fileNodes, filteredImports, selected, radius, highlightMode);
     const ghostLayered = emphasized.nodes.map((node) => (isGhost(node) ? dimGhost(node) : node));
     return { nodes: [...ghostLayered, ...childNodes, ...stubNodes], edges: [...emphasized.edges, ...stubEdges] };
-  }, [nodes, edges, selected, radius, highlightMode]);
+  }, [nodes, edges, selected, radius, highlightMode, hiddenRelKinds]);
 
   // Fit once per LAYOUT (build / expand / reset) — the same guard idiom as the sibling surfaces.
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
