@@ -92,6 +92,18 @@ const SEED_STACK_Y = 80;
 // Top padding leaves room for an expanded group's title bar; React Flow draws nothing there itself.
 const CONTAINER_OPTIONS: Record<string, string> = { "elk.padding": "[top=44,left=18,bottom=18,right=18]" };
 
+// The hierarchy-aware processors ELK runs under INCLUDE_CHILDREN (crossing-minimization,
+// cycle-breaking) MUST match between the root and every nested subgraph — the moment a seeded card is
+// EXPANDED into an ELK container, a container left on the default LAYER_SWEEP while the root switched
+// to INTERACTIVE makes ELK throw `UnsupportedGraphException`. So when seeded, every container carries
+// the same INTERACTIVE processors; node placement is free to differ, so nested children still lay out
+// normally. (Non-seeded containers stay on CONTAINER_OPTIONS — the root never switches processors.)
+const SEEDED_CONTAINER_OPTIONS: Record<string, string> = {
+  ...CONTAINER_OPTIONS,
+  "elk.layered.crossingMinimization.strategy": "INTERACTIVE",
+  "elk.layered.cycleBreaking.strategy": "INTERACTIVE",
+};
+
 const adapter: ElkNestAdapter<VisibleModuleNode> = {
   id: (node) => node.id,
   parentId: (node) => node.parentId,
@@ -99,6 +111,10 @@ const adapter: ElkNestAdapter<VisibleModuleNode> = {
   leafSize: (node) => leafSize(node),
   containerOptions: CONTAINER_OPTIONS,
 };
+
+// The seeded surface swaps in container options that keep the hierarchy-aware processors consistent
+// with SEEDED_ROOT_OPTIONS (see above), so an expanded card never trips ELK's INCLUDE_CHILDREN check.
+const seededAdapter: ElkNestAdapter<VisibleModuleNode> = { ...adapter, containerOptions: SEEDED_CONTAINER_OPTIONS };
 
 /**
  * Run ELK over the nested tree and map the placed (parent-relative) coordinates to React Flow. When
@@ -116,7 +132,7 @@ export async function layoutModuleTree(
   }
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const seeded = seedPositions !== undefined && Object.keys(seedPositions).length > 0;
-  const graph = buildNestedElkGraph(nodes, edges, adapter, seeded ? SEEDED_ROOT_OPTIONS : ROOT_OPTIONS);
+  const graph = buildNestedElkGraph(nodes, edges, seeded ? seededAdapter : adapter, seeded ? SEEDED_ROOT_OPTIONS : ROOT_OPTIONS);
   if (seeded) {
     seedTopLevelPositions(graph.children ?? [], edges, seedPositions);
   }
