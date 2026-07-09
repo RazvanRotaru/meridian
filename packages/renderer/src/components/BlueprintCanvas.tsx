@@ -25,6 +25,7 @@ import type { BlueprintNode, BlueprintEdge, BlueprintNodeData } from "../layout/
 import { nodeTypes } from "./nodes/nodeTypes";
 import { edgeTypes } from "./edges/edgeTypes";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
+import { useRecenter } from "./canvas/useRecenter";
 import { Toolbar } from "./Toolbar";
 import { CoveragePanel } from "./CoveragePanel";
 import { CodePanel } from "./CodePanel";
@@ -87,7 +88,9 @@ function FlowCanvas() {
   const layoutStatus = useBlueprint((state) => state.layoutStatus);
   const parentOf = useBlueprint((state) => state.index.parentOf);
   const coverage = useBlueprint((state) => (state.coverageMode ? state.coverage : null));
+  const selectedId = useBlueprint((state) => state.selectedId);
   const { select, diveInto, openLogicFlow } = useBlueprintActions();
+  useRecenter(selectedId ? [selectedId] : []);
   const { nodes, edges } = useMemo(
     () => emphasizeFlow(rawNodes, rawEdges, flowEmphasis),
     [rawNodes, rawEdges, flowEmphasis],

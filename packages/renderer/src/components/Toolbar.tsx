@@ -29,8 +29,11 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
   const isComposition = viewMode === "call";
   const isModules = viewMode === "modules";
   const isPrs = viewMode === "prs";
+  // The Logic view is a scrollable intra-procedural surface whose sub-tabs aren't all React Flow, so
+  // "recenter the graph" has no coherent meaning there — hide the action rather than dead-click it.
+  const isLogic = viewMode === "logic";
   const showFlowToggle = viewMode === "ui" || viewMode === "modules";
-  const { expandAll, collapseAll, toggleFlowExplorer } = useBlueprintActions();
+  const { expandAll, collapseAll, toggleFlowExplorer, recenter } = useBlueprintActions();
   return (
     <Panel position="top-left">
       <div style={PANEL_STYLE}>
@@ -38,6 +41,16 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
           <strong style={TITLE_STYLE} title={targetName}>{targetName}</strong>
           {isPrs ? null : (
             <span style={EXPAND_GROUP_STYLE}>
+              {isLogic ? null : (
+                <button
+                  type="button"
+                  style={RESET_STYLE}
+                  title="Recenter on the current selection, or the whole graph if nothing is selected"
+                  onClick={recenter}
+                >
+                  Recenter
+                </button>
+              )}
               <button
                 type="button"
                 style={RESET_STYLE}
@@ -130,6 +143,7 @@ const RESET_STYLE: React.CSSProperties = {
   padding: "4px 10px",
   fontSize: 12,
   cursor: "pointer",
+  whiteSpace: "nowrap",
 };
 
 function flowToggleStyle(active: boolean): React.CSSProperties {

@@ -216,6 +216,10 @@ export interface BlueprintState {
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
   layoutSeq: number;
+  /** Bumped by the Toolbar's "Recenter" action. The active graph surface subscribes to it and, on a
+   * change, re-fits its viewport to the current selection — or to the whole graph when nothing is
+   * selected. Ephemeral: never serialized to the URL (it is a signal, not navigation state). */
+  recenterSeq: number;
   telemetry: Record<string, NodeMetrics>;
   environment: string | null;
   provider: TelemetryProvider | null;
@@ -245,6 +249,7 @@ export interface BlueprintState {
   /** Fully collapse the current selection (or the whole view / root container when nothing is
    * selected) — closes every open container in scope in one click. Surface-aware. */
   collapseAll(): void;
+  recenter(): void;
   select(nodeId: string | null): void;
   diveInto(nodeId: string): void;
   diveTo(nodeId: string): void;
@@ -428,6 +433,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     rfEdges: [],
     layoutStatus: "idle",
     layoutSeq: 0,
+    recenterSeq: 0,
     telemetry: {},
     environment: null,
     provider: dependencies.provider,
@@ -470,6 +476,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Fully collapse the same scope: close every open container within it in one click.
     collapseAll() {
       applyScoped(get, set, () => (moduleGraph ??= buildModuleGraph(get().index)), () => (blockDeps ??= buildBlockDeps(get().index)), idsToCollapse, "close");
+    },
+
+    // Bump the recenter signal so the active graph surface re-fits its viewport (to the current
+    // selection, or the whole graph if none). A pure signal — no relayout, no navigation change; the
+    // surface reads the value change via useRecenter and calls React Flow's fitView.
+    recenter() {
+      set({ recenterSeq: get().recenterSeq + 1 });
     },
 
     select(nodeId) {

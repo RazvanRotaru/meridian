@@ -21,6 +21,7 @@ import { CoveragePanel } from "./CoveragePanel";
 import { BeaconArrows } from "./BeaconArrows";
 import { MapLegend } from "./MapLegend";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
+import { useRecenter } from "./canvas/useRecenter";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { MinimalGraphView } from "./MinimalGraphView";
 import { accentForKind } from "../theme/kindColors";
@@ -44,6 +45,7 @@ export function ModuleMapView() {
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const { buildMinimalGraph, setModuleFocus } = useBlueprintActions();
   const { onNodeClick, onNodeDoubleClick, onPaneClick } = useModuleNodeInteractions();
+  useRecenter(useMemo(() => [...selected], [selected]));
 
   // Category/test hiding is a pure VISIBILITY filter over the laid-out graph; positions are untouched.
   const { nodes: shownNodes, edges: visibleEdges } = useMemo(
