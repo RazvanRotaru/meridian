@@ -100,6 +100,7 @@ const PANEL_STYLE: React.CSSProperties = {
   width: 296,
   maxHeight: "calc(100vh - 24px)",
   overflowY: "auto",
+  overflowX: "hidden",
   boxSizing: "border-box",
   borderRadius: 14,
   border: `1px solid ${TOKENS.surfaceBorder}`,

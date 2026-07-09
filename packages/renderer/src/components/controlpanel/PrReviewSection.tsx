@@ -129,7 +129,7 @@ function barStyle(expanded: boolean): React.CSSProperties {
     display: "flex",
     alignItems: "center",
     gap: 6,
-    width: "100%",
+    boxSizing: "border-box",
     padding: "9px 8px 9px 12px",
     borderRadius: 10,
     border: `1px solid ${expanded ? hexAlpha(ACTIVE_HUE, 0.55) : TOKENS.surfaceBorder}`,
