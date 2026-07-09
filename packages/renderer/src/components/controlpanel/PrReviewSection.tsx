@@ -44,20 +44,11 @@ export function PrReviewSection() {
 
   const count = open?.length ?? 0;
   const current = open?.find((pr) => pr.number === selected) ?? open?.[0] ?? null;
-  const index = current ? (open?.findIndex((pr) => pr.number === current.number) ?? 0) : 0;
-
-  const step = (delta: number) => {
-    if (!open || open.length === 0) {
-      return;
-    }
-    const next = (index + delta + open.length) % open.length;
-    void selectPr(open[next].number);
-  };
 
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={barStyle(expanded)}>
-        <button type="button" style={TOGGLE_STYLE} onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+        <button type="button" style={TOGGLE_STYLE} title="Open the full Pull requests page" onClick={() => setViewMode("prs")}>
           <span style={{ display: "inline-flex", color: expanded ? ACTIVE_HUE : TOKENS.textMuted }}>
             <PullRequestIcon size={15} />
           </span>
@@ -67,12 +58,18 @@ export function PrReviewSection() {
             <CountBadge style={badgeToneStyle(expanded)}>{hasMore ? `${count}+` : count} open</CountBadge>
           ) : null}
         </button>
-        <button type="button" style={maxButtonStyle(expanded)} title="Open the full Pull requests page" onClick={() => setViewMode("prs")}>
+        <button
+          type="button"
+          style={maxButtonStyle(expanded)}
+          title={expanded ? "Collapse PR review" : "Expand PR review"}
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+        >
           <MaximizeIcon size={14} />
         </button>
       </div>
 
-      {expanded ? <ExpandedBody unavailable={unavailable} open={open} current={current} index={index} total={count} onStep={step} onReview={reviewPrInGraph} /> : null}
+      {expanded ? <ExpandedBody unavailable={unavailable} open={open} current={current} onReview={reviewPrInGraph} /> : null}
     </section>
   );
 }
@@ -81,9 +78,6 @@ function ExpandedBody(props: {
   unavailable: boolean;
   open: PrSummary[] | null;
   current: PrSummary | null;
-  index: number;
-  total: number;
-  onStep: (delta: number) => void;
   onReview: () => void;
 }) {
   if (props.unavailable) {
@@ -95,7 +89,7 @@ function ExpandedBody(props: {
   if (props.open.length === 0 || props.current === null) {
     return <div style={HINT_STYLE}>No open pull requests.</div>;
   }
-  return <PrReviewCard pr={props.current} index={props.index} total={props.total} onStep={props.onStep} onReview={props.onReview} />;
+  return <PrReviewCard pr={props.current} onReview={props.onReview} />;
 }
 
 const LABEL_STYLE: React.CSSProperties = { fontSize: 13.5, fontWeight: 500, color: TOKENS.text };
