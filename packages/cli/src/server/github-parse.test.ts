@@ -86,6 +86,8 @@ describe("parsePullRequestList", () => {
         title: "Ship PR tab",
         user: { login: "daria", html_url: "https://evil.example" },
         head: { ref: "feature/prs", sha: "abc" },
+        base: { ref: "main", sha: "def" },
+        html_url: "https://github.com/org/repo/pull/7",
         updated_at: "2026-07-08T12:00:00Z",
         draft: true,
         state: "open",
@@ -93,23 +95,49 @@ describe("parsePullRequestList", () => {
       },
     ]);
     expect(prs).toEqual([
-      { number: 7, title: "Ship PR tab", author: "daria", headRef: "feature/prs", updatedAt: "2026-07-08T12:00:00Z", draft: true, state: "open" },
+      {
+        number: 7,
+        title: "Ship PR tab",
+        author: "daria",
+        headRef: "feature/prs",
+        baseRef: "main",
+        updatedAt: "2026-07-08T12:00:00Z",
+        draft: true,
+        state: "open",
+        url: "https://github.com/org/repo/pull/7",
+      },
     ]);
+  });
+
+  it("drops a non-https PR url rather than forwarding it", () => {
+    const [pr] = parsePullRequestList([
+      {
+        number: 8,
+        title: "No url",
+        user: { login: "x" },
+        head: { ref: "h" },
+        base: { ref: "main" },
+        html_url: "javascript:alert(1)",
+        updated_at: "2026-07-08T12:00:00Z",
+        state: "open",
+      },
+    ]);
+    expect(pr.url).toBe("");
   });
 });
 
 describe("parsePullRequestFiles", () => {
-  it("projects filenames and maps non-renderer statuses", () => {
+  it("projects filenames, maps non-renderer statuses, and keeps line counts", () => {
     expect(
       parsePullRequestFiles([
-        { filename: "src/new.ts", status: "copied", patch: "secret" },
-        { filename: "src/changed.ts", status: "changed" },
+        { filename: "src/new.ts", status: "copied", patch: "secret", additions: 12, deletions: 0 },
+        { filename: "src/changed.ts", status: "changed", additions: 3, deletions: 7 },
         { filename: "src/weird.ts", status: "unknown" },
       ]),
     ).toEqual([
-      { path: "src/new.ts", status: "added" },
-      { path: "src/changed.ts", status: "modified" },
-      { path: "src/weird.ts", status: "modified" },
+      { path: "src/new.ts", status: "added", additions: 12, deletions: 0 },
+      { path: "src/changed.ts", status: "modified", additions: 3, deletions: 7 },
+      { path: "src/weird.ts", status: "modified", additions: 0, deletions: 0 },
     ]);
   });
 });

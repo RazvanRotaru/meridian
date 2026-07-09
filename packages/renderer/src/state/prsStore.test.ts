@@ -14,9 +14,11 @@ function pr(number: number, title = `PR ${number}`): PrSummary {
     title,
     author: "octo",
     headRef: "feature",
+    baseRef: "main",
     updatedAt: "2026-07-08T00:00:00.000Z",
     draft: false,
     state: "open",
+    url: `https://github.com/o/r/pull/${number}`,
   };
 }
 
@@ -69,7 +71,7 @@ describe("PR store slice", () => {
     const store = freshStore();
     store.setState({
       viewMode: "prs",
-      prFiles: [{ path: "repo/src/a.ts", status: "modified" }],
+      prFiles: [{ path: "repo/src/a.ts", status: "modified", additions: 1, deletions: 0 }],
       flowSelection: { rootId: "stale", blockPath: [] },
       flowEmphasis: new Set(["stale"]),
     });
@@ -83,7 +85,7 @@ describe("PR store slice", () => {
 
   it("review with no matched modules still lands on the Map overview", () => {
     const store = freshStore();
-    store.setState({ viewMode: "prs", prFiles: [{ path: "docs/readme.md", status: "modified" }] });
+    store.setState({ viewMode: "prs", prFiles: [{ path: "docs/readme.md", status: "modified", additions: 1, deletions: 0 }] });
     store.getState().reviewPrInGraph();
     expect(store.getState().viewMode).toBe("modules");
     expect(store.getState().moduleFocus).toBeNull();

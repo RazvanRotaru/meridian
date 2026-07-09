@@ -16,7 +16,7 @@ const NODES: GraphNode[] = [
 ];
 
 function file(path: string, status: PrChangedFile["status"] = "modified"): PrChangedFile {
-  return { path, status };
+  return { path, status, additions: 0, deletions: 0 };
 }
 
 describe("matchPrFilesToModules", () => {

@@ -1,7 +1,8 @@
 /**
- * The Call-flow / UI-composition segmented control — the "separate viewer" switch. Selecting a
- * segment flips the store's viewMode, which re-derives the graph (different edge kinds) and,
- * for UI, dives to the React render subtree.
+ * The LENS segmented control — the "separate viewer" switch. Selecting a segment flips the store's
+ * viewMode, which re-derives the graph (different edge kinds) and, for UI, dives to the React render
+ * subtree. Pull requests are no longer a lens here — they live in the control panel's PR review
+ * section — so this offers the four graph lenses only.
  */
 
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
@@ -9,17 +10,16 @@ import type { ViewMode } from "../derive/edgeSelection";
 
 const SEGMENTS: ReadonlyArray<{ mode: ViewMode; label: string }> = [
   { mode: "modules", label: "Map" },
-  { mode: "call", label: "Service composition" },
-  { mode: "ui", label: "UI composition" },
-  { mode: "logic", label: "Logic flow" },
-  { mode: "prs", label: "PRs" },
+  { mode: "call", label: "Service" },
+  { mode: "ui", label: "UI" },
+  { mode: "logic", label: "Logic" },
 ];
 
 export function ViewModeToggle() {
   const viewMode = useBlueprint((state) => state.viewMode);
   const setViewMode = useBlueprintActions().setViewMode;
   return (
-    <div style={GROUP_STYLE} role="group" aria-label="View mode">
+    <div style={GROUP_STYLE} role="group" aria-label="Lens">
       {SEGMENTS.map((segment) => (
         <button
           key={segment.mode}
@@ -37,24 +37,24 @@ export function ViewModeToggle() {
 
 const GROUP_STYLE: React.CSSProperties = {
   display: "flex",
-  flexWrap: "wrap",
-  padding: 2,
+  padding: 3,
   gap: 2,
-  borderRadius: 8,
+  borderRadius: 9,
   border: "1px solid #2A2F37",
   background: "#0E1116",
 };
 
 function segmentStyle(active: boolean): React.CSSProperties {
   return {
+    flex: 1,
     border: "none",
     borderRadius: 6,
-    padding: "4px 10px",
-    fontSize: 12,
+    padding: "6px 8px",
+    fontSize: 12.5,
     cursor: "pointer",
     font: "inherit",
-    fontWeight: active ? 600 : 400,
-    background: active ? "#1F2530" : "transparent",
-    color: active ? "#E6EDF3" : "#9AA4B2",
+    fontWeight: active ? 600 : 500,
+    background: active ? "#242A31" : "transparent",
+    color: active ? "#E6EDF3" : "#8B949E",
   };
 }

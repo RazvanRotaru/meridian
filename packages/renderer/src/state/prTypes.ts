@@ -7,14 +7,18 @@ export interface PrSummary {
   title: string;
   author: string;
   headRef: string;
+  baseRef: string;
   updatedAt: string;
   draft: boolean;
   state: PrsTab;
+  url: string;
 }
 
 export interface PrChangedFile {
   path: string;
   status: PrFileStatus;
+  additions: number;
+  deletions: number;
 }
 
 export interface PrListResponse {

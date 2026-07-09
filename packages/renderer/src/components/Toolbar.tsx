@@ -1,159 +1,110 @@
 /**
- * The top-left control panel: project identity, a collapse-all reset, and the mandatory
- * environment gate (only when the artifact ships with an overlay).
+ * The top-left control panel: project identity + expand/collapse, the mandatory environment gate
+ * (only when the artifact ships an overlay), the collapsible PR review, and the lens / overlay /
+ * category / relationship controls. Categories, relationships and the module-only dials show on the
+ * module surface (Map + Service); the composition worklist rides along on the Service lens.
  */
 
+import type { ReactNode } from "react";
 import { Panel } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { EnvSelector } from "./EnvSelector";
 import { Breadcrumb } from "./Breadcrumb";
 import { ViewModeToggle } from "./ViewModeToggle";
-import { TestsToggle } from "./TestsToggle";
-import { PrivateToggle } from "./PrivateToggle";
-import { CoverageToggle } from "./CoverageToggle";
 import { FlowSelector } from "./FlowSelector";
 import { CompositionPanel } from "./composition/CompositionPanel";
 import { DepthSlider } from "./DepthSlider";
 import { ModuleCategoryToggles } from "./ModuleCategoryToggles";
 import { RelationshipToggles } from "./RelationshipToggles";
-import { HighlightModeToggle } from "./HighlightModeToggle";
+import { ControlPanelHeader } from "./controlpanel/ControlPanelHeader";
+import { PrReviewSection } from "./controlpanel/PrReviewSection";
+import { OverlaysSection } from "./controlpanel/OverlaysSection";
+import { Divider, SectionLabel, TOKENS } from "./controlpanel/panelKit";
 
 export function Toolbar(props: { preselectedEnv: string | null }) {
-  const targetName = useBlueprint((state) => state.artifact.target.name);
-  const hasOverlay = useBlueprint((state) => state.hasOverlay);
-  // The sidebar swaps its per-lens controls: "call" (Service composition) gets the composition map +
-  // refactor worklist; "modules" (Module map) gets the selection highlight-radius dial + category
-  // toggles; ui/logic keep the call-flow FlowSelector.
   const viewMode = useBlueprint((state) => state.viewMode);
-  const flowExplorerOpen = useBlueprint((state) => state.flowExplorerOpen);
+  const hasOverlay = useBlueprint((state) => state.hasOverlay);
+  const focusId = useBlueprint((state) => state.focusId);
+  const { resetCategoryFilter, resetRelationshipFilter } = useBlueprintActions();
+
   const isComposition = viewMode === "call";
-  const isModules = viewMode === "modules";
-  const isPrs = viewMode === "prs";
-  // The Logic view is a scrollable intra-procedural surface whose sub-tabs aren't all React Flow, so
-  // "recenter the graph" has no coherent meaning there — hide the action rather than dead-click it.
-  const isLogic = viewMode === "logic";
-  const showFlowToggle = viewMode === "ui" || viewMode === "modules";
-  const { expandAll, collapseAll, toggleFlowExplorer, recenter } = useBlueprintActions();
+  const onModuleSurface = viewMode === "modules" || isComposition;
+  const showExpandControls = viewMode !== "logic" && viewMode !== "prs";
+
   return (
     <Panel position="top-left">
       <div style={PANEL_STYLE}>
-        <div style={TITLE_ROW_STYLE}>
-          <strong style={TITLE_STYLE} title={targetName}>{targetName}</strong>
-          {isPrs ? null : (
-            <span style={EXPAND_GROUP_STYLE}>
-              {isLogic ? null : (
-                <button
-                  type="button"
-                  style={RESET_STYLE}
-                  title="Recenter on the current selection, or the whole graph if nothing is selected"
-                  onClick={recenter}
-                >
-                  Recenter
-                </button>
-              )}
-              <button
-                type="button"
-                style={RESET_STYLE}
-                title="Expand the selection one level — or the whole view when nothing is selected"
-                onClick={expandAll}
-              >
-                Expand all
-              </button>
-              <button
-                type="button"
-                style={RESET_STYLE}
-                title="Collapse the selection one level — or the whole view when nothing is selected"
-                onClick={collapseAll}
-              >
-                Collapse all
-              </button>
-            </span>
-          )}
-        </div>
-        <ViewModeToggle />
-        {isPrs ? null : (
+        <ControlPanelHeader showExpandControls={showExpandControls} />
+
+        {hasOverlay ? (
           <>
-            <div style={FILTER_ROW_STYLE}>
-              <TestsToggle />
-              {isModules || isComposition ? <HighlightModeToggle /> : null}
-              {isModules ? <PrivateToggle /> : null}
-              <CoverageToggle />
-              {showFlowToggle ? (
-                <button
-                  type="button"
-                  style={flowToggleStyle(flowExplorerOpen)}
-                  aria-pressed={flowExplorerOpen}
-                  onClick={toggleFlowExplorer}
-                >
-                  Flows
-                </button>
-              ) : null}
-            </div>
-            <Breadcrumb />
+            <Divider />
+            <EnvSelector preselectedEnv={props.preselectedEnv} />
           </>
-        )}
-        {isComposition ? (
+        ) : null}
+
+        <Divider />
+        <PrReviewSection />
+
+        <Divider />
+        <Group label="Lens">
+          <ViewModeToggle />
+          {focusId !== null ? <Breadcrumb /> : null}
+        </Group>
+
+        <Divider />
+        <Group label="Overlays">
+          <OverlaysSection />
+        </Group>
+
+        {onModuleSurface ? (
           <>
+            <Divider />
+            <Group label="Categories" action={{ label: "Clear", onClick: resetCategoryFilter, title: "Show all categories" }}>
+              <ModuleCategoryToggles />
+            </Group>
+
+            <Divider />
+            <Group label="Relationships" action={{ label: "All", onClick: resetRelationshipFilter, title: "Show all relationships" }}>
+              <RelationshipToggles />
+            </Group>
+
             <DepthSlider />
-            <CompositionPanel />
+            {isComposition ? <CompositionPanel /> : null}
           </>
-        ) : isModules ? (
+        ) : viewMode === "ui" || viewMode === "logic" ? (
           <>
-            <DepthSlider />
-            <ModuleCategoryToggles />
-            <RelationshipToggles />
+            <Divider />
+            <FlowSelector />
           </>
-        ) : isPrs ? null : (
-          <FlowSelector />
-        )}
-        {hasOverlay && !isPrs ? <EnvSelector preselectedEnv={props.preselectedEnv} /> : null}
+        ) : null}
       </div>
     </Panel>
+  );
+}
+
+function Group(props: { label: string; action?: { label: string; onClick: () => void; title?: string }; children: ReactNode }) {
+  return (
+    <section style={GROUP_STYLE}>
+      <SectionLabel action={props.action}>{props.label}</SectionLabel>
+      {props.children}
+    </section>
   );
 }
 
 const PANEL_STYLE: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
-  gap: 10,
-  padding: 12,
-  borderRadius: 10,
-  border: "1px solid #2A2F37",
-  background: "rgba(14,17,22,0.92)",
-  backdropFilter: "blur(6px)",
-  maxWidth: 300,
+  gap: 11,
+  padding: 16,
+  width: 296,
+  maxHeight: "calc(100vh - 24px)",
+  overflowY: "auto",
+  overflowX: "hidden",
+  boxSizing: "border-box",
+  borderRadius: 14,
+  border: `1px solid ${TOKENS.surfaceBorder}`,
+  background: "rgba(10,13,18,0.94)",
+  backdropFilter: "blur(8px)",
 };
-const TITLE_ROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 12 };
-const EXPAND_GROUP_STYLE: React.CSSProperties = { marginLeft: "auto", display: "flex", gap: 6 };
-const FILTER_ROW_STYLE: React.CSSProperties = { display: "flex", gap: 6 };
-const TITLE_STYLE: React.CSSProperties = {
-  fontSize: 14,
-  color: "#E6EDF3",
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-  flex: 1,
-  minWidth: 0,
-};
-const RESET_STYLE: React.CSSProperties = {
-  background: "#1A1F27",
-  color: "#9AA4B2",
-  border: "1px solid #2A2F37",
-  borderRadius: 6,
-  padding: "4px 10px",
-  fontSize: 12,
-  cursor: "pointer",
-  whiteSpace: "nowrap",
-};
-
-function flowToggleStyle(active: boolean): React.CSSProperties {
-  return {
-    background: active ? "#1F2530" : "#1A1F27",
-    color: active ? "#E6EDF3" : "#9AA4B2",
-    border: `1px solid ${active ? "#56C271" : "#2A2F37"}`,
-    borderRadius: 6,
-    padding: "4px 10px",
-    fontSize: 12,
-    cursor: "pointer",
-  };
-}
+const GROUP_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 9 };
