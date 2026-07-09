@@ -48,16 +48,20 @@ interface Counts {
   files: number;
 }
 
-// "Packages" counts only ROOT package nodes (a monorepo's top-level packages — one for a single
-// service), not every nested directory; "files" counts every module node.
+// "Packages" counts the declared npm packages (the `npm-package` tag — matches the cards the Map
+// overview draws for a monorepo). Extractors that don't tag them (a plain single service) fall back
+// to root package nodes, so a lone service still reads "1 package". "Files" counts every module.
 function countKinds(roots: readonly GraphNode[], nodesById: ReadonlyMap<string, GraphNode>): Counts {
-  const packages = roots.filter((node) => node.kind === "package").length;
   let files = 0;
+  let npmPackages = 0;
   for (const node of nodesById.values()) {
     if (node.kind === "module") {
       files += 1;
+    } else if (node.kind === "package" && node.tags?.includes("npm-package")) {
+      npmPackages += 1;
     }
   }
+  const packages = npmPackages > 0 ? npmPackages : roots.filter((node) => node.kind === "package").length;
   return { packages, files };
 }
 
