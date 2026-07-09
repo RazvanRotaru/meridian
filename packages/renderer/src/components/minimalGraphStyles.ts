@@ -6,16 +6,17 @@
  */
 
 import type { Node } from "@xyflow/react";
-import type { ModuleCardData } from "../derive/moduleLevel";
-import { CATEGORY_COLOR } from "./nodes/modulemap/ModuleCardNode";
 import { MINIMAL_STUB_NODE } from "../layout/minimalSubgraphLayout";
 
 const STUB_TINT = "#3A4452";
 // An expanded file's nested declarations (unit/block/step) share a muted code tint on the MiniMap —
 // they carry no file `category`, and the reader navigates by the file frames, not their innards.
 const CHILD_TINT = "#4A5568";
+// Files wear the single file-family accent — the Map no longer tints per category (category is
+// carried by a text chip alone; see ModuleCardNode), so the MiniMap mirrors that one hue.
+const FILE_TINT = "#3FB7C4";
 
-/** MiniMap tint: [+n] stubs muted grey, nested declarations a muted code tint, else the file's hue. */
+/** MiniMap tint: [+n] stubs muted grey, nested declarations a muted code tint, else the file accent. */
 export function minimalMiniMapColor(node: Node): string {
   if (node.type === MINIMAL_STUB_NODE) {
     return STUB_TINT;
@@ -23,7 +24,7 @@ export function minimalMiniMapColor(node: Node): string {
   if (node.type !== "file") {
     return CHILD_TINT;
   }
-  return CATEGORY_COLOR[(node.data as ModuleCardData).category];
+  return FILE_TINT;
 }
 
 export const SURFACE_STYLE: React.CSSProperties = { position: "relative", width: "100%", height: "100%", background: "#0E1116" };
