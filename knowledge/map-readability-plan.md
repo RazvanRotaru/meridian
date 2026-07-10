@@ -80,7 +80,9 @@ a column no card ever occupies), and peels off horizontally into its target at t
 height. Wires sharing the rail overlap into a literal bus bar; every strand stays individually
 addressable. Precedence: bundle (container pairs) → route (frame-crossing) → spool (open-canvas
 fans only, e.g. the minimal overlay's ghost ring). Verified on the envelope.ts state: 16/25 wires
-routed, knot gone, zero wires behind cards.
+routed, knot gone, zero wires behind cards. The spool itself gained a GEOMETRY VETO: a wire
+whose free end lacks forward room to approach the gather (a ghost card hugging its hub) falls
+back to a plain curve instead of folding into an S-loop — trunks only where trunks make sense.
 
 ### P1 — semantic zoom (the next big one, ~1–2 days)
 

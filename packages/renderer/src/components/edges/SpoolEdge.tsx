@@ -5,7 +5,7 @@
  * a hub's wires overlap into one visible trunk for the final stretch and fan out only in open canvas.
  */
 
-import { BaseEdge, Position, type EdgeProps } from "@xyflow/react";
+import { BaseEdge, getBezierPath, Position, type EdgeProps } from "@xyflow/react";
 import type { SpoolEdgeData } from "../../layout/edgeSpooling";
 
 /** Length of the straight shared-trunk segment at a hub's handle. Fixed and hub-derived on purpose:
@@ -20,6 +20,10 @@ const PULL = 80;
 const APPROACH_MIN = 80;
 const APPROACH_MAX = 480;
 const APPROACH_FRACTION = 0.35;
+/** GEOMETRY VETO: a trunk only makes sense when the far end has this much forward room to approach
+ * the gather point. A source sitting closer than this (a ghost card hugging its hub) would force
+ * the wire to curve BACKWARD into the gather — the S-loop artifact — so it draws plain instead. */
+const MIN_FREE_SPAN = 40;
 
 interface Point {
   x: number;
@@ -42,8 +46,20 @@ export function SpoolEdge({
   const source: Point = { x: sourceX, y: sourceY };
   const target: Point = { x: targetX, y: targetY };
   // A gather point derives ONLY from its hub's handle, so every wire of that hub shares it exactly.
-  const sourceGather = spoolEnd !== "target" ? outward(source, sourcePosition, TRUNK) : null;
-  const targetGather = spoolEnd !== "source" ? outward(target, targetPosition, TRUNK) : null;
+  // The geometry veto drops a gather whose approach would fold backward (see MIN_FREE_SPAN).
+  let sourceGather = spoolEnd !== "target" ? outward(source, sourcePosition, TRUNK) : null;
+  let targetGather = spoolEnd !== "source" ? outward(target, targetPosition, TRUNK) : null;
+  if (targetGather && !hasApproachRoom(sourceGather ?? source, targetGather, targetPosition)) {
+    targetGather = null;
+  }
+  if (sourceGather && !hasApproachRoom(targetGather ?? target, sourceGather, sourcePosition)) {
+    sourceGather = null;
+  }
+  // Neither end can gather sanely → this wire is a plain curve, exactly as if it were never spooled.
+  if (!sourceGather && !targetGather) {
+    const [plain] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
+    return <BaseEdge id={id} path={plain} style={style} markerEnd={markerEnd} />;
+  }
   const from = sourceGather ?? source;
   const to = targetGather ?? target;
   // Control points extend along each end's outward axis, so the curve joins the straight trunk
@@ -60,6 +76,21 @@ export function SpoolEdge({
     targetGather ? `L ${target.x} ${target.y}` : "",
   ].join(" ");
   return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />;
+}
+
+/** True when `free` sits far enough on the APPROACH side of `gather` (the side the hub handle
+ * faces) that the curve arrives forward instead of folding back on itself. */
+function hasApproachRoom(free: Point, gather: Point, hubPosition: Position): boolean {
+  switch (hubPosition) {
+    case Position.Left:
+      return free.x <= gather.x - MIN_FREE_SPAN;
+    case Position.Right:
+      return free.x >= gather.x + MIN_FREE_SPAN;
+    case Position.Top:
+      return free.y <= gather.y - MIN_FREE_SPAN;
+    default:
+      return free.y >= gather.y + MIN_FREE_SPAN;
+  }
 }
 
 /** `distance` px outward from a handle, along the side the handle faces. */
