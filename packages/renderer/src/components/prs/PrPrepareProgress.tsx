@@ -35,6 +35,20 @@ export function PrPrepareProgress() {
   );
 }
 
+/** Compact one-line sibling of PrPrepareProgress for tight surfaces (the control-panel review
+ * card): the same store fields and stage labels, rendered as a single active dot + label instead
+ * of the full step list — so the two indicators can never drift apart. */
+export function PrPrepareInline() {
+  const stage = useBlueprint((state) => state.prPrepareStage);
+  const label = STAGES.find((entry) => entry.id === stage)?.label ?? STAGES[0].label;
+  return (
+    <div style={INLINE_ROW}>
+      <span style={stepDot("active")} />
+      <span style={INLINE_LABEL}>{label}…</span>
+    </div>
+  );
+}
+
 export function PrPrepareError() {
   const message = useBlueprint((state) => state.prPrepareError);
   const { reviewPrInGraph } = useBlueprintActions();
@@ -87,6 +101,8 @@ const CARD: React.CSSProperties = {
   marginBottom: 14,
 };
 const CARD_TITLE: React.CSSProperties = { color: "#F0F6FC", fontSize: 13.5, fontWeight: 650 };
+const INLINE_ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
+const INLINE_LABEL: React.CSSProperties = { fontSize: 12, color: "#E6EDF3", fontWeight: 550 };
 const STEP_LIST: React.CSSProperties = { listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 12 };
 const STEP_ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 12 };
 const ERROR_TITLE: React.CSSProperties = { color: "#FCA5A5", fontSize: 13.5, fontWeight: 650 };

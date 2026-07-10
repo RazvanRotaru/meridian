@@ -9,6 +9,7 @@ import type { PrChangedFile, PrSummary } from "../../state/prTypes";
 import { useBlueprint } from "../../state/StoreContext";
 import { Divider, hexAlpha, TOKENS } from "./panelKit";
 import { ExternalLinkIcon } from "./icons";
+import { PrPrepareInline } from "../prs/PrPrepareProgress";
 
 const NUMBER_HUE = "#7DD3FC";
 const OPEN_HUE = "#56C271";
@@ -23,6 +24,12 @@ export function PrReviewCard(props: {
   const truncated = useBlueprint((state) => state.prFilesTruncated);
   const loading = useBlueprint((state) => state.prsLoading);
   const reviewed = useBlueprint((state) => state.prReviewed === props.pr.number);
+  // The same prepare lane the PRs page's step indicator reads — this card fires the same
+  // reviewPrInGraph, so while the server streams the PR-head analysis it must not re-fire, and
+  // the reader needs to see WHY the click has not landed yet.
+  const reviewStatus = useBlueprint((state) => state.prReviewStatus);
+  const prepareError = useBlueprint((state) => state.prPrepareError);
+  const preparing = reviewStatus === "preparing";
   const stats = useMemo(() => sumStats(files), [files]);
 
   return (
@@ -41,7 +48,13 @@ export function PrReviewCard(props: {
         ) : null}
       </div>
 
-      <button type="button" style={BODY_STYLE} title="Review this PR's changes in the graph" onClick={props.onReview}>
+      <button
+        type="button"
+        style={preparing ? BODY_DISABLED_STYLE : BODY_STYLE}
+        title={preparing ? "Preparing the PR review…" : "Review this PR's changes in the graph"}
+        disabled={preparing}
+        onClick={props.onReview}
+      >
         <div style={TITLE_STYLE}>{props.pr.title}</div>
         <div style={BRANCH_STYLE}>
           {props.pr.headRef}
@@ -59,6 +72,9 @@ export function PrReviewCard(props: {
           ) : null}
         </div>
       </button>
+
+      {preparing ? <PrPrepareInline /> : null}
+      {reviewStatus === "error" ? <div style={PREPARE_ERROR_STYLE}>{prepareError ?? "PR analysis failed."} Click the card to retry.</div> : null}
 
       <Divider />
       <div style={FOOTER_STYLE}>{footerText(files, truncated, loading, reviewed)}</div>
@@ -160,6 +176,8 @@ const BRANCH_STYLE: React.CSSProperties = {
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
 };
+const BODY_DISABLED_STYLE: React.CSSProperties = { ...BODY_STYLE, cursor: "default", opacity: 0.55 };
+const PREPARE_ERROR_STYLE: React.CSSProperties = { fontSize: 11.5, lineHeight: "16px", color: "#FCA5A5" };
 const AUTHOR_ROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, marginTop: 2 };
 const AUTHOR_NAME_STYLE: React.CSSProperties = {
   color: TOKENS.textMuted,
