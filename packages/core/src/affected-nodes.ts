@@ -2,15 +2,20 @@
  * "Which CODE BLOCKS did this PR touch?" — the pure predicate behind the minimal review graph.
  *
  * A changed file names a set of nodes, but showing every node in a 500-line file is not "minimal".
- * So a node is affected only when it BOTH lives in a changed file AND its source range overlaps one
- * of that file's changed line ranges (`ChangedFile.hunks`). When a file carries no hunks — an
- * untracked add, an explicit `--changed` entry, or a diff we couldn't parse — the honest fallback is
- * whole-file: every node in it counts. Overlap uses the post-image line numbers on both sides (the
- * diff's `+` hunks and `node.location`, since we extract the very tree the diff describes).
+ * The unit is the LEAF block: a childless node is affected when its source range overlaps one of the
+ * file's changed line ranges (`ChangedFile.hunks`). Containers (class/interface/…) are NOT marked
+ * off their whole-body span — a one-method edit would ring every sibling — their ring and "Δ n"
+ * come from upward aggregation on the read side. A container still marks itself when a hunk touches
+ * its OWN lines (inside its span but outside every child's, e.g. only the declaration line changed),
+ * else that edit would vanish. Overlap uses the post-image line numbers on both sides (the diff's
+ * `+` hunks and `node.location`, since we extract the very tree the diff describes).
  *
- * Only real code blocks qualify: `package` and `module` nodes are the file/directory containers the
- * user explicitly does NOT want as the unit, and `ext:`/`unresolved:` pseudo-nodes have no repo file.
- * Lives in core so the renderer graph and any future CLI report share one tested implementation.
+ * When a file carries no hunks — an untracked add, an explicit `--changed` entry, or a diff GitHub
+ * omitted (binary/oversized) — the honest fallback is the file's MODULE node only, mirroring
+ * `tagChangedNodes`' module fallback: blanket-marking every block would over-mark code the PR never
+ * touched. Otherwise `package`/`module` nodes never qualify — they are the file/directory containers
+ * the user explicitly does NOT want as the unit — and `ext:`/`unresolved:` pseudo-nodes have no repo
+ * file. Lives in core so the renderer graph and any future CLI report share one tested implementation.
  */
 
 import { parseNodeId } from "./ids";
@@ -26,12 +31,19 @@ export interface AffectedNode {
   overlapsHunk: boolean;
 }
 
-/** Node kinds that are never a "code block": file/directory containers and boundary pseudo-nodes. */
-const NON_BLOCK_KINDS: ReadonlySet<string> = new Set(["package", "module"]);
+/** Node kinds that are never a "code block": file/directory containers and boundary pseudo-nodes.
+ * Exported so downstream views (e.g. the renderer's files checklist) share ONE container vocabulary. */
+export const NON_BLOCK_KINDS: ReadonlySet<string> = new Set(["package", "module"]);
+
+/** THE inclusive line-range overlap predicate — every hunk∩span decision must go through this one
+ * implementation (graph highlight, checklist fingerprints, comment anchors), so they never drift. */
+export function rangesOverlap(start: number, end: number, range: LineRange): boolean {
+  return start <= range.end && end >= range.start;
+}
 
 /**
- * The changed code blocks, sorted file asc → startLine asc → id asc (a stable, readable order for
- * both the graph and any list). A node with no `location.file` in the changed set is skipped.
+ * The changed code blocks, sorted file asc → id asc (a stable, readable order for both the graph
+ * and any list). A node with no `location.file` in the changed set is skipped.
  */
 export function computeAffectedNodes(
   nodes: readonly GraphNode[],
@@ -39,20 +51,25 @@ export function computeAffectedNodes(
 ): AffectedNode[] {
   const statusByFile = new Map(changedFiles.map((file) => [file.path, file.status]));
   const hunksByFile = new Map(changedFiles.map((file) => [file.path, file.hunks]));
+  const childSpans = childSpansByParent(nodes);
   const affected: AffectedNode[] = [];
   for (const node of nodes) {
-    if (!isBlockKind(node)) {
-      continue;
-    }
     const file = node.location.file;
     const status = statusByFile.get(file);
     if (status === undefined) {
       continue;
     }
     const hunks = hunksByFile.get(file);
-    const overlap = overlapsAnyHunk(node, hunks);
-    if (overlap.hit) {
-      affected.push({ nodeId: node.id, status, file, overlapsHunk: overlap.fromHunk });
+    if (hunks === undefined) {
+      // Hunk-less fallback: the module node ALONE carries the "this file changed" signal, so it must
+      // slip past NON_BLOCK_KINDS here — without it a hunk-less file's card would never ring.
+      if (node.kind === "module") {
+        affected.push({ nodeId: node.id, status, file, overlapsHunk: false });
+      }
+      continue;
+    }
+    if (isBlockKind(node) && marksFromHunks(node, hunks, childSpans.get(node.id))) {
+      affected.push({ nodeId: node.id, status, file, overlapsHunk: true });
     }
   }
   return sortAffected(affected);
@@ -80,22 +97,59 @@ function isBlockKind(node: GraphNode): boolean {
   return lang !== "ext" && lang !== "unresolved";
 }
 
-/** hit = counts as affected; fromHunk = true only when a real hunk overlapped (not the whole-file fallback). */
-function overlapsAnyHunk(
+/** A leaf marks on plain span overlap; a container only when a hunk touches its OWN (non-child) lines. */
+function marksFromHunks(
   node: GraphNode,
-  hunks: readonly LineRange[] | undefined,
-): { hit: boolean; fromHunk: boolean } {
-  if (hunks === undefined) {
-    return { hit: true, fromHunk: false }; // whole-file fallback
-  }
+  hunks: readonly LineRange[],
+  childSpans: readonly LineRange[] | undefined,
+): boolean {
   const start = node.location.startLine;
   const end = node.location.endLine ?? start;
-  for (const hunk of hunks) {
-    if (start <= hunk.end && end >= hunk.start) {
-      return { hit: true, fromHunk: true };
+  if (childSpans === undefined) {
+    return hunks.some((hunk) => rangesOverlap(start, end, hunk));
+  }
+  return hunks.some((hunk) => touchesOwnLines(hunk, start, end, childSpans));
+}
+
+/** True when hunk ∩ [start, end] is non-empty and at least one of its lines escapes every child span. */
+function touchesOwnLines(hunk: LineRange, start: number, end: number, childSpans: readonly LineRange[]): boolean {
+  const from = Math.max(hunk.start, start);
+  const to = Math.min(hunk.end, end);
+  return from <= to && !coveredBySpans(from, to, childSpans);
+}
+
+/** Interval cover over spans sorted by start: does their union contain every line of [from, to]? */
+function coveredBySpans(from: number, to: number, spans: readonly LineRange[]): boolean {
+  let cursor = from;
+  for (const span of spans) {
+    if (span.start > cursor) {
+      return false; // sorted by start, so nothing later can cover the gap at `cursor`
+    }
+    if (span.end >= cursor) {
+      cursor = span.end + 1;
+    }
+    if (cursor > to) {
+      return true;
     }
   }
-  return { hit: false, fromHunk: false };
+  return cursor > to;
+}
+
+/** Direct-child source spans per parent id, sorted by start — the "not my own lines" mask. */
+function childSpansByParent(nodes: readonly GraphNode[]): Map<string, LineRange[]> {
+  const spans = new Map<string, LineRange[]>();
+  for (const node of nodes) {
+    if (!node.parentId) {
+      continue;
+    }
+    const list = spans.get(node.parentId) ?? [];
+    list.push({ start: node.location.startLine, end: node.location.endLine ?? node.location.startLine });
+    spans.set(node.parentId, list);
+  }
+  for (const list of spans.values()) {
+    list.sort((a, b) => a.start - b.start);
+  }
+  return spans;
 }
 
 function sortAffected(affected: AffectedNode[]): AffectedNode[] {

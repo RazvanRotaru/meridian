@@ -27,6 +27,7 @@ export interface GenerateOptions extends GlobalOptions {
   includeExternal?: boolean;
   includeUnresolved?: boolean;
   excludeTests?: boolean;
+  valueRefs?: boolean;
   changedSince?: string;
 }
 
@@ -46,6 +47,7 @@ export async function runGenerate(path: string, options: GenerateOptions): Promi
     includeExternal: options.includeExternal,
     includeUnresolved: options.includeUnresolved,
     excludeTests: options.excludeTests,
+    valueRefs: options.valueRefs,
     changedSince: options.changedSince,
     materializeBoundary: true,
   });

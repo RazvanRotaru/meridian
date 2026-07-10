@@ -19,7 +19,7 @@ import { relativeToRoot } from "./paths";
 
 const MAX_DEPTH = 6;
 const SKIP_DIRS = new Set(["node_modules", "dist", "build", "out", "coverage", ".git"]);
-const ENTRY_CANDIDATES = ["src/index.ts", "src/index.tsx", "index.ts", "index.tsx"];
+export const ENTRY_CANDIDATES = ["src/index.ts", "src/index.tsx", "index.ts", "index.tsx"];
 
 export interface WorkspacePaths {
   baseUrl: string;
@@ -50,7 +50,7 @@ function addPackageAliases(paths: Record<string, string[]>, root: string, packag
 }
 
 /** Absolute dirs holding a package.json, bounded and skipping dependency/build trees. */
-function findPackageDirs(root: string): string[] {
+export function findPackageDirs(root: string): string[] {
   const found: string[] = [];
   walk(root, MAX_DEPTH, found);
   return found;
@@ -71,7 +71,7 @@ function walk(dir: string, depth: number, found: string[]): void {
   }
 }
 
-function readPackageName(packageDir: string): string | null {
+export function readPackageName(packageDir: string): string | null {
   try {
     const parsed = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8")) as { name?: unknown };
     return typeof parsed.name === "string" && parsed.name.length > 0 ? parsed.name : null;
@@ -80,7 +80,7 @@ function readPackageName(packageDir: string): string | null {
   }
 }
 
-function firstExisting(packageDir: string, candidates: string[]): string | null {
+export function firstExisting(packageDir: string, candidates: string[]): string | null {
   for (const candidate of candidates) {
     const absolute = join(packageDir, candidate);
     if (fileExists(absolute)) {
@@ -106,7 +106,7 @@ function fileExists(path: string): boolean {
   }
 }
 
-function dirExists(path: string): boolean {
+export function dirExists(path: string): boolean {
   try {
     return statSync(path).isDirectory();
   } catch {

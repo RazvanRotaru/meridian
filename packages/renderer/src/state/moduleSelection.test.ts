@@ -37,6 +37,7 @@ function freshStore(): BlueprintStore {
     sourceUrl: null,
     prsUrl: "/api/prs",
     prFilesUrl: "/api/prs/files",
+    prReviewUrl: "/api/prs/review",
   });
 }
 
@@ -73,14 +74,15 @@ describe("module-map selection set", () => {
 
   it("hiding tests strands test ids out of the selection but keeps production picks", () => {
     const store = freshStore();
+    store.getState().toggleShowTests(); // tests are hidden by default — reveal them so a test id is pickable
     store.getState().toggleModuleSelect("ts:src/a.ts");
     store.getState().toggleModuleSelect("ts:src/a.test.ts");
-    store.getState().toggleShowTests();
+    store.getState().toggleShowTests(); // hide again — the test id is stranded out of the selection
     expect(store.getState().moduleSelected).toEqual(new Set(["ts:src/a.ts"]));
   });
 });
 
-describe("minimal-graph overlay navigation", () => {
+describe("minimal-graph overlay (extract selection)", () => {
   function withBuiltGraph(): BlueprintStore {
     const store = freshStore();
     store.getState().toggleModuleSelect("ts:src/a.ts");
@@ -89,49 +91,59 @@ describe("minimal-graph overlay navigation", () => {
     return store;
   }
 
-  it("buildMinimalGraph opens the overlay from the selection's file modules", () => {
-    expect(withBuiltGraph().getState().minimalSeedIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
-  });
-
-  it("expandMinimal records the expansion and commits its source to the kept (persistent) set", () => {
+  it("buildMinimalGraph extracts the selection verbatim as members and origin", () => {
     const store = withBuiltGraph();
-    store.getState().expandMinimal("ts:src/a.ts", "out");
-    expect(store.getState().minimalExpanded).toEqual([{ id: "ts:src/a.ts", direction: "out" }]);
-    expect(store.getState().minimalKeptIds).toEqual(["ts:src/a.ts"]);
-    // The same direction twice is a no-op.
-    store.getState().expandMinimal("ts:src/a.ts", "out");
-    expect(store.getState().minimalExpanded).toHaveLength(1);
-  });
-
-  it("resetMinimalGraph drops all growth back to the seed base but keeps the overlay open", () => {
-    const store = withBuiltGraph();
-    store.getState().expandMinimal("ts:src/a.ts", "out");
-    store.getState().resetMinimalGraph();
-    expect(store.getState().minimalExpanded).toEqual([]);
-    expect(store.getState().minimalKeptIds).toEqual([]);
     expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
+    expect(store.getState().minimalMemberIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
   });
 
-  it("a fresh build resets any prior growth", () => {
+  it("promoteMinimalGhost adds a member without touching the origin", () => {
     const store = withBuiltGraph();
-    store.getState().expandMinimal("ts:src/a.ts", "out");
+    store.getState().promoteMinimalGhost("ts:src/a.test.ts");
+    expect(store.getState().minimalMemberIds).toContain("ts:src/a.test.ts");
+    expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
+    // Promoting an existing member is a no-op.
+    store.getState().promoteMinimalGhost("ts:src/a.ts");
+    expect(store.getState().minimalMemberIds.filter((id) => id === "ts:src/a.ts")).toHaveLength(1);
+  });
+
+  it("demoteMinimalMember removes a member but never empties the set", () => {
+    const store = withBuiltGraph();
+    store.getState().demoteMinimalMember("ts:src/b.ts");
+    expect(store.getState().minimalMemberIds).toEqual(["ts:src/a.ts"]);
+    // The last member can't be removed.
+    store.getState().demoteMinimalMember("ts:src/a.ts");
+    expect(store.getState().minimalMemberIds).toEqual(["ts:src/a.ts"]);
+  });
+
+  it("resetMinimalGraph restores the working set to the origin", () => {
+    const store = withBuiltGraph();
+    store.getState().promoteMinimalGhost("ts:src/a.test.ts");
+    store.getState().demoteMinimalMember("ts:src/b.ts");
+    store.getState().resetMinimalGraph();
+    expect(store.getState().minimalMemberIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
+  });
+
+  it("a fresh build resets any prior curation", () => {
+    const store = withBuiltGraph();
+    store.getState().promoteMinimalGhost("ts:src/a.test.ts");
     store.getState().buildMinimalGraph();
-    expect(store.getState().minimalExpanded).toEqual([]);
-    expect(store.getState().minimalKeptIds).toEqual([]);
+    expect(store.getState().minimalMemberIds).toEqual(store.getState().minimalSeedIds);
   });
 
   it("closeMinimalGraph clears the overlay but keeps the selection for a rebuild", () => {
     const store = withBuiltGraph();
     store.getState().closeMinimalGraph();
     expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().minimalMemberIds).toEqual([]);
     expect(store.getState().moduleSelected.size).toBe(2);
   });
 
   it("leaving the Map lens closes the overlay (it never lingers behind another tab)", () => {
     const store = withBuiltGraph();
-    store.getState().expandMinimal("ts:src/a.ts", "out");
+    store.getState().promoteMinimalGhost("ts:src/a.test.ts");
     store.getState().setViewMode("logic");
     expect(store.getState().minimalSeedIds).toEqual([]);
-    expect(store.getState().minimalExpanded).toEqual([]);
+    expect(store.getState().minimalMemberIds).toEqual([]);
   });
 });

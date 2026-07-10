@@ -12,6 +12,7 @@ import { Pill } from "./panelKit";
 const REACH_HUE = "#5B9BE3";
 const PRIVATE_HUE = "#7C8CA3";
 const FLOWS_HUE = "#5B9BE3";
+const HIGHWAYS_HUE = "#C99A4B";
 
 export function OverlaysSection() {
   const viewMode = useBlueprint((state) => state.viewMode);
@@ -23,9 +24,11 @@ export function OverlaysSection() {
   const coverageMode = useBlueprint((state) => state.coverageMode);
   const coveragePercent = useBlueprint((state) => state.coverage?.summary.percent ?? null);
   const flowExplorerOpen = useBlueprint((state) => state.flowExplorerOpen);
-  const { toggleShowTests, toggleHighlightMode, togglePrivateMembers, toggleCoverageMode, toggleFlowExplorer } = useBlueprintActions();
+  const showHighways = useBlueprint((state) => state.showHighways);
+  const { toggleShowTests, toggleHighlightMode, togglePrivateMembers, toggleCoverageMode, toggleFlowExplorer, toggleHighways } = useBlueprintActions();
 
   const onModuleSurface = viewMode === "modules" || viewMode === "call";
+  const onMap = viewMode === "modules";
   const noTests = testCount === 0;
   const noPrivate = privateCount === 0;
 
@@ -66,6 +69,17 @@ export function OverlaysSection() {
           onClick={togglePrivateMembers}
         >
           Private
+        </Pill>
+      ) : null}
+      {onMap ? (
+        <Pill
+          active={showHighways}
+          accent={HIGHWAYS_HUE}
+          indicator="square"
+          title={showHighways ? "Highways on: cross-package edges merge into bundles (select a node to read its own links)" : "Highways off: draw every edge individually"}
+          onClick={toggleHighways}
+        >
+          Highways
         </Pill>
       ) : null}
       <Pill

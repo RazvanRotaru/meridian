@@ -7,7 +7,7 @@
 import { Node, SyntaxKind, type ClassDeclaration } from "ts-morph";
 import type { CallSite, EdgeKind, ExtractionDiagnostic } from "@meridian/core";
 import { lineColOf, nodeKey, type NodeDescriptor } from "./model";
-import { resolveTarget, type TargetResolution } from "./edge-resolve";
+import { resolveTarget, type CrossPackageResolver, type TargetResolution } from "./edge-resolve";
 import type { LoadedProject } from "./project-loader";
 import type { ResolutionIndex } from "./resolution-index";
 
@@ -24,14 +24,15 @@ export function collectRawEdges(
   index: ResolutionIndex,
   moduleByFilePath: Map<string, NodeDescriptor>,
   diagnostics: ExtractionDiagnostic[],
+  resolver?: CrossPackageResolver,
 ): RawEdge[] {
   const edges: RawEdge[] = [];
   for (const sourceFile of loaded.sourceFiles) {
     const relPath = loaded.relativePathOf(sourceFile);
-    collectBehaviouralEdges(sourceFile, relPath, index, moduleByFilePath, diagnostics, edges);
+    collectBehaviouralEdges(sourceFile, relPath, index, moduleByFilePath, diagnostics, edges, resolver);
   }
   for (const descriptor of descriptors) {
-    collectInheritanceEdges(descriptor, index, diagnostics, edges);
+    collectInheritanceEdges(descriptor, index, diagnostics, edges, resolver);
   }
   return edges;
 }
@@ -43,15 +44,16 @@ function collectBehaviouralEdges(
   moduleByFilePath: Map<string, NodeDescriptor>,
   diagnostics: ExtractionDiagnostic[],
   edges: RawEdge[],
+  resolver?: CrossPackageResolver,
 ): void {
   for (const call of sourceFile.getDescendantsOfKind(SyntaxKind.CallExpression)) {
-    addCallableEdge(call, calleeOf(call), "calls", relPath, index, moduleByFilePath, diagnostics, edges);
+    addCallableEdge(call, calleeOf(call), "calls", relPath, index, moduleByFilePath, diagnostics, edges, resolver);
   }
   for (const expression of sourceFile.getDescendantsOfKind(SyntaxKind.NewExpression)) {
-    addCallableEdge(expression, calleeOf(expression), "instantiates", relPath, index, moduleByFilePath, diagnostics, edges);
+    addCallableEdge(expression, calleeOf(expression), "instantiates", relPath, index, moduleByFilePath, diagnostics, edges, resolver);
   }
-  collectReferenceEdges(sourceFile, relPath, index, moduleByFilePath, diagnostics, edges);
-  collectRenderEdges(sourceFile, relPath, index, moduleByFilePath, diagnostics, edges);
+  collectReferenceEdges(sourceFile, relPath, index, moduleByFilePath, diagnostics, edges, resolver);
+  collectRenderEdges(sourceFile, relPath, index, moduleByFilePath, diagnostics, edges, resolver);
 }
 
 /**
@@ -69,9 +71,10 @@ function collectReferenceEdges(
   moduleByFilePath: Map<string, NodeDescriptor>,
   diagnostics: ExtractionDiagnostic[],
   edges: RawEdge[],
+  resolver?: CrossPackageResolver,
 ): void {
   for (const ref of sourceFile.getDescendantsOfKind(SyntaxKind.TypeReference)) {
-    addCallableEdge(ref, typeNameOf(ref), "references", relPath, index, moduleByFilePath, diagnostics, edges);
+    addCallableEdge(ref, typeNameOf(ref), "references", relPath, index, moduleByFilePath, diagnostics, edges, resolver);
   }
 }
 
@@ -94,12 +97,13 @@ function collectRenderEdges(
   moduleByFilePath: Map<string, NodeDescriptor>,
   diagnostics: ExtractionDiagnostic[],
   edges: RawEdge[],
+  resolver?: CrossPackageResolver,
 ): void {
   for (const kind of JSX_ELEMENT_KINDS) {
     for (const element of sourceFile.getDescendantsOfKind(kind)) {
       const tag = componentTagOf(element);
       if (tag) {
-        addCallableEdge(element, tag, "renders", relPath, index, moduleByFilePath, diagnostics, edges);
+        addCallableEdge(element, tag, "renders", relPath, index, moduleByFilePath, diagnostics, edges, resolver);
       }
     }
   }
@@ -132,8 +136,9 @@ function addCallableEdge(
   moduleByFilePath: Map<string, NodeDescriptor>,
   diagnostics: ExtractionDiagnostic[],
   edges: RawEdge[],
+  resolver?: CrossPackageResolver,
 ): void {
-  const resolution = resolveTarget(callee, index);
+  const resolution = resolveTarget(callee, index, resolver);
   recordThrow(resolution, relPath, site, diagnostics);
   const enclosing = enclosingCallable(site, index);
   if (enclosing === null && kind === "renders") {
@@ -148,6 +153,7 @@ function collectInheritanceEdges(
   index: ResolutionIndex,
   diagnostics: ExtractionDiagnostic[],
   edges: RawEdge[],
+  resolver?: CrossPackageResolver,
 ): void {
   const node = descriptor.declarationNode;
   if (!node) {
@@ -155,13 +161,13 @@ function collectInheritanceEdges(
   }
   const relPath = descriptor.location.file;
   if (Node.isClassDeclaration(node)) {
-    collectClassInheritance(node, descriptor.finalId, relPath, index, diagnostics, edges);
+    collectClassInheritance(node, descriptor.finalId, relPath, index, diagnostics, edges, resolver);
     return;
   }
   if (Node.isInterfaceDeclaration(node)) {
     // Interfaces can extend multiple bases, so getExtends() is an array.
     for (const base of node.getExtends()) {
-      addInheritanceEdge(base, "extends", descriptor.finalId, relPath, index, diagnostics, edges);
+      addInheritanceEdge(base, "extends", descriptor.finalId, relPath, index, diagnostics, edges, resolver);
     }
   }
 }
@@ -173,13 +179,14 @@ function collectClassInheritance(
   index: ResolutionIndex,
   diagnostics: ExtractionDiagnostic[],
   edges: RawEdge[],
+  resolver?: CrossPackageResolver,
 ): void {
   const base = node.getExtends();
   if (base) {
-    addInheritanceEdge(base, "extends", source, relPath, index, diagnostics, edges);
+    addInheritanceEdge(base, "extends", source, relPath, index, diagnostics, edges, resolver);
   }
   for (const contract of node.getImplements()) {
-    addInheritanceEdge(contract, "implements", source, relPath, index, diagnostics, edges);
+    addInheritanceEdge(contract, "implements", source, relPath, index, diagnostics, edges, resolver);
   }
 }
 
@@ -191,8 +198,9 @@ function addInheritanceEdge(
   index: ResolutionIndex,
   diagnostics: ExtractionDiagnostic[],
   edges: RawEdge[],
+  resolver?: CrossPackageResolver,
 ): void {
-  const resolution = resolveTarget(expression.getExpression(), index);
+  const resolution = resolveTarget(expression.getExpression(), index, resolver);
   recordThrow(resolution, relPath, expression, diagnostics);
   edges.push({ source, kind, resolution, callSite: callSiteOf(expression, relPath) });
 }
@@ -202,7 +210,7 @@ function calleeOf(node: Node): Node {
 }
 
 /** The nearest enclosing emitted callable, or null when the site sits at module top level. */
-function enclosingCallable(site: Node, index: ResolutionIndex): string | null {
+export function enclosingCallable(site: Node, index: ResolutionIndex): string | null {
   let current = site.getParent();
   while (current) {
     const enclosing = index.sourceByCallableKey.get(nodeKey(current));
@@ -214,12 +222,12 @@ function enclosingCallable(site: Node, index: ResolutionIndex): string | null {
   return null;
 }
 
-function callSiteOf(node: Node, relPath: string): CallSite {
+export function callSiteOf(node: Node, relPath: string): CallSite {
   const position = lineColOf(node);
   return { file: relPath, line: position.line, col: position.column };
 }
 
-function recordThrow(resolution: TargetResolution, relPath: string, node: Node, diagnostics: ExtractionDiagnostic[]): void {
+export function recordThrow(resolution: TargetResolution, relPath: string, node: Node, diagnostics: ExtractionDiagnostic[]): void {
   if (resolution.threw) {
     diagnostics.push({ severity: "warn", message: `symbol resolution threw at ${relPath}:${node.getStartLineNumber()}` });
   }

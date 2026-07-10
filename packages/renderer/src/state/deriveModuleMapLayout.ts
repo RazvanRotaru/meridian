@@ -28,8 +28,10 @@ export async function deriveModuleLevelLayout(
   graph: ModuleGraph,
   blockDeps: BlockDeps,
   flows: LogicFlows,
+  extraIds: ReadonlySet<string> = new Set<string>(),
+  hiddenIds: ReadonlySet<string> = new Set<string>(),
 ): Promise<ModuleLevelLayout> {
-  const tree = deriveModuleTree(index, focus, expanded, graph, blockDeps, flows);
+  const tree = deriveModuleTree(index, focus, expanded, graph, blockDeps, flows, extraIds, hiddenIds);
   const { nodes, edges } = await layoutModuleTree(tree.nodes, tree.edges);
   return { nodes, edges, effectiveFocus: tree.effectiveFocus };
 }

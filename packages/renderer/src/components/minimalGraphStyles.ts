@@ -1,14 +1,14 @@
 /**
  * The minimal-graph overlay's shared styles + MiniMap tint, split out of `MinimalGraphView` to keep
- * the component small. The overlay is FLAT (no package frames): files take their category hue, [+n]
- * stubs a muted grey — the same reading order (and `CATEGORY_COLOR` palette) as the Module map the
- * overlay mirrors.
+ * the component small. The overlay is FLAT: file cards take the file-family accent, group member/ghost
+ * cards a package hue, and an expanded file's nested declarations a muted code tint — the same reading
+ * order as the Module map the overlay mirrors.
  */
 
 import type { Node } from "@xyflow/react";
-import { MINIMAL_STUB_NODE } from "../layout/minimalSubgraphLayout";
 
-const STUB_TINT = "#3A4452";
+// The package-card hue, mirroring PackageOverviewNode's accent.
+const PACKAGE_TINT = "#5B9BE3";
 // An expanded file's nested declarations (unit/block/step) share a muted code tint on the MiniMap —
 // they carry no file `category`, and the reader navigates by the file frames, not their innards.
 const CHILD_TINT = "#4A5568";
@@ -16,10 +16,10 @@ const CHILD_TINT = "#4A5568";
 // carried by a text chip alone; see ModuleCardNode), so the MiniMap mirrors that one hue.
 const FILE_TINT = "#3FB7C4";
 
-/** MiniMap tint: [+n] stubs muted grey, nested declarations a muted code tint, else the file accent. */
+/** MiniMap tint: group cards a package hue, nested declarations a muted code tint, else the file accent. */
 export function minimalMiniMapColor(node: Node): string {
-  if (node.type === MINIMAL_STUB_NODE) {
-    return STUB_TINT;
+  if (node.type === "package") {
+    return PACKAGE_TINT;
   }
   if (node.type !== "file") {
     return CHILD_TINT;
@@ -41,6 +41,17 @@ export const PANEL_STYLE: React.CSSProperties = {
   borderRadius: 8,
   background: "rgba(18,23,30,0.92)",
   padding: "10px 12px",
+};
+
+// The members list panel, docked top-right BENEATH the main title/Reset/Close panel (three stacked
+// rows at top:16), so the Close button underneath stays clickable.
+export const MEMBERS_PANEL_STYLE: React.CSSProperties = {
+  ...PANEL_STYLE,
+  left: "auto",
+  right: 16,
+  top: 152,
+  gap: 8,
+  maxWidth: 280,
 };
 
 const BUTTON_STYLE: React.CSSProperties = {

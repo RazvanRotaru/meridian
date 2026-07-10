@@ -12,7 +12,7 @@ import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import { colorForDistance, type ChannelCompData, type CompNodeData } from "../../../derive/compositionGraph";
 import type { PackageSummaryData } from "../../../derive/compositionAggregate";
 import type { CompRfNode } from "../../../layout/compositionElk";
-import { accentForKind, glyphForKind } from "../../../theme/kindColors";
+import { accentForKind } from "../../../theme/kindColors";
 import { coverageAccent } from "../../../theme/coverageColors";
 import { SmellChip } from "../../composition/SmellChip";
 import { CompositionMembers } from "../../composition/CompositionMembers";
@@ -64,7 +64,6 @@ function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
       <div style={{ ...ACCENT_BAR, background: health }} />
       <div style={boundary ? INNER_BOUNDARY : INNER}>
         <div style={HEADER}>
-          <span style={{ ...GLYPH, color: tint }}>{glyphForKind(d.kind)}</span>
           <span style={LABEL} title={d.label}>{d.label}</span>
           {boundary ? (
             <span style={BOUNDARY_TAG} title="Click to root the composition here">▸ ROOT</span>
@@ -181,7 +180,6 @@ function PackageSummaryNodeImpl({ data }: NodeProps<CompRfNode>) {
       <div style={{ ...ACCENT_BAR, background: health }} />
       <div style={INNER}>
         <div style={HEADER}>
-          <span style={{ ...GLYPH, color: "#A77BF3" }}>▤</span>
           <span style={LABEL} title={d.label}>{d.label}</span>
           <button
             type="button"
@@ -272,7 +270,6 @@ const BOUNDARY_TAG: React.CSSProperties = {
   borderRadius: 3,
   padding: "1px 4px",
 };
-const GLYPH: React.CSSProperties = { fontSize: 12, flexShrink: 0 };
 const LABEL: React.CSSProperties = {
   flex: 1,
   minWidth: 0,

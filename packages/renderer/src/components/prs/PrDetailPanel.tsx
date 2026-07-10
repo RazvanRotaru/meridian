@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import type { PrChangedFile, PrFileStatus, PrSummary } from "../../state/prTypes";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
+import { PrPrepareError, PrPrepareProgress } from "./PrPrepareProgress";
 
 export function PrDetailPanel() {
   const selected = useBlueprint((state) => state.prSelected);
@@ -9,7 +10,9 @@ export function PrDetailPanel() {
   const truncated = useBlueprint((state) => state.prFilesTruncated);
   const loading = useBlueprint((state) => state.prsLoading);
   const error = useBlueprint((state) => state.prsError);
+  const reviewStatus = useBlueprint((state) => state.prReviewStatus);
   const { selectPr, reviewPrInGraph } = useBlueprintActions();
+  const preparing = reviewStatus === "preparing";
 
   useEffect(() => {
     if (selected === null) {
@@ -26,14 +29,14 @@ export function PrDetailPanel() {
 
   if (selected === null) {
     return (
-      <aside style={PANEL_STYLE}>
+      <aside style={PANEL_STYLE} className="mrd-scroll">
         <div style={EMPTY_STYLE}>Select a pull request.</div>
       </aside>
     );
   }
 
   return (
-    <aside style={PANEL_STYLE}>
+    <aside style={PANEL_STYLE} className="mrd-scroll">
       <div style={HEADER_STYLE}>
         <button type="button" style={BACK_STYLE} onClick={() => void selectPr(null)}>
           Back
@@ -42,9 +45,11 @@ export function PrDetailPanel() {
       </div>
       <h2 style={TITLE_STYLE}>{summary?.title ?? `PR #${selected}`}</h2>
       {summary ? <div style={META_STYLE}>{summary.author} / {summary.headRef}</div> : null}
-      <button type="button" style={REVIEW_STYLE} disabled={!files || loading} onClick={reviewPrInGraph}>
+      <button type="button" style={REVIEW_STYLE} disabled={!files || loading || preparing} onClick={() => void reviewPrInGraph()}>
         Review in graph
       </button>
+      {preparing ? <PrPrepareProgress /> : null}
+      {reviewStatus === "error" ? <PrPrepareError /> : null}
       {truncated ? <div style={NOTICE_STYLE}>File list truncated by the server.</div> : null}
       {files === null && loading ? <div style={LOADING_STYLE}>Loading files...</div> : null}
       {files === null && error ? <div style={ERROR_STYLE}>{error}</div> : null}

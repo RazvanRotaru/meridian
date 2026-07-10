@@ -5,23 +5,32 @@
  * files — and the +/- counts — are available to the card.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { PRS_UNAVAILABLE_ERROR, type PrSummary } from "../../state/prTypes";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { CountBadge, hexAlpha, TOKENS } from "./panelKit";
-import { MaximizeIcon, PullRequestIcon } from "./icons";
+import { PullRequestIcon } from "./icons";
 import { PrReviewCard } from "./PrReviewCard";
 
 const ACTIVE_HUE = "#388BFD";
 
 export function PrReviewSection() {
-  const [expanded, setExpanded] = useState(false);
   const open = useBlueprint((state) => state.prsList.open);
   const hasMore = useBlueprint((state) => state.prsHasMore.open);
   const loading = useBlueprint((state) => state.prsLoading);
   const error = useBlueprint((state) => state.prsError);
   const selected = useBlueprint((state) => state.prSelected);
-  const { loadPrs, selectPr, reviewPrInGraph, setViewMode } = useBlueprintActions();
+  const prReviewed = useBlueprint((state) => state.prReviewed);
+  const reviewOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
+  const viewMode = useBlueprint((state) => state.viewMode);
+  const onPrsPage = viewMode === "prs";
+  const { loadPrs, selectPr, reviewPrInGraph, togglePrsView } = useBlueprintActions();
+
+  // Expanded only while a PR review is the active on-screen surface: a PR is under review
+  // (prReviewed), its minimal-graph overlay is open (minimalSeedIds), and we're not on the full
+  // Pull-requests page. Otherwise — the Map after closing the overlay, or the PRs page itself — it
+  // stays collapsed so a stale reviewed PR never lingers in the card.
+  const expanded = prReviewed !== null && reviewOpen && viewMode !== "prs";
 
   const unavailable = error === PRS_UNAVAILABLE_ERROR && open === null;
 
@@ -48,8 +57,14 @@ export function PrReviewSection() {
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={barStyle(expanded)}>
-        <button type="button" style={TOGGLE_STYLE} title="Open the full Pull requests page" onClick={() => setViewMode("prs")}>
-          <span style={{ display: "inline-flex", color: expanded ? ACTIVE_HUE : TOKENS.textMuted }}>
+        <button
+          type="button"
+          style={TOGGLE_STYLE}
+          title={onPrsPage ? "Back to the graph" : "Open the full Pull requests page"}
+          aria-pressed={onPrsPage}
+          onClick={togglePrsView}
+        >
+          <span style={{ display: "inline-flex", color: onPrsPage || expanded ? ACTIVE_HUE : TOKENS.textMuted }}>
             <PullRequestIcon size={15} />
           </span>
           <span style={LABEL_STYLE}>PR review</span>
@@ -57,15 +72,6 @@ export function PrReviewSection() {
           {!unavailable && open !== null ? (
             <CountBadge style={badgeToneStyle(expanded)}>{hasMore ? `${count}+` : count} open</CountBadge>
           ) : null}
-        </button>
-        <button
-          type="button"
-          style={maxButtonStyle(expanded)}
-          title={expanded ? "Collapse PR review" : "Expand PR review"}
-          onClick={() => setExpanded((value) => !value)}
-          aria-expanded={expanded}
-        >
-          <MaximizeIcon size={14} />
         </button>
       </div>
 
@@ -128,23 +134,6 @@ function barStyle(expanded: boolean): React.CSSProperties {
     borderRadius: 10,
     border: `1px solid ${expanded ? hexAlpha(ACTIVE_HUE, 0.55) : TOKENS.surfaceBorder}`,
     background: expanded ? hexAlpha(ACTIVE_HUE, 0.08) : TOKENS.surface,
-  };
-}
-
-function maxButtonStyle(expanded: boolean): React.CSSProperties {
-  return {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    width: 28,
-    height: 28,
-    flexShrink: 0,
-    borderRadius: 7,
-    border: "none",
-    background: "transparent",
-    color: expanded ? ACTIVE_HUE : TOKENS.textMuted,
-    cursor: "pointer",
-    padding: 0,
   };
 }
 

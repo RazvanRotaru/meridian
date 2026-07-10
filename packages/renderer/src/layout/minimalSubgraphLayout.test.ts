@@ -43,9 +43,22 @@ function specFor(expanded: string[]) {
   const index = buildGraphIndex({ nodes: NODES, edges: EDGES } as unknown as GraphArtifact);
   const graph = buildModuleGraph(index);
   const onMap = new Set(["m:a", "m:b"]);
-  return buildMinimalSubgraph(index, graph, new Set(["m:a"]), new Set(), [], onMap, {
+  return buildMinimalSubgraph(index, graph, new Set(["m:a"]), new Set(["m:a"]), onMap, {
     expanded: new Set(expanded),
     blockDeps: { edges: [] },
+    flows: {},
+  });
+}
+
+// foo() in a.ts calls baz() in b.ts — the overlay spec carries a per-kind dep wire a→b.
+function couplingSpec() {
+  const nodes = [...NODES, fn("fn:baz", "baz", "m:b")];
+  const calls = { id: "calls:fn:foo->fn:baz", source: "fn:foo", target: "fn:baz", kind: "calls", resolution: "resolved" } as GraphEdge;
+  const index = buildGraphIndex({ nodes, edges: EDGES } as unknown as GraphArtifact);
+  const graph = buildModuleGraph(index);
+  return buildMinimalSubgraph(index, graph, new Set(["m:a"]), new Set(["m:a"]), new Set(["m:a", "m:b"]), {
+    expanded: new Set(),
+    blockDeps: { edges: [calls] },
     flows: {},
   });
 }
@@ -86,22 +99,14 @@ describe("layoutMinimalSubgraph", () => {
     }
   });
 
-  it("re-hangs a stub against its source's reflowed position", async () => {
-    // b imports nothing shown outward but a→b means b has a hidden importee (c-less here); ensure any
-    // emitted stub sits flush beside its (reflowed) source rather than the stale seed spot.
+  it("emits a dep wire data-only (category/depKind for the paint chain), with no baked style", async () => {
     const base: Record<string, PlacedRect> = {
       "m:a": { x: 0, y: 0, width: 210, height: 54 },
-      "m:b": { x: 50, y: 0, width: 210, height: 54 },
+      "m:b": { x: 400, y: 0, width: 210, height: 54 },
     };
-    const { nodes } = await layoutMinimalSubgraph(specFor(["m:a"]), base);
-    for (const stub of nodes.filter((node) => node.type === "minimalStub")) {
-      const sourceId = (stub.data as { sourceId: string }).sourceId;
-      const source = nodes.find((node) => node.id === sourceId);
-      expect(source).toBeDefined();
-      const s = rectOf(source!);
-      const st = rectOf(stub);
-      // vertically centred on its source
-      expect(st.y + st.height / 2).toBeCloseTo(s.y + s.height / 2, 1);
-    }
+    const { edges } = await layoutMinimalSubgraph(couplingSpec(), base);
+    const dep = edges.find((edge) => edge.id === "dep:calls:m:a->m:b");
+    expect(dep?.data).toEqual({ weight: 1, crossFrame: false, category: "dep", depKind: "calls", ghost: false });
+    expect(dep?.style).toBeUndefined();
   });
 });

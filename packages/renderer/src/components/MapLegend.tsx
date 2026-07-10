@@ -18,9 +18,13 @@ interface MapLegendProps {
   hasSteps: boolean;
   /** Something is selected, so the caller/callee reads are lit. */
   hasSelection: boolean;
+  /** The surface draws package/directory cards. The minimal overlay never does, so it opts out. */
+  showPackages?: boolean;
+  /** The surface can carry IPC wires. The minimal overlay mints only import/dep wires, so it opts out. */
+  showIpc?: boolean;
 }
 
-export function MapLegend({ hasSteps, hasSelection }: MapLegendProps) {
+export function MapLegend({ hasSteps, hasSelection, showPackages = true, showIpc = true }: MapLegendProps) {
   const [open, setOpen] = useState(false);
   if (!open) {
     return (
@@ -36,9 +40,11 @@ export function MapLegend({ hasSteps, hasSelection }: MapLegendProps) {
         <button type="button" style={CLOSE} onClick={() => setOpen(false)} title="Close">✕</button>
       </div>
       <Section title="Cards">
-        <Row swatch={<Box color={accentForKind("package")} />} text="package / directory — double-click to zoom in, chevron to expand in place" />
+        {showPackages ? (
+          <Row swatch={<Box color={accentForKind("package")} />} text="package / directory — double-click to zoom in, chevron to expand in place" />
+        ) : null}
         <Row swatch={<Box color={FILE_ACCENT} />} text="file — expands into its declarations; its category is on the chip (UI / Utilities / Config)" />
-        <Row swatch={<Glyph text="◆ ◇ ❑ τ" color={accentForKind("class")} />} text="class / interface / object / type — amber; the glyph tells which" />
+        <Row swatch={<ChipSwatch label="KIND" color={accentForKind("class")} />} text="class / interface / object / type — amber; the kind chip names which" />
         <Row swatch={<Glyph text="ƒ" color={accentForKind("function")} />} text="method / function — double-click opens its logic flow" />
         <Row swatch={<Dashed />} text="ghost — a definition/caller NOT on this level; double-click reveals it" />
       </Section>
@@ -49,7 +55,7 @@ export function MapLegend({ hasSteps, hasSelection }: MapLegendProps) {
         <Row swatch={<Line color={REL_COLORS.implements} />} text="implements — a contract" />
         <Row swatch={<Line color={REL_COLORS.references} />} text="references — a type used in a signature / type position" />
         <Row swatch={<Line color={IMPORT_CROSS} />} text="import — gold crosses a directory boundary; grey within one" />
-        <Row swatch={<Line color={IPC_WIRE} />} text="IPC — joined over a channel (leaves the process)" />
+        {showIpc ? <Row swatch={<Line color={IPC_WIRE} />} text="IPC — joined over a channel (leaves the process)" /> : null}
         <Row swatch={<Line color={IMPORT_SIBLING} dashed />} text="dashed — the far end is off this level" />
       </Section>
       {hasSteps ? (
@@ -101,6 +107,15 @@ function Ring() {
 
 function Glyph(props: { text: string; color: string }) {
   return <span style={{ color: props.color, fontSize: 11, fontFamily: MONO }}>{props.text}</span>;
+}
+
+/** Mirrors the cards' uppercase kind chip — the one kind marker since the glyphs were retired. */
+function ChipSwatch(props: { label: string; color: string }) {
+  return (
+    <span style={{ color: props.color, border: `1px solid ${props.color}`, borderRadius: 3, padding: "1px 3px", fontSize: 7, fontWeight: 700, letterSpacing: "0.06em" }}>
+      {props.label}
+    </span>
+  );
 }
 
 function Line(props: { color: string; dashed?: boolean }) {

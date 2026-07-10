@@ -11,6 +11,7 @@ import { changedPathSet, computeAffectedFlows, flowFingerprint, LOGIC_FLOW_EXTEN
 import type { AffectedFlow, GraphArtifact, LogicFlows, ReviewContext } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { ReviewTick } from "../state/reviewTicksPref";
+import { checkStateOf, type CheckState } from "./reviewFiles";
 
 export interface AffectedFlowRow {
   flow: AffectedFlow;
@@ -60,15 +61,12 @@ export function deriveReviewDataFromContext(
   return { context, rows, flows };
 }
 
-export type TickState = "todo" | "done" | "stale";
+/** One vocabulary with the files checklist (reviewFiles.ts), so the two never drift. */
+export type TickState = CheckState;
 
 /** todo = never ticked; done = ticked fingerprint still matches; stale = the flow changed since. */
 export function tickStateOf(row: AffectedFlowRow, ticks: Record<string, ReviewTick>): TickState {
-  const tick = ticks[row.flow.flowId];
-  if (!tick) {
-    return "todo";
-  }
-  return tick.fingerprint === row.fingerprint ? "done" : "stale";
+  return checkStateOf(row.fingerprint, ticks[row.flow.flowId]);
 }
 
 /**

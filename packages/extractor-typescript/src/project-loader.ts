@@ -76,6 +76,38 @@ function globCompilerOptions(root: string): ts.CompilerOptions {
   return { allowJs: true, baseUrl, paths, moduleResolution: ts.ModuleResolutionKind.NodeJs };
 }
 
+/**
+ * Per-package mode: load ONE workspace unit into its own project, deliberately WITHOUT the
+ * workspace aliases — cross-package imports must dead-end here (they become pending refs the
+ * join resolves) instead of pulling sibling source into this program. Paths stay relative to
+ * the WORKSPACE root, so node ids are identical to whole-program extraction.
+ */
+export function loadUnitProject(
+  root: string,
+  unit: { include: string[]; exclude: string[] },
+  options: ExtractOptions,
+  memberPaths?: ReadonlySet<string>,
+): LoadedProject {
+  const project = new Project({ compilerOptions: { allowJs: true } });
+  const excludes = [...(options.exclude ?? DEFAULT_EXCLUDES), ...unit.exclude];
+  // Feed the excludes to the globber as NEGATIONS, not just a post-filter: otherwise ts-morph
+  // parses every matched file (node_modules, dist, and — for the rest unit — sibling packages)
+  // into this project before we drop them, which is the whole-workspace memory blow-up the
+  // per-package mode exists to avoid. isSelectable still runs as a cheap safety net.
+  project.addSourceFilesAtPaths([...anchorToRoot(root, unit.include), ...negations(root, excludes)]);
+  const relativePathOf = (file: SourceFile) => relativeToRoot(root, file.getFilePath());
+  const sourceFiles = project.getSourceFiles().filter((file) => isSelectable(file, relativePathOf(file), excludes));
+  // memberPaths (manifest mode) makes the structural pass tag exactly the declared members as
+  // package boundaries; undefined (scan fallback) tags by package.json presence, as before.
+  return memberPaths ? { sourceFiles, relativePathOf, root, memberPaths } : { sourceFiles, relativePathOf, root };
+}
+
+// Exclude globs as anchored `!` negations. Bare patterns (`**/node_modules/**`) anchor under
+// root; already-anchored ones are passed through — fast-glob needs one consistent base.
+function negations(root: string, excludes: string[]): string[] {
+  return excludes.map((glob) => `!${isAbsolute(glob) ? glob : `${root}/${glob}`}`);
+}
+
 // Include globs are relative to the project root, not the process cwd (ts-morph would
 // otherwise resolve them against cwd and silently match nothing).
 function anchorToRoot(root: string, include: string[]): string[] {

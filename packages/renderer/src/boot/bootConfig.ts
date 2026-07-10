@@ -23,6 +23,15 @@ export interface BootConfig {
 export interface PrApiUrls {
   prsUrl: string;
   prFilesUrl: string;
+  /** GET base for one changed file's text at the PR head ref (the review code panel). */
+  prFileUrl: string;
+  /** POST target for submitting a review with comments; 404s outside a `web` GitHub session. */
+  prReviewUrl: string;
+  /** POST target streaming the PR-head prepare pipeline (the analyze stages). */
+  analyzeUrl: string;
+  /** The server-session artifact id the analyze POST body names; null in a plain `view` session
+   * (which is also what gates reviewPrInGraph to its synchronous fallback). */
+  graphId: string | null;
 }
 
 interface InjectedConfig extends Omit<BootConfig, "defaultEnv"> {
@@ -39,7 +48,9 @@ const DEV_FALLBACK: BootConfig = {
   graphUrl: "/sample-graph.json",
   metaUrl: "/api/meta",
   overlayUrl: "/api/overlay",
-  hasOverlay: true,
+  // Dev sample ships with no telemetry, so the env gate is off by default — a real `meridian view`
+  // / `web` overlay still sets hasOverlay via the injected config, so the production gate is intact.
+  hasOverlay: false,
   overlayKind: "mock",
   envRequired: true,
   preselectedEnv: null,
@@ -61,6 +72,10 @@ export function prApiUrlsFromGraphUrl(graphUrl: string): PrApiUrls {
   return {
     prsUrl: apiUrl("/api/prs", id),
     prFilesUrl: apiUrl("/api/prs/files", id),
+    prFileUrl: apiUrl("/api/prs/file", id),
+    prReviewUrl: apiUrl("/api/prs/review", id),
+    analyzeUrl: "/api/pr/analyze",
+    graphId: id,
   };
 }
 

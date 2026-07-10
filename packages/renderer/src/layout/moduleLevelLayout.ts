@@ -12,6 +12,7 @@ import type { ElkNode } from "elkjs/lib/elk-api";
 import type { Edge, Node } from "@xyflow/react";
 import { runElkLayout } from "./elkLayout";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
+import { placeGhostBands } from "./ghostBandPlacement";
 import { clamp, countsRowWidth, monoTextWidth, pillWidth } from "./measure";
 import type { ModuleGroupData, ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
 import type { BlockData, ModuleCardData, UnitCardData } from "../derive/moduleLevel";
@@ -71,23 +72,34 @@ const CODE_BTN_WIDTH = pillWidth("</>", 9, { padX: 4 });
 const DELTA_CHIP_WIDTH = pillWidth("Δ 99", CHIP_FONT, { padX: 4, letterSpacing: CHIP_LETTER_SPACING });
 const TRAILING_BADGES = HEADER_GAP + DELTA_CHIP_WIDTH + HEADER_GAP + CODE_BTN_WIDTH;
 
+// Compaction options mirror buildElkGraph.ts (the call surface), where they were proven: NETWORK_
+// SIMPLEX placement + EDGE_LENGTH post-compaction close the half-empty frame interiors that plain
+// layering left behind, and 64px layers (was 120) stop long-span dummy nodes from inflating the
+// canvas. The aspect-ratio hint packs disconnected components toward a landscape viewport instead
+// of one tall column. (knowledge/map-readability-plan.md § P3 has the before/after evidence.)
 const ROOT_OPTIONS: Record<string, string> = {
   "elk.algorithm": "layered",
   "elk.direction": "RIGHT",
   "elk.hierarchyHandling": "INCLUDE_CHILDREN",
   "elk.spacing.nodeNode": "44",
-  "elk.layered.spacing.nodeNodeBetweenLayers": "120",
+  "elk.layered.spacing.nodeNodeBetweenLayers": "64",
   "elk.spacing.edgeNode": "28",
+  "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
+  "elk.layered.compaction.postCompaction.strategy": "EDGE_LENGTH",
+  "elk.aspectRatio": "1.6",
 };
 
 // Top padding leaves room for an expanded group's title bar; React Flow draws nothing there itself.
-const CONTAINER_OPTIONS: Record<string, string> = { "elk.padding": "[top=44,left=18,bottom=18,right=18]" };
+// Left/right at 30 reserve the GUTTER the routed-edge rail rides (edgeRouting.ts, rail at +12):
+// cards start 18px clear of the bus, so a wire on the rail never touches a card.
+const CONTAINER_OPTIONS: Record<string, string> = { "elk.padding": "[top=44,left=30,bottom=18,right=30]" };
 
 const adapter: ElkNestAdapter<VisibleModuleNode> = {
   id: (node) => node.id,
   parentId: (node) => node.parentId,
   isContainer: (node) => node.isExpanded,
   leafSize: (node) => leafSize(node),
+  containerMinSize: (node) => ({ width: frameTitleWidth(node), height: FRAME_MIN_HEIGHT }),
   containerOptions: CONTAINER_OPTIONS,
 };
 
@@ -96,10 +108,18 @@ export async function layoutModuleTree(nodes: VisibleModuleNode[], edges: Module
   if (nodes.length === 0) {
     return { nodes: [], edges: [] };
   }
-  const byId = new Map(nodes.map((node) => [node.id, node]));
-  const laid = await runElkLayout(buildNestedElkGraph(nodes, edges, adapter, ROOT_OPTIONS));
+  // GHOST cards (off-level far ends of dependency wires) are kept OUT of ELK — feeding them in gives
+  // them layer slots and shoves the real frames apart. The core lays out unchanged; ghosts hang beside
+  // it (see `ghostBandPlacement`, then repositioned selection-relative at paint time). No ghosts ⇒
+  // bit-identical to before.
+  const core = nodes.filter((node) => node.kind !== "ghost");
+  const ghosts = nodes.filter((node) => node.kind === "ghost");
+  const coreEdges = edges.filter((edge) => edge.ghost !== true);
+  const byId = new Map(core.map((node) => [node.id, node]));
+  const laid = await runElkLayout(buildNestedElkGraph(core, coreEdges, adapter, ROOT_OPTIONS));
   const placed = emitReactFlowNodes(laid, (elkNode, parentId) => toNode(elkNode, parentId, byId));
-  return { nodes: placed, edges: edges.map(toEdge) };
+  const banded = ghosts.length > 0 ? placeGhostBands(ghosts, edges.filter((edge) => edge.ghost === true), placed) : [];
+  return { nodes: [...placed, ...banded], edges: edges.map(toEdge) };
 }
 
 /** Every leaf card sizes to its own content so a long name is never clipped: blocks/steps/ghosts
@@ -178,10 +198,39 @@ function stepSize(data: StepData): { width: number; height: number } {
 }
 
 /** A ghost card stacks a name over a faint home-file line; size to the wider of the two. */
-function ghostSize(data: GhostData): { width: number; height: number } {
+export function ghostSize(data: GhostData): { width: number; height: number } {
   const head = CODE_GLYPH_WIDTH + GHOST_ROW_GAP + monoTextWidth(data.label, 11);
   const context = data.context ? monoTextWidth(data.context, 9) : 0;
   return { width: Math.round(clamp(GHOST_MIN_WIDTH, GHOST_MAX_WIDTH, GHOST_CHROME + Math.max(head, context))), height: GHOST_HEIGHT };
+}
+
+// An expanded frame is ELK-sized to its CHILDREN, which ignores the title bar it wears (chevron +
+// name + kind/category chip + Δ + </>). We floor a frame's width at that title-bar width so a frame
+// whose children are narrower than its title can never squeeze the name to nothing. It only binds
+// for such narrow frames — wider children still win. Height is a token floor: a real frame is far
+// taller once its top padding + children are in.
+const FRAME_MIN_HEIGHT = FILE_HEIGHT;
+const chipWidth = (text: string) => pillWidth(text, CHIP_FONT, { letterSpacing: CHIP_LETTER_SPACING });
+
+function frameTitleWidth(node: VisibleModuleNode): number {
+  if (node.kind === "file") {
+    const data = node.data as ModuleCardData;
+    const entry = data.isEntry ? HEADER_GAP + chipWidth("ENTRY") : 0;
+    const category = HEADER_GAP + chipWidth(data.category.toUpperCase());
+    return cardWidth(FILE_CHROME + CHEVRON_WIDTH + HEADER_GAP + monoTextWidth(data.label, 12.5) + entry + TRAILING_BADGES + category);
+  }
+  if (node.kind === "unit") {
+    const data = node.data as UnitCardData;
+    const content = CHEVRON_WIDTH + HEADER_GAP + UNIT_GLYPH_WIDTH + HEADER_GAP + monoTextWidth(data.label, 12.5) + HEADER_GAP + chipWidth(data.unitKind.toUpperCase()) + TRAILING_BADGES;
+    return cardWidth(UNIT_CHROME + content);
+  }
+  if (node.kind === "package") {
+    const data = node.data as ModuleGroupData;
+    const meta = monoTextWidth(`${data.fileCount} files`, 11) + META_GAP + countsRowWidth(["uses", String(data.ce), "used by", String(data.ca)], 10.5, COUNTS_GAP);
+    return cardWidth(PACKAGE_CHROME + CHEVRON_WIDTH + HEADER_GAP + monoTextWidth(data.label, 13) + HEADER_GAP + DELTA_CHIP_WIDTH + HEADER_GAP + meta);
+  }
+  // Blocks and steps wear a title bar identical to their collapsed row, so the leaf size already fits.
+  return leafSize(node).width;
 }
 
 /** Map one placed ELK node back to a React Flow node, wired to its parent frame when nested. */

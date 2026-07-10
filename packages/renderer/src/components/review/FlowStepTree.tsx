@@ -41,11 +41,10 @@ function StepRow(props: { step: FlowStep } & FlowStepTreeProps) {
     return <BranchRow {...props} step={step} />;
   }
   if (step.kind === "exit") {
-    // A return/throw/break terminal — no body; render as a muted cap.
+    // A return/throw/break terminal — no body; the muted label alone is the cap (no square glyph).
     return (
       <li style={ITEM}>
         <div style={CONTROL_LABEL}>
-          <span style={GLYPH}>◼</span>
           <span style={EXIT_TEXT}>{step.label ?? step.variant}</span>
         </div>
       </li>
@@ -92,7 +91,7 @@ function BranchRow(props: { step: Extract<FlowStep, { kind: "branch" }> } & Flow
   return (
     <li style={ITEM}>
       <div style={CONTROL_LABEL}>
-        <span style={GLYPH}>◆</span>
+        {/* The branch label ("if …") carries the meaning; the rhombus glyph is retired. */}
         <span style={CONTROL_TEXT}>{step.label}</span>
       </div>
       <ul style={LIST}>

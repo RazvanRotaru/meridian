@@ -9,36 +9,31 @@ import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 export const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 export const SELECT_ACCENT = "#6BE38A";
 
-/** Shared title strip for every expanded Module-map container frame. `readOnly` drops the
- * expand/collapse actions for a presentational frame (the minimal-graph overlay), whose store
- * actions would otherwise mutate the underlying Map's expansion state. */
+/** Shared title strip for every expanded Module-map container frame: the expand chevron and the
+ * frame's identity (label, badges, chips). Per-frame "expand all / collapse all" controls were
+ * removed — they crowded a narrow frame's title bar and could squeeze the name to nothing. */
 export function FrameTitleBar({
-  actionsId,
   chevron,
-  readOnly,
   children,
 }: {
-  actionsId: string;
   chevron?: React.ReactNode;
-  readOnly?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div style={TITLE_BAR}>
       {chevron}
       {children}
-      {readOnly ? null : <FrameLevelActions id={actionsId} />}
     </div>
   );
 }
 
 /**
  * The `</>` code button every located Map node (file, class/interface, function/method) carries:
- * opens the code modal on the WHOLE file, auto-scrolled to the first change when there is one, with
- * changed lines marked in the gutter + rows (+ added / − deleted / ~ modified). Shown for changed
- * AND unchanged nodes — the reader wants to open any file/class/function's source, not just the
- * diffed ones. Needs a source location AND the server serving source (`sourceUrl`), so it never
- * dangles a dead button; a directory/package node has no location and correctly gets none.
+ * opens the code modal on JUST THAT NODE'S span — the clicked function/class/interface (a file node
+ * spans the whole file), with its changed lines marked in the gutter + rows (+ added / − deleted /
+ * ~ modified). Scoped to the unit on purpose: a changed function should show the function, not the
+ * whole file it sits in. Shown for changed AND unchanged nodes. Needs a source location AND the
+ * server serving source (`sourceUrl`), so it never dangles; a directory/package node has none.
  */
 export function CodeButton({ id }: { id: string }) {
   const node = useBlueprint((state) => state.index.nodesById.get(id));
@@ -55,7 +50,7 @@ export function CodeButton({ id }: { id: string }) {
       aria-label="View source"
       onClick={(event) => {
         event.stopPropagation();
-        void showCode(node, { wholeFile: true });
+        void showCode(node);
         expandCode();
       }}
       onDoubleClick={(event) => event.stopPropagation()}
@@ -96,39 +91,6 @@ export function ExpandChevron({ id, isExpanded, collapsedTitle }: { id: string; 
     >
       {isExpanded ? "▾" : "▸"}
     </button>
-  );
-}
-
-/** One-level controls for an expanded frame's direct toggleable child containers. */
-export function FrameLevelActions({ id }: { id: string }) {
-  const { expandModuleChildren, collapseModuleChildren } = useBlueprintActions();
-  return (
-    <span style={FRAME_ACTIONS}>
-      <button
-        type="button"
-        style={FRAME_ACTION}
-        title="Expand each child card in this frame"
-        aria-label="Expand child cards in this frame"
-        onClick={(event) => {
-          event.stopPropagation();
-          expandModuleChildren(id);
-        }}
-      >
-        Expand all
-      </button>
-      <button
-        type="button"
-        style={FRAME_ACTION}
-        title="Collapse child cards in this frame"
-        aria-label="Collapse child cards in this frame"
-        onClick={(event) => {
-          event.stopPropagation();
-          collapseModuleChildren(id);
-        }}
-      >
-        Collapse all
-      </button>
-    </span>
   );
 }
 
@@ -185,17 +147,4 @@ const CHEVRON: React.CSSProperties = {
   cursor: "pointer",
   font: "inherit",
   fontSize: 11,
-};
-const FRAME_ACTIONS: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 2, flexShrink: 0 };
-const FRAME_ACTION: React.CSSProperties = {
-  background: "transparent",
-  border: "none",
-  borderRadius: 4,
-  color: "#9AA4B2",
-  cursor: "pointer",
-  font: "inherit",
-  fontSize: 11,
-  lineHeight: "14px",
-  padding: "2px 4px",
-  whiteSpace: "nowrap",
 };

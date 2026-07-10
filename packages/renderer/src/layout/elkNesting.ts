@@ -23,6 +23,10 @@ export interface ElkNestAdapter<T> {
   parentId(node: T): string | null | undefined;
   isContainer(node: T): boolean;
   leafSize(node: T): { width: number; height: number };
+  /** Optional per-container size floor fed to ELK. A compound node is otherwise sized to its
+   * children alone, so a frame with narrow children can crowd its own title bar; omit to keep the
+   * pure children-driven sizing. */
+  containerMinSize?(node: T): { width: number; height: number } | null;
   /** Layout options for child container subgraphs. NEVER includes `hierarchyHandling` (root-only). */
   containerOptions: Record<string, string>;
 }
@@ -46,10 +50,24 @@ export function buildNestedElkGraph<T>(
 
 function toElkNode<T>(node: T, adapter: ElkNestAdapter<T>): ElkNode {
   if (adapter.isContainer(node)) {
-    return { id: adapter.id(node), children: [], layoutOptions: adapter.containerOptions };
+    return { id: adapter.id(node), children: [], layoutOptions: containerLayoutOptions(node, adapter) };
   }
   const { width, height } = adapter.leafSize(node);
   return { id: adapter.id(node), width, height };
+}
+
+/** Container options, plus an ELK size floor when the adapter supplies one — so a frame is never laid
+ * out narrower than its own title bar (ELK sizes a compound node to its children otherwise). */
+function containerLayoutOptions<T>(node: T, adapter: ElkNestAdapter<T>): Record<string, string> {
+  const min = adapter.containerMinSize?.(node);
+  if (!min) {
+    return adapter.containerOptions;
+  }
+  return {
+    ...adapter.containerOptions,
+    "elk.nodeSize.constraints": "MINIMUM_SIZE",
+    "elk.nodeSize.minimum": `(${Math.round(min.width)},${Math.round(min.height)})`,
+  };
 }
 
 function attachToParent<T>(

@@ -11,8 +11,8 @@
  * breadcrumb (the containment trail) zooms OUT.
  */
 
-import { useEffect, useMemo, useRef } from "react";
-import { ReactFlow, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ReactFlow, type Edge, type EdgeTypes, type Node, type ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
 import { filterVisible, filterRelKinds, suppressRedundantImports, emphasize } from "./moduleMapPaint";
@@ -24,11 +24,22 @@ import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { useRecenter } from "./canvas/useRecenter";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { MinimalGraphView } from "./MinimalGraphView";
-import { ReviewFlowPanel } from "./review/ReviewFlowPanel";
+import { ReviewPanel } from "./review/ReviewPanel";
 import { accentForKind } from "../theme/kindColors";
+import { bundleEdges, BUNDLE_EDGE_TYPE } from "../layout/edgeBundling";
+import { BundledEdge } from "./edges/BundledEdge";
+import { routeFrameEdges, ROUTED_EDGE_TYPE } from "../layout/edgeRouting";
+import { RoutedEdge } from "./edges/RoutedEdge";
+import { spoolFanEdges, SPOOL_EDGE_TYPE } from "../layout/edgeSpooling";
+import { SpoolEdge } from "./edges/SpoolEdge";
+import { WireTooltip, type WireHover } from "./WireTooltip";
 import type { BlockData, UnitCardData } from "../derive/moduleLevel";
 
 const PACKAGE_KIND = "package";
+
+/** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
+ * rail (the bus) into member cards; "spool" gathers the remaining open-canvas fan-hub wires. */
+const moduleEdgeTypes: EdgeTypes = { [BUNDLE_EDGE_TYPE]: BundledEdge, [ROUTED_EDGE_TYPE]: RoutedEdge, [SPOOL_EDGE_TYPE]: SpoolEdge };
 
 export function ModuleMapView() {
   const nodes = useBlueprint((state) => state.moduleRfNodes);
@@ -43,12 +54,14 @@ export function ModuleMapView() {
   const hiddenRelKinds = useBlueprint((state) => state.hiddenRelKinds);
   const showTests = useBlueprint((state) => state.showTests);
   const showPrivate = useBlueprint((state) => state.showPrivate);
+  const showHighways = useBlueprint((state) => state.showHighways);
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const viewMode = useBlueprint((state) => state.viewMode);
   const serviceScope = useBlueprint((state) => state.serviceScope);
   const { buildMinimalGraph, setModuleFocus, clearServiceScope } = useBlueprintActions();
   const { onNodeClick, onNodeDoubleClick, onPaneClick } = useModuleNodeInteractions();
-  useRecenter(useMemo(() => [...selected], [selected]));
+  // Muted while the minimal overlay covers this canvas — the overlay's own recenter must win.
+  useRecenter(useMemo(() => [...selected], [selected]), { enabled: !minimalOpen });
 
   // Category/test hiding is a pure VISIBILITY filter over the laid-out graph; positions are untouched.
   const { nodes: shownNodes, edges: visibleEdges } = useMemo(
@@ -62,18 +75,72 @@ export function ModuleMapView() {
     () => emphasize(shownNodes, shownEdges, selected, radius, highlightMode),
     [shownNodes, shownEdges, selected, radius, highlightMode],
   );
+  // Visual Highways, three passes in precedence order: (1) container-pair BUNDLES merge parallel
+  // cross-container edges; (2) frame-crossing wires ROUTE through the frame's gutter rail (the bus)
+  // so no wire ever travels behind a member card; (3) the remaining open-canvas fan-hub wires SPOOL
+  // into shared trunks. Off draws every edge as a plain curve; a selected node's own wires always
+  // escape the container bundles so its links read out of the highway they'd otherwise join.
+  const bundledEdges = useMemo(
+    () => (showHighways ? spoolFanEdges(routeFrameEdges(bundleEdges(styledEdges, styledNodes, selected), styledNodes)) : styledEdges),
+    [showHighways, styledEdges, styledNodes, selected],
+  );
 
-  // Fit once per RELAYOUT (a focus change): `moduleRfNodes` only changes when the level does, so
-  // clearing the guard on `effectiveFocus` re-fits the fresh level to the viewport. Category toggles
-  // and radius are paint-only (they never change `nodes`), so they correctly do NOT trigger a refit.
-  // The Service lens has no focus (`effectiveFocus` stays null there), so entering/exiting a scoped
-  // sub-view clears the guard on the SCOPE's identity instead — the refit then fires only when the
-  // re-laid `nodes` land, never against the outgoing canvas.
+  // Wire HOVER: pointing at one strand names it (kind × weight, source → target) and lights it
+  // alone — the disambiguator for strands sharing a bus/trunk. A cheap overlay pass: hover never
+  // recomputes bundling/routing geometry, it only boosts one edge's paint. Bundle highways keep
+  // their own breakdown tooltip, so they opt out of this one.
+  const [wireHover, setWireHover] = useState<WireHover | null>(null);
+  const labelById = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const node of styledNodes) {
+      labels.set(node.id, ((node.data as { label?: string }).label ?? node.id.split("/").pop()) as string);
+    }
+    return labels;
+  }, [styledNodes]);
+  const hoverableEdges = useMemo(
+    () =>
+      bundledEdges.map((edge) => {
+        if (edge.type === BUNDLE_EDGE_TYPE) {
+          return edge;
+        }
+        const hovered = edge.id === wireHover?.id;
+        return {
+          ...edge,
+          interactionWidth: 14,
+          style: hovered ? { ...edge.style, opacity: 1, strokeWidth: ((edge.style?.strokeWidth as number) ?? 1.5) + 1.2 } : edge.style,
+        };
+      }),
+    [bundledEdges, wireHover?.id],
+  );
+  const onEdgeMouseEnter = (event: React.MouseEvent, edge: Edge) => {
+    if (edge.type === BUNDLE_EDGE_TYPE) {
+      return;
+    }
+    const data = edge.data as { depKind?: string; category?: string; weight?: number } | undefined;
+    setWireHover({
+      id: edge.id,
+      x: event.clientX,
+      y: event.clientY,
+      kind: data?.depKind ?? data?.category ?? "wire",
+      weight: data?.weight ?? 1,
+      source: labelById.get(edge.source) ?? edge.source,
+      target: labelById.get(edge.target) ?? edge.target,
+    });
+  };
+  const onEdgeMouseLeave = () => setWireHover(null);
+
+  // Fit once per RELAYOUT: `moduleRfNodes` only changes when the level does, so clearing the guard
+  // on `effectiveFocus` (a focus change) OR `showTests` (the Tests toggle relayouts + re-coords the
+  // level) re-fits the fresh level to the viewport. Category/Private toggles and radius are
+  // paint-only (they never change `nodes`), so they correctly do NOT trigger a refit. The Service
+  // lens has no focus (`effectiveFocus` stays null there), so entering/exiting a scoped sub-view
+  // clears the guard on the SCOPE's identity instead — the refit then fires only when the re-laid
+  // `nodes` land, never against the outgoing canvas.
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const fitted = useRef(false);
   useEffect(() => {
     fitted.current = false;
-  }, [effectiveFocus, serviceScope]);
+  }, [effectiveFocus, showTests, serviceScope]);
   useEffect(() => {
     if (!rfRef.current || nodes.length === 0 || fitted.current) {
       return;
@@ -86,8 +153,8 @@ export function ModuleMapView() {
 
   // The built minimal graph REPLACES the level canvas while open (after every hook above, so the
   // hook order is stable across open/close). Closing returns here with the selection intact. When a
-  // PR review seeded the graph, ReviewFlowPanel rides on the right (it self-hides when review is null,
-  // i.e. a minimal graph the reader built by hand from a Map selection).
+  // PR review seeded the graph, ReviewPanel rides on the right (it self-hides when review is null —
+  // a hand-built minimal graph — or when the reader hid it; MinimalGraphView then offers "Review").
   if (minimalOpen) {
     return (
       <div style={SURFACE_STYLE}>
@@ -95,7 +162,7 @@ export function ModuleMapView() {
           <div style={REVIEW_GRAPH_STYLE}>
             <MinimalGraphView />
           </div>
-          <ReviewFlowPanel />
+          <ReviewPanel />
         </div>
       </div>
     );
@@ -105,19 +172,23 @@ export function ModuleMapView() {
     <div style={SURFACE_STYLE}>
       <ReactFlow<Node, Edge>
         nodes={styledNodes}
-        edges={styledEdges}
+        edges={hoverableEdges}
         nodeTypes={moduleNodeTypes}
+        edgeTypes={moduleEdgeTypes}
         onInit={(instance) => {
           rfRef.current = instance;
         }}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={onPaneClick}
+        onEdgeMouseEnter={onEdgeMouseEnter}
+        onEdgeMouseLeave={onEdgeMouseLeave}
         {...READONLY_CANVAS_PROPS}
       >
         <CanvasChrome nodeColor={miniMapColor} />
         <BeaconArrows targets={beacons} />
       </ReactFlow>
+      {wireHover ? <WireTooltip hover={wireHover} /> : null}
       {viewMode === "call" && serviceScope !== null ? (
         // The scoped Service sub-view replaces the (focus-driven, here inert) containment trail
         // with its exit: "All services › <scope> ✕".
@@ -138,11 +209,11 @@ export function ModuleMapView() {
   );
 }
 
-/** The floating action a selection (one card or more) reveals: build its minimal graph overlay. */
+/** The floating action a selection (one card or more) reveals: extract it into the minimal-graph overlay. */
 function BuildMinimalGraphButton(props: { count: number; onBuild: () => void }) {
   return (
     <button type="button" style={BUILD_BUTTON_STYLE} onClick={props.onBuild}>
-      Build minimal graph ({props.count})
+      Extract selection ({props.count})
     </button>
   );
 }

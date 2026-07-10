@@ -7,9 +7,8 @@
 
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { Edge, Node } from "@xyflow/react";
-import { computeAffectedNodes, computeCoverage, unmappedChangedFiles, type ChangedLineSpan, type LineRange } from "@meridian/core";
+import { changedRangesFromExtensions, computeAffectedNodes, computeCoverage } from "@meridian/core";
 import type {
-  ChangedFile,
   CoverageReport,
   FlowPath,
   FlowStep,
@@ -38,10 +37,9 @@ import { deriveServiceLevelLayout } from "./deriveServiceMapLayout";
 import { deriveMinimalGraphLayout } from "./deriveMinimalGraphLayout";
 import { captureMapPositions } from "./mapPositions";
 import type { PlacedRect } from "../layout/minimalPlacement";
-import type { Direction, ExpansionEntry } from "../derive/minimalSubgraph";
-import { seedModuleIdsFor } from "../derive/selectionSeeds";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/blockDeps";
+import { buildUnitIndex, type UnitIndex } from "@meridian/design-metrics";
 import { deriveModuleTree, type VisibleModuleNode } from "../derive/moduleTree";
 import { moduleChildContainerIds } from "../derive/moduleChildContainers";
 import { deriveServiceTree } from "../derive/serviceClusterTree";
@@ -54,9 +52,19 @@ import { anchorNodeIds, mapRevealStateForMany, resolveServiceAnchors, serviceRev
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
 import { PRS_UNAVAILABLE_ERROR, type PrChangedFile, type PrFilesResponse, type PrListResponse, type PrSummary, type PrsTab } from "./prTypes";
+import { streamPrAnalysis, type PrAnalyzeStage } from "./prAnalysis";
+import {
+  fetchPreparedArtifact,
+  restorePrReviewBaseline,
+  swapToPreparedArtifact,
+  withPrLineDiff,
+  type PrReviewBaseline,
+} from "./prReviewSession";
 import { deriveReviewData, deriveReviewDataFromContext, applyTick, type ReviewData } from "../derive/reviewData";
-import { readReviewProgress, writeReviewProgress, clearReviewProgress, type ReviewTick } from "./reviewTicksPref";
+import { readReviewProgress, writeReviewProgress, type ReviewComment, type ReviewProgress, type ReviewTick } from "./reviewTicksPref";
 import { reviewContextFromPrFiles } from "../derive/prReviewContext";
+import { applyFileToggle, applyUnitTick, deriveReviewFiles, type ReviewFileRow } from "../derive/reviewFiles";
+import { buildReviewSubmission } from "../derive/reviewSubmit";
 
 /**
  * The "All" setting for the related-flows depth dial: a depth larger than any real call-graph chain.
@@ -192,6 +200,10 @@ export interface BlueprintState {
   moduleRadius: number;
   /** Whether Module-map selection lights incident node wires only, or the full radius-based reach. */
   highlightMode: HighlightMode;
+  /** Whether cross-container edges merge into thick "highway" bundles on the Map. PAINT-ONLY like the
+   * other Map toggles — off draws every edge individually. A selected node's own wires always draw
+   * individually regardless, so you can read its links out of the highway they'd otherwise join. */
+  showHighways: boolean;
   /** Module categories painted OUT of the map (a render-time filter — never a re-derive). */
   hiddenCategories: Set<ModuleCategory>;
   /** Relationship kinds painted OUT of the map (calls / instantiates / extends / implements /
@@ -203,25 +215,32 @@ export interface BlueprintState {
   /** Cards the reader expanded IN PLACE on the Map (files into code, blocks into flow frames,
    * steps into deeper flows) — one id space, URL-round-tripped. A relayout concern. */
   moduleExpanded: Set<string>;
+  /** Nodes the reader pinned into the current map lens via ⌘P's "+" — drawn as EXTRA top-level cards
+   * (their owning unit/file) so an out-of-view symbol joins the Map or Service canvas. Shared by both
+   * lenses (they share the module slice). Session-only; cleared on a focus/lens change. */
+  mapExtra: Set<string>;
   /** Whether `private`-tagged members are painted on the Map. PAINT-ONLY like Tests/categories —
    * privates always get their space in the layout, so toggling never reshuffles positions. */
   showPrivate: boolean;
   /** The Service lens's scoped sub-view (see state/serviceScope.ts); null == the full lens.
    * Session-only — deliberately NOT URL-round-tripped (YAGNI until asked). */
   serviceScope: ServiceScope | null;
-  /** The seed file-module ids of the OPEN minimal-graph overlay; empty == the overlay is closed and
-   * the Module-map level canvas shows. Set by buildMinimalGraph from the expanded selection. */
+  /** The ORIGIN of the OPEN minimal-graph overlay: the raw selection ids (any kind), verbatim; empty
+   * == the overlay is closed and the Module-map level canvas shows. Immutable per build — it is the
+   * seed-tier baseline and the Reset target. URL-synced as `mgraph`. */
   minimalSeedIds: string[];
-  /** Ghost files the reader committed by drilling through them (expanding a ghost promotes it to
-   * PERSISTENT). Unioned with the seeds' always-shown 1-hop ring to form the committed graph. */
-  minimalKeptIds: string[];
-  /** Directional expansions applied to the overlay — each reveals a node's `direction` neighbours as
-   * ghosts. Ephemeral exploration state; "Reset" empties it (and minimalKeptIds) back to the base. */
-  minimalExpanded: ExpansionEntry[];
-  /** The Module map's on-screen file positions, captured (absolute) when the overlay is BUILT, so the
-   * overlay mirrors them: a captured file sits at its exact map spot, growth is placed around it.
-   * Captured once at build (never on expand/reset) so placed nodes never jump; cleared on close. */
+  /** The mutable working set of MEMBERS shown in the overlay (starts = origin). Promoting a ghost adds
+   * to it; removing a member drops from it. Ghosts are the members' on-map 1-hop ring, derived (not
+   * stored). Reset restores it to the origin. */
+  minimalMemberIds: string[];
+  /** The Module map's on-screen card positions, captured (absolute) when the overlay is BUILT, so the
+   * overlay mirrors them: a captured card sits at its exact map spot, growth is placed around it.
+   * Captured once at build (never on curation) so placed cards never jump; cleared on close. */
   minimalBasePositions: Record<string, PlacedRect>;
+  /** When true, the overlay ABANDONS the captured map-mirror and lays the current cards out fresh with a
+   * tidy left→right ELK pass (the "Re-arrange" action) — the fix for members that mirror far-apart map
+   * spots. Stays on (so promote/demote keep the tidy layout) until the overlay is rebuilt or closed. */
+  minimalArrange: boolean;
   /** The laid-out minimal subgraph for the overlay (flat, mirroring the map), under its own stale-seq guard. */
   minimalRfNodes: Node[];
   minimalRfEdges: Edge[];
@@ -232,10 +251,22 @@ export interface BlueprintState {
   review: ReviewData | null;
   /** Artifact node ids that are affected — the coupling set between the graph and the flow panel. */
   reviewAffectedIds: Set<string>;
-  /** Changed files that mapped to no code block (deleted / not-extracted / edits outside any block). */
-  reviewUnmapped: ChangedFile[];
+  /** Every changed file as a checklist row (touched units inside; empty units == not in the graph). */
+  reviewFiles: ReviewFileRow[];
   /** Per-flow review progress, keyed by flowId, persisted to localStorage under the reviewKey. */
   reviewTicks: Record<string, ReviewTick>;
+  /** Per-unit ticks of the files checklist, keyed by nodeId — same persistence as reviewTicks. */
+  reviewUnitTicks: Record<string, ReviewTick>;
+  /** Explicit per-file viewed ticks, keyed by path (unit-less files only; else units derive it). */
+  reviewFileTicks: Record<string, ReviewTick>;
+  /** Draft review comments (file- or unit-anchored), persisted until submitted. */
+  reviewComments: ReviewComment[];
+  /** Hides the review side panel so the graph takes the full width; session-only. */
+  reviewPanelHidden: boolean;
+  reviewSubmitStatus: "idle" | "submitting";
+  reviewSubmitError: string | null;
+  /** html_url of the last submitted review; shows a "view on GitHub" confirmation. */
+  reviewSubmittedUrl: string | null;
   /** The graph node ids lit by a panel hover; null == nothing hovered (all blocks full strength). */
   reviewLitNodeIds: Set<string> | null;
   /** The selected review block/flow id; drives the graph selection ring and the panel row highlight. */
@@ -268,6 +299,23 @@ export interface BlueprintState {
   prFilesTruncated: boolean;
   /** The PR whose changed files are currently highlighted in the graph (via "review in graph"). */
   prReviewed: number | null;
+  /** The review-PREPARATION lane: "preparing" while the server streams the clone→checkout→extract
+   * analysis of the PR head; "error" when that stream failed (the panel offers Retry); else "idle". */
+  prReviewStatus: "idle" | "preparing" | "error";
+  /** The analyze stage currently running server-side; null outside "preparing". */
+  prPrepareStage: PrAnalyzeStage | null;
+  /** Why preparation failed; null outside "error". */
+  prPrepareError: string | null;
+  /** The server-side graph id of the prepared PR-head artifact (the analyze stream's "done"
+   * payload). The streamed review swaps the loaded artifact to it via `graphUrl`. */
+  prPreparedGraphId: string | null;
+  /** The boot artifact/index pair, saved ONCE when a streamed review swaps in the prepared PR-head
+   * artifact and restored when the session ends (back to the PRs lens, switching PRs). Null outside
+   * a swapped review — the synchronous fallback path never swaps, so it never sets this. */
+  prReviewBaseline: PrReviewBaseline | null;
+  /** The artifact endpoint this session loaded from; the wave-2 swap fetches the prepared PR
+   * graph from it by exchanging the `id` query param. Empty when booted without a server. */
+  graphUrl: string;
   /** The open source view (inline panel or modal); null when nothing is being shown. */
   codeView: CodeView | null;
   toggleExpand(nodeId: string): void;
@@ -319,11 +367,18 @@ export interface BlueprintState {
   setModuleFocus(id: string | null): void;
   toggleModuleExpand(nodeId: string): void;
   revealModule(nodeId: string): void;
+  /** ⌘P palette navigate: reveal a picked symbol in the CURRENT map lens — the Map goes to its
+   * definition (revealModule), the Service lens pins + selects it. Inert outside the map lenses. */
+  revealInView(rawId: string): void;
+  /** ⌘P palette "+": pin a picked symbol INTO the current map lens (its owning unit/file) as an extra
+   * card, without navigating. Inert outside the map lenses. */
+  addToView(rawId: string): void;
   expandModuleChildren(containerId: string | null): void;
   collapseModuleChildren(containerId: string | null): void;
   togglePrivateMembers(): void;
   setModuleRadius(radius: number): void;
   toggleHighlightMode(): void;
+  toggleHighways(): void;
   toggleCategory(category: ModuleCategory): void;
   toggleRelKind(kind: string): void;
   resetCategoryFilter(): void;
@@ -337,14 +392,26 @@ export interface BlueprintState {
   clearServiceScope(): void;
   buildMinimalGraph(): void;
   closeMinimalGraph(): void;
-  expandMinimal(sourceId: string, direction: Direction): void;
+  promoteMinimalGhost(id: string): void;
+  demoteMinimalMember(id: string): void;
   resetMinimalGraph(): void;
+  rearrangeMinimalGraph(): void;
   minimalRelayout(): Promise<void>;
   setReviewLit(ids: Set<string> | null): void;
   selectReviewNode(id: string | null): void;
   toggleReviewTick(flowId: string): void;
   resetReviewTicks(): void;
+  /** Reveal a changed file on the review graph: select its frame, light its units, center on it. */
+  focusReviewFile(path: string): void;
+  toggleReviewUnitTick(nodeId: string): void;
+  toggleReviewFileViewed(path: string): void;
+  addReviewComment(path: string, nodeId: string | null, body: string): void;
+  deleteReviewComment(id: string): void;
+  toggleReviewPanel(): void;
+  submitReviewComments(): Promise<void>;
   setViewMode(mode: ViewMode): void;
+  /** Toggle the full PR-review page: open it, or (when already open) resume the lens you came from. */
+  togglePrsView(): void;
   toggleShowTests(): void;
   toggleCoverageMode(): void;
   setEnvironment(environment: string): void;
@@ -355,7 +422,7 @@ export interface BlueprintState {
   setPrsTab(tab: PrsTab): void;
   loadPrs(page?: number): Promise<void>;
   selectPr(number: number | null): Promise<void>;
-  reviewPrInGraph(): void;
+  reviewPrInGraph(): Promise<void>;
   relayout(): Promise<void>;
 }
 
@@ -367,6 +434,15 @@ export interface StoreDependencies {
   sourceUrl: string | null;
   prsUrl: string;
   prFilesUrl: string;
+  /** POST endpoint for PR-head preparation. Null/absent (a plain `view` session, or an older
+   * server) makes reviewPrInGraph skip streaming and review the loaded artifact synchronously. */
+  analyzeUrl?: string | null;
+  /** The current GitHub artifact id — the analyze POST body's `id`. */
+  graphId?: string | null;
+  /** The graph-fetch URL; wave 2 loads the prepared PR artifact from it by swapping the id. */
+  graphUrl?: string;
+  /** POST target for submitting review comments (web sessions only; 404s elsewhere). */
+  prReviewUrl: string;
 }
 
 export type BlueprintStore = StoreApi<BlueprintState>;
@@ -376,6 +452,8 @@ export type BlueprintStore = StoreApi<BlueprintState>;
 const MODULE_TOP_LEVEL = { moduleFocus: null, moduleExpanded: new Set<string>(), moduleSelected: new Set<string>() } as const;
 
 export function createBlueprintStore(dependencies: StoreDependencies): BlueprintStore {
+  // The lens to resume when the PR-review page is toggled back off; null == none captured yet.
+  let lensBeforePrs: ViewMode | null = null;
   // Monotonic seq to drop a stale Logic-graph layout when a newer open/drill/toggle supersedes it.
   let logicLayoutSeq = 0;
   // Same guard for the composition layout — a newer relayout discards an older in-flight ELK pass.
@@ -384,27 +462,62 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let moduleLayoutSeq = 0;
   // And for the Module-map selection's minimal-graph overlay (its own surface, its own guard).
   let minimalLayoutSeq = 0;
-  // The file import graph, built once on first module-map relayout (the artifact never changes after
-  // boot) and reused for every level — never rebuilt per relayout.
+  // The file import graph, built once per ARTIFACT on first module-map relayout and reused for
+  // every level — never rebuilt per relayout. A PR-review swap/restore replaces the artifact, so
+  // invalidateArtifactCaches (below) nulls it for a lazy rebuild from the incoming index.
   let moduleGraph: ModuleGraph | null = null;
-  // The code-dependency substrate (coupling edges at their real endpoints), built once too.
+  // Stable empty set for "nothing hidden" so relayout inputs don't churn per call.
+  const EMPTY_HIDDEN_IDS: ReadonlySet<string> = new Set<string>();
+  // The code-dependency substrate (coupling edges at their real endpoints), same lifecycle.
   let blockDeps: BlockDeps | null = null;
+  // The composition unit index (member → owning unit), built lazily on the first ⌘P reveal/add so a
+  // picked symbol resolves to the unit/module card that draws it. Cached like moduleGraph/blockDeps.
+  let unitIndex: UnitIndex | null = null;
+  // Resolve any symbol to the card the map lenses actually draw: its nearest owning unit
+  // (class/interface/object), or its module for a top-level callable (module is itself a UNIT_KIND).
+  const resolveCard = (id: string): string => {
+    unitIndex ??= buildUnitIndex([...dependencies.index.nodesById.values()]);
+    return unitIndex.unitIdOf(id) ?? id;
+  };
   // And for the composition-tab method-preview drawer's logic layout (the EXPERIMENT surface).
   let compMethodLayoutSeq = 0;
   // Same guard for the Code flows explorer's embedded flow preview pane.
   let flowPaneLayoutSeq = 0;
-  // PR list/file fetches are independent async lanes; newer requests win when the reader switches.
+  // PR list/file fetches and PR-head preparation are independent async lanes; newer requests win
+  // when the reader switches PRs (or re-clicks Review) mid-stream.
   let prsListSeq = 0;
   let prFilesSeq = 0;
+  let prAnalyzeSeq = 0;
   const prsNextPage: Record<PrsTab, number> = { open: 1, closed: 1 };
+  // Rebuilding/closing the minimal overlay must discard any of its ELK passes still in flight; the
+  // extracted review body shares this invalidation with the in-store actions that own the counter.
+  const invalidateMinimalLayout = () => {
+    minimalLayoutSeq += 1;
+  };
+  // A PR-review swap/restore replaces the WHOLE artifact/index, so every "built once per artifact"
+  // cache must rebuild from the incoming index — and any overlay ELK pass in flight must drop.
+  const invalidateArtifactCaches = () => {
+    moduleGraph = null;
+    blockDeps = null;
+    invalidateMinimalLayout();
+  };
   // The parsed review payload from a `meridian review` artifact (null when the artifact carries no
   // valid `review` extension — e.g. a plain `web`/`view` session). Computed once (the artifact never
   // changes after boot); a GitHub PR opened via reviewPrInGraph can later populate `review` at runtime.
   const review = deriveReviewData(dependencies.artifact, dependencies.index);
+  // The files checklist + persisted progress for an artifact-sourced review; a GitHub PR opened via
+  // reviewPrInGraph re-derives both at runtime under its own reviewKey.
+  const reviewFiles = review ? deriveReviewFiles(review.context, dependencies.artifact, dependencies.index) : [];
+  const initialProgress = review ? readReviewProgress(review.context.reviewKey) : null;
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
   const prsUrl = dependencies.prsUrl;
   const prFilesUrl = dependencies.prFilesUrl;
+  // Null when the server can't prepare a PR head (no analyze route, or no stored GitHub artifact);
+  // reviewPrInGraph then falls back to the synchronous loaded-artifact review.
+  const analyzeUrl = dependencies.analyzeUrl ?? null;
+  const analyzeGraphId = dependencies.graphId ?? null;
+  const prReviewUrl = dependencies.prReviewUrl;
   // The composition tab opens on the WHOLE-SYSTEM overview (null root); file-rooting is the explicit
   // focus tool (⌘P / click a boundary or frame). Auto-rooting at the declared entry module proved a
   // poor default — a React entry (e.g. main.tsx) is a thin bootstrap with no cross-unit coupling, so
@@ -421,7 +534,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // A `meridian review` artifact opens straight on the review surface; everything else (plain
     // `view`, or a `web` GitHub session) opens on the Map — the default lens.
     viewMode: "modules",
-    showTests: true,
+    // Tests are hidden by default — rarely what the reader is here for, and always in the graph (the
+    // Tests toggle reveals them), so nothing is lost. Tagged ids come from `index.testIds`.
+    showTests: false,
     coverageMode: false,
     coverage: null,
     flowRootId: null,
@@ -465,23 +580,32 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleEffectiveFocus: null,
     moduleRadius: 1,
     highlightMode: "node",
+    showHighways: true,
     hiddenCategories: new Set<ModuleCategory>(),
     hiddenRelKinds: new Set<string>(),
     moduleSelected: new Set<string>(),
     moduleExpanded: new Set<string>(),
+    mapExtra: new Set<string>(),
     showPrivate: true,
     serviceScope: null,
     minimalSeedIds: [],
-    minimalKeptIds: [],
-    minimalExpanded: [],
+    minimalMemberIds: [],
     minimalBasePositions: {},
+    minimalArrange: false,
     minimalRfNodes: [],
     minimalRfEdges: [],
     minimalLayoutStatus: "idle",
     review,
-    reviewAffectedIds: new Set<string>(),
-    reviewUnmapped: [],
-    reviewTicks: review ? readReviewProgress(review.context.reviewKey).ticks : {},
+    reviewAffectedIds: new Set(reviewFiles.flatMap((file) => file.units.map((unit) => unit.nodeId))),
+    reviewFiles,
+    reviewTicks: initialProgress?.ticks ?? {},
+    reviewUnitTicks: initialProgress?.unitTicks ?? {},
+    reviewFileTicks: initialProgress?.fileTicks ?? {},
+    reviewComments: initialProgress?.comments ?? [],
+    reviewPanelHidden: false,
+    reviewSubmitStatus: "idle",
+    reviewSubmitError: null,
+    reviewSubmittedUrl: null,
     reviewLitNodeIds: null,
     reviewSelectedId: null,
     rfNodes: [],
@@ -505,6 +629,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prFiles: null,
     prFilesTruncated: false,
     prReviewed: null,
+    prReviewStatus: "idle",
+    prPrepareStage: null,
+    prPrepareError: null,
+    prPreparedGraphId: null,
+    prReviewBaseline: null,
+    graphUrl: dependencies.graphUrl ?? "",
     codeView: null,
 
     toggleExpand(nodeId) {
@@ -904,17 +1034,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // while "modules" derives the folder containment level for the current focus. The import graph
     // is built once (cached) and reused for every folder level.
     async moduleRelayout() {
-      const { index, moduleFocus, moduleExpanded, artifact, viewMode, serviceScope } = get();
+      const { index, moduleFocus, moduleExpanded, mapExtra, artifact, viewMode, showTests, serviceScope } = get();
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
       const graph = (moduleGraph ??= buildModuleGraph(index));
       const deps = (blockDeps ??= buildBlockDeps(index));
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      // Hidden tests are EXCLUDED from the layout (not just painted out): test code can be half the
+      // cards, and paint-hiding it kept a crater of empty space. toggleShowTests relayouts this lens.
+      const hidden = showTests ? EMPTY_HIDDEN_IDS : index.testIds;
       let layout: ModuleLevelLayout;
       if (viewMode === "call") {
-        layout = await deriveServiceLevelLayout(index, moduleExpanded, graph, deps, flows, scopeSetOf(serviceScope));
+        layout = await deriveServiceLevelLayout(index, moduleExpanded, graph, deps, flows, scopeSetOf(serviceScope), mapExtra);
       } else {
-        layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, graph, deps, flows);
+        layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, graph, deps, flows, mapExtra, hidden);
       }
       if (moduleLayoutSeq !== sequence) {
         return; // a newer focus change superseded this one.
@@ -935,7 +1068,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       // A new level is a fresh id space, so the prior expansion set means nothing here — clear it so
       // the new level opens with only its frontier shown (mirrors logic's reset-on-drill).
-      set({ moduleFocus: id, moduleSelected: new Set<string>(), moduleExpanded: new Set<string>() });
+      set({ moduleFocus: id, moduleSelected: new Set<string>(), moduleExpanded: new Set<string>(), mapExtra: new Set<string>() });
       void get().moduleRelayout();
     },
 
@@ -966,8 +1099,41 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleFocus: directory?.id ?? null,
         moduleExpanded: expanded,
         moduleSelected: new Set([nodeId]),
+        mapExtra: new Set<string>(), // a focus jump ends the scratch "+" pins from the level we left.
       });
       void get().moduleRelayout();
+    },
+
+    // ⌘P palette NAVIGATE: reveal a picked symbol in the current map lens. The Map goes to its real
+    // definition (revealModule: refocus + expand its file/unit chain + select it). The Service lens has
+    // no focus, so it pins the symbol's owning card onto the canvas and selects it. Inert elsewhere —
+    // the palette opens a logic flow in logic/ui itself.
+    revealInView(rawId) {
+      const viewMode = get().viewMode;
+      if (viewMode === "modules") {
+        get().revealModule(rawId);
+        return;
+      }
+      if (viewMode === "call") {
+        const card = resolveCard(rawId);
+        set({ mapExtra: new Set(get().mapExtra).add(card), moduleSelected: new Set([card]) });
+        void get().moduleRelayout();
+      }
+    },
+
+    // ⌘P palette "+": pin a picked symbol's owning card (unit/file) INTO the current map lens WITHOUT
+    // navigating — a scratch card unioned into the next relayout. A no-op when already pinned or off a
+    // map lens. Both lenses share `mapExtra`, so the same pin surfaces in either.
+    addToView(rawId) {
+      const viewMode = get().viewMode;
+      if (viewMode !== "call" && viewMode !== "modules") {
+        return;
+      }
+      const card = resolveCard(rawId);
+      if (!get().mapExtra.has(card)) {
+        set({ mapExtra: new Set(get().mapExtra).add(card) });
+        void get().moduleRelayout();
+      }
     },
 
     // Expand one containment level under the target. `null` means the current view frontier; a
@@ -1016,6 +1182,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ highlightMode: get().highlightMode === "reach" ? "node" : "reach" });
     },
 
+    // Merge/unmerge cross-container edges into highway bundles. PAINT-ONLY — the Map re-bundles in a
+    // useMemo, no relayout.
+    toggleHighways() {
+      set({ showHighways: !get().showHighways });
+    },
+
     // Show/hide a module category. PAINT-ONLY: the surface filters the category's file cards out in
     // place, so this deliberately does NOT relayout — positions stay stable.
     toggleCategory(category) {
@@ -1042,18 +1214,36 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ moduleSelected: id === null ? new Set<string>() : new Set([id]) });
     },
 
-    // The "Build minimal graph" action: expand the current selection to its seed file modules (a
-    // group card contributes its whole containment subtree) and open the overlay on their minimal
-    // subgraph (seeds + their always-shown 1-hop ring). A fresh build resets any prior growth.
-    // Inert when the selection expands to no file module.
+    // The "Extract selection" action: EXTRACT the current selection verbatim (any kind — a selected
+    // package stays ONE card) as the overlay's members/origin, and open on their curated subgraph
+    // (members + their on-map 1-hop ghost ring). A fresh build discards any prior curation. Inert when
+    // nothing is selected.
     buildMinimalGraph() {
-      const seeds = seedModuleIdsFor(get().index, [...get().moduleSelected]);
-      if (seeds.length === 0) {
+      const origin = [...get().moduleSelected];
+      if (origin.length === 0) {
         return;
       }
-      // Snapshot the map's current on-screen file positions ONCE, at build — the overlay mirrors them,
-      // and re-capturing on growth would let already-placed cards jump.
-      set({ minimalSeedIds: seeds, minimalKeptIds: [], minimalExpanded: [], minimalBasePositions: captureMapPositions(get().moduleRfNodes) });
+      // Snapshot the map's current on-screen card positions ONCE, at build — the overlay mirrors them,
+      // and re-capturing on curation would let already-placed cards jump. A selection-built graph is not
+      // a PR review, so drop any stale prReviewed marker (else the PR-review card would show it) AND,
+      // when the live review came from a PR, its runtime review state — else the panel would ride this
+      // unrelated hand-built graph showing the old PR's checklist. An artifact-sourced review
+      // (prReviewed null) is the session's purpose and could never be re-derived, so it stays.
+      const clearPrReview =
+        get().prReviewed !== null
+          ? {
+              review: null,
+              reviewFiles: [] as ReviewFileRow[],
+              reviewAffectedIds: new Set<string>(),
+              reviewComments: [] as ReviewComment[],
+              reviewLitNodeIds: null,
+              reviewSelectedId: null,
+              reviewSubmitStatus: "idle" as const,
+              reviewSubmitError: null,
+              reviewSubmittedUrl: null,
+            }
+          : {};
+      set({ minimalSeedIds: origin, minimalMemberIds: origin, minimalBasePositions: captureMapPositions(get().moduleRfNodes), minimalArrange: false, prReviewed: null, ...clearPrReview });
       void get().minimalRelayout();
     },
 
@@ -1062,37 +1252,60 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // pass still in flight, so a slow layout can't repopulate the arrays after the close.
     closeMinimalGraph() {
       minimalLayoutSeq += 1;
-      set({ minimalSeedIds: [], minimalKeptIds: [], minimalExpanded: [], minimalBasePositions: {}, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
+      set({ minimalSeedIds: [], minimalMemberIds: [], minimalBasePositions: {}, minimalArrange: false, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
     },
 
-    // Reveal a node's hidden neighbours in one direction as ghosts (the [+n] stub click). Drilling
-    // through a GHOST commits it: adding the source to minimalKeptIds promotes it to persistent (a
-    // no-op when it was already persistent). The spec changes, so it relayouts.
-    expandMinimal(sourceId, direction) {
-      const { minimalExpanded, minimalKeptIds } = get();
-      if (minimalExpanded.some((entry) => entry.id === sourceId && entry.direction === direction)) {
-        return; // already expanded this way.
-      }
-      const keptIds = minimalKeptIds.includes(sourceId) ? minimalKeptIds : [...minimalKeptIds, sourceId];
-      set({ minimalExpanded: [...minimalExpanded, { id: sourceId, direction }], minimalKeptIds: keptIds });
-      void get().minimalRelayout();
-    },
-
-    // Reset the overlay to its base: drop every ghost AND every committed expansion, back to the
-    // seeds + their 1-hop ring. A no-op when nothing has been grown.
-    resetMinimalGraph() {
-      if (get().minimalKeptIds.length === 0 && get().minimalExpanded.length === 0) {
+    // Promote a GHOST into the working member set (the ghost "+" click). The ghost ring is then
+    // recomputed from the larger member set, so promoting reaches one hop further. A no-op when the id
+    // is already a member.
+    promoteMinimalGhost(id) {
+      const { minimalMemberIds } = get();
+      if (minimalMemberIds.includes(id)) {
         return;
       }
-      set({ minimalKeptIds: [], minimalExpanded: [] });
+      set({ minimalMemberIds: [...minimalMemberIds, id] });
       void get().minimalRelayout();
     },
 
-    // Lay out the overlay's subgraph (seeds + 1-hop base + committed + expansions) through the shared
-    // minimal-graph pass, behind its own stale-seq guard.
+    // Remove a MEMBER (the members-panel ✕); it reappears as a ghost iff still 1-hop of a remaining
+    // member. Refuses to empty the set — the last member must stay so the overlay never goes blank.
+    demoteMinimalMember(id) {
+      const { minimalMemberIds } = get();
+      if (!minimalMemberIds.includes(id) || minimalMemberIds.length <= 1) {
+        return;
+      }
+      set({ minimalMemberIds: minimalMemberIds.filter((member) => member !== id) });
+      void get().minimalRelayout();
+    },
+
+    // Reset the overlay to its base: restore the working set to the origin selection AND drop any
+    // re-arrangement (back to the captured map-mirror). A no-op when already at the origin and mirror.
+    resetMinimalGraph() {
+      const { minimalSeedIds, minimalMemberIds, minimalArrange } = get();
+      if (sameMembers(minimalMemberIds, minimalSeedIds) && !minimalArrange) {
+        return;
+      }
+      set({ minimalMemberIds: [...minimalSeedIds], minimalArrange: false });
+      void get().minimalRelayout();
+    },
+
+    // Re-arrange: drop the captured map-mirror and lay the current cards out fresh (tidy left→right ELK),
+    // so members that mirror far-apart map spots snap into a compact, in-view graph. Stays on so later
+    // curation keeps the tidy layout. A no-op when already arranged.
+    rearrangeMinimalGraph() {
+      if (get().minimalArrange) {
+        return;
+      }
+      set({ minimalArrange: true });
+      void get().minimalRelayout();
+    },
+
+    // Lay out the overlay's curated subgraph (members + their on-map ghost ring) through the shared
+    // minimal-graph pass, behind its own stale-seq guard. `minimalArrange` picks the fresh ELK layout
+    // over the map-mirror.
     async minimalRelayout() {
-      const { index, minimalSeedIds, minimalKeptIds, minimalExpanded, minimalBasePositions, moduleExpanded, artifact } = get();
-      if (minimalSeedIds.length === 0) {
+      const { index, minimalSeedIds, minimalMemberIds, minimalBasePositions, minimalArrange, moduleExpanded, artifact } = get();
+      if (minimalMemberIds.length === 0) {
         return;
       }
       moduleGraph ??= buildModuleGraph(index);
@@ -1100,13 +1313,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const sequence = ++minimalLayoutSeq;
       set({ minimalLayoutStatus: "laying-out" });
-      const layout = await deriveMinimalGraphLayout(index, moduleGraph, new Set(minimalSeedIds), new Set(minimalKeptIds), minimalExpanded, minimalBasePositions, {
+      const layout = await deriveMinimalGraphLayout(index, moduleGraph, new Set(minimalMemberIds), new Set(minimalSeedIds), minimalBasePositions, {
         moduleExpanded,
         blockDeps: deps,
         flows,
-      });
+      }, minimalArrange);
       if (minimalLayoutSeq !== sequence) {
-        return; // a newer build/expand/reset superseded this one.
+        return; // a newer build/promote/demote/reset/re-arrange superseded this one.
       }
       set({ minimalRfNodes: layout.nodes, minimalRfEdges: layout.edges, minimalLayoutStatus: "ready" });
     },
@@ -1160,9 +1373,30 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ reviewLitNodeIds: ids });
     },
 
-    // Select a review block (from the graph or the panel); also lights it so the coupling reads as one.
+    // Select a review block (from the panel); also lights it and CENTERS the graph on it — a panel
+    // click must always end with the target visible, not selected somewhere off-screen.
     selectReviewNode(id) {
       set({ reviewSelectedId: id, reviewLitNodeIds: id === null ? null : new Set([id]) });
+      if (id !== null) {
+        set({ recenterSeq: get().recenterSeq + 1 });
+      }
+    },
+
+    // The file row's click: select the file's frame on the review graph (the emphasize ring), light
+    // its touched units amber-strong, and center the viewport on the frame. Inert for files with no
+    // module on the graph (the "not in graph" tail).
+    focusReviewFile(path) {
+      const file = get().reviewFiles.find((candidate) => candidate.path === path);
+      if (!file || file.moduleId === null) {
+        return;
+      }
+      const lit = file.units.length > 0 ? file.units.map((unit) => unit.nodeId) : [file.moduleId];
+      set({
+        moduleSelected: new Set([file.moduleId]),
+        reviewSelectedId: file.moduleId,
+        reviewLitNodeIds: new Set(lit),
+        recenterSeq: get().recenterSeq + 1,
+      });
     },
 
     // Toggle a flow's reviewed tick and persist the whole record under the reviewKey.
@@ -1172,18 +1406,118 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (!review || !row) {
         return;
       }
-      const next = applyTick(reviewTicks, row, "toggle", new Date().toISOString());
-      set({ reviewTicks: next });
-      writeReviewProgress(review.context.reviewKey, { version: 1, ticks: next });
+      set({ reviewTicks: applyTick(reviewTicks, row, "toggle", new Date().toISOString()) });
+      persistReviewProgress(get());
     },
 
+    // Reset every reviewed tick (flows, units, files) but KEEP the draft comments — progress is
+    // disposable, written words are not.
     resetReviewTicks() {
-      const { review } = get();
-      if (!review) {
+      if (!get().review) {
         return;
       }
-      clearReviewProgress(review.context.reviewKey);
-      set({ reviewTicks: {} });
+      set({ reviewTicks: {}, reviewUnitTicks: {}, reviewFileTicks: {} });
+      persistReviewProgress(get());
+    },
+
+    // Tick one touched unit in the files checklist; the owning file's viewed state derives from these.
+    toggleReviewUnitTick(nodeId) {
+      const { reviewFiles, reviewUnitTicks } = get();
+      const unit = reviewFiles.flatMap((file) => file.units).find((candidate) => candidate.nodeId === nodeId);
+      if (!unit) {
+        return;
+      }
+      set({ reviewUnitTicks: applyUnitTick(reviewUnitTicks, unit, new Date().toISOString()) });
+      persistReviewProgress(get());
+    },
+
+    // The per-file "viewed" checkbox: cascades over the file's units (all on / all off); an
+    // unit-less file flips its own explicit tick.
+    toggleReviewFileViewed(path) {
+      const { reviewFiles, reviewUnitTicks, reviewFileTicks } = get();
+      const file = reviewFiles.find((candidate) => candidate.path === path);
+      if (!file) {
+        return;
+      }
+      const next = applyFileToggle(file, reviewUnitTicks, reviewFileTicks, new Date().toISOString());
+      set({ reviewUnitTicks: next.unitTicks, reviewFileTicks: next.fileTicks });
+      persistReviewProgress(get());
+    },
+
+    // Add a draft comment on a file (nodeId null) or on a touched unit inside it. Drafts persist
+    // under the reviewKey until submitted or deleted.
+    addReviewComment(path, nodeId, body) {
+      const { review, reviewComments, index } = get();
+      const trimmed = body.trim();
+      if (!review || trimmed.length === 0) {
+        return;
+      }
+      const comment: ReviewComment = {
+        id: newCommentId(),
+        path,
+        nodeId,
+        anchorLabel: nodeId === null ? null : (index.nodesById.get(nodeId)?.displayName ?? null),
+        body: trimmed,
+        at: new Date().toISOString(),
+      };
+      // A fresh draft supersedes the last submit's outcome banners (link and error alike).
+      set({ reviewComments: [...reviewComments, comment], reviewSubmittedUrl: null, reviewSubmitError: null });
+      persistReviewProgress(get());
+    },
+
+    deleteReviewComment(id) {
+      if (!get().review) {
+        return;
+      }
+      set({ reviewComments: get().reviewComments.filter((comment) => comment.id !== id), reviewSubmittedUrl: null, reviewSubmitError: null });
+      persistReviewProgress(get());
+    },
+
+    toggleReviewPanel() {
+      set({ reviewPanelHidden: !get().reviewPanelHidden });
+    },
+
+    // Submit every draft as ONE GitHub review (event COMMENT): unit/file drafts become inline
+    // comments anchored to new-side diff lines, the rest ride as notes the server folds into the
+    // review body (reviewSubmit.ts). Only the drafts SNAPSHOTTED here are cleared on success — a
+    // comment added while the POST is in flight stays a draft; a failed submit keeps everything.
+    async submitReviewComments() {
+      const { review, reviewComments, reviewFiles, prReviewed: prNumber, reviewSubmitStatus } = get();
+      if (!review || prNumber === null || reviewComments.length === 0 || reviewSubmitStatus === "submitting") {
+        return;
+      }
+      const submission = buildReviewSubmission(reviewComments, reviewFiles, review.context);
+      const submittedIds = new Set(reviewComments.map((comment) => comment.id));
+      const submittedKey = review.context.reviewKey;
+      set({ reviewSubmitStatus: "submitting", reviewSubmitError: null });
+      try {
+        const response = await fetch(prReviewUrl, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ number: prNumber, comments: submission.comments, notes: submission.notes }),
+        });
+        if (!response.ok) {
+          set({ reviewSubmitStatus: "idle", reviewSubmitError: await submitErrorMessage(response) });
+          return;
+        }
+        const data = (await response.json()) as { url?: string | null };
+        // The review may have moved to another PR while awaiting; drop the SUBMITTED drafts from
+        // the submitted key's storage either way, but only touch live state on the same review.
+        // "" marks submitted-without-a-link, so the footer still confirms the submit happened.
+        stripStoredComments(submittedKey, submittedIds);
+        if (get().review?.context.reviewKey === submittedKey) {
+          set({
+            reviewSubmitStatus: "idle",
+            reviewComments: get().reviewComments.filter((comment) => !submittedIds.has(comment.id)),
+            reviewSubmittedUrl: data.url ?? "",
+          });
+        } else {
+          set({ reviewSubmitStatus: "idle" });
+        }
+      } catch {
+        set({ reviewSubmitStatus: "idle", reviewSubmitError: "could not reach the server" });
+      }
     },
 
     // Switching mode re-derives + relayouts like a dive, but CARRIES the current code path: the nodes
@@ -1210,6 +1544,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       if (mode === "prs") {
+        // Returning to the PRs lens ends the review session: the boot artifact comes back so the
+        // list is browsed against the graph the session booted with. No relayout here — the PRs
+        // page has no canvas, and re-entering a graph lens always lays out afresh.
+        restorePrReviewBaseline(get, set, invalidateArtifactCaches);
+        // Remember the lens we're leaving so `togglePrsView` can resume it (previous !== "prs" here).
+        lensBeforePrs = previous;
         set({ viewMode: mode });
         if (get().prsList[get().prsTab] === null) {
           void get().loadPrs(1);
@@ -1217,16 +1557,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       // A shared/reloaded deep link is unaffected: it restores via setState on boot (not this click
-      // path), so an explicit ?mfocus=… / ?focus=… still opens exactly where the link points.
+      // path), so an explicit ?mfocus=… / ?focus=… still opens exactly where the link points. The
+      // palette's "+" pins (`mapExtra`) are session scratch of the level we leave — always cleared.
       if (mode === "modules") {
         const reveal = mapRevealStateForMany(anchors, get().index);
-        set({ viewMode: mode, ...(reveal ?? MODULE_TOP_LEVEL) });
+        set({ viewMode: mode, mapExtra: new Set<string>(), ...(reveal ?? MODULE_TOP_LEVEL) });
         void get().moduleRelayout();
         return;
       }
       if (mode === "call") {
         const reveal = serviceRevealStateForMany(anchors, get().index);
-        set({ viewMode: mode, ...(reveal ?? MODULE_TOP_LEVEL) });
+        set({ viewMode: mode, mapExtra: new Set<string>(), ...(reveal ?? MODULE_TOP_LEVEL) });
         void get().moduleRelayout();
         return;
       }
@@ -1234,6 +1575,25 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const reveal = uiRevealStateForMany(anchors, get().index);
       set(reveal ? { viewMode: mode, ...reveal } : { viewMode: mode, focusId: uiFocusTarget(get().index) });
       void get().relayout();
+    },
+
+    // The "PR review" control is a toggle: off → open the full PR page; on → resume the lens you came
+    // from (Map/Service/UI/Logic). The graph state is left untouched while PRs are open, so flipping
+    // the mode back restores it exactly where you left it — no reset, no re-layout — except when that
+    // lens was never laid out (PRs opened before its surface first rendered), which we relayout for.
+    togglePrsView() {
+      if (get().viewMode !== "prs") {
+        get().setViewMode("prs");
+        return;
+      }
+      const back = lensBeforePrs ?? "modules";
+      lensBeforePrs = null;
+      set({ viewMode: back });
+      if ((back === "modules" || back === "call") && get().moduleRfNodes.length === 0) {
+        void get().moduleRelayout();
+      } else if (back === "ui" && get().rfNodes.length === 0) {
+        void get().relayout();
+      }
     },
 
     // Hiding tests while dived into (or having selected) test code would strand the view on
@@ -1252,14 +1612,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         compRoot: nextCompRoot,
         moduleSelected: showTests ? moduleSelected : new Set([...moduleSelected].filter((id) => !index.testIds.has(id))),
       });
-      // The composition AND module-map views hide test cards in place (the surface filters the rendered
-      // set), so they must NOT re-lay-out — that would reshuffle production cards. The module map's focus
-      // is a package/dir node (never test-stranded the way a file root was), so it's purely paint-only
-      // here. Composition still relayouts when its OWN root was stranded inside now-hidden test code.
+      // The composition view hides test cards in place (paint-only), relayouting only when its OWN
+      // root was stranded inside now-hidden test code. The MODULE MAP relayouts instead: test code
+      // can be half a level's cards (and a wall of off-level test ghosts), and paint-hiding kept a
+      // crater of empty space — moduleRelayout re-derives the level with testIds excluded, so the
+      // survivors compact. Positions do move on this toggle, by design.
       const paintOnlyMode = viewMode === "call" || viewMode === "modules";
       const compRootChanged = nextCompRoot !== compRoot;
       if (!paintOnlyMode || compRootChanged) {
         void get().relayout();
+      }
+      if (viewMode === "modules") {
+        void get().moduleRelayout();
       }
     },
 
@@ -1406,11 +1770,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     async selectPr(number) {
       const sequence = ++prFilesSeq;
+      // Switching PRs abandons any review preparation in flight: bump its seq so a landing stream
+      // is dropped, and clear the indicator so the panel never shows a stale progress/error card.
+      prAnalyzeSeq += 1;
+      // Leaving the reviewed PR (a different number, or Back/Escape's null) ends the review
+      // session: put the boot artifact back and re-lay the visible surface. A no-op outside one.
+      if (restorePrReviewBaseline(get, set, invalidateArtifactCaches)) {
+        void get().relayout();
+      }
+      const prepareReset = { prReviewStatus: "idle" as const, prPrepareStage: null, prPrepareError: null };
       if (number === null) {
-        set({ prSelected: null, prFiles: null, prFilesTruncated: false, prsLoading: false, prsError: null });
+        set({ prSelected: null, prFiles: null, prFilesTruncated: false, prsLoading: false, prsError: null, ...prepareReset });
         return;
       }
-      set({ prSelected: number, prFiles: null, prFilesTruncated: false, prsLoading: true, prsError: null });
+      set({ prSelected: number, prFiles: null, prFilesTruncated: false, prsLoading: true, prsError: null, ...prepareReset });
       try {
         const url = new URL(prFilesUrl, requestOrigin());
         url.searchParams.set("n", String(number));
@@ -1434,90 +1807,49 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // Reviewing a PR lands on main's Module-map minimal-graph surface, seeded from the PR's changed
-    // FILES and pre-expanded into their code blocks. The modified blocks (diff hunks ∩ node ranges)
-    // are pushed into the shared `changedIds` channel so the cards ring exactly them amber, and the
-    // affected logic flows fill the hierarchical panel beside the overlay. Same review CONTEXT a
-    // `meridian review` artifact carries — only the render surface is main's, not a bespoke graph.
-    reviewPrInGraph() {
-      const { prFiles, prSelected, prsList, artifact, index } = get();
-      if (prSelected === null) {
+    // Reviewing a PR lands on main's Module-map minimal-graph surface (applyPrReviewToMap). When
+    // the server can prepare the PR head (analyzeUrl + a stored artifact id + a known PR summary),
+    // it streams the clone→checkout→extract analysis into the prepare indicator, then SWAPS the
+    // loaded artifact for the prepared head-accurate one (saving the boot pair for the session-end
+    // restore) so the review computes in the diff's own coordinates. Without the endpoint (plain
+    // `view`, older server) it reviews the loaded artifact synchronously, as before — no swap.
+    // A stale-seq guard drops an older stream when a newer review (or PR switch) supersedes it.
+    async reviewPrInGraph() {
+      const prNumber = get().prSelected;
+      if (prNumber === null) {
         return;
       }
-      const summary = [...(prsList.open ?? []), ...(prsList.closed ?? [])].find((pr) => pr.number === prSelected);
-      const context = reviewContextFromPrFiles({
-        prNumber: prSelected,
-        headRef: summary?.headRef ?? null,
-        scopeId: prFilesUrl,
-        files: prFiles ?? [],
-      });
-      const review = deriveReviewDataFromContext(context, artifact, index);
-      // The modified code blocks (hunks ∩ node ranges); repaint main's changed-node channel to THIS PR
-      // so the Map + minimal overlay ring the edited blocks amber (reused `--changed-since` highlight).
-      const affected = computeAffectedNodes(artifact.nodes, context.changedFiles);
-      applyChangedIds(index, affected.map((node) => node.nodeId));
-      // Seed the minimal graph from the changed FILES (seeds must be module ids).
-      const matchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
-      const seeds = [...new Set(matchedFiles.map((match) => match.moduleId))].sort();
-      // Join the PR's line-level diff into the shared changedSince channel, keyed by each changed
-      // file's node.location.file, so the code panel's </> shows the added lines highlighted (green)
-      // over the block-level review — the "see the whole file's +/- diff" ask, straight from PR hunks.
-      const hunksByPath = new Map(context.changedFiles.map((file) => [file.path, file.hunks]));
-      const changedFiles: Record<string, LineRange[]> = {};
-      const changedKinds: Record<string, ChangedLineSpan[]> = {};
-      for (const match of matchedFiles) {
-        const hunks = hunksByPath.get(match.path);
-        const locFile = index.nodesById.get(match.moduleId)?.location?.file;
-        if (hunks && hunks.length > 0 && locFile) {
-          changedFiles[locFile] = hunks.map((hunk) => ({ start: hunk.start, end: hunk.end }));
-          changedKinds[locFile] = hunks.map((hunk) => ({ start: hunk.start, end: hunk.end, kind: "added" as const }));
-        }
+      const summary = selectedPrSummary(get());
+      if (analyzeUrl === null || analyzeGraphId === null || summary === null) {
+        applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
+        return;
       }
-      // extensions is a strict JsonValue; the ranges/spans are plain JSON, so cast the assembled
-      // artifact back to its type rather than widen JsonValue.
-      const reviewedArtifact = {
-        ...artifact,
-        extensions: {
-          ...(artifact.extensions as Record<string, unknown> | undefined),
-          changedSince: { baseRef: `pr#${prSelected}`, files: changedFiles, kinds: changedKinds },
-        },
-      } as unknown as typeof artifact;
-      // Pre-expand every container on the path to each changed block (file → class) so the modified
-      // methods surface as their own amber cards instead of a collapsed "N members" class.
-      const expanded = new Set<string>(seeds);
-      for (const node of affected) {
-        for (const ancestor of index.ancestorsOf(node.nodeId)) {
-          if (ancestor.id !== node.nodeId && index.isContainer(ancestor.id)) {
-            expanded.add(ancestor.id);
+      const sequence = ++prAnalyzeSeq;
+      set({ prReviewStatus: "preparing", prPrepareStage: "clone", prPrepareError: null, prPreparedGraphId: null });
+      try {
+        const request = { id: analyzeGraphId, prNumber, baseRef: summary.baseRef, headRef: summary.headRef };
+        const preparedGraphId = await streamPrAnalysis(analyzeUrl, request, (stage) => {
+          if (prAnalyzeSeq === sequence) {
+            set({ prPrepareStage: stage });
           }
+        });
+        if (prAnalyzeSeq !== sequence) {
+          return; // a newer review (or PR switch) superseded this one.
         }
-      }
-      minimalLayoutSeq += 1;
-      set({
-        artifact: reviewedArtifact,
-        review,
-        prReviewed: prSelected,
-        reviewTicks: readReviewProgress(context.reviewKey).ticks,
-        reviewAffectedIds: new Set(affected.map((node) => node.nodeId)),
-        reviewUnmapped: unmappedChangedFiles(affected, context.changedFiles),
-        reviewLitNodeIds: null,
-        reviewSelectedId: null,
-        viewMode: "modules",
-        moduleFocus: null,
-        moduleSelected: new Set<string>(),
-        moduleExpanded: expanded,
-        minimalSeedIds: seeds,
-        minimalKeptIds: [],
-        minimalExpanded: [],
-        minimalBasePositions: {},
-        minimalRfNodes: [],
-        minimalRfEdges: [],
-        minimalLayoutStatus: seeds.length > 0 ? "laying-out" : "idle",
-      });
-      // Lay out the underlying Map (correct if the reader closes the overlay) and, when seeded, the overlay.
-      void get().moduleRelayout();
-      if (seeds.length > 0) {
-        void get().minimalRelayout();
+        // SWAP: load the prepared PR-head artifact and make it the CURRENT graph BEFORE the review
+        // body runs, so amber marking, seeds, and the line diff all compute in the hunks' own
+        // head coordinates (the loaded artifact is the analyzed branch — its line numbers drift).
+        const prepared = await fetchPreparedArtifact(get().graphUrl, preparedGraphId);
+        if (prAnalyzeSeq !== sequence) {
+          return; // abandoned while the artifact was in flight — an old preparation must not swap.
+        }
+        swapToPreparedArtifact(get, set, prepared, invalidateArtifactCaches);
+        set({ prReviewStatus: "idle", prPrepareStage: null, prPreparedGraphId: preparedGraphId });
+        applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
+      } catch (error) {
+        if (prAnalyzeSeq === sequence) {
+          set({ prReviewStatus: "error", prPrepareStage: null, prPrepareError: prepareErrorMessage(error) });
+        }
       }
     },
 
@@ -1547,6 +1879,118 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   }));
 }
 
+/**
+ * Reviewing a PR lands on main's Module-map minimal-graph surface, seeded from the PR's changed
+ * FILES and pre-expanded into their code blocks. The modified blocks (diff hunks ∩ node ranges)
+ * are pushed into the shared `changedIds` channel so the cards ring exactly them amber, and the
+ * affected logic flows fill the hierarchical panel beside the overlay. Same review CONTEXT a
+ * `meridian review` artifact carries — only the render surface is main's, not a bespoke graph.
+ * Extracted from the store so reviewPrInGraph can run it either directly (no analyze endpoint)
+ * or after the streamed PR-head preparation lands.
+ */
+function applyPrReviewToMap(
+  get: () => BlueprintState,
+  set: (partial: Partial<BlueprintState>) => void,
+  prFilesUrl: string,
+  invalidateMinimalLayout: () => void,
+): void {
+  const { prFiles, prSelected, prsList, artifact, index } = get();
+  if (prSelected === null) {
+    return;
+  }
+  // This is a lens ENTRY (it lands on the Map lens below), so it owes the shared transition side
+  // effects like every other entry point: a live Service scope must not survive into the review.
+  beginLensTransition(get, set);
+  const summary = [...(prsList.open ?? []), ...(prsList.closed ?? [])].find((pr) => pr.number === prSelected);
+  const context = reviewContextFromPrFiles({
+    prNumber: prSelected,
+    headRef: summary?.headRef ?? null,
+    scopeId: prFilesUrl,
+    files: prFiles ?? [],
+  });
+  const review = deriveReviewDataFromContext(context, artifact, index);
+  // The files-first checklist: every changed file with its touched code units (the panel's primary
+  // section). Derived from the SAME context/artifact as the affected set below, so a checked unit
+  // corresponds 1:1 with an amber-ringed card.
+  const files = deriveReviewFiles(context, artifact, index);
+  // The modified code blocks (hunks ∩ node ranges); repaint main's changed-node channel to THIS PR
+  // so the Map + minimal overlay ring the edited blocks amber (reused `--changed-since` highlight).
+  const affected = computeAffectedNodes(artifact.nodes, context.changedFiles);
+  applyChangedIds(index, affected.map((node) => node.nodeId));
+  // Seed the minimal graph from the changed FILES (seeds must be module ids).
+  const matchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
+  const seeds = [...new Set(matchedFiles.map((match) => match.moduleId))].sort();
+  // ONE source of truth for the line-level changedSince channel (the code panel's </> diff): the
+  // artifact's OWN stamp when it carries one — the prepared PR-head artifact does, computed by the
+  // extract pipeline from the real merge-base git diff, keyed by the extractor's own location.file
+  // paths, with true added/modified/deleted span kinds and no truncation. The client-side join from
+  // the GitHub patch hunks is strictly weaker (suffix-matched paths, "added"-only kinds, and it
+  // silently misses files whenever the server capped the PR file list), so it remains only as the
+  // fallback for a boot artifact that carries no stamp (the synchronous, no-analyze-endpoint path).
+  const reviewedArtifact =
+    changedRangesFromExtensions(artifact.extensions) !== null
+      ? artifact
+      : withPrLineDiff(artifact, index, context, matchedFiles, prSelected);
+  // Pre-expand the packages and file modules on the path to each changed block (packages too,
+  // else deriveModuleTree never descends to the file — mirrors flowExplorer's
+  // expandedModulePaths): review reads at declaration level (class/type cards), so classes stay
+  // collapsed "N members" cards and blocks never chart flow steps — drilling deeper stays a
+  // manual gesture.
+  const expanded = new Set<string>(seeds);
+  for (const node of affected) {
+    for (const ancestor of index.ancestorsOf(node.nodeId)) {
+      if (ancestor.kind === "package" || ancestor.kind === "module") {
+        expanded.add(ancestor.id);
+      }
+    }
+  }
+  invalidateMinimalLayout();
+  const progress = readReviewProgress(context.reviewKey);
+  set({
+    artifact: reviewedArtifact,
+    review,
+    prReviewed: prSelected,
+    reviewTicks: progress.ticks,
+    reviewUnitTicks: progress.unitTicks,
+    reviewFileTicks: progress.fileTicks,
+    reviewComments: progress.comments,
+    reviewPanelHidden: false,
+    reviewSubmitStatus: "idle",
+    reviewSubmitError: null,
+    reviewSubmittedUrl: null,
+    reviewAffectedIds: new Set(affected.map((node) => node.nodeId)),
+    reviewFiles: files,
+    reviewLitNodeIds: null,
+    reviewSelectedId: null,
+    viewMode: "modules",
+    moduleFocus: null,
+    moduleSelected: new Set<string>(),
+    moduleExpanded: expanded,
+    minimalSeedIds: seeds,
+    minimalMemberIds: [...seeds],
+    minimalBasePositions: {},
+    minimalArrange: false,
+    minimalRfNodes: [],
+    minimalRfEdges: [],
+    minimalLayoutStatus: seeds.length > 0 ? "laying-out" : "idle",
+  });
+  // Lay out the underlying Map (correct if the reader closes the overlay) and, when seeded, the overlay.
+  void get().moduleRelayout();
+  if (seeds.length > 0) {
+    void get().minimalRelayout();
+  }
+}
+
+/** The selected PR's summary row (its refs feed the analyze request); null when not listed. */
+function selectedPrSummary(state: BlueprintState): PrSummary | null {
+  const { prSelected, prsList } = state;
+  return [...(prsList.open ?? []), ...(prsList.closed ?? [])].find((pr) => pr.number === prSelected) ?? null;
+}
+
+function prepareErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message.length > 0 ? error.message : "PR analysis failed.";
+}
+
 /** Route an in-place expansion relayout to whichever module surface is showing: the minimal-graph
  * overlay when it is open (it shares the one `moduleExpanded` id space), else the Module map beneath.
  * Relaying out the covered Map instead would be work the reader can't see. */
@@ -1569,6 +2013,15 @@ function beginLensTransition(get: BlueprintStore["getState"], set: (partial: Par
   if (get().serviceScope !== null) {
     set({ serviceScope: null });
   }
+}
+
+/** Order-independent equality of two id lists — the minimal overlay's "members === origin" test. */
+function sameMembers(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  const set = new Set(a);
+  return b.every((id) => set.has(id));
 }
 
 function withToggled(expanded: Set<string>, nodeId: string): Set<string> {
@@ -1711,6 +2164,50 @@ async function errorMessage(response: Response): Promise<string> {
   } catch {
     return "Could not load pull requests.";
   }
+}
+
+async function submitErrorMessage(response: Response): Promise<string> {
+  try {
+    const data = (await response.json()) as { error?: unknown };
+    if (typeof data.error === "string" && data.error.length > 0) {
+      return data.error;
+    }
+  } catch {
+    // No JSON body — fall through to the status-based message.
+  }
+  return response.status === 404 ? "submitting needs a web GitHub session" : "could not submit the review";
+}
+
+/** Persist the review progress WHOLE under its reviewKey — every mutating action funnels here. */
+function persistReviewProgress(
+  state: Pick<BlueprintState, "review" | "reviewTicks" | "reviewUnitTicks" | "reviewFileTicks" | "reviewComments">,
+): void {
+  if (!state.review) {
+    return;
+  }
+  const progress: ReviewProgress = {
+    version: 2,
+    ticks: state.reviewTicks,
+    unitTicks: state.reviewUnitTicks,
+    fileTicks: state.reviewFileTicks,
+    comments: state.reviewComments,
+  };
+  writeReviewProgress(state.review.context.reviewKey, progress);
+}
+
+/** Drop the SUBMITTED drafts from a review scope's storage, keeping ticks and any draft added
+ * while the submit was in flight. */
+function stripStoredComments(reviewKey: string, submittedIds: ReadonlySet<string>): void {
+  const progress = readReviewProgress(reviewKey);
+  writeReviewProgress(reviewKey, { ...progress, comments: progress.comments.filter((comment) => !submittedIds.has(comment.id)) });
+}
+
+/** Collision-safe enough for a per-review draft list; randomUUID exists on localhost (secure context). */
+function newCommentId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function mergePrSummaries(existing: readonly PrSummary[], incoming: readonly PrSummary[]): PrSummary[] {
