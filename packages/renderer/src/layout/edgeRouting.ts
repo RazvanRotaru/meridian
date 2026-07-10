@@ -26,6 +26,8 @@ export interface RoutedEdgeData extends Record<string, unknown> {
 const RAIL_INSET = 12;
 /** Corner radius where the wire turns onto / off the rail. */
 const CORNER = 8;
+/** Gates never enter through the frame's TITLE BAR strip (44px ELK top padding + a little air). */
+const TITLE_BAR_CLEAR = 50;
 /** Horizontal control pull for the free curve outside the frame. */
 const PULL = 90;
 
@@ -95,9 +97,11 @@ function routePlan(edge: Edge, byId: Map<string, Node>, rects: Map<string, Rect>
   const ty = target.y + target.h / 2;
   // Enter from whichever side of the frame the source sits on; the rail runs in that side's gutter.
   const fromLeft = source.x + source.w / 2 <= frame.x + frame.w / 2;
-  // The gate sits at the source's height, clamped into the frame's edge span, so the outside leg
-  // stays flat and gates from different sources spread along the boundary instead of knotting.
-  const gateY = clamp(sy, frame.y + CORNER * 2, frame.y + frame.h - CORNER * 2);
+  // The gate sits at the source's height, clamped into the frame's edge span — below the title bar
+  // (a wire through the frame's name is as bad as one through a card) and above the bottom edge —
+  // so the outside leg stays flat and gates spread along the boundary instead of knotting.
+  const gateTop = Math.min(frame.y + TITLE_BAR_CLEAR, frame.y + frame.h - CORNER * 2);
+  const gateY = clamp(sy, gateTop, frame.y + frame.h - CORNER * 2);
   return {
     railKey: `${frame.x},${frame.y},${fromLeft ? "L" : "R"}`,
     sx: fromLeft ? source.x + source.w : source.x,

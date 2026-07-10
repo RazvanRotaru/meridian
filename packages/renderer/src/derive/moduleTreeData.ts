@@ -4,6 +4,8 @@ import { npmPackageIdOf } from "./compositionClusters";
 import { type Skeleton } from "./codeWalk";
 import { liftEdges } from "./liftEdges";
 import { basename, blockData, fileData, unitData } from "./moduleLevel";
+
+const EMPTY_HIDDEN: ReadonlySet<string> = new Set<string>();
 import { subtreeFileCount } from "./moduleFrontier";
 import { weightKey, type ModuleGraph } from "./moduleGraph";
 import { derivePackageOverview, packageEntryModule, type ModulePackageData } from "./packageOverview";
@@ -20,6 +22,7 @@ export function finalizeModuleNode(
   lifted: ReturnType<typeof liftEdges>,
   stepData: ReadonlyMap<string, StepData>,
   overviewFold: ReadonlyMap<string, ModulePackageData>,
+  hiddenIds: ReadonlySet<string> = EMPTY_HIDDEN,
 ): VisibleModuleNode {
   const data =
     entry.kind === "step"
@@ -33,11 +36,14 @@ export function finalizeModuleNode(
           isExpanded: entry.isExpanded,
         })
       : entry.kind === "file"
-        ? fileData(entry.id, graph, index, entryFor(entry.id, index), {
-            isContainer: entry.isContainer,
-            isExpanded: entry.isExpanded,
-            unitCount: entry.childCount,
-          })
+        ? fileData(
+            entry.id,
+            graph,
+            index,
+            entryFor(entry.id, index),
+            { isContainer: entry.isContainer, isExpanded: entry.isExpanded, unitCount: entry.childCount },
+            hiddenIds,
+          )
         : groupData(entry, index, subtreeFileCount(index, entry.id), lifted, overviewFold);
   return { ...entry, data };
 }

@@ -111,13 +111,19 @@ export function frameStyle(accent: string): React.CSSProperties {
 
 // Selection reads as the card's OWN accent, just heavier — a 2px solid border (vs the 1px faint one
 // at rest) plus a soft accent halo. No separate selection colour, so a hue always means one thing.
+/** ONE selection ink for every card kind: a bright neutral focus ring. The old "own accent,
+ * heavier" treatment meant selection looked different on every card and was indistinguishable from
+ * the amber changed-ring on amber (class/config) cards — a state must have one costume. The card's
+ * accent stays on its border/rail; the RING says "selected". */
+export const SELECTION_RING = "#DCE6F2";
+
 export function frameSelectedStyle(accent: string): React.CSSProperties {
-  return { ...frameStyle(accent), border: `2px solid ${accent}`, boxShadow: `0 0 0 2px ${accent}55` };
+  return { ...frameStyle(accent), border: `2px solid ${accent}`, boxShadow: `0 0 0 2px ${SELECTION_RING}` };
 }
 
-/** The same "own accent, heavier" selection treatment for a COLLAPSED card (given its base style). */
+/** The same neutral-ring selection treatment for a COLLAPSED card (given its base style). */
 export function cardSelectedStyle(base: React.CSSProperties, accent: string): React.CSSProperties {
-  return { ...base, borderColor: accent, boxShadow: `0 0 0 2px ${accent}` };
+  return { ...base, borderColor: accent, boxShadow: `0 0 0 2px ${SELECTION_RING}` };
 }
 
 export const TITLE_BAR: React.CSSProperties = {

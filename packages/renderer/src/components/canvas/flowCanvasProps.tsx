@@ -43,7 +43,11 @@ export function CanvasChrome({ nodeColor, minimap = true }: { nodeColor: (node: 
     <>
       <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#222732" />
       <Controls showInteractive={false} />
-      {minimap ? <MiniMap pannable zoomable nodeColor={nodeColor} maskColor="rgba(8,10,14,0.7)" /> : null}
+      {/* Lighter mask + a per-node stroke: the old 0.7 mask over near-black node fills made the
+          minimap read as an empty rectangle; the stroke keeps tiny nodes visible at any density. */}
+      {minimap ? (
+        <MiniMap pannable zoomable nodeColor={nodeColor} nodeStrokeColor="#4B5563" nodeStrokeWidth={3} maskColor="rgba(8,10,14,0.55)" style={{ background: "#161B22" }} />
+      ) : null}
     </>
   );
 }
