@@ -47,13 +47,14 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={{ ...ACCENT_BAR, background: PACKAGE_ACCENT }} />
-      <div style={INNER}>
+      <span className="lod-place">{data.label}</span>
+      <div className="lod-card-body" style={INNER}>
         <div style={HEADER}>
           {chevron}
-          <span className="lod-label" style={LABEL} title={id}>{data.label}</span>
-          <span className="lod-hide" style={CONTENTS}><DeltaChip diff={diff} /></span>
+          <span style={LABEL} title={id}>{data.label}</span>
+          <DeltaChip diff={diff} />
         </div>
-        <div className="lod-hide" style={CONTENTS}><Meta data={data} /></div>
+        <Meta data={data} />
       </div>
     </div>
   );

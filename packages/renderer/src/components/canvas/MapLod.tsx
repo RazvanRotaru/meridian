@@ -23,14 +23,42 @@ const LOD_CSS = `
   visibility: hidden;
 }
 .react-flow[data-map-tier="orientation"] .lod-label {
-  /* !important throughout: labels carry inline ellipsis styles that must lose in this mode. */
-  transform: scale(clamp(1, calc(0.92 / var(--map-zoom, 1)), 4));
+  /* FRAME titles only (collapsed cards use the place label below): inverse-scale in the title
+     bar, where there is horizontal room. !important: labels carry inline ellipsis styles. */
+  transform: scale(clamp(1, calc(0.92 / var(--map-zoom, 1)), 3));
   transform-origin: left center;
   overflow: visible !important;
   text-overflow: clip !important;
   max-width: none !important;
   white-space: nowrap !important;
   z-index: 1;
+}
+/* The PLACE LABEL: a collapsed card's one name at orientation zoom. Deliberately a floating,
+   centered pill OVER the card (dot-and-label, like towns on a map) rather than the in-card text
+   scaled up — a left-anchored label escaping a crisp card edge reads as broken clipping, while a
+   symmetric pill with its own backdrop reads as a label. Display-none in the reading tier. */
+.lod-place {
+  display: none;
+}
+.react-flow[data-map-tier="orientation"] .lod-place {
+  display: block;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%) scale(clamp(1, calc(0.92 / var(--map-zoom, 1)), 3));
+  font-size: 12px;
+  font-weight: 700;
+  color: #E6EDF3;
+  background: rgba(10, 14, 19, 0.78);
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 2;
+}
+/* At orientation a collapsed card's IN-CARD content hides entirely; the place label replaces it. */
+.react-flow[data-map-tier="orientation"] .lod-card-body {
+  visibility: hidden;
 }
 .react-flow[data-map-tier="orientation"] .lod-tint,
 .react-flow[data-map-tier="orientation"] .lod-tint > div {
