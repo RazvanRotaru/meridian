@@ -68,8 +68,10 @@ function FileRow(props: {
   onComposer: (target: CommentTarget | null) => void;
 }) {
   const { file, unitTicks, fileTicks, drafts, composer, onComposer } = props;
-  const { toggleReviewFileViewed, addReviewComment, setReviewLit } = useBlueprintActions();
+  const { toggleReviewFileViewed, addReviewComment, setReviewLit, focusReviewFile } = useBlueprintActions();
+  const focused = useBlueprint((state) => file.moduleId !== null && state.reviewSelectedId === file.moduleId);
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
+  const [hovered, setHovered] = useState(false);
   const view = fileViewState(file, unitTicks, fileTicks);
   // A viewed file folds shut (GitHub's gesture). A manual chevron override holds only until the
   // viewed state next CHANGES — then the derived fold wins again, so completing the last unit
@@ -82,27 +84,48 @@ function FileRow(props: {
   const composerHere = composer !== null && composer.path === file.path && composer.nodeId === null;
   const doneUnits = file.units.filter((unit) => checkStateOf(unit.fingerprint, unitTicks[unit.nodeId]) === "done").length;
   return (
-    <div style={FILE_BLOCK}>
+    <div style={focused ? FILE_BLOCK_FOCUSED : FILE_BLOCK}>
       <div
         style={FILE_HEAD}
-        onMouseEnter={() => setReviewLit(file.units.length > 0 ? new Set(file.units.map((unit) => unit.nodeId)) : null)}
-        onMouseLeave={() => setReviewLit(null)}
+        onMouseEnter={() => {
+          setHovered(true);
+          setReviewLit(file.units.length > 0 ? new Set(file.units.map((unit) => unit.nodeId)) : null);
+        }}
+        onMouseLeave={() => {
+          setHovered(false);
+          setReviewLit(null);
+        }}
       >
-        <button type="button" style={FILE_MAIN} title={file.path} onClick={() => setOpenOverride(!expanded)}>
+        <button type="button" style={CARET_BTN} title={expanded ? "Collapse" : "Expand"} onClick={() => setOpenOverride(!expanded)}>
           <span style={{ ...CARET, visibility: file.units.length > 0 || fileDrafts.length > 0 ? "visible" : "hidden" }}>{expanded ? "▾" : "▸"}</span>
+        </button>
+        <button
+          type="button"
+          style={FILE_MAIN}
+          title={file.moduleId !== null ? `${file.path} — click to reveal on the graph` : file.path}
+          onClick={() => {
+            // In-graph file: the click REVEALS it (select + light + center); the caret alone folds.
+            if (file.moduleId !== null) {
+              focusReviewFile(file.path);
+              setOpenOverride(true);
+            } else {
+              setOpenOverride(!expanded);
+            }
+          }}
+        >
           <span style={{ ...STATUS_LETTER, color: STATUS_COLOR[file.status] ?? "#9AA4B2" }} title={file.status}>
             {file.status[0].toUpperCase()}
           </span>
           <FilePath path={file.path} />
-          {file.units.length > 0 ? (
-            <span style={SECTION_COUNT}>{doneUnits}/{file.units.length}</span>
-          ) : (
+          {file.units.length > 0 && <span style={SECTION_COUNT}>{doneUnits}/{file.units.length}</span>}
+          {file.moduleId === null && (
             <span style={NOT_IN_GRAPH} title="this change mapped to no extracted code block">not in graph</span>
           )}
         </button>
         <CommentButton
           count={fileDrafts.length}
           active={composerHere}
+          visible={hovered}
           onClick={() => {
             // The composer renders in the file body — opening it on a folded (viewed) file unfolds it.
             if (!composerHere) {
@@ -151,7 +174,9 @@ function FilePath({ path }: { path: string }) {
 export const ReviewFilesSection = memo(ReviewFilesSectionImpl);
 
 const FILE_BLOCK: React.CSSProperties = { borderRadius: 8, border: "1px solid #1B212A", background: "#0D1117", marginBottom: 6, paddingBottom: 2 };
+const FILE_BLOCK_FOCUSED: React.CSSProperties = { ...FILE_BLOCK, borderColor: "#2E3A4D", background: "rgba(46,58,77,0.18)" };
 const FILE_HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 2, padding: "2px 6px 2px 4px" };
+const CARET_BTN: React.CSSProperties = { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 18, alignSelf: "stretch", border: "none", background: "transparent", cursor: "pointer", padding: 0, flexShrink: 0 };
 const FILE_MAIN: React.CSSProperties = { flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, border: "none", background: "transparent", cursor: "pointer", font: "inherit", padding: "5px 2px", textAlign: "left" };
 const STATUS_LETTER: React.CSSProperties = { fontFamily: MONO, fontSize: 11, fontWeight: 700, width: 12, flexShrink: 0, textAlign: "center" };
 const PATH_WRAP: React.CSSProperties = { flex: 1, minWidth: 0, fontFamily: MONO, fontSize: 11.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };

@@ -18,8 +18,11 @@ import { SubmitReviewFooter } from "./ReviewComments";
 function ReviewPanelImpl() {
   const review = useBlueprint((state) => state.review);
   const hidden = useBlueprint((state) => state.reviewPanelHidden);
-  if (!review || hidden) {
+  if (!review) {
     return null;
+  }
+  if (hidden) {
+    return <CollapsedRail />;
   }
   return (
     <div style={PANEL}>
@@ -30,6 +33,23 @@ function ReviewPanelImpl() {
       </div>
       <SubmitReviewFooter />
     </div>
+  );
+}
+
+/** The hidden panel folds to a slim rail in place — the reopen affordance stays exactly where the
+ * panel was instead of popping up somewhere else. The whole rail is the button. */
+function CollapsedRail() {
+  const files = useBlueprint((state) => state.reviewFiles);
+  const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
+  const fileTicks = useBlueprint((state) => state.reviewFileTicks);
+  const { toggleReviewPanel } = useBlueprintActions();
+  const viewed = files.filter((file) => fileViewState(file, unitTicks, fileTicks) === "done").length;
+  return (
+    <button type="button" style={RAIL} onClick={toggleReviewPanel} title="Show the review panel">
+      <span style={RAIL_GLYPH}>«</span>
+      <span style={RAIL_LABEL}>PR review</span>
+      {files.length > 0 && <span style={RAIL_COUNT}>{viewed}/{files.length}</span>}
+    </button>
   );
 }
 
@@ -90,8 +110,28 @@ const PANEL: React.CSSProperties = {
 const HEADER: React.CSSProperties = { padding: "14px 16px 12px", borderBottom: "1px solid #20262F", display: "flex", flexDirection: "column", gap: 8 };
 const HEADER_TOP: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
 const HEADER_TITLE: React.CSSProperties = { fontSize: 14, fontWeight: 700, color: "#E6EDF3" };
-const RESET_BTN: React.CSSProperties = { border: "1px solid #2A2F37", background: "transparent", color: "#9AA4B2", borderRadius: 6, padding: "2px 8px", fontSize: 11, cursor: "pointer", font: "inherit" };
-const HIDE_BTN: React.CSSProperties = { border: "1px solid #2A2F37", background: "transparent", color: "#9AA4B2", borderRadius: 6, padding: "2px 8px", fontSize: 12, fontWeight: 700, cursor: "pointer", font: "inherit", lineHeight: "16px" };
+// One shared chip metric for BOTH header buttons — mismatched size/weight reads as a glitch.
+const HEADER_BTN: React.CSSProperties = { border: "1px solid #2A2F37", background: "transparent", color: "#9AA4B2", borderRadius: 6, padding: "3px 9px", fontSize: 11.5, fontWeight: 600, lineHeight: "15px", cursor: "pointer", font: "inherit" };
+const RESET_BTN: React.CSSProperties = { ...HEADER_BTN };
+const HIDE_BTN: React.CSSProperties = { ...HEADER_BTN };
+const RAIL: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  gap: 10,
+  width: 30,
+  height: "100%",
+  padding: "12px 0",
+  boxSizing: "border-box",
+  border: "none",
+  borderLeft: "1px solid #20262F",
+  background: "#0B0E13",
+  cursor: "pointer",
+  font: "inherit",
+};
+const RAIL_GLYPH: React.CSSProperties = { fontSize: 13, fontWeight: 700, color: "#9AA4B2", lineHeight: 1 };
+const RAIL_LABEL: React.CSSProperties = { writingMode: "vertical-rl", fontSize: 11, fontWeight: 700, letterSpacing: 0.5, color: "#9AA4B2", textTransform: "uppercase" };
+const RAIL_COUNT: React.CSSProperties = { fontSize: 9, fontWeight: 600, color: "#9AA4B2", background: "#1B212A", borderRadius: 8, padding: "3px 2px", writingMode: "vertical-rl" };
 const HEADER_REF: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6, fontFamily: MONO, fontSize: 11 };
 const REF_BRANCH: React.CSSProperties = { color: "#6BE38A" };
 const REF_ARROW: React.CSSProperties = { color: "#5A6472" };

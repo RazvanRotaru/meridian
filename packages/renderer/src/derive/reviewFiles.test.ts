@@ -35,14 +35,18 @@ function contextOf(changedFiles: ReviewContext["changedFiles"]): ReviewContext {
 }
 
 describe("deriveReviewFiles", () => {
-  it("groups hunk-overlapping units per file, ordered by start line, with nesting depth", () => {
+  it("groups hunk-overlapping units per file, in-graph files FIRST, units by start line with depth", () => {
     const context = contextOf([
-      { path: "src/a.ts", status: "modified", hunks: [{ start: 25, end: 30 }] },
       { path: "docs/readme.md", status: "modified", hunks: [{ start: 1, end: 3 }] },
+      { path: "src/a.ts", status: "modified", hunks: [{ start: 25, end: 30 }] },
     ]);
     const files = deriveReviewFiles(context, ARTIFACT, INDEX);
-    expect(files.map((file) => file.path)).toEqual(["docs/readme.md", "src/a.ts"]);
-    const [docs, a] = files;
+    // src/a.ts sorts first despite "d" < "s": it is on the graph, the md file is not.
+    expect(files.map((file) => [file.path, file.moduleId])).toEqual([
+      ["src/a.ts", "ts:src/a.ts"],
+      ["docs/readme.md", null],
+    ]);
+    const [a, docs] = files;
     // The md file maps to no extracted block — a unit-less row, not a dropped one.
     expect(docs.units).toEqual([]);
     // Module (file container) is excluded; helper (70..90) misses the 25..30 hunk.
@@ -67,7 +71,7 @@ describe("view state + tick transitions", () => {
     { path: "src/a.ts", status: "modified", hunks: [{ start: 25, end: 30 }] },
     { path: "docs/readme.md", status: "deleted" },
   ]);
-  const [docs, a] = deriveReviewFiles(context, ARTIFACT, INDEX);
+  const [a, docs] = deriveReviewFiles(context, ARTIFACT, INDEX);
 
   it("derives a unit-ful file's viewed state from its units (all done ⇒ done)", () => {
     let unitTicks: Record<string, { at: string; fingerprint: string }> = {};

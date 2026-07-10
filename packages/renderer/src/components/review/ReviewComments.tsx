@@ -10,11 +10,14 @@ import { useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { ReviewComment } from "../../state/reviewTicksPref";
 
-export function CommentButton(props: { count: number; active: boolean; onClick: () => void }) {
+/** Shown only while its row is hovered (or already carries drafts / an open composer) — a panel
+ * full of identical always-on icons reads as noise. Hidden, not unmounted, so columns never shift. */
+export function CommentButton(props: { count: number; active: boolean; visible: boolean; onClick: () => void }) {
+  const shown = props.visible || props.active || props.count > 0;
   return (
     <button
       type="button"
-      style={{ ...COMMENT_BTN, ...(props.active || props.count > 0 ? COMMENT_BTN_ON : {}) }}
+      style={{ ...COMMENT_BTN, ...(props.active || props.count > 0 ? COMMENT_BTN_ON : {}), visibility: shown ? "visible" : "hidden" }}
       title={props.count > 0 ? `${props.count} draft ${props.count === 1 ? "comment" : "comments"}` : "Add a comment"}
       onClick={(event) => {
         event.stopPropagation();

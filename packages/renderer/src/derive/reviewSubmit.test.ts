@@ -30,6 +30,7 @@ const FILES: ReviewFileRow[] = [
   {
     path: "src/a.ts",
     status: "modified",
+    moduleId: "ts:src/a.ts",
     fingerprint: "25-30,80-85",
     units: [
       { nodeId: "ts:src/a.ts#Repo", displayName: "Repo", kind: "class", startLine: 10, endLine: 60, depth: 0, isTest: false, fingerprint: "f1" },
@@ -37,8 +38,8 @@ const FILES: ReviewFileRow[] = [
       { nodeId: "ts:src/a.ts#drifted", displayName: "drifted", kind: "function", startLine: 100, endLine: 110, depth: 0, isTest: false, fingerprint: "f3" },
     ],
   },
-  { path: "docs/readme.md", status: "deleted", fingerprint: "whole-file", units: [] },
-  { path: "src/gone.ts", status: "deleted", fingerprint: "0-1", units: [] },
+  { path: "docs/readme.md", status: "deleted", moduleId: null, fingerprint: "whole-file", units: [] },
+  { path: "src/gone.ts", status: "deleted", moduleId: null, fingerprint: "0-1", units: [] },
 ];
 
 function draft(path: string, nodeId: string | null, body: string, anchorLabel: string | null = null): ReviewComment {

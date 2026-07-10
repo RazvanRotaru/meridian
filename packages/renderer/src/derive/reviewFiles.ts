@@ -13,6 +13,7 @@ import { computeAffectedNodes, NON_BLOCK_KINDS, rangesOverlap } from "@meridian/
 import type { ChangeStatus, GraphArtifact, LineRange, ReviewContext } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { ReviewTick } from "../state/reviewTicksPref";
+import { matchAffectedFiles } from "./matchAffectedFiles";
 
 export interface ReviewUnitRow {
   nodeId: string;
@@ -30,13 +31,17 @@ export interface ReviewUnitRow {
 export interface ReviewFileRow {
   path: string;
   status: ChangeStatus;
+  /** The file's module node on the graph (a minimal-graph seed frame); null == not in the graph. */
+  moduleId: string | null;
   /** Touched code units, ordered by start line. Empty ⇒ the change mapped to no extracted block. */
   units: ReviewUnitRow[];
   /** File-level fingerprint (hunks digest) — staleness for the unit-less viewed tick. */
   fingerprint: string;
 }
 
-/** All changed files as review rows, path-ascending, units by start line. Pure. */
+/** All changed files as review rows: in-graph files first (they are what the review is about; the
+ * unmatched tail is typically build artifacts), path-ascending within each group, units by start
+ * line. Pure. */
 export function deriveReviewFiles(
   context: ReviewContext,
   artifact: GraphArtifact,
@@ -51,14 +56,24 @@ export function deriveReviewFiles(
       bucket ? bucket.push(row) : unitsByFile.set(node.file, [row]);
     }
   }
+  const matches = matchAffectedFiles(index, context.changedFiles.map((file) => file.path));
+  const moduleByPath = new Map(matches.matched.map((match) => [match.path, match.moduleId]));
   return [...context.changedFiles]
-    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
     .map((file) => ({
       path: file.path,
       status: file.status,
+      moduleId: moduleByPath.get(file.path) ?? null,
       units: (unitsByFile.get(file.path) ?? []).sort((a, b) => a.startLine - b.startLine),
       fingerprint: hunksFingerprint(file.hunks),
-    }));
+    }))
+    .sort(byGraphThenPath);
+}
+
+function byGraphThenPath(a: ReviewFileRow, b: ReviewFileRow): number {
+  if ((a.moduleId === null) !== (b.moduleId === null)) {
+    return a.moduleId === null ? 1 : -1;
+  }
+  return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
 }
 
 /** todo = never ticked; done = tick's fingerprint still matches; stale = the code moved since. */

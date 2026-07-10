@@ -5,6 +5,7 @@
  * directly under the row.
  */
 
+import { useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { checkStateOf, type ReviewUnitRow as UnitRowData } from "../../derive/reviewFiles";
 import type { ReviewComment, ReviewTick } from "../../state/reviewTicksPref";
@@ -23,24 +24,31 @@ export function UnitRow(props: {
   const { unit, path, tick, drafts, composer, onComposer } = props;
   const { toggleReviewUnitTick, addReviewComment, setReviewLit, selectReviewNode } = useBlueprintActions();
   const selected = useBlueprint((state) => state.reviewSelectedId === unit.nodeId);
+  const [hovered, setHovered] = useState(false);
   const state = checkStateOf(unit.fingerprint, tick);
   const composerHere = composer !== null && composer.nodeId === unit.nodeId;
   return (
     <>
       <div
         style={{ ...(selected ? ROW_SELECTED : ROW), paddingLeft: 24 + unit.depth * 14 }}
-        onMouseEnter={() => setReviewLit(new Set([unit.nodeId]))}
-        onMouseLeave={() => setReviewLit(null)}
+        onMouseEnter={() => {
+          setHovered(true);
+          setReviewLit(new Set([unit.nodeId]));
+        }}
+        onMouseLeave={() => {
+          setHovered(false);
+          setReviewLit(null);
+        }}
       >
         <span style={{ ...GLYPH, color: accentForKind(unit.kind) }} title={unit.kind}>
           {glyphForKind(unit.kind)}
         </span>
-        <button type="button" style={MAIN} title={`${unit.displayName} · ${unit.kind}`} onClick={() => selectReviewNode(unit.nodeId)}>
+        <button type="button" style={MAIN} title={`${unit.displayName} · ${unit.kind} — click to reveal on the graph`} onClick={() => selectReviewNode(unit.nodeId)}>
           <span style={NAME}>{unit.displayName}</span>
           {unit.isTest && <span style={TEST_CHIP}>test</span>}
           <span style={LOC}>:{unit.startLine}</span>
         </button>
-        <CommentButton count={drafts.length} active={composerHere} onClick={() => onComposer(composerHere ? null : { path, nodeId: unit.nodeId })} />
+        <CommentButton count={drafts.length} active={composerHere} visible={hovered} onClick={() => onComposer(composerHere ? null : { path, nodeId: unit.nodeId })} />
         <button
           type="button"
           style={{ ...TICK_BTN, color: TICK_COLOR[state] }}

@@ -391,6 +391,8 @@ export interface BlueprintState {
   selectReviewNode(id: string | null): void;
   toggleReviewTick(flowId: string): void;
   resetReviewTicks(): void;
+  /** Reveal a changed file on the review graph: select its frame, light its units, center on it. */
+  focusReviewFile(path: string): void;
   toggleReviewUnitTick(nodeId: string): void;
   toggleReviewFileViewed(path: string): void;
   addReviewComment(path: string, nodeId: string | null, body: string): void;
@@ -1330,9 +1332,30 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ reviewLitNodeIds: ids });
     },
 
-    // Select a review block (from the graph or the panel); also lights it so the coupling reads as one.
+    // Select a review block (from the panel); also lights it and CENTERS the graph on it — a panel
+    // click must always end with the target visible, not selected somewhere off-screen.
     selectReviewNode(id) {
       set({ reviewSelectedId: id, reviewLitNodeIds: id === null ? null : new Set([id]) });
+      if (id !== null) {
+        set({ recenterSeq: get().recenterSeq + 1 });
+      }
+    },
+
+    // The file row's click: select the file's frame on the review graph (the emphasize ring), light
+    // its touched units amber-strong, and center the viewport on the frame. Inert for files with no
+    // module on the graph (the "not in graph" tail).
+    focusReviewFile(path) {
+      const file = get().reviewFiles.find((candidate) => candidate.path === path);
+      if (!file || file.moduleId === null) {
+        return;
+      }
+      const lit = file.units.length > 0 ? file.units.map((unit) => unit.nodeId) : [file.moduleId];
+      set({
+        moduleSelected: new Set([file.moduleId]),
+        reviewSelectedId: file.moduleId,
+        reviewLitNodeIds: new Set(lit),
+        recenterSeq: get().recenterSeq + 1,
+      });
     },
 
     // Toggle a flow's reviewed tick and persist the whole record under the reviewKey.
