@@ -43,16 +43,19 @@ export const PANEL_STYLE: React.CSSProperties = {
   padding: "10px 12px",
 };
 
-// The members list panel, docked top-right BENEATH the main title/Reset/Close panel (three stacked
-// rows at top:16), so the Close button underneath stays clickable.
-export const MEMBERS_PANEL_STYLE: React.CSSProperties = {
-  ...PANEL_STYLE,
-  left: "auto",
-  right: 16,
-  top: 152,
-  gap: 8,
-  maxWidth: 280,
-};
+// The members list panel, docked top-right BENEATH the main title/…/Close panel so its buttons stay
+// clickable. That panel is taller during a PR review (it grows a "Show on map" row), so the offset
+// tracks the row count: title + 3 buttons normally, + 1 more in review.
+export function membersPanelStyle(reviewActive: boolean): React.CSSProperties {
+  return {
+    ...PANEL_STYLE,
+    left: "auto",
+    right: 16,
+    top: reviewActive ? 188 : 152,
+    gap: 8,
+    maxWidth: 280,
+  };
+}
 
 const BUTTON_STYLE: React.CSSProperties = {
   background: "transparent",

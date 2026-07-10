@@ -473,3 +473,71 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().prReviewBaseline?.index).toBe(bootIndex);
   });
 });
+
+describe("PR review overlay exits (collapse to map / close to the prior lens)", () => {
+  // The synchronous, no-analyze-endpoint review the plain `view`/main path takes: applyPrReviewToMap
+  // runs in place (no artifact swap, so no baseline), amber marks the boot index directly — exactly
+  // the case both exits must still clean up. The hunk (10-11) overlaps the method (10-12).
+  function reviewedInMap(prNumber: number) {
+    const store = freshStore();
+    store.setState({
+      viewMode: "prs",
+      prSelected: prNumber,
+      prsList: { open: [pr(prNumber)], closed: null },
+      prFiles: [{ path: "src/a.ts", status: "modified", additions: 2, deletions: 0, hunks: [{ start: 10, end: 11 }] }],
+    });
+    store.getState().reviewPrInGraph();
+    return store;
+  }
+
+  it("collapseReviewToMap closes the overlay and reveals the changed file COLLAPSED, review still live", () => {
+    const store = reviewedInMap(9);
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]); // sanity: the overlay was seeded.
+    store.getState().collapseReviewToMap();
+    // The overlay is gone...
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().minimalRfNodes).toEqual([]);
+    // ...revealing the changed file as a selected card focused into its package, with the file, its
+    // class, and its method all still FOLDED (the calm landing, not the review's pre-expansion).
+    expect(store.getState().viewMode).toBe("modules");
+    expect(store.getState().moduleFocus).toBe(PACKAGE_ID);
+    expect(store.getState().moduleSelected.has(FILE_ID)).toBe(true);
+    expect(store.getState().moduleExpanded.has(FILE_ID)).toBe(false);
+    expect(store.getState().moduleExpanded.has(CLASS_ID)).toBe(false);
+    // The review session is untouched — prReviewed, the review, and the amber all stay, so the panel
+    // stays docked (ModuleMapView keeps it while prReviewed is set).
+    expect(store.getState().prReviewed).toBe(9);
+    expect(store.getState().review).not.toBe(null);
+    expect(store.getState().index.changedIds.has(METHOD_ID)).toBe(true);
+  });
+
+  it("exitReviewToPriorLens ends the session and returns to the lens PRs was opened from", () => {
+    const store = freshStore();
+    store.setState({ viewMode: "logic", prsList: { open: [], closed: null } });
+    store.getState().togglePrsView(); // logic -> prs, records lensBeforePrs = "logic".
+    store.setState({
+      prSelected: 9,
+      prsList: { open: [pr(9)], closed: null },
+      prFiles: [{ path: "src/a.ts", status: "modified", additions: 2, deletions: 0, hunks: [{ start: 10, end: 11 }] }],
+    });
+    store.getState().reviewPrInGraph();
+    expect(store.getState().index.changedIds.has(METHOD_ID)).toBe(true); // the review marked amber.
+
+    store.getState().exitReviewToPriorLens();
+    expect(store.getState().viewMode).toBe("logic"); // back where the reader came from.
+    expect(store.getState().prReviewed).toBe(null);
+    expect(store.getState().review).toBe(null);
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    // The in-place amber marking is reset to the artifact's OWN changed set (none), so no stale rings
+    // (or pre-expansion) survive the exit onto a visible lens.
+    expect(store.getState().index.changedIds.size).toBe(0);
+    expect(store.getState().moduleExpanded.size).toBe(0);
+  });
+
+  it("exitReviewToPriorLens falls back to the Map when no prior lens was recorded", () => {
+    const store = reviewedInMap(9);
+    store.getState().exitReviewToPriorLens();
+    expect(store.getState().viewMode).toBe("modules");
+    expect(store.getState().prReviewed).toBe(null);
+  });
+});

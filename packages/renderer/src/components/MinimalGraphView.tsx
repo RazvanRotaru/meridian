@@ -55,7 +55,9 @@ export function MinimalGraphView() {
   const grown = useBlueprint((state) => !sameMembers(state.minimalMemberIds, state.minimalSeedIds) || state.minimalArrange);
   const showHighways = useBlueprint((state) => state.showHighways);
   const reviewSelectedId = useBlueprint((state) => state.reviewSelectedId);
-  const { closeMinimalGraph, promoteMinimalGhost, resetMinimalGraph, rearrangeMinimalGraph } = useBlueprintActions();
+  // A PR review reuses this overlay; when one is live the panel's exit buttons change (see below).
+  const prReviewActive = useBlueprint((state) => state.prReviewed !== null);
+  const { closeMinimalGraph, collapseReviewToMap, exitReviewToPriorLens, promoteMinimalGhost, resetMinimalGraph, rearrangeMinimalGraph } = useBlueprintActions();
 
   // A review-panel click centers the viewport on the clicked node itself (recenterSeq bump); the
   // zoom cap keeps a single method card from blowing up to a full-viewport close-up.
@@ -65,7 +67,10 @@ export function MinimalGraphView() {
   );
   useRecenter(recenterTargets, { maxZoom: 1 });
 
-  useClearOnEscape(closeMinimalGraph, true);
+  // Escape is the quick, non-destructive dismiss: during a PR review it COLLAPSES to the map (the
+  // review stays live), matching the "Show on map" button rather than the session-ending ✕ Close;
+  // outside a review it closes the hand-built overlay as before.
+  useClearOnEscape(prReviewActive ? collapseReviewToMap : closeMinimalGraph, true);
 
   // Interactions ARE the Module map's own (shared hook), so selection/toggle/navigate stay identical.
   // A double-click closes the overlay first so the Map's navigate surfaces. No `onBeforeClick`: a plain
@@ -151,7 +156,17 @@ export function MinimalGraphView() {
         <button type="button" style={buttonStyle(false, !grown)} onClick={resetMinimalGraph} disabled={!grown} title="Restore the working set to the original selection">
           Reset
         </button>
-        <button type="button" style={buttonStyle(false, false)} onClick={closeMinimalGraph} title="Back to the Module map (Esc)">
+        {prReviewActive && (
+          <button type="button" style={buttonStyle(false, false)} onClick={collapseReviewToMap} title="Show the changed files on the Module map, collapsed — the review panel stays open (Esc)">
+            Show on map
+          </button>
+        )}
+        <button
+          type="button"
+          style={buttonStyle(false, false)}
+          onClick={prReviewActive ? exitReviewToPriorLens : closeMinimalGraph}
+          title={prReviewActive ? "Close the review and return to where you were before" : "Back to the Module map (Esc)"}
+        >
           ✕ Close
         </button>
       </div>

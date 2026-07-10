@@ -403,6 +403,12 @@ export interface BlueprintState {
   clearServiceScope(): void;
   buildMinimalGraph(): void;
   closeMinimalGraph(): void;
+  /** During a PR review: close the overlay and reveal its changed files on the Module map, kept
+   * COLLAPSED (no code-block expansion), with the review session + panel still live. */
+  collapseReviewToMap(): void;
+  /** During a PR review: end the session (restore the boot graph, clear amber + panel) and return
+   * to the lens the reader had open before they entered the PRs list. */
+  exitReviewToPriorLens(): void;
   promoteMinimalGhost(id: string): void;
   demoteMinimalMember(id: string): void;
   resetMinimalGraph(): void;
@@ -1274,6 +1280,49 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     closeMinimalGraph() {
       minimalLayoutSeq += 1;
       set({ minimalSeedIds: [], minimalMemberIds: [], minimalBasePositions: {}, minimalArrange: false, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
+    },
+
+    // The PR review's gentler overlay exit: close the minimal graph and REVEAL its changed files on
+    // the Module map beneath — but COLLAPSED (mapRevealStateForMany expands the container chain down
+    // to each file card, never the files themselves, so classes/blocks stay folded), a far calmer
+    // landing than the pre-expanded map the review seeded. The review session is untouched (amber,
+    // `prReviewed`, and the panel all stay live — ModuleMapView keeps the panel docked once
+    // `prReviewed` is set), so this is "see it on the map", not "leave the review".
+    collapseReviewToMap() {
+      const { minimalSeedIds, index } = get();
+      minimalLayoutSeq += 1; // discard any overlay layout still in flight (as closeMinimalGraph does).
+      const reveal = mapRevealStateForMany(minimalSeedIds, index) ?? MODULE_TOP_LEVEL;
+      set({
+        minimalSeedIds: [],
+        minimalMemberIds: [],
+        minimalBasePositions: {},
+        minimalArrange: false,
+        minimalRfNodes: [],
+        minimalRfEdges: [],
+        minimalLayoutStatus: "idle",
+        viewMode: "modules",
+        mapExtra: new Set<string>(),
+        ...reveal,
+      });
+      void get().moduleRelayout();
+    },
+
+    // The PR review's true exit (the panel's ✕ Close): end the session — restore the boot graph and
+    // clear the amber/seeds/panel via restorePrReviewBaseline — then return to whichever lens the
+    // reader had open before they opened the PRs list (`lensBeforePrs`, the same anchor togglePrsView
+    // resumes). Falls back to the Map when none was recorded (a review entered by deep link).
+    exitReviewToPriorLens() {
+      restorePrReviewBaseline(get, set, invalidateArtifactCaches);
+      const back = lensBeforePrs ?? "modules";
+      lensBeforePrs = null;
+      set({ viewMode: back });
+      // The review reset the module surface to its top level; re-lay whichever lands so the target
+      // lens shows a fresh canvas (logic is a standalone render — it needs none).
+      if (back === "modules" || back === "call") {
+        void get().moduleRelayout();
+      } else if (back === "ui") {
+        void get().relayout();
+      }
     },
 
     // Promote a GHOST satellite into the working member set (the ghost "+" click). A satellite is a

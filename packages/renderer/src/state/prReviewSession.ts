@@ -65,36 +65,20 @@ export function swapToPreparedArtifact(
 }
 
 /**
- * End the review session: put the boot artifact/index back and clear every review-owned field.
- * Returns false (a no-op) outside a swapped session, so callers can hook this unconditionally.
+ * The review-owned fields cleared identically whether a session ends by swapping the boot artifact
+ * back or (the no-analyze-endpoint path) in place — the review pre-expanded/seeded the Map around
+ * the PR, and none of that is the reader's own navigation, so the Map returns to its top level and
+ * the minimal overlay closes. One source of truth so the two exits can never drift; the baseline
+ * restore overrides artifact/index and the boot review's checklist on top of these defaults.
  */
-export function restorePrReviewBaseline(
-  get: () => BlueprintState,
-  set: (partial: Partial<BlueprintState>) => void,
-  invalidateArtifactCaches: () => void,
-): boolean {
-  const baseline = get().prReviewBaseline;
-  if (baseline === null) {
-    return false;
-  }
-  // `applyChangedIds` mutates whichever index is current when a review runs, so the baseline index
-  // can carry a PR's amber set (e.g. a synchronous fallback review earlier in the session).
-  // Reapply the artifact's OWN tag-derived set so the restored graph shows exactly the boot
-  // marking (usually none), never a finished review's leftovers.
-  applyChangedIds(baseline.index, collectChangedIds(baseline.artifact.nodes));
-  invalidateArtifactCaches();
-  // An artifact-sourced review (the boot artifact carried one) gets its checklist + progress back;
-  // a plain session clears every review-owned field.
-  const progress = baseline.review ? readReviewProgress(baseline.review.context.reviewKey) : null;
-  set({
-    artifact: baseline.artifact,
-    index: baseline.index,
-    review: baseline.review,
-    reviewTicks: progress?.ticks ?? {},
-    reviewUnitTicks: progress?.unitTicks ?? {},
-    reviewFileTicks: progress?.fileTicks ?? {},
-    reviewComments: progress?.comments ?? [],
-    reviewFiles: baseline.review ? deriveReviewFiles(baseline.review.context, baseline.artifact, baseline.index) : [],
+function clearedReviewState(): Partial<BlueprintState> {
+  return {
+    review: null,
+    reviewTicks: {},
+    reviewUnitTicks: {},
+    reviewFileTicks: {},
+    reviewComments: [],
+    reviewFiles: [],
     reviewPanelHidden: false,
     reviewSubmitStatus: "idle",
     reviewSubmitError: null,
@@ -108,10 +92,7 @@ export function restorePrReviewBaseline(
     prReviewed: null,
     prReviewBaseline: null,
     prPreparedGraphId: null,
-    coverage: get().coverageMode ? computeCoverage(baseline.artifact.nodes, baseline.artifact.edges) : null,
     codeView: null,
-    // The review pre-expanded/seeded the Map around the PR; none of that is the reader's own
-    // navigation, so the Map returns to its top level and the minimal overlay closes.
     moduleFocus: null,
     moduleSelected: new Set<string>(),
     moduleExpanded: new Set<string>(),
@@ -122,6 +103,58 @@ export function restorePrReviewBaseline(
     minimalRfNodes: [],
     minimalRfEdges: [],
     minimalLayoutStatus: "idle",
+  };
+}
+
+/**
+ * End the review session and clear every review-owned field. When the review swapped in a PR-head
+ * artifact, put the boot artifact/index back; when it reviewed the loaded graph in place (the
+ * synchronous, no-analyze-endpoint path — no baseline to swap), reset that graph's amber marking to
+ * its OWN changed set instead, so no stale rings survive the exit. Returns false (a true no-op) only
+ * when there is no review at all, so callers can hook this unconditionally.
+ */
+export function restorePrReviewBaseline(
+  get: () => BlueprintState,
+  set: (partial: Partial<BlueprintState>) => void,
+  invalidateArtifactCaches: () => void,
+): boolean {
+  const state = get();
+  const baseline = state.prReviewBaseline;
+  if (baseline === null) {
+    // No swap happened: the current graph IS the boot graph, only carrying this PR's amber marking.
+    // Reset it to the artifact's OWN tag-derived set (usually none) and clear the review fields. A
+    // boot-carried `meridian review` artifact (a review with no PR) is left untouched.
+    if (state.prReviewed === null) {
+      return false;
+    }
+    applyChangedIds(state.index, collectChangedIds(state.artifact.nodes));
+    invalidateArtifactCaches();
+    set({
+      ...clearedReviewState(),
+      coverage: state.coverageMode ? computeCoverage(state.artifact.nodes, state.artifact.edges) : null,
+    });
+    return true;
+  }
+  // `applyChangedIds` mutates whichever index is current when a review runs, so the baseline index
+  // can carry a PR's amber set (e.g. a synchronous fallback review earlier in the session).
+  // Reapply the artifact's OWN tag-derived set so the restored graph shows exactly the boot
+  // marking (usually none), never a finished review's leftovers.
+  applyChangedIds(baseline.index, collectChangedIds(baseline.artifact.nodes));
+  invalidateArtifactCaches();
+  // An artifact-sourced review (the boot artifact carried one) gets its checklist + progress back;
+  // a plain session clears every review-owned field.
+  const progress = baseline.review ? readReviewProgress(baseline.review.context.reviewKey) : null;
+  set({
+    ...clearedReviewState(),
+    artifact: baseline.artifact,
+    index: baseline.index,
+    review: baseline.review,
+    reviewTicks: progress?.ticks ?? {},
+    reviewUnitTicks: progress?.unitTicks ?? {},
+    reviewFileTicks: progress?.fileTicks ?? {},
+    reviewComments: progress?.comments ?? [],
+    reviewFiles: baseline.review ? deriveReviewFiles(baseline.review.context, baseline.artifact, baseline.index) : [],
+    coverage: state.coverageMode ? computeCoverage(baseline.artifact.nodes, baseline.artifact.edges) : null,
   });
   return true;
 }

@@ -69,6 +69,8 @@ export function ModuleMapView() {
   const showPrivate = useBlueprint((state) => state.showPrivate);
   const showHighways = useBlueprint((state) => state.showHighways);
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
+  // A live PR review keeps the ReviewPanel docked even after its overlay collapses to the map.
+  const prReviewActive = useBlueprint((state) => state.prReviewed !== null);
   const viewMode = useBlueprint((state) => state.viewMode);
   const serviceScope = useBlueprint((state) => state.serviceScope);
   const { buildMinimalGraph, setModuleFocus, clearServiceScope } = useBlueprintActions();
@@ -228,20 +230,9 @@ export function ModuleMapView() {
   // hook order is stable across open/close). Closing returns here with the selection intact. When a
   // PR review seeded the graph, ReviewPanel rides on the right (it self-hides when review is null —
   // a hand-built minimal graph — or when the reader hid it; MinimalGraphView then offers "Review").
-  if (minimalOpen) {
-    return (
-      <div style={SURFACE_STYLE}>
-        <div style={REVIEW_SPLIT_STYLE}>
-          <div style={REVIEW_GRAPH_STYLE}>
-            <MinimalGraphView />
-          </div>
-          <ReviewPanel />
-        </div>
-      </div>
-    );
-  }
-
-  return (
+  // The level's cards plus all its floating chrome. Rendered full-bleed normally, or on the LEFT of
+  // the review split when a PR review has collapsed its overlay to the map.
+  const mapCanvas = (
     <div style={SURFACE_STYLE}>
       <ReactFlow<Node, Edge>
         nodes={styledNodes}
@@ -285,6 +276,23 @@ export function ModuleMapView() {
       <CoveragePanel />
     </div>
   );
+
+  // The minimal-graph overlay REPLACES the level canvas while open; a PR review keeps the ReviewPanel
+  // docked on the right while the session is live (`prReviewActive`), so "Show on map" — which closes
+  // the overlay but not the review — lands on the collapsed map WITH the panel, not a bare canvas.
+  // Outside a review the panel self-hides (its `review` is null), so a hand-built overlay is unchanged.
+  if (minimalOpen || prReviewActive) {
+    return (
+      <div style={SURFACE_STYLE}>
+        <div style={REVIEW_SPLIT_STYLE}>
+          <div style={REVIEW_GRAPH_STYLE}>{minimalOpen ? <MinimalGraphView /> : mapCanvas}</div>
+          <ReviewPanel />
+        </div>
+      </div>
+    );
+  }
+
+  return mapCanvas;
 }
 
 /** The floating action a selection (one card or more) reveals: extract it into the minimal-graph overlay. */

@@ -6,15 +6,17 @@
  */
 
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
-import { MEMBERS_PANEL_STYLE } from "./minimalGraphStyles";
+import { membersPanelStyle } from "./minimalGraphStyles";
 
 export function MinimalMembersPanel() {
   const memberIds = useBlueprint((state) => state.minimalMemberIds);
   const index = useBlueprint((state) => state.index);
+  // A PR review adds a "Show on map" row to the sibling panel above; the offset must clear it.
+  const reviewActive = useBlueprint((state) => state.prReviewed !== null);
   const { demoteMinimalMember } = useBlueprintActions();
   const canRemove = memberIds.length > 1;
   return (
-    <div style={MEMBERS_PANEL_STYLE}>
+    <div style={membersPanelStyle(reviewActive)}>
       <span style={TITLE}>{memberIds.length} member{memberIds.length === 1 ? "" : "s"}</span>
       <ul style={LIST}>
         {[...memberIds].sort().map((id) => (
