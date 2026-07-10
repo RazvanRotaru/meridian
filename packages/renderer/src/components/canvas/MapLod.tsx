@@ -33,10 +33,10 @@ const LOD_CSS = `
   white-space: nowrap !important;
   z-index: 1;
 }
-/* The PLACE LABEL: a collapsed card's one name at orientation zoom. Deliberately a floating,
-   centered pill OVER the card (dot-and-label, like towns on a map) rather than the in-card text
-   scaled up — a left-anchored label escaping a crisp card edge reads as broken clipping, while a
-   symmetric pill with its own backdrop reads as a label. Display-none in the reading tier. */
+/* The PLACE LABEL: a collapsed card's one name at orientation zoom — centered over the card,
+   symmetric overflow, PLAIN text in the app's own voice (mono, the card ink, no pill chrome: the
+   card fill and the canvas are near-identical darks, so a backdrop box just read as a badge inside
+   a button). A text shadow keeps it legible where it crosses a wire. Display-none while reading. */
 .lod-place {
   display: none;
 }
@@ -49,9 +49,7 @@ const LOD_CSS = `
   font-size: 12px;
   font-weight: 700;
   color: #E6EDF3;
-  background: rgba(10, 14, 19, 0.78);
-  border-radius: 4px;
-  padding: 1px 6px;
+  text-shadow: 0 1px 8px rgba(5, 8, 12, 0.95), 0 0 3px rgba(5, 8, 12, 0.9);
   white-space: nowrap;
   pointer-events: none;
   z-index: 2;
@@ -64,10 +62,15 @@ const LOD_CSS = `
 .react-flow[data-map-tier="orientation"] .lod-tint > div {
   overflow: visible !important;
 }
+/* Stay in the page's design family: the card keeps its dark fill, with only a WHISPER of the
+   accent (the reading tier's card, decluttered — not a differently-styled block). The kind hue
+   survives distance through the RAIL, which thickens instead. !important: inline styles. */
 .react-flow[data-map-tier="orientation"] .lod-tint {
-  /* !important: card backgrounds are INLINE styles; the orientation tier is a mode that must win. */
-  background: color-mix(in srgb, var(--lod-accent, #7A8290) 26%, #10151C) !important;
-  border-color: color-mix(in srgb, var(--lod-accent, #7A8290) 60%, #10151C) !important;
+  background: color-mix(in srgb, var(--lod-accent, #7A8290) 9%, #12171E) !important;
+  border-color: color-mix(in srgb, var(--lod-accent, #7A8290) 40%, #232935) !important;
+}
+.react-flow[data-map-tier="orientation"] .lod-rail {
+  width: 10px !important;
 }
 `;
 
