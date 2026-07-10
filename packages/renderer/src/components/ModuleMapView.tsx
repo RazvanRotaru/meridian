@@ -58,7 +58,8 @@ export function ModuleMapView() {
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const { buildMinimalGraph, setModuleFocus } = useBlueprintActions();
   const { onNodeClick, onNodeDoubleClick, onPaneClick } = useModuleNodeInteractions();
-  useRecenter(useMemo(() => [...selected], [selected]));
+  // Muted while the minimal overlay covers this canvas — the overlay's own recenter must win.
+  useRecenter(useMemo(() => [...selected], [selected]), { enabled: !minimalOpen });
 
   // Category/test hiding is a pure VISIBILITY filter over the laid-out graph; positions are untouched.
   const { nodes: shownNodes, edges: visibleEdges } = useMemo(

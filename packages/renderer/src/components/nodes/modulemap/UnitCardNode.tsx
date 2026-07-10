@@ -9,7 +9,7 @@
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
-import { accentForKind, glyphForKind } from "../../../theme/kindColors";
+import { accentForKind } from "../../../theme/kindColors";
 import type { UnitCardData } from "../../../derive/moduleLevel";
 import { cardSelectedStyle, CodeButton, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, DeltaChip, useNodeDiff } from "./changed";
@@ -24,9 +24,9 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
     <ExpandChevron id={id} isExpanded={data.isExpanded} collapsedTitle={`Expand — ${data.memberCount} member(s) in this unit`} />
   ) : null;
 
+  // The uppercase kind chip is the ONE kind marker — the old ◆/◇/❑ glyphs are retired.
   const identity = (
     <>
-      <span style={{ ...GLYPH, color: accent }}>{glyphForKind(data.unitKind)}</span>
       <span style={LABEL} title={id}>{data.label}</span>
       <span style={{ ...KIND_CHIP, color: accent, borderColor: accent }}>{data.unitKind.toUpperCase()}</span>
       <DeltaChip diff={diff} />
@@ -53,7 +53,6 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
         <div style={INNER_STACK}>
           <div style={HEADER}>
             {chevron}
-            <span style={{ ...GLYPH, color: accent }}>{glyphForKind(data.unitKind)}</span>
             <span style={LABEL} title={id}>{data.label}</span>
             <DeltaChip diff={diff} />
             <CodeButton id={id} />
@@ -103,7 +102,6 @@ const INNER_STACK: React.CSSProperties = {
   padding: "0 10px 0 12px",
 };
 const HEADER: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6, minWidth: 0 };
-const GLYPH: React.CSSProperties = { fontSize: 11, flexShrink: 0 };
 const LABEL: React.CSSProperties = {
   flex: 1,
   minWidth: 0,

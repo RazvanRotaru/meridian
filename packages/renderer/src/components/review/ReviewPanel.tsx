@@ -14,6 +14,7 @@ import type { ReviewData } from "../../derive/reviewData";
 import { ReviewFilesSection } from "./ReviewFilesSection";
 import { ReviewFlowsSection } from "./ReviewFlowsSection";
 import { SubmitReviewFooter } from "./ReviewComments";
+import { NO_FOCUS_RING } from "./reviewPanelKit";
 
 function ReviewPanelImpl() {
   const review = useBlueprint((state) => state.review);
@@ -111,7 +112,7 @@ const HEADER: React.CSSProperties = { padding: "14px 16px 12px", borderBottom: "
 const HEADER_TOP: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
 const HEADER_TITLE: React.CSSProperties = { fontSize: 14, fontWeight: 700, color: "#E6EDF3" };
 // One shared chip metric for BOTH header buttons — mismatched size/weight reads as a glitch.
-const HEADER_BTN: React.CSSProperties = { border: "1px solid #2A2F37", background: "transparent", color: "#9AA4B2", borderRadius: 6, padding: "3px 9px", fontSize: 11.5, fontWeight: 600, lineHeight: "15px", cursor: "pointer", font: "inherit" };
+const HEADER_BTN: React.CSSProperties = { border: "1px solid #2A2F37", background: "transparent", color: "#9AA4B2", borderRadius: 6, padding: "3px 9px", fontSize: 11.5, fontWeight: 600, lineHeight: "15px", cursor: "pointer", font: "inherit", ...NO_FOCUS_RING };
 const RESET_BTN: React.CSSProperties = { ...HEADER_BTN };
 const HIDE_BTN: React.CSSProperties = { ...HEADER_BTN };
 const RAIL: React.CSSProperties = {
@@ -128,6 +129,7 @@ const RAIL: React.CSSProperties = {
   background: "#0B0E13",
   cursor: "pointer",
   font: "inherit",
+  ...NO_FOCUS_RING,
 };
 const RAIL_GLYPH: React.CSSProperties = { fontSize: 13, fontWeight: 700, color: "#9AA4B2", lineHeight: 1 };
 const RAIL_LABEL: React.CSSProperties = { writingMode: "vertical-rl", fontSize: 11, fontWeight: 700, letterSpacing: 0.5, color: "#9AA4B2", textTransform: "uppercase" };

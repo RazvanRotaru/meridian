@@ -6,12 +6,12 @@
  */
 
 import { useState } from "react";
-import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
+import { useBlueprintActions } from "../../state/StoreContext";
 import { checkStateOf, type ReviewUnitRow as UnitRowData } from "../../derive/reviewFiles";
 import type { ReviewComment, ReviewTick } from "../../state/reviewTicksPref";
-import { accentForKind, glyphForKind } from "../../theme/kindColors";
+import { accentForKind } from "../../theme/kindColors";
 import { CommentButton, CommentComposer, CommentList } from "./ReviewComments";
-import { MONO, TEST_CHIP, TICK_BTN, TICK_COLOR, TICK_GLYPH, type CommentTarget } from "./reviewPanelKit";
+import { KIND_CHIP, kindChipText, MONO, NO_FOCUS_RING, TEST_CHIP, TICK_BTN, TICK_COLOR, TICK_GLYPH, type CommentTarget } from "./reviewPanelKit";
 
 export function UnitRow(props: {
   unit: UnitRowData;
@@ -23,14 +23,15 @@ export function UnitRow(props: {
 }) {
   const { unit, path, tick, drafts, composer, onComposer } = props;
   const { toggleReviewUnitTick, addReviewComment, setReviewLit, selectReviewNode } = useBlueprintActions();
-  const selected = useBlueprint((state) => state.reviewSelectedId === unit.nodeId);
   const [hovered, setHovered] = useState(false);
   const state = checkStateOf(unit.fingerprint, tick);
   const composerHere = composer !== null && composer.nodeId === unit.nodeId;
+  const chip = kindChipText(unit.kind);
+  const accent = accentForKind(unit.kind);
   return (
     <>
       <div
-        style={{ ...(selected ? ROW_SELECTED : ROW), paddingLeft: 24 + unit.depth * 14 }}
+        style={{ ...ROW, paddingLeft: 24 + unit.depth * 14 }}
         onMouseEnter={() => {
           setHovered(true);
           setReviewLit(new Set([unit.nodeId]));
@@ -40,11 +41,9 @@ export function UnitRow(props: {
           setReviewLit(null);
         }}
       >
-        <span style={{ ...GLYPH, color: accentForKind(unit.kind) }} title={unit.kind}>
-          {glyphForKind(unit.kind)}
-        </span>
         <button type="button" style={MAIN} title={`${unit.displayName} · ${unit.kind} — click to reveal on the graph`} onClick={() => selectReviewNode(unit.nodeId)}>
           <span style={NAME}>{unit.displayName}</span>
+          {chip !== null && <span style={{ ...KIND_CHIP, color: accent, borderColor: accent }}>{chip}</span>}
           {unit.isTest && <span style={TEST_CHIP}>test</span>}
           <span style={LOC}>:{unit.startLine}</span>
         </button>
@@ -66,9 +65,7 @@ export function UnitRow(props: {
   );
 }
 
-const ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "1px 6px 1px 0", borderRadius: 6, border: "1px solid transparent" };
-const ROW_SELECTED: React.CSSProperties = { ...ROW, borderColor: "#2E3A4D", background: "rgba(46,58,77,0.25)" };
-const GLYPH: React.CSSProperties = { fontSize: 11, width: 14, flexShrink: 0, textAlign: "center" };
-const MAIN: React.CSSProperties = { flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 5, border: "none", background: "transparent", cursor: "pointer", font: "inherit", padding: "3px 0", textAlign: "left" };
+const ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "1px 6px 1px 0", borderRadius: 6 };
+const MAIN: React.CSSProperties = { flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 5, border: "none", background: "transparent", cursor: "pointer", font: "inherit", padding: "3px 0", textAlign: "left", ...NO_FOCUS_RING };
 const NAME: React.CSSProperties = { minWidth: 0, fontSize: 12, color: "#C9D1D9", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
 const LOC: React.CSSProperties = { fontFamily: MONO, fontSize: 10, color: "#5A6472", flexShrink: 0 };

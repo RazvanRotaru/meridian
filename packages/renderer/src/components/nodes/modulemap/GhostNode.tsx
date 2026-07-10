@@ -10,7 +10,7 @@
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
-import { accentForKind, glyphForKind } from "../../../theme/kindColors";
+import { accentForKind } from "../../../theme/kindColors";
 import type { GhostData } from "../../../derive/ghostDeps";
 import { cardSelectedStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
 
@@ -27,7 +27,7 @@ function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={HEAD}>
-        <span style={{ ...GLYPH, color: accent }}>{ghostGlyph(data.ghostKind)}</span>
+        {ghostGlyph(data.ghostKind) !== null && <span style={{ ...GLYPH, color: accent }}>{ghostGlyph(data.ghostKind)}</span>}
         <span style={LABEL}>{data.label}</span>
       </div>
       {data.context ? <div style={CONTEXT}>{data.context}</div> : null}
@@ -37,15 +37,16 @@ function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
 
 export const GhostNode = memo(GhostNodeImpl);
 
-/** Callable ghosts wear the block glyphs (ƒ/τ); units keep the shared kind glyphs (◆/◇/❑). */
-function ghostGlyph(kind: string): string {
+/** Callable ghosts wear the letter glyphs (ƒ/τ); unit kinds show the bare name — the ◆/◇/❑ kind
+ * glyph vocabulary is retired everywhere in favour of textual labels. */
+function ghostGlyph(kind: string): string | null {
   if (kind === "method" || kind === "function") {
     return "ƒ";
   }
   if (kind === "typeAlias" || kind === "enum") {
     return "τ";
   }
-  return glyphForKind(kind);
+  return null;
 }
 
 const GHOST: React.CSSProperties = {

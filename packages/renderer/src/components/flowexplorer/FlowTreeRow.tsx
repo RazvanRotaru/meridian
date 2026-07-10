@@ -92,10 +92,10 @@ export function FlowTreeRow(props: FlowTreeRowProps) {
   );
 }
 
+/** Only callables keep a letter glyph; container kinds read by name + indentation alone — the
+ * ◆/▤/▣ kind-glyph vocabulary is retired in favour of textual labels. */
 function kindGlyph(kind: FlowTreeEntry["kind"]): string {
-  if (kind === "container") return "▣";
-  if (kind === "module") return "▤";
-  if (kind === "class") return "◆";
+  if (kind === "container" || kind === "module" || kind === "class") return "";
   return "ƒ";
 }
 

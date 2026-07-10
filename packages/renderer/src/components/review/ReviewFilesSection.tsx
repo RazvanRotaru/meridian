@@ -15,7 +15,7 @@ import { checkStateOf, fileViewState, type ReviewFileRow } from "../../derive/re
 import type { ReviewComment, ReviewTick } from "../../state/reviewTicksPref";
 import { CommentButton, CommentComposer, CommentList } from "./ReviewComments";
 import { UnitRow } from "./ReviewUnitRow";
-import { basename, CARET, MONO, SECTION_COUNT, SECTION_HEAD, SECTION_TITLE, TICK_BTN, TICK_COLOR, TICK_GLYPH, type CommentTarget } from "./reviewPanelKit";
+import { basename, CARET, MONO, NO_FOCUS_RING, SECTION_COUNT, SECTION_HEAD, SECTION_TITLE, TICK_BTN, TICK_COLOR, TICK_GLYPH, type CommentTarget } from "./reviewPanelKit";
 
 const STATUS_COLOR: Record<string, string> = { added: "#3FB950", modified: "#D29922", deleted: "#F85149", renamed: "#7DD3FC" };
 
@@ -69,7 +69,6 @@ function FileRow(props: {
 }) {
   const { file, unitTicks, fileTicks, drafts, composer, onComposer } = props;
   const { toggleReviewFileViewed, addReviewComment, setReviewLit, focusReviewFile } = useBlueprintActions();
-  const focused = useBlueprint((state) => file.moduleId !== null && state.reviewSelectedId === file.moduleId);
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
   const [hovered, setHovered] = useState(false);
   const view = fileViewState(file, unitTicks, fileTicks);
@@ -84,7 +83,7 @@ function FileRow(props: {
   const composerHere = composer !== null && composer.path === file.path && composer.nodeId === null;
   const doneUnits = file.units.filter((unit) => checkStateOf(unit.fingerprint, unitTicks[unit.nodeId]) === "done").length;
   return (
-    <div style={focused ? FILE_BLOCK_FOCUSED : FILE_BLOCK}>
+    <div style={FILE_BLOCK}>
       <div
         style={FILE_HEAD}
         onMouseEnter={() => {
@@ -174,10 +173,9 @@ function FilePath({ path }: { path: string }) {
 export const ReviewFilesSection = memo(ReviewFilesSectionImpl);
 
 const FILE_BLOCK: React.CSSProperties = { borderRadius: 8, border: "1px solid #1B212A", background: "#0D1117", marginBottom: 6, paddingBottom: 2 };
-const FILE_BLOCK_FOCUSED: React.CSSProperties = { ...FILE_BLOCK, borderColor: "#2E3A4D", background: "rgba(46,58,77,0.18)" };
 const FILE_HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 2, padding: "2px 6px 2px 4px" };
-const CARET_BTN: React.CSSProperties = { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 18, alignSelf: "stretch", border: "none", background: "transparent", cursor: "pointer", padding: 0, flexShrink: 0 };
-const FILE_MAIN: React.CSSProperties = { flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, border: "none", background: "transparent", cursor: "pointer", font: "inherit", padding: "5px 2px", textAlign: "left" };
+const CARET_BTN: React.CSSProperties = { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 18, alignSelf: "stretch", border: "none", background: "transparent", cursor: "pointer", padding: 0, flexShrink: 0, ...NO_FOCUS_RING };
+const FILE_MAIN: React.CSSProperties = { flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, border: "none", background: "transparent", cursor: "pointer", font: "inherit", padding: "5px 2px", textAlign: "left", ...NO_FOCUS_RING };
 const STATUS_LETTER: React.CSSProperties = { fontFamily: MONO, fontSize: 11, fontWeight: 700, width: 12, flexShrink: 0, textAlign: "center" };
 const PATH_WRAP: React.CSSProperties = { flex: 1, minWidth: 0, fontFamily: MONO, fontSize: 11.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
 const PATH_DIR: React.CSSProperties = { color: "#5A6472" };
