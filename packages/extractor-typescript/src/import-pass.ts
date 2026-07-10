@@ -15,17 +15,21 @@ import type { ExportDeclaration, ImportDeclaration, SourceFile } from "ts-morph"
 import type { CallSite } from "@meridian/core";
 import { lineColOf, type NodeDescriptor } from "./model";
 import type { RawEdge } from "./edge-pass";
-import type { TargetResolution } from "./edge-resolve";
+import type { CrossPackageResolver, TargetResolution } from "./edge-resolve";
 import type { LoadedProject } from "./project-loader";
 
 // Both declaration forms expose their target through the same ts-morph method, so one type
 // covers `import ... from "x"` and re-exports alike.
 type ModuleDependencyDecl = ImportDeclaration | ExportDeclaration;
 
-export function collectImportEdges(loaded: LoadedProject, moduleByFilePath: Map<string, NodeDescriptor>): RawEdge[] {
+export function collectImportEdges(
+  loaded: LoadedProject,
+  moduleByFilePath: Map<string, NodeDescriptor>,
+  resolver?: CrossPackageResolver,
+): RawEdge[] {
   const edges: RawEdge[] = [];
   for (const sourceFile of loaded.sourceFiles) {
-    collectFileImports(sourceFile, loaded.relativePathOf(sourceFile), moduleByFilePath, edges);
+    collectFileImports(sourceFile, loaded.relativePathOf(sourceFile), moduleByFilePath, edges, resolver);
   }
   return edges;
 }
@@ -35,13 +39,14 @@ function collectFileImports(
   relPath: string,
   moduleByFilePath: Map<string, NodeDescriptor>,
   edges: RawEdge[],
+  resolver?: CrossPackageResolver,
 ): void {
   const importer = moduleByFilePath.get(sourceFile.getFilePath());
   if (!importer) {
     return; // a selected file always has a module node; guard only for a caller passing a stray file
   }
   for (const declaration of moduleDependencyDecls(sourceFile)) {
-    addImportEdge(declaration, importer.finalId, relPath, moduleByFilePath, edges);
+    addImportEdge(declaration, importer.finalId, relPath, moduleByFilePath, edges, resolver);
   }
 }
 
@@ -56,20 +61,50 @@ function addImportEdge(
   relPath: string,
   moduleByFilePath: Map<string, NodeDescriptor>,
   edges: RawEdge[],
+  resolver?: CrossPackageResolver,
 ): void {
   const targetFile = declaration.getModuleSpecifierSourceFile();
-  if (!targetFile) {
-    return; // no specifier, or one we cannot statically resolve to a file in the Project
+  const target = targetFile ? moduleByFilePath.get(targetFile.getFilePath()) : undefined;
+  if (target) {
+    if (target.finalId !== source) {
+      edges.push({ source, kind: "imports", resolution: resolvedTo(target.finalId), callSite: callSiteOf(declaration, relPath) });
+    }
+    return; // resolved in-unit (or a self-import, which carries no edge)
   }
-  const target = moduleByFilePath.get(targetFile.getFilePath());
-  if (!target || target.finalId === source) {
-    return; // external / excluded (absent from the module index) or a self-import
+  // No in-unit target — either the specifier resolved nowhere, or it resolved only to a sibling
+  // package's node_modules copy (per-package mode). If it names a workspace package (by bare
+  // name or a boundary-crossing relative path), record it as pending so the join points the
+  // edge at that package's module node; else it is a genuine external and drops out as before.
+  const pending = pendingModuleRef(declaration, resolver);
+  if (pending) {
+    edges.push({ source, kind: "imports", resolution: pending, callSite: callSiteOf(declaration, relPath) });
   }
-  edges.push({ source, kind: "imports", resolution: resolvedTo(target.finalId), callSite: callSiteOf(declaration, relPath) });
 }
 
 function resolvedTo(target: string): TargetResolution {
   return { resolution: "resolved", resolvedTarget: target, externalModulePath: null, externalQualname: null, threw: false };
+}
+
+function pendingModuleRef(declaration: ModuleDependencyDecl, resolver?: CrossPackageResolver): TargetResolution | null {
+  const specifier = declaration.getModuleSpecifierValue();
+  if (!specifier || !resolver) {
+    return null;
+  }
+  if (!resolver.matches(specifier)) {
+    const targetFile = resolver.resolveRelative(declaration.getSourceFile().getFilePath(), specifier);
+    if (targetFile === null) {
+      return null;
+    }
+    return { resolution: "unresolved", resolvedTarget: null, externalModulePath: null, externalQualname: null, threw: false, pending: { specifier, exportedName: null, targetFile } };
+  }
+  return {
+    resolution: "unresolved",
+    resolvedTarget: null,
+    externalModulePath: null,
+    externalQualname: null,
+    threw: false,
+    pending: { specifier, exportedName: null },
+  };
 }
 
 function callSiteOf(declaration: ModuleDependencyDecl, relPath: string): CallSite {
