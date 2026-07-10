@@ -49,6 +49,7 @@ import type { ModuleCategory } from "../derive/moduleCategory";
 import type { HighlightMode } from "../components/moduleMapPaint";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import { moduleRevealStateFor, withAncestorsOf, withAncestorsOfMany } from "./flowExplorer";
+import { anchorNodeId, mapRevealStateFor, serviceRevealStateFor, uiRevealStateFor } from "./lensPath";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
 import { PRS_UNAVAILABLE_ERROR, type PrChangedFile, type PrFilesResponse, type PrListResponse, type PrSummary, type PrsTab } from "./prTypes";
@@ -361,9 +362,11 @@ export interface StoreDependencies {
 
 export type BlueprintStore = StoreApi<BlueprintState>;
 
+/** The module surface (Map + Service) opened at its top level: whole-repo overview, nothing expanded
+ * or selected. The lens-switch fallback when no path node can be carried into it. */
+const MODULE_TOP_LEVEL = { moduleFocus: null, moduleExpanded: new Set<string>(), moduleSelected: new Set<string>() } as const;
+
 export function createBlueprintStore(dependencies: StoreDependencies): BlueprintStore {
-  // The focus to restore when leaving UI mode, kept off the reactive state (nothing renders it).
-  let focusBeforeUi: string | null = null;
   // Monotonic seq to drop a stale Logic-graph layout when a newer open/drill/toggle supersedes it.
   let logicLayoutSeq = 0;
   // Same guard for the composition layout — a newer relayout discards an older in-flight ELK pass.
@@ -1145,10 +1148,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ reviewTicks: {} });
     },
 
-    // Switching mode re-derives + relayouts like a dive. Entering UI mode dives to the render
-    // subtree; leaving it returns to call-flow at the focus you had before (home if none). The
-    // logic view is a standalone render (no rfNodes/ELK), so it neither dives nor relayouts, and
-    // it leaves the graph focus untouched so returning to call/ui resumes where you were.
+    // Switching mode re-derives + relayouts like a dive, but CARRIES the current code path: the node
+    // the reader is on in the outgoing lens (its selection, or focus) is revealed and selected in the
+    // incoming one, so Map ↔ Service ↔ UI stay on the same file/symbol instead of resetting to the
+    // lens's top level. When no node is anchored — or the target lens can't place it (a bare folder in
+    // the Service lens) — it falls back to opening the lens at its top. The logic view is a standalone
+    // render (no rfNodes/ELK), so it neither dives nor relayouts; it just flips the mode.
     setViewMode(mode) {
       const previous = get().viewMode;
       if (previous === mode) {
@@ -1160,6 +1165,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalLayoutSeq += 1;
         set({ minimalSeedIds: [], minimalKeptIds: [], minimalExpanded: [], minimalBasePositions: {}, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
       }
+      // The path node to carry — read BEFORE any state mutates the outgoing lens's selection/focus.
+      const anchor = anchorNodeId(get());
       if (mode === "logic") {
         set({ viewMode: mode });
         return;
@@ -1171,25 +1178,23 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
         return;
       }
-      // The Map ("modules") and Service-composition ("call") lenses SHARE the module slice — same
-      // view, same layout, different tree. Clicking INTO either always opens at its own top level,
-      // never a focus inherited from a prior visit. A shared/reloaded deep link is unaffected: it
-      // restores via setState on boot (not this click path), so an explicit ?mfocus=… still opens.
-      if (mode === "modules" || mode === "call") {
-        set({ viewMode: mode, moduleFocus: null, moduleExpanded: new Set<string>(), moduleSelected: new Set<string>() });
+      // A shared/reloaded deep link is unaffected: it restores via setState on boot (not this click
+      // path), so an explicit ?mfocus=… / ?focus=… still opens exactly where the link points.
+      if (mode === "modules") {
+        const reveal = anchor ? mapRevealStateFor(anchor, get().index) : null;
+        set({ viewMode: mode, ...(reveal ?? MODULE_TOP_LEVEL) });
         void get().moduleRelayout();
         return;
       }
-      if (mode === "ui") {
-        focusBeforeUi = get().focusId;
-        set({ viewMode: mode, focusId: uiFocusTarget(get().index) });
-      } else if (previous === "ui") {
-        set({ viewMode: mode, focusId: focusBeforeUi });
-        focusBeforeUi = null;
-      } else {
-        // Leaving logic back to call: the graph focus was preserved, so just flip the mode.
-        set({ viewMode: mode });
+      if (mode === "call") {
+        const reveal = anchor ? serviceRevealStateFor(anchor, get().index, get().index.edges) : null;
+        set({ viewMode: mode, ...(reveal ?? MODULE_TOP_LEVEL) });
+        void get().moduleRelayout();
+        return;
       }
+      // mode === "ui": reveal the anchor in the composition graph, else dive to the render subtree.
+      const reveal = anchor ? uiRevealStateFor(anchor, get().index) : null;
+      set(reveal ? { viewMode: mode, ...reveal } : { viewMode: mode, focusId: uiFocusTarget(get().index) });
       void get().relayout();
     },
 
