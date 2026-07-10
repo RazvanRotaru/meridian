@@ -11,6 +11,7 @@
 import { type Edge, type Node } from "@xyflow/react";
 import { arrowMarker, CALLER_WIRE, IPC_WIRE } from "../theme/edgeColors";
 import { IMPORT_CROSS, IMPORT_SIBLING, relColor } from "../theme/mapPalette";
+import { repositionLitGhosts } from "./ghostReposition";
 
 // Wire colour = relationship TYPE (see baseStroke), the same whether or not it is selected.
 const CROSS_FRAME_COLOR = IMPORT_CROSS;
@@ -73,20 +74,29 @@ export function emphasize(nodes: Node[], edges: Edge[], activeIds: ReadonlySet<s
 }
 
 /**
- * Dep wires are now the PRIMARY visual layer — always visible (dimmed at rest, lit on selection).
- * Visibility is controlled entirely by the relationship-toggle filter upstream (filterRelKinds).
- * Ghost nodes that lost ALL edges (because every connected edge was toggled off) still drop to
- * avoid orphan stubs cluttering the canvas.
+ * Drawn↔drawn dep wires are the PRIMARY visual layer — always visible (dimmed at rest, lit on
+ * selection), controlled by the relationship-toggle filter upstream. But OFF-LEVEL ghost wires (and
+ * their ghost cards) are shown ONLY when LIT by the selection — otherwise the map would carry every
+ * off-level dependency at once (a big level has hundreds). So a ghost appears only beside the node the
+ * reader points at, few at a time.
  */
 function pruneUnlitDeps(level: EmphasizedLevel): EmphasizedLevel {
+  // Keep a ghost wire when it is LIT, or when it beacons a selected step's definition (withheld at
+  // opacity 0 so the definition rings through it) — else off-level ghosts drop until pointed at.
+  const edges = level.edges.filter((edge) => !isGhostEdge(edge) || isLit(edge) || level.beacons.has(edge.target) || level.beacons.has(edge.source));
   const kept = new Set<string>();
-  for (const edge of level.edges) {
+  for (const edge of edges) {
     kept.add(edge.source);
     kept.add(edge.target);
   }
   const nodes = level.nodes.filter((node) => node.type !== "ghost" || kept.has(node.id) || level.beacons.has(node.id));
-  return { ...level, nodes, edges: level.edges };
+  // The few surviving ghosts are placed SELECTION-RELATIVE (beside the lit selection), not at their far
+  // global layout spot — every emphasis path ends here, so this is the one place to do it.
+  return { ...level, nodes: repositionLitGhosts(nodes, edges), edges };
 }
+
+const isGhostEdge = (edge: Edge): boolean => (edge.data as { ghost?: boolean } | undefined)?.ghost === true;
+const isLit = (edge: Edge): boolean => (edge.style as { opacity?: number } | undefined)?.opacity === 1;
 
 function emphasizeIncident(nodes: Node[], edges: Edge[], activeIds: readonly string[]): { nodes: Node[]; edges: Edge[] } {
   const seed = withDrawnDescendants(activeIds, nodes);

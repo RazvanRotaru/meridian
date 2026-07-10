@@ -7,7 +7,7 @@
 
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { Edge, Node } from "@xyflow/react";
-import { computeAffectedNodes, computeCoverage, unmappedChangedFiles, type ChangedLineSpan, type LineRange } from "@meridian/core";
+import { changedRangesFromExtensions, computeAffectedNodes, computeCoverage, unmappedChangedFiles } from "@meridian/core";
 import type {
   ChangedFile,
   CoverageReport,
@@ -53,6 +53,14 @@ import { moduleRevealStateFor, withAncestorsOf, withAncestorsOfMany } from "./fl
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
 import { PRS_UNAVAILABLE_ERROR, type PrChangedFile, type PrFilesResponse, type PrListResponse, type PrSummary, type PrsTab } from "./prTypes";
+import { streamPrAnalysis, type PrAnalyzeStage } from "./prAnalysis";
+import {
+  fetchPreparedArtifact,
+  restorePrReviewBaseline,
+  swapToPreparedArtifact,
+  withPrLineDiff,
+  type PrReviewBaseline,
+} from "./prReviewSession";
 import { deriveReviewData, deriveReviewDataFromContext, applyTick, type ReviewData } from "../derive/reviewData";
 import { readReviewProgress, writeReviewProgress, clearReviewProgress, type ReviewTick } from "./reviewTicksPref";
 import { reviewContextFromPrFiles } from "../derive/prReviewContext";
@@ -272,6 +280,23 @@ export interface BlueprintState {
   prFilesTruncated: boolean;
   /** The PR whose changed files are currently highlighted in the graph (via "review in graph"). */
   prReviewed: number | null;
+  /** The review-PREPARATION lane: "preparing" while the server streams the clone→checkout→extract
+   * analysis of the PR head; "error" when that stream failed (the panel offers Retry); else "idle". */
+  prReviewStatus: "idle" | "preparing" | "error";
+  /** The analyze stage currently running server-side; null outside "preparing". */
+  prPrepareStage: PrAnalyzeStage | null;
+  /** Why preparation failed; null outside "error". */
+  prPrepareError: string | null;
+  /** The server-side graph id of the prepared PR-head artifact (the analyze stream's "done"
+   * payload). The streamed review swaps the loaded artifact to it via `graphUrl`. */
+  prPreparedGraphId: string | null;
+  /** The boot artifact/index pair, saved ONCE when a streamed review swaps in the prepared PR-head
+   * artifact and restored when the session ends (back to the PRs lens, switching PRs). Null outside
+   * a swapped review — the synchronous fallback path never swaps, so it never sets this. */
+  prReviewBaseline: PrReviewBaseline | null;
+  /** The artifact endpoint this session loaded from; the wave-2 swap fetches the prepared PR
+   * graph from it by exchanging the `id` query param. Empty when booted without a server. */
+  graphUrl: string;
   /** The open source view (inline panel or modal); null when nothing is being shown. */
   codeView: CodeView | null;
   toggleExpand(nodeId: string): void;
@@ -361,7 +386,7 @@ export interface BlueprintState {
   setPrsTab(tab: PrsTab): void;
   loadPrs(page?: number): Promise<void>;
   selectPr(number: number | null): Promise<void>;
-  reviewPrInGraph(): void;
+  reviewPrInGraph(): Promise<void>;
   relayout(): Promise<void>;
 }
 
@@ -373,6 +398,13 @@ export interface StoreDependencies {
   sourceUrl: string | null;
   prsUrl: string;
   prFilesUrl: string;
+  /** POST endpoint for PR-head preparation. Null/absent (a plain `view` session, or an older
+   * server) makes reviewPrInGraph skip streaming and review the loaded artifact synchronously. */
+  analyzeUrl?: string | null;
+  /** The current GitHub artifact id — the analyze POST body's `id`. */
+  graphId?: string | null;
+  /** The graph-fetch URL; wave 2 loads the prepared PR artifact from it by swapping the id. */
+  graphUrl?: string;
 }
 
 export type BlueprintStore = StoreApi<BlueprintState>;
@@ -388,10 +420,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let moduleLayoutSeq = 0;
   // And for the Module-map selection's minimal-graph overlay (its own surface, its own guard).
   let minimalLayoutSeq = 0;
-  // The file import graph, built once on first module-map relayout (the artifact never changes after
-  // boot) and reused for every level — never rebuilt per relayout.
+  // The file import graph, built once per ARTIFACT on first module-map relayout and reused for
+  // every level — never rebuilt per relayout. A PR-review swap/restore replaces the artifact, so
+  // invalidateArtifactCaches (below) nulls it for a lazy rebuild from the incoming index.
   let moduleGraph: ModuleGraph | null = null;
-  // The code-dependency substrate (coupling edges at their real endpoints), built once too.
+  // The code-dependency substrate (coupling edges at their real endpoints), same lifecycle.
   let blockDeps: BlockDeps | null = null;
   // The composition unit index (member → owning unit), built lazily on the first ⌘P reveal/add so a
   // picked symbol resolves to the unit/module card that draws it. Cached like moduleGraph/blockDeps.
@@ -406,10 +439,24 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let compMethodLayoutSeq = 0;
   // Same guard for the Code flows explorer's embedded flow preview pane.
   let flowPaneLayoutSeq = 0;
-  // PR list/file fetches are independent async lanes; newer requests win when the reader switches.
+  // PR list/file fetches and PR-head preparation are independent async lanes; newer requests win
+  // when the reader switches PRs (or re-clicks Review) mid-stream.
   let prsListSeq = 0;
   let prFilesSeq = 0;
+  let prAnalyzeSeq = 0;
   const prsNextPage: Record<PrsTab, number> = { open: 1, closed: 1 };
+  // Rebuilding/closing the minimal overlay must discard any of its ELK passes still in flight; the
+  // extracted review body shares this invalidation with the in-store actions that own the counter.
+  const invalidateMinimalLayout = () => {
+    minimalLayoutSeq += 1;
+  };
+  // A PR-review swap/restore replaces the WHOLE artifact/index, so every "built once per artifact"
+  // cache must rebuild from the incoming index — and any overlay ELK pass in flight must drop.
+  const invalidateArtifactCaches = () => {
+    moduleGraph = null;
+    blockDeps = null;
+    invalidateMinimalLayout();
+  };
   // The parsed review payload from a `meridian review` artifact (null when the artifact carries no
   // valid `review` extension — e.g. a plain `web`/`view` session). Computed once (the artifact never
   // changes after boot); a GitHub PR opened via reviewPrInGraph can later populate `review` at runtime.
@@ -418,6 +465,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const sourceUrl = dependencies.sourceUrl;
   const prsUrl = dependencies.prsUrl;
   const prFilesUrl = dependencies.prFilesUrl;
+  // Null when the server can't prepare a PR head (no analyze route, or no stored GitHub artifact);
+  // reviewPrInGraph then falls back to the synchronous loaded-artifact review.
+  const analyzeUrl = dependencies.analyzeUrl ?? null;
+  const analyzeGraphId = dependencies.graphId ?? null;
   // The composition tab opens on the WHOLE-SYSTEM overview (null root); file-rooting is the explicit
   // focus tool (⌘P / click a boundary or frame). Auto-rooting at the declared entry module proved a
   // poor default — a React entry (e.g. main.tsx) is a thin bootstrap with no cross-unit coupling, so
@@ -434,7 +485,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // A `meridian review` artifact opens straight on the review surface; everything else (plain
     // `view`, or a `web` GitHub session) opens on the Map — the default lens.
     viewMode: "modules",
-    showTests: true,
+    // Tests are hidden by default — rarely what the reader is here for, and always in the graph (the
+    // Tests toggle reveals them), so nothing is lost. Tagged ids come from `index.testIds`.
+    showTests: false,
     coverageMode: false,
     coverage: null,
     flowRootId: null,
@@ -519,6 +572,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prFiles: null,
     prFilesTruncated: false,
     prReviewed: null,
+    prReviewStatus: "idle",
+    prPrepareStage: null,
+    prPrepareError: null,
+    prPreparedGraphId: null,
+    prReviewBaseline: null,
+    graphUrl: dependencies.graphUrl ?? "",
     codeView: null,
 
     toggleExpand(nodeId) {
@@ -1232,6 +1291,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       if (mode === "prs") {
+        // Returning to the PRs lens ends the review session: the boot artifact comes back so the
+        // list is browsed against the graph the session booted with. No relayout here — the PRs
+        // page has no canvas, and re-entering a graph lens always lays out afresh.
+        restorePrReviewBaseline(get, set, invalidateArtifactCaches);
         set({ viewMode: mode });
         if (get().prsList[get().prsTab] === null) {
           void get().loadPrs(1);
@@ -1430,11 +1493,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     async selectPr(number) {
       const sequence = ++prFilesSeq;
+      // Switching PRs abandons any review preparation in flight: bump its seq so a landing stream
+      // is dropped, and clear the indicator so the panel never shows a stale progress/error card.
+      prAnalyzeSeq += 1;
+      // Leaving the reviewed PR (a different number, or Back/Escape's null) ends the review
+      // session: put the boot artifact back and re-lay the visible surface. A no-op outside one.
+      if (restorePrReviewBaseline(get, set, invalidateArtifactCaches)) {
+        void get().relayout();
+      }
+      const prepareReset = { prReviewStatus: "idle" as const, prPrepareStage: null, prPrepareError: null };
       if (number === null) {
-        set({ prSelected: null, prFiles: null, prFilesTruncated: false, prsLoading: false, prsError: null });
+        set({ prSelected: null, prFiles: null, prFilesTruncated: false, prsLoading: false, prsError: null, ...prepareReset });
         return;
       }
-      set({ prSelected: number, prFiles: null, prFilesTruncated: false, prsLoading: true, prsError: null });
+      set({ prSelected: number, prFiles: null, prFilesTruncated: false, prsLoading: true, prsError: null, ...prepareReset });
       try {
         const url = new URL(prFilesUrl, requestOrigin());
         url.searchParams.set("n", String(number));
@@ -1458,90 +1530,49 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // Reviewing a PR lands on main's Module-map minimal-graph surface, seeded from the PR's changed
-    // FILES and pre-expanded into their code blocks. The modified blocks (diff hunks ∩ node ranges)
-    // are pushed into the shared `changedIds` channel so the cards ring exactly them amber, and the
-    // affected logic flows fill the hierarchical panel beside the overlay. Same review CONTEXT a
-    // `meridian review` artifact carries — only the render surface is main's, not a bespoke graph.
-    reviewPrInGraph() {
-      const { prFiles, prSelected, prsList, artifact, index } = get();
-      if (prSelected === null) {
+    // Reviewing a PR lands on main's Module-map minimal-graph surface (applyPrReviewToMap). When
+    // the server can prepare the PR head (analyzeUrl + a stored artifact id + a known PR summary),
+    // it streams the clone→checkout→extract analysis into the prepare indicator, then SWAPS the
+    // loaded artifact for the prepared head-accurate one (saving the boot pair for the session-end
+    // restore) so the review computes in the diff's own coordinates. Without the endpoint (plain
+    // `view`, older server) it reviews the loaded artifact synchronously, as before — no swap.
+    // A stale-seq guard drops an older stream when a newer review (or PR switch) supersedes it.
+    async reviewPrInGraph() {
+      const prNumber = get().prSelected;
+      if (prNumber === null) {
         return;
       }
-      const summary = [...(prsList.open ?? []), ...(prsList.closed ?? [])].find((pr) => pr.number === prSelected);
-      const context = reviewContextFromPrFiles({
-        prNumber: prSelected,
-        headRef: summary?.headRef ?? null,
-        scopeId: prFilesUrl,
-        files: prFiles ?? [],
-      });
-      const review = deriveReviewDataFromContext(context, artifact, index);
-      // The modified code blocks (hunks ∩ node ranges); repaint main's changed-node channel to THIS PR
-      // so the Map + minimal overlay ring the edited blocks amber (reused `--changed-since` highlight).
-      const affected = computeAffectedNodes(artifact.nodes, context.changedFiles);
-      applyChangedIds(index, affected.map((node) => node.nodeId));
-      // Seed the minimal graph from the changed FILES (seeds must be module ids).
-      const matchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
-      const seeds = [...new Set(matchedFiles.map((match) => match.moduleId))].sort();
-      // Join the PR's line-level diff into the shared changedSince channel, keyed by each changed
-      // file's node.location.file, so the code panel's </> shows the added lines highlighted (green)
-      // over the block-level review — the "see the whole file's +/- diff" ask, straight from PR hunks.
-      const hunksByPath = new Map(context.changedFiles.map((file) => [file.path, file.hunks]));
-      const changedFiles: Record<string, LineRange[]> = {};
-      const changedKinds: Record<string, ChangedLineSpan[]> = {};
-      for (const match of matchedFiles) {
-        const hunks = hunksByPath.get(match.path);
-        const locFile = index.nodesById.get(match.moduleId)?.location?.file;
-        if (hunks && hunks.length > 0 && locFile) {
-          changedFiles[locFile] = hunks.map((hunk) => ({ start: hunk.start, end: hunk.end }));
-          changedKinds[locFile] = hunks.map((hunk) => ({ start: hunk.start, end: hunk.end, kind: "added" as const }));
-        }
+      const summary = selectedPrSummary(get());
+      if (analyzeUrl === null || analyzeGraphId === null || summary === null) {
+        applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
+        return;
       }
-      // extensions is a strict JsonValue; the ranges/spans are plain JSON, so cast the assembled
-      // artifact back to its type rather than widen JsonValue.
-      const reviewedArtifact = {
-        ...artifact,
-        extensions: {
-          ...(artifact.extensions as Record<string, unknown> | undefined),
-          changedSince: { baseRef: `pr#${prSelected}`, files: changedFiles, kinds: changedKinds },
-        },
-      } as unknown as typeof artifact;
-      // Pre-expand every container on the path to each changed block (file → class) so the modified
-      // methods surface as their own amber cards instead of a collapsed "N members" class.
-      const expanded = new Set<string>(seeds);
-      for (const node of affected) {
-        for (const ancestor of index.ancestorsOf(node.nodeId)) {
-          if (ancestor.id !== node.nodeId && index.isContainer(ancestor.id)) {
-            expanded.add(ancestor.id);
+      const sequence = ++prAnalyzeSeq;
+      set({ prReviewStatus: "preparing", prPrepareStage: "clone", prPrepareError: null, prPreparedGraphId: null });
+      try {
+        const request = { id: analyzeGraphId, prNumber, baseRef: summary.baseRef, headRef: summary.headRef };
+        const preparedGraphId = await streamPrAnalysis(analyzeUrl, request, (stage) => {
+          if (prAnalyzeSeq === sequence) {
+            set({ prPrepareStage: stage });
           }
+        });
+        if (prAnalyzeSeq !== sequence) {
+          return; // a newer review (or PR switch) superseded this one.
         }
-      }
-      minimalLayoutSeq += 1;
-      set({
-        artifact: reviewedArtifact,
-        review,
-        prReviewed: prSelected,
-        reviewTicks: readReviewProgress(context.reviewKey).ticks,
-        reviewAffectedIds: new Set(affected.map((node) => node.nodeId)),
-        reviewUnmapped: unmappedChangedFiles(affected, context.changedFiles),
-        reviewLitNodeIds: null,
-        reviewSelectedId: null,
-        viewMode: "modules",
-        moduleFocus: null,
-        moduleSelected: new Set<string>(),
-        moduleExpanded: expanded,
-        minimalSeedIds: seeds,
-        minimalKeptIds: [],
-        minimalExpanded: [],
-        minimalBasePositions: {},
-        minimalRfNodes: [],
-        minimalRfEdges: [],
-        minimalLayoutStatus: seeds.length > 0 ? "laying-out" : "idle",
-      });
-      // Lay out the underlying Map (correct if the reader closes the overlay) and, when seeded, the overlay.
-      void get().moduleRelayout();
-      if (seeds.length > 0) {
-        void get().minimalRelayout();
+        // SWAP: load the prepared PR-head artifact and make it the CURRENT graph BEFORE the review
+        // body runs, so amber marking, seeds, and the line diff all compute in the hunks' own
+        // head coordinates (the loaded artifact is the analyzed branch — its line numbers drift).
+        const prepared = await fetchPreparedArtifact(get().graphUrl, preparedGraphId);
+        if (prAnalyzeSeq !== sequence) {
+          return; // abandoned while the artifact was in flight — an old preparation must not swap.
+        }
+        swapToPreparedArtifact(get, set, prepared, invalidateArtifactCaches);
+        set({ prReviewStatus: "idle", prPrepareStage: null, prPreparedGraphId: preparedGraphId });
+        applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
+      } catch (error) {
+        if (prAnalyzeSeq === sequence) {
+          set({ prReviewStatus: "error", prPrepareStage: null, prPrepareError: prepareErrorMessage(error) });
+        }
       }
     },
 
@@ -1569,6 +1600,103 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ rfNodes: graph.nodes, rfEdges: graph.edges, layoutStatus: "ready" });
     },
   }));
+}
+
+/**
+ * Reviewing a PR lands on main's Module-map minimal-graph surface, seeded from the PR's changed
+ * FILES and pre-expanded into their code blocks. The modified blocks (diff hunks ∩ node ranges)
+ * are pushed into the shared `changedIds` channel so the cards ring exactly them amber, and the
+ * affected logic flows fill the hierarchical panel beside the overlay. Same review CONTEXT a
+ * `meridian review` artifact carries — only the render surface is main's, not a bespoke graph.
+ * Extracted from the store so reviewPrInGraph can run it either directly (no analyze endpoint)
+ * or after the streamed PR-head preparation lands.
+ */
+function applyPrReviewToMap(
+  get: () => BlueprintState,
+  set: (partial: Partial<BlueprintState>) => void,
+  prFilesUrl: string,
+  invalidateMinimalLayout: () => void,
+): void {
+  const { prFiles, prSelected, prsList, artifact, index } = get();
+  if (prSelected === null) {
+    return;
+  }
+  const summary = [...(prsList.open ?? []), ...(prsList.closed ?? [])].find((pr) => pr.number === prSelected);
+  const context = reviewContextFromPrFiles({
+    prNumber: prSelected,
+    headRef: summary?.headRef ?? null,
+    scopeId: prFilesUrl,
+    files: prFiles ?? [],
+  });
+  const review = deriveReviewDataFromContext(context, artifact, index);
+  // The modified code blocks (hunks ∩ node ranges); repaint main's changed-node channel to THIS PR
+  // so the Map + minimal overlay ring the edited blocks amber (reused `--changed-since` highlight).
+  const affected = computeAffectedNodes(artifact.nodes, context.changedFiles);
+  applyChangedIds(index, affected.map((node) => node.nodeId));
+  // Seed the minimal graph from the changed FILES (seeds must be module ids).
+  const matchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
+  const seeds = [...new Set(matchedFiles.map((match) => match.moduleId))].sort();
+  // ONE source of truth for the line-level changedSince channel (the code panel's </> diff): the
+  // artifact's OWN stamp when it carries one — the prepared PR-head artifact does, computed by the
+  // extract pipeline from the real merge-base git diff, keyed by the extractor's own location.file
+  // paths, with true added/modified/deleted span kinds and no truncation. The client-side join from
+  // the GitHub patch hunks is strictly weaker (suffix-matched paths, "added"-only kinds, and it
+  // silently misses files whenever the server capped the PR file list), so it remains only as the
+  // fallback for a boot artifact that carries no stamp (the synchronous, no-analyze-endpoint path).
+  const reviewedArtifact =
+    changedRangesFromExtensions(artifact.extensions) !== null
+      ? artifact
+      : withPrLineDiff(artifact, index, context, matchedFiles, prSelected);
+  // Pre-expand the packages and file modules on the path to each changed block (packages too,
+  // else deriveModuleTree never descends to the file — mirrors flowExplorer's
+  // expandedModulePaths): review reads at declaration level (class/type cards), so classes stay
+  // collapsed "N members" cards and blocks never chart flow steps — drilling deeper stays a
+  // manual gesture.
+  const expanded = new Set<string>(seeds);
+  for (const node of affected) {
+    for (const ancestor of index.ancestorsOf(node.nodeId)) {
+      if (ancestor.kind === "package" || ancestor.kind === "module") {
+        expanded.add(ancestor.id);
+      }
+    }
+  }
+  invalidateMinimalLayout();
+  set({
+    artifact: reviewedArtifact,
+    review,
+    prReviewed: prSelected,
+    reviewTicks: readReviewProgress(context.reviewKey).ticks,
+    reviewAffectedIds: new Set(affected.map((node) => node.nodeId)),
+    reviewUnmapped: unmappedChangedFiles(affected, context.changedFiles),
+    reviewLitNodeIds: null,
+    reviewSelectedId: null,
+    viewMode: "modules",
+    moduleFocus: null,
+    moduleSelected: new Set<string>(),
+    moduleExpanded: expanded,
+    minimalSeedIds: seeds,
+    minimalKeptIds: [],
+    minimalExpanded: [],
+    minimalBasePositions: {},
+    minimalRfNodes: [],
+    minimalRfEdges: [],
+    minimalLayoutStatus: seeds.length > 0 ? "laying-out" : "idle",
+  });
+  // Lay out the underlying Map (correct if the reader closes the overlay) and, when seeded, the overlay.
+  void get().moduleRelayout();
+  if (seeds.length > 0) {
+    void get().minimalRelayout();
+  }
+}
+
+/** The selected PR's summary row (its refs feed the analyze request); null when not listed. */
+function selectedPrSummary(state: BlueprintState): PrSummary | null {
+  const { prSelected, prsList } = state;
+  return [...(prsList.open ?? []), ...(prsList.closed ?? [])].find((pr) => pr.number === prSelected) ?? null;
+}
+
+function prepareErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message.length > 0 ? error.message : "PR analysis failed.";
 }
 
 /** Route an in-place expansion relayout to whichever module surface is showing: the minimal-graph

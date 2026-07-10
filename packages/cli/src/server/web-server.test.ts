@@ -63,6 +63,13 @@ describe("createWebServer landing + errors", () => {
     expect((await fetch(`${base}/api/graph?id=nope`)).status).toBe(404);
     expect((await fetch(`${base}/view?id=nope`)).status).toBe(404);
   });
+
+  it("wires POST /api/pr/analyze: validates refs, then 404s an unknown session id, before any git", async () => {
+    const badRef = await post("/api/pr/analyze", { id: "nope", prNumber: 1, baseRef: "--evil", headRef: "x" });
+    expect(badRef.status).toBe(400);
+    const unknownId = await post("/api/pr/analyze", { id: "nope", prNumber: 1, baseRef: "main", headRef: "x" });
+    expect(unknownId.status).toBe(404);
+  });
 });
 
 describe("createWebServer generate -> view (offline path source)", () => {
