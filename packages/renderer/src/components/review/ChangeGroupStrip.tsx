@@ -1,15 +1,29 @@
 /**
  * The CHANGE GROUPS strip: when a PR splits into >1 disjoint change groups, offer one row per group
- * (plus "All groups") that ISOLATES the Map to that group's modules. Hidden entirely for the common
- * single-group PR, so an undivided change costs nothing. Selection is full isolation, not a highlight
- * — the store's `selectReviewGroup` re-seeds the minimal overlay with only the group's module ids.
+ * (plus "All groups") that ISOLATES the review to that group — the graph re-seeds to only its
+ * modules, and the files/flows sections scope to its members (via useActiveChangeGroup). Hidden
+ * entirely for the common single-group PR, so an undivided change costs nothing. Selection is full
+ * isolation, not a highlight — the store's `selectReviewGroup` swaps the minimal overlay's seeds.
  */
 
-import { memo } from "react";
+import { memo, useMemo } from "react";
+import type { ChangeGroup } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
+import { NO_FOCUS_RING, SECTION_COUNT, SECTION_TITLE } from "./reviewPanelKit";
 
 // One accent per group, cycled by index — purely decorative (groups isolate, they never co-paint).
 const DOT_PALETTE = ["#D29922", "#58C4DC", "#A371F7", "#6BE38A", "#F97583", "#79B8FF"] as const;
+
+/** The group currently isolating the review, or null for "All groups" — the one lens the strip,
+ * files section, and flows section must agree on. */
+export function useActiveChangeGroup(): ChangeGroup | null {
+  const groups = useBlueprint((state) => state.reviewGroups);
+  const activeId = useBlueprint((state) => state.reviewActiveGroupId);
+  return useMemo(
+    () => (activeId === null ? null : groups?.groups.find((group) => group.id === activeId) ?? null),
+    [groups, activeId],
+  );
+}
 
 function ChangeGroupStripImpl() {
   const reviewGroups = useBlueprint((state) => state.reviewGroups);
@@ -23,8 +37,9 @@ function ChangeGroupStripImpl() {
   return (
     <section style={STRIP}>
       <div style={STRIP_HEAD}>
-        <span style={STRIP_TITLE}>Change groups</span>
-        <span style={STRIP_COUNT}>{reviewGroups.groups.length}</span>
+        <span style={SECTION_TITLE}>Change groups</span>
+        <span style={SECTION_COUNT}>{reviewGroups.groups.length}</span>
+        <span style={SPLIT_NOTE}>⑂ {reviewGroups.groups.length} independent changes</span>
       </div>
       <button type="button" aria-pressed={activeGroupId === null} style={activeGroupId === null ? ROW_SELECTED : ROW} onClick={() => selectReviewGroup(null)}>
         <span style={ALL_DOT} />
@@ -47,11 +62,10 @@ function ChangeGroupStripImpl() {
 
 export const ChangeGroupStrip = memo(ChangeGroupStripImpl);
 
-const STRIP: React.CSSProperties = { padding: "10px 12px", borderBottom: "1px solid #20262F", display: "flex", flexDirection: "column", gap: 2 };
+const STRIP: React.CSSProperties = { padding: "8px 10px", borderBottom: "1px solid #20262F", display: "flex", flexDirection: "column", gap: 2 };
 const STRIP_HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, padding: "0 4px 6px" };
-const STRIP_TITLE: React.CSSProperties = { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: "#9AA4B2" };
-const STRIP_COUNT: React.CSSProperties = { fontSize: 10, fontWeight: 600, color: "#9AA4B2", background: "#1B212A", borderRadius: 9, padding: "0 6px" };
-const ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, width: "100%", border: "1px solid transparent", borderRadius: 7, background: "transparent", cursor: "pointer", font: "inherit", padding: "5px 8px", textAlign: "left" };
+const SPLIT_NOTE: React.CSSProperties = { marginLeft: "auto", fontSize: 10.5, color: "#7D8695" };
+const ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, width: "100%", border: "1px solid transparent", borderRadius: 7, background: "transparent", cursor: "pointer", font: "inherit", padding: "5px 8px", textAlign: "left", ...NO_FOCUS_RING };
 const ROW_SELECTED: React.CSSProperties = { ...ROW, borderColor: "#2E3A4D", background: "rgba(46,58,77,0.25)" };
 const DOT: React.CSSProperties = { width: 9, height: 9, borderRadius: "50%", flexShrink: 0 };
 const ALL_DOT: React.CSSProperties = { ...DOT, background: "transparent", border: "1.5px solid #7D8695" };

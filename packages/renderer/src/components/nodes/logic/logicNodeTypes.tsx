@@ -188,19 +188,14 @@ function ServiceGroupNode({ data }: NodeProps<LogicRfNode>) {
       <div style={{ ...SERVICE_RAIL, background: owner.health }} />
       <div style={SERVICE_TITLE} title="Double-click to open in Service composition">
         <span style={{ ...SERVICE_DOT, background: owner.health }} />
-        <span style={SERVICE_GLYPH}>{unitGlyph(owner.kind)}</span>
         <span style={NAME} title={owner.label}>{owner.label}</span>
+        {/* The textual kind label is the one kind marker — the ◆/◇/❑ glyph vocabulary is retired. */}
+        <span style={SERVICE_KIND}>{owner.kind.toUpperCase()}</span>
         {owner.smelly ? <span style={SERVICE_SMELL} title="carries a design smell">⚠</span> : null}
         <span style={SERVICE_COUNT}>{d.childCount}</span>
       </div>
     </div>
   );
-}
-
-// A compact unit glyph mirroring the scorecards, so a service frame reads as the same kind of thing.
-const UNIT_GLYPH: Record<string, string> = { module: "▤", class: "◆", interface: "◇", object: "❑" };
-function unitGlyph(kind: string): string {
-  return UNIT_GLYPH[kind] ?? "▪";
 }
 
 function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
@@ -808,7 +803,7 @@ const SERVICE_TITLE: React.CSSProperties = {
   fontWeight: 700,
 };
 const SERVICE_DOT: React.CSSProperties = { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 };
-const SERVICE_GLYPH: React.CSSProperties = { fontSize: 11, opacity: 0.8, flexShrink: 0 };
+const SERVICE_KIND: React.CSSProperties = { flexShrink: 0, fontSize: 7.5, fontWeight: 700, letterSpacing: "0.06em", opacity: 0.75, border: "1px solid currentColor", borderRadius: 3, padding: "0 3px" };
 const SERVICE_SMELL: React.CSSProperties = { flexShrink: 0, fontSize: 10, color: "#E6B84D" };
 // The count of calls the frame wraps, pinned right (auto margin) so it never crowds the name.
 const SERVICE_COUNT: React.CSSProperties = { marginLeft: "auto", flexShrink: 0, fontSize: 10, fontWeight: 600, color: "#6C7683" };

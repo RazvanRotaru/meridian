@@ -27,8 +27,13 @@ const DIM_FLOW_OPACITY = 0.55;
 // IPC stays clearly readable even unselected — crossing the process boundary is a signal worth seeing.
 const DIM_IPC_OPACITY = 0.55;
 const DIM_NODE_OPACITY = 0.28;
-const BASE_WIDTH = 1.5;
-const EMPHASIS_WIDTH = 2.5;
+// Wire WIDTH encodes the relationship's WEIGHT (aggregated call sites), log-clamped so a hot path
+// pre-attentively pops at any zoom while a 1-call wire stays hairline — the same read the call
+// surface's BlueprintEdge gives. Emphasis adds a constant thickening on top, never replaces it.
+const BASE_WIDTH = 1.1;
+const MAX_BASE_WIDTH = 4;
+const WIDTH_PER_LOG_WEIGHT = 0.55;
+const EMPHASIS_EXTRA = 1;
 
 export type HighlightMode = "reach" | "node";
 
@@ -211,7 +216,14 @@ function styleEdge(edge: Edge, emphasis: EdgeEmphasis): Edge {
   const stroke = baseStroke(edge);
   // Dashed = crosses a package boundary; solid = stays within the same package.
   const dash = isCrossFrame(edge) ? { strokeDasharray: "5 4" } : {};
-  return { ...edge, animated: false, style: { stroke, strokeWidth: lit ? EMPHASIS_WIDTH : BASE_WIDTH, opacity: lit ? 1 : dimOpacity(edge), ...dash }, markerEnd: arrowMarker(stroke, 14) };
+  const width = weightWidth(edge);
+  return { ...edge, animated: false, style: { stroke, strokeWidth: lit ? width + EMPHASIS_EXTRA : width, opacity: lit ? 1 : dimOpacity(edge), ...dash }, markerEnd: arrowMarker(stroke, 14) };
+}
+
+/** Log-clamped weight→width: w=1 → 1.1px, w=4 → 2.2px, w=16 → 3.3px, w≥64 → 4px cap. */
+function weightWidth(edge: Edge): number {
+  const weight = (edge.data as { weight?: number } | undefined)?.weight ?? 1;
+  return Math.min(MAX_BASE_WIDTH, BASE_WIDTH + WIDTH_PER_LOG_WEIGHT * Math.log2(Math.max(1, weight)));
 }
 
 // Colour tells the relationship TYPE, at rest AND when selected: IPC magenta, each code-dependency

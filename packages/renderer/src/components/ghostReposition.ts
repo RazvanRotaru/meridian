@@ -20,7 +20,10 @@ export function repositionLitGhosts(nodes: Node[], edges: Edge[]): Node[] {
   }
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const ghostIds = new Set(ghosts.map((ghost) => ghost.id));
-  const litRects = nodes.filter((node) => node.type !== "ghost" && isLit(node)).map((node) => absoluteRectOf(node, byId));
+  // A lit node's footprint is its OUTERMOST container's full rect, not its own card: a selection
+  // inside an expanded frame must band its ghosts outside the whole FRAME (with the routing gutter
+  // between them), never on top of the frame's other members.
+  const litRects = nodes.filter((node) => node.type !== "ghost" && isLit(node)).map((node) => absoluteRectOf(topAncestor(node, byId), byId));
   if (litRects.length === 0) {
     return nodes; // nothing lit (e.g. no selection) — ghosts are hidden anyway, leave them.
   }
@@ -167,6 +170,21 @@ function add(map: Map<string, string[]>, key: string, value: string): void {
 }
 
 const isLit = (node: Node): boolean => ((node.style?.opacity as number | undefined) ?? 1) > LIT_OPACITY_FLOOR;
+
+/** The topmost drawn ancestor (the root frame holding this node), or the node itself at root. */
+function topAncestor(node: Node, byId: ReadonlyMap<string, Node>): Node {
+  let current = node;
+  const seen = new Set<string>([node.id]);
+  while (current.parentId && !seen.has(current.parentId)) {
+    const parent = byId.get(current.parentId);
+    if (!parent) {
+      break;
+    }
+    seen.add(parent.id);
+    current = parent;
+  }
+  return current;
+}
 
 function sizeOf(node: Node): { width: number; height: number } {
   const style = (node.style ?? {}) as { width?: number; height?: number };

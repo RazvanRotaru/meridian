@@ -38,15 +38,5 @@ export function accentForKind(kind: string): string {
   return KIND_COLORS[kind] ?? NEUTRAL_ACCENT;
 }
 
-// A compact kind glyph so a card reads as class/module/interface/object before its tag is scanned.
-// Shared by the composition scorecards and the Map's unit cards, so the two lenses tell one story.
-const KIND_GLYPHS: Record<string, string> = {
-  module: "▤",
-  class: "◆",
-  interface: "◇",
-  object: "❑",
-};
-
-export function glyphForKind(kind: string): string {
-  return KIND_GLYPHS[kind] ?? "▪";
-}
+// The ◆/◇/❑/▤ kind-glyph vocabulary is retired: the textual kind labels (INTERFACE / OBJECT / …)
+// are the one kind marker across cards and panels.

@@ -16,7 +16,7 @@ import { SessionStore } from "./session";
 import { assertJsonContentType, assertSameOrigin } from "./web-guards";
 import { handleAuthSession, handleAuthStatus, handleDeviceStart, handleLogout, handleOwnRepos, handleRepoSearch } from "./web-auth";
 import { handleGenerate, sendGraph, sendMeta, sendView } from "./web-graph";
-import { handlePullRequestFiles, handlePullRequests } from "./web-prs";
+import { handlePullRequestFiles, handlePullRequests, handleSubmitReview } from "./web-prs";
 import { handlePrAnalyze } from "./web-pr-analyze";
 import { handlePickFolder } from "./web-pick-folder";
 import type { ArtifactSource } from "./web-source";
@@ -124,13 +124,14 @@ async function handleApi(ctx: Context, request: IncomingMessage, response: Serve
   assertSameOrigin(request);
   if (request.method === "POST") {
     assertJsonContentType(request);
-    await handleApiPost(ctx, request, response, url.pathname);
+    await handleApiPost(ctx, request, response, url);
     return;
   }
   await handleApiGet(ctx, request, response, url);
 }
 
-async function handleApiPost(ctx: Context, request: IncomingMessage, response: ServerResponse, pathname: string): Promise<void> {
+async function handleApiPost(ctx: Context, request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+  const pathname = url.pathname;
   if (pathname === "/api/generate") {
     await handleGenerate(ctx, request, response);
     return;
@@ -149,6 +150,10 @@ async function handleApiPost(ctx: Context, request: IncomingMessage, response: S
   }
   if (pathname === "/api/pick-folder") {
     await handlePickFolder(response);
+    return;
+  }
+  if (pathname === "/api/prs/review") {
+    await handleSubmitReview(ctx, request, response, url.searchParams);
     return;
   }
   sendJson(response, 404, { error: "unknown endpoint" });

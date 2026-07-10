@@ -44,7 +44,7 @@ export function MapLegend({ hasSteps, hasSelection, showPackages = true, showIpc
           <Row swatch={<Box color={accentForKind("package")} />} text="package / directory — double-click to zoom in, chevron to expand in place" />
         ) : null}
         <Row swatch={<Box color={FILE_ACCENT} />} text="file — expands into its declarations; its category is on the chip (UI / Utilities / Config)" />
-        <Row swatch={<Glyph text="◆ ◇ ❑ τ" color={accentForKind("class")} />} text="class / interface / object / type — amber; the glyph tells which" />
+        <Row swatch={<ChipSwatch label="KIND" color={accentForKind("class")} />} text="class / interface / object / type — amber; the kind chip names which" />
         <Row swatch={<Glyph text="ƒ" color={accentForKind("function")} />} text="method / function — double-click opens its logic flow" />
         <Row swatch={<Dashed />} text="ghost — a definition/caller NOT on this level; double-click reveals it" />
       </Section>
@@ -107,6 +107,15 @@ function Ring() {
 
 function Glyph(props: { text: string; color: string }) {
   return <span style={{ color: props.color, fontSize: 11, fontFamily: MONO }}>{props.text}</span>;
+}
+
+/** Mirrors the cards' uppercase kind chip — the one kind marker since the glyphs were retired. */
+function ChipSwatch(props: { label: string; color: string }) {
+  return (
+    <span style={{ color: props.color, border: `1px solid ${props.color}`, borderRadius: 3, padding: "1px 3px", fontSize: 7, fontWeight: 700, letterSpacing: "0.06em" }}>
+      {props.label}
+    </span>
+  );
 }
 
 function Line(props: { color: string; dashed?: boolean }) {

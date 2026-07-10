@@ -10,7 +10,7 @@
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
-import { accentForKind, glyphForKind } from "../../../theme/kindColors";
+import { accentForKind } from "../../../theme/kindColors";
 import type { GhostData } from "../../../derive/ghostDeps";
 import { cardSelectedStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
 
@@ -27,25 +27,39 @@ function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={HEAD}>
-        <span style={{ ...GLYPH, color: accent }}>{ghostGlyph(data.ghostKind)}</span>
-        <span style={LABEL}>{data.label}</span>
+        {ghostGlyph(data.ghostKind) !== null && <span style={{ ...GLYPH, color: accent }}>{ghostGlyph(data.ghostKind)}</span>}
+        <span style={LABEL}>{middleTruncate(data.label)}</span>
       </div>
       {data.context ? <div style={CONTEXT}>{data.context}</div> : null}
     </div>
   );
 }
 
+/** A folder-path label keeps BOTH ends when it must shrink — `src/packages/…/vscode/host` beats
+ * `src/packages/autopilot-vsc…` (tail-ellipsis kills the segment that actually identifies it).
+ * The hover title always carries the full path. */
+const LABEL_MAX = 46;
+function middleTruncate(label: string): string {
+  if (label.length <= LABEL_MAX) {
+    return label;
+  }
+  const head = Math.ceil((LABEL_MAX - 1) * 0.55);
+  const tail = LABEL_MAX - 1 - head;
+  return `${label.slice(0, head)}…${label.slice(label.length - tail)}`;
+}
+
 export const GhostNode = memo(GhostNodeImpl);
 
-/** Callable ghosts wear the block glyphs (ƒ/τ); units keep the shared kind glyphs (◆/◇/❑). */
-function ghostGlyph(kind: string): string {
+/** Callable ghosts wear the letter glyphs (ƒ/τ); unit kinds show the bare name — the ◆/◇/❑ kind
+ * glyph vocabulary is retired everywhere in favour of textual labels. */
+function ghostGlyph(kind: string): string | null {
   if (kind === "method" || kind === "function") {
     return "ƒ";
   }
   if (kind === "typeAlias" || kind === "enum") {
     return "τ";
   }
-  return glyphForKind(kind);
+  return null;
 }
 
 const GHOST: React.CSSProperties = {

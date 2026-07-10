@@ -12,7 +12,8 @@ import { IMPORT_CROSS, IMPORT_SIBLING, REL_COLORS } from "../theme/mapPalette";
 
 const NO_SELECTION: ReadonlySet<string> = new Set();
 // emphasize's lit stroke width (not exported); pinned so the tests catch a silent rest-state fallback.
-const EMPHASIS_WIDTH = 2.5;
+// Lit wires thicken by a constant on top of the weight-scaled base (weight 1 -> 1.1 + 1).
+const LIT_WIDTH_W1 = 2.1;
 
 function fileNode(id: string, tier: string | null = "seed"): Node {
   return { id, type: "file", position: { x: 0, y: 0 }, data: { category: "app", tier } } as Node;
@@ -75,7 +76,7 @@ describe("paintMinimalLevel — nested declarations join the Map's emphasis, not
   it("lights a selected declaration's incident intra-frame dep wire at full emphasis (node mode)", () => {
     const { edges } = paintMinimalLevel([frame, foo, bar], [intraDep], new Set([foo.id]), 1, "node");
     expect(edges[0].style?.opacity).toBe(1);
-    expect(edges[0].style?.strokeWidth).toBe(EMPHASIS_WIDTH);
+    expect(edges[0].style?.strokeWidth).toBe(LIT_WIDTH_W1);
   });
 
   it("does not leave a selected declaration in the no-selection rest state (reach mode)", () => {
@@ -83,13 +84,13 @@ describe("paintMinimalLevel — nested declarations join the Map's emphasis, not
     const { edges } = paintMinimalLevel([frame, foo, bar], [intraDep], new Set([foo.id]), 1, "reach");
     expect(rest.edges[0].style?.opacity).not.toBe(1);
     expect(edges[0].style?.opacity).toBe(1);
-    expect(edges[0].style?.strokeWidth).toBe(EMPHASIS_WIDTH);
+    expect(edges[0].style?.strokeWidth).toBe(LIT_WIDTH_W1);
   });
 
   it("selecting the expanded frame seeds its drawn descendants, lighting the intra-frame wire (node mode)", () => {
     const { edges } = paintMinimalLevel([frame, foo, bar], [intraDep], new Set([frame.id]), 1, "node");
     expect(edges[0].style?.opacity).toBe(1);
-    expect(edges[0].style?.strokeWidth).toBe(EMPHASIS_WIDTH);
+    expect(edges[0].style?.strokeWidth).toBe(LIT_WIDTH_W1);
   });
 
   it("keeps every node exactly once in laid-out order — parents before children", () => {
