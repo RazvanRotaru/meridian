@@ -84,18 +84,19 @@ routed, knot gone, zero wires behind cards. The spool itself gained a GEOMETRY V
 whose free end lacks forward room to approach the gather (a ghost card hugging its hub) falls
 back to a plain curve instead of folding into an S-loop — trunks only where trunks make sense.
 
-### P1 — semantic zoom (the next big one, ~1–2 days)
+### P1 — semantic zoom ✅ (shipped)
 
-Three detail tiers keyed off a **quantized** zoom subscription (one store read, bucketed, so cards
-don't re-render per scroll tick):
+CSS-driven, zero per-card React work (MapLod.tsx): ONE controller mirrors the zoom into a
+`--map-zoom` variable + a `data-map-tier` attribute on the canvas; the whole tier is a stylesheet
+acting on `lod-label` / `lod-hide` / `lod-tint` class tags the cards carry. Below z=0.45
+(ORIENTATION): chrome hides, cards become accent-tinted blocks, one name per card inverse-scales
+(`scale(clamp(1, 0.92/zoom, 4))`) toward legible — measured 3.8px → 13.3px on-screen at the
+38-card fit. Above: untouched. `!important` on the tier rules is deliberate — cards are
+inline-styled and the mode must win.
 
-- **z < ~0.45 (orientation)**: cards render as solid accent-tinted blocks with ONE inverse-scaled
-  name (`transform: scale(1/zoom)` clamped to ~11px on-screen); chips/badges/counts hidden; frame
-  titles inverse-scaled with a legibility floor — folder names survive any zoom, like map labels.
-- **0.45–1.2 (reading)**: today's rendering.
-- **>1.2 (tracing)**: today's + full detail.
-
-Also consider a zoom-compensated minimum on-screen wire width at tier 1.
+Residuals: unit/block/step internals keep full chrome at orientation (nested detail, rarely
+visible zoomed out); the minimal overlay isn't LOD'd; the zoom-compensated minimum wire width
+remains an idea.
 
 ### P4 — wire hover layer + lit lanes ✅ (shipped with this doc)
 

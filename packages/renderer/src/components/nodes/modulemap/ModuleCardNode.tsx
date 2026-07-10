@@ -41,30 +41,34 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
         <FrameTitleBar chevron={chevron}>
-          <span style={LABEL} title={data.fullPath}>{data.label}</span>
-          {entryBadge}
-          <DeltaChip diff={diff} />
-          <CodeButton id={id} />
-          <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
+          <span className="lod-label" style={LABEL} title={data.fullPath}>{data.label}</span>
+          <span className="lod-hide" style={CONTENTS}>
+            {entryBadge}
+            <DeltaChip diff={diff} />
+            <CodeButton id={id} />
+            <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
+          </span>
         </FrameTitleBar>
       </div>
     );
   }
 
   return (
-    <div style={borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff)}>
+    <div className="lod-tint" style={{ ...borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff), "--lod-accent": accent } as React.CSSProperties}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={{ ...ACCENT_BAR, background: accent }} />
       <div style={INNER}>
         <div style={HEADER}>
           {chevron}
-          <span style={LABEL} title={data.fullPath}>{data.label}</span>
-          {entryBadge}
-          <DeltaChip diff={diff} />
-          <CodeButton id={id} />
+          <span className="lod-label" style={LABEL} title={data.fullPath}>{data.label}</span>
+          <span className="lod-hide" style={CONTENTS}>
+            {entryBadge}
+            <DeltaChip diff={diff} />
+            <CodeButton id={id} />
+          </span>
         </div>
-        <div style={META}>
+        <div className="lod-hide" style={META}>
           <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
           <span style={COUNTS} title={`${data.inCount} importer(s) · ${data.outCount} import(s)`}>
             <span style={COUNT_MUTED}>in</span>
@@ -77,6 +81,10 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
     </div>
   );
 }
+
+/** Groups siblings for one visibility flip without disturbing the flex row (children keep laying
+ * out as if the wrapper weren't there; `visibility` inherits through it). */
+const CONTENTS: React.CSSProperties = { display: "contents" };
 
 export const ModuleCardNode = memo(ModuleCardNodeImpl);
 
