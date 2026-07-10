@@ -12,7 +12,7 @@ import { memo, useMemo, useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { tickStateOf, type AffectedFlowRow, type ReviewData } from "../../derive/reviewData";
 import { FlowStepTree } from "./FlowStepTree";
-import { basename, CARET, EMPTY_NOTE, MONO, SECTION_COUNT, SECTION_HEAD, SECTION_TITLE, TEST_CHIP, TICK_BTN, TICK_COLOR, TICK_GLYPH } from "./reviewPanelKit";
+import { basename, CARET, EMPTY_NOTE, MONO, NO_FOCUS_RING, SECTION_COUNT, SECTION_HEAD, SECTION_TITLE, TEST_CHIP, TICK_BTN, TICK_COLOR, TICK_GLYPH } from "./reviewPanelKit";
 import type { ReviewTick } from "../../state/reviewTicksPref";
 import type { GraphIndex } from "../../graph/graphIndex";
 import type { FlowStep } from "@meridian/core";
@@ -84,7 +84,6 @@ function FlowRow(props: {
   const { row, review, affectedIds, index, ticks } = props;
   const [open, setOpen] = useState(false);
   const { toggleReviewTick, setReviewLit, selectReviewNode } = useBlueprintActions();
-  const selected = useBlueprint((state) => state.reviewSelectedId === row.flow.flowId);
   const tick = tickStateOf(row, ticks);
   const steps = review.flows[row.flow.flowId] ?? [];
   // The blocks this flow lights on the graph; empty ⇒ null so nothing dims (the flow owns no visible block).
@@ -94,8 +93,10 @@ function FlowRow(props: {
   }, [row, steps, affectedIds]);
   const resolveName = (id: string) => index.nodesById.get(id)?.displayName ?? id;
   return (
+    // No persistent selected paint: the GRAPH carries the selection (ring + centering); a row that
+    // stayed highlighted after its click read as clutter.
     <div
-      style={selected ? ROW_SELECTED : ROW}
+      style={ROW}
       onMouseEnter={() => setReviewLit(litSet)}
       onMouseLeave={() => setReviewLit(null)}
     >
@@ -160,10 +161,9 @@ const GROUP: React.CSSProperties = { marginTop: 4 };
 const GROUP_HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, padding: "4px 6px 2px 20px" };
 const GROUP_TITLE: React.CSSProperties = { fontSize: 10.5, fontWeight: 700, color: "#7D8695", textTransform: "uppercase", letterSpacing: 0.4 };
 const GROUP_HINT: React.CSSProperties = { fontSize: 10.5, color: "#5A6472", fontStyle: "italic" };
-const ROW: React.CSSProperties = { borderRadius: 7, border: "1px solid transparent", padding: "2px 4px", marginBottom: 2 };
-const ROW_SELECTED: React.CSSProperties = { ...ROW, borderColor: "#2E3A4D", background: "rgba(46,58,77,0.25)" };
+const ROW: React.CSSProperties = { borderRadius: 7, padding: "2px 4px", marginBottom: 2 };
 const ROW_HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4 };
-const ROW_MAIN: React.CSSProperties = { flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, border: "none", background: "transparent", cursor: "pointer", font: "inherit", padding: "4px 2px", textAlign: "left" };
+const ROW_MAIN: React.CSSProperties = { flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, border: "none", background: "transparent", cursor: "pointer", font: "inherit", padding: "4px 2px", textAlign: "left", ...NO_FOCUS_RING };
 const ROW_NAME: React.CSSProperties = { flex: 1, minWidth: 0, fontSize: 12.5, color: "#E6EDF3", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
 const ROW_LOC: React.CSSProperties = { fontFamily: MONO, fontSize: 10, color: "#5A6472", flexShrink: 0 };
 const EDITED_CHIP: React.CSSProperties = { fontSize: 9, fontWeight: 700, color: "#6BE38A", border: "1px solid #2E5A3A", borderRadius: 4, padding: "0 4px", flexShrink: 0, textTransform: "uppercase", letterSpacing: 0.3 };
