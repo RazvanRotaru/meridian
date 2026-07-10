@@ -59,7 +59,7 @@ export function extractPerPackage(options: ExtractOptions, workspace?: Workspace
   const resolved = workspace ?? discoverWorkspaceUnits(root);
   const resolver = crossPackageResolver(resolved, root);
   const depth = options.depth ?? "function";
-  const units = resolved.units.map((unit) => extractUnit(unit, root, options, resolver, depth));
+  const units = resolved.units.map((unit) => extractUnit(unit, root, options, resolver, depth, resolved.memberPaths));
   return stitch(units, options, depth);
 }
 
@@ -91,8 +91,9 @@ function extractUnit(
   options: ExtractOptions,
   resolver: CrossPackageResolver,
   depth: ExtractionDepth,
+  memberPaths: ReadonlySet<string> | undefined,
 ): UnitExtraction {
-  const loaded = loadUnitProject(root, unit, options);
+  const loaded = loadUnitProject(root, unit, options, memberPaths);
   const diagnostics: ExtractionDiagnostic[] = [];
   const { descriptors, moduleByFilePath } = buildStructure(loaded, NODE_ID_LANGUAGE);
   assignFinalIds(descriptors);

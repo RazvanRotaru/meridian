@@ -1,14 +1,17 @@
 /**
- * Workspace partitioning for per-package extraction. Each package.json dir becomes a unit
- * claiming its own tree (nested packages excluded from the parent); files under no package
- * fall into a root "rest" unit. Units are what keeps memory bounded: each is loaded into its
- * own short-lived ts-morph project instead of one whole-workspace program, and
- * `matchSpecifier` maps a bare `@scope/pkg[/sub]` import back to the unit that will have
- * analyzed its target (see cross-package-join.ts for the stitch).
+ * Workspace partitioning for per-package extraction. A unit is one package's tree, loaded into
+ * its own short-lived ts-morph project instead of one whole-workspace program — that is what
+ * keeps memory bounded. `matchSpecifier` maps a bare `@scope/pkg[/sub]` import back to the unit
+ * that will have analyzed its target (see cross-package-join.ts for the stitch).
+ *
+ * Two ways to derive units: `workspaceFromMemberDirs` uses the repo's declared manifest members
+ * (the same scope the single-project path uses — no rest unit, out-of-member files excluded by
+ * design), and `discoverWorkspaceUnits` scans package.json dirs (fallback for manifest-less
+ * monorepos, with a rest unit for stray files).
  */
 
 import { join } from "node:path";
-import { relativeToRoot } from "./paths";
+import { relativeToRoot, toPosix } from "./paths";
 import { dirExists, findPackageDirs, firstExisting, readPackageName, ENTRY_CANDIDATES } from "./workspace-paths";
 
 export interface WorkspaceUnit {
@@ -35,6 +38,25 @@ export interface SpecifierMatch {
 export interface Workspace {
   units: WorkspaceUnit[];
   matchSpecifier(specifier: string): SpecifierMatch | null;
+  /** The declared member dirs (root-relative), when units came from manifests — passed to each
+   * unit's project so the structural pass tags exactly these as npm-package boundaries (nested
+   * package.jsons roll up). Undefined for the scan fallback, which tags by package.json presence. */
+  memberPaths?: ReadonlySet<string>;
+}
+
+/**
+ * Units from the repo's declared manifest members (absolute dirs from `manifestMemberDirs`).
+ * No rest unit — anything outside a declared member is out of scope, matching the single-project
+ * path. Member dirs are normalized to POSIX so they line up with the rest of the extractor.
+ */
+export function workspaceFromMemberDirs(root: string, memberAbsDirs: string[]): Workspace {
+  const members = memberAbsDirs
+    .map((abs) => ({ abs: toPosix(abs), rel: relativeToRoot(root, toPosix(abs)) }))
+    .sort((left, right) => (left.rel < right.rel ? -1 : 1));
+  const relDirs = members.map((member) => member.rel);
+  const units = members.map((member) => packageUnit(root, member.abs, member.rel, relDirs));
+  const memberPaths = new Set(relDirs);
+  return { units, matchSpecifier: (specifier) => matchAgainst(units, specifier), memberPaths };
 }
 
 export function discoverWorkspaceUnits(root: string): Workspace {

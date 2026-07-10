@@ -35,7 +35,8 @@ import {
 } from "./extract-common";
 import { extractPerPackage } from "./extract-per-package";
 import { absoluteRoot } from "./paths";
-import { discoverWorkspaceUnits } from "./workspace-units";
+import { discoverWorkspaceUnits, workspaceFromMemberDirs, type Workspace } from "./workspace-units";
+import { manifestMemberDirs } from "./workspace-scope";
 
 const MAX_DETECT_DEPTH = 5;
 
@@ -103,17 +104,23 @@ async function runExtraction(options: ExtractOptions): Promise<ExtractionResult>
 }
 
 /**
- * Route multi-package workspaces (no explicit tsconfig or include globs) to per-package
- * extraction: one bounded project per package instead of one whole-workspace program, which
- * on large monorepos is the difference between a flat memory profile and heap exhaustion.
+ * Route multi-package workspaces to per-package extraction: one bounded project per package
+ * instead of one whole-workspace program, the difference between a flat memory profile and heap
+ * exhaustion on a large monorepo. Boundaries come from the repo's declared manifest members when
+ * present (the SAME scope the single-project path uses); otherwise from a package.json scan, so
+ * manifest-less monorepos still get the memory bound. `null` = stay on the single-project path.
  */
-function multiPackageWorkspace(options: ExtractOptions) {
+function multiPackageWorkspace(options: ExtractOptions): Workspace | null {
   if (options.project || options.include) {
     return null; // an explicit program definition wins; the caller asked for exactly that scope
   }
-  const workspace = discoverWorkspaceUnits(absoluteRoot(options.root));
-  const namedUnits = workspace.units.filter((unit) => unit.name !== null);
-  return namedUnits.length >= 2 ? workspace : null;
+  const root = absoluteRoot(options.root);
+  const memberDirs = manifestMemberDirs(root, undefined);
+  if (memberDirs && memberDirs.length >= 2) {
+    return workspaceFromMemberDirs(root, memberDirs);
+  }
+  const scanned = discoverWorkspaceUnits(root);
+  return scanned.units.filter((unit) => unit.name !== null).length >= 2 ? scanned : null;
 }
 
 function runSingleProjectExtraction(options: ExtractOptions): ExtractionResult {

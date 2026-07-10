@@ -86,6 +86,7 @@ export function loadUnitProject(
   root: string,
   unit: { include: string[]; exclude: string[] },
   options: ExtractOptions,
+  memberPaths?: ReadonlySet<string>,
 ): LoadedProject {
   const project = new Project({ compilerOptions: { allowJs: true } });
   const excludes = [...(options.exclude ?? DEFAULT_EXCLUDES), ...unit.exclude];
@@ -96,7 +97,9 @@ export function loadUnitProject(
   project.addSourceFilesAtPaths([...anchorToRoot(root, unit.include), ...negations(root, excludes)]);
   const relativePathOf = (file: SourceFile) => relativeToRoot(root, file.getFilePath());
   const sourceFiles = project.getSourceFiles().filter((file) => isSelectable(file, relativePathOf(file), excludes));
-  return { sourceFiles, relativePathOf, root };
+  // memberPaths (manifest mode) makes the structural pass tag exactly the declared members as
+  // package boundaries; undefined (scan fallback) tags by package.json presence, as before.
+  return memberPaths ? { sourceFiles, relativePathOf, root, memberPaths } : { sourceFiles, relativePathOf, root };
 }
 
 // Exclude globs as anchored `!` negations. Bare patterns (`**/node_modules/**`) anchor under

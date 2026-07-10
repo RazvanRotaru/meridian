@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { absoluteRoot } from "./paths";
-import { discoverWorkspaceUnits, type Workspace } from "./workspace-units";
+import { discoverWorkspaceUnits, workspaceFromMemberDirs, type Workspace } from "./workspace-units";
 
 let root: string;
 let workspace: Workspace;
@@ -97,5 +97,20 @@ describe("matchSpecifier", () => {
     expect(workspace.matchSpecifier("@fix/core-extra")).toBeNull();
     expect(workspace.matchSpecifier("@other/pkg")).toBeNull();
     expect(workspace.matchSpecifier("./local")).toBeNull();
+  });
+});
+
+describe("workspaceFromMemberDirs", () => {
+  it("builds a unit per declared member, no rest unit, and reports member boundaries", () => {
+    const memberDirs = [absoluteRoot(join(root, "packages/core")), absoluteRoot(join(root, "packages/util"))];
+    const ws = workspaceFromMemberDirs(absoluteRoot(root), memberDirs);
+    expect(ws.units.map((u) => u.dir).sort()).toEqual(["packages/core", "packages/util"]);
+    // No "" rest unit — files outside declared members are out of scope.
+    expect(ws.units.some((u) => u.dir === "")).toBe(false);
+    expect(ws.memberPaths && [...ws.memberPaths].sort()).toEqual(["packages/core", "packages/util"]);
+    expect(ws.matchSpecifier("@fix/core")?.unit.dir).toBe("packages/core");
+    // `packages/core/embedded` is NOT a declared member, so it rolls UP into core (not excluded) —
+    // matching the manifest single-project scope, where only declared members are boundaries.
+    expect(ws.units.find((u) => u.dir === "packages/core")?.exclude).toEqual([]);
   });
 });
