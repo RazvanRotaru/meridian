@@ -142,7 +142,7 @@ function CommentIcon() {
   );
 }
 
-const COMMENT_BTN: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 3, border: "none", background: "transparent", cursor: "pointer", color: "#5A6472", padding: "2px 4px", borderRadius: 5, flexShrink: 0, font: "inherit" , ...NO_FOCUS_RING };
+const COMMENT_BTN: React.CSSProperties = { font: "inherit", display: "inline-flex", alignItems: "center", gap: 3, border: "none", background: "transparent", cursor: "pointer", color: "#5A6472", padding: "2px 4px", borderRadius: 5, flexShrink: 0, ...NO_FOCUS_RING };
 const COMMENT_BTN_ON: React.CSSProperties = { color: "#7DD3FC" , ...NO_FOCUS_RING };
 const COMMENT_COUNT: React.CSSProperties = { fontSize: 10, fontWeight: 700 };
 const LIST: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 4, padding: "2px 6px 4px 26px" };
@@ -152,12 +152,12 @@ const DRAFT_DELETE: React.CSSProperties = { border: "none", background: "transpa
 const COMPOSER: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6, padding: "2px 6px 6px 26px" };
 const TEXTAREA: React.CSSProperties = { width: "100%", boxSizing: "border-box", resize: "vertical", background: "#0D1117", border: "1px solid #2A2F37", borderRadius: 7, color: "#E6EDF3", font: "inherit", fontSize: 12, padding: "6px 8px", outline: "none" };
 const COMPOSER_ROW: React.CSSProperties = { display: "flex", gap: 6 };
-const ADD_BTN: React.CSSProperties = { border: "1px solid #2F5C3B", background: "rgba(86,194,113,0.16)", color: "#6BE38A", borderRadius: 6, padding: "3px 10px", fontSize: 11.5, fontWeight: 600, cursor: "pointer", font: "inherit" , ...NO_FOCUS_RING };
-const CANCEL_BTN: React.CSSProperties = { border: "1px solid #2A2F37", background: "transparent", color: "#9AA4B2", borderRadius: 6, padding: "3px 10px", fontSize: 11.5, cursor: "pointer", font: "inherit" , ...NO_FOCUS_RING };
+const ADD_BTN: React.CSSProperties = { font: "inherit", border: "1px solid #2F5C3B", background: "rgba(86,194,113,0.16)", color: "#6BE38A", borderRadius: 6, padding: "3px 10px", fontSize: 11.5, fontWeight: 600, cursor: "pointer", ...NO_FOCUS_RING };
+const CANCEL_BTN: React.CSSProperties = { font: "inherit", border: "1px solid #2A2F37", background: "transparent", color: "#9AA4B2", borderRadius: 6, padding: "3px 10px", fontSize: 11.5, cursor: "pointer", ...NO_FOCUS_RING };
 const FOOTER: React.CSSProperties = { borderTop: "1px solid #20262F", padding: "10px 14px", display: "flex", flexDirection: "column", gap: 6, background: "#0B0E13" };
 const FOOTER_ROW: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 };
 const FOOTER_COUNT: React.CSSProperties = { fontSize: 12, color: "#9AA4B2" };
-const SUBMIT_BTN: React.CSSProperties = { border: "1px solid #2F5C3B", background: "rgba(86,194,113,0.16)", color: "#6BE38A", borderRadius: 7, padding: "5px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", font: "inherit" , ...NO_FOCUS_RING };
+const SUBMIT_BTN: React.CSSProperties = { font: "inherit", border: "1px solid #2F5C3B", background: "rgba(86,194,113,0.16)", color: "#6BE38A", borderRadius: 7, padding: "5px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", ...NO_FOCUS_RING };
 const FOOTER_ERROR: React.CSSProperties = { fontSize: 11, color: "#F85149", background: "rgba(248,81,73,0.08)", borderRadius: 5, padding: "4px 8px" };
 const FOOTER_DONE: React.CSSProperties = { fontSize: 12, color: "#6BE38A" };
 const FOOTER_LINK: React.CSSProperties = { color: "#7DD3FC" };
