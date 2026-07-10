@@ -158,6 +158,7 @@ export function depWireEdges(
       crossFrame: false,
       category: "dep" as const,
       depKind: edge.kind,
+      underlyingEdgeIds: edge.underlyingEdgeIds,
     }));
 }
 

@@ -78,7 +78,7 @@ export function deriveModuleTree(
   const ghosts = ghostLevel(blockDeps, walked, visibleIds, index, kinds, hiddenIds);
   const isDepAnchor = (id: string) => isDepAnchorKind(kinds.get(id));
   const edges = [
-    ...importTreeEdges(lifted, kinds),
+    ...importTreeEdges(lifted, kinds, graph),
     // Code-level dep wires: anchored to file/unit/block cards (the detailed intra-package view).
     ...depWireEdges(blockDeps, visibleIds, index, isDepAnchor, walked.expandedBlocks),
     // Package-level dep wires: typed relationships (calls/extends/etc.) LIFTED to packages so the
@@ -124,13 +124,17 @@ function packageDepEdges(
   const lifted = liftEdges(couplingEdges, visibleIds, index.parentOf);
   // Keep only edges where BOTH endpoints landed on a package (skip file-to-file at this level —
   // those are handled by depWireEdges). Aggregate by source+target+kind, summing weight.
-  const byKey = new Map<string, { source: string; target: string; kind: string; weight: number }>();
+  const byKey = new Map<string, { source: string; target: string; kind: string; weight: number; underlyingEdgeIds: string[] }>();
   for (const edge of lifted) {
     if (!packageIds.has(edge.source) || !packageIds.has(edge.target)) continue;
     const key = `${edge.kind}@${edge.source}|${edge.target}`;
     const existing = byKey.get(key);
-    if (existing) { existing.weight += edge.weight; }
-    else { byKey.set(key, { source: edge.source, target: edge.target, kind: edge.kind, weight: edge.weight }); }
+    if (existing) {
+      existing.weight += edge.weight;
+      existing.underlyingEdgeIds.push(...edge.underlyingEdgeIds);
+    } else {
+      byKey.set(key, { source: edge.source, target: edge.target, kind: edge.kind, weight: edge.weight, underlyingEdgeIds: [...edge.underlyingEdgeIds] });
+    }
   }
   return [...byKey.values()].map((e) => ({
     id: `pdep:${e.kind}:${e.source}->${e.target}`,
@@ -140,6 +144,7 @@ function packageDepEdges(
     crossFrame: true, // always cross-package at this level
     category: "dep" as const,
     depKind: e.kind,
+    underlyingEdgeIds: e.underlyingEdgeIds,
   }));
 }
 
@@ -178,6 +183,7 @@ function ghostLevel(
     category: "dep",
     depKind: wire.kind,
     ghost: true,
+    underlyingEdgeIds: wire.underlyingEdgeIds,
   }));
   return { nodes, edges };
 }

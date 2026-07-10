@@ -33,14 +33,17 @@ import { routeFrameEdges, ROUTED_EDGE_TYPE } from "../layout/edgeRouting";
 import { RoutedEdge } from "./edges/RoutedEdge";
 import { spoolFanEdges, SPOOL_EDGE_TYPE } from "../layout/edgeSpooling";
 import { SpoolEdge } from "./edges/SpoolEdge";
+import { WireEdge, WIRE_EDGE_TYPE } from "./edges/WireEdge";
 import { WireTooltip, type WireHover } from "./WireTooltip";
+import { WireInspector } from "./WireInspector";
 import type { BlockData, UnitCardData } from "../derive/moduleLevel";
 
 const PACKAGE_KIND = "package";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
- * rail (the bus) into member cards; "spool" gathers the remaining open-canvas fan-hub wires. */
-const moduleEdgeTypes: EdgeTypes = { [BUNDLE_EDGE_TYPE]: BundledEdge, [ROUTED_EDGE_TYPE]: RoutedEdge, [SPOOL_EDGE_TYPE]: SpoolEdge };
+ * rail (the bus) into member cards; "spool" gathers the remaining open-canvas fan-hub wires;
+ * "wire" is the plain curve every remaining edge is retyped to (it carries the lit direction pulse). */
+const moduleEdgeTypes: EdgeTypes = { [BUNDLE_EDGE_TYPE]: BundledEdge, [ROUTED_EDGE_TYPE]: RoutedEdge, [SPOOL_EDGE_TYPE]: SpoolEdge, [WIRE_EDGE_TYPE]: WireEdge };
 
 export function ModuleMapView() {
   const nodes = useBlueprint((state) => state.moduleRfNodes);
@@ -91,6 +94,15 @@ export function ModuleMapView() {
   // recomputes bundling/routing geometry, it only boosts one edge's paint. Bundle highways keep
   // their own breakdown tooltip, so they opt out of this one.
   const [wireHover, setWireHover] = useState<WireHover | null>(null);
+  // Wire INSPECTOR: clicking a strand PINS its evidence panel (the aggregate's real links + call
+  // sites). The pinned wire stays force-lit like a hover; pane click / Esc unpin — and so does any
+  // change that can remove or reshape the wire (relayout, focus, a filter/highways toggle, or the
+  // SELECTION moving: ghost wires exist only while lit, and bundles re-fold a deselected node's
+  // strands): a panel attributing a strand no longer drawn would be a claim the canvas contradicts.
+  const [inspected, setInspected] = useState<Edge | null>(null);
+  useEffect(() => {
+    setInspected(null);
+  }, [edges, effectiveFocus, hiddenCategories, hiddenRelKinds, showTests, showPrivate, showHighways, selected, radius, highlightMode]);
   const labelById = useMemo(() => {
     const labels = new Map<string, string>();
     for (const node of styledNodes) {
@@ -102,16 +114,24 @@ export function ModuleMapView() {
     () =>
       bundledEdges.map((edge) => {
         if (edge.type === BUNDLE_EDGE_TYPE) {
-          return edge;
+          // A drilled constituent lives INSIDE the highway — boost the owning bundle so the panel's
+          // subject still has a visual anchor on canvas.
+          const holdsInspected = inspected !== null && (edge.data as { constituents?: Edge[] }).constituents?.some((member) => member.id === inspected.id) === true;
+          return holdsInspected ? { ...edge, style: { ...edge.style, opacity: 1 } } : edge;
         }
-        const hovered = edge.id === wireHover?.id;
+        const boosted = edge.id === wireHover?.id || edge.id === inspected?.id;
         return {
           ...edge,
+          // Untyped edges retype to the Map's own plain curve AFTER the highway passes have claimed
+          // theirs — same geometry as the default edge, plus the lit direction pulse. `pulse` is the
+          // Map's opt-in: shared edge components draw dots ONLY where the surface asked for them.
+          type: edge.type ?? WIRE_EDGE_TYPE,
           interactionWidth: 14,
-          style: hovered ? { ...edge.style, opacity: 1, strokeWidth: ((edge.style?.strokeWidth as number) ?? 1.5) + 1.2 } : edge.style,
+          data: { ...edge.data, pulse: true },
+          style: boosted ? { ...edge.style, opacity: 1, strokeWidth: ((edge.style?.strokeWidth as number) ?? 1.5) + 1.2 } : edge.style,
         };
       }),
-    [bundledEdges, wireHover?.id],
+    [bundledEdges, wireHover?.id, inspected],
   );
   const onEdgeMouseEnter = (event: React.MouseEvent, edge: Edge) => {
     if (edge.type === BUNDLE_EDGE_TYPE) {
@@ -129,6 +149,11 @@ export function ModuleMapView() {
     });
   };
   const onEdgeMouseLeave = () => setWireHover(null);
+  const onEdgeClick = (_event: React.MouseEvent, edge: Edge) => setInspected(edge);
+  const onPaneClickWithUnpin = () => {
+    setInspected(null);
+    onPaneClick();
+  };
 
   // Fit once per RELAYOUT: `moduleRfNodes` only changes when the level does, so clearing the guard
   // on `effectiveFocus` (a focus change) OR `showTests` (the Tests toggle relayouts + re-coords the
@@ -181,9 +206,10 @@ export function ModuleMapView() {
         }}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
-        onPaneClick={onPaneClick}
+        onPaneClick={onPaneClickWithUnpin}
         onEdgeMouseEnter={onEdgeMouseEnter}
         onEdgeMouseLeave={onEdgeMouseLeave}
+        onEdgeClick={onEdgeClick}
         {...READONLY_CANVAS_PROPS}
       >
         <CanvasChrome nodeColor={miniMapColor} />
@@ -191,6 +217,9 @@ export function ModuleMapView() {
         <MapLod />
       </ReactFlow>
       {wireHover ? <WireTooltip hover={wireHover} /> : null}
+      {inspected ? (
+        <WireInspector edge={inspected} labelOf={(id) => labelById.get(id)} onClose={() => setInspected(null)} onDrill={setInspected} />
+      ) : null}
       {viewMode === "call" && serviceScope !== null ? (
         // The scoped Service sub-view replaces the (focus-driven, here inert) containment trail
         // with its exit: "All services › <scope> ✕".

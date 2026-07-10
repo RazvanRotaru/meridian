@@ -6,7 +6,14 @@
 
 import { BaseEdge, type EdgeProps } from "@xyflow/react";
 import type { RoutedEdgeData } from "../../layout/edgeRouting";
+import { WirePulse } from "./WireEdge";
 
-export function RoutedEdge({ id, style, markerEnd, data }: EdgeProps) {
-  return <BaseEdge id={id} path={(data as RoutedEdgeData).routedPath} style={style} markerEnd={markerEnd} />;
+export function RoutedEdge({ id, style, markerEnd, data, interactionWidth }: EdgeProps) {
+  const path = (data as RoutedEdgeData).routedPath;
+  return (
+    <>
+      <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} interactionWidth={interactionWidth} />
+      <WirePulse path={path} style={style} data={data} />
+    </>
+  );
 }

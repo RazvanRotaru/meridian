@@ -39,6 +39,9 @@ export interface ModuleTreeEdge {
   depKind?: string;
   /** The far endpoint is a GHOST card (an off-screen definition/caller) — drawn dashed. */
   ghost?: boolean;
+  /** The artifact edge ids this wire aggregates — the Wire Inspector resolves them back to real
+   * symbol→symbol links and their call sites. Absent on synthetic wires (flow chains, IPC). */
+  underlyingEdgeIds?: string[];
 }
 
 export interface ModuleTree {

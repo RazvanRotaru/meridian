@@ -15,6 +15,8 @@ export interface GraphIndex {
   parentOf: Map<string, string | null>;
   outEdges: Map<string, GraphEdge[]>;
   edges: GraphEdge[];
+  /** Artifact edges by id — the Wire Inspector resolves a wire's `underlyingEdgeIds` through this. */
+  edgesById: Map<string, GraphEdge>;
   /** Every test-code node (tag or path heuristic), closed over containment — the hide-tests set. */
   testIds: Set<string>;
   /** Every `private`-tagged node (the open tags vocabulary) — the Map's hide-privates set. */
@@ -44,6 +46,7 @@ export function buildGraphIndex(artifact: GraphArtifact): GraphIndex {
     parentOf,
     outEdges: groupOutEdges(artifact.edges),
     edges: artifact.edges,
+    edgesById: new Map(artifact.edges.map((edge) => [edge.id, edge])),
     testIds: collectTestIds(artifact.nodes),
     privateIds: new Set(artifact.nodes.filter((node) => node.tags?.includes("private")).map((node) => node.id)),
     changedIds,
