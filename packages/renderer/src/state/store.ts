@@ -424,6 +424,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // every level — never rebuilt per relayout. A PR-review swap/restore replaces the artifact, so
   // invalidateArtifactCaches (below) nulls it for a lazy rebuild from the incoming index.
   let moduleGraph: ModuleGraph | null = null;
+  // Stable empty set for "nothing hidden" so relayout inputs don't churn per call.
+  const EMPTY_HIDDEN_IDS: ReadonlySet<string> = new Set<string>();
   // The code-dependency substrate (coupling edges at their real endpoints), same lifecycle.
   let blockDeps: BlockDeps | null = null;
   // The composition unit index (member → owning unit), built lazily on the first ⌘P reveal/add so a
@@ -975,17 +977,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // while "modules" derives the folder containment level for the current focus. The import graph
     // is built once (cached) and reused for every folder level.
     async moduleRelayout() {
-      const { index, moduleFocus, moduleExpanded, mapExtra, artifact, viewMode } = get();
+      const { index, moduleFocus, moduleExpanded, mapExtra, artifact, viewMode, showTests } = get();
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
       const graph = (moduleGraph ??= buildModuleGraph(index));
       const deps = (blockDeps ??= buildBlockDeps(index));
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      // Hidden tests are EXCLUDED from the layout (not just painted out): test code can be half the
+      // cards, and paint-hiding it kept a crater of empty space. toggleShowTests relayouts this lens.
+      const hidden = showTests ? EMPTY_HIDDEN_IDS : index.testIds;
       let layout: ModuleLevelLayout;
       if (viewMode === "call") {
         layout = await deriveServiceLevelLayout(index, moduleExpanded, graph, deps, flows, mapExtra);
       } else {
-        layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, graph, deps, flows, mapExtra);
+        layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, graph, deps, flows, mapExtra, hidden);
       }
       if (moduleLayoutSeq !== sequence) {
         return; // a newer focus change superseded this one.
@@ -1339,14 +1344,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         compRoot: nextCompRoot,
         moduleSelected: showTests ? moduleSelected : new Set([...moduleSelected].filter((id) => !index.testIds.has(id))),
       });
-      // The composition AND module-map views hide test cards in place (the surface filters the rendered
-      // set), so they must NOT re-lay-out — that would reshuffle production cards. The module map's focus
-      // is a package/dir node (never test-stranded the way a file root was), so it's purely paint-only
-      // here. Composition still relayouts when its OWN root was stranded inside now-hidden test code.
+      // The composition view hides test cards in place (paint-only), relayouting only when its OWN
+      // root was stranded inside now-hidden test code. The MODULE MAP relayouts instead: test code
+      // can be half a level's cards (and a wall of off-level test ghosts), and paint-hiding kept a
+      // crater of empty space — moduleRelayout re-derives the level with testIds excluded, so the
+      // survivors compact. Positions do move on this toggle, by design.
       const paintOnlyMode = viewMode === "call" || viewMode === "modules";
       const compRootChanged = nextCompRoot !== compRoot;
       if (!paintOnlyMode || compRootChanged) {
         void get().relayout();
+      }
+      if (viewMode === "modules") {
+        void get().moduleRelayout();
       }
     },
 
