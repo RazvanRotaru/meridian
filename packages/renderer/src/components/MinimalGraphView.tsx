@@ -29,6 +29,7 @@ import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { MinimalMembersPanel } from "./MinimalMembersPanel";
+import { useRecenter } from "./canvas/useRecenter";
 import { spoolFanEdges, SPOOL_EDGE_TYPE } from "../layout/edgeSpooling";
 import { SpoolEdge } from "./edges/SpoolEdge";
 import { minimalMiniMapColor, SURFACE_STYLE, PANEL_STYLE, buttonStyle } from "./minimalGraphStyles";
@@ -50,7 +51,16 @@ export function MinimalGraphView() {
   // — Reset restores both, so it must light up for either.
   const grown = useBlueprint((state) => !sameMembers(state.minimalMemberIds, state.minimalSeedIds) || state.minimalArrange);
   const showHighways = useBlueprint((state) => state.showHighways);
+  const reviewSelectedId = useBlueprint((state) => state.reviewSelectedId);
   const { closeMinimalGraph, promoteMinimalGhost, resetMinimalGraph, rearrangeMinimalGraph } = useBlueprintActions();
+
+  // A review-panel click centers the viewport on the clicked node itself (recenterSeq bump); the
+  // zoom cap keeps a single method card from blowing up to a full-viewport close-up.
+  const recenterTargets = useMemo(
+    () => (reviewSelectedId !== null ? [reviewSelectedId] : [...selected]),
+    [reviewSelectedId, selected],
+  );
+  useRecenter(recenterTargets, { maxZoom: 1 });
 
   useClearOnEscape(closeMinimalGraph, true);
 

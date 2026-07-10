@@ -1,13 +1,17 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { fetchPullRequestFiles, listPullRequests } from "./github";
+import { submitPullRequestReview, type ReviewCommentInput } from "./github-review";
 import { sendJson } from "./http-response";
 import { githubTokenFor } from "./web-auth";
 import { WebError } from "./web-error";
+import { readJsonBody } from "./web-request";
 import type { Context } from "./web-server";
 import type { ArtifactSource } from "./web-source";
-import { stripExtractionSubdir } from "./web-source";
+import { restoreExtractionSubdir, stripExtractionSubdir } from "./web-source";
 
 const GITHUB_SOURCE_ERROR = "pull requests need a GitHub-sourced session";
+/** Sanity bound; the 64KB body cap constrains the real payload long before this. */
+const MAX_REVIEW_COMMENTS = 100;
 
 export async function handlePullRequests(
   ctx: Context,
@@ -41,6 +45,103 @@ export async function handlePullRequestFiles(
   const prNumber = parsePositiveInt(query.get("n"), "n");
   const result = await fetchPullRequestFiles({ owner: source.owner, repo: source.repo, prNumber, token: githubTokenFor(ctx, request) });
   sendJson(response, 200, { files: stripExtractionSubdir(result.files, source.subdir), truncated: result.truncated });
+}
+
+/**
+ * POST /api/prs/review — submit a COMMENT review to the PR. The one GitHub WRITE in the server:
+ * it requires a resolved token (401 otherwise, never an anonymous call). Anchored `comments`
+ * become inline diff comments; anchorless `notes` fold into the review body. Both carry paths the
+ * browser knows subdir-STRIPPED, so the repo-root prefix is restored here — for notes too, which
+ * is exactly why the body is assembled server-side rather than shipped as prose.
+ */
+export async function handleSubmitReview(
+  ctx: Context,
+  request: IncomingMessage,
+  response: ServerResponse,
+  query: URLSearchParams,
+): Promise<void> {
+  const source = githubSource(ctx, query.get("id"));
+  if (!source) {
+    sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
+    return;
+  }
+  const body = parseSubmitReviewBody(await readJsonBody(request));
+  const token = githubTokenFor(ctx, request);
+  if (!token) {
+    throw new WebError(401, "submitting a review requires a GitHub sign-in");
+  }
+  const comments = body.comments.map((comment) => ({ ...comment, path: restoreExtractionSubdir(comment.path, source.subdir) }));
+  const reviewBody = body.notes
+    .map((note) => `**${restoreExtractionSubdir(note.path, source.subdir)}**${note.label ? ` · ${note.label}` : ""}: ${note.body}`)
+    .join("\n\n");
+  const result = await submitPullRequestReview({ owner: source.owner, repo: source.repo, prNumber: body.number, body: reviewBody, comments, token });
+  sendJson(response, 200, result);
+}
+
+/** A review note without a diff line to stand on; folds into the review body, path restored. */
+interface ReviewNoteInput {
+  path: string;
+  label: string | null;
+  body: string;
+}
+
+interface SubmitReviewBody {
+  number: number;
+  comments: ReviewCommentInput[];
+  notes: ReviewNoteInput[];
+}
+
+function parseSubmitReviewBody(raw: unknown): SubmitReviewBody {
+  if (typeof raw !== "object" || raw === null) {
+    throw new WebError(400, "request body must be a JSON object");
+  }
+  const record = raw as Record<string, unknown>;
+  if (typeof record.number !== "number" || !Number.isSafeInteger(record.number) || record.number <= 0) {
+    throw new WebError(400, "number must be a positive integer");
+  }
+  const comments = boundedArray(record.comments, "comments").map(parseComment);
+  const notes = boundedArray(record.notes, "notes").map(parseNote);
+  if (comments.length === 0 && notes.length === 0) {
+    throw new WebError(400, "a review needs at least one comment");
+  }
+  return { number: record.number, comments, notes };
+}
+
+function boundedArray(raw: unknown, name: string): unknown[] {
+  if (raw === undefined) {
+    return [];
+  }
+  if (!Array.isArray(raw) || raw.length > MAX_REVIEW_COMMENTS) {
+    throw new WebError(400, `${name} must be an array of at most ${MAX_REVIEW_COMMENTS}`);
+  }
+  return raw;
+}
+
+function parseComment(entry: unknown): ReviewCommentInput {
+  const comment = asRecord(entry);
+  const { path, line, body } = comment;
+  const validLine = typeof line === "number" && Number.isSafeInteger(line) && line > 0;
+  if (!isFilledString(path) || !validLine || !isFilledString(body)) {
+    throw new WebError(400, "each comment needs a path, a positive line, and a non-empty body");
+  }
+  return { path, line: line as number, body };
+}
+
+function parseNote(entry: unknown): ReviewNoteInput {
+  const note = asRecord(entry);
+  const { path, label, body } = note;
+  if (!isFilledString(path) || !isFilledString(body)) {
+    throw new WebError(400, "each note needs a path and a non-empty body");
+  }
+  return { path, label: isFilledString(label) ? label : null, body };
+}
+
+function asRecord(entry: unknown): Record<string, unknown> {
+  return typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : {};
+}
+
+function isFilledString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function githubSource(ctx: Context, id: string | null): Extract<ArtifactSource, { kind: "github" }> | null {

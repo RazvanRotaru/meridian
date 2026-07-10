@@ -25,6 +25,8 @@ export interface PrApiUrls {
   prFilesUrl: string;
   /** GET base for one changed file's text at the PR head ref (the review code panel). */
   prFileUrl: string;
+  /** POST target for submitting a review with comments; 404s outside a `web` GitHub session. */
+  prReviewUrl: string;
 }
 
 interface InjectedConfig extends Omit<BootConfig, "defaultEnv"> {
@@ -66,6 +68,7 @@ export function prApiUrlsFromGraphUrl(graphUrl: string): PrApiUrls {
     prsUrl: apiUrl("/api/prs", id),
     prFilesUrl: apiUrl("/api/prs/files", id),
     prFileUrl: apiUrl("/api/prs/file", id),
+    prReviewUrl: apiUrl("/api/prs/review", id),
   };
 }
 

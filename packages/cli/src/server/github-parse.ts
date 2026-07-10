@@ -106,6 +106,11 @@ export function parseUser(json: unknown): GitHubUser {
   return { login: requireString(body, "login"), avatarUrl: httpsOrNull(optionalString(body, "avatar_url")) };
 }
 
+/** The created review, whitelisted to the one field the browser shows: its html_url (or null). */
+export function parseReviewSubmitted(json: unknown): { url: string | null } {
+  return { url: httpsOrNull(optionalString(asObject(json), "html_url")) };
+}
+
 function repoSlug(term: string): { owner: string; repo: string } | null {
   const stripped = term
     .replace(/^https?:\/\/github\.com\//i, "")

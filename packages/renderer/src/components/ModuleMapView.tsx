@@ -24,7 +24,7 @@ import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { useRecenter } from "./canvas/useRecenter";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { MinimalGraphView } from "./MinimalGraphView";
-import { ReviewFlowPanel } from "./review/ReviewFlowPanel";
+import { ReviewPanel } from "./review/ReviewPanel";
 import { accentForKind } from "../theme/kindColors";
 import { bundleEdges, BUNDLE_EDGE_TYPE } from "../layout/edgeBundling";
 import { BundledEdge } from "./edges/BundledEdge";
@@ -147,8 +147,8 @@ export function ModuleMapView() {
 
   // The built minimal graph REPLACES the level canvas while open (after every hook above, so the
   // hook order is stable across open/close). Closing returns here with the selection intact. When a
-  // PR review seeded the graph, ReviewFlowPanel rides on the right (it self-hides when review is null,
-  // i.e. a minimal graph the reader built by hand from a Map selection).
+  // PR review seeded the graph, ReviewPanel rides on the right (it self-hides when review is null —
+  // a hand-built minimal graph — or when the reader hid it; MinimalGraphView then offers "Review").
   if (minimalOpen) {
     return (
       <div style={SURFACE_STYLE}>
@@ -156,7 +156,7 @@ export function ModuleMapView() {
           <div style={REVIEW_GRAPH_STYLE}>
             <MinimalGraphView />
           </div>
-          <ReviewFlowPanel />
+          <ReviewPanel />
         </div>
       </div>
     );

@@ -28,6 +28,13 @@ export function stripExtractionSubdir<T extends { path: string }>(files: T[], su
   });
 }
 
+/** The inverse of stripExtractionSubdir, for WRITES: a browser path back to repo-root-relative. */
+export function restoreExtractionSubdir(path: string, subdir: string | undefined): string {
+  const prefix = normalizedSubdir(subdir);
+  const normalized = normalizedPath(path);
+  return prefix ? `${prefix}/${normalized}` : normalized;
+}
+
 function parseGitHubRepo(value: string): { owner: string; repo: string } | null {
   const trimmed = value.trim().replace(/\.git$/i, "");
   if (OWNER_REPO.test(trimmed)) {
