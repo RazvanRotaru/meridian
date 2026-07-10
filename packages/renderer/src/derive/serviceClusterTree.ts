@@ -28,6 +28,7 @@ export function deriveServiceTree(
   graph: ModuleGraph,
   blockDeps: BlockDeps,
   flows: LogicFlows,
+  extraIds: ReadonlySet<string> = EMPTY_IDS,
 ): { nodes: VisibleModuleNode[]; edges: ModuleTreeEdge[] } {
   const clustering = deriveServiceClusters([...index.nodesById.values()], index.edges);
   if (clustering.clusters.length === 0) {
@@ -35,6 +36,10 @@ export function deriveServiceTree(
   }
   const degrees = clusterDegrees(clustering.couplings, clustering.leadOf);
   const walk = serviceWalk(clustering, index, expanded, flows);
+  // Palette-pinned nodes (⌘P "+") ride in as EXTRA top-level cards — this lens has no focus/frontier,
+  // so a unit/file/block that isn't inside an expanded cluster still joins the canvas. Already-visited
+  // ids (a member of an open cluster) are dropped by the walk's `seen` guard.
+  appendExtras(walk, extraIds, index, expanded, flows);
   const visibleIds = new Set(walk.skeleton.map((entry) => entry.id));
   const kinds = kindsOf(walk.skeleton);
   const isCode = (id: string) => kinds.get(id) === "unit" || kinds.get(id) === "block";
@@ -46,6 +51,21 @@ export function deriveServiceTree(
     ...stepCallEdges(walk, visibleIds, index),
   ].sort((a, b) => a.id.localeCompare(b.id));
   return { nodes, edges };
+}
+
+/** A shared empty set so the default `extraIds` argument never allocates per call. */
+const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
+
+/** Draw each palette-pinned id as a detached top-level card (unit/file/block), reusing `visitCode` so
+ * it renders exactly like an in-cluster member. Non-drawable or already-visited ids are skipped. */
+function appendExtras(walk: CodeWalk, extraIds: ReadonlySet<string>, index: GraphIndex, expanded: ReadonlySet<string>, flows: LogicFlows): void {
+  const ctx = { index, expanded, flows, unitsAlwaysOpen: true };
+  for (const id of [...extraIds].sort()) {
+    if (walk.seen.has(id) || !index.nodesById.has(id)) {
+      continue;
+    }
+    visitCode(id, null, 0, ctx, walk);
+  }
 }
 
 function serviceWalk(

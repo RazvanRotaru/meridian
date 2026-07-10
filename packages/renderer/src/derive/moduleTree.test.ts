@@ -510,3 +510,37 @@ describe("deriveModuleTree — flow steps charted in place (POC)", () => {
     expect(deps).toEqual([`${PLACE_ID}->${PAY_FILE_ID}`]);
   });
 });
+
+describe("deriveModuleTree — palette extras (⌘P +)", () => {
+  function treeWithExtra(focus: string | null, expanded: string[], extraIds: string[]) {
+    const { nodes, edges } = fixture();
+    const index = buildGraphIndex({ nodes, edges } as GraphArtifact);
+    return deriveModuleTree(index, focus, new Set(expanded), buildModuleGraph(index), buildBlockDeps(index), {}, new Set(extraIds));
+  }
+
+  it("surfaces an out-of-subtree file as an extra top-level card", () => {
+    // Focused on pkgB's subtree; pkgC's c.ts is unrelated and absent WITHOUT the extra.
+    expect(treeWithExtra("ts:pkgB", [], []).nodes.map((n) => n.id)).not.toContain("ts:pkgC/src/c.ts");
+    const tree = treeWithExtra("ts:pkgB", [], ["ts:pkgC/src/c.ts"]);
+    const c = tree.nodes.find((n) => n.id === "ts:pkgC/src/c.ts");
+    expect(c).toBeDefined();
+    expect(c!.parentId).toBeNull(); // an extra is a top-level root, not nested
+    expect(c!.kind).toBe("file");
+  });
+
+  it("does not duplicate an extra already drawn inside the focus subtree", () => {
+    const tree = treeWithExtra(null, ["ts:pkgA", "ts:pkgA/src"], ["ts:pkgA/src/index.ts"]);
+    expect(tree.nodes.filter((n) => n.id === "ts:pkgA/src/index.ts")).toHaveLength(1);
+  });
+
+  it("drops a non-drawable extra (a package id is not a file/unit/block card)", () => {
+    const tree = treeWithExtra("ts:pkgB", [], ["ts:pkgC"]);
+    expect(tree.nodes.map((n) => n.id)).not.toContain("ts:pkgC");
+  });
+
+  it("is a strict no-op when no extras are pinned", () => {
+    const base = treeWithExtra("ts:pkgB", [], []);
+    const same = treeWithExtra("ts:pkgB", [], []);
+    expect(same.nodes.map((n) => n.id)).toEqual(base.nodes.map((n) => n.id));
+  });
+});
