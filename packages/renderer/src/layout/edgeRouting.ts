@@ -46,17 +46,40 @@ export function routeFrameEdges(edges: Edge[], nodes: Node[]): Edge[] {
       frameIds.add(node.parentId);
     }
   }
-  return edges.map((edge) => {
+  // Pass 1: plan every routable edge (geometry, no path yet).
+  const planned = edges.map((edge) => {
     if (edge.type !== undefined) {
-      return edge; // container highways (bundle) and anything already custom keep their renderer
+      return { edge, plan: null }; // container highways and anything already custom keep their renderer
     }
-    const path = routedPath(edge, byId, rects, frameIds);
-    return path === null ? edge : { ...edge, type: ROUTED_EDGE_TYPE, data: { ...edge.data, routedPath: path } };
+    return { edge, plan: routePlan(edge, byId, rects, frameIds) };
   });
+  // Pass 2: LIT wires sharing a rail spread into parallel LANES (a ribbon, not an overlap), so a
+  // selection's strands stay individually followable from gate to peel-off. Unlit wires keep
+  // overlapping into the single bus bar — collectively legible is exactly right at rest.
+  const laneByEdge = assignLitLanes(planned);
+  // Pass 3: build paths.
+  return planned.map(({ edge, plan }) =>
+    plan === null
+      ? edge
+      : { ...edge, type: ROUTED_EDGE_TYPE, data: { ...edge.data, routedPath: planToPath(plan, laneByEdge.get(edge.id) ?? 0) } },
+  );
 }
 
-/** The bus path for a frame-crossing edge, or null when this edge has nothing to route around. */
-function routedPath(edge: Edge, byId: Map<string, Node>, rects: Map<string, Rect>, frameIds: Set<string>): string | null {
+interface RoutePlan {
+  /** Groups lanes per rail: one frame side = one bus. */
+  railKey: string;
+  sx: number;
+  sy: number;
+  gateX: number;
+  gateY: number;
+  railX: number;
+  tx: number;
+  ty: number;
+  inward: 1 | -1;
+}
+
+/** The routing geometry for a frame-crossing edge, or null when there is nothing to route around. */
+function routePlan(edge: Edge, byId: Map<string, Node>, rects: Map<string, Rect>, frameIds: Set<string>): RoutePlan | null {
   const source = rects.get(edge.source);
   const target = rects.get(edge.target);
   if (!source || !target) {
@@ -72,15 +95,54 @@ function routedPath(edge: Edge, byId: Map<string, Node>, rects: Map<string, Rect
   const ty = target.y + target.h / 2;
   // Enter from whichever side of the frame the source sits on; the rail runs in that side's gutter.
   const fromLeft = source.x + source.w / 2 <= frame.x + frame.w / 2;
-  const sx = fromLeft ? source.x + source.w : source.x;
-  const gateX = fromLeft ? frame.x : frame.x + frame.w;
-  const railX = fromLeft ? frame.x + RAIL_INSET : frame.x + frame.w - RAIL_INSET;
-  const tx = fromLeft ? target.x : target.x + target.w;
   // The gate sits at the source's height, clamped into the frame's edge span, so the outside leg
   // stays flat and gates from different sources spread along the boundary instead of knotting.
   const gateY = clamp(sy, frame.y + CORNER * 2, frame.y + frame.h - CORNER * 2);
+  return {
+    railKey: `${frame.x},${frame.y},${fromLeft ? "L" : "R"}`,
+    sx: fromLeft ? source.x + source.w : source.x,
+    sy,
+    gateX: fromLeft ? frame.x : frame.x + frame.w,
+    gateY,
+    railX: fromLeft ? frame.x + RAIL_INSET : frame.x + frame.w - RAIL_INSET,
+    tx: fromLeft ? target.x : target.x + target.w,
+    ty,
+    inward: fromLeft ? 1 : -1,
+  };
+}
+
+/** How far apart lit lanes sit, and how many fit each side of the rail before clamping — the band
+ * must stay inside the 30px gutter (rail inset 12 ± 9 → 3..21, always clear of border and cards). */
+const LANE_SPACING = 3;
+const LANE_MAX = 3;
+
+/** Per-edge lane offsets for LIT routed wires, centered per rail, ordered by peel-off height. */
+function assignLitLanes(planned: ReadonlyArray<{ edge: Edge; plan: RoutePlan | null }>): Map<string, number> {
+  const byRail = new Map<string, Array<{ id: string; ty: number }>>();
+  for (const { edge, plan } of planned) {
+    if (plan === null || (edge.style as { opacity?: number } | undefined)?.opacity !== 1) {
+      continue;
+    }
+    const group = byRail.get(plan.railKey) ?? [];
+    group.push({ id: edge.id, ty: plan.ty });
+    byRail.set(plan.railKey, group);
+  }
+  const lanes = new Map<string, number>();
+  for (const group of byRail.values()) {
+    group.sort((a, b) => a.ty - b.ty);
+    group.forEach(({ id }, index) => {
+      const centered = index - (group.length - 1) / 2;
+      lanes.set(id, Math.max(-LANE_MAX, Math.min(LANE_MAX, centered)) * LANE_SPACING);
+    });
+  }
+  return lanes;
+}
+
+/** The SVG path for a plan; `lane` shifts the rail segment sideways for lit ribbon strands. */
+function planToPath(plan: RoutePlan, lane: number): string {
+  const { sx, sy, gateX, gateY, tx, ty, inward } = plan;
+  const railX = plan.railX + inward * lane;
   const dir = ty >= gateY ? 1 : -1;
-  const inward = fromLeft ? 1 : -1;
   // Degenerate rail (target right at gate height): a plain flat entry needs no bus.
   if (Math.abs(ty - gateY) < CORNER * 2) {
     return [
