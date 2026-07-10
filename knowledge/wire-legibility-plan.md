@@ -45,11 +45,15 @@ down to real lines of code, and the field of wires must foreground the few that 
    ONLY on lit strands — motion reads as direction, animating only the selection keeps the
    canvas calm. (Dash animation was rejected during implementation: dash already means
    "crosses a package boundary".)
-4. **The parallel-pair fix** (shipped in the same PR after field feedback): same-(source,target)
-   strands used to draw on identical geometry — the topmost kind captured every click and hid
-   the others. `assignPairLanes` now spreads them into a multi-strand cable (4px lanes), and the
-   inspector reports the clicked strand's WHOLE ordered pair — one section per kind, clicked
-   first — so the z-order can never hide a relationship.
+4. **The pair RIBBON** (shipped in the same PR after field feedback; this IS W3's multi-kind
+   ribbon, pulled forward): same-(source,target) strands used to draw on identical geometry —
+   overlapping dashes wove into confetti, every strand carried its own arrowhead into a pile-up,
+   and the topmost kind captured every click. `foldPairRibbons` now folds each such group into
+   ONE cable edge: tight parallel stripes (one per kind, its colour, its own lit/dim emphasis),
+   offset perpendicular to the cable, a single arrowhead on the heaviest strand, one hover/click
+   target. Cross-package cables dash AS A UNIT via a background-coloured notch overlay (per-
+   stripe dashes can never share phase on parallel curves). Clicking the cable opens the pair
+   inspector — one evidence section per kind.
 
 ## W2 — hub demotion (the commons dock)
 

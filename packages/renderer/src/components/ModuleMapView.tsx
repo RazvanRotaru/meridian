@@ -34,7 +34,8 @@ import { RoutedEdge } from "./edges/RoutedEdge";
 import { spoolFanEdges, SPOOL_EDGE_TYPE } from "../layout/edgeSpooling";
 import { SpoolEdge } from "./edges/SpoolEdge";
 import { WireEdge, WIRE_EDGE_TYPE } from "./edges/WireEdge";
-import { assignPairLanes, pairOf } from "../layout/parallelWires";
+import { RibbonEdge } from "./edges/RibbonEdge";
+import { foldPairRibbons, pairOf, RIBBON_EDGE_TYPE, type RibbonEdgeData } from "../layout/parallelWires";
 import { WireTooltip, type WireHover } from "./WireTooltip";
 import { WireInspector } from "./WireInspector";
 import type { BlockData, UnitCardData } from "../derive/moduleLevel";
@@ -42,9 +43,16 @@ import type { BlockData, UnitCardData } from "../derive/moduleLevel";
 const PACKAGE_KIND = "package";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
- * rail (the bus) into member cards; "spool" gathers the remaining open-canvas fan-hub wires;
- * "wire" is the plain curve every remaining edge is retyped to (it carries the lit direction pulse). */
-const moduleEdgeTypes: EdgeTypes = { [BUNDLE_EDGE_TYPE]: BundledEdge, [ROUTED_EDGE_TYPE]: RoutedEdge, [SPOOL_EDGE_TYPE]: SpoolEdge, [WIRE_EDGE_TYPE]: WireEdge };
+ * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "spool" gathers
+ * the remaining open-canvas fan-hub wires; "wire" is the plain curve every remaining edge is
+ * retyped to (it carries the lit direction pulse). */
+const moduleEdgeTypes: EdgeTypes = {
+  [BUNDLE_EDGE_TYPE]: BundledEdge,
+  [ROUTED_EDGE_TYPE]: RoutedEdge,
+  [RIBBON_EDGE_TYPE]: RibbonEdge,
+  [SPOOL_EDGE_TYPE]: SpoolEdge,
+  [WIRE_EDGE_TYPE]: WireEdge,
+};
 
 export function ModuleMapView() {
   const nodes = useBlueprint((state) => state.moduleRfNodes);
@@ -80,13 +88,18 @@ export function ModuleMapView() {
     () => emphasize(shownNodes, shownEdges, selected, radius, highlightMode),
     [shownNodes, shownEdges, selected, radius, highlightMode],
   );
-  // Visual Highways, three passes in precedence order: (1) container-pair BUNDLES merge parallel
+  // Visual Highways, four passes in precedence order: (1) container-pair BUNDLES merge parallel
   // cross-container edges; (2) frame-crossing wires ROUTE through the frame's gutter rail (the bus)
-  // so no wire ever travels behind a member card; (3) the remaining open-canvas fan-hub wires SPOOL
-  // into shared trunks. Off draws every edge as a plain curve; a selected node's own wires always
-  // escape the container bundles so its links read out of the highway they'd otherwise join.
+  // so no wire ever travels behind a member card; (3) same-pair multi-kind strands fold into ONE
+  // striped RIBBON cable (they'd otherwise overlap into a z-order lottery); (4) the remaining
+  // open-canvas fan-hub wires SPOOL into shared trunks. Off keeps plain curves — but the ribbon
+  // fold still runs: overlapping same-pair strands are illegible in either mode. A selected node's
+  // own wires always escape the container bundles so its links read out of the highway.
   const bundledEdges = useMemo(
-    () => (showHighways ? spoolFanEdges(routeFrameEdges(bundleEdges(styledEdges, styledNodes, selected), styledNodes)) : styledEdges),
+    () =>
+      showHighways
+        ? spoolFanEdges(foldPairRibbons(routeFrameEdges(bundleEdges(styledEdges, styledNodes, selected), styledNodes)))
+        : foldPairRibbons(styledEdges),
     [showHighways, styledEdges, styledNodes, selected],
   );
 
@@ -111,13 +124,13 @@ export function ModuleMapView() {
     }
     return labels;
   }, [styledNodes]);
-  // The pinned strand's WHOLE ordered pair (clicked first): the inspector reports every kind
-  // between the two cards, and every strand of the cable lights — so the z-order of overlapping
-  // strands can never hide a relationship.
+  // The pinned wire's WHOLE ordered pair (a ribbon's members, or a strand + its siblings): the
+  // inspector reports every kind between the two cards — no strand can hide another.
   const inspectedPair = useMemo(() => (inspected === null ? null : pairOf(inspected, bundledEdges)), [inspected, bundledEdges]);
-  const inspectedIds = useMemo(() => new Set(inspectedPair?.map((edge) => edge.id) ?? []), [inspectedPair]);
-  // Same-pair strands spread into parallel lanes — the multi-strand cable read (see parallelWires).
-  const laneByEdge = useMemo(() => assignPairLanes(bundledEdges), [bundledEdges]);
+  const inspectedIds = useMemo(
+    () => new Set(inspectedPair === null ? [] : [inspected!.id, ...inspectedPair.map((edge) => edge.id)]),
+    [inspected, inspectedPair],
+  );
   const hoverableEdges = useMemo(
     () =>
       bundledEdges.map((edge) => {
@@ -128,6 +141,10 @@ export function ModuleMapView() {
           return holdsInspected ? { ...edge, style: { ...edge.style, opacity: 1 } } : edge;
         }
         const boosted = edge.id === wireHover?.id || inspectedIds.has(edge.id);
+        if (edge.type === RIBBON_EDGE_TYPE) {
+          // The cable boosts as a WHOLE (every stripe lights); its stripes carry their own paint.
+          return { ...edge, interactionWidth: 16, data: { ...edge.data, pulse: true, boosted } };
+        }
         return {
           ...edge,
           // Untyped edges retype to the Map's own plain curve AFTER the highway passes have claimed
@@ -135,14 +152,36 @@ export function ModuleMapView() {
           // Map's opt-in: shared edge components draw dots ONLY where the surface asked for them.
           type: edge.type ?? WIRE_EDGE_TYPE,
           interactionWidth: 14,
-          data: { ...edge.data, pulse: true, pairLane: laneByEdge.get(edge.id) ?? 0 },
+          data: { ...edge.data, pulse: true },
           style: boosted ? { ...edge.style, opacity: 1, strokeWidth: ((edge.style?.strokeWidth as number) ?? 1.5) + 1.2 } : edge.style,
         };
       }),
-    [bundledEdges, wireHover?.id, inspectedIds, laneByEdge],
+    [bundledEdges, wireHover?.id, inspectedIds],
   );
   const onEdgeMouseEnter = (event: React.MouseEvent, edge: Edge) => {
     if (edge.type === BUNDLE_EDGE_TYPE) {
+      return;
+    }
+    // A ribbon names its whole cable: the per-kind breakdown IS the tooltip text.
+    if (edge.type === RIBBON_EDGE_TYPE) {
+      const members = (edge.data as RibbonEdgeData).members ?? [];
+      const breakdown = [...members]
+        .reverse()
+        .map((member) => {
+          const data = member.data as { depKind?: string; category?: string; weight?: number } | undefined;
+          const weight = data?.weight ?? 1;
+          return `${data?.depKind ?? data?.category}${weight > 1 ? ` ×${weight}` : ""}`;
+        })
+        .join(" · ");
+      setWireHover({
+        id: edge.id,
+        x: event.clientX,
+        y: event.clientY,
+        kind: breakdown,
+        weight: 1,
+        source: labelById.get(edge.source) ?? edge.source,
+        target: labelById.get(edge.target) ?? edge.target,
+      });
       return;
     }
     const data = edge.data as { depKind?: string; category?: string; weight?: number } | undefined;
