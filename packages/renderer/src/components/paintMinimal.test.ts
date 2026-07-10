@@ -1,15 +1,14 @@
 /**
  * Paint parity with the Map lens: every wire carrying the map's edge-data contract goes through the
- * Map's own suppress→emphasize chain (so relationship colours match the Map by construction), the
- * overlay-minted stub tethers pass through byte-identical, and a pair's redundant import wire is
- * suppressed exactly as on the Map.
+ * Map's own suppress→emphasize chain (so relationship colours match the Map by construction), a pair's
+ * redundant import wire is suppressed exactly as on the Map, nested declarations join the same
+ * emphasis pass, and a ghost-tier card dims under it.
  */
 
 import { describe, expect, it } from "vitest";
 import type { Edge, Node } from "@xyflow/react";
 import { GHOST_OPACITY, paintMinimalLevel } from "./paintMinimal";
 import { IMPORT_CROSS, IMPORT_SIBLING, REL_COLORS } from "../theme/mapPalette";
-import { MINIMAL_STUB_NODE } from "../layout/minimalSubgraphLayout";
 
 const NO_SELECTION: ReadonlySet<string> = new Set();
 // emphasize's lit stroke width (not exported); pinned so the tests catch a silent rest-state fallback.
@@ -55,16 +54,6 @@ describe("paintMinimalLevel — relationship colours match the Map", () => {
   });
 });
 
-describe("paintMinimalLevel — the baked stub layer stays out of the paint", () => {
-  it("passes a data-less stub tether (and the [+n] stub node) through byte-identical", () => {
-    const stubNode = { id: "stub:ts:a.ts:out", type: MINIMAL_STUB_NODE, position: { x: 0, y: 0 }, data: { sourceId: "ts:a.ts", direction: "out" } } as Node;
-    const tether: Edge = { id: "stubedge:ts:a.ts:out", source: "ts:a.ts", target: stubNode.id, style: { stroke: "#2A313C", strokeWidth: 1, strokeDasharray: "2 3", opacity: 0.6 }, selectable: false };
-    const painted = paint([fileNode("ts:a.ts"), stubNode], [tether]);
-    expect(painted.edges.find((edge) => edge.id === tether.id)).toBe(tether);
-    expect(painted.nodes.find((node) => node.id === stubNode.id)).toBe(stubNode);
-  });
-});
-
 describe("paintMinimalLevel — redundant-import suppression (the Map's rule)", () => {
   it("drops the import wire when a typed dep wire joins the same pair, keeping the dep wire", () => {
     const dep = depEdge("ts:a.ts", "ts:b.ts", "calls");
@@ -103,10 +92,9 @@ describe("paintMinimalLevel — nested declarations join the Map's emphasis, not
     expect(edges[0].style?.strokeWidth).toBe(EMPHASIS_WIDTH);
   });
 
-  it("keeps every node exactly once in laid-out order — parents before children, stubs still last", () => {
-    const stubNode = { id: "stub:ts:a.ts:out", type: MINIMAL_STUB_NODE, position: { x: 0, y: 0 }, data: { sourceId: "ts:a.ts", direction: "out" } } as Node;
-    const painted = paintMinimalLevel([frame, foo, bar, stubNode], [intraDep], new Set([foo.id]), 1, "node");
-    expect(painted.nodes.map((node) => node.id)).toEqual([frame.id, foo.id, bar.id, stubNode.id]);
+  it("keeps every node exactly once in laid-out order — parents before children", () => {
+    const painted = paintMinimalLevel([frame, foo, bar], [intraDep], new Set([foo.id]), 1, "node");
+    expect(painted.nodes.map((node) => node.id)).toEqual([frame.id, foo.id, bar.id]);
   });
 });
 
