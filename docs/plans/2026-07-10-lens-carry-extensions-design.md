@@ -32,20 +32,15 @@ single-anchor pipeline with a list pipeline:
 New `SelectionPanel` component rendered in `Toolbar.tsx` directly below the Lens group. Visible
 whenever the active lens has a selection (`moduleSelected` on Map/Service, `selectedId` on UI).
 
-- Header: the selected node names (capped list, "+N more").
-- One **Reveal in <lens>** button per lens other than the current one (Map / Service / UI). A
-  button is enabled iff at least one anchor is placeable in that lens (the many-variant returns
-  non-null); disabled buttons carry a `title` reason:
-  - Map: "No file contains this selection"
-  - Service: "No service cluster owns this selection"
-  - UI: "Selection is not in the graph" (practically always placeable)
-- Clicking a reveal button calls `setViewMode(mode)` — the panel is a **discoverable alias** for
-  the carry, not a second code path.
-- One **Scope Service view** button (feature 3 trigger), enabled under the same condition as
-  Reveal-in-Service.
-- Placeability must not re-cluster per render: clustering depends only on the graph, so memoize
-  `deriveServiceClusters` per `index` (module-level WeakMap cache used by both the panel and
-  `serviceRevealStateForMany`).
+**Revised (user decision, post-implementation): the explicit "Reveal in <lens>" buttons are
+dropped** — the implicit carry on lens switching already covers reveal, so the buttons were a
+redundant alias for `setViewMode`. The panel is now just the selection header (selected node
+names, capped list, "+N more") plus the single **Scope Service view** button (feature 3 trigger),
+enabled iff at least one anchor resolves to a service cluster — the same
+`serviceRevealStateForMany` gate the carry uses; when disabled it carries the reason
+"No service cluster owns this selection" as its tooltip. Placeability must not re-cluster per
+render: clustering depends only on the graph, so `deriveServiceClusters` stays memoized per
+`index` (module-level WeakMap cache shared with the carry).
 
 ## 3. Scoped Service sub-view (owning cluster + 1-hop)
 

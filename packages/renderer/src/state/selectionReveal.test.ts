@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
-import { revealTargets } from "./selectionReveal";
+import { selectedAnchorIds } from "./lensPath";
+import { scopeTarget } from "./selectionReveal";
 
 function node(id: string, kind: string, parentId?: string, displayName?: string): GraphNode {
   return {
@@ -15,7 +16,7 @@ function node(id: string, kind: string, parentId?: string, displayName?: string)
 }
 
 // Same shape as lensPath.test.ts: a clustered service+repository pair under src/, an UNclustered
-// bare helper under lib/ — so each lens has both a placeable and an unplaceable anchor on hand.
+// bare helper under lib/ — so the Service gate has both a placeable and an unplaceable anchor.
 const NODES: GraphNode[] = [
   node("ts:app", "package", undefined, "app"),
   node("ts:app/src", "package", "ts:app", "src"),
@@ -36,61 +37,41 @@ const EDGES: GraphEdge[] = [
 const index = buildGraphIndex({ nodes: NODES, edges: EDGES } as GraphArtifact);
 const METHOD = "ts:app/src/orders.ts#OrderService.place";
 const FORMAT = "ts:app/lib/util.ts#format";
+const NO_CLUSTER_REASON = "No service cluster owns this selection";
 
-function targetFor(targets: ReturnType<typeof revealTargets>, mode: string) {
-  const target = targets.find((candidate) => candidate.mode === mode);
-  expect(target).toBeDefined();
-  return target!;
-}
-
-describe("revealTargets", () => {
-  it("returns ALL reveal-capable lenses in Map/Service/UI order — the active-lens filter is the panel's, and Scope reads the Service entry", () => {
-    expect(revealTargets([METHOD], index).map((t) => t.mode)).toEqual(["modules", "call", "ui"]);
+describe("scopeTarget", () => {
+  it("enables the Scope button (reason null) for a clustered unit's member", () => {
+    expect(scopeTarget([METHOD], index)).toEqual({ enabled: true, reason: null });
   });
 
-  it("enables every target (reason null) for a fully placeable anchor", () => {
-    for (const target of revealTargets([METHOD], index)) {
-      expect(target.enabled).toBe(true);
-      expect(target.reason).toBeNull();
-    }
+  it("disables with the exact reason for an unclustered helper", () => {
+    expect(scopeTarget([FORMAT], index)).toEqual({ enabled: false, reason: NO_CLUSTER_REASON });
   });
 
-  it("disables Service with its exact reason for an unclustered helper, keeping Map and UI live", () => {
-    const targets = revealTargets([FORMAT], index);
-    expect(targetFor(targets, "call")).toMatchObject({ enabled: false, reason: "No service cluster owns this selection" });
-    expect(targetFor(targets, "modules").enabled).toBe(true);
-    expect(targetFor(targets, "ui").enabled).toBe(true);
+  it("disables with the exact reason for a bare folder (no clustered unit beneath the anchor itself)", () => {
+    expect(scopeTarget(["ts:app/src"], index)).toEqual({ enabled: false, reason: NO_CLUSTER_REASON });
   });
 
-  it("disables Map with its exact reason for a bare package (no containing file)", () => {
-    const targets = revealTargets(["ts:app/src"], index);
-    expect(targetFor(targets, "modules")).toMatchObject({ enabled: false, reason: "No file contains this selection" });
+  it("disables for an empty selection and for an id not in the graph", () => {
+    expect(scopeTarget([], index).enabled).toBe(false);
+    expect(scopeTarget(["ts:nope#ghost"], index)).toEqual({ enabled: false, reason: NO_CLUSTER_REASON });
   });
 
-  it("disables everything, each with its own reason, for an id not in the graph", () => {
-    const targets = revealTargets(["ts:nope#ghost"], index);
-    expect(targetFor(targets, "modules")).toMatchObject({ enabled: false, reason: "No file contains this selection" });
-    expect(targetFor(targets, "call")).toMatchObject({ enabled: false, reason: "No service cluster owns this selection" });
-    expect(targetFor(targets, "ui")).toMatchObject({ enabled: false, reason: "Selection is not in the graph" });
+  it("enables when ANY anchor of a mixed selection is clustered", () => {
+    expect(scopeTarget([FORMAT, METHOD], index).enabled).toBe(true);
   });
 
-  it("enables a target when ANY anchor of a mixed selection is placeable there", () => {
-    const targets = revealTargets([FORMAT, METHOD], index);
-    expect(targetFor(targets, "call").enabled).toBe(true);
-    expect(targetFor(targets, "modules").enabled).toBe(true);
+  it("enables for a selected `svc:` cluster frame — the panel's anchors normalize it to its lead unit", () => {
+    const anchors = selectedAnchorIds({
+      viewMode: "call",
+      moduleSelected: new Set(["svc:ts:app/src/orders.ts#OrderService"]),
+      selectedId: null,
+    });
+    expect(anchors).toEqual(["ts:app/src/orders.ts#OrderService"]);
+    expect(scopeTarget(anchors, index)).toEqual({ enabled: true, reason: null });
   });
 
-  it("disables every target for an empty selection", () => {
-    for (const target of revealTargets([], index)) {
-      expect(target.enabled).toBe(false);
-      expect(target.reason).not.toBeNull();
-    }
-  });
-
-  it("gates 'Scope Service view' through the Service entry: enabled exactly when Reveal-in-Service is", () => {
-    expect(targetFor(revealTargets([METHOD], index), "call").enabled).toBe(true);
-    expect(targetFor(revealTargets([FORMAT, METHOD], index), "call").enabled).toBe(true);
-    expect(targetFor(revealTargets([FORMAT], index), "call").enabled).toBe(false);
-    expect(targetFor(revealTargets([], index), "call").enabled).toBe(false);
+  it("enables for a FILE anchor, which resolves through its contained clustered units", () => {
+    expect(scopeTarget(["ts:app/src/orders.ts"], index)).toEqual({ enabled: true, reason: null });
   });
 });
