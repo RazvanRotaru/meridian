@@ -13,6 +13,7 @@ import { memo, useEffect, useMemo, useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { checkStateOf, fileViewState, type ReviewFileRow } from "../../derive/reviewFiles";
 import type { ReviewComment, ReviewTick } from "../../state/reviewTicksPref";
+import { useActiveChangeGroup } from "./ChangeGroupStrip";
 import { CommentButton, CommentComposer, CommentList } from "./ReviewComments";
 import { UnitRow } from "./ReviewUnitRow";
 import { basename, CARET, MONO, NO_FOCUS_RING, SECTION_COUNT, SECTION_HEAD, SECTION_TITLE, TICK_BTN, TICK_COLOR, TICK_GLYPH, type CommentTarget } from "./reviewPanelKit";
@@ -25,12 +26,21 @@ type DraftsByRow = ReadonlyMap<string, ReviewComment[]>;
 const rowKey = (path: string, nodeId: string | null): string => nodeId ?? `file:${path}`;
 
 function ReviewFilesSectionImpl() {
-  const files = useBlueprint((state) => state.reviewFiles);
+  const allFiles = useBlueprint((state) => state.reviewFiles);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
   const comments = useBlueprint((state) => state.reviewComments);
+  const activeGroup = useActiveChangeGroup();
   const [open, setOpen] = useState(true);
   const [composer, setComposer] = useState<CommentTarget | null>(null);
+  // An isolated change group scopes the checklist to its own files — the same lens the graph shows.
+  const files = useMemo(() => {
+    if (activeGroup === null) {
+      return allFiles;
+    }
+    const member = new Set(activeGroup.files);
+    return allFiles.filter((file) => member.has(file.path));
+  }, [allFiles, activeGroup]);
   const drafts: DraftsByRow = useMemo(() => {
     const map = new Map<string, ReviewComment[]>();
     for (const comment of comments) {

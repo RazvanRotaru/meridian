@@ -22,3 +22,4 @@ export * from "./link";
 export * from "./review";
 export * from "./affected-nodes";
 export * from "./affected-flows";
+export * from "./change-groups";

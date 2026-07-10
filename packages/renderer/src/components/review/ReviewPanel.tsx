@@ -11,6 +11,7 @@ import { memo } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { fileViewState } from "../../derive/reviewFiles";
 import type { ReviewData } from "../../derive/reviewData";
+import { ChangeGroupStrip } from "./ChangeGroupStrip";
 import { ReviewFilesSection } from "./ReviewFilesSection";
 import { ReviewFlowsSection } from "./ReviewFlowsSection";
 import { SubmitReviewFooter } from "./ReviewComments";
@@ -28,6 +29,7 @@ function ReviewPanelImpl() {
   return (
     <div style={PANEL}>
       <Header review={review} />
+      <ChangeGroupStrip />
       <div style={SCROLL}>
         <ReviewFilesSection />
         <ReviewFlowsSection />

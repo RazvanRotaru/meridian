@@ -11,6 +11,7 @@
 import { memo, useMemo, useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { tickStateOf, type AffectedFlowRow, type ReviewData } from "../../derive/reviewData";
+import { useActiveChangeGroup } from "./ChangeGroupStrip";
 import { FlowStepTree } from "./FlowStepTree";
 import { basename, CARET, EMPTY_NOTE, MONO, NO_FOCUS_RING, SECTION_COUNT, SECTION_HEAD, SECTION_TITLE, TEST_CHIP, TICK_BTN, TICK_COLOR, TICK_GLYPH } from "./reviewPanelKit";
 import type { ReviewTick } from "../../state/reviewTicksPref";
@@ -22,26 +23,41 @@ function ReviewFlowsSectionImpl() {
   const ticks = useBlueprint((state) => state.reviewTicks);
   const affectedIds = useBlueprint((state) => state.reviewAffectedIds);
   const index = useBlueprint((state) => state.index);
+  const reviewGroups = useBlueprint((state) => state.reviewGroups);
+  const activeGroup = useActiveChangeGroup();
   const [open, setOpen] = useState(true);
+  // An isolated change group scopes the list to its own flows; a flow crossing groups appears in
+  // every group it touches, marked with the "spans groups" chip.
+  const rows = useMemo(() => {
+    if (!review || activeGroup === null) {
+      return review?.rows ?? [];
+    }
+    const member = new Set(activeGroup.flowIds);
+    return review.rows.filter((row) => member.has(row.flow.flowId));
+  }, [review, activeGroup]);
+  const crossGroup = useMemo(() => new Set(reviewGroups?.crossGroupFlowIds ?? []), [reviewGroups]);
   if (!review) {
     return null;
   }
-  const done = review.rows.filter((row) => tickStateOf(row, ticks) === "done").length;
+  const done = rows.filter((row) => tickStateOf(row, ticks) === "done").length;
   return (
     <section style={SECTION}>
       <button type="button" style={SECTION_HEAD} onClick={() => setOpen((value) => !value)}>
         <span style={CARET}>{open ? "▾" : "▸"}</span>
         <span style={SECTION_TITLE}>Logic flows</span>
-        <span style={SECTION_COUNT}>{done}/{review.rows.length}</span>
+        <span style={SECTION_COUNT}>{done}/{rows.length}</span>
       </button>
       {open && review.rows.length === 0 && (
         // The analysis ran and found nothing — say so, or its absence reads as a silent failure.
         <div style={EMPTY_NOTE}>No logic flows touch this change.</div>
       )}
+      {open && review.rows.length > 0 && rows.length === 0 && (
+        <div style={EMPTY_NOTE}>No flows in this group.</div>
+      )}
       {open && (
         <>
-          <FlowGroup title="Changed" hint="the flow's own code was edited" rows={review.rows.filter((r) => r.group === "changed")} review={review} affectedIds={affectedIds} index={index} ticks={ticks} />
-          <FlowGroup title="Impacted" hint="calls into changed code" rows={review.rows.filter((r) => r.group === "impacted")} review={review} affectedIds={affectedIds} index={index} ticks={ticks} />
+          <FlowGroup title="Changed" hint="the flow's own code was edited" rows={rows.filter((r) => r.group === "changed")} review={review} affectedIds={affectedIds} index={index} ticks={ticks} crossGroup={crossGroup} />
+          <FlowGroup title="Impacted" hint="calls into changed code" rows={rows.filter((r) => r.group === "impacted")} review={review} affectedIds={affectedIds} index={index} ticks={ticks} crossGroup={crossGroup} />
         </>
       )}
     </section>
@@ -56,6 +72,7 @@ function FlowGroup(props: {
   affectedIds: ReadonlySet<string>;
   index: GraphIndex;
   ticks: Record<string, ReviewTick>;
+  crossGroup: ReadonlySet<string>;
 }) {
   if (props.rows.length === 0) {
     return null;
@@ -68,7 +85,7 @@ function FlowGroup(props: {
         <span style={GROUP_HINT}>{props.hint}</span>
       </div>
       {props.rows.map((row) => (
-        <FlowRow key={row.flow.flowId} row={row} review={props.review} affectedIds={props.affectedIds} index={props.index} ticks={props.ticks} />
+        <FlowRow key={row.flow.flowId} row={row} review={props.review} affectedIds={props.affectedIds} index={props.index} ticks={props.ticks} spansGroups={props.crossGroup.has(row.flow.flowId)} />
       ))}
     </div>
   );
@@ -80,8 +97,9 @@ function FlowRow(props: {
   affectedIds: ReadonlySet<string>;
   index: GraphIndex;
   ticks: Record<string, ReviewTick>;
+  spansGroups: boolean;
 }) {
-  const { row, review, affectedIds, index, ticks } = props;
+  const { row, review, affectedIds, index, ticks, spansGroups } = props;
   const [open, setOpen] = useState(false);
   const { toggleReviewTick, setReviewLit, selectReviewNode } = useBlueprintActions();
   const tick = tickStateOf(row, ticks);
@@ -110,6 +128,7 @@ function FlowRow(props: {
           {/* A flow whose OWN block overlaps a hunk is on the graph — the node-level "edited" mark that
               distinguishes a directly-changed flow from one merely sharing a touched file. */}
           {affectedIds.has(row.flow.flowId) && <span style={EDITED_CHIP} title="this block is on the graph">edited</span>}
+          {spansGroups && <span style={SPANS_CHIP} title="this flow touches multiple change groups">spans groups</span>}
           {row.isTest && <span style={TEST_CHIP}>test</span>}
           <span style={ROW_LOC}>{row.file ? `${basename(row.file)}:${row.startLine}` : "—"}</span>
         </button>
@@ -167,6 +186,7 @@ const ROW_MAIN: React.CSSProperties = { flex: 1, minWidth: 0, display: "flex", a
 const ROW_NAME: React.CSSProperties = { flex: 1, minWidth: 0, fontSize: 12.5, color: "#E6EDF3", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
 const ROW_LOC: React.CSSProperties = { fontFamily: MONO, fontSize: 10, color: "#5A6472", flexShrink: 0 };
 const EDITED_CHIP: React.CSSProperties = { fontSize: 9, fontWeight: 700, color: "#6BE38A", border: "1px solid #2E5A3A", borderRadius: 4, padding: "0 4px", flexShrink: 0, textTransform: "uppercase", letterSpacing: 0.3 };
+const SPANS_CHIP: React.CSSProperties = { fontSize: 9, fontWeight: 700, color: "#E6C07A", border: "1px solid #5A4A22", borderRadius: 4, padding: "0 4px", flexShrink: 0 };
 const HITS: React.CSSProperties = { display: "flex", flexWrap: "wrap", gap: 4, padding: "0 6px 4px 26px" };
 const HIT_CHIP: React.CSSProperties = { fontSize: 9.5, color: "#E6C07A", background: "rgba(210,153,34,0.1)", border: "1px solid #5A4A22", borderRadius: 4, padding: "0 5px", fontFamily: MONO };
 const TREE_WRAP: React.CSSProperties = { padding: "4px 6px 8px 22px" };
