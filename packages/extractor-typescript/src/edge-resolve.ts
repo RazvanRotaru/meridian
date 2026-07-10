@@ -81,7 +81,75 @@ export function resolveTarget(callee: Node, index: ResolutionIndex, resolver?: C
  * boundary-crossing relative path.
  */
 function pendingCrossPackageRef(callee: Node, original: TsSymbol | undefined, resolver: CrossPackageResolver): PendingRef | null {
-  return namespaceMemberRef(callee, resolver) ?? classMemberRef(callee, resolver) ?? bindingRef(original, resolver);
+  return (
+    namespaceMemberRef(callee, resolver) ??
+    classMemberRef(callee, resolver) ??
+    receiverTypedRef(callee, resolver) ??
+    bindingRef(original, resolver)
+  );
+}
+
+/**
+ * `receiver.method()` where `receiver`'s type is a class/interface imported from a sibling
+ * package — the dominant cross-package member-call shape (`const x = new Sibling(); x.m()` or a
+ * parameter typed by a sibling interface). The receiver's type is read from LOCAL syntax (a
+ * `new X()` initializer or a type annotation), so the sibling's source is never loaded; the
+ * join keys the call under `TypeName.method` against that package's member table.
+ */
+function receiverTypedRef(callee: Node, resolver: CrossPackageResolver): PendingRef | null {
+  if (!Node.isPropertyAccessExpression(callee)) {
+    return null;
+  }
+  const typeIdentifier = receiverTypeIdentifier(callee.getExpression());
+  if (typeIdentifier === null) {
+    return null;
+  }
+  const binding = namedImportBinding(typeIdentifier);
+  if (binding === null) {
+    return null;
+  }
+  return pendingFor(binding.specifier, `${binding.importedName}.${callee.getNameNode().getText()}`, binding.fromFile, resolver);
+}
+
+/** The identifier naming a receiver's class/interface, from a `new X()` or a type annotation. */
+function receiverTypeIdentifier(receiver: Node): Node | null {
+  const fromNew = newExpressionClass(receiver);
+  if (fromNew !== null) {
+    return fromNew;
+  }
+  if (!Node.isIdentifier(receiver)) {
+    return null;
+  }
+  const declaration = receiver.getSymbol()?.getDeclarations().find(isTypedBinding);
+  if (declaration === undefined) {
+    return null;
+  }
+  return annotatedTypeIdentifier(declaration) ?? newExpressionClass(initializerOf(declaration));
+}
+
+function newExpressionClass(node: Node | undefined): Node | null {
+  if (node && Node.isNewExpression(node)) {
+    const expression = node.getExpression();
+    return Node.isIdentifier(expression) ? expression : null;
+  }
+  return null;
+}
+
+function isTypedBinding(node: Node): boolean {
+  return Node.isVariableDeclaration(node) || Node.isParameterDeclaration(node) || Node.isPropertyDeclaration(node);
+}
+
+function annotatedTypeIdentifier(declaration: Node): Node | null {
+  const typeNode = (declaration as { getTypeNode?(): Node | undefined }).getTypeNode?.();
+  if (typeNode && Node.isTypeReference(typeNode)) {
+    const name = typeNode.getTypeName();
+    return Node.isIdentifier(name) ? name : null;
+  }
+  return null;
+}
+
+function initializerOf(declaration: Node): Node | undefined {
+  return (declaration as { getInitializer?(): Node | undefined }).getInitializer?.();
 }
 
 /**

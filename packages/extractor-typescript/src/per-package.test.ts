@@ -142,7 +142,8 @@ describe("extractPerPackage cross-package resolution edge cases", () => {
     w(
       "packages/dep/src/index.ts",
       "export function provide(): number {\n  return 1;\n}\n" +
-        "export class Registry {\n  static register(): number {\n    return 3;\n  }\n}\n",
+        "export class Registry {\n  static register(): number {\n    return 3;\n  }\n  handle(): number {\n    return 4;\n  }\n}\n" +
+        "export interface Provider {\n  get(): number;\n}\n",
     );
     w("packages/dep/src/deep.ts", "export function deep(): number {\n  return 2;\n}\n");
     // A node_modules copy so a bare `@fix/dep` specifier resolves there (external) in a unit
@@ -176,6 +177,18 @@ describe("extractPerPackage cross-package resolution edge cases", () => {
       "packages/member/src/index.ts",
       'import { Registry } from "@fix/dep";\nexport function useMember(): number {\n  return Registry.register();\n}\n',
     );
+    // Instance-method call through a `const x = new SiblingClass()` local.
+    w("packages/inst/package.json", JSON.stringify({ name: "@fix/inst" }));
+    w(
+      "packages/inst/src/index.ts",
+      'import { Registry } from "@fix/dep";\nexport function useInstance(): number {\n  const r = new Registry();\n  return r.handle();\n}\n',
+    );
+    // Method call on a parameter typed by a cross-package interface.
+    w("packages/iface/package.json", JSON.stringify({ name: "@fix/iface" }));
+    w(
+      "packages/iface/src/index.ts",
+      'import type { Provider } from "@fix/dep";\nexport function useIface(p: Provider): number {\n  return p.get();\n}\n',
+    );
     edges = extractPerPackage({ root: edgeRoot }).edges;
   });
 
@@ -206,5 +219,15 @@ describe("extractPerPackage cross-package resolution edge cases", () => {
     expect(resolved("calls", "ts:packages/member/src/index.ts#useMember", "ts:packages/dep/src/index.ts#Registry.register")).toBe(
       true,
     );
+  });
+
+  it("resolves an instance-method call through a `new SiblingClass()` local", () => {
+    expect(resolved("calls", "ts:packages/inst/src/index.ts#useInstance", "ts:packages/dep/src/index.ts#Registry.handle")).toBe(
+      true,
+    );
+  });
+
+  it("resolves a method call on a parameter typed by a cross-package interface", () => {
+    expect(resolved("calls", "ts:packages/iface/src/index.ts#useIface", "ts:packages/dep/src/index.ts#Provider.get")).toBe(true);
   });
 });
