@@ -72,17 +72,27 @@ const CODE_BTN_WIDTH = pillWidth("</>", 9, { padX: 4 });
 const DELTA_CHIP_WIDTH = pillWidth("Δ 99", CHIP_FONT, { padX: 4, letterSpacing: CHIP_LETTER_SPACING });
 const TRAILING_BADGES = HEADER_GAP + DELTA_CHIP_WIDTH + HEADER_GAP + CODE_BTN_WIDTH;
 
+// Compaction options mirror buildElkGraph.ts (the call surface), where they were proven: NETWORK_
+// SIMPLEX placement + EDGE_LENGTH post-compaction close the half-empty frame interiors that plain
+// layering left behind, and 64px layers (was 120) stop long-span dummy nodes from inflating the
+// canvas. The aspect-ratio hint packs disconnected components toward a landscape viewport instead
+// of one tall column. (knowledge/map-readability-plan.md § P3 has the before/after evidence.)
 const ROOT_OPTIONS: Record<string, string> = {
   "elk.algorithm": "layered",
   "elk.direction": "RIGHT",
   "elk.hierarchyHandling": "INCLUDE_CHILDREN",
   "elk.spacing.nodeNode": "44",
-  "elk.layered.spacing.nodeNodeBetweenLayers": "120",
+  "elk.layered.spacing.nodeNodeBetweenLayers": "64",
   "elk.spacing.edgeNode": "28",
+  "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
+  "elk.layered.compaction.postCompaction.strategy": "EDGE_LENGTH",
+  "elk.aspectRatio": "1.6",
 };
 
 // Top padding leaves room for an expanded group's title bar; React Flow draws nothing there itself.
-const CONTAINER_OPTIONS: Record<string, string> = { "elk.padding": "[top=44,left=18,bottom=18,right=18]" };
+// Left/right at 30 reserve the GUTTER the routed-edge rail rides (edgeRouting.ts, rail at +12):
+// cards start 18px clear of the bus, so a wire on the rail never touches a card.
+const CONTAINER_OPTIONS: Record<string, string> = { "elk.padding": "[top=44,left=30,bottom=18,right=30]" };
 
 const adapter: ElkNestAdapter<VisibleModuleNode> = {
   id: (node) => node.id,

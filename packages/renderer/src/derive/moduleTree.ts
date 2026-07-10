@@ -73,7 +73,7 @@ export function deriveModuleTree(
   // toward its nearest npm package) so nested packages never double-count — main's dedicated
   // package-overview fold, kept through the expandable walk.
   const overviewFold = effectiveFocus === null ? foldById(index) : new Map<string, ModulePackageData>();
-  const nodes = skeleton.map((entry) => finalizeModuleNode(entry, index, graph, lifted, walked.stepData, overviewFold));
+  const nodes = skeleton.map((entry) => finalizeModuleNode(entry, index, graph, lifted, walked.stepData, overviewFold, hiddenIds));
   const kinds = kindsOf(skeleton);
   const ghosts = ghostLevel(blockDeps, walked, visibleIds, index, kinds, hiddenIds);
   const isDepAnchor = (id: string) => isDepAnchorKind(kinds.get(id));

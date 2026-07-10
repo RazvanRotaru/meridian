@@ -58,6 +58,7 @@ function freshStore(extra?: Partial<StoreDependencies>) {
     sourceUrl: null,
     prsUrl: "/api/prs?id=artifact-1",
     prFilesUrl: "/api/prs/files?id=artifact-1",
+    prReviewUrl: "/api/prs/review?id=artifact-1",
     ...extra,
   });
 }

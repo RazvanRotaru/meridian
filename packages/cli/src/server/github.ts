@@ -16,6 +16,8 @@ import type { GitHubUser, PrFile, PrSummary, RepoSummary } from "./github-parse"
 import { interpretTokenResponse, parseDeviceCodeResponse, tokenRedeemBody } from "./github-auth";
 import type { DeviceCode, TokenPoll } from "./github-auth";
 import { API_ROOT, getApi, getApiOrNull, postForm, repoApi } from "./github-http";
+import { submitPullRequestReviewWithFetch } from "./github-review";
+import type { SubmitReviewRequest, SubmitReviewResult } from "./github-review";
 
 const DEVICE_CODE_URL = "https://github.com/login/device/code";
 const TOKEN_URL = "https://github.com/login/oauth/access_token";
@@ -35,6 +37,7 @@ export interface GitHubClient {
   listOwnRepos(token: string): Promise<RepoSummary[]>;
   listPullRequests(request: PullRequestsRequest): Promise<PullRequestsResult>;
   fetchPullRequestFiles(request: PullRequestFilesRequest): Promise<PullRequestFilesResult>;
+  submitPullRequestReview(request: SubmitReviewRequest): Promise<SubmitReviewResult>;
 }
 
 export interface GitHubClientConfig {
@@ -77,6 +80,7 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
     listOwnRepos: (token) => listOwnRepos(fetchImpl, token),
     listPullRequests: (request) => listPullRequestsWithFetch(fetchImpl, request),
     fetchPullRequestFiles: (request) => fetchPullRequestFilesWithFetch(fetchImpl, request),
+    submitPullRequestReview: (request) => submitPullRequestReviewWithFetch(fetchImpl, request),
   };
 }
 
