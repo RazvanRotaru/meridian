@@ -7,9 +7,10 @@
 
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { Edge, Node } from "@xyflow/react";
-import { changedRangesFromExtensions, computeAffectedNodes, computeCoverage, unmappedChangedFiles } from "@meridian/core";
+import { changedRangesFromExtensions, computeAffectedNodes, computeChangeGroups, computeCoverage, unmappedChangedFiles } from "@meridian/core";
 import type {
   ChangedFile,
+  ChangeGroupsResult,
   CoverageReport,
   FlowPath,
   FlowStep,
@@ -253,6 +254,13 @@ export interface BlueprintState {
   reviewLitNodeIds: Set<string> | null;
   /** The selected review block/flow id; drives the graph selection ring and the panel row highlight. */
   reviewSelectedId: string | null;
+  /** The PR's disjoint change groups (one per weakly-connected component of the changed modules),
+   * computed once at review time; null outside a review. Drives the CHANGE GROUPS strip. */
+  reviewGroups: ChangeGroupsResult | null;
+  /** The isolated group's id, or null for "All groups" (the full seed set). Session-only, never URL-synced. */
+  reviewActiveGroupId: string | null;
+  /** Snapshot of the full seed list at review time — the "All groups" restore target. */
+  reviewAllSeedIds: string[];
   rfNodes: BlueprintNode[];
   rfEdges: BlueprintEdge[];
   layoutStatus: LayoutStatus;
@@ -376,6 +384,9 @@ export interface BlueprintState {
   minimalRelayout(): Promise<void>;
   setReviewLit(ids: Set<string> | null): void;
   selectReviewNode(id: string | null): void;
+  /** Isolate one change group on the Map (null = "All groups"): re-seed the minimal overlay with only
+   * that group's module ids and relayout. A no-op outside a review or when already active. */
+  selectReviewGroup(groupId: string | null): void;
   toggleReviewTick(flowId: string): void;
   resetReviewTicks(): void;
   setViewMode(mode: ViewMode): void;
@@ -560,6 +571,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewTicks: review ? readReviewProgress(review.context.reviewKey).ticks : {},
     reviewLitNodeIds: null,
     reviewSelectedId: null,
+    reviewGroups: null,
+    reviewActiveGroupId: null,
+    reviewAllSeedIds: [],
     rfNodes: [],
     rfEdges: [],
     layoutStatus: "idle",
@@ -1188,7 +1202,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // Snapshot the map's current on-screen card positions ONCE, at build — the overlay mirrors them,
       // and re-capturing on curation would let already-placed cards jump. A selection-built graph is not
       // a PR review, so drop any stale prReviewed marker (else the PR-review card would show it).
-      set({ minimalSeedIds: origin, minimalMemberIds: origin, minimalBasePositions: captureMapPositions(get().moduleRfNodes), minimalArrange: false, prReviewed: null });
+      set({ minimalSeedIds: origin, minimalMemberIds: origin, minimalBasePositions: captureMapPositions(get().moduleRfNodes), minimalArrange: false, prReviewed: null, reviewGroups: null, reviewActiveGroupId: null, reviewAllSeedIds: [] });
       void get().minimalRelayout();
     },
 
@@ -1283,6 +1297,34 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Select a review block (from the graph or the panel); also lights it so the coupling reads as one.
     selectReviewNode(id) {
       set({ reviewSelectedId: id, reviewLitNodeIds: id === null ? null : new Set([id]) });
+    },
+
+    // Isolate one change group on the Map: re-seed the minimal overlay with ONLY that group's module
+    // ids (null restores the full review seed set), then relayout through the shared minimal machinery
+    // — a pure seed/member swap, no dimming and no bespoke graph. Mirrors applyPrReviewToMap's reset
+    // of the minimal fields exactly so the overlay rebuilds identically.
+    selectReviewGroup(groupId) {
+      const { review, reviewGroups, reviewActiveGroupId, reviewAllSeedIds } = get();
+      if (!review || !reviewGroups || groupId === reviewActiveGroupId) {
+        return;
+      }
+      // An unknown id falls back to "All" — a stale group id can never strand the reader on an empty Map.
+      const group = groupId === null ? null : reviewGroups.groups.find((candidate) => candidate.id === groupId) ?? null;
+      const nextSeeds = group ? group.moduleIds : reviewAllSeedIds;
+      invalidateMinimalLayout();
+      set({
+        reviewActiveGroupId: group ? group.id : null,
+        reviewSelectedId: null,
+        reviewLitNodeIds: null,
+        minimalSeedIds: nextSeeds,
+        minimalMemberIds: [...nextSeeds],
+        minimalBasePositions: {},
+        minimalArrange: false,
+        minimalRfNodes: [],
+        minimalRfEdges: [],
+        minimalLayoutStatus: nextSeeds.length > 0 ? "laying-out" : "idle",
+      });
+      void get().minimalRelayout();
     },
 
     // Toggle a flow's reviewed tick and persist the whole record under the reviewKey.
@@ -1696,6 +1738,10 @@ function applyPrReviewToMap(
   // Seed the minimal graph from the changed FILES (seeds must be module ids).
   const matchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
   const seeds = [...new Set(matchedFiles.map((match) => match.moduleId))].sort();
+  // Partition the change into disjoint groups (one per weakly-connected component of the changed
+  // modules), sharing the SAME flow substrate the review rows already read. Stored so the rail can
+  // offer per-group isolation; ignored (strip hidden) when the change is a single connected component.
+  const changeGroups = computeChangeGroups(artifact.nodes, artifact.edges, context.changedFiles, review.flows);
   // ONE source of truth for the line-level changedSince channel (the code panel's </> diff): the
   // artifact's OWN stamp when it carries one — the prepared PR-head artifact does, computed by the
   // extract pipeline from the real merge-base git diff, keyed by the extractor's own location.file
@@ -1730,6 +1776,9 @@ function applyPrReviewToMap(
     reviewUnmapped: unmappedChangedFiles(affected, context.changedFiles),
     reviewLitNodeIds: null,
     reviewSelectedId: null,
+    reviewGroups: changeGroups,
+    reviewActiveGroupId: null,
+    reviewAllSeedIds: seeds,
     viewMode: "modules",
     moduleFocus: null,
     moduleSelected: new Set<string>(),
