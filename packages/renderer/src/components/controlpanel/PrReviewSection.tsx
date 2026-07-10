@@ -5,7 +5,7 @@
  * files — and the +/- counts — are available to the card.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { PRS_UNAVAILABLE_ERROR, type PrSummary } from "../../state/prTypes";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { CountBadge, hexAlpha, TOKENS } from "./panelKit";
@@ -15,13 +15,17 @@ import { PrReviewCard } from "./PrReviewCard";
 const ACTIVE_HUE = "#388BFD";
 
 export function PrReviewSection() {
-  const [expanded, setExpanded] = useState(false);
   const open = useBlueprint((state) => state.prsList.open);
   const hasMore = useBlueprint((state) => state.prsHasMore.open);
   const loading = useBlueprint((state) => state.prsLoading);
   const error = useBlueprint((state) => state.prsError);
   const selected = useBlueprint((state) => state.prSelected);
+  const prReviewed = useBlueprint((state) => state.prReviewed);
   const { loadPrs, selectPr, reviewPrInGraph, setViewMode } = useBlueprintActions();
+
+  // The inline card only makes sense mid-review: expand it (always) while a specific PR is being
+  // reviewed, and keep it locked-collapsed on the Map — you pick a PR from the full page, not here.
+  const expanded = prReviewed !== null;
 
   const unavailable = error === PRS_UNAVAILABLE_ERROR && open === null;
 
@@ -61,9 +65,8 @@ export function PrReviewSection() {
         <button
           type="button"
           style={maxButtonStyle(expanded)}
-          title={expanded ? "Collapse PR review" : "Expand PR review"}
-          onClick={() => setExpanded((value) => !value)}
-          aria-expanded={expanded}
+          title="Open the full Pull requests page"
+          onClick={() => setViewMode("prs")}
         >
           <MaximizeIcon size={14} />
         </button>
