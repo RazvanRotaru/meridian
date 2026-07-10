@@ -1,13 +1,13 @@
 /**
  * Paint parity with the Map lens: every wire carrying the map's edge-data contract goes through the
  * Map's own suppress→emphasize chain (so relationship colours match the Map by construction), a pair's
- * redundant import wire is suppressed exactly as on the Map, nested declarations join the same
- * emphasis pass, and a ghost-tier card dims under it.
+ * redundant import wire is suppressed exactly as on the Map, and nested declarations join the same
+ * emphasis pass.
  */
 
 import { describe, expect, it } from "vitest";
 import type { Edge, Node } from "@xyflow/react";
-import { GHOST_OPACITY, paintMinimalLevel } from "./paintMinimal";
+import { paintMinimalLevel } from "./paintMinimal";
 import { IMPORT_CROSS, IMPORT_SIBLING, REL_COLORS } from "../theme/mapPalette";
 
 const NO_SELECTION: ReadonlySet<string> = new Set();
@@ -99,10 +99,3 @@ describe("paintMinimalLevel — nested declarations join the Map's emphasis, not
   });
 });
 
-describe("paintMinimalLevel — the ghost-tier dim still layers under the paint", () => {
-  it("dims a ghost-tier file to GHOST_OPACITY when nothing is selected", () => {
-    const { nodes } = paint([fileNode("ts:a.ts", "ghost"), fileNode("ts:b.ts")], [importEdge("ts:a.ts", "ts:b.ts", false)]);
-    expect(nodes.find((node) => node.id === "ts:a.ts")?.style?.opacity).toBe(GHOST_OPACITY);
-    expect(nodes.find((node) => node.id === "ts:b.ts")?.style?.opacity).toBeUndefined();
-  });
-});

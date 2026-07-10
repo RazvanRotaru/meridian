@@ -22,7 +22,7 @@ import { type ModuleGraph } from "./moduleGraph";
 import { collapseChain } from "./moduleLevel";
 import { containmentChildren, frontierRoots, subtreeFileCount } from "./moduleFrontier";
 import { BLOCK_KINDS, type BlockDeps, UNIT_CARD_KINDS } from "./blockDeps";
-import { ghostDepWires, type GhostEmission } from "./ghostDeps";
+import { ghostDepWires, withoutHidden } from "./ghostDeps";
 import { groupGhostEmission } from "./groupGhosts";
 import { liftEdges } from "./liftEdges";
 import { createCodeWalk, depWireEdges, flowChainEdges, stepCallEdges, visitCode, type CodeWalk, type Skeleton } from "./codeWalk";
@@ -180,16 +180,6 @@ function ghostLevel(
     ghost: true,
   }));
   return { nodes, edges };
-}
-
-/** Drop hidden ghosts and every wire touching one (a wire into hidden code has nothing to say). */
-function withoutHidden(emission: GhostEmission, hiddenIds: ReadonlySet<string>): GhostEmission {
-  if (hiddenIds.size === 0) {
-    return emission;
-  }
-  const ghosts = new Map([...emission.ghosts].filter(([id]) => !hiddenIds.has(id)));
-  const wires = emission.wires.filter((wire) => !hiddenIds.has(wire.source) && !hiddenIds.has(wire.target));
-  return { ghosts, wires };
 }
 
 function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>, flows: LogicFlows, hiddenIds: ReadonlySet<string>): CodeWalk {

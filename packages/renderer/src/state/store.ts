@@ -1255,20 +1255,23 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ minimalSeedIds: [], minimalMemberIds: [], minimalBasePositions: {}, minimalArrange: false, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
     },
 
-    // Promote a GHOST into the working member set (the ghost "+" click). The ghost ring is then
-    // recomputed from the larger member set, so promoting reaches one hop further. A no-op when the id
-    // is already a member.
+    // Promote a GHOST satellite into the working member set (the ghost "+" click). A satellite is a
+    // SYMBOL (or a folder group-ghost) — members are file/package boxes — so the id resolves to its
+    // home box first. The ring is then recomputed from the larger member set, so promoting reaches
+    // further. A no-op when the resolved box is already a member (or the id is unknown).
     promoteMinimalGhost(id) {
+      const member = ghostMemberId(get().index, id);
       const { minimalMemberIds } = get();
-      if (minimalMemberIds.includes(id)) {
+      if (member === null || minimalMemberIds.includes(member)) {
         return;
       }
-      set({ minimalMemberIds: [...minimalMemberIds, id] });
+      set({ minimalMemberIds: [...minimalMemberIds, member] });
       void get().minimalRelayout();
     },
 
-    // Remove a MEMBER (the members-panel ✕); it reappears as a ghost iff still 1-hop of a remaining
-    // member. Refuses to empty the set — the last member must stay so the overlay never goes blank.
+    // Remove a MEMBER (the members-panel ✕); it reappears as a satellite iff a remaining member still
+    // couples to its code. Refuses to empty the set — the last member must stay so the overlay never
+    // goes blank.
     demoteMinimalMember(id) {
       const { minimalMemberIds } = get();
       if (!minimalMemberIds.includes(id) || minimalMemberIds.length <= 1) {
@@ -1300,24 +1303,25 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().minimalRelayout();
     },
 
-    // Lay out the overlay's curated subgraph (members + their on-map ghost ring) through the shared
-    // minimal-graph pass, behind its own stale-seq guard. `minimalArrange` picks the fresh ELK layout
-    // over the map-mirror.
+    // Lay out the overlay's curated subgraph (members + their ghost-satellite ring) through the
+    // shared minimal-graph pass, behind its own stale-seq guard. `minimalArrange` picks the fresh
+    // ELK layout over the map-mirror; hidden tests drop out of the ring like on the Map beneath.
     async minimalRelayout() {
-      const { index, minimalSeedIds, minimalMemberIds, minimalBasePositions, minimalArrange, moduleExpanded, artifact } = get();
+      const { index, minimalSeedIds, minimalMemberIds, minimalBasePositions, minimalArrange, moduleExpanded, artifact, showTests } = get();
       if (minimalMemberIds.length === 0) {
         return;
       }
       moduleGraph ??= buildModuleGraph(index);
       const deps = (blockDeps ??= buildBlockDeps(index));
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const hidden = showTests ? EMPTY_HIDDEN_IDS : index.testIds;
       const sequence = ++minimalLayoutSeq;
       set({ minimalLayoutStatus: "laying-out" });
       const layout = await deriveMinimalGraphLayout(index, moduleGraph, new Set(minimalMemberIds), new Set(minimalSeedIds), minimalBasePositions, {
         moduleExpanded,
         blockDeps: deps,
         flows,
-      }, minimalArrange);
+      }, minimalArrange, hidden);
       if (minimalLayoutSeq !== sequence) {
         return; // a newer build/promote/demote/reset/re-arrange superseded this one.
       }
@@ -1624,6 +1628,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       if (viewMode === "modules") {
         void get().moduleRelayout();
+        // An open minimal overlay derives its ghost-satellite ring with the same hidden set, so the
+        // toggle refreshes it too (else stale test satellites linger over the recomputed Map).
+        if (get().minimalSeedIds.length > 0) {
+          void get().minimalRelayout();
+        }
       }
     },
 
@@ -2022,6 +2031,26 @@ function sameMembers(a: readonly string[], b: readonly string[]): boolean {
   }
   const set = new Set(a);
   return b.every((id) => set.has(id));
+}
+
+/** The member a promoted ghost satellite becomes: a folder group-ghost joins as that folder, a
+ * symbol satellite as its home FILE (nearest module ancestor-or-self) — members are always the
+ * file/package boxes the overlay draws, never bare symbols. Null when the index can't place the id. */
+function ghostMemberId(index: GraphIndex, ghostId: string): string | null {
+  const kind = index.nodesById.get(ghostId)?.kind;
+  if (kind === undefined) {
+    return null;
+  }
+  if (kind === "module" || kind === "package" || kind === "directory") {
+    return ghostId;
+  }
+  const ancestors = index.ancestorsOf(ghostId);
+  for (let i = ancestors.length - 1; i >= 0; i -= 1) {
+    if (ancestors[i].kind === "module") {
+      return ancestors[i].id;
+    }
+  }
+  return null;
 }
 
 function withToggled(expanded: Set<string>, nodeId: string): Set<string> {

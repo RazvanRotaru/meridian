@@ -1,9 +1,9 @@
 /**
- * THE minimal-graph feature entry: build the curated MEMBER/GHOST subgraph from the working member set
- * (+ its on-map 1-hop ghost ring), then lay it out by MIRRORING the Module map — boxes that were on the
- * map keep their captured positions (`basePositions`), the rest are placed relative to them (see
- * `minimalSubgraphLayout`). `originIds` (the raw selection) drives the seed vs persistent tier split.
- * Pure of store concerns.
+ * THE minimal-graph feature entry: build the curated MEMBER subgraph (+ its ghost-satellite ring, the
+ * Map's own projection), then lay it out by MIRRORING the Module map — member boxes that were on the
+ * map keep their captured positions (`basePositions`), the rest are placed relative to them, and the
+ * satellites band outside the core (see `minimalSubgraphLayout`). `originIds` (the raw selection)
+ * drives the seed vs persistent tier split. Pure of store concerns.
  */
 
 import type { LogicFlows } from "@meridian/core";
@@ -36,12 +36,15 @@ export async function deriveMinimalGraphLayout(
   basePositions: Record<string, PlacedRect>,
   code: MinimalCodeInputs,
   arrange = false,
+  hiddenIds: ReadonlySet<string> = new Set<string>(),
 ): Promise<MinimalGraphLayout> {
-  const onMapIds = new Set(Object.keys(basePositions));
-  const spec = buildMinimalSubgraph(index, moduleGraph, memberIds, originIds, onMapIds, {
-    expanded: code.moduleExpanded,
-    blockDeps: code.blockDeps,
-    flows: code.flows,
-  });
+  const spec = buildMinimalSubgraph(
+    index,
+    moduleGraph,
+    memberIds,
+    originIds,
+    { expanded: code.moduleExpanded, blockDeps: code.blockDeps, flows: code.flows },
+    hiddenIds,
+  );
   return layoutMinimalSubgraph(spec, basePositions, arrange);
 }

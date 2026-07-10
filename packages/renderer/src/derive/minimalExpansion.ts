@@ -25,12 +25,16 @@ export interface MinimalExpansion {
 }
 
 /** The file card's container facts (for the flat card's chevron) plus, when it is expanded, its
- * drawn code subtree. A collapsed or childless file yields `expansion: null`. */
+ * drawn code subtree. A collapsed or childless file yields `expansion: null`. `calls` and
+ * `expandedBlocks` surface the walk's step-call/expansion facts for the overlay's GHOST projection —
+ * the same inputs `moduleTree` feeds `ghostDepWires` from its own walk (empty while collapsed). */
 export interface FileCodeWalk {
   isContainer: boolean;
   isExpanded: boolean;
   unitCount: number;
   expansion: MinimalExpansion | null;
+  calls: ReadonlyArray<{ stepId: string; target: string }>;
+  expandedBlocks: ReadonlySet<string>;
 }
 
 const NO_IMPORT_FOLD = new Map<string, ModulePackageData>();
@@ -49,9 +53,9 @@ export function walkFileCode(
   visitCode(fileId, null, 0, { index, expanded, flows }, walk);
   const fileEntry = walk.skeleton.find((entry) => entry.id === fileId);
   if (!fileEntry) {
-    return { isContainer: false, isExpanded: false, unitCount: 0, expansion: null };
+    return { isContainer: false, isExpanded: false, unitCount: 0, expansion: null, calls: [], expandedBlocks: new Set() };
   }
-  const facts = { isContainer: fileEntry.isContainer, isExpanded: fileEntry.isExpanded, unitCount: fileEntry.childCount };
+  const facts = { isContainer: fileEntry.isContainer, isExpanded: fileEntry.isExpanded, unitCount: fileEntry.childCount, calls: walk.calls, expandedBlocks: walk.expandedBlocks };
   if (!fileEntry.isExpanded) {
     return { ...facts, expansion: null };
   }

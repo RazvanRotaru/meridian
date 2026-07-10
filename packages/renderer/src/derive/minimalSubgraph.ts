@@ -1,17 +1,18 @@
 /**
- * The minimal subgraph the overlay renders — the SELECTION EXTRACTED as a curated MEMBER/GHOST view,
- * in the existing three-tier vocabulary:
+ * The minimal subgraph the overlay renders — the SELECTION EXTRACTED as a curated MEMBER set ringed
+ * by the Map's OWN ghost satellites:
  *   - SEED       — an ORIGIN member (a card that was in the raw selection); kept verbatim, never
  *                  decomposed (a selected package stays ONE package card).
  *   - PERSISTENT — a member the reader PROMOTED from a ghost (added to the working set).
- *   - GHOST      — a 1-hop import neighbour of the CURRENT members, restricted to ids that were on the
- *                  Module map (`onMapIds`), minus the members. Dimmed; clicking one promotes it. The
- *                  ring is recomputed from the member set every build, so promoting reaches past 1 hop.
- * Members and ghosts may be FILE (module) cards or GROUP (package/dir) leaf cards — a group member is
- * a single card, not a frame of its files. Import + per-kind dep wires connect any two visible boxes
- * (file-level edges lifted to the visible frontier). File members nest in their ancestor package
- * frames (single-child chains collapse) and can expand IN PLACE into their declarations. Pure; no
- * React, no ELK.
+ *   - GHOST      — NOT a tier but the Map's ghost projection (`ghostDepWires`): every code coupling
+ *                  that LEAVES the member set charts its off-overlay end as a detached symbol
+ *                  satellite (folded to its owning unit, same-folder crowds grouped by
+ *                  `groupGhostEmission`), wired per coupling kind. The "+" on a satellite promotes
+ *                  its home file/folder; the ring recomputes from the member set every build.
+ * Members may be FILE (module) cards or GROUP (package/dir) leaf cards — a group member is a single
+ * card, not a frame of its files. Import + per-kind dep wires connect member boxes (file-level edges
+ * lifted to the member frontier). File members nest in their ancestor package frames (single-child
+ * chains collapse) and can expand IN PLACE into their declarations. Pure; no React, no ELK.
  */
 
 import type { GraphNode, LogicFlows } from "@meridian/core";
@@ -25,21 +26,24 @@ import type { ModuleCardData } from "./moduleLevel";
 import type { ModulePackageData } from "./packageOverview";
 import type { BlockDeps } from "./blockDeps";
 import { depWireEdges } from "./codeWalk";
+import { ghostDepWires, withoutHidden, type GhostData, type GhostEmission } from "./ghostDeps";
+import { groupGhostEmission } from "./groupGhosts";
 import { walkFileCode, type FileCodeWalk, type MinimalExpansion } from "./minimalExpansion";
 
 const MODULE_KIND = "module";
+const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
 
-export type MinimalTier = "seed" | "persistent" | "ghost";
+export type MinimalTier = "seed" | "persistent";
 
 export interface MinimalSubgraphNode {
   id: string;
-  kind: "group" | "file";
+  kind: "group" | "file" | "ghost";
   parentId: string | null;
-  /** Leaf cards (a file, or a group member/ghost) carry their tier; a containment FRAME leaves it null. */
+  /** Member LEAF cards (a file, or a group member) carry their tier; frames and ghosts leave it null. */
   tier: MinimalTier | null;
   /** Joined path segments when this frame is a collapsed package chain. */
   collapsedLabel?: string;
-  data: ModuleCardData | ModulePackageData;
+  data: ModuleCardData | ModulePackageData | GhostData;
 }
 
 export interface MinimalSubgraphEdge {
@@ -47,18 +51,20 @@ export interface MinimalSubgraphEdge {
   source: string;
   target: string;
   weight: number;
-  /** "import"/"dep" wires both connect two visible boxes; the paint colours each by kind. */
+  /** "import"/"dep" wires both connect two drawn boxes; the paint colours each by kind. */
   kind: "import" | "dep";
   /** import edges only: true when source and target sit in different package frames (gold-coloured). */
   crossPackage?: boolean;
   /** dep edges only: the underlying coupling kind (calls / instantiates / …) the paint colours by. */
   depKind?: string;
+  /** The far endpoint is a GHOST satellite — the layout bands it outside the member core. */
+  ghost?: boolean;
 }
 
 export interface MinimalSubgraphSpec {
   nodes: MinimalSubgraphNode[];
   edges: MinimalSubgraphEdge[];
-  /** One entry per EXPANDED visible file: its nested code subtree, for the per-file frame layout. */
+  /** One entry per EXPANDED member file: its nested code subtree, for the per-file frame layout. */
   expansions: MinimalExpansion[];
 }
 
@@ -73,58 +79,76 @@ export interface CodeContext {
 const NO_CODE: CodeContext = { expanded: new Set(), blockDeps: { edges: [] }, flows: {} };
 
 /**
- * Build the curated subgraph: the `memberIds` working set (verbatim, any kind), plus its 1-hop ghost
- * ring restricted to `onMapIds`. `originIds` (the raw selection) decides seed vs persistent tiers.
+ * Build the curated subgraph: the `memberIds` working set (verbatim, any kind), ringed by its ghost
+ * satellites. `originIds` (the raw selection) decides seed vs persistent tiers; `hiddenIds` (the
+ * Tests toggle) drops hidden satellites exactly like the Map's ghost level.
  */
 export function buildMinimalSubgraph(
   index: GraphIndex,
   graph: ModuleGraph,
   memberIds: ReadonlySet<string>,
   originIds: ReadonlySet<string>,
-  onMapIds: ReadonlySet<string> = new Set(),
   code: CodeContext = NO_CODE,
+  hiddenIds: ReadonlySet<string> = EMPTY_IDS,
 ): MinimalSubgraphSpec {
-  const ghosts = collectGhosts(index, graph, memberIds, onMapIds);
-  const visible = new Set<string>([...memberIds, ...ghosts]);
-  const groupLeaf = new Set([...visible].filter((id) => !isModule(index, id)));
-  const fileVisible = new Set([...visible].filter((id) => isModule(index, id)));
+  const groupLeaf = new Set([...memberIds].filter((id) => !isModule(index, id)));
+  const fileVisible = new Set([...memberIds].filter((id) => isModule(index, id)));
   const { keptNodeIds, fileCountByGroup } = closeOverAncestors(index, fileVisible);
   const collapse = collapseChains(index, keptNodeIds);
   const walks = walkVisibleFiles(index, graph, fileVisible, code);
   const context: NodeContext = { memberIds, originIds, collapse, fileCountByGroup, walks };
+  const emission = projectGhosts(index, memberIds, walks, code, hiddenIds);
+  // A folder group-ghost can carry the id of a member's own (never-rendered) ancestor frame — the
+  // ghost card wins the id so the spec stays one-node-per-id (frames are flattened away anyway).
+  const ghostIds = new Set(emission.ghosts.keys());
   return {
     nodes: [
-      ...buildContainmentNodes(index, graph, keptNodeIds, groupLeaf, context),
+      ...buildContainmentNodes(index, graph, keptNodeIds, new Set([...groupLeaf, ...ghostIds]), context),
       ...buildLeafGroupNodes(index, [...groupLeaf], context),
+      ...ghostNodes(emission),
     ],
-    edges: [...importEdges(index, graph, visible), ...depEdges(index, visible, code)],
+    edges: [...importEdges(index, graph, memberIds), ...depEdges(index, memberIds, code), ...ghostEdges(emission)],
     expansions: [...walks.values()].map((walk) => walk.expansion).filter((exp): exp is MinimalExpansion => exp !== null),
   };
 }
 
-/** The ghost ring: on-map import neighbours of the members, minus the members. A file inside a member
- * is REPRESENTED by that member, so an edge from member-content to outside content promotes the
- * outside content's nearest on-map box (a file if it was on the map, else its package) to a ghost. */
-function collectGhosts(index: GraphIndex, graph: ModuleGraph, memberIds: ReadonlySet<string>, onMapIds: ReadonlySet<string>): Set<string> {
-  const ghosts = new Set<string>();
-  const memberBoxOf = (id: string) => nearestInSet(index, id, memberIds);
-  const onMapBoxOf = (id: string) => nearestInSet(index, id, onMapIds);
-  const consider = (inner: string, outer: string): void => {
-    if (memberBoxOf(inner) === null || memberBoxOf(outer) !== null) {
-      return; // `inner` must be inside a member and `outer` outside every member.
-    }
-    const box = onMapBoxOf(outer);
-    if (box !== null && !memberIds.has(box)) {
-      ghosts.add(box);
-    }
-  };
-  for (const [source, targets] of graph.out) {
-    for (const target of targets) {
-      consider(source, target);
-      consider(target, source);
-    }
-  }
-  return ghosts;
+/**
+ * The ghost ring, by the Map's OWN projection: every blockDeps coupling (and resolved step call from
+ * an expanded member's walk) whose far end lifts to NO member charts that end as a symbol satellite,
+ * exactly like `moduleTree`'s ghost level. `visibleIds` here is the member set — `nearestVisible`
+ * lifts any symbol inside a member (file OR package) onto its box — and every member box counts as a
+ * code anchor for the same reason `depEdges` treats every file as code: with only member boxes drawn,
+ * member↔outside coupling IS this surface's off-screen story. Hidden (test) ghosts drop BEFORE
+ * grouping so group counts stay honest, then same-folder crowds fold into one folder group-ghost
+ * (the Highways treatment, `groupGhosts`) — the exact order of the Map's `ghostLevel`.
+ */
+function projectGhosts(index: GraphIndex, memberIds: ReadonlySet<string>, walks: Map<string, FileCodeWalk>, code: CodeContext, hiddenIds: ReadonlySet<string>): GhostEmission {
+  const calls = [...walks.values()].flatMap((walk) => [...walk.calls]);
+  const expandedBlocks = new Set([...walks.values()].flatMap((walk) => [...walk.expandedBlocks]));
+  const raw = ghostDepWires(code.blockDeps, calls, memberIds, index, (id) => memberIds.has(id), expandedBlocks);
+  return groupGhostEmission(withoutHidden(raw, hiddenIds), index);
+}
+
+/** Ghost satellites as spec nodes: kind "ghost", the REAL artifact id, the Map's own GhostData. */
+function ghostNodes(emission: GhostEmission): MinimalSubgraphNode[] {
+  return [...emission.ghosts.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([id, data]) => ({ id, kind: "ghost" as const, parentId: null, tier: null, data }));
+}
+
+/** Ghost wires: per-coupling-kind dep edges flagged `ghost` — the Map's `gdep:` shape. */
+function ghostEdges(emission: GhostEmission): MinimalSubgraphEdge[] {
+  return emission.wires
+    .map((wire) => ({
+      id: `gdep:${wire.kind}:${wire.source}->${wire.target}`,
+      source: wire.source,
+      target: wire.target,
+      weight: wire.weight,
+      kind: "dep" as const,
+      depKind: wire.kind,
+      ghost: true,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /** The nearest ancestor-or-self of `id` that is in `set` (self first). `ancestorsOf` is root..self,
@@ -147,8 +171,9 @@ interface NodeContext {
   walks: Map<string, FileCodeWalk>;
 }
 
-/** Walk every visible FILE's code once (with the shared `expanded` set): the file card reads its
- * container facts from here, and an expanded file also carries its drawn subtree. */
+/** Walk every member FILE's code once (with the shared `expanded` set): the file card reads its
+ * container facts from here, an expanded file carries its drawn subtree, and the ghost projection
+ * reads the walks' step calls + expanded blocks. */
 function walkVisibleFiles(index: GraphIndex, graph: ModuleGraph, fileVisible: ReadonlySet<string>, code: CodeContext): Map<string, FileCodeWalk> {
   const walks = new Map<string, FileCodeWalk>();
   for (const id of fileVisible) {
@@ -160,7 +185,7 @@ function walkVisibleFiles(index: GraphIndex, graph: ModuleGraph, fileVisible: Re
   return walks;
 }
 
-/** Ancestor-close the visible files (root..file inclusive) and tally visible files per ancestor frame. */
+/** Ancestor-close the member files (root..file inclusive) and tally member files per ancestor frame. */
 function closeOverAncestors(index: GraphIndex, fileVisible: ReadonlySet<string>) {
   const keptNodeIds = new Set<string>();
   const fileCountByGroup = new Map<string, number>();
@@ -175,13 +200,14 @@ function closeOverAncestors(index: GraphIndex, fileVisible: ReadonlySet<string>)
   return { keptNodeIds, fileCountByGroup };
 }
 
-/** File cards + their ancestor containment FRAMES. A group that is itself a leaf member/ghost card
- * (`groupLeaf`) is skipped here — it is emitted as its own card, never a frame of files. */
-function buildContainmentNodes(index: GraphIndex, graph: ModuleGraph, keptNodeIds: Set<string>, groupLeaf: ReadonlySet<string>, context: NodeContext): MinimalSubgraphNode[] {
+/** File cards + their ancestor containment FRAMES. An id in `claimed` is skipped here — a group
+ * that is itself a leaf member card is emitted as its own card (never a frame of files), and a
+ * frame whose id a folder group-ghost took is represented by that satellite instead. */
+function buildContainmentNodes(index: GraphIndex, graph: ModuleGraph, keptNodeIds: Set<string>, claimed: ReadonlySet<string>, context: NodeContext): MinimalSubgraphNode[] {
   const nodes: MinimalSubgraphNode[] = [];
   for (const id of keptNodeIds) {
     const node = index.nodesById.get(id);
-    if (!node || groupLeaf.has(id) || context.collapse.absorbed.has(id)) {
+    if (!node || claimed.has(id) || context.collapse.absorbed.has(id)) {
       continue;
     }
     nodes.push(node.kind === MODULE_KIND ? fileNode(node, graph, context) : frameNode(node, context));
@@ -213,14 +239,10 @@ function fileNode(node: GraphNode, graph: ModuleGraph, context: NodeContext): Mi
   };
 }
 
-/** Membership decides ghost vs not FIRST; origin only splits seed from persistent AMONG members. A
- * demoted origin re-enters the ghost ring structurally (collectGhosts re-adds it via its remaining
- * member couplings), so it must read as a ghost too — dimmed, wearing the "+" — else it strands at
- * full seed brightness with no affordance to re-add it. */
+/** Every tiered card is a MEMBER now (the ghost ring is the separate satellite projection); origin
+ * only splits seed from persistent. A demoted origin simply leaves the drawn set — it returns as a
+ * satellite iff a remaining member still couples to its code, the Map-consistent read. */
 function tierOf(id: string, context: NodeContext): MinimalTier {
-  if (!context.memberIds.has(id)) {
-    return "ghost";
-  }
   return context.originIds.has(id) ? "seed" : "persistent";
 }
 
@@ -237,7 +259,7 @@ function frameNode(node: GraphNode, context: NodeContext): MinimalSubgraphNode {
   };
 }
 
-/** A selected/ghosted GROUP as ONE leaf package card (flat, tiered) — never decomposed into files. */
+/** A selected GROUP as ONE leaf package card (flat, tiered) — never decomposed into files. */
 function buildLeafGroupNodes(index: GraphIndex, ids: string[], context: NodeContext): MinimalSubgraphNode[] {
   return ids
     .sort()
@@ -252,11 +274,11 @@ function buildLeafGroupNodes(index: GraphIndex, ids: string[], context: NodeCont
     }));
 }
 
-/** Import wires between two visible boxes: file-level edges lifted so each endpoint rises to its
- * nearest visible ancestor-or-self (folding a group member's files onto its card). Folded to one per
+/** Import wires between two member boxes: file-level edges lifted so each endpoint rises to its
+ * nearest member ancestor-or-self (folding a group member's files onto its card). Folded to one per
  * ordered box pair, self-loops dropped. `crossPackage` colours a boundary-crossing wire gold. */
-function importEdges(index: GraphIndex, graph: ModuleGraph, visible: ReadonlySet<string>): MinimalSubgraphEdge[] {
-  const boxOf = (id: string) => nearestInSet(index, id, visible);
+function importEdges(index: GraphIndex, graph: ModuleGraph, memberIds: ReadonlySet<string>): MinimalSubgraphEdge[] {
+  const boxOf = (id: string) => nearestInSet(index, id, memberIds);
   const aggregates = new Map<string, { source: string; target: string; weight: number }>();
   for (const [source, targets] of graph.out) {
     const sourceBox = boxOf(source);
@@ -289,14 +311,14 @@ function importEdges(index: GraphIndex, graph: ModuleGraph, visible: ReadonlySet
     }));
 }
 
-/** Per-kind dependency wires between visible files — the SAME lift the Map draws (calls /
+/** Per-kind dependency wires between member files — the SAME lift the Map draws (calls /
  * instantiates / extends / implements / references), so the overlay reads like the Map at the same
- * level. Every visible file counts as a "code" endpoint here: with only file cards drawn, file↔file
- * coupling IS this level's dep story. An off-overlay endpoint lifts to nothing and drops; an
- * intra-file coupling folds to a self-loop and drops (both inside `liftEdges`). A group (package)
- * card carries no code walk, so it simply contributes no dep wire — file↔file coupling is the story. */
-function depEdges(index: GraphIndex, visible: ReadonlySet<string>, code: CodeContext): MinimalSubgraphEdge[] {
-  return depWireEdges(code.blockDeps, visible, index, (id) => visible.has(id), new Set()).map((edge) => ({
+ * level. Every member box counts as a "code" endpoint here: with only member boxes drawn, box↔box
+ * coupling IS this level's dep story. An off-overlay endpoint lifts to nothing and drops here (the
+ * ghost projection charts it instead); an intra-box coupling folds to a self-loop and drops (both
+ * inside `liftEdges`). */
+function depEdges(index: GraphIndex, memberIds: ReadonlySet<string>, code: CodeContext): MinimalSubgraphEdge[] {
+  return depWireEdges(code.blockDeps, memberIds, index, (id) => memberIds.has(id), new Set()).map((edge) => ({
     id: edge.id,
     source: edge.source,
     target: edge.target,
