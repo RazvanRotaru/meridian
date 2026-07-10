@@ -89,6 +89,7 @@ const adapter: ElkNestAdapter<VisibleModuleNode> = {
   parentId: (node) => node.parentId,
   isContainer: (node) => node.isExpanded,
   leafSize: (node) => leafSize(node),
+  containerMinSize: (node) => ({ width: frameTitleWidth(node), height: FRAME_MIN_HEIGHT }),
   containerOptions: CONTAINER_OPTIONS,
 };
 
@@ -191,6 +192,35 @@ export function ghostSize(data: GhostData): { width: number; height: number } {
   const head = CODE_GLYPH_WIDTH + GHOST_ROW_GAP + monoTextWidth(data.label, 11);
   const context = data.context ? monoTextWidth(data.context, 9) : 0;
   return { width: Math.round(clamp(GHOST_MIN_WIDTH, GHOST_MAX_WIDTH, GHOST_CHROME + Math.max(head, context))), height: GHOST_HEIGHT };
+}
+
+// An expanded frame is ELK-sized to its CHILDREN, which ignores the title bar it wears (chevron +
+// name + kind/category chip + Δ + </>). We floor a frame's width at that title-bar width so a frame
+// whose children are narrower than its title can never squeeze the name to nothing. It only binds
+// for such narrow frames — wider children still win. Height is a token floor: a real frame is far
+// taller once its top padding + children are in.
+const FRAME_MIN_HEIGHT = FILE_HEIGHT;
+const chipWidth = (text: string) => pillWidth(text, CHIP_FONT, { letterSpacing: CHIP_LETTER_SPACING });
+
+function frameTitleWidth(node: VisibleModuleNode): number {
+  if (node.kind === "file") {
+    const data = node.data as ModuleCardData;
+    const entry = data.isEntry ? HEADER_GAP + chipWidth("ENTRY") : 0;
+    const category = HEADER_GAP + chipWidth(data.category.toUpperCase());
+    return cardWidth(FILE_CHROME + CHEVRON_WIDTH + HEADER_GAP + monoTextWidth(data.label, 12.5) + entry + TRAILING_BADGES + category);
+  }
+  if (node.kind === "unit") {
+    const data = node.data as UnitCardData;
+    const content = CHEVRON_WIDTH + HEADER_GAP + UNIT_GLYPH_WIDTH + HEADER_GAP + monoTextWidth(data.label, 12.5) + HEADER_GAP + chipWidth(data.unitKind.toUpperCase()) + TRAILING_BADGES;
+    return cardWidth(UNIT_CHROME + content);
+  }
+  if (node.kind === "package") {
+    const data = node.data as ModuleGroupData;
+    const meta = monoTextWidth(`${data.fileCount} files`, 11) + META_GAP + countsRowWidth(["uses", String(data.ce), "used by", String(data.ca)], 10.5, COUNTS_GAP);
+    return cardWidth(PACKAGE_CHROME + CHEVRON_WIDTH + HEADER_GAP + monoTextWidth(data.label, 13) + HEADER_GAP + DELTA_CHIP_WIDTH + HEADER_GAP + meta);
+  }
+  // Blocks and steps wear a title bar identical to their collapsed row, so the leaf size already fits.
+  return leafSize(node).width;
 }
 
 /** Map one placed ELK node back to a React Flow node, wired to its parent frame when nested. */
