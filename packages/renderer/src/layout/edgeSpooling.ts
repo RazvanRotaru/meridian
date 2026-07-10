@@ -11,7 +11,6 @@
  */
 
 import type { Edge } from "@xyflow/react";
-import { BUNDLE_EDGE_TYPE } from "./edgeBundling";
 
 export const SPOOL_EDGE_TYPE = "spool";
 
@@ -28,14 +27,14 @@ export function spoolFanEdges(edges: Edge[]): Edge[] {
   const inCount = new Map<string, number>();
   const outCount = new Map<string, number>();
   for (const edge of edges) {
-    if (edge.type === BUNDLE_EDGE_TYPE) {
-      continue; // container highways are already trunks
+    if (edge.type !== undefined) {
+      continue; // container highways (bundle) and gutter-bus wires (routed) are already structured
     }
     outCount.set(edge.source, (outCount.get(edge.source) ?? 0) + 1);
     inCount.set(edge.target, (inCount.get(edge.target) ?? 0) + 1);
   }
   return edges.map((edge) => {
-    if (edge.type === BUNDLE_EDGE_TYPE) {
+    if (edge.type !== undefined) {
       return edge;
     }
     const gathersIn = (inCount.get(edge.target) ?? 0) >= SPOOL_THRESHOLD;
