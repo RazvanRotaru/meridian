@@ -21,6 +21,7 @@ import { assignFinalIds, buildGraphNodes } from "./finalize-nodes";
 import { buildResolutionIndex } from "./resolution-index";
 import { collectRawEdges } from "./edge-pass";
 import { collectImportEdges } from "./import-pass";
+import { collectValueRefEdges } from "./value-ref-pass";
 import { buildEdges } from "./edge-build";
 import { collapseToDepth } from "./depth-collapse";
 import { buildLogicFlows } from "./flow-pass";
@@ -131,7 +132,8 @@ function runSingleProjectExtraction(options: ExtractOptions): ExtractionResult {
   const index = buildResolutionIndex(descriptors);
   const behavioural = collectRawEdges(loaded, descriptors, index, moduleByFilePath, diagnostics);
   const imports = collectImportEdges(loaded, moduleByFilePath);
-  const built = buildEdges([...behavioural, ...imports], options);
+  const valueRefs = options.valueRefs ? collectValueRefEdges(loaded, index, moduleByFilePath, diagnostics) : [];
+  const built = buildEdges([...behavioural, ...imports, ...valueRefs], options);
   const collapsed = collapseToDepth(buildGraphNodes(descriptors), built.edges, options.depth ?? "function");
   const keepIds = new Set(collapsed.nodes.map((node) => node.id));
   const flows = buildLogicFlows(descriptors, index, keepIds, moduleSourcesById(loaded, moduleByFilePath));

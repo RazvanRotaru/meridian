@@ -37,6 +37,9 @@ export async function handleGenerate(ctx: Context, request: IncomingMessage, res
       language: parsed.lang,
       depth: "function",
       materializeBoundary: false,
+      // Opt-in via MERIDIAN_VALUE_REFS: emit `references` edges for imported symbols used as values,
+      // so bare `imports` wires resolve into traceable dependencies (extra type-checker work).
+      valueRefs: process.env.MERIDIAN_VALUE_REFS === "1",
       targetName: source.target, // the repo label (e.g. "sindresorhus/ky"), not the temp dir
     });
     const id = artifactId(parsed);
