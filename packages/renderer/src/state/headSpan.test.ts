@@ -1,0 +1,48 @@
+import { describe, expect, it } from "vitest";
+import { headKindsWithin, headSpanFor, mapBaseLineToHead } from "./headSpan";
+import type { LineEdit } from "./prTypes";
+
+// One hunk that turns base lines 5-6 into head lines 5-9 (net +3): everything after it shifts down 3.
+const EDITS: LineEdit[] = [{ oldStart: 5, oldLines: 2, newStart: 5, newLines: 5 }];
+
+describe("mapBaseLineToHead", () => {
+  it("leaves lines before the hunk untouched", () => {
+    expect(mapBaseLineToHead(3, EDITS)).toBe(3);
+  });
+
+  it("shifts lines after the hunk by the hunk's net line delta", () => {
+    expect(mapBaseLineToHead(10, EDITS)).toBe(13); // +3
+  });
+
+  it("maps a line inside the hunk onto the new side, clamped to the new range", () => {
+    expect(mapBaseLineToHead(5, EDITS)).toBe(5);
+    expect(mapBaseLineToHead(6, EDITS)).toBe(6);
+  });
+
+  it("is the identity when there are no edits", () => {
+    expect(mapBaseLineToHead(42, [])).toBe(42);
+  });
+});
+
+describe("headSpanFor", () => {
+  it("maps a node's base span to its shifted head span", () => {
+    expect(headSpanFor(10, 20, EDITS)).toEqual({ start: 13, end: 23 });
+  });
+});
+
+describe("headKindsWithin", () => {
+  it("keeps only the change kinds that fall inside the span, as a per-line map", () => {
+    const map = headKindsWithin(
+      [
+        { start: 14, end: 15, kind: "added" },
+        { start: 40, end: 40, kind: "modified" },
+      ],
+      13,
+      23,
+    );
+    expect([...map.entries()]).toEqual([
+      [14, "added"],
+      [15, "added"],
+    ]);
+  });
+});

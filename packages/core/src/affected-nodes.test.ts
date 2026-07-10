@@ -45,8 +45,16 @@ describe("computeAffectedNodes", () => {
     expect(ids).toEqual([SVC.id, RUN.id].sort());
   });
 
-  it("falls back to the module node ONLY for a hunk-less changed file", () => {
+  it("falls back to the module node for a hunk-less changed file", () => {
     const affected = computeAffectedNodes(NODES, [modified("src/a.ts")]);
+    expect(affected.map((entry) => entry.nodeId)).toEqual([MODULE.id]);
+    expect(affected[0].overlapsHunk).toBe(false);
+  });
+
+  it("falls back to the module node when hunks overlap NO extracted unit (e.g. it()/describe() bodies)", () => {
+    // Line 35 sits in the module but inside no child unit (svc 3-20, helper 25-30) — the file still
+    // changed, so its module rings rather than the card looking untouched.
+    const affected = computeAffectedNodes(NODES, [modified("src/a.ts", [{ start: 35, end: 36 }])]);
     expect(affected.map((entry) => entry.nodeId)).toEqual([MODULE.id]);
     expect(affected[0].overlapsHunk).toBe(false);
   });

@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyQuery,
+  parsePatchDetail,
   parsePullRequestFiles,
   parsePullRequestList,
   parseRepoList,
@@ -138,6 +139,76 @@ describe("parsePullRequestFiles", () => {
       { path: "src/new.ts", status: "added", additions: 12, deletions: 0 },
       { path: "src/changed.ts", status: "modified", additions: 3, deletions: 7 },
       { path: "src/weird.ts", status: "modified", additions: 0, deletions: 0 },
+    ]);
+  });
+});
+
+describe("parsePatchDetail", () => {
+  // U3 context, one modification (- then +, plus an extra +), a pure addition, and a pure deletion.
+  const patch = [
+    "@@ -10,7 +10,8 @@ class Foo {",
+    " context1",
+    " context2",
+    " context3",
+    "-  const old = 1;",
+    "+  const changed = 2;",
+    "+  const added = 3;",
+    " context4",
+    " context5",
+    " context6",
+    "@@ -30,6 +31,7 @@",
+    " c1",
+    " c2",
+    " c3",
+    "+  brandNew();",
+    " c4",
+    " c5",
+    " c6",
+    "@@ -50,7 +55,6 @@",
+    " d1",
+    " d2",
+    " d3",
+    "-  gone();",
+    " d4",
+    " d5",
+    " d6",
+  ].join("\n");
+
+  it("paints only the changed body lines, not the context-padded hunk header", () => {
+    const detail = parsePatchDetail(patch);
+    // The modification's two new lines (13-14) are `modified`; the lone insertion (34) is `added`;
+    // the pure deletion contributes NO head line to paint.
+    expect(detail.kinds).toEqual([
+      { start: 13, end: 14, kind: "modified" },
+      { start: 34, end: 34, kind: "added" },
+    ]);
+  });
+
+  it("records each hunk's old/new spans for base→head line mapping", () => {
+    expect(parsePatchDetail(patch).edits).toEqual([
+      { oldStart: 10, oldLines: 7, newStart: 10, newLines: 8 },
+      { oldStart: 30, oldLines: 6, newStart: 31, newLines: 7 },
+      { oldStart: 50, oldLines: 7, newStart: 55, newLines: 6 },
+    ]);
+  });
+
+  it("marks TIGHT changed-line ranges (body, not header) so an unchanged next declaration isn't flagged", () => {
+    // Header ranges would be 10-17 / 31-37 / 55-60 (context-padded) and spill into whatever follows;
+    // the tight ranges are exactly the changed new-side lines + a seam where a pure deletion sat.
+    expect(parsePatchDetail(patch).hunks).toEqual([
+      { start: 13, end: 14 }, // the modification
+      { start: 34, end: 34 }, // the lone insertion
+      { start: 58, end: 58 }, // the pure deletion's seam (the line it now precedes)
+    ]);
+  });
+
+  it("also emits BASE-side ranges so a base-graph review marks nodes in base coordinates", () => {
+    // Same edits, on the OLD side: the modification sat at base line 13; the insertion's seam is the
+    // base line it followed (33); the deletion removed base line 53. These never drift with additions.
+    expect(parsePatchDetail(patch).oldHunks).toEqual([
+      { start: 13, end: 13 }, // the modified base line
+      { start: 33, end: 33 }, // the insertion's base seam
+      { start: 53, end: 53 }, // the deleted base line
     ]);
   });
 });

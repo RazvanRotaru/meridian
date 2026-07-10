@@ -22,6 +22,9 @@ function toChangedFile(file: PrChangedFile): ChangedFile {
   if (file.hunks && file.hunks.length > 0) {
     changed.hunks = file.hunks;
   }
+  if (file.oldHunks && file.oldHunks.length > 0) {
+    changed.oldHunks = file.oldHunks;
+  }
   return changed;
 }
 

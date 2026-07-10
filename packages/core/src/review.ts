@@ -32,6 +32,11 @@ export interface ChangedFile {
   previousPath?: string;
   /** New-side changed line ranges; omitted ⇒ whole-file. Deletion-only hunks are anchored upstream. */
   hunks?: LineRange[];
+  /** Base-side (old) changed line ranges, for marking nodes on a BASE graph (a PR review overlaid on
+   * the base artifact): a new-side hunk shifted down by earlier additions would spill onto the next
+   * unchanged declaration in base coordinates; the old-side range can't. `computeAffectedNodes`
+   * prefers this and falls back to `hunks` when absent (a head-accurate graph, where new-side aligns). */
+  oldHunks?: LineRange[];
 }
 
 /** The extensions.review payload. JSON-serializable; stamped by `meridian review` only. */

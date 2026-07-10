@@ -9,15 +9,20 @@
 import { useEffect } from "react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { CodeBlock } from "./CodeBlock";
-import { useChangeSummary, useChangedLines, useLineChangeKinds } from "./useChangedLines";
+import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeKinds } from "./useChangedLines";
 
 export function CodePanel() {
   const codeView = useBlueprint((state) => state.codeView);
   const { closeCode } = useBlueprintActions();
   const wholeFile = codeView?.wholeFile ?? false;
-  const changedLines = useChangedLines(codeView?.node, wholeFile);
-  const changedLineKinds = useLineChangeKinds(codeView?.node, wholeFile);
-  const summary = useChangeSummary(codeView?.node, wholeFile);
+  // A PR-review panel carries its own head-relative diff; otherwise the artifact's `changedSince`
+  // drives the paint. The hooks run unconditionally (rules of hooks) and are overridden when carried.
+  const hookChangedLines = useChangedLines(codeView?.node, wholeFile);
+  const hookChangedLineKinds = useLineChangeKinds(codeView?.node, wholeFile);
+  const hookSummary = useChangeSummary(codeView?.node, wholeFile);
+  const changedLines = codeView?.changedLines ?? hookChangedLines;
+  const changedLineKinds = codeView?.changedLineKinds ?? hookChangedLineKinds;
+  const summary = codeView?.changedLineKinds ? summarizeChangeKinds(codeView.changedLineKinds) : hookSummary;
   const open = codeView?.mode === "modal";
 
   // Escape closes the modal while it's open. Rebinding on `open` keeps the listener off the
@@ -41,10 +46,13 @@ export function CodePanel() {
   const { node, code, loading, error, truncated } = codeView;
   const { file, startLine, endLine } = node.location;
   const baseLine = codeView.baseLine ?? startLine;
-  // Whole-file view titles by the file and lands on the first change, so the node's own span in the
-  // subtitle would be misleading; show just the file path instead.
+  // A PR-review panel shows the HEAD file sliced to where the unit moved to, so the subtitle range
+  // must track the shown lines (baseLine..+len), not the node's base span. Whole-file view titles by
+  // the file and lands on the first change, so its own span in the subtitle would be misleading too.
+  const isHead = codeView.changedLineKinds !== undefined;
+  const shownEnd = isHead ? baseLine + Math.max((code?.split("\n").length ?? 1) - 1, 0) : endLine ?? startLine;
   const title = wholeFile ? (file.split("/").pop() ?? file) : node.displayName;
-  const range = endLine && endLine !== startLine ? `${startLine}-${endLine}` : String(startLine);
+  const range = shownEnd !== baseLine ? `${baseLine}-${shownEnd}` : String(baseLine);
   const location = wholeFile ? file : `${file}:${range}`;
 
   // A backdrop click closes; clicks inside the panel are swallowed so they don't reach it.
