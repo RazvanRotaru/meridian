@@ -10,6 +10,7 @@ import { useState } from "react";
 import { CALLER_WIRE, IPC_WIRE } from "../theme/edgeColors";
 import { accentForKind } from "../theme/kindColors";
 import { CALL_RESOLVED, CONSTRUCT, IMPORT_CROSS, IMPORT_SIBLING, REL_COLORS } from "../theme/mapPalette";
+import { CHROME_EDGE, CHROME_GAP, MINIMAP_W, LEGEND_BOTTOM } from "./canvas/flowCanvasProps";
 
 const FILE_ACCENT = accentForKind("module");
 
@@ -123,7 +124,9 @@ function Line(props: { color: string; dashed?: boolean }) {
 }
 
 const MONO = "'JetBrains Mono', ui-monospace, monospace";
-const ANCHOR: React.CSSProperties = { position: "absolute", bottom: 16, left: 56, zIndex: 5 };
+// Bottom-right, just LEFT of the minimap; the zoom controls stack directly above this pill. The
+// whole left gutter stays free for the control panel, which can grow to full height.
+const ANCHOR: React.CSSProperties = { position: "absolute", bottom: LEGEND_BOTTOM, right: CHROME_EDGE + MINIMAP_W + CHROME_GAP, zIndex: 6 };
 const PILL: React.CSSProperties = {
   ...ANCHOR,
   border: "1px solid #2A2F37",
