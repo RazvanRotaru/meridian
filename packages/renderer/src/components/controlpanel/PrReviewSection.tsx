@@ -23,7 +23,8 @@ export function PrReviewSection() {
   const prReviewed = useBlueprint((state) => state.prReviewed);
   const reviewOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const viewMode = useBlueprint((state) => state.viewMode);
-  const { loadPrs, selectPr, reviewPrInGraph, setViewMode } = useBlueprintActions();
+  const onPrsPage = viewMode === "prs";
+  const { loadPrs, selectPr, reviewPrInGraph, togglePrsView } = useBlueprintActions();
 
   // Expanded only while a PR review is the active on-screen surface: a PR is under review
   // (prReviewed), its minimal-graph overlay is open (minimalSeedIds), and we're not on the full
@@ -56,8 +57,14 @@ export function PrReviewSection() {
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={barStyle(expanded)}>
-        <button type="button" style={TOGGLE_STYLE} title="Open the full Pull requests page" onClick={() => setViewMode("prs")}>
-          <span style={{ display: "inline-flex", color: expanded ? ACTIVE_HUE : TOKENS.textMuted }}>
+        <button
+          type="button"
+          style={TOGGLE_STYLE}
+          title={onPrsPage ? "Back to the graph" : "Open the full Pull requests page"}
+          aria-pressed={onPrsPage}
+          onClick={togglePrsView}
+        >
+          <span style={{ display: "inline-flex", color: onPrsPage || expanded ? ACTIVE_HUE : TOKENS.textMuted }}>
             <PullRequestIcon size={15} />
           </span>
           <span style={LABEL_STYLE}>PR review</span>

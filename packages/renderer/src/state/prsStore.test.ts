@@ -141,6 +141,25 @@ describe("PR store slice", () => {
     expect(store.getState().viewMode).toBe("modules");
     expect(store.getState().minimalSeedIds).toEqual([]);
   });
+
+  it("togglePrsView opens the PR page, then a second toggle returns to the Map", () => {
+    const store = freshStore();
+    // A non-empty module layout means the return skips a re-layout (nothing async to await here).
+    store.setState({ viewMode: "modules", prsList: { open: [], closed: null }, moduleRfNodes: [{ id: "x", position: { x: 0, y: 0 }, data: {} }] });
+    store.getState().togglePrsView();
+    expect(store.getState().viewMode).toBe("prs");
+    store.getState().togglePrsView();
+    expect(store.getState().viewMode).toBe("modules");
+  });
+
+  it("togglePrsView resumes the exact lens it was opened from", () => {
+    const store = freshStore();
+    store.setState({ viewMode: "logic", prsList: { open: [], closed: null } });
+    store.getState().togglePrsView();
+    expect(store.getState().viewMode).toBe("prs");
+    store.getState().togglePrsView();
+    expect(store.getState().viewMode).toBe("logic");
+  });
 });
 
 /** Store deps of a GitHub `web` session, where the server can prepare the PR head. */

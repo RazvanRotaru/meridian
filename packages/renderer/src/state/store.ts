@@ -376,6 +376,8 @@ export interface BlueprintState {
   toggleReviewTick(flowId: string): void;
   resetReviewTicks(): void;
   setViewMode(mode: ViewMode): void;
+  /** Toggle the full PR-review page: open it, or (when already open) resume the lens you came from. */
+  togglePrsView(): void;
   toggleShowTests(): void;
   toggleCoverageMode(): void;
   setEnvironment(environment: string): void;
@@ -412,6 +414,8 @@ export type BlueprintStore = StoreApi<BlueprintState>;
 export function createBlueprintStore(dependencies: StoreDependencies): BlueprintStore {
   // The focus to restore when leaving UI mode, kept off the reactive state (nothing renders it).
   let focusBeforeUi: string | null = null;
+  // The lens to resume when the PR-review page is toggled back off; null == none captured yet.
+  let lensBeforePrs: ViewMode | null = null;
   // Monotonic seq to drop a stale Logic-graph layout when a newer open/drill/toggle supersedes it.
   let logicLayoutSeq = 0;
   // Same guard for the composition layout — a newer relayout discards an older in-flight ELK pass.
@@ -1300,6 +1304,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // list is browsed against the graph the session booted with. No relayout here — the PRs
         // page has no canvas, and re-entering a graph lens always lays out afresh.
         restorePrReviewBaseline(get, set, invalidateArtifactCaches);
+        // Remember the lens we're leaving so `togglePrsView` can resume it (previous !== "prs" here).
+        lensBeforePrs = previous;
         set({ viewMode: mode });
         if (get().prsList[get().prsTab] === null) {
           void get().loadPrs(1);
@@ -1326,6 +1332,25 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({ viewMode: mode });
       }
       void get().relayout();
+    },
+
+    // The "PR review" control is a toggle: off → open the full PR page; on → resume the lens you came
+    // from (Map/Service/UI/Logic). The graph state is left untouched while PRs are open, so flipping
+    // the mode back restores it exactly where you left it — no reset, no re-layout — except when that
+    // lens was never laid out (PRs opened before its surface first rendered), which we relayout for.
+    togglePrsView() {
+      if (get().viewMode !== "prs") {
+        get().setViewMode("prs");
+        return;
+      }
+      const back = lensBeforePrs ?? "modules";
+      lensBeforePrs = null;
+      set({ viewMode: back });
+      if ((back === "modules" || back === "call") && get().moduleRfNodes.length === 0) {
+        void get().moduleRelayout();
+      } else if (back === "ui" && get().rfNodes.length === 0) {
+        void get().relayout();
+      }
     },
 
     // Hiding tests while dived into (or having selected) test code would strand the view on

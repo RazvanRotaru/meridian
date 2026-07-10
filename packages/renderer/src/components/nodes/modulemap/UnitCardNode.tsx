@@ -39,7 +39,7 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
       <div style={borderFor(frameStyle(accent), frameSelectedStyle(accent), selected, diff)}>
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-        <FrameTitleBar actionsId={id} chevron={chevron}>{identity}</FrameTitleBar>
+        <FrameTitleBar chevron={chevron}>{identity}</FrameTitleBar>
       </div>
     );
   }
