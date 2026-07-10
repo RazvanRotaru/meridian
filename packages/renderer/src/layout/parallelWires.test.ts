@@ -22,12 +22,13 @@ const wire = (id: string, source: string, target: string, weight = 1, type?: str
 });
 
 describe("foldPairRibbons", () => {
-  it("folds a multi-kind pair into one ribbon, members lightest-first, dominant's marker on the cable", () => {
+  it("folds a multi-kind pair into one ribbon: heaviest strand MID-CABLE, dominant's marker on the cable", () => {
     const folded = foldPairRibbons([wire("refs", "a", "b", 7), wire("calls", "a", "b", 5), wire("inst", "a", "b", 2), wire("lone", "a", "c")]);
     expect(folded.map((edge) => edge.id)).toEqual(["ribbon:a->b", "lone"]);
     const ribbon = folded[0];
     expect(ribbon.type).toBe(RIBBON_EDGE_TYPE);
-    expect((ribbon.data as RibbonEdgeData).members.map((member) => member.id)).toEqual(["inst", "calls", "refs"]);
+    // Centre-out by weight: refs(7) mid-cable, calls(5) beside it, inst(2) at the band's edge.
+    expect((ribbon.data as RibbonEdgeData).members.map((member) => member.id)).toEqual(["calls", "refs", "inst"]);
     expect(ribbon.markerEnd).toBe("marker-refs"); // heaviest strand's arrowhead
   });
 
