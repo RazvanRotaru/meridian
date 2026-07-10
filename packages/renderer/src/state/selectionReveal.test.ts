@@ -48,8 +48,10 @@ describe("scopeTarget", () => {
     expect(scopeTarget([FORMAT], index)).toEqual({ enabled: false, reason: NO_CLUSTER_REASON });
   });
 
-  it("disables with the exact reason for a bare folder (no clustered unit beneath the anchor itself)", () => {
-    expect(scopeTarget(["ts:app/src"], index)).toEqual({ enabled: false, reason: NO_CLUSTER_REASON });
+  it("disables with the exact reason for a folder with NO clustered units beneath it", () => {
+    expect(scopeTarget(["ts:app/lib"], index)).toEqual({ enabled: false, reason: NO_CLUSTER_REASON });
+    // A folder OVER clustered units decomposes to them (the folder group-ghost reveal), so it scopes.
+    expect(scopeTarget(["ts:app/src"], index)).toEqual({ enabled: true, reason: null });
   });
 
   it("disables for an empty selection and for an id not in the graph", () => {

@@ -8,21 +8,15 @@
 
 import type { ElkNode } from "elkjs/lib/elk-api";
 import type { LiftedEdge, VisibleNode } from "../derive/types";
+import { CANVAS_ROOT_ELK_OPTIONS } from "./elkCanvasOptions";
 import { buildNestedElkGraph, type ElkNestAdapter } from "./elkNesting";
 import { boxSize } from "./nodeSize";
 
 export { ELK_ROOT_ID } from "./elkNesting";
 
-const ROOT_LAYOUT_OPTIONS: Record<string, string> = {
-  "elk.algorithm": "layered",
-  "elk.direction": "RIGHT",
-  "elk.hierarchyHandling": "INCLUDE_CHILDREN",
-  "elk.layered.spacing.nodeNodeBetweenLayers": "48",
-  "elk.spacing.nodeNode": "28",
-  "elk.padding": "[top=28,left=28,bottom=28,right=28]",
-  "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
-  "elk.layered.compaction.postCompaction.strategy": "EDGE_LENGTH",
-};
+// Root options are the ONE canonical canvas set (elkCanvasOptions.ts) — adopted wholesale; this
+// path dies in phase C, and the canon's `elk.aspectRatio` is what stops ELK stacking a
+// renders-forest's disconnected components into a single vertical column.
 
 // Top padding leaves room for the container's title bar; React Flow draws nothing there itself.
 const CONTAINER_LAYOUT_OPTIONS: Record<string, string> = {
@@ -38,5 +32,5 @@ const adapter: ElkNestAdapter<VisibleNode> = {
 };
 
 export function buildElkGraph(visible: VisibleNode[], edges: LiftedEdge[]): ElkNode {
-  return buildNestedElkGraph(visible, edges, adapter, ROOT_LAYOUT_OPTIONS);
+  return buildNestedElkGraph(visible, edges, adapter, CANVAS_ROOT_ELK_OPTIONS);
 }

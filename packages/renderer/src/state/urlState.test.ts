@@ -160,6 +160,13 @@ describe("urlState", () => {
     expect(encodeNav(nav).has("mgraph")).toBe(false);
   });
 
+  it("round-trips the Service lens's cluster focus (mfocus with a svc: id under view=call)", () => {
+    const frameId = "svc:ts:app/a.ts#AlphaService";
+    const nav: NavState = { ...emptyNav(), viewMode: "call", moduleFocus: frameId };
+    expect(encodeNav(nav).get("mfocus")).toBe(frameId);
+    expect(roundTrip(nav)).toEqual({ viewMode: "call", moduleFocus: frameId });
+  });
+
   it("round-trips the non-default highlight mode (hmode)", () => {
     const nav: NavState = { ...emptyNav(), viewMode: "modules", highlightMode: "reach" };
     expect(encodeNav(nav).get("hmode")).toBe("reach");
@@ -221,6 +228,11 @@ describe("urlState", () => {
     it("on the Map, drops ui / call / logic / prs keys", () => {
       const keys = [...encodeNav(everyLensVisited("modules")).keys()].sort();
       expect(keys).toEqual(["mexp", "mfocus"]);
+    });
+
+    it("on the Service lens, keeps its root/selection AND the shared moduleFocus (the cluster zoom)", () => {
+      const keys = [...encodeNav(everyLensVisited("call")).keys()].sort();
+      expect(keys).toEqual(["csel", "mfocus", "root", "view"]);
     });
 
     it("on Logic, drops Map / ui / call / prs keys", () => {

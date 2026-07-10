@@ -133,9 +133,12 @@ describe("serviceRevealStateForMany", () => {
     expect(reveal!.moduleSelected).toEqual(new Set([METHOD]));
   });
 
-  it("returns null only when NO anchor lives in a clustered unit", () => {
-    expect(serviceRevealStateForMany(["ts:app/src", FORMAT], index)).toBeNull();
+  it("returns null only when NO anchor lives in a clustered unit (a folder decomposes to the units beneath it)", () => {
+    // lib/ holds only the bare helper function — no clustered unit anywhere beneath.
+    expect(serviceRevealStateForMany(["ts:app/lib", FORMAT], index)).toBeNull();
     expect(serviceRevealStateForMany([], index)).toBeNull();
+    // src/ DOES decompose: the clusters of the units beneath it open (the folder group-ghost reveal).
+    expect(serviceRevealStateForMany(["ts:app/src"], index)!.moduleExpanded.has(frameIdOf(LEAD))).toBe(true);
   });
 
   it("memoizes clustering per graph index", () => {

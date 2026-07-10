@@ -75,10 +75,11 @@ export function mapRevealStateForMany(anchors: readonly string[], index: GraphIn
 }
 
 /** Reveal `anchors` in the Service-cluster lens: open every service frame owning an anchor's unit(s)
- * — a FILE anchor resolves through ALL its contained clustered units — plus any block containers on
- * each path, and select them all. Anchors in no clustered unit (a bare folder, an unclustered
- * helper) are dropped; null when none survive, so the caller opens the lens at its top. The Service
- * lens keeps `moduleFocus` null (it has no folder zoom). */
+ * — a FILE anchor resolves through ALL its contained clustered units, a FOLDER anchor through every
+ * clustered unit beneath it — plus any block containers on each path, and select them all. Anchors
+ * in no clustered unit (a folder of unclustered files, an unowned helper) are dropped; null when
+ * none survive, so the caller opens the lens at its top. The Service lens keeps `moduleFocus` null
+ * (it has no folder zoom). */
 export function serviceRevealStateForMany(anchors: readonly string[], index: GraphIndex): ModuleRevealState | null {
   return resolveServiceAnchors(anchors, index)?.reveal ?? null;
 }
@@ -163,8 +164,9 @@ function rawAnchorIds(selection: SelectionSource, fallback: AnchorSource | null)
 
 /** The clustered unit(s) an anchor maps onto — each with the lead of its owning cluster: its nearest
  * unit ancestor when it has one, else — for a FILE anchor, which sits ABOVE units — each clustered
- * unit inside the file (a file may span several clusters; all of them count). Units outside every
- * cluster resolve to nothing. */
+ * unit inside the file, else — for a FOLDER anchor (a folded folder group-ghost, a Map directory) —
+ * every unit under the folder's files, recursively (the file decomposition one level up; an anchor
+ * may span several clusters; all of them count). Units outside every cluster resolve to nothing. */
 function ownedUnitsOf(anchorId: string, index: GraphIndex, leadOf: ReadonlyMap<string, string>): { unitId: string; leadId: string }[] {
   const owned: { unitId: string; leadId: string }[] = [];
   for (const unit of candidateUnits(anchorId, index)) {
@@ -181,10 +183,28 @@ function candidateUnits(anchorId: string, index: GraphIndex): GraphNode[] {
   if (unit !== null) {
     return [unit];
   }
-  if (index.nodesById.get(anchorId)?.kind !== "module") {
-    return [];
+  const kind = index.nodesById.get(anchorId)?.kind;
+  if (kind === "module") {
+    return index.childrenOf(anchorId).filter((child) => UNIT_CARD_KINDS.has(child.kind));
   }
-  return index.childrenOf(anchorId).filter((child) => UNIT_CARD_KINDS.has(child.kind));
+  return kind === "package" ? unitsUnderFolder(anchorId, index) : [];
+}
+
+/** Every unit under a FOLDER anchor's files (subfolders included) — how a folded folder group-ghost
+ * decomposes so its reveal can open every owning cluster frame beneath the folder. */
+function unitsUnderFolder(folderId: string, index: GraphIndex): GraphNode[] {
+  const units: GraphNode[] = [];
+  const visit = (id: string): void => {
+    for (const child of index.childrenOf(id)) {
+      if (UNIT_CARD_KINDS.has(child.kind)) {
+        units.push(child);
+      } else if (child.kind === "package" || child.kind === "module") {
+        visit(child.id);
+      }
+    }
+  };
+  visit(folderId);
+  return units;
 }
 
 /** The container ids strictly BETWEEN `scope` and the anchor on the root..anchor path (excluding both

@@ -42,7 +42,8 @@ import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/block
 import { buildUnitIndex, type UnitIndex } from "@meridian/design-metrics";
 import type { VisibleModuleNode } from "../derive/moduleTree";
 import { moduleChildContainerIds } from "../derive/moduleChildContainers";
-import { serviceScopeFor, type ServiceScope } from "./serviceScope";
+import { serviceScopeFor, widenServiceScope, type ServiceScope } from "./serviceScope";
+import { leadIdOf } from "../derive/serviceClusterEdges";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import type { HighlightMode } from "../components/moduleMapPaint";
 import { activeModuleSurfaceSpec, moduleSurfaceSpec } from "../components/canvas/surfaceSpec";
@@ -374,6 +375,9 @@ export interface BlueprintState {
   setModuleFocus(id: string | null): void;
   toggleModuleExpand(nodeId: string): void;
   revealModule(nodeId: string): void;
+  /** The Service lens's ghost reveal: open the ghost's owning `svc:` cluster frame(s) IN PLACE
+   * (expansion union) and select it — never a folder focus. Unclustered ghosts select only. */
+  revealServiceGhost(nodeId: string): void;
   /** ⌘P palette navigate: reveal a picked symbol in the CURRENT map lens — the Map goes to its
    * definition (revealModule), the Service lens pins + selects it. Inert outside the map lenses. */
   revealInView(rawId: string): void;
@@ -1055,7 +1059,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       // Hidden tests are EXCLUDED from the layout (not just painted out): test code can be half the
       // cards, and paint-hiding it kept a crater of empty space. toggleShowTests relayouts this lens.
-      // (The Service tree ignores the hidden set, exactly as its old branch did.)
+      // (The Service tree applies the hidden set to its GHOST tier only — cluster members still
+      // hide at paint time, exactly as its old branch did.)
       const hidden = state.showTests ? EMPTY_HIDDEN_IDS : state.index.testIds;
       const tree = activeModuleSurfaceSpec(state.viewMode).deriveTree(state, { graph, deps, flows }, { extraIds: state.mapExtra, hiddenIds: hidden });
       const laid = await layoutModuleTree(tree.nodes, tree.edges);
@@ -1112,6 +1117,42 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         mapExtra: new Set<string>(), // a focus jump ends the scratch "+" pins from the level we left.
       });
       void get().moduleRelayout();
+    },
+
+    // GHOST reveal on the SERVICE lens — the expand-based sibling of revealModule: resolve the
+    // ghost through the shared service placement (resolveServiceAnchors — the same pass the
+    // lens-carry and the scope opener read) and OPEN its owning cluster frame(s) in place, frames
+    // UNIONED into the current expansion, the node selected. A folded FOLDER group-ghost
+    // decomposes to every clustered unit beneath the folder, opening ALL their frames (the folder
+    // id stays the selection — the same id revealModule selects for a group ghost). NEVER a folder
+    // focus (this lens's reveal is an expand, not a jump). A live cluster ZOOM survives only when
+    // it already contains the ghost — else it clears WITH its cluster's frame joining the union
+    // (the zoom drew that frame force-open; exiting must not collapse the reader's context), and a
+    // scoped sub-view WIDENS by the owning leads, so the opened frame is actually on canvas. An
+    // unclustered ghost (an unowned helper, a folder with no clustered units) has no frame to
+    // open: best-effort select only, mirroring revealModule's tolerance.
+    revealServiceGhost(nodeId) {
+      const { index, moduleExpanded, moduleFocus, serviceScope } = get();
+      const resolution = resolveServiceAnchors([nodeId], index);
+      if (resolution === null) {
+        set({ moduleSelected: new Set([nodeId]) });
+        return;
+      }
+      const focusLead = moduleFocus === null ? null : leadIdOf(moduleFocus);
+      const staysInFocus = focusLead !== null && resolution.owningLeads.every((lead) => lead === focusLead);
+      const expanded = new Set([...moduleExpanded, ...resolution.reveal.moduleExpanded]);
+      if (!staysInFocus && focusLead !== null && moduleFocus !== null) {
+        expanded.add(moduleFocus);
+      }
+      set({
+        moduleFocus: staysInFocus ? moduleFocus : null,
+        serviceScope: widenServiceScope(serviceScope, resolution.owningLeads),
+        moduleExpanded: expanded,
+        moduleSelected: resolution.reveal.moduleSelected,
+      });
+      // `moduleExpanded` is shared with the minimal overlay; when one covers this lens the reveal
+      // must re-lay the overlay the reader can see, not the Map beneath it.
+      void relayoutActiveModuleSurface(get);
     },
 
     // ⌘P palette NAVIGATE: reveal a picked symbol in the current map lens. The Map goes to its real
@@ -1229,9 +1270,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // (members + their on-map 1-hop ghost ring). A fresh build discards any prior curation. Inert when
     // nothing is selected.
     buildMinimalGraph() {
-      // The active surface's spec decides how a selection seeds the overlay (identity on both
-      // lenses today; phase B decomposes a Service `svc:` frame into its cluster members).
-      const origin = activeModuleSurfaceSpec(get().viewMode).minimalSeeds([...get().moduleSelected]);
+      // The active surface's spec decides how a selection seeds the overlay: identity on the Map,
+      // while the Service lens decomposes a selected `svc:` frame into its cluster's member units.
+      const origin = activeModuleSurfaceSpec(get().viewMode).minimalSeeds([...get().moduleSelected], get().index);
       if (origin.length === 0) {
         return;
       }
@@ -1576,10 +1617,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     setViewMode(mode) {
       const previous = get().viewMode;
       if (previous === mode) {
-        // Re-clicking the ACTIVE Service tab is the escape hatch out of a scoped sub-view (the
-        // breadcrumb ✕ stays the primary exit); every other same-tab click remains a no-op.
+        // Re-clicking the ACTIVE Service tab is the escape hatch back to the FULL lens: the scoped
+        // sub-view exits AND any svc: cluster zoom clears (the breadcrumb stays the primary exit
+        // for each); every other same-tab click remains a no-op.
         if (mode === "call") {
           get().clearServiceScope();
+          const focus = get().moduleFocus;
+          if (focus !== null && leadIdOf(focus) !== null) {
+            get().setModuleFocus(null);
+          }
         }
         return;
       }
@@ -1660,16 +1706,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleSelected: showTests ? moduleSelected : new Set([...moduleSelected].filter((id) => !index.testIds.has(id))),
       });
       // The composition view hides test cards in place (paint-only), relayouting only when its OWN
-      // root was stranded inside now-hidden test code. The MODULE MAP relayouts instead: test code
-      // can be half a level's cards (and a wall of off-level test ghosts), and paint-hiding kept a
-      // crater of empty space — moduleRelayout re-derives the level with testIds excluded, so the
-      // survivors compact. Positions do move on this toggle, by design.
+      // root was stranded inside now-hidden test code. The MODULE surfaces relayout instead: on the
+      // Map test code can be half a level's cards (and a wall of off-level test ghosts), and
+      // paint-hiding kept a crater of empty space — moduleRelayout re-derives the level with
+      // testIds excluded, so the survivors compact. The Service lens re-derives for its GHOST tier
+      // (hidden test ghosts drop from the derive; members still paint-hide in place). Positions do
+      // move on this toggle, by design.
       const paintOnlyMode = viewMode === "call" || viewMode === "modules";
       const compRootChanged = nextCompRoot !== compRoot;
       if (!paintOnlyMode || compRootChanged) {
         void get().relayout();
       }
-      if (viewMode === "modules") {
+      if (paintOnlyMode) {
         void get().moduleRelayout();
         // An open minimal overlay derives its ghost-satellite ring with the same hidden set, so the
         // toggle refreshes it too (else stale test satellites linger over the recomputed Map).
@@ -2071,6 +2119,16 @@ function beginLensTransition(get: BlueprintStore["getState"], set: (partial: Par
   }
   if (get().serviceScope !== null) {
     set({ serviceScope: null });
+  }
+  // A svc: cluster zoom is CALL-LENS state — stale on the next visit and meaningless anywhere
+  // else: clear it so a lens entry that lands back on "call" (openComposition's pivot) can't hide
+  // its target under a lingering zoom. ONLY the `svc:` grammar clears — a Map folder focus is that
+  // lens's own state and must survive. The relayout matters for entries that never re-lay the
+  // module surface themselves; any entry that does supersedes it via the layout sequence guard.
+  const focus = get().moduleFocus;
+  if (focus !== null && leadIdOf(focus) !== null) {
+    set({ moduleFocus: null });
+    void get().moduleRelayout();
   }
 }
 

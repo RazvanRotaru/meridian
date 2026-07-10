@@ -71,7 +71,9 @@ const SHARED_KEYS = new Set<string>(["view", "env", "flow", "depth", "fexp", "fs
  * new lens must declare its keys here. */
 const LENS_KEYS: Record<ViewMode, readonly string[]> = {
   ui: ["focus", "sel", "expand"],
-  call: ["root", "csel"],
+  // The Service lens shares `mfocus` with the Map: its cluster zoom is a `svc:` frame id in the
+  // same store field, so a Service deep link restores the dive like any other focus.
+  call: ["root", "csel", "mfocus"],
   modules: ["mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide"],
   logic: ["lroot", "lview", "lstack", "lsel"],
   prs: ["prstate", "prn"],

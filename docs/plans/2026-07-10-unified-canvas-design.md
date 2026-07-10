@@ -85,16 +85,41 @@ ternaries (`moduleRelayout`, `useModuleNodeInteractions`, `applyScoped`, `module
   from frames.
 - **C — UI unification**: `deriveUiTree`, slice migration, component deletion.
 - **D — general promotion**: "+" on all surfaces → `mapExtra` pin (overlay unchanged).
-- **E — parity suite**: one table-driven spec executed against every surface (ghost emission,
-  expand/collapse round-trip, focus dive + crumbs, edge color families, minimal seeding,
-  promotion), plus a headless drive asserting identical interaction outcomes per lens.
+- **E — the CI parity suite**: the ONLY tests this project wants (user decision) — a table-driven
+  spec proving the four views behave the same, run in CI, plus a headless parity drive.
 
-## Testing the lenses behave the same (phase E detail)
+## Verifying the lenses behave the same (phase E detail)
 
-A `surfaceParity.test.ts` runs each capability against each `SurfaceSpec` over one fixture graph:
-same off-level dep ⇒ ghost with the same id everywhere; same expand toggle ⇒ same `moduleExpanded`
-delta; focus dive ⇒ breadcrumb crumbs with the surface's root label; same edge kind ⇒ same
-`REL_COLORS` stroke; same selection ⇒ same minimal seed set (frames decomposed); same ghost ⇒
-promotion lands in `mapExtra` (or overlay members). The headless drive replays one script
-(select → expand → focus → scope/dive → promote → extract) per lens and diffs the observable
-outcomes.
+**POC verification convention (user decisions, 2026-07-10): no TDD, and exactly one test suite.**
+Iterate first; features are verified by driving the app, not by writing tests. The single
+exception — explicitly wanted as CI tests — is the **cross-lens parity suite**: tests that the
+Map, Service, UI, and minimal-graph views behave the same. No other new tests ("just those").
+
+`surfaceParity.test.ts` runs each capability against each `SurfaceSpec` over one fixture graph:
+same off-level dep ⇒ ghost with the same node id everywhere; same expand toggle ⇒ same
+`moduleExpanded` delta and same cards drawn; focus dive ⇒ breadcrumb crumbs with the surface's
+root label; same edge kind ⇒ same relationship color; same selection ⇒ same minimal member set
+(frames decomposed); same ghost ⇒ promotion pins the same file. It runs with the normal vitest
+suite in CI. A headless Playwright drive (select → expand → focus dive → scope → ghost-reveal →
+promote → extract, replayed per lens with screenshots) backs it as the e2e layer, wired into the
+CLI's existing `e2e` script.
+
+## Known layout pathologies the unification must fix (user-reported)
+
+- **UI lens single-column stacking**: `buildElkGraph`'s root options lack `elk.aspectRatio`
+  (the Map sets 1.6, `moduleLevelLayout.ts:89`), so ELK stacks disconnected components
+  vertically. Phase C fixes this by construction — the UI projection adopts the Map's
+  `layoutModuleTree` path. Acceptance: a renders-forest with several roots lays out packed, not
+  one column.
+  **Enforcement (user: "make sure those elk options are never used again")**: the canonical root
+  options now live in `layout/elkCanvasOptions.ts` — the ONLY place `elk.*` root literals may be
+  defined (CLAUDE.md gotcha added). `moduleLevelLayout.ts` and `buildElkGraph.ts` switch to
+  importing it (the swap lands right after phase B to avoid colliding with its in-flight review;
+  phase C then deletes `buildElkGraph.ts` entirely). The CI parity suite asserts every
+  `SurfaceSpec` layout path uses `CANVAS_ROOT_ELK_OPTIONS` by identity, so a forked config can
+  never come back silently.
+- **Minimal overlay column growth on "+" promote**: `placeMinimalNodes` places promoted files
+  with no import edge to an already-placed member via `placeDisconnectedFiles`, which stacks
+  them in a vertical band (`V_STEP` stepping). Phase D fixes placement: a promoted ghost's home
+  file inherits the ghost card's current band position (it is already on screen — keep it where
+  the reader's eye is) instead of falling into the disconnected column.

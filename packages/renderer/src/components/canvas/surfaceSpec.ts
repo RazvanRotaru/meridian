@@ -1,13 +1,19 @@
 /**
- * The SurfaceSpec seam (unified-canvas phase A): the two module lenses — the folder Map and the
+ * The SurfaceSpec seam (unified-canvas phases A+B): the two module lenses — the folder Map and the
  * Service lens — declare how they differ from the shared canvas (`GraphSurface`), and a
  * viewMode → spec registry replaces the `viewMode === "call"` ternaries that used to be scattered
  * through the store (moduleRelayout / moduleTreeNodes / applyScoped / buildMinimalGraph) and the
- * interaction hook. The specs encode EXACTLY the historical branches — no new capabilities: the
- * Map dives a folder focus and reveals ghosts by refocusing; the Service lens has no focus model
- * and its tree derives no ghosts. The minimal overlay is NOT a spec (yet — see
- * `MINIMAL_OVERLAY_HIGHWAYS`): it spools its flat graph and defers every gesture to the lens
- * beneath it.
+ * interaction hook. Phase B gave the Service lens the Map's full capability set, per-surface where
+ * the semantics differ:
+ *
+ *   - FOCUS: both lenses zoom by double-click (`focus.dive` → moduleFocus), but the Map dives
+ *     folders AND files while the Service lens dives ONLY `svc:` cluster frames (`divableKinds`);
+ *     each surface names its own breadcrumb root and crumbs its own effective focus.
+ *   - GHOST REVEAL: the Map refocuses at the definition (`revealModule` — a focus jump); the
+ *     Service lens OPENS the owning cluster frame in place (`revealServiceGhost` — an expand,
+ *     never a folder focus).
+ *   - MINIMAL SEEDS: the Map extracts the selection verbatim; the Service lens decomposes a
+ *     selected `svc:` frame (a pseudo-id no overlay could draw) into its members' home FILES.
  *
  * Lives beside the canvas it configures. The STORE imports this module — the dependency points
  * store → spec, never spec → store (only pure derives and narrow structural state/action types),
@@ -21,6 +27,8 @@ import type { ModuleGraph } from "../../derive/moduleGraph";
 import type { BlockDeps } from "../../derive/blockDeps";
 import { deriveModuleTree, type ModuleTree } from "../../derive/moduleTree";
 import { deriveServiceTree } from "../../derive/serviceClusterTree";
+import { clusterMemberSeeds, leadIdOf } from "../../derive/serviceClusterEdges";
+import { clusteringFor } from "../../derive/serviceClusteringCache";
 import { scopeSetOf, type ServiceScope } from "../../state/serviceScope";
 
 /** Which of the Visual Highways passes apply to a surface's shape (always bundle → route → spool). */
@@ -59,52 +67,112 @@ export interface SurfaceTreeExtras {
 export interface SurfaceActions {
   setModuleFocus(id: string | null): void;
   revealModule(id: string): void;
+  revealServiceGhost(id: string): void;
+}
+
+/** One breadcrumb segment of a surface's containment trail. */
+export interface Crumb {
+  id: string;
+  label: string;
+}
+
+/** A surface's zoom model: how a dive lands and how the trail reads. Every surface holds its zoom
+ * in the ONE shared `moduleFocus` slot (phase C migrates the UI lens's `focusId` into it too), so
+ * there is deliberately no per-spec `of(state)` accessor — read `state.moduleFocus` directly. */
+export interface SurfaceFocusModel {
+  /** Zoom into a container card (the double-click dive); null == the surface has no focus model
+   * (containers expand in place instead). */
+  dive: ((actions: SurfaceActions, id: string) => void) | null;
+  /** Whether the dive gesture applies to THIS card (by its React Flow node type + id); a refusing
+   * container falls back to expand-in-place, exactly the chevron's gesture. */
+  divable(nodeType: string | undefined, id: string): boolean;
+  /** The breadcrumb's root segment ("Repository" / "All services") and its count noun. */
+  rootLabel: string;
+  rootNoun: string;
+  /** The trail below the root for the LAID-OUT effective focus (never a render-time re-derive of
+   * the tree — only of the trail labels, which are stable per index). */
+  crumbs(effectiveFocus: string | null, index: GraphIndex): Crumb[];
 }
 
 export interface SurfaceSpec {
   /** Derive the surface's visible tree — the ONLY required difference between surfaces. Its
    * `effectiveFocus` output lands in the store as `moduleEffectiveFocus`, and the breadcrumb
-   * renders from THAT laid-out slice (never a render-time re-derive), so the trail always matches
-   * the canvas on screen — even mid-lens-switch, before the new layout lands. A per-surface
-   * render-time focus model (`of`/`crumbs`) arrives with phase B, when a lens actually branches. */
+   * renders from THAT laid-out slice, so the trail always matches the canvas on screen — even
+   * mid-lens-switch, before the new layout lands. */
   deriveTree(state: SurfaceTreeState, caches: SurfaceCaches, extras?: SurfaceTreeExtras): ModuleTree;
-  /** Zoom into a container card (the double-click dive); null == the surface has no focus model
-   * (containers expand in place instead). */
-  dive: ((actions: SurfaceActions, id: string) => void) | null;
+  /** The surface's zoom model — dive gesture, breadcrumb root + trail. */
+  focus: SurfaceFocusModel;
   /** Surface a ghost card's real definition (the double-click gesture on a satellite). */
   ghostReveal(actions: SurfaceActions, id: string): void;
-  /** How a selection seeds the minimal-graph overlay (identity today; phase B decomposes frames). */
-  minimalSeeds(selection: readonly string[]): string[];
+  /** How a selection seeds the minimal-graph overlay: real ids pass through; the Service lens
+   * decomposes `svc:` frames into their cluster members' home FILE ids (the overlay draws
+   * file/folder boxes, never bare units). */
+  minimalSeeds(selection: readonly string[], index: GraphIndex): string[];
   highways: HighwayFlags;
 }
 
 const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
 const ALL_HIGHWAYS: HighwayFlags = { bundling: true, routing: true, spooling: true };
 
-/** The folder Map: focus = moduleFocus (containment dive), ghosts reveal by refocusing. */
+/** The Map's containment trail: package/file ancestors from the repo down to the focus, inclusive. */
+export function crumbsFor(focus: string | null, index: GraphIndex): Crumb[] {
+  if (focus === null) {
+    return [];
+  }
+  return index
+    .ancestorsOf(focus)
+    .filter((node) => node.kind === "package" || node.kind === "module")
+    .map((node) => ({ id: node.id, label: node.displayName ?? node.id }));
+}
+
+/** The Service trail: one segment — the focused cluster, by its lead's display name. */
+function serviceCrumbs(effectiveFocus: string | null, index: GraphIndex): Crumb[] {
+  const lead = effectiveFocus === null ? null : leadIdOf(effectiveFocus);
+  if (effectiveFocus === null || lead === null) {
+    return [];
+  }
+  return [{ id: effectiveFocus, label: clusteringFor(index).metrics.get(lead)?.displayName ?? lead }];
+}
+
+/** The folder Map: focus = moduleFocus (containment dive over folders AND files), ghosts reveal by
+ * refocusing at the definition. */
 const MAP_SURFACE: SurfaceSpec = {
   deriveTree: (state, caches, extras = {}) =>
     deriveModuleTree(state.index, state.moduleFocus, state.moduleExpanded, caches.graph, caches.deps, caches.flows, extras.extraIds ?? EMPTY_IDS, extras.hiddenIds ?? EMPTY_IDS),
-  dive: (actions, id) => actions.setModuleFocus(id),
+  focus: {
+    dive: (actions, id) => actions.setModuleFocus(id),
+    divable: (nodeType) => nodeType === "package" || nodeType === "file",
+    rootLabel: "Repository",
+    rootNoun: "packages",
+    crumbs: crumbsFor,
+  },
   ghostReveal: (actions, id) => actions.revealModule(id),
   minimalSeeds: (selection) => [...selection],
   highways: ALL_HIGHWAYS,
 };
 
-/** The Service lens: no zoom/focus (cluster frames expand in place). Its LEVEL tree emits no ghosts
- * today, but `ghostReveal` is LIVE here regardless: the minimal overlay always derives ghost
- * satellites and defers its gestures to the lens beneath (`viewMode` stays "call" while it covers
- * this canvas), so a satellite double-click in an overlay opened FROM the Service lens resolves
- * this spec — the shared reveal path is that gesture's landing, exactly as before the extraction.
- * Tests-toggle hiding never applied to this tree; that stands. */
+/** The Service lens: focus = ONE cluster (dive a `svc:` frame; Scope stays the coupling filter),
+ * ghosts from the shared projection with expand-based reveal — `revealServiceGhost` opens the
+ * owning frame in place and NEVER sets a folder focus. The minimal overlay defers its gestures to
+ * this spec while it covers the lens (`viewMode` stays "call"), exactly as before the extraction. */
 const SERVICE_SURFACE: SurfaceSpec = {
-  deriveTree: (state, caches, extras = {}) => ({
-    ...deriveServiceTree(state.index, state.moduleExpanded, caches.graph, caches.deps, caches.flows, scopeSetOf(state.serviceScope), extras.extraIds ?? EMPTY_IDS),
-    effectiveFocus: null,
-  }),
-  dive: null,
-  ghostReveal: (actions, id) => actions.revealModule(id),
-  minimalSeeds: (selection) => [...selection],
+  deriveTree: (state, caches, extras = {}) =>
+    deriveServiceTree(state.index, state.moduleFocus, state.moduleExpanded, caches.graph, caches.deps, caches.flows, {
+      scopeLeadIds: scopeSetOf(state.serviceScope),
+      extraIds: extras.extraIds,
+      hiddenIds: extras.hiddenIds,
+    }),
+  focus: {
+    dive: (actions, id) => actions.setModuleFocus(id),
+    // ONLY `svc:` cluster frames dive on this lens — a folder frame (the minimal overlay's home
+    // boxes) or a file card keeps its expand/select gesture, never a junk focus.
+    divable: (nodeType, id) => nodeType === "package" && leadIdOf(id) !== null,
+    rootLabel: "All services",
+    rootNoun: "services",
+    crumbs: serviceCrumbs,
+  },
+  ghostReveal: (actions, id) => actions.revealServiceGhost(id),
+  minimalSeeds: clusterMemberSeeds,
   highways: ALL_HIGHWAYS,
 };
 
@@ -113,7 +181,7 @@ const SERVICE_SURFACE: SurfaceSpec = {
  * its members+satellite tree is built by `minimalRelayout` (`buildMinimalSubgraph` mirrors
  * captured Map positions — a different input shape than `deriveTree`), and its gestures defer to
  * the UNDERLYING lens's spec by construction (`viewMode` stays "modules"/"call" while it covers
- * the Map, so the interaction hook resolves that spec). Folding it into the registry is phase B/C
+ * the Map, so the interaction hook resolves that spec). Folding it into the registry is phase C
  * work; until a real deriveTree exists, exporting only the flags keeps every spec member honest. */
 export const MINIMAL_OVERLAY_HIGHWAYS: HighwayFlags = { bundling: false, routing: false, spooling: true };
 

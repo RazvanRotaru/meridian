@@ -21,7 +21,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { Edge, Node, ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
-import { crumbsFor, BuildMinimalGraphButton, EmptyModuleMapCard, LevelBreadcrumb, ServiceScopeBreadcrumb } from "./ModuleMapChrome";
+import { BuildMinimalGraphButton, EmptyModuleMapCard, LevelBreadcrumb, ServiceScopeBreadcrumb } from "./ModuleMapChrome";
 import { filterVisible } from "./moduleMapPaint";
 import { CoveragePanel } from "./CoveragePanel";
 import { BeaconArrows } from "./BeaconArrows";
@@ -121,18 +121,32 @@ export function ModuleMapView() {
       flowExtras={renderBeacons}
     >
       {viewMode === "call" && serviceScope !== null ? (
-        // The scoped Service sub-view replaces the (focus-driven, here inert) containment trail
-        // with its exit: "All services › <scope> ✕".
-        <ServiceScopeBreadcrumb label={serviceScope.label} onClear={clearServiceScope} />
+        // The scoped Service sub-view's trail: "All services › <scope> ✕ [› <cluster>]" — the
+        // cluster zoom (spec.focus.crumbs of the laid-out focus) composes onto the scope segment.
+        // "All services" exits everything; ✕ drops the scope filter; the scope label (a button
+        // only while zoomed) steps back out of the dive.
+        <ServiceScopeBreadcrumb
+          label={serviceScope.label}
+          crumbs={spec.focus.crumbs(effectiveFocus, index)}
+          onClear={() => {
+            clearServiceScope();
+            setModuleFocus(null);
+          }}
+          onExitScope={clearServiceScope}
+          onFocus={setModuleFocus}
+        />
       ) : (
         // The breadcrumb reads the LAID-OUT level's focus (`moduleEffectiveFocus`, written by the
         // relayout from the spec's deriveTree) — never a render-time re-derive — so the trail
         // always matches the canvas on screen, even mid-lens-switch before the new layout lands.
+        // The spec names the root ("Repository" / "All services") and crumbs its own focus model.
         <LevelBreadcrumb
           focus={effectiveFocus}
-          packageCount={effectiveFocus === null ? nodes.filter((node) => !node.parentId).length : 0}
-          crumbs={crumbsFor(effectiveFocus, index)}
+          packageCount={effectiveFocus === null ? nodes.filter((node) => !node.parentId && node.type !== "ghost").length : 0}
+          crumbs={spec.focus.crumbs(effectiveFocus, index)}
           onFocus={setModuleFocus}
+          rootLabel={spec.focus.rootLabel}
+          rootNoun={spec.focus.rootNoun}
         />
       )}
       {selected.size >= 1 ? <BuildMinimalGraphButton count={selected.size} onBuild={buildMinimalGraph} /> : null}

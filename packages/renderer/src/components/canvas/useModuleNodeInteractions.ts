@@ -23,7 +23,6 @@ import type { BlockData } from "../../derive/moduleLevel";
 
 const SELECT_CLICK_DELAY_MS = 250;
 const PACKAGE_KIND = "package";
-const FILE_KIND = "file";
 
 export interface NodeInteractionOverrides {
   /** Return true to fully handle the click and skip the shared select/toggle path. */
@@ -44,7 +43,7 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
   // The minimal overlay reuses the UNDERLYING lens's spec by construction (`viewMode` stays
   // "modules"/"call" while it covers the Map), so its gestures are the Map's/Service's exactly.
   const spec = activeModuleSurfaceSpec(viewMode);
-  const { selectModule, toggleModuleSelect, setModuleFocus, toggleModuleExpand, revealModule, openLogicFlow } = useBlueprintActions();
+  const { selectModule, toggleModuleSelect, setModuleFocus, toggleModuleExpand, revealModule, revealServiceGhost, openLogicFlow } = useBlueprintActions();
   const pendingSelectTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const pendingSelectId = useRef<string | null>(null);
 
@@ -92,22 +91,23 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
       pendingSelectId.current = null;
     }, SELECT_CLICK_DELAY_MS);
   };
-  // Double-click follows the surface's spec: on a focus-model surface (the Map) a package/file card
-  // DIVES into it (setModuleFocus); on a focus-less surface (Service) a package frame expands in
-  // place instead. A GHOST reveals through the spec (the Map refocuses where its definition lives);
-  // a callable BLOCK opens its logic flow (the map→logic link); everything else only selects. The
+  // Double-click follows the surface's spec: a card whose kind the surface declares DIVABLE zooms
+  // (the Map dives packages AND files; the Service lens dives only its `svc:` cluster frames); any
+  // other package-kind container expands in place (the chevron's gesture). A GHOST reveals through
+  // the spec (the Map refocuses at the definition; the Service lens opens the owning frame); a
+  // callable BLOCK opens its logic flow (the map→logic link); everything else only selects. The
   // breadcrumb is the way back up.
   const onNodeDoubleClick: NodeMouseHandler<Node> = (event, node) => {
     if (overrides.onBeforeDoubleClick?.(event, node)) {
       return;
     }
     clearPendingSelect();
-    const surfaceActions = { setModuleFocus, revealModule };
-    const dive = spec.dive;
-    if (node.type === PACKAGE_KIND && dive === null) {
-      toggleModuleExpand(node.id);
-    } else if (dive !== null && (node.type === PACKAGE_KIND || node.type === FILE_KIND)) {
+    const surfaceActions = { setModuleFocus, revealModule, revealServiceGhost };
+    const { dive, divable } = spec.focus;
+    if (dive !== null && divable(node.type, node.id)) {
       dive(surfaceActions, node.id);
+    } else if (node.type === PACKAGE_KIND) {
+      toggleModuleExpand(node.id);
     } else if (node.type === "ghost") {
       spec.ghostReveal(surfaceActions, node.id);
     } else if (node.type === "block" && (node.data as BlockData).callable) {

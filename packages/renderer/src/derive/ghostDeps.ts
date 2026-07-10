@@ -139,7 +139,9 @@ export function nearestVisible(startId: string, visibleIds: ReadonlySet<string>,
   return null;
 }
 
-function ghostData(node: GraphNode): GhostData {
+/** What a real artifact node reads as when charted as a ghost card. Exported for the Service
+ * lens's cluster-level ghosts (serviceGhosts.ts), which share this one card vocabulary. */
+export function ghostData(node: GraphNode): GhostData {
   return {
     label: node.qualifiedName ?? node.displayName ?? node.id,
     context: node.location?.file ?? "",
