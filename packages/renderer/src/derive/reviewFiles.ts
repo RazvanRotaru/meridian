@@ -50,6 +50,11 @@ export function deriveReviewFiles(
   const affected = computeAffectedNodes(artifact.nodes, context.changedFiles);
   const unitsByFile = new Map<string, ReviewUnitRow[]>();
   for (const node of affected) {
+    // A hunk-less file's affected set is its MODULE node (core's honest fallback) — the file row
+    // itself already represents that; a container kind must never render as a checkable unit.
+    if (NON_BLOCK_KINDS.has(index.nodesById.get(node.nodeId)?.kind ?? "")) {
+      continue;
+    }
     const row = toUnitRow(node.nodeId, node.file, context, index);
     if (row) {
       const bucket = unitsByFile.get(node.file);

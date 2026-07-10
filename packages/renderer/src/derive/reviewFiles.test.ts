@@ -35,7 +35,7 @@ function contextOf(changedFiles: ReviewContext["changedFiles"]): ReviewContext {
 }
 
 describe("deriveReviewFiles", () => {
-  it("groups hunk-overlapping units per file, in-graph files FIRST, units by start line with depth", () => {
+  it("groups hunk-overlapping LEAF units per file, in-graph files FIRST, ordered by start line", () => {
     const context = contextOf([
       { path: "docs/readme.md", status: "modified", hunks: [{ start: 1, end: 3 }] },
       { path: "src/a.ts", status: "modified", hunks: [{ start: 25, end: 30 }] },
@@ -49,26 +49,25 @@ describe("deriveReviewFiles", () => {
     const [a, docs] = files;
     // The md file maps to no extracted block — a unit-less row, not a dropped one.
     expect(docs.units).toEqual([]);
-    // Module (file container) is excluded; helper (70..90) misses the 25..30 hunk.
-    expect(a.units.map((unit) => [unit.nodeId, unit.depth])).toEqual([
-      ["ts:src/a.ts#Repo", 0],
-      ["ts:src/a.ts#Repo.save", 1],
-    ]);
+    // Core marks LEAF blocks: the 25..30 hunk sits inside Repo.save, so the containing class does
+    // NOT mark (no own-line touch) and helper (70..90) misses it entirely.
+    expect(a.units.map((unit) => [unit.nodeId, unit.depth])).toEqual([["ts:src/a.ts#Repo.save", 1]]);
   });
 
-  it("falls back to every block in the file when a changed file carries no hunks", () => {
+  it("keeps a hunk-less changed file as a unit-less row (core's module-only fallback)", () => {
     const files = deriveReviewFiles(contextOf([{ path: "src/a.ts", status: "modified" }]), ARTIFACT, INDEX);
-    expect(files[0].units.map((unit) => unit.nodeId)).toEqual([
-      "ts:src/a.ts#Repo",
-      "ts:src/a.ts#Repo.save",
-      "ts:src/a.ts#helper",
-    ]);
+    // The module node carries the "file changed" graph signal, but a container kind must never
+    // render as a checkable unit — the file row itself represents it.
+    expect(files[0].moduleId).toBe("ts:src/a.ts");
+    expect(files[0].units).toEqual([]);
   });
 });
 
 describe("view state + tick transitions", () => {
+  // Two hunks so src/a.ts carries TWO leaf units (Repo.save + helper) — the cascade tests need a
+  // partly-viewed state to exist.
   const context = contextOf([
-    { path: "src/a.ts", status: "modified", hunks: [{ start: 25, end: 30 }] },
+    { path: "src/a.ts", status: "modified", hunks: [{ start: 25, end: 30 }, { start: 75, end: 80 }] },
     { path: "docs/readme.md", status: "deleted" },
   ]);
   const [a, docs] = deriveReviewFiles(context, ARTIFACT, INDEX);

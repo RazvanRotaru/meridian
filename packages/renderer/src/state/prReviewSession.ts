@@ -13,6 +13,7 @@ import { loadArtifact } from "../boot/loadArtifact";
 import { applyChangedIds, buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
 import type { FileMatch } from "../derive/matchAffectedFiles";
 import type { ReviewData } from "../derive/reviewData";
+import { deriveReviewFiles } from "../derive/reviewFiles";
 import { readReviewProgress } from "./reviewTicksPref";
 import type { BlueprintState } from "./store";
 
@@ -82,13 +83,23 @@ export function restorePrReviewBaseline(
   // marking (usually none), never a finished review's leftovers.
   applyChangedIds(baseline.index, collectChangedIds(baseline.artifact.nodes));
   invalidateArtifactCaches();
+  // An artifact-sourced review (the boot artifact carried one) gets its checklist + progress back;
+  // a plain session clears every review-owned field.
+  const progress = baseline.review ? readReviewProgress(baseline.review.context.reviewKey) : null;
   set({
     artifact: baseline.artifact,
     index: baseline.index,
     review: baseline.review,
-    reviewTicks: baseline.review ? readReviewProgress(baseline.review.context.reviewKey).ticks : {},
+    reviewTicks: progress?.ticks ?? {},
+    reviewUnitTicks: progress?.unitTicks ?? {},
+    reviewFileTicks: progress?.fileTicks ?? {},
+    reviewComments: progress?.comments ?? [],
+    reviewFiles: baseline.review ? deriveReviewFiles(baseline.review.context, baseline.artifact, baseline.index) : [],
+    reviewPanelHidden: false,
+    reviewSubmitStatus: "idle",
+    reviewSubmitError: null,
+    reviewSubmittedUrl: null,
     reviewAffectedIds: new Set<string>(),
-    reviewUnmapped: [],
     reviewLitNodeIds: null,
     reviewSelectedId: null,
     prReviewed: null,
