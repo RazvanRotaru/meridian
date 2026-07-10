@@ -8,19 +8,22 @@
 
 // Green is RESERVED for selection/caller-callee reads and amber for the diff highlight; node kinds
 // wear neither, so those two hues always mean one thing. Structural containers are cool (blue/teal);
-// type-shaped kinds share one violet — the "type world", echoing the extends/implements wires;
+// type-shaped kinds are a clean neutral grey — colour no longer marks them, the letter chip does;
 // callables are a distinct yellow.
+const NEUTRAL_ACCENT = "#7A8290";
+
 const KIND_COLORS: Record<string, string> = {
   package: "#5B9BE3",
   module: "#3FB7C4",
   namespace: "#3FB7C4",
-  // Every type-shaped declaration shares ONE violet; the glyph (◆ ◇ ❑ τ) tells class from interface
-  // from object from type — colour doesn't need to repeat what the glyph already says.
-  class: "#B87ED0",
-  object: "#B87ED0",
-  interface: "#B87ED0",
-  enum: "#B87ED0",
-  typeAlias: "#B87ED0",
+  // Every type-shaped declaration is the same quiet grey — colour doesn't distinguish class from
+  // interface from object from type; the letter chip (c / i / o / e / t) is the only kind marker.
+  // Keeps the type world calm so the coloured containers, callables, and wires carry the eye.
+  class: NEUTRAL_ACCENT,
+  object: NEUTRAL_ACCENT,
+  interface: NEUTRAL_ACCENT,
+  enum: NEUTRAL_ACCENT,
+  typeAlias: NEUTRAL_ACCENT,
   function: "#E3C36B",
   method: "#E3C36B",
   // Boundary nodes read as muted grey — they are outside the analyzed code.
@@ -32,8 +35,6 @@ const KIND_COLORS: Record<string, string> = {
   channel: "#E06CB0",
   system: "#8FB6E3",
 };
-
-const NEUTRAL_ACCENT = "#7A8290";
 
 export function accentForKind(kind: string): string {
   return KIND_COLORS[kind] ?? NEUTRAL_ACCENT;
