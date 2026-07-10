@@ -42,6 +42,7 @@ import type { Direction, ExpansionEntry } from "../derive/minimalSubgraph";
 import { seedModuleIdsFor } from "../derive/selectionSeeds";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/blockDeps";
+import { buildUnitIndex, type UnitIndex } from "@meridian/design-metrics";
 import { deriveModuleTree } from "../derive/moduleTree";
 import { moduleChildContainerIds } from "../derive/moduleChildContainers";
 import { deriveServiceTree } from "../derive/serviceClusterTree";
@@ -213,6 +214,10 @@ export interface BlueprintState {
   /** Cards the reader expanded IN PLACE on the Map (files into code, blocks into flow frames,
    * steps into deeper flows) — one id space, URL-round-tripped. A relayout concern. */
   moduleExpanded: Set<string>;
+  /** Nodes the reader pinned into the current map lens via ⌘P's "+" — drawn as EXTRA top-level cards
+   * (their owning unit/file) so an out-of-view symbol joins the Map or Service canvas. Shared by both
+   * lenses (they share the module slice). Session-only; cleared on a focus/lens change. */
+  mapExtra: Set<string>;
   /** Whether `private`-tagged members are painted on the Map. PAINT-ONLY like Tests/categories —
    * privates always get their space in the layout, so toggling never reshuffles positions. */
   showPrivate: boolean;
@@ -343,6 +348,12 @@ export interface BlueprintState {
   setModuleFocus(id: string | null): void;
   toggleModuleExpand(nodeId: string): void;
   revealModule(nodeId: string): void;
+  /** ⌘P palette navigate: reveal a picked symbol in the CURRENT map lens — the Map goes to its
+   * definition (revealModule), the Service lens pins + selects it. Inert outside the map lenses. */
+  revealInView(rawId: string): void;
+  /** ⌘P palette "+": pin a picked symbol INTO the current map lens (its owning unit/file) as an extra
+   * card, without navigating. Inert outside the map lenses. */
+  addToView(rawId: string): void;
   expandModuleChildren(containerId: string | null): void;
   collapseModuleChildren(containerId: string | null): void;
   togglePrivateMembers(): void;
@@ -415,6 +426,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let moduleGraph: ModuleGraph | null = null;
   // The code-dependency substrate (coupling edges at their real endpoints), same lifecycle.
   let blockDeps: BlockDeps | null = null;
+  // The composition unit index (member → owning unit), built lazily on the first ⌘P reveal/add so a
+  // picked symbol resolves to the unit/module card that draws it. Cached like moduleGraph/blockDeps.
+  let unitIndex: UnitIndex | null = null;
+  // Resolve any symbol to the card the map lenses actually draw: its nearest owning unit
+  // (class/interface/object), or its module for a top-level callable (module is itself a UNIT_KIND).
+  const resolveCard = (id: string): string => {
+    unitIndex ??= buildUnitIndex([...dependencies.index.nodesById.values()]);
+    return unitIndex.unitIdOf(id) ?? id;
+  };
   // And for the composition-tab method-preview drawer's logic layout (the EXPERIMENT surface).
   let compMethodLayoutSeq = 0;
   // Same guard for the Code flows explorer's embedded flow preview pane.
@@ -516,6 +536,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     hiddenRelKinds: new Set<string>(),
     moduleSelected: new Set<string>(),
     moduleExpanded: new Set<string>(),
+    mapExtra: new Set<string>(),
     showPrivate: true,
     minimalSeedIds: [],
     minimalKeptIds: [],
@@ -954,7 +975,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // while "modules" derives the folder containment level for the current focus. The import graph
     // is built once (cached) and reused for every folder level.
     async moduleRelayout() {
-      const { index, moduleFocus, moduleExpanded, artifact, viewMode } = get();
+      const { index, moduleFocus, moduleExpanded, mapExtra, artifact, viewMode } = get();
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
       const graph = (moduleGraph ??= buildModuleGraph(index));
@@ -962,9 +983,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       let layout: ModuleLevelLayout;
       if (viewMode === "call") {
-        layout = await deriveServiceLevelLayout(index, moduleExpanded, graph, deps, flows);
+        layout = await deriveServiceLevelLayout(index, moduleExpanded, graph, deps, flows, mapExtra);
       } else {
-        layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, graph, deps, flows);
+        layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, graph, deps, flows, mapExtra);
       }
       if (moduleLayoutSeq !== sequence) {
         return; // a newer focus change superseded this one.
@@ -985,7 +1006,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       // A new level is a fresh id space, so the prior expansion set means nothing here — clear it so
       // the new level opens with only its frontier shown (mirrors logic's reset-on-drill).
-      set({ moduleFocus: id, moduleSelected: new Set<string>(), moduleExpanded: new Set<string>() });
+      set({ moduleFocus: id, moduleSelected: new Set<string>(), moduleExpanded: new Set<string>(), mapExtra: new Set<string>() });
       void get().moduleRelayout();
     },
 
@@ -1016,8 +1037,41 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleFocus: directory?.id ?? null,
         moduleExpanded: expanded,
         moduleSelected: new Set([nodeId]),
+        mapExtra: new Set<string>(), // a focus jump ends the scratch "+" pins from the level we left.
       });
       void get().moduleRelayout();
+    },
+
+    // ⌘P palette NAVIGATE: reveal a picked symbol in the current map lens. The Map goes to its real
+    // definition (revealModule: refocus + expand its file/unit chain + select it). The Service lens has
+    // no focus, so it pins the symbol's owning card onto the canvas and selects it. Inert elsewhere —
+    // the palette opens a logic flow in logic/ui itself.
+    revealInView(rawId) {
+      const viewMode = get().viewMode;
+      if (viewMode === "modules") {
+        get().revealModule(rawId);
+        return;
+      }
+      if (viewMode === "call") {
+        const card = resolveCard(rawId);
+        set({ mapExtra: new Set(get().mapExtra).add(card), moduleSelected: new Set([card]) });
+        void get().moduleRelayout();
+      }
+    },
+
+    // ⌘P palette "+": pin a picked symbol's owning card (unit/file) INTO the current map lens WITHOUT
+    // navigating — a scratch card unioned into the next relayout. A no-op when already pinned or off a
+    // map lens. Both lenses share `mapExtra`, so the same pin surfaces in either.
+    addToView(rawId) {
+      const viewMode = get().viewMode;
+      if (viewMode !== "call" && viewMode !== "modules") {
+        return;
+      }
+      const card = resolveCard(rawId);
+      if (!get().mapExtra.has(card)) {
+        set({ mapExtra: new Set(get().mapExtra).add(card) });
+        void get().moduleRelayout();
+      }
     },
 
     // Expand one containment level under the target. `null` means the current view frontier; a
@@ -1120,8 +1174,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       // Snapshot the map's current on-screen file positions ONCE, at build — the overlay mirrors them,
-      // and re-capturing on growth would let already-placed cards jump.
-      set({ minimalSeedIds: seeds, minimalKeptIds: [], minimalExpanded: [], minimalBasePositions: captureMapPositions(get().moduleRfNodes) });
+      // and re-capturing on growth would let already-placed cards jump. A selection-built graph is not
+      // a PR review, so drop any stale prReviewed marker (else the PR-review card would show it).
+      set({ minimalSeedIds: seeds, minimalKeptIds: [], minimalExpanded: [], minimalBasePositions: captureMapPositions(get().moduleRfNodes), prReviewed: null });
       void get().minimalRelayout();
     },
 
@@ -1251,7 +1306,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // never a focus inherited from a prior visit. A shared/reloaded deep link is unaffected: it
       // restores via setState on boot (not this click path), so an explicit ?mfocus=… still opens.
       if (mode === "modules" || mode === "call") {
-        set({ viewMode: mode, moduleFocus: null, moduleExpanded: new Set<string>(), moduleSelected: new Set<string>() });
+        set({ viewMode: mode, moduleFocus: null, moduleExpanded: new Set<string>(), moduleSelected: new Set<string>(), mapExtra: new Set<string>() });
         void get().moduleRelayout();
         return;
       }

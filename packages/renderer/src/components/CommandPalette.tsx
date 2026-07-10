@@ -1,32 +1,41 @@
 /**
  * A global VS Code-style quick-open dialog: press Cmd+P (mac) / Ctrl+P (win/linux) in ANY view to
- * open a centered search box, type to substring-match symbols, and Enter/click to jump straight to
- * that symbol's logic flow. It's mounted once by BlueprintCanvas so the shortcut works everywhere —
- * the empty-state picker in the Logic tab only helps before a flow is open; this switches at will.
+ * open a centered search box and type to substring-match nodes. What Enter does depends on the view:
  *
- * It reads the graph off the store but never mutates it beyond calling `openLogicFlow`, so it stays
- * a pure overlay on top of whichever view is showing.
+ *   - The MAP lenses (Map = "modules", Service = "call") REVEAL the pick — the Map goes to its
+ *     definition, the Service lens pins + selects it — via `revealInView`, and every row carries a
+ *     "+" that instead ADDS the node into the current lens (`addToView`) without navigating, grafting
+ *     an out-of-scope symbol onto the canvas. ⌘/Ctrl+↵ adds from the keyboard; the palette stays open
+ *     so several nodes can be added in a row.
+ *   - Logic / UI views open the pick's intra-procedural logic flow (`openLogicFlow`); no "+" there.
+ *
+ * A picked symbol is resolved to the card the lens draws (its owning unit or module) by the store, so
+ * searching a bare function still reveals/adds the class or file it lives in. Mounted once by
+ * BlueprintCanvas so the shortcut works everywhere; a pure overlay that only calls store actions.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { GraphArtifact, GraphNode, NodeId } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
+import type { ViewMode } from "../derive/edgeSelection";
 
+// The map lenses: here a pick is REVEALED (navigate) or ADDED ("+") into the current graph.
+const MAP_VIEWS: ReadonlySet<ViewMode> = new Set<ViewMode>(["call", "modules"]);
+// Map mode searches every navigable node — a bare function resolves to its owning unit/module on pick.
+const MAP_KINDS = new Set(["function", "method", "module", "package", "class", "interface", "object"]);
 // Logic/UI mode: only callables and modules have a meaningful logic flow to open.
 const LOGIC_KINDS = new Set(["function", "method", "module"]);
-// Composition ("call") mode: the structural roots the tab can open rooted at — modules and packages.
-const ROOT_KINDS = new Set(["module", "package"]);
 // Cap the list so a huge graph never renders thousands of rows into the scroll container.
 const MAX_ROWS = 40;
 
-/** One searchable symbol row, pre-computed once so keystrokes only filter (never re-scan the graph). */
+/** One searchable node row, pre-computed once so keystrokes only filter (never re-scan the graph). */
 interface SymbolEntry {
   id: NodeId;
   displayName: string;
   qualifiedName: string;
   file: string;
   kind: string;
-  /** Steps in this symbol's logic flow, or null when it ships none (opens an empty flow). */
+  /** Steps in this node's logic flow, or null when it ships none (a container, or an empty body). */
   stepCount: number | null;
 }
 
@@ -34,14 +43,14 @@ export function CommandPalette() {
   const artifact = useBlueprint((state) => state.artifact);
   const index = useBlueprint((state) => state.index);
   const viewMode = useBlueprint((state) => state.viewMode);
-  const { openLogicFlow, setCompRoot } = useBlueprintActions();
-  // The "call" lens IS the Service-composition graph, so there ⌘P re-roots it; logic/ui open a flow.
-  const compositionMode = viewMode === "call";
+  const { openLogicFlow, revealInView, addToView } = useBlueprintActions();
+  // In a map lens, the palette reveals/adds a graph node; elsewhere it opens a logic flow.
+  const isMap = MAP_VIEWS.has(viewMode);
 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [highlighted, setHighlighted] = useState(0);
-  const activeRowRef = useRef<HTMLButtonElement | null>(null);
+  const activeRowRef = useRef<HTMLDivElement | null>(null);
 
   // The global shortcut. Cmd/Ctrl+P is the browser's Print dialog, so preventDefault is CRITICAL —
   // without it the print window steals the keystroke and the palette never opens. Pressing it again
@@ -65,10 +74,10 @@ export function CommandPalette() {
     }
   }, [open]);
 
-  // Rank once per artifact + mode (not on every keystroke): logic ranks flow-bearing symbols first;
-  // composition lists modules/packages by name. The order carries through the substring filter below.
-  const symbols = useMemo(() => collectSymbols(artifact, index.nodesById, compositionMode), [artifact, index.nodesById, compositionMode]);
-  const results = useMemo(() => selectResults(symbols, query, compositionMode), [symbols, query, compositionMode]);
+  // Rank once per artifact + mode (not on every keystroke): map lists every navigable node by name;
+  // logic ranks flow-bearing symbols first. The order carries through the substring filter below.
+  const symbols = useMemo(() => collectSymbols(artifact, index.nodesById, isMap), [artifact, index.nodesById, isMap]);
+  const results = useMemo(() => selectResults(symbols, query, isMap), [symbols, query, isMap]);
 
   // Typing shifts the result set, so re-prime the highlight to the top match.
   useEffect(() => {
@@ -86,18 +95,23 @@ export function CommandPalette() {
   }
 
   const close = () => setOpen(false);
-  // Composition mode re-roots the graph at the pick; logic/ui open its logic flow. Either way, close.
+  // Enter/click a row: a map lens reveals it (go-to / pin+select), logic/ui opens its logic flow. Close.
   const openPick = (id: NodeId) => {
-    if (compositionMode) {
-      setCompRoot(id);
+    if (isMap) {
+      revealInView(id);
     } else {
       openLogicFlow(id);
     }
     close();
   };
+  // The "+" (map lenses only): pin the node into the current lens WITHOUT navigating. Stay open so a
+  // reader can add several nodes before dismissing to see the result on the canvas.
+  const addPick = (id: NodeId) => {
+    addToView(id);
+  };
 
-  // Arrow keys move the highlight (clamped to the list); Enter opens it; Escape closes. preventDefault
-  // on the arrows stops the caret from also jumping to the input's start/end.
+  // Arrow keys move the highlight (clamped to the list); Enter reveals it, ⌘/Ctrl+Enter adds it (map
+  // lenses); Escape closes. preventDefault on the arrows stops the caret jumping to the input's ends.
   const onInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "ArrowDown") {
       event.preventDefault();
@@ -108,7 +122,12 @@ export function CommandPalette() {
     } else if (event.key === "Enter") {
       event.preventDefault();
       const pick = results[highlighted];
-      if (pick) {
+      if (!pick) {
+        return;
+      }
+      if (isMap && (event.metaKey || event.ctrlKey)) {
+        addPick(pick.id);
+      } else {
         openPick(pick.id);
       }
     } else if (event.key === "Escape") {
@@ -120,11 +139,11 @@ export function CommandPalette() {
   // Backdrop click closes; clicks inside the dialog are swallowed so they don't reach it.
   return (
     <div style={BACKDROP_STYLE} onClick={close}>
-      <div style={DIALOG_STYLE} role="dialog" aria-modal aria-label={compositionMode ? "Root the composition at a module or package" : "Open a symbol's logic flow"} onClick={(e) => e.stopPropagation()}>
+      <div style={DIALOG_STYLE} role="dialog" aria-modal aria-label={isMap ? "Reveal or add a node in the current view" : "Open a symbol's logic flow"} onClick={(e) => e.stopPropagation()}>
         <input
           style={INPUT_STYLE}
           autoFocus
-          placeholder={compositionMode ? "Root the composition at…" : "Search a symbol to open its logic flow…"}
+          placeholder={isMap ? "Reveal a node — Enter to go there, + to add it here…" : "Search a symbol to open its logic flow…"}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={onInputKeyDown}
@@ -136,60 +155,73 @@ export function CommandPalette() {
                 key={entry.id}
                 entry={entry}
                 active={row === highlighted}
+                canAdd={isMap}
                 activeRef={row === highlighted ? activeRowRef : undefined}
                 onHover={() => setHighlighted(row)}
                 onOpen={() => openPick(entry.id)}
+                onAdd={() => addPick(entry.id)}
               />
             ))
           ) : (
-            <div style={EMPTY_STYLE}>No symbol matches “{query.trim()}”.</div>
+            <div style={EMPTY_STYLE}>No node matches “{query.trim()}”.</div>
           )}
         </div>
-        <div style={FOOTER_STYLE}>↑↓ navigate · ↵ open · esc close</div>
+        <div style={FOOTER_STYLE}>{isMap ? "↑↓ navigate · ↵ reveal · ⌘↵ add · esc close" : "↑↓ navigate · ↵ open · esc close"}</div>
       </div>
     </div>
   );
 }
 
-/** One result: name over a faint (mono) qualified name/path, a step-count chip when it has a flow, a kind tag. */
+/** One result: name over a faint (mono) qualified name/path, a step-count chip when it has a flow, a
+ * kind tag, and — in a map lens — a "+" that adds the node to the current view without navigating. */
 function ResultRow(props: {
   entry: SymbolEntry;
   active: boolean;
-  activeRef?: React.Ref<HTMLButtonElement>;
+  canAdd: boolean;
+  activeRef?: React.Ref<HTMLDivElement>;
   onHover: () => void;
   onOpen: () => void;
+  onAdd: () => void;
 }) {
   const { entry } = props;
   return (
-    <button
-      type="button"
-      ref={props.activeRef}
-      style={props.active ? ROW_ACTIVE_STYLE : ROW_STYLE}
-      title={entry.id}
-      onMouseEnter={props.onHover}
-      onClick={props.onOpen}
-    >
-      <span style={ROW_MAIN_STYLE}>
-        <span style={ROW_NAME_STYLE}>{entry.displayName}</span>
-        <span style={ROW_SECONDARY_STYLE}>{entry.qualifiedName || entry.file}</span>
-      </span>
-      {entry.stepCount !== null ? (
-        <span style={STEP_CHIP_STYLE}>{entry.stepCount} steps</span>
-      ) : null}
+    <div ref={props.activeRef} style={props.active ? ROW_ACTIVE_STYLE : ROW_STYLE} onMouseEnter={props.onHover}>
+      <button type="button" style={ROW_MAIN_BUTTON_STYLE} title={entry.id} onClick={props.onOpen}>
+        <span style={ROW_MAIN_STYLE}>
+          <span style={ROW_NAME_STYLE}>{entry.displayName}</span>
+          <span style={ROW_SECONDARY_STYLE}>{entry.qualifiedName || entry.file}</span>
+        </span>
+      </button>
+      {entry.stepCount !== null ? <span style={STEP_CHIP_STYLE}>{entry.stepCount} steps</span> : null}
       <span style={kindTagStyle(entry.kind)}>{entry.kind}</span>
-    </button>
+      {props.canAdd ? (
+        <button
+          type="button"
+          style={ADD_BUTTON_STYLE}
+          title="Add this node to the current view"
+          aria-label={`Add ${entry.displayName} to the current view`}
+          onClick={(event) => {
+            event.stopPropagation();
+            props.onAdd();
+          }}
+        >
+          +
+        </button>
+      ) : null}
+    </div>
   );
 }
 
 /**
- * The searchable rows for the current mode. Logic/UI: every function/method/module, sorted
- * flow-bearing first (then alphabetically) so flow-openable symbols rank above those without.
- * Composition: every module/package (the structural roots), no step count — they sort by name.
- * Both preserve their order through the substring filter. `logicFlow` is a loose extension record.
+ * The searchable rows for the current mode. Map lenses: every navigable node (function/method/module/
+ * package/class/interface/object), sorted by name — a pick resolves to its drawable card on
+ * reveal/add. Logic/UI: every function/method/module, flow-bearing first (then alphabetically) so
+ * flow-openable symbols rank above those without. Both preserve their order through the substring
+ * filter. `logicFlow` is a loose extension record.
  */
-function collectSymbols(artifact: GraphArtifact, nodesById: ReadonlyMap<string, GraphNode>, compositionMode: boolean): SymbolEntry[] {
-  const flows = compositionMode ? {} : ((artifact.extensions?.logicFlow ?? {}) as unknown as Record<string, unknown[]>);
-  const kinds = compositionMode ? ROOT_KINDS : LOGIC_KINDS;
+function collectSymbols(artifact: GraphArtifact, nodesById: ReadonlyMap<string, GraphNode>, isMap: boolean): SymbolEntry[] {
+  const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as Record<string, unknown[]>;
+  const kinds = isMap ? MAP_KINDS : LOGIC_KINDS;
   const entries: SymbolEntry[] = [];
   for (const node of nodesById.values()) {
     if (!kinds.has(node.kind)) {
@@ -206,8 +238,13 @@ function collectSymbols(artifact: GraphArtifact, nodesById: ReadonlyMap<string, 
       stepCount: Array.isArray(steps) ? steps.filter((step) => (step as { kind?: string }).kind !== "exit").length : null,
     });
   }
-  entries.sort(byFlowThenName);
+  entries.sort(isMap ? byName : byFlowThenName);
   return entries;
+}
+
+// Plain alphabetical, for the map lenses where every row is equally navigable.
+function byName(a: SymbolEntry, b: SymbolEntry): number {
+  return a.displayName.localeCompare(b.displayName);
 }
 
 // Flow-bearing symbols float to the top; ties break alphabetically for a stable, scannable list.
@@ -217,14 +254,14 @@ function byFlowThenName(a: SymbolEntry, b: SymbolEntry): number {
 }
 
 /**
- * The rows to show: with no query, a sensible default set — composition shows the top roots, logic
- * shows the top flow-bearing symbols (the ones worth jumping into); with a query, symbols whose
- * display OR qualified name contains the (lowercased) needle. Capped.
+ * The rows to show: with no query, a sensible default set — a map lens shows the top nodes, logic
+ * shows the top flow-bearing symbols (the ones worth jumping into); with a query, nodes whose display
+ * OR qualified name contains the (lowercased) needle. Capped.
  */
-function selectResults(symbols: SymbolEntry[], query: string, compositionMode: boolean): SymbolEntry[] {
+function selectResults(symbols: SymbolEntry[], query: string, isMap: boolean): SymbolEntry[] {
   const needle = query.trim().toLowerCase();
   if (!needle) {
-    const base = compositionMode ? symbols : symbols.filter((entry) => entry.stepCount !== null);
+    const base = isMap ? symbols : symbols.filter((entry) => entry.stepCount !== null);
     return base.slice(0, MAX_ROWS);
   }
   const matched: SymbolEntry[] = [];
@@ -296,16 +333,27 @@ const ROW_STYLE: React.CSSProperties = {
   alignItems: "center",
   gap: 10,
   width: "100%",
-  textAlign: "left",
   borderRadius: 6,
   border: "1px solid transparent",
   background: "transparent",
-  color: "#9AA4B2",
   padding: "6px 10px",
+};
+const ROW_ACTIVE_STYLE: React.CSSProperties = { ...ROW_STYLE, background: "#1D2733", border: "1px solid #2A2F37" };
+// The row's main click target (reveal/open) — a borderless button filling the row minus the trailing
+// chips/tag/add, so the name area is one big hit box.
+const ROW_MAIN_BUTTON_STYLE: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  flex: 1,
+  minWidth: 0,
+  textAlign: "left",
+  border: "none",
+  background: "transparent",
+  color: "#9AA4B2",
+  padding: 0,
   cursor: "pointer",
   font: "inherit",
 };
-const ROW_ACTIVE_STYLE: React.CSSProperties = { ...ROW_STYLE, background: "#1D2733", border: "1px solid #2A2F37" };
 const ROW_MAIN_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 1, flex: 1, minWidth: 0 };
 const ROW_NAME_STYLE: React.CSSProperties = {
   fontSize: 13,
@@ -341,6 +389,25 @@ const KIND_TAG_STYLE: React.CSSProperties = {
   borderRadius: 4,
   padding: "1px 6px",
   color: "#7B8695",
+};
+// The "+" affordance: a compact square button that adds the row's node to the current view. Accented
+// so it reads as the secondary action next to the primary (row) click.
+const ADD_BUTTON_STYLE: React.CSSProperties = {
+  flex: "0 0 auto",
+  width: 22,
+  height: 22,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontSize: 15,
+  lineHeight: 1,
+  fontWeight: 600,
+  borderRadius: 5,
+  border: "1px solid #2C4133",
+  background: "#14261B",
+  color: "#56C271",
+  cursor: "pointer",
+  font: "inherit",
 };
 
 // Accent the module tag green — a module's top-level flow is the app/boot init, the place to start.
