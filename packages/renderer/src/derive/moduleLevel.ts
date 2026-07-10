@@ -106,18 +106,46 @@ export interface FileExpansion {
   unitCount: number;
 }
 
-export function fileData(id: string, graph: ModuleGraph, index: GraphIndex, entryId: string | null, expansion: FileExpansion): ModuleCardData {
+const NO_HIDDEN: ReadonlySet<string> = new Set<string>();
+
+export function fileData(
+  id: string,
+  graph: ModuleGraph,
+  index: GraphIndex,
+  entryId: string | null,
+  expansion: FileExpansion,
+  hiddenIds: ReadonlySet<string> = NO_HIDDEN,
+): ModuleCardData {
   const modulePath = parseNodeId(id).modulePath;
   const isEntry = id === entryId;
   return {
     label: index.nodesById.get(id)?.displayName ?? basename(modulePath),
     fullPath: modulePath,
     category: isEntry ? "entry" : categorize(modulePath),
-    inCount: graph.in.get(id)?.size ?? 0,
-    outCount: graph.out.get(id)?.size ?? 0,
+    // The badges count what the level actually shows: partners hidden by the Tests toggle (which
+    // EXCLUDES their nodes and wires from the layout) don't count — "in 44" with the 30 test wires
+    // hidden would be a claim the canvas visibly contradicts.
+    inCount: countVisible(graph.in.get(id), hiddenIds),
+    outCount: countVisible(graph.out.get(id), hiddenIds),
     isEntry,
     ...expansion,
   };
+}
+
+function countVisible(partners: ReadonlySet<string> | undefined, hiddenIds: ReadonlySet<string>): number {
+  if (!partners) {
+    return 0;
+  }
+  if (hiddenIds.size === 0) {
+    return partners.size;
+  }
+  let count = 0;
+  for (const partner of partners) {
+    if (!hiddenIds.has(partner)) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 export function basename(modulePath: string): string {
