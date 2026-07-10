@@ -84,7 +84,7 @@ export function RibbonEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosit
       )}
       {/* The invisible spine: one hit area for the whole cable, and the direction pulse's track. */}
       <BaseEdge id={id} path={spine} style={SPINE} interactionWidth={interactionWidth ?? 16} />
-      <WirePulse path={spine} style={{ opacity: anyLit ? 1 : 0 }} data={{ pulse: ribbon.pulse }} />
+      <WirePulse path={spine} style={{ opacity: anyLit ? 1 : 0, strokeWidth: bandWidth }} data={{ pulse: ribbon.pulse }} />
     </>
   );
 }
