@@ -50,14 +50,22 @@ export function computeAffectedNodes(
   changedFiles: readonly ChangedFile[],
 ): AffectedNode[] {
   const statusByFile = new Map(changedFiles.map((file) => [file.path, file.status]));
-  const hunksByFile = new Map(changedFiles.map((file) => [file.path, file.hunks]));
+  // Prefer base-side ranges: node.location is base-relative on a review overlaid on the BASE graph,
+  // so matching new-side hunks would spill onto the next declaration after an addition. `oldHunks`
+  // is absent on a head-accurate graph (analyze/`--changed-since`), where `hunks` (new-side) aligns.
+  const hunksByFile = new Map(changedFiles.map((file) => [file.path, file.oldHunks ?? file.hunks]));
   const childSpans = childSpansByParent(nodes);
   const affected: AffectedNode[] = [];
+  const moduleByFile = new Map<string, GraphNode>();
+  const fileMarkedABlock = new Set<string>();
   for (const node of nodes) {
     const file = node.location.file;
     const status = statusByFile.get(file);
     if (status === undefined) {
       continue;
+    }
+    if (node.kind === "module") {
+      moduleByFile.set(file, node);
     }
     const hunks = hunksByFile.get(file);
     if (hunks === undefined) {
@@ -70,6 +78,17 @@ export function computeAffectedNodes(
     }
     if (isBlockKind(node) && marksFromHunks(node, hunks, childSpans.get(node.id))) {
       affected.push({ nodeId: node.id, status, file, overlapsHunk: true });
+      fileMarkedABlock.add(file);
+    }
+  }
+  // Hunks-present-but-no-block fallback: a file whose diff overlapped NONE of its extracted units
+  // (e.g. a `.test.ts` whose changes live in `it()`/`describe()` callbacks the extractor doesn't
+  // surface as nodes, or a change confined to imports/top-level) still changed — ring its module so
+  // the card shows as touched instead of looking untouched. Mirrors the hunk-less module fallback.
+  for (const [file, moduleNode] of moduleByFile) {
+    // Only files that HAD hunks but matched no block — hunk-less files already rang above.
+    if (hunksByFile.get(file) !== undefined && !fileMarkedABlock.has(file)) {
+      affected.push({ nodeId: moduleNode.id, status: statusByFile.get(file)!, file, overlapsHunk: false });
     }
   }
   return sortAffected(affected);

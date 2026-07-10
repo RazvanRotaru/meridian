@@ -106,6 +106,8 @@ export function restorePrReviewBaseline(
     reviewActiveGroupId: null,
     reviewAllSeedIds: [],
     prReviewed: null,
+    reviewHeadRef: null,
+    reviewDiffByFile: {},
     prReviewBaseline: null,
     prPreparedGraphId: null,
     coverage: get().coverageMode ? computeCoverage(baseline.artifact.nodes, baseline.artifact.edges) : null,

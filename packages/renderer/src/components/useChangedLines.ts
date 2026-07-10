@@ -89,5 +89,23 @@ export function useChangeSummary(node: GraphNode | undefined, wholeFile = false)
   }, [extensions, node, wholeFile]);
 }
 
+/**
+ * Summarize an already-computed per-line kind map (the PR-review code panel carries its own, keyed to
+ * the PR head — not the artifact's `changedSince`). Added-or-modified count as added rows; the head
+ * file has no deleted rows, so `deleted` is 0 there. Null when nothing changed.
+ */
+export function summarizeChangeKinds(kinds: ReadonlyMap<number, ChangedLineKind>): NodeChangeSummary | null {
+  let added = 0;
+  let deleted = 0;
+  for (const kind of kinds.values()) {
+    if (kind === "deleted") {
+      deleted += 1;
+    } else {
+      added += 1;
+    }
+  }
+  return added === 0 && deleted === 0 ? null : { added, deleted, touched: added + deleted };
+}
+
 const EMPTY: ReadonlySet<number> = new Set();
 const EMPTY_KINDS: ReadonlyMap<number, ChangedLineKind> = new Map();

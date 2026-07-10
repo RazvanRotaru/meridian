@@ -92,6 +92,42 @@ export function fetchPullRequestFiles(request: PullRequestFilesRequest): Promise
   return fetchPullRequestFilesWithFetch(globalThis.fetch, request);
 }
 
+export interface FileAtRefRequest {
+  owner: string;
+  repo: string;
+  ref: string;
+  path: string;
+  token?: string;
+}
+
+export interface FileAtRefResult {
+  code: string;
+  truncated: boolean;
+}
+
+/** One file's text content at a git ref (the PR head), for the review code panel. */
+export function fetchFileAtRef(request: FileAtRefRequest): Promise<FileAtRefResult> {
+  return fetchFileAtRefWithFetch(globalThis.fetch, request);
+}
+
+const FILE_AT_REF_MAX_BYTES = 2_000_000;
+
+async function fetchFileAtRefWithFetch(fetchImpl: typeof fetch, request: FileAtRefRequest): Promise<FileAtRefResult> {
+  // GitHub's Contents API keeps the path segments as `/` (encodeURIComponent per segment) and takes
+  // the ref as a query param; a private repo's fetch rides the same token as every other call here.
+  const segments = request.path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+  const params = new URLSearchParams({ ref: request.ref });
+  const json = await getApiOrNull(fetchImpl, repoApi(request.owner, request.repo, `/contents/${segments}?${params}`), request.token);
+  const raw = (json as { content?: unknown; encoding?: unknown } | null) ?? null;
+  if (!raw || typeof raw.content !== "string" || raw.encoding !== "base64") {
+    // Files over ~1MB come back without inline content; treat as unavailable rather than guessing.
+    return { code: "", truncated: true };
+  }
+  const bytes = Buffer.from(raw.content, "base64");
+  const capped = bytes.length > FILE_AT_REF_MAX_BYTES;
+  return { code: (capped ? bytes.subarray(0, FILE_AT_REF_MAX_BYTES) : bytes).toString("utf8"), truncated: capped };
+}
+
 async function requestDeviceCode(fetchImpl: typeof fetch, clientId: string): Promise<DeviceCode> {
   return parseDeviceCodeResponse(await postForm(fetchImpl, DEVICE_CODE_URL, { client_id: clientId, scope: SCOPE }));
 }
