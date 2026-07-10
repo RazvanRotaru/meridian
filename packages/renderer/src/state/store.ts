@@ -7,9 +7,8 @@
 
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { Edge, Node } from "@xyflow/react";
-import { changedRangesFromExtensions, computeAffectedNodes, computeCoverage, unmappedChangedFiles } from "@meridian/core";
+import { changedRangesFromExtensions, computeAffectedNodes, computeCoverage } from "@meridian/core";
 import type {
-  ChangedFile,
   CoverageReport,
   FlowPath,
   FlowStep,
@@ -60,8 +59,10 @@ import {
   type PrReviewBaseline,
 } from "./prReviewSession";
 import { deriveReviewData, deriveReviewDataFromContext, applyTick, type ReviewData } from "../derive/reviewData";
-import { readReviewProgress, writeReviewProgress, clearReviewProgress, type ReviewTick } from "./reviewTicksPref";
+import { readReviewProgress, writeReviewProgress, type ReviewComment, type ReviewProgress, type ReviewTick } from "./reviewTicksPref";
 import { reviewContextFromPrFiles } from "../derive/prReviewContext";
+import { applyFileToggle, applyUnitTick, deriveReviewFiles, type ReviewFileRow } from "../derive/reviewFiles";
+import { buildReviewSubmission } from "../derive/reviewSubmit";
 
 /**
  * The "All" setting for the related-flows depth dial: a depth larger than any real call-graph chain.
@@ -245,10 +246,22 @@ export interface BlueprintState {
   review: ReviewData | null;
   /** Artifact node ids that are affected — the coupling set between the graph and the flow panel. */
   reviewAffectedIds: Set<string>;
-  /** Changed files that mapped to no code block (deleted / not-extracted / edits outside any block). */
-  reviewUnmapped: ChangedFile[];
+  /** Every changed file as a checklist row (touched units inside; empty units == not in the graph). */
+  reviewFiles: ReviewFileRow[];
   /** Per-flow review progress, keyed by flowId, persisted to localStorage under the reviewKey. */
   reviewTicks: Record<string, ReviewTick>;
+  /** Per-unit ticks of the files checklist, keyed by nodeId — same persistence as reviewTicks. */
+  reviewUnitTicks: Record<string, ReviewTick>;
+  /** Explicit per-file viewed ticks, keyed by path (unit-less files only; else units derive it). */
+  reviewFileTicks: Record<string, ReviewTick>;
+  /** Draft review comments (file- or unit-anchored), persisted until submitted. */
+  reviewComments: ReviewComment[];
+  /** Hides the review side panel so the graph takes the full width; session-only. */
+  reviewPanelHidden: boolean;
+  reviewSubmitStatus: "idle" | "submitting";
+  reviewSubmitError: string | null;
+  /** html_url of the last submitted review; shows a "view on GitHub" confirmation. */
+  reviewSubmittedUrl: string | null;
   /** The graph node ids lit by a panel hover; null == nothing hovered (all blocks full strength). */
   reviewLitNodeIds: Set<string> | null;
   /** The selected review block/flow id; drives the graph selection ring and the panel row highlight. */
@@ -378,6 +391,14 @@ export interface BlueprintState {
   selectReviewNode(id: string | null): void;
   toggleReviewTick(flowId: string): void;
   resetReviewTicks(): void;
+  /** Reveal a changed file on the review graph: select its frame, light its units, center on it. */
+  focusReviewFile(path: string): void;
+  toggleReviewUnitTick(nodeId: string): void;
+  toggleReviewFileViewed(path: string): void;
+  addReviewComment(path: string, nodeId: string | null, body: string): void;
+  deleteReviewComment(id: string): void;
+  toggleReviewPanel(): void;
+  submitReviewComments(): Promise<void>;
   setViewMode(mode: ViewMode): void;
   /** Toggle the full PR-review page: open it, or (when already open) resume the lens you came from. */
   togglePrsView(): void;
@@ -410,6 +431,8 @@ export interface StoreDependencies {
   graphId?: string | null;
   /** The graph-fetch URL; wave 2 loads the prepared PR artifact from it by swapping the id. */
   graphUrl?: string;
+  /** POST target for submitting review comments (web sessions only; 404s elsewhere). */
+  prReviewUrl: string;
 }
 
 export type BlueprintStore = StoreApi<BlueprintState>;
@@ -470,6 +493,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // valid `review` extension — e.g. a plain `web`/`view` session). Computed once (the artifact never
   // changes after boot); a GitHub PR opened via reviewPrInGraph can later populate `review` at runtime.
   const review = deriveReviewData(dependencies.artifact, dependencies.index);
+  // The files checklist + persisted progress for an artifact-sourced review; a GitHub PR opened via
+  // reviewPrInGraph re-derives both at runtime under its own reviewKey.
+  const reviewFiles = review ? deriveReviewFiles(review.context, dependencies.artifact, dependencies.index) : [];
+  const initialProgress = review ? readReviewProgress(review.context.reviewKey) : null;
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
   const prsUrl = dependencies.prsUrl;
@@ -478,6 +505,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // reviewPrInGraph then falls back to the synchronous loaded-artifact review.
   const analyzeUrl = dependencies.analyzeUrl ?? null;
   const analyzeGraphId = dependencies.graphId ?? null;
+  const prReviewUrl = dependencies.prReviewUrl;
   // The composition tab opens on the WHOLE-SYSTEM overview (null root); file-rooting is the explicit
   // focus tool (⌘P / click a boundary or frame). Auto-rooting at the declared entry module proved a
   // poor default — a React entry (e.g. main.tsx) is a thin bootstrap with no cross-unit coupling, so
@@ -555,9 +583,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     minimalRfEdges: [],
     minimalLayoutStatus: "idle",
     review,
-    reviewAffectedIds: new Set<string>(),
-    reviewUnmapped: [],
-    reviewTicks: review ? readReviewProgress(review.context.reviewKey).ticks : {},
+    reviewAffectedIds: new Set(reviewFiles.flatMap((file) => file.units.map((unit) => unit.nodeId))),
+    reviewFiles,
+    reviewTicks: initialProgress?.ticks ?? {},
+    reviewUnitTicks: initialProgress?.unitTicks ?? {},
+    reviewFileTicks: initialProgress?.fileTicks ?? {},
+    reviewComments: initialProgress?.comments ?? [],
+    reviewPanelHidden: false,
+    reviewSubmitStatus: "idle",
+    reviewSubmitError: null,
+    reviewSubmittedUrl: null,
     reviewLitNodeIds: null,
     reviewSelectedId: null,
     rfNodes: [],
@@ -1187,8 +1222,25 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       // Snapshot the map's current on-screen card positions ONCE, at build — the overlay mirrors them,
       // and re-capturing on curation would let already-placed cards jump. A selection-built graph is not
-      // a PR review, so drop any stale prReviewed marker (else the PR-review card would show it).
-      set({ minimalSeedIds: origin, minimalMemberIds: origin, minimalBasePositions: captureMapPositions(get().moduleRfNodes), minimalArrange: false, prReviewed: null });
+      // a PR review, so drop any stale prReviewed marker (else the PR-review card would show it) AND,
+      // when the live review came from a PR, its runtime review state — else the panel would ride this
+      // unrelated hand-built graph showing the old PR's checklist. An artifact-sourced review
+      // (prReviewed null) is the session's purpose and could never be re-derived, so it stays.
+      const clearPrReview =
+        get().prReviewed !== null
+          ? {
+              review: null,
+              reviewFiles: [] as ReviewFileRow[],
+              reviewAffectedIds: new Set<string>(),
+              reviewComments: [] as ReviewComment[],
+              reviewLitNodeIds: null,
+              reviewSelectedId: null,
+              reviewSubmitStatus: "idle" as const,
+              reviewSubmitError: null,
+              reviewSubmittedUrl: null,
+            }
+          : {};
+      set({ minimalSeedIds: origin, minimalMemberIds: origin, minimalBasePositions: captureMapPositions(get().moduleRfNodes), minimalArrange: false, prReviewed: null, ...clearPrReview });
       void get().minimalRelayout();
     },
 
@@ -1280,9 +1332,30 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ reviewLitNodeIds: ids });
     },
 
-    // Select a review block (from the graph or the panel); also lights it so the coupling reads as one.
+    // Select a review block (from the panel); also lights it and CENTERS the graph on it — a panel
+    // click must always end with the target visible, not selected somewhere off-screen.
     selectReviewNode(id) {
       set({ reviewSelectedId: id, reviewLitNodeIds: id === null ? null : new Set([id]) });
+      if (id !== null) {
+        set({ recenterSeq: get().recenterSeq + 1 });
+      }
+    },
+
+    // The file row's click: select the file's frame on the review graph (the emphasize ring), light
+    // its touched units amber-strong, and center the viewport on the frame. Inert for files with no
+    // module on the graph (the "not in graph" tail).
+    focusReviewFile(path) {
+      const file = get().reviewFiles.find((candidate) => candidate.path === path);
+      if (!file || file.moduleId === null) {
+        return;
+      }
+      const lit = file.units.length > 0 ? file.units.map((unit) => unit.nodeId) : [file.moduleId];
+      set({
+        moduleSelected: new Set([file.moduleId]),
+        reviewSelectedId: file.moduleId,
+        reviewLitNodeIds: new Set(lit),
+        recenterSeq: get().recenterSeq + 1,
+      });
     },
 
     // Toggle a flow's reviewed tick and persist the whole record under the reviewKey.
@@ -1292,18 +1365,118 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (!review || !row) {
         return;
       }
-      const next = applyTick(reviewTicks, row, "toggle", new Date().toISOString());
-      set({ reviewTicks: next });
-      writeReviewProgress(review.context.reviewKey, { version: 1, ticks: next });
+      set({ reviewTicks: applyTick(reviewTicks, row, "toggle", new Date().toISOString()) });
+      persistReviewProgress(get());
     },
 
+    // Reset every reviewed tick (flows, units, files) but KEEP the draft comments — progress is
+    // disposable, written words are not.
     resetReviewTicks() {
-      const { review } = get();
-      if (!review) {
+      if (!get().review) {
         return;
       }
-      clearReviewProgress(review.context.reviewKey);
-      set({ reviewTicks: {} });
+      set({ reviewTicks: {}, reviewUnitTicks: {}, reviewFileTicks: {} });
+      persistReviewProgress(get());
+    },
+
+    // Tick one touched unit in the files checklist; the owning file's viewed state derives from these.
+    toggleReviewUnitTick(nodeId) {
+      const { reviewFiles, reviewUnitTicks } = get();
+      const unit = reviewFiles.flatMap((file) => file.units).find((candidate) => candidate.nodeId === nodeId);
+      if (!unit) {
+        return;
+      }
+      set({ reviewUnitTicks: applyUnitTick(reviewUnitTicks, unit, new Date().toISOString()) });
+      persistReviewProgress(get());
+    },
+
+    // The per-file "viewed" checkbox: cascades over the file's units (all on / all off); an
+    // unit-less file flips its own explicit tick.
+    toggleReviewFileViewed(path) {
+      const { reviewFiles, reviewUnitTicks, reviewFileTicks } = get();
+      const file = reviewFiles.find((candidate) => candidate.path === path);
+      if (!file) {
+        return;
+      }
+      const next = applyFileToggle(file, reviewUnitTicks, reviewFileTicks, new Date().toISOString());
+      set({ reviewUnitTicks: next.unitTicks, reviewFileTicks: next.fileTicks });
+      persistReviewProgress(get());
+    },
+
+    // Add a draft comment on a file (nodeId null) or on a touched unit inside it. Drafts persist
+    // under the reviewKey until submitted or deleted.
+    addReviewComment(path, nodeId, body) {
+      const { review, reviewComments, index } = get();
+      const trimmed = body.trim();
+      if (!review || trimmed.length === 0) {
+        return;
+      }
+      const comment: ReviewComment = {
+        id: newCommentId(),
+        path,
+        nodeId,
+        anchorLabel: nodeId === null ? null : (index.nodesById.get(nodeId)?.displayName ?? null),
+        body: trimmed,
+        at: new Date().toISOString(),
+      };
+      // A fresh draft supersedes the last submit's outcome banners (link and error alike).
+      set({ reviewComments: [...reviewComments, comment], reviewSubmittedUrl: null, reviewSubmitError: null });
+      persistReviewProgress(get());
+    },
+
+    deleteReviewComment(id) {
+      if (!get().review) {
+        return;
+      }
+      set({ reviewComments: get().reviewComments.filter((comment) => comment.id !== id), reviewSubmittedUrl: null, reviewSubmitError: null });
+      persistReviewProgress(get());
+    },
+
+    toggleReviewPanel() {
+      set({ reviewPanelHidden: !get().reviewPanelHidden });
+    },
+
+    // Submit every draft as ONE GitHub review (event COMMENT): unit/file drafts become inline
+    // comments anchored to new-side diff lines, the rest ride as notes the server folds into the
+    // review body (reviewSubmit.ts). Only the drafts SNAPSHOTTED here are cleared on success — a
+    // comment added while the POST is in flight stays a draft; a failed submit keeps everything.
+    async submitReviewComments() {
+      const { review, reviewComments, reviewFiles, prReviewed: prNumber, reviewSubmitStatus } = get();
+      if (!review || prNumber === null || reviewComments.length === 0 || reviewSubmitStatus === "submitting") {
+        return;
+      }
+      const submission = buildReviewSubmission(reviewComments, reviewFiles, review.context);
+      const submittedIds = new Set(reviewComments.map((comment) => comment.id));
+      const submittedKey = review.context.reviewKey;
+      set({ reviewSubmitStatus: "submitting", reviewSubmitError: null });
+      try {
+        const response = await fetch(prReviewUrl, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ number: prNumber, comments: submission.comments, notes: submission.notes }),
+        });
+        if (!response.ok) {
+          set({ reviewSubmitStatus: "idle", reviewSubmitError: await submitErrorMessage(response) });
+          return;
+        }
+        const data = (await response.json()) as { url?: string | null };
+        // The review may have moved to another PR while awaiting; drop the SUBMITTED drafts from
+        // the submitted key's storage either way, but only touch live state on the same review.
+        // "" marks submitted-without-a-link, so the footer still confirms the submit happened.
+        stripStoredComments(submittedKey, submittedIds);
+        if (get().review?.context.reviewKey === submittedKey) {
+          set({
+            reviewSubmitStatus: "idle",
+            reviewComments: get().reviewComments.filter((comment) => !submittedIds.has(comment.id)),
+            reviewSubmittedUrl: data.url ?? "",
+          });
+        } else {
+          set({ reviewSubmitStatus: "idle" });
+        }
+      } catch {
+        set({ reviewSubmitStatus: "idle", reviewSubmitError: "could not reach the server" });
+      }
     },
 
     // Switching mode re-derives + relayouts like a dive. Entering UI mode dives to the render
@@ -1689,6 +1862,10 @@ function applyPrReviewToMap(
     files: prFiles ?? [],
   });
   const review = deriveReviewDataFromContext(context, artifact, index);
+  // The files-first checklist: every changed file with its touched code units (the panel's primary
+  // section). Derived from the SAME context/artifact as the affected set below, so a checked unit
+  // corresponds 1:1 with an amber-ringed card.
+  const files = deriveReviewFiles(context, artifact, index);
   // The modified code blocks (hunks ∩ node ranges); repaint main's changed-node channel to THIS PR
   // so the Map + minimal overlay ring the edited blocks amber (reused `--changed-since` highlight).
   const affected = computeAffectedNodes(artifact.nodes, context.changedFiles);
@@ -1721,13 +1898,21 @@ function applyPrReviewToMap(
     }
   }
   invalidateMinimalLayout();
+  const progress = readReviewProgress(context.reviewKey);
   set({
     artifact: reviewedArtifact,
     review,
     prReviewed: prSelected,
-    reviewTicks: readReviewProgress(context.reviewKey).ticks,
+    reviewTicks: progress.ticks,
+    reviewUnitTicks: progress.unitTicks,
+    reviewFileTicks: progress.fileTicks,
+    reviewComments: progress.comments,
+    reviewPanelHidden: false,
+    reviewSubmitStatus: "idle",
+    reviewSubmitError: null,
+    reviewSubmittedUrl: null,
     reviewAffectedIds: new Set(affected.map((node) => node.nodeId)),
-    reviewUnmapped: unmappedChangedFiles(affected, context.changedFiles),
+    reviewFiles: files,
     reviewLitNodeIds: null,
     reviewSelectedId: null,
     viewMode: "modules",
@@ -1914,6 +2099,50 @@ async function errorMessage(response: Response): Promise<string> {
   } catch {
     return "Could not load pull requests.";
   }
+}
+
+async function submitErrorMessage(response: Response): Promise<string> {
+  try {
+    const data = (await response.json()) as { error?: unknown };
+    if (typeof data.error === "string" && data.error.length > 0) {
+      return data.error;
+    }
+  } catch {
+    // No JSON body — fall through to the status-based message.
+  }
+  return response.status === 404 ? "submitting needs a web GitHub session" : "could not submit the review";
+}
+
+/** Persist the review progress WHOLE under its reviewKey — every mutating action funnels here. */
+function persistReviewProgress(
+  state: Pick<BlueprintState, "review" | "reviewTicks" | "reviewUnitTicks" | "reviewFileTicks" | "reviewComments">,
+): void {
+  if (!state.review) {
+    return;
+  }
+  const progress: ReviewProgress = {
+    version: 2,
+    ticks: state.reviewTicks,
+    unitTicks: state.reviewUnitTicks,
+    fileTicks: state.reviewFileTicks,
+    comments: state.reviewComments,
+  };
+  writeReviewProgress(state.review.context.reviewKey, progress);
+}
+
+/** Drop the SUBMITTED drafts from a review scope's storage, keeping ticks and any draft added
+ * while the submit was in flight. */
+function stripStoredComments(reviewKey: string, submittedIds: ReadonlySet<string>): void {
+  const progress = readReviewProgress(reviewKey);
+  writeReviewProgress(reviewKey, { ...progress, comments: progress.comments.filter((comment) => !submittedIds.has(comment.id)) });
+}
+
+/** Collision-safe enough for a per-review draft list; randomUUID exists on localhost (secure context). */
+function newCommentId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function mergePrSummaries(existing: readonly PrSummary[], incoming: readonly PrSummary[]): PrSummary[] {

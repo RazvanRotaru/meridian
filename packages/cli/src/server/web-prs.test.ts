@@ -1,6 +1,7 @@
 import { describe, expect, it, afterEach, vi } from "vitest";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { handlePullRequestFiles, handlePullRequests } from "./web-prs";
+import { Readable } from "node:stream";
+import { handlePullRequestFiles, handlePullRequests, handleSubmitReview } from "./web-prs";
 import type { Context } from "./web-server";
 import type { ArtifactSource } from "./web-source";
 import { SessionStore, markAuthorized } from "./session";
@@ -108,6 +109,110 @@ describe("PR routes", () => {
     });
   });
 });
+
+describe("handleSubmitReview", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  const VALID_BODY = { number: 7, comments: [{ path: "src/a.ts", line: 25, body: "check" }] };
+
+  it("404s for a non-GitHub artifact source", async () => {
+    const captured = await invokePost(ctxWithSource({ kind: "other" }), bodyRequest(VALID_BODY));
+    expect(captured.status()).toBe(404);
+  });
+
+  it("401s when no token can be resolved — a review is a write, never anonymous", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "");
+    vi.stubEnv("GH_TOKEN", "");
+    vi.stubGlobal("fetch", vi.fn());
+    const captured = await invokePost(ctxWithSource({ kind: "github", owner: "org", repo: "repo" }), bodyRequest(VALID_BODY));
+    expect(captured.status()).toBe(401);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("posts ONE COMMENT review, restoring the extraction subdir on comment AND note paths", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const calls: { url: string; init: RequestInit | undefined }[] = [];
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ html_url: "https://github.com/org/repo/pull/7#pullrequestreview-1" }), { status: 200 });
+    }) as typeof fetch);
+    const ctx = ctxWithSource({ kind: "github", owner: "org", repo: "repo", subdir: "packages/cli" });
+    const captured = await invokePost(
+      ctx,
+      bodyRequest({
+        ...VALID_BODY,
+        notes: [
+          { path: "src/gone.ts", label: "OldUnit", body: "why delete?" },
+          { path: "src/x.ts", body: "general" },
+        ],
+      }),
+    );
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body())).toEqual({ url: "https://github.com/org/repo/pull/7#pullrequestreview-1" });
+    expect(calls[0].url).toBe("https://api.github.com/repos/org/repo/pulls/7/reviews");
+    expect(calls[0].init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+      event: "COMMENT",
+      // Notes fold into the body SERVER-side so their display paths are repo-root-relative too.
+      body: "**packages/cli/src/gone.ts** · OldUnit: why delete?\n\n**packages/cli/src/x.ts**: general",
+      comments: [{ path: "packages/cli/src/a.ts", line: 25, side: "RIGHT", body: "check" }],
+    });
+  });
+
+  it("omits an empty review body from the GitHub payload", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    let posted: unknown;
+    vi.stubGlobal("fetch", (async (_url: string | URL | Request, init?: RequestInit) => {
+      posted = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch);
+    await invokePost(ctxWithSource({ kind: "github", owner: "org", repo: "repo" }), bodyRequest(VALID_BODY));
+    expect(posted).toEqual({ event: "COMMENT", comments: [{ path: "src/a.ts", line: 25, side: "RIGHT", body: "check" }] });
+  });
+
+  it("400s on malformed comments and on an empty submission, before any GitHub call", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    vi.stubGlobal("fetch", vi.fn());
+    const ctx = ctxWithSource({ kind: "github", owner: "org", repo: "repo" });
+    const noLine = await invokePost(ctx, bodyRequest({ number: 7, comments: [{ path: "a.ts", body: "x" }] }));
+    const zeroLine = await invokePost(ctx, bodyRequest({ number: 7, comments: [{ path: "a.ts", line: 0, body: "x" }] }));
+    const empty = await invokePost(ctx, bodyRequest({ number: 7, comments: [], notes: [] }));
+    const badNumber = await invokePost(ctx, bodyRequest({ ...VALID_BODY, number: 0 }));
+    expect([noLine.status(), zeroLine.status(), empty.status(), badNumber.status()]).toEqual([400, 400, 400, 400]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("surfaces GitHub's 422 as the anchor hint", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    vi.stubGlobal("fetch", (async () => new Response("{}", { status: 422 })) as typeof fetch);
+    const captured = await invokePost(ctxWithSource({ kind: "github", owner: "org", repo: "repo" }), bodyRequest(VALID_BODY));
+    expect(captured.status()).toBe(422);
+    expect(JSON.parse(captured.body()).error).toMatch(/anchor/);
+  });
+});
+
+/** A minimal IncomingMessage whose stream yields one JSON body (what readJsonBody consumes). */
+function bodyRequest(payload: unknown): IncomingMessage {
+  const request = Readable.from([Buffer.from(JSON.stringify(payload))]) as unknown as IncomingMessage;
+  (request as { headers: Record<string, string> }).headers = {};
+  return request;
+}
+
+async function invokePost(ctx: Context, request: IncomingMessage) {
+  const captured = capturedResponse();
+  try {
+    await handleSubmitReview(ctx, request, captured.response, new URLSearchParams({ id: "artifact" }));
+  } catch (error) {
+    if (!(error instanceof WebError)) {
+      throw error;
+    }
+    sendJson(captured.response, error.status, { error: error.message });
+  }
+  return captured;
+}
 
 type PrHandler = (
   ctx: Context,

@@ -121,6 +121,7 @@ function neverCalledGitHub(): GitHubClient {
     listOwnRepos: reject,
     listPullRequests: reject,
     fetchPullRequestFiles: reject,
+    submitPullRequestReview: reject,
   };
 }
 

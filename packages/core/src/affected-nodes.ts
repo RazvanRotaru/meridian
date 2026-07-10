@@ -31,8 +31,15 @@ export interface AffectedNode {
   overlapsHunk: boolean;
 }
 
-/** Node kinds that are never a "code block": file/directory containers and boundary pseudo-nodes. */
-const NON_BLOCK_KINDS: ReadonlySet<string> = new Set(["package", "module"]);
+/** Node kinds that are never a "code block": file/directory containers and boundary pseudo-nodes.
+ * Exported so downstream views (e.g. the renderer's files checklist) share ONE container vocabulary. */
+export const NON_BLOCK_KINDS: ReadonlySet<string> = new Set(["package", "module"]);
+
+/** THE inclusive line-range overlap predicate — every hunk∩span decision must go through this one
+ * implementation (graph highlight, checklist fingerprints, comment anchors), so they never drift. */
+export function rangesOverlap(start: number, end: number, range: LineRange): boolean {
+  return start <= range.end && end >= range.start;
+}
 
 /**
  * The changed code blocks, sorted file asc → id asc (a stable, readable order for both the graph
@@ -99,7 +106,7 @@ function marksFromHunks(
   const start = node.location.startLine;
   const end = node.location.endLine ?? start;
   if (childSpans === undefined) {
-    return hunks.some((hunk) => hunk.start <= end && hunk.end >= start);
+    return hunks.some((hunk) => rangesOverlap(start, end, hunk));
   }
   return hunks.some((hunk) => touchesOwnLines(hunk, start, end, childSpans));
 }
