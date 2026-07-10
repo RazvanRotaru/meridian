@@ -12,9 +12,16 @@ import { IMPORT_CROSS, IMPORT_SIBLING, REL_COLORS } from "../theme/mapPalette";
 import { MINIMAL_STUB_NODE } from "../layout/minimalSubgraphLayout";
 
 const NO_SELECTION: ReadonlySet<string> = new Set();
+// emphasize's lit stroke width (not exported); pinned so the tests catch a silent rest-state fallback.
+const EMPHASIS_WIDTH = 2.5;
 
 function fileNode(id: string, tier: string | null = "seed"): Node {
   return { id, type: "file", position: { x: 0, y: 0 }, data: { category: "app", tier } } as Node;
+}
+
+// A drawn declaration card inside an expanded file frame (the Map's own `unit` component).
+function unitNode(id: string, parentId: string): Node {
+  return { id, type: "unit", parentId, position: { x: 0, y: 0 }, data: { unitKind: "function" } } as Node;
 }
 
 function depEdge(source: string, target: string, depKind?: string): Edge {
@@ -65,6 +72,41 @@ describe("paintMinimalLevel — redundant-import suppression (the Map's rule)", 
     const { edges } = paint(TWO_FILES, [dep, imp]);
     expect(edges.map((edge) => edge.id)).toEqual([dep.id]);
     expect(edges[0].style?.stroke).toBe(REL_COLORS.calls);
+  });
+});
+
+describe("paintMinimalLevel — nested declarations join the Map's emphasis, not a side bucket", () => {
+  // An expanded file frame with two drawn declaration cards and their intra-frame dep wire —
+  // the PRIMARY PR-review surface (clicking a changed block inside an amber frame).
+  const frame = fileNode("ts:a.ts");
+  const foo = unitNode("ts:a.ts#Foo", "ts:a.ts");
+  const bar = unitNode("ts:a.ts#bar", "ts:a.ts");
+  const intraDep = depEdge("ts:a.ts#Foo", "ts:a.ts#bar", "calls");
+
+  it("lights a selected declaration's incident intra-frame dep wire at full emphasis (node mode)", () => {
+    const { edges } = paintMinimalLevel([frame, foo, bar], [intraDep], new Set([foo.id]), 1, "node");
+    expect(edges[0].style?.opacity).toBe(1);
+    expect(edges[0].style?.strokeWidth).toBe(EMPHASIS_WIDTH);
+  });
+
+  it("does not leave a selected declaration in the no-selection rest state (reach mode)", () => {
+    const rest = paintMinimalLevel([frame, foo, bar], [intraDep], NO_SELECTION, 1, "reach");
+    const { edges } = paintMinimalLevel([frame, foo, bar], [intraDep], new Set([foo.id]), 1, "reach");
+    expect(rest.edges[0].style?.opacity).not.toBe(1);
+    expect(edges[0].style?.opacity).toBe(1);
+    expect(edges[0].style?.strokeWidth).toBe(EMPHASIS_WIDTH);
+  });
+
+  it("selecting the expanded frame seeds its drawn descendants, lighting the intra-frame wire (node mode)", () => {
+    const { edges } = paintMinimalLevel([frame, foo, bar], [intraDep], new Set([frame.id]), 1, "node");
+    expect(edges[0].style?.opacity).toBe(1);
+    expect(edges[0].style?.strokeWidth).toBe(EMPHASIS_WIDTH);
+  });
+
+  it("keeps every node exactly once in laid-out order — parents before children, stubs still last", () => {
+    const stubNode = { id: "stub:ts:a.ts:out", type: MINIMAL_STUB_NODE, position: { x: 0, y: 0 }, data: { sourceId: "ts:a.ts", direction: "out" } } as Node;
+    const painted = paintMinimalLevel([frame, foo, bar, stubNode], [intraDep], new Set([foo.id]), 1, "node");
+    expect(painted.nodes.map((node) => node.id)).toEqual([frame.id, foo.id, bar.id, stubNode.id]);
   });
 });
 

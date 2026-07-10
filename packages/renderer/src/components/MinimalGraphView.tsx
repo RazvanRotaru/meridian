@@ -107,8 +107,11 @@ export function MinimalGraphView() {
         <CanvasChrome nodeColor={minimalMiniMapColor} />
       </ReactFlow>
       {/* The Map's own legend, in the Map's own corner (bottom-left, clear of the zoom controls) —
-          the overlay shares the Map's colour vocabulary, so it shares the Map's key to it. */}
-      <MapLegend hasSteps={nodes.some((node) => node.type === "step")} hasSelection={selected.size > 0} />
+          the overlay shares the Map's colour vocabulary, so it shares the Map's key to it. The
+          overlay can never draw package/directory cards or IPC wires (it mints only file/stub cards
+          and import/dep wires), so those two rows opt out — the legend never advertises a glyph
+          this surface cannot show. */}
+      <MapLegend hasSteps={nodes.some((node) => node.type === "step")} hasSelection={selected.size > 0} showPackages={false} showIpc={false} />
       <div style={MINIMAL_PANEL_STYLE}>
         <span style={TITLE_STYLE}>
           Minimal graph — {seedCount} seed {seedCount === 1 ? "file" : "files"}

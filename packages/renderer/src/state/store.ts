@@ -1453,13 +1453,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           changedSince: { baseRef: `pr#${prSelected}`, files: changedFiles, kinds: changedKinds },
         },
       } as unknown as typeof artifact;
-      // Pre-expand ONLY the file modules on the path to each changed block: review reads at
-      // declaration level (class/type cards), so classes stay collapsed "N members" cards and
-      // blocks never chart flow steps — drilling deeper stays a manual gesture.
+      // Pre-expand the packages and file modules on the path to each changed block (packages too,
+      // else deriveModuleTree never descends to the file — mirrors flowExplorer's
+      // expandedModulePaths): review reads at declaration level (class/type cards), so classes stay
+      // collapsed "N members" cards and blocks never chart flow steps — drilling deeper stays a
+      // manual gesture.
       const expanded = new Set<string>(seeds);
       for (const node of affected) {
         for (const ancestor of index.ancestorsOf(node.nodeId)) {
-          if (ancestor.kind === "module") {
+          if (ancestor.kind === "package" || ancestor.kind === "module") {
             expanded.add(ancestor.id);
           }
         }

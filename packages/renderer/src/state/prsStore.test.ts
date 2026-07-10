@@ -29,6 +29,7 @@ function pr(number: number, title = `PR ${number}`): PrSummary {
   };
 }
 
+const PACKAGE_ID = "ts:src";
 const FILE_ID = "ts:src/a.ts";
 const CLASS_ID = `${FILE_ID}#Svc`;
 const METHOD_ID = `${CLASS_ID}.run`;
@@ -39,8 +40,8 @@ const ARTIFACT: GraphArtifact = {
   generator: { name: "test", version: "0" },
   target: { name: "fixture", root: ".", language: "typescript" },
   nodes: [
-    node("ts:src", "package", "src"),
-    node(FILE_ID, "module", "src/a.ts", "ts:src"),
+    node(PACKAGE_ID, "package", "src"),
+    node(FILE_ID, "module", "src/a.ts", PACKAGE_ID),
     node(CLASS_ID, "class", "src/a.ts", FILE_ID, { start: 3, end: 20 }),
     node(METHOD_ID, "method", "src/a.ts", CLASS_ID, { start: 10, end: 12 }),
   ],
@@ -113,9 +114,12 @@ describe("PR store slice", () => {
     });
     store.getState().reviewPrInGraph();
     expect(store.getState().reviewAffectedIds.has(METHOD_ID)).toBe(true);
-    // Auto-expansion caps at the file: its declarations show, but the class does not open into
-    // members and the method never charts flow steps — deeper drilling stays a manual gesture.
+    // Auto-expansion opens the package chain down to the file (deriveModuleTree only descends
+    // into expanded packages, so the file card is invisible without them) and caps at the file:
+    // its declarations show, but the class does not open into members and the method never charts
+    // flow steps — deeper drilling stays a manual gesture.
     const expanded = store.getState().moduleExpanded;
+    expect(expanded.has(PACKAGE_ID)).toBe(true);
     expect(expanded.has(FILE_ID)).toBe(true);
     expect(expanded.has(CLASS_ID)).toBe(false);
     expect(expanded.has(METHOD_ID)).toBe(false);
