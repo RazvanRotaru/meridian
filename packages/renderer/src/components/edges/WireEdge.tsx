@@ -24,7 +24,10 @@ export function WireEdge({ id, sourceX, sourceY, targetX, targetY, sourcePositio
 
 /** One pulse cycle's duration; two dots half a cycle apart keep a long path readable end to end. */
 const PULSE_SECONDS = 1.6;
-const PULSE_RADIUS = 2.4;
+const PULSE_RADIUS = 2.6;
+/** A canvas-dark outline ring: the dot must stay visible RIDING ON a lit stripe band (a bare ink
+ * dot on a bright solid cable has no edge to read motion against — it only flashed in dash gaps). */
+const PULSE_RING = "#0E1116";
 
 interface PulseProps {
   path: string;
@@ -32,23 +35,26 @@ interface PulseProps {
   data: EdgeProps["data"];
 }
 
+/** The dots' one meaning is DIRECTION, so they wear the app's neutral ink — never a kind colour,
+ * which would read as data ("a reference traveling") the renderer can't honestly claim. */
+const PULSE_INK = "#E6EDF3";
+
 /** The drifting direction dots, rendered by every Map edge component when its wire is lit. */
 export function WirePulse({ path, style, data }: PulseProps) {
   if (!path || style?.opacity !== 1 || (data as { pulse?: boolean } | undefined)?.pulse !== true) {
     return null;
   }
-  const fill = typeof style.stroke === "string" ? style.stroke : "#E6EDF3";
   return (
     <>
-      <PulseDot path={path} fill={fill} beginSeconds={0} />
-      <PulseDot path={path} fill={fill} beginSeconds={-PULSE_SECONDS / 2} />
+      <PulseDot path={path} fill={PULSE_INK} beginSeconds={0} />
+      <PulseDot path={path} fill={PULSE_INK} beginSeconds={-PULSE_SECONDS / 2} />
     </>
   );
 }
 
 function PulseDot({ path, fill, beginSeconds }: { path: string; fill: string; beginSeconds: number }) {
   return (
-    <circle r={PULSE_RADIUS} fill={fill} opacity={0.9} pointerEvents="none">
+    <circle r={PULSE_RADIUS} fill={fill} stroke={PULSE_RING} strokeWidth={1.6} opacity={0.95} pointerEvents="none">
       <animateMotion dur={`${PULSE_SECONDS}s`} begin={`${beginSeconds}s`} repeatCount="indefinite" path={path} />
     </circle>
   );
