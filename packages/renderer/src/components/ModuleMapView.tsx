@@ -21,6 +21,7 @@ import { CoveragePanel } from "./CoveragePanel";
 import { BeaconArrows } from "./BeaconArrows";
 import { MapLegend } from "./MapLegend";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
+import { MapLod } from "./canvas/MapLod";
 import { useRecenter } from "./canvas/useRecenter";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { MinimalGraphView } from "./MinimalGraphView";
@@ -182,6 +183,7 @@ export function ModuleMapView() {
       >
         <CanvasChrome nodeColor={miniMapColor} />
         <BeaconArrows targets={beacons} />
+        <MapLod />
       </ReactFlow>
       {wireHover ? <WireTooltip hover={wireHover} /> : null}
       <LevelBreadcrumb
