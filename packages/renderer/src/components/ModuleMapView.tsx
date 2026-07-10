@@ -34,6 +34,7 @@ import { RoutedEdge } from "./edges/RoutedEdge";
 import { spoolFanEdges, SPOOL_EDGE_TYPE } from "../layout/edgeSpooling";
 import { SpoolEdge } from "./edges/SpoolEdge";
 import { WireEdge, WIRE_EDGE_TYPE } from "./edges/WireEdge";
+import { assignPairLanes, pairOf } from "../layout/parallelWires";
 import { WireTooltip, type WireHover } from "./WireTooltip";
 import { WireInspector } from "./WireInspector";
 import type { BlockData, UnitCardData } from "../derive/moduleLevel";
@@ -110,16 +111,23 @@ export function ModuleMapView() {
     }
     return labels;
   }, [styledNodes]);
+  // The pinned strand's WHOLE ordered pair (clicked first): the inspector reports every kind
+  // between the two cards, and every strand of the cable lights — so the z-order of overlapping
+  // strands can never hide a relationship.
+  const inspectedPair = useMemo(() => (inspected === null ? null : pairOf(inspected, bundledEdges)), [inspected, bundledEdges]);
+  const inspectedIds = useMemo(() => new Set(inspectedPair?.map((edge) => edge.id) ?? []), [inspectedPair]);
+  // Same-pair strands spread into parallel lanes — the multi-strand cable read (see parallelWires).
+  const laneByEdge = useMemo(() => assignPairLanes(bundledEdges), [bundledEdges]);
   const hoverableEdges = useMemo(
     () =>
       bundledEdges.map((edge) => {
         if (edge.type === BUNDLE_EDGE_TYPE) {
           // A drilled constituent lives INSIDE the highway — boost the owning bundle so the panel's
           // subject still has a visual anchor on canvas.
-          const holdsInspected = inspected !== null && (edge.data as { constituents?: Edge[] }).constituents?.some((member) => member.id === inspected.id) === true;
+          const holdsInspected = inspectedIds.size > 0 && (edge.data as { constituents?: Edge[] }).constituents?.some((member) => inspectedIds.has(member.id)) === true;
           return holdsInspected ? { ...edge, style: { ...edge.style, opacity: 1 } } : edge;
         }
-        const boosted = edge.id === wireHover?.id || edge.id === inspected?.id;
+        const boosted = edge.id === wireHover?.id || inspectedIds.has(edge.id);
         return {
           ...edge,
           // Untyped edges retype to the Map's own plain curve AFTER the highway passes have claimed
@@ -127,11 +135,11 @@ export function ModuleMapView() {
           // Map's opt-in: shared edge components draw dots ONLY where the surface asked for them.
           type: edge.type ?? WIRE_EDGE_TYPE,
           interactionWidth: 14,
-          data: { ...edge.data, pulse: true },
+          data: { ...edge.data, pulse: true, pairLane: laneByEdge.get(edge.id) ?? 0 },
           style: boosted ? { ...edge.style, opacity: 1, strokeWidth: ((edge.style?.strokeWidth as number) ?? 1.5) + 1.2 } : edge.style,
         };
       }),
-    [bundledEdges, wireHover?.id, inspected],
+    [bundledEdges, wireHover?.id, inspectedIds, laneByEdge],
   );
   const onEdgeMouseEnter = (event: React.MouseEvent, edge: Edge) => {
     if (edge.type === BUNDLE_EDGE_TYPE) {
@@ -217,8 +225,8 @@ export function ModuleMapView() {
         <MapLod />
       </ReactFlow>
       {wireHover ? <WireTooltip hover={wireHover} /> : null}
-      {inspected ? (
-        <WireInspector edge={inspected} labelOf={(id) => labelById.get(id)} onClose={() => setInspected(null)} onDrill={setInspected} />
+      {inspectedPair ? (
+        <WireInspector pair={inspectedPair} labelOf={(id) => labelById.get(id)} onClose={() => setInspected(null)} onDrill={setInspected} />
       ) : null}
       {viewMode === "call" && serviceScope !== null ? (
         // The scoped Service sub-view replaces the (focus-driven, here inert) containment trail

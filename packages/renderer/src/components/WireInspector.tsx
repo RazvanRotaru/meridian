@@ -3,9 +3,12 @@
  * (a claim: "these two are coupled, calls ×7"); the inspector pins a panel that lists the concrete
  * symbol→symbol links it stands for — resolved through the wire's `underlyingEdgeIds` back to the
  * artifact's real edges and their `callSites` — so any line on the canvas is attributable down to
- * file:line. Endpoint names REVEAL the symbol on the map (the ghost double-click gesture, reused).
- * A bundle highway inspects too: its constituent wires list first, each drillable into its own
- * links. Wires with no artifact trail (flow chains, IPC joins) show the aggregate header alone.
+ * file:line. It inspects the clicked strand's WHOLE ordered pair (one section per relationship
+ * kind, clicked kind first): parallel same-pair strands overlap on canvas, so whichever one wins
+ * the click, the panel tells the pair's complete story. Endpoint names REVEAL the symbol on the
+ * map (the ghost double-click gesture, reused). A bundle highway inspects too: its constituent
+ * wires list first, each drillable into its own links. Wires with no artifact trail (flow chains,
+ * IPC joins) show their section header alone.
  */
 
 import { useMemo, useState } from "react";
@@ -19,7 +22,8 @@ import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { MONO } from "./nodes/modulemap/frameChrome";
 
 interface WireInspectorProps {
-  edge: Edge;
+  /** The clicked strand's full ordered-pair stack, clicked strand FIRST (see `pairOf`). */
+  pair: Edge[];
   /** The drawn label for an on-canvas node id (the level's cards); symbol ids fall back to `unitLabel`. */
   labelOf: (id: string) => string | undefined;
   onClose: () => void;
@@ -30,32 +34,55 @@ interface WireInspectorProps {
 const ROW_CAP = 12;
 const SITE_CAP = 6;
 
-export function WireInspector({ edge, labelOf, onClose, onDrill }: WireInspectorProps) {
+export function WireInspector({ pair, labelOf, onClose, onDrill }: WireInspectorProps) {
   useClearOnEscape(onClose, true);
   return (
     <div style={PANEL}>
-      {edge.type === BUNDLE_EDGE_TYPE ? (
-        <BundleBody edge={edge} labelOf={labelOf} onClose={onClose} onDrill={onDrill} />
+      {pair[0].type === BUNDLE_EDGE_TYPE ? (
+        <BundleBody edge={pair[0]} labelOf={labelOf} onClose={onClose} onDrill={onDrill} />
       ) : (
-        <WireBody edge={edge} labelOf={labelOf} onClose={onClose} />
+        <PairBody pair={pair} labelOf={labelOf} onClose={onClose} />
       )}
     </div>
   );
 }
 
-function WireBody({ edge, labelOf, onClose }: Omit<WireInspectorProps, "onDrill">) {
+/** The pair's story: endpoints once in the header, then one evidence section per strand (kind). */
+function PairBody({ pair, labelOf, onClose }: Omit<WireInspectorProps, "onDrill">) {
+  const index = useBlueprint((state) => state.index);
+  const name = (id: string) => labelOf(id) ?? unitLabel(id, index);
+  const first = pair[0];
+  return (
+    <>
+      <div style={HEADER}>
+        <span style={HEADER_ENDS}>
+          <RevealName id={first.source} label={name(first.source)} onRevealed={onClose} />
+          <span style={ARROW}> → </span>
+          <RevealName id={first.target} label={name(first.target)} onRevealed={onClose} />
+        </span>
+        <CloseButton onClose={onClose} />
+      </div>
+      {pair.map((edge) => (
+        <KindSection key={edge.id} edge={edge} name={name} onRevealed={onClose} />
+      ))}
+    </>
+  );
+}
+
+/** One strand's evidence: its kind (coloured) × weight, then the concrete links with call sites. */
+function KindSection({ edge, name, onRevealed }: { edge: Edge; name: (id: string) => string; onRevealed: () => void }) {
   const index = useBlueprint((state) => state.index);
   const data = edge.data as { depKind?: string; category?: string; weight?: number; underlyingEdgeIds?: string[] } | undefined;
   const kind = data?.depKind ?? data?.category ?? "wire";
   const links = useMemo(() => resolveLinks(data?.underlyingEdgeIds, index.edgesById), [data?.underlyingEdgeIds, index.edgesById]);
-  const name = (id: string) => labelOf(id) ?? unitLabel(id, index);
   return (
-    <>
-      <Header kind={kind} weight={data?.weight ?? 1} onClose={onClose} />
-      <div style={ENDS}>
-        <RevealName id={edge.source} label={name(edge.source)} onRevealed={onClose} />
-        <span style={ARROW}> → </span>
-        <RevealName id={edge.target} label={name(edge.target)} onRevealed={onClose} />
+    <div style={SECTION}>
+      <div style={SECTION_HEAD}>
+        <span style={{ ...KIND_DOT, background: relColor(kind) ?? "#8B95A3" }} />
+        <span style={SECTION_KIND}>
+          {kind}
+          {(data?.weight ?? 1) > 1 ? <span style={HEADER_WEIGHT}> ×{data?.weight}</span> : null}
+        </span>
       </div>
       {links.length === 0 ? (
         <div style={EMPTY_NOTE}>No per-site attribution for this wire kind.</div>
@@ -63,16 +90,16 @@ function WireBody({ edge, labelOf, onClose }: Omit<WireInspectorProps, "onDrill"
         <CappedRows
           count={links.length}
           render={(shown) =>
-            links.slice(0, shown).map((link) => <LinkRow key={link.id} link={link} name={name} onRevealed={onClose} />)
+            links.slice(0, shown).map((link) => <LinkRow key={link.id} link={link} name={name} onRevealed={onRevealed} />)
           }
         />
       )}
-    </>
+    </div>
   );
 }
 
 /** A bundle highway's inspector: the member wires, each drillable into its own evidence. */
-function BundleBody({ edge, labelOf, onClose, onDrill }: WireInspectorProps) {
+function BundleBody({ edge, labelOf, onClose, onDrill }: Omit<WireInspectorProps, "pair"> & { edge: Edge }) {
   const index = useBlueprint((state) => state.index);
   const bundle = edge.data as unknown as BundleEdgeData;
   const name = (id: string) => labelOf(id) ?? unitLabel(id, index);
@@ -106,19 +133,18 @@ function BundleBody({ edge, labelOf, onClose, onDrill }: WireInspectorProps) {
   );
 }
 
-/** One concrete artifact link: source symbol → target symbol, with its call-site chips. */
+/** One concrete artifact link: source symbol → target symbol, with its call-site chips. The kind
+ * is the SECTION's story (its coloured header) — repeating it per row would be noise. */
 function LinkRow({ link, name, onRevealed }: { link: GraphEdge; name: (id: string) => string; onRevealed: () => void }) {
   const sites = link.callSites ?? [];
   return (
     <div style={ROW}>
       <div style={ROW_TOP}>
-        <span style={{ ...KIND_DOT, background: relColor(link.kind) ?? "#8B95A3" }} />
         <span style={ROW_MAIN}>
           <RevealName id={link.source} label={name(link.source)} onRevealed={onRevealed} />
           <span style={ARROW}> → </span>
           <RevealName id={link.target} label={name(link.target)} onRevealed={onRevealed} />
         </span>
-        <span style={ROW_KIND}>{link.kind}</span>
       </div>
       {sites.length > 0 ? (
         <div style={SITES}>
@@ -160,10 +186,16 @@ function Header({ kind, weight, onClose }: { kind: string; weight: number; onClo
         {kind}
         {weight > 1 ? <span style={HEADER_WEIGHT}> ×{weight}</span> : null}
       </span>
-      <button type="button" style={CLOSE} title="Close (Esc)" onClick={onClose}>
-        ✕
-      </button>
+      <CloseButton onClose={onClose} />
     </div>
+  );
+}
+
+function CloseButton({ onClose }: { onClose: () => void }) {
+  return (
+    <button type="button" style={CLOSE} title="Close (Esc)" onClick={onClose}>
+      ✕
+    </button>
   );
 }
 
@@ -209,6 +241,11 @@ const PANEL: React.CSSProperties = {
 const HEADER: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 };
 const HEADER_KIND: React.CSSProperties = { fontSize: 11.5, fontWeight: 700, color: "#E6EDF3" };
 const HEADER_WEIGHT: React.CSSProperties = { fontWeight: 400, color: "#9AA4B2" };
+// The pair header IS the endpoints — bold card ink, one line, symmetric truncation via ellipsis.
+const HEADER_ENDS: React.CSSProperties = { minWidth: 0, fontSize: 11.5, fontWeight: 700, color: "#E6EDF3", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const SECTION: React.CSSProperties = { marginTop: 8 };
+const SECTION_HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6 };
+const SECTION_KIND: React.CSSProperties = { fontSize: 10.5, fontWeight: 700, color: "#C9D1D9" };
 const CLOSE: React.CSSProperties = { border: "none", background: "none", color: "#9AA4B2", cursor: "pointer", fontSize: 12, padding: 2 };
 const ENDS: React.CSSProperties = { fontSize: 10.5, color: "#9AA4B2", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const ARROW: React.CSSProperties = { color: "#565E68" };
