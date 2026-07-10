@@ -9,7 +9,7 @@ import { useEffect } from "react";
 import { PRS_UNAVAILABLE_ERROR, type PrSummary } from "../../state/prTypes";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { CountBadge, hexAlpha, TOKENS } from "./panelKit";
-import { MaximizeIcon, PullRequestIcon } from "./icons";
+import { PullRequestIcon } from "./icons";
 import { PrReviewCard } from "./PrReviewCard";
 
 const ACTIVE_HUE = "#388BFD";
@@ -61,14 +61,6 @@ export function PrReviewSection() {
           {!unavailable && open !== null ? (
             <CountBadge style={badgeToneStyle(expanded)}>{hasMore ? `${count}+` : count} open</CountBadge>
           ) : null}
-        </button>
-        <button
-          type="button"
-          style={maxButtonStyle(expanded)}
-          title="Open the full Pull requests page"
-          onClick={() => setViewMode("prs")}
-        >
-          <MaximizeIcon size={14} />
         </button>
       </div>
 
@@ -131,23 +123,6 @@ function barStyle(expanded: boolean): React.CSSProperties {
     borderRadius: 10,
     border: `1px solid ${expanded ? hexAlpha(ACTIVE_HUE, 0.55) : TOKENS.surfaceBorder}`,
     background: expanded ? hexAlpha(ACTIVE_HUE, 0.08) : TOKENS.surface,
-  };
-}
-
-function maxButtonStyle(expanded: boolean): React.CSSProperties {
-  return {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    width: 28,
-    height: 28,
-    flexShrink: 0,
-    borderRadius: 7,
-    border: "none",
-    background: "transparent",
-    color: expanded ? ACTIVE_HUE : TOKENS.textMuted,
-    cursor: "pointer",
-    padding: 0,
   };
 }
 
