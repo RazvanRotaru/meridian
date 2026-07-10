@@ -342,6 +342,40 @@
         gap: 12px;
       }
 
+      /* Local-path field: the input shares its row with a "Browse…" button that asks the server
+         (running on this machine) to open the OS folder picker and fill in the chosen path. */
+      .path-row {
+        display: flex;
+        gap: 8px;
+        align-items: stretch;
+      }
+      .path-row > input {
+        flex: 1;
+        min-width: 0;
+      }
+      button.browse {
+        flex-shrink: 0;
+        padding: 0 14px;
+        font-family: var(--font-sans);
+        font-size: 13.5px;
+        font-weight: 500;
+        white-space: nowrap;
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 10px;
+        cursor: pointer;
+        transition: border-color 0.15s, background 0.15s;
+      }
+      button.browse:hover {
+        border-color: var(--blue);
+        background: rgba(88, 166, 255, 0.1);
+      }
+      button.browse:disabled {
+        cursor: progress;
+        opacity: 0.6;
+      }
+
       /* The search dropdown floats OVER the form (an overlay, like every autocomplete) so
          opening it never reflows the page underneath. */
       .search-wrap {
@@ -754,7 +788,10 @@
             <div class="fieldset" id="path-fields" hidden>
               <div class="field">
                 <label for="path">Local path</label>
-                <input id="path" name="path" placeholder="/absolute/or/relative/path/to/a/repo" />
+                <div class="path-row">
+                  <input id="path" name="path" placeholder="/absolute/or/relative/path/to/a/repo" />
+                  <button type="button" class="browse" id="browse-path" title="Browse for a folder on this machine">Browse…</button>
+                </div>
               </div>
               <p class="hint">Extraction runs on the server; nothing is uploaded to GitHub.</p>
             </div>
@@ -1310,6 +1347,31 @@
           setStatus("Could not reach the server.", "error");
         } finally {
           $("submit").disabled = false;
+        }
+      });
+
+      // "Browse…" asks the local server to pop the OS folder dialog and fills the path it returns.
+      // A browser can't read a real filesystem path from its own picker, but `web` runs on this
+      // machine, so the server can. Cancel is a no-op; an unavailable picker leaves the typed field.
+      $("browse-path").addEventListener("click", async () => {
+        const browse = $("browse-path");
+        const label = browse.textContent;
+        browse.disabled = true;
+        browse.textContent = "Choose a folder…";
+        try {
+          const response = await apiPost("/api/pick-folder", {});
+          const data = await response.json();
+          if (data.path) {
+            $("path").value = data.path;
+            setStatus("", null);
+          } else if (data.unavailable) {
+            setStatus("Couldn't open a folder picker here — type the path instead.", "error");
+          }
+        } catch (error) {
+          setStatus("Couldn't open a folder picker here — type the path instead.", "error");
+        } finally {
+          browse.disabled = false;
+          browse.textContent = label;
         }
       });
 

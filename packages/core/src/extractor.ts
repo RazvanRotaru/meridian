@@ -28,6 +28,11 @@ export interface ExtractOptions {
   includeExternal?: boolean;
   includeUnresolved?: boolean;
   emitImportEdges?: boolean;
+  /** Opt-in: emit `references` edges for imported symbols used as plain VALUES (a callback, a
+   * const read, a namespace receiver) — the usage the call/new/type/JSX passes don't model. Turns
+   * featureless `imports` wires into traceable dependency edges. Off by default (extra type-checker
+   * work); the extractor no-ops when unset. */
+  valueRefs?: boolean;
 }
 
 export interface ExtractionStats {

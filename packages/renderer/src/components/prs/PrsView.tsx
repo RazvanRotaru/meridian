@@ -51,7 +51,7 @@ export function PrsView() {
           </div>
         </header>
         <div style={BODY_STYLE}>
-          <div style={LIST_STYLE}>
+          <div style={LIST_STYLE} className="mrd-scroll">
             {prs === null && loading ? <SkeletonList /> : null}
             {prs !== null && prs.length === 0 ? <div style={EMPTY_STYLE}>No {tab} pull requests.</div> : null}
             {prs?.map((pr) => (

@@ -33,6 +33,7 @@ import {
 import { assignFinalIds, buildGraphNodes } from "./finalize-nodes";
 import { buildLogicFlows } from "./flow-pass";
 import { collectImportEdges } from "./import-pass";
+import { collectValueRefEdges } from "./value-ref-pass";
 import { collapseToDepth } from "./depth-collapse";
 import { collectPorts } from "./ports-pass";
 import { loadUnitProject } from "./project-loader";
@@ -100,12 +101,13 @@ function extractUnit(
   const index = buildResolutionIndex(descriptors);
   const behavioural = collectRawEdges(loaded, descriptors, index, moduleByFilePath, diagnostics, resolver);
   const imports = collectImportEdges(loaded, moduleByFilePath, resolver);
+  const valueRefs = options.valueRefs ? collectValueRefEdges(loaded, index, moduleByFilePath, diagnostics, resolver) : [];
   const keepIds = survivorIdsAtDepth(descriptors, depth);
   const flows = buildLogicFlows(descriptors, index, keepIds, moduleSourcesById(loaded, moduleByFilePath));
   const moduleIds = moduleIdsByRelPath(loaded, moduleByFilePath);
   return {
     nodes: buildGraphNodes(descriptors),
-    rawEdges: [...behavioural, ...imports],
+    rawEdges: [...behavioural, ...imports, ...valueRefs],
     flows,
     ports: collectPorts(loaded, index, moduleByFilePath),
     summary: buildUnitSummary(unit, loaded, index, moduleIds, resolver),

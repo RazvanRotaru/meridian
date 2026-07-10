@@ -20,6 +20,10 @@ export interface TargetResolution {
   /** Set in per-package mode when the target lives in a sibling workspace package: the join
    * pass (cross-package-join.ts) rewrites it to `resolved`, or it stays honestly unresolved. */
   pending?: PendingRef;
+  /** Set when the symbol itself has no emitted node (a type alias, a plain const) and the target
+   * is its declaring FILE's module node instead. Callers that share ownership with another pass
+   * use this to tell "found the real node" from "found only the file". */
+  viaModuleFallback?: true;
 }
 
 export interface PendingRef {
@@ -51,12 +55,26 @@ export interface CrossPackageResolver {
   resolveRelative(fromFileAbsPath: string, specifier: string): string | null;
 }
 
-export function resolveTarget(callee: Node, index: ResolutionIndex, resolver?: CrossPackageResolver): TargetResolution {
+export function resolveTarget(
+  callee: Node,
+  index: ResolutionIndex,
+  resolver?: CrossPackageResolver,
+  moduleFallback?: Map<string, { finalId: string }>,
+): TargetResolution {
   try {
     const original = calleeSymbol(callee);
     const symbol = aliasedSymbol(original);
     const declaration = implementationDeclaration(symbol);
     const classified = symbol && declaration ? classifyDeclaration(declaration, symbol, index) : UNRESOLVED;
+    // Opt-in module fallback (the value-ref pass): a symbol with no emitted node — a type alias,
+    // a plain const — still names a real in-project dependency. Resolve it to the declaring
+    // file's MODULE node so the relationship survives instead of dropping as unresolved.
+    if (classified.resolution === "unresolved" && declaration && moduleFallback) {
+      const fallback = moduleFallbackTarget(callee, declaration, moduleFallback);
+      if (fallback) {
+        return fallback;
+      }
+    }
     // Attach a pending ref on ANYTHING that did not resolve in-unit — including `external`,
     // because an installed monorepo resolves a sibling package through its node_modules copy
     // (a real .d.ts/.ts), which classifies external here; only the join knows it is in-project.
@@ -305,6 +323,31 @@ function classifyDeclaration(declaration: Node, symbol: TsSymbol, index: Resolut
     return { resolution: "resolved", resolvedTarget, externalModulePath: null, externalQualname: null, threw: false };
   }
   return UNRESOLVED;
+}
+
+/** The declaring file's module node, for an unresolved symbol that still lives in-project. Never
+ * the referencing file's own module (an intra-file symbol is not a dependency). */
+function moduleFallbackTarget(
+  callee: Node,
+  declaration: Node,
+  moduleFallback: Map<string, { finalId: string }>,
+): TargetResolution | null {
+  const declFile = declaration.getSourceFile().getFilePath();
+  if (declFile === callee.getSourceFile().getFilePath()) {
+    return null;
+  }
+  const module = moduleFallback.get(declFile);
+  if (!module) {
+    return null;
+  }
+  return {
+    resolution: "resolved",
+    resolvedTarget: module.finalId,
+    externalModulePath: null,
+    externalQualname: null,
+    threw: false,
+    viaModuleFallback: true,
+  };
 }
 
 function isExternalDeclaration(declaration: Node): boolean {

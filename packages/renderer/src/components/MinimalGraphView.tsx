@@ -18,7 +18,7 @@
  */
 
 import { useEffect, useMemo, useRef } from "react";
-import { ReactFlow, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
+import { ReactFlow, type Edge, type EdgeTypes, type Node, type ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
 import { MinimalStubNode } from "./nodes/modulemap/MinimalStubNode";
@@ -28,11 +28,16 @@ import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { MINIMAL_STUB_NODE } from "../layout/minimalSubgraphLayout";
+import { spoolFanEdges, SPOOL_EDGE_TYPE } from "../layout/edgeSpooling";
+import { SpoolEdge } from "./edges/SpoolEdge";
 import type { MinimalStubData } from "../derive/minimalSubgraph";
 import { minimalMiniMapColor, SURFACE_STYLE, PANEL_STYLE, buttonStyle } from "./minimalGraphStyles";
 
 // The Map's own card components plus the overlay-only [+n] expander (a stable module-level reference).
 const overlayNodeTypes = { ...moduleNodeTypes, [MINIMAL_STUB_NODE]: MinimalStubNode };
+
+/** Fan hubs gather their wires into trunks (the Highways treatment for this overlay's flat graph). */
+const overlayEdgeTypes: EdgeTypes = { [SPOOL_EDGE_TYPE]: SpoolEdge };
 
 export function MinimalGraphView() {
   const nodes = useBlueprint((state) => state.minimalRfNodes);
@@ -43,6 +48,7 @@ export function MinimalGraphView() {
   const hiddenRelKinds = useBlueprint((state) => state.hiddenRelKinds);
   const seedCount = useBlueprint((state) => state.minimalSeedIds.length);
   const grown = useBlueprint((state) => state.minimalKeptIds.length > 0 || state.minimalExpanded.length > 0);
+  const showHighways = useBlueprint((state) => state.showHighways);
   const { closeMinimalGraph, expandMinimal, resetMinimalGraph } = useBlueprintActions();
 
   useClearOnEscape(closeMinimalGraph, true);
@@ -72,11 +78,19 @@ export function MinimalGraphView() {
   // The Map's OWN paint chain (suppress redundant imports → relationship-kind filter → emphasize →
   // ghost-tier dim), extracted pure into `paintMinimal` so the overlay's colour parity with the Map
   // is unit-tested. The Map's Relationships pills float over this overlay, so they filter it too.
-  // Only the baked [+n] stub tethers stay out of the paint.
-  const { nodes: paintedNodes, edges: paintedEdges } = useMemo(
-    () => paintMinimalLevel(nodes, edges, selected, radius, highlightMode, hiddenRelKinds),
-    [nodes, edges, selected, radius, highlightMode, hiddenRelKinds],
-  );
+  // Only the baked [+n] stub tethers stay out of the paint. Highways here means SPOOLING: fan hubs
+  // gather their many wires into shared trunks (no containers to pair-bundle in this flat overlay);
+  // only painted import/dep wires spool — the stub tethers keep their own path.
+  const { nodes: paintedNodes, edges: paintedEdges } = useMemo(() => {
+    const painted = paintMinimalLevel(nodes, edges, selected, radius, highlightMode, hiddenRelKinds);
+    if (!showHighways) {
+      return painted;
+    }
+    // Painted wires carry a data.category (import/dep); the [+n] stub tethers carry none.
+    const wires = painted.edges.filter((edge) => (edge.data as { category?: string } | undefined)?.category !== undefined);
+    const tethers = painted.edges.filter((edge) => (edge.data as { category?: string } | undefined)?.category === undefined);
+    return { nodes: painted.nodes, edges: [...spoolFanEdges(wires), ...tethers] };
+  }, [nodes, edges, selected, radius, highlightMode, hiddenRelKinds, showHighways]);
 
   // Fit once per LAYOUT (build / expand / reset) — the same guard idiom as the sibling surfaces.
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
@@ -96,6 +110,7 @@ export function MinimalGraphView() {
         nodes={paintedNodes}
         edges={paintedEdges}
         nodeTypes={overlayNodeTypes}
+        edgeTypes={overlayEdgeTypes}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={onPaneClick}

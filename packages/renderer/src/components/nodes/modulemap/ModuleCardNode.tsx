@@ -40,7 +40,7 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
       <div style={borderFor(frameStyle(FILE_FRAME_ACCENT), frameSelectedStyle(FILE_FRAME_ACCENT), selected, diff)}>
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-        <FrameTitleBar actionsId={id} chevron={chevron}>
+        <FrameTitleBar chevron={chevron}>
           <span style={LABEL} title={data.fullPath}>{data.label}</span>
           {entryBadge}
           <DeltaChip diff={diff} />
