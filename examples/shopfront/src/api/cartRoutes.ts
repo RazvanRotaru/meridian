@@ -11,7 +11,7 @@ export class CartRoutes {
     return ok({ cart: this._cart.getCart(cartId), total: this._cart.summarize(cartId) });
   }
 
-  /** POST /cart/:id/items — add a product line. */
+  /** POST /cart/:id/items — add a product line (validated). */
   handleAddItem(cartId: string, productId: string, quantity: number): ApiResponse {
     log(`POST /cart/${cartId}/items ${productId} x${quantity}`);
     return ok(this._cart.addItem(cartId, productId, quantity));
