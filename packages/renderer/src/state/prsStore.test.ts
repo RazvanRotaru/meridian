@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GraphArtifact, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
-import { createBlueprintStore } from "./store";
+import { createBlueprintStore, type StoreDependencies } from "./store";
 import type { PrSummary } from "./prTypes";
 
 function node(id: string, kind: string, file: string, parentId?: string, lines?: { start: number; end: number }): GraphNode {
@@ -48,7 +48,7 @@ const ARTIFACT: GraphArtifact = {
   edges: [],
 };
 
-function freshStore() {
+function freshStore(extra?: Partial<StoreDependencies>) {
   const index = buildGraphIndex(ARTIFACT);
   return createBlueprintStore({
     artifact: ARTIFACT,
@@ -58,6 +58,7 @@ function freshStore() {
     sourceUrl: null,
     prsUrl: "/api/prs?id=artifact-1",
     prFilesUrl: "/api/prs/files?id=artifact-1",
+    ...extra,
   });
 }
 
@@ -139,5 +140,150 @@ describe("PR store slice", () => {
     store.getState().reviewPrInGraph();
     expect(store.getState().viewMode).toBe("modules");
     expect(store.getState().minimalSeedIds).toEqual([]);
+  });
+});
+
+/** Store deps of a GitHub `web` session, where the server can prepare the PR head. */
+const ANALYZE_DEPS: Partial<StoreDependencies> = {
+  analyzeUrl: "/api/pr/analyze",
+  graphId: "artifact-1",
+  graphUrl: "/api/graph?id=artifact-1",
+};
+
+/** One NDJSON Response streaming the given lines (single chunk — boundary cases live in prAnalysis.test). */
+function ndjsonResponse(lines: readonly object[]): Response {
+  const body = lines.map((line) => `${JSON.stringify(line)}\n`).join("");
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(body));
+      controller.close();
+    },
+  });
+  return new Response(stream, { status: 200 });
+}
+
+function selectedPrState(number: number) {
+  return {
+    viewMode: "prs" as const,
+    prSelected: number,
+    prsList: { open: [pr(number)], closed: null },
+    prFiles: [{ path: "repo/src/a.ts", status: "modified" as const, additions: 1, deletions: 0, hunks: [{ start: 1, end: 1 }] }],
+  };
+}
+
+describe("PR review preparation (streamed analyze)", () => {
+  it("walks clone→checkout→extract, stores the prepared graph id, and lands the synchronous review's post-conditions", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(ndjsonResponse([{ stage: "clone" }, { stage: "checkout" }, { stage: "extract" }, { stage: "done", graphId: "pr-deadbeef" }]));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore(ANALYZE_DEPS);
+    store.setState(selectedPrState(7));
+    const stages: (string | null)[] = [];
+    store.subscribe((state) => {
+      if (stages[stages.length - 1] !== state.prPrepareStage) {
+        stages.push(state.prPrepareStage);
+      }
+    });
+    await store.getState().reviewPrInGraph();
+    expect(stages).toEqual(["clone", "checkout", "extract", null]);
+    expect(store.getState().prReviewStatus).toBe("idle");
+    expect(store.getState().prPrepareError).toBe(null);
+    expect(store.getState().prPreparedGraphId).toBe("pr-deadbeef");
+    // The analyze POST carries the contract body.
+    expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/pr/analyze");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ id: "artifact-1", prNumber: 7, baseRef: "main", headRef: "feature" });
+    // Wave 1: after the stream, the review applies to the LOADED artifact exactly as before.
+    expect(store.getState().viewMode).toBe("modules");
+    expect(store.getState().prReviewed).toBe(7);
+    expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts"]);
+  });
+
+  it("a second review supersedes a first still mid-stream", async () => {
+    const encoder = new TextEncoder();
+    let releaseFirst!: () => void;
+    const firstStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('{"stage":"clone"}\n'));
+        releaseFirst = () => {
+          controller.enqueue(encoder.encode('{"stage":"done","graphId":"pr-first"}\n'));
+          controller.close();
+        };
+      },
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(firstStream, { status: 200 }))
+      .mockResolvedValueOnce(ndjsonResponse([{ stage: "done", graphId: "pr-second" }]));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore(ANALYZE_DEPS);
+    store.setState(selectedPrState(7));
+    const first = store.getState().reviewPrInGraph();
+    const second = store.getState().reviewPrInGraph();
+    await second;
+    releaseFirst();
+    await first;
+    // The superseded stream's completion must not clobber the newer run's result.
+    expect(store.getState().prPreparedGraphId).toBe("pr-second");
+    expect(store.getState().prReviewStatus).toBe("idle");
+    expect(store.getState().prPrepareStage).toBe(null);
+  });
+
+  it("a failed stream reports the error and leaves the review surface closed", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ndjsonResponse([{ stage: "clone" }, { stage: "error", message: "clone failed" }])));
+    const store = freshStore(ANALYZE_DEPS);
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    expect(store.getState().prReviewStatus).toBe("error");
+    expect(store.getState().prPrepareError).toBe("clone failed");
+    expect(store.getState().prPrepareStage).toBe(null);
+    // The overlay never opened: still on the PRs page, nothing seeded, nothing marked reviewed.
+    expect(store.getState().viewMode).toBe("prs");
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().prReviewed).toBe(null);
+  });
+
+  it("without an analyzeUrl the review stays synchronous and never fetches", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(store.getState().prReviewStatus).toBe("idle");
+    expect(store.getState().prPreparedGraphId).toBe(null);
+    expect(store.getState().viewMode).toBe("modules");
+    expect(store.getState().prReviewed).toBe(7);
+    expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts"]);
+  });
+
+  it("switching PRs abandons an in-flight preparation", async () => {
+    const encoder = new TextEncoder();
+    let releaseAnalyze!: () => void;
+    const analyzeStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('{"stage":"clone"}\n'));
+        releaseAnalyze = () => {
+          controller.enqueue(encoder.encode('{"stage":"done","graphId":"pr-stale"}\n'));
+          controller.close();
+        };
+      },
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(analyzeStream, { status: 200 }))
+      .mockResolvedValue(Response.json({ files: [], truncated: false }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore(ANALYZE_DEPS);
+    store.setState(selectedPrState(7));
+    const review = store.getState().reviewPrInGraph();
+    const select = store.getState().selectPr(8);
+    releaseAnalyze();
+    await Promise.all([review, select]);
+    // The indicator reset with the switch, and the stale stream landed on nothing.
+    expect(store.getState().prReviewStatus).toBe("idle");
+    expect(store.getState().prPreparedGraphId).toBe(null);
+    expect(store.getState().prReviewed).toBe(null);
+    expect(store.getState().viewMode).toBe("prs");
   });
 });

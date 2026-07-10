@@ -23,6 +23,11 @@ export interface BootConfig {
 export interface PrApiUrls {
   prsUrl: string;
   prFilesUrl: string;
+  /** The fixed PR-prepare (analyze) endpoint; null when the graph URL carries no artifact id —
+   * a plain `view` session has no server-stored GitHub source the server could re-clone. */
+  analyzeUrl: string | null;
+  /** The current artifact id parsed from the graph URL — the analyze POST body's `id`. */
+  graphId: string | null;
 }
 
 interface InjectedConfig extends Omit<BootConfig, "defaultEnv"> {
@@ -61,6 +66,8 @@ export function prApiUrlsFromGraphUrl(graphUrl: string): PrApiUrls {
   return {
     prsUrl: apiUrl("/api/prs", id),
     prFilesUrl: apiUrl("/api/prs/files", id),
+    analyzeUrl: id ? "/api/pr/analyze" : null,
+    graphId: id,
   };
 }
 

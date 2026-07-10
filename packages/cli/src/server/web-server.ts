@@ -17,6 +17,7 @@ import { assertJsonContentType, assertSameOrigin } from "./web-guards";
 import { handleAuthSession, handleAuthStatus, handleDeviceStart, handleLogout, handleOwnRepos, handleRepoSearch } from "./web-auth";
 import { handleGenerate, sendGraph, sendMeta, sendView } from "./web-graph";
 import { handlePullRequestFiles, handlePullRequests } from "./web-prs";
+import { handlePrAnalyze } from "./web-pr-analyze";
 import type { ArtifactSource } from "./web-source";
 import { sendSource } from "./source-serve";
 
@@ -131,6 +132,10 @@ async function handleApi(ctx: Context, request: IncomingMessage, response: Serve
 async function handleApiPost(ctx: Context, request: IncomingMessage, response: ServerResponse, pathname: string): Promise<void> {
   if (pathname === "/api/generate") {
     await handleGenerate(ctx, request, response);
+    return;
+  }
+  if (pathname === "/api/pr/analyze") {
+    await handlePrAnalyze(ctx, request, response);
     return;
   }
   if (pathname === "/api/auth/device") {

@@ -1,46 +1,84 @@
 /**
- * Running `git clone` as a child process and turning its stderr into a browser-safe message.
+ * Running `git` as a child process and turning its stderr into a browser-safe message.
  *
  * Split from `clone` so the process/IO concerns (spawn, timeout, secret-scrubbing) stay apart
  * from the pure input parsing. A token appears here only to build the redactor that strips it
- * from git's stderr; it is never logged, echoed in a response, or persisted anywhere.
+ * from git's stderr and (for `runGit`) to inject an `http.extraHeader` credential; it is never
+ * logged, echoed in a response, or persisted anywhere.
  */
 
 import { spawn } from "node:child_process";
 import { WebError } from "./web-error";
 
 const CLONE_TIMEOUT_MS = 90_000;
+const DEFAULT_GIT_TIMEOUT_MS = 60_000;
 const MAX_STDERR_BYTES = 4_000;
+const MAX_STDOUT_BYTES = 32 * 1024 * 1024;
 
 /** base64("x-access-token:<token>") — the credential half of the Authorization header. */
 export function base64Auth(token: string): string {
   return Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
 }
 
+/** The `-c http.extraHeader=…` prefix that carries a token into a git subcommand without a URL. */
+function authArgs(token?: string): string[] {
+  return token ? ["-c", `http.extraHeader=AUTHORIZATION: basic ${base64Auth(token)}`] : [];
+}
+
 export function runGitClone(args: string[], token?: string): Promise<void> {
-  const redact = redactor(token);
-  return new Promise((resolveClone, rejectClone) => {
-    const child = spawn("git", args, { stdio: ["ignore", "ignore", "pipe"] });
+  return spawnGit(args, { token, timeoutMs: CLONE_TIMEOUT_MS }).then(() => undefined);
+}
+
+/**
+ * Run an arbitrary git subcommand in `opts.cwd`, argv-only (never shell-interpolated), and return
+ * its stdout. The token is injected the same way `runGitClone` does — a `-c http.extraHeader`
+ * before the subcommand — so it never lands in an argv URL, a log, or an error message.
+ */
+export function runGit(args: string[], opts: { cwd: string; token?: string; timeoutMs?: number }): Promise<string> {
+  return spawnGit([...authArgs(opts.token), ...args], {
+    cwd: opts.cwd,
+    token: opts.token,
+    timeoutMs: opts.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
+  });
+}
+
+interface SpawnOptions {
+  cwd?: string;
+  token?: string;
+  timeoutMs: number;
+}
+
+/** The one place `git` is spawned: pipes stdout, caps buffers, time-boxes, and scrubs the token. */
+function spawnGit(args: string[], opts: SpawnOptions): Promise<string> {
+  const redact = redactor(opts.token);
+  return new Promise((resolveRun, rejectRun) => {
+    const child = spawn("git", args, { cwd: opts.cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      rejectClone(new WebError(422, "git clone timed out after 90s"));
-    }, CLONE_TIMEOUT_MS);
+      rejectRun(new WebError(422, `git timed out after ${Math.round(opts.timeoutMs / 1000)}s`));
+    }, opts.timeoutMs);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (stdout.length < MAX_STDOUT_BYTES) {
+        stdout += chunk.toString("utf8");
+      }
+    });
     child.stderr?.on("data", (chunk: Buffer) => {
       stderr = (stderr + chunk.toString("utf8")).slice(-MAX_STDERR_BYTES);
     });
     child.on("error", (error) => {
       clearTimeout(timer);
-      rejectClone(new WebError(500, `could not run git: ${error.message}`));
+      rejectRun(new WebError(500, `could not run git: ${redact(error.message)}`));
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      code === 0 ? resolveClone() : rejectClone(new WebError(422, cloneFailureMessage(redact(stderr))));
+      code === 0 ? resolveRun(stdout) : rejectRun(new WebError(422, gitFailureMessage(redact(stderr))));
     });
   });
 }
 
-function cloneFailureMessage(scrubbedStderr: string): string {
+function gitFailureMessage(scrubbedStderr: string): string {
   const authLike = /Authentication failed|could not read Username|terminal prompts disabled|\b403\b|not found/i.test(
     scrubbedStderr,
   );
@@ -48,7 +86,7 @@ function cloneFailureMessage(scrubbedStderr: string): string {
   if (authLike) {
     return `authentication failed — repository not found or is private (set GITHUB_TOKEN or provide a token): ${tail}`;
   }
-  return `git clone failed: ${tail}`;
+  return `git failed: ${tail}`;
 }
 
 /** Strip every trace of the token from git's stderr before it can reach a log or response. */
