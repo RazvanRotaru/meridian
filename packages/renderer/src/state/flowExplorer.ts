@@ -24,7 +24,7 @@ export function moduleRevealStateFor(nodeIds: readonly string[], index: GraphInd
   if (modules.length === 0) {
     return null;
   }
-  const focus = commonPackageFocus(modules, index);
+  const focus = commonPackageFocus(modules.map((module) => module.id), index);
   return {
     moduleFocus: focus,
     moduleExpanded: expandedModulePaths(modules, focus, index),
@@ -65,8 +65,10 @@ function nearestModule(nodeId: string, index: GraphIndex): GraphNode | null {
   return null;
 }
 
-function commonPackageFocus(modules: readonly GraphNode[], index: GraphIndex): string | null {
-  const packagePaths = modules.map((module) => index.ancestorsOf(module.id).filter((node) => node.kind === "package"));
+/** The DEEPEST `package` ancestor shared by ALL of `nodeIds`, or null (repo root) when they share
+ * none — the natural dive-in focus for revealing several nodes at once. */
+export function commonPackageFocus(nodeIds: readonly string[], index: GraphIndex): string | null {
+  const packagePaths = nodeIds.map((nodeId) => index.ancestorsOf(nodeId).filter((node) => node.kind === "package"));
   let common: GraphNode | null = null;
   for (let depth = 0; ; depth += 1) {
     const candidate = packagePaths[0]?.[depth];

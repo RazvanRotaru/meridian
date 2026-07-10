@@ -113,9 +113,13 @@ function applyEnvironment(store: BlueprintStore, environment: string | null | un
 // The structural fields of a full NavState as a store partial, the Set-valued ones (`expanded`,
 // `moduleExpanded`, `hiddenCategories`) rebuilt as Sets. Always the complete set (not a sparse patch) so absent URL
 // keys reset to their default. Excludes `environment`, which is apply-only (see restoreFromUrl).
-function structuralState(nav: NavState): Record<string, unknown> {
+// Exported for the serviceScope tests, which assert a restore always resets the scope.
+export function structuralState(nav: NavState): Record<string, unknown> {
   return {
     viewMode: nav.viewMode,
+    // The scoped Service sub-view is session-only (never URL-encoded), so NO history entry carries
+    // it: restoring any entry — popstate back/forward included — must render the lens unscoped.
+    serviceScope: null,
     focusId: nav.focusId,
     compRoot: nav.compRoot,
     selectedId: nav.selectedId,

@@ -42,14 +42,15 @@ import type { Direction, ExpansionEntry } from "../derive/minimalSubgraph";
 import { seedModuleIdsFor } from "../derive/selectionSeeds";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/blockDeps";
-import { deriveModuleTree } from "../derive/moduleTree";
+import { deriveModuleTree, type VisibleModuleNode } from "../derive/moduleTree";
 import { moduleChildContainerIds } from "../derive/moduleChildContainers";
 import { deriveServiceTree } from "../derive/serviceClusterTree";
+import { scopeSetOf, serviceScopeFor, type ServiceScope } from "./serviceScope";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import type { HighlightMode } from "../components/moduleMapPaint";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import { moduleRevealStateFor, withAncestorsOf, withAncestorsOfMany } from "./flowExplorer";
-import { anchorNodeId, mapRevealStateFor, serviceRevealStateFor, uiRevealStateFor } from "./lensPath";
+import { anchorNodeIds, mapRevealStateForMany, resolveServiceAnchors, serviceRevealStateForMany, uiRevealStateForMany } from "./lensPath";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
 import { PRS_UNAVAILABLE_ERROR, type PrChangedFile, type PrFilesResponse, type PrListResponse, type PrSummary, type PrsTab } from "./prTypes";
@@ -205,6 +206,9 @@ export interface BlueprintState {
   /** Whether `private`-tagged members are painted on the Map. PAINT-ONLY like Tests/categories —
    * privates always get their space in the layout, so toggling never reshuffles positions. */
   showPrivate: boolean;
+  /** The Service lens's scoped sub-view (see state/serviceScope.ts); null == the full lens.
+   * Session-only — deliberately NOT URL-round-tripped (YAGNI until asked). */
+  serviceScope: ServiceScope | null;
   /** The seed file-module ids of the OPEN minimal-graph overlay; empty == the overlay is closed and
    * the Module-map level canvas shows. Set by buildMinimalGraph from the expanded selection. */
   minimalSeedIds: string[];
@@ -326,6 +330,11 @@ export interface BlueprintState {
   resetRelationshipFilter(): void;
   selectModule(id: string | null): void;
   toggleModuleSelect(id: string): void;
+  /** Scope the Service lens to the current anchors' owning cluster(s) + 1-hop; no-op when nothing
+   * anchored resolves to a cluster. Enters the "call" lens itself (bypassing setViewMode's clear). */
+  openServiceScope(): void;
+  /** Exit the scoped Service sub-view back to the full lens; no-op when already unscoped. */
+  clearServiceScope(): void;
   buildMinimalGraph(): void;
   closeMinimalGraph(): void;
   expandMinimal(sourceId: string, direction: Direction): void;
@@ -461,6 +470,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleSelected: new Set<string>(),
     moduleExpanded: new Set<string>(),
     showPrivate: true,
+    serviceScope: null,
     minimalSeedIds: [],
     minimalKeptIds: [],
     minimalExpanded: [],
@@ -661,6 +671,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Open a callable's logic flow (the double-click "dive into logic" gesture). A fresh chart
     // starts at default expansion; clear any prior selection (it means nothing in a new chart).
     openLogicFlow(nodeId) {
+      beginLensTransition(get, set);
       set({ viewMode: "logic", logicRoot: nodeId, logicStack: [nodeId], logicFocus: [], selectedId: nodeId, logicSelected: null, expandedLogic: new Set<string>() });
       void get().logicRelayout();
     },
@@ -669,6 +680,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // selected, so a reader can pivot from "who calls this" to "how healthy is the unit it lives in".
     // No guard needed — compRelayout is idempotent, and rooting+selecting is always a fresh view.
     openComposition(unitId) {
+      beginLensTransition(get, set);
       set({ viewMode: "call", compRoot: unitId, compExpanded: new Set<string>(), compSelectedId: unitId });
       void get().compRelayout();
     },
@@ -892,7 +904,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // while "modules" derives the folder containment level for the current focus. The import graph
     // is built once (cached) and reused for every folder level.
     async moduleRelayout() {
-      const { index, moduleFocus, moduleExpanded, artifact, viewMode } = get();
+      const { index, moduleFocus, moduleExpanded, artifact, viewMode, serviceScope } = get();
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
       const graph = (moduleGraph ??= buildModuleGraph(index));
@@ -900,7 +912,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       let layout: ModuleLevelLayout;
       if (viewMode === "call") {
-        layout = await deriveServiceLevelLayout(index, moduleExpanded, graph, deps, flows);
+        layout = await deriveServiceLevelLayout(index, moduleExpanded, graph, deps, flows, scopeSetOf(serviceScope));
       } else {
         layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, graph, deps, flows);
       }
@@ -962,16 +974,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // frame id means that expanded frame's visible package/file/unit/block child containers. The
     // active module surface decides whether that frontier is the folder Map or the Service lens.
     expandModuleChildren(containerId) {
-      const { index, moduleFocus, artifact, viewMode } = get();
-      const graph = (moduleGraph ??= buildModuleGraph(index));
-      const deps = (blockDeps ??= buildBlockDeps(index));
-      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
-      const expanded = new Set(get().moduleExpanded);
-      const tree =
-        viewMode === "call"
-          ? deriveServiceTree(index, expanded, graph, deps, flows)
-          : deriveModuleTree(index, moduleFocus, expanded, graph, deps, flows);
-      moduleChildContainerIds(tree, containerId).forEach((id) => expanded.add(id));
+      const state = get();
+      const nodes = moduleTreeNodes(state, (moduleGraph ??= buildModuleGraph(state.index)), (blockDeps ??= buildBlockDeps(state.index)));
+      const expanded = new Set(state.moduleExpanded);
+      moduleChildContainerIds({ nodes }, containerId).forEach((id) => expanded.add(id));
       set({ moduleExpanded: expanded });
       void relayoutActiveModuleSurface(get);
     },
@@ -979,16 +985,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Collapse only direct child package/file/unit/block frames; deeper expansion ids deliberately
     // remain, so re-opening a parent restores the reader's deeper manual state.
     collapseModuleChildren(containerId) {
-      const { index, moduleFocus, artifact, viewMode } = get();
-      const graph = (moduleGraph ??= buildModuleGraph(index));
-      const deps = (blockDeps ??= buildBlockDeps(index));
-      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
-      const expanded = new Set(get().moduleExpanded);
-      const tree =
-        viewMode === "call"
-          ? deriveServiceTree(index, expanded, graph, deps, flows)
-          : deriveModuleTree(index, moduleFocus, expanded, graph, deps, flows);
-      moduleChildContainerIds(tree, containerId).forEach((id) => expanded.delete(id));
+      const state = get();
+      const nodes = moduleTreeNodes(state, (moduleGraph ??= buildModuleGraph(state.index)), (blockDeps ??= buildBlockDeps(state.index)));
+      const expanded = new Set(state.moduleExpanded);
+      moduleChildContainerIds({ nodes }, containerId).forEach((id) => expanded.delete(id));
       set({ moduleExpanded: expanded });
       void relayoutActiveModuleSurface(get);
     },
@@ -1117,6 +1117,44 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ moduleSelected: withToggled(get().moduleSelected, id) });
     },
 
+    // Scope the Service lens to the current anchors' owning cluster(s) plus every cluster coupled
+    // to them in EITHER direction (1-hop). Enters the lens DIRECTLY — going through setViewMode
+    // would clear the very scope this is setting — so it runs the shared lens transition itself
+    // (clear-then-set). The reveal seeds the owning frames open + anchors selected.
+    openServiceScope() {
+      const { index, viewMode, moduleExpanded } = get();
+      // ONE anchors→clusters resolution feeds both the scope's leads and the reveal, so they can
+      // never disagree about which anchors resolve (they read the same cached clustering too).
+      const resolution = resolveServiceAnchors(anchorNodeIds(get()), index);
+      if (resolution === null) {
+        return; // nothing anchored resolves to a cluster — there is no scope to open.
+      }
+      beginLensTransition(get, set);
+      // Scoping from WITHIN the call lens narrows the canvas the reader is already on, so their
+      // open frames must survive: UNION the reveal's expansion into the current one. From any
+      // other lens this is a lens switch, where the reveal REPLACES the expansion (the outgoing
+      // lens's expansion ids mean nothing on the incoming surface).
+      const revealExpanded =
+        viewMode === "call"
+          ? new Set([...moduleExpanded, ...resolution.reveal.moduleExpanded])
+          : resolution.reveal.moduleExpanded;
+      set({
+        viewMode: "call",
+        serviceScope: serviceScopeFor(resolution.owningLeads, index),
+        ...resolution.reveal,
+        moduleExpanded: revealExpanded,
+      });
+      void get().moduleRelayout();
+    },
+
+    clearServiceScope() {
+      if (get().serviceScope === null) {
+        return;
+      }
+      set({ serviceScope: null });
+      void get().moduleRelayout();
+    },
+
     // Paint-only: light a set of graph node ids (from a panel hover); null clears back to full strength.
     setReviewLit(ids) {
       set({ reviewLitNodeIds: ids });
@@ -1148,25 +1186,25 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ reviewTicks: {} });
     },
 
-    // Switching mode re-derives + relayouts like a dive, but CARRIES the current code path: the node
-    // the reader is on in the outgoing lens (its selection, or focus) is revealed and selected in the
-    // incoming one, so Map ↔ Service ↔ UI stay on the same file/symbol instead of resetting to the
-    // lens's top level. When no node is anchored — or the target lens can't place it (a bare folder in
-    // the Service lens) — it falls back to opening the lens at its top. The logic view is a standalone
-    // render (no rfNodes/ELK), so it neither dives nor relayouts; it just flips the mode.
+    // Switching mode re-derives + relayouts like a dive, but CARRIES the current code path: the nodes
+    // the reader is on in the outgoing lens (its whole selection, or focus) are revealed and selected
+    // in the incoming one, so Map ↔ Service ↔ UI stay on the same files/symbols instead of resetting
+    // to the lens's top level. Anchors the target lens can't place (a bare folder in the Service lens)
+    // are dropped; only when NONE is placeable does it fall back to opening the lens at its top. The
+    // logic view is a standalone render (no rfNodes/ELK), so it neither dives nor relayouts.
     setViewMode(mode) {
       const previous = get().viewMode;
       if (previous === mode) {
+        // Re-clicking the ACTIVE Service tab is the escape hatch out of a scoped sub-view (the
+        // breadcrumb ✕ stays the primary exit); every other same-tab click remains a no-op.
+        if (mode === "call") {
+          get().clearServiceScope();
+        }
         return;
       }
-      // The minimal-graph overlay is a Map-only surface; leaving the lens closes it so it never
-      // lingers hidden behind another tab (and the URL's `mgraph` clears with the switch).
-      if (get().minimalSeedIds.length > 0) {
-        minimalLayoutSeq += 1;
-        set({ minimalSeedIds: [], minimalKeptIds: [], minimalExpanded: [], minimalBasePositions: {}, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
-      }
-      // The path node to carry — read BEFORE any state mutates the outgoing lens's selection/focus.
-      const anchor = anchorNodeId(get());
+      beginLensTransition(get, set);
+      // The path nodes to carry — read BEFORE any state mutates the outgoing lens's selection/focus.
+      const anchors = anchorNodeIds(get());
       if (mode === "logic") {
         set({ viewMode: mode });
         return;
@@ -1181,19 +1219,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // A shared/reloaded deep link is unaffected: it restores via setState on boot (not this click
       // path), so an explicit ?mfocus=… / ?focus=… still opens exactly where the link points.
       if (mode === "modules") {
-        const reveal = anchor ? mapRevealStateFor(anchor, get().index) : null;
+        const reveal = mapRevealStateForMany(anchors, get().index);
         set({ viewMode: mode, ...(reveal ?? MODULE_TOP_LEVEL) });
         void get().moduleRelayout();
         return;
       }
       if (mode === "call") {
-        const reveal = anchor ? serviceRevealStateFor(anchor, get().index, get().index.edges) : null;
+        const reveal = serviceRevealStateForMany(anchors, get().index);
         set({ viewMode: mode, ...(reveal ?? MODULE_TOP_LEVEL) });
         void get().moduleRelayout();
         return;
       }
-      // mode === "ui": reveal the anchor in the composition graph, else dive to the render subtree.
-      const reveal = anchor ? uiRevealStateFor(anchor, get().index) : null;
+      // mode === "ui": reveal the anchors in the composition graph, else dive to the render subtree.
+      const reveal = uiRevealStateForMany(anchors, get().index);
       set(reveal ? { viewMode: mode, ...reveal } : { viewMode: mode, focusId: uiFocusTarget(get().index) });
       void get().relayout();
     },
@@ -1516,6 +1554,23 @@ function relayoutActiveModuleSurface(get: () => BlueprintState): Promise<void> {
   return get().minimalSeedIds.length > 0 ? get().minimalRelayout() : get().moduleRelayout();
 }
 
+/**
+ * The side effects EVERY lens entry owes before it lands: the Map-only minimal overlay closes (it
+ * must never linger hidden behind another tab; its URL `mgraph` clears with the switch), and the
+ * scoped Service sub-view exits (it is session state of ONE call-lens visit). Centralized because
+ * each entry point used to re-inline these and the scope clear got missed twice (openLogicFlow /
+ * openComposition set viewMode directly) — one helper means the next lens-entry side effect cannot
+ * be forgotten four times over. openServiceScope runs it too, then SETS its own fresh scope.
+ */
+function beginLensTransition(get: BlueprintStore["getState"], set: (partial: Partial<BlueprintState>) => void): void {
+  if (get().minimalSeedIds.length > 0) {
+    get().closeMinimalGraph();
+  }
+  if (get().serviceScope !== null) {
+    set({ serviceScope: null });
+  }
+}
+
 function withToggled(expanded: Set<string>, nodeId: string): Set<string> {
   const next = new Set(expanded);
   if (next.has(nodeId)) {
@@ -1599,12 +1654,13 @@ function foldIds(expanded: ReadonlySet<string>, ids: readonly string[], mode: "o
   return next;
 }
 
-/** The Map surface's visible frontier as `ExpandableNode`s (the folder Map or service-cluster tree). */
-function moduleTreeNodes(state: BlueprintState, graph: ModuleGraph, deps: BlockDeps): ExpandableNode[] {
+/** The Map surface's visible frontier (the folder Map or service-cluster tree) — the ONE place the
+ * viewMode-based tree derive lives, shared by the scoped expand/collapse actions and applyScoped. */
+function moduleTreeNodes(state: BlueprintState, graph: ModuleGraph, deps: BlockDeps): VisibleModuleNode[] {
   const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
   const tree =
     state.viewMode === "call"
-      ? deriveServiceTree(state.index, state.moduleExpanded, graph, deps, flows)
+      ? deriveServiceTree(state.index, state.moduleExpanded, graph, deps, flows, scopeSetOf(state.serviceScope))
       : deriveModuleTree(state.index, state.moduleFocus, state.moduleExpanded, graph, deps, flows);
   return tree.nodes;
 }

@@ -11,6 +11,7 @@ import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { EnvSelector } from "./EnvSelector";
 import { Breadcrumb } from "./Breadcrumb";
 import { ViewModeToggle } from "./ViewModeToggle";
+import { SelectionPanel } from "./SelectionPanel";
 import { FlowSelector } from "./FlowSelector";
 import { CompositionPanel } from "./composition/CompositionPanel";
 import { DepthSlider } from "./DepthSlider";
@@ -51,6 +52,7 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
           <ViewModeToggle />
           {focusId !== null ? <Breadcrumb /> : null}
         </Group>
+        <SelectionPanel />
 
         <Divider />
         <Group label="Overlays">
