@@ -16,7 +16,7 @@ import { ReactFlow, type Edge, type EdgeTypes, type Node, type ReactFlowInstance
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
 import { filterVisible, filterRelKinds, suppressRedundantImports, emphasize } from "./moduleMapPaint";
-import { crumbsFor, EmptyModuleMapCard, LevelBreadcrumb } from "./ModuleMapChrome";
+import { crumbsFor, EmptyModuleMapCard, LevelBreadcrumb, ServiceScopeBreadcrumb } from "./ModuleMapChrome";
 import { CoveragePanel } from "./CoveragePanel";
 import { BeaconArrows } from "./BeaconArrows";
 import { MapLegend } from "./MapLegend";
@@ -56,7 +56,9 @@ export function ModuleMapView() {
   const showPrivate = useBlueprint((state) => state.showPrivate);
   const showHighways = useBlueprint((state) => state.showHighways);
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
-  const { buildMinimalGraph, setModuleFocus } = useBlueprintActions();
+  const viewMode = useBlueprint((state) => state.viewMode);
+  const serviceScope = useBlueprint((state) => state.serviceScope);
+  const { buildMinimalGraph, setModuleFocus, clearServiceScope } = useBlueprintActions();
   const { onNodeClick, onNodeDoubleClick, onPaneClick } = useModuleNodeInteractions();
   // Muted while the minimal overlay covers this canvas — the overlay's own recenter must win.
   useRecenter(useMemo(() => [...selected], [selected]), { enabled: !minimalOpen });
@@ -130,12 +132,15 @@ export function ModuleMapView() {
   // Fit once per RELAYOUT: `moduleRfNodes` only changes when the level does, so clearing the guard
   // on `effectiveFocus` (a focus change) OR `showTests` (the Tests toggle relayouts + re-coords the
   // level) re-fits the fresh level to the viewport. Category/Private toggles and radius are
-  // paint-only (they never change `nodes`), so they correctly do NOT trigger a refit.
+  // paint-only (they never change `nodes`), so they correctly do NOT trigger a refit. The Service
+  // lens has no focus (`effectiveFocus` stays null there), so entering/exiting a scoped sub-view
+  // clears the guard on the SCOPE's identity instead — the refit then fires only when the re-laid
+  // `nodes` land, never against the outgoing canvas.
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const fitted = useRef(false);
   useEffect(() => {
     fitted.current = false;
-  }, [effectiveFocus, showTests]);
+  }, [effectiveFocus, showTests, serviceScope]);
   useEffect(() => {
     if (!rfRef.current || nodes.length === 0 || fitted.current) {
       return;
@@ -184,12 +189,18 @@ export function ModuleMapView() {
         <BeaconArrows targets={beacons} />
       </ReactFlow>
       {wireHover ? <WireTooltip hover={wireHover} /> : null}
-      <LevelBreadcrumb
-        focus={effectiveFocus}
-        packageCount={effectiveFocus === null ? nodes.filter((node) => !node.parentId).length : 0}
-        crumbs={crumbsFor(effectiveFocus, index)}
-        onFocus={setModuleFocus}
-      />
+      {viewMode === "call" && serviceScope !== null ? (
+        // The scoped Service sub-view replaces the (focus-driven, here inert) containment trail
+        // with its exit: "All services › <scope> ✕".
+        <ServiceScopeBreadcrumb label={serviceScope.label} onClear={clearServiceScope} />
+      ) : (
+        <LevelBreadcrumb
+          focus={effectiveFocus}
+          packageCount={effectiveFocus === null ? nodes.filter((node) => !node.parentId).length : 0}
+          crumbs={crumbsFor(effectiveFocus, index)}
+          onFocus={setModuleFocus}
+        />
+      )}
       {selected.size >= 1 ? <BuildMinimalGraphButton count={selected.size} onBuild={buildMinimalGraph} /> : null}
       {isEmpty ? <EmptyModuleMapCard focus={effectiveFocus} /> : null}
       <MapLegend hasSteps={shownNodes.some((node) => node.type === "step")} hasSelection={selected.size > 0} />

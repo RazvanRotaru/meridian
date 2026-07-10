@@ -17,10 +17,11 @@ import { blockData, fileData, unitData } from "./moduleLevel";
 import type { ModuleGraph } from "./moduleGraph";
 import type { BlockDeps } from "./blockDeps";
 import { packageEntryModule } from "./packageOverview";
-import { deriveServiceClusters, type ServiceCluster, type ServiceClustering } from "./serviceComposition";
+import type { ServiceCluster, ServiceClustering } from "./serviceComposition";
+import { clusteringFor } from "./serviceClusteringCache";
 import type { ModuleGroupData, ModuleTreeEdge, VisibleModuleNode } from "./moduleTree";
 import type { StepData } from "./flowSteps";
-import { clusterCouplingEdges, clusterDegrees, frameIdOf, isOpen, type ClusterDegrees } from "./serviceClusterEdges";
+import { clusterCouplingEdges, clusterDegrees, frameIdOf, isOpen, leadIdOf, type ClusterDegrees } from "./serviceClusterEdges";
 
 export function deriveServiceTree(
   index: GraphIndex,
@@ -28,9 +29,12 @@ export function deriveServiceTree(
   graph: ModuleGraph,
   blockDeps: BlockDeps,
   flows: LogicFlows,
+  scopeLeadIds?: ReadonlySet<string>,
   extraIds: ReadonlySet<string> = EMPTY_IDS,
 ): { nodes: VisibleModuleNode[]; edges: ModuleTreeEdge[] } {
-  const clustering = deriveServiceClusters([...index.nodesById.values()], index.edges);
+  // The memoized clustering (keyed by the index) — the SAME object the lens-carry and the scoped
+  // sub-view's lead resolution read, so a relayout never re-clusters and scope leads always match.
+  const clustering = scopedTo(clusteringFor(index), scopeLeadIds);
   if (clustering.clusters.length === 0) {
     return { nodes: [], edges: [] };
   }
@@ -51,6 +55,27 @@ export function deriveServiceTree(
     ...stepCallEdges(walk, visibleIds, index),
   ].sort((a, b) => a.id.localeCompare(b.id));
   return { nodes, edges };
+}
+
+/**
+ * The scoped Service sub-view: keep only the clusters whose lead is in scope, and only the
+ * couplings whose BOTH endpoints lift (via leadOf) into scope. An edge touching an out-of-scope
+ * cluster is DROPPED, not ghosted — the same no-ghost invariant as the rest of this lens — so the
+ * degree badges too count in-scope neighbours only, matching the wires actually drawn.
+ */
+function scopedTo(clustering: ServiceClustering, scopeLeadIds: ReadonlySet<string> | undefined): ServiceClustering {
+  if (scopeLeadIds === undefined) {
+    return clustering;
+  }
+  const inScope = (unitId: string) => {
+    const lead = clustering.leadOf.get(unitId);
+    return lead !== undefined && scopeLeadIds.has(lead);
+  };
+  return {
+    ...clustering,
+    clusters: clustering.clusters.filter((cluster) => scopeLeadIds.has(cluster.leadId)),
+    couplings: clustering.couplings.filter((edge) => inScope(edge.source) && inScope(edge.target)),
+  };
 }
 
 /** A shared empty set so the default `extraIds` argument never allocates per call. */
@@ -143,7 +168,7 @@ function clusterData(
 }
 
 function clusterForFrame(frameId: string, clustering: ServiceClustering): ServiceCluster {
-  const leadId = frameId.slice("svc:".length);
+  const leadId = leadIdOf(frameId);
   const cluster = clustering.clusters.find((item) => item.leadId === leadId);
   if (!cluster) {
     throw new Error(`Unknown service cluster frame: ${frameId}`);

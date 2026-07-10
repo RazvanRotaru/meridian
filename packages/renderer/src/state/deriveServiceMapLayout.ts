@@ -18,9 +18,10 @@ export async function deriveServiceLevelLayout(
   graph: ModuleGraph,
   blockDeps: BlockDeps,
   flows: LogicFlows,
+  scopeLeadIds?: ReadonlySet<string>,
   extraIds: ReadonlySet<string> = new Set<string>(),
 ): Promise<ModuleLevelLayout> {
-  const tree = deriveServiceTree(index, expanded, graph, blockDeps, flows, extraIds);
+  const tree = deriveServiceTree(index, expanded, graph, blockDeps, flows, scopeLeadIds, extraIds);
   if (tree.nodes.length === 0) {
     return { nodes: [], edges: [], effectiveFocus: null };
   }

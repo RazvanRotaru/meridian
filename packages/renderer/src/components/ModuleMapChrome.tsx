@@ -59,6 +59,24 @@ export function LevelBreadcrumb(props: {
   );
 }
 
+/**
+ * The Service lens's trail while SCOPED to a cluster neighbourhood: `All services › <label> ✕`.
+ * Both "All services" and ✕ exit back to the full lens — the scope has exactly one level, so the
+ * whole trail is the exit. Mirrors LevelBreadcrumb's chrome so the two read as one control.
+ */
+export function ServiceScopeBreadcrumb(props: { label: string; onClear: () => void }) {
+  return (
+    <nav style={BREADCRUMB_STYLE} aria-label="Service scope">
+      <button type="button" style={CRUMB_STYLE} onClick={props.onClear}>All services</button>
+      <span style={SEG_WRAP}>
+        <span style={CRUMB_SEP_STYLE} aria-hidden>›</span>
+        <span style={CRUMB_CURRENT_STYLE} aria-current="page">{props.label}</span>
+        <button type="button" style={CRUMB_STYLE} aria-label="Exit service scope" onClick={props.onClear}>✕</button>
+      </span>
+    </nav>
+  );
+}
+
 /** Shown when a level is empty — a focus with no in-project files, so the lens is never a silent blank. */
 export function EmptyModuleMapCard(props: { focus: string | null }) {
   return (
