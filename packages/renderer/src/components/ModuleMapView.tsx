@@ -77,14 +77,15 @@ export function ModuleMapView() {
     [showHighways, styledEdges, styledNodes, selected],
   );
 
-  // Fit once per RELAYOUT (a focus change): `moduleRfNodes` only changes when the level does, so
-  // clearing the guard on `effectiveFocus` re-fits the fresh level to the viewport. Category toggles
-  // and radius are paint-only (they never change `nodes`), so they correctly do NOT trigger a refit.
+  // Fit once per RELAYOUT: `moduleRfNodes` only changes when the level does, so clearing the guard
+  // on `effectiveFocus` (a focus change) OR `showTests` (the Tests toggle relayouts + re-coords the
+  // level) re-fits the fresh level to the viewport. Category/Private toggles and radius are
+  // paint-only (they never change `nodes`), so they correctly do NOT trigger a refit.
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const fitted = useRef(false);
   useEffect(() => {
     fitted.current = false;
-  }, [effectiveFocus]);
+  }, [effectiveFocus, showTests]);
   useEffect(() => {
     if (!rfRef.current || nodes.length === 0 || fitted.current) {
       return;

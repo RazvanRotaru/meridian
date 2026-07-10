@@ -544,3 +544,21 @@ describe("deriveModuleTree — palette extras (⌘P +)", () => {
     expect(same.nodes.map((n) => n.id)).toEqual(base.nodes.map((n) => n.id));
   });
 });
+
+describe("deriveModuleTree — hiddenIds (the Tests toggle excludes, not paints)", () => {
+  function treeWithHidden(focus: string | null, hiddenIds: string[]) {
+    const { nodes, edges } = fixture();
+    nodes.push(node("ts:pkgA/src/x.test.ts", "module", "ts:pkgA/src", "x.test.ts"));
+    const index = buildGraphIndex({ nodes, edges } as GraphArtifact);
+    return deriveModuleTree(index, focus, new Set<string>(), buildModuleGraph(index), buildBlockDeps(index), {}, new Set<string>(), new Set(hiddenIds));
+  }
+
+  it("excludes a hidden file from the level entirely (no kept empty space)", () => {
+    // pkgA chain-collapses to src; the test file is a normal sibling card when nothing is hidden.
+    expect(treeWithHidden("ts:pkgA", []).nodes.map((n) => n.id)).toContain("ts:pkgA/src/x.test.ts");
+    const hidden = treeWithHidden("ts:pkgA", ["ts:pkgA/src/x.test.ts"]);
+    expect(hidden.nodes.map((n) => n.id)).not.toContain("ts:pkgA/src/x.test.ts");
+    // The survivors are untouched.
+    expect(hidden.nodes.map((n) => n.id)).toContain("ts:pkgA/src/index.ts");
+  });
+});

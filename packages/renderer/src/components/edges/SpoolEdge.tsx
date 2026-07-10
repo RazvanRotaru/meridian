@@ -8,10 +8,18 @@
 import { BaseEdge, Position, type EdgeProps } from "@xyflow/react";
 import type { SpoolEdgeData } from "../../layout/edgeSpooling";
 
-/** Length of the straight shared-trunk segment at a hub's handle. */
+/** Length of the straight shared-trunk segment at a hub's handle. Fixed and hub-derived on purpose:
+ * every wire of the hub must share the gather point EXACTLY, so the trunk can't scale per-wire. */
 const TRUNK = 90;
-/** Bezier control pull for the free span between gather points. */
+/** Bezier control pull at a RAW handle (the non-hub end): modest, a normal departure curve. */
 const PULL = 80;
+/** Control pull at a GATHER end scales with the wire's span (clamped): the control point rides the
+ * trunk AXIS, so a long wire flattens onto that shared line early and the trunk reads at overview
+ * zoom — the fixed 90px segment alone vanished on large canvases. Sharing survives because every
+ * wire's control sits on the SAME axis; only its distance along it differs. */
+const APPROACH_MIN = 80;
+const APPROACH_MAX = 480;
+const APPROACH_FRACTION = 0.35;
 
 interface Point {
   x: number;
@@ -39,9 +47,12 @@ export function SpoolEdge({
   const from = sourceGather ?? source;
   const to = targetGather ?? target;
   // Control points extend along each end's outward axis, so the curve joins the straight trunk
-  // segments tangentially (no kink where the fan meets the trunk).
-  const c1 = outward(from, sourcePosition, PULL);
-  const c2 = outward(to, targetPosition, PULL);
+  // segments tangentially (no kink where the fan meets the trunk). A gather end gets the adaptive
+  // span-scaled pull (long wires ride the trunk axis early); a raw end keeps the modest departure.
+  const span = Math.hypot(to.x - from.x, to.y - from.y);
+  const approach = Math.min(APPROACH_MAX, Math.max(APPROACH_MIN, span * APPROACH_FRACTION));
+  const c1 = outward(from, sourcePosition, sourceGather ? approach : PULL);
+  const c2 = outward(to, targetPosition, targetGather ? approach : PULL);
   const path = [
     `M ${source.x} ${source.y}`,
     sourceGather ? `L ${sourceGather.x} ${sourceGather.y}` : "",

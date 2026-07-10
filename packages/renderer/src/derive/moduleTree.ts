@@ -22,7 +22,8 @@ import { type ModuleGraph } from "./moduleGraph";
 import { collapseChain } from "./moduleLevel";
 import { containmentChildren, frontierRoots, subtreeFileCount } from "./moduleFrontier";
 import { BLOCK_KINDS, type BlockDeps, UNIT_CARD_KINDS } from "./blockDeps";
-import { ghostDepWires } from "./ghostDeps";
+import { ghostDepWires, type GhostEmission } from "./ghostDeps";
+import { groupGhostEmission } from "./groupGhosts";
 import { liftEdges } from "./liftEdges";
 import { createCodeWalk, depWireEdges, flowChainEdges, stepCallEdges, visitCode, type CodeWalk, type Skeleton } from "./codeWalk";
 import { finalizeModuleNode, foldById, importEdges, importTreeEdges } from "./moduleTreeData";
@@ -46,8 +47,10 @@ function extraRoots(index: GraphIndex, extraIds: ReadonlySet<string>): string[] 
 }
 
 /** The containment tree to draw for `(focus, expanded)`: overview when null, else the focus subtree.
- * Private members are ALWAYS derived and laid out — the Private toggle hides them at PAINT time
- * (like Tests/categories), so every toggle holds positions still and nothing ever reshuffles. */
+ * Private members and category-toggled cards are ALWAYS derived and laid out — those toggles hide at
+ * PAINT time so positions hold still. `hiddenIds` (the Tests toggle) is the deliberate exception:
+ * test code can be half a repo's cards, and paint-hiding it leaves a crater of kept empty space — so
+ * hidden ids are excluded HERE and the level relayouts compact. */
 export function deriveModuleTree(
   index: GraphIndex,
   focus: string | null,
@@ -56,12 +59,13 @@ export function deriveModuleTree(
   blockDeps: BlockDeps,
   flows: LogicFlows,
   extraIds: ReadonlySet<string> = EMPTY_IDS,
+  hiddenIds: ReadonlySet<string> = EMPTY_IDS,
 ): ModuleTree {
   const effectiveFocus = focus === null ? null : collapseChain(index, focus);
   // Palette-pinned nodes (⌘P "+") ride in as EXTRA top-level roots so an out-of-focus card joins the
   // current level; `walk`'s `seen` guard drops any that the focus subtree already draws.
   const roots = [...frontierRoots(index, effectiveFocus, graph), ...extraRoots(index, extraIds)];
-  const walked = walk(index, roots, expanded, flows);
+  const walked = walk(index, roots, expanded, flows, hiddenIds);
   const skeleton = walked.skeleton;
   const visibleIds = new Set(skeleton.map((entry) => entry.id));
   const lifted = liftEdges(importEdges(graph), visibleIds, index.parentOf);
@@ -71,7 +75,7 @@ export function deriveModuleTree(
   const overviewFold = effectiveFocus === null ? foldById(index) : new Map<string, ModulePackageData>();
   const nodes = skeleton.map((entry) => finalizeModuleNode(entry, index, graph, lifted, walked.stepData, overviewFold));
   const kinds = kindsOf(skeleton);
-  const ghosts = ghostLevel(blockDeps, walked, visibleIds, index, kinds);
+  const ghosts = ghostLevel(blockDeps, walked, visibleIds, index, kinds, hiddenIds);
   const isDepAnchor = (id: string) => isDepAnchorKind(kinds.get(id));
   const edges = [
     ...importTreeEdges(lifted, kinds),
@@ -145,12 +149,16 @@ function ghostLevel(
   visibleIds: ReadonlySet<string>,
   index: GraphIndex,
   kinds: Map<string, Skeleton["kind"]>,
+  hiddenIds: ReadonlySet<string>,
 ): { nodes: VisibleModuleNode[]; edges: ModuleTreeEdge[] } {
   const isDepAnchor = (id: string) => isDepAnchorKind(kinds.get(id));
   if (![...kinds.values()].some(isDepAnchorKind)) {
     return { nodes: [], edges: [] };
   }
-  const emission = ghostDepWires(blockDeps, walked.calls, visibleIds, index, isDepAnchor, walked.expandedBlocks);
+  const raw = ghostDepWires(blockDeps, walked.calls, visibleIds, index, isDepAnchor, walked.expandedBlocks);
+  // Hidden (test) ghosts drop BEFORE grouping so group counts stay honest, then same-folder ghosts
+  // fold into one group card (the Highways treatment for the ghost tier — see groupGhosts.ts).
+  const emission = groupGhostEmission(withoutHidden(raw, hiddenIds), index);
   const nodes: VisibleModuleNode[] = [...emission.ghosts.entries()].map(([id, data]) => ({
     id,
     parentId: null,
@@ -174,10 +182,23 @@ function ghostLevel(
   return { nodes, edges };
 }
 
-function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>, flows: LogicFlows): CodeWalk {
+/** Drop hidden ghosts and every wire touching one (a wire into hidden code has nothing to say). */
+function withoutHidden(emission: GhostEmission, hiddenIds: ReadonlySet<string>): GhostEmission {
+  if (hiddenIds.size === 0) {
+    return emission;
+  }
+  const ghosts = new Map([...emission.ghosts].filter(([id]) => !hiddenIds.has(id)));
+  const wires = emission.wires.filter((wire) => !hiddenIds.has(wire.source) && !hiddenIds.has(wire.target));
+  return { ghosts, wires };
+}
+
+function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>, flows: LogicFlows, hiddenIds: ReadonlySet<string>): CodeWalk {
   const walked = createCodeWalk();
   const ctx = { index, expanded, flows };
   const visit = (id: string, parentId: string | null, depth: number): void => {
+    if (hiddenIds.has(id)) {
+      return; // the Tests toggle EXCLUDES hidden subtrees from layout (testIds close over containment)
+    }
     const graphNode = index.nodesById.get(id);
     if (graphNode?.kind === MODULE_KIND || (graphNode && (UNIT_CARD_KINDS.has(graphNode.kind) || BLOCK_KINDS.has(graphNode.kind)))) {
       visitCode(id, parentId, depth, ctx, walked);
