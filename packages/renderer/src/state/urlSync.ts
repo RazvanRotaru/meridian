@@ -135,11 +135,11 @@ function structuralState(nav: NavState): Record<string, unknown> {
     expanded: new Set(nav.expanded),
     moduleFocus: nav.moduleFocus,
     // Reset the overlay to the URL's state; a restore that carries no seeds closes it, one that
-    // carries seeds reopens it at the seed base (restoreFromUrl then rebuilds the nodes). The grown
-    // state is ephemeral, so it always resets — a restore never reproduces committed ghosts.
+    // carries seeds reopens it at the seed base (members := origin; restoreFromUrl then rebuilds the
+    // nodes). The curated (promoted/demoted) state is ephemeral — a restore never reproduces it.
     minimalSeedIds: nav.minimalSeedIds,
-    minimalKeptIds: [],
-    minimalExpanded: [],
+    minimalMemberIds: [...nav.minimalSeedIds],
+    minimalArrange: false,
     minimalRfNodes: [],
     minimalRfEdges: [],
     minimalLayoutStatus: "idle",

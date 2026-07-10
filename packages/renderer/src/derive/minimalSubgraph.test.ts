@@ -1,7 +1,7 @@
 /**
- * The minimal subgraph the overlay grows: a SEED (the only permanent node) + its always-shown 1-hop
- * ring as GHOST nodes, directional [+n] stubs on any node with hidden neighbours, further GHOST nodes
- * revealed by an expansion, and the collapsed containment frame. Import wires connect any two visible files.
+ * The minimal subgraph the overlay EXTRACTS: the member working set (any kind — a selected package
+ * stays ONE card) plus its on-map 1-hop import ring as GHOST nodes. Origin members render seed-tier,
+ * promoted members persistent, ghosts ghost-tier. Import wires connect any two visible boxes.
  */
 
 import { describe, expect, it } from "vitest";
@@ -9,7 +9,7 @@ import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { buildModuleGraph } from "./moduleGraph";
 import type { ModuleCardData } from "./moduleLevel";
-import { buildMinimalSubgraph, type ExpansionEntry, type MinimalStubData, type MinimalSubgraphNode } from "./minimalSubgraph";
+import { buildMinimalSubgraph, type MinimalSubgraphNode } from "./minimalSubgraph";
 
 function pkg(id: string, name: string, parentId: string | null): GraphNode {
   return { id, kind: "package", qualifiedName: id, displayName: name, parentId, location: { file: name, startLine: 1 } } as GraphNode;
@@ -27,12 +27,12 @@ function importEdge(source: string, target: string): GraphEdge {
   return { id: `imports:${source}->${target}`, source, target, kind: "imports", resolution: "resolved" } as GraphEdge;
 }
 
-function build(nodes: GraphNode[], edges: GraphEdge[], seeds: string[], kept: string[] = [], expanded: ExpansionEntry[] = [], onMap?: string[]) {
+/** members default to origin; onMap defaults to every module in the fixture (as if the whole map was
+ * on screen). Pass explicit args to exercise promotion (members ⊋ origin) and the on-map restriction. */
+function build(nodes: GraphNode[], edges: GraphEdge[], members: string[], origin: string[] = members, onMap?: string[]) {
   const index = buildGraphIndex({ nodes, edges } as unknown as GraphArtifact);
-  // Default onMap to every module node in the fixture, so the auto 1-hop ring behaves as if the whole
-  // fixture was on the Module map. Callers pass an explicit subset to exercise the on-map restriction.
   const onMapIds = new Set(onMap ?? nodes.filter((node) => node.kind === "module").map((node) => node.id));
-  return buildMinimalSubgraph(index, buildModuleGraph(index), new Set(seeds), new Set(kept), expanded, onMapIds);
+  return buildMinimalSubgraph(index, buildModuleGraph(index), new Set(members), new Set(origin), onMapIds);
 }
 
 function nodeById(nodes: MinimalSubgraphNode[], id: string): MinimalSubgraphNode | undefined {
@@ -52,7 +52,7 @@ const NODES = [
 const EDGES = [importEdge("m:a", "m:b"), importEdge("m:b", "m:c"), importEdge("m:c", "m:d"), importEdge("m:e", "m:a")];
 
 describe("buildMinimalSubgraph", () => {
-  it("shows a seed (the only permanent node) with its full 1-hop ring as ghosts", () => {
+  it("extracts a single file member with its full on-map 1-hop ring as ghosts", () => {
     const { nodes } = build(NODES, EDGES, ["m:a"]);
     expect(nodeById(nodes, "m:a")?.tier).toBe("seed");
     expect(nodeById(nodes, "m:b")?.tier).toBe("ghost"); // a imports b
@@ -60,25 +60,14 @@ describe("buildMinimalSubgraph", () => {
     expect(nodeById(nodes, "m:c")).toBeUndefined(); // 2 hops out, not shown
   });
 
-  it("restricts the seed's auto 1-hop ring to neighbours that were on the Module map", () => {
-    // Only a and b were on the map; e imports a but is off-map, so it must not auto-show.
-    const { nodes } = build(NODES, EDGES, ["m:a"], [], [], ["m:a", "m:b"]);
+  it("restricts the ghost ring to neighbours that were on the Module map", () => {
+    // Only a and b were on the map; e imports a but is off-map, so it must not show as a ghost.
+    const { nodes } = build(NODES, EDGES, ["m:a"], ["m:a"], ["m:a", "m:b"]);
     expect(nodeById(nodes, "m:b")?.tier).toBe("ghost"); // on-map neighbour still shown
-    expect(nodeById(nodes, "m:e")).toBeUndefined(); // off-map neighbour excluded from the auto ring
+    expect(nodeById(nodes, "m:e")).toBeUndefined(); // off-map neighbour excluded from the ring
   });
 
-  it("puts a directional [+n] stub on a node with hidden neighbours, none where all are shown", () => {
-    const { nodes } = build(NODES, EDGES, ["m:a"]);
-    // b's import of c is hidden → an out-stub with count 1; b's importer (a) is shown → no in-stub.
-    const bOut = nodeById(nodes, "stub:m:b|out");
-    expect((bOut?.data as MinimalStubData).count).toBe(1);
-    expect(nodeById(nodes, "stub:m:b|in")).toBeUndefined();
-    // a's whole 1-hop is shown → no stubs on the seed at all.
-    expect(nodeById(nodes, "stub:m:a|out")).toBeUndefined();
-    expect(nodeById(nodes, "stub:m:a|in")).toBeUndefined();
-  });
-
-  it("draws import wires only between two visible files", () => {
+  it("draws import wires only between two visible boxes", () => {
     const { edges } = build(NODES, EDGES, ["m:a"]);
     const imports = edges.filter((edge) => edge.kind === "import").map((edge) => edge.id);
     expect(imports).toContain("min:m:e->m:a");
@@ -86,60 +75,67 @@ describe("buildMinimalSubgraph", () => {
     expect(imports).not.toContain("min:m:b->m:c"); // c is not visible
   });
 
-  it("flags an import wire crossPackage when its two files sit in different package frames", () => {
-    // a lives in p:src, x lives in a sibling package p:lib; a imports x → a cross-package wire.
-    const nodes = [
-      pkg("p:root", "root", null),
-      pkg("p:src", "src", "p:root"),
-      pkg("p:lib", "lib", "p:root"),
-      mod("m:a", "src/a.ts", "p:src"),
-      mod("m:x", "lib/x.ts", "p:lib"),
-    ];
-    const edges = [importEdge("m:a", "m:x")];
-    const built = build(nodes, edges, ["m:a"]);
-    const cross = built.edges.find((edge) => edge.id === "min:m:a->m:x");
-    expect(cross?.crossPackage).toBe(true);
+  it("renders a promoted member (in members, not origin) persistent, its new neighbour a ghost", () => {
+    // b was promoted from a ghost: members = {a, b}, origin = {a}. c is now b's newly-revealed ghost.
+    const { nodes } = build(NODES, EDGES, ["m:a", "m:b"], ["m:a"]);
+    expect(nodeById(nodes, "m:a")?.tier).toBe("seed");
+    expect(nodeById(nodes, "m:b")?.tier).toBe("persistent");
+    expect(nodeById(nodes, "m:c")?.tier).toBe("ghost"); // reached one hop past the original ring
   });
 
-  it("leaves a same-package import wire's crossPackage false", () => {
-    // All fixture files live in p:src, so a→b is same-package.
-    const { edges } = build(NODES, EDGES, ["m:a"]);
-    const same = edges.find((edge) => edge.id === "min:m:a->m:b");
-    expect(same?.crossPackage).toBe(false);
-  });
-
-  it("reveals an expansion's neighbours as ghosts, one hop past the frontier", () => {
-    const { nodes } = build(NODES, EDGES, ["m:a"], [], [{ id: "m:b", direction: "out" }]);
-    expect(nodeById(nodes, "m:c")?.tier).toBe("ghost"); // b's out-neighbour, revealed
-    expect(nodeById(nodes, "m:d")).toBeUndefined(); // still one hop further
-    // The freshly-revealed ghost carries its own outward stub.
-    expect((nodeById(nodes, "stub:m:c|out")?.data as MinimalStubData).count).toBe(1);
-  });
-
-  it("renders a drilled-through ghost as persistent (kept), its neighbour as the new ghost", () => {
-    const { nodes } = build(NODES, EDGES, ["m:a"], ["m:c"], [
-      { id: "m:b", direction: "out" },
-      { id: "m:c", direction: "out" },
-    ]);
-    expect(nodeById(nodes, "m:c")?.tier).toBe("persistent"); // committed by drilling through it
-    expect(nodeById(nodes, "m:d")?.tier).toBe("ghost"); // c's newly-revealed neighbour
-  });
-
-  it("resets to the seed base when there are no expansions", () => {
+  it("nests visible file members under a collapsed containment frame", () => {
     const { nodes } = build(NODES, EDGES, ["m:a"]);
-    const files = nodes.filter((node) => node.kind === "file").map((node) => node.id).sort();
-    expect(files).toEqual(["m:a", "m:b", "m:e"]);
-  });
-
-  it("nests visible files under a collapsed containment frame", () => {
-    const { nodes } = build(NODES, EDGES, ["m:a"]);
-    const frame = nodes.find((node) => node.kind === "group");
+    const frame = nodes.find((node) => node.kind === "group" && node.tier === null);
     expect(frame?.collapsedLabel).toBe("root/src");
     expect(nodeById(nodes, "m:a")?.parentId).toBe(frame?.id);
   });
 });
 
-// foo()/bar() live in a.ts, baz() in b.ts, qux() in c.ts; imports run a → b → c, so with seed a the
+// a lives in p:src, x lives in a sibling package p:lib; a imports x.
+const CROSS_NODES = [
+  pkg("p:root", "root", null),
+  pkg("p:src", "src", "p:root"),
+  pkg("p:lib", "lib", "p:root"),
+  mod("m:a", "src/a.ts", "p:src"),
+  mod("m:x", "lib/x.ts", "p:lib"),
+];
+const CROSS_EDGES = [importEdge("m:a", "m:x")];
+
+describe("buildMinimalSubgraph — group members and cross-package wires", () => {
+  it("flags an import wire crossPackage when its two files sit in different package frames", () => {
+    const cross = build(CROSS_NODES, CROSS_EDGES, ["m:a"]).edges.find((edge) => edge.id === "min:m:a->m:x");
+    expect(cross?.crossPackage).toBe(true);
+  });
+
+  it("leaves a same-package import wire's crossPackage false", () => {
+    const same = build(NODES, EDGES, ["m:a"]).edges.find((edge) => edge.id === "min:m:a->m:b");
+    expect(same?.crossPackage).toBe(false);
+  });
+
+  it("extracts a selected PACKAGE as ONE leaf card, never a frame of its files", () => {
+    // p:src selected; its files stay folded onto the one card (no m:a/m:b file cards for it).
+    const { nodes } = build(CROSS_NODES, CROSS_EDGES, ["p:src"], ["p:src"], ["m:x"]);
+    const card = nodeById(nodes, "p:src");
+    expect(card?.kind).toBe("group");
+    expect(card?.tier).toBe("seed"); // a leaf card carries a tier (a frame would be null)
+    expect(card?.parentId).toBeNull(); // flat, not nested in a p:root frame
+    expect(nodeById(nodes, "m:a")).toBeUndefined(); // its files are NOT decomposed
+  });
+
+  it("gives a group member a lifted ghost ring: its files' outside imports show as on-map boxes", () => {
+    // p:src's file a imports x. With only m:x on the map, x shows as a file ghost; the wire lifts to p:src.
+    const fileGhost = build(CROSS_NODES, CROSS_EDGES, ["p:src"], ["p:src"], ["m:x"]);
+    expect(nodeById(fileGhost.nodes, "m:x")?.tier).toBe("ghost");
+    expect(fileGhost.edges.find((edge) => edge.id === "min:p:src->m:x")?.crossPackage).toBe(true);
+    // With only the package p:lib on the map, the same neighbour lifts to a package GHOST card instead.
+    const pkgGhost = build(CROSS_NODES, CROSS_EDGES, ["p:src"], ["p:src"], ["p:lib"]);
+    const ghostCard = nodeById(pkgGhost.nodes, "p:lib");
+    expect(ghostCard?.kind).toBe("group");
+    expect(ghostCard?.tier).toBe("ghost");
+  });
+});
+
+// foo()/bar() live in a.ts, baz() in b.ts, qux() in c.ts; imports run a → b → c, so with member a the
 // overlay shows a + b and keeps c two hops out (off the overlay).
 const DEP_NODES = [
   pkg("p:root", "root", null),
@@ -161,7 +157,7 @@ function callsEdge(source: string, target: string): GraphEdge {
 function buildWithCoupling(coupling: GraphEdge[]) {
   const index = buildGraphIndex({ nodes: DEP_NODES, edges: DEP_IMPORTS } as unknown as GraphArtifact);
   const onMapIds = new Set(DEP_NODES.filter((node) => node.kind === "module").map((node) => node.id));
-  return buildMinimalSubgraph(index, buildModuleGraph(index), new Set(["m:a"]), new Set(), [], onMapIds, {
+  return buildMinimalSubgraph(index, buildModuleGraph(index), new Set(["m:a"]), new Set(["m:a"]), onMapIds, {
     expanded: new Set(),
     blockDeps: { edges: coupling },
     flows: {},
@@ -203,7 +199,7 @@ function buildExpanded(expandedIds: string[]) {
   const index = buildGraphIndex({ nodes: CODE_NODES, edges: CODE_EDGES } as unknown as GraphArtifact);
   const graph = buildModuleGraph(index);
   const onMapIds = new Set(CODE_NODES.filter((node) => node.kind === "module").map((node) => node.id));
-  return buildMinimalSubgraph(index, graph, new Set(["m:a"]), new Set(), [], onMapIds, {
+  return buildMinimalSubgraph(index, graph, new Set(["m:a"]), new Set(["m:a"]), onMapIds, {
     expanded: new Set(expandedIds),
     blockDeps: { edges: [] },
     flows: {},

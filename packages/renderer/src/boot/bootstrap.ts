@@ -32,8 +32,6 @@ export async function bootstrap(): Promise<BootResult> {
     sourceUrl: boot.sourceUrl,
     prsUrl: prApi.prsUrl,
     prFilesUrl: prApi.prFilesUrl,
-    analyzeUrl: prApi.analyzeUrl,
-    graphId: prApi.graphId,
     graphUrl: boot.graphUrl,
   });
   // Restore the navigation state carried in the URL (or fall through to defaults) and run the
