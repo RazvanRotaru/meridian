@@ -20,10 +20,12 @@ const PULL = 80;
 const APPROACH_MIN = 80;
 const APPROACH_MAX = 480;
 const APPROACH_FRACTION = 0.35;
-/** GEOMETRY VETO: a trunk only makes sense when the far end has this much forward room to approach
- * the gather point. A source sitting closer than this (a ghost card hugging its hub) would force
- * the wire to curve BACKWARD into the gather — the S-loop artifact — so it draws plain instead. */
-const MIN_FREE_SPAN = 40;
+/** GEOMETRY VETO + CLAMP: control points must always stay BETWEEN the free end and the gather —
+ * a pull longer than the available room folds the curve backward (the S-loop artifact). Every pull
+ * is clamped to the free span minus this margin; when even that leaves no room, the gather drops
+ * and the wire draws plain. So short spans get gentle direct curves, long hauls keep full trunks,
+ * and a fold is impossible at ANY distance by construction. */
+const PULL_MARGIN = 24;
 
 interface Point {
   x: number;
@@ -46,13 +48,14 @@ export function SpoolEdge({
   const source: Point = { x: sourceX, y: sourceY };
   const target: Point = { x: targetX, y: targetY };
   // A gather point derives ONLY from its hub's handle, so every wire of that hub shares it exactly.
-  // The geometry veto drops a gather whose approach would fold backward (see MIN_FREE_SPAN).
+  // A gather whose free end has no forward room at all (behind the gather, or within PULL_MARGIN of
+  // it) drops — the trunk cannot exist without folding the wire backward.
   let sourceGather = spoolEnd !== "target" ? outward(source, sourcePosition, TRUNK) : null;
   let targetGather = spoolEnd !== "source" ? outward(target, targetPosition, TRUNK) : null;
-  if (targetGather && !hasApproachRoom(sourceGather ?? source, targetGather, targetPosition)) {
+  if (targetGather && axisRoom(sourceGather ?? source, targetGather, targetPosition) < PULL_MARGIN * 2) {
     targetGather = null;
   }
-  if (sourceGather && !hasApproachRoom(targetGather ?? target, sourceGather, sourcePosition)) {
+  if (sourceGather && axisRoom(targetGather ?? target, sourceGather, sourcePosition) < PULL_MARGIN * 2) {
     sourceGather = null;
   }
   // Neither end can gather sanely → this wire is a plain curve, exactly as if it were never spooled.
@@ -63,12 +66,14 @@ export function SpoolEdge({
   const from = sourceGather ?? source;
   const to = targetGather ?? target;
   // Control points extend along each end's outward axis, so the curve joins the straight trunk
-  // segments tangentially (no kink where the fan meets the trunk). A gather end gets the adaptive
-  // span-scaled pull (long wires ride the trunk axis early); a raw end keeps the modest departure.
+  // segments tangentially (no kink where the fan meets the trunk). A gather end wants the adaptive
+  // span-scaled pull (long wires ride the trunk axis early); a raw end a modest departure — and
+  // EVERY pull is clamped to the free room so a control point can never cross back over the far end.
   const span = Math.hypot(to.x - from.x, to.y - from.y);
-  const approach = Math.min(APPROACH_MAX, Math.max(APPROACH_MIN, span * APPROACH_FRACTION));
-  const c1 = outward(from, sourcePosition, sourceGather ? approach : PULL);
-  const c2 = outward(to, targetPosition, targetGather ? approach : PULL);
+  const room = Math.max(axisRoom(from, to, targetGather ? targetPosition : sourcePosition), 0);
+  const adaptive = Math.min(APPROACH_MAX, Math.max(APPROACH_MIN, span * APPROACH_FRACTION));
+  const c1 = outward(from, sourcePosition, clampPull(sourceGather ? adaptive : PULL, room));
+  const c2 = outward(to, targetPosition, clampPull(targetGather ? adaptive : PULL, room));
   const path = [
     `M ${source.x} ${source.y}`,
     sourceGather ? `L ${sourceGather.x} ${sourceGather.y}` : "",
@@ -78,18 +83,23 @@ export function SpoolEdge({
   return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />;
 }
 
-/** True when `free` sits far enough on the APPROACH side of `gather` (the side the hub handle
- * faces) that the curve arrives forward instead of folding back on itself. */
-function hasApproachRoom(free: Point, gather: Point, hubPosition: Position): boolean {
+/** A pull that always fits: never longer than the free room minus the margin, never negative. */
+function clampPull(pull: number, room: number): number {
+  return Math.max(Math.min(pull, room - PULL_MARGIN), 0);
+}
+
+/** How much forward room `free` has on the APPROACH side of `gather` (the side the hub handle
+ * faces): positive = the curve can arrive moving forward; ≤ 0 = it would have to fold back. */
+function axisRoom(free: Point, gather: Point, hubPosition: Position): number {
   switch (hubPosition) {
     case Position.Left:
-      return free.x <= gather.x - MIN_FREE_SPAN;
+      return gather.x - free.x;
     case Position.Right:
-      return free.x >= gather.x + MIN_FREE_SPAN;
+      return free.x - gather.x;
     case Position.Top:
-      return free.y <= gather.y - MIN_FREE_SPAN;
+      return gather.y - free.y;
     default:
-      return free.y >= gather.y + MIN_FREE_SPAN;
+      return free.y - gather.y;
   }
 }
 
