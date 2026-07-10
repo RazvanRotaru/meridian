@@ -8,6 +8,11 @@
  * hand-encode them — they ride through URLSearchParams, which percent-encodes on toString and
  * decodes on parse, so a round-trip is lossless. `mergeNavIntoSearch` owns only our own keys and
  * leaves foreign params (e.g. web-mode `?id=`) untouched.
+ *
+ * The URL is a snapshot of the CURRENT lens, not the union of every lens visited: `encodeNav` scopes
+ * output to the active `viewMode` (see `scopeToView`), so switching lenses never strands another
+ * lens's dive/selection in the query string. Back/forward therefore steps between clean per-lens
+ * URLs instead of a single ever-growing blob.
  */
 
 import type { ViewMode } from "../derive/edgeSelection";
@@ -55,6 +60,22 @@ export interface NavState {
 
 /** Every param key we own — listed once so `mergeNavIntoSearch` can clear them before rewriting. */
 const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "fexp", "fsel", "lroot", "lview", "lstack", "expand", "mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide", "prstate", "prn", "env"] as const;
+
+/** Keys that ride along in EVERY lens: the lens itself, the telemetry env, and the cross-cutting
+ * flow explorer / flow isolation (its panel is mounted regardless of the active lens, and reveals
+ * across the ui and modules surfaces). These never get scoped out. */
+const SHARED_KEYS = new Set<string>(["view", "env", "flow", "depth", "fexp", "fsel"]);
+
+/** The keys each lens OWNS. `encodeNav` emits a lens's own keys plus the shared ones and drops the
+ * rest, so a Map URL never carries a stale Logic trail (and vice-versa). Typed over ViewMode so a
+ * new lens must declare its keys here. */
+const LENS_KEYS: Record<ViewMode, readonly string[]> = {
+  ui: ["focus", "sel", "expand"],
+  call: ["root", "csel"],
+  modules: ["mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide"],
+  logic: ["lroot", "lview", "lstack", "lsel"],
+  prs: ["prstate", "prn"],
+};
 
 /** The navigation state the app boots into — the baseline a restore resets absent keys back to. */
 export const DEFAULT_NAV: NavState = {
@@ -169,6 +190,19 @@ export function encodeNav(nav: NavState): Map<string, string> {
   if (nav.prsTab !== "open") out.set("prstate", nav.prsTab);
   if (nav.prSelected !== null) out.set("prn", String(nav.prSelected));
   setId(out, "env", nav.environment);
+  return scopeToView(out, nav.viewMode);
+}
+
+/** Drop keys owned by a lens other than the active one, so the URL mirrors only what's on screen.
+ * Shared keys and the active lens's own keys survive; everything else (a stale dive/trail/selection
+ * left in the store from a prior lens) is stripped. */
+function scopeToView(out: Map<string, string>, viewMode: ViewMode): Map<string, string> {
+  const owned = new Set<string>(LENS_KEYS[viewMode]);
+  for (const key of [...out.keys()]) {
+    if (!SHARED_KEYS.has(key) && !owned.has(key)) {
+      out.delete(key);
+    }
+  }
   return out;
 }
 
