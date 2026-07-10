@@ -31,6 +31,8 @@ export interface GhostWire {
   target: string;
   weight: number;
   kind: string;
+  /** The artifact edge ids behind this wire (empty for step-call ghosts — steps have no edge id). */
+  underlyingEdgeIds: string[];
 }
 
 export interface GhostEmission {
@@ -56,7 +58,7 @@ export function ghostDepWires(
 ): GhostEmission {
   const ghosts = new Map<string, GhostData>();
   const byPair = new Map<string, GhostWire>();
-  const add = (source: string, target: string, ghostId: string, weight: number, kind: string): void => {
+  const add = (source: string, target: string, ghostId: string, weight: number, kind: string, edgeId: string | null): void => {
     const node = index.nodesById.get(ghostId);
     if (!node) {
       return; // ext:/unresolved: pseudo-ids have no definition to chart.
@@ -66,8 +68,11 @@ export function ghostDepWires(
     const existing = byPair.get(key);
     if (existing) {
       existing.weight += weight;
+      if (edgeId !== null) {
+        existing.underlyingEdgeIds.push(edgeId);
+      }
     } else {
-      byPair.set(key, { source, target, weight, kind });
+      byPair.set(key, { source, target, weight, kind, underlyingEdgeIds: edgeId === null ? [] : [edgeId] });
     }
   };
   for (const edge of blockDeps.edges) {
@@ -76,18 +81,18 @@ export function ghostDepWires(
     const weight = edge.weight ?? 1;
     if (sourceVisible !== null && targetVisible === null && isCode(sourceVisible) && !expandedBlocks.has(sourceVisible)) {
       const anchor = serviceAnchor(edge.target, index);
-      add(sourceVisible, anchor, anchor, weight, edge.kind);
+      add(sourceVisible, anchor, anchor, weight, edge.kind, edge.id);
     }
     if (targetVisible !== null && sourceVisible === null && isCode(targetVisible)) {
       const anchor = serviceAnchor(edge.source, index);
-      add(anchor, targetVisible, anchor, weight, edge.kind);
+      add(anchor, targetVisible, anchor, weight, edge.kind, edge.id);
     }
   }
   // Step-call targets arrive already resolved (constructions point at the constructor block).
   for (const call of calls) {
     if (nearestVisible(call.target, visibleIds, index) === null) {
       const anchor = serviceAnchor(call.target, index);
-      add(call.stepId, anchor, anchor, 1, "calls");
+      add(call.stepId, anchor, anchor, 1, "calls", null);
     }
   }
   return { ghosts, wires: [...byPair.values()] };

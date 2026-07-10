@@ -58,6 +58,8 @@ export interface LiftedDepEdge {
   target: string;
   weight: number;
   kind: string;
+  /** The artifact edge ids this wire aggregates — the Wire Inspector's trail back to call sites. */
+  underlyingEdgeIds: string[];
 }
 
 /**
@@ -82,8 +84,9 @@ export function liftDepEdges(
     const existing = byPair.get(key);
     if (existing) {
       existing.weight += edge.weight;
+      existing.underlyingEdgeIds.push(...edge.underlyingEdgeIds);
     } else {
-      byPair.set(key, { source: edge.source, target: edge.target, weight: edge.weight, kind: edge.kind });
+      byPair.set(key, { source: edge.source, target: edge.target, weight: edge.weight, kind: edge.kind, underlyingEdgeIds: [...edge.underlyingEdgeIds] });
     }
   }
   return [...byPair.values()];
