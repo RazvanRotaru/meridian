@@ -57,7 +57,7 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
     <div className="lod-tint" style={{ ...borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff), "--lod-accent": accent } as React.CSSProperties}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-      <div style={{ ...ACCENT_BAR, background: accent }} />
+      <div className="lod-rail" style={{ ...ACCENT_BAR, background: accent }} />
       <span className="lod-place">{data.label}</span>
       <div className="lod-card-body" style={INNER}>
         <div style={HEADER}>
