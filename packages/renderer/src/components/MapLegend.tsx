@@ -45,7 +45,7 @@ export function MapLegend({ hasSteps, hasSelection, showPackages = true, showIpc
           <Row swatch={<Box color={accentForKind("package")} />} text="package / directory — double-click to zoom in, chevron to expand in place" />
         ) : null}
         <Row swatch={<Box color={FILE_ACCENT} />} text="file — expands into its declarations; its category is on the chip (UI / Utilities / Config)" />
-        <Row swatch={<ChipSwatch label="KIND" color={accentForKind("class")} />} text="class / interface / object / type — amber; the kind chip names which" />
+        <Row swatch={<ChipSwatch label="KIND" color={accentForKind("class")} />} text="class / interface / object / type — a neutral grey; the kind chip names which" />
         <Row swatch={<Glyph text="ƒ" color={accentForKind("function")} />} text="method / function — double-click opens its logic flow" />
         <Row swatch={<Dashed />} text="ghost — a definition/caller NOT on this level; double-click reveals it" />
       </Section>
