@@ -18,9 +18,9 @@ import { BUNDLE_EDGE_TYPE, type BundleEdgeData } from "./edgeBundling";
 export const RIBBON_EDGE_TYPE = "ribbon";
 
 export interface RibbonEdgeData extends Record<string, unknown> {
-  /** The folded same-pair strands, LIGHTEST weight first (the heaviest lands mid-cable, where the
-   * single arrowhead rides). Each keeps its full styled edge — stroke, opacity, dash — so the
-   * cable renders honest per-strand emphasis. */
+  /** The folded same-pair strands in STRIPE ORDER, arranged centre-out by weight: the heaviest
+   * strand sits mid-cable (where the single arrowhead rides), lighter strands alternate outward.
+   * Each keeps its full styled edge — stroke, opacity, dash — for honest per-strand emphasis. */
   members: Edge[];
   /** Paint-time flag (hover/pin): every strand lights together. */
   boosted?: boolean;
@@ -65,8 +65,8 @@ export function foldPairRibbons(edges: Edge[]): Edge[] {
 }
 
 function ribbonOf(group: Edge[]): Edge {
-  const members = [...group].sort((a, b) => weightOf(a) - weightOf(b));
-  const dominant = members[members.length - 1];
+  const members = centerOutByWeight(group);
+  const dominant = [...group].sort((a, b) => weightOf(b) - weightOf(a))[0];
   return {
     id: `ribbon:${dominant.source}->${dominant.target}`,
     source: dominant.source,
@@ -80,7 +80,23 @@ function ribbonOf(group: Edge[]): Edge {
   };
 }
 
-const weightOf = (edge: Edge): number => (edge.data as { weight?: number } | undefined)?.weight ?? 1;
+/** Weight per artifact aggregate; exported so RibbonEdge can seat the arrowhead on the heaviest. */
+export const weightOf = (edge: Edge): number => (edge.data as { weight?: number } | undefined)?.weight ?? 1;
+
+/** Stripe order: heaviest strand exactly mid-cable, lighter strands alternating outward — so the
+ * cable's visual centre (and its single arrowhead) belongs to the pair's dominant relationship. */
+function centerOutByWeight(group: Edge[]): Edge[] {
+  const byWeight = [...group].sort((a, b) => weightOf(b) - weightOf(a));
+  const center = (group.length - 1) / 2;
+  const positions = group
+    .map((_, index) => index)
+    .sort((a, b) => Math.abs(a - center) - Math.abs(b - center) || a - b);
+  const members = new Array<Edge>(group.length);
+  positions.forEach((position, rank) => {
+    members[position] = byWeight[rank];
+  });
+  return members;
+}
 
 /**
  * Every strand behind a clicked wire, for the inspector: a ribbon opens as its members; a plain
@@ -93,7 +109,7 @@ export function pairOf(inspected: Edge, edges: Edge[]): Edge[] {
   }
   if (inspected.type === RIBBON_EDGE_TYPE) {
     const members = (inspected.data as RibbonEdgeData).members ?? [];
-    return [...members].reverse(); // heaviest first — the panel leads with the pair's main story
+    return [...members].sort((a, b) => weightOf(b) - weightOf(a)); // the panel leads with the pair's main story
   }
   const pool = edges.flatMap((edge) =>
     edge.type === BUNDLE_EDGE_TYPE ? ((edge.data as BundleEdgeData).constituents ?? []) : [edge],

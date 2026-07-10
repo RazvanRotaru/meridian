@@ -55,6 +55,10 @@ down to real lines of code, and the field of wires must foreground the few that 
    stripe dashes can never share phase on parallel curves). Clicking the cable opens the pair
    inspector — one evidence section per kind.
 
+   Residual: multi-kind pairs whose target sits inside an expanded frame are ROUTED (gutter
+   rail) before the fold, so they still overlap on the rail — the pair inspector covers the
+   attribution, but the rail should learn ribbon stripes in a follow-up.
+
 ## W2 — hub demotion (the commons dock)
 
 The biggest spaghetti reducer: a handful of utility modules (logger/types/config) attract wires

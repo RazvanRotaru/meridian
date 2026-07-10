@@ -166,11 +166,11 @@ export function ModuleMapView() {
     if (edge.type === RIBBON_EDGE_TYPE) {
       const members = (edge.data as RibbonEdgeData).members ?? [];
       const breakdown = [...members]
-        .reverse()
+        .sort((a, b) => ((b.data as { weight?: number })?.weight ?? 1) - ((a.data as { weight?: number })?.weight ?? 1))
         .map((member) => {
           const data = member.data as { depKind?: string; category?: string; weight?: number } | undefined;
           const weight = data?.weight ?? 1;
-          return `${data?.depKind ?? data?.category}${weight > 1 ? ` ×${weight}` : ""}`;
+          return `${data?.depKind ?? data?.category ?? "wire"}${weight > 1 ? ` ×${weight}` : ""}`;
         })
         .join(" · ");
       setWireHover({
