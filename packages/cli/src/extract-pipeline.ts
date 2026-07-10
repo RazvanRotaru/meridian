@@ -39,6 +39,8 @@ export interface PipelineRequest {
   materializeBoundary: boolean;
   /** Drop test code from the artifact entirely (`--exclude-tests`); default is include + tag. */
   excludeTests?: boolean;
+  /** Emit `references` edges for imported symbols used as values (`--value-refs`); default off. */
+  valueRefs?: boolean;
   /** Tag nodes the PR changed (git diff --merge-base <ref> vs the working tree) `"changed"`. */
   changedSince?: string;
   /** Display name for the artifact; the web flow passes the repo label so the title isn't a temp dir. */
@@ -157,6 +159,7 @@ async function runExtract(extractor: LanguageExtractor, request: PipelineRequest
       depth: request.depth,
       includeExternal: request.includeExternal,
       includeUnresolved: request.includeUnresolved,
+      valueRefs: request.valueRefs,
     });
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
