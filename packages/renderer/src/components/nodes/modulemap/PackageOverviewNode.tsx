@@ -46,7 +46,7 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
     <div className="lod-tint" style={{ ...borderFor(CARD, cardSelectedStyle(CARD, PACKAGE_ACCENT), selected, diff), "--lod-accent": PACKAGE_ACCENT } as React.CSSProperties}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-      <div style={{ ...ACCENT_BAR, background: PACKAGE_ACCENT }} />
+      <div className="lod-rail" style={{ ...ACCENT_BAR, background: PACKAGE_ACCENT }} />
       <span className="lod-place">{data.label}</span>
       <div className="lod-card-body" style={INNER}>
         <div style={HEADER}>
