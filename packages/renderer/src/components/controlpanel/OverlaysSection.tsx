@@ -1,5 +1,5 @@
 /**
- * The OVERLAYS row: paint/lens switches (Tests, Reach, Private, Coverage, Flows) as unified pills.
+ * The OVERLAYS row: paint/lens switches (Tests, Reach, Private, Coverage) as unified pills.
  * Each pill is shown only where it means something for the active lens (e.g. Reach/Private only on
  * the module surface, Tests never in the Logic view), and carries its count where one exists.
  */
@@ -11,8 +11,7 @@ import { Pill } from "./panelKit";
 
 const REACH_HUE = "#5B9BE3";
 const PRIVATE_HUE = "#7C8CA3";
-const FLOWS_HUE = "#5B9BE3";
-const HIGHWAYS_HUE = "#C99A4B";
+const HIGHWAYS_HUE = "#E8843C"; // orange — arterial/high-traffic edges; the one bold warm accent (diff amber is reserved)
 
 export function OverlaysSection() {
   const viewMode = useBlueprint((state) => state.viewMode);
@@ -23,9 +22,8 @@ export function OverlaysSection() {
   const privateCount = useBlueprint((state) => state.index.privateIds.size);
   const coverageMode = useBlueprint((state) => state.coverageMode);
   const coveragePercent = useBlueprint((state) => state.coverage?.summary.percent ?? null);
-  const flowExplorerOpen = useBlueprint((state) => state.flowExplorerOpen);
   const showHighways = useBlueprint((state) => state.showHighways);
-  const { toggleShowTests, toggleHighlightMode, togglePrivateMembers, toggleCoverageMode, toggleFlowExplorer, toggleHighways } = useBlueprintActions();
+  const { toggleShowTests, toggleHighlightMode, togglePrivateMembers, toggleCoverageMode, toggleHighways } = useBlueprintActions();
 
   const onModuleSurface = viewMode === "modules" || viewMode === "call";
   const onMap = viewMode === "modules";
@@ -92,17 +90,6 @@ export function OverlaysSection() {
       >
         Coverage
       </Pill>
-      {viewMode !== "logic" ? (
-        <Pill
-          active={flowExplorerOpen}
-          accent={FLOWS_HUE}
-          indicator="square"
-          title={flowExplorerOpen ? "Close the flow explorer" : "Open the flow explorer"}
-          onClick={toggleFlowExplorer}
-        >
-          Flows
-        </Pill>
-      ) : null}
     </div>
   );
 }

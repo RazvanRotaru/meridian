@@ -7,7 +7,7 @@
 
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { Edge, Node } from "@xyflow/react";
-import { changedRangesFromExtensions, computeAffectedNodes, computeChangeGroups, computeCoverage } from "@meridian/core";
+import { changedRangesFromExtensions, computeAffectedNodes, computeChangeGroups, computeCoverage, type ChangeStatus } from "@meridian/core";
 import type {
   ChangeGroupsResult,
   CoverageReport,
@@ -19,7 +19,7 @@ import type {
   NodeId,
   NodeMetrics,
 } from "@meridian/core";
-import { applyChangedIds, type GraphIndex } from "../graph/graphIndex";
+import { applyChangedIds, applyChangedStatus, type GraphIndex } from "../graph/graphIndex";
 import { matchAffectedFiles } from "../derive/matchAffectedFiles";
 import type { BlueprintEdge, BlueprintNode } from "../layout/rfTypes";
 import type { TelemetryProvider } from "../telemetry/provider";
@@ -254,6 +254,9 @@ export interface BlueprintState {
   reviewAffectedIds: Set<string>;
   /** Every changed file as a checklist row (touched units inside; empty units == not in the graph). */
   reviewFiles: ReviewFileRow[];
+  /** Per changed file (keyed by node.location.file): GitHub's +N/-M churn, shown as a marker before
+   * the file card's name (files themselves are not coloured — only the touched blocks inside are). */
+  reviewFileDelta: Record<string, { added: number; deleted: number }>;
   /** Per-flow review progress, keyed by flowId, persisted to localStorage under the reviewKey. */
   reviewTicks: Record<string, ReviewTick>;
   /** Per-unit ticks of the files checklist, keyed by nodeId — same persistence as reviewTicks. */
@@ -609,6 +612,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     review,
     reviewAffectedIds: new Set(reviewFiles.flatMap((file) => file.units.map((unit) => unit.nodeId))),
     reviewFiles,
+    reviewFileDelta: {},
     reviewTicks: initialProgress?.ticks ?? {},
     reviewUnitTicks: initialProgress?.unitTicks ?? {},
     reviewFileTicks: initialProgress?.fileTicks ?? {},
@@ -1971,6 +1975,9 @@ function applyPrReviewToMap(
   // so the Map + minimal overlay ring the edited blocks amber (reused `--changed-since` highlight).
   const affected = computeAffectedNodes(artifact.nodes, context.changedFiles);
   applyChangedIds(index, affected.map((node) => node.nodeId));
+  // Colour each touched CODE BLOCK by its file's change kind (green added / gold modified / red
+  // deleted). A file/module that only contains changes stays uncoloured — it shows a +/- stat instead.
+  applyChangedStatus(index, affected.map((node) => [node.nodeId, node.status] as [string, ChangeStatus]));
   // Seed the minimal graph from the changed FILES (seeds must be module ids).
   const matchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
   const seeds = [...new Set(matchedFiles.map((match) => match.moduleId))].sort();
@@ -1978,6 +1985,19 @@ function applyPrReviewToMap(
   // modules), sharing the SAME flow substrate the review rows already read. Stored so the rail can
   // offer per-group isolation; ignored (strip hidden) when the change is a single connected component.
   const changeGroups = computeChangeGroups(artifact.nodes, artifact.edges, context.changedFiles, review.flows);
+  // GitHub's whole-file +N/-M churn per changed file, keyed by node.location.file, for the marker a
+  // changed FILE card shows before its name (files aren't coloured; only their touched blocks are).
+  const deltaByPath = new Map<string, { added: number; deleted: number }>(
+    (prFiles ?? []).map((file) => [file.path, { added: file.additions, deleted: file.deletions }]),
+  );
+  const reviewFileDelta: Record<string, { added: number; deleted: number }> = {};
+  for (const match of matchedFiles) {
+    const locFile = index.nodesById.get(match.moduleId)?.location?.file;
+    const delta = deltaByPath.get(match.path);
+    if (locFile && delta) {
+      reviewFileDelta[locFile] = delta;
+    }
+  }
   // ONE source of truth for the line-level changedSince channel (the code panel's </> diff): the
   // artifact's OWN stamp when it carries one — the prepared PR-head artifact does, computed by the
   // extract pipeline from the real merge-base git diff, keyed by the extractor's own location.file
@@ -2018,6 +2038,7 @@ function applyPrReviewToMap(
     reviewSubmittedUrl: null,
     reviewAffectedIds: new Set(affected.map((node) => node.nodeId)),
     reviewFiles: files,
+    reviewFileDelta,
     reviewLitNodeIds: null,
     reviewSelectedId: null,
     reviewGroups: changeGroups,

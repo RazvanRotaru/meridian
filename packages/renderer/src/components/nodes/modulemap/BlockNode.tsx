@@ -10,10 +10,10 @@
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
-import { accentForKind } from "../../../theme/kindColors";
+import { accentForKind, kindLetter } from "../../../theme/kindColors";
 import type { BlockData } from "../../../derive/moduleLevel";
 import { cardSelectedStyle, CodeButton, ExpandChevron, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
-import { borderFor, DeltaChip, useNodeDiff } from "./changed";
+import { borderFor, useNodeDiff } from "./changed";
 
 type BlockRfNode = Node<BlockData, "block">;
 
@@ -31,9 +31,8 @@ function BlockNodeImpl({ id, data }: NodeProps<BlockRfNode>) {
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
         <div style={TITLE_BAR} title={title}>
           {chevron}
-          <span style={{ ...GLYPH, color: accent }}>ƒ</span>
+          <span style={{ ...GLYPH, color: accent }}>{kindLetter(data.blockKind)}</span>
           <span style={FRAME_LABEL}>{data.label}</span>
-          <DeltaChip diff={diff} />
           <CodeButton id={id} />
         </div>
       </div>
@@ -45,9 +44,8 @@ function BlockNodeImpl({ id, data }: NodeProps<BlockRfNode>) {
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       {chevron}
-      <span style={{ ...GLYPH, color: accent }}>{data.callable ? "ƒ" : "τ"}</span>
+      <span style={{ ...GLYPH, color: accent }}>{kindLetter(data.blockKind)}</span>
       <span style={LABEL}>{data.label}</span>
-      <DeltaChip diff={diff} />
       <CodeButton id={id} />
     </div>
   );

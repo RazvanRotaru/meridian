@@ -7,6 +7,7 @@
 import type { ReactNode } from "react";
 import type { GraphNode } from "@meridian/core";
 import { titleCase } from "../../theme/displayName";
+import { kindLetter } from "../../theme/kindColors";
 
 export function NodeHeader(props: {
   node: GraphNode;
@@ -31,8 +32,8 @@ export function NodeHeader(props: {
         <span style={TITLE_ROW_STYLE}>
           {props.chevron ? <span style={CHEVRON_STYLE}>{glyph(props.chevron)}</span> : null}
           {props.entry ? <span style={ENTRY_PILL_STYLE}>ENTRY</span> : null}
+          <span style={{ ...KIND_LETTER_STYLE, color: props.accent }} title={props.node.kind}>{kindLetter(props.node.kind)}</span>
           <span style={TITLE_STYLE}>{titleCase(props.node.displayName)}</span>
-          <span style={{ ...KIND_STYLE, color: props.accent }}>{props.node.kind}</span>
         </span>
         {props.children}
       </span>
@@ -100,9 +101,9 @@ const TITLE_STYLE: React.CSSProperties = {
   overflow: "hidden",
   textOverflow: "ellipsis",
 };
-const KIND_STYLE: React.CSSProperties = {
-  fontSize: 10,
-  textTransform: "uppercase",
-  letterSpacing: 0.5,
-  marginLeft: "auto",
+const KIND_LETTER_STYLE: React.CSSProperties = {
+  fontSize: 12,
+  fontWeight: 700,
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  flex: "0 0 auto",
 };

@@ -1,42 +1,19 @@
 /**
- * The amber "Δ changed" chip a node header shows when the artifact was generated with
- * `--changed-since` and this node's span overlapped the diff. A pure tag read — no store
- * state: changed-ness is in the data, so the chip is on wherever changed code is visible.
+ * Change-status colour helpers, re-exported for the node components. The "Δ changed" / "Δ n" header
+ * chips were removed — the status ring + body wash (green added / gold modified / red deleted) now
+ * carry the "touched" signal on their own, so the chip was redundant clutter. The component stubs
+ * stay (returning nothing) so call sites need no edit and the chip is trivial to reinstate.
  */
 
-import { isChangedNode } from "@meridian/core";
 import type { GraphNode } from "@meridian/core";
+import { CHANGED_ACCENT, changedColor, changedFill } from "../theme/changedColors";
 
-export const CHANGED_ACCENT = "#E2A33C";
+export { CHANGED_ACCENT, changedColor, changedFill };
 
-export function ChangedBadge(props: { node: GraphNode }) {
-  if (!isChangedNode(props.node)) {
-    return null;
-  }
-  return <span style={BADGE_STYLE}>Δ changed</span>;
+export function ChangedBadge(_props: { node: GraphNode; color?: string }): null {
+  return null;
 }
 
-/** The collapsed-container hint: "Δ n" changed nodes are hidden inside this frame. */
-export function ChangedCountChip(props: { count: number }) {
-  if (props.count === 0) {
-    return null;
-  }
-  return (
-    <span style={BADGE_STYLE} title={`${props.count} changed inside`}>
-      Δ {props.count}
-    </span>
-  );
+export function ChangedCountChip(_props: { count: number; color?: string }): null {
+  return null;
 }
-
-const BADGE_STYLE: React.CSSProperties = {
-  display: "inline-block",
-  marginTop: 3,
-  padding: "1px 6px",
-  borderRadius: 4,
-  border: `1px solid ${CHANGED_ACCENT}66`,
-  background: `${CHANGED_ACCENT}1A`,
-  color: CHANGED_ACCENT,
-  fontSize: 10,
-  fontWeight: 600,
-  letterSpacing: 0.3,
-};
