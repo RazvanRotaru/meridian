@@ -31,6 +31,20 @@ import type { ModuleTree, ModuleTreeEdge, VisibleModuleNode } from "./moduleTree
 export type { ModuleGroupData, ModuleTree, ModuleTreeEdge, VisibleModuleNode } from "./moduleTreeTypes";
 
 const MODULE_KIND = "module";
+/** A shared empty set so the default `extraIds` argument never allocates per call. */
+const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
+
+/** Palette-added ids as extra roots — only real file/unit/block nodes `walk` can draw, sorted for a
+ * stable order. A package/unknown id is dropped (the walk would need its subtree, not the raw pin). */
+function extraRoots(index: GraphIndex, extraIds: ReadonlySet<string>): string[] {
+  return [...extraIds]
+    .filter((id) => {
+      const kind = index.nodesById.get(id)?.kind;
+      return kind !== undefined && (kind === MODULE_KIND || UNIT_CARD_KINDS.has(kind) || BLOCK_KINDS.has(kind));
+    })
+    .sort();
+}
+
 /** The containment tree to draw for `(focus, expanded)`: overview when null, else the focus subtree.
  * Private members are ALWAYS derived and laid out — the Private toggle hides them at PAINT time
  * (like Tests/categories), so every toggle holds positions still and nothing ever reshuffles. */
@@ -41,9 +55,12 @@ export function deriveModuleTree(
   graph: ModuleGraph,
   blockDeps: BlockDeps,
   flows: LogicFlows,
+  extraIds: ReadonlySet<string> = EMPTY_IDS,
 ): ModuleTree {
   const effectiveFocus = focus === null ? null : collapseChain(index, focus);
-  const roots = frontierRoots(index, effectiveFocus, graph);
+  // Palette-pinned nodes (⌘P "+") ride in as EXTRA top-level roots so an out-of-focus card joins the
+  // current level; `walk`'s `seen` guard drops any that the focus subtree already draws.
+  const roots = [...frontierRoots(index, effectiveFocus, graph), ...extraRoots(index, extraIds)];
   const walked = walk(index, roots, expanded, flows);
   const skeleton = walked.skeleton;
   const visibleIds = new Set(skeleton.map((entry) => entry.id));
