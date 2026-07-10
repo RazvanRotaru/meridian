@@ -56,4 +56,16 @@ describe("routeFrameEdges", () => {
     expect(routed.type).toBe(ROUTED_EDGE_TYPE);
     expect(pathOf(routed)).not.toContain("Q"); // no corners — straight flat entry
   });
+
+  it("spreads LIT wires sharing a rail into parallel lanes; unlit wires keep the shared bus", () => {
+    const lit = (id: string, target: string): Edge => ({ ...edge(id, "left", target), style: { opacity: 1 } });
+    const [a, b, dim] = routeFrameEdges([lit("a", "top"), lit("b", "low"), edge("dim", "left", "top")], nodes);
+    // The rail x is the first corner's control point: `Q <railX> <gateY> ...`.
+    const railXOf = (e: Edge) => Number((pathOf(e).match(/Q ([\d.]+) /) ?? [])[1]);
+    // Two lit strands: centered lanes ±1.5px around the 512 rail — distinct, inside the gutter.
+    expect(railXOf(a)).toBe(510.5);
+    expect(railXOf(b)).toBe(513.5);
+    // The unlit wire stays exactly on the shared bus.
+    expect(railXOf(dim)).toBe(512);
+  });
 });

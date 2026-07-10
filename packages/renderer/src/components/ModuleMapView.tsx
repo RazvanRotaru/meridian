@@ -11,7 +11,7 @@
  * breadcrumb (the containment trail) zooms OUT.
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlow, type Edge, type EdgeTypes, type Node, type ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
@@ -32,6 +32,7 @@ import { routeFrameEdges, ROUTED_EDGE_TYPE } from "../layout/edgeRouting";
 import { RoutedEdge } from "./edges/RoutedEdge";
 import { spoolFanEdges, SPOOL_EDGE_TYPE } from "../layout/edgeSpooling";
 import { SpoolEdge } from "./edges/SpoolEdge";
+import { WireTooltip, type WireHover } from "./WireTooltip";
 import type { BlockData, UnitCardData } from "../derive/moduleLevel";
 
 const PACKAGE_KIND = "package";
@@ -81,6 +82,50 @@ export function ModuleMapView() {
     [showHighways, styledEdges, styledNodes, selected],
   );
 
+  // Wire HOVER: pointing at one strand names it (kind × weight, source → target) and lights it
+  // alone — the disambiguator for strands sharing a bus/trunk. A cheap overlay pass: hover never
+  // recomputes bundling/routing geometry, it only boosts one edge's paint. Bundle highways keep
+  // their own breakdown tooltip, so they opt out of this one.
+  const [wireHover, setWireHover] = useState<WireHover | null>(null);
+  const labelById = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const node of styledNodes) {
+      labels.set(node.id, ((node.data as { label?: string }).label ?? node.id.split("/").pop()) as string);
+    }
+    return labels;
+  }, [styledNodes]);
+  const hoverableEdges = useMemo(
+    () =>
+      bundledEdges.map((edge) => {
+        if (edge.type === BUNDLE_EDGE_TYPE) {
+          return edge;
+        }
+        const hovered = edge.id === wireHover?.id;
+        return {
+          ...edge,
+          interactionWidth: 14,
+          style: hovered ? { ...edge.style, opacity: 1, strokeWidth: ((edge.style?.strokeWidth as number) ?? 1.5) + 1.2 } : edge.style,
+        };
+      }),
+    [bundledEdges, wireHover?.id],
+  );
+  const onEdgeMouseEnter = (event: React.MouseEvent, edge: Edge) => {
+    if (edge.type === BUNDLE_EDGE_TYPE) {
+      return;
+    }
+    const data = edge.data as { depKind?: string; category?: string; weight?: number } | undefined;
+    setWireHover({
+      id: edge.id,
+      x: event.clientX,
+      y: event.clientY,
+      kind: data?.depKind ?? data?.category ?? "wire",
+      weight: data?.weight ?? 1,
+      source: labelById.get(edge.source) ?? edge.source,
+      target: labelById.get(edge.target) ?? edge.target,
+    });
+  };
+  const onEdgeMouseLeave = () => setWireHover(null);
+
   // Fit once per RELAYOUT: `moduleRfNodes` only changes when the level does, so clearing the guard
   // on `effectiveFocus` (a focus change) OR `showTests` (the Tests toggle relayouts + re-coords the
   // level) re-fits the fresh level to the viewport. Category/Private toggles and radius are
@@ -121,7 +166,7 @@ export function ModuleMapView() {
     <div style={SURFACE_STYLE}>
       <ReactFlow<Node, Edge>
         nodes={styledNodes}
-        edges={bundledEdges}
+        edges={hoverableEdges}
         nodeTypes={moduleNodeTypes}
         edgeTypes={moduleEdgeTypes}
         onInit={(instance) => {
@@ -130,11 +175,14 @@ export function ModuleMapView() {
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={onPaneClick}
+        onEdgeMouseEnter={onEdgeMouseEnter}
+        onEdgeMouseLeave={onEdgeMouseLeave}
         {...READONLY_CANVAS_PROPS}
       >
         <CanvasChrome nodeColor={miniMapColor} />
         <BeaconArrows targets={beacons} />
       </ReactFlow>
+      {wireHover ? <WireTooltip hover={wireHover} /> : null}
       <LevelBreadcrumb
         focus={effectiveFocus}
         packageCount={effectiveFocus === null ? nodes.filter((node) => !node.parentId).length : 0}

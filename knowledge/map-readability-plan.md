@@ -97,10 +97,15 @@ don't re-render per scroll tick):
 
 Also consider a zoom-compensated minimum on-screen wire width at tier 1.
 
-### P4 — wire hover layer (~half day)
+### P4 — wire hover layer + lit lanes ✅ (shipped with this doc)
 
-`interactionWidth ≥ 12` + tooltip (kind · weight · source→target names). Makes the color
-vocabulary self-teaching; the "interactive surfaces ship a hover layer" rule.
+Field feedback: selecting a hub lit its wires but the shared bus made individual strands
+unattributable — "you don't really see what each connection does". Two answers:
+- **Hover**: every non-bundle wire is interactive (`interactionWidth 14`); pointing at a strand
+  lights it alone and names it — `references ×4 · Bridge.ts → BridgeEventMap` (WireTooltip).
+- **Lit lanes**: LIT wires sharing a rail spread into parallel lanes (3px apart, clamped inside
+  the gutter) — a ribbon whose strands stay followable from gate to peel-off. Unlit wires keep
+  overlapping into the single bus bar; collective legibility at rest, attribution under focus.
 
 ### P5 — polish (small)
 
