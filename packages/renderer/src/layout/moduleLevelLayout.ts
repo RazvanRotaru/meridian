@@ -90,7 +90,9 @@ const ROOT_OPTIONS: Record<string, string> = {
 };
 
 // Top padding leaves room for an expanded group's title bar; React Flow draws nothing there itself.
-const CONTAINER_OPTIONS: Record<string, string> = { "elk.padding": "[top=44,left=18,bottom=18,right=18]" };
+// Left/right at 30 reserve the GUTTER the routed-edge rail rides (edgeRouting.ts, rail at +12):
+// cards start 18px clear of the bus, so a wire on the rail never touches a card.
+const CONTAINER_OPTIONS: Record<string, string> = { "elk.padding": "[top=44,left=30,bottom=18,right=30]" };
 
 const adapter: ElkNestAdapter<VisibleModuleNode> = {
   id: (node) => node.id,

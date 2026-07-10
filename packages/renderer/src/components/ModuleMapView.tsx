@@ -28,14 +28,17 @@ import { ReviewFlowPanel } from "./review/ReviewFlowPanel";
 import { accentForKind } from "../theme/kindColors";
 import { bundleEdges, BUNDLE_EDGE_TYPE } from "../layout/edgeBundling";
 import { BundledEdge } from "./edges/BundledEdge";
+import { routeFrameEdges, ROUTED_EDGE_TYPE } from "../layout/edgeRouting";
+import { RoutedEdge } from "./edges/RoutedEdge";
 import { spoolFanEdges, SPOOL_EDGE_TYPE } from "../layout/edgeSpooling";
 import { SpoolEdge } from "./edges/SpoolEdge";
 import type { BlockData, UnitCardData } from "../derive/moduleLevel";
 
 const PACKAGE_KIND = "package";
 
-/** Custom edge types: "bundle" renders container-pair highways; "spool" gathers fan-hub wires. */
-const moduleEdgeTypes: EdgeTypes = { [BUNDLE_EDGE_TYPE]: BundledEdge, [SPOOL_EDGE_TYPE]: SpoolEdge };
+/** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
+ * rail (the bus) into member cards; "spool" gathers the remaining open-canvas fan-hub wires. */
+const moduleEdgeTypes: EdgeTypes = { [BUNDLE_EDGE_TYPE]: BundledEdge, [ROUTED_EDGE_TYPE]: RoutedEdge, [SPOOL_EDGE_TYPE]: SpoolEdge };
 
 export function ModuleMapView() {
   const nodes = useBlueprint((state) => state.moduleRfNodes);
@@ -68,12 +71,13 @@ export function ModuleMapView() {
     () => emphasize(shownNodes, shownEdges, selected, radius, highlightMode),
     [shownNodes, shownEdges, selected, radius, highlightMode],
   );
-  // Visual Highways: merge cross-container edges into thick bundled "highway" curves, then gather
-  // the remaining individual wires of FAN HUBS into shared trunks (spooling). Off draws every edge
-  // individually; a selected node's own wires always escape the container bundles so its links read
-  // out of the highway they'd otherwise join.
+  // Visual Highways, three passes in precedence order: (1) container-pair BUNDLES merge parallel
+  // cross-container edges; (2) frame-crossing wires ROUTE through the frame's gutter rail (the bus)
+  // so no wire ever travels behind a member card; (3) the remaining open-canvas fan-hub wires SPOOL
+  // into shared trunks. Off draws every edge as a plain curve; a selected node's own wires always
+  // escape the container bundles so its links read out of the highway they'd otherwise join.
   const bundledEdges = useMemo(
-    () => (showHighways ? spoolFanEdges(bundleEdges(styledEdges, styledNodes, selected)) : styledEdges),
+    () => (showHighways ? spoolFanEdges(routeFrameEdges(bundleEdges(styledEdges, styledNodes, selected), styledNodes)) : styledEdges),
     [showHighways, styledEdges, styledNodes, selected],
   );
 

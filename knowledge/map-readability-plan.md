@@ -69,6 +69,19 @@ call-surface config; verified A/B on the autopilot states (fit zoom 0.30→0.32,
 the frame. Config alone doesn't fix it; candidates are frame-boundary ports/gates or laying the
 frame's children out without INCLUDE_CHILDREN pass-through. Tracked as follow-up under P1/P4.
 
+### P3b — gutter-bus edge routing ✅ (shipped with this doc)
+
+Field feedback on the spool: a fan whose far ends are DISTRIBUTED inside an expanded frame knotted
+at one gather point and then swept vertically BEHIND the member cards — worse than plain curves.
+Root cause: spooling controls where wires meet, not what path they take. Fix (`edgeRouting.ts` +
+`RoutedEdge`): a frame-crossing wire enters through a GATE on the frame boundary at its source's
+height, rides a vertical RAIL inside the frame's padding gutter (widened to 30px; rail at +12 —
+a column no card ever occupies), and peels off horizontally into its target at the target's own
+height. Wires sharing the rail overlap into a literal bus bar; every strand stays individually
+addressable. Precedence: bundle (container pairs) → route (frame-crossing) → spool (open-canvas
+fans only, e.g. the minimal overlay's ghost ring). Verified on the envelope.ts state: 16/25 wires
+routed, knot gone, zero wires behind cards.
+
 ### P1 — semantic zoom (the next big one, ~1–2 days)
 
 Three detail tiers keyed off a **quantized** zoom subscription (one store read, bucketed, so cards
