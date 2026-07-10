@@ -42,8 +42,7 @@ const EDGES = [importEdge("m:a", "m:b")];
 function specFor(expanded: string[]) {
   const index = buildGraphIndex({ nodes: NODES, edges: EDGES } as unknown as GraphArtifact);
   const graph = buildModuleGraph(index);
-  const onMap = new Set(["m:a", "m:b"]);
-  return buildMinimalSubgraph(index, graph, new Set(["m:a"]), new Set(["m:a"]), onMap, {
+  return buildMinimalSubgraph(index, graph, new Set(["m:a", "m:b"]), new Set(["m:a"]), {
     expanded: new Set(expanded),
     blockDeps: { edges: [] },
     flows: {},
@@ -56,7 +55,7 @@ function couplingSpec() {
   const calls = { id: "calls:fn:foo->fn:baz", source: "fn:foo", target: "fn:baz", kind: "calls", resolution: "resolved" } as GraphEdge;
   const index = buildGraphIndex({ nodes, edges: EDGES } as unknown as GraphArtifact);
   const graph = buildModuleGraph(index);
-  return buildMinimalSubgraph(index, graph, new Set(["m:a"]), new Set(["m:a"]), new Set(["m:a", "m:b"]), {
+  return buildMinimalSubgraph(index, graph, new Set(["m:a", "m:b"]), new Set(["m:a"]), {
     expanded: new Set(),
     blockDeps: { edges: [calls] },
     flows: {},

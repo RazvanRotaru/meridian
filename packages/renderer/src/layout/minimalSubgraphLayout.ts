@@ -1,10 +1,11 @@
 /**
  * Lay out a MinimalSubgraphSpec by MIRRORING the Module map: instead of a fresh whole-graph ELK pass,
- * every box the map had on screen keeps its exact captured map position (`basePositions`), and the rest
- * — off-map ghosts and later promotions — is placed relative to a connected placed node (see
- * `minimalPlacement`). Leaf cards reuse the Map's OWN `file` / `package` components (a ghost-tier card
- * dims in place). The overlay is FLAT: containment frames aren't drawn (their file cards sit at absolute
- * positions).
+ * every member box the map had on screen keeps its exact captured map position (`basePositions`), and
+ * later promotions are placed relative to a connected placed node (see `minimalPlacement`). Member
+ * cards reuse the Map's OWN `file` / `package` components. The overlay is FLAT: containment frames
+ * aren't drawn (their file cards sit at absolute positions). GHOST satellites are kept OUT of both
+ * placement paths — exactly like the Map (`moduleLevelLayout`), they band outside the member core via
+ * `placeGhostBands` (importers left, dependencies right) and reposition selection-relative at paint.
  *
  * The one exception to the flat mirror is IN-PLACE expansion: an expanded file becomes a frame whose
  * declarations nest inside. To size that frame and place its children WITHOUT reshuffling the rest, we
@@ -18,10 +19,13 @@ import { placeMinimalNodes, FILE_WIDTH, FILE_HEIGHT, type PlacedRect } from "./m
 import { reflowMinimalFiles } from "./minimalReflow";
 import { arrangeMinimalCards } from "./minimalArrange";
 import { layoutModuleTree } from "./moduleLevelLayout";
+import { placeGhostBands } from "./ghostBandPlacement";
 import type { MinimalSubgraphEdge, MinimalSubgraphNode, MinimalSubgraphSpec, MinimalTier } from "../derive/minimalSubgraph";
 import type { MinimalExpansion } from "../derive/minimalExpansion";
 import type { ModuleCardData } from "../derive/moduleLevel";
 import type { ModulePackageData } from "../derive/packageOverview";
+import type { GhostData } from "../derive/ghostDeps";
+import type { ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
 
 /** One expanded file laid out by the Map's own nested-ELK pass: its frame + child cards and their
  * intra-frame wires. The frame node (id === fileId) sits first, ready to be anchored. */
@@ -41,8 +45,8 @@ export async function layoutMinimalSubgraph(
   if (spec.nodes.length === 0) {
     return { nodes: [], edges: [] };
   }
-  // Only tiered LEAF cards render (a file, or a group member/ghost); tier-null containment frames are
-  // flattened away — the overlay places their file cards at absolute positions.
+  // Only tiered LEAF cards enter placement (a file, or a group member); tier-null containment frames
+  // are flattened away, and ghost satellites band AFTER the members are placed (never inside ELK).
   const cards = spec.nodes.filter((node) => node.tier !== null);
   // Placement rides on the IMPORT graph only (dep wires are a redundant subset — a→b calls implies
   // a→b imports), matching the Map's own layout substrate.
@@ -54,9 +58,26 @@ export async function layoutMinimalSubgraph(
     ? await arrangeMinimalCards(cards.map((card) => card.id), cardSizes(cards, laidByFile), importEdges)
     : await mirrorPlacement(cards, importEdges, basePositions, frameSizes(laidByFile), laidByFile.size > 0);
   const { nodes, edges } = emitCards(cards, placement, laidByFile);
-  const placedIds = new Set(nodes.map((node) => node.id));
-  const importWires = spec.edges.filter((edge) => placedIds.has(edge.source) && placedIds.has(edge.target)).map(toRfEdge);
-  return { nodes, edges: [...importWires, ...edges] };
+  const banded = ghostSatellites(spec, nodes);
+  const placedIds = new Set([...nodes, ...banded].map((node) => node.id));
+  const wires = spec.edges.filter((edge) => placedIds.has(edge.source) && placedIds.has(edge.target)).map(toRfEdge);
+  return { nodes: [...nodes, ...banded], edges: [...wires, ...edges] };
+}
+
+/** Band the ghost satellites outside the placed member core, exactly like the Map: `placeGhostBands`
+ * hangs each past the box edge nearest its anchor (importers left, dependencies right), sized by the
+ * Map's own `ghostSize`, emitted as root-level `ghost` React Flow nodes. */
+function ghostSatellites(spec: MinimalSubgraphSpec, coreNodes: Node[]): Node[] {
+  const ghosts: VisibleModuleNode[] = spec.nodes
+    .filter((node) => node.kind === "ghost")
+    .map((node) => ({ id: node.id, parentId: null, kind: "ghost" as const, isContainer: false, isExpanded: false, depth: 0, childCount: 0, data: node.data as GhostData }));
+  if (ghosts.length === 0 || coreNodes.length === 0) {
+    return [];
+  }
+  const wires: ModuleTreeEdge[] = spec.edges
+    .filter((edge) => edge.ghost === true)
+    .map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, weight: edge.weight, crossFrame: false, category: "dep" as const, depKind: edge.depKind, ghost: true }));
+  return placeGhostBands(ghosts, wires, coreNodes);
 }
 
 // A group (package) leaf card renders wider/taller than a file card; size it so both placement paths
@@ -144,7 +165,7 @@ function emitCards(
 
 /** Move an expanded file's laid subtree so its frame sits at `rect`: only the frame node (the sole
  * root) is repositioned — its children are parent-relative, so they ride along untouched. The frame
- * carries its overlay `tier` so a ghost-tier expanded file still dims like its collapsed card. */
+ * keeps its overlay `tier` so an expanded origin still reads seed like its collapsed card. */
 function anchorExpansion(laidNodes: Node[], fileId: string, tier: MinimalTier | null, rect: PlacedRect): Node[] {
   return laidNodes.map((node) =>
     node.id === fileId
@@ -153,8 +174,7 @@ function anchorExpansion(laidNodes: Node[], fileId: string, tier: MinimalTier | 
   );
 }
 
-// A file is the Map's own `file` card at an absolute position. It carries its `tier` so the component
-// can dim ghosts UNDER the shared `emphasize` selection paint (no opacity is baked here anymore).
+// A file is the Map's own `file` card at an absolute position, carrying its member `tier`.
 function toFileNode(node: MinimalSubgraphNode, rect: PlacedRect): Node {
   return {
     id: node.id,
@@ -165,8 +185,8 @@ function toFileNode(node: MinimalSubgraphNode, rect: PlacedRect): Node {
   };
 }
 
-// A group member/ghost is the Map's own `package` card at an absolute position — ONE card, never a
-// frame of files. `readOnly` hides the (unmeaningful in a subgraph) coupling counts; `tier` dims a ghost.
+// A group member is the Map's own `package` card at an absolute position — ONE card, never a frame
+// of files. `readOnly` hides the (unmeaningful in a subgraph) coupling counts.
 function toGroupCardNode(node: MinimalSubgraphNode, rect: PlacedRect): Node {
   return {
     id: node.id,
@@ -180,7 +200,10 @@ function toGroupCardNode(node: MinimalSubgraphNode, rect: PlacedRect): Node {
 function toRfEdge(edge: MinimalSubgraphEdge): Edge {
   // No baked stroke/marker on import/dep wires: the overlay's paint chain (suppressRedundantImports →
   // emphasize) styles them by relationship kind at rest and lights the selection's neighbourhood.
-  // `data` is the map's edge shape that chain reads.
+  // `data` is the map's edge shape that chain reads. GHOST wires deliberately mint `ghost: false`
+  // here — the ONE divergence from the Map's shape: there, off-level ghosts are on-demand context and
+  // `pruneUnlitDeps` hides them until lit; here the satellites ARE the curation ring, always on
+  // screen, so they must ride the ordinary dim-at-rest / lit-on-selection dep styling instead.
   if (edge.kind === "dep") {
     return {
       id: edge.id,

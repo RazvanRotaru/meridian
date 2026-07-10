@@ -93,6 +93,18 @@ export function ghostDepWires(
   return { ghosts, wires: [...byPair.values()] };
 }
 
+/** Drop hidden ghosts and every wire touching one (a wire into hidden code has nothing to say) —
+ * the Tests-toggle filter, applied BEFORE grouping so group counts stay honest. Shared by the Map's
+ * ghost level (`moduleTree`) and the minimal-graph overlay's satellite ring. */
+export function withoutHidden(emission: GhostEmission, hiddenIds: ReadonlySet<string>): GhostEmission {
+  if (hiddenIds.size === 0) {
+    return emission;
+  }
+  const ghosts = new Map([...emission.ghosts].filter(([id]) => !hiddenIds.has(id)));
+  const wires = emission.wires.filter((wire) => !hiddenIds.has(wire.source) && !hiddenIds.has(wire.target));
+  return { ghosts, wires };
+}
+
 /**
  * The SERVICE a ghost should read as: a member block (constructor / method) lifts to its owning
  * class / interface / object, so an off-level dependency ghosts as `BlobFileSystem`, not

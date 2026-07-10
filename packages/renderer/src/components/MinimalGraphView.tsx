@@ -1,22 +1,25 @@
 /**
  * The minimal-graph OVERLAY: the Module-map's "Extract selection" result as its own read-only React
  * Flow surface, replacing the level canvas while open. It EXTRACTS the selection verbatim (any kind —
- * a selected package stays ONE card) as MEMBERS, in three tiers: SEED cards (the origin selection,
- * keeping their green ring), PERSISTENT cards (ghosts the reader promoted), and dimmed GHOST cards (the
- * members' on-map 1-hop import ring). Each ghost wears a subtle round "+" that promotes it into the
- * members; the floating members panel removes a member back to a ghost; "Reset" restores the working
- * set (and the map-mirror layout) to the origin; "Re-arrange" lays the current cards out compactly,
- * ignoring their (possibly far-apart) map spots. A floating panel names the state and closes (Escape
- * too — closing returns to the level with the selection kept, so the reader can adjust and rebuild).
- * Wires are painted by the Map's OWN chain (`paintMinimal`) and keyed by the Map's OWN `MapLegend`,
- * so the overlay's colour vocabulary is the Map's by construction.
+ * a selected package stays ONE card) as MEMBERS — SEED cards (the origin selection, keeping their
+ * green ring) and PERSISTENT cards (ghosts the reader promoted) — ringed by the Map's OWN ghost
+ * SATELLITES: every code coupling that leaves the member set charts its off-overlay symbol as a
+ * dashed `GhostNode` card banded outside the core (callers left, dependencies right), per-kind wired.
+ * Each satellite wears a subtle round "+" that promotes its home file/folder into the members; the
+ * floating members panel removes a member (it returns as a satellite iff still coupled); "Reset"
+ * restores the working set (and the map-mirror layout) to the origin; "Re-arrange" lays the members
+ * out compactly, ignoring their (possibly far-apart) map spots. A floating panel names the state and
+ * closes (Escape too — closing returns to the level with the selection kept). Wires are painted by
+ * the Map's OWN chain (`paintMinimal`) and keyed by the Map's OWN `MapLegend`, so the overlay's
+ * colour vocabulary is the Map's by construction.
  *
  * Gestures ARE the Module map's own, via the shared `useModuleNodeInteractions` hook — so they're
  * identical to the Map by construction: single-click selects (DEBOUNCED, so a double-click wins),
  * ctrl/cmd toggles the selection, a pane-click clears it, and a double-click NAVIGATES into the node
  * exactly like the Map (the overlay just closes first, since it covers the Map, so the navigation
- * surfaces). A plain click NEVER promotes a ghost — promotion is the explicit "+" button, so curation
- * is deliberate. The only page-specific gestures are that "+" (promote) and Escape/Close.
+ * surfaces — for a satellite that's the Map's reveal-the-definition read). A plain click NEVER
+ * promotes a ghost — promotion is the explicit "+" button, so curation is deliberate. The only
+ * page-specific gestures are that "+" (promote) and Escape/Close.
  */
 
 import { useEffect, useMemo, useRef } from "react";
@@ -64,21 +67,22 @@ export function MinimalGraphView() {
     },
   });
 
-  // Each ghost carries an explicit "+" add affordance, drawn in CANVAS coordinates (via ViewportPortal)
-  // so it scales with zoom exactly like the node it sits on. Read from the raw (pre-paint) nodes — the
-  // paint only tweaks style/opacity, so positions and the `tier` the ghost read depends on are intact.
-  const ghostRects = useMemo(() => nodes.filter(isGhost).map(ghostRect), [nodes]);
-
-  // The Map's OWN paint chain (suppress redundant imports → relationship-kind filter → emphasize →
-  // ghost-tier dim), extracted pure into `paintMinimal` so the overlay's colour parity with the Map
-  // is unit-tested. The Map's Relationships pills float over this overlay, so they filter it too.
-  // Highways here means SPOOLING: fan hubs gather their many wires into shared trunks (no containers
-  // to pair-bundle in this flat overlay). Every overlay wire is a painted import/dep wire — ghosts hang
-  // on real wires, not tethers — so when Highways is on they ALL spool.
+  // The Map's OWN paint chain (suppress redundant imports → relationship-kind filter → emphasize),
+  // extracted pure into `paintMinimal` so the overlay's colour parity with the Map is unit-tested.
+  // The Map's Relationships pills float over this overlay, so they filter it too. Highways here means
+  // SPOOLING: fan hubs gather their many wires into shared trunks (no containers to pair-bundle in
+  // this flat overlay). Every overlay wire is a painted import/dep wire — ghost satellites hang on
+  // real per-kind wires — so when Highways is on they ALL spool.
   const { nodes: paintedNodes, edges: paintedEdges } = useMemo(() => {
     const painted = paintMinimalLevel(nodes, edges, selected, radius, highlightMode, hiddenRelKinds);
     return showHighways ? { nodes: painted.nodes, edges: spoolFanEdges(painted.edges) } : painted;
   }, [nodes, edges, selected, radius, highlightMode, hiddenRelKinds, showHighways]);
+
+  // Each ghost SATELLITE carries an explicit "+" add affordance, drawn in CANVAS coordinates (via
+  // ViewportPortal) so it scales with zoom exactly like the card it sits on. Read from the PAINTED
+  // nodes: the paint re-bands satellites selection-relative (`repositionLitGhosts`), and the "+"
+  // must straddle the corner the card actually renders at.
+  const ghostRects = useMemo(() => paintedNodes.filter(isGhost).map(ghostRect), [paintedNodes]);
 
   // Fit once per LAYOUT (build / promote / demote / reset / re-arrange) — the same guard idiom as the
   // sibling surfaces.
@@ -146,13 +150,13 @@ export function MinimalGraphView() {
   );
 }
 
-const isGhost = (node: Node): boolean => (node.data as { tier?: string } | undefined)?.tier === "ghost";
+const isGhost = (node: Node): boolean => node.type === "ghost";
 
 // The "+" add button's size in FLOW units — so ViewportPortal scales it with the node at every zoom.
 const ADD_SIZE = 20;
 type GhostCorner = { id: string; x: number; y: number };
 
-// A ghost's top-right corner in absolute flow coords (overlay cards are flat, so position IS absolute).
+// A satellite's top-right corner in absolute flow coords (ghosts are root-level, so position IS absolute).
 function ghostRect(node: Node): GhostCorner {
   const width = ((node.style ?? {}) as { width?: number }).width ?? 0;
   return { id: node.id, x: node.position.x + width, y: node.position.y };
