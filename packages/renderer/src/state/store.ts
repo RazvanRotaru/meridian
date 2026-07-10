@@ -1115,8 +1115,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       // Snapshot the map's current on-screen file positions ONCE, at build — the overlay mirrors them,
-      // and re-capturing on growth would let already-placed cards jump.
-      set({ minimalSeedIds: seeds, minimalKeptIds: [], minimalExpanded: [], minimalBasePositions: captureMapPositions(get().moduleRfNodes) });
+      // and re-capturing on growth would let already-placed cards jump. A selection-built graph is not
+      // a PR review, so drop any stale prReviewed marker (else the PR-review card would show it).
+      set({ minimalSeedIds: seeds, minimalKeptIds: [], minimalExpanded: [], minimalBasePositions: captureMapPositions(get().moduleRfNodes), prReviewed: null });
       void get().minimalRelayout();
     },
 

@@ -21,11 +21,15 @@ export function PrReviewSection() {
   const error = useBlueprint((state) => state.prsError);
   const selected = useBlueprint((state) => state.prSelected);
   const prReviewed = useBlueprint((state) => state.prReviewed);
+  const reviewOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
+  const viewMode = useBlueprint((state) => state.viewMode);
   const { loadPrs, selectPr, reviewPrInGraph, setViewMode } = useBlueprintActions();
 
-  // The inline card only makes sense mid-review: expand it (always) while a specific PR is being
-  // reviewed, and keep it locked-collapsed on the Map — you pick a PR from the full page, not here.
-  const expanded = prReviewed !== null;
+  // Expanded only while a PR review is the active on-screen surface: a PR is under review
+  // (prReviewed), its minimal-graph overlay is open (minimalSeedIds), and we're not on the full
+  // Pull-requests page. Otherwise — the Map after closing the overlay, or the PRs page itself — it
+  // stays collapsed so a stale reviewed PR never lingers in the card.
+  const expanded = prReviewed !== null && reviewOpen && viewMode !== "prs";
 
   const unavailable = error === PRS_UNAVAILABLE_ERROR && open === null;
 
