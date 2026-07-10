@@ -33,20 +33,19 @@ import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveFlowPaneLayout } from "./deriveFlowPaneLayout";
 import { deriveCompositionLayout } from "./deriveCompositionLayout";
-import { deriveModuleLevelLayout, type ModuleLevelLayout } from "./deriveModuleMapLayout";
-import { deriveServiceLevelLayout } from "./deriveServiceMapLayout";
+import { layoutModuleTree } from "../layout/moduleLevelLayout";
 import { deriveMinimalGraphLayout } from "./deriveMinimalGraphLayout";
 import { captureMapPositions } from "./mapPositions";
 import type { PlacedRect } from "../layout/minimalPlacement";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/blockDeps";
 import { buildUnitIndex, type UnitIndex } from "@meridian/design-metrics";
-import { deriveModuleTree, type VisibleModuleNode } from "../derive/moduleTree";
+import type { VisibleModuleNode } from "../derive/moduleTree";
 import { moduleChildContainerIds } from "../derive/moduleChildContainers";
-import { deriveServiceTree } from "../derive/serviceClusterTree";
-import { scopeSetOf, serviceScopeFor, type ServiceScope } from "./serviceScope";
+import { serviceScopeFor, type ServiceScope } from "./serviceScope";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import type { HighlightMode } from "../components/moduleMapPaint";
+import { activeModuleSurfaceSpec, moduleSurfaceSpec } from "../components/canvas/surfaceSpec";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import { moduleRevealStateFor, withAncestorsOf, withAncestorsOfMany } from "./flowExplorer";
 import { anchorNodeIds, mapRevealStateForMany, resolveServiceAnchors, serviceRevealStateForMany, uiRevealStateForMany } from "./lensPath";
@@ -1044,32 +1043,29 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     // Re-derive the Module-surface LEVEL through ELK, behind the same stale-seq guard. BOTH lenses
-    // write this slice: the "call" lens feeds the same view a SERVICE-CLUSTER tree (no zoom/focus),
-    // while "modules" derives the folder containment level for the current focus. The import graph
-    // is built once (cached) and reused for every folder level.
+    // write this slice: the surface's SurfaceSpec derives the tree — the "call" lens a
+    // SERVICE-CLUSTER tree (no zoom/focus), "modules" the folder containment level for the current
+    // focus. The import graph is built once (cached) and reused for every level.
     async moduleRelayout() {
-      const { index, moduleFocus, moduleExpanded, mapExtra, artifact, viewMode, showTests, serviceScope } = get();
+      const state = get();
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
-      const graph = (moduleGraph ??= buildModuleGraph(index));
-      const deps = (blockDeps ??= buildBlockDeps(index));
-      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const graph = (moduleGraph ??= buildModuleGraph(state.index));
+      const deps = (blockDeps ??= buildBlockDeps(state.index));
+      const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       // Hidden tests are EXCLUDED from the layout (not just painted out): test code can be half the
       // cards, and paint-hiding it kept a crater of empty space. toggleShowTests relayouts this lens.
-      const hidden = showTests ? EMPTY_HIDDEN_IDS : index.testIds;
-      let layout: ModuleLevelLayout;
-      if (viewMode === "call") {
-        layout = await deriveServiceLevelLayout(index, moduleExpanded, graph, deps, flows, scopeSetOf(serviceScope), mapExtra);
-      } else {
-        layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, graph, deps, flows, mapExtra, hidden);
-      }
+      // (The Service tree ignores the hidden set, exactly as its old branch did.)
+      const hidden = state.showTests ? EMPTY_HIDDEN_IDS : state.index.testIds;
+      const tree = activeModuleSurfaceSpec(state.viewMode).deriveTree(state, { graph, deps, flows }, { extraIds: state.mapExtra, hiddenIds: hidden });
+      const laid = await layoutModuleTree(tree.nodes, tree.edges);
       if (moduleLayoutSeq !== sequence) {
         return; // a newer focus change superseded this one.
       }
       set({
-        moduleRfNodes: layout.nodes,
-        moduleRfEdges: layout.edges,
-        moduleEffectiveFocus: layout.effectiveFocus,
+        moduleRfNodes: laid.nodes,
+        moduleRfEdges: laid.edges,
+        moduleEffectiveFocus: tree.effectiveFocus,
         moduleLayoutStatus: "ready",
       });
     },
@@ -1233,7 +1229,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // (members + their on-map 1-hop ghost ring). A fresh build discards any prior curation. Inert when
     // nothing is selected.
     buildMinimalGraph() {
-      const origin = [...get().moduleSelected];
+      // The active surface's spec decides how a selection seeds the overlay (identity on both
+      // lenses today; phase B decomposes a Service `svc:` frame into its cluster members).
+      const origin = activeModuleSurfaceSpec(get().viewMode).minimalSeeds([...get().moduleSelected]);
       if (origin.length === 0) {
         return;
       }
@@ -2145,7 +2143,9 @@ function applyScoped(
   mode: "open" | "close",
 ): void {
   const state = get();
-  if (state.viewMode === "modules" || state.viewMode === "call") {
+  // A registered module surface (Map/Service) shares one frontier read + expansion set; the strict
+  // registry returns null for the ui/logic lenses, which keep their own branches below.
+  if (moduleSurfaceSpec(state.viewMode) !== null) {
     const scope = state.moduleSelected.size ? [...state.moduleSelected] : [null];
     const ids = pick(moduleTreeNodes(state, getGraph(), getDeps()), scope);
     if (ids.length === 0) {
@@ -2188,15 +2188,12 @@ function foldIds(expanded: ReadonlySet<string>, ids: readonly string[], mode: "o
   return next;
 }
 
-/** The Map surface's visible frontier (the folder Map or service-cluster tree) — the ONE place the
- * viewMode-based tree derive lives, shared by the scoped expand/collapse actions and applyScoped. */
+/** The Map surface's visible frontier (the folder Map or service-cluster tree), read through the
+ * SurfaceSpec registry — shared by the scoped expand/collapse actions and applyScoped. No
+ * extras (palette pins / hidden tests) here, exactly as the old per-viewMode derive calls. */
 function moduleTreeNodes(state: BlueprintState, graph: ModuleGraph, deps: BlockDeps): VisibleModuleNode[] {
   const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
-  const tree =
-    state.viewMode === "call"
-      ? deriveServiceTree(state.index, state.moduleExpanded, graph, deps, flows, scopeSetOf(state.serviceScope))
-      : deriveModuleTree(state.index, state.moduleFocus, state.moduleExpanded, graph, deps, flows);
-  return tree.nodes;
+  return activeModuleSurfaceSpec(state.viewMode).deriveTree(state, { graph, deps, flows }).nodes;
 }
 
 /** The UI call-flow graph's visible frontier as `ExpandableNode`s. */

@@ -1,101 +1,81 @@
 /**
- * The minimal-graph OVERLAY: the Module-map's "Extract selection" result as its own read-only React
- * Flow surface, replacing the level canvas while open. It EXTRACTS the selection verbatim (any kind —
- * a selected package stays ONE card) as MEMBERS — SEED cards (the origin selection, keeping their
+ * The minimal-graph OVERLAY — a THIN MOUNT of the shared GraphSurface with spool-only highways
+ * (`MINIMAL_OVERLAY_HIGHWAYS`): the Module-map's "Extract selection" result as its own read-only React Flow
+ * surface, replacing the level canvas while open. It EXTRACTS the selection verbatim (any kind — a
+ * selected package stays ONE card) as MEMBERS — SEED cards (the origin selection, keeping their
  * green ring) and PERSISTENT cards (ghosts the reader promoted) — ringed by the Map's OWN ghost
  * SATELLITES: every code coupling that leaves the member set charts its off-overlay symbol as a
- * dashed `GhostNode` card banded outside the core (callers left, dependencies right), per-kind wired.
- * Each satellite wears a subtle round "+" that promotes its home file/folder into the members; the
- * floating members panel removes a member (it returns as a satellite iff still coupled); "Reset"
- * restores the working set (and the map-mirror layout) to the origin; "Re-arrange" lays the members
- * out compactly, ignoring their (possibly far-apart) map spots. A floating panel names the state and
- * closes (Escape too — closing returns to the level with the selection kept). Wires are painted by
- * the Map's OWN chain (`paintMinimal`) and keyed by the Map's OWN `MapLegend`, so the overlay's
- * colour vocabulary is the Map's by construction.
+ * dashed `GhostNode` card banded outside the core (callers left, dependencies right), per-kind
+ * wired. The satellites stay VISIBLE at rest (unlike the Map's on-demand prune) because their
+ * wires are minted `ghost: false` — see `minimalSubgraphLayout`'s toRfEdge. Each satellite wears a
+ * subtle round "+" that promotes its home file/folder into the members; the floating members panel
+ * removes a member (it returns as a satellite iff still coupled); "Reset" restores the working set
+ * (and the map-mirror layout) to the origin; "Re-arrange" lays the members out compactly, ignoring
+ * their (possibly far-apart) map spots. A floating panel names the state and closes (Escape too —
+ * closing returns to the level with the selection kept). Wires are painted by the Map's OWN chain
+ * (GraphSurface's, pinned by `paintMinimal`'s parity tests) and keyed by the Map's OWN `MapLegend`,
+ * so the overlay's colour vocabulary is the Map's by construction. Highways here means SPOOLING
+ * only: fan hubs gather their many wires into shared trunks (no containers to pair-bundle in this
+ * flat overlay); every overlay wire is a painted import/dep wire, so when Highways is on they ALL
+ * spool.
  *
- * Gestures ARE the Module map's own, via the shared `useModuleNodeInteractions` hook — so they're
- * identical to the Map by construction: single-click selects (DEBOUNCED, so a double-click wins),
- * ctrl/cmd toggles the selection, a pane-click clears it, and a double-click NAVIGATES into the node
- * exactly like the Map (the overlay just closes first, since it covers the Map, so the navigation
- * surfaces — for a satellite that's the Map's reveal-the-definition read). A plain click NEVER
- * promotes a ghost — promotion is the explicit "+" button, so curation is deliberate. The only
- * page-specific gestures are that "+" (promote) and Escape/Close.
+ * Gestures ARE the Module map's own, via the shared interaction hook inside GraphSurface — so
+ * they're identical to the Map by construction: single-click selects (DEBOUNCED, so a double-click
+ * wins), ctrl/cmd toggles the selection, a pane-click clears it, and a double-click NAVIGATES into
+ * the node exactly like the Map (the overlay just closes first, since it covers the Map, so the
+ * navigation surfaces — for a satellite that's the Map's reveal-the-definition read). A plain
+ * click NEVER promotes a ghost — promotion is the explicit "+" button, so curation is deliberate.
+ * The only page-specific gestures are that "+" (promote) and Escape/Close.
  */
 
 import { useEffect, useMemo, useRef } from "react";
-import { ReactFlow, ViewportPortal, type Edge, type EdgeTypes, type Node, type ReactFlowInstance } from "@xyflow/react";
+import { ViewportPortal, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
-import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
-import { paintMinimalLevel } from "./paintMinimal";
 import { MapLegend } from "./MapLegend";
-import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
+import { GraphSurface } from "./canvas/GraphSurface";
+import { MINIMAL_OVERLAY_HIGHWAYS } from "./canvas/surfaceSpec";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
-import { MinimalMembersPanel } from "./MinimalMembersPanel";
 import { useRecenter } from "./canvas/useRecenter";
-import { spoolFanEdges, SPOOL_EDGE_TYPE } from "../layout/edgeSpooling";
-import { SpoolEdge } from "./edges/SpoolEdge";
-import { minimalMiniMapColor, SURFACE_STYLE, PANEL_STYLE, buttonStyle } from "./minimalGraphStyles";
+import { MinimalMembersPanel } from "./MinimalMembersPanel";
+import { minimalMiniMapColor, PANEL_STYLE, buttonStyle } from "./minimalGraphStyles";
 
-// The Map's own card components (files + package cards), reused as-is (a stable module-level reference).
-const overlayNodeTypes = moduleNodeTypes;
-
-/** Fan hubs gather their wires into trunks (the Highways treatment for this overlay's flat graph). */
-const overlayEdgeTypes: EdgeTypes = { [SPOOL_EDGE_TYPE]: SpoolEdge };
+// A review-panel click centers on a single (possibly tiny) method card, so cap how far the fit zooms in.
+const RECENTER_OPTIONS = { maxZoom: 1 } as const;
 
 export function MinimalGraphView() {
   const nodes = useBlueprint((state) => state.minimalRfNodes);
   const edges = useBlueprint((state) => state.minimalRfEdges);
   const selected = useBlueprint((state) => state.moduleSelected);
-  const radius = useBlueprint((state) => state.moduleRadius);
-  const highlightMode = useBlueprint((state) => state.highlightMode);
-  const hiddenRelKinds = useBlueprint((state) => state.hiddenRelKinds);
   // "Grown" (Reset enabled) once the working set diverges from the origin OR the layout was re-arranged
   // — Reset restores both, so it must light up for either.
   const grown = useBlueprint((state) => !sameMembers(state.minimalMemberIds, state.minimalSeedIds) || state.minimalArrange);
-  const showHighways = useBlueprint((state) => state.showHighways);
   const reviewSelectedId = useBlueprint((state) => state.reviewSelectedId);
   const { closeMinimalGraph, promoteMinimalGhost, resetMinimalGraph, rearrangeMinimalGraph } = useBlueprintActions();
 
-  // A review-panel click centers the viewport on the clicked node itself (recenterSeq bump); the
-  // zoom cap keeps a single method card from blowing up to a full-viewport close-up.
-  const recenterTargets = useMemo(
+  // A review-panel click centers the viewport on the clicked node itself (recenterSeq bump); else
+  // the selection is the recenter target, like every module surface.
+  const recenterIds = useMemo(
     () => (reviewSelectedId !== null ? [reviewSelectedId] : [...selected]),
     [reviewSelectedId, selected],
   );
-  useRecenter(recenterTargets, { maxZoom: 1 });
+  useRecenter(recenterIds, RECENTER_OPTIONS);
 
-  useClearOnEscape(closeMinimalGraph, true);
-
-  // Interactions ARE the Module map's own (shared hook), so selection/toggle/navigate stay identical.
-  // A double-click closes the overlay first so the Map's navigate surfaces. No `onBeforeClick`: a plain
-  // click never promotes a ghost — that's the explicit "+" button below, so curation is deliberate.
-  const { onNodeClick, onNodeDoubleClick, onPaneClick } = useModuleNodeInteractions({
+  // Interactions ARE the Module map's own (the shared hook — called HERE so the debounce dies with
+  // the overlay); a double-click closes the overlay first so the Map's navigate surfaces. No
+  // `onBeforeClick`: a plain click never promotes a ghost — that's the explicit "+" button, so
+  // curation is deliberate.
+  const interactions = useModuleNodeInteractions({
     onBeforeDoubleClick: () => {
       closeMinimalGraph();
       return false;
     },
   });
 
-  // The Map's OWN paint chain (suppress redundant imports → relationship-kind filter → emphasize),
-  // extracted pure into `paintMinimal` so the overlay's colour parity with the Map is unit-tested.
-  // The Map's Relationships pills float over this overlay, so they filter it too. Highways here means
-  // SPOOLING: fan hubs gather their many wires into shared trunks (no containers to pair-bundle in
-  // this flat overlay). Every overlay wire is a painted import/dep wire — ghost satellites hang on
-  // real per-kind wires — so when Highways is on they ALL spool.
-  const { nodes: paintedNodes, edges: paintedEdges } = useMemo(() => {
-    const painted = paintMinimalLevel(nodes, edges, selected, radius, highlightMode, hiddenRelKinds);
-    return showHighways ? { nodes: painted.nodes, edges: spoolFanEdges(painted.edges) } : painted;
-  }, [nodes, edges, selected, radius, highlightMode, hiddenRelKinds, showHighways]);
+  useClearOnEscape(closeMinimalGraph, true);
 
-  // Each ghost SATELLITE carries an explicit "+" add affordance, drawn in CANVAS coordinates (via
-  // ViewportPortal) so it scales with zoom exactly like the card it sits on. Read from the PAINTED
-  // nodes: the paint re-bands satellites selection-relative (`repositionLitGhosts`), and the "+"
-  // must straddle the corner the card actually renders at.
-  const ghostRects = useMemo(() => paintedNodes.filter(isGhost).map(ghostRect), [paintedNodes]);
-
-  // Fit once per LAYOUT (build / promote / demote / reset / re-arrange) — the same guard idiom as the
-  // sibling surfaces.
+  // Fit once per LAYOUT (build / promote / demote / reset / re-arrange) — unlike the Map's
+  // per-LEVEL guard, so it stays in this mount rather than the shared surface.
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const laidRef = useRef<Node[] | null>(null);
   useEffect(() => {
@@ -108,31 +88,17 @@ export function MinimalGraphView() {
   }, [nodes]);
 
   return (
-    <div style={SURFACE_STYLE}>
-      <ReactFlow<Node, Edge>
-        nodes={paintedNodes}
-        edges={paintedEdges}
-        nodeTypes={overlayNodeTypes}
-        edgeTypes={overlayEdgeTypes}
-        onNodeClick={onNodeClick}
-        onNodeDoubleClick={onNodeDoubleClick}
-        onPaneClick={onPaneClick}
-        onInit={(instance) => {
-          rfRef.current = instance;
-        }}
-        {...READONLY_CANVAS_PROPS}
-      >
-        <CanvasChrome nodeColor={minimalMiniMapColor} />
-        <ViewportPortal>
-          {ghostRects.map((rect) => (
-            <div key={rect.id} style={ghostAddWrap(rect)}>
-              <button type="button" style={ADD_GHOST_STYLE} onClick={() => promoteMinimalGhost(rect.id)} title="Add to the graph" aria-label="Add to the graph">
-                +
-              </button>
-            </div>
-          ))}
-        </ViewportPortal>
-      </ReactFlow>
+    <GraphSurface
+      nodes={nodes}
+      edges={edges}
+      highways={MINIMAL_OVERLAY_HIGHWAYS}
+      miniMapColor={minimalMiniMapColor}
+      interactions={interactions}
+      onInit={(instance) => {
+        rfRef.current = instance;
+      }}
+      flowExtras={(view) => <GhostPromoteRing nodes={view.nodes} onPromote={promoteMinimalGhost} />}
+    >
       {/* The Map's own legend, in the Map's own corner (bottom-left, clear of the zoom controls) — the
           overlay shares the Map's colour vocabulary, so it shares the Map's key to it. The package row
           shows only when a group member/ghost card is actually present; IPC opts out always — the
@@ -156,7 +122,26 @@ export function MinimalGraphView() {
         </button>
       </div>
       <MinimalMembersPanel />
-    </div>
+    </GraphSurface>
+  );
+}
+
+/** Each ghost SATELLITE carries an explicit "+" add affordance, drawn in CANVAS coordinates (via
+ * ViewportPortal, so it must render INSIDE the flow) and scaling with zoom exactly like the card it
+ * sits on. Reads the PAINTED nodes: the paint re-bands satellites selection-relative
+ * (`repositionLitGhosts`), and the "+" must straddle the corner the card actually renders at. */
+function GhostPromoteRing(props: { nodes: Node[]; onPromote: (id: string) => void }) {
+  const ghostRects = useMemo(() => props.nodes.filter(isGhost).map(ghostRect), [props.nodes]);
+  return (
+    <ViewportPortal>
+      {ghostRects.map((rect) => (
+        <div key={rect.id} style={ghostAddWrap(rect)}>
+          <button type="button" style={ADD_GHOST_STYLE} onClick={() => props.onPromote(rect.id)} title="Add to the graph" aria-label="Add to the graph">
+            +
+          </button>
+        </div>
+      ))}
+    </ViewportPortal>
   );
 }
 
