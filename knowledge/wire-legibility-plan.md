@@ -41,11 +41,15 @@ down to real lines of code, and the field of wires must foreground the few that 
      reused); open the source symbol's code (`codeView`) where available.
    - Bundle highways (`bundle` type) open the inspector too, listing their member wires first
      (the existing breakdown), each expandable into its underlying links.
-3. **Direction on lit wires**: a slow stroke-dash drift (CSS keyframe on `stroke-dashoffset`)
-   applied ONLY to lit strands — motion reads as direction, and animating only the selection
-   keeps the canvas calm and the frame budget safe. During visual QA, judge against a
-   userSpaceOnUse source→target gradient as the alternative; ship whichever survives
-   autopilot-vscode.
+3. **Direction on lit wires**: drifting pulse dots (SMIL `animateMotion` over the drawn path)
+   ONLY on lit strands — motion reads as direction, animating only the selection keeps the
+   canvas calm. (Dash animation was rejected during implementation: dash already means
+   "crosses a package boundary".)
+4. **The parallel-pair fix** (shipped in the same PR after field feedback): same-(source,target)
+   strands used to draw on identical geometry — the topmost kind captured every click and hid
+   the others. `assignPairLanes` now spreads them into a multi-strand cable (4px lanes), and the
+   inspector reports the clicked strand's WHOLE ordered pair — one section per kind, clicked
+   first — so the z-order can never hide a relationship.
 
 ## W2 — hub demotion (the commons dock)
 

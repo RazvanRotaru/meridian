@@ -13,13 +13,21 @@ import { BaseEdge, getBezierPath, type EdgeProps } from "@xyflow/react";
 export const WIRE_EDGE_TYPE = "wire";
 
 export function WireEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style, markerEnd, data, interactionWidth }: EdgeProps) {
-  const [path] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
+  // Same-pair strands ride parallel LANES (assignPairLanes) instead of overlapping into one line —
+  // a vertical shift at both ends keeps the strands parallel along the whole curve.
+  const lane = pairLaneOf(data);
+  const [path] = getBezierPath({ sourceX, sourceY: sourceY + lane, targetX, targetY: targetY + lane, sourcePosition, targetPosition });
   return (
     <>
       <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} interactionWidth={interactionWidth} />
       <WirePulse path={path} style={style} data={data} />
     </>
   );
+}
+
+/** The strand's lane offset within its same-pair cable (0 = alone or centered). */
+export function pairLaneOf(data: EdgeProps["data"]): number {
+  return (data as { pairLane?: number } | undefined)?.pairLane ?? 0;
 }
 
 /** One pulse cycle's duration; two dots half a cycle apart keep a long path readable end to end. */

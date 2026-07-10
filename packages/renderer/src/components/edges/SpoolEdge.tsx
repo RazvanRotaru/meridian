@@ -7,7 +7,7 @@
 
 import { BaseEdge, getBezierPath, Position, type EdgeProps } from "@xyflow/react";
 import type { SpoolEdgeData } from "../../layout/edgeSpooling";
-import { WirePulse } from "./WireEdge";
+import { pairLaneOf, WirePulse } from "./WireEdge";
 
 /** Length of the straight shared-trunk segment at a hub's handle. Fixed and hub-derived on purpose:
  * every wire of the hub must share the gather point EXACTLY, so the trunk can't scale per-wire. */
@@ -47,8 +47,11 @@ export function SpoolEdge({
   interactionWidth,
 }: EdgeProps) {
   const spoolEnd = (data as SpoolEdgeData).spoolEnd;
-  const source: Point = { x: sourceX, y: sourceY };
-  const target: Point = { x: targetX, y: targetY };
+  // Same-pair strands keep their parallel lane through the spool: gathers derive from these
+  // endpoints, so the whole trunk-and-fan shifts with the lane and the strands never re-overlap.
+  const lane = pairLaneOf(data);
+  const source: Point = { x: sourceX, y: sourceY + lane };
+  const target: Point = { x: targetX, y: targetY + lane };
   // A gather point derives ONLY from its hub's handle, so every wire of that hub shares it exactly.
   // A gather whose free end has no forward room at all (behind the gather, or within PULL_MARGIN of
   // it) drops — the trunk cannot exist without folding the wire backward.
@@ -62,7 +65,7 @@ export function SpoolEdge({
   }
   // Neither end can gather sanely → this wire is a plain curve, exactly as if it were never spooled.
   if (!sourceGather && !targetGather) {
-    const [plain] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
+    const [plain] = getBezierPath({ sourceX, sourceY: source.y, targetX, targetY: target.y, sourcePosition, targetPosition });
     return (
       <>
         <BaseEdge id={id} path={plain} style={style} markerEnd={markerEnd} interactionWidth={interactionWidth} />
