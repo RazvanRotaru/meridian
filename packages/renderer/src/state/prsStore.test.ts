@@ -114,6 +114,9 @@ describe("PR store slice", () => {
     });
     store.getState().reviewPrInGraph();
     expect(store.getState().reviewAffectedIds.has(METHOD_ID)).toBe(true);
+    // Leaf-level marking: the class must NOT self-mark off its whole-body span when only a method
+    // body changed — its amber ring/count comes from upward aggregation, not from being "affected".
+    expect(store.getState().reviewAffectedIds.has(CLASS_ID)).toBe(false);
     // Auto-expansion opens the package chain down to the file (deriveModuleTree only descends
     // into expanded packages, so the file card is invisible without them) and caps at the file:
     // its declarations show, but the class does not open into members and the method never charts
