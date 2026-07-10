@@ -58,17 +58,18 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={{ ...ACCENT_BAR, background: accent }} />
-      <div style={INNER}>
+      <span className="lod-place">{data.label}</span>
+      <div className="lod-card-body" style={INNER}>
         <div style={HEADER}>
           {chevron}
-          <span className="lod-label" style={LABEL} title={data.fullPath}>{data.label}</span>
+          <span style={LABEL} title={data.fullPath}>{data.label}</span>
           <span className="lod-hide" style={CONTENTS}>
             {entryBadge}
             <DeltaChip diff={diff} />
             <CodeButton id={id} />
           </span>
         </div>
-        <div className="lod-hide" style={META}>
+        <div style={META}>
           <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
           <span style={COUNTS} title={`${data.inCount} importer(s) · ${data.outCount} import(s)`}>
             <span style={COUNT_MUTED}>in</span>
