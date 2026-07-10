@@ -23,6 +23,7 @@ import { collapseChains, type ChainCollapse } from "./collapseChains";
 import type { ModuleCardData } from "./moduleLevel";
 import type { ModulePackageData } from "./packageOverview";
 import type { BlockDeps } from "./blockDeps";
+import { depWireEdges } from "./codeWalk";
 import { walkFileCode, type FileCodeWalk, type MinimalExpansion } from "./minimalExpansion";
 
 const MODULE_KIND = "module";
@@ -54,10 +55,12 @@ export interface MinimalSubgraphEdge {
   source: string;
   target: string;
   weight: number;
-  /** "import" wires connect two visible files; "stub" wires tether a [+n] to its source file. */
-  kind: "import" | "stub";
+  /** "import"/"dep" wires connect two visible files; "stub" wires tether a [+n] to its source file. */
+  kind: "import" | "stub" | "dep";
   /** import edges only: true when source and target sit in different package frames (gold-coloured). */
   crossPackage?: boolean;
+  /** dep edges only: the underlying coupling kind (calls / instantiates / …) the paint colours by. */
+  depKind?: string;
 }
 
 export interface MinimalSubgraphSpec {
@@ -101,7 +104,7 @@ export function buildMinimalSubgraph(
   const stubs = computeStubs(graph, visible);
   return {
     nodes: [...buildContainmentNodes(index, graph, keptNodeIds, context), ...stubNodes(stubs, collapse)],
-    edges: [...importEdges(index, graph, visible), ...stubEdges(stubs)],
+    edges: [...importEdges(index, graph, visible), ...depEdges(index, visible, code), ...stubEdges(stubs)],
     expansions: [...walks.values()].map((walk) => walk.expansion).filter((exp): exp is MinimalExpansion => exp !== null),
   };
 }
@@ -304,6 +307,22 @@ function nearestPackage(index: GraphIndex, id: string): string | null {
     }
   }
   return null;
+}
+
+/** Per-kind dependency wires between visible files — the SAME lift the Map draws (calls /
+ * instantiates / extends / implements / references), so the overlay reads like the Map at the same
+ * level. Every visible file counts as a "code" endpoint here: with only file cards drawn, file↔file
+ * coupling IS this level's dep story. An off-overlay endpoint lifts to nothing and drops; an
+ * intra-file coupling folds to a self-loop and drops (both inside `liftEdges`). */
+function depEdges(index: GraphIndex, visible: ReadonlySet<string>, code: CodeContext): MinimalSubgraphEdge[] {
+  return depWireEdges(code.blockDeps, visible, index, (id) => visible.has(id), new Set()).map((edge) => ({
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    weight: edge.weight,
+    kind: "dep" as const,
+    depKind: edge.depKind,
+  }));
 }
 
 /** A faint tether from each [+n] stub to its source (in points into the file, out points out). */

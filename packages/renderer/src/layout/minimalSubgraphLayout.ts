@@ -176,8 +176,17 @@ function toRfEdge(edge: MinimalSubgraphEdge): Edge {
       selectable: false,
     };
   }
-  // No baked stroke/marker: the component's `emphasize` styles import wires by coupling at rest and
-  // lights the selection's neighbourhood. `data` is the map's edge shape emphasize reads.
+  // No baked stroke/marker on import/dep wires: the component's paint chain (`suppressRedundantImports`
+  // → `emphasize`) styles them by relationship kind at rest and lights the selection's neighbourhood.
+  // `data` is the map's edge shape that chain reads.
+  if (edge.kind === "dep") {
+    return {
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      data: { weight: edge.weight, crossFrame: false, category: "dep", depKind: edge.depKind, ghost: false },
+    };
+  }
   return {
     id: edge.id,
     source: edge.source,

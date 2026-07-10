@@ -6,6 +6,8 @@
  * cards revealed by clicking a stub. Drilling through a ghost commits it; "Reset" drops all growth
  * back to the seed base. A floating panel names the seed count, resets, and closes (Escape too —
  * closing returns to the level with the selection kept, so the reader can adjust and rebuild).
+ * Wires are painted by the Map's OWN chain (`paintMinimal`) and keyed by the Map's OWN `MapLegend`,
+ * so the overlay's colour vocabulary is the Map's by construction.
  *
  * Gestures ARE the Module map's own, via the shared `useModuleNodeInteractions` hook — so they're
  * identical to the Map by construction: single-click selects (DEBOUNCED, so a double-click wins),
@@ -20,7 +22,8 @@ import { ReactFlow, type Edge, type Node, type ReactFlowInstance } from "@xyflow
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
 import { MinimalStubNode } from "./nodes/modulemap/MinimalStubNode";
-import { emphasize } from "./moduleMapPaint";
+import { paintMinimalLevel } from "./paintMinimal";
+import { MapLegend } from "./MapLegend";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
@@ -31,19 +34,13 @@ import { minimalMiniMapColor, SURFACE_STYLE, PANEL_STYLE, buttonStyle } from "./
 // The Map's own card components plus the overlay-only [+n] expander (a stable module-level reference).
 const overlayNodeTypes = { ...moduleNodeTypes, [MINIMAL_STUB_NODE]: MinimalStubNode };
 
-// The nested-declaration node types an expanded file frame holds (drawn by the Map's own components).
-const CHILD_NODE_TYPES: ReadonlySet<string> = new Set(["unit", "block", "step"]);
-
-// A ghost-tier file dims to this at rest. Layered UNDER `emphasize`: an emphasize-dimmed ghost keeps
-// the smaller dim (min wins), a LIT ghost still recedes to this opacity — the ghost read is preserved.
-const GHOST_OPACITY = 0.62;
-
 export function MinimalGraphView() {
   const nodes = useBlueprint((state) => state.minimalRfNodes);
   const edges = useBlueprint((state) => state.minimalRfEdges);
   const selected = useBlueprint((state) => state.moduleSelected);
   const radius = useBlueprint((state) => state.moduleRadius);
   const highlightMode = useBlueprint((state) => state.highlightMode);
+  const hiddenRelKinds = useBlueprint((state) => state.hiddenRelKinds);
   const seedCount = useBlueprint((state) => state.minimalSeedIds.length);
   const grown = useBlueprint((state) => state.minimalKeptIds.length > 0 || state.minimalExpanded.length > 0);
   const { closeMinimalGraph, expandMinimal, resetMinimalGraph } = useBlueprintActions();
@@ -72,24 +69,14 @@ export function MinimalGraphView() {
     },
   });
 
-  // Reuse the Module map's shared `emphasize` for edge + selection paint, but it only understands the
-  // file-import graph — the [+n] stubs and their tethers must pass through untouched. So split those
-  // out, run emphasize on files + import wires only, then re-append the stubs. The page's ghost dim is
-  // layered UNDER emphasize's selection dim (min wins, so a lit ghost still recedes to GHOST_OPACITY).
-  const { nodes: paintedNodes, edges: paintedEdges } = useMemo(() => {
-    const fileNodes = nodes.filter((node) => node.type === "file");
-    const stubNodes = nodes.filter((node) => node.type === MINIMAL_STUB_NODE);
-    // An expanded file's nested declarations (unit/block/step) live INSIDE frames — emphasize only
-    // understands the file-import graph, so they pass through untouched, after their parent frames.
-    const childNodes = nodes.filter((node) => CHILD_NODE_TYPES.has(node.type ?? ""));
-    const importEdges = edges.filter((edge) => (edge.data as { category?: string } | undefined)?.category === "import");
-    const stubEdges = edges.filter((edge) => (edge.data as { category?: string } | undefined)?.category !== "import");
-    // The minimal graph carries only import edges — the relationship toggles (designed for the main
-    // map's dep/import/IPC mix) don't apply here. Import edges are always shown in this focused view.
-    const emphasized = emphasize(fileNodes, importEdges, selected, radius, highlightMode);
-    const ghostLayered = emphasized.nodes.map((node) => (isGhost(node) ? dimGhost(node) : node));
-    return { nodes: [...ghostLayered, ...childNodes, ...stubNodes], edges: [...emphasized.edges, ...stubEdges] };
-  }, [nodes, edges, selected, radius, highlightMode]);
+  // The Map's OWN paint chain (suppress redundant imports → relationship-kind filter → emphasize →
+  // ghost-tier dim), extracted pure into `paintMinimal` so the overlay's colour parity with the Map
+  // is unit-tested. The Map's Relationships pills float over this overlay, so they filter it too.
+  // Only the baked [+n] stub tethers stay out of the paint.
+  const { nodes: paintedNodes, edges: paintedEdges } = useMemo(
+    () => paintMinimalLevel(nodes, edges, selected, radius, highlightMode, hiddenRelKinds),
+    [nodes, edges, selected, radius, highlightMode, hiddenRelKinds],
+  );
 
   // Fit once per LAYOUT (build / expand / reset) — the same guard idiom as the sibling surfaces.
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
@@ -119,6 +106,9 @@ export function MinimalGraphView() {
       >
         <CanvasChrome nodeColor={minimalMiniMapColor} />
       </ReactFlow>
+      {/* The Map's own legend, in the Map's own corner (bottom-left, clear of the zoom controls) —
+          the overlay shares the Map's colour vocabulary, so it shares the Map's key to it. */}
+      <MapLegend hasSteps={nodes.some((node) => node.type === "step")} hasSelection={selected.size > 0} />
       <div style={MINIMAL_PANEL_STYLE}>
         <span style={TITLE_STYLE}>
           Minimal graph — {seedCount} seed {seedCount === 1 ? "file" : "files"}
@@ -132,15 +122,6 @@ export function MinimalGraphView() {
       </div>
     </div>
   );
-}
-
-const isGhost = (node: Node): boolean => (node.data as { tier?: string } | undefined)?.tier === "ghost";
-
-// Dim a ghost card, keeping whatever smaller opacity emphasize already applied (a dimmed non-neighbour
-// stays dim; a lit ghost drops to GHOST_OPACITY so the ghost tier still reads).
-function dimGhost(node: Node): Node {
-  const existing = (node.style?.opacity as number | undefined) ?? 1;
-  return { ...node, style: { ...node.style, opacity: Math.min(existing, GHOST_OPACITY) } };
 }
 
 // Top-RIGHT, because the Module map keeps its main Toolbar floating top-left over this overlay.

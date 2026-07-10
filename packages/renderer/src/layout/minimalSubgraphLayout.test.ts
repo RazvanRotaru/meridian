@@ -50,6 +50,19 @@ function specFor(expanded: string[]) {
   });
 }
 
+// foo() in a.ts calls baz() in b.ts — the overlay spec carries a per-kind dep wire a→b.
+function couplingSpec() {
+  const nodes = [...NODES, fn("fn:baz", "baz", "m:b")];
+  const calls = { id: "calls:fn:foo->fn:baz", source: "fn:foo", target: "fn:baz", kind: "calls", resolution: "resolved" } as GraphEdge;
+  const index = buildGraphIndex({ nodes, edges: EDGES } as unknown as GraphArtifact);
+  const graph = buildModuleGraph(index);
+  return buildMinimalSubgraph(index, graph, new Set(["m:a"]), new Set(), [], new Set(["m:a", "m:b"]), {
+    expanded: new Set(),
+    blockDeps: { edges: [calls] },
+    flows: {},
+  });
+}
+
 const rectOf = (node: Node): PlacedRect => {
   const style = (node.style ?? {}) as { width?: number; height?: number };
   return { x: node.position.x, y: node.position.y, width: style.width ?? 0, height: style.height ?? 0 };
@@ -84,6 +97,17 @@ describe("layoutMinimalSubgraph", () => {
         expect(overlaps(rectOf(files[i]), rectOf(files[j]))).toBe(false);
       }
     }
+  });
+
+  it("emits a dep wire data-only (category/depKind for the paint chain), with no baked style", async () => {
+    const base: Record<string, PlacedRect> = {
+      "m:a": { x: 0, y: 0, width: 210, height: 54 },
+      "m:b": { x: 400, y: 0, width: 210, height: 54 },
+    };
+    const { edges } = await layoutMinimalSubgraph(couplingSpec(), base);
+    const dep = edges.find((edge) => edge.id === "dep:calls:m:a->m:b");
+    expect(dep?.data).toEqual({ weight: 1, crossFrame: false, category: "dep", depKind: "calls", ghost: false });
+    expect(dep?.style).toBeUndefined();
   });
 
   it("re-hangs a stub against its source's reflowed position", async () => {

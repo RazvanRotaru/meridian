@@ -139,6 +139,55 @@ describe("buildMinimalSubgraph", () => {
   });
 });
 
+// foo()/bar() live in a.ts, baz() in b.ts, qux() in c.ts; imports run a → b → c, so with seed a the
+// overlay shows a + b and keeps c two hops out (off the overlay).
+const DEP_NODES = [
+  pkg("p:root", "root", null),
+  pkg("p:src", "src", "p:root"),
+  mod("m:a", "src/a.ts", "p:src"),
+  mod("m:b", "src/b.ts", "p:src"),
+  mod("m:c", "src/c.ts", "p:src"),
+  fn("fn:foo", "foo", "m:a"),
+  fn("fn:bar", "bar", "m:a"),
+  fn("fn:baz", "baz", "m:b"),
+  fn("fn:qux", "qux", "m:c"),
+];
+const DEP_IMPORTS = [importEdge("m:a", "m:b"), importEdge("m:b", "m:c")];
+
+function callsEdge(source: string, target: string): GraphEdge {
+  return { id: `calls:${source}->${target}`, source, target, kind: "calls", resolution: "resolved" } as GraphEdge;
+}
+
+function buildWithCoupling(coupling: GraphEdge[]) {
+  const index = buildGraphIndex({ nodes: DEP_NODES, edges: DEP_IMPORTS } as unknown as GraphArtifact);
+  const onMapIds = new Set(DEP_NODES.filter((node) => node.kind === "module").map((node) => node.id));
+  return buildMinimalSubgraph(index, buildModuleGraph(index), new Set(["m:a"]), new Set(), [], onMapIds, {
+    expanded: new Set(),
+    blockDeps: { edges: coupling },
+    flows: {},
+  });
+}
+
+describe("buildMinimalSubgraph — per-kind dep wires between visible files", () => {
+  it("lifts a cross-file coupling to a per-kind dep wire, alongside the pair's import wire", () => {
+    const { edges } = buildWithCoupling([callsEdge("fn:foo", "fn:baz")]);
+    const dep = edges.find((edge) => edge.kind === "dep");
+    expect(dep).toMatchObject({ id: "dep:calls:m:a->m:b", source: "m:a", target: "m:b", depKind: "calls", weight: 1 });
+    // The import wire is still minted here — the paint's suppressRedundantImports hides it, like the Map.
+    expect(edges.map((edge) => edge.id)).toContain("min:m:a->m:b");
+  });
+
+  it("mints nothing for a coupling whose target file is not on the overlay", () => {
+    const { edges } = buildWithCoupling([callsEdge("fn:foo", "fn:qux")]);
+    expect(edges.filter((edge) => edge.kind === "dep")).toEqual([]);
+  });
+
+  it("mints no self-wire for an intra-file coupling", () => {
+    const { edges } = buildWithCoupling([callsEdge("fn:foo", "fn:bar")]);
+    expect(edges.filter((edge) => edge.kind === "dep")).toEqual([]);
+  });
+});
+
 // a.ts declares foo() and bar() and imports b.ts — so a's card is an expandable container.
 const CODE_NODES = [
   pkg("p:root", "root", null),

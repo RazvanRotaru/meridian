@@ -1453,12 +1453,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           changedSince: { baseRef: `pr#${prSelected}`, files: changedFiles, kinds: changedKinds },
         },
       } as unknown as typeof artifact;
-      // Pre-expand every container on the path to each changed block (file → class) so the modified
-      // methods surface as their own amber cards instead of a collapsed "N members" class.
+      // Pre-expand ONLY the file modules on the path to each changed block: review reads at
+      // declaration level (class/type cards), so classes stay collapsed "N members" cards and
+      // blocks never chart flow steps — drilling deeper stays a manual gesture.
       const expanded = new Set<string>(seeds);
       for (const node of affected) {
         for (const ancestor of index.ancestorsOf(node.nodeId)) {
-          if (ancestor.id !== node.nodeId && index.isContainer(ancestor.id)) {
+          if (ancestor.kind === "module") {
             expanded.add(ancestor.id);
           }
         }
