@@ -5,7 +5,6 @@
  */
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { isChangedNode } from "@meridian/core";
 import { accentForKind } from "../../theme/kindColors";
 import { coverageAccent } from "../../theme/coverageColors";
 import { ellipsize } from "../../theme/displayName";
@@ -14,7 +13,7 @@ import type { BlueprintNode } from "../../layout/rfTypes";
 import { NodeHeader } from "./NodeHeader";
 import { TelemetryBadges } from "../TelemetryBadges";
 import { CoverageBadge } from "../CoverageBadge";
-import { CHANGED_ACCENT, ChangedBadge, ChangedCountChip } from "../ChangedBadge";
+import { changedColor, changedFill } from "../ChangedBadge";
 
 export function ContainerNode(props: NodeProps<BlueprintNode>) {
   const { node, isExpanded, childCount } = props.data;
@@ -24,13 +23,14 @@ export function ContainerNode(props: NodeProps<BlueprintNode>) {
   const selected = useBlueprint((state) => state.selectedId === props.id);
   const isEntry = useBlueprint((state) => state.flowRootId === props.id);
   const toggleExpand = useBlueprintActions().toggleExpand;
-  const changed = isChangedNode(node);
-  // Collapsed frames hint at edits they hide; expanded ones let the children carry the highlight.
-  const hiddenChanges = useBlueprint((state) => state.index.changedDescendants.get(props.id) ?? 0);
-  const hasDiff = changed || hiddenChanges > 0;
-  const showHiddenChanges = !isExpanded && !changed && hiddenChanges > 0;
+  // Only a directly-changed CODE BLOCK rings, in its status colour (green added / gold modified / red
+  // deleted). A file/module/package container that merely CONTAINS changes is left uncoloured — its
+  // changed children carry the highlight instead.
+  const changedStatus = useBlueprint((state) => state.index.changedStatus.get(props.id));
+  const changed = changedStatus !== undefined;
+  const changedRing = changedColor(changedStatus);
   return (
-    <div style={frameStyle(accent, isExpanded, selected, isEntry, hasDiff)}>
+    <div style={frameStyle(accent, isExpanded, selected, isEntry, changed, changedRing)}>
       <Handle type="target" position={Position.Left} id="in" style={HANDLE_STYLE} />
       <NodeHeader
         node={node}
@@ -41,8 +41,6 @@ export function ContainerNode(props: NodeProps<BlueprintNode>) {
       >
         <TelemetryBadges metrics={metrics} />
         <CoverageBadge nodeId={props.id} />
-        <ChangedBadge node={node} />
-        {showHiddenChanges ? <ChangedCountChip count={hiddenChanges} /> : null}
       </NodeHeader>
       {isExpanded ? null : <CollapsedBody summary={node.summary} childCount={childCount} accent={accent} />}
       <Handle type="source" position={Position.Right} id="out" style={HANDLE_STYLE} />
@@ -65,22 +63,25 @@ function frameStyle(
   isExpanded: boolean,
   selected: boolean,
   isEntry: boolean,
-  hasDiff: boolean,
+  changed: boolean,
+  changedRing: string,
 ): React.CSSProperties {
   return {
     width: "100%",
     height: "100%",
     boxSizing: "border-box",
     borderRadius: 10,
-    border: isEntry ? "2px solid #56C271" : `1px solid ${selected ? accent : hasDiff ? CHANGED_ACCENT : "#2A2F37"}`,
+    border: isEntry ? "2px solid #56C271" : `1px solid ${selected ? accent : changed ? changedRing : "#2A2F37"}`,
     // Expanded frames stay near-transparent so nested children read as "inside" the box.
-    background: isExpanded ? (hasDiff ? "rgba(226,163,60,0.08)" : "rgba(18,21,27,0.55)") : hasDiff ? "#1D1912" : "#161A21",
+    background: isExpanded
+      ? (changed ? changedFill(changedRing) : "rgba(18,21,27,0.55)")
+      : changed ? `linear-gradient(0deg, ${changedFill(changedRing)}, ${changedFill(changedRing)}), #161A21` : "#161A21",
     boxShadow: isEntry
       ? "0 0 0 3px rgba(86,194,113,0.30)"
       : selected
         ? `0 0 0 1px ${accent}66`
-        : hasDiff
-          ? `0 0 0 1px ${CHANGED_ACCENT}44`
+        : changed
+          ? `0 0 0 1px ${changedRing}44`
           : "0 1px 2px rgba(0,0,0,0.4)",
     overflow: "hidden",
   };

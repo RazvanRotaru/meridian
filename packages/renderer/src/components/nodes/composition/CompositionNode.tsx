@@ -17,7 +17,7 @@ import { coverageAccent } from "../../../theme/coverageColors";
 import { SmellChip } from "../../composition/SmellChip";
 import { CompositionMembers } from "../../composition/CompositionMembers";
 import { CoverageBadge } from "../../CoverageBadge";
-import { CHANGED_ACCENT } from "../../ChangedBadge";
+import { changedColor } from "../../ChangedBadge";
 import { ClusterFrameNode } from "./ClusterFrameNode";
 import { useChangeSummary } from "../../useChangedLines";
 
@@ -36,10 +36,13 @@ function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
   // unit, so it never wears the green selection ring.
   const boundary = d.boundary === true;
   const selected = compSelectedId === d.unitId && !boundary;
-  const changed = useBlueprint((state) => state.index.changedIds.has(d.unitId));
+  const changedStatus = useBlueprint((state) => state.index.changedStatus.get(d.unitId));
+  const changed = changedStatus !== undefined;
   const changedDescendants = useBlueprint((state) => state.index.changedDescendants.get(d.unitId) ?? 0);
   // A composition unit should expose diff navigation when either it OR anything inside it changed.
   const hasDiff = changed || changedDescendants > 0;
+  // Green added / gold modified / red deleted; a contains-changes-only card falls back to gold.
+  const changedRing = changedColor(changedStatus);
   const unitNode = useBlueprint((state) => (hasDiff ? state.index.nodesById.get(d.unitId) : undefined));
   const changeSummary = useChangeSummary(unitNode);
   const { showCode, expandCode } = useBlueprintActions();
@@ -57,7 +60,7 @@ function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
   const health = coverage ? coverageAccent(d.unitId, coverage) : colorForDistance(metrics.distance);
   const tint = accentForKind(d.kind);
   return (
-    <div style={boundary ? CARD_BOUNDARY : selected ? CARD_SELECTED : hasDiff ? CARD_CHANGED : CARD}>
+    <div style={boundary ? CARD_BOUNDARY : selected ? CARD_SELECTED : hasDiff ? changedCard(changedRing) : CARD}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       {/* The health rail stays crisp on a boundary card so the neighbour's health still reads. */}
@@ -72,11 +75,11 @@ function CompositionNodeImpl({ data }: NodeProps<CompRfNode>) {
           {hasDiff ? (
             <button
               type="button"
-              style={CHANGED_TAG}
+              style={{ ...CHANGED_TAG, color: changedRing, border: `1px solid ${changedRing}66`, background: `${changedRing}1A` }}
               title={changed ? "Changed in this diff — click to see the changed lines" : "Contains changed code — click to see the changed lines"}
               onClick={openDiff}
             >
-              {changeSummary ? `+${changeSummary.added} -${changeSummary.deleted}` : "Δ diff"}
+              {changeSummary ? `+${changeSummary.added} -${changeSummary.deleted}` : "diff"}
             </button>
           ) : null}
           <span style={{ ...KIND_TAG, color: tint, borderColor: tint }}>{d.kind.toUpperCase()}</span>
@@ -233,12 +236,10 @@ const CARD_SELECTED: React.CSSProperties = {
   borderColor: COMP_SELECT_ACCENT,
   boxShadow: `0 0 0 2px ${COMP_SELECT_ACCENT}`,
 };
-// A changed card keeps the amber ring subtler than selection so the two never compete.
-const CARD_CHANGED: React.CSSProperties = {
-  ...CARD,
-  borderColor: CHANGED_ACCENT,
-  boxShadow: `0 0 0 1px ${CHANGED_ACCENT}44`,
-};
+// A changed card keeps the status ring (green/gold/red) subtler than selection so the two never compete.
+function changedCard(color: string): React.CSSProperties {
+  return { ...CARD, borderColor: color, boxShadow: `0 0 0 1px ${color}44` };
+}
 // A boundary neighbour reads as a ghost: dashed border + darker fill say "context, not part of the
 // root"; its body dims (below) while the accent rail stays lit. Clicking it re-roots there.
 const CARD_BOUNDARY: React.CSSProperties = {
@@ -304,8 +305,8 @@ const EXPAND_BTN: React.CSSProperties = {
   cursor: "pointer",
   fontFamily: "inherit",
 };
-// The amber diff marker, sized like KIND_TAG so the header chips read as one row. A button:
-// clicking it opens the source modal with the changed lines marked.
+// The diff marker, sized like KIND_TAG so the header chips read as one row; its colour (green/gold/
+// red) is applied inline by the caller. A button: clicking it opens the source modal with the diff.
 const CHANGED_TAG: React.CSSProperties = {
   flexShrink: 0,
   fontSize: 8,
@@ -313,9 +314,6 @@ const CHANGED_TAG: React.CSSProperties = {
   letterSpacing: "0.06em",
   fontFamily: "inherit",
   lineHeight: 1.4,
-  color: CHANGED_ACCENT,
-  border: `1px solid ${CHANGED_ACCENT}66`,
-  background: `${CHANGED_ACCENT}1A`,
   borderRadius: 3,
   padding: "1px 4px",
   cursor: "pointer",

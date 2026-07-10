@@ -6,7 +6,7 @@
  */
 
 import { collectChangedIds, collectTestIds } from "@meridian/core";
-import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
+import type { ChangeStatus, GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
 
 export interface GraphIndex {
   nodesById: Map<string, GraphNode>;
@@ -23,6 +23,9 @@ export interface GraphIndex {
   privateIds: Set<string>;
   /** Every node tagged "changed" (`--changed-since`) — the exact edits, no containment closure. */
   changedIds: Set<string>;
+  /** The change status (added/modified/deleted) per changed node — includes the file/module nodes a
+   * PR touched, so the ring paints green/gold/red by kind. `--changed-since` seeds every id "modified". */
+  changedStatus: Map<string, ChangeStatus>;
   /** Changed nodes strictly inside each container, so a COLLAPSED ancestor can hint at them. */
   changedDescendants: Map<string, number>;
   isContainer(nodeId: string): boolean;
@@ -50,6 +53,9 @@ export function buildGraphIndex(artifact: GraphArtifact): GraphIndex {
     testIds: collectTestIds(artifact.nodes),
     privateIds: new Set(artifact.nodes.filter((node) => node.tags?.includes("private")).map((node) => node.id)),
     changedIds,
+    // A tag-based (`--changed-since`) artifact carries no per-node status, so every changed id defaults
+    // to "modified" (gold) — a PR review overwrites this via applyChangedStatus with real add/mod kinds.
+    changedStatus: new Map<string, ChangeStatus>([...changedIds].map((id) => [id, "modified"] as [string, ChangeStatus])),
     changedDescendants: countChangedDescendants(changedIds, parentOf),
     isContainer: (nodeId) => (childrenByParent.get(nodeId)?.length ?? 0) > 0,
     childrenOf: (nodeId) => childrenByParent.get(nodeId) ?? [],
@@ -70,8 +76,12 @@ export function applyChangedIds(index: GraphIndex, changedIds: Iterable<string>)
   for (const id of changedIds) {
     index.changedIds.add(id);
   }
+  // Seed a "modified" status for each id; a caller with real per-node statuses (a PR review) follows
+  // up with applyChangedStatus to overwrite this with the actual add/modified/deleted kinds.
+  index.changedStatus.clear();
   index.changedDescendants.clear();
   for (const changedId of index.changedIds) {
+    index.changedStatus.set(changedId, "modified");
     const seen = new Set<string>([changedId]);
     let current = index.parentOf.get(changedId) ?? null;
     while (current && !seen.has(current)) {
@@ -79,6 +89,20 @@ export function applyChangedIds(index: GraphIndex, changedIds: Iterable<string>)
       index.changedDescendants.set(current, (index.changedDescendants.get(current) ?? 0) + 1);
       current = index.parentOf.get(current) ?? null;
     }
+  }
+}
+
+/**
+ * Overwrite the per-node change STATUS in place. A PR review knows each touched node's kind
+ * (added/modified/deleted, from its file's status) and the file/module nodes it touched — richer than
+ * the boolean changedIds. Kept separate from changedIds/changedDescendants so the "contains changes"
+ * bubbling (which counts only real code blocks) is unaffected; this map drives colour only. The next
+ * store `set()` re-runs the cards' `changedStatus.get(id)` selectors and repaints green/gold/red.
+ */
+export function applyChangedStatus(index: GraphIndex, entries: Iterable<readonly [string, ChangeStatus]>): void {
+  index.changedStatus.clear();
+  for (const [id, status] of entries) {
+    index.changedStatus.set(id, status);
   }
 }
 
