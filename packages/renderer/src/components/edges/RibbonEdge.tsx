@@ -33,7 +33,6 @@ export function RibbonEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosit
   const markerIndex = members.reduce((heaviest, member, index) => (weightOf(member) > weightOf(members[heaviest]) ? index : heaviest), 0);
   const [spine] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
   const anyLit = ribbon.boosted === true || members.some((member) => (member.style as { opacity?: number } | undefined)?.opacity === 1);
-  const dominantStroke = (members[markerIndex]?.style as { stroke?: string } | undefined)?.stroke ?? "#8B95A3";
   const crossFrame = members.some((member) => (member.data as { crossFrame?: boolean } | undefined)?.crossFrame === true);
   const bandWidth = members.length * STRIPE_PITCH + 1.2;
   const maskId = `ribbon-notch-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
@@ -85,7 +84,7 @@ export function RibbonEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosit
       )}
       {/* The invisible spine: one hit area for the whole cable, and the direction pulse's track. */}
       <BaseEdge id={id} path={spine} style={SPINE} interactionWidth={interactionWidth ?? 16} />
-      <WirePulse path={spine} style={{ opacity: anyLit ? 1 : 0, stroke: dominantStroke }} data={{ pulse: ribbon.pulse }} />
+      <WirePulse path={spine} style={{ opacity: anyLit ? 1 : 0 }} data={{ pulse: ribbon.pulse }} />
     </>
   );
 }
