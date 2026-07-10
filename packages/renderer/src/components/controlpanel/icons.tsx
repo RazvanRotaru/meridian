@@ -37,6 +37,16 @@ export function CollapseIcon({ size = 15 }: IconProps) {
   );
 }
 
+/** Crosshair — a circle with four outward ticks (lucide "locate"); reads as "center the view". */
+export function RecenterIcon({ size = 15 }: IconProps) {
+  return (
+    <svg {...svgProps(size)}>
+      <circle cx="12" cy="12" r="7" />
+      <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+    </svg>
+  );
+}
+
 export function ChevronDownIcon({ size = 14 }: IconProps) {
   return (
     <svg {...svgProps(size)}>

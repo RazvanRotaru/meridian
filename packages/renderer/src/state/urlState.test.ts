@@ -182,19 +182,73 @@ describe("urlState", () => {
   });
 
   it("preserves foreign params (web-mode id) while owning its own keys", () => {
-    const search = mergeNavIntoSearch("id=abc123", { ...emptyNav(), focusId: "ts:m.ts#f" });
+    const search = mergeNavIntoSearch("id=abc123", { ...emptyNav(), viewMode: "ui", focusId: "ts:m.ts#f" });
     const params = new URLSearchParams(search);
     expect(params.get("id")).toBe("abc123");
     expect(params.get("focus")).toBe("ts:m.ts#f");
   });
 
-  it("survives a node id with every special character intact", () => {
+  it("survives a node id with every special character intact (scalar + list)", () => {
     const id = "ts:packages/a/b.ts#Outer.inner~2";
-    const nav: NavState = { ...emptyNav(), focusId: id, logicStack: [id] };
+    const nav: NavState = { ...emptyNav(), viewMode: "logic", logicRoot: id, logicStack: [id] };
     const search = mergeNavIntoSearch("", nav);
     const decoded = decodeNav(new URLSearchParams(search));
-    expect(decoded.focusId).toBe(id);
+    expect(decoded.logicRoot).toBe(id);
     expect(decoded.logicStack).toEqual([id]);
+  });
+
+  describe("scopes the URL to the active lens (no cross-lens leakage)", () => {
+    // A store that has visited every lens still holds each lens's nav state; the URL must reflect
+    // only the lens on screen, never the union — this is the accumulating-URL fix.
+    function everyLensVisited(viewMode: NavState["viewMode"]): NavState {
+      return {
+        ...emptyNav(),
+        viewMode,
+        focusId: "ts:m.ts#uiDive",
+        selectedId: "ts:m.ts#uiSel",
+        expanded: ["ts:m.ts#x"],
+        compRoot: "ts:pkg",
+        compSelectedId: "ts:pkg#Unit",
+        logicRoot: "ts:m.ts#run",
+        logicStack: ["ts:m.ts#run"],
+        logicSelected: "ts:m.ts#leaf",
+        moduleFocus: "ts:pkg/src",
+        moduleExpanded: ["ts:pkg/src/a.ts"],
+        prSelected: 42,
+      };
+    }
+
+    it("on the Map, drops ui / call / logic / prs keys", () => {
+      const keys = [...encodeNav(everyLensVisited("modules")).keys()].sort();
+      expect(keys).toEqual(["mexp", "mfocus"]);
+    });
+
+    it("on Logic, drops Map / ui / call / prs keys", () => {
+      const keys = [...encodeNav(everyLensVisited("logic")).keys()].sort();
+      expect(keys).toEqual(["lroot", "lsel", "lstack", "view"]);
+    });
+
+    it("on the ui graph, drops Map / logic / call / prs keys", () => {
+      const keys = [...encodeNav(everyLensVisited("ui")).keys()].sort();
+      expect(keys).toEqual(["expand", "focus", "sel", "view"]);
+    });
+
+    it("on the PR browser, drops every graph-lens key", () => {
+      const keys = [...encodeNav(everyLensVisited("prs")).keys()].sort();
+      expect(keys).toEqual(["prn", "view"]);
+    });
+
+    it("keeps cross-cutting flow-explorer + env keys in any lens", () => {
+      const nav: NavState = {
+        ...emptyNav(),
+        viewMode: "modules",
+        environment: "staging",
+        flowExplorerOpen: true,
+        flowRootId: "ts:m.ts#entry",
+      };
+      const keys = [...encodeNav(nav).keys()].sort();
+      expect(keys).toEqual(["env", "fexp", "flow"]);
+    });
   });
 
   describe("decodeNavState (complete state for back/forward resets)", () => {

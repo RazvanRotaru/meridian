@@ -1,21 +1,21 @@
 /**
  * The control panel's identity header: a project chip (status dot + name + chevron), the
- * expand-all / collapse-all icon buttons, and a "Repository · N packages · M files" summary line
- * counted from the graph index.
+ * recenter / expand-all / collapse-all icon buttons, and a "Repository · N packages · M files"
+ * summary line counted from the graph index.
  */
 
 import { useMemo } from "react";
 import type { GraphNode } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { IconButton, TOKENS } from "./panelKit";
-import { ChevronDownIcon, CollapseIcon, ExpandIcon } from "./icons";
+import { ChevronDownIcon, CollapseIcon, ExpandIcon, RecenterIcon } from "./icons";
 
 const PROJECT_DOT = "#5B9BE3";
 
 export function ControlPanelHeader(props: { showExpandControls: boolean }) {
   const targetName = useBlueprint((state) => state.artifact.target.name);
   const index = useBlueprint((state) => state.index);
-  const { expandAll, collapseAll } = useBlueprintActions();
+  const { recenter, expandAll, collapseAll } = useBlueprintActions();
   const counts = useMemo(() => countKinds(index.roots, index.nodesById), [index]);
   return (
     <div style={WRAP_STYLE}>
@@ -29,6 +29,9 @@ export function ControlPanelHeader(props: { showExpandControls: boolean }) {
         </div>
         {props.showExpandControls ? (
           <div style={ACTIONS_STYLE}>
+            <IconButton title="Recenter on the current selection, or the whole graph if nothing is selected" onClick={recenter}>
+              <RecenterIcon />
+            </IconButton>
             <IconButton title="Expand the selection one level — or the whole view when nothing is selected" onClick={expandAll}>
               <ExpandIcon />
             </IconButton>

@@ -20,7 +20,7 @@
  */
 
 import { useEffect, useMemo, useRef } from "react";
-import { ReactFlow, ViewportPortal, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
+import { ReactFlow, ViewportPortal, type Edge, type EdgeTypes, type Node, type ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { moduleNodeTypes } from "./nodes/modulemap/ModuleCardNode";
 import { paintMinimalLevel } from "./paintMinimal";
@@ -29,10 +29,15 @@ import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { MinimalMembersPanel } from "./MinimalMembersPanel";
+import { spoolFanEdges, SPOOL_EDGE_TYPE } from "../layout/edgeSpooling";
+import { SpoolEdge } from "./edges/SpoolEdge";
 import { minimalMiniMapColor, SURFACE_STYLE, PANEL_STYLE, buttonStyle } from "./minimalGraphStyles";
 
 // The Map's own card components (files + package cards), reused as-is (a stable module-level reference).
 const overlayNodeTypes = moduleNodeTypes;
+
+/** Fan hubs gather their wires into trunks (the Highways treatment for this overlay's flat graph). */
+const overlayEdgeTypes: EdgeTypes = { [SPOOL_EDGE_TYPE]: SpoolEdge };
 
 export function MinimalGraphView() {
   const nodes = useBlueprint((state) => state.minimalRfNodes);
@@ -44,6 +49,7 @@ export function MinimalGraphView() {
   // "Grown" (Reset enabled) once the working set diverges from the origin OR the layout was re-arranged
   // — Reset restores both, so it must light up for either.
   const grown = useBlueprint((state) => !sameMembers(state.minimalMemberIds, state.minimalSeedIds) || state.minimalArrange);
+  const showHighways = useBlueprint((state) => state.showHighways);
   const { closeMinimalGraph, promoteMinimalGhost, resetMinimalGraph, rearrangeMinimalGraph } = useBlueprintActions();
 
   useClearOnEscape(closeMinimalGraph, true);
@@ -66,10 +72,13 @@ export function MinimalGraphView() {
   // The Map's OWN paint chain (suppress redundant imports → relationship-kind filter → emphasize →
   // ghost-tier dim), extracted pure into `paintMinimal` so the overlay's colour parity with the Map
   // is unit-tested. The Map's Relationships pills float over this overlay, so they filter it too.
-  const { nodes: paintedNodes, edges: paintedEdges } = useMemo(
-    () => paintMinimalLevel(nodes, edges, selected, radius, highlightMode, hiddenRelKinds),
-    [nodes, edges, selected, radius, highlightMode, hiddenRelKinds],
-  );
+  // Highways here means SPOOLING: fan hubs gather their many wires into shared trunks (no containers
+  // to pair-bundle in this flat overlay). Every overlay wire is a painted import/dep wire — ghosts hang
+  // on real wires, not tethers — so when Highways is on they ALL spool.
+  const { nodes: paintedNodes, edges: paintedEdges } = useMemo(() => {
+    const painted = paintMinimalLevel(nodes, edges, selected, radius, highlightMode, hiddenRelKinds);
+    return showHighways ? { nodes: painted.nodes, edges: spoolFanEdges(painted.edges) } : painted;
+  }, [nodes, edges, selected, radius, highlightMode, hiddenRelKinds, showHighways]);
 
   // Fit once per LAYOUT (build / promote / demote / reset / re-arrange) — the same guard idiom as the
   // sibling surfaces.
@@ -90,6 +99,7 @@ export function MinimalGraphView() {
         nodes={paintedNodes}
         edges={paintedEdges}
         nodeTypes={overlayNodeTypes}
+        edgeTypes={overlayEdgeTypes}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={onPaneClick}

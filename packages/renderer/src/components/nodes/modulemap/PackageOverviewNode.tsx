@@ -31,7 +31,7 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
       <div style={borderFor(frameStyle(PACKAGE_ACCENT), frameSelectedStyle(PACKAGE_ACCENT), selected, diff)}>
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-        <FrameTitleBar actionsId={id} chevron={chevron} readOnly={data.readOnly}>
+        <FrameTitleBar chevron={chevron}>
           <span style={TITLE_LABEL} title={id}>{data.label}</span>
           <DeltaChip diff={diff} />
           <Meta data={data} hideCoupling={data.readOnly} />

@@ -29,14 +29,14 @@ export function PrDetailPanel() {
 
   if (selected === null) {
     return (
-      <aside style={PANEL_STYLE}>
+      <aside style={PANEL_STYLE} className="mrd-scroll">
         <div style={EMPTY_STYLE}>Select a pull request.</div>
       </aside>
     );
   }
 
   return (
-    <aside style={PANEL_STYLE}>
+    <aside style={PANEL_STYLE} className="mrd-scroll">
       <div style={HEADER_STYLE}>
         <button type="button" style={BACK_STYLE} onClick={() => void selectPr(null)}>
           Back

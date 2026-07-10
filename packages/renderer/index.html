@@ -16,6 +16,26 @@
         color: #e6edf3;
         font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
       }
+      /* Slim, theme-matching scrollbars — mirrors the landing card's `.card-scroll` so scroll
+         surfaces (the PR page's list + detail panel) don't fall back to default OS chrome. */
+      .mrd-scroll {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+      }
+      .mrd-scroll::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      .mrd-scroll::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.12);
+        border-radius: 4px;
+      }
+      .mrd-scroll::-webkit-scrollbar-thumb:hover {
+        background: rgba(255, 255, 255, 0.2);
+      }
+      .mrd-scroll::-webkit-scrollbar-track {
+        background: transparent;
+      }
     </style>
   </head>
   <body>

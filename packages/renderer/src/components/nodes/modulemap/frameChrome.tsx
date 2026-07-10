@@ -9,25 +9,20 @@ import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 export const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 export const SELECT_ACCENT = "#6BE38A";
 
-/** Shared title strip for every expanded Module-map container frame. `readOnly` drops the
- * expand/collapse actions for a presentational frame (the minimal-graph overlay), whose store
- * actions would otherwise mutate the underlying Map's expansion state. */
+/** Shared title strip for every expanded Module-map container frame: the expand chevron and the
+ * frame's identity (label, badges, chips). Per-frame "expand all / collapse all" controls were
+ * removed — they crowded a narrow frame's title bar and could squeeze the name to nothing. */
 export function FrameTitleBar({
-  actionsId,
   chevron,
-  readOnly,
   children,
 }: {
-  actionsId: string;
   chevron?: React.ReactNode;
-  readOnly?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div style={TITLE_BAR}>
       {chevron}
       {children}
-      {readOnly ? null : <FrameLevelActions id={actionsId} />}
     </div>
   );
 }
@@ -99,39 +94,6 @@ export function ExpandChevron({ id, isExpanded, collapsedTitle }: { id: string; 
   );
 }
 
-/** One-level controls for an expanded frame's direct toggleable child containers. */
-export function FrameLevelActions({ id }: { id: string }) {
-  const { expandModuleChildren, collapseModuleChildren } = useBlueprintActions();
-  return (
-    <span style={FRAME_ACTIONS}>
-      <button
-        type="button"
-        style={FRAME_ACTION}
-        title="Expand each child card in this frame"
-        aria-label="Expand child cards in this frame"
-        onClick={(event) => {
-          event.stopPropagation();
-          expandModuleChildren(id);
-        }}
-      >
-        Expand all
-      </button>
-      <button
-        type="button"
-        style={FRAME_ACTION}
-        title="Collapse child cards in this frame"
-        aria-label="Collapse child cards in this frame"
-        onClick={(event) => {
-          event.stopPropagation();
-          collapseModuleChildren(id);
-        }}
-      >
-        Collapse all
-      </button>
-    </span>
-  );
-}
-
 /** An expanded card's near-transparent frame, tinted by the card family's accent. */
 export function frameStyle(accent: string): React.CSSProperties {
   return {
@@ -185,17 +147,4 @@ const CHEVRON: React.CSSProperties = {
   cursor: "pointer",
   font: "inherit",
   fontSize: 11,
-};
-const FRAME_ACTIONS: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 2, flexShrink: 0 };
-const FRAME_ACTION: React.CSSProperties = {
-  background: "transparent",
-  border: "none",
-  borderRadius: 4,
-  color: "#9AA4B2",
-  cursor: "pointer",
-  font: "inherit",
-  fontSize: 11,
-  lineHeight: "14px",
-  padding: "2px 4px",
-  whiteSpace: "nowrap",
 };

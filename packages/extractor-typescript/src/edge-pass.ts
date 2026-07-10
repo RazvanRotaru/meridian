@@ -210,7 +210,7 @@ function calleeOf(node: Node): Node {
 }
 
 /** The nearest enclosing emitted callable, or null when the site sits at module top level. */
-function enclosingCallable(site: Node, index: ResolutionIndex): string | null {
+export function enclosingCallable(site: Node, index: ResolutionIndex): string | null {
   let current = site.getParent();
   while (current) {
     const enclosing = index.sourceByCallableKey.get(nodeKey(current));
@@ -222,12 +222,12 @@ function enclosingCallable(site: Node, index: ResolutionIndex): string | null {
   return null;
 }
 
-function callSiteOf(node: Node, relPath: string): CallSite {
+export function callSiteOf(node: Node, relPath: string): CallSite {
   const position = lineColOf(node);
   return { file: relPath, line: position.line, col: position.column };
 }
 
-function recordThrow(resolution: TargetResolution, relPath: string, node: Node, diagnostics: ExtractionDiagnostic[]): void {
+export function recordThrow(resolution: TargetResolution, relPath: string, node: Node, diagnostics: ExtractionDiagnostic[]): void {
   if (resolution.threw) {
     diagnostics.push({ severity: "warn", message: `symbol resolution threw at ${relPath}:${node.getStartLineNumber()}` });
   }
