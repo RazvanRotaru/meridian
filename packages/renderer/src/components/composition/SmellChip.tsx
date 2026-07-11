@@ -1,8 +1,7 @@
 /**
- * A design-smell pill — the shared chip drawn on both the composition scorecard (`CompositionNode`)
- * and the refactor-candidates worklist. Short glanceable label, red for the structural hazards
- * (HUB/PAIN), amber for the softer split/unused hints; the full smell name rides the hover title.
- * One definition so the two surfaces never drift apart.
+ * A design-smell pill — the chip drawn on the refactor-candidates worklist. Short glanceable label,
+ * red for the structural hazards (HUB/PAIN), amber for the softer split/unused hints; the full
+ * smell name rides the hover title.
  */
 
 import type { Smell } from "@meridian/design-metrics";
