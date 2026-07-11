@@ -132,14 +132,40 @@ export function ModuleMapView() {
     () => new Set(inspectedPair === null ? [] : [inspected!.id, ...inspectedPair.map((edge) => edge.id)]),
     [inspected, inspectedPair],
   );
+  // WIRES GO BEHIND CARDS. React Flow auto-elevates any edge touching a NESTED node above every
+  // top-level card — a lit fan into a frame's member covered unrelated cards' text. The rule the
+  // eye expects: a wire CROSSING the canvas travels under everything (zIndex 0); a wire living
+  // INSIDE one frame keeps its elevation (above its frame's translucent background, still below
+  // that frame's own cards, which React Flow elevates further).
+  const topAncestorById = useMemo(() => {
+    const parentOf = new Map(styledNodes.map((node) => [node.id, node.parentId]));
+    const topOf = new Map<string, string>();
+    for (const node of styledNodes) {
+      let current = node.id;
+      const seen = new Set<string>();
+      while (!seen.has(current)) {
+        seen.add(current);
+        const parent = parentOf.get(current);
+        if (parent === null || parent === undefined || !parentOf.has(parent)) {
+          break;
+        }
+        current = parent;
+      }
+      topOf.set(node.id, current);
+    }
+    return topOf;
+  }, [styledNodes]);
+  const crossCanvas = (edge: Edge) =>
+    (topAncestorById.get(edge.source) ?? edge.source) !== (topAncestorById.get(edge.target) ?? edge.target);
   const hoverableEdges = useMemo(
     () =>
       bundledEdges.map((edge) => {
+        const zIndex = crossCanvas(edge) ? 0 : edge.zIndex;
         if (edge.type === BUNDLE_EDGE_TYPE) {
           // A drilled constituent lives INSIDE the highway — boost the owning bundle so the panel's
           // subject still has a visual anchor on canvas.
           const holdsInspected = inspectedIds.size > 0 && (edge.data as { constituents?: Edge[] }).constituents?.some((member) => inspectedIds.has(member.id)) === true;
-          return holdsInspected ? { ...edge, style: { ...edge.style, opacity: 1 } } : edge;
+          return holdsInspected ? { ...edge, zIndex, style: { ...edge.style, opacity: 1 } } : { ...edge, zIndex };
         }
         const boosted = edge.id === wireHover?.id || inspectedIds.has(edge.id);
         if (edge.type === RIBBON_EDGE_TYPE) {
@@ -148,7 +174,7 @@ export function ModuleMapView() {
           // (data.hidden → RibbonEdge returns null): an opacity-0 SVG path still hit-tests, so a
           // pixel-precise hover would resurrect a wire only a SELECTION may light.
           const anyVisible = boosted || ((edge.data as RibbonEdgeData).members ?? []).some((member) => (member.style as { opacity?: number } | undefined)?.opacity !== 0);
-          return { ...edge, interactionWidth: anyVisible ? 16 : 0, data: { ...edge.data, pulse: true, boosted, hidden: !anyVisible } };
+          return { ...edge, zIndex, interactionWidth: anyVisible ? 16 : 0, data: { ...edge.data, pulse: true, boosted, hidden: !anyVisible } };
         }
         // An INVISIBLE wire (an unlit commons strand, opacity 0) renders NOTHING — no path, no
         // marker, no hit area (opacity 0 alone still hit-tests the stroke, so hovering the exact
@@ -156,6 +182,7 @@ export function ModuleMapView() {
         const invisible = (edge.style as { opacity?: number } | undefined)?.opacity === 0 && !boosted;
         return {
           ...edge,
+          zIndex,
           // Untyped edges retype to the Map's own plain curve AFTER the highway passes have claimed
           // theirs — same geometry as the default edge, plus the lit direction pulse. `pulse` is the
           // Map's opt-in: shared edge components draw dots ONLY where the surface asked for them.
@@ -165,7 +192,8 @@ export function ModuleMapView() {
           style: boosted ? { ...edge.style, opacity: 1, strokeWidth: ((edge.style?.strokeWidth as number) ?? 1.5) + 1.2 } : edge.style,
         };
       }),
-    [bundledEdges, wireHover?.id, inspectedIds],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- crossCanvas derives from topAncestorById
+    [bundledEdges, wireHover?.id, inspectedIds, topAncestorById],
   );
   const onEdgeMouseEnter = (event: React.MouseEvent, edge: Edge) => {
     if (edge.type === BUNDLE_EDGE_TYPE) {
