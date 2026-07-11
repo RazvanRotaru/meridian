@@ -52,6 +52,23 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     expect(pageErrors).toEqual([]);
   });
 
+  it("keeps the Map legend static when selection changes", async () => {
+    await page.getByRole("button", { name: /Legend/ }).click();
+    const legend = page.getByRole("region", { name: "Map legend" });
+    const beforeSelection = await legend.innerText();
+    expect(beforeSelection).toContain("WHEN YOU SELECT");
+
+    const packageNode = page.locator('[data-id="ts:src"]');
+    await packageNode.click();
+    await page.getByRole("button", { name: "Extract selection (1)" }).waitFor();
+    expect(await legend.innerText()).toBe(beforeSelection);
+
+    await page.locator(".react-flow__pane").dispatchEvent("click");
+    await page.getByRole("button", { name: "Extract selection (1)" }).waitFor({ state: "detached" });
+    expect(await legend.innerText()).toBe(beforeSelection);
+    await legend.getByTitle("Close").click();
+  });
+
   it("renders the Service-composition scorecards wired by couplings, with no console/page errors", async () => {
     await page.click('button:has-text("Service composition")');
     // Wait on a composition-only marker (a scorecard's members band), not a raw node count the
