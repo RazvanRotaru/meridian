@@ -42,6 +42,12 @@ export interface PrChangedFile {
   previousPath?: string;
 }
 
+/** GitHub source identity exposed by the web session for a safe same-repository re-extract. */
+export interface PrSessionSource {
+  repository: string;
+  subdir: string;
+}
+
 export interface PrListResponse {
   prs: PrSummary[];
   hasMore: boolean;
@@ -50,6 +56,13 @@ export interface PrListResponse {
 export interface PrFilesResponse {
   files: PrChangedFile[];
   truncated: boolean;
+  totalFiles: number;
+  outsideCount: number;
+  suggestedSubdir: string;
+}
+
+export interface PrOneResponse {
+  pr: PrSummary;
 }
 
 export const PRS_UNAVAILABLE_ERROR = "Pull requests unavailable";

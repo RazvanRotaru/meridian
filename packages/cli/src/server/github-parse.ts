@@ -150,7 +150,7 @@ function toRepoSummary(body: Record<string, unknown>): RepoSummary {
   };
 }
 
-function toPrSummary(body: Record<string, unknown>): PrSummary {
+export function toPrSummary(body: Record<string, unknown>): PrSummary {
   return {
     number: Math.trunc(requireNumber(body, "number")),
     title: requireString(body, "title"),

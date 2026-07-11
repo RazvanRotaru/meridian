@@ -92,6 +92,7 @@ describe("PR routes", () => {
       { filename: "packages/cli/src/a.ts", status: "modified" },
       { filename: "packages/core/src/b.ts", status: "added" },
       { filename: "packages/cli/package.json", status: "renamed" },
+      { filename: "packages/../escape.ts", status: "modified" },
     ]);
     const captured = await invoke(
       handlePullRequestFiles,
@@ -106,6 +107,10 @@ describe("PR routes", () => {
         { path: "package.json", status: "renamed", additions: 0, deletions: 0 },
       ],
       truncated: false,
+      totalFiles: 4,
+      outsideCount: 2,
+      // The unsafe `..` candidate is counted as outside but cannot influence the suggested root.
+      suggestedSubdir: "packages/core/src",
     });
   });
 });

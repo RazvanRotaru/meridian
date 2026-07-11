@@ -19,11 +19,11 @@ let prevNav: NavState | null = null;
 let suppress = false;
 
 /** Apply the URL's navigation state to the store and lay out the restored view. Inert off-DOM. */
-export async function restoreFromUrl(store: BlueprintStore): Promise<void> {
+export async function restoreFromUrl(store: BlueprintStore, search?: string): Promise<void> {
   if (typeof window === "undefined") {
     return;
   }
-  const nav = decodeNavState(new URLSearchParams(window.location.search));
+  const nav = decodeNavState(new URLSearchParams(search ?? window.location.search));
   // Apply the COMPLETE structural state (not just the keys the URL carried) so a back/forward to a
   // sparser URL resets fields the previous state had set — otherwise a dive/selection never undoes.
   // `environment` is deliberately excluded: nulling telemetry on every restore is undesirable, so it
@@ -45,7 +45,10 @@ export async function restoreFromUrl(store: BlueprintStore): Promise<void> {
   if (nav.flowSelection) {
     store.getState().selectFlowEntry(nav.flowSelection);
   }
-  if (nav.prSelected !== null) {
+  if (nav.reviewActive && nav.reviewPr !== null) {
+    await restorePrReview(store, nav.reviewPr);
+  } else if (nav.prSelected !== null) {
+    // The plain PR-browser restore deliberately keeps its existing fire-and-forget behavior.
     void store.getState().selectPr(nav.prSelected);
   }
   applyEnvironment(store, nav.environment);
@@ -63,17 +66,43 @@ export function startUrlSync(store: BlueprintStore): () => void {
     }
     writeUrl(store);
   });
+  let restoreQueue = Promise.resolve();
+  let pendingRestores = 0;
   const onPopState = () => {
+    const search = window.location.search;
+    pendingRestores += 1;
     suppress = true;
-    void restoreFromUrl(store).finally(() => {
-      suppress = false;
-    });
+    const restore = restoreQueue.then(() => restoreFromUrl(store, search));
+    // Keep the queue usable after a failed restore; completion is still observed below.
+    restoreQueue = restore.catch(() => {});
+    const finish = () => {
+      pendingRestores -= 1;
+      if (pendingRestores === 0) {
+        suppress = false;
+      }
+    };
+    void restore.then(finish, finish);
   };
   window.addEventListener("popstate", onPopState);
   return () => {
     unsubscribe();
     window.removeEventListener("popstate", onPopState);
   };
+}
+
+async function restorePrReview(store: BlueprintStore, number: number): Promise<void> {
+  await store.getState().ensurePrSummary(number);
+  const summaries = store.getState().prsList;
+  if (![...(summaries.open ?? []), ...(summaries.closed ?? [])].some((pr) => pr.number === number)) {
+    return;
+  }
+  await store.getState().selectPr(number);
+  if (store.getState().prSelected !== number || store.getState().prFiles === null) {
+    return;
+  }
+  // reviewPrInGraph is intentionally sync-only; awaiting its declared Promise keeps this chain
+  // (and the URL-write suppression around it) complete before Forward restoration is released.
+  await store.getState().reviewPrInGraph();
 }
 
 // Reflect the current store into the URL. A no-op when the URL wouldn't change (this also absorbs
@@ -115,6 +144,7 @@ function applyEnvironment(store: BlueprintStore, environment: string | null | un
 // keys reset to their default. Excludes `environment`, which is apply-only (see restoreFromUrl).
 // Exported for the serviceScope tests, which assert a restore always resets the scope.
 export function structuralState(nav: NavState): Record<string, unknown> {
+  const rebuildingReview = nav.reviewActive && nav.reviewPr !== null;
   return {
     viewMode: nav.viewMode,
     // The scoped Service sub-view is session-only (never URL-encoded), so NO history entry carries
@@ -132,16 +162,16 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     logicView: nav.logicView,
     logicStack: nav.logicStack,
     moduleFocus: nav.moduleFocus,
-    // Reset the overlay to the URL's state; a restore that carries no seeds closes it, one that
-    // carries seeds reopens it at the seed base (members := origin; restoreFromUrl then rebuilds the
-    // nodes). The curated (promoted/demoted) state is ephemeral — a restore never reproduces it.
-    minimalSeedIds: nav.minimalSeedIds,
-    minimalMemberIds: [...nav.minimalSeedIds],
+    // Reset the overlay to the URL's state. A review rebuild starts empty because its current
+    // artifact/files re-derive both seeds and expansion; replaying mgraph/mexp first would run a
+    // redundant ELK pass with ids that may belong to the prior artifact.
+    minimalSeedIds: rebuildingReview ? [] : nav.minimalSeedIds,
+    minimalMemberIds: rebuildingReview ? [] : [...nav.minimalSeedIds],
     minimalArrange: false,
     minimalRfNodes: [],
     minimalRfEdges: [],
     minimalLayoutStatus: "idle",
-    moduleExpanded: new Set(nav.moduleExpanded),
+    moduleExpanded: new Set(rebuildingReview ? [] : nav.moduleExpanded),
     moduleRadius: nav.moduleRadius,
     highlightMode: nav.highlightMode,
     hiddenCategories: new Set(nav.hiddenCategories),
@@ -149,6 +179,9 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     prSelected: null,
     prFiles: null,
     prFilesTruncated: false,
+    prFilesTotal: 0,
+    prFilesOutside: 0,
+    prFilesSuggestedSubdir: "",
     prsLoading: false,
     prsError: null,
   };

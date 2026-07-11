@@ -11,11 +11,13 @@ import {
   parseRepoResult,
   parseSearchResults,
   parseUser,
+  toPrSummary,
 } from "./github-parse";
 import type { GitHubUser, PrFile, PrSummary, RepoSummary } from "./github-parse";
 import { interpretTokenResponse, parseDeviceCodeResponse, tokenRedeemBody } from "./github-auth";
 import type { DeviceCode, TokenPoll } from "./github-auth";
 import { API_ROOT, getApi, getApiOrNull, postForm, repoApi } from "./github-http";
+import { asObject } from "./json-fields";
 import { submitPullRequestReviewWithFetch } from "./github-review";
 import type { SubmitReviewRequest, SubmitReviewResult } from "./github-review";
 
@@ -58,6 +60,13 @@ export interface PullRequestsResult {
   hasMore: boolean;
 }
 
+export interface PullRequestRequest {
+  owner: string;
+  repo: string;
+  number: number;
+  token?: string;
+}
+
 export interface PullRequestFilesRequest {
   owner: string;
   repo: string;
@@ -86,6 +95,11 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
 
 export function listPullRequests(request: PullRequestsRequest): Promise<PullRequestsResult> {
   return listPullRequestsWithFetch(globalThis.fetch, request);
+}
+
+export async function fetchPullRequest(fetchImpl: typeof fetch, request: PullRequestRequest): Promise<PrSummary> {
+  const json = await getApi(fetchImpl, repoApi(request.owner, request.repo, `/pulls/${request.number}`), request.token);
+  return toPrSummary(asObject(json));
 }
 
 export function fetchPullRequestFiles(request: PullRequestFilesRequest): Promise<PullRequestFilesResult> {

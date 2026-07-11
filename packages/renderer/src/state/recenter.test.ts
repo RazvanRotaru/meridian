@@ -31,6 +31,7 @@ function freshStore(): BlueprintStore {
     hasOverlay: false,
     sourceUrl: null,
     prsUrl: "/api/prs",
+    prOneUrl: "/api/prs/one",
     prFilesUrl: "/api/prs/files",
     prReviewUrl: "/api/prs/review",
   });

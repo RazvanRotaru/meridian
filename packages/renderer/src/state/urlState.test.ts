@@ -21,6 +21,8 @@ function emptyNav(): NavState {
     hiddenCategories: [],
     prsTab: "open",
     prSelected: null,
+    reviewPr: null,
+    reviewActive: false,
     environment: null,
   };
 }
@@ -170,6 +172,13 @@ describe("urlState", () => {
     expect(roundTrip(nav)).toEqual({ viewMode: "prs", prsTab: "closed", prSelected: 76 });
   });
 
+  it("round-trips an active modules review with an explicit lens, PR number, and review flag", () => {
+    const nav: NavState = { ...emptyNav(), reviewPr: 76, reviewActive: true };
+    const encoded = encodeNav(nav);
+    expect(Object.fromEntries(encoded)).toMatchObject({ view: "modules", prn: "76", rev: "1" });
+    expect(roundTrip(nav)).toEqual({ viewMode: "modules", reviewPr: 76, reviewActive: true });
+  });
+
   it("rejects invalid PR URL params", () => {
     expect(decodeNav(new URLSearchParams("prstate=merged")).prsTab).toBeUndefined();
     expect(decodeNav(new URLSearchParams("prn=0")).prSelected).toBeUndefined();
@@ -218,6 +227,8 @@ describe("urlState", () => {
     it("on the Service lens, keeps its root/selection AND the shared moduleFocus (the cluster zoom)", () => {
       const keys = [...encodeNav(everyLensVisited("call")).keys()].sort();
       expect(keys).toEqual(["csel", "mfocus", "root", "view"]);
+    it("on the Map, does not leak a retained PR-browser selection", () => {
+      expect(encodeNav({ ...emptyNav(), prSelected: 42 }).has("prn")).toBe(false);
     });
 
     it("on Logic, drops Map / ui / call / prs keys", () => {
@@ -294,6 +305,10 @@ describe("urlState", () => {
       expect(isNavigationChange(open, base)).toBe(true);
     });
 
+    it("is true when a review starts even when it has no graph seeds", () => {
+      expect(isNavigationChange(base, { ...base, reviewPr: 76, reviewActive: true })).toBe(true);
+    });
+
     it("is false for a selection-only change", () => {
       expect(isNavigationChange(base, { ...base, compSelectedId: "ts:m.ts#f" })).toBe(false);
     });
@@ -329,6 +344,7 @@ function storeShape() {
     hiddenCategories: new Set<string>(),
     prsTab: "open" as const,
     prSelected: null,
+    prReviewed: null,
     environment: null,
   };
 }

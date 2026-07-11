@@ -86,7 +86,7 @@ export function sendView(ctx: Context, response: ServerResponse, id: string | nu
     sendHtml(response, "<!doctype html><meta charset=utf-8><title>Meridian</title><p>Unknown graph id.</p>", 404);
     return;
   }
-  sendHtml(response, injectViewBoot(ctx.rendererIndex, id as string));
+  sendHtml(response, injectViewBoot(ctx.rendererIndex, id as string, ctx.sources.get(id as string)));
 }
 
 function lookup(ctx: Context, id: string | null): GraphArtifact | undefined {

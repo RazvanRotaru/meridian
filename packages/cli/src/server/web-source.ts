@@ -15,17 +15,49 @@ export function artifactSourceFor(request: GenerateRequest): ArtifactSource {
 }
 
 export function stripExtractionSubdir<T extends { path: string }>(files: T[], subdir: string | undefined): T[] {
+  return partitionExtractionSubdir(files, subdir).inside;
+}
+
+export function partitionExtractionSubdir<T extends { path: string }>(
+  files: T[],
+  subdir: string | undefined,
+): { inside: T[]; outside: T[] } {
   const prefix = normalizedSubdir(subdir);
   if (!prefix) {
-    return files;
+    return { inside: files, outside: [] };
   }
-  return files.flatMap((file) => {
+  const inside: T[] = [];
+  const outside: T[] = [];
+  for (const file of files) {
     const path = normalizedPath(file.path);
     if (!path.startsWith(`${prefix}/`)) {
+      outside.push(file);
+      continue;
+    }
+    inside.push({ ...file, path: path.slice(prefix.length + 1) });
+  }
+  return { inside, outside };
+}
+
+/** The exact normalized prefix used for extraction filtering, safe to expose as the session label. */
+export function canonicalExtractionSubdir(subdir: string | undefined): string {
+  return normalizedSubdir(subdir) ?? "";
+}
+
+/** Deepest repo-root directory shared by candidate files. Unsafe parent segments never suggest a root. */
+export function deepestCommonDirectory(files: readonly { path: string }[]): string {
+  const directories = files.flatMap((file) => {
+    const segments = file.path.replace(/\\/g, "/").split("/");
+    if (segments.includes("..")) {
       return [];
     }
-    return [{ ...file, path: path.slice(prefix.length + 1) }];
+    const normalized = segments.filter((segment) => segment.length > 0 && segment !== ".");
+    return [normalized.slice(0, -1)];
   });
+  if (directories.length === 0) {
+    return "";
+  }
+  return directories.slice(1).reduce(commonPrefix, directories[0]).join("/");
 }
 
 /** The inverse of stripExtractionSubdir, for WRITES: a browser path back to repo-root-relative. */
@@ -59,7 +91,7 @@ function splitOwnerRepo(slug: string): { owner: string; repo: string } {
 
 function normalizedSubdir(subdir: string | undefined): string | null {
   const normalized = normalizedPath(subdir ?? "");
-  return normalized.includes("..") || normalized.length === 0 ? null : normalized;
+  return normalized.split("/").includes("..") || normalized.length === 0 ? null : normalized;
 }
 
 function normalizedPath(path: string): string {
@@ -69,4 +101,13 @@ function normalizedPath(path: string): string {
     .split("/")
     .filter((part) => part.length > 0 && part !== ".")
     .join("/");
+}
+
+function commonPrefix(left: string[], right: string[]): string[] {
+  const length = Math.min(left.length, right.length);
+  let shared = 0;
+  while (shared < length && left[shared] === right[shared]) {
+    shared += 1;
+  }
+  return left.slice(0, shared);
 }

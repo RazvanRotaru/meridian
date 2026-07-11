@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { fetchFileAtRef, fetchPullRequestFiles, listPullRequests } from "./github";
+import { fetchFileAtRef, fetchPullRequest, fetchPullRequestFiles, listPullRequests } from "./github";
 import { submitPullRequestReview, type ReviewCommentInput } from "./github-review";
 import { sendJson } from "./http-response";
 import { githubTokenFor } from "./web-auth";
@@ -7,7 +7,7 @@ import { WebError } from "./web-error";
 import { readJsonBody } from "./web-request";
 import type { Context } from "./web-server";
 import type { ArtifactSource } from "./web-source";
-import { restoreExtractionSubdir, stripExtractionSubdir } from "./web-source";
+import { deepestCommonDirectory, partitionExtractionSubdir, restoreExtractionSubdir } from "./web-source";
 
 const GITHUB_SOURCE_ERROR = "pull requests need a GitHub-sourced session";
 /** Sanity bound; the 64KB body cap constrains the real payload long before this. */
@@ -44,7 +44,31 @@ export async function handlePullRequestFiles(
   }
   const prNumber = parsePositiveInt(query.get("n"), "n");
   const result = await fetchPullRequestFiles({ owner: source.owner, repo: source.repo, prNumber, token: githubTokenFor(ctx, request) });
-  sendJson(response, 200, { files: stripExtractionSubdir(result.files, source.subdir), truncated: result.truncated });
+  const { inside: files, outside } = partitionExtractionSubdir(result.files, source.subdir);
+  sendJson(response, 200, {
+    files,
+    truncated: result.truncated,
+    totalFiles: result.files.length,
+    outsideCount: outside.length,
+    suggestedSubdir: deepestCommonDirectory(outside),
+  });
+}
+
+export async function handlePullRequestOne(
+  ctx: Context,
+  request: IncomingMessage,
+  response: ServerResponse,
+  query: URLSearchParams,
+): Promise<void> {
+  const source = githubSource(ctx, query.get("id"));
+  if (!source) {
+    sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
+    return;
+  }
+  // Parse before fetchPullRequest can interpolate the number into GitHub's outbound URL path.
+  const number = parsePositiveInt(query.get("n"), "n");
+  const pr = await fetchPullRequest(globalThis.fetch, { owner: source.owner, repo: source.repo, number, token: githubTokenFor(ctx, request) });
+  sendJson(response, 200, { pr });
 }
 
 /**

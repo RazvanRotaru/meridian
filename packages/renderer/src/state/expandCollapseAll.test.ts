@@ -43,7 +43,7 @@ const ARTIFACT: GraphArtifact = {
 
 function freshStore(): BlueprintStore {
   const index = buildGraphIndex(ARTIFACT);
-  return createBlueprintStore({ artifact: ARTIFACT, index, provider: null, hasOverlay: false, sourceUrl: null, prsUrl: "", prFilesUrl: "", prReviewUrl: "" });
+  return createBlueprintStore({ artifact: ARTIFACT, index, provider: null, hasOverlay: false, sourceUrl: null, prsUrl: "", prOneUrl: "", prFilesUrl: "", prReviewUrl: "" });
 }
 
 describe("expandAll / collapseAll — Map surface", () => {

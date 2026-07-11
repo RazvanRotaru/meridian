@@ -57,6 +57,7 @@ function freshStore(extra?: Partial<StoreDependencies>) {
     hasOverlay: false,
     sourceUrl: null,
     prsUrl: "/api/prs?id=artifact-1",
+    prOneUrl: "/api/prs/one?id=artifact-1",
     prFilesUrl: "/api/prs/files?id=artifact-1",
     prReviewUrl: "/api/prs/review?id=artifact-1",
     ...extra,
@@ -84,6 +85,26 @@ describe("PR store slice", () => {
     ]);
     expect(store.getState().prsHasMore.open).toBe(false);
     expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/prs?id=artifact-1&state=open&page=1");
+  });
+
+  it("fetches and merges a missing PR summary into its state tab", async () => {
+    const summary = { ...pr(42), state: "closed" as const };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ pr: summary }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    await store.getState().ensurePrSummary(42);
+    expect(store.getState().prsList.closed).toEqual([summary]);
+    expect(store.getState().prsHasMore.closed).toBe(true);
+    expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/prs/one?id=artifact-1&n=42");
+  });
+
+  it("does not fetch a PR summary already present in either list", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    store.setState({ prsList: { open: null, closed: [{ ...pr(42), state: "closed" }] } });
+    await store.getState().ensurePrSummary(42);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("reviews a PR: lands on the Map, seeds the changed files, and joins their line diff", () => {

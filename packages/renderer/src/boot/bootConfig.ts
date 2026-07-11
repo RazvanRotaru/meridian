@@ -7,6 +7,8 @@
  * sample, so the production path is never coupled to the dev convenience path.
  */
 
+import type { PrSessionSource } from "../state/prTypes";
+
 export interface BootConfig {
   graphUrl: string;
   metaUrl: string;
@@ -17,11 +19,14 @@ export interface BootConfig {
   preselectedEnv: string | null;
   /** Base URL the renderer GETs to fetch a node's source; null when source isn't available. */
   sourceUrl: string | null;
+  /** Exact GitHub session source; null for local/plain-view artifacts. */
+  githubSource: PrSessionSource | null;
   defaultEnv: null;
 }
 
 export interface PrApiUrls {
   prsUrl: string;
+  prOneUrl: string;
   prFilesUrl: string;
   /** GET base for one changed file's text at the PR head ref (the review code panel). */
   prFileUrl: string;
@@ -34,8 +39,9 @@ export interface PrApiUrls {
   graphId: string | null;
 }
 
-interface InjectedConfig extends Omit<BootConfig, "defaultEnv"> {
+interface InjectedConfig extends Omit<BootConfig, "defaultEnv" | "githubSource"> {
   defaultEnv: unknown;
+  githubSource?: PrSessionSource | null;
 }
 
 declare global {
@@ -55,6 +61,7 @@ const DEV_FALLBACK: BootConfig = {
   envRequired: true,
   preselectedEnv: null,
   sourceUrl: null,
+  githubSource: null,
   defaultEnv: null,
 };
 
@@ -71,6 +78,7 @@ export function prApiUrlsFromGraphUrl(graphUrl: string): PrApiUrls {
   const id = graph.searchParams.get("id");
   return {
     prsUrl: apiUrl("/api/prs", id),
+    prOneUrl: apiUrl("/api/prs/one", id),
     prFilesUrl: apiUrl("/api/prs/files", id),
     prFileUrl: apiUrl("/api/prs/file", id),
     prReviewUrl: apiUrl("/api/prs/review", id),
@@ -83,7 +91,7 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
   if (injected.defaultEnv !== null) {
     throw new Error("boot contract violation: defaultEnv must never be defaulted (always null)");
   }
-  return { ...injected, defaultEnv: null };
+  return { ...injected, githubSource: injected.githubSource ?? null, defaultEnv: null };
 }
 
 function apiUrl(path: string, id: string | null): string {

@@ -49,7 +49,18 @@ import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref"
 import { moduleRevealStateFor, nearestModuleIds } from "./flowExplorer";
 import { anchorNodeIds, mapRevealStateForMany, resolveServiceAnchors, serviceRevealStateForMany, uiRevealStateForMany } from "./lensPath";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
-import { PRS_UNAVAILABLE_ERROR, type LineEdit, type PrChangedFile, type PrFilesResponse, type PrListResponse, type PrSummary, type PrsTab } from "./prTypes";
+import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
+import {
+  PRS_UNAVAILABLE_ERROR,
+  type LineEdit,
+  type PrChangedFile,
+  type PrFilesResponse,
+  type PrListResponse,
+  type PrOneResponse,
+  type PrSessionSource,
+  type PrSummary,
+  type PrsTab,
+} from "./prTypes";
 import { headKindsWithin, headSpanFor } from "./headSpan";
 import { streamPrAnalysis, type PrAnalyzeStage } from "./prAnalysis";
 import {
@@ -291,7 +302,10 @@ export interface BlueprintState {
   analyzeUrl: string | null;
   /** PR API endpoints derived from the graph artifact URL; 404/network means this session lacks PRs. */
   prsUrl: string;
+  prOneUrl: string;
   prFilesUrl: string;
+  /** Exact web-session source used only by the subfolder recovery action. */
+  prSessionSource: PrSessionSource | null;
   prsTab: PrsTab;
   prsList: Record<PrsTab, PrSummary[] | null>;
   prsHasMore: Record<PrsTab, boolean>;
@@ -300,6 +314,9 @@ export interface BlueprintState {
   prSelected: number | null;
   prFiles: PrChangedFile[] | null;
   prFilesTruncated: boolean;
+  prFilesTotal: number;
+  prFilesOutside: number;
+  prFilesSuggestedSubdir: string;
   /** The PR whose changed files are currently highlighted in the graph (via "review in graph"). */
   prReviewed: number | null;
   /** Head ref of the PR under review — the code panel fetches changed files at this ref. Null off-review. */
@@ -435,6 +452,7 @@ export interface BlueprintState {
   closeCode(): void;
   setPrsTab(tab: PrsTab): void;
   loadPrs(page?: number): Promise<void>;
+  ensurePrSummary(number: number): Promise<void>;
   selectPr(number: number | null): Promise<void>;
   reviewPrInGraph(): Promise<void>;
   /** Opt-in head extract: stream the server's clone→checkout→extract of the PR head, swap the
@@ -457,7 +475,9 @@ export interface StoreDependencies {
   provider: TelemetryProvider | null;
   hasOverlay: boolean;
   sourceUrl: string | null;
+  prSessionSource?: PrSessionSource | null;
   prsUrl: string;
+  prOneUrl: string;
   prFilesUrl: string;
   /** GET base for one changed file's text at the PR head ref (the review code panel's head-fetch). */
   prFileUrl?: string;
@@ -590,6 +610,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // valid `review` extension — e.g. a plain `web`/`view` session). Computed once (the artifact never
   // changes after boot); a GitHub PR opened via reviewPrInGraph can later populate `review` at runtime.
   const review = deriveReviewData(dependencies.artifact, dependencies.index);
+  const bootReviewBaseline: PrReviewBaseline = { artifact: dependencies.artifact, index: dependencies.index, review };
   // The files checklist + persisted progress for an artifact-sourced review; a GitHub PR opened via
   // reviewPrInGraph re-derives both at runtime under its own reviewKey.
   const reviewFiles = review ? deriveReviewFiles(review.context, dependencies.artifact, dependencies.index) : [];
@@ -597,6 +618,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
   const prsUrl = dependencies.prsUrl;
+  const prOneUrl = dependencies.prOneUrl;
   const prFilesUrl = dependencies.prFilesUrl;
   const prFileUrl = dependencies.prFileUrl ?? null;
   // Null when the server can't prepare a PR head (no analyze route, or no stored GitHub artifact);
@@ -698,7 +720,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     sourceUrl,
     analyzeUrl,
     prsUrl,
+    prOneUrl,
     prFilesUrl,
+    prSessionSource: dependencies.prSessionSource ?? null,
     prsTab: "open",
     prsList: { open: null, closed: null },
     prsHasMore: { open: false, closed: false },
@@ -707,6 +731,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prSelected: null,
     prFiles: null,
     prFilesTruncated: false,
+    prFilesTotal: 0,
+    prFilesOutside: 0,
+    prFilesSuggestedSubdir: "",
     prReviewed: null,
     reviewHeadRef: null,
     reviewDiffByFile: {},
@@ -1834,7 +1861,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (get().prsTab === tab) {
         return;
       }
-      set({ prsTab: tab, prsError: null, prSelected: null, prFiles: null, prFilesTruncated: false });
+      set({
+        prsTab: tab,
+        prsError: null,
+        prSelected: null,
+        prFiles: null,
+        prFilesTruncated: false,
+        prFilesTotal: 0,
+        prFilesOutside: 0,
+        prFilesSuggestedSubdir: "",
+      });
       if (get().prsList[tab] === null) {
         void get().loadPrs(1);
       }
@@ -1877,6 +1913,33 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
+    async ensurePrSummary(number) {
+      const listed = [...(get().prsList.open ?? []), ...(get().prsList.closed ?? [])];
+      if (listed.some((pr) => pr.number === number)) {
+        return;
+      }
+      try {
+        const url = new URL(prOneUrl, requestOrigin());
+        url.searchParams.set("n", String(number));
+        const response = await fetch(url, { credentials: "same-origin" });
+        if (!response.ok) {
+          set({ prsError: await errorMessage(response) });
+          return;
+        }
+        const { pr } = (await response.json()) as PrOneResponse;
+        const existing = get().prsList[pr.state];
+        set({
+          prsList: { ...get().prsList, [pr.state]: mergePrSummaries(existing ?? [], [pr]) },
+          // A singleton obtained by number is not page 1. Keep a load affordance so opening the
+          // PR browser can still fetch the real first page instead of looking permanently complete.
+          prsHasMore: { ...get().prsHasMore, [pr.state]: existing === null ? true : get().prsHasMore[pr.state] },
+          prsError: null,
+        });
+      } catch {
+        set({ prsError: PRS_UNAVAILABLE_ERROR });
+      }
+    },
+
     async selectPr(number) {
       const sequence = ++prFilesSeq;
       // Switching PRs abandons any review preparation in flight: bump its seq so a landing stream
@@ -1884,15 +1947,35 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       prAnalyzeSeq += 1;
       // Leaving the reviewed PR (a different number, or Back/Escape's null) ends the review
       // session: put the boot artifact back and re-lay the visible surface. A no-op outside one.
-      if (restorePrReviewBaseline(get, set, invalidateArtifactCaches)) {
+      if (restoreSelectedPrReview(get, set, invalidateArtifactCaches, bootReviewBaseline)) {
         void get().relayout();
       }
       const prepareReset = { prReviewStatus: "idle" as const, prPrepareStage: null, prPrepareError: null };
       if (number === null) {
-        set({ prSelected: null, prFiles: null, prFilesTruncated: false, prsLoading: false, prsError: null, ...prepareReset });
+        set({
+          prSelected: null,
+          prFiles: null,
+          prFilesTruncated: false,
+          prFilesTotal: 0,
+          prFilesOutside: 0,
+          prFilesSuggestedSubdir: "",
+          prsLoading: false,
+          prsError: null,
+          ...prepareReset,
+        });
         return;
       }
-      set({ prSelected: number, prFiles: null, prFilesTruncated: false, prsLoading: true, prsError: null, ...prepareReset });
+      set({
+        prSelected: number,
+        prFiles: null,
+        prFilesTruncated: false,
+        prFilesTotal: 0,
+        prFilesOutside: 0,
+        prFilesSuggestedSubdir: "",
+        prsLoading: true,
+        prsError: null,
+        ...prepareReset,
+      });
       try {
         const url = new URL(prFilesUrl, requestOrigin());
         url.searchParams.set("n", String(number));
@@ -1908,7 +1991,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         if (prFilesSeq !== sequence || get().prSelected !== number) {
           return;
         }
-        set({ prFiles: data.files, prFilesTruncated: data.truncated, prsLoading: false, prsError: null });
+        set({
+          prFiles: data.files,
+          prFilesTruncated: data.truncated,
+          prFilesTotal: data.totalFiles ?? data.files.length,
+          prFilesOutside: data.outsideCount ?? 0,
+          prFilesSuggestedSubdir: data.suggestedSubdir ?? "",
+          prsLoading: false,
+          prsError: null,
+        });
       } catch {
         if (prFilesSeq === sequence && get().prSelected === number) {
           set({ prsLoading: false, prsError: PRS_UNAVAILABLE_ERROR });
@@ -2181,6 +2272,21 @@ function applyPrReviewToMap(
 function selectedPrSummary(state: BlueprintState): PrSummary | null {
   const { prSelected, prsList } = state;
   return [...(prsList.open ?? []), ...(prsList.closed ?? [])].find((pr) => pr.number === prSelected) ?? null;
+}
+
+/** End either review mode through the existing baseline restore. Sync mode normally has no saved
+ * pair, so selectPr seeds the immutable boot pair just for this immediate end-session restore. */
+function restoreSelectedPrReview(
+  get: () => BlueprintState,
+  set: (partial: Partial<BlueprintState>) => void,
+  invalidateArtifactCaches: () => void,
+  bootBaseline: PrReviewBaseline,
+): boolean {
+  const state = get();
+  if (state.prReviewed !== null && state.prReviewBaseline === null) {
+    set({ prReviewBaseline: bootBaseline });
+  }
+  return restorePrReviewBaseline(get, set, invalidateArtifactCaches);
 }
 
 function prepareErrorMessage(error: unknown): string {
