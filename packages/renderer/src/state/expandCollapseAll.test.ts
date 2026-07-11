@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { GraphArtifact, GraphNode } from "@meridian/core";
+import { moduleSurfaceSpec } from "../components/canvas/surfaceSpec";
+import { buildBlockDeps } from "../derive/blockDeps";
+import { frameIdOf } from "../derive/serviceClusterEdges";
+import { buildModuleGraph } from "../derive/moduleGraph";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { createBlueprintStore, type BlueprintStore } from "./store";
 
@@ -41,10 +45,24 @@ const ARTIFACT: GraphArtifact = {
   },
 };
 
-function freshStore(): BlueprintStore {
-  const index = buildGraphIndex(ARTIFACT);
+// Exclude the top-level helper for the Service-specific contract: because a module is itself a
+// composition unit, that helper would honestly create a second, unassigned service frame and a
+// synthetic domain wrapper. This focused artifact has exactly one named-service cluster whose
+// sole member is its lead class — the boundary that regressed.
+const SINGLE_SERVICE_ARTIFACT: GraphArtifact = {
+  ...ARTIFACT,
+  nodes: ARTIFACT.nodes.filter((entry) => entry.id !== HELPER_ID),
+  extensions: {
+    logicFlow: {
+      [METHOD_ID]: [{ kind: "call", label: "charge", target: null, resolution: "unresolved" }],
+    },
+  },
+};
+
+function storeFor(artifact: GraphArtifact): BlueprintStore {
+  const index = buildGraphIndex(artifact);
   return createBlueprintStore({
-    artifact: ARTIFACT,
+    artifact,
     index,
     provider: null,
     hasOverlay: false,
@@ -57,6 +75,28 @@ function freshStore(): BlueprintStore {
     prChecksUrl: "",
     prReviewUrl: "",
   });
+}
+
+function freshStore(): BlueprintStore {
+  return storeFor(ARTIFACT);
+}
+
+function freshSingleServiceStore(): BlueprintStore {
+  return storeFor(SINGLE_SERVICE_ARTIFACT);
+}
+
+/** Read the same Service frontier that the canvas-wide actions inspect, without involving ELK. */
+function serviceNodes(store: BlueprintStore) {
+  const state = store.getState();
+  const service = moduleSurfaceSpec("call");
+  if (service === null) {
+    throw new Error("Service must be registered as a module surface");
+  }
+  return service.deriveTree(state, {
+    graph: buildModuleGraph(state.index),
+    deps: buildBlockDeps(state.index),
+    flows: (state.artifact.extensions?.logicFlow ?? {}) as never,
+  }).nodes;
 }
 
 describe("expandAll / collapseAll — Map surface", () => {
@@ -107,6 +147,68 @@ describe("expandAll / collapseAll — UI lens (the shared module surface since p
     store.setState({ viewMode: "ui", moduleFocus: null, moduleExpanded: new Set(["ts:pkg", "ts:pkg/src"]), moduleSelected: new Set() });
     store.getState().collapseAll();
     expect(store.getState().moduleExpanded).toEqual(new Set());
+  });
+});
+
+describe("expandAll / collapseAll — Service lens", () => {
+  const FRAME_ID = frameIdOf(UNIT_ID);
+
+  it("canvas-wide expandAll opens a one-member synthetic frame exactly one level per action", () => {
+    const store = freshSingleServiceStore();
+    store.setState({ viewMode: "call", moduleFocus: null, moduleExpanded: new Set(), moduleSelected: new Set() });
+
+    // Even a frame containing only its lead class is an expandable synthetic parent. It is the
+    // only collapsed container on the initial Service frontier, so the first canvas-wide action
+    // must include it rather than treating the frame as a leaf.
+    expect(serviceNodes(store).find((entry) => entry.id === FRAME_ID)).toMatchObject({
+      parentId: null,
+      kind: "package",
+      childCount: 1,
+      isContainer: true,
+      isExpanded: false,
+    });
+
+    store.getState().expandAll();
+    expect(store.getState().moduleExpanded).toEqual(new Set([FRAME_ID]));
+
+    const frameOpen = serviceNodes(store);
+    expect(frameOpen.find((entry) => entry.id === UNIT_ID)).toMatchObject({
+      parentId: FRAME_ID,
+      kind: "unit",
+      isContainer: true,
+      isExpanded: false,
+    });
+    expect(frameOpen.some((entry) => entry.id === METHOD_ID)).toBe(false);
+
+    // A second action advances one more level. This guards the regression where opening a TS
+    // service frame also opened its class and methods during the same action.
+    store.getState().expandAll();
+    expect(store.getState().moduleExpanded).toEqual(new Set([FRAME_ID, UNIT_ID]));
+    expect(serviceNodes(store).find((entry) => entry.id === METHOD_ID)).toMatchObject({
+      parentId: UNIT_ID,
+      kind: "block",
+    });
+  });
+
+  it("canvas-wide collapseAll closes the one-member frame and every open descendant", () => {
+    const store = freshSingleServiceStore();
+    store.setState({
+      viewMode: "call",
+      moduleFocus: null,
+      moduleExpanded: new Set([FRAME_ID, UNIT_ID]),
+      moduleSelected: new Set(),
+    });
+    expect(serviceNodes(store).find((entry) => entry.id === METHOD_ID)).toMatchObject({ parentId: UNIT_ID });
+
+    store.getState().collapseAll();
+    expect(store.getState().moduleExpanded).toEqual(new Set());
+    const collapsed = serviceNodes(store);
+    expect(collapsed.find((entry) => entry.id === FRAME_ID)).toMatchObject({
+      childCount: 1,
+      isContainer: true,
+      isExpanded: false,
+    });
+    expect(collapsed.some((entry) => entry.id === UNIT_ID || entry.id === METHOD_ID)).toBe(false);
   });
 });
 

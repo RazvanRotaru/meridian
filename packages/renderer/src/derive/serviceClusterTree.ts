@@ -203,10 +203,11 @@ function serviceWalk(
   const clustersByLead = new Map(clustering.clusters.map((cluster) => [cluster.leadId, cluster]));
   const emitCluster = (cluster: ServiceClustering["clusters"][number], parentId: string | null, depth: number) => {
     const frameId = frameIdOf(cluster.leadId);
-    // The FOCUSED cluster is the zoom: always open — even a single-member cluster, which the full
-    // lens draws as a bare frame card — so the dive always lands on the members.
+    // Every synthetic service frame is a real container, including a one-member cluster. The
+    // collapsed frame remains the overview summary; opening it reveals the lead class as its one
+    // direct child so selection/reveal can preserve that exact artifact id across lenses.
     const isFocus = cluster.leadId === focusLead;
-    const isContainer = isFocus ? cluster.memberIds.length > 0 : cluster.memberIds.length > 1;
+    const isContainer = cluster.memberIds.length > 0;
     const isExpanded = isFocus ? isContainer : isOpen(cluster, expanded);
     walk.skeleton.push({
       id: frameId,

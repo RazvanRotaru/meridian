@@ -36,6 +36,58 @@ export interface ModuleNodeHandlers {
   expandedGhostGroupIds: ReadonlySet<string>;
   /** Explicit disclosure action rendered by a grouped ghost parent's own chevron. */
   toggleGhostGroup(groupId: string): void;
+  /** Complete paint-owner override for the current literal selection. Ghost entries contribute
+   * their captured provenance; ordinary entries remain their own paint seeds. */
+  paintSelectionOverride: ReadonlySet<string> | null;
+}
+
+export interface GhostPaintContext {
+  targetId: string;
+  seedIds: ReadonlySet<string>;
+  viewMode: string;
+  effectiveFocus: string | null;
+}
+
+/** Provenance is valid through its own debounce and for as long as that ghost remains selected. */
+export function retainsGhostPaintContext(
+  targetId: string,
+  selected: ReadonlySet<string>,
+  pendingSelectId: string | null,
+): boolean {
+  return pendingSelectId === targetId || selected.has(targetId);
+}
+
+/** Build the complete traversal seed set for a selection containing captured ghosts. A pending
+ * ghost click already carries the provenance that will replace the old selection; a pending real
+ * click keeps the current provenance until its 250 ms debounce commits. For a committed
+ * Ctrl-selection, each ghost contributes its OWN provenance while real nodes seed themselves; no
+ * global LCA can merge unrelated ghost owners. */
+export function ghostPaintSeedOverride(
+  contexts: ReadonlyMap<string, GhostPaintContext>,
+  selected: ReadonlySet<string>,
+  pendingSelectId: string | null,
+): ReadonlySet<string> | null {
+  if (pendingSelectId !== null) {
+    const pending = contexts.get(pendingSelectId);
+    if (pending !== undefined) {
+      return new Set(pending.seedIds);
+    }
+    // A real-node replacement is deliberately delayed so a double-click can win. Until that
+    // selection actually commits, retain the current ghost provenance: an unrelated repaint
+    // (for example a review hover) must not move the clicked target during the arbitration window.
+  }
+  const seeds = new Set<string>();
+  let hasGhostContext = false;
+  for (const id of selected) {
+    const context = contexts.get(id);
+    if (context === undefined) {
+      seeds.add(id);
+      continue;
+    }
+    hasGhostContext = true;
+    context.seedIds.forEach((seedId) => seeds.add(seedId));
+  }
+  return hasGhostContext ? seeds : null;
 }
 
 export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = {}): ModuleNodeHandlers {
@@ -52,6 +104,7 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
   const showTests = useBlueprint((s) => s.showTests);
   const showPrivate = useBlueprint((s) => s.showPrivate);
   const groupGhostsByParent = useBlueprint((s) => s.groupGhostsByParent);
+  const moduleSelected = useBlueprint((s) => s.moduleSelected);
   // The minimal overlay reuses the UNDERLYING lens's spec by construction (`viewMode` stays
   // "modules"/"call" while it covers the Map), so its gestures are the Map's/Service's exactly.
   const spec = activeModuleSurfaceSpec(viewMode);
@@ -67,6 +120,7 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
   const pendingSelectTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const pendingSelectId = useRef<string | null>(null);
   const [expandedGhostGroupIds, setExpandedGhostGroupIds] = useState<Set<string>>(() => new Set());
+  const [ghostPaintContexts, setGhostPaintContexts] = useState<Map<string, GhostPaintContext>>(() => new Map());
   const toggleGhostGroup = useCallback((groupId: string) => {
     setExpandedGhostGroupIds((current) => toggleExpandedGhostGroupIds(current, groupId));
   }, []);
@@ -102,6 +156,7 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
   // must not immediately fold the child away again.
   useEffect(() => {
     setExpandedGhostGroupIds(new Set());
+    setGhostPaintContexts(new Map());
   }, [
     effectiveFocus,
     hiddenCategories,
@@ -118,15 +173,56 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
     viewMode,
   ]);
 
+  const rememberGhostPaintContext = (node: Node, gesture: SelectionGesture) => {
+    if (node.type !== "ghost") {
+      return;
+    }
+    const provenance = (node.data as { ghostPaintSeedIds?: unknown }).ghostPaintSeedIds;
+    const ids = Array.isArray(provenance)
+      ? provenance.filter((id): id is string => typeof id === "string" && id.length > 0)
+      : [];
+    setGhostPaintContexts((current) => {
+      const next = gesture === "replace" ? new Map<string, GhostPaintContext>() : new Map(current);
+      if (ids.length === 0) {
+        next.delete(node.id);
+        return next;
+      }
+      next.set(node.id, {
+        targetId: node.id,
+        seedIds: new Set(ids),
+        viewMode,
+        effectiveFocus,
+      });
+      return next;
+    });
+  };
+  // Store actions outside this canvas (sidebar reveal, lens carry, review navigation) can replace
+  // selection without firing a node handler. Retire each provenance entry as soon as its ghost is
+  // no longer selected; the pending click exemption bridges only the deliberate 250 ms debounce.
+  useEffect(() => {
+    setGhostPaintContexts((current) => {
+      let next: Map<string, GhostPaintContext> | null = null;
+      for (const [targetId] of current) {
+        if (retainsGhostPaintContext(targetId, moduleSelected, pendingSelectId.current)) continue;
+        next ??= new Map(current);
+        next.delete(targetId);
+      }
+      return next ?? current;
+    });
+  }, [moduleSelected]);
+
   const onNodeClick: NodeMouseHandler<Node> = (event, node) => {
     // Selection is deliberately type-agnostic: real cards, synthetic parents, exact ghosts and
     // grouped ghost parents all enter the same selection (and therefore extraction) path.
-    if (selectionGestureFor(node, event) === "toggle") {
+    const gesture = selectionGestureFor(node, event);
+    if (gesture === "toggle") {
       flushPendingSelect();
+      rememberGhostPaintContext(node, gesture);
       toggleModuleSelect(node.id);
       return;
     }
     clearPendingSelect();
+    rememberGhostPaintContext(node, gesture);
     pendingSelectId.current = node.id;
     pendingSelectTimer.current = window.setTimeout(() => {
       selectModule(node.id);
@@ -141,6 +237,7 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
     // React Flow delivers the constituent clicks before a double-click. Cancel either a queued
     // selection before running the navigation path.
     clearPendingSelect();
+    setGhostPaintContexts(new Map());
     overrides.onBeforeDoubleClick?.(event, node);
     const surfaceActions = { setModuleFocus, revealModule, revealServiceGhost };
     const navigation = navigationForNode(node, spec);
@@ -161,10 +258,27 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
   };
   const onPaneClick = () => {
     clearPendingSelect();
+    setGhostPaintContexts(new Map());
     selectModule(null);
   };
 
-  return { onNodeClick, onNodeDoubleClick, onPaneClick, expandedGhostGroupIds, toggleGhostGroup };
+  const scopedGhostPaintContexts = new Map(
+    [...ghostPaintContexts].filter(([, context]) =>
+      context.viewMode === viewMode && context.effectiveFocus === effectiveFocus),
+  );
+  const paintSelectionOverride = ghostPaintSeedOverride(
+    scopedGhostPaintContexts,
+    moduleSelected,
+    pendingSelectId.current,
+  );
+  return {
+    onNodeClick,
+    onNodeDoubleClick,
+    onPaneClick,
+    expandedGhostGroupIds,
+    toggleGhostGroup,
+    paintSelectionOverride,
+  };
 }
 
 export type SelectionGesture = "replace" | "toggle";
