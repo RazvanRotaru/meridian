@@ -132,16 +132,18 @@ export function ModuleMapView() {
     () => new Set(inspectedPair === null ? [] : [inspected!.id, ...inspectedPair.map((edge) => edge.id)]),
     [inspected, inspectedPair],
   );
-  // WIRES GO BEHIND CARDS. React Flow auto-elevates any edge touching a NESTED node above every
-  // top-level card — a lit fan into a frame's member covered unrelated cards' text. The rule the
-  // eye expects: a wire CROSSING the canvas travels under everything (zIndex 0); a wire living
-  // INSIDE one frame keeps its elevation (above its frame's translucent background, still below
-  // that frame's own cards, which React Flow elevates further).
-  const topAncestorById = useMemo(() => {
+  // WIRES GO BEHIND CARDS. React Flow's default z-mode elevates any edge touching a NESTED node
+  // above every top-level card (basic mode ADDS the child node's z to the edge's own) — a lit fan
+  // into a frame member covered unrelated cards' text. The Map runs zIndexMode="manual" and sets
+  // the rule the eye expects: a wire CROSSING the canvas travels under everything (z 0); a wire
+  // living INSIDE one frame sits at its nesting depth — above its frame's translucent background,
+  // still below that frame's own (deeper-z) cards.
+  const nestingById = useMemo(() => {
     const parentOf = new Map(styledNodes.map((node) => [node.id, node.parentId]));
-    const topOf = new Map<string, string>();
+    const info = new Map<string, { top: string; depth: number }>();
     for (const node of styledNodes) {
       let current = node.id;
+      let depth = 0;
       const seen = new Set<string>();
       while (!seen.has(current)) {
         seen.add(current);
@@ -150,17 +152,24 @@ export function ModuleMapView() {
           break;
         }
         current = parent;
+        depth += 1;
       }
-      topOf.set(node.id, current);
+      info.set(node.id, { top: current, depth });
     }
-    return topOf;
+    return info;
   }, [styledNodes]);
-  const crossCanvas = (edge: Edge) =>
-    (topAncestorById.get(edge.source) ?? edge.source) !== (topAncestorById.get(edge.target) ?? edge.target);
+  const wireZ = (edge: Edge): number => {
+    const source = nestingById.get(edge.source);
+    const target = nestingById.get(edge.target);
+    if (!source || !target || source.top !== target.top) {
+      return 0; // cross-canvas: under everything
+    }
+    return Math.max(source.depth, target.depth); // intra-frame: above the frame, below its cards
+  };
   const hoverableEdges = useMemo(
     () =>
       bundledEdges.map((edge) => {
-        const zIndex = crossCanvas(edge) ? 0 : edge.zIndex;
+        const zIndex = wireZ(edge);
         if (edge.type === BUNDLE_EDGE_TYPE) {
           // A drilled constituent lives INSIDE the highway — boost the owning bundle so the panel's
           // subject still has a visual anchor on canvas.
@@ -192,8 +201,8 @@ export function ModuleMapView() {
           style: boosted ? { ...edge.style, opacity: 1, strokeWidth: ((edge.style?.strokeWidth as number) ?? 1.5) + 1.2 } : edge.style,
         };
       }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- crossCanvas derives from topAncestorById
-    [bundledEdges, wireHover?.id, inspectedIds, topAncestorById],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- wireZ derives from nestingById
+    [bundledEdges, wireHover?.id, inspectedIds, nestingById],
   );
   const onEdgeMouseEnter = (event: React.MouseEvent, edge: Edge) => {
     if (edge.type === BUNDLE_EDGE_TYPE) {
@@ -294,6 +303,8 @@ export function ModuleMapView() {
         onEdgeMouseEnter={onEdgeMouseEnter}
         onEdgeMouseLeave={onEdgeMouseLeave}
         onEdgeClick={onEdgeClick}
+        // Manual z: basic mode ADDS a nested endpoint's node-z to the edge (see wireZ above).
+        zIndexMode="manual"
         {...READONLY_CANVAS_PROPS}
       >
         <CanvasChrome nodeColor={miniMapColor} />

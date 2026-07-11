@@ -100,12 +100,9 @@ function routePlan(edge: Edge, byId: Map<string, Node>, rects: Map<string, Rect>
   const frame = entry.rect;
   const sy = source.y + source.h / 2;
   const ty = target.y + target.h / 2;
-  // Enter from whichever side of the frame the SOURCE sits on — except the commons dock: its cards
-  // sit in a HORIZONTAL row, so a source-side gate's peel-off would travel the row and cross the
-  // sibling cards; entering nearest the TARGET keeps the peel out of them.
-  const horizontalRow = byId.get(entry.id)?.type === "commonsDock";
-  const anchor = horizontalRow ? target : source;
-  const fromLeft = anchor.x + anchor.w / 2 <= frame.x + frame.w / 2;
+  // Enter from whichever side of the frame the source sits on; the rail runs in that side's gutter.
+  // (The commons dock is a vertical COLUMN like any frame interior, so the same rule serves it.)
+  const fromLeft = source.x + source.w / 2 <= frame.x + frame.w / 2;
   // The gate sits at the source's height, clamped into the frame's edge span — below the title bar
   // (a wire through the frame's name is as bad as one through a card) and above the bottom edge —
   // so the outside leg stays flat and gates spread along the boundary instead of knotting.

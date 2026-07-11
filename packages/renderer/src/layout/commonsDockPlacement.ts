@@ -5,9 +5,14 @@
  * TRAY: a real (non-interactive) parent node drawn as a quiet dashed shelf titled "COMMONS", with
  * the docked cards nested as its children — so the dock reads as a place, not as strays that fell
  * off the graph, and paint-time ghost banding treats the whole tray as one footprint (a selected
- * dock card's ghosts band OUTSIDE the tray, never onto its neighbours). Wires still exist (paint
- * hides them until lit), so selecting a docked card lights its real connections up into the graph.
- * Pure, deterministic.
+ * dock card's ghosts band OUTSIDE the tray, never onto its neighbours).
+ *
+ * The tray stands to the RIGHT of the graph as a VERTICAL column: the Map reads left→right
+ * (importers → imported), and the commons are the level's most-imported cards — the far right is
+ * where that grammar puts them. A column is also exactly the geometry the gutter-bus routes best:
+ * lit wires gate once on the tray's left edge, ride the rail, and peel off at each card's own
+ * height — no sibling is ever crossed. Wires still exist (paint hides them until lit), so
+ * selecting a docked card lights its real connections back into the graph. Pure, deterministic.
  */
 
 import type { Node } from "@xyflow/react";
@@ -21,8 +26,8 @@ export const COMMONS_DOCK_ID = "dock:commons";
 /** Clearance between the graph's box and the tray, the tray's inner chrome, and card spacing.
  * The 30px side padding mirrors the frame gutter convention (CONTAINER_OPTIONS): the tray is a
  * FRAME to the gutter-bus router, so lit wires ride a rail inside that gutter into the cards. */
-const DOCK_GAP = 72;
-const CARD_GAP = 28;
+const DOCK_GAP = 88;
+const CARD_GAP = 18;
 const TRAY_PAD_X = 30;
 const TRAY_PAD_BOTTOM = 14;
 /** Room for the tray's title row ("COMMONS · n") above the cards. */
@@ -43,32 +48,32 @@ export function placeCommonsDock(
       : { x: 0, y: 0, width: 0, height: 0 };
   const ordered = [...commons].sort((a, b) => a.id.localeCompare(b.id));
   const sizes = ordered.map(sizeOf);
-  const rowWidth = sizes.reduce((sum, size) => sum + size.width, 0) + CARD_GAP * (ordered.length - 1);
-  const rowHeight = sizes.reduce((max, size) => Math.max(max, size.height), 0);
-  const trayWidth = rowWidth + TRAY_PAD_X * 2;
-  const trayHeight = TRAY_TITLE + rowHeight + TRAY_PAD_BOTTOM;
+  const columnWidth = sizes.reduce((max, size) => Math.max(max, size.width), 0);
+  const columnHeight = sizes.reduce((sum, size) => sum + size.height, 0) + CARD_GAP * (ordered.length - 1);
+  const trayWidth = columnWidth + TRAY_PAD_X * 2;
+  const trayHeight = TRAY_TITLE + columnHeight + TRAY_PAD_BOTTOM;
   const tray: Node = {
     id: COMMONS_DOCK_ID,
     type: COMMONS_DOCK_TYPE,
-    position: { x: box.x + box.width / 2 - trayWidth / 2, y: box.y + box.height + DOCK_GAP },
+    position: { x: box.x + box.width + DOCK_GAP, y: box.y + box.height / 2 - trayHeight / 2 },
     style: { width: trayWidth, height: trayHeight },
     data: { count: ordered.length },
     selectable: false,
     focusable: false,
   };
   // Children are TRAY-RELATIVE (React Flow parentId semantics); the tray comes first in the array.
-  let x = TRAY_PAD_X;
+  let y = TRAY_TITLE;
   const cards = ordered.map((node, index) => {
     const size = sizes[index];
     const placed: Node = {
       id: node.id,
       type: node.kind,
       parentId: COMMONS_DOCK_ID,
-      position: { x, y: TRAY_TITLE },
+      position: { x: TRAY_PAD_X, y },
       style: { width: size.width, height: size.height },
       data: node.data,
     };
-    x += size.width + CARD_GAP;
+    y += size.height + CARD_GAP;
     return placed;
   });
   return [tray, ...cards];
