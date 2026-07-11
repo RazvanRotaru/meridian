@@ -97,13 +97,15 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
 
   it("Map: the semantic ghost '+' pins its home file as a permanent card", async () => {
     const surface = mainCanvasFor(page, CLASS);
-    const promotion = surface.locator('button[aria-label="Pin to canvas"][data-ghost-id*="#"]').first();
+    const promotion = surface.locator('button[aria-label="Pin to canvas"][data-ghost-id*="#"]:visible').first();
     await promotion.waitFor();
     const ghostId = await promotion.getAttribute("data-ghost-id");
     expect(ghostId).toBeTruthy();
     const homeId = ghostId!.split("#", 1)[0];
-    const exactGhost = surface.locator(`.react-flow__node-ghost[data-id="${ghostId}"]`);
-    const promotedHome = surface.locator(`.react-flow__node:not(.react-flow__node-ghost)[data-id="${homeId}"]`);
+    // Semantic ancestors remain deliberately mounted for outward zoom. Assert the active painted
+    // population, not a hidden parent layer which may already contain the same real home card.
+    const exactGhost = surface.locator(`.react-flow__node-ghost[data-id="${ghostId}"]:visible`);
+    const promotedHome = surface.locator(`.react-flow__node:not(.react-flow__node-ghost)[data-id="${homeId}"]:visible`);
     expect(await exactGhost.count()).toBe(1);
     expect(await promotedHome.count()).toBe(0);
 
@@ -127,12 +129,12 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
       await expect.poll(() => mainCanvas.count(), { timeout: 20_000 }).toBe(1);
       // The chevron gesture keeps working on every lens: expanding any collapsed container
       // (a cluster frame on Service, a file card on Map/UI) grows the drawn node set.
-      const mainNodes = mainCanvas.locator(".react-flow__nodes > .react-flow__node");
-      const before = await mainNodes.count();
-      const chevron = mainCanvas.getByLabel("Expand", { exact: true }).first();
+      const visibleMainNodes = mainCanvas.locator(".react-flow__nodes > .react-flow__node:visible");
+      const before = await visibleMainNodes.count();
+      const chevron = mainCanvas.locator('button[aria-label="Expand"]:visible').first();
       expect(await chevron.count(), `a collapsed container to expand on the ${lens} lens`).toBe(1);
       await chevron.dispatchEvent("click");
-      await expect.poll(() => mainNodes.count(), { timeout: 20_000 }).toBeGreaterThan(before);
+      await expect.poll(() => visibleMainNodes.count(), { timeout: 20_000 }).toBeGreaterThan(before);
       await expectMiniMapParity(mainCanvas, lens);
     }
     expect(pageErrors).toEqual([]);

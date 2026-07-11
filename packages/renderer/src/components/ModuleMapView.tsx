@@ -45,12 +45,21 @@ export function ModuleMapView() {
   return (
     <div style={SURFACE_STYLE}>
       {/* Simultaneously mounted ReactFlow instances need isolated stores; otherwise the overlay's
-          nodes and viewport overwrite the source scene it is supposed to reveal. */}
-      <GraphSurfaceProvider>
-        <ModuleSourceSurface covered={minimalOpen} />
-      </GraphSurfaceProvider>
+          nodes and viewport overwrite the source scene it is supposed to reveal. Keep the source
+          visually mounted for the fade handoff, but remove its covered controls from pointer,
+          keyboard, and accessibility navigation while Minimal Graph owns the interaction layer. */}
+      <div
+        data-graph-surface="source"
+        style={SOURCE_SURFACE_LAYER_STYLE}
+        inert={minimalOpen}
+        aria-hidden={minimalOpen || undefined}
+      >
+        <GraphSurfaceProvider>
+          <ModuleSourceSurface covered={minimalOpen} />
+        </GraphSurfaceProvider>
+      </div>
       {minimalOpen ? (
-        <div style={MINIMAL_OVERLAY_STYLE}>
+        <div data-graph-surface="minimal" style={MINIMAL_OVERLAY_STYLE}>
           <div style={REVIEW_SPLIT_STYLE}>
             <div style={REVIEW_GRAPH_STYLE}>
               <GraphSurfaceProvider>
@@ -221,4 +230,5 @@ function miniMapColor(node: Node): string {
 
 const REVIEW_SPLIT_STYLE: React.CSSProperties = { position: "absolute", inset: 0, display: "flex" };
 const REVIEW_GRAPH_STYLE: React.CSSProperties = { position: "relative", flex: 1, minWidth: 0 };
+const SOURCE_SURFACE_LAYER_STYLE: React.CSSProperties = { position: "absolute", inset: 0 };
 const MINIMAL_OVERLAY_STYLE: React.CSSProperties = { position: "absolute", inset: 0, zIndex: 10 };

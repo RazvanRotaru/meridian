@@ -50,7 +50,7 @@ describe("GraphSurface mount semantic-navigation parity", () => {
     const openState = store.getState();
     Object.assign(store, { getInitialState: () => openState });
 
-    renderToStaticMarkup(
+    const markup = renderToStaticMarkup(
       <StoreProvider store={store}>
         <ReactFlowProvider><ModuleMapView /></ReactFlowProvider>
       </StoreProvider>,
@@ -58,6 +58,12 @@ describe("GraphSurface mount semantic-navigation parity", () => {
 
     expect(graphSurfaceMounts).toHaveLength(2);
     graphSurfaceMounts.forEach(expectSemanticNavigationDeclaration);
+    const sourceTag = markup.match(/<div[^>]*data-graph-surface="source"[^>]*>/)?.[0];
+    const minimalTag = markup.match(/<div[^>]*data-graph-surface="minimal"[^>]*>/)?.[0];
+    expect(sourceTag).toContain("inert=\"\"");
+    expect(sourceTag).toContain("aria-hidden=\"true\"");
+    expect(minimalTag).not.toContain("inert");
+    expect(minimalTag).not.toContain("aria-hidden");
   });
 });
 
