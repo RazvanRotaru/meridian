@@ -63,11 +63,13 @@ function Header({ review }: { review: ReviewData }) {
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
   const prReviewed = useBlueprint((state) => state.prReviewed);
+  const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
   const preparing = useBlueprint((state) => state.prReviewStatus === "preparing");
   const canExtract = useBlueprint((state) => state.prReviewed !== null && state.prPreparedGraphId === null && state.analyzeUrl !== null);
   const { resetReviewTicks, toggleReviewPanel, prepareHeadGraph } = useBlueprintActions();
   const viewed = countViewedFiles(files, unitTicks, fileTicks);
   const total = files.length;
+  const addedUnmatched = files.filter((file) => file.status === "added" && file.moduleId === null).length;
   const ctx = review.context;
   return (
     <div style={HEADER}>
@@ -99,6 +101,9 @@ function Header({ review }: { review: ReviewData }) {
           <span style={REF_ARROW}>vs</span>
           <span style={REF_BASE}>{ctx.baseRef ?? "explicit files"}</span>
         </div>
+      )}
+      {prReviewed !== null && !preparedArtifactCurrent && addedUnmatched > 0 && (
+        <div style={ADDED_FILES_NOTE}>{addedUnmatched} added files aren't in the base graph — Extract head graph to review them</div>
       )}
       {prReviewed !== null && <ExtractFailedWarning />}
       {total > 0 && (
@@ -199,6 +204,7 @@ const PROVENANCE: React.CSSProperties = { fontFamily: MONO, fontSize: 11, whiteS
 const REF_BRANCH: React.CSSProperties = { color: "#6BE38A" };
 const REF_ARROW: React.CSSProperties = { color: "#5A6472" };
 const REF_BASE: React.CSSProperties = { color: "#9AA4B2" };
+const ADDED_FILES_NOTE: React.CSSProperties = { fontSize: 11, color: "#7D8695" };
 const PROGRESS_ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
 const PROGRESS_TRACK: React.CSSProperties = { flex: 1, height: 5, background: "#1B212A", borderRadius: 3, overflow: "hidden" };
 const PROGRESS_FILL: React.CSSProperties = { height: "100%", background: "#3FB950", transition: "width 160ms ease" };

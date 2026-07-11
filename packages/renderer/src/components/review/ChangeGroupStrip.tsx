@@ -28,12 +28,14 @@ export function useActiveChangeGroup(): ChangeGroup | null {
 function ChangeGroupStripImpl() {
   const reviewGroups = useBlueprint((state) => state.reviewGroups);
   const activeGroupId = useBlueprint((state) => state.reviewActiveGroupId);
+  const allFiles = useBlueprint((state) => state.reviewFiles);
   const totalFlows = useBlueprint((state) => state.review?.rows.length ?? 0);
   const { selectReviewGroup } = useBlueprintActions();
   if (!reviewGroups || reviewGroups.groups.length <= 1) {
     return null;
   }
-  const totalFiles = reviewGroups.groups.reduce((sum, group) => sum + group.files.length, 0);
+  const groupedFiles = reviewGroups.groups.reduce((sum, group) => sum + group.files.length, 0);
+  const totalFiles = allFiles.length;
   return (
     <section style={STRIP}>
       <div style={STRIP_HEAD}>
@@ -44,7 +46,7 @@ function ChangeGroupStripImpl() {
       <button type="button" aria-pressed={activeGroupId === null} style={activeGroupId === null ? ROW_SELECTED : ROW} onClick={() => selectReviewGroup(null)}>
         <span style={ALL_DOT} />
         <span style={ROW_LABEL}>All groups</span>
-        <span style={ROW_META}>{totalFiles} files · {totalFlows} flows</span>
+        <span style={ROW_META}>{groupedFiles < totalFiles ? `${groupedFiles} of ${totalFiles} files · ${totalFlows} flows` : `${groupedFiles} files · ${totalFlows} flows`}</span>
       </button>
       {reviewGroups.groups.map((group, index) => {
         const selected = activeGroupId === group.id;

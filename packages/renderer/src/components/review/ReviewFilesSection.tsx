@@ -86,13 +86,16 @@ function ReviewFilesSectionImpl() {
     return null;
   }
   const viewed = files.filter((file) => fileViewState(file, unitTicks, fileTicks) === "done").length;
+  const unmatchedCount = allFiles.filter((file) => file.moduleId === null).length;
   return (
     <section>
       <div style={{ ...SECTION_HEAD, boxSizing: "border-box", cursor: "default" }}>
         <button type="button" style={SECTION_TOGGLE} onClick={() => setOpen((value) => !value)}>
           <span style={CARET}>{open ? "▾" : "▸"}</span>
           <span style={SECTION_TITLE}>Files changed</span>
-          <span style={SECTION_COUNT}>{viewed}/{files.length} viewed</span>
+          <span style={SECTION_COUNT} title={unmatchedCount > 0 ? "the graph shows the base branch, added files join it after Extract head graph." : undefined}>
+            {unmatchedCount > 0 ? `${allFiles.length} files · ${unmatchedCount} not in this graph` : `${viewed}/${files.length} viewed`}
+          </span>
         </button>
         <div style={SORT_TOGGLE} role="group" aria-label="Sort changed files">
           <button type="button" style={sortButtonStyle(sort === "path")} aria-pressed={sort === "path"} onClick={() => setReviewFilesSort("path")}>
@@ -134,6 +137,7 @@ function FileRow(props: {
 }) {
   const { file, unitTicks, fileTicks, drafts, draftCounts, githubComments, composer, onComposer } = props;
   const currentNodes = useBlueprint((state) => state.index.nodesById);
+  const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
   const { toggleReviewFileViewed, addReviewComment, setReviewLit, focusReviewFile, selectReviewNode } = useBlueprintActions();
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
   const [hovered, setHovered] = useState(false);
@@ -198,7 +202,11 @@ function FileRow(props: {
             </span>
           )}
           {file.moduleId === null && file.deletedImpact === null && (
-            <span style={NOT_IN_GRAPH} title="this change mapped to no extracted code block">not in graph</span>
+            file.status === "added" && !preparedArtifactCurrent ? (
+              <span style={NOT_IN_GRAPH} title="This file is new in the PR. Extract head graph to include it.">added — extract head to view</span>
+            ) : (
+              <span style={NOT_IN_GRAPH} title="this change mapped to no extracted code block">not in graph</span>
+            )
           )}
         </button>
         <CommentButton
