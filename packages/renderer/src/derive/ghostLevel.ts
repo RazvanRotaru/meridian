@@ -69,6 +69,8 @@ export function finishGhostTier(emission: GhostEmission, index: GraphIndex, hidd
     target: wire.target,
     weight: wire.weight,
     crossFrame: false,
+    crossPackage: wire.crossPackage,
+    outsideView: true,
     category: "dep",
     depKind: wire.kind,
     ghost: true,

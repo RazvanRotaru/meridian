@@ -22,9 +22,12 @@ export function CycleEdge({ id, sourceX, sourceY, targetX, targetY, sourcePositi
   const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
   const width = (style?.strokeWidth as number) ?? 1.5;
   const opacity = (style?.opacity as number) ?? 1;
+  const dash = style?.strokeDasharray;
   return (
     <>
-      <path d={path} fill="none" stroke={TENSION} strokeWidth={width + 4} strokeOpacity={0.28 * opacity} strokeLinecap="round" pointerEvents="none" />
+      {/* Keep the tension halo's gaps phase-aligned with a semantic boundary dash; a solid halo
+          underneath a dashed main stroke would visually fill the gaps and make the cycle read solid. */}
+      <path d={path} fill="none" stroke={TENSION} strokeWidth={width + 4} strokeOpacity={0.28 * opacity} strokeDasharray={dash} strokeLinecap="round" pointerEvents="none" />
       <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} markerStart={markerStart} interactionWidth={14} />
       <WireLabel x={labelX} y={labelY} text={cycleLabelText(cycle)} style={style} data={data} color={TENSION} />
     </>

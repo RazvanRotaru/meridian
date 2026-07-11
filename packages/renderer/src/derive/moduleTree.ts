@@ -29,6 +29,7 @@ import { demoteCommons } from "./commonsDemotion";
 import { finalizeModuleNode, foldById, importEdges, importTreeEdges } from "./moduleTreeData";
 import { ipcTreeEdges } from "./moduleIpc";
 import type { ModuleTree, ModuleTreeEdge } from "./moduleTreeTypes";
+import { underlyingEdgesCrossPackage } from "./packageBoundary";
 export type { ModuleGroupData, ModuleTree, ModuleTreeEdge, VisibleModuleNode } from "./moduleTreeTypes";
 
 const MODULE_KIND = "module";
@@ -80,7 +81,7 @@ export function deriveModuleTree(
   const ghosts = ghostLevel(blockDeps, walked, visibleIds, index, kinds, hiddenIds);
   const isDepAnchor = (id: string) => isDepAnchorKind(kinds.get(id));
   const edges = [
-    ...importTreeEdges(lifted, kinds, graph),
+    ...importTreeEdges(lifted, kinds, graph, index),
     // Code-level dep wires: anchored to file/unit/block cards (the detailed intra-package view).
     ...depWireEdges(blockDeps, visibleIds, index, isDepAnchor, walked.expandedBlocks),
     // Package-level dep wires: typed relationships (calls/extends/etc.) LIFTED to packages so the
@@ -139,7 +140,9 @@ function packageDepEdges(
     source: e.source,
     target: e.target,
     weight: e.weight,
-    crossFrame: true, // always cross-package at this level
+    crossFrame: true, // always crosses drawn group cards at this level; package ownership is separate
+    crossPackage: underlyingEdgesCrossPackage(e.underlyingEdgeIds, index),
+    outsideView: false,
     category: "dep" as const,
     depKind: e.kind,
     underlyingEdgeIds: e.underlyingEdgeIds,

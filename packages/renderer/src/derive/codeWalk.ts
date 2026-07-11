@@ -10,6 +10,7 @@ import type { GraphIndex } from "../graph/graphIndex";
 import { BLOCK_KINDS, constructionTarget, liftDepEdges, UNIT_CARD_KINDS, type BlockDeps } from "./blockDeps";
 import { emitFlowSteps, type StepData } from "./flowSteps";
 import { nearestVisible } from "./ghostDeps";
+import { crossesPackageBoundary, underlyingEdgesCrossPackage } from "./packageBoundary";
 
 const MODULE_KIND = "module";
 
@@ -132,7 +133,7 @@ function visitBlock(id: string, parentId: string | null, depth: number, ctx: Cod
     });
   });
   walk.chains.push(...emission.chain);
-  emission.calls.forEach((call) => walk.calls.push({ stepId: call.stepId, blockId: id, target: call.target }));
+  walk.calls.push(...emission.calls);
 }
 
 /** Code-dependency wires projected onto the frontier — derived only when a code node (a unit frame
@@ -156,6 +157,8 @@ export function depWireEdges(
       target: edge.target,
       weight: edge.weight,
       crossFrame: false,
+      crossPackage: underlyingEdgesCrossPackage(edge.underlyingEdgeIds, index),
+      outsideView: false,
       category: "dep" as const,
       depKind: edge.kind,
       underlyingEdgeIds: edge.underlyingEdgeIds,
@@ -170,6 +173,8 @@ export function flowChainEdges(walk: CodeWalk) {
     target: chain.target,
     weight: 1,
     crossFrame: false,
+    crossPackage: false,
+    outsideView: false,
     category: "flow" as const,
   }));
 }
@@ -190,6 +195,8 @@ export function stepCallEdges(walk: CodeWalk, visibleIds: ReadonlySet<string>, i
       target,
       weight: 1,
       crossFrame: false,
+      crossPackage: crossesPackageBoundary(call.blockId, call.target, index),
+      outsideView: false,
       category: "dep" as const,
     });
   }

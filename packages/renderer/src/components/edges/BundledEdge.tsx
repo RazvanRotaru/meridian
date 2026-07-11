@@ -3,7 +3,7 @@
  *
  * Renders a thick smooth bezier curve whose width encodes the number of constituent relationships.
  * On hover, a tooltip shows the breakdown (e.g. "5 calls · 2 extends"). The edge uses the dominant
- * relationship colour and dashes when crossing a package boundary.
+ * relationship colour and dashes when any constituent leaves the view or its npm package.
  */
 
 import { type EdgeProps, getBezierPath } from "@xyflow/react";

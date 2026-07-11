@@ -26,6 +26,7 @@ import { ghostData, type GhostEmission, type GhostWire } from "./ghostDeps";
 import { EMPTY_GHOST_TIER, finishGhostTier, rawGhostEmission, type GhostTier } from "./ghostLevel";
 import { frameIdOf, leadIdOf } from "./serviceClusterEdges";
 import type { ServiceClustering } from "./serviceComposition";
+import { crossesPackageBoundary } from "./packageBoundary";
 
 const EMPTY_EMISSION: GhostEmission = { ghosts: new Map(), wires: [] };
 /** The wire kind cluster-level coupling ghosts ride through the shared pipeline: it keys their
@@ -177,14 +178,16 @@ function clusterGhostEmission(full: ServiceClustering, drawnLeads: ReadonlySet<s
     ghosts.set(ghostLead, ghostData(ghostNode));
     const [source, target] = sourceDrawn ? [anchor, ghostLead] : [ghostLead, anchor];
     const key = `${source} ${target}`;
+    const crossPackage = crossesPackageBoundary(edge.source, edge.target, index);
     const existing = byPair.get(key);
     if (existing) {
       existing.weight += 1;
+      existing.crossPackage ||= crossPackage;
     } else {
       // Cluster couplings are pair-level aggregates (design-metrics' CouplingEdge unions kinds
       // without keeping artifact edge ids), so this tier has no per-site trail — the Wire
       // Inspector shows the wire's section header alone, like flow/IPC wires.
-      byPair.set(key, { source, target, weight: 1, kind: COUPLE_KIND, underlyingEdgeIds: [] });
+      byPair.set(key, { source, target, weight: 1, kind: COUPLE_KIND, crossPackage, underlyingEdgeIds: [] });
     }
   }
   return { ghosts, wires: [...byPair.values()] };

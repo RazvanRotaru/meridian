@@ -33,6 +33,11 @@ export interface ModuleTreeEdge {
   target: string;
   weight: number;
   crossFrame: boolean;
+  /** True when any ORIGINAL artifact relationship behind this drawn wire crosses an npm-package,
+   * linked-system, or external boundary. Never inferred from the lifted/drawn boxes. */
+  crossPackage: boolean;
+  /** True when this wire terminates at context materialized from outside the current drawn view. */
+  outsideView: boolean;
   category: "import" | "dep" | "flow" | "ipc";
   /** For `dep` wires: the underlying coupling kind (calls / instantiates / extends / implements /
    * references), so the paint layer colours per relationship type and the toggles filter by it. */

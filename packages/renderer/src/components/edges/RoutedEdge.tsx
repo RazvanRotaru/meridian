@@ -1,6 +1,6 @@
 /**
  * RoutedEdge — draws the gutter-bus path computed by layout/edgeRouting.ts verbatim. All styling
- * (weight-scaled width, relationship colour, emphasis opacity, cross-frame dash) arrives on the
+ * (weight-scaled width, relationship colour, emphasis opacity, semantic boundary dash) arrives on the
  * edge's style exactly like a default edge; only the GEOMETRY is custom.
  */
 

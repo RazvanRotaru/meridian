@@ -18,6 +18,9 @@ import type { PlacedRect } from "./minimalPlacement";
 function pkg(id: string, name: string, parentId: string | null): GraphNode {
   return { id, kind: "package", qualifiedName: id, displayName: name, parentId, location: { file: name, startLine: 1 } } as GraphNode;
 }
+function npmPkg(id: string, name: string, parentId: string | null): GraphNode {
+  return { ...pkg(id, name, parentId), tags: ["npm-package"] } as GraphNode;
+}
 function mod(id: string, file: string, parentId: string | null): GraphNode {
   return { id, kind: "module", qualifiedName: id, displayName: id, parentId, location: { file, startLine: 1 } } as GraphNode;
 }
@@ -30,7 +33,7 @@ function importEdge(source: string, target: string): GraphEdge {
 
 // a.ts declares foo()/bar() (so its card is an expandable, class-heavy frame) and imports b.ts.
 const NODES = [
-  pkg("p:root", "root", null),
+  npmPkg("p:root", "root", null),
   pkg("p:src", "src", "p:root"),
   mod("m:a", "src/a.ts", "p:src"),
   mod("m:b", "src/b.ts", "p:src"),
@@ -53,11 +56,44 @@ function specFor(expanded: string[]) {
 function couplingSpec() {
   const nodes = [...NODES, fn("fn:baz", "baz", "m:b")];
   const calls = { id: "calls:fn:foo->fn:baz", source: "fn:foo", target: "fn:baz", kind: "calls", resolution: "resolved" } as GraphEdge;
-  const index = buildGraphIndex({ nodes, edges: EDGES } as unknown as GraphArtifact);
+  const index = buildGraphIndex({ nodes, edges: [...EDGES, calls] } as unknown as GraphArtifact);
   const graph = buildModuleGraph(index);
   return buildMinimalSubgraph(index, graph, new Set(["m:a", "m:b"]), new Set(["m:a"]), {
     expanded: new Set(),
     blockDeps: { edges: [calls] },
+    flows: {},
+  });
+}
+
+// Two package.json-backed member files. With both members present the import is an on-view package
+// crossing; with only the source present, its call charts the target as an always-visible satellite.
+const CROSS_PACKAGE_NODES = [
+  pkg("p:workspace", "workspace", null),
+  npmPkg("p:left", "left", "p:workspace"),
+  mod("m:left", "left/a.ts", "p:left"),
+  fn("fn:left", "left", "m:left"),
+  npmPkg("p:right", "right", "p:workspace"),
+  mod("m:right", "right/b.ts", "p:right"),
+  fn("fn:right", "right", "m:right"),
+];
+const CROSS_PACKAGE_IMPORT = importEdge("m:left", "m:right");
+const CROSS_PACKAGE_CALL = {
+  id: "calls:fn:left->fn:right",
+  source: "fn:left",
+  target: "fn:right",
+  kind: "calls",
+  resolution: "resolved",
+} as GraphEdge;
+
+function crossPackageSpec(includeTarget: boolean) {
+  const index = buildGraphIndex({
+    nodes: CROSS_PACKAGE_NODES,
+    edges: [CROSS_PACKAGE_IMPORT, CROSS_PACKAGE_CALL],
+  } as unknown as GraphArtifact);
+  const members = new Set(includeTarget ? ["m:left", "m:right"] : ["m:left"]);
+  return buildMinimalSubgraph(index, buildModuleGraph(index), members, members, {
+    expanded: new Set(),
+    blockDeps: { edges: [CROSS_PACKAGE_CALL] },
     flows: {},
   });
 }
@@ -105,7 +141,56 @@ describe("layoutMinimalSubgraph", () => {
     };
     const { edges } = await layoutMinimalSubgraph(couplingSpec(), base);
     const dep = edges.find((edge) => edge.id === "dep:calls:m:a->m:b");
-    expect(dep?.data).toEqual({ weight: 1, crossFrame: false, category: "dep", depKind: "calls", ghost: false });
+    expect(dep?.data).toEqual({
+      weight: 1,
+      crossFrame: false,
+      crossPackage: false,
+      outsideView: false,
+      category: "dep",
+      depKind: "calls",
+      ghost: false,
+      underlyingEdgeIds: ["calls:fn:foo->fn:baz"],
+    });
     expect(dep?.style).toBeUndefined();
+  });
+
+  it("propagates true package ownership independently from the drawn-frame colour cue", async () => {
+    const base: Record<string, PlacedRect> = {
+      "m:left": { x: 0, y: 0, width: 210, height: 54 },
+      "m:right": { x: 400, y: 0, width: 210, height: 54 },
+    };
+    const { edges } = await layoutMinimalSubgraph(crossPackageSpec(true), base);
+    const importWire = edges.find((edge) => edge.id === "min:m:left->m:right");
+    expect(importWire?.data).toMatchObject({
+      crossFrame: true,
+      crossPackage: true,
+      outsideView: false,
+      ghost: false,
+      underlyingEdgeIds: [CROSS_PACKAGE_IMPORT.id],
+    });
+    const depWire = edges.find((edge) => edge.id === "dep:calls:m:left->m:right");
+    expect(depWire?.data).toMatchObject({
+      crossFrame: false,
+      crossPackage: true,
+      outsideView: false,
+      ghost: false,
+      underlyingEdgeIds: [CROSS_PACKAGE_CALL.id],
+    });
+  });
+
+  it("keeps satellite outsideView semantics through the deliberate ghost:false RF rewrite", async () => {
+    const base: Record<string, PlacedRect> = {
+      "m:left": { x: 0, y: 0, width: 210, height: 54 },
+    };
+    const { nodes, edges } = await layoutMinimalSubgraph(crossPackageSpec(false), base);
+    expect(nodes.some((node) => node.id === "fn:right" && node.type === "ghost")).toBe(true);
+    const ghostWire = edges.find((edge) => edge.id === "gdep:calls:m:left->fn:right");
+    expect(ghostWire?.data).toMatchObject({
+      crossFrame: false,
+      crossPackage: true,
+      outsideView: true,
+      ghost: false,
+      underlyingEdgeIds: [CROSS_PACKAGE_CALL.id],
+    });
   });
 });

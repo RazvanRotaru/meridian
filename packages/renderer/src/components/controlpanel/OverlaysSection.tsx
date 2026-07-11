@@ -77,7 +77,7 @@ export function OverlaysSection() {
           active={showHighways}
           accent={HIGHWAYS_HUE}
           indicator="square"
-          title={showHighways ? "Highways on: cross-package edges merge into bundles (select a node to read its own links)" : "Highways off: draw every edge individually"}
+          title={showHighways ? "Highways on: cross-container edges merge into bundles (select a node to read its own links)" : "Highways off: draw every edge individually"}
           onClick={toggleHighways}
         >
           Highways

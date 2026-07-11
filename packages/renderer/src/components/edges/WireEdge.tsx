@@ -6,7 +6,7 @@
  * geometry and width; it moves at CONSTANT pixels-per-second (duration derives from the measured
  * path length — a fixed duration made long wires look "faster" for no reason). Motion is the one
  * direction encoding that survives density — arrowheads vanish under overlap, and animating the
- * wire's own dashes would corrupt the dash vocabulary (dash = crosses a package boundary). Streaks
+ * wire's own dashes would corrupt the dash vocabulary (dash = outside-view or cross-package). Streaks
  * require BOTH a lit wire (opacity 1 — a selection's strands) AND the surface's `data.pulse`
  * opt-in (the Map sets it; the minimal overlay — where most wires are lit at rest by construction
  * — does not), so the canvas stays calm and only a deliberate selection pays the frame budget.

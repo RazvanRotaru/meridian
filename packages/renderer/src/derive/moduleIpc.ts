@@ -11,6 +11,7 @@ import type { GraphEdge } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import { liftEdges } from "./liftEdges";
 import type { ModuleTreeEdge } from "./moduleTreeTypes";
+import { graphEdgeCrossesPackage } from "./packageBoundary";
 
 /** Sender→handler edges (real function ids) for every channel, deduped per ordered pair. */
 export function buildIpcEdges(edges: GraphEdge[]): GraphEdge[] {
@@ -44,13 +45,20 @@ export function buildIpcEdges(edges: GraphEdge[]): GraphEdge[] {
 
 /** IPC wires folded onto the visible frontier, as level edges — magenta, never gold or ghost. */
 export function ipcTreeEdges(index: GraphIndex, visibleIds: ReadonlySet<string>): ModuleTreeEdge[] {
-  const lifted = liftEdges(buildIpcEdges(index.edges), visibleIds, index.parentOf);
+  const raw = buildIpcEdges(index.edges);
+  const rawById = new Map(raw.map((edge) => [edge.id, edge]));
+  const lifted = liftEdges(raw, visibleIds, index.parentOf);
   return lifted.map((edge) => ({
     id: `ipc:${edge.source}->${edge.target}`,
     source: edge.source,
     target: edge.target,
     weight: edge.weight,
     crossFrame: false,
+    crossPackage: edge.underlyingEdgeIds.some((id) => {
+      const rawEdge = rawById.get(id);
+      return rawEdge !== undefined && graphEdgeCrossesPackage(rawEdge, index);
+    }),
+    outsideView: false,
     category: "ipc" as const,
   }));
 }

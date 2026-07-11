@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import type { Edge, Node } from "@xyflow/react";
 import { paintMinimalLevel } from "./paintMinimal";
 import { IMPORT_CROSS, IMPORT_SIBLING, REL_COLORS } from "../theme/mapPalette";
+import { BOUNDARY_DASH_PATTERN, type EdgeBoundaryData } from "../layout/edgeBoundary";
 
 const NO_SELECTION: ReadonlySet<string> = new Set();
 // emphasize's lit stroke width (not exported); pinned so the tests catch a silent rest-state fallback.
@@ -24,12 +25,22 @@ function unitNode(id: string, parentId: string): Node {
   return { id, type: "unit", parentId, position: { x: 0, y: 0 }, data: { unitKind: "function" } } as Node;
 }
 
-function depEdge(source: string, target: string, depKind?: string): Edge {
-  return { id: `dep:${depKind ?? "step"}:${source}->${target}`, source, target, data: { weight: 1, crossFrame: false, category: "dep", ghost: false, ...(depKind ? { depKind } : {}) } } as Edge;
+function depEdge(source: string, target: string, depKind?: string, boundary: EdgeBoundaryData = {}): Edge {
+  return {
+    id: `dep:${depKind ?? "step"}:${source}->${target}`,
+    source,
+    target,
+    data: { weight: 1, crossFrame: false, crossPackage: false, outsideView: false, category: "dep", ghost: false, ...(depKind ? { depKind } : {}), ...boundary },
+  } as Edge;
 }
 
-function importEdge(source: string, target: string, crossFrame: boolean): Edge {
-  return { id: `imp:${source}->${target}`, source, target, data: { weight: 1, crossFrame, category: "import", ghost: false } } as Edge;
+function importEdge(source: string, target: string, crossFrame: boolean, boundary: EdgeBoundaryData = {}): Edge {
+  return {
+    id: `imp:${source}->${target}`,
+    source,
+    target,
+    data: { weight: 1, crossFrame, crossPackage: false, outsideView: false, category: "import", ghost: false, ...boundary },
+  } as Edge;
 }
 
 function paint(nodes: Node[], edges: Edge[]): { nodes: Node[]; edges: Edge[] } {
@@ -52,6 +63,20 @@ describe("paintMinimalLevel — relationship colours match the Map", () => {
     const { edges } = paint(TWO_FILES, wires);
     expect(edges.find((edge) => edge.id === wires[0].id)?.style?.stroke).toBe(IMPORT_CROSS);
     expect(edges.find((edge) => edge.id === wires[1].id)?.style?.stroke).toBe(IMPORT_SIBLING);
+  });
+
+  it("dashes iff the wire is outside-view or cross-package; crossFrame remains colour-only", () => {
+    const crossFrameOnly = { ...importEdge("ts:a.ts", "ts:b.ts", true), style: { strokeDasharray: "1 1" } };
+    const crossPackage = depEdge("ts:a.ts", "ts:b.ts", "calls", { crossPackage: true });
+    const outsideView = depEdge("ts:b.ts", "ts:a.ts", "references", { outsideView: true });
+    // Paint separately: a typed dep intentionally suppresses a redundant same-pair import upstream.
+    const [paintedCrossFrame] = paint(TWO_FILES, [crossFrameOnly]).edges;
+    const { edges } = paint(TWO_FILES, [crossPackage, outsideView]);
+
+    expect(paintedCrossFrame.style?.stroke).toBe(IMPORT_CROSS);
+    expect(paintedCrossFrame.style?.strokeDasharray).toBeUndefined();
+    expect(edges.find((edge) => edge.id === crossPackage.id)?.style?.strokeDasharray).toBe(BOUNDARY_DASH_PATTERN);
+    expect(edges.find((edge) => edge.id === outsideView.id)?.style?.strokeDasharray).toBe(BOUNDARY_DASH_PATTERN);
   });
 });
 
@@ -98,4 +123,3 @@ describe("paintMinimalLevel — nested declarations join the Map's emphasis, not
     expect(painted.nodes.map((node) => node.id)).toEqual([frame.id, foo.id, bar.id]);
   });
 });
-

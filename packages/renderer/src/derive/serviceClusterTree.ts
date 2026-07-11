@@ -72,7 +72,7 @@ export function deriveServiceTree(
   const drawnLeads = new Set(clustering.clusters.map((cluster) => cluster.leadId));
   const ghosts = serviceGhostTier(full, drawnLeads, blockDeps, walk, visibleIds, index, kinds, options.hiddenIds ?? EMPTY_IDS);
   const edges = [
-    ...clusterCouplingEdges(clustering.couplings, clustering.leadOf, visibleIds),
+    ...clusterCouplingEdges(clustering.couplings, clustering.leadOf, visibleIds, index),
     ...depWireEdges(blockDeps, visibleIds, index, isCode, walk.expandedBlocks),
     ...flowChainEdges(walk),
     ...stepCallEdges(walk, visibleIds, index),

@@ -2,6 +2,7 @@ import type { GraphIndex } from "../graph/graphIndex";
 import type { ModuleTreeEdge } from "./moduleTree";
 import { clusteringFor } from "./serviceClusteringCache";
 import type { ServiceCluster, ServiceClustering } from "./serviceComposition";
+import { crossesPackageBoundary } from "./packageBoundary";
 
 type Couplings = ServiceClustering["couplings"];
 
@@ -10,7 +11,12 @@ export interface ClusterDegrees {
   ce: Map<string, Set<string>>;
 }
 
-export function clusterCouplingEdges(couplings: Couplings, leadOf: Map<string, string>, visibleIds: ReadonlySet<string>): ModuleTreeEdge[] {
+export function clusterCouplingEdges(
+  couplings: Couplings,
+  leadOf: Map<string, string>,
+  visibleIds: ReadonlySet<string>,
+  index: GraphIndex,
+): ModuleTreeEdge[] {
   const byPair = new Map<string, ModuleTreeEdge>();
   for (const edge of couplings) {
     const source = representative(edge.source, leadOf, visibleIds);
@@ -20,12 +26,23 @@ export function clusterCouplingEdges(couplings: Couplings, leadOf: Map<string, s
     }
     const key = `${source}->${target}`;
     const crossFrame = leadOf.get(edge.source) !== leadOf.get(edge.target);
+    const crossPackage = crossesPackageBoundary(edge.source, edge.target, index);
     const existing = byPair.get(key);
     if (existing) {
       existing.weight += 1;
       existing.crossFrame = existing.crossFrame || crossFrame;
+      existing.crossPackage ||= crossPackage;
     } else {
-      byPair.set(key, { id: `dep:${key}`, source, target, weight: 1, crossFrame, category: "dep" });
+      byPair.set(key, {
+        id: `dep:${key}`,
+        source,
+        target,
+        weight: 1,
+        crossFrame,
+        crossPackage,
+        outsideView: false,
+        category: "dep",
+      });
     }
   }
   return [...byPair.values()];

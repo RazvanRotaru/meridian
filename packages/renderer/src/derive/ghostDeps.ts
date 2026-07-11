@@ -11,6 +11,7 @@
 import type { GraphNode } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import { UNIT_CARD_KINDS, type BlockDeps } from "./blockDeps";
+import { crossesPackageBoundary, graphEdgeCrossesPackage } from "./packageBoundary";
 
 /** What a ghost card shows: the symbol's qualified name, its home file, and its kind (glyph tint).
  * A type alias (not an interface) so it satisfies React Flow's Record-typed node-data constraint. */
@@ -35,6 +36,8 @@ export interface GhostWire {
   target: string;
   weight: number;
   kind: string;
+  /** True when any original dependency behind the ghost wire crosses package ownership. */
+  crossPackage: boolean;
   /** The artifact edge ids behind this wire (empty for step-call ghosts — steps have no edge id). */
   underlyingEdgeIds: string[];
 }
@@ -54,7 +57,7 @@ export interface GhostEmission {
  */
 export function ghostDepWires(
   blockDeps: BlockDeps,
-  calls: ReadonlyArray<{ stepId: string; target: string }>,
+  calls: ReadonlyArray<{ stepId: string; blockId: string; target: string }>,
   visibleIds: ReadonlySet<string>,
   index: GraphIndex,
   isCode: (id: string) => boolean,
@@ -62,7 +65,15 @@ export function ghostDepWires(
 ): GhostEmission {
   const ghosts = new Map<string, GhostData>();
   const byPair = new Map<string, GhostWire>();
-  const add = (source: string, target: string, ghostId: string, weight: number, kind: string, edgeId: string | null): void => {
+  const add = (
+    source: string,
+    target: string,
+    ghostId: string,
+    weight: number,
+    kind: string,
+    edgeId: string | null,
+    crossPackage: boolean,
+  ): void => {
     const node = index.nodesById.get(ghostId);
     if (!node) {
       return; // ext:/unresolved: pseudo-ids have no definition to chart.
@@ -72,11 +83,12 @@ export function ghostDepWires(
     const existing = byPair.get(key);
     if (existing) {
       existing.weight += weight;
+      existing.crossPackage ||= crossPackage;
       if (edgeId !== null) {
         existing.underlyingEdgeIds.push(edgeId);
       }
     } else {
-      byPair.set(key, { source, target, weight, kind, underlyingEdgeIds: edgeId === null ? [] : [edgeId] });
+      byPair.set(key, { source, target, weight, kind, crossPackage, underlyingEdgeIds: edgeId === null ? [] : [edgeId] });
     }
   };
   for (const edge of blockDeps.edges) {
@@ -85,18 +97,18 @@ export function ghostDepWires(
     const weight = edge.weight ?? 1;
     if (sourceVisible !== null && targetVisible === null && isCode(sourceVisible) && !expandedBlocks.has(sourceVisible)) {
       const anchor = serviceAnchor(edge.target, index);
-      add(sourceVisible, anchor, anchor, weight, edge.kind, edge.id);
+      add(sourceVisible, anchor, anchor, weight, edge.kind, edge.id, graphEdgeCrossesPackage(edge, index));
     }
     if (targetVisible !== null && sourceVisible === null && isCode(targetVisible)) {
       const anchor = serviceAnchor(edge.source, index);
-      add(anchor, targetVisible, anchor, weight, edge.kind, edge.id);
+      add(anchor, targetVisible, anchor, weight, edge.kind, edge.id, graphEdgeCrossesPackage(edge, index));
     }
   }
   // Step-call targets arrive already resolved (constructions point at the constructor block).
   for (const call of calls) {
     if (nearestVisible(call.target, visibleIds, index) === null) {
       const anchor = serviceAnchor(call.target, index);
-      add(call.stepId, anchor, anchor, 1, "calls", null);
+      add(call.stepId, anchor, anchor, 1, "calls", null, crossesPackageBoundary(call.blockId, call.target, index));
     }
   }
   return { ghosts, wires: [...byPair.values()] };

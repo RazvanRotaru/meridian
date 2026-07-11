@@ -76,7 +76,19 @@ function ghostSatellites(spec: MinimalSubgraphSpec, coreNodes: Node[]): Node[] {
   }
   const wires: ModuleTreeEdge[] = spec.edges
     .filter((edge) => edge.ghost === true)
-    .map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, weight: edge.weight, crossFrame: false, category: "dep" as const, depKind: edge.depKind, ghost: true }));
+    .map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      weight: edge.weight,
+      crossFrame: edge.crossFrame,
+      crossPackage: edge.crossPackage,
+      outsideView: edge.outsideView,
+      category: "dep" as const,
+      depKind: edge.depKind,
+      ghost: true,
+      underlyingEdgeIds: edge.underlyingEdgeIds,
+    }));
   return placeGhostBands(ghosts, wires, coreNodes);
 }
 
@@ -209,13 +221,32 @@ function toRfEdge(edge: MinimalSubgraphEdge): Edge {
       id: edge.id,
       source: edge.source,
       target: edge.target,
-      data: { weight: edge.weight, crossFrame: false, category: "dep", depKind: edge.depKind, ghost: false },
+      data: {
+        weight: edge.weight,
+        crossFrame: edge.crossFrame,
+        crossPackage: edge.crossPackage,
+        outsideView: edge.outsideView,
+        category: "dep",
+        depKind: edge.depKind,
+        // Satellites stay visible at rest on the overlay, but `outsideView` remains the independent
+        // dash semantic. `ghost:false` is only the shared paint chain's pruning policy switch.
+        ghost: false,
+        underlyingEdgeIds: edge.underlyingEdgeIds,
+      },
     };
   }
   return {
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    data: { weight: edge.weight, crossFrame: edge.crossPackage ?? false, category: "import", ghost: false },
+    data: {
+      weight: edge.weight,
+      crossFrame: edge.crossFrame,
+      crossPackage: edge.crossPackage,
+      outsideView: edge.outsideView,
+      category: "import",
+      ghost: false,
+      underlyingEdgeIds: edge.underlyingEdgeIds,
+    },
   };
 }

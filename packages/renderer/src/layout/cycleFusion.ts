@@ -12,6 +12,7 @@
  */
 
 import type { Edge } from "@xyflow/react";
+import { withBoundaryDash } from "./edgeBoundary";
 
 export const CYCLE_EDGE_TYPE = "cycle";
 
@@ -22,6 +23,8 @@ export interface CycleEdgeData extends Record<string, unknown> {
   /** Summed weights per direction, for the tooltip/chip (`⇄ calls ×5/×2`). */
   forwardWeight: number;
   backwardWeight: number;
+  crossPackage: boolean;
+  outsideView: boolean;
   pulse?: boolean;
   hidden?: boolean;
 }
@@ -57,21 +60,38 @@ export function fuseCycles(edges: Edge[]): Edge[] {
 
 /** One fused cycle wire: forward's geometry, both directions' evidence, the brighter emphasis. */
 function fuse(forward: Edge, backward: Edge): Edge {
-  const forwardData = (forward.data ?? {}) as { depKind?: string; weight?: number; underlyingEdgeIds?: string[]; crossFrame?: boolean };
-  const backwardData = (backward.data ?? {}) as { weight?: number; underlyingEdgeIds?: string[] };
+  const forwardData = (forward.data ?? {}) as {
+    depKind?: string;
+    weight?: number;
+    underlyingEdgeIds?: string[];
+    crossFrame?: boolean;
+    crossPackage?: boolean;
+    outsideView?: boolean;
+  };
+  const backwardData = (backward.data ?? {}) as {
+    weight?: number;
+    underlyingEdgeIds?: string[];
+    crossPackage?: boolean;
+    outsideView?: boolean;
+  };
   const litSide = (forward.style as { opacity?: number } | undefined)?.opacity === 1 ? forward : backward;
+  const crossPackage = forwardData.crossPackage === true || backwardData.crossPackage === true;
+  const outsideView = forwardData.outsideView === true || backwardData.outsideView === true;
   return {
     id: `cycle:${forwardData.depKind ?? "wire"}:${forward.source}<->${forward.target}`,
     source: forward.source,
     target: forward.target,
     type: CYCLE_EDGE_TYPE,
-    style: litSide.style,
+    // Emphasis may choose either direction's paint, but boundary dashing is the OR of BOTH facts.
+    style: withBoundaryDash(litSide.style, { crossPackage, outsideView }),
     markerEnd: forward.markerEnd,
     markerStart: backward.markerEnd, // the reverse direction's arrow, worn at the source end
     data: {
       members: [forward, backward],
       depKind: forwardData.depKind,
       crossFrame: forwardData.crossFrame,
+      crossPackage,
+      outsideView,
       weight: (forwardData.weight ?? 1) + (backwardData.weight ?? 1),
       forwardWeight: forwardData.weight ?? 1,
       backwardWeight: backwardData.weight ?? 1,

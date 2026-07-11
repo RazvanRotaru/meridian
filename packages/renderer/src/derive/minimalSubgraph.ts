@@ -28,6 +28,7 @@ import type { BlockDeps } from "./blockDeps";
 import { depWireEdges } from "./codeWalk";
 import { ghostDepWires, withoutHidden, type GhostData, type GhostEmission } from "./ghostDeps";
 import { groupGhostEmission } from "./groupGhosts";
+import { crossesPackageBoundary, underlyingEdgesCrossPackage } from "./packageBoundary";
 import { walkFileCode, type FileCodeWalk, type MinimalExpansion } from "./minimalExpansion";
 
 const MODULE_KIND = "module";
@@ -53,12 +54,19 @@ export interface MinimalSubgraphEdge {
   weight: number;
   /** "import"/"dep" wires both connect two drawn boxes; the paint colours each by kind. */
   kind: "import" | "dep";
-  /** import edges only: true when source and target sit in different package frames (gold-coloured). */
-  crossPackage?: boolean;
+  /** Presentational colour cue: the drawn boxes sit in different directory/package frames. This is
+   * deliberately separate from npm-package ownership — a monorepo directory is not a package.json. */
+  crossFrame: boolean;
+  /** Semantic package boundary, computed from the ORIGINAL artifact endpoints before box lifting. */
+  crossPackage: boolean;
+  /** One real endpoint is outside this extracted member view and represented by a ghost satellite. */
+  outsideView: boolean;
   /** dep edges only: the underlying coupling kind (calls / instantiates / …) the paint colours by. */
   depKind?: string;
   /** The far endpoint is a GHOST satellite — the layout bands it outside the member core. */
   ghost?: boolean;
+  /** Concrete artifact edges retained through member-box aggregation for inspection and ownership. */
+  underlyingEdgeIds?: string[];
 }
 
 export interface MinimalSubgraphSpec {
@@ -145,8 +153,14 @@ function ghostEdges(emission: GhostEmission): MinimalSubgraphEdge[] {
       target: wire.target,
       weight: wire.weight,
       kind: "dep" as const,
+      crossFrame: false,
+      // Ghost projection already classified the original edge (including step calls, whose synthetic
+      // wire has no underlying artifact id but whose owning block still gives package ownership).
+      crossPackage: wire.crossPackage,
+      outsideView: true,
       depKind: wire.kind,
       ghost: true,
+      underlyingEdgeIds: wire.underlyingEdgeIds,
     }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -276,10 +290,18 @@ function buildLeafGroupNodes(index: GraphIndex, ids: string[], context: NodeCont
 
 /** Import wires between two member boxes: file-level edges lifted so each endpoint rises to its
  * nearest member ancestor-or-self (folding a group member's files onto its card). Folded to one per
- * ordered box pair, self-loops dropped. `crossPackage` colours a boundary-crossing wire gold. */
+ * ordered box pair, self-loops dropped. `crossFrame` preserves the existing directory-boundary
+ * colour cue; `crossPackage` is independently derived from each original file pair. */
 function importEdges(index: GraphIndex, graph: ModuleGraph, memberIds: ReadonlySet<string>): MinimalSubgraphEdge[] {
   const boxOf = (id: string) => nearestInSet(index, id, memberIds);
-  const aggregates = new Map<string, { source: string; target: string; weight: number }>();
+  const aggregates = new Map<string, {
+    source: string;
+    target: string;
+    weight: number;
+    crossFrame: boolean;
+    crossPackage: boolean;
+    underlyingEdgeIds: string[];
+  }>();
   for (const [source, targets] of graph.out) {
     const sourceBox = boxOf(source);
     if (sourceBox === null) {
@@ -290,24 +312,43 @@ function importEdges(index: GraphIndex, graph: ModuleGraph, memberIds: ReadonlyS
       if (targetBox === null || targetBox === sourceBox) {
         continue;
       }
-      const weight = graph.weight.get(weightKey(source, target)) ?? 1;
+      const graphKey = weightKey(source, target);
+      const weight = graph.weight.get(graphKey) ?? 1;
+      const underlyingEdgeIds = graph.edgeIds.get(graphKey) ?? [];
+      // ModuleGraph endpoints are the original owning FILES, before either side lifts onto a selected
+      // group member. Prefer the concrete artifact ids, with the file pair as a defensive fallback.
+      const crossPackage = underlyingEdgeIds.length > 0
+        ? underlyingEdgesCrossPackage(underlyingEdgeIds, index)
+        : crossesPackageBoundary(source, target, index);
       const existing = aggregates.get(`${sourceBox}->${targetBox}`);
       if (existing) {
         existing.weight += weight;
+        existing.crossPackage = existing.crossPackage || crossPackage;
+        existing.underlyingEdgeIds.push(...underlyingEdgeIds);
       } else {
-        aggregates.set(`${sourceBox}->${targetBox}`, { source: sourceBox, target: targetBox, weight });
+        aggregates.set(`${sourceBox}->${targetBox}`, {
+          source: sourceBox,
+          target: targetBox,
+          weight,
+          crossFrame: nearestPackageFrame(index, sourceBox) !== nearestPackageFrame(index, targetBox),
+          crossPackage,
+          underlyingEdgeIds: [...underlyingEdgeIds],
+        });
       }
     }
   }
   return [...aggregates.values()]
     .sort((a, b) => (a.source === b.source ? a.target.localeCompare(b.target) : a.source.localeCompare(b.source)))
-    .map(({ source, target, weight }) => ({
+    .map(({ source, target, weight, crossFrame, crossPackage, underlyingEdgeIds }) => ({
       id: `min:${source}->${target}`,
       source,
       target,
       weight,
       kind: "import" as const,
-      crossPackage: nearestPackage(index, source) !== nearestPackage(index, target),
+      crossFrame,
+      crossPackage,
+      outsideView: false,
+      underlyingEdgeIds,
     }));
 }
 
@@ -324,13 +365,17 @@ function depEdges(index: GraphIndex, memberIds: ReadonlySet<string>, code: CodeC
     target: edge.target,
     weight: edge.weight,
     kind: "dep" as const,
+    crossFrame: false,
+    crossPackage: edge.crossPackage,
+    outsideView: false,
     depKind: edge.depKind,
+    underlyingEdgeIds: edge.underlyingEdgeIds,
   }));
 }
 
-/** The id of the box's nearest package-kind ancestor-or-self (null when it has none). `ancestorsOf` is
- * root..self, so the LAST package entry is the closest one. */
-function nearestPackage(index: GraphIndex, id: string): string | null {
+/** The box's nearest package-kind ancestor-or-self. This is the legacy DRAWN-FRAME colour grouping,
+ * not npm ownership; semantic package crossing comes from packageBoundary.ts above. */
+function nearestPackageFrame(index: GraphIndex, id: string): string | null {
   const ancestors = index.ancestorsOf(id);
   for (let i = ancestors.length - 1; i >= 0; i -= 1) {
     if (ancestors[i].kind === "package") {
