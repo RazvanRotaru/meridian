@@ -393,8 +393,9 @@ export interface BlueprintState {
   clearServiceScope(): void;
   buildMinimalGraph(): void;
   closeMinimalGraph(): void;
-  /** Promote a ghost satellite into the overlay's member set. `at` is the ghost card's on-screen
-   * top-left (flow coords) — when given, the promoted box INHERITS that spot (see the impl). */
+  /** Promote a ghost satellite into the overlay's member set and open its containment path until
+   * the original artifact is visible. `at` is the ghost card's on-screen top-left (flow coords) —
+   * when given, the promoted box INHERITS that spot (see the impl). */
   promoteMinimalGhost(id: string, at?: { x: number; y: number }): void;
   demoteMinimalMember(id: string): void;
   resetMinimalGraph(): void;
@@ -1130,21 +1131,26 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     // The ghost "+" on the Map/Service/UI canvases (the general sibling of the overlay's promote):
     // pin the ghost's HOME FILE — a folder group-ghost its files, bounded (`ghostPinIds`) — into
-    // `mapExtra`, addToView's exact mechanism, so the coupling the ghost charted becomes a permanent
-    // card. Placement deliberately stays ELK's: the pinned file re-enters the level WIRED to the
-    // very cards that anchored its ghost, so the layered flow seats it on the ghost band's own side
-    // (dependencies right, callers left) — seeding a fixed rect would just fight the next relayout.
+    // `mapExtra`, addToView's exact mechanism, and open the individual ghost's containment path so
+    // the artifact the reader clicked is visible inside that file. Placement deliberately stays
+    // ELK's: the pinned file re-enters the level WIRED to the very cards that anchored its ghost, so
+    // the layered flow seats it on the ghost band's own side (dependencies right, callers left) —
+    // seeding a fixed rect would just fight the next relayout.
     pinGhostToCanvas(ghostId) {
-      if (moduleSurfaceSpec(get().viewMode) === null) {
+      const state = get();
+      if (moduleSurfaceSpec(state.viewMode) === null) {
         return;
       }
-      const pins = ghostPinIds(get().index, ghostId, drawnGhostMembers(get().moduleRfNodes, ghostId));
-      const mapExtra = new Set(get().mapExtra);
+      const pins = ghostPinIds(state.index, ghostId, drawnGhostMembers(state.moduleRfNodes, ghostId));
+      const mapExtra = new Set(state.mapExtra);
       pins.forEach((pin) => mapExtra.add(pin));
-      if (mapExtra.size === get().mapExtra.size) {
-        return; // unknown ghost, or everything it resolves to is already pinned.
+      const moduleExpanded = withMapRevealExpansion(state.moduleExpanded, [ghostId], state.index);
+      if (mapExtra.size === state.mapExtra.size && moduleExpanded.size === state.moduleExpanded.size) {
+        return; // unknown ghost, or its home file and reveal path are already present.
       }
-      set({ mapExtra });
+      // Keep the current lens focus and selection. `mapRevealStateForMany` contributes expansion ids
+      // only; adopting its other fields would unexpectedly navigate away from the canvas being edited.
+      set({ mapExtra, moduleExpanded });
       void get().moduleRelayout();
     },
 
@@ -1290,16 +1296,23 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // under the reader's eye instead of `placeDisconnectedFiles` stacking every unconnected
     // promotion into its far-right vertical band (the reported column-growth pathology).
     promoteMinimalGhost(id, at) {
-      const { index, minimalMemberIds, minimalBasePositions } = get();
+      const { index, minimalMemberIds, minimalBasePositions, moduleExpanded } = get();
       const member = ghostMemberId(index, id);
       if (member === null || minimalMemberIds.includes(member)) {
         return;
       }
+      // The promoted member is its home FILE, but the satellite id can be a class or method nested
+      // inside that file. Open every containment gate from the file through the target's parent so
+      // the promoted artifact itself replaces the ghost on screen. The target stays collapsed: a
+      // class promotion reveals the class card without also opening all of its methods. Reuse the
+      // Map's path resolver for the expansion ids ONLY: promotion must preserve the reader's current
+      // selection and must not adopt the resolver's focus/selection fields.
+      const expanded = withMapRevealExpansion(moduleExpanded, [id], index);
       const basePositions =
         at === undefined
           ? minimalBasePositions
           : { ...minimalBasePositions, [member]: promotedMemberRect(at, index.nodesById.get(member)?.kind !== "module") };
-      set({ minimalMemberIds: [...minimalMemberIds, member], minimalBasePositions: basePositions });
+      set({ minimalMemberIds: [...minimalMemberIds, member], minimalBasePositions: basePositions, moduleExpanded: expanded });
       void get().minimalRelayout();
     },
 
@@ -2123,6 +2136,15 @@ function sameMembers(a: readonly string[], b: readonly string[]): boolean {
   }
   const set = new Set(a);
   return b.every((id) => set.has(id));
+}
+
+/** Union the folder-Map containment gates needed to draw `anchors` into an existing expansion set.
+ * Callers intentionally take ONLY this field from the reveal: pin/promote edit the current canvas
+ * in place, so they must not replace its focus or selection with the resolver's navigation state. */
+function withMapRevealExpansion(current: ReadonlySet<string>, anchors: readonly string[], index: GraphIndex): Set<string> {
+  const next = new Set(current);
+  mapRevealStateForMany(anchors, index)?.moduleExpanded.forEach((id) => next.add(id));
+  return next;
 }
 
 /** The member a promoted ghost satellite becomes: a folder group-ghost joins as that folder, a

@@ -8,8 +8,9 @@
  * dashed `GhostNode` card banded outside the core (callers left, dependencies right), per-kind
  * wired. The satellites stay VISIBLE at rest (unlike the Map's on-demand prune) because their
  * wires are minted `ghost: false` — see `minimalSubgraphLayout`'s toRfEdge. Each satellite wears a
- * subtle round "+" that promotes its home file/folder into the members; the floating members panel
- * removes a member (it returns as a satellite iff still coupled); "Reset" restores the working set
+ * subtle round "+" that promotes its home file/folder into the members and opens the path until the
+ * original symbol is visible. The floating members panel removes a member (it returns as a satellite
+ * iff still coupled); "Reset" restores the working set
  * (and the map-mirror layout) to the origin; "Re-arrange" lays the members out compactly, ignoring
  * their (possibly far-apart) map spots. A floating panel names the state and closes (Escape too —
  * closing returns to the level with the selection kept). Wires are painted by the Map's OWN chain
