@@ -58,7 +58,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await prCard.innerText()).toContain("pr-head");
     await prCard.click();
 
-    // 4b — the real-patch response has exactly two files and opens a synchronous base-graph review.
+    // 4b — the real-patch response has exactly two files and prepares the HEAD graph before opening the review.
     const detail = page.locator("aside.mrd-scroll");
     const detailFiles = detail.locator(
       '[title="src/pricing/loyaltyTiers.ts"], [title="src/services/orderService.ts"]',
@@ -66,20 +66,23 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await detailFiles.first().waitFor();
     expect(await detailFiles.count()).toBe(2);
     await detail.getByRole("button", { name: "Review in graph" }).click();
-    const syncProvenance = page.getByText("pr-head → main · base graph + head code", { exact: true });
-    await syncProvenance.waitFor();
+    const preparing = page.getByText("Preparing PR review", { exact: true });
+    const reviewFiles = page.getByText("Files changed", { exact: true });
+    await Promise.race([
+      preparing.waitFor({ timeout: 1_000 }).catch(() => undefined),
+      reviewFiles.waitFor({ timeout: 120_000 }),
+    ]);
+    await reviewFiles.waitFor({ timeout: 120_000 });
+    const syncProvenance = page.getByText(/^pr-head → main · head graph @[0-9a-f]{7}$/);
+    await syncProvenance.waitFor({ timeout: 120_000 });
 
-    // 4c — the added file is absent from main, then joins the graph after the opt-in head extract.
+    // 4c — the added file is immediately in the prepared HEAD graph with reviewable units.
     let addedFile = reviewFileButton(page, "src/pricing/loyaltyTiers.ts");
-    await addedFile.getByText("not in graph", { exact: true }).waitFor();
-    await page.getByRole("button", { name: "Extract head graph" }).click();
-    await page.getByText(/^pr-head → main · head graph @[0-9a-f]{7}$/).waitFor({ timeout: 120_000 });
-    addedFile = reviewFileButton(page, "src/pricing/loyaltyTiers.ts");
-    expect(await addedFile.getByText("not in graph", { exact: true }).count()).toBe(0);
     let addedBlock = addedFile.locator("xpath=../..");
     const addedUnits = addedBlock.getByTitle("Mark as reviewed");
     await addedUnits.first().waitFor();
     expect(await addedUnits.count()).toBeGreaterThan(0);
+    expect(await addedFile.getByText("added — extract head to view", { exact: true }).count()).toBe(0);
 
     // 4d — one unit tick completes the added file and advances the header fraction.
     await page.getByText("0/2 files viewed", { exact: true }).waitFor();
@@ -124,7 +127,8 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await syncProvenance.waitFor();
     expect(await storedUnitTicks(page)).toEqual(storedTick);
 
-    // 4g — Escape closes the source modal first, then the overlay; the text-only Resume chip reopens it.
+    // 4g — Escape closes the source modal only; repeated Escape leaves the overlay in place, and
+    // explicit Close parks the review for the text-only Resume chip.
     const codeButton = page.locator(
       `[data-id="${ORDER_SERVICE_MODULE_ID}"] button[aria-label="View source"]`,
     );
@@ -137,6 +141,9 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await page.getByText("Extracted selection", { exact: true }).count()).toBe(1);
     expect(await syncProvenance.count()).toBe(1);
     await page.keyboard.press("Escape");
+    expect(await page.getByText("Extracted selection", { exact: true }).count()).toBe(1);
+    expect(await syncProvenance.count()).toBe(1);
+    await page.getByRole("button", { name: "✕ Close", exact: true }).click();
     await page.getByText("Extracted selection", { exact: true }).waitFor({ state: "detached" });
     const resumeText = page.getByText("Resume review #7", { exact: true });
     await resumeText.waitFor();

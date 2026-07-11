@@ -11,8 +11,8 @@
  * subtle round "+" that promotes its home file/folder into the members; the floating members panel
  * removes a member (it returns as a satellite iff still coupled); "Reset" restores the working set
  * (and the map-mirror layout) to the origin; "Re-arrange" lays the members out compactly, ignoring
- * their (possibly far-apart) map spots. A floating panel names the state and closes (Escape too —
- * closing returns to the level with the selection kept). Wires are painted by the Map's OWN chain
+ * their (possibly far-apart) map spots. A floating panel names the state and can be explicitly
+ * closed, returning to the level with the selection kept. Wires are painted by the Map's OWN chain
  * (GraphSurface's, pinned by `paintMinimal`'s parity tests) and keyed by the Map's OWN `MapLegend`,
  * so the overlay's colour vocabulary is the Map's by construction. Highways here means SPOOLING
  * only: fan hubs gather their many wires into shared trunks (no containers to pair-bundle in this
@@ -25,14 +25,13 @@
  * the node exactly like the Map (the overlay just closes first, since it covers the Map, so the
  * navigation surfaces — for a satellite that's the Map's reveal-the-definition read). A plain
  * click NEVER promotes a ghost — promotion is the explicit "+" button, so curation is deliberate.
- * The only page-specific gestures are that "+" (promote) and Escape/Close.
+ * The only page-specific gestures are that "+" (promote) and explicit Close.
  */
 
 import { useEffect, useMemo, useRef } from "react";
 import type { Edge, Node, ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { MapLegend } from "./MapLegend";
-import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { GraphSurface } from "./canvas/GraphSurface";
 import { GhostPromoteRing } from "./canvas/GhostPromoteRing";
 import { MINIMAL_OVERLAY_HIGHWAYS } from "./canvas/surfaceSpec";
@@ -77,8 +76,6 @@ export function MinimalGraphView() {
     },
   });
 
-  useClearOnEscape(closeMinimalGraph, true);
-
   // Fit once per LAYOUT (build / promote / demote / reset / re-arrange) — unlike the Map's
   // per-LEVEL guard, so it stays in this mount rather than the shared surface.
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
@@ -122,7 +119,7 @@ export function MinimalGraphView() {
         <button type="button" style={buttonStyle(false, !grown)} onClick={resetMinimalGraph} disabled={!grown} title="Restore the working set to the original selection">
           Reset
         </button>
-        <button type="button" style={buttonStyle(false, false)} onClick={closeMinimalGraph} title="Back to the Module map (Esc)">
+        <button type="button" style={buttonStyle(false, false)} onClick={closeMinimalGraph} title="Back to the Module map">
           ✕ Close
         </button>
       </div>
