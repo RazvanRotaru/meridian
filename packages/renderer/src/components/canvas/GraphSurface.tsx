@@ -42,25 +42,26 @@ import { moduleNodeTypes } from "../nodes/modulemap/ModuleCardNode";
 import { paintMinimalLevel } from "../paintMinimal";
 import { WireTooltip } from "../WireTooltip";
 import { WireInspector } from "../WireInspector";
-import { CanvasChrome, READONLY_CANVAS_PROPS } from "./flowCanvasProps";
+import { CanvasChrome, MINIMAP_NODE_CAP, READONLY_CANVAS_PROPS } from "./flowCanvasProps";
 import { MapLod } from "./MapLod";
 import type { ModuleNodeHandlers } from "./useModuleNodeInteractions";
 import { useWireHover } from "./useWireHover";
 import type { HighwayFlags } from "./surfaceSpec";
-import { bundleEdges, BUNDLE_EDGE_TYPE } from "../../layout/edgeBundling";
+import { BUNDLE_EDGE_TYPE } from "../../layout/edgeBundling";
 import { BundledEdge } from "../edges/BundledEdge";
-import { routeFrameEdges, ROUTED_EDGE_TYPE } from "../../layout/edgeRouting";
+import { ROUTED_EDGE_TYPE } from "../../layout/edgeRouting";
 import { RoutedEdge } from "../edges/RoutedEdge";
-import { spoolFanEdges, SPOOL_EDGE_TYPE } from "../../layout/edgeSpooling";
+import { SPOOL_EDGE_TYPE } from "../../layout/edgeSpooling";
 import { SpoolEdge } from "../edges/SpoolEdge";
-import { foldPairRibbons, RIBBON_EDGE_TYPE } from "../../layout/parallelWires";
+import { RIBBON_EDGE_TYPE } from "../../layout/parallelWires";
 import { RibbonEdge } from "../edges/RibbonEdge";
-import { CYCLE_EDGE_TYPE, fuseCycles } from "../../layout/cycleFusion";
+import { CYCLE_EDGE_TYPE } from "../../layout/cycleFusion";
 import { CycleEdge } from "../edges/CycleEdge";
-import { fadeFaintWires } from "../../layout/wireSalience";
 import { WireEdge, WIRE_EDGE_TYPE } from "../edges/WireEdge";
 import { withReactFlowDimensions } from "./reactFlowDimensions";
 import { useNodeDiffPreview } from "../review/useNodeDiffPreview";
+import { GhostHierarchyEdge, GHOST_HIERARCHY_EDGE_TYPE } from "../edges/GhostHierarchyEdge";
+import { prepareCanvasEdges } from "./presentationEdgePipeline";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
  * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "cycle" the
@@ -75,6 +76,7 @@ const moduleEdgeTypes: EdgeTypes = {
   [CYCLE_EDGE_TYPE]: CycleEdge,
   [SPOOL_EDGE_TYPE]: SpoolEdge,
   [WIRE_EDGE_TYPE]: WireEdge,
+  [GHOST_HIERARCHY_EDGE_TYPE]: GhostHierarchyEdge,
 };
 
 /** The painted view handed to `flowExtras`: emphasis-styled nodes + the selected-step beacons. */
@@ -108,33 +110,48 @@ export interface GraphSurfaceProps {
 
 export function GraphSurface(props: GraphSurfaceProps) {
   const selected = useBlueprint((state) => state.moduleSelected);
+  const index = useBlueprint((state) => state.index);
   const radius = useBlueprint((state) => state.moduleRadius);
   const highlightMode = useBlueprint((state) => state.highlightMode);
   const hiddenRelKinds = useBlueprint((state) => state.hiddenRelKinds);
   const showHighways = useBlueprint((state) => state.showHighways);
+  const groupGhostsByParent = useBlueprint((state) => state.groupGhostsByParent);
 
   // The ONE paint chain: suppress redundant imports → drop toggled-off relationship kinds →
   // emphasize (dim at rest, light the selection's N-hop reach). A pure repaint — positions hold.
   const { nodes: paintedNodes, edges: paintedEdges, beacons } = useMemo(
-    () => paintMinimalLevel(props.nodes, props.edges, selected, radius, highlightMode, hiddenRelKinds),
-    [props.nodes, props.edges, selected, radius, highlightMode, hiddenRelKinds],
+    () => paintMinimalLevel(props.nodes, props.edges, selected, radius, highlightMode, hiddenRelKinds, {
+      index,
+      groupByParent: groupGhostsByParent,
+      expandedGroupIds: props.interactions.expandedGhostGroupIds,
+    }),
+    [props.nodes, props.edges, selected, radius, highlightMode, hiddenRelKinds, index, groupGhostsByParent, props.interactions.expandedGhostGroupIds],
+  );
+  // Ghost inspection is deliberately downstream of the shared paint chain. It clones only the
+  // matching card's data, preserving every id, coordinate, parent and edge/layout input.
+  const displayedNodes = useMemo(
+    () => decorateInspectedGhost(paintedNodes, props.interactions.inspectedGhostId),
+    [paintedNodes, props.interactions.inspectedGhostId],
   );
   // The module-family layouts keep their canonical geometry in `style.width/height`, which all
   // routing and overlay passes below intentionally continue to read. React Flow's MiniMap checks
   // only top-level dimensions on the controlled user node, so expose the same numbers at the final
-  // library boundary without changing the stored/layout/paint node shapes.
-  const reactFlowNodes = useMemo(() => withReactFlowDimensions(paintedNodes), [paintedNodes]);
-  // Two salience passes precede the highways (see the header): fade weight-1 strands on dense
-  // levels, fuse A⇄B mutual pairs into one typed tension wire.
-  const preppedEdges = useMemo(() => fuseCycles(fadeFaintWires(paintedEdges)), [paintedEdges]);
-  // Visual Highways per the surface's flags; the ribbon fold runs in EITHER mode (overlapping
-  // same-pair strands are illegible with Highways off too). A selected node's own wires always
-  // escape the container bundles so its links read out of the highway they'd join.
-  const highwayEdges = useMemo(
-    () => (showHighways ? applyHighways(preppedEdges, paintedNodes, selected, props.highways) : foldPairRibbons(preppedEdges)),
-    [showHighways, preppedEdges, paintedNodes, selected, props.highways],
+  // library boundary after the paint-only inspection decoration.
+  const reactFlowNodes = useMemo(() => withReactFlowDimensions(displayedNodes), [displayedNodes]);
+  const virtualizeCanvas = shouldVirtualizeCanvasNodes(reactFlowNodes.length);
+  // Presentation-only parent→member spokes split off before every semantic edge pass. The helper
+  // runs salience, cycle, ribbon and enabled highway transforms only over actual relationships.
+  const preparedEdges = useMemo(
+    () => prepareCanvasEdges(paintedEdges, paintedNodes, selected, showHighways, props.highways),
+    [paintedEdges, paintedNodes, selected, showHighways, props.highways],
   );
-  const wire = useWireHover(highwayEdges, paintedNodes, props.wireHover === true);
+  const wire = useWireHover(preparedEdges.semanticEdges, paintedNodes, props.wireHover === true);
+  // Append hierarchy spokes AFTER interaction dressing too: their exact objects never acquire a
+  // pulse, label, hit width, tooltip, inspector subject, or semantic z-order.
+  const renderedEdges = useMemo(
+    () => [...wire.edges, ...preparedEdges.hierarchyEdges],
+    [wire.edges, preparedEdges.hierarchyEdges],
+  );
   const nodeDiffEnabled = props.nodeDiffPreview === true;
   const nodeDiff = useNodeDiffPreview(nodeDiffEnabled);
 
@@ -142,7 +159,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
     <div style={SURFACE_STYLE}>
       <ReactFlow<Node, Edge>
         nodes={reactFlowNodes}
-        edges={wire.edges}
+        edges={renderedEdges}
         nodeTypes={moduleNodeTypes}
         edgeTypes={moduleEdgeTypes}
         onInit={props.onInit}
@@ -160,13 +177,17 @@ export function GraphSurface(props: GraphSurfaceProps) {
         onEdgeMouseEnter={wire.onEdgeMouseEnter}
         onEdgeMouseLeave={wire.onEdgeMouseLeave}
         onEdgeClick={wire.onEdgeClick}
+        // Keep the rendered canvas in 1:1 parity with the MiniMap while that navigation aid is
+        // present. Once the graph is too dense for a useful MiniMap, mount only visible cards so a
+        // fully disclosed high-degree ghost neighbourhood can still contain hundreds of nodes.
+        onlyRenderVisibleElements={virtualizeCanvas}
         // Manual z: basic mode ADDS a nested endpoint's node-z to the edge — see useWireHover's z rule.
         zIndexMode="manual"
         {...READONLY_CANVAS_PROPS}
       >
-        <CanvasChrome nodeColor={props.miniMapColor} />
+        <CanvasChrome nodeColor={props.miniMapColor} minimap={!virtualizeCanvas} />
         <MapLod />
-        {props.flowExtras?.({ nodes: paintedNodes, beacons })}
+        {props.flowExtras?.({ nodes: displayedNodes, beacons })}
       </ReactFlow>
       {wire.hover ? <WireTooltip hover={wire.hover} /> : null}
       {wire.inspectedPair ? (
@@ -178,22 +199,25 @@ export function GraphSurface(props: GraphSurfaceProps) {
   );
 }
 
-/** The highway passes over the salience-prepped edges, in precedence order — bundling, routing and
- * spooling each opt-in per the surface's flags; the ribbon fold is unconditional (and must sit
- * between bundling and routing so a multi-kind pair rides a frame's rail as ONE striped cable). */
-function applyHighways(edges: Edge[], nodes: Node[], selected: ReadonlySet<string>, flags: HighwayFlags): Edge[] {
-  let out = edges;
-  if (flags.bundling) {
-    out = bundleEdges(out, nodes, selected);
+/** Add the transient inspection flag without feeding it back into layout or graph selection. */
+export function decorateInspectedGhost(nodes: Node[], inspectedGhostId: string | null): Node[] {
+  if (inspectedGhostId === null) {
+    return nodes;
   }
-  out = foldPairRibbons(out);
-  if (flags.routing) {
-    out = routeFrameEdges(out, nodes);
+  const index = nodes.findIndex((node) => node.type === "ghost" && node.id === inspectedGhostId);
+  if (index < 0) {
+    return nodes;
   }
-  if (flags.spooling) {
-    out = spoolFanEdges(out);
-  }
-  return out;
+  const node = nodes[index];
+  const decorated = [...nodes];
+  decorated[index] = { ...node, data: { ...node.data, inspected: true } };
+  return decorated;
+}
+
+/** MiniMap and viewport virtualization switch at the same boundary: below it every canonical
+ * node has both a canvas card and a MiniMap mark; above it both expensive representations go. */
+export function shouldVirtualizeCanvasNodes(nodeCount: number): boolean {
+  return nodeCount > MINIMAP_NODE_CAP;
 }
 
 /** The shared canvas root — exported so a mount's own replacement branches (the overlay split)

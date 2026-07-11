@@ -59,10 +59,10 @@ function collectBehaviouralEdges(
 /**
  * Type dependencies: a symbol used in a TYPE POSITION — a parameter or return annotation, a property
  * type, a type argument (`Promise<FsReadFileResult>`) — becomes a `references` edge from the enclosing
- * callable (or the module, for a top-level type) to that type's definition. This is what makes a
- * types/protocol module read as USED: `foo(req: FsReadFileRequest)` couples `foo` to the interface
- * even though it never calls or extends it. `extends`/`implements` live in heritage clauses (not
- * TypeReference nodes), so they never double-count here; built-in/lib types resolve external and drop.
+ * callable/type declaration (or the module, for a top-level type) to that type's definition. This
+ * is what makes a types/protocol module read as USED: `foo(req: FsReadFileRequest)` couples `foo`
+ * to the interface even though it never calls or extends it. `extends`/`implements` live in heritage
+ * clauses (not TypeReference nodes), so they never double-count here; built-in/lib types resolve external and drop.
  */
 function collectReferenceEdges(
   sourceFile: { getDescendantsOfKind(kind: SyntaxKind): Node[] },
@@ -140,7 +140,9 @@ function addCallableEdge(
 ): void {
   const resolution = resolveTarget(callee, index, resolver);
   recordThrow(resolution, relPath, site, diagnostics);
-  const enclosing = enclosingCallable(site, index);
+  const enclosing = kind === "references"
+    ? enclosingSemanticDeclaration(site, index)
+    : enclosingCallable(site, index);
   if (enclosing === null && kind === "renders") {
     return; // a module can call/instantiate at load time, but it cannot render JSX
   }
@@ -214,6 +216,24 @@ export function enclosingCallable(site: Node, index: ResolutionIndex): string | 
   let current = site.getParent();
   while (current) {
     const enclosing = index.sourceByCallableKey.get(nodeKey(current));
+    if (enclosing) {
+      return enclosing;
+    }
+    current = current.getParent();
+  }
+  return null;
+}
+
+/**
+ * The nearest emitted declaration enclosing a type reference. Type annotations in a callable's
+ * parameters and return type sit outside its body, so the behavioural body index cannot see them.
+ * Declaration ancestry also gives un-emitted class/interface properties to their owning type,
+ * while a reference with no emitted declaration ancestor remains a module-level reference.
+ */
+function enclosingSemanticDeclaration(site: Node, index: ResolutionIndex): string | null {
+  let current = site.getParent();
+  while (current) {
+    const enclosing = index.sourceBySemanticDeclKey.get(nodeKey(current));
     if (enclosing) {
       return enclosing;
     }

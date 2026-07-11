@@ -1,13 +1,22 @@
 /**
  * Paint-time, SELECTION-RELATIVE ghost placement. The layout lays out ALL of a level's ghosts at once,
- * so a selected node's ghosts land far down a shared global band. Here — after the paint pass has pruned
- * to just the LIT ghosts (those wired to the selection's neighbourhood) — we reposition those few around
- * the lit subgraph's own small bounding box, so a node's ghosts sit right beside IT, outside the local
- * perimeter, never across the whole graph. Pure: no store, no React.
+ * so a selected node's ghosts land far down a shared global band. Here — after the paint pass has
+ * pruned to the complete LIT neighbourhood (and optionally grouped sibling crowds) — we reposition
+ * those presented ghosts around the lit subgraph's own small bounding box, so they sit right beside
+ * the selected code, outside the local perimeter, never across the whole graph. Pure: no store, no React.
  */
 
 import type { Edge, Node } from "@xyflow/react";
-import { bandGhostsOutside, boundingBoxOf, absoluteRectOf, type GhostItem, type Side } from "../layout/ghostBandPlacement";
+import {
+  bandGhostsOutside,
+  boundingBoxOf,
+  absoluteRectOf,
+  placeGhostHierarchy,
+  type GhostHierarchyGroup,
+  type GhostItem,
+  type Rect,
+  type Side,
+} from "../layout/ghostBandPlacement";
 
 // A core node counts as LIT (part of the selection's neighbourhood) unless the emphasis pass dimmed it.
 const LIT_OPACITY_FLOOR = 0.5;
@@ -29,8 +38,11 @@ export function repositionLitGhosts(nodes: Node[], edges: Edge[]): Node[] {
   }
   const box = boundingBoxOf(litRects);
   const anchorOf = anchorByGhost(edges, ghostIds, byId);
+  const hierarchy = resolveHierarchyLinks(hierarchyLinks(edges, byId), anchorOf);
+  const hierarchyMemberIds = new Set(hierarchy.map((link) => link.memberId));
+  const bandedGhosts = ghosts.filter((ghost) => !hierarchyMemberIds.has(ghost.id));
   const items: GhostItem[] = [];
-  for (const ghost of ghosts) {
+  for (const ghost of bandedGhosts) {
     const info = anchorOf.get(ghost.id);
     const anchor = info ? byId.get(info.anchorId) : undefined;
     if (!info || !anchor) {
@@ -38,14 +50,134 @@ export function repositionLitGhosts(nodes: Node[], edges: Edge[]): Node[] {
     }
     const rect = absoluteRectOf(anchor, byId);
     const size = sizeOf(ghost);
-    items.push({ id: ghost.id, side: info.side, anchorCx: rect.x + rect.width / 2, anchorCy: rect.y + rect.height / 2, ...size });
+    items.push({
+      id: ghost.id,
+      side: info.side,
+      anchorCx: rect.x + rect.width / 2,
+      anchorCy: rect.y + rect.height / 2,
+      ...size,
+      ...(isExpandableGhostParent(ghost) ? { outerColumn: true } : {}),
+    });
   }
   const positions = bandGhostsOutside(box, items);
   nudgeClearOfEdges(items, positions, coreSegments(edges, ghostIds, byId));
+  const occupied = [...litRects, ...bandedGhosts.map((ghost) => positionedRect(ghost, positions, byId))];
+  const hierarchyPositions = placeGhostHierarchy(hierarchyGroups(hierarchy, positions, byId), occupied);
+  for (const [id, position] of hierarchyPositions) {
+    positions.set(id, position);
+  }
   return nodes.map((node) => {
     const pos = positions.get(node.id);
     return pos ? { ...node, position: pos, parentId: undefined } : node;
   });
+}
+
+interface GhostHierarchyLink {
+  parentId: string;
+  memberId: string;
+  side: Side;
+  preferredSide?: Side;
+}
+
+/** Read the small paint-only hierarchy contract emitted for an expanded parent group. The canonical
+ * marker is `edgeRole: "ghost-hierarchy"`; the boolean alias keeps the helper compatible with the
+ * initial contract draft. Ordinary ghost↔ghost dependency edges retain their normal semantics. */
+function hierarchyLinks(edges: readonly Edge[], byId: ReadonlyMap<string, Node>): GhostHierarchyLink[] {
+  const links: GhostHierarchyLink[] = [];
+  for (const edge of edges) {
+    const data = (edge.data ?? {}) as { edgeRole?: unknown; ghostHierarchy?: unknown; ghostDirection?: unknown };
+    if (data.edgeRole !== "ghost-hierarchy" && data.ghostHierarchy !== true) continue;
+    const source = byId.get(edge.source);
+    const target = byId.get(edge.target);
+    if (!source || !target || source.type !== "ghost" || target.type !== "ghost") continue;
+    const sourceGroup = isGhostGroup(source);
+    const targetGroup = isGhostGroup(target);
+    if (sourceGroup === targetGroup) continue;
+    const parent = sourceGroup ? source : target;
+    const member = sourceGroup ? target : source;
+    const declared = data.ghostDirection === "incoming" || data.ghostDirection === "outgoing"
+      ? data.ghostDirection
+      : sourceGroup ? "outgoing" : "incoming";
+    const memberDirection = (member.data as { ghostDirection?: unknown }).ghostDirection;
+    const preferredSide = memberDirection === "incoming" || memberDirection === "outgoing"
+      ? (memberDirection === "outgoing" ? "right" : "left")
+      : undefined;
+    links.push({
+      parentId: parent.id,
+      memberId: member.id,
+      side: declared === "outgoing" ? "right" : "left",
+      ...(preferredSide === undefined ? {} : { preferredSide }),
+    });
+  }
+  return links.sort(
+    (a, b) => a.memberId.localeCompare(b.memberId) || a.parentId.localeCompare(b.parentId) || a.side.localeCompare(b.side),
+  );
+}
+
+/** A bidirectional exact member can have two presentation edges but only one React Flow card. Its
+ * declared primary direction wins, then its parent's band side, then stable order. */
+function resolveHierarchyLinks(
+  links: readonly GhostHierarchyLink[],
+  anchorOf: ReadonlyMap<string, { anchorId: string; side: Side }>,
+): GhostHierarchyLink[] {
+  const byMember = new Map<string, GhostHierarchyLink[]>();
+  for (const link of links) {
+    if (!anchorOf.has(link.parentId)) continue; // no normal-band parent anchor, so keep the child ordinary.
+    const candidates = byMember.get(link.memberId) ?? [];
+    candidates.push(link);
+    byMember.set(link.memberId, candidates);
+  }
+  return [...byMember.values()].map((candidates) => {
+    const preferred = candidates.find((candidate) => candidate.preferredSide === candidate.side);
+    if (preferred) return preferred;
+    const matchingParentSide = candidates.find((candidate) => anchorOf.get(candidate.parentId)?.side === candidate.side);
+    return matchingParentSide ?? candidates[0];
+  });
+}
+
+function hierarchyGroups(
+  links: readonly GhostHierarchyLink[],
+  positions: ReadonlyMap<string, { x: number; y: number }>,
+  byId: ReadonlyMap<string, Node>,
+): GhostHierarchyGroup[] {
+  const groups = new Map<string, GhostHierarchyGroup>();
+  for (const link of links) {
+    const parent = byId.get(link.parentId);
+    const member = byId.get(link.memberId);
+    const parentPosition = positions.get(link.parentId);
+    if (!parent || !member || !parentPosition) continue;
+    const parentSize = sizeOf(parent);
+    const key = `${link.side}\u0000${link.parentId}`;
+    const group = groups.get(key) ?? {
+      parentId: link.parentId,
+      side: link.side,
+      parent: { ...parentPosition, ...parentSize },
+      members: [],
+    };
+    group.members.push({ id: member.id, ...sizeOf(member) });
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
+function isGhostGroup(node: Node): boolean {
+  return typeof (node.data as { ghostGroupId?: unknown }).ghostGroupId === "string";
+}
+
+function isExpandableGhostParent(node: Node): boolean {
+  const data = node.data as { ghostRole?: unknown; groupedGhostCount?: unknown };
+  return data.ghostRole === "parent-anchor"
+    && typeof data.groupedGhostCount === "number"
+    && data.groupedGhostCount > 0;
+}
+
+function positionedRect(
+  node: Node,
+  positions: ReadonlyMap<string, { x: number; y: number }>,
+  byId: ReadonlyMap<string, Node>,
+): Rect {
+  const position = positions.get(node.id);
+  return position ? { ...position, ...sizeOf(node) } : absoluteRectOf(node, byId);
 }
 
 // Best-effort: slide each side's column FURTHER out (in whole steps) until no ghost in it crosses a

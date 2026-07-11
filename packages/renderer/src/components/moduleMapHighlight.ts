@@ -9,8 +9,10 @@
  */
 
 import { type Edge, type Node } from "@xyflow/react";
+import type { GraphIndex } from "../graph/graphIndex";
 import { arrowMarker, CALLER_WIRE, IPC_WIRE, RENDERS_WIRE } from "../theme/edgeColors";
 import { IMPORT_CROSS, IMPORT_SIBLING, relColor } from "../theme/mapPalette";
+import { groupLitGhosts } from "../derive/groupGhosts";
 import { repositionLitGhosts } from "./ghostReposition";
 import { withBoundaryDash } from "../layout/edgeBoundary";
 
@@ -45,6 +47,12 @@ export interface EmphasizedLevel {
   beacons: Set<string>;
 }
 
+export interface GhostPresentationOptions {
+  index: GraphIndex;
+  groupByParent: boolean;
+  expandedGroupIds: ReadonlySet<string>;
+}
+
 const CODE_TYPES: ReadonlySet<string> = new Set(["unit", "block", "step", "ghost"]);
 
 /**
@@ -61,17 +69,25 @@ const CODE_TYPES: ReadonlySet<string> = new Set(["unit", "block", "step", "ghost
  * wires across all categories. Outbound/callee edges are violet; inbound/caller edges are green;
  * both-in-seed edges count as outbound.
  */
-export function emphasize(nodes: Node[], edges: Edge[], activeIds: ReadonlySet<string>, radius: number, mode: HighlightMode): EmphasizedLevel {
+export function emphasize(
+  nodes: Node[],
+  edges: Edge[],
+  activeIds: ReadonlySet<string>,
+  radius: number,
+  mode: HighlightMode,
+  ghostPresentation?: GhostPresentationOptions,
+): EmphasizedLevel {
   const typeById = new Map(nodes.map((node) => [node.id, node.type]));
   const active = [...activeIds].filter((id) => typeById.has(id));
+  const activeSet = new Set(active);
   if (active.length === 0) {
-    return pruneUnlitDeps({ nodes, edges: edges.map((edge) => styleEdge(edge, "none")), beacons: new Set() });
+    return pruneUnlitDeps({ nodes, edges: edges.map((edge) => styleEdge(edge, "none")), beacons: new Set() }, activeSet, ghostPresentation);
   }
   if (mode === "node") {
-    return pruneUnlitDeps(applyBeacons(emphasizeIncident(nodes, edges, active), active, typeById));
+    return pruneUnlitDeps(applyBeacons(emphasizeIncident(nodes, edges, active), active, typeById), activeSet, ghostPresentation);
   }
   if (active.every((id) => CODE_TYPES.has(typeById.get(id) ?? ""))) {
-    return pruneUnlitDeps(applyBeacons(emphasizeDirected(nodes, edges, active, radius), active, typeById));
+    return pruneUnlitDeps(applyBeacons(emphasizeDirected(nodes, edges, active, radius), active, typeById), activeSet, ghostPresentation);
   }
   // A selected container means all code currently drawn inside it. Seed reach from those descendants
   // just like node/directed mode does; otherwise an expanded file's outside-view wires (correctly
@@ -80,7 +96,7 @@ export function emphasize(nodes: Node[], edges: Edge[], activeIds: ReadonlySet<s
   const near = neighbourhood(edges, [...seed], radius);
   const styledEdges = edges.map((edge) => styleEdge(edge, near.has(edge.source) && near.has(edge.target) ? "near" : "none"));
   const styledNodes = nodes.map((node) => (near.has(node.id) ? node : dimNode(node)));
-  return pruneUnlitDeps(applyBeacons({ nodes: styledNodes, edges: styledEdges }, active, typeById));
+  return pruneUnlitDeps(applyBeacons({ nodes: styledNodes, edges: styledEdges }, active, typeById), activeSet, ghostPresentation);
 }
 
 /**
@@ -88,21 +104,34 @@ export function emphasize(nodes: Node[], edges: Edge[], activeIds: ReadonlySet<s
  * selection), controlled by the relationship-toggle filter upstream. But OFF-LEVEL ghost wires (and
  * their ghost cards) are shown ONLY when LIT by the selection — otherwise the map would carry every
  * off-level dependency at once (a big level has hundreds). So a ghost appears only beside the node the
- * reader points at, few at a time.
+ * reader points at. Once lit, every related ghost survives; optional parent grouping is the
+ * presentation control for a crowded sibling set.
  */
-function pruneUnlitDeps(level: EmphasizedLevel): EmphasizedLevel {
+function pruneUnlitDeps(
+  level: EmphasizedLevel,
+  activeIds: ReadonlySet<string>,
+  ghostPresentation?: GhostPresentationOptions,
+): EmphasizedLevel {
   // Keep a ghost wire when it is LIT, or when it beacons a selected step's definition (withheld at
   // opacity 0 so the definition rings through it) — else off-level ghosts drop until pointed at.
-  const edges = level.edges.filter((edge) => !isGhostEdge(edge) || isLit(edge) || level.beacons.has(edge.target) || level.beacons.has(edge.source));
+  const eligibleEdges = level.edges.filter((edge) => !isGhostEdge(edge) || isLit(edge) || level.beacons.has(edge.target) || level.beacons.has(edge.source));
   const kept = new Set<string>();
-  for (const edge of edges) {
+  for (const edge of eligibleEdges) {
     kept.add(edge.source);
     kept.add(edge.target);
   }
-  const nodes = level.nodes.filter((node) => node.type !== "ghost" || kept.has(node.id) || level.beacons.has(node.id));
-  // The few surviving ghosts are placed SELECTION-RELATIVE (beside the lit selection), not at their far
-  // global layout spot — every emphasis path ends here, so this is the one place to do it.
-  return { ...level, nodes: repositionLitGhosts(nodes, edges), edges };
+  const exactNodes = level.nodes.filter((node) => node.type !== "ghost" || kept.has(node.id) || level.beacons.has(node.id));
+  const protectedGhostIds = new Set([...activeIds, ...level.beacons]);
+  const presented = ghostPresentation === undefined
+    ? { nodes: exactNodes, edges: eligibleEdges }
+    : groupLitGhosts(exactNodes, eligibleEdges, ghostPresentation.index, {
+        enabled: ghostPresentation.groupByParent,
+        expandedGroupIds: ghostPresentation.expandedGroupIds,
+        protectedGhostIds,
+      });
+  // Every surviving related ghost is placed SELECTION-RELATIVE beside the lit subgraph. Parent
+  // grouping is presentation-only and runs just before this step, so its count matches the view.
+  return { ...level, nodes: repositionLitGhosts(presented.nodes, presented.edges), edges: presented.edges };
 }
 
 const isGhostEdge = (edge: Edge): boolean => (edge.data as { ghost?: boolean } | undefined)?.ghost === true;

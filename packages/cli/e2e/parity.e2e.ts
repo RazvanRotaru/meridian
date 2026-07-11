@@ -2,9 +2,10 @@
  * Cross-lens PARITY drive (unified-canvas phase E), the e2e layer behind the renderer's
  * surfaceParity suite: serve examples/shopfront (it has a real render tree, so all three lenses
  * have substance) through the built CLI and replay the SAME gestures per lens — select a class,
- * expand via the chevron, assert the selection ring + expansion; pin a ghost "+" on the Map; and
- * prove the lens-carry round trip (Map → Service → UI → Map) lands the same data-id selected on
- * every surface. Gestures dispatch DOM events on the card itself (never coordinate clicks): the
+ * expand via the chevron, assert the selection ring + expansion; prove ghost inspection is
+ * selection/geometry-neutral and pin one ghost's home file; then prove the lens-carry round trip
+ * (Map → Service → UI → Map) lands the same data-id selected on every surface. Gestures dispatch
+ * DOM events on the card itself (never coordinate clicks): the
  * canvas recenters with an animated fitView after every dive/relayout, so a position-based click
  * can land mid-pan — the React handlers see the same click/dblclick either way. Skips cleanly
  * when the Playwright browser is missing (`npx playwright install chromium`).
@@ -76,18 +77,41 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
     expect(pageErrors).toEqual([]);
   });
 
-  it("Map: the ghost '+' pins the ghost's home files as permanent cards", async () => {
-    // The selection lights CartService's off-canvas deps as folder group-ghosts (utils/, repository/…).
-    const GHOST = "ts:src/utils";
-    await page.waitForSelector(`.react-flow__node-ghost[data-id="${GHOST}"]`);
-    const ghosts = await page.locator(".react-flow__node-ghost").all();
-    const ghostIds = await Promise.all(ghosts.map((ghost) => ghost.getAttribute("data-id")));
-    // Pin the utils group-ghost via its "+" (ring buttons follow ghost order): its CONTRIBUTING
-    // home files join the level as REAL cards (mapExtra), wired where the ghost charted…
-    await page.getByLabel("Pin to canvas").nth(ghostIds.indexOf(GHOST)).dispatchEvent("click");
-    await page.waitForSelector(`.react-flow__node[data-id^="${GHOST}/"]:not(.react-flow__node-ghost)`);
-    // …and with every charted fact now drawn, the group-ghost itself retires.
-    await expect.poll(() => page.locator(`.react-flow__node-ghost[data-id="${GHOST}"]`).count(), { timeout: 20_000 }).toBe(0);
+  it("Map: ghost inspection preserves the primary selection and every ghost position", async () => {
+    await page.waitForSelector(".react-flow__node-ghost");
+    const ghosts = page.locator(".react-flow__node-ghost");
+    const first = ghosts.first();
+    const firstId = await first.getAttribute("data-id");
+    expect(firstId).toBeTruthy();
+    const before = await ghostGeometry(page);
+
+    await first.dispatchEvent("click");
+    // The old path queued normal selection for 250 ms; waiting beyond it proves no delayed takeover.
+    await page.waitForTimeout(350);
+
+    expect(await hasSelectionRing(page, CLASS)).toBe(true);
+    expect(await first.locator('[role="button"][aria-pressed="true"]').count()).toBe(1);
+    expect(await ghostGeometry(page)).toEqual(before);
+    expect(pageErrors).toEqual([]);
+  });
+
+  it("Map: the semantic ghost '+' pins its home file as a permanent card", async () => {
+    const surface = mainCanvasFor(page, CLASS);
+    const promotion = surface.locator('button[aria-label="Pin to canvas"][data-ghost-id*="#"]').first();
+    await promotion.waitFor();
+    const ghostId = await promotion.getAttribute("data-ghost-id");
+    expect(ghostId).toBeTruthy();
+    const homeId = ghostId!.split("#", 1)[0];
+    const exactGhost = surface.locator(`.react-flow__node-ghost[data-id="${ghostId}"]`);
+    const promotedHome = surface.locator(`.react-flow__node:not(.react-flow__node-ghost)[data-id="${homeId}"]`);
+    expect(await exactGhost.count()).toBe(1);
+    expect(await promotedHome.count()).toBe(0);
+
+    // The stable id binds this affordance to its exact painted satellite even when React Flow
+    // virtualizes off-screen cards. Its owning file joins the level and that satellite retires.
+    await promotion.dispatchEvent("click");
+    await expect.poll(() => promotedHome.count(), { timeout: 20_000 }).toBe(1);
+    await expect.poll(() => exactGhost.count(), { timeout: 20_000 }).toBe(0);
     expect(pageErrors).toEqual([]);
   });
 
@@ -147,9 +171,9 @@ async function expectMiniMapParity(surface: Locator, lens: string): Promise<void
         canvasNodes.count(),
         miniMap.locator(".react-flow__minimap-node").count(),
       ]);
-      return canvasCount === miniMapCount;
+      return canvasCount === miniMapCount ? "match" : `${canvasCount} canvas / ${miniMapCount} minimap`;
     }, { timeout: 20_000 })
-    .toBe(true);
+    .toBe("match");
   const [canvasCount, miniMapCount] = await Promise.all([
     canvasNodes.count(),
     miniMap.locator(".react-flow__minimap-node").count(),
@@ -165,4 +189,15 @@ function hasSelectionRing(page: Page, nodeId: string): Promise<boolean> {
       (el, rgb) => [el, ...el.querySelectorAll("div")].some((box) => getComputedStyle(box as Element).boxShadow.includes(rgb)),
       SELECTION_RING_RGB,
     );
+}
+
+/** Stable-position regression: both the viewport and every ghost wrapper transform must be exact. */
+async function ghostGeometry(page: Page): Promise<{ viewport: string | null; ghosts: Array<{ id: string | null; transform: string }> }> {
+  const viewport = await page.locator(".react-flow__viewport").getAttribute("style");
+  const ghosts = await page.locator(".react-flow__node-ghost").evaluateAll((elements) =>
+    elements
+      .map((element) => ({ id: element.getAttribute("data-id"), transform: (element as HTMLElement).style.transform }))
+      .sort((a, b) => (a.id ?? "").localeCompare(b.id ?? "")),
+  );
+  return { viewport, ghosts };
 }

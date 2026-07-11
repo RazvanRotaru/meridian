@@ -78,6 +78,33 @@ function depOnlyCouplingSpec() {
   });
 }
 
+function highDegreeSpec() {
+  const targets = Array.from({ length: 23 }, (_, index) => {
+    const fileId = `m:peer-${index}`;
+    const functionId = `fn:peer-${index}`;
+    return {
+      nodes: [mod(fileId, `src/peer-${index}.ts`, "p:src"), fn(functionId, `peer${index}`, fileId)],
+      edge: {
+        id: `calls:fn:foo->${functionId}`,
+        source: "fn:foo",
+        target: functionId,
+        kind: "calls",
+        resolution: "resolved",
+      } as GraphEdge,
+    };
+  });
+  const calls = targets.map(({ edge }) => edge);
+  const index = buildGraphIndex({
+    nodes: [...NODES, ...targets.flatMap(({ nodes }) => nodes)],
+    edges: [...EDGES, ...calls],
+  } as unknown as GraphArtifact);
+  return buildMinimalSubgraph(index, buildModuleGraph(index), new Set(["m:a"]), new Set(["m:a"]), {
+    expanded: new Set(),
+    blockDeps: { edges: calls },
+    flows: {},
+  });
+}
+
 // Two package.json-backed member files. With both members present the import is an on-view package
 // crossing; with only the source present, its call charts the target as an always-visible satellite.
 const CROSS_PACKAGE_NODES = [
@@ -213,5 +240,18 @@ describe("layoutMinimalSubgraph", () => {
       ghost: true,
       underlyingEdgeIds: [CROSS_PACKAGE_CALL.id],
     });
+  });
+
+  it("lays out every minimal ghost beyond the former twenty-item evidence window", async () => {
+    const base: Record<string, PlacedRect> = {
+      "m:a": { x: 0, y: 0, width: 210, height: 54 },
+    };
+    const { nodes, edges } = await layoutMinimalSubgraph(highDegreeSpec(), base);
+    const ghostNodes = nodes.filter((node) => node.type === "ghost");
+    const ghostWires = edges.filter((edge) => edge.id.startsWith("gdep:calls:"));
+
+    expect(ghostNodes).toHaveLength(23);
+    expect(ghostWires).toHaveLength(23);
+    expect(ghostWires.every((edge) => (edge.data as { underlyingEdgeIds?: string[] }).underlyingEdgeIds?.length === 1)).toBe(true);
   });
 });

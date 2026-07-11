@@ -1,8 +1,8 @@
 /**
  * The minimal subgraph the overlay EXTRACTS: the member working set (any kind — a selected package
  * stays ONE card) ringed by the Map's OWN ghost projection — off-member couplings chart as symbol
- * satellites (same-folder crowds folded into a folder group-ghost), never as peer boxes. Origin
- * members render seed-tier, promoted members persistent. Import/dep wires connect member boxes.
+ * satellites at their exact semantic endpoints, never as peer boxes. Origin members render
+ * seed-tier, promoted members persistent. Import/dep wires connect member boxes.
  */
 
 import { describe, expect, it } from "vitest";
@@ -94,14 +94,42 @@ describe("buildMinimalSubgraph", () => {
     });
   });
 
-  it("folds two satellites sharing a home folder into ONE folder group-ghost, wires aggregated", () => {
+  it("keeps a same-folder pair as separate semantic satellites", () => {
     const coupling = [callsEdge("fn:foo", "fn:baz"), callsEdge("fn:bar", "fn:qux")]; // homes m:b + m:c, both under p:src
     const { nodes, edges } = build(NODES, EDGES, ["m:a"], ["m:a"], coupling);
-    const group = nodeById(nodes, "p:src");
-    expect(group?.kind).toBe("ghost");
-    expect((group?.data as GhostData).ghostKind).toBe("package");
-    expect((group?.data as GhostData).context).toBe("2 referenced symbols — double-click to open");
-    expect(edges.find((edge) => edge.ghost === true)).toMatchObject({ id: "gdep:calls:m:a->p:src", weight: 2 });
+    expect(nodeById(nodes, "fn:baz")?.kind).toBe("ghost");
+    expect(nodeById(nodes, "fn:qux")?.kind).toBe("ghost");
+    expect(nodes.filter((node) => node.kind === "ghost").map((node) => node.id).sort()).toEqual(["fn:baz", "fn:qux"]);
+    expect(edges.filter((edge) => edge.ghost === true).map((edge) => edge.id).sort()).toEqual([
+      "gdep:calls:m:a->fn:baz",
+      "gdep:calls:m:a->fn:qux",
+    ]);
+  });
+
+  it("keeps every semantic ghost beyond the former twenty-item evidence window", () => {
+    const targets = Array.from({ length: 23 }, (_, index) => {
+      const fileId = `m:peer-${index}`;
+      const functionId = `fn:peer-${index}`;
+      return {
+        nodes: [mod(fileId, `src/peer-${index}.ts`, "p:src"), fn(functionId, `peer${index}`, fileId)],
+        edge: callsEdge("fn:foo", functionId),
+      };
+    });
+    const coupling = targets.map(({ edge }) => edge);
+    const { nodes, edges } = build(
+      [...NODES, ...targets.flatMap(({ nodes: peerNodes }) => peerNodes)],
+      EDGES,
+      ["m:a"],
+      ["m:a"],
+      coupling,
+    );
+    const ghosts = nodes.filter((node) => node.kind === "ghost");
+    const ghostWires = edges.filter((edge) => edge.ghost === true);
+
+    expect(ghosts).toHaveLength(23);
+    expect(ghosts.every((node) => (node.data as GhostData).ghostKind === "function")).toBe(true);
+    expect(ghostWires).toHaveLength(23);
+    expect(ghostWires.every((edge) => edge.underlyingEdgeIds?.length === 1)).toBe(true);
   });
 
   it("draws import wires only between two member boxes", () => {
@@ -242,7 +270,14 @@ describe("buildMinimalSubgraph — per-kind dep wires between member files", () 
   it("lifts a cross-file coupling to a per-kind dep wire, alongside the pair's import wire", () => {
     const { edges } = buildWithCoupling([callsEdge("fn:foo", "fn:baz")]);
     const dep = edges.find((edge) => edge.kind === "dep" && edge.ghost !== true);
-    expect(dep).toMatchObject({ id: "dep:calls:m:a->m:b", source: "m:a", target: "m:b", depKind: "calls", weight: 1 });
+    expect(dep).toMatchObject({
+      id: "dep:calls:m:a->m:b",
+      source: "m:a",
+      target: "m:b",
+      depKind: "calls",
+      weight: 1,
+      underlyingEdgeIds: ["calls:fn:foo->fn:baz"],
+    });
     // The import wire is still minted here — the paint's suppressRedundantImports hides it, like the Map.
     expect(edges.map((edge) => edge.id)).toContain("min:m:a->m:b");
   });
