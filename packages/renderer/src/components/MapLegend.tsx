@@ -2,8 +2,8 @@
  * The Map's LEGEND: a collapsed pill that expands into the lens's vocabulary. It reads its colours
  * and glyphs from the SAME sources the canvas paints from — `kindColors` (card accents + glyphs),
  * `mapPalette` (wires + flow-step tints), and `edgeColors` (the caller/callee relationship hues) —
- * so a swatch can never drift from what's on screen. Contextual sections only appear when they apply:
- * Flow steps once a callable is unrolled, Selection reads once something is selected.
+ * so a swatch can never drift from what's on screen. Selection guidance is always present: the
+ * legend is reference material, so selecting a card must not change its contents or size.
  */
 
 import { useState } from "react";
@@ -17,15 +17,13 @@ const FILE_ACCENT = accentForKind("module");
 interface MapLegendProps {
   /** A callable is unrolled, so flow-step cards are on the canvas. */
   hasSteps: boolean;
-  /** Something is selected, so the caller/callee reads are lit. */
-  hasSelection: boolean;
   /** The surface draws package/directory cards. The minimal overlay never does, so it opts out. */
   showPackages?: boolean;
   /** The surface can carry IPC wires. The minimal overlay mints only import/dep wires, so it opts out. */
   showIpc?: boolean;
 }
 
-export function MapLegend({ hasSteps, hasSelection, showPackages = true, showIpc = true }: MapLegendProps) {
+export function MapLegend({ hasSteps, showPackages = true, showIpc = true }: MapLegendProps) {
   const [open, setOpen] = useState(false);
   if (!open) {
     return (
@@ -35,7 +33,7 @@ export function MapLegend({ hasSteps, hasSelection, showPackages = true, showIpc
     );
   }
   return (
-    <div style={CARD}>
+    <div style={CARD} role="region" aria-label="Map legend">
       <div style={HEAD_ROW}>
         <strong style={TITLE}>Legend</strong>
         <button type="button" style={CLOSE} onClick={() => setOpen(false)} title="Close">✕</button>
@@ -66,12 +64,10 @@ export function MapLegend({ hasSteps, hasSelection, showPackages = true, showIpc
           <Row swatch={<Glyph text="⏎" color={CONSTRUCT} />} text="return / throw — this path ends here" />
         </Section>
       ) : null}
-      {hasSelection ? (
-        <Section title="When you select">
-          <Row swatch={<Line color="#C8D3E0" />} text="a node's wires BRIGHTEN (keeping their colour), everything else dims; the arrow shows direction. ctrl/cmd+click adds to the selection" />
-          <Row swatch={<Ring />} text="green ring — a selected call step's definition; an edge-of-screen ➤ guides to it when off view" />
-        </Section>
-      ) : null}
+      <Section title="When you select">
+        <Row swatch={<Line color="#C8D3E0" />} text="a node's wires BRIGHTEN (keeping their colour), everything else dims; the arrow shows direction. ctrl/cmd+click adds to the selection" />
+        <Row swatch={<Ring />} text="green ring — a selected call step's definition; an edge-of-screen ➤ guides to it when off view" />
+      </Section>
     </div>
   );
 }

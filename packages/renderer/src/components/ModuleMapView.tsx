@@ -163,7 +163,7 @@ export function ModuleMapView() {
       )}
       {selected.size >= 1 ? <BuildMinimalGraphButton count={selected.size} onBuild={buildMinimalGraph} /> : null}
       {isEmpty ? <EmptyModuleMapCard focus={effectiveFocus} /> : null}
-      <MapLegend hasSteps={shownNodes.some((node) => node.type === "step")} hasSelection={selected.size > 0} />
+      <MapLegend hasSteps={shownNodes.some((node) => node.type === "step")} />
       <CoveragePanel />
     </GraphSurface>
   );
