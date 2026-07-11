@@ -33,10 +33,16 @@ export function ensureBuilt(): void {
 }
 
 export function generateGraph(): { graphPath: string; dir: string } {
+  return generateGraphFrom(FIXTURE);
+}
+
+/** Generate a graph artifact from ANY example fixture (the parity drive uses shopfront — it has a
+ * render tree, so all three lenses have substance). */
+export function generateGraphFrom(fixtureDir: string): { graphPath: string; dir: string } {
   ensureBuilt();
   const dir = mkdtempSync(join(tmpdir(), "blueprint-e2e-"));
-  const graphPath = join(dir, "orders.graph.json");
-  execFileSync(process.execPath, [CLI, "generate", FIXTURE, "-o", graphPath], { stdio: "ignore" });
+  const graphPath = join(dir, "fixture.graph.json");
+  execFileSync(process.execPath, [CLI, "generate", fixtureDir, "-o", graphPath], { stdio: "ignore" });
   return { graphPath, dir };
 }
 
@@ -45,10 +51,10 @@ export function runCli(args: string[]): { code: number; stderr: string } {
   return { code: result.status ?? -1, stderr: result.stderr ?? "" };
 }
 
-export function startView(graphPath: string): Promise<{ server: ChildProcess; url: string }> {
+export function startView(graphPath: string, port = 4399): Promise<{ server: ChildProcess; url: string }> {
   const server = spawn(
     process.execPath,
-    [CLI, "view", graphPath, "--overlay", "mock", "--env", "staging", "--no-open", "--port", "4399"],
+    [CLI, "view", graphPath, "--overlay", "mock", "--env", "staging", "--no-open", "--port", String(port)],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   return new Promise((resolve, reject) => {
