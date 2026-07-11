@@ -25,4 +25,4 @@ jobs:
       - run: pnpm test
       - run: npx playwright install --with-deps chromium
       # parity e2e only: render.e2e.ts has known pre-existing failures unrelated to parity
-      - run: pnpm --filter @meridian/cli e2e -- parity
+      - run: pnpm --filter @meridian/cli e2e parity
