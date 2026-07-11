@@ -7,7 +7,7 @@
  * <CanvasChrome> with its own minimap colour fn.
  */
 
-import { Background, BackgroundVariant, Controls, MiniMap, type Node } from "@xyflow/react";
+import { Background, BackgroundVariant, Controls, MiniMap, type Node, useStore } from "@xyflow/react";
 
 // The shared, generic-independent <ReactFlow> props. Read-only (not draggable/connectable) but
 // selectable — selection is driven into the store via each view's onNodeClick. Click-drag pans and
@@ -41,6 +41,7 @@ export const MINIMAP_NODE_CAP = 250;
 // top-left control panel, which can grow to full viewport height and would otherwise cover them.
 export const MINIMAP_W = 200;
 export const MINIMAP_H = 150;
+export const MINIMAP_MIN_SURFACE_HEIGHT = 403;
 export const CHROME_EDGE = 15; // React Flow's default panel inset from the canvas edge
 export const CHROME_GAP = 12;
 export const LEGEND_BOTTOM = 16; // the Map Legend pill's bottom inset
@@ -53,17 +54,21 @@ const CONTROLS_BOTTOM = LEGEND_BOTTOM + LEGEND_PILL_H + CHROME_GAP; // clear of 
 // node by the view's own colour fn. Controls stack above the Legend pill (left of the minimap); with
 // the minimap dropped (a dense graph) they fall back to the corner.
 export function CanvasChrome({ nodeColor, minimap = true }: { nodeColor: (node: Node) => string; minimap?: boolean }) {
+  const surfaceHeight = useStore((state) => state.height);
+  // A 150px minimap stops being useful once it consumes most of a short graph pane (for example
+  // above an open flow drawer). Retire it there so the primary canvas actions own the bottom lane.
+  const showMinimap = minimap && surfaceHeight >= MINIMAP_MIN_SURFACE_HEIGHT;
   return (
     <>
       <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#222732" />
       <Controls
         showInteractive={false}
         position="bottom-right"
-        style={minimap ? { right: CONTROLS_COLUMN, bottom: CONTROLS_BOTTOM } : { right: CHROME_EDGE, bottom: CHROME_EDGE }}
+        style={showMinimap ? { right: CONTROLS_COLUMN, bottom: CONTROLS_BOTTOM } : { right: CHROME_EDGE, bottom: CHROME_EDGE }}
       />
       {/* Lighter mask + a per-node stroke: the old 0.7 mask over near-black node fills made the
           minimap read as an empty rectangle; the stroke keeps tiny nodes visible at any density. */}
-      {minimap ? (
+      {showMinimap ? (
         <MiniMap pannable zoomable nodeColor={nodeColor} nodeStrokeColor="#4B5563" nodeStrokeWidth={3} maskColor="rgba(8,10,14,0.55)" style={{ width: MINIMAP_W, height: MINIMAP_H, background: "#161B22" }} />
       ) : null}
     </>

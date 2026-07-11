@@ -59,6 +59,37 @@ export function ExtractSelectionIcon({ size = 15 }: IconProps) {
   );
 }
 
+/** Four cards snapping into a grid — compact the extracted graph without changing its members. */
+export function RearrangeIcon({ size = 15 }: IconProps) {
+  return (
+    <svg {...svgProps(size)}>
+      <rect x="3" y="3" width="6" height="6" rx="1.5" />
+      <rect x="15" y="3" width="6" height="6" rx="1.5" />
+      <rect x="3" y="15" width="6" height="6" rx="1.5" />
+      <rect x="15" y="15" width="6" height="6" rx="1.5" />
+      <path d="M9 6h6M6 9v6M18 9v6M9 18h6" />
+    </svg>
+  );
+}
+
+/** Counter-clockwise restore arrow — return the extracted graph to its seed members and positions. */
+export function ResetIcon({ size = 15 }: IconProps) {
+  return (
+    <svg {...svgProps(size)}>
+      <path d="M4 8V4m0 0h4M4 4l3.2 3.2a8 8 0 1 1-2 8" />
+    </svg>
+  );
+}
+
+/** Close the temporary extracted graph and reveal the previous lens. */
+export function CloseIcon({ size = 15 }: IconProps) {
+  return (
+    <svg {...svgProps(size)}>
+      <path d="M6 6l12 12M18 6 6 18" />
+    </svg>
+  );
+}
+
 export function ChevronDownIcon({ size = 14 }: IconProps) {
   return (
     <svg {...svgProps(size)}>

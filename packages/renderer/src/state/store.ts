@@ -1414,13 +1414,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().minimalRelayout();
     },
 
-    // Re-arrange: drop the captured map-mirror and run the canonical canvas ELK layout once. It stays
-    // active so later curation keeps the arranged layout; repeated clicks are deliberately a no-op.
+    // Re-arrange: drop the captured map-mirror and run the canonical canvas ELK layout. It stays
+    // active so later curation keeps the arranged layout; repeated clicks deliberately run it again.
     rearrangeMinimalGraph() {
-      if (get().minimalArrange) {
-        return;
+      if (!get().minimalArrange) {
+        set({ minimalArrange: true });
       }
-      set({ minimalArrange: true });
       void get().minimalRelayout();
     },
 

@@ -3,8 +3,7 @@
  * per-file "viewed" check (ReviewFilesSection — the panel's primary content), then the affected
  * logic flows (ReviewFlowsSection), and a footer that submits the draft comments as one GitHub
  * review. The header tracks viewed-files progress and offers Reset (ticks only — never drafts)
- * and Hide; a hidden panel gives the graph the full width, and MinimalGraphView's floating bar
- * grows a "Review" button to bring it back. Self-hides when there is no review.
+ * and Hide; a hidden panel folds into a narrow reopen rail. Self-hides when there is no review.
  */
 
 import { memo } from "react";
