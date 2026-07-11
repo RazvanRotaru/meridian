@@ -115,7 +115,7 @@ describe("EXPAND/COLLAPSE — the same container id toggles the same delta and c
   const base = perSurface<Arrangement>({
     modules: { focus: CORE, expanded: [A_FILE, ALPHA] },
     ui: { focus: CORE, expanded: [A_FILE, ALPHA] },
-    call: { focus: SVC_ALPHA, expanded: [] },
+    call: { focus: SVC_ALPHA, expanded: [ALPHA] },
   });
 
   it.each([...MODULE_SURFACE_MODES])("%s: toggling Alpha.run's flow block", (mode) => {

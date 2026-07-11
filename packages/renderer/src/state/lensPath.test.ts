@@ -69,7 +69,9 @@ describe("anchorNodeIds", () => {
     const anchors = anchorNodeIds({ ...base, viewMode: "call", moduleSelected: new Set([frameIdOf(LEAD)]) });
     expect(anchors).toEqual([LEAD]);
     expect(mapRevealStateForMany(anchors, index)!.moduleSelected).toEqual(new Set([LEAD]));
-    expect(serviceRevealStateForMany(anchors, index)!.moduleExpanded.has(frameIdOf(LEAD))).toBe(true);
+    const serviceReveal = serviceRevealStateForMany(anchors, index)!;
+    expect(serviceReveal.moduleExpanded.has(frameIdOf(LEAD))).toBe(true);
+    expect(serviceReveal.moduleExpanded.has(LEAD)).toBe(false);
     expect(uiRevealStateForMany(anchors, index)!.moduleSelected).toEqual(new Set([LEAD]));
   });
 });
@@ -123,8 +125,10 @@ describe("serviceRevealStateForMany", () => {
     expect(reveal).not.toBeNull();
     expect(reveal!.moduleFocus).toBeNull();
     expect(reveal!.moduleSelected).toEqual(new Set([METHOD, SAVE]));
-    // The frame owning the cluster of both classes is opened, so both are drawn.
+    // The frame and both owning units are opened so the exact selected methods are drawn.
     expect(reveal!.moduleExpanded.has(frameIdOf(LEAD))).toBe(true);
+    expect(reveal!.moduleExpanded.has(LEAD)).toBe(true);
+    expect(reveal!.moduleExpanded.has("ts:app/src/repo.ts#OrderRepository")).toBe(true);
   });
 
   it("drops anchors in no clustered unit but keeps the placeable ones", () => {
@@ -152,6 +156,7 @@ describe("file anchors resolve through their contained clustered units", () => {
     expect(resolution).not.toBeNull();
     expect(resolution!.owningLeads).toEqual([LEAD]);
     expect(resolution!.reveal.moduleExpanded.has(frameIdOf(LEAD))).toBe(true);
+    expect(resolution!.reveal.moduleExpanded.has(LEAD)).toBe(false);
     expect(resolution!.reveal.moduleSelected).toEqual(new Set(["ts:app/src/orders.ts"]));
   });
 
@@ -179,6 +184,8 @@ describe("file anchors resolve through their contained clustered units", () => {
     expect(new Set(resolution!.owningLeads)).toEqual(new Set([ALPHA, BETA]));
     expect(resolution!.reveal.moduleExpanded.has(frameIdOf(ALPHA))).toBe(true);
     expect(resolution!.reveal.moduleExpanded.has(frameIdOf(BETA))).toBe(true);
+    expect(resolution!.reveal.moduleExpanded.has(ALPHA)).toBe(false);
+    expect(resolution!.reveal.moduleExpanded.has(BETA)).toBe(false);
     expect(resolution!.reveal.moduleSelected).toEqual(new Set(["ts:two/pair.ts"]));
   });
 });

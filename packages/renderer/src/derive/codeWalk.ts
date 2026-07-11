@@ -42,7 +42,6 @@ export interface CodeWalkContext {
   index: GraphIndex;
   expanded: ReadonlySet<string>;
   flows: LogicFlows;
-  unitsAlwaysOpen?: boolean;
 }
 
 export function createCodeWalk(): CodeWalk {
@@ -98,7 +97,7 @@ function visitFile(id: string, parentId: string | null, depth: number, ctx: Code
 function visitDecl(decl: GraphNode, parentId: string | null, depth: number, ctx: CodeWalkContext, walk: CodeWalk): void {
   const members = memberChildren(ctx.index, decl.id);
   const isContainer = members.length > 0;
-  const isExpanded = isContainer && (ctx.unitsAlwaysOpen === true || ctx.expanded.has(decl.id));
+  const isExpanded = isContainer && ctx.expanded.has(decl.id);
   walk.skeleton.push({ id: decl.id, parentId, kind: "unit", isContainer, isExpanded, depth, childCount: members.length });
   if (isExpanded) {
     members.forEach((member) => visitCode(member.id, decl.id, depth + 1, ctx, walk));

@@ -174,9 +174,11 @@ function resolveFocusDomain(
 const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
 
 /** Draw each palette-pinned id as a detached top-level card (unit/file/block), reusing `visitCode` so
- * it renders exactly like an in-cluster member. Non-drawable or already-visited ids are skipped. */
+ * it renders like the same node on the Map. Every level respects the explicit expansion set: opening
+ * a file reveals collapsed declarations, never their members in the same action. Non-drawable or
+ * already-visited ids are skipped. */
 function appendExtras(walk: CodeWalk, extraIds: ReadonlySet<string>, index: GraphIndex, expanded: ReadonlySet<string>, flows: LogicFlows): void {
-  const ctx = { index, expanded, flows, unitsAlwaysOpen: true };
+  const ctx = { index, expanded, flows };
   for (const id of [...extraIds].sort()) {
     if (walk.seen.has(id) || !index.nodesById.has(id)) {
       continue;
@@ -194,8 +196,9 @@ function serviceWalk(
   domains: readonly ServiceDomain[],
 ): CodeWalk {
   const walk = createCodeWalk();
-  // The Service lens has always shown unit members inside service frames; only the folder Map gates units.
-  const ctx = { index, expanded, flows, unitsAlwaysOpen: true };
+  // A service frame reveals exactly its direct members. Member-bearing units stay collapsed until
+  // the reader explicitly expands them, matching the one-level contract of every other container.
+  const ctx = { index, expanded, flows };
   const clustersByLead = new Map(clustering.clusters.map((cluster) => [cluster.leadId, cluster]));
   const emitCluster = (cluster: ServiceClustering["clusters"][number], parentId: string | null, depth: number) => {
     const frameId = frameIdOf(cluster.leadId);
