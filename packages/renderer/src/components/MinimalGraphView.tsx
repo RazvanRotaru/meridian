@@ -6,11 +6,11 @@
  * green ring) and PERSISTENT cards (ghosts the reader promoted) — ringed by the Map's OWN ghost
  * SATELLITES: every code coupling that leaves the member set charts its off-overlay symbol as a
  * dashed `GhostNode` card banded outside the core (callers left, dependencies right), per-kind
- * wired. The satellites stay VISIBLE at rest (unlike the Map's on-demand prune) because their
- * wires are minted `ghost: false` — see `minimalSubgraphLayout`'s toRfEdge. Each satellite wears a
- * subtle round "+" that promotes its home file/folder into the members and opens the path until the
- * original symbol is visible. The floating members panel removes a member (it returns as a satellite
- * iff still coupled); "Reset" restores the working set
+ * wired. Like the Map, satellites are ON-DEMAND context: selecting a member reveals only that
+ * member's off-view callers/dependencies. Each satellite wears a subtle round "+" that promotes its
+ * home file/folder into the members and opens the path until the original symbol is visible. The
+ * floating members panel removes a member (it returns as a satellite iff still coupled); "Reset"
+ * restores the working set
  * (and the map-mirror layout) to the origin; "Re-arrange" lays the members out compactly, ignoring
  * their (possibly far-apart) map spots. A floating panel names the state and closes (Escape too —
  * closing returns to the level with the selection kept). Wires are painted by the Map's OWN chain

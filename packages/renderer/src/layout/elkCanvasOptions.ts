@@ -21,3 +21,11 @@ export const CANVAS_ROOT_ELK_OPTIONS: Record<string, string> = {
   "elk.layered.compaction.postCompaction.strategy": "EDGE_LENGTH",
   "elk.aspectRatio": "1.6",
 };
+
+/** The synthetic flat child graph used by minimal Re-arrange. It inherits every canonical canvas
+ * knob and changes only hierarchy handling: its leaves are not a real nested surface, so keeping
+ * INCLUDE_CHILDREN there suppresses ELK's disconnected-component packing. */
+export const FLAT_CANVAS_ELK_OPTIONS: Record<string, string> = {
+  ...CANVAS_ROOT_ELK_OPTIONS,
+  "elk.hierarchyHandling": "SEPARATE_CHILDREN",
+};

@@ -123,17 +123,27 @@ export function buildMinimalSubgraph(
 /**
  * The ghost ring, by the Map's OWN projection: every blockDeps coupling (and resolved step call from
  * an expanded member's walk) whose far end lifts to NO member charts that end as a symbol satellite,
- * exactly like `moduleTree`'s ghost level. `visibleIds` here is the member set — `nearestVisible`
- * lifts any symbol inside a member (file OR package) onto its box — and every member box counts as a
- * code anchor for the same reason `depEdges` treats every file as code: with only member boxes drawn,
- * member↔outside coupling IS this surface's off-screen story. Hidden (test) ghosts drop BEFORE
- * grouping so group counts stay honest, then same-folder crowds fold into one folder group-ghost
- * (the Highways treatment, `groupGhosts`) — the exact order of the Map's `ghostLevel`.
+ * exactly like `moduleTree`'s ghost level. Collapsed members anchor their own outside couplings; an
+ * expanded file contributes its drawn unit/block frontier so selecting a nested declaration reveals
+ * that declaration's satellites instead of leaving every wire attached to the file frame. Hidden
+ * (test) ghosts drop BEFORE grouping so group counts stay honest, then same-folder crowds fold into
+ * one folder group-ghost (the Highways treatment, `groupGhosts`) — the exact order of the Map's
+ * `ghostLevel`.
  */
 function projectGhosts(index: GraphIndex, memberIds: ReadonlySet<string>, walks: Map<string, FileCodeWalk>, code: CodeContext, hiddenIds: ReadonlySet<string>): GhostEmission {
   const calls = [...walks.values()].flatMap((walk) => [...walk.calls]);
   const expandedBlocks = new Set([...walks.values()].flatMap((walk) => [...walk.expandedBlocks]));
-  const raw = ghostDepWires(code.blockDeps, calls, memberIds, index, (id) => memberIds.has(id), expandedBlocks);
+  const visibleIds = new Set(memberIds);
+  const codeIds = new Set(memberIds);
+  for (const walk of walks.values()) {
+    for (const node of walk.expansion?.nodes ?? []) {
+      visibleIds.add(node.id);
+      if (node.kind === "unit" || node.kind === "block" || node.kind === "step") {
+        codeIds.add(node.id);
+      }
+    }
+  }
+  const raw = ghostDepWires(code.blockDeps, calls, visibleIds, index, (id) => codeIds.has(id), expandedBlocks);
   return groupGhostEmission(withoutHidden(raw, hiddenIds), index);
 }
 

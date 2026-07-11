@@ -118,6 +118,12 @@ describe("paintMinimalLevel — nested declarations join the Map's emphasis, not
     expect(edges[0].style?.strokeWidth).toBe(LIT_WIDTH_W1);
   });
 
+  it("selecting the expanded frame seeds its drawn descendants in reach mode too", () => {
+    const { edges } = paintMinimalLevel([frame, foo, bar], [intraDep], new Set([frame.id]), 1, "reach");
+    expect(edges[0].style?.opacity).toBe(1);
+    expect(edges[0].style?.strokeWidth).toBe(LIT_WIDTH_W1);
+  });
+
   it("keeps every node exactly once in laid-out order — parents before children", () => {
     const painted = paintMinimalLevel([frame, foo, bar], [intraDep], new Set([foo.id]), 1, "node");
     expect(painted.nodes.map((node) => node.id)).toEqual([frame.id, foo.id, bar.id]);

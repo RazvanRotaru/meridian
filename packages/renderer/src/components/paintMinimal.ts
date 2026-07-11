@@ -7,9 +7,9 @@
  * `filterRelKinds` → `emphasize`), so relationship colours (calls / instantiates / extends /
  * implements / references, and the import golds), the dim-at-rest read, and the selection walk are
  * the Map's by construction. Ghost satellites even reposition selection-relative inside
- * `emphasize` (`repositionLitGhosts`) — the Map's own beside-the-selection banding. On the minimal
- * overlay they stay VISIBLE at rest (unlike the Map's on-demand prune) because their wires are
- * minted `ghost: false` — see `minimalSubgraphLayout`'s toRfEdge.
+ * `emphasize` (`repositionLitGhosts`) — the Map's own beside-the-selection banding. The minimal
+ * overlay preserves the same ghost-edge marker, so changing selection swaps the visible exploration
+ * frontier instead of leaving the initial member ring permanently on screen.
  */
 
 import type { Edge, Node } from "@xyflow/react";
