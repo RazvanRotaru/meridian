@@ -7,9 +7,9 @@ import { CliError, EXIT } from "../errors";
 import { serveStatic } from "./static-files";
 import type { StaticAssets } from "./static-files";
 import { WebError } from "./web-error";
-import { injectAuthConfig, injectPrefill } from "./web-boot";
+import { injectPrefill } from "./web-boot";
 import { sendHtml, sendJson } from "./http-response";
-import { createGitHubClient } from "./github";
+import { createGitHubClient, resolveGitHubClientId } from "./github";
 import type { GitHubClient } from "./github";
 import type { GitHubUser } from "./github-parse";
 import { SessionStore } from "./session";
@@ -39,7 +39,7 @@ export interface WebServerConfig {
   cwd: string;
   /** Optional CLI positional pre-filled into the landing form. */
   source?: string;
-  /** GitHub OAuth app client id enabling Device Flow sign-in; absent → sign-in disabled. */
+  /** Optional GitHub OAuth app identity override; blank/absent uses Meridian's bundled app. */
   githubClientId?: string;
   /** Last-resort token (the `gh` CLI login) used when no env token or session is present. */
   fallbackToken?: string;
@@ -62,7 +62,7 @@ export interface Context {
   staticAssets: StaticAssets;
   cwd: string;
   sessions: SessionStore;
-  github: GitHubClient | null;
+  github: GitHubClient;
   /** Last-resort token (the `gh` CLI login), below env vars in `githubTokenFor` precedence. */
   fallbackToken?: string;
   /** Identity behind `fallbackToken`, surfaced by `/api/auth/session` as the signed-in user. */
@@ -81,8 +81,8 @@ function buildContext(config: WebServerConfig): Context {
   if (!existsSync(indexPath)) {
     throw new CliError(EXIT.io, `renderer bundle not found at ${config.rendererRoot} — run \`pnpm --filter @meridian/cli copy-renderer\``);
   }
-  const github = config.githubClientId ? createGitHubClient({ clientId: config.githubClientId }) : null;
-  const landing = injectAuthConfig(injectPrefill(readFileSync(config.webUiPath, "utf8"), config.source), github !== null);
+  const github = createGitHubClient({ clientId: resolveGitHubClientId(config.githubClientId) });
+  const landing = injectPrefill(readFileSync(config.webUiPath, "utf8"), config.source);
   const ctx: Context = {
     graphs: new Map(),
     sourceRoots: new Map(),

@@ -11,7 +11,7 @@ import { resolveCwd } from "../paths";
 import { Reporter } from "../reporter";
 import type { GlobalOptions } from "../reporter";
 import { createWebServer } from "../server/web-server";
-import { createGitHubClient } from "../server/github";
+import { createGitHubClient, resolveGitHubClientId } from "../server/github";
 import type { GitHubUser } from "../server/github-parse";
 import { resolveGhCliToken } from "../server/gh-cli-token";
 import { serve } from "../server/serve";
@@ -23,17 +23,10 @@ export interface WebOptions extends GlobalOptions {
   githubClientId?: string;
 }
 
-/**
- * The project's own OAuth app registration (Device Flow enabled; maintained by the meridian
- * owners). A client id is public by design — the device flow uses no secret. Forks that want
- * their own app identity override via --github-client-id or MERIDIAN_GITHUB_CLIENT_ID.
- */
-const DEFAULT_GITHUB_CLIENT_ID = "Ov23liC6UQi42iShRkP4";
-
 export async function runWeb(source: string | undefined, options: WebOptions): Promise<void> {
   const reporter = new Reporter(options);
   const cwd = resolveCwd(options.cwd);
-  const githubClientId = options.githubClientId ?? process.env.MERIDIAN_GITHUB_CLIENT_ID ?? DEFAULT_GITHUB_CLIENT_ID;
+  const githubClientId = resolveGitHubClientId(options.githubClientId, process.env.MERIDIAN_GITHUB_CLIENT_ID);
   const fallback = await resolveFallbackAuth(githubClientId, reporter);
   const server = createWebServer({
     rendererRoot: rendererRoot(),

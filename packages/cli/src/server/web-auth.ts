@@ -6,7 +6,6 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { WebError } from "./web-error";
 import { sendJson } from "./http-response";
 import { requestHeader } from "./web-guards";
 import type { GitHubClient } from "./github";
@@ -17,8 +16,7 @@ import type { Session } from "./session";
 
 export interface AuthContext {
   sessions: SessionStore;
-  /** The GitHub client, or null when no client id was configured (sign-in disabled). */
-  github: GitHubClient | null;
+  github: GitHubClient;
   /** Last-resort token resolved once at boot (the `gh` CLI login); below env vars in precedence. */
   fallbackToken?: string;
   /** Identity behind `fallbackToken`, resolved once at boot so the UI can show "signed in as …". */
@@ -26,7 +24,7 @@ export interface AuthContext {
 }
 
 export async function handleDeviceStart(ctx: AuthContext, response: ServerResponse): Promise<void> {
-  const device = await requireGitHub(ctx).requestDeviceCode();
+  const device = await ctx.github.requestDeviceCode();
   const now = Date.now();
   const seed = { deviceCode: device.deviceCode, intervalSeconds: device.intervalSeconds, expiresAt: now + device.expiresInSeconds * 1000 };
   const { id } = ctx.sessions.create(seed, now);
@@ -63,7 +61,6 @@ export function handleAuthSession(ctx: AuthContext, request: IncomingMessage, re
   // ambient env/gh token — so a `gh`-logged-in user gets the signed-in UI (search, own repos)
   // without the device flow. `user` stays null for the ambient case (no identity is fetched).
   sendJson(response, 200, {
-    configured: ctx.github !== null,
     signedIn: Boolean(githubTokenFor(ctx, request)),
     user: session?.user ?? ctx.fallbackUser ?? null,
   });
@@ -80,7 +77,7 @@ export async function handleRepoSearch(
     sendJson(response, 401, { error: "sign in to search repositories" });
     return;
   }
-  sendJson(response, 200, { repos: await requireGitHub(ctx).searchRepos(token, query) });
+  sendJson(response, 200, { repos: await ctx.github.searchRepos(token, query) });
 }
 
 export async function handleOwnRepos(ctx: AuthContext, request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -89,7 +86,7 @@ export async function handleOwnRepos(ctx: AuthContext, request: IncomingMessage,
     sendJson(response, 401, { error: "sign in to list your repositories" });
     return;
   }
-  sendJson(response, 200, { repos: await requireGitHub(ctx).listOwnRepos(token) });
+  sendJson(response, 200, { repos: await ctx.github.listOwnRepos(token) });
 }
 
 /** The session token feeding a clone (cookie → session), or undefined when not signed in. */
@@ -110,10 +107,9 @@ async function pollStatus(
   if (!pollDue(session, now)) {
     return { body: pendingBody(), terminal: false };
   }
-  const github = requireGitHub(ctx);
-  const poll = await github.redeemToken(session.deviceCode);
+  const poll = await ctx.github.redeemToken(session.deviceCode);
   if (poll.status === "authorized") {
-    const user = await github.getUser(poll.token);
+    const user = await ctx.github.getUser(poll.token);
     markAuthorized(session, poll.token, user, now);
     return { body: authorizedBody(user), terminal: false };
   }
@@ -151,14 +147,4 @@ function terminalBody(poll: Extract<TokenPoll, { status: "expired" | "denied" | 
     return { signedIn: false, status: "error", message: poll.message };
   }
   return { signedIn: false, status: poll.status };
-}
-
-function requireGitHub(ctx: AuthContext): GitHubClient {
-  if (!ctx.github) {
-    throw new WebError(
-      400,
-      "GitHub sign-in is not configured — set MERIDIAN_GITHUB_CLIENT_ID to a GitHub OAuth app client id with Device Flow enabled",
-    );
-  }
-  return ctx.github;
 }

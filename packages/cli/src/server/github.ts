@@ -27,6 +27,23 @@ import type { SubmitReviewRequest, SubmitReviewResult } from "./github-review";
 const DEVICE_CODE_URL = "https://github.com/login/device/code";
 const TOKEN_URL = "https://github.com/login/oauth/access_token";
 const SCOPE = "repo";
+
+/**
+ * Meridian's public OAuth app registration (Device Flow enabled). A caller may override the app
+ * identity, but an absent or blank override always falls back here — sign-in is never disabled.
+ */
+export const DEFAULT_GITHUB_CLIENT_ID = "Ov23liC6UQi42iShRkP4";
+
+export function resolveGitHubClientId(...overrides: readonly (string | undefined)[]): string {
+  for (const override of overrides) {
+    const value = override?.trim();
+    if (value) {
+      return value;
+    }
+  }
+  return DEFAULT_GITHUB_CLIENT_ID;
+}
+
 const SEARCH_PER_PAGE = 20;
 const LIST_PER_PAGE = 100;
 const LIST_MAX_PAGES = 4;

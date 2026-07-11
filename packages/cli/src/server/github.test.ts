@@ -5,7 +5,15 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { createGitHubClient } from "./github";
+import { createGitHubClient, DEFAULT_GITHUB_CLIENT_ID, resolveGitHubClientId } from "./github";
+
+describe("resolveGitHubClientId", () => {
+  it("always resolves a usable id and preserves override precedence", () => {
+    expect(resolveGitHubClientId()).toBe(DEFAULT_GITHUB_CLIENT_ID);
+    expect(resolveGitHubClientId("", "  Iv1.environment  ")).toBe("Iv1.environment");
+    expect(resolveGitHubClientId("Iv1.cli", "Iv1.environment")).toBe("Iv1.cli");
+  });
+});
 
 function repoPage(count: number, offset: number): unknown[] {
   return Array.from({ length: count }, (_unused, index) => ({ full_name: `org/repo-${offset + index}` }));

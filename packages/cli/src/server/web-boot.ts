@@ -40,12 +40,6 @@ export function injectPrefill(html: string, source: string | undefined): string 
   return injectScript(html, `window.__MERIDIAN_PREFILL__=${escapeForScript(JSON.stringify(source))}`);
 }
 
-// Tells the landing page whether "Sign in with GitHub" is available. Only the boolean is exposed —
-// the browser never needs the client id, since every GitHub call is made server-side.
-export function injectAuthConfig(html: string, configured: boolean): string {
-  return injectScript(html, `window.__MERIDIAN_AUTH__=${escapeForScript(JSON.stringify({ configured }))}`);
-}
-
 function injectScript(html: string, body: string): string {
   const script = `<script>${body}</script>`;
   if (html.includes(HEAD_CLOSE)) {

@@ -77,14 +77,14 @@ describe("handleAuthSession", () => {
     const ctx: AuthContext = { sessions: new SessionStore(), github: neverCalledGitHub() };
     const captured = capturedResponse();
     handleAuthSession(ctx, requestWith(undefined), captured.response);
-    expect(JSON.parse(captured.body())).toEqual({ configured: true, signedIn: false, user: null });
+    expect(JSON.parse(captured.body())).toEqual({ signedIn: false, user: null });
   });
 
   it("reports signed-in as the gh fallback user without any session", () => {
     const ctx: AuthContext = { sessions: new SessionStore(), github: neverCalledGitHub(), fallbackToken: "gho_gh_cli", fallbackUser: GH_USER };
     const captured = capturedResponse();
     handleAuthSession(ctx, requestWith(undefined), captured.response);
-    expect(JSON.parse(captured.body())).toEqual({ configured: true, signedIn: true, user: GH_USER });
+    expect(JSON.parse(captured.body())).toEqual({ signedIn: true, user: GH_USER });
   });
 });
 
