@@ -99,13 +99,17 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
       await page.waitForSelector(`[data-id="${CLASS}"]`, { timeout: 30_000 });
       await page.waitForSelector('button:has-text("Extract selection (1)")', { timeout: 30_000 });
       expect(await hasSelectionRing(page, CLASS), `selection ring on the ${lens} lens`).toBe(true);
+      const mainCanvas = mainCanvasFor(page, CLASS);
+      await expect.poll(() => mainCanvas.count(), { timeout: 20_000 }).toBe(1);
       // The chevron gesture keeps working on every lens: expanding any collapsed container
       // (a cluster frame on Service, a file card on Map/UI) grows the drawn node set.
-      const before = await page.locator(".react-flow__node").count();
-      const chevron = page.getByLabel("Expand", { exact: true }).first();
+      const mainNodes = mainCanvas.locator(".react-flow__nodes > .react-flow__node");
+      const before = await mainNodes.count();
+      const chevron = mainCanvas.getByLabel("Expand", { exact: true }).first();
       expect(await chevron.count(), `a collapsed container to expand on the ${lens} lens`).toBe(1);
       await chevron.dispatchEvent("click");
-      await expect.poll(() => page.locator(".react-flow__node").count(), { timeout: 20_000 }).toBeGreaterThan(before);
+      await expect.poll(() => mainNodes.count(), { timeout: 20_000 }).toBeGreaterThan(before);
+      await expectMiniMapParity(mainCanvas, lens);
     }
     expect(pageErrors).toEqual([]);
   });
@@ -124,6 +128,33 @@ function chevronOf(page: Page, nodeId: string): Locator {
 /** A lens segment button inside the Lens segmented control (ViewModeToggle). */
 function lensButton(page: Page, label: string): Locator {
   return page.getByLabel("Lens").getByRole("button", { name: label, exact: true });
+}
+
+/** Resolve the primary lens canvas by a carried node, never by DOM order. */
+function mainCanvasFor(page: Page, anchorId: string): Locator {
+  return page.locator(".react-flow").filter({ has: page.locator(`.react-flow__node[data-id="${anchorId}"]`) });
+}
+
+/** The active module surface draws every controlled React Flow node once in its own MiniMap. */
+async function expectMiniMapParity(surface: Locator, lens: string): Promise<void> {
+  const canvasNodes = surface.locator(".react-flow__nodes > .react-flow__node");
+  const miniMap = surface.locator('[data-testid="rf__minimap"]');
+  await expect.poll(() => miniMap.count(), { timeout: 20_000 }).toBe(1);
+  await expect.poll(() => canvasNodes.count(), { timeout: 20_000 }).toBeGreaterThan(0);
+  await expect
+    .poll(async () => {
+      const [canvasCount, miniMapCount] = await Promise.all([
+        canvasNodes.count(),
+        miniMap.locator(".react-flow__minimap-node").count(),
+      ]);
+      return canvasCount === miniMapCount;
+    }, { timeout: 20_000 })
+    .toBe(true);
+  const [canvasCount, miniMapCount] = await Promise.all([
+    canvasNodes.count(),
+    miniMap.locator(".react-flow__minimap-node").count(),
+  ]);
+  expect(miniMapCount, `MiniMap nodes on the ${lens} lens`).toBe(canvasCount);
 }
 
 /** Whether the card wears the shared neutral selection ring (frameChrome SELECTION_RING). */

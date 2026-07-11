@@ -59,6 +59,7 @@ import { CYCLE_EDGE_TYPE, fuseCycles } from "../../layout/cycleFusion";
 import { CycleEdge } from "../edges/CycleEdge";
 import { fadeFaintWires } from "../../layout/wireSalience";
 import { WireEdge, WIRE_EDGE_TYPE } from "../edges/WireEdge";
+import { withReactFlowDimensions } from "./reactFlowDimensions";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
  * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "cycle" the
@@ -115,6 +116,11 @@ export function GraphSurface(props: GraphSurfaceProps) {
     () => paintMinimalLevel(props.nodes, props.edges, selected, radius, highlightMode, hiddenRelKinds),
     [props.nodes, props.edges, selected, radius, highlightMode, hiddenRelKinds],
   );
+  // The module-family layouts keep their canonical geometry in `style.width/height`, which all
+  // routing and overlay passes below intentionally continue to read. React Flow's MiniMap checks
+  // only top-level dimensions on the controlled user node, so expose the same numbers at the final
+  // library boundary without changing the stored/layout/paint node shapes.
+  const reactFlowNodes = useMemo(() => withReactFlowDimensions(paintedNodes), [paintedNodes]);
   // Two salience passes precede the highways (see the header): fade weight-1 strands on dense
   // levels, fuse A⇄B mutual pairs into one typed tension wire.
   const preppedEdges = useMemo(() => fuseCycles(fadeFaintWires(paintedEdges)), [paintedEdges]);
@@ -130,7 +136,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
   return (
     <div style={SURFACE_STYLE}>
       <ReactFlow<Node, Edge>
-        nodes={paintedNodes}
+        nodes={reactFlowNodes}
         edges={wire.edges}
         nodeTypes={moduleNodeTypes}
         edgeTypes={moduleEdgeTypes}
