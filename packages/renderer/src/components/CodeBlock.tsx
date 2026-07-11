@@ -7,8 +7,9 @@
  * React still escapes as a plain string child.
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangedLineKind } from "@meridian/core";
+import { CommentComposer } from "./review/ReviewComments";
 
 const COLOR = {
   plain: "#C9D3E0",
@@ -68,6 +69,11 @@ export function CodeBlock({
   showGutter = false,
   changedLines,
   changedLineKinds,
+  onLineClick,
+  commentableLines,
+  lineComposer,
+  removedRows,
+  removedTruncated = false,
 }: {
   code: string;
   maxHeight?: number | string;
@@ -80,6 +86,16 @@ export function CodeBlock({
   changedLines?: ReadonlySet<number>;
   /** Per-line change kinds (`added`/`modified`/`deleted`) for colored backgrounds/gutter markers. */
   changedLineKinds?: ReadonlyMap<number, ChangedLineKind>;
+  /** Opens the controlled line composer. Only the gutter affordance invokes this callback. */
+  onLineClick?: (line: number) => void;
+  /** Absolute HEAD-side lines allowed to host a RIGHT-side review comment. */
+  commentableLines?: ReadonlySet<number>;
+  /** The panel-owned composer shown immediately below its absolute source row. */
+  lineComposer?: { line: number; onAdd: (body: string) => void; onCancel: () => void } | null;
+  /** Removed patch text, grouped by the absolute new-side line emitted immediately before it. */
+  removedRows?: ReadonlyMap<number, string[]>;
+  /** The patch parser hit its per-file removed-line cap. */
+  removedTruncated?: boolean;
 }) {
   // Reset the shared regex's lastIndex per run (it is stateful with the `g` flag) and never let a
   // tokenizing surprise blank the panel — fall back to the raw, still-escaped source.
@@ -106,18 +122,118 @@ export function CodeBlock({
     }
     container.scrollTop = Math.max(0, (firstChanged - startLine - 3) * LINE_HEIGHT_PX);
   }, [code, startLine, changedLines, changedLineKinds]);
+  const [hoveredGutterLine, setHoveredGutterLine] = useState<number | null>(null);
   if (startLine === undefined) {
     return <pre style={{ ...PRE_STYLE, maxHeight }}>{renderHighlightedLines(highlightedLines)}</pre>;
   }
   // A known startLine maps the diff kinds onto ROWS (coloured backgrounds + inset bar) regardless of
   // the gutter — so a logic-flow panel with no line numbers still paints its added/deleted lines.
-  // The row owns vertical scroll (numbers + code scroll together); the code column owns horizontal
-  // scroll (min-width:0 lets it shrink) so the fixed-width gutter never slides out of view.
+  // The row table owns both scroll axes, while sticky gutter cells keep line numbers in view. Each
+  // source row and its optional composer share one table, so inserting a composer or ghost row can
+  // never desynchronise independently-rendered code and gutter columns.
+  const hasCommentableLines = (commentableLines?.size ?? 0) > 0 && onLineClick !== undefined;
+  const showReviewGutter = hasCommentableLines || (removedRows?.size ?? 0) > 0 || removedTruncated;
+  const gutterVisible = showGutter || showReviewGutter;
   return (
     <div ref={listingRef} style={{ ...LISTING_STYLE, maxHeight }}>
-      {showGutter ? <pre style={GUTTER_STYLE} aria-hidden>{lineNumbers(code, startLine, changedLines, changedLineKinds)}</pre> : null}
-      <pre style={CODE_COLUMN_STYLE}>{renderHighlightedLines(highlightedLines, startLine, changedLineKinds)}</pre>
+      <table style={CODE_TABLE_STYLE}>
+        <tbody>
+          {removedRows?.get(0)?.map((line, index) => (
+            <GhostRow key={`removed-0-${index}`} text={line} showGutter={gutterVisible} />
+          ))}
+          {highlightedLines.map((line, index) => {
+            const lineNo = startLine + index;
+            const kind = changedLineKinds?.get(lineNo);
+            const changed = changedLines?.has(lineNo) ?? false;
+            const commentable = onLineClick !== undefined && (commentableLines?.has(lineNo) ?? false);
+            const composerOpen = lineComposer?.line === lineNo;
+            return (
+              <Fragment key={`line-${lineNo}`}>
+                <tr>
+                  {gutterVisible ? (
+                    <td
+                      style={GUTTER_CELL_STYLE}
+                      onMouseEnter={() => setHoveredGutterLine(lineNo)}
+                      onMouseLeave={() => setHoveredGutterLine((current) => current === lineNo ? null : current)}
+                    >
+                      <div style={GUTTER_CONTENT_STYLE}>
+                        {commentable ? (
+                          <button
+                            type="button"
+                            style={{
+                              ...LINE_COMMENT_BUTTON_STYLE,
+                              visibility: hoveredGutterLine === lineNo || composerOpen ? "visible" : "hidden",
+                            }}
+                            aria-label={`Comment on line ${lineNo}`}
+                            title={`Comment on line ${lineNo}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onLineClick(lineNo);
+                            }}
+                          >
+                            +
+                          </button>
+                        ) : null}
+                        <span
+                          aria-hidden="true"
+                          style={kind ? kindGutterStyle(kind) : changed ? CHANGED_LINE_STYLE : undefined}
+                        >
+                          {lineMarker(kind, changed)}
+                          {lineNo}
+                        </span>
+                      </div>
+                    </td>
+                  ) : null}
+                  <td style={{ ...CODE_CELL_STYLE, ...(lineRowStyle(kind) ?? {}) }}>
+                    {line.length > 0 ? line : " "}
+                  </td>
+                </tr>
+                {composerOpen ? (
+                  <tr>
+                    <td colSpan={gutterVisible ? 2 : 1} style={COMPOSER_CELL_STYLE}>
+                      <CommentComposer
+                        key={lineNo}
+                        placeholder={`Comment on line ${lineNo}…`}
+                        onAdd={lineComposer.onAdd}
+                        onCancel={lineComposer.onCancel}
+                        stopEscape
+                      />
+                    </td>
+                  </tr>
+                ) : null}
+                {removedRows?.get(lineNo)?.map((removedLine, removedIndex) => (
+                  <GhostRow
+                    key={`removed-${lineNo}-${removedIndex}`}
+                    text={removedLine}
+                    showGutter={gutterVisible}
+                  />
+                ))}
+              </Fragment>
+            );
+          })}
+          {removedTruncated ? (
+            <GhostRow text="… removed lines truncated" showGutter={gutterVisible} marker />
+          ) : null}
+        </tbody>
+      </table>
     </div>
+  );
+}
+
+function GhostRow(props: { text: string; showGutter: boolean; marker?: boolean }) {
+  return (
+    <tr style={GHOST_ROW_STYLE}>
+      {props.showGutter ? (
+        <td style={{ ...GUTTER_CELL_STYLE, ...GHOST_GUTTER_STYLE }} aria-hidden="true">
+          <div style={GUTTER_CONTENT_STYLE}>
+            <span>{"− "}</span>
+          </div>
+        </td>
+      ) : null}
+      <td style={{ ...CODE_CELL_STYLE, ...GHOST_CODE_STYLE, ...(props.marker ? GHOST_MARKER_STYLE : {}) }}>
+        {props.text.length > 0 ? props.text : " "}
+      </td>
+    </tr>
   );
 }
 
@@ -176,32 +292,8 @@ function renderHighlightedLines(
   ));
 }
 
-// A right-aligned column of consecutive line numbers, one per line of `code`, starting at
-// `startLine`. A line the diff touched renders its number amber + a leading ● (the VS-Code-style
-// modified-gutter read); untouched lines keep the muted grey.
-function lineNumbers(
-  code: string,
-  startLine: number,
-  changedLines?: ReadonlySet<number>,
-  changedLineKinds?: ReadonlyMap<number, ChangedLineKind>,
-): React.ReactNode {
-  const lines = code.split("\n");
-  if ((!changedLines || changedLines.size === 0) && (!changedLineKinds || changedLineKinds.size === 0)) {
-    return lines.map((_line, index) => startLine + index).join("\n");
-  }
-  return lines.map((_line, index) => {
-    const lineNo = startLine + index;
-    const kind = changedLineKinds?.get(lineNo);
-    const changed = changedLines?.has(lineNo) ?? false;
-    const marker = kind === "added" ? "+ " : kind === "deleted" ? "- " : kind === "modified" ? "~ " : changed ? "● " : "";
-    return (
-      <span key={lineNo} style={kind ? kindGutterStyle(kind) : changed ? CHANGED_LINE_STYLE : undefined}>
-        {marker}
-        {lineNo}
-        {"\n"}
-      </span>
-    );
-  });
+function lineMarker(kind: ChangedLineKind | undefined, changed: boolean): string {
+  return kind === "added" ? "+ " : kind === "deleted" ? "- " : kind === "modified" ? "~ " : changed ? "● " : "";
 }
 
 function lineRowStyle(kind: ChangedLineKind | undefined): React.CSSProperties | undefined {
@@ -242,23 +334,46 @@ const PRE_STYLE: React.CSSProperties = {
 };
 
 const LISTING_STYLE: React.CSSProperties = {
-  display: "flex",
-  alignItems: "flex-start",
-  gap: 10,
-  overflowY: "auto",
-  overflowX: "hidden",
+  overflow: "auto",
   fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
   fontSize: 11.5,
   lineHeight: `${LINE_HEIGHT_PX}px`,
   tabSize: 2,
 };
-const GUTTER_STYLE: React.CSSProperties = {
-  margin: 0,
-  flexShrink: 0,
+const CODE_TABLE_STYLE: React.CSSProperties = {
+  width: "max-content",
+  minWidth: "100%",
+  borderCollapse: "collapse",
+  borderSpacing: 0,
+};
+const GUTTER_CELL_STYLE: React.CSSProperties = {
+  position: "sticky",
+  left: 0,
+  zIndex: 1,
+  height: LINE_HEIGHT_PX,
+  padding: "0 10px 0 4px",
+  verticalAlign: "top",
   textAlign: "right",
   color: "#4A525F",
   userSelect: "none",
   whiteSpace: "pre",
+  background: "#0E1116",
+};
+const GUTTER_CONTENT_STYLE: React.CSSProperties = { minHeight: LINE_HEIGHT_PX, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 4 };
+const LINE_COMMENT_BUTTON_STYLE: React.CSSProperties = {
+  width: 15,
+  height: 15,
+  padding: 0,
+  border: "1px solid rgba(125,211,252,0.55)",
+  borderRadius: 4,
+  background: "rgba(56,139,253,0.15)",
+  color: "#7DD3FC",
+  font: "inherit",
+  fontSize: 12,
+  fontWeight: 700,
+  lineHeight: "12px",
+  cursor: "pointer",
+  flexShrink: 0,
 };
 const CHANGED_LINE_STYLE: React.CSSProperties = { color: "#E2A33C", fontWeight: 700 };
 const CODE_LINE_STYLE: React.CSSProperties = { display: "block", width: "100%" };
@@ -277,12 +392,15 @@ const DELETED_ROW_STYLE: React.CSSProperties = {
   background: "rgba(240,120,124,0.20)",
   boxShadow: "inset 3px 0 0 #F0787C",
 };
-const CODE_COLUMN_STYLE: React.CSSProperties = {
-  margin: 0,
-  flex: 1,
-  minWidth: 0,
+const CODE_CELL_STYLE: React.CSSProperties = {
+  height: LINE_HEIGHT_PX,
+  padding: 0,
+  verticalAlign: "top",
   color: COLOR.plain,
   whiteSpace: "pre",
-  overflowX: "auto",
-  overflowY: "hidden",
 };
+const COMPOSER_CELL_STYLE: React.CSSProperties = { padding: "6px 0 2px", background: "rgba(56,139,253,0.04)" };
+const GHOST_ROW_STYLE: React.CSSProperties = { background: "rgba(240,120,124,0.14)" };
+const GHOST_GUTTER_STYLE: React.CSSProperties = { color: "#F0787C", background: "rgba(50,22,27,0.96)", fontWeight: 700 };
+const GHOST_CODE_STYLE: React.CSSProperties = { color: "#E98A8E", textDecoration: "line-through" };
+const GHOST_MARKER_STYLE: React.CSSProperties = { color: "#A66B70", textDecoration: "none", fontStyle: "italic" };

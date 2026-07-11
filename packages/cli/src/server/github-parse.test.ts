@@ -182,6 +182,11 @@ describe("parsePatchDetail", () => {
       { start: 13, end: 14, kind: "modified" },
       { start: 34, end: 34, kind: "added" },
     ]);
+    expect(detail.removed).toEqual([
+      { afterNewLine: 12, lines: ["  const old = 1;"] },
+      { afterNewLine: 57, lines: ["  gone();"] },
+    ]);
+    expect(detail.removedTruncated).toBe(false);
   });
 
   it("records each hunk's old/new spans for base→head line mapping", () => {

@@ -13,6 +13,7 @@ const SEARCH_RESULT_LIMIT = 20;
 const LIST_RESULT_LIMIT = 100;
 const PR_LIST_RESULT_LIMIT = 30;
 const PR_FILE_RESULT_LIMIT = 100;
+const REMOVED_LINE_LIMIT = 500;
 
 export interface RepoSummary {
   fullName: string;
@@ -64,6 +65,10 @@ export interface PrFile {
   /** Head-relative added/modified line spans, read from the patch BODY (not the context-padded hunk
    * header), so the code panel paints exactly the changed lines green/gold — not the whole hunk. */
   kinds?: ChangedLineSpan[];
+  /** Removed patch text grouped by deletion run and anchored after the preceding HEAD-side line. */
+  removed?: Array<{ afterNewLine: number; lines: string[] }>;
+  /** True when `removed` reached its per-file safety cap. */
+  removedTruncated?: boolean;
 }
 
 export type RepoQuery =
@@ -186,6 +191,12 @@ function toPrFile(body: Record<string, unknown>): PrFile {
     if (detail.kinds.length > 0) {
       file.kinds = detail.kinds;
     }
+    if (detail.removed.length > 0) {
+      file.removed = detail.removed;
+    }
+    if (detail.removedTruncated) {
+      file.removedTruncated = true;
+    }
   }
   return file;
 }
@@ -221,6 +232,10 @@ export interface PatchDetail {
   oldHunks: LineRange[];
   edits: LineEdit[];
   kinds: ChangedLineSpan[];
+  /** Removed patch text, one entry per contiguous deletion run, positioned in HEAD coordinates. */
+  removed: Array<{ afterNewLine: number; lines: string[] }>;
+  /** True when more than REMOVED_LINE_LIMIT deleted lines were present in this file's patch. */
+  removedTruncated: boolean;
 }
 
 /**
@@ -237,11 +252,16 @@ export function parsePatchDetail(patch: string): PatchDetail {
   const oldHunks: LineRange[] = [];
   const edits: LineEdit[] = [];
   const kinds: ChangedLineSpan[] = [];
+  const removed: Array<{ afterNewLine: number; lines: string[] }> = [];
   let newLine = 0;
   let oldLine = 0;
   let inHunk = false;
   let addRun: number[] = []; // new-side line numbers of the current contiguous `+` run
   let delRun: number[] = []; // old-side (base) line numbers of the current contiguous `-` run
+  let removedRun: string[] = [];
+  let removedAfterNewLine = 0;
+  let capturedRemovedLines = 0;
+  let removedTruncated = false;
   const flush = () => {
     if (addRun.length > 0) {
       const span = { start: addRun[0], end: addRun[addRun.length - 1] };
@@ -261,10 +281,17 @@ export function parsePatchDetail(patch: string): PatchDetail {
     addRun = [];
     delRun = [];
   };
+  const flushRemoved = () => {
+    if (removedRun.length > 0) {
+      removed.push({ afterNewLine: removedAfterNewLine, lines: removedRun });
+      removedRun = [];
+    }
+  };
   for (const raw of patch.split("\n")) {
     const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(raw);
     if (header) {
       flush();
+      flushRemoved();
       const oldStart = Number(header[1]);
       const oldLines = header[2] === undefined ? 1 : Number(header[2]);
       const newStart = Number(header[3]);
@@ -280,19 +307,31 @@ export function parsePatchDetail(patch: string): PatchDetail {
     }
     const marker = raw[0];
     if (marker === "+") {
+      flushRemoved();
       addRun.push(newLine);
       newLine += 1;
     } else if (marker === "-") {
+      if (removedRun.length === 0) {
+        removedAfterNewLine = Math.max(newLine - 1, 0);
+      }
+      if (capturedRemovedLines < REMOVED_LINE_LIMIT) {
+        removedRun.push(raw.slice(1));
+        capturedRemovedLines += 1;
+      } else {
+        removedTruncated = true;
+      }
       delRun.push(oldLine);
       oldLine += 1;
     } else {
       flush(); // a context line ends any run
+      flushRemoved();
       oldLine += 1;
       newLine += 1;
     }
   }
   flush();
-  return { hunks, oldHunks, edits, kinds };
+  flushRemoved();
+  return { hunks, oldHunks, edits, kinds, removed, removedTruncated };
 }
 
 function prFileStatus(status: unknown): PrFile["status"] {

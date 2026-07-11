@@ -326,6 +326,10 @@ export interface BlueprintState {
   reviewHeadRef: string | null;
   /** Per changed file (keyed by node.location.file): the PR diff needed to slice + paint the head code. */
   reviewDiffByFile: Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>;
+  /** Removed patch text keyed like reviewDiffByFile. Positions are HEAD-side in both review modes. */
+  reviewRemovedByFile: Record<string, { afterNewLine: number; lines: string[] }[]>;
+  /** Files whose removed patch text exceeded the server-side cap, keyed like reviewRemovedByFile. */
+  reviewRemovedTruncatedByFile: Record<string, boolean>;
   /** The review-PREPARATION lane: "preparing" while the server streams the clone→checkout→extract
    * analysis of the PR head; "error" when that stream failed (the panel offers Retry); else "idle". */
   prReviewStatus: "idle" | "preparing" | "error";
@@ -440,7 +444,7 @@ export interface BlueprintState {
   focusReviewFile(path: string): void;
   toggleReviewUnitTick(nodeId: string): void;
   toggleReviewFileViewed(path: string): void;
-  addReviewComment(path: string, nodeId: string | null, body: string): void;
+  addReviewComment(path: string, nodeId: string | null, body: string, line?: number | null): void;
   deleteReviewComment(id: string): void;
   toggleReviewPanel(): void;
   submitReviewComments(): Promise<void>;
@@ -743,6 +747,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prReviewed: null,
     reviewHeadRef: null,
     reviewDiffByFile: {},
+    reviewRemovedByFile: {},
+    reviewRemovedTruncatedByFile: {},
     prReviewStatus: "idle",
     prPrepareStage: null,
     prPrepareError: null,
@@ -1334,6 +1340,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               reviewSubmittedUrl: null,
               reviewHeadRef: null,
               reviewDiffByFile: {} as Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>,
+              reviewRemovedByFile: {} as Record<string, { afterNewLine: number; lines: string[] }[]>,
+              reviewRemovedTruncatedByFile: {} as Record<string, boolean>,
             }
           : {};
       set({ minimalSeedIds: origin, minimalMemberIds: origin, minimalBasePositions: captureMapPositions(get().moduleRfNodes), minimalArrange: false, prReviewed: null, ...clearPrReview });
@@ -1591,9 +1599,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       persistReviewProgress(get());
     },
 
-    // Add a draft comment on a file (nodeId null) or on a touched unit inside it. Drafts persist
-    // under the reviewKey until submitted or deleted.
-    addReviewComment(path, nodeId, body) {
+    // Add a draft comment on a file (nodeId null), touched unit, or explicit HEAD-side line. Drafts
+    // persist under the reviewKey until submitted or deleted.
+    addReviewComment(path, nodeId, body, line = null) {
       const { review, reviewComments, index } = get();
       const trimmed = body.trim();
       if (!review || trimmed.length === 0) {
@@ -1603,7 +1611,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         id: newCommentId(),
         path,
         nodeId,
-        anchorLabel: nodeId === null ? null : (index.nodesById.get(nodeId)?.displayName ?? null),
+        line,
+        anchorLabel: line === null ? (nodeId === null ? null : (index.nodesById.get(nodeId)?.displayName ?? null)) : `L${line}`,
         body: trimmed,
         at: new Date().toISOString(),
       };
@@ -2229,6 +2238,25 @@ function applyPrReviewToMap(
       }
     }
   }
+  // Removed text is parsed from GitHub's patch in HEAD coordinates, so unlike the base→head edit
+  // remap above it is valid in BOTH sync and swapped reviews. Join through the same matched module
+  // path so the code panel can look it up with node.location.file in either graph.
+  const reviewRemovedByFile: Record<string, { afterNewLine: number; lines: string[] }[]> = {};
+  const reviewRemovedTruncatedByFile: Record<string, boolean> = {};
+  const removedByPath = new Map((prFiles ?? []).map((file) => [file.path, file]));
+  for (const match of matchedFiles) {
+    const locFile = index.nodesById.get(match.moduleId)?.location?.file;
+    const prFile = removedByPath.get(match.path);
+    if (!locFile || !prFile) {
+      continue;
+    }
+    if ((prFile.removed?.length ?? 0) > 0) {
+      reviewRemovedByFile[locFile] = prFile.removed ?? [];
+    }
+    if (prFile.removedTruncated === true) {
+      reviewRemovedTruncatedByFile[locFile] = true;
+    }
+  }
   const progress = readReviewProgress(context.reviewKey);
   set({
     artifact: reviewedArtifact,
@@ -2240,6 +2268,8 @@ function applyPrReviewToMap(
     prReviewed: prSelected,
     reviewHeadRef: swapped ? null : summary?.headRef ?? null,
     reviewDiffByFile,
+    reviewRemovedByFile,
+    reviewRemovedTruncatedByFile,
     reviewTicks: progress.ticks,
     reviewUnitTicks: progress.unitTicks,
     reviewFileTicks: progress.fileTicks,

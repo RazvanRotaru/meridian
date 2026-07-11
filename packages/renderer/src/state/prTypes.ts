@@ -38,6 +38,10 @@ export interface PrChangedFile {
   edits?: LineEdit[];
   /** Head-relative added/modified line spans (from the patch body) — the code panel's exact green/gold. */
   kinds?: ChangedLineSpan[];
+  /** Text removed by the patch, grouped by consecutive deletion run and anchored after a HEAD line. */
+  removed?: Array<{ afterNewLine: number; lines: string[] }>;
+  /** The patch carried more than the per-file cap of removed-line text. */
+  removedTruncated?: boolean;
   /** Renames only: the pre-image path (display-only — never matched against nodes). */
   previousPath?: string;
 }

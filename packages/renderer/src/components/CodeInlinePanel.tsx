@@ -12,6 +12,9 @@
  * own show/hide gating — this component is just the opened panel.
  */
 
+import { useEffect, useMemo, useState } from "react";
+import { anchorableHunks } from "../derive/reviewSubmit";
+import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import type { CodeView } from "../state/store";
 import { CodeBlock } from "./CodeBlock";
 import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeKinds } from "./useChangedLines";
@@ -28,6 +31,10 @@ export function CodeInlinePanel({
   showGutter?: boolean;
 }) {
   const { node, code, loading, error, truncated } = codeView;
+  const review = useBlueprint((state) => state.review);
+  const removed = useBlueprint((state) => state.reviewRemovedByFile[node.location?.file ?? ""] ?? EMPTY_REMOVED);
+  const removedTruncated = useBlueprint((state) => state.reviewRemovedTruncatedByFile[node.location?.file ?? ""] === true);
+  const { addReviewComment } = useBlueprintActions();
   const wholeFile = codeView.wholeFile ?? false;
   // Prefer the PR-review panel's own head-relative diff; else the artifact's `changedSince`. Hooks run
   // unconditionally (rules of hooks) and are overridden when the panel carries its own.
@@ -39,6 +46,29 @@ export function CodeInlinePanel({
   const summary = codeView.changedLineKinds ? summarizeChangeKinds(codeView.changedLineKinds) : hookSummary;
   const { file, startLine, endLine } = node.location;
   const baseLine = codeView.baseLine ?? startLine;
+  const visibleLineCount = code === null ? 0 : code.split("\n").length;
+  const visibleEnd = baseLine + Math.max(visibleLineCount - 1, 0);
+  const commentableLines = useMemo(() => {
+    if (review === null || anchorableHunks(file, review.context).length === 0) {
+      return EMPTY_COMMENTABLE_LINES;
+    }
+    // Review code is HEAD-side in both modes: sync fetches the head file, while swapped graph
+    // locations are head-native. These absolute values therefore map directly to RIGHT-side lines.
+    return changedLineKinds.size > 0
+      ? new Set([...changedLineKinds].filter(([, kind]) => kind === "added" || kind === "modified").map(([line]) => line))
+      : new Set(changedLines);
+  }, [changedLineKinds, changedLines, file, review]);
+  const visibleRemovedRows = useMemo(() => {
+    const rows = new Map<number, string[]>();
+    for (const entry of removed) {
+      if ((entry.afterNewLine === 0 && baseLine === 1) || (entry.afterNewLine >= baseLine && entry.afterNewLine <= visibleEnd)) {
+        rows.set(entry.afterNewLine, [...(rows.get(entry.afterNewLine) ?? []), ...entry.lines]);
+      }
+    }
+    return rows;
+  }, [baseLine, removed, visibleEnd]);
+  const [activeCommentLine, setActiveCommentLine] = useState<number | null>(null);
+  useEffect(() => setActiveCommentLine(null), [node.id, baseLine]);
   // Head-review slice: the shown lines are baseLine..+len (where the unit moved to), not the base span.
   const isHead = codeView.changedLineKinds !== undefined;
   const shownEnd = isHead ? baseLine + Math.max((code?.split("\n").length ?? 1) - 1, 0) : endLine ?? startLine;
@@ -88,6 +118,15 @@ export function CodeInlinePanel({
             showGutter={showGutter}
             changedLines={changedLines}
             changedLineKinds={changedLineKinds}
+            commentableLines={commentableLines}
+            onLineClick={commentableLines.size > 0 ? setActiveCommentLine : undefined}
+            lineComposer={activeCommentLine === null || !commentableLines.has(activeCommentLine) ? null : {
+              line: activeCommentLine,
+              onAdd: (body) => addReviewComment(file, null, body, activeCommentLine),
+              onCancel: () => setActiveCommentLine(null),
+            }}
+            removedRows={visibleRemovedRows}
+            removedTruncated={removedTruncated}
           />
         ) : null}
         {truncated ? <div style={TRUNCATED_STYLE}>…truncated</div> : null}
@@ -95,6 +134,9 @@ export function CodeInlinePanel({
     </div>
   );
 }
+
+const EMPTY_COMMENTABLE_LINES: ReadonlySet<number> = new Set<number>();
+const EMPTY_REMOVED: readonly { afterNewLine: number; lines: string[] }[] = [];
 
 const PANEL_STYLE: React.CSSProperties = {
   position: "absolute",

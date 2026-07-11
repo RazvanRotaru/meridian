@@ -6,6 +6,8 @@
  * which escapes it as plain text children (never dangerouslySetInnerHTML).
  */
 
+import { useEffect, useMemo, useState } from "react";
+import { anchorableHunks } from "../derive/reviewSubmit";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { CodeBlock } from "./CodeBlock";
@@ -13,7 +15,10 @@ import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeK
 
 export function CodePanel() {
   const codeView = useBlueprint((state) => state.codeView);
-  const { closeCode } = useBlueprintActions();
+  const review = useBlueprint((state) => state.review);
+  const removed = useBlueprint((state) => codeView ? state.reviewRemovedByFile[codeView.node.location?.file ?? ""] ?? EMPTY_REMOVED : EMPTY_REMOVED);
+  const removedTruncated = useBlueprint((state) => codeView ? state.reviewRemovedTruncatedByFile[codeView.node.location?.file ?? ""] === true : false);
+  const { closeCode, addReviewComment } = useBlueprintActions();
   const wholeFile = codeView?.wholeFile ?? false;
   // A PR-review panel carries its own head-relative diff; otherwise the artifact's `changedSince`
   // drives the paint. The hooks run unconditionally (rules of hooks) and are overridden when carried.
@@ -24,6 +29,31 @@ export function CodePanel() {
   const changedLineKinds = codeView?.changedLineKinds ?? hookChangedLineKinds;
   const summary = codeView?.changedLineKinds ? summarizeChangeKinds(codeView.changedLineKinds) : hookSummary;
   const open = codeView?.mode === "modal";
+  const reviewFile = codeView?.node.location?.file ?? null;
+  const reviewBaseLine = codeView?.baseLine ?? codeView?.node.location?.startLine ?? 1;
+  const visibleLineCount = codeView?.code === null || codeView?.code === undefined ? 0 : codeView.code.split("\n").length;
+  const visibleEnd = reviewBaseLine + Math.max(visibleLineCount - 1, 0);
+  const commentableLines = useMemo(() => {
+    if (reviewFile === null || review === null || anchorableHunks(reviewFile, review.context).length === 0) {
+      return EMPTY_COMMENTABLE_LINES;
+    }
+    // Review code is HEAD-side in both modes: sync fetches the head file, while swapped graph
+    // locations are head-native. These absolute values therefore map directly to RIGHT-side lines.
+    return changedLineKinds.size > 0
+      ? new Set([...changedLineKinds].filter(([, kind]) => kind === "added" || kind === "modified").map(([line]) => line))
+      : new Set(changedLines);
+  }, [changedLineKinds, changedLines, review, reviewFile]);
+  const visibleRemovedRows = useMemo(() => {
+    const rows = new Map<number, string[]>();
+    for (const entry of removed) {
+      if ((entry.afterNewLine === 0 && reviewBaseLine === 1) || (entry.afterNewLine >= reviewBaseLine && entry.afterNewLine <= visibleEnd)) {
+        rows.set(entry.afterNewLine, [...(rows.get(entry.afterNewLine) ?? []), ...entry.lines]);
+      }
+    }
+    return rows;
+  }, [removed, reviewBaseLine, visibleEnd]);
+  const [activeCommentLine, setActiveCommentLine] = useState<number | null>(null);
+  useEffect(() => setActiveCommentLine(null), [codeView?.node.id, reviewBaseLine]);
 
   // Escape closes the modal while it's open — but as the TOP layer, so a modal opened over the
   // PR-review overlay closes just itself and the next Escape reaches the overlay beneath it.
@@ -80,6 +110,15 @@ export function CodePanel() {
               showGutter
               changedLines={changedLines}
               changedLineKinds={changedLineKinds}
+              commentableLines={commentableLines}
+              onLineClick={commentableLines.size > 0 ? setActiveCommentLine : undefined}
+              lineComposer={activeCommentLine === null || !commentableLines.has(activeCommentLine) ? null : {
+                line: activeCommentLine,
+                onAdd: (body) => addReviewComment(file, null, body, activeCommentLine),
+                onCancel: () => setActiveCommentLine(null),
+              }}
+              removedRows={visibleRemovedRows}
+              removedTruncated={removedTruncated}
             />
           ) : null}
           {truncated ? <div style={TRUNCATED_STYLE}>Snippet truncated by the server.</div> : null}
@@ -88,6 +127,9 @@ export function CodePanel() {
     </div>
   );
 }
+
+const EMPTY_COMMENTABLE_LINES: ReadonlySet<number> = new Set<number>();
+const EMPTY_REMOVED: readonly { afterNewLine: number; lines: string[] }[] = [];
 
 const BACKDROP_STYLE: React.CSSProperties = {
   position: "absolute",

@@ -22,6 +22,12 @@ const STATUS_COLOR: Record<string, string> = { added: "#3FB950", modified: "#D29
 
 /** Drafts grouped by row in one pass (vs a per-row scan on every render). */
 type DraftsByRow = ReadonlyMap<string, ReviewComment[]>;
+interface DraftCounts {
+  file: number;
+  unit: number;
+  line: number;
+}
+type DraftCountsByFile = ReadonlyMap<string, DraftCounts>;
 
 const rowKey = (path: string, nodeId: string | null): string => nodeId ?? `file:${path}`;
 
@@ -44,14 +50,24 @@ function ReviewFilesSectionImpl() {
     }
     return [...scoped].sort(sort === "risk" ? byRisk : byGraphThenPath);
   }, [allFiles, activeGroup, sort]);
-  const drafts: DraftsByRow = useMemo(() => {
-    const map = new Map<string, ReviewComment[]>();
+  const draftIndex = useMemo(() => {
+    const byRow = new Map<string, ReviewComment[]>();
+    const countsByFile = new Map<string, DraftCounts>();
     for (const comment of comments) {
-      const key = rowKey(comment.path, comment.nodeId);
-      const bucket = map.get(key);
-      bucket ? bucket.push(comment) : map.set(key, [comment]);
+      const counts = countsByFile.get(comment.path) ?? { file: 0, unit: 0, line: 0 };
+      const key = comment.line !== null ? rowKey(comment.path, null) : rowKey(comment.path, comment.nodeId);
+      if (comment.line !== null) {
+        counts.line += 1;
+      } else if (comment.nodeId === null) {
+        counts.file += 1;
+      } else {
+        counts.unit += 1;
+      }
+      countsByFile.set(comment.path, counts);
+      const bucket = byRow.get(key);
+      bucket ? bucket.push(comment) : byRow.set(key, [comment]);
     }
-    return map;
+    return { byRow, countsByFile };
   }, [comments]);
   if (files.length === 0) {
     return null;
@@ -77,7 +93,16 @@ function ReviewFilesSectionImpl() {
       </div>
       {open &&
         files.map((file) => (
-          <FileRow key={file.path} file={file} unitTicks={unitTicks} fileTicks={fileTicks} drafts={drafts} composer={composer} onComposer={setComposer} />
+          <FileRow
+            key={file.path}
+            file={file}
+            unitTicks={unitTicks}
+            fileTicks={fileTicks}
+            drafts={draftIndex.byRow}
+            draftCounts={draftIndex.countsByFile}
+            composer={composer}
+            onComposer={setComposer}
+          />
         ))}
     </section>
   );
@@ -88,10 +113,11 @@ function FileRow(props: {
   unitTicks: Record<string, ReviewTick>;
   fileTicks: Record<string, ReviewTick>;
   drafts: DraftsByRow;
+  draftCounts: DraftCountsByFile;
   composer: CommentTarget | null;
   onComposer: (target: CommentTarget | null) => void;
 }) {
-  const { file, unitTicks, fileTicks, drafts, composer, onComposer } = props;
+  const { file, unitTicks, fileTicks, drafts, draftCounts, composer, onComposer } = props;
   const currentNodes = useBlueprint((state) => state.index.nodesById);
   const { toggleReviewFileViewed, addReviewComment, setReviewLit, focusReviewFile, selectReviewNode } = useBlueprintActions();
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
@@ -105,6 +131,8 @@ function FileRow(props: {
   }, [view]);
   const expanded = openOverride ?? (view !== "done");
   const fileDrafts = drafts.get(rowKey(file.path, null)) ?? [];
+  const counts = draftCounts.get(file.path) ?? { file: 0, unit: 0, line: 0 };
+  const aggregateDraftCount = counts.file + counts.unit + counts.line;
   const composerHere = composer !== null && composer.path === file.path && composer.nodeId === null;
   const doneUnits = file.units.filter((unit) => checkStateOf(unit.fingerprint, unitTicks[unit.nodeId]) === "done").length;
   const hasBody = file.units.length > 0 || fileDrafts.length > 0 || file.deletedImpact !== null;
@@ -158,9 +186,10 @@ function FileRow(props: {
           )}
         </button>
         <CommentButton
-          count={fileDrafts.length}
+          count={aggregateDraftCount}
           active={composerHere}
           visible={hovered}
+          title={`${counts.file} file · ${counts.unit} unit · ${counts.line} line drafts`}
           onClick={() => {
             // The composer renders in the file body — opening it on a folded (viewed) file unfolds it.
             if (!composerHere) {

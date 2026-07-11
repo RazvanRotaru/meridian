@@ -142,6 +142,8 @@ export function restorePrReviewBaseline(
     prReviewed: null,
     reviewHeadRef: null,
     reviewDiffByFile: {},
+    reviewRemovedByFile: {},
+    reviewRemovedTruncatedByFile: {},
     prReviewBaseline: null,
     prPreparedGraphId: null,
     prPreparedHeadSha: null,

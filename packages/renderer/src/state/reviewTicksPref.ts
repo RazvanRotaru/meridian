@@ -21,12 +21,14 @@ export interface ReviewTick {
   fingerprint: string;
 }
 
-/** One draft review comment, anchored to a changed file or to a touched unit inside it. */
+/** One draft review comment, anchored to a changed file, touched unit, or changed HEAD-side line. */
 export interface ReviewComment {
   id: string;
   path: string;
   /** The touched unit the comment targets; null == a file-level comment. */
   nodeId: string | null;
+  /** Explicit HEAD-side line selected in the code panel; null == use the file/unit heuristic. */
+  line: number | null;
   /** Display name captured at write time, so the draft still reads if the node later vanishes. */
   anchorLabel: string | null;
   body: string;
@@ -98,7 +100,9 @@ function coerce(parsed: unknown): ReviewProgress {
     ticks: record.ticks,
     unitTicks: isTickMap(record.unitTicks) ? record.unitTicks : {},
     fileTicks: isTickMap(record.fileTicks) ? record.fileTicks : {},
-    comments: Array.isArray(record.comments) ? record.comments.filter(isComment) : [],
+    comments: Array.isArray(record.comments)
+      ? record.comments.filter(isComment).map((comment) => ({ ...comment, line: comment.line ?? null }))
+      : [],
   };
 }
 
@@ -106,7 +110,9 @@ function isTickMap(value: unknown): value is Record<string, ReviewTick> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isComment(value: unknown): value is ReviewComment {
+type StoredReviewComment = Omit<ReviewComment, "line"> & { line?: number | null };
+
+function isComment(value: unknown): value is StoredReviewComment {
   if (typeof value !== "object" || value === null) {
     return false;
   }
@@ -115,6 +121,7 @@ function isComment(value: unknown): value is ReviewComment {
     typeof comment.id === "string" &&
     typeof comment.path === "string" &&
     (comment.nodeId === null || typeof comment.nodeId === "string") &&
+    (comment.line === undefined || comment.line === null || typeof comment.line === "number") &&
     (comment.anchorLabel === null || typeof comment.anchorLabel === "string") &&
     typeof comment.body === "string" &&
     comment.body.trim().length > 0 &&
