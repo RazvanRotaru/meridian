@@ -19,30 +19,42 @@ function svgProps(size: number) {
   };
 }
 
-/** Four corners pushing OUT — "expand all". */
+/** List rows with chevrons pushing outward — expand graph hierarchy, not fullscreen. */
 export function ExpandIcon({ size = 15 }: IconProps) {
   return (
     <svg {...svgProps(size)}>
-      <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
+      <path d="M3 5h8M3 12h8M3 19h8" />
+      <path d="m15 8 3-3 3 3M15 16l3 3 3-3" />
     </svg>
   );
 }
 
-/** Four corners pulling IN — "collapse all". */
+/** List rows with chevrons pulling inward — collapse the active hierarchy scope. */
 export function CollapseIcon({ size = 15 }: IconProps) {
   return (
     <svg {...svgProps(size)}>
-      <path d="M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5" />
+      <path d="M3 5h8M3 12h8M3 19h8" />
+      <path d="m15 5 3 3 3-3M15 19l3-3 3 3" />
     </svg>
   );
 }
 
-/** Crosshair — a circle with four outward ticks (lucide "locate"); reads as "center the view". */
+/** A scan frame — fit the current selection, or the whole graph when nothing is selected. */
 export function RecenterIcon({ size = 15 }: IconProps) {
   return (
     <svg {...svgProps(size)}>
-      <circle cx="12" cy="12" r="7" />
-      <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+      <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
+    </svg>
+  );
+}
+
+/** Two linked cards — pull the selected nodes into their own focused subgraph. */
+export function ExtractSelectionIcon({ size = 15 }: IconProps) {
+  return (
+    <svg {...svgProps(size)}>
+      <rect x="3" y="3" width="8" height="8" rx="2" />
+      <path d="M7 11v4a2 2 0 0 0 2 2h4" />
+      <rect x="13" y="13" width="8" height="8" rx="2" />
     </svg>
   );
 }

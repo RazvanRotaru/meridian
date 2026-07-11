@@ -40,6 +40,7 @@ import { MINIMAL_OVERLAY_HIGHWAYS } from "./canvas/surfaceSpec";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { useRecenter } from "./canvas/useRecenter";
 import { MinimalMembersPanel } from "./MinimalMembersPanel";
+import { CanvasActionBar } from "./controlpanel/CanvasActionBar";
 import { minimalMiniMapColor, PANEL_STYLE, buttonStyle } from "./minimalGraphStyles";
 
 // A review-panel click centers on a single (possibly tiny) method card, so cap how far the fit zooms in.
@@ -110,6 +111,7 @@ export function MinimalGraphView() {
         showPackages={nodes.some((node) => node.type === "package")}
         showIpc={false}
       />
+      <CanvasActionBar />
       <div style={MINIMAL_PANEL_STYLE}>
         <span style={TITLE_STYLE}>Extracted selection</span>
         <button type="button" style={buttonStyle(false, false)} onClick={rearrangeMinimalGraph} title="Lay the current nodes out compactly, ignoring their map positions">

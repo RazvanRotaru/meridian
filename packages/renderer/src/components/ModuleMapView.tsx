@@ -22,11 +22,12 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { Edge, Node, ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
-import { BuildMinimalGraphButton, EmptyModuleMapCard, LevelBreadcrumb, ServiceScopeBreadcrumb } from "./ModuleMapChrome";
+import { EmptyModuleMapCard, LevelBreadcrumb, ServiceScopeBreadcrumb } from "./ModuleMapChrome";
 import { filterVisible } from "./moduleMapPaint";
 import { CoveragePanel } from "./CoveragePanel";
 import { BeaconArrows } from "./BeaconArrows";
 import { MapLegend } from "./MapLegend";
+import { CanvasActionBar } from "./controlpanel/CanvasActionBar";
 import { GraphSurface, SURFACE_STYLE, type SurfaceFlowView } from "./canvas/GraphSurface";
 import { GhostPromoteRing } from "./canvas/GhostPromoteRing";
 import { activeModuleSurfaceSpec } from "./canvas/surfaceSpec";
@@ -53,7 +54,7 @@ export function ModuleMapView() {
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const viewMode = useBlueprint((state) => state.viewMode);
   const serviceScope = useBlueprint((state) => state.serviceScope);
-  const { buildMinimalGraph, setModuleFocus, clearServiceScope, promoteGhost } = useBlueprintActions();
+  const { setModuleFocus, clearServiceScope, promoteGhost } = useBlueprintActions();
   // This lens's spec (Map or Service) — the highways flags read from it.
   const spec = activeModuleSurfaceSpec(viewMode);
   // The lens-lifetime hooks live HERE (not in GraphSurface, which unmounts under the overlay): a
@@ -161,7 +162,7 @@ export function ModuleMapView() {
           rootNoun={spec.focus.rootNoun}
         />
       )}
-      {selected.size >= 1 ? <BuildMinimalGraphButton count={selected.size} onBuild={buildMinimalGraph} /> : null}
+      <CanvasActionBar />
       {isEmpty ? <EmptyModuleMapCard focus={effectiveFocus} /> : null}
       <MapLegend hasSteps={shownNodes.some((node) => node.type === "step")} />
       <CoveragePanel />

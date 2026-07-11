@@ -1,8 +1,9 @@
 /**
- * The collapsible top-left control panel: its project identity/actions, mandatory environment gate
- * (when the artifact ships an overlay), and PR review remain visible while the detailed lens /
- * overlay / filter controls fold away. Categories, relationships and the module-only dials show on
- * the module surface (Map + Service); the composition worklist rides along on the Service lens.
+ * The collapsible top-left control panel: its project identity, mandatory environment gate (when
+ * the artifact ships an overlay), and PR review remain visible while the detailed lens / overlay /
+ * filter controls fold away. Canvas-wide actions live in the separate bottom action bar. Categories,
+ * relationships and the module-only dials show on the module surface (Map + Service); the
+ * composition worklist rides along on the Service lens.
  */
 
 import { useState, type ReactNode } from "react";
@@ -18,7 +19,7 @@ import { RelationshipToggles } from "./RelationshipToggles";
 import { ControlPanelHeader } from "./controlpanel/ControlPanelHeader";
 import { PrReviewSection } from "./controlpanel/PrReviewSection";
 import { OverlaysSection } from "./controlpanel/OverlaysSection";
-import { Divider, SectionLabel, TOKENS } from "./controlpanel/panelKit";
+import { CONTROL_PANEL_WIDTH, Divider, SectionLabel, TOKENS } from "./controlpanel/panelKit";
 import { ChevronDownIcon } from "./controlpanel/icons";
 
 const CONTROL_PANEL_ID = "meridian-control-panel";
@@ -33,12 +34,10 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
   const isComposition = viewMode === "call";
   // Every module-family lens (Map / Service / UI — unified in phase C) wears the same dials.
   const onModuleSurface = viewMode === "modules" || viewMode === "ui" || isComposition;
-  const showExpandControls = viewMode !== "logic" && viewMode !== "prs";
-
   return (
     <Panel position="top-left">
       <div id={CONTROL_PANEL_ID} style={PANEL_STYLE}>
-        <ControlPanelHeader showExpandControls={showExpandControls} />
+        <ControlPanelHeader />
 
         {hasOverlay ? (
           <>
@@ -126,7 +125,7 @@ const PANEL_STYLE: React.CSSProperties = {
   flexDirection: "column",
   gap: 11,
   padding: 16,
-  width: 296,
+  width: CONTROL_PANEL_WIDTH,
   maxHeight: "calc(100vh - 24px)",
   overflowY: "auto",
   overflowX: "hidden",
