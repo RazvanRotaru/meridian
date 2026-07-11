@@ -35,6 +35,7 @@ import { pairOf, RIBBON_EDGE_TYPE, type RibbonEdgeData } from "../../layout/para
 import { CYCLE_EDGE_TYPE, type CycleEdgeData } from "../../layout/cycleFusion";
 import { WIRE_EDGE_TYPE } from "../edges/WireEdge";
 import type { WireHover } from "../WireTooltip";
+import { isGhostHierarchyEdge, isInteractiveSemanticEdge } from "./presentationEdges";
 
 export interface WireInteractionApi {
   /** The input edges, z-ordered always; hover/inspector-boosted (and hit-widened) when enabled. */
@@ -71,7 +72,10 @@ export function useWireHover(edges: Edge[], nodes: Node[], enabled: boolean): Wi
     return labels;
   }, [nodes]);
 
-  const inspectedPair = useMemo(() => (inspected === null ? null : pairOf(inspected, edges)), [inspected, edges]);
+  const inspectedPair = useMemo(
+    () => (inspected === null || isGhostHierarchyEdge(inspected) ? null : pairOf(inspected, edges.filter(isInteractiveSemanticEdge))),
+    [inspected, edges],
+  );
   const inspectedIds = useMemo(
     () => new Set(inspectedPair === null || inspected === null ? [] : [inspected.id, ...inspectedPair.map((edge) => edge.id)]),
     [inspected, inspectedPair],
@@ -82,6 +86,11 @@ export function useWireHover(edges: Edge[], nodes: Node[], enabled: boolean): Wi
 
   const dressedEdges = useMemo(() => {
     return edges.map((edge) => {
+      // GraphSurface normally partitions these before the hook. Keep this guard so another caller
+      // cannot accidentally add semantic chrome or interaction state to a disclosure spoke.
+      if (isGhostHierarchyEdge(edge)) {
+        return edge;
+      }
       const zIndex = wireZ(edge, nestingById);
       if (!enabled) {
         return { ...edge, zIndex };
@@ -126,7 +135,8 @@ export function useWireHover(edges: Edge[], nodes: Node[], enabled: boolean): Wi
   }
 
   const onEdgeMouseEnter = (event: React.MouseEvent, edge: Edge) => {
-    if (edge.type === BUNDLE_EDGE_TYPE) {
+    if (!isInteractiveSemanticEdge(edge) || edge.type === BUNDLE_EDGE_TYPE) {
+      setHover(null);
       return;
     }
     setHover({
@@ -143,11 +153,15 @@ export function useWireHover(edges: Edge[], nodes: Node[], enabled: boolean): Wi
     hover,
     inspectedPair,
     labelOf,
-    inspect: setInspected,
+    inspect: (edge) => {
+      if (isInteractiveSemanticEdge(edge)) setInspected(edge);
+    },
     clearInspected: () => setInspected(null),
     onEdgeMouseEnter,
     onEdgeMouseLeave: () => setHover(null),
-    onEdgeClick: (_event, edge) => setInspected(edge),
+    onEdgeClick: (_event, edge) => {
+      if (isInteractiveSemanticEdge(edge)) setInspected(edge);
+    },
   };
 }
 

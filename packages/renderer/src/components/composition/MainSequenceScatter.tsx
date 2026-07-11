@@ -14,9 +14,12 @@ import { useMemo } from "react";
 import type { UnitMetrics } from "@meridian/design-metrics";
 import { scatterPoints } from "../../derive/compositionScatter";
 import { colorForDistance, HEALTH_AMBER, HEALTH_GREEN, HEALTH_RED } from "../../derive/compositionGraph";
-import { COMP_SELECT_ACCENT } from "../nodes/composition/CompositionNode";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
+
+// The selection green shared across the app's highlights (logic SELECT_ACCENT, module-map ring), so
+// the scatter's active-dot ring reads as the same "selected" signal.
+const COMP_SELECT_ACCENT = "#6BE38A";
 
 // Viewbox + margins: the plot box (PLOT_W × PLOT_H) is inset by the label margins, then PAD keeps
 // dots and the diagonal/zone corners off the frame edge. Kept in one place so the SVG geometry and

@@ -93,9 +93,18 @@ describe("deriveModuleTree — overview (focus null)", () => {
 
   it("collapsed packages couple as package→package wires; internal imports self-loop away", () => {
     const { nodes, edges } = fixture();
-    const wires = treeOf(nodes, edges, null, []).edges.map((e) => `${e.source}->${e.target}:${e.crossFrame}`);
-    expect(wires).toContain("ts:pkgA->ts:pkgB:true");
-    expect(wires).toContain("ts:pkgB->ts:pkgC:true");
+    const tree = treeOf(nodes, edges, null, []);
+    const wires = tree.edges.map((e) => `${e.source}->${e.target}:${e.crossFrame}`);
+    expect(tree.edges.find((edge) => edge.source === "ts:pkgA" && edge.target === "ts:pkgB")).toMatchObject({
+      crossFrame: true,
+      crossPackage: true,
+      outsideView: false,
+    });
+    expect(tree.edges.find((edge) => edge.source === "ts:pkgB" && edge.target === "ts:pkgC")).toMatchObject({
+      crossFrame: true,
+      crossPackage: true,
+      outsideView: false,
+    });
     // index→util and index→run are internal to pkgA, so they collapse to a dropped self-loop.
     expect(wires.some((w) => w.startsWith("ts:pkgA->ts:pkgA"))).toBe(false);
   });
@@ -128,6 +137,16 @@ describe("deriveModuleTree — inline expansion", () => {
     expect(wires).toContain("ts:pkgA/src/index.ts->ts:pkgA/src/cli:true");
     // the cross-package import lifts to the still-collapsed pkgB package node.
     expect(wires).toContain("ts:pkgA/src/index.ts->ts:pkgB:true");
+    expect(tree.edges.find((edge) => edge.target === "ts:pkgA/src/cli")).toMatchObject({
+      crossFrame: true,
+      crossPackage: false,
+      outsideView: false,
+    });
+    expect(tree.edges.find((edge) => edge.target === "ts:pkgB")).toMatchObject({
+      crossFrame: true,
+      crossPackage: true,
+      outsideView: false,
+    });
   });
 });
 
@@ -375,11 +394,13 @@ describe("deriveModuleTree — ghost relationships (off-screen endpoints)", () =
     const { nodes, edges } = ghostFixture();
     const tree = treeOf(nodes, edges, "ts:pkg/src/orders", ["ts:pkg/src/orders/svc.ts", "ts:pkg/src/orders/svc.ts#OrderService"]);
     const ghost = tree.nodes.find((n) => n.kind === "ghost");
-    // The ghost reads at SERVICE granularity: the off-level `charge` method lifts to its class.
-    expect(ghost?.id).toBe("ts:pkg/src/billing/pay.ts#PaymentGateway");
+    // A call names the exact off-level callable, not its coarser owning class.
+    expect(ghost?.id).toBe("ts:pkg/src/billing/pay.ts#PaymentGateway.charge");
     expect(ghost?.parentId).toBeNull();
+    const ghostWire = tree.edges.find((edge) => edge.ghost === true);
     const wires = tree.edges.filter((e) => e.ghost).map((e) => `${e.source}->${e.target}`);
-    expect(wires).toEqual(["ts:pkg/src/orders/svc.ts#OrderService.place->ts:pkg/src/billing/pay.ts#PaymentGateway"]);
+    expect(wires).toEqual(["ts:pkg/src/orders/svc.ts#OrderService.place->ts:pkg/src/billing/pay.ts#PaymentGateway.charge"]);
+    expect(ghostWire).toMatchObject({ crossFrame: false, crossPackage: false, outsideView: true });
     // The lifted dep projection itself drew nothing (the endpoint left the canvas) — only the ghost.
     expect(tree.edges.filter((e) => e.category === "dep" && !e.ghost)).toHaveLength(0);
   });
@@ -388,10 +409,10 @@ describe("deriveModuleTree — ghost relationships (off-screen endpoints)", () =
     const { nodes, edges } = ghostFixture();
     const tree = treeOf(nodes, edges, "ts:pkg/src/billing", ["ts:pkg/src/billing/pay.ts", "ts:pkg/src/billing/pay.ts#PaymentGateway"]);
     const ghost = tree.nodes.find((n) => n.kind === "ghost");
-    // The off-level CALLER lifts to its class too, so the ghost reads as the service.
-    expect(ghost?.id).toBe("ts:pkg/src/orders/svc.ts#OrderService");
+    // Incoming calls preserve the exact caller method too.
+    expect(ghost?.id).toBe("ts:pkg/src/orders/svc.ts#OrderService.place");
     const wires = tree.edges.filter((e) => e.ghost).map((e) => `${e.source}->${e.target}`);
-    expect(wires).toEqual(["ts:pkg/src/orders/svc.ts#OrderService->ts:pkg/src/billing/pay.ts#PaymentGateway.charge"]);
+    expect(wires).toEqual(["ts:pkg/src/orders/svc.ts#OrderService.place->ts:pkg/src/billing/pay.ts#PaymentGateway.charge"]);
   });
 
   it("draws no ghost when both endpoints are on screen", () => {
@@ -420,14 +441,14 @@ describe("deriveModuleTree — ghost relationships (off-screen endpoints)", () =
       "ts:pkg/src/orders/svc.ts#OrderService.place",
     ], flows);
     const wires = tree.edges.filter((e) => e.ghost).map((e) => `${e.source}->${e.target}`);
-    expect(wires).toEqual(["step:ts:pkg/src/orders/svc.ts#OrderService.place:0->ts:pkg/src/billing/pay.ts#PaymentGateway"]);
+    expect(wires).toEqual(["step:ts:pkg/src/orders/svc.ts#OrderService.place:0->ts:pkg/src/billing/pay.ts#PaymentGateway.charge"]);
   });
 
   it("never ghosts an endpoint the artifact does not know (ext:/unresolved: pseudo-ids)", () => {
     const { nodes, edges } = ghostFixture();
     const withExt = [...edges, callEdge("ts:pkg/src/orders/svc.ts#OrderService.place", "ext:stripe#charge")];
     const tree = treeOf(nodes, withExt, "ts:pkg/src/orders", ["ts:pkg/src/orders/svc.ts", "ts:pkg/src/orders/svc.ts#OrderService"]);
-    expect(tree.nodes.filter((n) => n.kind === "ghost").map((n) => n.id)).toEqual(["ts:pkg/src/billing/pay.ts#PaymentGateway"]);
+    expect(tree.nodes.filter((n) => n.kind === "ghost").map((n) => n.id)).toEqual(["ts:pkg/src/billing/pay.ts#PaymentGateway.charge"]);
   });
 });
 

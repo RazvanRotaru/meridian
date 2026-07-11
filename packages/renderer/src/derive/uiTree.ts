@@ -10,7 +10,8 @@
  *     the lens keeps its cyan identity via the shared relationship paint) plus the dep wires of
  *     expanded cards, step chains, and step call wires — the Map's own code-level machinery.
  *   - GHOSTS ride the shared tier: an off-tree dep OR renders endpoint charts as a dashed ghost
- *     card exactly like the Map's off-level deps (same folding, same Tests filter).
+ *     card exactly like the Map's off-level deps (same exact derivation, Tests filter, and optional
+ *     paint-time parent grouping).
  *
  * Pure; no React, no ELK.
  */
@@ -26,12 +27,14 @@ import { frontierRoots } from "./moduleFrontier";
 import { extraRoots, walkContainment } from "./moduleTree";
 import { depWireEdges, flowChainEdges, stepCallEdges, type Skeleton } from "./codeWalk";
 import { finalizeModuleNode, foldById } from "./moduleTreeData";
-import { ghostData, nearestVisible, type GhostEmission } from "./ghostDeps";
+import { ghostData, nearestVisible, type GhostEmission, type GhostWire } from "./ghostDeps";
 import { finishGhostTier, isDepAnchorKind, rawGhostEmission } from "./ghostLevel";
+import { folderGhostEmission, mergeGhostEmissions } from "./folderGhosts";
 import type { LiftedEdge } from "./types";
 import { liftEdges } from "./liftEdges";
 import type { ModulePackageData } from "./packageOverview";
 import type { ModuleTree, ModuleTreeEdge } from "./moduleTreeTypes";
+import { graphEdgeCrossesPackage, underlyingEdgesCrossPackage } from "./packageBoundary";
 
 /** A shared empty set so the default arguments never allocate per call. */
 const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
@@ -66,13 +69,16 @@ export function deriveUiTree(
   const nodes = walked.skeleton.map((entry) => finalizeModuleNode(entry, index, graph, lifted, walked.stepData, overviewFold, hiddenIds));
   const kinds = new Map(walked.skeleton.map((entry) => [entry.id, entry.kind]));
   const isDepAnchor = (id: string) => isDepAnchorKind(kinds.get(id));
-  const emission = mergeEmissions(
+  const emission = mergeGhostEmissions(
     rawGhostEmission(blockDeps, walked, visibleIds, index, kinds),
     rendersGhostEmission(renders, visibleIds, index, isDepAnchor),
+    // A folder-only UI frontier cannot anchor the symbol-level renders projection above. Keep the
+    // canvas at folder granularity by aggregating descendants onto the complete peer-folder set.
+    folderGhostEmission(renders, visibleIds, index, hiddenIds),
   );
   const ghosts = finishGhostTier(emission, index, hiddenIds);
   const edges = [
-    ...rendersTreeEdges(lifted, kinds),
+    ...rendersTreeEdges(lifted, kinds, index),
     ...depWireEdges(blockDeps, visibleIds, index, isDepAnchor, walked.expandedBlocks),
     ...flowChainEdges(walked),
     ...stepCallEdges(walked, visibleIds, index),
@@ -83,15 +89,18 @@ export function deriveUiTree(
 
 /** Lifted renders wires as level edges — category "dep" with depKind "renders", so the shared
  * relationship paint gives them the lens's cyan and the emphasis walk treats them as couplings. */
-function rendersTreeEdges(lifted: LiftedEdge[], kinds: Map<string, Skeleton["kind"]>): ModuleTreeEdge[] {
+function rendersTreeEdges(lifted: LiftedEdge[], kinds: Map<string, Skeleton["kind"]>, index: GraphIndex): ModuleTreeEdge[] {
   return lifted.map((edge) => ({
     id: `uir:${edge.source}->${edge.target}`,
     source: edge.source,
     target: edge.target,
     weight: edge.weight,
     crossFrame: kinds.get(edge.source) === "package" || kinds.get(edge.target) === "package",
+    crossPackage: underlyingEdgesCrossPackage(edge.underlyingEdgeIds, index),
+    outsideView: false,
     category: "dep" as const,
     depKind: UI_EDGE_KIND,
+    underlyingEdgeIds: edge.underlyingEdgeIds,
   }));
 }
 
@@ -105,9 +114,9 @@ function rendersGhostEmission(
   isAnchor: (id: string) => boolean,
 ): GhostEmission {
   const ghosts = new Map<string, ReturnType<typeof ghostData>>();
-  const byPair = new Map<string, { source: string; target: string; weight: number; kind: string; underlyingEdgeIds: string[] }>();
+  const byPair = new Map<string, GhostWire>();
   // Real artifact edge ids ride along so the Wire Inspector can attribute a ghost renders wire.
-  const add = (source: string, target: string, ghostId: string, weight: number, edgeId: string): void => {
+  const add = (source: string, target: string, ghostId: string, weight: number, edge: GraphEdge): void => {
     const node = index.nodesById.get(ghostId);
     if (!node) {
       return;
@@ -117,9 +126,17 @@ function rendersGhostEmission(
     const existing = byPair.get(key);
     if (existing) {
       existing.weight += weight;
-      existing.underlyingEdgeIds.push(edgeId);
+      existing.crossPackage ||= graphEdgeCrossesPackage(edge, index);
+      existing.underlyingEdgeIds.push(edge.id);
     } else {
-      byPair.set(key, { source, target, weight, kind: UI_EDGE_KIND, underlyingEdgeIds: [edgeId] });
+      byPair.set(key, {
+        source,
+        target,
+        weight,
+        kind: UI_EDGE_KIND,
+        crossPackage: graphEdgeCrossesPackage(edge, index),
+        underlyingEdgeIds: [edge.id],
+      });
     }
   };
   for (const edge of renders) {
@@ -127,22 +144,11 @@ function rendersGhostEmission(
     const targetVisible = nearestVisible(edge.target, visibleIds, index);
     const weight = edge.weight ?? 1;
     if (sourceVisible !== null && targetVisible === null && isAnchor(sourceVisible)) {
-      add(sourceVisible, edge.target, edge.target, weight, edge.id);
+      add(sourceVisible, edge.target, edge.target, weight, edge);
     }
     if (targetVisible !== null && sourceVisible === null && isAnchor(targetVisible)) {
-      add(edge.source, targetVisible, edge.source, weight, edge.id);
+      add(edge.source, targetVisible, edge.source, weight, edge);
     }
   }
   return { ghosts, wires: [...byPair.values()] };
-}
-
-/** Union two ghost emissions (dep + renders) so ONE shared finishing pass folds and filters both. */
-function mergeEmissions(deps: GhostEmission | null, renders: GhostEmission): GhostEmission {
-  if (deps === null) {
-    return renders;
-  }
-  return {
-    ghosts: new Map([...deps.ghosts, ...renders.ghosts]),
-    wires: [...deps.wires, ...renders.wires],
-  };
 }

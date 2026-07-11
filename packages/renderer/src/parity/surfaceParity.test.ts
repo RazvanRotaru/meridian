@@ -30,7 +30,7 @@ import {
   freshStore,
   ghostIdsOf,
   unrepresentedFacts,
-  ALPHA, ALPHA_RUN, APP_FILE, APP_FN, APP_PKG, A_FILE, BETA, BETA_PKG, B_FILE, CORE, ORDER, STORE_FILE, SVC_ALPHA,
+  ALPHA, ALPHA_RUN, APP_FILE, APP_FN, APP_PKG, A_FILE, BETA, BETA_PKG, BETA_RUN, B_FILE, CORE, ORDER, STORE_FILE, SVC_ALPHA,
 } from "./surfaceFixture";
 import { homeFileOf } from "../derive/serviceClusterEdges";
 
@@ -83,10 +83,12 @@ describe("GHOSTS — the same off-canvas facts chart as the same ghost cards on 
 
   it.each([...MODULE_SURFACE_MODES])("%s: the off-canvas dep and caller ghost with the SAME real node ids", (mode) => {
     const tree = deriveFor(spec(mode), INDEX, CACHES, offCanvas(mode));
-    expect(ghostIdsOf(tree)).toEqual([APP_FN, BETA].sort());
+    expect(ghostIdsOf(tree)).toEqual([APP_FN, BETA_RUN].sort());
     const ghostEdges = tree.edges.filter((e) => e.ghost === true);
+    expect(ghostEdges.length).toBeGreaterThan(0);
+    expect(ghostEdges.every((edge) => edge.outsideView === true)).toBe(true);
     // The dependency ghosts as the wire's TARGET; the caller ghosts as a SOURCE — on every surface.
-    expect(ghostEdges.some((e) => e.target === BETA)).toBe(true);
+    expect(ghostEdges.some((e) => e.target === BETA_RUN)).toBe(true);
     expect(ghostEdges.some((e) => e.source === APP_FN)).toBe(true);
     // Ghost cards are always detached (root-level) and their ids are REAL artifact ids.
     for (const ghost of tree.nodes.filter((n) => n.kind === "ghost")) {
@@ -98,6 +100,7 @@ describe("GHOSTS — the same off-canvas facts chart as the same ghost cards on 
   it.each([...MODULE_SURFACE_MODES])("%s: no ghost when the facts are drawn (wires/frame wires instead)", (mode) => {
     const tree = deriveFor(spec(mode), INDEX, CACHES, allDrawn(mode));
     expect(ghostIdsOf(tree)).toEqual([]);
+    expect(tree.edges.every((edge) => edge.outsideView === false)).toBe(true);
   });
 
   it.each([...MODULE_SURFACE_MODES])("%s: every coupling fact touching the canvas is represented — never dropped", (mode) => {
@@ -197,12 +200,12 @@ describe("PROMOTION — the ghost '+' pins the same home file into mapExtra on e
   it.each([...MODULE_SURFACE_MODES])("%s: pinning the dep ghost and the caller ghost", (mode) => {
     const store = freshStore();
     store.setState({ viewMode: mode });
-    store.getState().pinGhostToCanvas(BETA);
+    store.getState().promoteGhost(BETA);
     expect([...store.getState().mapExtra]).toEqual([B_FILE]);
-    store.getState().pinGhostToCanvas(APP_FN);
+    store.getState().promoteGhost(APP_FN);
     expect([...store.getState().mapExtra].sort()).toEqual([APP_FILE, B_FILE].sort());
     // Pinning the same ghost twice is a no-op — the pin set never duplicates.
-    store.getState().pinGhostToCanvas(BETA);
+    store.getState().promoteGhost(BETA);
     expect(store.getState().mapExtra.size).toBe(2);
   });
 
@@ -210,7 +213,7 @@ describe("PROMOTION — the ghost '+' pins the same home file into mapExtra on e
     for (const mode of ALL_VIEW_MODES.filter((m) => !MODULE_SURFACE_MODES.includes(m))) {
       const store = freshStore();
       store.setState({ viewMode: mode });
-      store.getState().pinGhostToCanvas(BETA);
+      store.getState().promoteGhost(BETA);
       expect(store.getState().mapExtra.size, `mode "${mode}"`).toBe(0);
     }
   });

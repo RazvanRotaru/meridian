@@ -28,7 +28,7 @@ export interface StepEmission {
   chain: Array<{ id: string; source: string; target: string }>;
   /** Resolved call steps and their artifact targets, for dep wires to visible definitions. An
    * EXPANDED call keeps its wire — the frame still points at where the inlined code is defined. */
-  calls: Array<{ stepId: string; target: NodeId }>;
+  calls: Array<{ stepId: string; blockId: NodeId; target: NodeId }>;
 }
 
 /** Unroll a block's flow into drawable pseudo-nodes + wires, recursing into every step whose id is
@@ -43,7 +43,7 @@ export function emitFlowSteps(
   resolveTarget: (target: NodeId) => NodeId = (target) => target,
 ): StepEmission {
   const out: StepEmission = { steps: [], chain: [], calls: [] };
-  emitRun(ownerId, flow, 1, 0, out, { flows, expanded, resolveTarget });
+  emitRun(ownerId, flow, 1, 0, ownerId, out, { flows, expanded, resolveTarget });
   return out;
 }
 
@@ -55,7 +55,15 @@ interface EmitContext {
 
 /** Emit one contiguous run of steps under `ownerId`, chained in order, starting at `base` (branch
  * paths share a parent, so later paths offset their indices to keep child ids unique). */
-function emitRun(ownerId: string, steps: FlowStep[], depth: number, base: number, out: StepEmission, ctx: EmitContext): void {
+function emitRun(
+  ownerId: string,
+  steps: FlowStep[],
+  depth: number,
+  base: number,
+  blockId: NodeId,
+  out: StepEmission,
+  ctx: EmitContext,
+): void {
   let previous: string | null = null;
   steps.forEach((step, i) => {
     const id = `step:${ownerId}:${base + i}`;
@@ -67,32 +75,33 @@ function emitRun(ownerId: string, steps: FlowStep[], depth: number, base: number
     }
     previous = id;
     if (step.kind === "call" && step.resolution === "resolved" && step.target) {
-      out.calls.push({ stepId: id, target: ctx.resolveTarget(step.target) });
+      out.calls.push({ stepId: id, blockId, target: ctx.resolveTarget(step.target) });
     }
     if (isExpanded) {
-      emitInside(id, step, depth + 1, out, ctx);
+      emitInside(id, step, depth + 1, blockId, out, ctx);
     }
   });
 }
 
 /** What expanding this step charts: nothing across branch PATHS is chained — they are alternatives. */
-function emitInside(id: string, step: FlowStep, depth: number, out: StepEmission, ctx: EmitContext): void {
+function emitInside(id: string, step: FlowStep, depth: number, blockId: NodeId, out: StepEmission, ctx: EmitContext): void {
   if (step.kind === "branch") {
     let offset = 0;
     for (const path of step.paths) {
-      emitRun(id, path.body, depth, offset, out, ctx);
+      emitRun(id, path.body, depth, offset, blockId, out, ctx);
       offset += path.body.length;
     }
     return;
   }
   if (step.kind === "call") {
-    emitRun(id, step.target ? ctx.flows[ctx.resolveTarget(step.target)] ?? [] : [], depth, 0, out, ctx);
+    const target = step.target ? ctx.resolveTarget(step.target) : null;
+    emitRun(id, target ? ctx.flows[target] ?? [] : [], depth, 0, target ?? blockId, out, ctx);
     return;
   }
   if (step.kind === "exit") {
     return; // never a container — nothing charts inside a return/throw.
   }
-  emitRun(id, step.body, depth, 0, out, ctx);
+  emitRun(id, step.body, depth, 0, blockId, out, ctx);
 }
 
 /** Whether the step has anything to open: a charted callee flow, or a non-empty construct body.

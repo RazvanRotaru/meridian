@@ -185,13 +185,16 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     logicView: nav.logicView,
     logicStack: nav.logicStack,
     moduleFocus: nav.moduleFocus,
+    serviceGroupingMode: nav.serviceGroupingMode,
+    serviceGroupingTargetSize: nav.serviceGroupingTargetSize,
     // Reset the overlay to the URL's state. A review rebuild starts empty because its current
     // artifact/files re-derive both seeds and expansion; replaying mgraph/mexp first would run a
-    // redundant ELK pass with ids that may belong to the prior artifact.
+    // redundant ELK pass with ids that may belong to the prior artifact. An ordinary restore that
+    // carries no seeds closes the overlay; one with seeds reopens it at the seed base (curated
+    // promoted/demoted state is ephemeral — a restore never reproduces it).
     minimalSeedIds: rebuildingReview ? [] : nav.minimalSeedIds,
     minimalMemberIds: rebuildingReview ? [] : [...nav.minimalSeedIds],
-    // Rollup expansion is session-only. A review rebuild derives the mapping again from its files;
-    // an ordinary URL-carried package seed is already a valid opaque member without one.
+    // Rollup expansion is session-only. A review rebuild derives the mapping again from its files.
     minimalRollups: {},
     minimalArrange: false,
     minimalRfNodes: [],

@@ -21,9 +21,19 @@ const PACKAGE_ACCENT = "#5B9BE3";
 
 type PackageRfNode = Node<ModuleGroupData, "package">;
 
-type PackageMetaData = Pick<ModuleGroupData, "fileCount" | "ca" | "ce">;
+type PackageMetaData = Pick<ModuleGroupData, "fileCount" | "ca" | "ce" | "countLabel">;
 
 function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
+  return <GroupContainerNodeView id={id} data={data} />;
+}
+
+/**
+ * Shared package-shaped container rendering. A Service-domain node is synthetic in the derive, but
+ * it must wear the exact same interaction chrome as every other group: selection/diff treatment,
+ * source/target handles, the expand chevron, and the collapsed-card/expanded-frame transition.
+ * Keep those mechanics here and let each React Flow node type be a thin semantic wrapper.
+ */
+export function GroupContainerNodeView({ id, data }: { id: string; data: ModuleGroupData }) {
   const selected = useBlueprint((state) => state.moduleSelected.has(id));
   const rollupFileCount = useBlueprint((state) => state.minimalRollups[id]?.length ?? 0);
   const { expandMinimalGroup } = useBlueprintActions();
@@ -68,7 +78,7 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
           <span style={LABEL} title={id}>{data.label}</span>
           {data.readOnly ? changedInside : <DeltaChip diff={diff} />}
         </div>
-        <Meta data={data} rollupFileCount={rollupFileCount} />
+        <Meta data={data} hideCoupling={data.readOnly} rollupFileCount={rollupFileCount} />
         <CommonsChips chips={(data as { commonsChips?: string[] }).commonsChips} />
       </div>
     </div>
@@ -78,9 +88,10 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
 /** File count + cross-package fan-in/out — shown compact in a title bar, block in a collapsed card.
  * `hideCoupling` drops the uses/used-by pair when the counts aren't meaningful (a filtered subgraph). */
 function Meta({ data, hideCoupling, rollupFileCount = 0 }: { data: PackageMetaData; hideCoupling?: boolean; rollupFileCount?: number }) {
+  const countLabel = data.countLabel ?? `${data.fileCount} files`;
   return (
     <div style={META}>
-      <span style={FILES} title={`${data.fileCount} source file(s)`}>{data.fileCount} files</span>
+      <span style={FILES} title={data.countLabel ?? `${data.fileCount} source file(s)`}>{countLabel}</span>
       {rollupFileCount > 0 ? (
         <span style={EXPAND_ROLLUP} title={`Expand ${rollupFileCount} changed file(s)`}>{rollupFileCount} files ▸</span>
       ) : hideCoupling ? null : (

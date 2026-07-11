@@ -4,21 +4,24 @@
  * into its cluster members' home files.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { frameIdOf } from "../derive/serviceClusterEdges";
+import { deriveServiceDomains } from "../derive/serviceDomains";
+import { clusteringFor } from "../derive/serviceClusteringCache";
 import { moduleSurfaceSpec } from "../components/canvas/surfaceSpec";
 import { createBlueprintStore, type BlueprintStore } from "./store";
+import type { ServiceGroupingMode } from "../derive/serviceClusteringModes";
 
-function node(id: string, kind: string, parentId?: string, displayName?: string): GraphNode {
+function node(id: string, kind: string, parentId?: string, displayName?: string, file = "f.ts"): GraphNode {
   return {
     id,
     kind,
     qualifiedName: id,
     displayName: displayName ?? id,
     parentId: parentId ?? null,
-    location: { file: "f.ts", startLine: 1 },
+    location: { file, startLine: 1 },
   } as GraphNode;
 }
 
@@ -82,6 +85,51 @@ function freshStore(): BlueprintStore {
   });
 }
 
+function freshDomainStore(): BlueprintStore {
+  const nodes: GraphNode[] = [node("ts:src", "package", undefined, "src", "src")];
+  const edges: GraphEdge[] = [];
+  const leads: string[] = [];
+  for (const domain of ["analytics", "backend"]) {
+    for (let position = 0; position < 6; position += 1) {
+      const file = `src/aria/app/${domain}/service${position}.ts`;
+      const moduleId = `ts:${file}`;
+      const lead = `${moduleId}#${domain}${position}Service`;
+      nodes.push(node(moduleId, "module", "ts:src", `service${position}.ts`, file));
+      nodes.push(node(lead, "class", moduleId, `${domain}${position}Service`, file));
+      leads.push(lead);
+    }
+  }
+  for (let position = 0; position < leads.length - 1; position += 1) {
+    edges.push({
+      id: `domain-edge-${position}`,
+      source: leads[position],
+      target: leads[position + 1],
+      kind: "calls",
+      resolution: "resolved",
+    } as GraphEdge);
+  }
+  const artifact = { ...ARTIFACT, target: { ...ARTIFACT.target, name: "domains" }, nodes, edges } as GraphArtifact;
+  const index = buildGraphIndex(artifact);
+  return createBlueprintStore({
+    artifact,
+    index,
+    provider: null,
+    hasOverlay: false,
+    sourceUrl: null,
+    prsUrl: "",
+    prOneUrl: "",
+    prFilesUrl: "",
+    prRelatedUrl: "",
+    prCommentsUrl: "",
+    prChecksUrl: "",
+    prReviewUrl: "",
+  });
+}
+
+function domainId(store: BlueprintStore, label: string, mode: ServiceGroupingMode = "folder"): string {
+  return deriveServiceDomains(clusteringFor(store.getState().index), mode).domains.find((domain) => domain.label === label)!.id;
+}
+
 describe("Service cluster focus (the containment dive)", () => {
   it("diving into a svc: frame zooms the lens to that ONE cluster, members drawn, ghosts for the rest", async () => {
     const store = freshStore();
@@ -97,7 +145,7 @@ describe("Service cluster focus (the containment dive)", () => {
     expect(ids.has(ORDER)).toBe(true);
     expect(ids.has(frameIdOf(BETA))).toBe(false);
     // The off-zoom callee appears as a banded ghost card (kept OUT of ELK, still on the canvas).
-    const ghost = state.moduleRfNodes.find((n) => n.id === BETA);
+    const ghost = state.moduleRfNodes.find((n) => n.id === `${BETA}.run`);
     expect(ghost?.type).toBe("ghost");
   });
 
@@ -139,6 +187,162 @@ describe("Service cluster focus (the containment dive)", () => {
     // common-package focus), with the lead itself selected — never the svc: pseudo-id.
     expect(store.getState().moduleFocus).toBe("ts:app");
     expect(store.getState().moduleSelected.has(ALPHA)).toBe(true);
+  });
+
+  it("dives into a synthetic domain and the active Service tab returns to All services", async () => {
+    const store = freshDomainStore();
+    const backend = domainId(store, "backend");
+    store.setState({ viewMode: "call" });
+    store.getState().setModuleFocus(backend);
+    await store.getState().moduleRelayout();
+
+    expect(store.getState().moduleEffectiveFocus).toBe(backend);
+    expect(store.getState().moduleRfNodes.some((item) => item.type === "serviceDomain")).toBe(false);
+    expect(store.getState().moduleRfNodes.filter((item) => item.id.startsWith("svc:"))).toHaveLength(6);
+
+    store.getState().setViewMode("call");
+    expect(store.getState().moduleFocus).toBeNull();
+    await store.getState().moduleRelayout();
+    expect(store.getState().moduleRfNodes.filter((item) => item.type === "serviceDomain")).toHaveLength(2);
+    expect(store.getState().moduleRfNodes.filter((item) => item.type === "serviceDomain").every((item) => (item.data as { isExpanded?: boolean }).isExpanded === false)).toBe(true);
+  });
+
+  it("leaving a focused domain carries its real service leads instead of the synthetic id", async () => {
+    const store = freshDomainStore();
+    const backend = domainId(store, "backend");
+    store.setState({ viewMode: "call" });
+    store.getState().setModuleFocus(backend);
+    await store.getState().moduleRelayout();
+    store.getState().setViewMode("modules");
+
+    expect(store.getState().moduleFocus).toBe("ts:src");
+    expect(store.getState().moduleSelected.size).toBe(6);
+    expect([...store.getState().moduleSelected].every((id) => id.startsWith("ts:src/aria/app/backend/"))).toBe(true);
+    expect(store.getState().moduleSelected.has(backend)).toBe(false);
+  });
+});
+
+describe("Service domain container behavior", () => {
+  it("uses the shared selection and inline expansion actions in both directions", async () => {
+    const store = freshDomainStore();
+    const backend = domainId(store, "backend");
+    store.setState({ viewMode: "call" });
+    await store.getState().moduleRelayout();
+
+    const collapsed = store.getState().moduleRfNodes.find((item) => item.id === backend)!;
+    expect(collapsed.type).toBe("serviceDomain");
+    expect(collapsed.selectable).not.toBe(false);
+    expect(collapsed.data).toMatchObject({ isContainer: true, isExpanded: false, countLabel: "6 services" });
+
+    store.getState().selectModule(backend);
+    expect(store.getState().moduleSelected).toEqual(new Set([backend]));
+    store.getState().toggleModuleExpand(backend);
+    await store.getState().moduleRelayout();
+    expect(store.getState().moduleRfNodes.find((item) => item.id === backend)?.data).toMatchObject({ isExpanded: true });
+    expect(store.getState().moduleRfNodes.filter((item) => item.parentId === backend && item.id.startsWith("svc:"))).toHaveLength(6);
+
+    store.getState().toggleModuleExpand(backend);
+    await store.getState().moduleRelayout();
+    expect(store.getState().moduleRfNodes.find((item) => item.id === backend)?.data).toMatchObject({ isExpanded: false });
+    expect(store.getState().moduleRfNodes.some((item) => item.parentId === backend)).toBe(false);
+  });
+
+  it("switches grouping without discarding real service exploration state", () => {
+    const store = freshDomainStore();
+    const folderDomain = domainId(store, "backend");
+    const leadFrame = frameIdOf("ts:src/aria/app/backend/service0.ts#backend0Service");
+    store.setState({
+      viewMode: "call",
+      moduleFocus: folderDomain,
+      moduleEffectiveFocus: folderDomain,
+      moduleExpanded: new Set([folderDomain, leadFrame]),
+      moduleSelected: new Set([folderDomain, leadFrame]),
+    });
+
+    store.getState().setServiceGroupingMode("domain");
+    const state = store.getState();
+    expect(state.serviceGroupingMode).toBe("domain");
+    expect(state.moduleFocus).toBeNull();
+    expect(state.moduleEffectiveFocus).toBeNull();
+    expect(state.moduleExpanded).toEqual(new Set([leadFrame]));
+    expect(state.moduleSelected).toEqual(new Set([leadFrame]));
+  });
+});
+
+describe("action-scoped graph loading", () => {
+  it("describes the grouping action and clears it when that request settles", async () => {
+    const store = freshDomainStore();
+    store.setState({ viewMode: "call" });
+
+    store.getState().setServiceGroupingMode("leiden");
+    expect(store.getState().moduleLayoutStatus).toBe("laying-out");
+    expect(store.getState().moduleLayoutActivity).toEqual({
+      label: "Grouping services by Leiden + CPM…",
+      detail: "Target 12",
+    });
+
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+    expect(store.getState().moduleLayoutActivity).toBeNull();
+  });
+
+  it("uses the initiating expand/collapse action instead of sticky grouping settings", async () => {
+    const store = freshDomainStore();
+    store.setState({ viewMode: "call", serviceGroupingMode: "leiden" });
+    await store.getState().moduleRelayout();
+    const domain = deriveServiceDomains(
+      clusteringFor(store.getState().index),
+      "leiden",
+      store.getState().serviceGroupingTargetSize,
+    ).domains[0]!;
+
+    store.getState().toggleModuleExpand(domain.id);
+    expect(store.getState().moduleLayoutActivity).toEqual({ label: `Expanding ${domain.label}…` });
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+
+    store.getState().toggleModuleExpand(domain.id);
+    expect(store.getState().moduleLayoutActivity).toEqual({ label: `Collapsing ${domain.label}…` });
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+    expect(store.getState().moduleLayoutActivity).toBeNull();
+  });
+
+  it("snapshots a cluster-size change as its own action", async () => {
+    const store = freshDomainStore();
+    store.setState({ viewMode: "call", serviceGroupingMode: "leiden" });
+
+    store.getState().setServiceGroupingTargetSize(6);
+    expect(store.getState().moduleLayoutActivity).toEqual({
+      label: "Changing cluster target to 6…",
+      detail: "Leiden + CPM",
+    });
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+    expect(store.getState().moduleLayoutActivity).toBeNull();
+  });
+
+  it("does not let a superseded request clear the newer action", async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    }));
+    try {
+      const store = freshDomainStore();
+      store.setState({ viewMode: "call" });
+      const first = store.getState().moduleRelayout({ label: "First action…" });
+      const second = store.getState().moduleRelayout({ label: "Second action…" });
+      expect(store.getState().moduleLayoutActivity).toEqual({ label: "Second action…" });
+
+      frames[0]!(0);
+      await first;
+      expect(store.getState().moduleLayoutActivity).toEqual({ label: "Second action…" });
+      expect(store.getState().moduleLayoutStatus).toBe("laying-out");
+
+      frames[1]!(0);
+      await second;
+      expect(store.getState().moduleLayoutActivity).toBeNull();
+      expect(store.getState().moduleLayoutStatus).toBe("ready");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
@@ -224,6 +428,7 @@ describe("minimal-graph seeds from svc: frames", () => {
     const index = buildGraphIndex(ARTIFACT);
     const spec = moduleSurfaceSpec("call")!;
     expect(spec.minimalSeeds(["svc:ts:app/z.ts#NopeService"], index)).toEqual([]);
+    expect(spec.minimalSeeds(["service-domain:does-not-exist"], index)).toEqual([]);
     expect(spec.minimalSeeds([ALPHA, "ts:app/a.ts"], index)).toEqual(["ts:app/a.ts"]);
     expect(spec.minimalSeeds(["ts:app", "ts:app/c.ts"], index)).toEqual(["ts:app", "ts:app/c.ts"]);
   });
@@ -232,6 +437,31 @@ describe("minimal-graph seeds from svc: frames", () => {
     const index = buildGraphIndex(ARTIFACT);
     const spec = moduleSurfaceSpec("modules")!;
     expect(spec.minimalSeeds(["ts:app/a.ts", "ts:app"], index)).toEqual(["ts:app/a.ts", "ts:app"]);
+  });
+
+  it("a selected synthetic domain extracts every represented service as a non-empty graph of real home files", async () => {
+    const store = freshDomainStore();
+    const backend = domainId(store, "backend");
+    store.setState({ viewMode: "call", moduleSelected: new Set([backend]) });
+    store.getState().buildMinimalGraph();
+
+    expect(store.getState().minimalSeedIds).toHaveLength(6);
+    expect(store.getState().minimalSeedIds.every((id) => id.startsWith("ts:src/aria/app/backend/") && !id.startsWith("service-domain:"))).toBe(true);
+    expect(store.getState().minimalMemberIds).toEqual(store.getState().minimalSeedIds);
+    await store.getState().minimalRelayout();
+    expect(store.getState().minimalRfNodes.length).toBeGreaterThan(0);
+    expect(store.getState().minimalRfNodes.some((node) => node.id.startsWith("service-domain:"))).toBe(false);
+  });
+
+  it("domain + contained service + member selections dedupe their home files", () => {
+    const store = freshDomainStore();
+    const index = store.getState().index;
+    const backend = domainId(store, "backend");
+    const lead = "ts:src/aria/app/backend/service0.ts#backend0Service";
+    const seeds = moduleSurfaceSpec("call")!.minimalSeeds([backend, frameIdOf(lead), lead], index);
+
+    expect(seeds).toHaveLength(6);
+    expect(new Set(seeds).size).toBe(6);
   });
 });
 
@@ -260,5 +490,20 @@ describe("the Service surface's focus model (breadcrumb contract)", () => {
     expect(map.divable("package", "ts:app")).toBe(true);
     expect(map.divable("file", "ts:app/a.ts")).toBe(true);
     expect(map.divable("unit", ALPHA)).toBe(false);
+  });
+
+  it("domains dive and a focused service carries its domain in the breadcrumb", () => {
+    const store = freshDomainStore();
+    const index = store.getState().index;
+    const backend = domainId(store, "backend");
+    const service = frameIdOf("ts:src/aria/app/backend/service0.ts#backend0Service");
+    const focus = moduleSurfaceSpec("call")!.focus;
+
+    expect(focus.divable("serviceDomain", backend)).toBe(true);
+    expect(focus.crumbs(backend, index)).toEqual([{ id: backend, label: "backend" }]);
+    expect(focus.crumbs(service, index)).toEqual([
+      { id: backend, label: "backend" },
+      { id: service, label: "backend0Service" },
+    ]);
   });
 });

@@ -90,6 +90,9 @@ describe("createWebServer generate -> view (offline path source)", () => {
     expect(view).toContain(`"graphUrl":"/api/graph?id=${result.id}"`);
     expect(view).toContain('"hasOverlay":false');
     expect(view).toContain('"defaultEnv":null');
+    // A path-sourced session has no GitHub identity: the boot contract carries null (a GitHub
+    // session carries the {repository, subdir} source object instead of the old boolean).
+    expect(view).toContain('"githubSource":null');
   }, 60_000);
 
   it("auto-detects Python for a pyproject tree", async () => {

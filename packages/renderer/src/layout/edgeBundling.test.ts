@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Edge, Node } from "@xyflow/react";
-import { bundleEdges, BUNDLE_EDGE_TYPE, type BundleEdgeData } from "./edgeBundling";
+import { bundleEdges, bundleLabel, BUNDLE_EDGE_TYPE, type BundleEdgeData } from "./edgeBundling";
+import { BOUNDARY_DASH_PATTERN, type EdgeBoundaryData } from "./edgeBoundary";
+import { IMPORT_CROSS } from "../theme/mapPalette";
 
 // Two packages, each holding three files. All three files in A import their counterpart in B, so the
 // A→B pair carries three cross-container edges — exactly the bundle threshold.
@@ -15,7 +17,12 @@ const nodes: Node[] = [
   { id: "b3", parentId: "pkgB", position: { x: 0, y: 0 }, data: {} },
 ];
 
-const edge = (id: string, source: string, target: string): Edge => ({ id, source, target, data: { depKind: "imports" } });
+const edge = (id: string, source: string, target: string, boundary: EdgeBoundaryData = {}): Edge => ({
+  id,
+  source,
+  target,
+  data: { depKind: "imports", crossPackage: false, outsideView: false, ...boundary },
+});
 
 const crossEdges: Edge[] = [edge("e1", "a1", "b1"), edge("e2", "a2", "b2"), edge("e3", "a3", "b3")];
 
@@ -28,6 +35,16 @@ describe("bundleEdges", () => {
     expect(highway.source).toBe("pkgA");
     expect(highway.target).toBe("pkgB");
     expect((highway.data as BundleEdgeData).count).toBe(3);
+    // Cross-container remains the bundle's geometric/color signal, not a reason to dash.
+    expect(highway.data).toMatchObject({ crossFrame: true, crossPackage: false, outsideView: false });
+    expect(highway.style?.strokeDasharray).toBeUndefined();
+  });
+
+  it.each(["crossPackage", "outsideView"] as const)("dashes when any constituent carries %s", (flag) => {
+    const flagged = [edge("e1", "a1", "b1"), edge("e2", "a2", "b2", { [flag]: true }), edge("e3", "a3", "b3")];
+    const [highway] = bundleEdges(flagged, nodes);
+    expect(highway.data).toMatchObject({ [flag]: true });
+    expect(highway.style?.strokeDasharray).toBe(BOUNDARY_DASH_PATTERN);
   });
 
   it("un-bundles a selected node's own wires so its links draw individually", () => {
@@ -91,5 +108,17 @@ describe("bundleEdges", () => {
     const edges = [edge("e1", "a1", "b1"), edge("e2", "a1", "b2"), edge("e3", "a1", "b3")];
     const result = bundleEdges(edges, siblings);
     expect(result.filter((e) => e.type === BUNDLE_EDGE_TYPE)).toHaveLength(1);
+  });
+
+  it("preserves the painted cross-frame colour for untyped Service dependency highways", () => {
+    const serviceEdges = crossEdges.map((item) => ({
+      ...item,
+      data: { category: "dep", crossFrame: true, crossPackage: false, outsideView: false },
+      style: { stroke: IMPORT_CROSS, opacity: 0.12 },
+    }));
+    const [highway] = bundleEdges(serviceEdges, nodes);
+
+    expect(highway.style?.stroke).toBe(IMPORT_CROSS);
+    expect(bundleLabel((highway.data as BundleEdgeData).breakdown)).toBe("3 dependencies");
   });
 });

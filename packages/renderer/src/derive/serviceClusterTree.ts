@@ -6,15 +6,14 @@
  * like that same node under an expanded file in the Map tab. The lens shares the Map's whole focus
  * and ghost vocabulary (unified-canvas phase B):
  *
- *   - FOCUS is the containment zoom into ONE cluster: a `svc:` focus draws only that cluster's
- *     frame, force-expanded, and flows out as `effectiveFocus` for the breadcrumb. Any other focus
- *     id (a folder left by another lens, a stale frame) is ignored — full lens.
+ *   - FOCUS is containment zoom into one synthetic domain or one `svc:` cluster. A domain focus
+ *     draws its service cards flat; a service focus draws that frame force-expanded.
  *   - GHOSTS chart every coupling the canvas cannot represent (`serviceGhosts.ts`): off-zoom /
  *     out-of-scope clusters, and code-level deps whose cluster frame is not drawn. Ghost ids are
  *     real artifact ids; `hiddenIds` (the Tests toggle) filters them exactly like the Map's tier.
  *
- * Cluster coupling wires only emit when at least one endpoint is a `svc:` frame; drawn-to-drawn
- * code pairs are handled by `depWireEdges`, avoiding a duplicate wire.
+ * Cluster coupling wires lift to the nearest visible service/domain container; drawn-to-drawn code
+ * pairs are handled by `depWireEdges`, avoiding a duplicate wire.
  */
 
 import type { LogicFlows } from "@meridian/core";
@@ -23,11 +22,19 @@ import { createCodeWalk, depWireEdges, flowChainEdges, stepCallEdges, visitCode,
 import type { ModuleGraph } from "./moduleGraph";
 import type { BlockDeps } from "./blockDeps";
 import type { ServiceClustering } from "./serviceComposition";
+import type { ServiceGroupingMode } from "./serviceClusteringModes";
 import { clusteringFor } from "./serviceClusteringCache";
 import type { ModuleTree } from "./moduleTree";
 import { clusterCouplingEdges, clusterDegrees, frameIdOf, isOpen, leadIdOf } from "./serviceClusterEdges";
-import { finalizeServiceNode } from "./serviceClusterData";
+import { finalizeServiceDomainNode, finalizeServiceNode } from "./serviceClusterData";
 import { serviceGhostTier } from "./serviceGhosts";
+import {
+  deriveServiceDomains,
+  SERVICE_DOMAIN_MIN_CLUSTERS,
+  visibleServiceDomains,
+  type ServiceDomain,
+  type ServiceDomainModel,
+} from "./serviceDomains";
 
 export interface ServiceTreeOptions {
   /** The scoped sub-view's kept cluster leads; undefined == the full lens. */
@@ -37,6 +44,10 @@ export interface ServiceTreeOptions {
   /** The Tests toggle's hidden set — filters the GHOST tier (the walk itself never hid tests on
    * this lens; that stands — test members hide at paint time like before). */
   hiddenIds?: ReadonlySet<string>;
+  /** Full-system parent assignment used only by the dense unscoped overview. */
+  groupingMode?: ServiceGroupingMode;
+  /** Preferred member count for balanced parent-assignment strategies. */
+  groupingTargetSize?: number;
 }
 
 export function deriveServiceTree(
@@ -52,15 +63,32 @@ export function deriveServiceTree(
   // sub-view's lead resolution read, so a relayout never re-clusters and scope leads always match.
   const full = clusteringFor(index);
   const scoped = scopedTo(full, options.scopeLeadIds);
+  const domainModel = deriveServiceDomains(full, options.groupingMode, options.groupingTargetSize);
   const focusLead = resolveFocusLead(focus, scoped);
-  // FOCUS zooms INSIDE whatever the scope kept: the drawn set narrows to the one dived cluster.
-  const clustering = focusLead === null ? scoped : scopedTo(scoped, new Set([focusLead]));
+  const focusDomain = resolveFocusDomain(focus, scoped, domainModel);
+  // FOCUS zooms INSIDE whatever the scope kept: a service narrows to one cluster; a synthetic
+  // domain narrows to that domain's service leads and drops its own wrapper, like a Map folder dive.
+  const clustering = focusLead !== null
+    ? scopedTo(scoped, new Set([focusLead]))
+    : focusDomain !== null
+      ? scopedTo(scoped, new Set(focusDomain.leadIds))
+      : scoped;
   if (clustering.clusters.length === 0) {
     return { nodes: [], edges: [], effectiveFocus: null };
   }
   // Badges read at SCOPE level (never the zoom): diving must not re-count a cluster's neighbours.
   const degrees = clusterDegrees(scoped.couplings, scoped.leadOf);
-  const walk = serviceWalk(clustering, index, expanded, flows, focusLead);
+  const visibleDomains = visibleServiceDomains(clustering.clusters, domainModel);
+  // The close-up view was already good: focused/small scopes stay flat. Domain frames solve only
+  // the dense overview where spatial responsibility areas otherwise disappear.
+  const domains = focusLead === null
+    && focusDomain === null
+    && options.scopeLeadIds === undefined
+    && clustering.clusters.length >= SERVICE_DOMAIN_MIN_CLUSTERS
+    && visibleDomains.length > 0
+    ? visibleDomains
+    : [];
+  const walk = serviceWalk(clustering, index, expanded, flows, focusLead, domains);
   // Palette-pinned nodes (⌘P "+") ride in as EXTRA top-level cards — a unit/file/block that isn't
   // inside an expanded cluster still joins the canvas. Already-visited ids (a member of an open
   // cluster) are dropped by the walk's `seen` guard.
@@ -68,17 +96,28 @@ export function deriveServiceTree(
   const visibleIds = new Set(walk.skeleton.map((entry) => entry.id));
   const kinds = kindsOf(walk.skeleton);
   const isCode = (id: string) => kinds.get(id) === "unit" || kinds.get(id) === "block";
-  const nodes = walk.skeleton.map((entry) => finalizeServiceNode(entry, clustering, degrees, index, graph, walk));
+  const domainById = new Map(domains.map((domain) => [domain.id, domain]));
+  const domainIdByLead = new Map([...domainModel.domainByLead].map(([lead, domain]) => [lead, domain.id]));
+  const nodes = walk.skeleton.map((entry) => {
+    const domain = domainById.get(entry.id);
+    return domain
+      ? finalizeServiceDomainNode(entry, domain)
+      : finalizeServiceNode(entry, clustering, degrees, index, graph, walk);
+  });
   const drawnLeads = new Set(clustering.clusters.map((cluster) => cluster.leadId));
-  const ghosts = serviceGhostTier(full, drawnLeads, blockDeps, walk, visibleIds, index, kinds, options.hiddenIds ?? EMPTY_IDS);
+  const ghosts = serviceGhostTier(full, drawnLeads, blockDeps, walk, visibleIds, index, kinds, domainIdByLead, options.hiddenIds ?? EMPTY_IDS);
   const edges = [
-    ...clusterCouplingEdges(clustering.couplings, clustering.leadOf, visibleIds),
+    ...clusterCouplingEdges(clustering.couplings, clustering.leadOf, visibleIds, index, domainIdByLead),
     ...depWireEdges(blockDeps, visibleIds, index, isCode, walk.expandedBlocks),
     ...flowChainEdges(walk),
     ...stepCallEdges(walk, visibleIds, index),
     ...ghosts.edges,
   ].sort((a, b) => a.id.localeCompare(b.id));
-  return { nodes: [...nodes, ...ghosts.nodes], edges, effectiveFocus: focusLead === null ? null : frameIdOf(focusLead) };
+  return {
+    nodes: [...nodes, ...ghosts.nodes],
+    edges,
+    effectiveFocus: focusLead !== null ? frameIdOf(focusLead) : focusDomain?.id ?? null,
+  };
 }
 
 /**
@@ -112,6 +151,25 @@ function resolveFocusLead(focus: string | null, clustering: ServiceClustering): 
   return clustering.clusters.some((cluster) => cluster.leadId === lead) ? lead : null;
 }
 
+/** A focused synthetic domain, restricted to the leads the current Service scope kept. */
+function resolveFocusDomain(
+  focus: string | null,
+  clustering: ServiceClustering,
+  model: ServiceDomainModel,
+): ServiceDomain | null {
+  const fullDomainSize = model.domains.reduce((sum, domain) => sum + domain.leadIds.length, 0);
+  if (focus === null || fullDomainSize < SERVICE_DOMAIN_MIN_CLUSTERS) {
+    return null;
+  }
+  const domain = model.domainById.get(focus);
+  if (!domain) {
+    return null;
+  }
+  const scopedLeads = new Set(clustering.clusters.map((cluster) => cluster.leadId));
+  const leadIds = domain.leadIds.filter((lead) => scopedLeads.has(lead));
+  return leadIds.length > 0 ? { ...domain, leadIds } : null;
+}
+
 /** A shared empty set so the default option arguments never allocate per call. */
 const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
 
@@ -133,11 +191,13 @@ function serviceWalk(
   expanded: ReadonlySet<string>,
   flows: LogicFlows,
   focusLead: string | null,
+  domains: readonly ServiceDomain[],
 ): CodeWalk {
   const walk = createCodeWalk();
   // The Service lens has always shown unit members inside service frames; only the folder Map gates units.
   const ctx = { index, expanded, flows, unitsAlwaysOpen: true };
-  for (const cluster of [...clustering.clusters].sort((a, b) => a.leadId.localeCompare(b.leadId))) {
+  const clustersByLead = new Map(clustering.clusters.map((cluster) => [cluster.leadId, cluster]));
+  const emitCluster = (cluster: ServiceClustering["clusters"][number], parentId: string | null, depth: number) => {
     const frameId = frameIdOf(cluster.leadId);
     // The FOCUSED cluster is the zoom: always open — even a single-member cluster, which the full
     // lens draws as a bare frame card — so the dive always lands on the members.
@@ -146,15 +206,39 @@ function serviceWalk(
     const isExpanded = isFocus ? isContainer : isOpen(cluster, expanded);
     walk.skeleton.push({
       id: frameId,
-      parentId: null,
+      parentId,
       kind: "package",
       isContainer,
       isExpanded,
-      depth: 0,
+      depth,
       childCount: cluster.memberIds.length,
     });
     if (isExpanded) {
-      cluster.memberIds.slice().sort().forEach((id) => visitCode(id, frameId, 1, ctx, walk));
+      cluster.memberIds.slice().sort().forEach((id) => visitCode(id, frameId, depth + 1, ctx, walk));
+    }
+  };
+  if (domains.length === 0) {
+    [...clustering.clusters]
+      .sort((a, b) => a.leadId.localeCompare(b.leadId))
+      .forEach((cluster) => emitCluster(cluster, null, 0));
+    return walk;
+  }
+  for (const domain of domains) {
+    const isExpanded = expanded.has(domain.id);
+    walk.skeleton.push({
+      id: domain.id,
+      parentId: null,
+      kind: "serviceDomain",
+      isContainer: true,
+      isExpanded,
+      depth: 0,
+      childCount: domain.leadIds.length,
+    });
+    if (isExpanded) {
+      domain.leadIds.forEach((leadId) => {
+        const cluster = clustersByLead.get(leadId);
+        if (cluster) emitCluster(cluster, domain.id, 1);
+      });
     }
   }
   return walk;

@@ -41,5 +41,6 @@ function bootJson(overlay: OverlaySource, preselectedEnv: string | null, sourceR
     envRequired: hasOverlay(overlay),
     preselectedEnv,
     defaultEnv: null,
+    githubSource: false,
   });
 }

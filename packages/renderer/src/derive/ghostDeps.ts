@@ -11,6 +11,7 @@
 import type { GraphNode } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import { UNIT_CARD_KINDS, type BlockDeps } from "./blockDeps";
+import { crossesPackageBoundary, graphEdgeCrossesPackage } from "./packageBoundary";
 
 /** What a ghost card shows: the symbol's qualified name, its home file, and its kind (glyph tint).
  * A type alias (not an interface) so it satisfies React Flow's Record-typed node-data constraint. */
@@ -18,10 +19,13 @@ export type GhostData = {
   label: string;
   context: string;
   ghostKind: string;
-  /** A folder GROUP ghost's contributing home FILES — the files whose symbols actually folded into
-   * the card, recorded at fold time (groupGhosts.ts) so the "+" pin promotes THEM, never the
-   * folder's alphabetically-first files. Absent on individual ghosts. */
+  /** A real folder ghost's contributing home FILES, so main's "+" promotion pins exactly the
+   * relationships represented by that folder instead of arbitrary children. */
   members?: string[];
+  /** Exact cards represented by a paint-time parent group, used for hover preview and expansion. */
+  semanticMembers?: Array<{ id: string; data: GhostData }>;
+  /** Stable real-parent expansion key on a paint-time parent anchor; absent on exact child ghosts. */
+  ghostGroupId?: string;
   /** Paint-time flag: this ghost IS a selected call step's definition — its border flips to the
    * selection colour (the beacon read). Never set at derive time. */
   beacon?: boolean;
@@ -35,6 +39,8 @@ export interface GhostWire {
   target: string;
   weight: number;
   kind: string;
+  /** True when any original dependency behind the ghost wire crosses package ownership. */
+  crossPackage: boolean;
   /** The artifact edge ids behind this wire (empty for step-call ghosts — steps have no edge id). */
   underlyingEdgeIds: string[];
 }
@@ -54,7 +60,7 @@ export interface GhostEmission {
  */
 export function ghostDepWires(
   blockDeps: BlockDeps,
-  calls: ReadonlyArray<{ stepId: string; target: string }>,
+  calls: ReadonlyArray<{ stepId: string; blockId: string; target: string }>,
   visibleIds: ReadonlySet<string>,
   index: GraphIndex,
   isCode: (id: string) => boolean,
@@ -62,7 +68,15 @@ export function ghostDepWires(
 ): GhostEmission {
   const ghosts = new Map<string, GhostData>();
   const byPair = new Map<string, GhostWire>();
-  const add = (source: string, target: string, ghostId: string, weight: number, kind: string, edgeId: string | null): void => {
+  const add = (
+    source: string,
+    target: string,
+    ghostId: string,
+    weight: number,
+    kind: string,
+    edgeId: string | null,
+    crossPackage: boolean,
+  ): void => {
     const node = index.nodesById.get(ghostId);
     if (!node) {
       return; // ext:/unresolved: pseudo-ids have no definition to chart.
@@ -72,11 +86,12 @@ export function ghostDepWires(
     const existing = byPair.get(key);
     if (existing) {
       existing.weight += weight;
+      existing.crossPackage ||= crossPackage;
       if (edgeId !== null) {
         existing.underlyingEdgeIds.push(edgeId);
       }
     } else {
-      byPair.set(key, { source, target, weight, kind, underlyingEdgeIds: edgeId === null ? [] : [edgeId] });
+      byPair.set(key, { source, target, weight, kind, crossPackage, underlyingEdgeIds: edgeId === null ? [] : [edgeId] });
     }
   };
   for (const edge of blockDeps.edges) {
@@ -84,19 +99,19 @@ export function ghostDepWires(
     const targetVisible = nearestVisible(edge.target, visibleIds, index);
     const weight = edge.weight ?? 1;
     if (sourceVisible !== null && targetVisible === null && isCode(sourceVisible) && !expandedBlocks.has(sourceVisible)) {
-      const anchor = serviceAnchor(edge.target, index);
-      add(sourceVisible, anchor, anchor, weight, edge.kind, edge.id);
+      const anchor = semanticAnchor(edge.target, edge.kind, "target", index);
+      add(sourceVisible, anchor, anchor, weight, edge.kind, edge.id, graphEdgeCrossesPackage(edge, index));
     }
     if (targetVisible !== null && sourceVisible === null && isCode(targetVisible)) {
-      const anchor = serviceAnchor(edge.source, index);
-      add(anchor, targetVisible, anchor, weight, edge.kind, edge.id);
+      const anchor = semanticAnchor(edge.source, edge.kind, "source", index);
+      add(anchor, targetVisible, anchor, weight, edge.kind, edge.id, graphEdgeCrossesPackage(edge, index));
     }
   }
   // Step-call targets arrive already resolved (constructions point at the constructor block).
   for (const call of calls) {
     if (nearestVisible(call.target, visibleIds, index) === null) {
-      const anchor = serviceAnchor(call.target, index);
-      add(call.stepId, anchor, anchor, 1, "calls", null);
+      const anchor = semanticAnchor(call.target, "calls", "target", index);
+      add(call.stepId, anchor, anchor, 1, "calls", null, crossesPackageBoundary(call.blockId, call.target, index));
     }
   }
   return { ghosts, wires: [...byPair.values()] };
@@ -105,23 +120,39 @@ export function ghostDepWires(
 /** Drop hidden ghosts and every wire touching one (a wire into hidden code has nothing to say) —
  * the Tests-toggle filter, applied BEFORE grouping so group counts stay honest. Shared by the Map's
  * ghost level (`moduleTree`) and the minimal-graph overlay's satellite ring. */
-export function withoutHidden(emission: GhostEmission, hiddenIds: ReadonlySet<string>): GhostEmission {
+export function withoutHidden(emission: GhostEmission, hiddenIds: ReadonlySet<string>, index?: GraphIndex): GhostEmission {
   if (hiddenIds.size === 0) {
     return emission;
   }
-  const ghosts = new Map([...emission.ghosts].filter(([id]) => !hiddenIds.has(id)));
-  const wires = emission.wires.filter((wire) => !hiddenIds.has(wire.source) && !hiddenIds.has(wire.target));
+  // Production testIds are containment-closed, but accepting an ancestor-only set keeps this helper
+  // honest for focused derives/tests and prevents a newly precise method ghost escaping a hidden class.
+  const isHidden = (id: string): boolean => hiddenIds.has(id) || (index?.ancestorsOf(id).some((node) => hiddenIds.has(node.id)) ?? false);
+  const ghosts = new Map([...emission.ghosts].filter(([id]) => !isHidden(id)));
+  const wires = emission.wires.filter((wire) => !isHidden(wire.source) && !isHidden(wire.target));
   return { ghosts, wires };
 }
 
 /**
- * The SERVICE a ghost should read as: a member block (constructor / method) lifts to its owning
- * class / interface / object, so an off-level dependency ghosts as `BlobFileSystem`, not
- * `BlobFileSystem.constructor` — and every member dep on the same unit folds into one ghost card.
- * A standalone function (no unit ancestor, e.g. a bare module-level callable) passes through
- * unchanged, staying a function ghost. The result is always a real artifact id (never parallel).
+ * Pick the semantic endpoint that best explains this relationship. Execution is callable-specific:
+ * a `calls` ghost is the exact called/calling function or method, and the source of `instantiates`
+ * remains the exact constructor consumer. Structural relationships read at type granularity:
+ * extends/implements endpoints and an instantiated constructor rise to their owning class,
+ * interface, or object. References stay exact on both sides; in particular, an incoming reference
+ * to a drawn type must identify the function/method using that type rather than its enclosing class.
+ * Module targets (the extractor's honest fallback for unemitted symbols/top-level code) have no unit
+ * ancestor and therefore pass through unchanged.
  */
-function serviceAnchor(id: string, index: GraphIndex): string {
+function semanticAnchor(id: string, kind: string, role: "source" | "target", index: GraphIndex): string {
+  if (kind === "extends" || kind === "implements" || (kind === "instantiates" && role === "target")) {
+    return nearestUnit(id, index);
+  }
+  return id;
+}
+
+/** Rise through a constructor/member endpoint to the nearest type definition. If there is no type
+ * ancestor (a module fallback, standalone function, or malformed/open-vocabulary endpoint), keep
+ * the artifact's exact id rather than inventing a coarser identity. */
+function nearestUnit(id: string, index: GraphIndex): string {
   const seen = new Set<string>();
   let current: string | null | undefined = id;
   while (current && !seen.has(current)) {

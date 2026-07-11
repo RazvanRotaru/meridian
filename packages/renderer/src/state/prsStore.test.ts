@@ -62,6 +62,7 @@ function freshStore(extra?: Partial<StoreDependencies>) {
     provider: null,
     hasOverlay: false,
     sourceUrl: null,
+    prSessionSource: { repository: "https://github.com/o/r", subdir: "" },
     prsUrl: "/api/prs?id=artifact-1",
     prOneUrl: "/api/prs/one?id=artifact-1",
     prFilesUrl: "/api/prs/files?id=artifact-1",
@@ -78,6 +79,20 @@ afterEach(() => {
 });
 
 describe("PR store slice", () => {
+  it("does not call PR endpoints for a graph that is not connected to GitHub", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ prSessionSource: null });
+
+    await store.getState().loadPrs(1);
+    await store.getState().selectPr(8);
+    store.getState().togglePrsView();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(store.getState().prSelected).toBeNull();
+    expect(store.getState().viewMode).toBe("modules");
+  });
+
   it("appends paged PRs and dedupes by number", async () => {
     const fetchMock = vi
       .fn()
@@ -265,6 +280,93 @@ describe("PR store slice", () => {
     store.getState().togglePrsView();
     expect(store.getState().viewMode).toBe("logic");
   });
+
+  it("loads an isolated hover preview without replacing the open code modal", async () => {
+    vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: "line10\nline11\nline12", startLine: 10, truncated: false }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ sourceUrl: "/api/source?id=artifact-1" });
+    const method = store.getState().index.nodesById.get(METHOD_ID)!;
+    const openModal = { node: method, code: "already open", loading: false, error: null, mode: "modal" as const };
+    store.setState({ codeView: openModal });
+
+    const preview = await store.getState().loadCodePreview(method);
+
+    expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/source?id=artifact-1&file=src%2Fa.ts&start=10&end=12");
+    expect(preview?.code).toBe("line10\nline11\nline12");
+    expect(preview?.baseLine).toBe(10);
+    expect(store.getState().codeView).toBe(openModal);
+  });
+
+  it("reads a changed file from the PR head even when GitHub omitted its patch", async () => {
+    vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
+    const fullCode = Array.from({ length: 20 }, (_value, index) => `line${index + 1}`).join("\n");
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: fullCode, truncated: false }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ sourceUrl: "/api/source?id=artifact-1", prFileUrl: "/api/prs/file?id=artifact-1" });
+    store.setState({
+      prReviewed: 7,
+      reviewHeadRef: "feature",
+      reviewFileDelta: { "src/a.ts": { added: 100, deleted: 20 } },
+      reviewDiffByFile: {}, // binary/oversized patches carry no edits or line kinds
+    });
+    const method = store.getState().index.nodesById.get(METHOD_ID)!;
+
+    const preview = await store.getState().loadCodePreview(method);
+
+    expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/prs/file?id=artifact-1&path=src%2Fa.ts&ref=feature");
+    expect(preview?.code).toBe("line10\nline11\nline12");
+  });
+
+  it("reads a removed file from base source because it no longer exists at PR head", async () => {
+    vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: "old10\nold11\nold12", startLine: 10, truncated: false }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ sourceUrl: "/api/source?id=artifact-1", prFileUrl: "/api/prs/file?id=artifact-1" });
+    store.setState({
+      prReviewed: 7,
+      reviewHeadRef: "feature",
+      reviewFileDelta: { "src/a.ts": { added: 0, deleted: 20, status: "removed" } },
+      reviewDiffByFile: {
+        "src/a.ts": {
+          edits: [{ oldStart: 1, oldLines: 20, newStart: 0, newLines: 0 }],
+          kinds: [{ start: 1, end: 20, kind: "deleted" }],
+        },
+      },
+    });
+    const method = store.getState().index.nodesById.get(METHOD_ID)!;
+
+    const preview = await store.getState().loadCodePreview(method);
+
+    expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/source?id=artifact-1&file=src%2Fa.ts&start=10&end=12");
+    expect(preview?.code).toBe("old10\nold11\nold12");
+    expect(preview?.baseLine).toBe(10);
+    expect([...preview!.changedLineKinds!.entries()]).toEqual([[10, "deleted"], [11, "deleted"], [12, "deleted"]]);
+  });
+
+  it("shares one PR-head file response across previews for nodes in that file", async () => {
+    vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
+    const fullCode = Array.from({ length: 20 }, (_value, index) => `line${index + 1}`).join("\n");
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: fullCode, truncated: false }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ prFileUrl: "/api/prs/file?id=artifact-1" });
+    store.setState({
+      prReviewed: 7,
+      reviewHeadRef: "feature",
+      reviewFileDelta: { "src/a.ts": { added: 2, deleted: 0 } },
+    });
+    const method = store.getState().index.nodesById.get(METHOD_ID)!;
+    const service = store.getState().index.nodesById.get(CLASS_ID)!;
+
+    const [methodPreview, servicePreview] = await Promise.all([
+      store.getState().loadCodePreview(method),
+      store.getState().loadCodePreview(service),
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(methodPreview?.code).toBe("line10\nline11\nline12");
+    expect(servicePreview?.code).toBe(Array.from({ length: 18 }, (_value, index) => `line${index + 3}`).join("\n"));
+  });
 });
 
 /** Store deps of a GitHub `web` session, where the server can prepare the PR head. */
@@ -350,7 +452,11 @@ function headSelectedPrState(number: number) {
 async function swappedReviewStore() {
   const fetchMock = routedFetch();
   vi.stubGlobal("fetch", fetchMock);
-  const store = freshStore(ANALYZE_DEPS);
+  const store = freshStore({
+    ...ANALYZE_DEPS,
+    sourceUrl: "/api/source?id=artifact-1",
+    prFileUrl: "/api/prs/file?id=artifact-1",
+  });
   const bootIndex = store.getState().index;
   store.setState(headSelectedPrState(7));
   await store.getState().reviewPrInGraph();
@@ -715,6 +821,37 @@ describe("PR review artifact swap and restore", () => {
     // machinery must be disarmed — showCode reads the prepared checkout via /api/source instead.
     expect(store.getState().reviewHeadRef).toBe(null);
     expect(store.getState().reviewDiffByFile).toEqual({});
+  });
+
+  it("previews a prepared node in its existing HEAD coordinates without double-shifting it", async () => {
+    const { store } = await swappedReviewStore();
+    vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+      code: "line20\nline21\nline22",
+      truncated: false,
+      startLine: 20,
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    store.setState({
+      reviewDiffByFile: {
+        "src/a.ts": {
+          // Mapping this already-head node again would move 20..22 to 30..32.
+          edits: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 11 }],
+          kinds: [{ start: 21, end: 21, kind: "modified" }],
+        },
+      },
+    });
+    const method = store.getState().index.nodesById.get(METHOD_ID)!;
+
+    const preview = await store.getState().loadCodePreview(method);
+
+    expect(fetchMock.mock.calls[0][0].toString()).toBe(
+      "http://meridian.local/api/source?id=pr-head-1&file=src%2Fa.ts&start=20&end=22",
+    );
+    expect(preview?.baseLine).toBe(20);
+    expect(preview?.code).toBe("line20\nline21\nline22");
+    // The prepared artifact's own 20..21 line kinds win over the weaker one-line GitHub detail.
+    expect([...preview!.changedLineKinds!.entries()]).toEqual([[20, "modified"], [21, "modified"]]);
   });
 
   it("returning to the PRs lens restores the boot pair and clears the review session", async () => {

@@ -5,7 +5,10 @@
  */
 
 import { describe, expect, it } from "vitest";
+import type { GraphArtifact, GraphNode } from "@meridian/core";
 import type { Edge, Node } from "@xyflow/react";
+import { buildGraphIndex } from "../graph/graphIndex";
+import { ghostGroupId } from "../derive/groupGhosts";
 import { emphasize, filterVisible, type HideOptions } from "./moduleMapPaint";
 
 /** Baseline options with nothing hidden; tests override the one filter they exercise. */
@@ -27,6 +30,19 @@ function unitNode(id: string, parentId: string): Node {
 
 function edge(source: string, target: string): Edge {
   return { id: `${source}->${target}`, source, target, data: {} } as Edge;
+}
+
+function ghostNode(id: string, ghostKind = "function"): Node {
+  return { id, type: "ghost", position: { x: 100, y: 100 }, data: { label: id, context: `${id}.ts`, ghostKind }, style: { width: 220, height: 54 } } as Node;
+}
+
+function ghostEdge(source: string, target: string, weight = 1, onDemand = true): Edge {
+  return {
+    id: `g:${source}->${target}`,
+    source,
+    target,
+    data: { category: "dep", depKind: "calls", ghost: onDemand, weight },
+  } as Edge;
 }
 
 describe("filterVisible — subtree closure", () => {
@@ -95,5 +111,98 @@ describe("emphasize — stale selection", () => {
     const { nodes: styled } = emphasize(nodes, edges, new Set(["ts:a.ts#Gone"]), 1, "reach");
     // No node dims: the vanished selection must not fade the whole level.
     expect(styled.every((node) => node.style?.opacity === undefined)).toBe(true);
+  });
+});
+
+describe("emphasize — complete semantic ghosts", () => {
+  it("shows every related caller and dependency", () => {
+    const anchor = fileNode("ts:anchor.ts");
+    const incoming = Array.from({ length: 23 }, (_, index) => ghostNode(`ts:caller-${index}.ts#run`));
+    const outgoing = Array.from({ length: 23 }, (_, index) => ghostNode(`ts:dep-${index}.ts#run`));
+    const edges = [
+      ...incoming.map((ghost) => ghostEdge(ghost.id, anchor.id)),
+      ...outgoing.map((ghost) => ghostEdge(anchor.id, ghost.id)),
+    ];
+
+    const painted = emphasize([anchor, ...incoming, ...outgoing], edges, new Set([anchor.id]), 1, "node");
+
+    expect(painted.nodes.filter((node) => node.type === "ghost")).toHaveLength(46);
+    expect(painted.edges).toHaveLength(46);
+  });
+
+  it("keeps exact callables and an honest module fallback instead of ranking either away", () => {
+    const anchor = fileNode("ts:anchor.ts");
+    const exact = Array.from({ length: 8 }, (_, index) => ghostNode(`ts:dep-${index}.ts#run`, "method"));
+    const fallback = ghostNode("ts:fallback.ts", "module");
+    const edges = [
+      ...exact.map((ghost) => ghostEdge(anchor.id, ghost.id)),
+      ghostEdge(anchor.id, fallback.id, 100),
+    ];
+
+    const painted = emphasize([anchor, ...exact, fallback], edges, new Set([anchor.id]), 1, "node");
+
+    expect(painted.nodes.filter((node) => node.type === "ghost")).toHaveLength(9);
+    expect(painted.nodes.some((node) => node.id === fallback.id)).toBe(true);
+  });
+
+  it("keeps every minimal-overlay satellite visible at rest", () => {
+    const anchor = fileNode("ts:anchor.ts");
+    const satellites = Array.from({ length: 31 }, (_, index) => ghostNode(`ts:satellite-${index}.ts#run`));
+    const edges = satellites.map((ghost) => ghostEdge(anchor.id, ghost.id, 1, false));
+
+    const painted = emphasize([anchor, ...satellites], edges, new Set(), 1, "node");
+
+    expect(painted.nodes.filter((node) => node.type === "ghost")).toHaveLength(31);
+    expect(painted.edges).toHaveLength(31);
+  });
+
+  it("keeps every related ghost across a multi-selection", () => {
+    const anchors = [fileNode("ts:a.ts"), fileNode("ts:b.ts")];
+    const ghosts = anchors.flatMap((_anchor, anchorIndex) =>
+      Array.from({ length: 6 }, (_, index) => ghostNode(`ts:${anchorIndex}-${index}.ts#run`)),
+    );
+    const edges = ghosts.map((ghost, index) => ghostEdge(anchors[index < 6 ? 0 : 1].id, ghost.id));
+
+    const painted = emphasize([...anchors, ...ghosts], edges, new Set(anchors.map((node) => node.id)), 1, "node");
+
+    expect(painted.nodes.filter((node) => node.type === "ghost")).toHaveLength(12);
+    expect(painted.edges).toHaveLength(12);
+  });
+
+  it("keeps a persistent parent anchor and discloses exact children as its neighbours", () => {
+    const anchor = fileNode("ts:anchor.ts");
+    const parentId = "ts:dep.ts#Worker";
+    const ids = [1, 2, 3, 4].map((index) => `${parentId}.m${index}`);
+    const graphNodes: GraphNode[] = [
+      { id: "ts:dep.ts", kind: "module", qualifiedName: "dep.ts", displayName: "dep.ts", parentId: null, location: { file: "dep.ts", startLine: 1 } },
+      { id: parentId, kind: "class", qualifiedName: "Worker", displayName: "Worker", parentId: "ts:dep.ts", location: { file: "dep.ts", startLine: 1 } },
+      ...ids.map((id, index) => ({ id, kind: "method", qualifiedName: `Worker.m${index + 1}`, displayName: `m${index + 1}`, parentId, location: { file: "dep.ts", startLine: index + 2 } } as GraphNode)),
+    ];
+    const index = buildGraphIndex({ nodes: graphNodes, edges: [] } as unknown as GraphArtifact);
+    const ghosts = ids.map((id) => ghostNode(id, "method"));
+    const edges = ghosts.map((ghost) => ghostEdge(anchor.id, ghost.id));
+    const groupId = ghostGroupId("outgoing", parentId);
+
+    const grouped = emphasize([anchor, ...ghosts], edges, new Set([anchor.id]), 1, "node", {
+      index,
+      groupByParent: true,
+      expandedGroupIds: new Set(),
+    });
+    expect(grouped.nodes.filter((node) => node.type === "ghost").map((node) => node.id)).toEqual([groupId]);
+    expect(grouped.edges).toEqual([
+      expect.objectContaining({ source: anchor.id, target: parentId }),
+    ]);
+
+    const expanded = emphasize([anchor, ...ghosts], edges, new Set([anchor.id]), 1, "node", {
+      index,
+      groupByParent: true,
+      expandedGroupIds: new Set([groupId]),
+    });
+    expect(expanded.nodes.filter((node) => node.type === "ghost").map((node) => node.id).sort()).toEqual([parentId, ...ids].sort());
+    expect(expanded.edges.filter((edge) => edge.data?.edgeRole === "ghost-hierarchy")).toHaveLength(4);
+    expect(expanded.edges.filter((edge) => edge.data?.edgeRole === "ghost-hierarchy").every((edge) => edge.source === parentId)).toBe(true);
+    expect(expanded.edges.filter((edge) => edge.data?.ghostGroupAggregate === true)).toEqual([
+      expect.objectContaining({ source: anchor.id, target: parentId }),
+    ]);
   });
 });

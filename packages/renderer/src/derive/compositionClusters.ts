@@ -7,11 +7,11 @@
 
 import type { GraphNode } from "@meridian/core";
 import type { CompNodeSpec } from "./compositionGraph";
+import { npmPackageIdOf } from "./packageBoundary";
+
+export { npmPackageIdOf } from "./packageBoundary";
 
 const PACKAGE_KIND = "package";
-
-/** Tag the extractor puts on a `package` node whose directory owns a package.json (an npm package). */
-const NPM_PACKAGE_TAG = "npm-package";
 
 /** The frame every package-less unit falls into — a stable id/label safe as a React Flow node id. */
 export const ROOT_CLUSTER_ID = "(root)";
@@ -128,23 +128,6 @@ export function nearestEmitted(
       return current.id;
     }
     visited.add(current.id);
-    current = current.parentId ? nodesById.get(current.parentId) : undefined;
-  }
-  return null;
-}
-
-/**
- * The nearest ancestor `package` node tagged `npm-package` (the file's owning npm package), or null
- * when the file sits outside any npm package. Same visited-guarded parentId walk as `clusterIdOf`.
- */
-export function npmPackageIdOf(nodeId: string, nodesById: Map<string, GraphNode>): string | null {
-  const visited = new Set<string>();
-  let current = nodesById.get(nodeId);
-  while (current && !visited.has(current.id)) {
-    visited.add(current.id);
-    if (current.kind === PACKAGE_KIND && (current.tags?.includes(NPM_PACKAGE_TAG) ?? false)) {
-      return current.id;
-    }
     current = current.parentId ? nodesById.get(current.parentId) : undefined;
   }
   return null;

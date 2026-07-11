@@ -48,15 +48,18 @@ export async function layoutMinimalSubgraph(
   // Only tiered LEAF cards enter placement (a file, or a group member); tier-null containment frames
   // are flattened away, and ghost satellites band AFTER the members are placed (never inside ELK).
   const cards = spec.nodes.filter((node) => node.tier !== null);
-  // Placement rides on the IMPORT graph only (dep wires are a redundant subset — a→b calls implies
-  // a→b imports), matching the Map's own layout substrate.
+  // The map-mirror still grows along imports, matching the Map's own placement substrate. Re-arrange
+  // uses every INTERNAL visible relation: valid artifacts (including the bundled sample) may carry
+  // calls/instantiates without redundant import edges, and discarding those wires makes ELK see a
+  // connected member set as isolated cards. Ghost wires stay outside core placement.
   const importEdges = spec.edges.filter((edge) => edge.kind === "import").map((edge) => ({ source: edge.source, target: edge.target }));
+  const arrangeEdges = spec.edges.filter((edge) => edge.ghost !== true).map((edge) => ({ source: edge.source, target: edge.target }));
   const laidByFile = await layoutExpansions(spec.expansions);
   // Mirror path overrides only expanded frames and group summary cards: captured FILE cards keep their
   // exact map footprint, while a package member must always use its own 300×60 summary-card footprint.
   // Arrange path needs every card's real size so ELK reserves the right footprint.
   const placement = arrange
-    ? await arrangeMinimalCards(cards.map((card) => card.id), cardSizes(cards, laidByFile), importEdges)
+    ? await arrangeMinimalCards(cards.map((card) => card.id), cardSizes(cards, laidByFile), arrangeEdges)
     : await mirrorPlacement(cards, importEdges, basePositions, mirrorSizeOverrides(cards, laidByFile), laidByFile.size > 0);
   const { nodes, edges } = emitCards(cards, placement, laidByFile);
   const banded = ghostSatellites(spec, nodes);
@@ -77,7 +80,19 @@ function ghostSatellites(spec: MinimalSubgraphSpec, coreNodes: Node[]): Node[] {
   }
   const wires: ModuleTreeEdge[] = spec.edges
     .filter((edge) => edge.ghost === true)
-    .map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, weight: edge.weight, crossFrame: false, category: "dep" as const, depKind: edge.depKind, ghost: true }));
+    .map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      weight: edge.weight,
+      crossFrame: edge.crossFrame,
+      crossPackage: edge.crossPackage,
+      outsideView: edge.outsideView,
+      category: "dep" as const,
+      depKind: edge.depKind,
+      ghost: true,
+      underlyingEdgeIds: edge.underlyingEdgeIds,
+    }));
   return placeGhostBands(ghosts, wires, coreNodes);
 }
 
@@ -214,22 +229,39 @@ function toGroupCardNode(node: MinimalSubgraphNode, rect: PlacedRect): Node {
 function toRfEdge(edge: MinimalSubgraphEdge): Edge {
   // No baked stroke/marker on import/dep wires: the overlay's paint chain (suppressRedundantImports →
   // emphasize) styles them by relationship kind at rest and lights the selection's neighbourhood.
-  // `data` is the map's edge shape that chain reads. GHOST wires deliberately mint `ghost: false`
-  // here — the ONE divergence from the Map's shape: there, off-level ghosts are on-demand context and
-  // `pruneUnlitDeps` hides them until lit; here the satellites ARE the curation ring, always on
-  // screen, so they must ride the ordinary dim-at-rest / lit-on-selection dep styling instead.
+  // `data` is the map's edge shape that chain reads. Preserve the ghost bit so the shared paint
+  // pruner shows only satellites attached to the current selection. This is what turns the raw ring
+  // derived from every current member into an on-demand, member-by-member exploration frontier.
   if (edge.kind === "dep") {
     return {
       id: edge.id,
       source: edge.source,
       target: edge.target,
-      data: { weight: edge.weight, crossFrame: false, category: "dep", depKind: edge.depKind, ghost: false },
+      data: {
+        weight: edge.weight,
+        crossFrame: edge.crossFrame,
+        crossPackage: edge.crossPackage,
+        outsideView: edge.outsideView,
+        category: "dep",
+        depKind: edge.depKind,
+        // `outsideView` owns the dash semantic; `ghost` independently owns on-demand visibility.
+        ghost: edge.ghost === true,
+        underlyingEdgeIds: edge.underlyingEdgeIds,
+      },
     };
   }
   return {
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    data: { weight: edge.weight, crossFrame: edge.crossPackage ?? false, category: "import", ghost: false },
+    data: {
+      weight: edge.weight,
+      crossFrame: edge.crossFrame,
+      crossPackage: edge.crossPackage,
+      outsideView: edge.outsideView,
+      category: "import",
+      ghost: edge.ghost === true,
+      underlyingEdgeIds: edge.underlyingEdgeIds,
+    },
   };
 }

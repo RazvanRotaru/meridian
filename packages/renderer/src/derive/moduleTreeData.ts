@@ -4,6 +4,7 @@ import { npmPackageIdOf } from "./compositionClusters";
 import { type Skeleton } from "./codeWalk";
 import { liftEdges } from "./liftEdges";
 import { basename, blockData, fileData, unitData } from "./moduleLevel";
+import { underlyingEdgesCrossPackage } from "./packageBoundary";
 
 const EMPTY_HIDDEN: ReadonlySet<string> = new Set<string>();
 import { subtreeFileCount } from "./moduleFrontier";
@@ -69,16 +70,26 @@ export function importEdges(graph: ModuleGraph): GraphEdge[] {
 /** Lifted import wires as level edges, flagged crossFrame when either endpoint is a group card.
  * The lifted underlying ids are SYNTHETIC (`mimp:<pair>` — see `importEdges`); each expands through
  * `graph.edgeIds` back to the real artifact `imports` edges so the Wire Inspector can attribute. */
-export function importTreeEdges(lifted: ReturnType<typeof liftEdges>, kinds: Map<string, Skeleton["kind"]>, graph: ModuleGraph): ModuleTreeEdge[] {
-  return lifted.map((edge) => ({
-    id: `lvl:${edge.source}->${edge.target}`,
-    source: edge.source,
-    target: edge.target,
-    weight: edge.weight,
-    crossFrame: kinds.get(edge.source) === "package" || kinds.get(edge.target) === "package",
-    category: "import" as const,
-    underlyingEdgeIds: edge.underlyingEdgeIds.flatMap((id) => graph.edgeIds.get(id.slice("mimp:".length)) ?? []),
-  }));
+export function importTreeEdges(
+  lifted: ReturnType<typeof liftEdges>,
+  kinds: Map<string, Skeleton["kind"]>,
+  graph: ModuleGraph,
+  index: GraphIndex,
+): ModuleTreeEdge[] {
+  return lifted.map((edge) => {
+    const underlyingEdgeIds = edge.underlyingEdgeIds.flatMap((id) => graph.edgeIds.get(id.slice("mimp:".length)) ?? []);
+    return {
+      id: `lvl:${edge.source}->${edge.target}`,
+      source: edge.source,
+      target: edge.target,
+      weight: edge.weight,
+      crossFrame: kinds.get(edge.source) === "package" || kinds.get(edge.target) === "package",
+      crossPackage: underlyingEdgesCrossPackage(underlyingEdgeIds, index),
+      outsideView: false,
+      category: "import" as const,
+      underlyingEdgeIds,
+    };
+  });
 }
 
 /** The blast-radius entry module of the file's owning package (for the ENTRY badge on the card). */

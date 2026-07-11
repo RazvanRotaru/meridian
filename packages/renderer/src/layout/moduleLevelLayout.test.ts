@@ -32,11 +32,23 @@ function ghostNode(id: string): VisibleModuleNode {
 }
 
 function importEdge(source: string, target: string): ModuleTreeEdge {
-  return { id: `imp:${source}->${target}`, source, target, weight: 1, crossFrame: false, category: "import" };
+  return { id: `imp:${source}->${target}`, source, target, weight: 1, crossFrame: false, crossPackage: false, outsideView: false, category: "import" };
 }
 
 function ghostWire(source: string, target: string): ModuleTreeEdge {
-  return { id: `gdep:calls:${source}->${target}`, source, target, weight: 1, crossFrame: false, category: "dep", depKind: "calls", ghost: true };
+  return {
+    id: `gdep:calls:${source}->${target}`,
+    source,
+    target,
+    weight: 1,
+    crossFrame: false,
+    crossPackage: true,
+    outsideView: true,
+    category: "dep",
+    depKind: "calls",
+    ghost: true,
+    underlyingEdgeIds: [`calls:${source}->${target}`],
+  };
 }
 
 interface Rect {
@@ -76,12 +88,18 @@ describe("layoutModuleTree ghost placement", () => {
   it("keeps the ELK core ghost-free and emits ghosts as root nodes OUTSIDE the core's perimeter", async () => {
     const nodes = [fileNode("f:a"), fileNode("f:b"), ghostNode("g:x")];
     const edges = [importEdge("f:a", "f:b"), ghostWire("f:a", "g:x")];
-    const { nodes: laid } = await layoutModuleTree(nodes, edges);
+    const { nodes: laid, edges: laidEdges } = await layoutModuleTree(nodes, edges);
 
     const ghost = laid.find((node) => node.id === "g:x")!;
     // Emitted as a ROOT node typed "ghost" — never nested, never fed to ELK.
     expect(ghost.type).toBe("ghost");
     expect(ghost.parentId).toBeUndefined();
+    const wire = laidEdges.find((edge) => edge.id === "gdep:calls:f:a->g:x");
+    expect(wire?.data).toMatchObject({
+      crossPackage: true,
+      outsideView: true,
+      underlyingEdgeIds: ["calls:f:a->g:x"],
+    });
     // Fully outside the perimeter (past some edge), never inside the graph.
     expect(outsideBox(rectOf(ghost), coreBox(laid))).toBe(true);
   });
@@ -115,6 +133,22 @@ describe("layoutModuleTree ghost placement", () => {
     for (let i = 0; i < laid.length; i += 1) {
       for (let j = i + 1; j < laid.length; j += 1) {
         expect(overlaps(rects[i], rects[j])).toBe(false);
+      }
+    }
+  });
+
+  it("lays out every ghost beyond the former twenty-item evidence window", async () => {
+    const ghosts = Array.from({ length: 23 }, (_, index) => ghostNode(`g:${index}`));
+    const nodes = [fileNode("f:a"), ...ghosts];
+    const edges = ghosts.map((ghost) => ghostWire("f:a", ghost.id));
+    const { nodes: laid, edges: laidEdges } = await layoutModuleTree(nodes, edges);
+    const laidGhosts = laid.filter((node) => node.type === "ghost");
+
+    expect(laidGhosts).toHaveLength(23);
+    expect(laidEdges.filter((edge) => edge.id.startsWith("gdep:calls:"))).toHaveLength(23);
+    for (let i = 0; i < laidGhosts.length; i += 1) {
+      for (let j = i + 1; j < laidGhosts.length; j += 1) {
+        expect(overlaps(rectOf(laidGhosts[i]), rectOf(laidGhosts[j]))).toBe(false);
       }
     }
   });

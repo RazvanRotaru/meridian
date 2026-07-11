@@ -12,8 +12,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import { CANVAS_ROOT_ELK_OPTIONS } from "../layout/elkCanvasOptions";
+import { CANVAS_ROOT_ELK_OPTIONS, FLAT_CANVAS_ELK_OPTIONS } from "../layout/elkCanvasOptions";
 import { runElkLayout } from "../layout/elkLayout";
+import { arrangeMinimalCards } from "../layout/minimalArrange";
 import { layoutModuleTree } from "../layout/moduleLevelLayout";
 import { moduleSurfaceSpec } from "../components/canvas/surfaceSpec";
 import {
@@ -67,6 +68,21 @@ describe("ELK identity — one canonical root-options object for every surface",
     expect(CANVAS_ROOT_ELK_OPTIONS["elk.aspectRatio"]).toBe("1.6");
     expect(CANVAS_ROOT_ELK_OPTIONS["elk.hierarchyHandling"]).toBe("INCLUDE_CHILDREN");
   });
+
+  it("the minimal Re-arrange pass keeps canonical root identity", async () => {
+    const spy = vi.mocked(runElkLayout);
+    spy.mockClear();
+    await arrangeMinimalCards(["a", "b"], {}, [{ source: "a", target: "b" }]);
+
+    expect(spy).toHaveBeenCalledOnce();
+    const [graph] = spy.mock.calls[0];
+    expect(graph.layoutOptions).toBe(CANVAS_ROOT_ELK_OPTIONS);
+    expect(graph.children?.[0]?.layoutOptions).toBe(FLAT_CANVAS_ELK_OPTIONS);
+    expect(FLAT_CANVAS_ELK_OPTIONS).toEqual({
+      ...CANVAS_ROOT_ELK_OPTIONS,
+      "elk.hierarchyHandling": "SEPARATE_CHILDREN",
+    });
+  });
 });
 
 function treeArgs(mode: string): [Parameters<typeof layoutModuleTree>[0], Parameters<typeof layoutModuleTree>[1]] {
@@ -77,10 +93,9 @@ function treeArgs(mode: string): [Parameters<typeof layoutModuleTree>[0], Parame
 describe("ELK root-option literals — the source scan", () => {
   // The ONLY production modules allowed to spell an "elk.algorithm" literal. The canvas surfaces
   // (Map / Service / UI / minimal overlay's per-file nesting) all import CANVAS_ROOT_ELK_OPTIONS;
-  // the remaining four are standalone NON-canvas passes with deliberately different options:
+  // the remaining three are standalone NON-canvas passes with deliberately different options:
   //   - layout/logicElk.ts        the Logic lens's own render (out of unification scope, PR #116)
   //   - layout/compositionElk.ts  the composition scorecards (Toolbar side surface)
-  //   - layout/minimalArrange.ts  the overlay's "Re-arrange": a fresh flat pass, wider layers
   //   - layout/minimalReflow.ts   the overlay's expansion reflow: INTERACTIVE, position-seeded
   // This list may only ever SHRINK. Adding a file here to ship a new root config is the exact
   // regression this test exists to block — derive from elkCanvasOptions.ts instead.
@@ -88,7 +103,6 @@ describe("ELK root-option literals — the source scan", () => {
     "layout/compositionElk.ts",
     "layout/elkCanvasOptions.ts",
     "layout/logicElk.ts",
-    "layout/minimalArrange.ts",
     "layout/minimalReflow.ts",
   ];
 

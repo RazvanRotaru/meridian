@@ -33,7 +33,8 @@ export interface FileCodeWalk {
   isExpanded: boolean;
   unitCount: number;
   expansion: MinimalExpansion | null;
-  calls: ReadonlyArray<{ stepId: string; target: string }>;
+  /** Keep the original owning block so a synthetic step-call wire can still resolve package scope. */
+  calls: ReadonlyArray<{ stepId: string; blockId: string; target: string }>;
   expandedBlocks: ReadonlySet<string>;
 }
 

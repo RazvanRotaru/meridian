@@ -46,8 +46,9 @@ export interface PrApiUrls {
 }
 
 interface InjectedConfig extends Omit<BootConfig, "defaultEnv" | "githubSource"> {
+  /** Optional for compatibility with renderer HTML cached from before this capability existed. */
+  githubSource?: unknown;
   defaultEnv: unknown;
-  githubSource?: PrSessionSource | null;
 }
 
 declare global {
@@ -100,7 +101,11 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
   if (injected.defaultEnv !== null) {
     throw new Error("boot contract violation: defaultEnv must never be defaulted (always null)");
   }
-  return { ...injected, githubSource: injected.githubSource ?? null, defaultEnv: null };
+  // Cached pre-capability HTML may inject nothing or a legacy boolean — only the session-source
+  // OBJECT counts; anything else normalizes to null (no PR surfaces).
+  const source = injected.githubSource;
+  const githubSource = typeof source === "object" && source !== null ? (source as PrSessionSource) : null;
+  return { ...injected, githubSource, defaultEnv: null };
 }
 
 function apiUrl(path: string, id: string | null): string {

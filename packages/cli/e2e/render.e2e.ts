@@ -8,7 +8,7 @@
 import { rmSync } from "node:fs";
 import type { ChildProcess } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { chromium, type Browser, type Page } from "playwright";
+import { chromium, type Browser, type Locator, type Page } from "playwright";
 import { chromiumInstalled, generateGraph, runCli, startView } from "./harness";
 
 let graphDir: string | undefined;
@@ -23,6 +23,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
   let server: ChildProcess;
   let browser: Browser;
   let page: Page;
+  let viewUrl: string;
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
 
@@ -30,6 +31,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     const generated = generateGraph();
     graphDir = generated.dir;
     const view = await startView(generated.graphPath);
+    viewUrl = view.url;
     server = view.server;
     browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
     page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
@@ -52,6 +54,84 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     expect(pageErrors).toEqual([]);
   });
 
+  it("lets a disconnected PR deep link return to the graph", async () => {
+    await page.goto(`${viewUrl}?view=prs`, { waitUntil: "networkidle" });
+    expect(await page.getByRole("group", { name: "Canvas actions" }).count()).toBe(0);
+    const back = page.getByRole("button", { name: "PR review" });
+    await back.waitFor();
+    expect(await back.isEnabled()).toBe(true);
+    expect(await back.getAttribute("title")).toBe("Back to the graph");
+
+    await back.click();
+    await page.waitForSelector(".react-flow__node");
+    await page.getByRole("group", { name: "Canvas actions" }).waitFor();
+    expect(new URL(page.url()).searchParams.get("view")).toBeNull();
+  });
+
+  // Runs before the Service-lens switch below so it starts on the default Map lens.
+  it("collapses and restores the detailed controls while keeping the panel summary", async () => {
+    const panel = page.locator("#meridian-control-panel");
+    const actionBar = page.getByRole("group", { name: "Canvas actions" });
+    const controls = page.locator("#meridian-control-panel-controls");
+    const prReview = page.getByRole("button", { name: "PR review" });
+    const recenter = actionBar.getByRole("button", { name: "Recenter view" });
+    const expand = actionBar.getByRole("button", { name: "Expand one level" });
+    const collapse = actionBar.getByRole("button", { name: "Collapse all" });
+    const repositorySummary = panel.getByText("Repository · 1 package · 10 files", { exact: true });
+    const environment = panel.locator("select");
+    const unavailableBadge = panel.getByText("Unavailable", { exact: true });
+    const disclosure = panel.locator('button[aria-controls="meridian-control-panel-controls"]');
+    const expandedHeight = await panel.evaluate((element) => element.getBoundingClientRect().height);
+
+    expect(await prReview.isDisabled()).toBe(true);
+    expect(await unavailableBadge.isVisible()).toBe(true);
+    expect(await prReview.getAttribute("title")).toBe("PR review needs a GitHub repository. Open one with meridian web <owner/repo>.");
+    expect(await disclosure.getAttribute("aria-label")).toBe("Hide detailed controls");
+    expect(await disclosure.getAttribute("aria-expanded")).toBe("true");
+    expect(await actionBar.isVisible()).toBe(true);
+    expect(await recenter.isVisible()).toBe(true);
+    expect(await expand.isVisible()).toBe(true);
+    expect(await collapse.isVisible()).toBe(true);
+    expect(await panel.getByRole("button", { name: "Recenter view" }).count()).toBe(0);
+    await disclosure.click();
+    expect(await panel.isVisible()).toBe(true);
+    expect(await controls.isHidden()).toBe(true);
+    expect(await prReview.isVisible()).toBe(true);
+    expect(await actionBar.isVisible()).toBe(true);
+    expect(await recenter.isVisible()).toBe(true);
+    expect(await repositorySummary.isVisible()).toBe(true);
+    expect(await environment.isVisible()).toBe(true);
+    expect(await disclosure.getAttribute("aria-label")).toBe("Show detailed controls");
+    expect(await disclosure.getAttribute("aria-expanded")).toBe("false");
+    expect(await disclosure.evaluate((element) => document.activeElement === element)).toBe(true);
+    expect(await panel.evaluate((element) => element.getBoundingClientRect().height)).toBeLessThan(expandedHeight);
+
+    await disclosure.click();
+    expect(await controls.isVisible()).toBe(true);
+    expect(await disclosure.getAttribute("aria-label")).toBe("Hide detailed controls");
+    expect(await disclosure.getAttribute("aria-expanded")).toBe("true");
+    expect(await disclosure.evaluate((element) => document.activeElement === element)).toBe(true);
+    expect(await panel.evaluate((element) => element.getBoundingClientRect().height)).toBe(expandedHeight);
+  });
+
+  it("keeps the compact action bar clear of canvas chrome at a narrow desktop width", async () => {
+    const packageNode = page.locator('[data-id="ts:src"]');
+    await packageNode.click();
+    const actionBar = page.getByRole("group", { name: "Canvas actions" });
+    await actionBar.getByRole("button", { name: "Extract selection (1)" }).waitFor();
+
+    try {
+      await page.setViewportSize({ width: 900, height: 600 });
+      await actionBar.getByRole("button", { name: "Recenter view" }).click();
+      await expectNoOverlap(actionBar, page.locator("#meridian-control-panel"));
+      await expectNoOverlap(actionBar, page.getByRole("button", { name: /Legend/ }));
+      await expectNoOverlap(actionBar, page.locator(".react-flow__minimap"));
+    } finally {
+      await page.setViewportSize({ width: 1400, height: 900 });
+      await page.locator(".react-flow__pane").dispatchEvent("click");
+    }
+  });
+
   it("keeps the Map legend static when selection changes", async () => {
     await page.getByRole("button", { name: /Legend/ }).click();
     const legend = page.getByRole("region", { name: "Map legend" });
@@ -60,22 +140,23 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
 
     const packageNode = page.locator('[data-id="ts:src"]');
     await packageNode.click();
-    await page.getByRole("button", { name: "Extract selection (1)" }).waitFor();
+    await page.getByRole("group", { name: "Canvas actions" }).getByRole("button", { name: "Extract selection (1)" }).waitFor();
     expect(await legend.innerText()).toBe(beforeSelection);
 
     await page.locator(".react-flow__pane").dispatchEvent("click");
-    await page.getByRole("button", { name: "Extract selection (1)" }).waitFor({ state: "detached" });
+    await page.getByRole("group", { name: "Canvas actions" }).getByRole("button", { name: "Extract selection (1)" }).waitFor({ state: "detached" });
     expect(await legend.innerText()).toBe(beforeSelection);
     await legend.getByTitle("Close").click();
   });
 
-  it("renders the Service-composition scorecards wired by couplings, with no console/page errors", async () => {
-    await page.click('button:has-text("Service composition")');
-    // Wait on a composition-only marker (a scorecard's members band), not a raw node count the
-    // outgoing Map lens could also satisfy.
-    await page.waitForSelector('.react-flow__node:has-text("members")');
-    expect(await page.locator(".react-flow__node").count()).toBeGreaterThan(5);
-    expect(await page.locator(".react-flow__edge").count()).toBeGreaterThan(0);
+  it("Service lens renders svc: cluster frames wired by couplings, with no console/page errors", async () => {
+    // The composition surface merged into the Lens segmented control: the Service segment draws
+    // service clusters as `svc:` frames on the SHARED canvas (not scorecards).
+    await lensButton(page, "Service").dispatchEvent("click");
+    await page.waitForSelector('.react-flow__node-package[data-id^="svc:"]', { timeout: 30_000 });
+    expect(await page.locator('.react-flow__node-package[data-id^="svc:"]').count()).toBeGreaterThan(1);
+    // …wired by cluster-coupling edges (at least one endpoint a svc: frame).
+    await expect.poll(() => page.locator(".react-flow__edge").count(), { timeout: 20_000 }).toBeGreaterThan(0);
     expect(consoleErrors).toEqual([]);
     expect(pageErrors).toEqual([]);
   });
@@ -88,21 +169,23 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     expect(await statusText(page)).toContain("loaded: staging");
   });
 
-  it("hides test file cards on the Map when the Tests toggle is clicked", async () => {
-    // Drill to where the test FILES are drawn (group cards are never test-hidden by design).
-    await page.dblclick('[data-id="ts:src"]');
-    await page.waitForSelector('[data-id="ts:src/__tests__"]');
-    await page.dblclick('[data-id="ts:src/__tests__"]');
-    await page.waitForSelector('[data-id="ts:src/__tests__/orderService.test.ts"]');
-    const before = await page.locator(".react-flow__node").count();
-    await page.click('button:has-text("Tests (")');
-    await page.waitForTimeout(700);
-    const hidden = await page.locator(".react-flow__node").count();
-    expect(hidden).toBeLessThan(before); // the test file cards (and their wires) are gone
-    // Toggling back restores them — the level is filtered in place, not permanently pruned.
-    await page.click('button:has-text("Tests (")');
-    await page.waitForTimeout(700);
-    expect(await page.locator(".react-flow__node").count()).toBe(before);
+  it("hides tests by default on the Map, and the badged Tests pill reveals then re-hides them", async () => {
+    // Back to the Map lens, then drill into src — the level where __tests__ would be drawn
+    // (testIds close over containment, so the group card itself is hidden with its files).
+    await lensButton(page, "Map").dispatchEvent("click");
+    await page.waitForSelector('[data-id="ts:src"]', { timeout: 30_000 });
+    await page.locator('[data-id="ts:src"]').dispatchEvent("dblclick");
+    await page.waitForSelector('[data-id="ts:src/services"]', { timeout: 30_000 });
+    // showTests DEFAULTS to false: no test cards at boot.
+    expect(await page.locator('[data-id="ts:src/__tests__"]').count()).toBe(0);
+    // The Tests pill carries its file-count badge; clicking it SHOWS the test cards…
+    const testsPill = page.getByRole("button", { name: /^Tests \d+$/ });
+    expect(await testsPill.count()).toBe(1);
+    await testsPill.dispatchEvent("click");
+    await page.waitForSelector('[data-id="ts:src/__tests__"]', { timeout: 30_000 });
+    // …and clicking again hides them in place (filtered, not permanently pruned).
+    await testsPill.dispatchEvent("click");
+    await expect.poll(() => page.locator('[data-id="ts:src/__tests__"]').count(), { timeout: 20_000 }).toBe(0);
   });
 
   it("coverage mode opens the panel with verdicts, reasons, and the summary percentage", async () => {
@@ -130,4 +213,20 @@ describe("never-prod gate", () => {
 
 function statusText(page: Page): Promise<string> {
   return page.locator("text=/no telemetry|loaded:/").first().innerText();
+}
+
+/** A lens segment button inside the Lens segmented control (ViewModeToggle). */
+function lensButton(page: Page, label: string): Locator {
+  return page.getByLabel("Lens").getByRole("button", { name: label, exact: true });
+}
+
+async function expectNoOverlap(first: Locator, second: Locator): Promise<void> {
+  const [a, b] = await Promise.all([first.boundingBox(), second.boundingBox()]);
+  expect(a).not.toBeNull();
+  expect(b).not.toBeNull();
+  if (!a || !b) {
+    return;
+  }
+  const overlaps = a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+  expect(overlaps).toBe(false);
 }

@@ -1,45 +1,25 @@
 /**
- * The control panel's identity header: a project chip (status dot + name + chevron), the
- * recenter / expand-all / collapse-all icon buttons, and a "Repository · N packages · M files"
- * summary line counted from the graph index.
+ * The control panel's identity header: a project chip (status dot + name) and a
+ * "Repository · N packages · M files" summary line counted from the graph index. Canvas actions
+ * live in the bottom action bar, leaving the project name room to breathe.
  */
 
 import { useMemo } from "react";
 import type { GraphNode } from "@meridian/core";
-import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import { IconButton, TOKENS } from "./panelKit";
-import { ChevronDownIcon, CollapseIcon, ExpandIcon, RecenterIcon } from "./icons";
+import { useBlueprint } from "../../state/StoreContext";
+import { TOKENS } from "./panelKit";
 
 const PROJECT_DOT = "#5B9BE3";
 
-export function ControlPanelHeader(props: { showExpandControls: boolean }) {
+export function ControlPanelHeader() {
   const targetName = useBlueprint((state) => state.artifact.target.name);
   const index = useBlueprint((state) => state.index);
-  const { recenter, expandAll, collapseAll } = useBlueprintActions();
   const counts = useMemo(() => countKinds(index.roots, index.nodesById), [index]);
   return (
     <div style={WRAP_STYLE}>
-      <div style={TOP_ROW_STYLE}>
-        <div style={PROJECT_CHIP_STYLE} title={targetName}>
-          <span style={DOT_STYLE} />
-          <span style={NAME_STYLE}>{targetName}</span>
-          <span style={CHEVRON_STYLE}>
-            <ChevronDownIcon />
-          </span>
-        </div>
-        {props.showExpandControls ? (
-          <div style={ACTIONS_STYLE}>
-            <IconButton title="Recenter on the current selection, or the whole graph if nothing is selected" onClick={recenter}>
-              <RecenterIcon />
-            </IconButton>
-            <IconButton title="Expand the selection one level — or the whole view when nothing is selected" onClick={expandAll}>
-              <ExpandIcon />
-            </IconButton>
-            <IconButton title="Collapse the selection one level — or the whole view when nothing is selected" onClick={collapseAll}>
-              <CollapseIcon />
-            </IconButton>
-          </div>
-        ) : null}
+      <div style={PROJECT_CHIP_STYLE} title={targetName}>
+        <span style={DOT_STYLE} />
+        <span style={NAME_STYLE}>{targetName}</span>
       </div>
       <div style={SUBTITLE_STYLE}>{subtitle(counts)}</div>
     </div>
@@ -78,7 +58,6 @@ function subtitle(counts: Counts): string {
 }
 
 const WRAP_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 8 };
-const TOP_ROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
 const PROJECT_CHIP_STYLE: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
@@ -101,6 +80,4 @@ const NAME_STYLE: React.CSSProperties = {
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
 };
-const CHEVRON_STYLE: React.CSSProperties = { display: "inline-flex", color: TOKENS.textDim, flexShrink: 0 };
-const ACTIONS_STYLE: React.CSSProperties = { display: "flex", gap: 6, flexShrink: 0 };
 const SUBTITLE_STYLE: React.CSSProperties = { fontSize: 12, color: TOKENS.textDim, letterSpacing: "0.01em" };

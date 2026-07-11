@@ -2,6 +2,9 @@ import type { GraphIndex } from "../graph/graphIndex";
 import type { ModuleTreeEdge } from "./moduleTree";
 import { clusteringFor } from "./serviceClusteringCache";
 import type { ServiceCluster, ServiceClustering } from "./serviceComposition";
+import { crossesPackageBoundary } from "./packageBoundary";
+import { deriveServiceDomains, isServiceDomainId } from "./serviceDomains";
+import type { ServiceGroupingMode } from "./serviceClusteringModes";
 
 type Couplings = ServiceClustering["couplings"];
 
@@ -10,22 +13,39 @@ export interface ClusterDegrees {
   ce: Map<string, Set<string>>;
 }
 
-export function clusterCouplingEdges(couplings: Couplings, leadOf: Map<string, string>, visibleIds: ReadonlySet<string>): ModuleTreeEdge[] {
+export function clusterCouplingEdges(
+  couplings: Couplings,
+  leadOf: Map<string, string>,
+  visibleIds: ReadonlySet<string>,
+  index: GraphIndex,
+  domainIdByLead: ReadonlyMap<string, string> = EMPTY_DOMAIN_IDS,
+): ModuleTreeEdge[] {
   const byPair = new Map<string, ModuleTreeEdge>();
   for (const edge of couplings) {
-    const source = representative(edge.source, leadOf, visibleIds);
-    const target = representative(edge.target, leadOf, visibleIds);
-    if (source === null || target === null || source === target || (!isServiceFrame(source) && !isServiceFrame(target))) {
+    const source = representative(edge.source, leadOf, visibleIds, domainIdByLead);
+    const target = representative(edge.target, leadOf, visibleIds, domainIdByLead);
+    if (source === null || target === null || source === target || (!isServiceContainer(source) && !isServiceContainer(target))) {
       continue;
     }
     const key = `${source}->${target}`;
     const crossFrame = leadOf.get(edge.source) !== leadOf.get(edge.target);
+    const crossPackage = crossesPackageBoundary(edge.source, edge.target, index);
     const existing = byPair.get(key);
     if (existing) {
       existing.weight += 1;
       existing.crossFrame = existing.crossFrame || crossFrame;
+      existing.crossPackage ||= crossPackage;
     } else {
-      byPair.set(key, { id: `dep:${key}`, source, target, weight: 1, crossFrame, category: "dep" });
+      byPair.set(key, {
+        id: `dep:${key}`,
+        source,
+        target,
+        weight: 1,
+        crossFrame,
+        crossPackage,
+        outsideView: false,
+        category: "dep",
+      });
     }
   }
   return [...byPair.values()];
@@ -83,23 +103,63 @@ export function isOpen(cluster: ServiceCluster, expanded: ReadonlySet<string>): 
   return cluster.memberIds.length > 1 && expanded.has(frameIdOf(cluster.leadId));
 }
 
-/** Decompose selected `svc:` frames into their cluster's members (a frame is a pseudo-id absent
- * from the graph, so nothing downstream could draw it), then land every id on its home FILE —
+/** Decompose selected `svc:` frames and synthetic domains into their represented cluster members
+ * (both are pseudo-ids absent from the graph), then land every id on its home FILE —
  * `buildMinimalSubgraph` draws file ("module") and folder boxes, so a bare unit id would chart as
  * a bogus zero-file package card. Module/package ids pass through unchanged; an unknown frame
  * contributes nothing. Union, deduped, selection-ordered — the minimal-graph seed translation for
  * the Service lens. */
-export function clusterMemberSeeds(selection: readonly string[], index: GraphIndex): string[] {
-  const { clusters } = clusteringFor(index);
+export function clusterMemberSeeds(
+  selection: readonly string[],
+  index: GraphIndex,
+  groupingMode?: ServiceGroupingMode,
+  groupingTargetSize?: number,
+): string[] {
+  const clustering = clusteringFor(index);
+  const { clusters } = clustering;
+  const domains = deriveServiceDomains(clustering, groupingMode, groupingTargetSize).domainById;
   const out: string[] = [];
   const seen = new Set<string>();
   for (const id of selection) {
     const lead = leadIdOf(id);
-    const ids = lead === null ? [id] : (clusters.find((cluster) => cluster.leadId === lead)?.memberIds ?? []);
+    const domain = domains.get(id);
+    const ids = lead !== null
+      ? (clusters.find((cluster) => cluster.leadId === lead)?.memberIds ?? [])
+      : domain
+        ? domain.leadIds.flatMap((domainLead) => clusters.find((cluster) => cluster.leadId === domainLead)?.memberIds ?? [])
+        : isServiceDomainId(id)
+          ? [] // a stale/unknown synthetic domain never leaks into the artifact-only overlay
+          : [id];
     for (const member of ids.map((memberId) => homeFileOf(memberId, index))) {
       if (!seen.has(member)) {
         seen.add(member);
         out.push(member);
+      }
+    }
+  }
+  return out;
+}
+
+/** Translate Service-only synthetic selections at a real-artifact action boundary. The live
+ * canvas keeps one logical selected domain; cross-lens reveal expands it to its real lead units. */
+export function expandServiceSyntheticAnchors(
+  ids: readonly string[],
+  index: GraphIndex,
+  groupingMode?: ServiceGroupingMode,
+  groupingTargetSize?: number,
+): string[] {
+  const clustering = clusteringFor(index);
+  const domains = deriveServiceDomains(clustering, groupingMode, groupingTargetSize).domainById;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    const lead = leadIdOf(id);
+    const domain = domains.get(id);
+    const expanded = lead !== null ? [lead] : domain ? domain.leadIds : isServiceDomainId(id) ? [] : [id];
+    for (const anchor of expanded) {
+      if (!seen.has(anchor)) {
+        seen.add(anchor);
+        out.push(anchor);
       }
     }
   }
@@ -119,17 +179,32 @@ export function homeFileOf(id: string, index: GraphIndex): string {
   return id;
 }
 
-function representative(id: string, leadOf: Map<string, string>, visibleIds: ReadonlySet<string>): string | null {
+function representative(
+  id: string,
+  leadOf: Map<string, string>,
+  visibleIds: ReadonlySet<string>,
+  domainIdByLead: ReadonlyMap<string, string>,
+): string | null {
   if (visibleIds.has(id)) {
     return id;
   }
   const lead = leadOf.get(id);
-  return lead === undefined ? null : frameIdOf(lead);
+  if (lead === undefined) {
+    return null;
+  }
+  const frame = frameIdOf(lead);
+  if (visibleIds.has(frame)) {
+    return frame;
+  }
+  const domain = domainIdByLead.get(lead);
+  return domain !== undefined && visibleIds.has(domain) ? domain : null;
 }
 
-function isServiceFrame(id: string): boolean {
-  return leadIdOf(id) !== null;
+function isServiceContainer(id: string): boolean {
+  return leadIdOf(id) !== null || isServiceDomainId(id);
 }
+
+const EMPTY_DOMAIN_IDS: ReadonlyMap<string, string> = new Map<string, string>();
 
 function addTo(map: Map<string, Set<string>>, from: string, to: string): void {
   const set = map.get(from);

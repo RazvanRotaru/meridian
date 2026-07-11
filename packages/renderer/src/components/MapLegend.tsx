@@ -45,7 +45,7 @@ export function MapLegend({ hasSteps, showPackages = true, showIpc = true }: Map
         <Row swatch={<Box color={FILE_ACCENT} />} text="file — expands into its declarations; its category is on the chip (UI / Utilities / Config)" />
         <Row swatch={<ChipSwatch label="KIND" color={accentForKind("class")} />} text="class / interface / object / type — a neutral grey; the kind chip names which" />
         <Row swatch={<Glyph text="ƒ" color={accentForKind("function")} />} text="method / function — double-click opens its logic flow" />
-        <Row swatch={<Dashed />} text="ghost — a definition/caller NOT on this level; double-click reveals it" />
+        <Row swatch={<Dashed />} text="ghost — related context outside this level; click inspects or expands a group, double-click reveals an exact node" />
       </Section>
       <Section title="Wires — by relationship (toggle each in the toolbar)">
         <Row swatch={<Line color={REL_COLORS.calls} />} text="calls — a behavioural call" />
@@ -53,9 +53,9 @@ export function MapLegend({ hasSteps, showPackages = true, showIpc = true }: Map
         <Row swatch={<Line color={REL_COLORS.extends} />} text="extends — class / interface inheritance" />
         <Row swatch={<Line color={REL_COLORS.implements} />} text="implements — a contract" />
         <Row swatch={<Line color={REL_COLORS.references} />} text="references — a type used in a signature / type position" />
-        <Row swatch={<Line color={IMPORT_CROSS} />} text="import — gold crosses a directory boundary; grey within one" />
+        <Row swatch={<Line color={IMPORT_CROSS} />} text="import — gold touches a package/directory card; grey between peer files" />
         {showIpc ? <Row swatch={<Line color={IPC_WIRE} />} text="IPC — joined over a channel (leaves the process)" /> : null}
-        <Row swatch={<Line color={IMPORT_SIBLING} dashed />} text="dashed — the far end is off this level" />
+        <Row swatch={<Line color={IMPORT_SIBLING} dashed />} text="dashed — an endpoint is outside this view or the dependency crosses a package boundary" />
       </Section>
       {hasSteps ? (
         <Section title="Flow steps">

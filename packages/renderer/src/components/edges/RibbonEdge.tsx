@@ -9,15 +9,16 @@
  * the direction pulse. Stripe width is uniform — inside a cable, weight speaks through the
  * tooltip's/inspector's ×N, not width (varying widths would break the band's packing).
  *
- * Cross-package cables keep the dash vocabulary, but per-stripe dashes can NEVER share a phase
- * (parallel curves differ in length — the dashes weave into a checker). Instead the stripes draw
- * solid inside an SVG MASK that cuts aligned gaps across the whole band at once: the cable dashes
- * as a unit, and the gaps are TRANSPARENT — wires crossing underneath show through, nothing on
- * the canvas is painted over.
+ * Boundary cables (outside-view or cross-package) keep the dash vocabulary, but per-stripe dashes
+ * can NEVER share a phase (parallel curves differ in length — the dashes weave into a checker).
+ * Instead the stripes draw solid inside an SVG MASK that cuts aligned gaps across the whole band at
+ * once: the cable dashes as a unit, and the gaps are TRANSPARENT — wires crossing underneath show
+ * through, nothing on the canvas is painted over.
  */
 
-import { BaseEdge, getBezierPath, type EdgeProps } from "@xyflow/react";
+import { BaseEdge, getBezierPath, type Edge, type EdgeProps } from "@xyflow/react";
 import { weightOf, type RibbonEdgeData } from "../../layout/parallelWires";
+import { isDashedBoundary } from "../../layout/edgeBoundary";
 import { isHiddenWire, WirePulse } from "./WireEdge";
 import { WireLabel } from "./WireLabel";
 
@@ -44,7 +45,7 @@ export function RibbonEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosit
     ? [routedPath, 0, 0]
     : getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
   const anyLit = ribbon.boosted === true || members.some((member) => (member.style as { opacity?: number } | undefined)?.opacity === 1);
-  const crossFrame = members.some((member) => (member.data as { crossFrame?: boolean } | undefined)?.crossFrame === true);
+  const boundary = ribbonCrossesBoundary(members);
   const bandWidth = members.length * STRIPE_PITCH + 1.2;
   const maskId = `ribbon-notch-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   const dx = targetX - sourceX;
@@ -98,11 +99,11 @@ export function RibbonEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosit
       });
   return (
     <>
-      {crossFrame ? (
+      {boundary ? (
         <>
-          {/* The NOTCH mask: a white band along the spine keeps the cable, a black dashed stroke
-              cuts aligned TRANSPARENT gaps through every stripe at once — the cable's "crosses a
-              package boundary" dash, without painting over anything beneath it. */}
+          {/* The NOTCH mask: a white band along the spine keeps the cable, while a black dashed
+              stroke cuts aligned TRANSPARENT gaps through every stripe at once — the cable's
+              view/package-boundary dash, without painting over anything beneath it. */}
           <mask id={maskId} maskUnits="userSpaceOnUse" x={Math.min(sourceX, targetX) - 200} y={Math.min(sourceY, targetY) - 200} width={Math.abs(dx) + 400} height={Math.abs(dy) + 400}>
             <path d={spine} fill="none" stroke="#fff" strokeWidth={bandWidth + 2} />
             <path d={spine} fill="none" stroke="#000" strokeWidth={bandWidth + 2} strokeDasharray={NOTCH_DASH} />
@@ -123,6 +124,9 @@ export function RibbonEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosit
     </>
   );
 }
+
+/** A cable dashes when ANY constituent strand carries either semantic boundary reason. */
+export const ribbonCrossesBoundary = (members: readonly Edge[]): boolean => members.some((member) => isDashedBoundary(member.data));
 
 /** The cable's chip leads with its dominant strand and counts the rest: `references ×7 +2`. */
 function ribbonLabelText(members: RibbonEdgeData["members"], markerIndex: number): string {

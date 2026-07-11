@@ -12,6 +12,7 @@ import { Pill } from "./panelKit";
 
 const REACH_HUE = "#5B9BE3";
 const PRIVATE_HUE = "#7C8CA3";
+const GHOST_GROUP_HUE = "#8C83D9";
 const HIGHWAYS_HUE = "#E8843C"; // orange — arterial/high-traffic edges; the one bold warm accent (diff amber is reserved)
 const COMMONS_HUE = "#B08F4E"; // the dock tray's quiet amber (a shelf, not an alert)
 
@@ -26,7 +27,8 @@ export function OverlaysSection() {
   const coveragePercent = useBlueprint((state) => state.coverage?.summary.percent ?? null);
   const showHighways = useBlueprint((state) => state.showHighways);
   const showCommons = useBlueprint((state) => state.showCommons);
-  const { toggleShowTests, toggleHighlightMode, togglePrivateMembers, toggleCoverageMode, toggleHighways, toggleCommons } = useBlueprintActions();
+  const groupGhostsByParent = useBlueprint((state) => state.groupGhostsByParent);
+  const { toggleShowTests, toggleHighlightMode, togglePrivateMembers, toggleCoverageMode, toggleHighways, toggleCommons, toggleGhostGrouping } = useBlueprintActions();
 
   const onModuleSurface = moduleSurfaceSpec(viewMode) !== null;
   const onMap = viewMode === "modules";
@@ -72,12 +74,23 @@ export function OverlaysSection() {
           Private
         </Pill>
       ) : null}
+      {onModuleSurface ? (
+        <Pill
+          active={groupGhostsByParent}
+          accent={GHOST_GROUP_HUE}
+          indicator="square"
+          title={groupGhostsByParent ? "Ghost grouping on: 4+ related siblings collapse under their parent" : "Ghost grouping off: show every exact related ghost"}
+          onClick={toggleGhostGrouping}
+        >
+          Ghost groups
+        </Pill>
+      ) : null}
       {onMap ? (
         <Pill
           active={showHighways}
           accent={HIGHWAYS_HUE}
           indicator="square"
-          title={showHighways ? "Highways on: cross-package edges merge into bundles (select a node to read its own links)" : "Highways off: draw every edge individually"}
+          title={showHighways ? "Highways on: cross-container edges merge into bundles (select a node to read its own links)" : "Highways off: draw every edge individually"}
           onClick={toggleHighways}
         >
           Highways

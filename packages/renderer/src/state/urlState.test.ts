@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { SERVICE_GROUPING_OPTIONS } from "../derive/serviceClusteringModes";
 import { DEFAULT_NAV, decodeNav, decodeNavState, encodeNav, isNavigationChange, mergeNavIntoSearch, navFrom, type NavState } from "./urlState";
 
 /** A NavState at every default — the empty starting point the app boots into. */
@@ -14,6 +15,8 @@ function emptyNav(): NavState {
     logicView: "graph",
     logicStack: [],
     moduleFocus: null,
+    serviceGroupingMode: "folder",
+    serviceGroupingTargetSize: 12,
     minimalSeedIds: [],
     moduleExpanded: [],
     moduleRadius: 1,
@@ -61,6 +64,41 @@ describe("urlState", () => {
       moduleFocus: "ts:packages/orders/src",
       moduleExpanded: ["ts:a", "ts:b"],
     });
+  });
+
+  it("round-trips Service domain focus and expansion ids", () => {
+    const domain = "service-domain:src%2Fbackend";
+    const nav: NavState = {
+      ...emptyNav(),
+      viewMode: "call",
+      moduleFocus: domain,
+      moduleExpanded: [domain, "svc:ts:src/backend/auth.ts#AuthService"],
+    };
+    expect(roundTrip(nav)).toEqual({
+      viewMode: "call",
+      moduleFocus: domain,
+      moduleExpanded: [domain, "svc:ts:src/backend/auth.ts#AuthService"],
+    });
+  });
+
+  it("round-trips every non-default Service grouping mode and rejects junk", () => {
+    for (const { id: serviceGroupingMode } of SERVICE_GROUPING_OPTIONS.filter((option) => option.id !== "folder")) {
+      const nav: NavState = { ...emptyNav(), viewMode: "call", serviceGroupingMode };
+      expect(roundTrip(nav)).toEqual({ viewMode: "call", serviceGroupingMode });
+    }
+    expect(encodeNav({ ...emptyNav(), viewMode: "call", serviceGroupingMode: "folder" }).has("sgroup")).toBe(false);
+    expect(decodeNav(new URLSearchParams("view=call&sgroup=bogus")).serviceGroupingMode).toBeUndefined();
+  });
+
+  it("round-trips supported Service target sizes, omits the default, and rejects other values", () => {
+    for (const serviceGroupingTargetSize of [6, 8, 16, 24, 32] as const) {
+      const nav: NavState = { ...emptyNav(), viewMode: "call", serviceGroupingTargetSize };
+      expect(roundTrip(nav)).toEqual({ viewMode: "call", serviceGroupingTargetSize });
+    }
+    expect(encodeNav({ ...emptyNav(), viewMode: "call", serviceGroupingTargetSize: 12 }).has("sgsize")).toBe(false);
+    for (const invalid of ["", "7", "13", "12.5", "-6", "NaN"]) {
+      expect(decodeNav(new URLSearchParams(`view=call&sgsize=${invalid}`)).serviceGroupingTargetSize).toBeUndefined();
+    }
   });
 
   it("round-trips a logic view (root, drill stack, selection)", () => {
@@ -224,9 +262,9 @@ describe("urlState", () => {
       expect(keys).toEqual(["mexp", "mfocus"]);
     });
 
-    it("on the Service lens, keeps its root/selection AND the shared moduleFocus (the cluster zoom)", () => {
+    it("on the Service lens, keeps root/selection plus shared focus and expansion", () => {
       const keys = [...encodeNav(everyLensVisited("call")).keys()].sort();
-      expect(keys).toEqual(["csel", "mfocus", "root", "view"]);
+      expect(keys).toEqual(["csel", "mexp", "mfocus", "root", "view"]);
     });
 
     it("on the Map, does not leak a retained PR-browser selection", () => {
@@ -318,6 +356,14 @@ describe("urlState", () => {
     it("is false for an expansion-only change", () => {
       expect(isNavigationChange(base, { ...base, moduleExpanded: ["ts:m.ts#f"] })).toBe(false);
     });
+
+    it("is false for a Service grouping presentation change", () => {
+      expect(isNavigationChange(base, { ...base, serviceGroupingMode: "domain" })).toBe(false);
+    });
+
+    it("is false for a Service target-size presentation change", () => {
+      expect(isNavigationChange(base, { ...base, serviceGroupingTargetSize: 24 })).toBe(false);
+    });
   });
 
   it("sorts expanded ids so the URL is deterministic regardless of Set order", () => {
@@ -339,6 +385,8 @@ function storeShape() {
     logicView: "graph" as const,
     logicStack: [] as string[],
     moduleFocus: null,
+    serviceGroupingMode: "folder" as const,
+    serviceGroupingTargetSize: 12 as const,
     minimalSeedIds: [] as string[],
     moduleExpanded: new Set<string>(),
     moduleRadius: 1,

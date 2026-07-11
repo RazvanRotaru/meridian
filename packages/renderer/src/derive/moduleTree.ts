@@ -22,13 +22,15 @@ import { type ModuleGraph } from "./moduleGraph";
 import { collapseChain } from "./moduleLevel";
 import { containmentChildren, frontierRoots, subtreeFileCount } from "./moduleFrontier";
 import { BLOCK_KINDS, type BlockDeps, UNIT_CARD_KINDS } from "./blockDeps";
-import { ghostLevel, isDepAnchorKind } from "./ghostLevel";
+import { finishGhostTier, isDepAnchorKind, rawGhostEmission } from "./ghostLevel";
+import { folderGhostEmission, mergeGhostEmissions } from "./folderGhosts";
 import { liftEdges } from "./liftEdges";
 import { createCodeWalk, depWireEdges, flowChainEdges, stepCallEdges, visitCode, type CodeWalk, type Skeleton } from "./codeWalk";
 import { demoteCommons } from "./commonsDemotion";
 import { finalizeModuleNode, foldById, importEdges, importTreeEdges } from "./moduleTreeData";
 import { ipcTreeEdges } from "./moduleIpc";
 import type { ModuleTree, ModuleTreeEdge } from "./moduleTreeTypes";
+import { underlyingEdgesCrossPackage } from "./packageBoundary";
 export type { ModuleGroupData, ModuleTree, ModuleTreeEdge, VisibleModuleNode } from "./moduleTreeTypes";
 
 const MODULE_KIND = "module";
@@ -77,10 +79,24 @@ export function deriveModuleTree(
   const overviewFold = effectiveFocus === null ? foldById(index) : new Map<string, ModulePackageData>();
   const nodes = skeleton.map((entry) => finalizeModuleNode(entry, index, graph, lifted, walked.stepData, overviewFold, hiddenIds));
   const kinds = kindsOf(skeleton);
-  const ghosts = ghostLevel(blockDeps, walked, visibleIds, index, kinds, hiddenIds);
+  // Folder-only frontiers have no code anchor, so their off-level relationships need a parallel
+  // same-tier projection: raw descendant imports/couplings become the complete set of peer-package ghosts.
+  // Semantic ghosts retain their existing code-only anchor policy and share the finishing pass.
+  const folderRelationships = [
+    ...index.edges.filter((edge) => edge.kind === "imports" && edge.resolution === "resolved"),
+    ...blockDeps.edges,
+  ];
+  const ghosts = finishGhostTier(
+    mergeGhostEmissions(
+      rawGhostEmission(blockDeps, walked, visibleIds, index, kinds),
+      folderGhostEmission(folderRelationships, visibleIds, index, hiddenIds),
+    ),
+    index,
+    hiddenIds,
+  );
   const isDepAnchor = (id: string) => isDepAnchorKind(kinds.get(id));
   const edges = [
-    ...importTreeEdges(lifted, kinds, graph),
+    ...importTreeEdges(lifted, kinds, graph, index),
     // Code-level dep wires: anchored to file/unit/block cards (the detailed intra-package view).
     ...depWireEdges(blockDeps, visibleIds, index, isDepAnchor, walked.expandedBlocks),
     // Package-level dep wires: typed relationships (calls/extends/etc.) LIFTED to packages so the
@@ -139,7 +155,9 @@ function packageDepEdges(
     source: e.source,
     target: e.target,
     weight: e.weight,
-    crossFrame: true, // always cross-package at this level
+    crossFrame: true, // always crosses drawn group cards at this level; package ownership is separate
+    crossPackage: underlyingEdgesCrossPackage(e.underlyingEdgeIds, index),
+    outsideView: false,
     category: "dep" as const,
     depKind: e.kind,
     underlyingEdgeIds: e.underlyingEdgeIds,

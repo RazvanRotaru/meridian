@@ -1,6 +1,6 @@
 import type { VisibleModuleNode } from "./moduleTree";
 
-type ChildContainerKind = "package" | "file" | "unit" | "block";
+type ChildContainerKind = "package" | "serviceDomain" | "file" | "unit" | "block";
 
 export function moduleChildContainerIds(tree: { nodes: readonly VisibleModuleNode[] }, containerId: string | null): string[] {
   const byParent = childrenByParent(tree.nodes);
@@ -29,5 +29,5 @@ function isChildContainer(node: VisibleModuleNode): boolean {
 }
 
 function isChildContainerKind(kind: VisibleModuleNode["kind"]): kind is ChildContainerKind {
-  return kind === "package" || kind === "file" || kind === "unit" || kind === "block";
+  return kind === "package" || kind === "serviceDomain" || kind === "file" || kind === "unit" || kind === "block";
 }
