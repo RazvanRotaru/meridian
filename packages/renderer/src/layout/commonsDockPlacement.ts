@@ -18,10 +18,12 @@ export const COMMONS_DOCK_TYPE = "commonsDock";
 /** The tray's RF-only id — presentational, never an artifact id (nothing joins through it). */
 export const COMMONS_DOCK_ID = "dock:commons";
 
-/** Clearance between the graph's box and the tray, the tray's inner chrome, and card spacing. */
+/** Clearance between the graph's box and the tray, the tray's inner chrome, and card spacing.
+ * The 30px side padding mirrors the frame gutter convention (CONTAINER_OPTIONS): the tray is a
+ * FRAME to the gutter-bus router, so lit wires ride a rail inside that gutter into the cards. */
 const DOCK_GAP = 72;
 const CARD_GAP = 28;
-const TRAY_PAD_X = 18;
+const TRAY_PAD_X = 30;
 const TRAY_PAD_BOTTOM = 14;
 /** Room for the tray's title row ("COMMONS · n") above the cards. */
 const TRAY_TITLE = 30;
