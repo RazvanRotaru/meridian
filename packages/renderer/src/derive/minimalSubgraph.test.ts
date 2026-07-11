@@ -292,6 +292,22 @@ describe("buildMinimalSubgraph — per-kind dep wires between member files", () 
     const { edges } = buildWithCoupling([callsEdge("fn:foo", "fn:bar")]);
     expect(edges.filter((edge) => edge.kind === "dep")).toEqual([]);
   });
+
+  it("coalesces ordinary and inspected raw edges that lift to the same rendered wire", () => {
+    const coupling = [callsEdge("m:a", "fn:baz"), callsEdge("fn:foo", "fn:baz")];
+    const index = buildGraphIndex({ nodes: DEP_NODES, edges: [...DEP_IMPORTS, ...coupling] } as unknown as GraphArtifact);
+    const spec = buildMinimalSubgraph(index, buildModuleGraph(index), new Set(["m:a", "m:b"]), new Set(["m:a", "m:b"]), {
+      expanded: new Set(),
+      blockDeps: { edges: coupling },
+      flows: {},
+      inspectionIds: new Set(["m:a"]),
+    });
+    const projected = spec.edges.filter((edge) => edge.id === "dep:calls:m:a->m:b");
+
+    expect(projected).toHaveLength(1);
+    expect(projected[0]).toMatchObject({ weight: 2 });
+    expect(new Set(projected[0].underlyingEdgeIds)).toEqual(new Set(coupling.map((edge) => edge.id)));
+  });
 });
 
 // a.ts declares foo() and bar() and imports b.ts — so a's card is an expandable container.

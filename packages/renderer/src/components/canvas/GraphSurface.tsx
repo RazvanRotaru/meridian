@@ -81,6 +81,7 @@ import {
   semanticCommitDepthForZoomChange,
   type SemanticLodLayer,
 } from "./mapLodGeometry";
+import type { SurfaceEmphasisMode } from "../moduleMapHighlight";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
  * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "cycle" the
@@ -143,6 +144,14 @@ export interface GraphSurfaceProps {
   semanticCommitEnabled: boolean;
   /** Commit one parent when a user-driven outward move crosses its threshold. */
   onSemanticCommit: (layer: SemanticLodLayer) => void;
+  /** PR review overlay only: let its checklist/flow rows temporarily override graph selection. */
+  reviewEmphasis?: boolean;
+  /** Optional surface-specific emphasis semantics. PR flow review uses the selected-flow subgraph
+   * at rest, then node mode so one selected target reveals its incident on-demand ghost cards. */
+  emphasisMode?: SurfaceEmphasisMode;
+  /** Optional override for exact-detail surfaces. A selected PR-flow node disables sibling ghost
+   * grouping so every incident ghost and edge remains individually reviewable. */
+  groupGhosts?: boolean;
   /** Extras that must render INSIDE the flow (beacon arrows, the overlay's ghost "+" ring). */
   flowExtras?: (view: SurfaceFlowView) => ReactNode;
   /** Floating chrome (breadcrumb, legends, panels, action strips), absolutely positioned over the canvas. */
@@ -153,12 +162,19 @@ export interface GraphSurfaceProps {
 
 export function GraphSurface(props: GraphSurfaceProps) {
   const selected = useBlueprint((state) => state.moduleSelected);
+  const reviewLit = useBlueprint((state) => state.reviewLitNodeIds);
   const index = useBlueprint((state) => state.index);
   const radius = useBlueprint((state) => state.moduleRadius);
   const highlightMode = useBlueprint((state) => state.highlightMode);
   const hiddenRelKinds = useBlueprint((state) => state.hiddenRelKinds);
   const showHighways = useBlueprint((state) => state.showHighways);
   const groupGhostsByParent = useBlueprint((state) => state.groupGhostsByParent);
+  // Review rows own a transient hover preview; once it clears, fall back to the persistent graph or
+  // logic-flow selection. The override remains paint-only, so semantic populations keep their
+  // independently laid-out geometry and zoom handoff behavior.
+  const emphasized = props.reviewEmphasis === true ? reviewLit ?? selected : selected;
+  const emphasisMode = props.emphasisMode ?? highlightMode;
+  const groupGhosts = props.groupGhosts ?? groupGhostsByParent;
   // Keep the semantic controller mounted through the final parent handoff too: its ancestor list can
   // already be empty while the retained root population is still fading in and resetting camera.
   const hasSemanticComposite =
@@ -228,12 +244,12 @@ export function GraphSurface(props: GraphSurfaceProps) {
   // cards and hierarchy spokes at paint time; stamping those outputs back onto their source depth
   // keeps them in the same cross-fade instead of leaking across hidden ancestor graphs.
   const { nodes: paintedNodes, edges: paintedEdges, beacons } = useMemo(
-    () => paintSemanticLayers(props.nodes, props.edges, selected, radius, highlightMode, hiddenRelKinds, {
+    () => paintSemanticLayers(props.nodes, props.edges, emphasized, radius, emphasisMode, hiddenRelKinds, {
       index,
-      groupByParent: groupGhostsByParent,
+      groupByParent: groupGhosts,
       expandedGroupIds: props.interactions.expandedGhostGroupIds,
     }),
-    [props.nodes, props.edges, selected, radius, highlightMode, hiddenRelKinds, index, groupGhostsByParent, props.interactions.expandedGhostGroupIds],
+    [props.nodes, props.edges, emphasized, radius, emphasisMode, hiddenRelKinds, index, groupGhosts, props.interactions.expandedGhostGroupIds],
   );
   // Ghost inspection is deliberately downstream of the shared paint chain. It clones only the
   // matching card's data, preserving every id, coordinate, parent and edge/layout input.
@@ -264,14 +280,14 @@ export function GraphSurface(props: GraphSurfaceProps) {
     const semanticEdges: Edge[] = [];
     const hierarchyEdges: Edge[] = [];
     for (const [depth, edges] of layers) {
-      const prepared = prepareCanvasEdges(edges, paintedNodes, selected, showHighways, props.highways);
+      const prepared = prepareCanvasEdges(edges, paintedNodes, emphasized, showHighways, props.highways);
       semanticEdges.push(...prepared.semanticEdges.map((edge) =>
         depth === undefined ? edge : withSemanticDepth(edge, depth),
       ));
       hierarchyEdges.push(...prepared.hierarchyEdges);
     }
     return { semanticEdges, hierarchyEdges };
-  }, [paintedEdges, paintedNodes, props.highways, selected, showHighways]);
+  }, [paintedEdges, paintedNodes, props.highways, emphasized, showHighways]);
   const wire = useWireHover(preparedEdges.semanticEdges, paintedNodes, props.wireHover === true);
   // Append hierarchy spokes AFTER interaction dressing too: their exact objects never acquire a
   // pulse, label, hit width, tooltip, inspector subject, or semantic z-order.

@@ -59,6 +59,7 @@ export function MinimalGraphView() {
   const layoutActivity = useBlueprint((state) => state.minimalLayoutActivity);
   const reviewSelectedId = useBlueprint((state) => state.reviewSelectedId);
   const reviewActive = useBlueprint((state) => state.review !== null);
+  const reviewFlowOpen = useBlueprint((state) => state.flowSelection !== null && state.reviewFlowBaseline !== null);
   const index = useBlueprint((state) => state.index);
   const viewMode = useBlueprint((state) => state.viewMode);
   const moduleFocus = useBlueprint((state) => state.moduleFocus);
@@ -127,6 +128,9 @@ export function MinimalGraphView() {
         miniMapColor={minimalMiniMapColor}
         interactions={interactions}
         nodeDiffPreview={reviewActive}
+        reviewEmphasis={reviewActive}
+        emphasisMode={reviewFlowOpen ? (reviewSelectedId === null ? "subgraph" : "node") : undefined}
+        groupGhosts={reviewFlowOpen && reviewSelectedId !== null ? false : undefined}
         busy={layoutStatus === "laying-out" ? layoutActivity ?? undefined : undefined}
         autoFitView={false}
         semanticLayers={semanticScene.semanticLayers}

@@ -61,7 +61,7 @@ export function ModuleMapView() {
       {minimalOpen ? (
         <div data-graph-surface="minimal" style={MINIMAL_OVERLAY_STYLE}>
           <div style={REVIEW_SPLIT_STYLE}>
-            <div style={REVIEW_GRAPH_STYLE}>
+            <div style={REVIEW_GRAPH_STYLE} role="region" aria-label="PR review graph">
               <GraphSurfaceProvider>
                 <MinimalGraphView />
               </GraphSurfaceProvider>

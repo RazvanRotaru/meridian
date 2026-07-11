@@ -1,8 +1,8 @@
 /**
  * The PR-review side panel. Files first: every changed file with its touched code units and a
- * per-file "viewed" check (ReviewFilesSection — the panel's primary content), then the affected
- * logic flows (ReviewFlowsSection), and a footer that submits the draft comments as one GitHub
- * review. The header tracks viewed-files progress, states the review's provenance (which graph,
+ * per-file "viewed" check (ReviewFilesSection — the panel's primary content). Change groups and
+ * impacted logic flows stay pinned above that file scroller, and a footer submits the draft
+ * comments as one GitHub review. The header tracks viewed-files progress, states the review's provenance (which graph,
  * which code), offers the fallback review's opt-in "Extract head graph", and Reset (ticks only —
  * never drafts) and Hide; a hidden panel folds into a narrow reopen rail. Self-hides when there
  * is no review.
@@ -32,9 +32,9 @@ function ReviewPanelImpl() {
     <div style={PANEL}>
       <Header review={review} />
       <ChangeGroupStrip />
+      <ReviewFlowsSection />
       <div style={SCROLL}>
         <ReviewFilesSection />
-        <ReviewFlowsSection />
       </div>
       <SubmitReviewFooter />
     </div>
@@ -220,4 +220,4 @@ const WARNING: React.CSSProperties = { fontSize: 11, color: "#D29922", backgroun
 const EXTRACT_WARNING: React.CSSProperties = { ...WARNING, display: "flex", alignItems: "flex-start", gap: 6 };
 const EXTRACT_WARNING_DETAIL: React.CSSProperties = { color: "#9A7B2D" };
 const WARNING_DISMISS: React.CSSProperties = { font: "inherit", border: "none", background: "transparent", color: "#D29922", cursor: "pointer", padding: 0, lineHeight: "14px", fontSize: 13, ...NO_FOCUS_RING };
-const SCROLL: React.CSSProperties = { flex: 1, overflowY: "auto", padding: "8px 10px 24px" };
+const SCROLL: React.CSSProperties = { flex: 1, minHeight: 0, overflowY: "auto", padding: "8px 10px 24px" };

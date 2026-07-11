@@ -11,6 +11,7 @@ import { useLogicFlows } from "./useFlowTree";
 export function FlowPane() {
   const selection = useBlueprint((state) => state.flowSelection);
   const nodesById = useBlueprint((state) => state.index.nodesById);
+  const reviewActive = useBlueprint((state) => state.flowSelection !== null && state.reviewFlowBaseline !== null);
   const flows = useLogicFlows();
   const { selectFlowEntry, openLogicFlow } = useBlueprintActions();
   if (selection === null) {
@@ -19,7 +20,7 @@ export function FlowPane() {
   const rootLabel = nodesById.get(selection.rootId)?.displayName ?? selection.rootId;
   const crumbs = blockBreadcrumbs(flows, selection);
   return (
-    <aside style={DRAWER}>
+    <aside style={reviewActive ? REVIEW_DRAWER : DRAWER} aria-label={reviewActive ? "Logic flow review" : "Code flow"}>
       <header style={HEADER}>
         <div style={TITLE_ROW}>
           <span style={GLYPH}>ƒ</span>
@@ -58,6 +59,8 @@ function FlowPaneSurface() {
   const nodes = useBlueprint((state) => state.flowPaneRfNodes);
   const edges = useBlueprint((state) => state.flowPaneRfEdges);
   const status = useBlueprint((state) => state.flowPaneLayoutStatus);
+  const logicSelected = useBlueprint((state) => state.logicSelected);
+  const { selectFlowPaneTarget } = useBlueprintActions();
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const fittedNodes = useRef<readonly Node[] | null>(null);
 
@@ -97,11 +100,28 @@ function FlowPaneSurface() {
         fittedNodes.current = null;
         fitReadyNodes(instance);
       }}
+      onNodeClick={(_event, node) => {
+        const target = artifactTargetOf(node);
+        if (target !== null) {
+          selectFlowPaneTarget(target === logicSelected ? null : target);
+        }
+      }}
+      onPaneClick={() => selectFlowPaneTarget(null)}
       {...READONLY_CANVAS_PROPS}
     >
       <CanvasChrome nodeColor={miniMapColor} />
     </ReactFlow>
   );
+}
+
+/** Call blocks map directly to their artifact target. Structural controls and entry/exit caps have
+ * no selectable standalone target in the flow pane and intentionally do nothing. */
+function artifactTargetOf(node: Node): string | null {
+  const data = node.data as { targetId?: unknown };
+  if (typeof data.targetId === "string") {
+    return data.targetId;
+  }
+  return null;
 }
 
 function PaneMessage(props: { mark: string; text: string }) {
@@ -129,12 +149,23 @@ const DRAWER: React.CSSProperties = {
   flex: "0 0 40%",
   minHeight: 240,
   maxHeight: "55%",
+  boxSizing: "border-box",
   display: "flex",
   flexDirection: "column",
   background: "#0B0E13",
   borderTop: "1px solid #222732",
   boxShadow: "0 -12px 32px rgba(0,0,0,0.35)",
   color: "#D6DEE9",
+};
+
+// PR logic review is an exact horizontal split: the graph keeps the upper 70% of the full canvas
+// and this flow surface owns the lower 30%. Remove the generic pane's minimum/maximum constraints,
+// which would otherwise break the ratio on shorter windows.
+const REVIEW_DRAWER: React.CSSProperties = {
+  ...DRAWER,
+  flex: "0 0 30%",
+  minHeight: 0,
+  maxHeight: "30%",
 };
 
 const HEADER: React.CSSProperties = {

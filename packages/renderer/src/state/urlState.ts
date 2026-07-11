@@ -186,7 +186,12 @@ export function encodeNav(nav: NavState): Map<string, string> {
   setId(out, "csel", nav.compSelectedId);
   setId(out, "lsel", nav.logicSelected);
   if (nav.flowExplorerOpen) out.set("fexp", "1");
-  if (nav.flowSelection !== null) out.set("fsel", encodeFlowSelection(nav.flowSelection));
+  // A soft-closed PR review can host the ordinary base-Map flow explorer. Its URL still carries
+  // `rev=1` (reload resumes the review overlay), so persisting that base-Map ref would replay it as
+  // a review flow after reload. Only carry a review flow while its review overlay is actually open.
+  if (nav.flowSelection !== null && (!activeReview || nav.minimalSeedIds.length > 0)) {
+    out.set("fsel", encodeFlowSelection(nav.flowSelection));
+  }
   setId(out, "lroot", nav.logicRoot);
   if (nav.logicView !== "graph") out.set("lview", nav.logicView);
   setList(out, "lstack", nav.logicStack);
@@ -209,16 +214,19 @@ export function encodeNav(nav: NavState): Map<string, string> {
     out.set("rev", "1");
   }
   setId(out, "env", nav.environment);
-  return scopeToView(out, nav.viewMode);
+  return scopeToView(out, nav.viewMode, activeReview);
 }
 
 /** Drop keys owned by a lens other than the active one, so the URL mirrors only what's on screen.
  * Shared keys and the active lens's own keys survive; everything else (a stale dive/trail/selection
  * left in the store from a prior lens) is stripped. */
-function scopeToView(out: Map<string, string>, viewMode: ViewMode): Map<string, string> {
+function scopeToView(out: Map<string, string>, viewMode: ViewMode, activeReview: boolean): Map<string, string> {
   const owned = new Set<string>(LENS_KEYS[viewMode]);
+  const hasFlowSelection = out.has("fsel");
   for (const key of [...out.keys()]) {
-    if (!SHARED_KEYS.has(key) && !owned.has(key)) {
+    // `logicSelected` normally belongs only to the Logic lens. Paired with `fsel` during an active
+    // Map review, however, it is the selected call target in the bottom flow pane.
+    if (!SHARED_KEYS.has(key) && !owned.has(key) && !(key === "lsel" && hasFlowSelection && activeReview)) {
       out.delete(key);
     }
   }

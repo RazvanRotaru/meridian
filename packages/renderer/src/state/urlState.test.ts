@@ -131,6 +131,51 @@ describe("urlState", () => {
     });
   });
 
+  it("round-trips a selected flow target on an active Map review", () => {
+    const flowSelection = { rootId: "ts:src/a.ts#run", blockPath: [] };
+    const nav: NavState = {
+      ...emptyNav(),
+      flowSelection,
+      logicSelected: "ts:src/b.ts#validate",
+      minimalSeedIds: ["ts:src/a.ts"],
+      reviewPr: 76,
+      reviewActive: true,
+    };
+    expect(roundTrip(nav)).toEqual({
+      viewMode: "modules",
+      flowSelection,
+      logicSelected: "ts:src/b.ts#validate",
+      minimalSeedIds: ["ts:src/a.ts"],
+      reviewPr: 76,
+      reviewActive: true,
+    });
+  });
+
+  it("still drops a stale Logic selection from a Map URL when no flow is selected", () => {
+    expect(encodeNav({ ...emptyNav(), logicSelected: "ts:src/b.ts#validate" }).has("lsel")).toBe(false);
+  });
+
+  it("does not treat a non-review explorer pane as the owner of the Logic view selection", () => {
+    const encoded = encodeNav({
+      ...emptyNav(),
+      flowSelection: { rootId: "ts:src/a.ts#run", blockPath: [] },
+      logicSelected: "ts:src/b.ts#validate",
+    });
+    expect(encoded.has("fsel")).toBe(true);
+    expect(encoded.has("lsel")).toBe(false);
+  });
+
+  it("does not replay a base-Map flow as review inspection after a soft-closed review reload", () => {
+    const encoded = encodeNav({
+      ...emptyNav(),
+      flowSelection: { rootId: "ts:src/a.ts#run", blockPath: [] },
+      reviewPr: 76,
+      reviewActive: true,
+    });
+    expect(encoded.has("fsel")).toBe(false);
+    expect(encoded.has("lsel")).toBe(false);
+  });
+
   it("ignores invalid flow explorer selection refs", () => {
     expect(decodeNav(new URLSearchParams("fsel=missing-at")).flowSelection).toBeUndefined();
     expect(decodeNav(new URLSearchParams("fsel=ts%253Am%2523f@1-nope")).flowSelection).toBeUndefined();

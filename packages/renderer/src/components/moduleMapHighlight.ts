@@ -39,6 +39,9 @@ const WIDTH_PER_LOG_WEIGHT = 0.55;
 const EMPHASIS_EXTRA = 1;
 
 export type HighlightMode = "reach" | "node";
+/** A surface-only mode used by PR logic-flow review. It is deliberately not persisted as the Map's
+ * user preference: it highlights the induced set of flow nodes until one node is inspected. */
+export type SurfaceEmphasisMode = HighlightMode | "subgraph";
 
 export interface EmphasizedLevel {
   nodes: Node[];
@@ -74,7 +77,7 @@ export function emphasize(
   edges: Edge[],
   activeIds: ReadonlySet<string>,
   radius: number,
-  mode: HighlightMode,
+  mode: SurfaceEmphasisMode,
   ghostPresentation?: GhostPresentationOptions,
 ): EmphasizedLevel {
   const typeById = new Map(nodes.map((node) => [node.id, node.type]));
@@ -82,6 +85,9 @@ export function emphasize(
   const activeSet = new Set(active);
   if (active.length === 0) {
     return pruneUnlitDeps({ nodes, edges: edges.map((edge) => styleEdge(edge, "none")), beacons: new Set() }, activeSet, ghostPresentation);
+  }
+  if (mode === "subgraph") {
+    return pruneUnlitDeps(emphasizeInducedSubgraph(nodes, edges, activeSet), activeSet, ghostPresentation);
   }
   if (mode === "node") {
     return pruneUnlitDeps(applyBeacons(emphasizeIncident(nodes, edges, active), active, typeById), activeSet, ghostPresentation);
@@ -120,7 +126,9 @@ function pruneUnlitDeps(
     kept.add(edge.source);
     kept.add(edge.target);
   }
-  const exactNodes = level.nodes.filter((node) => node.type !== "ghost" || kept.has(node.id) || level.beacons.has(node.id));
+  const exactNodes = level.nodes.filter(
+    (node) => node.type !== "ghost" || kept.has(node.id) || level.beacons.has(node.id) || activeIds.has(node.id),
+  );
   const protectedGhostIds = new Set([...activeIds, ...level.beacons]);
   const presented = ghostPresentation === undefined
     ? { nodes: exactNodes, edges: eligibleEdges }
@@ -136,6 +144,38 @@ function pruneUnlitDeps(
 
 const isGhostEdge = (edge: Edge): boolean => (edge.data as { ghost?: boolean } | undefined)?.ghost === true;
 const isLit = (edge: Edge): boolean => (edge.style as { opacity?: number } | undefined)?.opacity === 1;
+
+/** Whole-flow emphasis is an induced-subgraph read: every resolved flow node and its rendered
+ * containment ancestors remain opaque, and only relationships joining two flow nodes light up.
+ * Incident edges leaving the flow stay dim, so the ghost-pruning pass below withholds that broader
+ * neighbourhood until the reader explicitly selects one flow node. */
+function emphasizeInducedSubgraph(nodes: Node[], edges: Edge[], active: ReadonlySet<string>): EmphasizedLevel {
+  const kept = withDrawnAncestors(active, nodes);
+  return {
+    nodes: nodes.map((node) => (kept.has(node.id) ? node : dimNode(node))),
+    edges: edges.map((edge) => styleEdge(edge, active.has(edge.source) && active.has(edge.target) ? "downstream" : "none")),
+    beacons: new Set(),
+  };
+}
+
+function withDrawnAncestors(active: ReadonlySet<string>, nodes: readonly Node[]): Set<string> {
+  const parentById = new Map(nodes.map((node) => [node.id, node.parentId]));
+  const kept = new Set<string>();
+  for (const id of active) {
+    if (!parentById.has(id)) {
+      continue;
+    }
+    let current: string | undefined = id;
+    while (current !== undefined) {
+      if (kept.has(current)) {
+        break;
+      }
+      kept.add(current);
+      current = parentById.get(current);
+    }
+  }
+  return kept;
+}
 
 function emphasizeIncident(nodes: Node[], edges: Edge[], activeIds: readonly string[]): { nodes: Node[]; edges: Edge[] } {
   const seed = withDrawnDescendants(activeIds, nodes);

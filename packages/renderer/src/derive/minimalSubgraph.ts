@@ -81,6 +81,9 @@ export interface CodeContext {
   expanded: ReadonlySet<string>;
   blockDeps: BlockDeps;
   flows: LogicFlows;
+  /** Exact visible callables under PR flow-node inspection. Their incident dependencies bypass the
+   * ordinary member-file fold so wires remain attached to the selected block. */
+  inspectionIds?: ReadonlySet<string>;
 }
 
 const NO_CODE: CodeContext = { expanded: new Set(), blockDeps: { edges: [] }, flows: {} };
@@ -105,6 +108,11 @@ export function buildMinimalSubgraph(
   const walks = walkVisibleFiles(index, graph, fileVisible, code);
   const context: NodeContext = { memberIds, originIds, collapse, fileCountByGroup, walks };
   const emission = projectGhosts(index, memberIds, walks, code, hiddenIds);
+  const inspection = inspectionDepEdges(index, memberIds, walks, code);
+  const dependencies = mergeProjectedDepEdges([
+    ...depEdges(index, memberIds, code, inspection.incidentEdgeIds),
+    ...inspection.edges,
+  ]);
   // A folder group-ghost can carry the id of a member's own (never-rendered) ancestor frame — the
   // ghost card wins the id so the spec stays one-node-per-id (frames are flattened away anyway).
   const ghostIds = new Set(emission.ghosts.keys());
@@ -114,7 +122,11 @@ export function buildMinimalSubgraph(
       ...buildLeafGroupNodes(index, [...groupLeaf], context),
       ...ghostNodes(emission),
     ],
-    edges: [...importEdges(index, graph, memberIds), ...depEdges(index, memberIds, code), ...ghostEdges(emission)],
+    edges: [
+      ...importEdges(index, graph, memberIds),
+      ...dependencies,
+      ...ghostEdges(emission),
+    ],
     expansions: [...walks.values()].map((walk) => walk.expansion).filter((exp): exp is MinimalExpansion => exp !== null),
   };
 }
@@ -130,6 +142,20 @@ export function buildMinimalSubgraph(
  * paint-time policy driven by the current selection.
  */
 function projectGhosts(index: GraphIndex, memberIds: ReadonlySet<string>, walks: Map<string, FileCodeWalk>, code: CodeContext, hiddenIds: ReadonlySet<string>): GhostEmission {
+  const { calls, expandedBlocks, visibleIds, codeIds } = minimalVisibility(memberIds, walks);
+  const raw = ghostDepWires(code.blockDeps, calls, visibleIds, index, (id) => codeIds.has(id), expandedBlocks);
+  return withoutHidden(raw, hiddenIds, index);
+}
+
+interface MinimalVisibility {
+  calls: FileCodeWalk["calls"];
+  expandedBlocks: Set<string>;
+  visibleIds: Set<string>;
+  codeIds: Set<string>;
+}
+
+/** The exact frontier shared by ordinary ghost projection and selected-node edge inspection. */
+function minimalVisibility(memberIds: ReadonlySet<string>, walks: Map<string, FileCodeWalk>): MinimalVisibility {
   const calls = [...walks.values()].flatMap((walk) => [...walk.calls]);
   const expandedBlocks = new Set([...walks.values()].flatMap((walk) => [...walk.expandedBlocks]));
   const visibleIds = new Set(memberIds);
@@ -142,8 +168,42 @@ function projectGhosts(index: GraphIndex, memberIds: ReadonlySet<string>, walks:
       }
     }
   }
-  const raw = ghostDepWires(code.blockDeps, calls, visibleIds, index, (id) => codeIds.has(id), expandedBlocks);
-  return withoutHidden(raw, hiddenIds, index);
+  return { calls, expandedBlocks, visibleIds, codeIds };
+}
+
+/** Preserve exact edges touching a selected flow callable. Normal minimal-graph dependencies fold
+ * through member files; inspection instead projects only the selected callable's raw edges over the
+ * full expanded frontier. Off-view endpoints remain the ghost projection's job. Raw edges already
+ * drawn inside a file expansion are withheld here to avoid duplicate React Flow edge ids. */
+function inspectionDepEdges(
+  index: GraphIndex,
+  memberIds: ReadonlySet<string>,
+  walks: Map<string, FileCodeWalk>,
+  code: CodeContext,
+): { edges: MinimalSubgraphEdge[]; incidentEdgeIds: Set<string> } {
+  if (!code.inspectionIds || code.inspectionIds.size === 0) {
+    return { edges: [], incidentEdgeIds: new Set() };
+  }
+  const visibility = minimalVisibility(memberIds, walks);
+  const active = new Set([...code.inspectionIds].filter((id) => visibility.visibleIds.has(id)));
+  if (active.size === 0) {
+    return { edges: [], incidentEdgeIds: new Set() };
+  }
+  const incident = code.blockDeps.edges.filter((edge) => active.has(edge.source) || active.has(edge.target));
+  const incidentEdgeIds = new Set(incident.map((edge) => edge.id));
+  const representedInsideExpansion = new Set(
+    [...walks.values()].flatMap((walk) =>
+      (walk.expansion?.edges ?? []).flatMap((edge) => edge.underlyingEdgeIds ?? []),
+    ),
+  );
+  const projected = depWireEdges(
+    { edges: incident.filter((edge) => !representedInsideExpansion.has(edge.id)) },
+    visibility.visibleIds,
+    index,
+    (id) => visibility.codeIds.has(id),
+    visibility.expandedBlocks,
+  );
+  return { edges: projected.map(toMinimalDepEdge), incidentEdgeIds };
 }
 
 /** Ghost satellites as spec nodes: kind "ghost", the REAL artifact id, the Map's own GhostData. */
@@ -373,8 +433,20 @@ function importEdges(index: GraphIndex, graph: ModuleGraph, memberIds: ReadonlyS
  * coupling IS this level's dep story. An off-overlay endpoint lifts to nothing and drops here (the
  * ghost projection charts it instead); an intra-box coupling folds to a self-loop and drops (both
  * inside `liftEdges`). */
-function depEdges(index: GraphIndex, memberIds: ReadonlySet<string>, code: CodeContext): MinimalSubgraphEdge[] {
-  return depWireEdges(code.blockDeps, memberIds, index, (id) => memberIds.has(id), new Set()).map((edge) => ({
+function depEdges(
+  index: GraphIndex,
+  memberIds: ReadonlySet<string>,
+  code: CodeContext,
+  excludedEdgeIds: ReadonlySet<string> = EMPTY_IDS,
+): MinimalSubgraphEdge[] {
+  const blockDeps = excludedEdgeIds.size === 0
+    ? code.blockDeps
+    : { edges: code.blockDeps.edges.filter((edge) => !excludedEdgeIds.has(edge.id)) };
+  return depWireEdges(blockDeps, memberIds, index, (id) => memberIds.has(id), new Set()).map(toMinimalDepEdge);
+}
+
+function toMinimalDepEdge(edge: ReturnType<typeof depWireEdges>[number]): MinimalSubgraphEdge {
+  return {
     id: edge.id,
     source: edge.source,
     target: edge.target,
@@ -385,7 +457,31 @@ function depEdges(index: GraphIndex, memberIds: ReadonlySet<string>, code: CodeC
     outsideView: false,
     depKind: edge.depKind,
     underlyingEdgeIds: [...(edge.underlyingEdgeIds ?? [])],
-  }));
+  };
+}
+
+/** Ordinary member folding and exact inspection partition raw dependency edges, but those disjoint
+ * inputs can still lift onto the same rendered endpoint pair. Coalesce that collision so React Flow
+ * receives one stable id while retaining the complete weight and concrete-edge provenance. */
+function mergeProjectedDepEdges(edges: readonly MinimalSubgraphEdge[]): MinimalSubgraphEdge[] {
+  const merged = new Map<string, MinimalSubgraphEdge>();
+  for (const edge of edges) {
+    const prior = merged.get(edge.id);
+    if (!prior) {
+      merged.set(edge.id, edge);
+      continue;
+    }
+    merged.set(edge.id, {
+      ...prior,
+      weight: prior.weight + edge.weight,
+      crossFrame: prior.crossFrame || edge.crossFrame,
+      crossPackage: prior.crossPackage || edge.crossPackage,
+      outsideView: prior.outsideView || edge.outsideView,
+      ghost: prior.ghost || edge.ghost || undefined,
+      underlyingEdgeIds: [...new Set([...(prior.underlyingEdgeIds ?? []), ...(edge.underlyingEdgeIds ?? [])])],
+    });
+  }
+  return [...merged.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /** The box's nearest package-kind ancestor-or-self. This is the legacy DRAWN-FRAME colour grouping,

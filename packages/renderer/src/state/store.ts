@@ -206,6 +206,18 @@ export interface BlueprintState {
   flowPaneRfNodes: LogicRfNode[];
   flowPaneRfEdges: LogicRfEdge[];
   flowPaneLayoutStatus: LayoutStatus;
+  /** Review-only snapshot captured before the first flow opens, so closing/switching back to file
+   * review restores the exact graph curation and declaration expansion the reader had. */
+  reviewFlowBaseline: {
+    moduleSelected: Set<string>;
+    moduleExpanded: Set<string>;
+    minimalSeedIds: string[];
+    minimalMemberIds: string[];
+    minimalBasePositions: Record<string, PlacedRect>;
+    minimalArrange: boolean;
+    reviewSelectedId: NodeId | null;
+    reviewLitNodeIds: Set<NodeId> | null;
+  } | null;
   /** The laid-out Logic graph (React Flow), recomputed on open/drill/expand/toggle via ELK. */
   logicRfNodes: LogicRfNode[];
   logicRfEdges: LogicRfEdge[];
@@ -424,6 +436,10 @@ export interface BlueprintState {
   recenter(): void;
   toggleFlowExplorer(): void;
   selectFlowEntry(ref: FlowSelectionRef | null): void;
+  /** Select one artifact node from the bottom flow pane. In a PR review this narrows the Map to
+   * that node's incident relationships (including its on-demand ghosts); null restores the whole
+   * selected flow as the graph emphasis. Outside review it is the pane-local selection only. */
+  selectFlowPaneTarget(nodeId: NodeId | null): void;
   flowPaneRelayout(): Promise<void>;
   /** The logic flow charted for a callable, or undefined when it has none (empty body). */
   logicFlowFor(nodeId: string): FlowStep[] | undefined;
@@ -935,6 +951,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     flowPaneRfNodes: [],
     flowPaneRfEdges: [],
     flowPaneLayoutStatus: "idle",
+    reviewFlowBaseline: null,
     logicRfNodes: [],
     logicRfEdges: [],
     logicLayoutStatus: "idle",
@@ -1055,31 +1072,98 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     toggleFlowExplorer() {
-      const flowExplorerOpen = !get().flowExplorerOpen;
-      set(flowExplorerOpen
-        ? { flowExplorerOpen }
-        : {
-            flowExplorerOpen,
-            flowSelection: null,
-            flowPaneRfNodes: [],
-            flowPaneRfEdges: [],
-            flowPaneLayoutStatus: "idle",
-          });
+      if (!get().flowExplorerOpen) {
+        set({ flowExplorerOpen: true });
+        return;
+      }
+      set({ flowExplorerOpen: false });
+      // Closing the explorer is the same navigation as closing its selected pane. In review mode
+      // that path also restores the graph snapshot captured before flow inspection began.
+      get().selectFlowEntry(null);
     },
 
     selectFlowEntry(ref) {
       if (ref === null) {
+        const state = get();
+        const baseline = state.reviewFlowBaseline;
+        const reviewFlowOpen = state.review !== null
+          && state.minimalSeedIds.length > 0
+          && state.flowSelection !== null
+          && baseline !== null;
+        flowPaneLayoutSeq += 1;
         set({
           flowSelection: null,
           flowPaneRfNodes: [],
           flowPaneRfEdges: [],
           flowPaneLayoutStatus: "idle",
+          ...(reviewFlowOpen
+            ? {
+                logicSelected: null,
+                ...baseline,
+                reviewFlowBaseline: null,
+              }
+            : {}),
         });
+        if (reviewFlowOpen && baseline !== null) {
+          void get().minimalRelayout({ label: "Closing logic flow review…" });
+        }
         return;
       }
-      const { artifact, index, viewMode } = get();
+      const state = get();
+      const { artifact, index, viewMode } = state;
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const related = relatedNodeIds(index, flows, ref);
+      const reviewFlow = state.review !== null && state.minimalSeedIds.length > 0;
+      if (reviewFlow) {
+        const reviewFlowBaseline = state.reviewFlowBaseline ?? {
+          moduleSelected: new Set(state.moduleSelected),
+          moduleExpanded: new Set(state.moduleExpanded),
+          minimalSeedIds: [...state.minimalSeedIds],
+          minimalMemberIds: [...state.minimalMemberIds],
+          minimalBasePositions: { ...state.minimalBasePositions },
+          minimalArrange: state.minimalArrange,
+          reviewSelectedId: state.reviewSelectedId,
+          reviewLitNodeIds: state.reviewLitNodeIds === null ? null : new Set(state.reviewLitNodeIds),
+        };
+        // A review flow is an exact code-level read, not the explorer's coarser file reveal. Open
+        // every owning file/unit gate so nested methods exist on the minimal Map, then select every
+        // resolved node in the flow. Off-member targets remain exact ghost cards.
+        const moduleExpanded = expandedCodePaths(reviewFlowBaseline.moduleExpanded, related, index);
+        const { minimalSeedIds, minimalMemberIds } = expandFlowRollups(
+          state,
+          related,
+          reviewFlowBaseline.minimalSeedIds,
+          reviewFlowBaseline.minimalMemberIds,
+        );
+        const needsRelayout = !sameFlowSelection(state.flowSelection, ref)
+          || state.logicSelected !== null
+          || !sameStringSet(moduleExpanded, state.moduleExpanded)
+          || !sameMembers(minimalSeedIds, state.minimalSeedIds)
+          || !sameMembers(minimalMemberIds, state.minimalMemberIds);
+        set({
+          flowSelection: ref,
+          logicSelected: null,
+          moduleSelected: related,
+          moduleExpanded,
+          minimalSeedIds,
+          minimalMemberIds,
+          reviewFlowBaseline,
+          reviewLitNodeIds: null,
+          reviewSelectedId: null,
+        });
+        void get().flowPaneRelayout();
+        const recenterIfCurrent = () => {
+          if (get().flowSelection === ref && get().logicSelected === null) {
+            set({ recenterSeq: get().recenterSeq + 1 });
+          }
+        };
+        if (needsRelayout) {
+          void get().minimalRelayout({ label: "Revealing logic flow in review…" }).then(recenterIfCurrent);
+        } else {
+          recenterIfCurrent();
+        }
+        return;
+      }
       set({ flowSelection: ref });
       // Both module lenses the explorer serves (Map + UI) bulk-reveal the flow's modules in the
       // SHARED module spaces — the phase-C unification retired the ui lens's private expansion.
@@ -1104,6 +1188,48 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().flowPaneRelayout();
     },
 
+    selectFlowPaneTarget(nodeId) {
+      const state = get();
+      const selection = state.flowSelection;
+      if (selection === null) {
+        return;
+      }
+      // The shared `logicSelected` field belongs to the main Logic lens. A non-review explorer pane
+      // must not overwrite (or clear) that unrelated selection; linked graph inspection is a PR
+      // review interaction only until the pane owns a dedicated local selection field.
+      if (state.review === null || state.minimalSeedIds.length === 0 || state.reviewFlowBaseline === null) {
+        return;
+      }
+      const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const related = relatedNodeIds(state.index, flows, selection);
+      // External/unresolved call blocks still select inside the flow pane, but they have no artifact
+      // definition to reveal on the Map. Keep the whole-flow graph context in that honest fallback.
+      const graphTarget = nodeId !== null && related.has(nodeId) && state.index.nodesById.has(nodeId) ? nodeId : null;
+      const emphasized = graphTarget === null ? related : new Set([graphTarget]);
+      const moduleExpanded = expandedCodePaths(state.moduleExpanded, emphasized, state.index);
+      // Re-derive on every target change. When the selected node is currently an off-member ghost,
+      // the layout pass temporarily treats its home file as a member so its full incident edge set
+      // can fan out to ghost neighbours; clearing the target removes that temporary context again.
+      const needsRelayout = moduleExpanded.size !== state.moduleExpanded.size || state.logicSelected !== nodeId;
+      set({
+        logicSelected: nodeId,
+        moduleSelected: emphasized,
+        moduleExpanded,
+        reviewLitNodeIds: null,
+        reviewSelectedId: graphTarget,
+      });
+      const recenterIfCurrent = () => {
+        if (get().flowSelection === selection && get().logicSelected === nodeId) {
+          set({ recenterSeq: get().recenterSeq + 1 });
+        }
+      };
+      if (needsRelayout) {
+        void get().minimalRelayout({ label: nodeId === null ? "Restoring logic flow context…" : "Revealing logic flow node…" }).then(recenterIfCurrent);
+      } else {
+        recenterIfCurrent();
+      }
+    },
+
     async flowPaneRelayout() {
       const { flowSelection, index, artifact } = get();
       if (flowSelection === null) {
@@ -1114,7 +1240,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const sequence = ++flowPaneLayoutSeq;
       set({ flowPaneLayoutStatus: "laying-out" });
       const graph = await deriveFlowPaneLayout(flowSelection, flows, index);
-      if (flowPaneLayoutSeq !== sequence) {
+      if (flowPaneLayoutSeq !== sequence || get().flowSelection !== flowSelection) {
         return;
       }
       set({ flowPaneRfNodes: graph.nodes, flowPaneRfEdges: graph.edges, flowPaneLayoutStatus: "ready" });
@@ -1754,6 +1880,26 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Select a Module-map node, REPLACING the whole selection (pass null to clear) — the plain-click
     // gesture. A repaint-only highlight — no relayout.
     selectModule(id) {
+      const state = get();
+      if (state.review !== null && state.minimalSeedIds.length > 0 && state.flowSelection !== null && state.reviewFlowBaseline !== null) {
+        if (id === null) {
+          // Clearing the Map while a flow is open means "back to the whole flow", not "show no
+          // emphasis": no selected flow node must always highlight every node in that flow.
+          get().selectFlowPaneTarget(null);
+          return;
+        }
+        const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+        if (relatedNodeIds(state.index, flows, state.flowSelection).has(id)) {
+          // Clicking a real flow node on the Map mirrors selecting it in the bottom pane.
+          get().selectFlowPaneTarget(id);
+          return;
+        }
+        // A plain click outside the selected flow returns to ordinary graph review before applying
+        // the new selection; keeping the split open would make its "whole flow" invariant false.
+        get().selectFlowEntry(null);
+        set({ moduleSelected: new Set([id]), reviewSelectedId: null, reviewLitNodeIds: null });
+        return;
+      }
       set({ moduleSelected: id === null ? new Set<string>() : new Set([id]) });
     },
 
@@ -1788,6 +1934,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               reviewComments: [] as ReviewComment[],
               reviewLitNodeIds: null,
               reviewSelectedId: null,
+              flowSelection: null,
+              logicSelected: null,
+              flowPaneRfNodes: [] as LogicRfNode[],
+              flowPaneRfEdges: [] as LogicRfEdge[],
+              flowPaneLayoutStatus: "idle" as const,
+              reviewFlowBaseline: null,
               reviewGroups: null,
               reviewActiveGroupId: null,
               reviewAllSeedIds: [] as string[],
@@ -1800,6 +1952,21 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               reviewRemovedTruncatedByFile: {} as Record<string, boolean>,
             }
           : {};
+      const clearArtifactReviewFlow = get().review !== null && get().prReviewed === null
+        ? {
+            reviewLitNodeIds: null,
+            reviewSelectedId: null,
+            flowSelection: null,
+            logicSelected: null,
+            flowPaneRfNodes: [] as LogicRfNode[],
+            flowPaneRfEdges: [] as LogicRfEdge[],
+            flowPaneLayoutStatus: "idle" as const,
+            reviewFlowBaseline: null,
+          }
+        : {};
+      if (get().flowSelection !== null) {
+        flowPaneLayoutSeq += 1;
+      }
       set({
         minimalSeedIds: origin,
         minimalMemberIds: origin,
@@ -1807,6 +1974,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalBasePositions: captureMapPositions(get().moduleRfNodes),
         minimalArrange: false,
         prReviewed: null,
+        ...clearArtifactReviewFlow,
         ...clearPrReview,
       });
       void get().minimalRelayout({ label: "Extracting selection…" });
@@ -1816,6 +1984,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // can adjust it and rebuild without re-picking every card. Bumping the seq discards any ELK
     // pass still in flight, so a slow layout can't repopulate the arrays after the close.
     closeMinimalGraph() {
+      const stateBeforeClose = get();
+      const flowBaseline = stateBeforeClose.reviewFlowBaseline;
+      const reviewFlowOpen = stateBeforeClose.review !== null
+        && stateBeforeClose.flowSelection !== null
+        && flowBaseline !== null;
       // Closing the overlay mid-review must not strand the reader on the swapped PR-head artifact
       // (still amber-marked) under the plain Map — yet the review must stay RESUMABLE. Soft-restore
       // the boot graph while keeping every review field (the chip + resumePrReview re-open from
@@ -1827,7 +2000,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
       }
       minimalLayoutSeq += 1;
+      flowPaneLayoutSeq += 1;
       set({
+        ...(reviewFlowOpen && flowBaseline !== null
+          ? {
+              moduleSelected: flowBaseline.moduleSelected,
+              moduleExpanded: flowBaseline.moduleExpanded,
+              reviewSelectedId: flowBaseline.reviewSelectedId,
+              reviewLitNodeIds: flowBaseline.reviewLitNodeIds,
+            }
+          : {}),
         minimalSeedIds: [],
         minimalMemberIds: [],
         minimalRollups: {},
@@ -1837,6 +2019,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalRfEdges: [],
         minimalLayoutStatus: "idle",
         minimalLayoutActivity: null,
+        ...(reviewFlowOpen
+          ? {
+              flowSelection: null,
+              logicSelected: null,
+              flowPaneRfNodes: [] as LogicRfNode[],
+              flowPaneRfEdges: [] as LogicRfEdge[],
+              flowPaneLayoutStatus: "idle" as const,
+              reviewFlowBaseline: null,
+            }
+          : {}),
       });
     },
 
@@ -1920,15 +2112,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         if (minimalLayoutSeq !== sequence) {
           return;
         }
-        const { index, minimalSeedIds, minimalMemberIds, minimalBasePositions, minimalArrange, moduleExpanded, artifact, showTests } = get();
+        const state = get();
+        const { index, minimalSeedIds, minimalBasePositions, minimalArrange, moduleExpanded, artifact, showTests } = state;
         moduleGraph ??= buildModuleGraph(index);
         const deps = (blockDeps ??= buildBlockDeps(index));
         const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
         const hidden = showTests ? EMPTY_HIDDEN_IDS : index.testIds;
-        const layout = await deriveMinimalGraphLayout(index, moduleGraph, new Set(minimalMemberIds), new Set(minimalSeedIds), minimalBasePositions, {
+        const layout = await deriveMinimalGraphLayout(index, moduleGraph, minimalMembersForFlowInspection(state), new Set(minimalSeedIds), minimalBasePositions, {
           moduleExpanded,
           blockDeps: deps,
           flows,
+          inspectionIds: flowInspectionIds(state, flows),
         }, minimalArrange, hidden);
         if (minimalLayoutSeq !== sequence) {
           return; // a newer build/promote/demote/reset/re-arrange superseded this one.
@@ -1949,6 +2143,23 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Flip one Module-map node in/out of the selection WITHOUT touching the rest — the ctrl/cmd+click
     // gesture that accumulates a multi-selection. Repaint-only, like selectModule.
     toggleModuleSelect(id) {
+      const state = get();
+      if (state.review !== null && state.minimalSeedIds.length > 0 && state.flowSelection !== null && state.reviewFlowBaseline !== null) {
+        const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+        if (relatedNodeIds(state.index, flows, state.flowSelection).has(id)) {
+          get().selectFlowPaneTarget(state.logicSelected === id ? null : id);
+          return;
+        }
+        // Multi-select cannot coexist with the single-node flow inspection contract. Restore the
+        // pre-flow selection first, then apply the reader's ordinary ctrl/cmd toggle to that set.
+        get().selectFlowEntry(null);
+        set({
+          moduleSelected: withToggled(get().moduleSelected, id),
+          reviewSelectedId: null,
+          reviewLitNodeIds: null,
+        });
+        return;
+      }
       set({ moduleSelected: withToggled(get().moduleSelected, id) });
     },
 
@@ -2061,9 +2272,30 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Select a review block (from the panel); also lights it and CENTERS the graph on it — a panel
     // click must always end with the target visible, not selected somewhere off-screen.
     selectReviewNode(id) {
-      set({ reviewSelectedId: id, reviewLitNodeIds: id === null ? null : new Set([id]) });
-      if (id !== null) {
-        set({ recenterSeq: get().recenterSeq + 1 });
+      const flowBaseline = get().reviewFlowBaseline;
+      set({
+        ...(flowBaseline ?? {}),
+        reviewSelectedId: id,
+        reviewLitNodeIds: id === null ? null : new Set([id]),
+        moduleSelected: id === null ? new Set<string>() : new Set([id]),
+        // A file/unit click switches back to graph review; the bottom split belongs to a selected
+        // logic flow and must not linger with a now-unrelated pane selection.
+        flowSelection: null,
+        logicSelected: null,
+        flowPaneRfNodes: [],
+        flowPaneRfEdges: [],
+        flowPaneLayoutStatus: "idle",
+        reviewFlowBaseline: null,
+      });
+      const recenter = () => {
+        if (id !== null && get().reviewSelectedId === id) {
+          set({ recenterSeq: get().recenterSeq + 1 });
+        }
+      };
+      if (flowBaseline !== null) {
+        void get().minimalRelayout({ label: "Returning to changed node review…" }).then(recenter);
+      } else {
+        recenter();
       }
     },
 
@@ -2071,17 +2303,35 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // its touched units amber-strong, and center the viewport on the frame. Inert for files with no
     // module on the graph (the "not in graph" tail).
     focusReviewFile(path) {
-      const file = get().reviewFiles.find((candidate) => candidate.path === path);
+      const state = get();
+      const file = state.reviewFiles.find((candidate) => candidate.path === path);
       if (!file || file.moduleId === null) {
         return;
       }
+      const flowBaseline = state.reviewFlowBaseline;
       const lit = file.units.length > 0 ? file.units.map((unit) => unit.nodeId) : [file.moduleId];
       set({
+        ...(flowBaseline ?? {}),
         moduleSelected: new Set([file.moduleId]),
         reviewSelectedId: file.moduleId,
         reviewLitNodeIds: new Set(lit),
-        recenterSeq: get().recenterSeq + 1,
+        flowSelection: null,
+        logicSelected: null,
+        flowPaneRfNodes: [],
+        flowPaneRfEdges: [],
+        flowPaneLayoutStatus: "idle",
+        reviewFlowBaseline: null,
       });
+      const recenter = () => {
+        if (get().reviewSelectedId === file.moduleId) {
+          set({ recenterSeq: get().recenterSeq + 1 });
+        }
+      };
+      if (flowBaseline !== null) {
+        void get().minimalRelayout({ label: "Returning to changed file review…" }).then(recenter);
+      } else {
+        recenter();
+      }
     },
 
     // Isolate one change group on the Map: re-seed the minimal overlay with ONLY that group's module
@@ -2107,6 +2357,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewActiveGroupId: group ? group.id : null,
         reviewSelectedId: null,
         reviewLitNodeIds: null,
+        flowSelection: null,
+        logicSelected: null,
+        flowPaneRfNodes: [],
+        flowPaneRfEdges: [],
+        flowPaneLayoutStatus: "idle",
+        reviewFlowBaseline: null,
         minimalSeedIds: nextSeeds,
         minimalMemberIds: [...nextSeeds],
         minimalRollups: rollupsRecord(rolledUp),
@@ -2802,11 +3058,37 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (prReviewed === null || minimalSeedIds.length > 0) {
         return;
       }
+      // A normal Code Flow may have been opened on the base Map after the review overlay soft-
+      // closed. It belongs to that Map, not the resumed review/head artifact; clear it before any
+      // possible artifact swap so only a flow selected inside the review enters review mode.
+      const clearResumeFlow = () => {
+        const staleFlowOpen = get().flowSelection !== null;
+        flowPaneLayoutSeq += 1;
+        set({
+          flowSelection: null,
+          logicSelected: null,
+          flowPaneRfNodes: [],
+          flowPaneRfEdges: [],
+          flowPaneLayoutStatus: "idle",
+          reviewFlowBaseline: null,
+          ...(staleFlowOpen
+            ? {
+                moduleSelected: new Set<string>(),
+                reviewSelectedId: null,
+                reviewLitNodeIds: null,
+              }
+            : {}),
+        });
+      };
+      clearResumeFlow();
       if (prPreparedGraphId !== null) {
         const prepared = await fetchPreparedArtifact(get().graphUrl, prPreparedGraphId);
         if (get().prReviewed !== prReviewed || get().minimalSeedIds.length > 0) {
           return; // the review moved on (or resumed elsewhere) while the artifact was in flight.
         }
+        // The base Map stayed interactive during the fetch. Clear once more so a Code Flow opened
+        // in that window cannot ride the stale base-artifact ref across the head-graph swap.
+        clearResumeFlow();
         swapToPreparedArtifact(get, set, prepared, invalidateArtifactCaches);
       }
       // Repaint the review's amber onto the current index — the soft close reset it to the boot
@@ -3129,6 +3411,12 @@ function applyPrReviewToMap(
     reviewFileDelta,
     reviewLitNodeIds: null,
     reviewSelectedId: null,
+    flowSelection: null,
+    logicSelected: null,
+    flowPaneRfNodes: [],
+    flowPaneRfEdges: [],
+    flowPaneLayoutStatus: "idle",
+    reviewFlowBaseline: null,
     reviewGroups: changeGroups,
     reviewActiveGroupId: null,
     reviewAllSeedIds: seeds,
@@ -3243,6 +3531,20 @@ function sameMembers(a: readonly string[], b: readonly string[]): boolean {
   return b.every((id) => set.has(id));
 }
 
+function sameStringSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  return a.size === b.size && [...a].every((id) => b.has(id));
+}
+
+function sameFlowSelection(a: FlowSelectionRef | null, b: FlowSelectionRef): boolean {
+  if (a === null || a.rootId !== b.rootId || a.blockPath.length !== b.blockPath.length) {
+    return false;
+  }
+  return a.blockPath.every((segment, index) => {
+    const other = b.blockPath[index];
+    return segment.step === other.step && segment.path === other.path;
+  });
+}
+
 function rollupsRecord(rolledUp: ReadonlyMap<string, string[]>): Record<string, string[]> {
   return Object.fromEntries([...rolledUp].map(([packageId, fileIds]) => [packageId, [...fileIds]]));
 }
@@ -3277,6 +3579,77 @@ function reviewExpansionForMatches(
     }
   }
   return expanded;
+}
+
+/** Union the containment gates required to draw exact flow callables in an already-open module
+ * surface. Files reveal their top-level declarations; class/interface/object units reveal nested
+ * methods. The callable itself stays collapsed — the bottom pane owns its intra-procedural steps. */
+function expandedCodePaths(
+  current: ReadonlySet<string>,
+  nodeIds: ReadonlySet<string>,
+  index: GraphIndex,
+): Set<string> {
+  const expanded = new Set(current);
+  for (const nodeId of nodeIds) {
+    for (const ancestor of index.ancestorsOf(nodeId)) {
+      if (ancestor.kind === "module" || UNIT_CARD_KINDS.has(ancestor.kind)) {
+        expanded.add(ancestor.id);
+      }
+    }
+  }
+  return expanded;
+}
+
+/** A large review may summarize changed files as one package card. Selecting a flow inside that
+ * summary is an explicit request for code-level detail, so decompose only the rollup(s) containing
+ * the flow's home files through the same package→files substitution as the card's Expand action. */
+function expandFlowRollups(
+  state: BlueprintState,
+  related: ReadonlySet<string>,
+  baseSeedIds: readonly string[] = state.minimalSeedIds,
+  baseMemberIds: readonly string[] = state.minimalMemberIds,
+): { minimalSeedIds: string[]; minimalMemberIds: string[] } {
+  const homeFiles = new Set(nearestModuleIds([...related], state.index));
+  let minimalSeedIds = [...baseSeedIds];
+  let minimalMemberIds = [...baseMemberIds];
+  for (const [packageId, fileIds] of Object.entries(state.minimalRollups)) {
+    if (!fileIds.some((fileId) => homeFiles.has(fileId))) {
+      continue;
+    }
+    minimalSeedIds = replaceRollupSeed(minimalSeedIds, packageId, fileIds);
+    minimalMemberIds = replaceRollupSeed(minimalMemberIds, packageId, fileIds);
+  }
+  return { minimalSeedIds, minimalMemberIds };
+}
+
+/** During PR flow inspection, temporarily promote one anchor's home file into the derive inputs.
+ * At rest that anchor is the flow root, which guarantees an impacted flow whose root itself did not
+ * change can still project every charted call target. After a node click the anchor becomes that
+ * target, making it a real expanded block whose complete caller/callee ring can fan out as ghosts.
+ * Stored review curation is never changed; closing the flow removes this temporary context. */
+function minimalMembersForFlowInspection(state: BlueprintState): Set<string> {
+  const members = new Set(state.minimalMemberIds);
+  if (state.review === null || state.flowSelection === null || state.reviewFlowBaseline === null) {
+    return members;
+  }
+  const anchor = state.reviewSelectedId ?? state.flowSelection.rootId;
+  for (const fileId of nearestModuleIds([anchor], state.index)) {
+    members.add(fileId);
+  }
+  return members;
+}
+
+/** Exact dependency projection follows the same two review states as paint: the complete selected
+ * flow while no resolvable pane node is selected, then only the selected node's incident edges.
+ * External/unresolved pane calls leave `reviewSelectedId` null and honestly fall back to the whole
+ * in-graph flow context. */
+function flowInspectionIds(state: BlueprintState, flows: LogicFlows): ReadonlySet<string> | undefined {
+  if (state.review === null || state.flowSelection === null || state.reviewFlowBaseline === null) {
+    return undefined;
+  }
+  return state.reviewSelectedId === null
+    ? relatedNodeIds(state.index, flows, state.flowSelection)
+    : new Set([state.reviewSelectedId]);
 }
 
 function replaceRollupSeed(ids: readonly string[], packageId: string, fileIds: readonly string[]): string[] {
