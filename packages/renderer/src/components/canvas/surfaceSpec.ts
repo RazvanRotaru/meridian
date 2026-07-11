@@ -91,6 +91,9 @@ export interface SurfaceActions {
 export interface Crumb {
   id: string;
   label: string;
+  /** The node kind, when known — a "package" segment can be descended into (its breadcrumb dropdown
+   * lists children); a "module" (file) segment cannot. Absent for synthetic (Service) segments. */
+  kind?: string;
 }
 
 /** The laid level plus the lens-local state needed to resolve its real enclosing graph. Passing the
@@ -177,7 +180,7 @@ export function crumbsFor(focus: string | null, index: GraphIndex): Crumb[] {
   return index
     .ancestorsOf(focus)
     .filter((node) => node.kind === "package" || node.kind === "module")
-    .map((node) => ({ id: node.id, label: node.displayName ?? node.id }));
+    .map((node) => ({ id: node.id, label: node.displayName ?? node.id, kind: node.kind }));
 }
 
 /** Map/UI share containment ancestry even though their edge projections differ. Their canonical

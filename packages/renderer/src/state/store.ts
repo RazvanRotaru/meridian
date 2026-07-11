@@ -37,6 +37,7 @@ import { deriveMinimalGraphLayout } from "./deriveMinimalGraphLayout";
 import { captureMapPositions, promotedMemberRect } from "./mapPositions";
 import type { PlacedRect } from "../layout/minimalPlacement";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
+import { levelChildren, type NavChild } from "../derive/breadcrumbNav";
 import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/blockDeps";
 import type { GhostData } from "../derive/ghostDeps";
 import { buildUnitIndex, type UnitIndex } from "@meridian/design-metrics";
@@ -489,6 +490,9 @@ export interface BlueprintState {
   toggleSolidMetrics(): void;
   moduleRelayout(activity?: LayoutActivity): Promise<void>;
   setModuleFocus(id: string | null): void;
+  /** The navigable cards shown at a given Map focus — powers the breadcrumb dropdowns (the nodes you
+   * can go into from that level). Read-only; reuses the cached module import graph + hidden-tests set. */
+  folderChildrenFor(focus: string | null): NavChild[];
   /** Commit an already-mounted semantic parent as real surface navigation. This consumes inner
    * layers in place; unlike an explicit double-click/breadcrumb dive, it never runs ELK again. */
   commitModuleSemanticParent(depth: number): boolean;
@@ -1680,6 +1684,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().moduleRelayout(id === null
         ? { label: "Returning to overview…" }
         : nodeLayoutActivity(state, "Opening", id));
+    },
+
+    // The cards a breadcrumb segment can descend into: the frontier the Map draws at that focus,
+    // filtered to folders/files. Reuses the cached import graph and the SAME hidden-tests set the
+    // layout hides, so the dropdown never lists a card that isn't on screen.
+    folderChildrenFor(focus) {
+      const state = get();
+      const graph = (moduleGraph ??= buildModuleGraph(state.index));
+      const hidden = state.showTests ? EMPTY_HIDDEN_IDS : state.index.testIds;
+      return levelChildren(state.index, graph, focus, hidden);
     },
 
     // Crossing an outward semantic threshold is browser-back-shaped navigation on ANY registered
