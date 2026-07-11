@@ -336,6 +336,8 @@ export interface BlueprintState {
   prFilesTotal: number;
   prFilesOutside: number;
   prFilesSuggestedSubdir: string;
+  /** The selected PR could not seed this session's graph; shown on the PR detail page. */
+  prReviewBlocked: { number: number; reason: string } | null;
   /** The PR whose changed files are currently highlighted in the graph (via "review in graph"). */
   prReviewed: number | null;
   /** Head ref of the PR under review — the code panel fetches changed files at this ref. Null off-review. */
@@ -626,6 +628,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let prsListSeq = 0;
   let relatedPrsSeq = 0;
   let prFilesSeq = 0;
+  let prFilesRequest: { number: number; sequence: number; promise: Promise<void> } | null = null;
   let prAnalyzeSeq = 0;
   const prsNextPage: Record<PrsTab, number> = { open: 1, closed: 1 };
   // Rebuilding/closing the minimal overlay must discard any of its ELK passes still in flight; the
@@ -779,6 +782,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prFilesTotal: 0,
     prFilesOutside: 0,
     prFilesSuggestedSubdir: "",
+    prReviewBlocked: null,
     prReviewed: null,
     reviewHeadRef: null,
     reviewDiffByFile: {},
@@ -1984,6 +1988,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         prFilesTotal: 0,
         prFilesOutside: 0,
         prFilesSuggestedSubdir: "",
+        prReviewBlocked: null,
       });
       if (get().prsList[tab] === null) {
         void get().loadPrs(1);
@@ -2136,6 +2141,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           prFilesTotal: 0,
           prFilesOutside: 0,
           prFilesSuggestedSubdir: "",
+          prReviewBlocked: null,
           prsLoading: false,
           prsError: null,
           ...prepareReset,
@@ -2151,84 +2157,106 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         prFilesTotal: 0,
         prFilesOutside: 0,
         prFilesSuggestedSubdir: "",
+        prReviewBlocked: null,
         prsLoading: true,
         prsError: null,
         ...prepareReset,
       });
-      // Related results intentionally carry only card fields. Resolve a full summary before the
-      // ordinary file/discussion/check lanes so a related card behaves exactly like a paged card.
-      if (selectedPrSummary(get(), number) === null) {
-        await get().ensurePrSummary(number);
-        if (prFilesSeq !== sequence || get().prSelected !== number) {
-          return;
+      const request = (async () => {
+        // Related results intentionally carry only card fields. Resolve a full summary before the
+        // ordinary file/discussion/check lanes so a related card behaves exactly like a paged card.
+        if (selectedPrSummary(get(), number) === null) {
+          await get().ensurePrSummary(number);
+          if (prFilesSeq !== sequence || get().prSelected !== number) {
+            return;
+          }
         }
-      }
-      try {
-        const url = new URL(prFilesUrl, requestOrigin());
-        url.searchParams.set("n", String(number));
-        const response = await fetch(url, { credentials: "same-origin" });
-        if (prFilesSeq !== sequence || get().prSelected !== number) {
-          return;
-        }
-        if (!response.ok) {
-          set({ prsLoading: false, prsError: await errorMessage(response) });
-          return;
-        }
-        const data = (await response.json()) as PrFilesResponse;
-        if (prFilesSeq !== sequence || get().prSelected !== number) {
-          return;
-        }
-        set({
-          prFiles: data.files,
-          prFilesTruncated: data.truncated,
-          prFilesTotal: data.totalFiles ?? data.files.length,
-          prFilesOutside: data.outsideCount ?? 0,
-          prFilesSuggestedSubdir: data.suggestedSubdir ?? "",
-          prsLoading: false,
-          prsError: null,
-        });
-        // Discussion and checks are deliberately secondary to the changed-file load: the detail
-        // panel is usable as soon as files land, while these two independent lanes fill in quietly.
-        void fetchPrDiscussion(prCommentsUrl, number).then(
-          (discussion) => {
-            if (prFilesSeq === sequence && get().prSelected === number) {
-              set({ prDiscussion: { comments: discussion.comments, reviews: discussion.reviews } });
-            }
-          },
-          () => {
-            if (prFilesSeq === sequence && get().prSelected === number) {
-              console.warn("[meridian] PR discussion unavailable.");
-            }
-          },
-        );
-        const headSha = selectedPrSummary(get(), number)?.headSha ?? null;
-        if (headSha !== null) {
-          void fetchPrChecks(prChecksUrl, number, headSha).then(
-            (checks) => {
+        try {
+          const url = new URL(prFilesUrl, requestOrigin());
+          url.searchParams.set("n", String(number));
+          const response = await fetch(url, { credentials: "same-origin" });
+          if (prFilesSeq !== sequence || get().prSelected !== number) {
+            return;
+          }
+          if (!response.ok) {
+            set({ prsLoading: false, prsError: await errorMessage(response) });
+            return;
+          }
+          const data = (await response.json()) as PrFilesResponse;
+          if (prFilesSeq !== sequence || get().prSelected !== number) {
+            return;
+          }
+          set({
+            prFiles: data.files,
+            prFilesTruncated: data.truncated,
+            prFilesTotal: data.totalFiles ?? data.files.length,
+            prFilesOutside: data.outsideCount ?? 0,
+            prFilesSuggestedSubdir: data.suggestedSubdir ?? "",
+            prsLoading: false,
+            prsError: null,
+          });
+          // Discussion and checks are deliberately secondary to the changed-file load: the detail
+          // panel is usable as soon as files land, while these two independent lanes fill in quietly.
+          void fetchPrDiscussion(prCommentsUrl, number).then(
+            (discussion) => {
               if (prFilesSeq === sequence && get().prSelected === number) {
-                set({ prChecks: checks });
+                set({ prDiscussion: { comments: discussion.comments, reviews: discussion.reviews } });
               }
             },
             () => {
               if (prFilesSeq === sequence && get().prSelected === number) {
-                console.warn("[meridian] PR checks unavailable.");
+                console.warn("[meridian] PR discussion unavailable.");
               }
             },
           );
+          const headSha = selectedPrSummary(get(), number)?.headSha ?? null;
+          if (headSha !== null) {
+            void fetchPrChecks(prChecksUrl, number, headSha).then(
+              (checks) => {
+                if (prFilesSeq === sequence && get().prSelected === number) {
+                  set({ prChecks: checks });
+                }
+              },
+              () => {
+                if (prFilesSeq === sequence && get().prSelected === number) {
+                  console.warn("[meridian] PR checks unavailable.");
+                }
+              },
+            );
+          }
+        } catch {
+          if (prFilesSeq === sequence && get().prSelected === number) {
+            set({ prsLoading: false, prsError: PRS_UNAVAILABLE_ERROR });
+          }
         }
-      } catch {
-        if (prFilesSeq === sequence && get().prSelected === number) {
-          set({ prsLoading: false, prsError: PRS_UNAVAILABLE_ERROR });
+      })();
+      const activeRequest = { number, sequence, promise: request };
+      prFilesRequest = activeRequest;
+      try {
+        await request;
+      } finally {
+        if (prFilesRequest === activeRequest) {
+          prFilesRequest = null;
         }
       }
     },
 
-    // Reviewing a PR ALWAYS lands synchronously on main's Module-map minimal-graph surface
-    // (applyPrReviewToMap), against the loaded artifact — no network, no swap. The head-accurate
-    // extraction is opt-in: prepareHeadGraph below, offered by the review panel's button.
+    // Once the selected PR's files are ready, reviewing lands synchronously on main's Module-map
+    // minimal-graph surface (applyPrReviewToMap), against the loaded artifact. If selection's file
+    // lane is still pending, await that exact request first. Head extraction remains opt-in below.
     async reviewPrInGraph() {
-      if (get().prSelected === null) {
+      const selected = get().prSelected;
+      if (selected === null) {
         return;
+      }
+      if (get().prFiles === null) {
+        const inFlight = prFilesRequest?.number === selected && prFilesRequest.sequence === prFilesSeq
+          ? prFilesRequest.promise
+          : get().selectPr(selected);
+        await inFlight;
+        if (get().prSelected !== selected || get().prFiles === null) {
+          return;
+        }
       }
       applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
     },
@@ -2341,7 +2369,16 @@ function applyPrReviewToMap(
   prFilesUrl: string,
   invalidateMinimalLayout: () => void,
 ): void {
-  const { prFiles, prSelected, artifact, index, prPreparedArtifactCurrent, prReviewBaseline } = get();
+  const {
+    prFiles,
+    prSelected,
+    prFilesTotal,
+    prFilesOutside,
+    artifact,
+    index,
+    prPreparedArtifactCurrent,
+    prReviewBaseline,
+  } = get();
   if (prSelected === null) {
     return;
   }
@@ -2349,9 +2386,6 @@ function applyPrReviewToMap(
   // head-relative, so every base→head remap below must stand down (running it would corrupt an
   // already-correct coordinate space — the #134 machinery is for the base-graph sync mode only).
   const swapped = prPreparedArtifactCurrent;
-  // This is a lens ENTRY (it lands on the Map lens below), so it owes the shared transition side
-  // effects like every other entry point: a live Service scope must not survive into the review.
-  beginLensTransition(get, set);
   const summary = selectedPrSummary(get());
   const context = reviewContextFromPrFiles(
     {
@@ -2364,6 +2398,26 @@ function applyPrReviewToMap(
     // Base-side hunks mark base coordinates — right for the boot artifact, wrong for a head graph.
     { baseSide: !swapped },
   );
+  // Derive the overlay's seeds before ANY lens or review mutation. An empty review remains on the
+  // PR detail page, where the reader can re-extract and retry without losing the rest of the queue.
+  const matchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
+  const { seeds, rolledUp } = rollupSeeds(matchedFiles, index);
+  if (seeds.length === 0) {
+    const allOutside = (prFiles?.length ?? 0) === 0 && prFilesOutside > 0;
+    const changedFileCount = prFilesTotal > 0 ? prFilesTotal : (prFiles?.length ?? 0) + prFilesOutside;
+    set({
+      prReviewBlocked: {
+        number: prSelected,
+        reason: allOutside
+          ? "This PR's changes are outside this session's subfolder"
+          : `None of this PR's ${changedFileCount} changed files match this session's graph`,
+      },
+    });
+    return;
+  }
+  // This is a lens ENTRY (it lands on the Map lens below), so it owes the shared transition side
+  // effects like every other entry point: a live Service scope must not survive into the review.
+  beginLensTransition(get, set);
   const review = deriveReviewDataFromContext(context, artifact, index);
   // The files-first checklist: every changed file with its touched code units (the panel's primary
   // section). Derived from the SAME context/artifact as the affected set below, so a checked unit
@@ -2378,10 +2432,6 @@ function applyPrReviewToMap(
   // Colour each touched CODE BLOCK by its file's change kind (green added / gold modified / red
   // deleted). A file/module that only contains changes stays uncoloured — it shows a +/- stat instead.
   applyChangedStatus(index, affected.map((node) => [node.nodeId, node.status] as [string, ChangeStatus]));
-  // Small reviews stay file-shaped. Past ten matched files, dense immediate-parent sibling sets
-  // become one package summary card; sparse siblings remain individual file seeds.
-  const matchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
-  const { seeds, rolledUp } = rollupSeeds(matchedFiles, index);
   // Partition the change into disjoint groups (one per weakly-connected component of the changed
   // modules), sharing the SAME flow substrate the review rows already read. Stored so the rail can
   // offer per-group isolation; ignored (strip hidden) when the change is a single connected component.
@@ -2468,6 +2518,7 @@ function applyPrReviewToMap(
     index,
     prPreparedArtifactCurrent: swapped,
     review,
+    prReviewBlocked: null,
     prReviewed: prSelected,
     reviewHeadRef: swapped ? null : summary?.headRef ?? null,
     reviewDiffByFile,

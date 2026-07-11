@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GraphArtifact, GraphNode } from "@meridian/core";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { PrReviewSection } from "../components/controlpanel/PrReviewSection";
 import { applyChangedIds, buildGraphIndex } from "../graph/graphIndex";
 import { createBlueprintStore, selectedPrSummary, type StoreDependencies } from "./store";
+import { StoreProvider } from "./StoreContext";
 import type { PrSummary } from "./prTypes";
 
 function node(id: string, kind: string, file: string, parentId?: string, lines?: { start: number; end: number }): GraphNode {
@@ -174,17 +178,73 @@ describe("PR store slice", () => {
     expect(expanded.has(METHOD_ID)).toBe(false);
   });
 
-  it("review with no matched files still lands on the Map", () => {
+  it("waits for the selected PR's files, then keeps a zero-match review on the PRs page", async () => {
+    let resolveFiles!: (response: Response) => void;
+    const filesResponse = new Promise<Response>((resolve) => {
+      resolveFiles = resolve;
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/api/prs/files")) {
+        return filesResponse;
+      }
+      if (url.includes("/api/prs/comments")) {
+        return Promise.resolve(Response.json({ comments: [], reviews: { approved: [], changesRequested: [], commented: 0 }, hasMore: false }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
     const store = freshStore();
     store.setState({
       viewMode: "prs",
-      prSelected: 7,
       prsList: { open: [pr(7)], closed: null },
-      prFiles: [{ path: "docs/readme.md", status: "modified", additions: 1, deletions: 0 }],
     });
-    store.getState().reviewPrInGraph();
-    expect(store.getState().viewMode).toBe("modules");
+    const selection = store.getState().selectPr(7);
+    const review = store.getState().reviewPrInGraph();
+    expect(fetchMock.mock.calls.filter(([input]) => input.toString().includes("/api/prs/files"))).toHaveLength(1);
+    resolveFiles(Response.json({
+      files: [{ path: "docs/readme.md", status: "modified", additions: 1, deletions: 0 }],
+      truncated: false,
+      totalFiles: 1,
+      outsideCount: 0,
+      suggestedSubdir: "",
+    }));
+    await Promise.all([selection, review]);
+
+    expect(store.getState().viewMode).toBe("prs");
+    expect(store.getState().prReviewed).toBe(null);
     expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().reviewAllSeedIds).toEqual([]);
+    expect(store.getState().prReviewBlocked).toEqual({
+      number: 7,
+      reason: "None of this PR's 1 changed files match this session's graph",
+    });
+  });
+
+  it("renders the Resume chip only for saved non-empty review seeds and never replaces the queue row", () => {
+    const store = freshStore();
+    store.setState({
+      viewMode: "modules",
+      prsList: { open: [pr(7)], closed: null },
+      prReviewed: 7,
+      minimalSeedIds: [],
+      reviewAllSeedIds: [],
+    });
+    store.getInitialState = store.getState;
+    const renderSection = () => renderToStaticMarkup(
+      createElement(StoreProvider, { store, children: createElement(PrReviewSection) }),
+    );
+
+    const withoutSeeds = renderSection();
+    expect(withoutSeeds).toContain("PR review");
+    expect(withoutSeeds).toContain("1 open");
+    expect(withoutSeeds).not.toContain("Resume review #7");
+
+    store.setState({ reviewAllSeedIds: [FILE_ID] });
+    const withSeeds = renderSection();
+    expect(withSeeds).toContain("PR review");
+    expect(withSeeds).toContain("1 open");
+    expect(withSeeds).toContain("Resume review #7");
   });
 
   it("togglePrsView opens the PR page, then a second toggle returns to the Map", () => {

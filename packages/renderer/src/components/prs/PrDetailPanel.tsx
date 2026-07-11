@@ -21,6 +21,7 @@ export function PrDetailPanel() {
   const loading = useBlueprint((state) => state.prsLoading);
   const error = useBlueprint((state) => state.prsError);
   const reviewStatus = useBlueprint((state) => state.prReviewStatus);
+  const reviewBlocked = useBlueprint((state) => state.prReviewBlocked);
   const { selectPr, reviewPrInGraph } = useBlueprintActions();
   const preparing = reviewStatus === "preparing";
   const allOutside = files !== null && files.length === 0 && outsideCount > 0;
@@ -103,6 +104,7 @@ export function PrDetailPanel() {
       >
         Review in graph
       </button>
+      {reviewBlocked?.number === selected ? <div style={NOTICE_STYLE}>{reviewBlocked.reason}</div> : null}
       {partiallyOutside ? (
         <div style={OUTSIDE_INFO_STYLE}>
           {outsideCount} of {totalFiles} changed files are outside {subdirLabel} and won't appear in this review.
