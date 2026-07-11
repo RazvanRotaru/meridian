@@ -10,9 +10,8 @@
  * hit targets stable long enough for React Flow to assemble the native double-click on the node.
  *
  * Called by each MOUNT (not by the shared GraphSurface), because the debounce timer's lifetime must
- * match the LENS, not the canvas instance: the Map's pending single-click select survives the
- * minimal overlay replacing its canvas — it still lands under the overlay, exactly as it always did
- * — while the overlay's own pending select dies with the overlay on close.
+ * match the LENS, not the canvas instance: the source Map's pending single-click select survives
+ * while the minimal overlay covers it, while the overlay's own pending select dies on close.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -166,7 +165,7 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
   // other package-kind container expands in place (the chevron's gesture). A GHOST reveals through
   // the spec (the Map refocuses at the definition; the Service lens opens the owning frame); a
   // callable BLOCK opens its logic flow (the map→logic link); everything else only selects. The
-  // breadcrumb is the way back up.
+  // breadcrumb and outward semantic zoom are the ways back up.
   const onNodeDoubleClick: NodeMouseHandler<Node> = (event, node) => {
     // React Flow delivers the constituent clicks before a double-click. Cancel either a queued
     // core selection or a transient ghost inspection before running the existing reveal path.

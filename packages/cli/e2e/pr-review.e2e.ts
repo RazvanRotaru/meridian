@@ -129,7 +129,11 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
 
     // 4g — Escape closes the source modal only; repeated Escape leaves the overlay in place, and
     // explicit Close parks the review for the text-only Resume chip.
-    const codeButton = page.locator(
+    // The source graph stays mounted beneath Minimal Graph so outward semantic zoom can reveal its
+    // exact viewport. Scope this raw CSS locator to the extracted surface rather than matching the
+    // intentionally retained source copy of the same file card.
+    const extractedSurface = page.getByRole("region", { name: "Extracted selection" }).locator("xpath=..");
+    const codeButton = extractedSurface.locator(
       `[data-id="${ORDER_SERVICE_MODULE_ID}"] button[aria-label="View source"]`,
     );
     await codeButton.waitFor({ timeout: 60_000 });

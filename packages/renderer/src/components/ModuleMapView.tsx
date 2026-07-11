@@ -1,26 +1,18 @@
 /**
- * The Module-map view — a THIN MOUNT of the shared GraphSurface (unified-canvas phase A): ONE
- * zoomable containment level. The whole-repo package overview at the top, or — once you
- * double-click a group card — that package/directory's children (sub-dirs as group cards, files as
- * file cards) wired by the import graph folded to this level. Nodes/edges are laid out in the
- * store (`moduleRfNodes`/`moduleRfEdges`); the base canvas runs the shared paint chain, salience,
- * highways, hover/inspector, recenter, and interactions, configured by this lens's SurfaceSpec
- * (Map, Service, or the renders-rooted UI — all three mount here). Supplied by THIS mount, because
- * they are lens-chrome:
+ * The Module-map view — a THIN MOUNT of the shared GraphSurface (unified-canvas phase A): one
+ * zoomable containment scene for the folder Map, Service, or renders-rooted UI lens. Nodes and
+ * edges are laid out in the store; this mount supplies lens chrome, visibility filtering,
+ * interactions, recentering, and the shared semantic-navigation lifecycle.
  *
- *   1. `filterVisible` drops file cards a category/Tests toggle hides (group cards always stay) —
- *      a pure VISIBILITY filter over the laid-out graph, so positions are untouched;
- *   2. the LENS-lifetime hooks: the fit-once-per-LEVEL guard, the interaction hook (its pending
- *      single-click select), and the (muted-while-covered) recenter reaction — all of which must
- *      survive the minimal overlay replacing the canvas beneath it;
- *   3. the containment/scope breadcrumb, extract strip, empty-level card, legend, and coverage chrome.
- *
- * Navigation is one gesture set: double-click a package/file card to zoom IN (the spec's focus
- * dive); the breadcrumb (the containment trail) zooms OUT.
+ * Double-click and breadcrumbs dive explicitly. Wheel/pinch previews an already-mounted parent,
+ * then commits it as outward navigation after crossing the threshold. The retained anchor stays
+ * centred while the camera returns to reading zoom, and the same transition can continue through
+ * every available level. A Minimal Graph uses an isolated React Flow provider above the still-
+ * mounted source so its outward handoff can reveal the exact source viewport in place.
  */
 
-import { useEffect, useMemo, useRef } from "react";
-import type { Edge, Node, ReactFlowInstance } from "@xyflow/react";
+import { useMemo } from "react";
+import type { Node } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { EmptyModuleMapCard, LevelBreadcrumb, ServiceScopeBreadcrumb } from "./ModuleMapChrome";
 import { filterVisible } from "./moduleMapPaint";
@@ -28,11 +20,17 @@ import { CoveragePanel } from "./CoveragePanel";
 import { BeaconArrows } from "./BeaconArrows";
 import { MapLegend } from "./MapLegend";
 import { CanvasActionBar } from "./controlpanel/CanvasActionBar";
-import { GraphSurface, SURFACE_STYLE, type SurfaceFlowView } from "./canvas/GraphSurface";
+import {
+  GraphSurface,
+  GraphSurfaceProvider,
+  SURFACE_STYLE,
+  type SurfaceFlowView,
+} from "./canvas/GraphSurface";
 import { GhostPromoteRing } from "./canvas/GhostPromoteRing";
 import { activeModuleSurfaceSpec } from "./canvas/surfaceSpec";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { useRecenter } from "./canvas/useRecenter";
+import { useSemanticSurfaceNavigation } from "./canvas/useSemanticSurfaceNavigation";
 import { MinimalGraphView } from "./MinimalGraphView";
 import { ReviewPanel } from "./review/ReviewPanel";
 import { accentForKind } from "../theme/kindColors";
@@ -43,79 +41,101 @@ const PACKAGE_KIND = "package";
 const SERVICE_DOMAIN_KIND = "serviceDomain";
 
 export function ModuleMapView() {
+  const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
+  return (
+    <div style={SURFACE_STYLE}>
+      {/* Simultaneously mounted ReactFlow instances need isolated stores; otherwise the overlay's
+          nodes and viewport overwrite the source scene it is supposed to reveal. Keep the source
+          visually mounted for the fade handoff, but remove its covered controls from pointer,
+          keyboard, and accessibility navigation while Minimal Graph owns the interaction layer. */}
+      <div
+        data-graph-surface="source"
+        style={SOURCE_SURFACE_LAYER_STYLE}
+        inert={minimalOpen}
+        aria-hidden={minimalOpen || undefined}
+      >
+        <GraphSurfaceProvider>
+          <ModuleSourceSurface covered={minimalOpen} />
+        </GraphSurfaceProvider>
+      </div>
+      {minimalOpen ? (
+        <div data-graph-surface="minimal" style={MINIMAL_OVERLAY_STYLE}>
+          <div style={REVIEW_SPLIT_STYLE}>
+            <div style={REVIEW_GRAPH_STYLE}>
+              <GraphSurfaceProvider>
+                <MinimalGraphView />
+              </GraphSurfaceProvider>
+            </div>
+            <ReviewPanel />
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ModuleSourceSurface({ covered }: { covered: boolean }) {
   const nodes = useBlueprint((state) => state.moduleRfNodes);
   const edges = useBlueprint((state) => state.moduleRfEdges);
   const selected = useBlueprint((state) => state.moduleSelected);
   const layoutStatus = useBlueprint((state) => state.moduleLayoutStatus);
   const layoutActivity = useBlueprint((state) => state.moduleLayoutActivity);
+  const rawFocus = useBlueprint((state) => state.moduleFocus);
   const effectiveFocus = useBlueprint((state) => state.moduleEffectiveFocus);
+  const semanticLayers = useBlueprint((state) => state.moduleSemanticLayers);
   const index = useBlueprint((state) => state.index);
   const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
   const showTests = useBlueprint((state) => state.showTests);
   const showPrivate = useBlueprint((state) => state.showPrivate);
   const showCommons = useBlueprint((state) => state.showCommons);
-  const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const viewMode = useBlueprint((state) => state.viewMode);
   const serviceScope = useBlueprint((state) => state.serviceScope);
   const serviceGroupingMode = useBlueprint((state) => state.serviceGroupingMode);
   const serviceGroupingTargetSize = useBlueprint((state) => state.serviceGroupingTargetSize);
-  const { setModuleFocus, clearServiceScope, promoteGhost } = useBlueprintActions();
-  // This lens's spec (Map or Service) — the highways flags read from it.
+  const { setModuleFocus, commitModuleSemanticParent, clearServiceScope, promoteGhost } = useBlueprintActions();
   const spec = activeModuleSurfaceSpec(viewMode);
-  // The lens-lifetime hooks live HERE (not in GraphSurface, which unmounts under the overlay): a
-  // pending single-click select still lands after the overlay opens, and the recenter reaction is
-  // muted while covered — the overlay's own recenter must win — then re-fits the kept selection
-  // when the enabled flip fires on close.
-  const interactions = useModuleNodeInteractions();
-  useRecenter(useMemo(() => [...selected], [selected]), { enabled: !minimalOpen });
 
-  // Category/test hiding is a pure VISIBILITY filter over the laid-out graph; positions are untouched.
+  // The source remains mounted while covered. Its recenter subscription is muted so a toolbar
+  // signal cannot disturb the viewport which Minimal Graph will reveal on outward navigation.
+  const interactions = useModuleNodeInteractions();
+  useRecenter(useMemo(() => [...selected], [selected]), { enabled: !covered });
+
+  // Category/test hiding is a pure visibility filter over already-laid geometry.
   const { nodes: shownNodes, edges: shownEdges } = useMemo(
-    () => filterVisible(nodes, edges, { hiddenCategories, showTests, testIds: index.testIds, showPrivate, privateIds: index.privateIds }),
+    () => filterVisible(nodes, edges, {
+      hiddenCategories,
+      showTests,
+      testIds: index.testIds,
+      showPrivate,
+      privateIds: index.privateIds,
+    }),
     [nodes, edges, hiddenCategories, showTests, showPrivate, index.testIds, index.privateIds],
   );
 
-  // Fit once per RELAYOUT: `moduleRfNodes` only changes when the level does, so clearing the guard
-  // on `effectiveFocus` (a focus change), `showTests` (the Tests toggle relayouts + re-coords the
-  // level), OR `showCommons` (hubs leave/rejoin ELK) re-fits the fresh level to the viewport.
-  // Category/Private toggles and radius are paint-only (they never change `nodes`), so they
-  // correctly do NOT trigger a refit. Entering/exiting a scoped Service sub-view also clears the
-  // guard on the SCOPE's identity — the refit fires only when the re-laid nodes land.
-  // Kept HERE (not in GraphSurface) so the guard survives the minimal overlay covering this canvas
-  // — closing the overlay must not re-run the whole-LEVEL fit (the recenter hook's enabled flip
-  // owns the close-time fit-to-selection).
-  const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
-  const fitted = useRef(false);
-  useEffect(() => {
-    fitted.current = false;
-  }, [effectiveFocus, showTests, serviceScope, showCommons, serviceGroupingMode, serviceGroupingTargetSize]);
-  useEffect(() => {
-    if (!rfRef.current || nodes.length === 0 || fitted.current) {
-      return;
-    }
-    fitted.current = true;
-    requestAnimationFrame(() => rfRef.current?.fitView({ padding: 0.2, duration: 400, minZoom: 0.01 }));
-  }, [nodes]);
+  // All module-family surfaces use this controller. The mount contributes only its store commit
+  // and the structural inputs which identify a newly derived level—including Service grouping.
+  const semanticNavigation = useSemanticSurfaceNavigation({
+    nodes,
+    fitNodes: shownNodes,
+    layoutStatus,
+    semanticLayers,
+    resetKeys: [
+      rawFocus,
+      effectiveFocus,
+      showTests,
+      serviceScope,
+      showCommons,
+      serviceGroupingMode,
+      serviceGroupingTargetSize,
+    ],
+    commitAdapter: {
+      mode: "retained-anchor",
+      commit: (layer) => commitModuleSemanticParent(layer.depth),
+    },
+  });
 
-  const isEmpty = nodes.length === 0 && layoutStatus === "ready";
+  const isEmpty = semanticNavigation.currentNodes.length === 0 && layoutStatus === "ready";
   const busy = layoutStatus === "laying-out" ? layoutActivity ?? undefined : undefined;
-
-  // The built minimal graph REPLACES the level canvas while open (after every hook above, so the
-  // hook order is stable across open/close). Closing returns here with the selection intact. When a
-  // PR review seeded the graph, ReviewPanel rides on the right (it self-hides when review is null —
-  // a hand-built minimal graph — or folds into its own reopen rail when the reader hides it).
-  if (minimalOpen) {
-    return (
-      <div style={SURFACE_STYLE}>
-        <div style={REVIEW_SPLIT_STYLE}>
-          <div style={REVIEW_GRAPH_STYLE}>
-            <MinimalGraphView />
-          </div>
-          <ReviewPanel />
-        </div>
-      </div>
-    );
-  }
 
   return (
     <GraphSurface
@@ -125,29 +145,34 @@ export function ModuleMapView() {
       miniMapColor={miniMapColor}
       interactions={interactions}
       busy={busy}
-      onInit={(instance) => {
-        rfRef.current = instance;
-      }}
+      autoFitView={false}
+      semanticLayers={semanticLayers}
+      semanticDepths={semanticNavigation.semanticDepths}
+      semanticBandOriginDepth={semanticNavigation.semanticBandOriginDepth}
+      semanticFirstPreviewMax={semanticNavigation.semanticFirstPreviewMax}
+      semanticLodEnabled={semanticNavigation.semanticLodEnabled}
+      semanticCommitEnabled={semanticNavigation.semanticCommitEnabled}
+      onSemanticCommit={semanticNavigation.onSemanticCommit}
+      onInit={semanticNavigation.onInit}
       wireHover
       flowExtras={(view) => (
         <>
           {renderBeacons(view)}
-          {/* The shared ghost "+" action adds each canonical real-id ghost to whichever canvas is
-              visible. Here that means pinning its home file into mapExtra; in the minimal overlay
-              the same action adds its home member there. Persistent parent anchors have real ids,
-              stay promotable while they disclose children, and only LIT ghosts receive a ring. */}
+          {/* Canonical real-id ghosts remain promotable while persistent parent anchors disclose
+              their children; only lit ghosts receive the shared ring. */}
           <GhostPromoteRing nodes={view.nodes} title="Pin to canvas" onPromote={promoteGhost} />
         </>
       )}
     >
       {viewMode === "call" && serviceScope !== null ? (
-        // The scoped Service sub-view's trail: "All services › <scope> ✕ [› <cluster>]" — the
-        // cluster zoom (spec.focus.crumbs of the laid-out focus) composes onto the scope segment.
-        // "All services" exits everything; ✕ drops the scope filter; the scope label (a button
-        // only while zoomed) steps back out of the dive.
         <ServiceScopeBreadcrumb
           label={serviceScope.label}
-          crumbs={spec.focus.crumbs(effectiveFocus, index, serviceGroupingMode, serviceGroupingTargetSize)}
+          crumbs={spec.focus.crumbs(
+            effectiveFocus,
+            index,
+            serviceGroupingMode,
+            serviceGroupingTargetSize,
+          )}
           onClear={() => {
             clearServiceScope();
             setModuleFocus(null);
@@ -156,18 +181,19 @@ export function ModuleMapView() {
           onFocus={setModuleFocus}
         />
       ) : (
-        // The breadcrumb reads the LAID-OUT level's focus (`moduleEffectiveFocus`, written by the
-        // relayout from the spec's deriveTree) — never a render-time re-derive — so the trail
-        // always matches the canvas on screen, even mid-lens-switch before the new layout lands.
-        // The spec names the root ("Repository" / "All services") and crumbs its own focus model.
         <LevelBreadcrumb
           focus={effectiveFocus}
           packageCount={effectiveFocus === null
             ? viewMode === "call"
               ? clusteringFor(index).clusters.length
-              : nodes.filter((node) => !node.parentId && node.type !== "ghost").length
+              : semanticNavigation.currentNodes.filter((node) => !node.parentId && node.type !== "ghost").length
             : 0}
-          crumbs={spec.focus.crumbs(effectiveFocus, index, serviceGroupingMode, serviceGroupingTargetSize)}
+          crumbs={spec.focus.crumbs(
+            effectiveFocus,
+            index,
+            serviceGroupingMode,
+            serviceGroupingTargetSize,
+          )}
           onFocus={setModuleFocus}
           rootLabel={spec.focus.rootLabel}
           rootNoun={spec.focus.rootNoun}
@@ -181,12 +207,8 @@ export function ModuleMapView() {
   );
 }
 
-// A selected call step's definition beacons ride INSIDE the flow so they track pan/zoom.
 const renderBeacons = (view: SurfaceFlowView) => <BeaconArrows targets={view.beacons} />;
 
-// The MiniMap gets untyped `Node`s: a group card reads as a blue package tone, unit/block dots tint
-// by their kind, each file dot by its category (the same palette as the cards) so a level stays
-// legible at overview zoom.
 function miniMapColor(node: Node): string {
   if (node.type === PACKAGE_KIND || node.type === SERVICE_DOMAIN_KIND) {
     return "#5B9BE3";
@@ -201,12 +223,12 @@ function miniMapColor(node: Node): string {
     return "#565E68";
   }
   if (node.type === "commonsDock") {
-    return "#5C4A2F"; // the tray's quiet amber, so the dock reads as one region on the minimap
+    return "#5C4A2F";
   }
-  // File dots wear the neutral file-family accent (category lives on the card's text chip, not a hue).
   return accentForKind("module");
 }
 
-// PR-review split: the minimal-graph overlay flexes to fill, the flow panel takes its fixed rail on the right.
 const REVIEW_SPLIT_STYLE: React.CSSProperties = { position: "absolute", inset: 0, display: "flex" };
 const REVIEW_GRAPH_STYLE: React.CSSProperties = { position: "relative", flex: 1, minWidth: 0 };
+const SOURCE_SURFACE_LAYER_STYLE: React.CSSProperties = { position: "absolute", inset: 0 };
+const MINIMAL_OVERLAY_STYLE: React.CSSProperties = { position: "absolute", inset: 0, zIndex: 10 };

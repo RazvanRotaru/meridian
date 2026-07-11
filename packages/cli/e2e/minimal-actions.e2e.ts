@@ -95,7 +95,10 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
         ]);
         return bar !== null && members !== null && bar.y >= 0 && bar.y + bar.height <= 350 && members.y + members.height <= bar.y;
       }, { timeout: 5_000 }).toBe(true);
-      await expect.poll(() => page.locator(".react-flow__minimap").isHidden(), { timeout: 5_000 }).toBe(true);
+      await expect.poll(
+        () => page.locator('[data-graph-surface="minimal"] .react-flow__minimap').isHidden(),
+        { timeout: 5_000 },
+      ).toBe(true);
       expect(await centerIsHit(close)).toBe(true);
     } finally {
       await page.setViewportSize({ width: 1600, height: 1000 });
@@ -121,7 +124,7 @@ async function expectNarrowGeometry(page: Page, actionBar: Locator, extractedAct
     const [bar, controls, minimap, members, viewGroup, extractedGroup] = await Promise.all([
       actionBar.boundingBox(),
       page.locator("#meridian-control-panel").boundingBox(),
-      page.locator(".react-flow__minimap").boundingBox(),
+      page.locator('[data-graph-surface="minimal"] .react-flow__minimap').boundingBox(),
       page.getByRole("region", { name: "Extracted selection" }).boundingBox(),
       actionBar.getByRole("group", { name: "View actions" }).boundingBox(),
       extractedActions.boundingBox(),

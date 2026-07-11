@@ -1,7 +1,7 @@
 /**
  * The minimal-graph OVERLAY — a THIN MOUNT of the shared GraphSurface with spool-only highways
  * (`MINIMAL_OVERLAY_HIGHWAYS`): the Module-map's "Extract selection" result as its own read-only React Flow
- * surface, replacing the level canvas while open. It EXTRACTS the selection verbatim (any kind — a
+ * surface, covering the still-mounted source canvas while open. It EXTRACTS the selection verbatim (any kind — a
  * selected package stays ONE card) as MEMBERS — SEED cards (the origin selection, keeping their
  * green ring) and PERSISTENT cards (ghosts the reader promoted) — ringed by the Map's OWN ghost
  * SATELLITES: every code coupling that leaves the member set charts its off-overlay symbol as a
@@ -12,9 +12,8 @@
  * crowded sibling set folds under its persistent real parent; clicking that parent keeps it in
  * place and discloses exact children as outward neighbours. The floating members panel removes a
  * member (it returns as a satellite iff still coupled), while the shared bottom action bar
- * rearranges, resets, and closes the extracted graph, returning to the active lens with the
- * selection kept. Wires are painted by the Map's OWN chain
- * (GraphSurface's, pinned by `paintMinimal`'s parity tests) and keyed by the Map's OWN `MapLegend`,
+ * rearranges, resets, and explicitly closes the extracted graph, returning to the active lens with
+ * the selection kept. Wires are painted by the Map's OWN chain and keyed by its own `MapLegend`,
  * so the overlay's colour vocabulary is the Map's by construction. Highways here means SPOOLING
  * only: fan hubs gather their many wires into shared trunks (no containers to pair-bundle in this
  * flat overlay); every overlay wire is a painted import/dep wire, so when Highways is on they ALL
@@ -30,21 +29,27 @@
  * page-specific gestures are that "+" (promote) and explicit Close.
  */
 
-import { useEffect, useMemo, useRef } from "react";
-import type { Edge, Node, ReactFlowInstance } from "@xyflow/react";
+import { useMemo, useRef } from "react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { MapLegend } from "./MapLegend";
 import { GraphSurface } from "./canvas/GraphSurface";
 import { GhostPromoteRing } from "./canvas/GhostPromoteRing";
+import { SEMANTIC_LAYER_FADE_MS } from "./canvas/MapLod";
+import { adaptMinimalGraphToSemanticSource, type MinimalSourceGraphState } from "./canvas/minimalSemanticSource";
 import { MINIMAL_OVERLAY_HIGHWAYS } from "./canvas/surfaceSpec";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { useRecenter } from "./canvas/useRecenter";
+import {
+  SEMANTIC_READING_MIN_ZOOM,
+  useSemanticSurfaceNavigation,
+} from "./canvas/useSemanticSurfaceNavigation";
 import { MinimalMembersPanel } from "./MinimalMembersPanel";
 import { CanvasActionBar } from "./controlpanel/CanvasActionBar";
 import { minimalMiniMapColor } from "./minimalGraphStyles";
 
 // A review-panel click centers on a single (possibly tiny) method card, so cap how far the fit zooms in.
 const RECENTER_OPTIONS = { maxZoom: 1 } as const;
+const MINIMAL_SEMANTIC_FIT = { minZoom: SEMANTIC_READING_MIN_ZOOM } as const;
 
 export function MinimalGraphView() {
   const nodes = useBlueprint((state) => state.minimalRfNodes);
@@ -54,6 +59,13 @@ export function MinimalGraphView() {
   const layoutActivity = useBlueprint((state) => state.minimalLayoutActivity);
   const reviewSelectedId = useBlueprint((state) => state.reviewSelectedId);
   const reviewActive = useBlueprint((state) => state.review !== null);
+  const index = useBlueprint((state) => state.index);
+  const viewMode = useBlueprint((state) => state.viewMode);
+  const moduleFocus = useBlueprint((state) => state.moduleFocus);
+  const moduleEffectiveFocus = useBlueprint((state) => state.moduleEffectiveFocus);
+  const serviceScope = useBlueprint((state) => state.serviceScope);
+  const serviceGroupingMode = useBlueprint((state) => state.serviceGroupingMode);
+  const serviceGroupingTargetSize = useBlueprint((state) => state.serviceGroupingTargetSize);
   const { closeMinimalGraph, promoteGhost } = useBlueprintActions();
 
   // A review-panel click centers the viewport on the clicked node itself (recenterSeq bump); else
@@ -75,45 +87,75 @@ export function MinimalGraphView() {
     },
   });
 
-  // Fit once per LAYOUT (build / promote / demote / reset / re-arrange) — unlike the Map's
-  // per-LEVEL guard, so it stays in this mount rather than the shared surface.
-  const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
-  const laidRef = useRef<Node[] | null>(null);
-  useEffect(() => {
-    const rf = rfRef.current;
-    if (!rf || nodes.length === 0 || laidRef.current === nodes) {
-      return;
-    }
-    laidRef.current = nodes;
-    requestAnimationFrame(() => rf.fitView({ padding: 0.2, duration: 400, minZoom: 0.01 }));
-  }, [nodes]);
+  // Capture the source graph ONCE for this overlay lifetime. Curation can change the minimal graph,
+  // but its outward parent remains the exact Map/Service/UI scene from which it was extracted.
+  const sourceRef = useRef<MinimalSourceGraphState | null>(null);
+  sourceRef.current ??= {
+    index,
+    viewMode,
+    moduleFocus,
+    moduleEffectiveFocus,
+    serviceScope,
+    serviceGroupingMode,
+    serviceGroupingTargetSize,
+  };
+  const semanticScene = useMemo(
+    () => adaptMinimalGraphToSemanticSource({ nodes, edges }, sourceRef.current!),
+    [edges, nodes],
+  );
+  const semanticNavigation = useSemanticSurfaceNavigation({
+    nodes: semanticScene.nodes,
+    layoutStatus,
+    semanticLayers: semanticScene.semanticLayers,
+    resetKeys: [nodes],
+    commitAdapter: {
+      mode: "exit",
+      commit: () => {
+        closeMinimalGraph();
+        return true;
+      },
+    },
+    fit: MINIMAL_SEMANTIC_FIT,
+  });
 
   return (
-    <GraphSurface
-      nodes={nodes}
-      edges={edges}
-      highways={MINIMAL_OVERLAY_HIGHWAYS}
-      miniMapColor={minimalMiniMapColor}
-      interactions={interactions}
-      orientationLod={false}
-      nodeDiffPreview={reviewActive}
-      busy={layoutStatus === "laying-out" ? layoutActivity ?? undefined : undefined}
-      onInit={(instance) => {
-        rfRef.current = instance;
-      }}
-      flowExtras={(view) => <GhostPromoteRing nodes={view.nodes} title="Add to the graph" onPromote={promoteGhost} />}
-    >
-      {/* The Map's own legend, in the Map's own corner (bottom-left, clear of the zoom controls) — the
-          overlay shares the Map's colour vocabulary, so it shares the Map's key to it. The package row
-          shows only when a group member/ghost card is actually present; IPC opts out always — the
-          overlay mints only file/package cards and import/dep wires, never IPC. */}
-      <MapLegend
-        hasSteps={nodes.some((node) => node.type === "step")}
-        showPackages={nodes.some((node) => node.type === "package")}
-        showIpc={false}
-      />
-      <CanvasActionBar />
-      <MinimalMembersPanel />
-    </GraphSurface>
+    <div style={{ ...MINIMAL_SEMANTIC_SURFACE_STYLE, opacity: semanticNavigation.exitPending ? 0 : 1 }}>
+      <GraphSurface
+        nodes={semanticScene.nodes}
+        edges={semanticScene.edges}
+        highways={MINIMAL_OVERLAY_HIGHWAYS}
+        miniMapColor={minimalMiniMapColor}
+        interactions={interactions}
+        nodeDiffPreview={reviewActive}
+        busy={layoutStatus === "laying-out" ? layoutActivity ?? undefined : undefined}
+        autoFitView={false}
+        semanticLayers={semanticScene.semanticLayers}
+        semanticDepths={semanticNavigation.semanticDepths}
+        semanticBandOriginDepth={semanticNavigation.semanticBandOriginDepth}
+        semanticFirstPreviewMax={semanticNavigation.semanticFirstPreviewMax}
+        semanticLodEnabled={semanticNavigation.semanticLodEnabled}
+        semanticCommitEnabled={semanticNavigation.semanticCommitEnabled}
+        onSemanticCommit={semanticNavigation.onSemanticCommit}
+        onInit={semanticNavigation.onInit}
+        flowExtras={(view) => <GhostPromoteRing nodes={view.nodes} title="Add to the graph" onPromote={promoteGhost} />}
+      >
+        {/* The Map's own legend, in the Map's own corner (bottom-left, clear of the zoom controls) — the
+            overlay shares the Map's colour vocabulary, so it shares the Map's key to it. The package row
+            shows only when a group member/ghost card is actually present; IPC opts out always. */}
+        <MapLegend
+          hasSteps={nodes.some((node) => node.type === "step")}
+          showPackages={nodes.some((node) => node.type === "package")}
+          showIpc={false}
+        />
+        <CanvasActionBar />
+        <MinimalMembersPanel />
+      </GraphSurface>
+    </div>
   );
 }
+
+const MINIMAL_SEMANTIC_SURFACE_STYLE: React.CSSProperties = {
+  position: "absolute",
+  inset: 0,
+  transition: `opacity ${SEMANTIC_LAYER_FADE_MS}ms ease-out`,
+};
