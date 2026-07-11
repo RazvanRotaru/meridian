@@ -7,6 +7,7 @@
  */
 
 import type { GraphIndex } from "../graph/graphIndex";
+import type { ServiceGroupingMode } from "../derive/serviceClusteringModes";
 import { serviceRevealStateForMany } from "./lensPath";
 
 export interface ScopeTarget {
@@ -19,7 +20,12 @@ const NO_CLUSTER_REASON = "No service cluster owns this selection";
 
 /** Enabled iff at least one anchor resolves to a service cluster — the many-variant drops
  * unplaceable anchors per node and goes null only when the whole selection is unplaceable. */
-export function scopeTarget(anchors: readonly string[], index: GraphIndex): ScopeTarget {
-  const enabled = serviceRevealStateForMany(anchors, index) !== null;
+export function scopeTarget(
+  anchors: readonly string[],
+  index: GraphIndex,
+  groupingMode?: ServiceGroupingMode,
+  groupingTargetSize?: number,
+): ScopeTarget {
+  const enabled = serviceRevealStateForMany(anchors, index, groupingMode, groupingTargetSize) !== null;
   return { enabled, reason: enabled ? null : NO_CLUSTER_REASON };
 }

@@ -20,9 +20,19 @@ const PACKAGE_ACCENT = "#5B9BE3";
 
 type PackageRfNode = Node<ModuleGroupData, "package">;
 
-type PackageMetaData = Pick<ModuleGroupData, "fileCount" | "ca" | "ce">;
+type PackageMetaData = Pick<ModuleGroupData, "fileCount" | "ca" | "ce" | "countLabel">;
 
 function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
+  return <GroupContainerNodeView id={id} data={data} />;
+}
+
+/**
+ * Shared package-shaped container rendering. A Service-domain node is synthetic in the derive, but
+ * it must wear the exact same interaction chrome as every other group: selection/diff treatment,
+ * source/target handles, the expand chevron, and the collapsed-card/expanded-frame transition.
+ * Keep those mechanics here and let each React Flow node type be a thin semantic wrapper.
+ */
+export function GroupContainerNodeView({ id, data }: { id: string; data: ModuleGroupData }) {
   const selected = useBlueprint((state) => state.moduleSelected.has(id));
   const diff = useNodeDiff(id);
   const chevron = data.isContainer ? <ExpandChevron id={id} isExpanded={data.isExpanded} /> : null;
@@ -55,7 +65,7 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
           <span style={LABEL} title={id}>{data.label}</span>
           <DeltaChip diff={diff} />
         </div>
-        <Meta data={data} />
+        <Meta data={data} hideCoupling={data.readOnly} />
         <CommonsChips chips={(data as { commonsChips?: string[] }).commonsChips} />
       </div>
     </div>
@@ -65,9 +75,10 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
 /** File count + cross-package fan-in/out — shown compact in a title bar, block in a collapsed card.
  * `hideCoupling` drops the uses/used-by pair when the counts aren't meaningful (a filtered subgraph). */
 function Meta({ data, hideCoupling }: { data: PackageMetaData; hideCoupling?: boolean }) {
+  const countLabel = data.countLabel ?? `${data.fileCount} files`;
   return (
     <div style={META}>
-      <span style={FILES} title={`${data.fileCount} source file(s)`}>{data.fileCount} files</span>
+      <span style={FILES} title={data.countLabel ?? `${data.fileCount} source file(s)`}>{countLabel}</span>
       {hideCoupling ? null : (
         <span style={COUNTS} title={`imports ${data.ce} · imported by ${data.ca}`}>
           <span style={COUNT_MUTED}>uses</span>

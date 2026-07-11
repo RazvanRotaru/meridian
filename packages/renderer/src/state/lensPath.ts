@@ -17,6 +17,8 @@ import type { ViewMode } from "../derive/edgeSelection";
 import { UNIT_CARD_KINDS } from "../derive/blockDeps";
 import { frameIdOf, leadIdOf } from "../derive/serviceClusterEdges";
 import { clusteringFor } from "../derive/serviceClusteringCache";
+import { deriveServiceDomains, SERVICE_DOMAIN_MIN_CLUSTERS } from "../derive/serviceDomains";
+import type { ServiceGroupingMode } from "../derive/serviceClusteringModes";
 import { uiFocusTarget } from "../derive/uiFocus";
 import { commonPackageFocus, type ModuleRevealState } from "./flowExplorer";
 
@@ -72,8 +74,13 @@ export function mapRevealStateForMany(anchors: readonly string[], index: GraphIn
  * in no clustered unit (a folder of unclustered files, an unowned helper) are dropped; null when
  * none survive, so the caller opens the lens at its top. The Service lens keeps `moduleFocus` null
  * (it has no folder zoom). */
-export function serviceRevealStateForMany(anchors: readonly string[], index: GraphIndex): ModuleRevealState | null {
-  return resolveServiceAnchors(anchors, index)?.reveal ?? null;
+export function serviceRevealStateForMany(
+  anchors: readonly string[],
+  index: GraphIndex,
+  groupingMode?: ServiceGroupingMode,
+  groupingTargetSize?: number,
+): ModuleRevealState | null {
+  return resolveServiceAnchors(anchors, index, groupingMode, groupingTargetSize)?.reveal ?? null;
 }
 
 export interface ServiceAnchorResolution {
@@ -85,8 +92,18 @@ export interface ServiceAnchorResolution {
 /** The ONE anchors→clusters resolution pass: each anchor resolves to its clustered unit(s), whose
  * frames the reveal opens and whose leads seed the Service scope — so the reveal gate and the scope
  * gate can never disagree. Null when no anchor resolves (reveal and scope both have nothing). */
-export function resolveServiceAnchors(anchors: readonly string[], index: GraphIndex): ServiceAnchorResolution | null {
-  const { leadOf } = clusteringFor(index);
+export function resolveServiceAnchors(
+  anchors: readonly string[],
+  index: GraphIndex,
+  groupingMode?: ServiceGroupingMode,
+  groupingTargetSize?: number,
+): ServiceAnchorResolution | null {
+  const clustering = clusteringFor(index);
+  const { leadOf } = clustering;
+  const domainModel = deriveServiceDomains(clustering, groupingMode, groupingTargetSize);
+  const domainByLead = clustering.clusters.length >= SERVICE_DOMAIN_MIN_CLUSTERS
+    ? domainModel.domainByLead
+    : EMPTY_DOMAIN_BY_LEAD;
   const moduleExpanded = new Set<string>();
   const owningLeads = new Set<string>();
   const placeable: string[] = [];
@@ -101,6 +118,10 @@ export function resolveServiceAnchors(anchors: readonly string[], index: GraphIn
       // method's flow frame, say); the unit itself is always-open in the service walk. A FILE
       // anchor sits above its units, so it contributes the frames alone.
       moduleExpanded.add(frameIdOf(leadId));
+      const domain = domainByLead.get(leadId);
+      if (domain) {
+        moduleExpanded.add(domain.id);
+      }
       for (const id of containersOnPath(anchor, index, unitId)) {
         moduleExpanded.add(id);
       }
@@ -115,6 +136,8 @@ export function resolveServiceAnchors(anchors: readonly string[], index: GraphIn
     owningLeads: [...owningLeads],
   };
 }
+
+const EMPTY_DOMAIN_BY_LEAD: ReadonlyMap<string, { id: string }> = new Map<string, { id: string }>();
 
 /** Reveal `anchors` in the UI lens — SHARED module spaces since the phase-C unification: keep the
  * implicit render-subtree root (`moduleFocus` null) while it contains EVERY placeable anchor, else

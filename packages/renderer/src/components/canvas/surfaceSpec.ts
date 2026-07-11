@@ -7,7 +7,7 @@
  * Map's full capability set, per-surface where the semantics differ:
  *
  *   - FOCUS: both lenses zoom by double-click (`focus.dive` → moduleFocus), but the Map dives
- *     folders AND files while the Service lens dives ONLY `svc:` cluster frames (`divableKinds`);
+ *     folders/files while the Service lens dives synthetic domains and `svc:` cluster frames;
  *     each surface names its own breadcrumb root and crumbs its own effective focus.
  *   - GHOST REVEAL: the Map refocuses at the definition (`revealModule` — a focus jump); the
  *     Service lens OPENS the owning cluster frame in place (`revealServiceGhost` — an expand,
@@ -30,6 +30,8 @@ import { deriveServiceTree } from "../../derive/serviceClusterTree";
 import { deriveUiTree } from "../../derive/uiTree";
 import { clusterMemberSeeds, homeFileOf, leadIdOf } from "../../derive/serviceClusterEdges";
 import { clusteringFor } from "../../derive/serviceClusteringCache";
+import { deriveServiceDomains, isServiceDomainId, SERVICE_DOMAIN_MIN_CLUSTERS } from "../../derive/serviceDomains";
+import type { ServiceGroupingMode } from "../../derive/serviceClusteringModes";
 import { scopeSetOf, type ServiceScope } from "../../state/serviceScope";
 
 /** Which of the Visual Highways passes apply to a surface's shape (always bundle → route → spool). */
@@ -48,6 +50,8 @@ export interface SurfaceTreeState {
   moduleFocus: string | null;
   moduleExpanded: ReadonlySet<string>;
   serviceScope: ServiceScope | null;
+  serviceGroupingMode?: ServiceGroupingMode;
+  serviceGroupingTargetSize?: number;
   /** The Commons toggle: utility hubs demote into the dock tray (the Map's hub treatment — the
    * toggle is Map-gated in the control panel, and only the Map's derive reads it). */
   showCommons: boolean;
@@ -95,7 +99,12 @@ export interface SurfaceFocusModel {
   rootNoun: string;
   /** The trail below the root for the LAID-OUT effective focus (never a render-time re-derive of
    * the tree — only of the trail labels, which are stable per index). */
-  crumbs(effectiveFocus: string | null, index: GraphIndex): Crumb[];
+  crumbs(
+    effectiveFocus: string | null,
+    index: GraphIndex,
+    groupingMode?: ServiceGroupingMode,
+    groupingTargetSize?: number,
+  ): Crumb[];
 }
 
 export interface SurfaceSpec {
@@ -111,7 +120,12 @@ export interface SurfaceSpec {
   /** How a selection seeds the minimal-graph overlay: real ids pass through; the Service lens
    * decomposes `svc:` frames into their cluster members' home FILE ids (the overlay draws
    * file/folder boxes, never bare units). */
-  minimalSeeds(selection: readonly string[], index: GraphIndex): string[];
+  minimalSeeds(
+    selection: readonly string[],
+    index: GraphIndex,
+    groupingMode?: ServiceGroupingMode,
+    groupingTargetSize?: number,
+  ): string[];
   highways: HighwayFlags;
 }
 
@@ -129,13 +143,31 @@ export function crumbsFor(focus: string | null, index: GraphIndex): Crumb[] {
     .map((node) => ({ id: node.id, label: node.displayName ?? node.id }));
 }
 
-/** The Service trail: one segment — the focused cluster, by its lead's display name. */
-function serviceCrumbs(effectiveFocus: string | null, index: GraphIndex): Crumb[] {
-  const lead = effectiveFocus === null ? null : leadIdOf(effectiveFocus);
-  if (effectiveFocus === null || lead === null) {
+/** The Service trail: a synthetic filesystem domain followed by the focused service when present. */
+function serviceCrumbs(
+  effectiveFocus: string | null,
+  index: GraphIndex,
+  groupingMode?: ServiceGroupingMode,
+  groupingTargetSize?: number,
+): Crumb[] {
+  if (effectiveFocus === null) {
     return [];
   }
-  return [{ id: effectiveFocus, label: clusteringFor(index).metrics.get(lead)?.displayName ?? lead }];
+  const clustering = clusteringFor(index);
+  const model = deriveServiceDomains(clustering, groupingMode, groupingTargetSize);
+  const focusedDomain = model.domainById.get(effectiveFocus);
+  if (focusedDomain) {
+    return [{ id: focusedDomain.id, label: focusedDomain.label }];
+  }
+  const lead = effectiveFocus === null ? null : leadIdOf(effectiveFocus);
+  if (lead === null) {
+    return [];
+  }
+  const service = { id: effectiveFocus, label: clustering.metrics.get(lead)?.displayName ?? lead };
+  const domain = model.domainByLead.get(lead);
+  return clustering.clusters.length >= SERVICE_DOMAIN_MIN_CLUSTERS && domain
+    ? [{ id: domain.id, label: domain.label }, service]
+    : [service];
 }
 
 /** The folder Map: focus = moduleFocus (containment dive over folders AND files), ghosts reveal by
@@ -157,7 +189,7 @@ const MAP_SURFACE: SurfaceSpec = {
   highways: ALL_HIGHWAYS,
 };
 
-/** The Service lens: focus = ONE cluster (dive a `svc:` frame; Scope stays the coupling filter),
+/** The Service lens: focus = one domain or cluster (Scope stays the coupling filter),
  * ghosts from the shared projection with expand-based reveal — `revealServiceGhost` opens the
  * owning frame in place and NEVER sets a folder focus. The minimal overlay defers its gestures to
  * this spec while it covers the lens (`viewMode` stays "call"), exactly as before the extraction. */
@@ -167,12 +199,16 @@ const SERVICE_SURFACE: SurfaceSpec = {
       scopeLeadIds: scopeSetOf(state.serviceScope),
       extraIds: extras.extraIds,
       hiddenIds: extras.hiddenIds,
+      groupingMode: state.serviceGroupingMode,
+      groupingTargetSize: state.serviceGroupingTargetSize,
     }),
   focus: {
     dive: (actions, id) => actions.setModuleFocus(id),
     // ONLY `svc:` cluster frames dive on this lens — a folder frame (the minimal overlay's home
     // boxes) or a file card keeps its expand/select gesture, never a junk focus.
-    divable: (nodeType, id) => nodeType === "package" && leadIdOf(id) !== null,
+    divable: (nodeType, id) =>
+      (nodeType === "package" && leadIdOf(id) !== null)
+      || (nodeType === "serviceDomain" && isServiceDomainId(id)),
     rootLabel: "All services",
     rootNoun: "services",
     crumbs: serviceCrumbs,

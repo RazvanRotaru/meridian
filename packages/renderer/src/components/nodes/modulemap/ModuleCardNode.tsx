@@ -12,6 +12,7 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
 import type { ModuleCardData } from "../../../derive/moduleLevel";
 import { PackageOverviewNode } from "./PackageOverviewNode";
+import { ServiceDomainNode } from "./ServiceDomainNode";
 import { UnitCardNode } from "./UnitCardNode";
 import { BlockNode } from "./BlockNode";
 import { StepNode } from "./StepNode";
@@ -118,7 +119,16 @@ export const ModuleCardNode = memo(ModuleCardNodeImpl);
  * `block` is a leaf code block (a method, function, or type definition). A card the reader expands
  * becomes a frame whose children NEST inside it (parentId), so a level can hold nested frames —
  * mirroring the call graph's ContainerNode. */
-export const moduleNodeTypes = { file: ModuleCardNode, package: PackageOverviewNode, unit: UnitCardNode, block: BlockNode, step: StepNode, ghost: GhostNode, commonsDock: CommonsDockNode };
+export const moduleNodeTypes = {
+  file: ModuleCardNode,
+  package: PackageOverviewNode,
+  serviceDomain: ServiceDomainNode,
+  unit: UnitCardNode,
+  block: BlockNode,
+  step: StepNode,
+  ghost: GhostNode,
+  commonsDock: CommonsDockNode,
+};
 
 const CARD: React.CSSProperties = {
   position: "relative",

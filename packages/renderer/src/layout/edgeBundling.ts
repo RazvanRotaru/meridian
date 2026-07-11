@@ -157,6 +157,7 @@ function createBundleEdge(sourceParent: string, targetParent: string, edges: Edg
   let hasLit = false;
   let crossPackage = false;
   let outsideView = false;
+  let paintedStroke: string | undefined;
 
   for (const edge of edges) {
     const data = edge.data as { depKind?: string; category?: string; crossPackage?: boolean; outsideView?: boolean } | undefined;
@@ -164,6 +165,9 @@ function createBundleEdge(sourceParent: string, targetParent: string, edges: Edg
     breakdown[kind] = (breakdown[kind] ?? 0) + 1;
     crossPackage ||= data?.crossPackage === true;
     outsideView ||= data?.outsideView === true;
+    if (paintedStroke === undefined && typeof edge.style?.stroke === "string") {
+      paintedStroke = edge.style.stroke;
+    }
     if ((edge.style as { opacity?: number } | undefined)?.opacity === 1) {
       hasLit = true;
     }
@@ -181,7 +185,10 @@ function createBundleEdge(sourceParent: string, targetParent: string, edges: Edg
 
   const count = edges.length;
   const width = bundleWidth(count);
-  const color = relColor(dominantKind) ?? "#8B95A3";
+  // The bundle pass runs after emphasis, so an untyped aggregate (notably a Service coupling) has
+  // already received its correct cross-frame gold. Preserve that established surface vocabulary
+  // instead of replacing it with generic gray merely because the aggregate has no `depKind`.
+  const color = relColor(dominantKind) ?? paintedStroke ?? "#8B95A3";
   const opacity = hasLit ? 0.85 : 0.45;
 
   const bundleData: BundleEdgeData = {
@@ -213,6 +220,6 @@ function createBundleEdge(sourceParent: string, targetParent: string, edges: Edg
 export function bundleLabel(breakdown: Record<string, number>): string {
   return Object.entries(breakdown)
     .sort((a, b) => b[1] - a[1])
-    .map(([kind, count]) => `${count} ${kind}`)
+    .map(([kind, count]) => `${count} ${kind === "dep" ? "dependencies" : kind}`)
     .join(" · ");
 }

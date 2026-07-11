@@ -43,9 +43,10 @@ export function serviceGhostTier(
   visibleIds: ReadonlySet<string>,
   index: GraphIndex,
   kinds: Map<string, Skeleton["kind"]>,
+  domainIdByLead: ReadonlyMap<string, string>,
   hiddenIds: ReadonlySet<string>,
 ): GhostTier {
-  const walkEmission = walkGhostEmission(full, drawnLeads, blockDeps, walk, visibleIds, index, kinds);
+  const walkEmission = walkGhostEmission(full, drawnLeads, blockDeps, walk, visibleIds, index, kinds, domainIdByLead);
   const clusterEmission =
     drawnLeads.size === full.clusters.length ? EMPTY_EMISSION : clusterGhostEmission(full, drawnLeads, visibleIds, index);
   const merged = mergeEmissions(walkEmission, clusterEmission);
@@ -64,12 +65,13 @@ function walkGhostEmission(
   visibleIds: ReadonlySet<string>,
   index: GraphIndex,
   kinds: Map<string, Skeleton["kind"]>,
+  domainIdByLead: ReadonlyMap<string, string>,
 ): GhostEmission {
   const raw = rawGhostEmission(blockDeps, walk, visibleIds, index, kinds);
   if (raw === null) {
     return EMPTY_EMISSION;
   }
-  return withoutFrameWireGhosts(raw, full.leadOf, visibleIds, index, walk, drawnLeads);
+  return withoutFrameWireGhosts(raw, full.leadOf, visibleIds, index, walk, drawnLeads, domainIdByLead);
 }
 
 /**
@@ -89,12 +91,13 @@ function withoutFrameWireGhosts(
   index: GraphIndex,
   walk: CodeWalk,
   drawnLeads: ReadonlySet<string>,
+  domainIdByLead: ReadonlyMap<string, string>,
 ): GhostEmission {
   const drawnParents = new Map(walk.skeleton.map((entry) => [entry.id, entry.parentId]));
   const representsFrameWire = (wire: GhostWire): boolean => {
     const ghostEnd = emission.ghosts.has(wire.source) ? wire.source : wire.target;
     const anchorEnd = ghostEnd === wire.source ? wire.target : wire.source;
-    return hasDrawnFrame(ghostEnd, leadOf, visibleIds, index) && anchorInDrawnCluster(anchorEnd, drawnParents, leadOf, drawnLeads, index);
+    return hasDrawnFrame(ghostEnd, leadOf, visibleIds, index, domainIdByLead) && anchorInDrawnCluster(anchorEnd, drawnParents, leadOf, drawnLeads, index);
   };
   const wires = emission.wires.filter((wire) => !representsFrameWire(wire));
   const kept = new Set(wires.flatMap((wire) => [wire.source, wire.target]));
@@ -103,10 +106,16 @@ function withoutFrameWireGhosts(
 }
 
 /** Whether any ancestor-or-self of `id` belongs to a cluster whose `svc:` frame is drawn. */
-function hasDrawnFrame(id: string, leadOf: ReadonlyMap<string, string>, visibleIds: ReadonlySet<string>, index: GraphIndex): boolean {
+function hasDrawnFrame(
+  id: string,
+  leadOf: ReadonlyMap<string, string>,
+  visibleIds: ReadonlySet<string>,
+  index: GraphIndex,
+  domainIdByLead: ReadonlyMap<string, string>,
+): boolean {
   for (const node of index.ancestorsOf(id)) {
     const lead = leadOf.get(node.id);
-    if (lead !== undefined && visibleIds.has(frameIdOf(lead))) {
+    if (lead !== undefined && (visibleIds.has(frameIdOf(lead)) || visibleIds.has(domainIdByLead.get(lead) ?? ""))) {
       return true;
     }
   }
@@ -123,7 +132,7 @@ function anchorInDrawnCluster(
   drawnLeads: ReadonlySet<string>,
   index: GraphIndex,
 ): boolean {
-  if (leadIdOf(skeletonRootOf(anchorId, drawnParents)) !== null) {
+  if (insideServiceFrame(anchorId, drawnParents)) {
     return true;
   }
   const ancestors = index.ancestorsOf(anchorId);
@@ -136,19 +145,23 @@ function anchorInDrawnCluster(
   return false;
 }
 
-/** The drawn skeleton root above `id` (self when detached) — a `svc:` root means "inside a frame". */
-function skeletonRootOf(id: string, drawnParents: ReadonlyMap<string, string | null>): string {
+/** Whether the skeleton chain crosses a real service frame. Domain placement parents can now sit
+ * above that frame, so checking only the topmost ancestor would incorrectly miss nested steps. */
+function insideServiceFrame(id: string, drawnParents: ReadonlyMap<string, string | null>): boolean {
   const seen = new Set<string>();
   let current = id;
   while (!seen.has(current)) {
+    if (leadIdOf(current) !== null) {
+      return true;
+    }
     seen.add(current);
     const parent = drawnParents.get(current);
     if (parent === null || parent === undefined) {
-      return current;
+      return false;
     }
     current = parent;
   }
-  return current;
+  return false;
 }
 
 /** Ghost the far end of couplings the scope/zoom dropped, anchored at the kept side's COLLAPSED
