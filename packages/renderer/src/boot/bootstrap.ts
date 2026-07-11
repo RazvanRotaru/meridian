@@ -32,6 +32,7 @@ export async function bootstrap(): Promise<BootResult> {
     sourceUrl: boot.sourceUrl,
     prsUrl: prApi.prsUrl,
     prFilesUrl: prApi.prFilesUrl,
+    prFileUrl: prApi.prFileUrl,
     graphUrl: boot.graphUrl,
     prReviewUrl: prApi.prReviewUrl,
   });

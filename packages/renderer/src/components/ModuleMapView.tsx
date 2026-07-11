@@ -3,9 +3,10 @@
  * zoomable containment level. The whole-repo package overview at the top, or — once you
  * double-click a group card — that package/directory's children (sub-dirs as group cards, files as
  * file cards) wired by the import graph folded to this level. Nodes/edges are laid out in the
- * store (`moduleRfNodes`/`moduleRfEdges`); the base canvas runs the shared paint chain, highways,
- * hover, recenter, and interactions, configured by this lens's SurfaceSpec (Map, Service, or the
- * renders-rooted UI — all three mount here). Supplied by THIS mount, because they are lens-chrome:
+ * store (`moduleRfNodes`/`moduleRfEdges`); the base canvas runs the shared paint chain, salience,
+ * highways, hover/inspector, recenter, and interactions, configured by this lens's SurfaceSpec
+ * (Map, Service, or the renders-rooted UI — all three mount here). Supplied by THIS mount, because
+ * they are lens-chrome:
  *
  *   1. `filterVisible` drops file cards a category/Tests toggle hides (group cards always stay) —
  *      a pure VISIBILITY filter over the laid-out graph, so positions are untouched;
@@ -48,6 +49,7 @@ export function ModuleMapView() {
   const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
   const showTests = useBlueprint((state) => state.showTests);
   const showPrivate = useBlueprint((state) => state.showPrivate);
+  const showCommons = useBlueprint((state) => state.showCommons);
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const viewMode = useBlueprint((state) => state.viewMode);
   const serviceScope = useBlueprint((state) => state.serviceScope);
@@ -68,19 +70,20 @@ export function ModuleMapView() {
   );
 
   // Fit once per RELAYOUT: `moduleRfNodes` only changes when the level does, so clearing the guard
-  // on `effectiveFocus` (a focus change) OR `showTests` (the Tests toggle relayouts + re-coords the
-  // level) re-fits the fresh level to the viewport. Category/Private toggles and radius are
-  // paint-only (they never change `nodes`), so they correctly do NOT trigger a refit. The Service
-  // lens has no focus (`effectiveFocus` stays null there), so entering/exiting a scoped sub-view
-  // clears the guard on the SCOPE's identity instead — the refit then fires only when the re-laid
-  // `nodes` land, never against the outgoing canvas. Kept HERE (not in GraphSurface) so the guard
-  // survives the minimal overlay covering this canvas — closing the overlay must not re-run the
-  // whole-LEVEL fit (the recenter hook's enabled flip owns the close-time fit-to-selection).
+  // on `effectiveFocus` (a focus change), `showTests` (the Tests toggle relayouts + re-coords the
+  // level), OR `showCommons` (hubs leave/rejoin ELK) re-fits the fresh level to the viewport.
+  // Category/Private toggles and radius are paint-only (they never change `nodes`), so they
+  // correctly do NOT trigger a refit. The Service lens has no focus (`effectiveFocus` stays null
+  // there), so entering/exiting a scoped sub-view clears the guard on the SCOPE's identity instead
+  // — the refit then fires only when the re-laid `nodes` land, never against the outgoing canvas.
+  // Kept HERE (not in GraphSurface) so the guard survives the minimal overlay covering this canvas
+  // — closing the overlay must not re-run the whole-LEVEL fit (the recenter hook's enabled flip
+  // owns the close-time fit-to-selection).
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const fitted = useRef(false);
   useEffect(() => {
     fitted.current = false;
-  }, [effectiveFocus, showTests, serviceScope]);
+  }, [effectiveFocus, showTests, serviceScope, showCommons]);
   useEffect(() => {
     if (!rfRef.current || nodes.length === 0 || fitted.current) {
       return;
@@ -184,6 +187,9 @@ function miniMapColor(node: Node): string {
   }
   if (node.type === "step" || node.type === "ghost") {
     return "#565E68";
+  }
+  if (node.type === "commonsDock") {
+    return "#5C4A2F"; // the tray's quiet amber, so the dock reads as one region on the minimap
   }
   // File dots wear the neutral file-family accent (category lives on the card's text chip, not a hue).
   return accentForKind("module");

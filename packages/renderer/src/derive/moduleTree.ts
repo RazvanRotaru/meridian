@@ -25,6 +25,7 @@ import { BLOCK_KINDS, type BlockDeps, UNIT_CARD_KINDS } from "./blockDeps";
 import { ghostLevel, isDepAnchorKind } from "./ghostLevel";
 import { liftEdges } from "./liftEdges";
 import { createCodeWalk, depWireEdges, flowChainEdges, stepCallEdges, visitCode, type CodeWalk, type Skeleton } from "./codeWalk";
+import { demoteCommons } from "./commonsDemotion";
 import { finalizeModuleNode, foldById, importEdges, importTreeEdges } from "./moduleTreeData";
 import { ipcTreeEdges } from "./moduleIpc";
 import type { ModuleTree, ModuleTreeEdge } from "./moduleTreeTypes";
@@ -60,6 +61,7 @@ export function deriveModuleTree(
   flows: LogicFlows,
   extraIds: ReadonlySet<string> = EMPTY_IDS,
   hiddenIds: ReadonlySet<string> = EMPTY_IDS,
+  demoteHubs = true,
 ): ModuleTree {
   const effectiveFocus = focus === null ? null : collapseChain(index, focus);
   // Palette-pinned nodes (⌘P "+") ride in as EXTRA top-level roots so an out-of-focus card joins the
@@ -78,7 +80,7 @@ export function deriveModuleTree(
   const ghosts = ghostLevel(blockDeps, walked, visibleIds, index, kinds, hiddenIds);
   const isDepAnchor = (id: string) => isDepAnchorKind(kinds.get(id));
   const edges = [
-    ...importTreeEdges(lifted, kinds),
+    ...importTreeEdges(lifted, kinds, graph),
     // Code-level dep wires: anchored to file/unit/block cards (the detailed intra-package view).
     ...depWireEdges(blockDeps, visibleIds, index, isDepAnchor, walked.expandedBlocks),
     // Package-level dep wires: typed relationships (calls/extends/etc.) LIFTED to packages so the
@@ -89,7 +91,11 @@ export function deriveModuleTree(
     ...ipcTreeEdges(index, visibleIds),
     ...ghosts.edges,
   ].sort((a, b) => a.id.localeCompare(b.id));
-  return { nodes: [...nodes, ...ghosts.nodes], edges, effectiveFocus };
+  // Hub treatment: utility files with logger-grade in-degree demote to the commons dock — their
+  // wires mark for paint-hiding and their dependents gain chips (commonsDemotion.ts). The Commons
+  // toggle turns the whole treatment off (hubs rejoin ELK with ordinary wires).
+  const demoted = demoteHubs ? demoteCommons([...nodes, ...ghosts.nodes], edges) : { nodes: [...nodes, ...ghosts.nodes], edges };
+  return { nodes: demoted.nodes, edges: demoted.edges, effectiveFocus };
 }
 
 /**
@@ -116,13 +122,17 @@ function packageDepEdges(
   const lifted = liftEdges(couplingEdges, visibleIds, index.parentOf);
   // Keep only edges where BOTH endpoints landed on a package (skip file-to-file at this level —
   // those are handled by depWireEdges). Aggregate by source+target+kind, summing weight.
-  const byKey = new Map<string, { source: string; target: string; kind: string; weight: number }>();
+  const byKey = new Map<string, { source: string; target: string; kind: string; weight: number; underlyingEdgeIds: string[] }>();
   for (const edge of lifted) {
     if (!packageIds.has(edge.source) || !packageIds.has(edge.target)) continue;
     const key = `${edge.kind}@${edge.source}|${edge.target}`;
     const existing = byKey.get(key);
-    if (existing) { existing.weight += edge.weight; }
-    else { byKey.set(key, { source: edge.source, target: edge.target, kind: edge.kind, weight: edge.weight }); }
+    if (existing) {
+      existing.weight += edge.weight;
+      existing.underlyingEdgeIds.push(...edge.underlyingEdgeIds);
+    } else {
+      byKey.set(key, { source: edge.source, target: edge.target, kind: edge.kind, weight: edge.weight, underlyingEdgeIds: [...edge.underlyingEdgeIds] });
+    }
   }
   return [...byKey.values()].map((e) => ({
     id: `pdep:${e.kind}:${e.source}->${e.target}`,
@@ -132,6 +142,7 @@ function packageDepEdges(
     crossFrame: true, // always cross-package at this level
     category: "dep" as const,
     depKind: e.kind,
+    underlyingEdgeIds: e.underlyingEdgeIds,
   }));
 }
 

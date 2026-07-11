@@ -14,6 +14,7 @@ import { CANVAS_ROOT_ELK_OPTIONS } from "./elkCanvasOptions";
 import { runElkLayout } from "./elkLayout";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
 import { placeGhostBands } from "./ghostBandPlacement";
+import { placeCommonsDock } from "./commonsDockPlacement";
 import { clamp, countsRowWidth, monoTextWidth, pillWidth } from "./measure";
 import type { ModuleGroupData, ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
 import type { BlockData, ModuleCardData, UnitCardData } from "../derive/moduleLevel";
@@ -97,18 +98,23 @@ export async function layoutModuleTree(nodes: VisibleModuleNode[], edges: Module
   if (nodes.length === 0) {
     return { nodes: [], edges: [] };
   }
-  // GHOST cards (off-level far ends of dependency wires) are kept OUT of ELK — feeding them in gives
-  // them layer slots and shoves the real frames apart. The core lays out unchanged; ghosts hang beside
-  // it (see `ghostBandPlacement`, then repositioned selection-relative at paint time). No ghosts ⇒
-  // bit-identical to before.
-  const core = nodes.filter((node) => node.kind !== "ghost");
+  // GHOST cards (off-level far ends of dependency wires) and demoted COMMONS hubs are kept OUT of
+  // ELK — ghosts would take layer slots and shove the real frames apart; a commons hub is the level's
+  // biggest magnet and would pull every layer toward it. The core lays out unchanged; ghosts hang
+  // beside it (`ghostBandPlacement`, repositioned selection-relative at paint time), commons park in
+  // the dock row below (`commonsDockPlacement`). Neither present ⇒ bit-identical to before.
+  const isCommons = (node: VisibleModuleNode) => (node.data as { isCommons?: boolean }).isCommons === true;
+  const core = nodes.filter((node) => node.kind !== "ghost" && !isCommons(node));
   const ghosts = nodes.filter((node) => node.kind === "ghost");
-  const coreEdges = edges.filter((edge) => edge.ghost !== true);
+  const commons = nodes.filter(isCommons);
+  const commonsIds = new Set(commons.map((node) => node.id));
+  const coreEdges = edges.filter((edge) => edge.ghost !== true && !commonsIds.has(edge.target) && !commonsIds.has(edge.source));
   const byId = new Map(core.map((node) => [node.id, node]));
   const laid = await runElkLayout(buildNestedElkGraph(core, coreEdges, adapter, CANVAS_ROOT_ELK_OPTIONS));
   const placed = emitReactFlowNodes(laid, (elkNode, parentId) => toNode(elkNode, parentId, byId));
   const banded = ghosts.length > 0 ? placeGhostBands(ghosts, edges.filter((edge) => edge.ghost === true), placed) : [];
-  return { nodes: [...placed, ...banded], edges: edges.map(toEdge) };
+  const docked = placeCommonsDock(commons, placed, leafSize);
+  return { nodes: [...placed, ...banded, ...docked], edges: edges.map(toEdge) };
 }
 
 /** Every leaf card sizes to its own content so a long name is never clipped: blocks/steps/ghosts
@@ -141,11 +147,12 @@ function groupSize(data: ModuleGroupData): { width: number; height: number } {
     monoTextWidth(`${data.fileCount} files`, 11) +
     META_GAP +
     countsRowWidth(["uses", String(data.ce), "used by", String(data.ca)], 10.5, COUNTS_GAP);
-  return { width: cardWidth(PACKAGE_CHROME + Math.max(header, meta)), height: GROUP_HEIGHT };
+  const chips = commonsChipsWidth((data as { commonsChips?: string[] }).commonsChips);
+  return { width: cardWidth(PACKAGE_CHROME + Math.max(header, meta, chips)), height: GROUP_HEIGHT };
 }
 
 /** A source-file card: chevron + name (+ ENTRY badge) in the header, a category chip + `in N out N`
- * on the meta row. */
+ * (+ any commons chips) on the meta row. */
 function fileSize(data: ModuleCardData): { width: number; height: number } {
   const chevron = data.isContainer ? CHEVRON_WIDTH + HEADER_GAP : 0;
   const entry = data.isEntry ? HEADER_GAP + pillWidth("ENTRY", CHIP_FONT, { letterSpacing: CHIP_LETTER_SPACING }) : 0;
@@ -153,8 +160,20 @@ function fileSize(data: ModuleCardData): { width: number; height: number } {
   const meta =
     pillWidth(data.category.toUpperCase(), CHIP_FONT, { letterSpacing: CHIP_LETTER_SPACING }) +
     META_GAP +
-    countsRowWidth(["in", String(data.inCount), "out", String(data.outCount)], 10.5, COUNTS_GAP);
+    countsRowWidth(["in", String(data.inCount), "out", String(data.outCount)], 10.5, COUNTS_GAP) +
+    commonsChipsWidth(data.commonsChips);
   return { width: cardWidth(FILE_CHROME + Math.max(header, meta)), height: FILE_HEIGHT };
+}
+
+/** Room the commons chip row needs so the chips are never half-clipped (capped at 3 + "+n"). */
+function commonsChipsWidth(chips: string[] | undefined): number {
+  if (!chips || chips.length === 0) {
+    return 0;
+  }
+  const shown = chips.slice(0, 3);
+  const chipsWidth = shown.reduce((sum, chip) => sum + pillWidth(chip, CHIP_FONT, { padX: 4 }) + 4, 0);
+  const more = chips.length > shown.length ? monoTextWidth(`+${chips.length - shown.length}`, CHIP_FONT) + 4 : 0;
+  return META_GAP + chipsWidth + more;
 }
 
 /** A unit identity card: memberless units use one row; collapsed memberful units add a meta row. */
@@ -244,7 +263,7 @@ function toEdge(edge: ModuleTreeEdge): Edge {
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    data: { weight: edge.weight, crossFrame: edge.crossFrame, category: edge.category, ghost: edge.ghost === true, depKind: edge.depKind },
+    data: { weight: edge.weight, crossFrame: edge.crossFrame, category: edge.category, ghost: edge.ghost === true, depKind: edge.depKind, underlyingEdgeIds: edge.underlyingEdgeIds, commons: edge.commons === true },
     // Edge hit-paths sit above nested frames' title bars and steal button clicks; Map edges are non-interactive.
     interactionWidth: 0,
   };

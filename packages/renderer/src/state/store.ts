@@ -7,8 +7,10 @@
 
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { Edge, Node } from "@xyflow/react";
-import { changedRangesFromExtensions, computeAffectedNodes, computeChangeGroups, computeCoverage } from "@meridian/core";
+import { changedRangesFromExtensions, computeAffectedNodes, computeChangeGroups, computeCoverage, type ChangeStatus } from "@meridian/core";
 import type {
+  ChangedLineKind,
+  ChangedLineSpan,
   ChangeGroupsResult,
   CoverageReport,
   FlowPath,
@@ -19,7 +21,7 @@ import type {
   NodeId,
   NodeMetrics,
 } from "@meridian/core";
-import { applyChangedIds, type GraphIndex } from "../graph/graphIndex";
+import { applyChangedIds, applyChangedStatus, type GraphIndex } from "../graph/graphIndex";
 import { matchAffectedFiles } from "../derive/matchAffectedFiles";
 import type { TelemetryProvider } from "../telemetry/provider";
 import type { ViewMode } from "../derive/edgeSelection";
@@ -47,7 +49,8 @@ import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref"
 import { moduleRevealStateFor, nearestModuleIds } from "./flowExplorer";
 import { anchorNodeIds, mapRevealStateForMany, resolveServiceAnchors, serviceRevealStateForMany, uiRevealStateForMany } from "./lensPath";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
-import { PRS_UNAVAILABLE_ERROR, type PrChangedFile, type PrFilesResponse, type PrListResponse, type PrSummary, type PrsTab } from "./prTypes";
+import { PRS_UNAVAILABLE_ERROR, type LineEdit, type PrChangedFile, type PrFilesResponse, type PrListResponse, type PrSummary, type PrsTab } from "./prTypes";
+import { headKindsWithin, headSpanFor } from "./headSpan";
 import { streamPrAnalysis, type PrAnalyzeStage } from "./prAnalysis";
 import {
   fetchPreparedArtifact,
@@ -88,6 +91,11 @@ export interface CodeView {
   baseLine?: number;
   /** The whole file is shown (scrolled to the first change) rather than just the node's own span. */
   wholeFile?: boolean;
+  /** PR-review only: head-relative change kinds for THIS panel (from the PR's own diff, not the
+   * global changedSince). When set, the panel paints these — so the code shown is the PR head and
+   * the highlight is exactly its added/modified lines, even on the synchronous (base-graph) review. */
+  changedLineKinds?: ReadonlyMap<number, ChangedLineKind>;
+  changedLines?: ReadonlySet<number>;
 }
 
 export interface BlueprintState {
@@ -186,6 +194,9 @@ export interface BlueprintState {
    * other Map toggles — off draws every edge individually. A selected node's own wires always draw
    * individually regardless, so you can read its links out of the highway they'd otherwise join. */
   showHighways: boolean;
+  /** Whether utility hubs demote into the COMMONS DOCK below the graph (commonsDemotion). A
+   * RELAYOUT toggle like Tests — the docked cards leave/rejoin ELK, so positions change. */
+  showCommons: boolean;
   /** Module categories painted OUT of the map (a render-time filter — never a re-derive). */
   hiddenCategories: Set<ModuleCategory>;
   /** Relationship kinds painted OUT of the map (calls / instantiates / extends / implements /
@@ -235,6 +246,9 @@ export interface BlueprintState {
   reviewAffectedIds: Set<string>;
   /** Every changed file as a checklist row (touched units inside; empty units == not in the graph). */
   reviewFiles: ReviewFileRow[];
+  /** Per changed file (keyed by node.location.file): GitHub's +N/-M churn, shown as a marker before
+   * the file card's name (files themselves are not coloured — only the touched blocks inside are). */
+  reviewFileDelta: Record<string, { added: number; deleted: number }>;
   /** Per-flow review progress, keyed by flowId, persisted to localStorage under the reviewKey. */
   reviewTicks: Record<string, ReviewTick>;
   /** Per-unit ticks of the files checklist, keyed by nodeId — same persistence as reviewTicks. */
@@ -284,6 +298,10 @@ export interface BlueprintState {
   prFilesTruncated: boolean;
   /** The PR whose changed files are currently highlighted in the graph (via "review in graph"). */
   prReviewed: number | null;
+  /** Head ref of the PR under review — the code panel fetches changed files at this ref. Null off-review. */
+  reviewHeadRef: string | null;
+  /** Per changed file (keyed by node.location.file): the PR diff needed to slice + paint the head code. */
+  reviewDiffByFile: Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>;
   /** The review-PREPARATION lane: "preparing" while the server streams the clone→checkout→extract
    * analysis of the PR head; "error" when that stream failed (the panel offers Retry); else "idle". */
   prReviewStatus: "idle" | "preparing" | "error";
@@ -361,6 +379,7 @@ export interface BlueprintState {
   setModuleRadius(radius: number): void;
   toggleHighlightMode(): void;
   toggleHighways(): void;
+  toggleCommons(): void;
   toggleCategory(category: ModuleCategory): void;
   toggleRelKind(kind: string): void;
   resetCategoryFilter(): void;
@@ -421,6 +440,8 @@ export interface StoreDependencies {
   sourceUrl: string | null;
   prsUrl: string;
   prFilesUrl: string;
+  /** GET base for one changed file's text at the PR head ref (the review code panel's head-fetch). */
+  prFileUrl?: string;
   /** POST endpoint for PR-head preparation. Null/absent (a plain `view` session, or an older
    * server) makes reviewPrInGraph skip streaming and review the loaded artifact synchronously. */
   analyzeUrl?: string | null;
@@ -433,6 +454,53 @@ export interface StoreDependencies {
 }
 
 export type BlueprintStore = StoreApi<BlueprintState>;
+
+/** `/api/source` URL for a node slice (or the whole file). */
+function baseSourceUrl(sourceUrl: string, location: NonNullable<GraphNode["location"]>, wholeFile: boolean): URL {
+  const url = new URL(sourceUrl, window.location.origin);
+  url.searchParams.set("file", location.file);
+  // Omitting start/end makes the server return the whole file (missing bounds default to 1..EOF).
+  if (!wholeFile) {
+    url.searchParams.set("start", String(location.startLine));
+    url.searchParams.set("end", String(location.endLine ?? location.startLine));
+  }
+  return url;
+}
+
+/** `/api/prs/file` URL for one changed file's text at the PR head ref. */
+function prFileHeadUrl(prFileUrl: string, file: string, ref: string): URL {
+  const url = new URL(prFileUrl, window.location.origin);
+  url.searchParams.set("path", file);
+  url.searchParams.set("ref", ref);
+  return url;
+}
+
+/** Slice the fetched HEAD file to the node's head span and pin the PR's own change kinds onto it. */
+function sliceHeadCodeView(
+  node: GraphNode,
+  fullCode: string,
+  truncated: boolean,
+  headSpan: { start: number; end: number },
+  kinds: readonly ChangedLineSpan[],
+  mode: "inline" | "modal",
+): CodeView {
+  const lines = fullCode.length > 0 ? fullCode.split("\n") : [];
+  const start = Math.min(Math.max(headSpan.start, 1), Math.max(lines.length, 1));
+  const end = Math.min(Math.max(headSpan.end, start), Math.max(lines.length, 1));
+  const changedLineKinds = headKindsWithin(kinds, start, end);
+  return {
+    node,
+    code: lines.slice(start - 1, end).join("\n"),
+    loading: false,
+    error: null,
+    truncated,
+    mode,
+    baseLine: start,
+    wholeFile: false,
+    changedLineKinds,
+    changedLines: new Set(changedLineKinds.keys()),
+  };
+}
 
 /** The module surface (Map + Service) opened at its top level: whole-repo overview, nothing expanded
  * or selected. The lens-switch fallback when no path node can be carried into it. */
@@ -498,6 +566,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const sourceUrl = dependencies.sourceUrl;
   const prsUrl = dependencies.prsUrl;
   const prFilesUrl = dependencies.prFilesUrl;
+  const prFileUrl = dependencies.prFileUrl ?? null;
   // Null when the server can't prepare a PR head (no analyze route, or no stored GitHub artifact);
   // reviewPrInGraph then falls back to the synchronous loaded-artifact review.
   const analyzeUrl = dependencies.analyzeUrl ?? null;
@@ -557,6 +626,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleRadius: 1,
     highlightMode: "node",
     showHighways: true,
+    showCommons: true,
     hiddenCategories: new Set<ModuleCategory>(),
     hiddenRelKinds: new Set<string>(),
     moduleSelected: new Set<string>(),
@@ -574,6 +644,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     review,
     reviewAffectedIds: new Set(reviewFiles.flatMap((file) => file.units.map((unit) => unit.nodeId))),
     reviewFiles,
+    reviewFileDelta: {},
     reviewTicks: initialProgress?.ticks ?? {},
     reviewUnitTicks: initialProgress?.unitTicks ?? {},
     reviewFileTicks: initialProgress?.fileTicks ?? {},
@@ -604,6 +675,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prFiles: null,
     prFilesTruncated: false,
     prReviewed: null,
+    reviewHeadRef: null,
+    reviewDiffByFile: {},
     prReviewStatus: "idle",
     prPrepareStage: null,
     prPrepareError: null,
@@ -927,7 +1000,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // Hidden tests are EXCLUDED from the layout (not just painted out): test code can be half the
       // cards, and paint-hiding it kept a crater of empty space. toggleShowTests relayouts this lens.
       // (The Service tree applies the hidden set to its GHOST tier only — cluster members still
-      // hide at paint time, exactly as its old branch did.)
+      // hide at paint time, exactly as its old branch did. The Commons toggle rides in as part of
+      // `state`: the Map's spec threads `showCommons` into its hub demotion; Service/UI ignore it.)
       const hidden = state.showTests ? EMPTY_HIDDEN_IDS : state.index.testIds;
       const tree = activeModuleSurfaceSpec(state.viewMode).deriveTree(state, { graph, deps, flows }, { extraIds: state.mapExtra, hiddenIds: hidden });
       const laid = await layoutModuleTree(tree.nodes, tree.edges);
@@ -1126,6 +1200,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ showHighways: !get().showHighways });
     },
 
+    // Park/unpark utility hubs in the commons dock. A RELAYOUT toggle (like Tests): the docked
+    // cards leave/rejoin ELK, so the level re-lays out and re-fits.
+    toggleCommons() {
+      set({ showCommons: !get().showCommons });
+      void get().moduleRelayout();
+    },
+
     // Show/hide a module category. PAINT-ONLY: the surface filters the category's file cards out in
     // place, so this deliberately does NOT relayout — positions stay stable.
     toggleCategory(category) {
@@ -1184,6 +1265,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               reviewSubmitStatus: "idle" as const,
               reviewSubmitError: null,
               reviewSubmittedUrl: null,
+              reviewHeadRef: null,
+              reviewDiffByFile: {} as Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>,
             }
           : {};
       set({ minimalSeedIds: origin, minimalMemberIds: origin, minimalBasePositions: captureMapPositions(get().moduleRfNodes), minimalArrange: false, prReviewed: null, ...clearPrReview });
@@ -1631,54 +1714,58 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // click (a different node) has since taken over the view; the mode is preserved across the
     // fetch so a mid-flight expand-to-modal is not clobbered when the code lands.
     async showCode(node, opts) {
-      if (!sourceUrl || !node.location) {
+      if (!node.location) {
+        return;
+      }
+      // While reviewing, a changed file opens from the PR HEAD (not the base clone) so the code shown
+      // matches the PR — sliced to where the node moved to in the head, painted with the PR's own
+      // added/modified lines. Any other file (or off-review) takes the base /api/source path.
+      const st = get();
+      const reviewDiff = st.prReviewed !== null && prFileUrl && st.reviewHeadRef
+        ? st.reviewDiffByFile[node.location.file] ?? null
+        : null;
+      if (!reviewDiff && !sourceUrl) {
         return;
       }
       // Whole-file view (the diff `</>`) shows the entire file scrolled to the first change; a node
-      // slice shows just the span. baseLine is the code's first line — 1 for a whole file.
-      const wholeFile = opts?.wholeFile ?? false;
-      const baseLine = wholeFile ? 1 : node.location.startLine;
+      // slice shows just the span. A head-fetch is always the node's own (head-shifted) span.
+      const wholeFile = reviewDiff ? false : opts?.wholeFile ?? false;
+      const headSpan = reviewDiff
+        ? headSpanFor(node.location.startLine, node.location.endLine ?? node.location.startLine, reviewDiff.edits)
+        : null;
+      const baseLine = headSpan ? headSpan.start : wholeFile ? 1 : node.location.startLine;
       set({ codeView: { node, code: null, loading: true, error: null, mode: "inline", baseLine, wholeFile } });
-      try {
-        const url = new URL(sourceUrl, window.location.origin);
-        url.searchParams.set("file", node.location.file);
-        // Omitting start/end makes the server return the whole file (it defaults missing bounds to
-        // 1..EOF); a node slice sends the span explicitly.
-        if (!wholeFile) {
-          url.searchParams.set("start", String(node.location.startLine));
-          url.searchParams.set("end", String(node.location.endLine ?? node.location.startLine));
-        }
-        const res = await fetch(url, { credentials: "same-origin" });
+      const fail = () => {
         if (get().codeView?.node.id !== node.id) {
           return;
         }
         const mode = get().codeView?.mode ?? "inline";
+        set({ codeView: { node, code: null, loading: false, error: "Could not load source.", mode, baseLine, wholeFile } });
+      };
+      try {
+        const url = reviewDiff && st.reviewHeadRef
+          ? prFileHeadUrl(prFileUrl!, node.location.file, st.reviewHeadRef)
+          : baseSourceUrl(sourceUrl!, node.location, wholeFile);
+        const res = await fetch(url, { credentials: "same-origin" });
+        if (get().codeView?.node.id !== node.id) {
+          return;
+        }
         if (!res.ok) {
-          set({ codeView: { node, code: null, loading: false, error: "Could not load source.", mode, baseLine, wholeFile } });
+          fail();
           return;
         }
         const data = await res.json();
         if (get().codeView?.node.id !== node.id) {
           return;
         }
-        set({
-          codeView: {
-            node,
-            code: data.code,
-            loading: false,
-            error: null,
-            truncated: data.truncated,
-            mode: get().codeView?.mode ?? "inline",
-            baseLine: data.startLine ?? baseLine,
-            wholeFile,
-          },
-        });
-      } catch {
-        if (get().codeView?.node.id !== node.id) {
-          return;
-        }
         const mode = get().codeView?.mode ?? "inline";
-        set({ codeView: { node, code: null, loading: false, error: "Could not load source.", mode, baseLine, wholeFile } });
+        const view =
+          reviewDiff && headSpan
+            ? sliceHeadCodeView(node, String(data.code ?? ""), data.truncated === true, headSpan, reviewDiff.kinds, mode)
+            : { node, code: data.code, loading: false, error: null, truncated: data.truncated, mode, baseLine: data.startLine ?? baseLine, wholeFile };
+        set({ codeView: view });
+      } catch {
+        fail();
       }
     },
 
@@ -1876,6 +1963,9 @@ function applyPrReviewToMap(
   // so the Map + minimal overlay ring the edited blocks amber (reused `--changed-since` highlight).
   const affected = computeAffectedNodes(artifact.nodes, context.changedFiles);
   applyChangedIds(index, affected.map((node) => node.nodeId));
+  // Colour each touched CODE BLOCK by its file's change kind (green added / gold modified / red
+  // deleted). A file/module that only contains changes stays uncoloured — it shows a +/- stat instead.
+  applyChangedStatus(index, affected.map((node) => [node.nodeId, node.status] as [string, ChangeStatus]));
   // Seed the minimal graph from the changed FILES (seeds must be module ids).
   const matchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
   const seeds = [...new Set(matchedFiles.map((match) => match.moduleId))].sort();
@@ -1883,6 +1973,19 @@ function applyPrReviewToMap(
   // modules), sharing the SAME flow substrate the review rows already read. Stored so the rail can
   // offer per-group isolation; ignored (strip hidden) when the change is a single connected component.
   const changeGroups = computeChangeGroups(artifact.nodes, artifact.edges, context.changedFiles, review.flows);
+  // GitHub's whole-file +N/-M churn per changed file, keyed by node.location.file, for the marker a
+  // changed FILE card shows before its name (files aren't coloured; only their touched blocks are).
+  const deltaByPath = new Map<string, { added: number; deleted: number }>(
+    (prFiles ?? []).map((file) => [file.path, { added: file.additions, deleted: file.deletions }]),
+  );
+  const reviewFileDelta: Record<string, { added: number; deleted: number }> = {};
+  for (const match of matchedFiles) {
+    const locFile = index.nodesById.get(match.moduleId)?.location?.file;
+    const delta = deltaByPath.get(match.path);
+    if (locFile && delta) {
+      reviewFileDelta[locFile] = delta;
+    }
+  }
   // ONE source of truth for the line-level changedSince channel (the code panel's </> diff): the
   // artifact's OWN stamp when it carries one — the prepared PR-head artifact does, computed by the
   // extract pipeline from the real merge-base git diff, keyed by the extractor's own location.file
@@ -1908,11 +2011,32 @@ function applyPrReviewToMap(
     }
   }
   invalidateMinimalLayout();
+  // Capture the head ref + each changed file's real per-line diff (old/new spans + head-relative
+  // added/modified lines), keyed by node.location.file, so opening a changed unit's </> fetches the
+  // PR HEAD of that file and paints exactly its diff — code + highlight that match the PR, not base.
+  // Keyed off the MATCHED node's location.file (same matching that seeds the graph), robust to any
+  // path prefix. This is what makes the fast (synchronous) review show head code without re-extract.
+  const diffByPath = new Map<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>();
+  for (const file of prFiles ?? []) {
+    if (file.edits && file.edits.length > 0) {
+      diffByPath.set(file.path, { edits: file.edits, kinds: file.kinds ?? [] });
+    }
+  }
+  const reviewDiffByFile: Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }> = {};
+  for (const match of matchedFiles) {
+    const locFile = index.nodesById.get(match.moduleId)?.location?.file;
+    const diff = diffByPath.get(match.path);
+    if (locFile && diff) {
+      reviewDiffByFile[locFile] = diff;
+    }
+  }
   const progress = readReviewProgress(context.reviewKey);
   set({
     artifact: reviewedArtifact,
     review,
     prReviewed: prSelected,
+    reviewHeadRef: summary?.headRef ?? null,
+    reviewDiffByFile,
     reviewTicks: progress.ticks,
     reviewUnitTicks: progress.unitTicks,
     reviewFileTicks: progress.fileTicks,
@@ -1923,6 +2047,7 @@ function applyPrReviewToMap(
     reviewSubmittedUrl: null,
     reviewAffectedIds: new Set(affected.map((node) => node.nodeId)),
     reviewFiles: files,
+    reviewFileDelta,
     reviewLitNodeIds: null,
     reviewSelectedId: null,
     reviewGroups: changeGroups,

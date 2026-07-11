@@ -1,6 +1,14 @@
-import type { LineRange } from "@meridian/core";
+import type { ChangedLineSpan, LineRange } from "@meridian/core";
 
 export type PrsTab = "open" | "closed";
+
+/** One unified-diff hunk's old/new line spans — maps a node's base line to its PR-head line. */
+export interface LineEdit {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+}
 
 export type PrFileStatus = "added" | "modified" | "removed" | "renamed";
 
@@ -24,6 +32,12 @@ export interface PrChangedFile {
   /** New-side changed line ranges parsed from the file's unified-diff patch; absent ⇒ the whole
    * file is treated as changed. Lets the PR-review graph name the exact touched code blocks. */
   hunks?: LineRange[];
+  /** Base-side (old) tight changed ranges — base-graph node marking (avoids spill onto the next unit). */
+  oldHunks?: LineRange[];
+  /** Per-hunk old/new spans, for mapping a node's base span to its position in the PR head file. */
+  edits?: LineEdit[];
+  /** Head-relative added/modified line spans (from the patch body) — the code panel's exact green/gold. */
+  kinds?: ChangedLineSpan[];
   /** Renames only: the pre-image path (display-only — never matched against nodes). */
   previousPath?: string;
 }

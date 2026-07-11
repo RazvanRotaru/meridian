@@ -72,6 +72,9 @@ export function finishGhostTier(emission: GhostEmission, index: GraphIndex, hidd
     category: "dep",
     depKind: wire.kind,
     ghost: true,
+    // The artifact edges behind this wire — the Wire Inspector's evidence trail (every surface's
+    // ghost tier funnels through here, so ghost wires are attributable on Map, Service, and UI).
+    underlyingEdgeIds: wire.underlyingEdgeIds,
   }));
   return { nodes, edges };
 }

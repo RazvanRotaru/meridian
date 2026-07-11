@@ -9,10 +9,10 @@
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
-import { accentForKind } from "../../../theme/kindColors";
+import { accentForKind, kindLetter } from "../../../theme/kindColors";
 import type { UnitCardData } from "../../../derive/moduleLevel";
 import { cardSelectedStyle, CodeButton, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
-import { borderFor, DeltaChip, useNodeDiff } from "./changed";
+import { borderFor, useNodeDiff } from "./changed";
 
 type UnitRfNode = Node<UnitCardData, "unit">;
 
@@ -24,12 +24,11 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
     <ExpandChevron id={id} isExpanded={data.isExpanded} collapsedTitle={`Expand — ${data.memberCount} member(s) in this unit`} />
   ) : null;
 
-  // The uppercase kind chip is the ONE kind marker — the old ◆/◇/❑ glyphs are retired.
+  // A single-letter kind glyph (f/c/m/i/…) in the kind's colour is the ONE kind marker — no text tag.
   const identity = (
     <>
+      <span style={{ ...GLYPH, color: accent }}>{kindLetter(data.unitKind)}</span>
       <span style={LABEL} title={id}>{data.label}</span>
-      <span style={{ ...KIND_CHIP, color: accent, borderColor: accent }}>{data.unitKind.toUpperCase()}</span>
-      <DeltaChip diff={diff} />
       <CodeButton id={id} />
     </>
   );
@@ -53,12 +52,11 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
         <div style={INNER_STACK}>
           <div style={HEADER}>
             {chevron}
+            <span style={{ ...GLYPH, color: accent }}>{kindLetter(data.unitKind)}</span>
             <span style={LABEL} title={id}>{data.label}</span>
-            <DeltaChip diff={diff} />
             <CodeButton id={id} />
           </div>
           <div style={META}>
-            <span style={{ ...KIND_CHIP, color: accent, borderColor: accent }}>{data.unitKind.toUpperCase()}</span>
             <span style={MEMBERS} title={`${data.memberCount} member declaration(s)`}>{data.memberCount} members</span>
           </div>
         </div>
@@ -102,6 +100,7 @@ const INNER_STACK: React.CSSProperties = {
   padding: "0 10px 0 12px",
 };
 const HEADER: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6, minWidth: 0 };
+const GLYPH: React.CSSProperties = { fontSize: 11, flexShrink: 0 };
 const LABEL: React.CSSProperties = {
   flex: 1,
   minWidth: 0,
@@ -113,13 +112,4 @@ const LABEL: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 const META: React.CSSProperties = { display: "flex", alignItems: "baseline", gap: 8, flexShrink: 0 };
-const KIND_CHIP: React.CSSProperties = {
-  flexShrink: 0,
-  fontSize: 8,
-  fontWeight: 700,
-  letterSpacing: "0.06em",
-  border: "1px solid",
-  borderRadius: 3,
-  padding: "1px 4px",
-};
 const MEMBERS: React.CSSProperties = { fontSize: 10.5, color: "#9AA4B2" };

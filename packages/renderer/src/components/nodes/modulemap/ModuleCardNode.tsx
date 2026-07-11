@@ -17,7 +17,10 @@ import { BlockNode } from "./BlockNode";
 import { StepNode } from "./StepNode";
 import { GhostNode } from "./GhostNode";
 import { cardSelectedStyle, CodeButton, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
-import { borderFor, DeltaChip, useNodeDiff } from "./changed";
+import { borderFor, useNodeDiff } from "./changed";
+import { CHANGED_COLORS } from "../../../theme/changedColors";
+import { CommonsChips } from "./CommonsChips";
+import { CommonsDockNode } from "./CommonsDockNode";
 
 // The file family's frame accent (the module cyan), used when an expanded card turns into a frame.
 const FILE_FRAME_ACCENT = "#3FB7C4";
@@ -27,6 +30,10 @@ type ModuleCardRfNode = Node<ModuleCardData, "file">;
 function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
   const selected = useBlueprint((state) => state.moduleSelected.has(id));
   const diff = useNodeDiff(id);
+  // A file is NOT coloured (only its touched blocks are); instead it shows GitHub's +N/-M churn before
+  // its name, so a reviewer sees which files the PR touched and how heavily.
+  const filePath = useBlueprint((state) => state.index.nodesById.get(id)?.location?.file);
+  const delta = useBlueprint((state) => (filePath ? state.reviewFileDelta[filePath] : undefined));
   // Every file wears the neutral file-family accent; its CATEGORY is carried by the text chip alone,
   // so category never competes for a hue with the relationship (caller/callee) or kind palettes.
   const accent = FILE_FRAME_ACCENT;
@@ -41,28 +48,33 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
         <FrameTitleBar chevron={chevron}>
-          <span style={LABEL} title={data.fullPath}>{data.label}</span>
-          {entryBadge}
-          <DeltaChip diff={diff} />
-          <CodeButton id={id} />
-          <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
+          <DiffStat delta={delta} />
+          <span className="lod-label" style={LABEL} title={data.fullPath}>{data.label}</span>
+          <span className="lod-hide" style={CONTENTS}>
+            {entryBadge}
+            <CodeButton id={id} />
+            <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
+          </span>
         </FrameTitleBar>
       </div>
     );
   }
 
   return (
-    <div style={borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff)}>
+    <div className="lod-tint" style={{ ...borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff), "--lod-accent": accent } as React.CSSProperties}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-      <div style={{ ...ACCENT_BAR, background: accent }} />
-      <div style={INNER}>
+      <div className="lod-rail" style={{ ...ACCENT_BAR, background: accent }} />
+      <span className="lod-place">{data.label}</span>
+      <div className="lod-card-body" style={INNER}>
         <div style={HEADER}>
           {chevron}
+          <DiffStat delta={delta} />
           <span style={LABEL} title={data.fullPath}>{data.label}</span>
-          {entryBadge}
-          <DeltaChip diff={diff} />
-          <CodeButton id={id} />
+          <span className="lod-hide" style={CONTENTS}>
+            {entryBadge}
+            <CodeButton id={id} />
+          </span>
         </div>
         <div style={META}>
           <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
@@ -72,9 +84,29 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
             <span style={COUNT_MUTED}>out</span>
             <span style={COUNT_VALUE}>{data.outCount}</span>
           </span>
+          <CommonsChips chips={data.commonsChips} />
         </div>
       </div>
     </div>
+  );
+}
+
+
+/** Groups siblings for one visibility flip without disturbing the flex row (children keep laying
+ * out as if the wrapper weren't there; `visibility` inherits through it). */
+const CONTENTS: React.CSSProperties = { display: "contents" };
+
+/** The "+N -M" churn a changed FILE card shows before its name (the marker that replaces colouring
+ * the whole file). Green additions, red deletions; hidden when the file has no counted changes. */
+function DiffStat({ delta }: { delta?: { added: number; deleted: number } }) {
+  if (!delta || (delta.added === 0 && delta.deleted === 0)) {
+    return null;
+  }
+  return (
+    <span style={DIFF_STAT} title={`+${delta.added} added · −${delta.deleted} deleted`}>
+      <span style={{ color: CHANGED_COLORS.added }}>+{delta.added}</span>
+      <span style={{ color: CHANGED_COLORS.deleted }}>−{delta.deleted}</span>
+    </span>
   );
 }
 
@@ -86,7 +118,7 @@ export const ModuleCardNode = memo(ModuleCardNodeImpl);
  * `block` is a leaf code block (a method, function, or type definition). A card the reader expands
  * becomes a frame whose children NEST inside it (parentId), so a level can hold nested frames —
  * mirroring the call graph's ContainerNode. */
-export const moduleNodeTypes = { file: ModuleCardNode, package: PackageOverviewNode, unit: UnitCardNode, block: BlockNode, step: StepNode, ghost: GhostNode };
+export const moduleNodeTypes = { file: ModuleCardNode, package: PackageOverviewNode, unit: UnitCardNode, block: BlockNode, step: StepNode, ghost: GhostNode, commonsDock: CommonsDockNode };
 
 const CARD: React.CSSProperties = {
   position: "relative",
@@ -139,6 +171,14 @@ const CHIP: React.CSSProperties = {
   border: "1px solid",
   borderRadius: 3,
   padding: "1px 4px",
+};
+const DIFF_STAT: React.CSSProperties = {
+  flexShrink: 0,
+  display: "inline-flex",
+  gap: 4,
+  fontSize: 10,
+  fontWeight: 700,
+  fontFamily: MONO,
 };
 const COUNTS: React.CSSProperties = { display: "inline-flex", alignItems: "baseline", gap: 4, fontSize: 10.5 };
 const COUNT_MUTED: React.CSSProperties = { color: "#6C7683" };

@@ -6,20 +6,24 @@
  * neutral accent rather than crashing — the schema's vocabularies are intentionally open.
  */
 
-// Green and violet are RESERVED for relationships (caller/callee wires + selection reads); node
-// kinds never wear them, so a hue means one thing. Structural containers are cool (blue/teal),
-// type-shaped kinds share a warm amber ramp, callables are a distinct yellow.
+// Green is RESERVED for selection/caller-callee reads and amber for the diff highlight; node kinds
+// wear neither, so those two hues always mean one thing. Structural containers are cool (blue/teal);
+// type-shaped kinds are a clean neutral grey — colour no longer marks them, the letter chip does;
+// callables are a distinct yellow.
+const NEUTRAL_ACCENT = "#7A8290";
+
 const KIND_COLORS: Record<string, string> = {
   package: "#5B9BE3",
   module: "#3FB7C4",
   namespace: "#3FB7C4",
-  // Every type-shaped declaration shares ONE amber; the glyph (◆ ◇ ❑ τ) tells class from interface
-  // from object from type — colour doesn't need to repeat what the glyph already says.
-  class: "#E0A33E",
-  object: "#E0A33E",
-  interface: "#E0A33E",
-  enum: "#E0A33E",
-  typeAlias: "#E0A33E",
+  // Every type-shaped declaration is the same quiet grey — colour doesn't distinguish class from
+  // interface from object from type; the letter chip (c / i / o / e / t) is the only kind marker.
+  // Keeps the type world calm so the coloured containers, callables, and wires carry the eye.
+  class: NEUTRAL_ACCENT,
+  object: NEUTRAL_ACCENT,
+  interface: NEUTRAL_ACCENT,
+  enum: NEUTRAL_ACCENT,
+  typeAlias: NEUTRAL_ACCENT,
   function: "#E3C36B",
   method: "#E3C36B",
   // Boundary nodes read as muted grey — they are outside the analyzed code.
@@ -32,11 +36,36 @@ const KIND_COLORS: Record<string, string> = {
   system: "#8FB6E3",
 };
 
-const NEUTRAL_ACCENT = "#7A8290";
-
 export function accentForKind(kind: string): string {
   return KIND_COLORS[kind] ?? NEUTRAL_ACCENT;
 }
 
-// The ◆/◇/❑/▤ kind-glyph vocabulary is retired: the textual kind labels (INTERFACE / OBJECT / …)
-// are the one kind marker across cards and panels.
+// A compact kind glyph so a card reads as class/module/interface/object before its tag is scanned.
+// Shared by the composition scorecards and the Map's unit cards, so the two lenses tell one story.
+const KIND_GLYPHS: Record<string, string> = {
+  module: "▤",
+  class: "◆",
+  interface: "◇",
+  object: "❑",
+};
+
+export function glyphForKind(kind: string): string {
+  return KIND_GLYPHS[kind] ?? "▪";
+}
+
+// A single-letter kind glyph — f function, m method, c class, i interface, o object, e enum, t type,
+// n namespace — replacing the wordy INTERFACE / FUNCTION / … tags; the accent colour still says which.
+const KIND_LETTERS: Record<string, string> = {
+  function: "f",
+  method: "m",
+  class: "c",
+  interface: "i",
+  object: "o",
+  enum: "e",
+  typeAlias: "t",
+  namespace: "n",
+};
+
+export function kindLetter(kind: string): string {
+  return KIND_LETTERS[kind] ?? (kind.charAt(0).toLowerCase() || "•");
+}

@@ -4,7 +4,7 @@
  * response fields — only these typed projections leave the server, and only over `textContent`.
  */
 
-import type { LineRange } from "@meridian/core";
+import type { ChangedLineSpan, LineRange } from "@meridian/core";
 import { asObject, numberOr, optionalString, requireNumber, requireString } from "./json-fields";
 
 const OWNER_REPO = /^[\w.-]+\/[\w.-]+$/;
@@ -39,6 +39,14 @@ export interface PrSummary {
   url: string;
 }
 
+/** One unified-diff hunk's old/new line spans — enough to map a base line number to its head line. */
+export interface LineEdit {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+}
+
 export interface PrFile {
   path: string;
   status: "added" | "modified" | "removed" | "renamed";
@@ -48,6 +56,14 @@ export interface PrFile {
    * ships no patch (binary, or a diff too large to include) ⇒ downstream treats the whole file as
    * changed. Lets the PR-review graph name the exact code blocks a PR touched, not just the files. */
   hunks?: LineRange[];
+  /** Base-side (old) tight changed ranges — the base-graph node marking uses these so a shifted
+   * new-side hunk can't spill onto the next unchanged declaration in base coordinates. */
+  oldHunks?: LineRange[];
+  /** Per-hunk old/new spans, for mapping a node's base span to its position in the PR head file. */
+  edits?: LineEdit[];
+  /** Head-relative added/modified line spans, read from the patch BODY (not the context-padded hunk
+   * header), so the code panel paints exactly the changed lines green/gold — not the whole hunk. */
+  kinds?: ChangedLineSpan[];
 }
 
 export type RepoQuery =
@@ -156,9 +172,20 @@ function toPrFile(body: Record<string, unknown>): PrFile {
     deletions: Math.max(0, Math.trunc(numberOr(body.deletions, 0))),
   };
   const patch = optionalString(body, "patch");
-  const hunks = patch ? parsePatchHunks(patch) : [];
-  if (hunks.length > 0) {
-    file.hunks = hunks;
+  if (patch) {
+    const detail = parsePatchDetail(patch);
+    if (detail.hunks.length > 0) {
+      file.hunks = detail.hunks;
+    }
+    if (detail.oldHunks.length > 0) {
+      file.oldHunks = detail.oldHunks;
+    }
+    if (detail.edits.length > 0) {
+      file.edits = detail.edits;
+    }
+    if (detail.kinds.length > 0) {
+      file.kinds = detail.kinds;
+    }
   }
   return file;
 }
@@ -181,6 +208,91 @@ export function parsePatchHunks(patch: string): LineRange[] {
     ranges.push(count === 0 ? { start, end: start + 1 } : { start, end: start + count - 1 });
   }
   return ranges;
+}
+
+export interface PatchDetail {
+  /** New-side TIGHT changed ranges — code-panel head paint + review-comment anchoring + head-graph
+   * marking. */
+  hunks: LineRange[];
+  /** Old-side (BASE) tight changed ranges — base-graph node marking. Because the synchronous review
+   * overlays the diff on the BASE graph (whose node line numbers are base-side), a new-side range
+   * that shifted down when earlier lines were added would numerically spill onto the NEXT unchanged
+   * declaration; the old-side range can't, so only genuinely-changed base nodes mark. */
+  oldHunks: LineRange[];
+  edits: LineEdit[];
+  kinds: ChangedLineSpan[];
+}
+
+/**
+ * A GitHub PR `patch` carries CONTEXT lines (the default `-U3`), so the hunk HEADER range covers
+ * more than the edit — marking nodes off it spills into the next declaration. This walks the hunk
+ * BODY instead, tracking BOTH the new- and old-side line counters, and emits, per contiguous run of
+ * additions/deletions, TIGHT changed-line spans: `kinds` (new-side, tagged modified/added, code
+ * panel), `hunks` (new-side, comments + head-graph marking) and `oldHunks` (base-side, base-graph
+ * marking — see the interface). `edits` records each hunk's old/new spans for base→head mapping.
+ * 1-based, inclusive.
+ */
+export function parsePatchDetail(patch: string): PatchDetail {
+  const hunks: LineRange[] = [];
+  const oldHunks: LineRange[] = [];
+  const edits: LineEdit[] = [];
+  const kinds: ChangedLineSpan[] = [];
+  let newLine = 0;
+  let oldLine = 0;
+  let inHunk = false;
+  let addRun: number[] = []; // new-side line numbers of the current contiguous `+` run
+  let delRun: number[] = []; // old-side (base) line numbers of the current contiguous `-` run
+  const flush = () => {
+    if (addRun.length > 0) {
+      const span = { start: addRun[0], end: addRun[addRun.length - 1] };
+      kinds.push({ ...span, kind: delRun.length > 0 ? "modified" : "added" });
+      hunks.push(span);
+    } else if (delRun.length > 0) {
+      // Pure deletion: no head line to paint, but the node it sat in changed — new-side seam at the
+      // line the removed block now precedes.
+      hunks.push({ start: Math.max(newLine, 1), end: Math.max(newLine, 1) });
+    }
+    // Base-side marking range: deleted/modified base lines, or a seam at the base insertion point.
+    if (delRun.length > 0) {
+      oldHunks.push({ start: delRun[0], end: delRun[delRun.length - 1] });
+    } else if (addRun.length > 0) {
+      oldHunks.push({ start: Math.max(oldLine, 1), end: Math.max(oldLine, 1) });
+    }
+    addRun = [];
+    delRun = [];
+  };
+  for (const raw of patch.split("\n")) {
+    const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(raw);
+    if (header) {
+      flush();
+      const oldStart = Number(header[1]);
+      const oldLines = header[2] === undefined ? 1 : Number(header[2]);
+      const newStart = Number(header[3]);
+      const newLines = header[4] === undefined ? 1 : Number(header[4]);
+      edits.push({ oldStart, oldLines, newStart, newLines });
+      oldLine = oldStart;
+      newLine = newStart;
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk || raw.startsWith("\\")) {
+      continue; // preamble (diff --git / ---/+++), or a "\ No newline at end of file" marker
+    }
+    const marker = raw[0];
+    if (marker === "+") {
+      addRun.push(newLine);
+      newLine += 1;
+    } else if (marker === "-") {
+      delRun.push(oldLine);
+      oldLine += 1;
+    } else {
+      flush(); // a context line ends any run
+      oldLine += 1;
+      newLine += 1;
+    }
+  }
+  flush();
+  return { hunks, oldHunks, edits, kinds };
 }
 
 function prFileStatus(status: unknown): PrFile["status"] {

@@ -37,7 +37,6 @@ function ClusterFrameNodeImpl({ data }: NodeProps<CompRfNode>) {
         <span style={PKG_GLYPH}>◗</span>
         <span style={LABEL} title={d.label}>{d.label}</span>
         <span style={COUNT}>{`${d.unitCount} ${d.unitCount === 1 ? "unit" : "units"}`}</span>
-        {hasDiff ? <span style={DIFF_BADGE}>{`Δ ${changedUnits}`}</span> : null}
         {d.smellyCount > 0 ? (
           <span style={SMELL_BADGE} title={`${d.smellyCount} unit(s) with design smells`}>{`${d.smellyCount}⚠`}</span>
         ) : null}
@@ -126,17 +125,6 @@ const LABEL: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 const COUNT: React.CSSProperties = { flexShrink: 0, fontSize: 10, fontWeight: 600, color: "#6C7683" };
-const DIFF_BADGE: React.CSSProperties = {
-  flexShrink: 0,
-  fontSize: 9.5,
-  fontWeight: 700,
-  letterSpacing: "0.04em",
-  color: CHANGED_ACCENT,
-  border: `1px solid ${CHANGED_ACCENT}66`,
-  borderRadius: 3,
-  padding: "1px 5px",
-  background: `${CHANGED_ACCENT}1A`,
-};
 const SMELL_BADGE: React.CSSProperties = {
   flexShrink: 0,
   fontSize: 9.5,

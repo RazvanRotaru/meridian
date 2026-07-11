@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { fetchPullRequestFiles, listPullRequests } from "./github";
+import { fetchFileAtRef, fetchPullRequestFiles, listPullRequests } from "./github";
 import { submitPullRequestReview, type ReviewCommentInput } from "./github-review";
 import { sendJson } from "./http-response";
 import { githubTokenFor } from "./web-auth";
@@ -45,6 +45,33 @@ export async function handlePullRequestFiles(
   const prNumber = parsePositiveInt(query.get("n"), "n");
   const result = await fetchPullRequestFiles({ owner: source.owner, repo: source.repo, prNumber, token: githubTokenFor(ctx, request) });
   sendJson(response, 200, { files: stripExtractionSubdir(result.files, source.subdir), truncated: result.truncated });
+}
+
+/**
+ * One changed file's text at the PR head ref, for the review code panel. The graph stays the base
+ * clone (the instant overlay); this fetches just the file being opened — so opening `</>` on a
+ * PR-changed unit shows the PR's actual head code + its head-relative diff, with no re-clone or
+ * re-extract. The browser knows the path subdir-STRIPPED; the repo-root prefix is restored here.
+ */
+export async function handlePullRequestFileContent(
+  ctx: Context,
+  request: IncomingMessage,
+  response: ServerResponse,
+  query: URLSearchParams,
+): Promise<void> {
+  const source = githubSource(ctx, query.get("id"));
+  if (!source) {
+    sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
+    return;
+  }
+  const ref = query.get("ref");
+  const file = query.get("path");
+  if (!ref || ref.length > 200 || !file || file.split("/").includes("..")) {
+    throw new WebError(400, "ref and path are required");
+  }
+  const repoPath = restoreExtractionSubdir(file, source.subdir);
+  const result = await fetchFileAtRef({ owner: source.owner, repo: source.repo, ref, path: repoPath, token: githubTokenFor(ctx, request) });
+  sendJson(response, 200, { file, code: result.code, truncated: result.truncated });
 }
 
 /**

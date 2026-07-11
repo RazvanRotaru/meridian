@@ -27,6 +27,10 @@ export type ModuleCardData = {
   /** Expanded in place: the card becomes a frame with its unit cards nested inside. */
   isExpanded: boolean;
   unitCount: number;
+  /** A demoted COMMONS hub (commonsDemotion): parked in the dock, wires hidden until lit. */
+  isCommons?: boolean;
+  /** The commons this card depends on — worn as small chips instead of wires. */
+  commonsChips?: string[];
 };
 
 /** A unit's identity strip: one class/interface/object. With members it can expand into a FRAME

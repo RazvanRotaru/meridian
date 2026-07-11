@@ -181,7 +181,10 @@ function clusterGhostEmission(full: ServiceClustering, drawnLeads: ReadonlySet<s
     if (existing) {
       existing.weight += 1;
     } else {
-      byPair.set(key, { source, target, weight: 1, kind: COUPLE_KIND });
+      // Cluster couplings are pair-level aggregates (design-metrics' CouplingEdge unions kinds
+      // without keeping artifact edge ids), so this tier has no per-site trail — the Wire
+      // Inspector shows the wire's section header alone, like flow/IPC wires.
+      byPair.set(key, { source, target, weight: 1, kind: COUPLE_KIND, underlyingEdgeIds: [] });
     }
   }
   return { ghosts, wires: [...byPair.values()] };

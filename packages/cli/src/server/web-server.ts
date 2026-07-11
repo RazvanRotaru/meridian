@@ -16,7 +16,7 @@ import { SessionStore } from "./session";
 import { assertJsonContentType, assertSameOrigin } from "./web-guards";
 import { handleAuthSession, handleAuthStatus, handleDeviceStart, handleLogout, handleOwnRepos, handleRepoSearch } from "./web-auth";
 import { handleGenerate, sendGraph, sendMeta, sendView } from "./web-graph";
-import { handlePullRequestFiles, handlePullRequests, handleSubmitReview } from "./web-prs";
+import { handlePullRequestFileContent, handlePullRequestFiles, handlePullRequests, handleSubmitReview } from "./web-prs";
 import { handlePrAnalyze } from "./web-pr-analyze";
 import { handlePickFolder } from "./web-pick-folder";
 import type { ArtifactSource } from "./web-source";
@@ -183,6 +183,10 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
   }
   if (pathname === "/api/prs/files") {
     await handlePullRequestFiles(ctx, request, response, url.searchParams);
+    return;
+  }
+  if (pathname === "/api/prs/file") {
+    await handlePullRequestFileContent(ctx, request, response, url.searchParams);
     return;
   }
   if (pathname === "/api/auth/status") {

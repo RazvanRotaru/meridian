@@ -152,8 +152,10 @@ export interface Arrangement {
 }
 
 export function deriveFor(spec: SurfaceSpec, index: GraphIndex, caches: SurfaceCaches, arrangement: Arrangement): ModuleTree {
+  // `showCommons: true` mirrors the store default; on this small fixture no hub reaches the
+  // demotion bar, so the parity trees are identical either way.
   return spec.deriveTree(
-    { index, moduleFocus: arrangement.focus, moduleExpanded: new Set(arrangement.expanded), serviceScope: null },
+    { index, moduleFocus: arrangement.focus, moduleExpanded: new Set(arrangement.expanded), serviceScope: null, showCommons: true },
     caches,
   );
 }

@@ -66,8 +66,10 @@ export function importEdges(graph: ModuleGraph): GraphEdge[] {
   return edges;
 }
 
-/** Lifted import wires as level edges, flagged crossFrame when either endpoint is a group card. */
-export function importTreeEdges(lifted: ReturnType<typeof liftEdges>, kinds: Map<string, Skeleton["kind"]>): ModuleTreeEdge[] {
+/** Lifted import wires as level edges, flagged crossFrame when either endpoint is a group card.
+ * The lifted underlying ids are SYNTHETIC (`mimp:<pair>` — see `importEdges`); each expands through
+ * `graph.edgeIds` back to the real artifact `imports` edges so the Wire Inspector can attribute. */
+export function importTreeEdges(lifted: ReturnType<typeof liftEdges>, kinds: Map<string, Skeleton["kind"]>, graph: ModuleGraph): ModuleTreeEdge[] {
   return lifted.map((edge) => ({
     id: `lvl:${edge.source}->${edge.target}`,
     source: edge.source,
@@ -75,6 +77,7 @@ export function importTreeEdges(lifted: ReturnType<typeof liftEdges>, kinds: Map
     weight: edge.weight,
     crossFrame: kinds.get(edge.source) === "package" || kinds.get(edge.target) === "package",
     category: "import" as const,
+    underlyingEdgeIds: edge.underlyingEdgeIds.flatMap((id) => graph.edgeIds.get(id.slice("mimp:".length)) ?? []),
   }));
 }
 

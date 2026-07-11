@@ -44,13 +44,19 @@ export function routeFrameEdges(edges: Edge[], nodes: Node[]): Edge[] {
   const frameIds = new Set<string>();
   for (const node of nodes) {
     rects.set(node.id, absoluteRect(node, byId));
+    // Every parent with drawn children is a frame — INCLUDING the commons dock tray: its lit
+    // wires enter through a gate and ride the tray's rail like any frame's bus (the tray reserves
+    // the same 30px gutter). Hidden wires render nothing regardless (isHiddenWire), so routing
+    // them is free.
     if (node.parentId) {
       frameIds.add(node.parentId);
     }
   }
-  // Pass 1: plan every routable edge (geometry, no path yet).
+  // Pass 1: plan every routable edge (geometry, no path yet). RIBBON cables route too — the fold
+  // now precedes routing, and a multi-kind pair must ride the rail as ONE striped line, not as
+  // stacked strands ("ribbon" is a string literal here: importing parallelWires would be circular).
   const planned = edges.map((edge) => {
-    if (edge.type !== undefined) {
+    if (edge.type !== undefined && edge.type !== "ribbon") {
       return { edge, plan: null }; // container highways and anything already custom keep their renderer
     }
     return { edge, plan: routePlan(edge, byId, rects, frameIds) };
@@ -59,11 +65,16 @@ export function routeFrameEdges(edges: Edge[], nodes: Node[]): Edge[] {
   // selection's strands stay individually followable from gate to peel-off. Unlit wires keep
   // overlapping into the single bus bar — collectively legible is exactly right at rest.
   const laneByEdge = assignLitLanes(planned);
-  // Pass 3: build paths.
+  // Pass 3: build paths. A routed RIBBON keeps its type (RibbonEdge draws the striped band along
+  // `routedPath`); plain wires retype to the routed renderer.
   return planned.map(({ edge, plan }) =>
     plan === null
       ? edge
-      : { ...edge, type: ROUTED_EDGE_TYPE, data: { ...edge.data, routedPath: planToPath(plan, laneByEdge.get(edge.id) ?? 0) } },
+      : {
+          ...edge,
+          type: edge.type === "ribbon" ? edge.type : ROUTED_EDGE_TYPE,
+          data: { ...edge.data, routedPath: planToPath(plan, laneByEdge.get(edge.id) ?? 0) },
+        },
   );
 }
 
@@ -89,13 +100,15 @@ function routePlan(edge: Edge, byId: Map<string, Node>, rects: Map<string, Rect>
   }
   // The OUTERMOST expanded frame around the target that does not also contain the source: the
   // boundary the wire must cross. None → open canvas or intra-frame; not ours to route.
-  const frame = entryFrame(edge.source, edge.target, byId, rects, frameIds);
-  if (!frame) {
+  const entry = entryFrame(edge.source, edge.target, byId, rects, frameIds);
+  if (!entry) {
     return null;
   }
+  const frame = entry.rect;
   const sy = source.y + source.h / 2;
   const ty = target.y + target.h / 2;
   // Enter from whichever side of the frame the source sits on; the rail runs in that side's gutter.
+  // (The commons dock is a vertical COLUMN like any frame interior, so the same rule serves it.)
   const fromLeft = source.x + source.w / 2 <= frame.x + frame.w / 2;
   // The gate sits at the source's height, clamped into the frame's edge span — below the title bar
   // (a wire through the frame's name is as bad as one through a card) and above the bottom edge —
@@ -124,7 +137,7 @@ const LANE_MAX = 3;
 function assignLitLanes(planned: ReadonlyArray<{ edge: Edge; plan: RoutePlan | null }>): Map<string, number> {
   const byRail = new Map<string, Array<{ id: string; ty: number }>>();
   for (const { edge, plan } of planned) {
-    if (plan === null || (edge.style as { opacity?: number } | undefined)?.opacity !== 1) {
+    if (plan === null || !isLitForLanes(edge)) {
       continue;
     }
     const group = byRail.get(plan.railKey) ?? [];
@@ -140,6 +153,16 @@ function assignLitLanes(planned: ReadonlyArray<{ edge: Edge; plan: RoutePlan | n
     });
   }
   return lanes;
+}
+
+/** Lit = full-opacity paint; a ribbon is lit when ANY of its folded strands is (its own style
+ * mirrors just the dominant member). */
+function isLitForLanes(edge: Edge): boolean {
+  if ((edge.style as { opacity?: number } | undefined)?.opacity === 1) {
+    return true;
+  }
+  const members = (edge.data as { members?: Edge[] } | undefined)?.members;
+  return members?.some((member) => (member.style as { opacity?: number } | undefined)?.opacity === 1) === true;
 }
 
 /** The SVG path for a plan; `lane` shifts the rail segment sideways for lit ribbon strands. */
@@ -177,17 +200,18 @@ function entryFrame(
   byId: Map<string, Node>,
   rects: Map<string, Rect>,
   frameIds: Set<string>,
-): Rect | null {
+): { id: string; rect: Rect } | null {
   const sourceAncestors = ancestorsOf(sourceId, byId);
-  let outermost: Rect | null = null;
+  let outermost: { id: string; rect: Rect } | null = null;
   let current = byId.get(targetId)?.parentId;
   const seen = new Set<string>();
   while (current && !seen.has(current)) {
     if (sourceAncestors.has(current)) {
       break; // shared container — from here up the frame holds BOTH ends
     }
-    if (frameIds.has(current)) {
-      outermost = rects.get(current) ?? outermost;
+    const rect = rects.get(current);
+    if (frameIds.has(current) && rect) {
+      outermost = { id: current, rect };
     }
     seen.add(current);
     current = byId.get(current)?.parentId;

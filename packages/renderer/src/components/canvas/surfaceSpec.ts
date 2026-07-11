@@ -48,6 +48,9 @@ export interface SurfaceTreeState {
   moduleFocus: string | null;
   moduleExpanded: ReadonlySet<string>;
   serviceScope: ServiceScope | null;
+  /** The Commons toggle: utility hubs demote into the dock tray (the Map's hub treatment — the
+   * toggle is Map-gated in the control panel, and only the Map's derive reads it). */
+  showCommons: boolean;
 }
 
 /** The store's memoized substrates, built once per artifact and threaded into every derive. */
@@ -138,8 +141,10 @@ function serviceCrumbs(effectiveFocus: string | null, index: GraphIndex): Crumb[
 /** The folder Map: focus = moduleFocus (containment dive over folders AND files), ghosts reveal by
  * refocusing at the definition. */
 const MAP_SURFACE: SurfaceSpec = {
+  // `showCommons` threads through as the hub-demotion switch: on, logger-grade utility hubs leave
+  // ELK for the commons dock tray; off, they rejoin the level with ordinary wires.
   deriveTree: (state, caches, extras = {}) =>
-    deriveModuleTree(state.index, state.moduleFocus, state.moduleExpanded, caches.graph, caches.deps, caches.flows, extras.extraIds ?? EMPTY_IDS, extras.hiddenIds ?? EMPTY_IDS),
+    deriveModuleTree(state.index, state.moduleFocus, state.moduleExpanded, caches.graph, caches.deps, caches.flows, extras.extraIds ?? EMPTY_IDS, extras.hiddenIds ?? EMPTY_IDS, state.showCommons),
   focus: {
     dive: (actions, id) => actions.setModuleFocus(id),
     divable: (nodeType) => nodeType === "package" || nodeType === "file",

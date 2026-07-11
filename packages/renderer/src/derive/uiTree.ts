@@ -105,8 +105,9 @@ function rendersGhostEmission(
   isAnchor: (id: string) => boolean,
 ): GhostEmission {
   const ghosts = new Map<string, ReturnType<typeof ghostData>>();
-  const byPair = new Map<string, { source: string; target: string; weight: number; kind: string }>();
-  const add = (source: string, target: string, ghostId: string, weight: number): void => {
+  const byPair = new Map<string, { source: string; target: string; weight: number; kind: string; underlyingEdgeIds: string[] }>();
+  // Real artifact edge ids ride along so the Wire Inspector can attribute a ghost renders wire.
+  const add = (source: string, target: string, ghostId: string, weight: number, edgeId: string): void => {
     const node = index.nodesById.get(ghostId);
     if (!node) {
       return;
@@ -116,8 +117,9 @@ function rendersGhostEmission(
     const existing = byPair.get(key);
     if (existing) {
       existing.weight += weight;
+      existing.underlyingEdgeIds.push(edgeId);
     } else {
-      byPair.set(key, { source, target, weight, kind: UI_EDGE_KIND });
+      byPair.set(key, { source, target, weight, kind: UI_EDGE_KIND, underlyingEdgeIds: [edgeId] });
     }
   };
   for (const edge of renders) {
@@ -125,10 +127,10 @@ function rendersGhostEmission(
     const targetVisible = nearestVisible(edge.target, visibleIds, index);
     const weight = edge.weight ?? 1;
     if (sourceVisible !== null && targetVisible === null && isAnchor(sourceVisible)) {
-      add(sourceVisible, edge.target, edge.target, weight);
+      add(sourceVisible, edge.target, edge.target, weight, edge.id);
     }
     if (targetVisible !== null && sourceVisible === null && isAnchor(targetVisible)) {
-      add(edge.source, targetVisible, edge.source, weight);
+      add(edge.source, targetVisible, edge.source, weight, edge.id);
     }
   }
   return { ghosts, wires: [...byPair.values()] };

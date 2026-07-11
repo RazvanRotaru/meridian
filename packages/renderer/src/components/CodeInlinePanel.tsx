@@ -14,7 +14,7 @@
 
 import type { CodeView } from "../state/store";
 import { CodeBlock } from "./CodeBlock";
-import { useChangeSummary, useChangedLines, useLineChangeKinds } from "./useChangedLines";
+import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeKinds } from "./useChangedLines";
 
 export function CodeInlinePanel({
   codeView,
@@ -29,12 +29,20 @@ export function CodeInlinePanel({
 }) {
   const { node, code, loading, error, truncated } = codeView;
   const wholeFile = codeView.wholeFile ?? false;
-  const changedLines = useChangedLines(node, wholeFile);
-  const changedLineKinds = useLineChangeKinds(node, wholeFile);
-  const summary = useChangeSummary(node, wholeFile);
+  // Prefer the PR-review panel's own head-relative diff; else the artifact's `changedSince`. Hooks run
+  // unconditionally (rules of hooks) and are overridden when the panel carries its own.
+  const hookChangedLines = useChangedLines(node, wholeFile);
+  const hookChangedLineKinds = useLineChangeKinds(node, wholeFile);
+  const hookSummary = useChangeSummary(node, wholeFile);
+  const changedLines = codeView.changedLines ?? hookChangedLines;
+  const changedLineKinds = codeView.changedLineKinds ?? hookChangedLineKinds;
+  const summary = codeView.changedLineKinds ? summarizeChangeKinds(codeView.changedLineKinds) : hookSummary;
   const { file, startLine, endLine } = node.location;
   const baseLine = codeView.baseLine ?? startLine;
-  const range = endLine && endLine !== startLine ? `${startLine}-${endLine}` : String(startLine);
+  // Head-review slice: the shown lines are baseLine..+len (where the unit moved to), not the base span.
+  const isHead = codeView.changedLineKinds !== undefined;
+  const shownEnd = isHead ? baseLine + Math.max((code?.split("\n").length ?? 1) - 1, 0) : endLine ?? startLine;
+  const range = shownEnd !== baseLine ? `${baseLine}-${shownEnd}` : String(baseLine);
   const location = wholeFile ? file : `${file}:${range}`;
   const stop = (event: React.SyntheticEvent) => event.stopPropagation();
   return (

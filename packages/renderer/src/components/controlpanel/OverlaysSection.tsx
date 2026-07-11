@@ -1,5 +1,5 @@
 /**
- * The OVERLAYS row: paint/lens switches (Tests, Reach, Private, Coverage, Flows) as unified pills.
+ * The OVERLAYS row: paint/lens switches (Tests, Reach, Private, Coverage) as unified pills.
  * Each pill is shown only where it means something for the active lens (e.g. Reach/Private only on
  * the module surface, Tests never in the Logic view), and carries its count where one exists.
  */
@@ -12,8 +12,8 @@ import { Pill } from "./panelKit";
 
 const REACH_HUE = "#5B9BE3";
 const PRIVATE_HUE = "#7C8CA3";
-const FLOWS_HUE = "#5B9BE3";
-const HIGHWAYS_HUE = "#C99A4B";
+const HIGHWAYS_HUE = "#E8843C"; // orange — arterial/high-traffic edges; the one bold warm accent (diff amber is reserved)
+const COMMONS_HUE = "#B08F4E"; // the dock tray's quiet amber (a shelf, not an alert)
 
 export function OverlaysSection() {
   const viewMode = useBlueprint((state) => state.viewMode);
@@ -24,9 +24,9 @@ export function OverlaysSection() {
   const privateCount = useBlueprint((state) => state.index.privateIds.size);
   const coverageMode = useBlueprint((state) => state.coverageMode);
   const coveragePercent = useBlueprint((state) => state.coverage?.summary.percent ?? null);
-  const flowExplorerOpen = useBlueprint((state) => state.flowExplorerOpen);
   const showHighways = useBlueprint((state) => state.showHighways);
-  const { toggleShowTests, toggleHighlightMode, togglePrivateMembers, toggleCoverageMode, toggleFlowExplorer, toggleHighways } = useBlueprintActions();
+  const showCommons = useBlueprint((state) => state.showCommons);
+  const { toggleShowTests, toggleHighlightMode, togglePrivateMembers, toggleCoverageMode, toggleHighways, toggleCommons } = useBlueprintActions();
 
   const onModuleSurface = moduleSurfaceSpec(viewMode) !== null;
   const onMap = viewMode === "modules";
@@ -83,6 +83,17 @@ export function OverlaysSection() {
           Highways
         </Pill>
       ) : null}
+      {onMap ? (
+        <Pill
+          active={showCommons}
+          accent={COMMONS_HUE}
+          indicator="square"
+          title={showCommons ? "Commons on: the level's utility hubs park in the dock below the graph (their wires hide until selected)" : "Commons off: utility hubs stay in the graph with all their wires"}
+          onClick={toggleCommons}
+        >
+          Commons
+        </Pill>
+      ) : null}
       <Pill
         active={coverageMode}
         accent={COVERAGE_COLORS.covered}
@@ -93,17 +104,6 @@ export function OverlaysSection() {
       >
         Coverage
       </Pill>
-      {viewMode !== "logic" ? (
-        <Pill
-          active={flowExplorerOpen}
-          accent={FLOWS_HUE}
-          indicator="square"
-          title={flowExplorerOpen ? "Close the flow explorer" : "Open the flow explorer"}
-          onClick={toggleFlowExplorer}
-        >
-          Flows
-        </Pill>
-      ) : null}
     </div>
   );
 }

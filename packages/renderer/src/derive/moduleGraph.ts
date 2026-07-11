@@ -23,6 +23,9 @@ export interface ModuleGraph {
   in: Map<string, Set<string>>;
   /** Import multiplicity per ordered pair, keyed by `weightKey(src, tgt)`. */
   weight: Map<string, number>;
+  /** The artifact `imports` edge ids folded into each ordered pair (same key) — the Wire
+   * Inspector's trail from a file-to-file wire back to the concrete import statements. */
+  edgeIds: Map<string, string[]>;
 }
 
 /** The stable weight-map key for an ordered file pair. */
@@ -65,6 +68,12 @@ function addImport(graph: ModuleGraph, index: GraphIndex, edge: GraphEdge): void
   addAdjacency(graph.in, target, source);
   const key = weightKey(source, target);
   graph.weight.set(key, (graph.weight.get(key) ?? 0) + 1);
+  const ids = graph.edgeIds.get(key);
+  if (ids) {
+    ids.push(edge.id);
+  } else {
+    graph.edgeIds.set(key, [edge.id]);
+  }
 }
 
 /** Walk `parentId` up to the nearest `module` ancestor (visited-guarded against a parentId cycle). */
@@ -91,7 +100,7 @@ function addAdjacency(map: Map<string, Set<string>>, from: string, to: string): 
 }
 
 function emptyGraph(fileIds: Set<string>): ModuleGraph {
-  return { fileIds, out: new Map(), in: new Map(), weight: new Map() };
+  return { fileIds, out: new Map(), in: new Map(), weight: new Map(), edgeIds: new Map() };
 }
 
 function collectModuleIds(index: GraphIndex): Set<string> {

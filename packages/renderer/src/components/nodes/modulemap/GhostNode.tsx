@@ -23,14 +23,15 @@ function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
   // definition — keeps the green marker so it stands out as the thing pointed at.
   const style = selected ? cardSelectedStyle(GHOST, accent) : data.beacon ? GHOST_BEACON : GHOST;
   return (
-    <div style={style} title={`${data.label} — off-screen; double-click to reveal it`}>
+    <div className="lod-tint" style={{ ...style, "--lod-accent": accent } as React.CSSProperties} title={`${data.label} — off-screen; double-click to reveal it`}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-      <div style={HEAD}>
+      <span className="lod-place">{middleTruncate(data.label)}</span>
+      <div className="lod-card-body" style={HEAD}>
         {ghostGlyph(data.ghostKind) !== null && <span style={{ ...GLYPH, color: accent }}>{ghostGlyph(data.ghostKind)}</span>}
         <span style={LABEL}>{middleTruncate(data.label)}</span>
       </div>
-      {data.context ? <div style={CONTEXT}>{data.context}</div> : null}
+      {data.context ? <div className="lod-card-body" style={CONTEXT}>{data.context}</div> : null}
     </div>
   );
 }

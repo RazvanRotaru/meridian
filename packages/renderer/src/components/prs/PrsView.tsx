@@ -1,7 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PRS_UNAVAILABLE_ERROR, type PrSummary, type PrsTab } from "../../state/prTypes";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { PrDetailPanel } from "./PrDetailPanel";
+import { PrsFilterBar } from "./PrsFilterBar";
 
 export function PrsView() {
   const tab = useBlueprint((state) => state.prsTab);
@@ -11,6 +12,24 @@ export function PrsView() {
   const error = useBlueprint((state) => state.prsError);
   const selected = useBlueprint((state) => state.prSelected);
   const { setPrsTab, loadPrs, selectPr } = useBlueprintActions();
+
+  // Ephemeral view state: search text + chosen author, filtering the already-loaded list only.
+  const [query, setQuery] = useState("");
+  const [author, setAuthor] = useState("");
+
+  // Switching Open/Closed clears both filters — otherwise a stale author pick could silently
+  // resurface and re-filter when the user returns to a tab where that author exists again.
+  const switchTab = (state: PrsTab) => {
+    setQuery("");
+    setAuthor("");
+    setPrsTab(state);
+  };
+
+  const authors = useMemo(() => uniqueAuthors(prs), [prs]);
+  // Deriving validity (instead of an effect) keeps the select consistent when the tab's authors
+  // change: a stale pick that's no longer present silently falls back to "All authors".
+  const activeAuthor = authors.includes(author) ? author : "";
+  const filtered = useMemo(() => filterPrs(prs, query, activeAuthor), [prs, query, activeAuthor]);
 
   useEffect(() => {
     if (prs === null && !loading && error === null) {
@@ -43,18 +62,22 @@ export function PrsView() {
                 type="button"
                 style={tabButtonStyle(tab === state)}
                 aria-pressed={tab === state}
-                onClick={() => setPrsTab(state)}
+                onClick={() => switchTab(state)}
               >
                 {state === "open" ? "Open" : "Closed"}
               </button>
             ))}
           </div>
         </header>
+        {prs !== null && prs.length > 0 ? (
+          <PrsFilterBar query={query} onQueryChange={setQuery} author={activeAuthor} onAuthorChange={setAuthor} authors={authors} />
+        ) : null}
         <div style={BODY_STYLE}>
           <div style={LIST_STYLE} className="mrd-scroll">
             {prs === null && loading ? <SkeletonList /> : null}
             {prs !== null && prs.length === 0 ? <div style={EMPTY_STYLE}>No {tab} pull requests.</div> : null}
-            {prs?.map((pr) => (
+            {prs !== null && prs.length > 0 && filtered.length === 0 ? <div style={EMPTY_STYLE}>{noMatchMessage(query)}</div> : null}
+            {filtered.map((pr) => (
               <PrCard key={pr.number} pr={pr} active={selected === pr.number} onSelect={() => void selectPr(pr.number)} />
             ))}
             {error && error !== PRS_UNAVAILABLE_ERROR ? <div style={ERROR_STYLE}>{error}</div> : null}
@@ -97,6 +120,36 @@ function SkeletonList() {
       ))}
     </>
   );
+}
+
+// The tab's authors, unique and alphabetical, for the filter dropdown. Empty until the list loads.
+function uniqueAuthors(prs: PrSummary[] | null): string[] {
+  if (prs === null) {
+    return [];
+  }
+  return [...new Set(prs.map((pr) => pr.author))].sort((a, b) => a.localeCompare(b));
+}
+
+// AND-compose the two filters over the loaded list: title/number substring, then exact author.
+function filterPrs(prs: PrSummary[] | null, query: string, author: string): PrSummary[] {
+  if (prs === null) {
+    return [];
+  }
+  return prs.filter((pr) => matchesQuery(pr, query) && (author === "" || pr.author === author));
+}
+
+// Case-insensitive substring on the title; the number matches with or without a leading "#".
+function matchesQuery(pr: PrSummary, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (needle === "") {
+    return true;
+  }
+  return pr.title.toLowerCase().includes(needle) || String(pr.number).includes(needle.replace(/^#/, ""));
+}
+
+function noMatchMessage(query: string): string {
+  const trimmed = query.trim();
+  return trimmed ? `No PRs match "${trimmed}"` : "No PRs match the current filters.";
 }
 
 function relativeUpdatedAt(value: string): string {

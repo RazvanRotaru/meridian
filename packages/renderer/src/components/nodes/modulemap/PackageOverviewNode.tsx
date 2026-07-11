@@ -13,6 +13,7 @@ import { useBlueprint } from "../../../state/StoreContext";
 import type { ModuleGroupData } from "../../../derive/moduleTree";
 import { cardSelectedStyle, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, DeltaChip, useNodeDiff } from "./changed";
+import { CommonsChips } from "./CommonsChips";
 
 // A neutral package hue — the cross-package coupling gold lives on the wires, not the boxes.
 const PACKAGE_ACCENT = "#5B9BE3";
@@ -32,26 +33,30 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
         <FrameTitleBar chevron={chevron}>
-          <span style={TITLE_LABEL} title={id}>{data.label}</span>
-          <DeltaChip diff={diff} />
-          <Meta data={data} hideCoupling={data.readOnly} />
+          <span className="lod-label" style={TITLE_LABEL} title={id}>{data.label}</span>
+          <span className="lod-hide" style={CONTENTS}>
+            <DeltaChip diff={diff} />
+            <Meta data={data} hideCoupling={data.readOnly} />
+          </span>
         </FrameTitleBar>
       </div>
     );
   }
 
   return (
-    <div style={borderFor(CARD, cardSelectedStyle(CARD, PACKAGE_ACCENT), selected, diff)}>
+    <div className="lod-tint" style={{ ...borderFor(CARD, cardSelectedStyle(CARD, PACKAGE_ACCENT), selected, diff), "--lod-accent": PACKAGE_ACCENT } as React.CSSProperties}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-      <div style={{ ...ACCENT_BAR, background: PACKAGE_ACCENT }} />
-      <div style={INNER}>
+      <div className="lod-rail" style={{ ...ACCENT_BAR, background: PACKAGE_ACCENT }} />
+      <span className="lod-place">{data.label}</span>
+      <div className="lod-card-body" style={INNER}>
         <div style={HEADER}>
           {chevron}
           <span style={LABEL} title={id}>{data.label}</span>
           <DeltaChip diff={diff} />
         </div>
         <Meta data={data} />
+        <CommonsChips chips={(data as { commonsChips?: string[] }).commonsChips} />
       </div>
     </div>
   );
@@ -74,6 +79,9 @@ function Meta({ data, hideCoupling }: { data: PackageMetaData; hideCoupling?: bo
     </div>
   );
 }
+
+/** Visibility-flip wrapper that stays out of flex layout (visibility inherits through it). */
+const CONTENTS: React.CSSProperties = { display: "contents" };
 
 export const PackageOverviewNode = memo(PackageOverviewNodeImpl);
 

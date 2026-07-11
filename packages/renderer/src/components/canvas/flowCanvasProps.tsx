@@ -35,18 +35,36 @@ export const READONLY_CANVAS_PROPS = {
 // dense to navigate by minimap anyway; pan/zoom + ⌘P are the tools).
 export const MINIMAP_NODE_CAP = 250;
 
+// The bottom-right chrome cluster, shared so MapLegend can stack against it. The minimap sits in the
+// corner; the Map's Legend pill sits just left of it; the zoom/fit controls stack directly ABOVE
+// that Legend pill. Keeping the whole cluster on the right leaves the entire left gutter to the
+// top-left control panel, which can grow to full viewport height and would otherwise cover them.
+export const MINIMAP_W = 200;
+export const MINIMAP_H = 150;
+export const CHROME_EDGE = 15; // React Flow's default panel inset from the canvas edge
+export const CHROME_GAP = 12;
+export const LEGEND_BOTTOM = 16; // the Map Legend pill's bottom inset
+export const LEGEND_PILL_H = 28; // its collapsed height (see MapLegend PILL)
+const CONTROLS_COLUMN = CHROME_EDGE + MINIMAP_W + CHROME_GAP; // shared with the Legend pill, left of the minimap
+const CONTROLS_BOTTOM = LEGEND_BOTTOM + LEGEND_PILL_H + CHROME_GAP; // clear of the Legend pill below
+
 // The three chrome children every read-only surface renders: a dotted background, the zoom/fit
 // controls (interactive toggle hidden — the graph is read-only), and a pannable minimap tinted per
-// node by the view's own colour fn.
+// node by the view's own colour fn. Controls stack above the Legend pill (left of the minimap); with
+// the minimap dropped (a dense graph) they fall back to the corner.
 export function CanvasChrome({ nodeColor, minimap = true }: { nodeColor: (node: Node) => string; minimap?: boolean }) {
   return (
     <>
       <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#222732" />
-      <Controls showInteractive={false} />
+      <Controls
+        showInteractive={false}
+        position="bottom-right"
+        style={minimap ? { right: CONTROLS_COLUMN, bottom: CONTROLS_BOTTOM } : { right: CHROME_EDGE, bottom: CHROME_EDGE }}
+      />
       {/* Lighter mask + a per-node stroke: the old 0.7 mask over near-black node fills made the
           minimap read as an empty rectangle; the stroke keeps tiny nodes visible at any density. */}
       {minimap ? (
-        <MiniMap pannable zoomable nodeColor={nodeColor} nodeStrokeColor="#4B5563" nodeStrokeWidth={3} maskColor="rgba(8,10,14,0.55)" style={{ background: "#161B22" }} />
+        <MiniMap pannable zoomable nodeColor={nodeColor} nodeStrokeColor="#4B5563" nodeStrokeWidth={3} maskColor="rgba(8,10,14,0.55)" style={{ width: MINIMAP_W, height: MINIMAP_H, background: "#161B22" }} />
       ) : null}
     </>
   );
