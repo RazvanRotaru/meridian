@@ -54,6 +54,7 @@ export function MinimalGraphView() {
   // — Reset restores both, so it must light up for either.
   const grown = useBlueprint((state) => !sameMembers(state.minimalMemberIds, state.minimalSeedIds) || state.minimalArrange);
   const reviewSelectedId = useBlueprint((state) => state.reviewSelectedId);
+  const reviewActive = useBlueprint((state) => state.review !== null);
   const { closeMinimalGraph, promoteGhost, resetMinimalGraph, rearrangeMinimalGraph } = useBlueprintActions();
 
   // A review-panel click centers the viewport on the clicked node itself (recenterSeq bump); else
@@ -97,6 +98,7 @@ export function MinimalGraphView() {
       highways={MINIMAL_OVERLAY_HIGHWAYS}
       miniMapColor={minimalMiniMapColor}
       interactions={interactions}
+      nodeDiffPreview={reviewActive}
       onInit={(instance) => {
         rfRef.current = instance;
       }}

@@ -7,7 +7,7 @@
 
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { Edge, Node } from "@xyflow/react";
-import { changedRangesFromExtensions, computeAffectedNodes, computeChangeGroups, computeCoverage, type ChangeStatus } from "@meridian/core";
+import { changedLineKindsFromExtensions, changedRangesFromExtensions, computeAffectedNodes, computeChangeGroups, computeCoverage, type ChangeStatus } from "@meridian/core";
 import type {
   ChangedLineKind,
   ChangedLineSpan,
@@ -49,7 +49,7 @@ import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref"
 import { moduleRevealStateFor, nearestModuleIds } from "./flowExplorer";
 import { anchorNodeIds, mapRevealStateForMany, resolveServiceAnchors, serviceRevealStateForMany, uiRevealStateForMany } from "./lensPath";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
-import { PRS_UNAVAILABLE_ERROR, type LineEdit, type PrChangedFile, type PrFilesResponse, type PrListResponse, type PrSummary, type PrsTab } from "./prTypes";
+import { PRS_UNAVAILABLE_ERROR, type LineEdit, type PrChangedFile, type PrFilesResponse, type PrFileStatus, type PrListResponse, type PrSummary, type PrsTab } from "./prTypes";
 import { headKindsWithin, headSpanFor } from "./headSpan";
 import { streamPrAnalysis, type PrAnalyzeStage } from "./prAnalysis";
 import {
@@ -237,7 +237,7 @@ export interface BlueprintState {
   reviewFiles: ReviewFileRow[];
   /** Per changed file (keyed by node.location.file): GitHub's +N/-M churn, shown as a marker before
    * the file card's name (files themselves are not coloured — only the touched blocks inside are). */
-  reviewFileDelta: Record<string, { added: number; deleted: number }>;
+  reviewFileDelta: Record<string, { added: number; deleted: number; status?: PrFileStatus }>;
   /** Per-flow review progress, keyed by flowId, persisted to localStorage under the reviewKey. */
   reviewTicks: Record<string, ReviewTick>;
   /** Per-unit ticks of the files checklist, keyed by nodeId — same persistence as reviewTicks. */
@@ -406,6 +406,8 @@ export interface BlueprintState {
   toggleCoverageMode(): void;
   setEnvironment(environment: string): void;
   refreshTelemetry(): Promise<void>;
+  /** Load one node's review diff for the hover preview without taking over the global code modal. */
+  loadCodePreview(node: GraphNode): Promise<CodeView | null>;
   showCode(node: GraphNode, opts?: { wholeFile?: boolean }): Promise<void>;
   expandCode(): void;
   closeCode(): void;
@@ -459,6 +461,148 @@ function prFileHeadUrl(prFileUrl: string, file: string, ref: string): URL {
   url.searchParams.set("path", file);
   url.searchParams.set("ref", ref);
   return url;
+}
+
+interface CodeLoadRequest {
+  node: GraphNode;
+  url: URL;
+  baseLine: number;
+  wholeFile: boolean;
+  /** Present when the request reads the PR head rather than the loaded source root. */
+  headSpan: { start: number; end: number } | null;
+  headKinds: readonly ChangedLineSpan[];
+}
+
+interface CodePayload {
+  code: string;
+  truncated: boolean;
+  startLine?: number;
+}
+
+type CodePayloadCache = Map<string, Promise<CodePayload>>;
+
+/** Resolve the source request once so click-to-open and hover-preview read identical code. */
+function codeLoadRequest(
+  node: GraphNode,
+  opts: { wholeFile?: boolean } | undefined,
+  state: BlueprintState,
+  sourceUrl: string | null,
+  prFileUrl: string | null,
+): CodeLoadRequest | null {
+  if (!node.location) {
+    return null;
+  }
+  // A live PR review reads changed files from the PR head. The synchronous path holds BASE node
+  // coordinates and therefore needs the edit map; a prepared artifact is already in HEAD
+  // coordinates, so mapping it again would double-shift the preview after an earlier hunk.
+  const reviewDiff = state.prReviewed !== null && prFileUrl && state.reviewHeadRef
+    ? state.reviewDiffByFile[node.location.file] ?? null
+    : null;
+  // A patch can be absent for a binary/oversized change, but the file is still a PR-head file. Its
+  // file-delta entry is the fallback capability signal so the preview never silently shows BASE
+  // source just because GitHub omitted hunk detail. Removed files are the exception: no HEAD path
+  // exists, so their old (entirely deleted) node span must come from the base source endpoint.
+  const removedAtHead = state.reviewFileDelta[node.location.file]?.status === "removed";
+  const readsPrHead = !removedAtHead && state.prReviewed !== null && prFileUrl !== null && state.reviewHeadRef !== null
+    && (reviewDiff !== null || state.reviewFileDelta[node.location.file] !== undefined);
+  if (!readsPrHead && !sourceUrl) {
+    return null;
+  }
+  const wholeFile = readsPrHead ? false : opts?.wholeFile ?? false;
+  const headSpan = readsPrHead
+    ? state.prReviewBaseline !== null || reviewDiff === null
+      ? { start: node.location.startLine, end: node.location.endLine ?? node.location.startLine }
+      : headSpanFor(node.location.startLine, node.location.endLine ?? node.location.startLine, reviewDiff.edits)
+    : null;
+  const baseLine = headSpan ? headSpan.start : wholeFile ? 1 : node.location.startLine;
+  // A prepared head artifact's local diff is keyed to the CURRENT node coordinates and is more
+  // accurate than GitHub's possibly-truncated patch detail. The synchronous path still needs the
+  // latter because its artifact/node coordinates are on the base side.
+  const artifactKinds = state.prReviewBaseline !== null
+    ? changedLineKindsFromExtensions(state.artifact.extensions)?.[node.location.file]
+    : undefined;
+  return {
+    node,
+    url: readsPrHead
+      ? prFileHeadUrl(prFileUrl!, node.location.file, state.reviewHeadRef!)
+      : baseSourceUrl(sourceUrl!, node.location, wholeFile),
+    baseLine,
+    wholeFile,
+    headSpan,
+    // A removed file has no head-side text or line kinds. Its base snippet is entirely deleted,
+    // so paint the node span explicitly instead of reducing the hover card to plain source.
+    headKinds: removedAtHead
+      ? [{ start: node.location.startLine, end: node.location.endLine ?? node.location.startLine, kind: "deleted" }]
+      : artifactKinds ?? reviewDiff?.kinds ?? [],
+  };
+}
+
+/** Fetch a resolved request into the same view model the existing code surfaces render. */
+async function fetchCodeView(
+  request: CodeLoadRequest,
+  mode: CodeView["mode"],
+  payloadCache?: CodePayloadCache,
+): Promise<CodeView> {
+  const key = request.url.toString();
+  let pending = payloadCache?.get(key);
+  if (!pending) {
+    pending = fetch(request.url, { credentials: "same-origin" }).then(async (response): Promise<CodePayload> => {
+      if (!response.ok) {
+        throw new Error(`source request failed with ${response.status}`);
+      }
+      const data = await response.json() as { code?: unknown; truncated?: unknown; startLine?: unknown };
+      return {
+        code: typeof data.code === "string" ? data.code : String(data.code ?? ""),
+        truncated: data.truncated === true,
+        ...(typeof data.startLine === "number" ? { startLine: data.startLine } : {}),
+      };
+    });
+    payloadCache?.set(key, pending);
+  }
+  try {
+    const data = await pending;
+    if (request.headSpan) {
+      return sliceHeadCodeView(
+        request.node,
+        data.code,
+        data.truncated,
+        request.headSpan,
+        request.headKinds,
+        mode,
+      );
+    }
+    const baseLine = data.startLine ?? request.baseLine;
+    const changedLineKinds = request.headKinds.length > 0
+      ? headKindsWithin(request.headKinds, baseLine, baseLine + Math.max(data.code.split("\n").length - 1, 0))
+      : undefined;
+    return {
+      node: request.node,
+      code: data.code,
+      loading: false,
+      error: null,
+      truncated: data.truncated,
+      mode,
+      baseLine,
+      wholeFile: request.wholeFile,
+      ...(changedLineKinds && changedLineKinds.size > 0
+        ? { changedLineKinds, changedLines: new Set(changedLineKinds.keys()) }
+        : {}),
+    };
+  } catch {
+    // Do not pin a transient source error into the shared cache; a later hover/click may retry it.
+    if (payloadCache?.get(key) === pending) {
+      payloadCache.delete(key);
+    }
+    return {
+      node: request.node,
+      code: null,
+      loading: false,
+      error: "Could not load source.",
+      mode,
+      baseLine: request.baseLine,
+      wholeFile: request.wholeFile,
+    };
+  }
 }
 
 /** Slice the fetched HEAD file to the node's head span and pin the PR's own change kinds onto it. */
@@ -526,6 +670,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let prFilesSeq = 0;
   let prAnalyzeSeq = 0;
   const prsNextPage: Record<PrsTab, number> = { open: 1, closed: 1 };
+  // PR-head reads return an entire file. Share that response across every changed node in the file;
+  // fetchCodeView still slices and annotates a separate node-specific view for each caller.
+  const codePayloadCache: CodePayloadCache = new Map();
   // Rebuilding/closing the minimal overlay must discard any of its ELK passes still in flight; the
   // extracted review body shares this invalidation with the in-store actions that own the counter.
   const invalidateMinimalLayout = () => {
@@ -536,6 +683,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const invalidateArtifactCaches = () => {
     moduleGraph = null;
     blockDeps = null;
+    codePayloadCache.clear();
     invalidateMinimalLayout();
   };
   // The parsed review payload from a `meridian review` artifact (null when the artifact carries no
@@ -1653,64 +1801,40 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ telemetry: await provider.fetchMetrics(environment) });
     },
 
+    // Hover previews have their own local lifecycle. Loading through this action reuses the exact
+    // click-to-open source rules without mutating `codeView`, so hovering can never replace an open
+    // modal. The preview component owns dwell, stale-result, and per-node caching behavior.
+    async loadCodePreview(node) {
+      const request = codeLoadRequest(node, undefined, get(), sourceUrl, prFileUrl);
+      return request ? fetchCodeView(request, "inline", codePayloadCache) : null;
+    },
+
     // Fetch and reveal a callable's source, starting inline on the node. Inert when the server
     // ships no source access or the node has no location. A race guard drops the result if a newer
     // click (a different node) has since taken over the view; the mode is preserved across the
     // fetch so a mid-flight expand-to-modal is not clobbered when the code lands.
     async showCode(node, opts) {
-      if (!node.location) {
+      const request = codeLoadRequest(node, opts, get(), sourceUrl, prFileUrl);
+      if (!request) {
         return;
       }
-      // While reviewing, a changed file opens from the PR HEAD (not the base clone) so the code shown
-      // matches the PR — sliced to where the node moved to in the head, painted with the PR's own
-      // added/modified lines. Any other file (or off-review) takes the base /api/source path.
-      const st = get();
-      const reviewDiff = st.prReviewed !== null && prFileUrl && st.reviewHeadRef
-        ? st.reviewDiffByFile[node.location.file] ?? null
-        : null;
-      if (!reviewDiff && !sourceUrl) {
+      set({
+        codeView: {
+          node,
+          code: null,
+          loading: true,
+          error: null,
+          mode: "inline",
+          baseLine: request.baseLine,
+          wholeFile: request.wholeFile,
+        },
+      });
+      const view = await fetchCodeView(request, "inline", codePayloadCache);
+      if (get().codeView?.node.id !== node.id) {
         return;
       }
-      // Whole-file view (the diff `</>`) shows the entire file scrolled to the first change; a node
-      // slice shows just the span. A head-fetch is always the node's own (head-shifted) span.
-      const wholeFile = reviewDiff ? false : opts?.wholeFile ?? false;
-      const headSpan = reviewDiff
-        ? headSpanFor(node.location.startLine, node.location.endLine ?? node.location.startLine, reviewDiff.edits)
-        : null;
-      const baseLine = headSpan ? headSpan.start : wholeFile ? 1 : node.location.startLine;
-      set({ codeView: { node, code: null, loading: true, error: null, mode: "inline", baseLine, wholeFile } });
-      const fail = () => {
-        if (get().codeView?.node.id !== node.id) {
-          return;
-        }
-        const mode = get().codeView?.mode ?? "inline";
-        set({ codeView: { node, code: null, loading: false, error: "Could not load source.", mode, baseLine, wholeFile } });
-      };
-      try {
-        const url = reviewDiff && st.reviewHeadRef
-          ? prFileHeadUrl(prFileUrl!, node.location.file, st.reviewHeadRef)
-          : baseSourceUrl(sourceUrl!, node.location, wholeFile);
-        const res = await fetch(url, { credentials: "same-origin" });
-        if (get().codeView?.node.id !== node.id) {
-          return;
-        }
-        if (!res.ok) {
-          fail();
-          return;
-        }
-        const data = await res.json();
-        if (get().codeView?.node.id !== node.id) {
-          return;
-        }
-        const mode = get().codeView?.mode ?? "inline";
-        const view =
-          reviewDiff && headSpan
-            ? sliceHeadCodeView(node, String(data.code ?? ""), data.truncated === true, headSpan, reviewDiff.kinds, mode)
-            : { node, code: data.code, loading: false, error: null, truncated: data.truncated, mode, baseLine: data.startLine ?? baseLine, wholeFile };
-        set({ codeView: view });
-      } catch {
-        fail();
-      }
+      // The reader may expand the loading inline panel before the response lands.
+      set({ codeView: { ...view, mode: get().codeView?.mode ?? "inline" } });
     },
 
     // Blow the current inline panel up into the centered modal. A no-op when nothing is shown.
@@ -1832,6 +1956,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       const summary = selectedPrSummary(get());
       if (analyzeUrl === null || analyzeGraphId === null || summary === null) {
+        codePayloadCache.clear();
         applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
         return;
       }
@@ -1856,6 +1981,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
         swapToPreparedArtifact(get, set, prepared, invalidateArtifactCaches);
         set({ prReviewStatus: "idle", prPrepareStage: null, prPreparedGraphId: preparedGraphId });
+        codePayloadCache.clear();
         applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
       } catch (error) {
         if (prAnalyzeSeq === sequence) {
@@ -1925,10 +2051,10 @@ function applyPrReviewToMap(
   const changeGroups = computeChangeGroups(artifact.nodes, artifact.edges, context.changedFiles, review.flows);
   // GitHub's whole-file +N/-M churn per changed file, keyed by node.location.file, for the marker a
   // changed FILE card shows before its name (files aren't coloured; only their touched blocks are).
-  const deltaByPath = new Map<string, { added: number; deleted: number }>(
-    (prFiles ?? []).map((file) => [file.path, { added: file.additions, deleted: file.deletions }]),
+  const deltaByPath = new Map<string, { added: number; deleted: number; status: PrFileStatus }>(
+    (prFiles ?? []).map((file) => [file.path, { added: file.additions, deleted: file.deletions, status: file.status }]),
   );
-  const reviewFileDelta: Record<string, { added: number; deleted: number }> = {};
+  const reviewFileDelta: Record<string, { added: number; deleted: number; status?: PrFileStatus }> = {};
   for (const match of matchedFiles) {
     const locFile = index.nodesById.get(match.moduleId)?.location?.file;
     const delta = deltaByPath.get(match.path);
