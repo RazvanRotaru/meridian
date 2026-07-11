@@ -98,7 +98,7 @@ export function ModuleMapView() {
   // The built minimal graph REPLACES the level canvas while open (after every hook above, so the
   // hook order is stable across open/close). Closing returns here with the selection intact. When a
   // PR review seeded the graph, ReviewPanel rides on the right (it self-hides when review is null —
-  // a hand-built minimal graph — or when the reader hid it; MinimalGraphView then offers "Review").
+  // a hand-built minimal graph — or folds into its own reopen rail when the reader hides it).
   if (minimalOpen) {
     return (
       <div style={SURFACE_STYLE}>

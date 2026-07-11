@@ -9,11 +9,9 @@
  * wired. Like the Map, satellites are ON-DEMAND context: selecting a member reveals only that
  * member's off-view callers/dependencies. Each satellite wears a subtle round "+" that promotes its
  * home file/folder into the members and opens the path until the original symbol is visible. The
- * floating members panel removes a member (it returns as a satellite iff still coupled); "Reset"
- * restores the working set
- * (and the map-mirror layout) to the origin; "Re-arrange" lays the members out compactly, ignoring
- * their (possibly far-apart) map spots. A floating panel names the state and closes (Escape too —
- * closing returns to the level with the selection kept). Wires are painted by the Map's OWN chain
+ * floating members panel removes a member (it returns as a satellite iff still coupled), while the
+ * shared bottom action bar rearranges, resets, and closes the extracted graph. Escape closes too,
+ * returning to the active lens with the selection kept. Wires are painted by the Map's OWN chain
  * (GraphSurface's, pinned by `paintMinimal`'s parity tests) and keyed by the Map's OWN `MapLegend`,
  * so the overlay's colour vocabulary is the Map's by construction. Highways here means SPOOLING
  * only: fan hubs gather their many wires into shared trunks (no containers to pair-bundle in this
@@ -41,7 +39,7 @@ import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { useRecenter } from "./canvas/useRecenter";
 import { MinimalMembersPanel } from "./MinimalMembersPanel";
 import { CanvasActionBar } from "./controlpanel/CanvasActionBar";
-import { minimalMiniMapColor, PANEL_STYLE, buttonStyle } from "./minimalGraphStyles";
+import { minimalMiniMapColor } from "./minimalGraphStyles";
 
 // A review-panel click centers on a single (possibly tiny) method card, so cap how far the fit zooms in.
 const RECENTER_OPTIONS = { maxZoom: 1 } as const;
@@ -50,12 +48,9 @@ export function MinimalGraphView() {
   const nodes = useBlueprint((state) => state.minimalRfNodes);
   const edges = useBlueprint((state) => state.minimalRfEdges);
   const selected = useBlueprint((state) => state.moduleSelected);
-  // "Grown" (Reset enabled) once the working set diverges from the origin OR the layout was re-arranged
-  // — Reset restores both, so it must light up for either.
-  const grown = useBlueprint((state) => !sameMembers(state.minimalMemberIds, state.minimalSeedIds) || state.minimalArrange);
   const reviewSelectedId = useBlueprint((state) => state.reviewSelectedId);
   const reviewActive = useBlueprint((state) => state.review !== null);
-  const { closeMinimalGraph, promoteGhost, resetMinimalGraph, rearrangeMinimalGraph } = useBlueprintActions();
+  const { closeMinimalGraph, promoteGhost } = useBlueprintActions();
 
   // A review-panel click centers the viewport on the clicked node itself (recenterSeq bump); else
   // the selection is the recenter target, like every module surface.
@@ -114,32 +109,7 @@ export function MinimalGraphView() {
         showIpc={false}
       />
       <CanvasActionBar />
-      <div style={MINIMAL_PANEL_STYLE}>
-        <span style={TITLE_STYLE}>Extracted selection</span>
-        <button type="button" style={buttonStyle(false, false)} onClick={rearrangeMinimalGraph} title="Lay the current nodes out compactly, ignoring their map positions">
-          Re-arrange
-        </button>
-        <button type="button" style={buttonStyle(false, !grown)} onClick={resetMinimalGraph} disabled={!grown} title="Restore the working set to the original selection">
-          Reset
-        </button>
-        <button type="button" style={buttonStyle(false, false)} onClick={closeMinimalGraph} title="Back to the Module map (Esc)">
-          ✕ Close
-        </button>
-      </div>
       <MinimalMembersPanel />
     </GraphSurface>
   );
 }
-
-// Order-independent equality of two id lists — the "grown" check compares members against the origin.
-function sameMembers(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-  const set = new Set(a);
-  return b.every((id) => set.has(id));
-}
-
-// Top-RIGHT, because the Module map keeps its main Toolbar floating top-left over this overlay.
-const MINIMAL_PANEL_STYLE: React.CSSProperties = { ...PANEL_STYLE, left: "auto", right: 16 };
-const TITLE_STYLE: React.CSSProperties = { fontSize: 12, fontWeight: 700, color: "#E6EDF3" };

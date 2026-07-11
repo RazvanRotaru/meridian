@@ -315,7 +315,7 @@ describe("minimal-graph overlay (extract selection)", () => {
     expect(store.getState().minimalArrange).toBe(false);
   });
 
-  it("runs Re-arrange once and Reset restores the map mirror", () => {
+  it("re-runs Re-arrange and Reset restores the map mirror", () => {
     const store = withBuiltGraph();
     const relayout = vi.fn().mockResolvedValue(undefined);
     store.setState({ minimalRelayout: relayout });
@@ -324,9 +324,21 @@ describe("minimal-graph overlay (extract selection)", () => {
     store.getState().rearrangeMinimalGraph();
     expect(store.getState().minimalArrange).toBe(true);
     store.getState().rearrangeMinimalGraph();
-    expect(relayout).toHaveBeenCalledOnce();
+    expect(relayout).toHaveBeenCalledTimes(2);
 
     store.getState().resetMinimalGraph();
+    expect(store.getState().minimalArrange).toBe(false);
+  });
+
+  it("resetMinimalGraph restores map positions after an arrange-only change", () => {
+    const store = withBuiltGraph();
+    expect(store.getState().minimalMemberIds).toEqual(store.getState().minimalSeedIds);
+
+    store.getState().rearrangeMinimalGraph();
+    expect(store.getState().minimalArrange).toBe(true);
+    store.getState().resetMinimalGraph();
+
+    expect(store.getState().minimalMemberIds).toEqual(store.getState().minimalSeedIds);
     expect(store.getState().minimalArrange).toBe(false);
   });
 

@@ -1,0 +1,108 @@
+import { useLayoutEffect, useState } from "react";
+import type { PanelPosition } from "@xyflow/react";
+import { CHROME_EDGE, MINIMAP_H } from "../canvas/flowCanvasProps";
+import { CONTROL_PANEL_WIDTH } from "./panelKit";
+
+export type CanvasActionMode = "base" | "extract" | "minimal";
+export type CanvasActionLayout = "row" | "stacked";
+
+export interface CanvasActionPlacement {
+  position: PanelPosition;
+  layout: CanvasActionLayout;
+  left?: number;
+  bottom?: number;
+}
+
+/** Keep the full bar in one row whenever it can sit beside the control panel. Narrow panes stack
+ * whole groups; short panes slide the bar downward so every action and member control stays visible. */
+export function canvasActionPlacement(
+  surfaceWidth: number | null,
+  mode: CanvasActionMode,
+  surfaceHeight: number | null = null,
+): CanvasActionPlacement {
+  const rowWidth = BAR_WIDTHS[mode];
+  const layout: CanvasActionLayout =
+    surfaceWidth !== null && mode !== "base" && surfaceWidth < CONTROL_CLEARANCE + rowWidth + EDGE_GAP
+      ? "stacked"
+      : "row";
+  const barWidth = layout === "stacked" ? STACKED_BAR_WIDTHS[mode] : rowWidth;
+
+  if (surfaceWidth === null || (layout === "row" && surfaceWidth >= CONTROL_CLEARANCE * 2 + rowWidth)) {
+    return { position: "bottom-center", layout };
+  }
+  return {
+    position: "bottom-left",
+    layout,
+    left: Math.min(CONTROL_CLEARANCE, Math.max(EDGE_GAP, surfaceWidth - barWidth - EDGE_GAP)),
+    bottom: actionBarBottom(surfaceHeight, mode, layout),
+  };
+}
+
+function actionBarBottom(surfaceHeight: number | null, mode: CanvasActionMode, layout: CanvasActionLayout): number {
+  const barHeight = layout === "stacked" ? STACKED_BAR_HEIGHT : ROW_BAR_HEIGHT;
+  const topClearance = mode === "minimal" ? MEMBERS_PANEL_TOP + MINIMAL_MEMBERS_MIN_HEIGHT + EDGE_GAP : EDGE_GAP;
+  if (surfaceHeight === null) {
+    return NORMAL_BOTTOM;
+  }
+  return Math.min(NORMAL_BOTTOM, Math.max(EDGE_GAP, surfaceHeight - barHeight - topClearance));
+}
+
+export function useSurfaceSize(): [(element: HTMLDivElement | null) => void, { width: number; height: number } | null] {
+  const [element, setElement] = useState<HTMLDivElement | null>(null);
+  const [size, setSize] = useState<{ width: number; height: number } | null>(null);
+  useLayoutEffect(() => {
+    const surface = element?.parentElement ?? null;
+    if (surface === null) {
+      return;
+    }
+    const update = () => {
+      const bounds = surface.getBoundingClientRect();
+      setSize({ width: bounds.width, height: bounds.height });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(surface);
+    return () => {
+      observer.disconnect();
+    };
+  }, [element]);
+  return [setElement, size];
+}
+
+export function panelAnchorStyle(placement: CanvasActionPlacement): React.CSSProperties {
+  if (placement.position === "bottom-center") {
+    return CENTERED_ANCHOR_STYLE;
+  }
+  return {
+    left: placement.left,
+    bottom: placement.bottom,
+    margin: 0,
+    maxWidth: `calc(100% - ${(placement.left ?? 0) + EDGE_GAP}px)`,
+    zIndex: (placement.left ?? CONTROL_CLEARANCE) < CONTROL_CLEARANCE || (placement.bottom ?? NORMAL_BOTTOM) < NORMAL_BOTTOM ? 7 : 4,
+  };
+}
+
+const EDGE_GAP = 16;
+const CONTROL_CLEARANCE = CHROME_EDGE + CONTROL_PANEL_WIDTH + EDGE_GAP;
+const NORMAL_BOTTOM = MINIMAP_H + CHROME_EDGE + EDGE_GAP;
+const ROW_BAR_HEIGHT = 54;
+const STACKED_BAR_HEIGHT = 109;
+const MEMBERS_PANEL_TOP = 16;
+export const MINIMAL_MEMBERS_MIN_HEIGHT = 96;
+export const MINIMAL_MEMBERS_MAX_HEIGHT_OFFSET = MEMBERS_PANEL_TOP + NORMAL_BOTTOM + STACKED_BAR_HEIGHT + EDGE_GAP;
+const BASE_BAR_WIDTH = 144;
+const BAR_WIDTHS: Record<CanvasActionMode, number> = {
+  base: BASE_BAR_WIDTH,
+  extract: 217,
+  minimal: 299,
+};
+const STACKED_BAR_WIDTHS: Record<CanvasActionMode, number> = {
+  base: BASE_BAR_WIDTH,
+  extract: BASE_BAR_WIDTH,
+  minimal: 154,
+};
+const CENTERED_ANCHOR_STYLE: React.CSSProperties = {
+  marginBottom: EDGE_GAP,
+  maxWidth: `calc(100% - ${EDGE_GAP * 2}px)`,
+  zIndex: 4,
+};
