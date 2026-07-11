@@ -76,12 +76,19 @@ export function ServiceScopeBreadcrumb(props: {
         )}
         <button type="button" style={CRUMB_STYLE} aria-label="Exit service scope" onClick={props.onExitScope}>✕</button>
       </span>
-      {crumbs.map((crumb) => (
-        <span key={crumb.id} style={SEG_WRAP}>
-          <span style={CRUMB_SEP_STYLE} aria-hidden>›</span>
-          <span style={CRUMB_CURRENT_STYLE} aria-current="page" title={crumb.id}>{crumb.label}</span>
-        </span>
-      ))}
+      {crumbs.map((crumb, index) => {
+        const isLast = index === crumbs.length - 1;
+        return (
+          <span key={crumb.id} style={SEG_WRAP}>
+            <span style={CRUMB_SEP_STYLE} aria-hidden>›</span>
+            {isLast ? (
+              <span style={CRUMB_CURRENT_STYLE} aria-current="page" title={crumb.id}>{crumb.label}</span>
+            ) : (
+              <button type="button" style={CRUMB_STYLE} title={crumb.id} onClick={() => props.onFocus?.(crumb.id)}>{crumb.label}</button>
+            )}
+          </span>
+        );
+      })}
     </nav>
   );
 }

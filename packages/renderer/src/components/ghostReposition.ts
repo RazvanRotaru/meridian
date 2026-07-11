@@ -312,6 +312,11 @@ function topAncestor(node: Node, byId: ReadonlyMap<string, Node>): Node {
     if (!parent) {
       break;
     }
+    // A Service domain is a placement region, not the selected service's semantic boundary. Keep
+    // selection-relative ghosts beside the service frame rather than outside the whole domain.
+    if ((parent.data as { serviceDomain?: boolean }).serviceDomain === true) {
+      break;
+    }
     seen.add(parent.id);
     current = parent;
   }

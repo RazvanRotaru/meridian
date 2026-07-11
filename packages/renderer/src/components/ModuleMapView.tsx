@@ -37,14 +37,17 @@ import { MinimalGraphView } from "./MinimalGraphView";
 import { ReviewPanel } from "./review/ReviewPanel";
 import { accentForKind } from "../theme/kindColors";
 import type { BlockData, UnitCardData } from "../derive/moduleLevel";
+import { clusteringFor } from "../derive/serviceClusteringCache";
 
 const PACKAGE_KIND = "package";
+const SERVICE_DOMAIN_KIND = "serviceDomain";
 
 export function ModuleMapView() {
   const nodes = useBlueprint((state) => state.moduleRfNodes);
   const edges = useBlueprint((state) => state.moduleRfEdges);
   const selected = useBlueprint((state) => state.moduleSelected);
   const layoutStatus = useBlueprint((state) => state.moduleLayoutStatus);
+  const layoutActivity = useBlueprint((state) => state.moduleLayoutActivity);
   const effectiveFocus = useBlueprint((state) => state.moduleEffectiveFocus);
   const index = useBlueprint((state) => state.index);
   const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
@@ -54,6 +57,8 @@ export function ModuleMapView() {
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const viewMode = useBlueprint((state) => state.viewMode);
   const serviceScope = useBlueprint((state) => state.serviceScope);
+  const serviceGroupingMode = useBlueprint((state) => state.serviceGroupingMode);
+  const serviceGroupingTargetSize = useBlueprint((state) => state.serviceGroupingTargetSize);
   const { setModuleFocus, clearServiceScope, promoteGhost } = useBlueprintActions();
   // This lens's spec (Map or Service) — the highways flags read from it.
   const spec = activeModuleSurfaceSpec(viewMode);
@@ -74,9 +79,8 @@ export function ModuleMapView() {
   // on `effectiveFocus` (a focus change), `showTests` (the Tests toggle relayouts + re-coords the
   // level), OR `showCommons` (hubs leave/rejoin ELK) re-fits the fresh level to the viewport.
   // Category/Private toggles and radius are paint-only (they never change `nodes`), so they
-  // correctly do NOT trigger a refit. The Service lens has no focus (`effectiveFocus` stays null
-  // there), so entering/exiting a scoped sub-view clears the guard on the SCOPE's identity instead
-  // — the refit then fires only when the re-laid `nodes` land, never against the outgoing canvas.
+  // correctly do NOT trigger a refit. Entering/exiting a scoped Service sub-view also clears the
+  // guard on the SCOPE's identity — the refit fires only when the re-laid nodes land.
   // Kept HERE (not in GraphSurface) so the guard survives the minimal overlay covering this canvas
   // — closing the overlay must not re-run the whole-LEVEL fit (the recenter hook's enabled flip
   // owns the close-time fit-to-selection).
@@ -84,7 +88,7 @@ export function ModuleMapView() {
   const fitted = useRef(false);
   useEffect(() => {
     fitted.current = false;
-  }, [effectiveFocus, showTests, serviceScope, showCommons]);
+  }, [effectiveFocus, showTests, serviceScope, showCommons, serviceGroupingMode, serviceGroupingTargetSize]);
   useEffect(() => {
     if (!rfRef.current || nodes.length === 0 || fitted.current) {
       return;
@@ -94,6 +98,7 @@ export function ModuleMapView() {
   }, [nodes]);
 
   const isEmpty = nodes.length === 0 && layoutStatus === "ready";
+  const busy = layoutStatus === "laying-out" ? layoutActivity ?? undefined : undefined;
 
   // The built minimal graph REPLACES the level canvas while open (after every hook above, so the
   // hook order is stable across open/close). Closing returns here with the selection intact. When a
@@ -119,6 +124,7 @@ export function ModuleMapView() {
       highways={spec.highways}
       miniMapColor={miniMapColor}
       interactions={interactions}
+      busy={busy}
       onInit={(instance) => {
         rfRef.current = instance;
       }}
@@ -141,7 +147,7 @@ export function ModuleMapView() {
         // only while zoomed) steps back out of the dive.
         <ServiceScopeBreadcrumb
           label={serviceScope.label}
-          crumbs={spec.focus.crumbs(effectiveFocus, index)}
+          crumbs={spec.focus.crumbs(effectiveFocus, index, serviceGroupingMode, serviceGroupingTargetSize)}
           onClear={() => {
             clearServiceScope();
             setModuleFocus(null);
@@ -156,8 +162,12 @@ export function ModuleMapView() {
         // The spec names the root ("Repository" / "All services") and crumbs its own focus model.
         <LevelBreadcrumb
           focus={effectiveFocus}
-          packageCount={effectiveFocus === null ? nodes.filter((node) => !node.parentId && node.type !== "ghost").length : 0}
-          crumbs={spec.focus.crumbs(effectiveFocus, index)}
+          packageCount={effectiveFocus === null
+            ? viewMode === "call"
+              ? clusteringFor(index).clusters.length
+              : nodes.filter((node) => !node.parentId && node.type !== "ghost").length
+            : 0}
+          crumbs={spec.focus.crumbs(effectiveFocus, index, serviceGroupingMode, serviceGroupingTargetSize)}
           onFocus={setModuleFocus}
           rootLabel={spec.focus.rootLabel}
           rootNoun={spec.focus.rootNoun}
@@ -178,7 +188,7 @@ const renderBeacons = (view: SurfaceFlowView) => <BeaconArrows targets={view.bea
 // by their kind, each file dot by its category (the same palette as the cards) so a level stays
 // legible at overview zoom.
 function miniMapColor(node: Node): string {
-  if (node.type === PACKAGE_KIND) {
+  if (node.type === PACKAGE_KIND || node.type === SERVICE_DOMAIN_KIND) {
     return "#5B9BE3";
   }
   if (node.type === "unit") {

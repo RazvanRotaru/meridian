@@ -132,6 +132,8 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     logicView: nav.logicView,
     logicStack: nav.logicStack,
     moduleFocus: nav.moduleFocus,
+    serviceGroupingMode: nav.serviceGroupingMode,
+    serviceGroupingTargetSize: nav.serviceGroupingTargetSize,
     // Reset the overlay to the URL's state; a restore that carries no seeds closes it, one that
     // carries seeds reopens it at the seed base (members := origin; restoreFromUrl then rebuilds the
     // nodes). The curated (promoted/demoted) state is ephemeral — a restore never reproduces it.

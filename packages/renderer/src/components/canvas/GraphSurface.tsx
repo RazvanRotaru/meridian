@@ -62,6 +62,7 @@ import { withReactFlowDimensions } from "./reactFlowDimensions";
 import { useNodeDiffPreview } from "../review/useNodeDiffPreview";
 import { GhostHierarchyEdge, GHOST_HIERARCHY_EDGE_TYPE } from "../edges/GhostHierarchyEdge";
 import { prepareCanvasEdges } from "./presentationEdgePipeline";
+import { GraphLayoutIndicator, type GraphLayoutIndicatorProps } from "./GraphLayoutIndicator";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
  * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "cycle" the
@@ -106,6 +107,8 @@ export interface GraphSurfaceProps {
   flowExtras?: (view: SurfaceFlowView) => ReactNode;
   /** Floating chrome (breadcrumb, legends, panels, action strips), absolutely positioned over the canvas. */
   children?: ReactNode;
+  /** Retain the last committed graph underneath a blocking status overlay while its replacement is derived. */
+  busy?: GraphLayoutIndicatorProps;
 }
 
 export function GraphSurface(props: GraphSurfaceProps) {
@@ -156,7 +159,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const nodeDiff = useNodeDiffPreview(nodeDiffEnabled);
 
   return (
-    <div style={SURFACE_STYLE}>
+    <div style={SURFACE_STYLE} aria-busy={props.busy ? "true" : undefined}>
       <ReactFlow<Node, Edge>
         nodes={reactFlowNodes}
         edges={renderedEdges}
@@ -195,6 +198,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
       ) : null}
       {nodeDiff.layer}
       {props.children}
+      {props.busy ? <GraphLayoutIndicator {...props.busy} /> : null}
     </div>
   );
 }

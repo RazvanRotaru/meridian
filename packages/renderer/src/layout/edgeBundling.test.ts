@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Edge, Node } from "@xyflow/react";
-import { bundleEdges, BUNDLE_EDGE_TYPE, type BundleEdgeData } from "./edgeBundling";
+import { bundleEdges, bundleLabel, BUNDLE_EDGE_TYPE, type BundleEdgeData } from "./edgeBundling";
 import { BOUNDARY_DASH_PATTERN, type EdgeBoundaryData } from "./edgeBoundary";
+import { IMPORT_CROSS } from "../theme/mapPalette";
 
 // Two packages, each holding three files. All three files in A import their counterpart in B, so the
 // A→B pair carries three cross-container edges — exactly the bundle threshold.
@@ -107,5 +108,17 @@ describe("bundleEdges", () => {
     const edges = [edge("e1", "a1", "b1"), edge("e2", "a1", "b2"), edge("e3", "a1", "b3")];
     const result = bundleEdges(edges, siblings);
     expect(result.filter((e) => e.type === BUNDLE_EDGE_TYPE)).toHaveLength(1);
+  });
+
+  it("preserves the painted cross-frame colour for untyped Service dependency highways", () => {
+    const serviceEdges = crossEdges.map((item) => ({
+      ...item,
+      data: { category: "dep", crossFrame: true, crossPackage: false, outsideView: false },
+      style: { stroke: IMPORT_CROSS, opacity: 0.12 },
+    }));
+    const [highway] = bundleEdges(serviceEdges, nodes);
+
+    expect(highway.style?.stroke).toBe(IMPORT_CROSS);
+    expect(bundleLabel((highway.data as BundleEdgeData).breakdown)).toBe("3 dependencies");
   });
 });

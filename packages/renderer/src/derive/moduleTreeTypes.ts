@@ -6,6 +6,10 @@ import type { ModulePackageData } from "./packageOverview";
 export type ModuleGroupData = ModulePackageData & {
   isContainer: boolean;
   isExpanded: boolean;
+  /** Overrides the Map-native `N files` copy for artificial architectural parents. */
+  countLabel?: string;
+  /** A first-class synthetic Service container (`backend`, `analytics`, ...), never an artifact id. */
+  serviceDomain?: boolean;
   /** A presentational frame (the minimal-graph overlay): no expand/collapse actions, no package
    * coupling counts (they aren't computed for a filtered subgraph). Absent on the real Map. */
   readOnly?: boolean;
@@ -16,7 +20,7 @@ export type ModuleGroupData = ModulePackageData & {
 export interface VisibleModuleNode {
   id: string;
   parentId: string | null;
-  kind: "package" | "file" | "unit" | "block" | "step" | "ghost";
+  kind: "package" | "serviceDomain" | "file" | "unit" | "block" | "step" | "ghost";
   isContainer: boolean;
   isExpanded: boolean;
   depth: number;

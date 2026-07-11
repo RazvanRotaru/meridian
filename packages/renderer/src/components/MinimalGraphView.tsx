@@ -51,6 +51,8 @@ export function MinimalGraphView() {
   const nodes = useBlueprint((state) => state.minimalRfNodes);
   const edges = useBlueprint((state) => state.minimalRfEdges);
   const selected = useBlueprint((state) => state.moduleSelected);
+  const layoutStatus = useBlueprint((state) => state.minimalLayoutStatus);
+  const layoutActivity = useBlueprint((state) => state.minimalLayoutActivity);
   const reviewSelectedId = useBlueprint((state) => state.reviewSelectedId);
   const reviewActive = useBlueprint((state) => state.review !== null);
   const { closeMinimalGraph, promoteGhost } = useBlueprintActions();
@@ -97,6 +99,7 @@ export function MinimalGraphView() {
       miniMapColor={minimalMiniMapColor}
       interactions={interactions}
       nodeDiffPreview={reviewActive}
+      busy={layoutStatus === "laying-out" ? layoutActivity ?? undefined : undefined}
       onInit={(instance) => {
         rfRef.current = instance;
       }}

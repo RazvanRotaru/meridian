@@ -135,6 +135,17 @@ export function ExternalLinkIcon({ size = 15 }: IconProps) {
   );
 }
 
+/** Circled information mark used for contextual, non-blocking explanations. */
+export function InfoIcon({ size = 15 }: IconProps) {
+  return (
+    <svg {...svgProps(size)}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5" />
+      <path d="M12 8h.01" />
+    </svg>
+  );
+}
+
 /** Maximise — open the full-page view. Two opposing diagonal arrows to the corners. */
 export function MaximizeIcon({ size = 15 }: IconProps) {
   return (

@@ -17,7 +17,7 @@ const MODULE_KIND = "module";
 export interface Skeleton {
   id: string;
   parentId: string | null;
-  kind: "package" | "file" | "unit" | "block" | "step";
+  kind: "package" | "serviceDomain" | "file" | "unit" | "block" | "step";
   isContainer: boolean;
   isExpanded: boolean;
   depth: number;

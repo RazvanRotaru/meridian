@@ -15,6 +15,7 @@ import type { ServiceCluster, ServiceClustering } from "./serviceComposition";
 import type { ModuleGroupData, VisibleModuleNode } from "./moduleTreeTypes";
 import type { StepData } from "./flowSteps";
 import { leadIdOf, type ClusterDegrees } from "./serviceClusterEdges";
+import type { ServiceDomain } from "./serviceDomains";
 
 export function finalizeServiceNode(
   entry: Skeleton,
@@ -42,6 +43,23 @@ export function finalizeServiceNode(
           : entry.kind === "block"
             ? blockData(entry.id, index, { hasFlow: entry.isContainer, isExpanded: entry.isExpanded })
             : (walk.stepData.get(entry.id) as StepData);
+  return { ...entry, data };
+}
+
+/** A first-class synthetic domain container. It shares the Map group's collapsed-card / expanded-
+ * frame contract; only action boundaries translate its stable synthetic id to real service data. */
+export function finalizeServiceDomainNode(entry: Skeleton, domain: ServiceDomain): VisibleModuleNode {
+  const count = entry.childCount;
+  const data: ModuleGroupData = {
+    label: domain.label,
+    fileCount: count,
+    countLabel: `${count} ${count === 1 ? "service" : "services"}`,
+    ca: domain.ca,
+    ce: domain.ce,
+    isContainer: entry.isContainer,
+    isExpanded: entry.isExpanded,
+    serviceDomain: true,
+  };
   return { ...entry, data };
 }
 

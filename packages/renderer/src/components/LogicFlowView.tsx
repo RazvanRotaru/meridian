@@ -33,19 +33,26 @@ import type { GraphIndex } from "../graph/graphIndex";
 import { buildFlowContainmentIndex, transitiveCallers } from "../derive/flowInspect";
 import { AltLogicSurface } from "./logicviews/AltLogicSurface";
 import { LogicViewTabs } from "./logicviews/LogicViewTabs";
+import { GraphLayoutIndicator } from "./canvas/GraphLayoutIndicator";
 
 export function LogicFlowView() {
   const logicRoot = useBlueprint((state) => state.logicRoot);
   const logicView = useBlueprint((state) => state.logicView);
+  const layoutStatus = useBlueprint((state) => state.logicLayoutStatus);
+  const layoutActivity = useBlueprint((state) => state.logicLayoutActivity);
   if (logicRoot === null) {
     return <LogicFlowPicker />;
   }
   // Four projections of the SAME flow: the exec-pins graph is the default; metro/blocks/timeline
   // mount over the same root/trail/selection. The sub-tab strip floats above whichever is on screen.
   return (
-    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+    <div
+      style={{ position: "relative", width: "100%", height: "100%" }}
+      aria-busy={layoutStatus === "laying-out" ? "true" : undefined}
+    >
       {logicView === "graph" ? <LogicFlowGraph rootId={logicRoot} /> : <AltLogicSurface rootId={logicRoot} mode={logicView} />}
       <LogicViewTabs />
+      {layoutStatus === "laying-out" && layoutActivity ? <GraphLayoutIndicator {...layoutActivity} /> : null}
     </div>
   );
 }

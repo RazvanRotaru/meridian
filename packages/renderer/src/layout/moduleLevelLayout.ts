@@ -143,10 +143,7 @@ function leafSize(node: VisibleModuleNode): { width: number; height: number } {
  * the meta row below — the box fits whichever of the two lines is wider. */
 function groupSize(data: ModuleGroupData): { width: number; height: number } {
   const header = (data.isContainer ? CHEVRON_WIDTH + HEADER_GAP : 0) + monoTextWidth(data.label, 13);
-  const meta =
-    monoTextWidth(`${data.fileCount} files`, 11) +
-    META_GAP +
-    countsRowWidth(["uses", String(data.ce), "used by", String(data.ca)], 10.5, COUNTS_GAP);
+  const meta = groupMetaWidth(data);
   const chips = commonsChipsWidth((data as { commonsChips?: string[] }).commonsChips);
   return { width: cardWidth(PACKAGE_CHROME + Math.max(header, meta, chips)), height: GROUP_HEIGHT };
 }
@@ -232,13 +229,27 @@ function frameTitleWidth(node: VisibleModuleNode): number {
     const content = CHEVRON_WIDTH + HEADER_GAP + UNIT_GLYPH_WIDTH + HEADER_GAP + monoTextWidth(data.label, 12.5) + HEADER_GAP + chipWidth(data.unitKind.toUpperCase()) + TRAILING_BADGES;
     return cardWidth(UNIT_CHROME + content);
   }
-  if (node.kind === "package") {
+  if (node.kind === "package" || node.kind === "serviceDomain") {
     const data = node.data as ModuleGroupData;
-    const meta = monoTextWidth(`${data.fileCount} files`, 11) + META_GAP + countsRowWidth(["uses", String(data.ce), "used by", String(data.ca)], 10.5, COUNTS_GAP);
-    return cardWidth(PACKAGE_CHROME + CHEVRON_WIDTH + HEADER_GAP + monoTextWidth(data.label, 13) + HEADER_GAP + DELTA_CHIP_WIDTH + HEADER_GAP + meta);
+    const meta = groupMetaWidth(data);
+    const chevron = data.isContainer ? CHEVRON_WIDTH + HEADER_GAP : 0;
+    return cardWidth(PACKAGE_CHROME + chevron + monoTextWidth(data.label, 13) + HEADER_GAP + DELTA_CHIP_WIDTH + HEADER_GAP + meta);
   }
   // Blocks and steps wear a title bar identical to their collapsed row, so the leaf size already fits.
   return leafSize(node).width;
+}
+
+function groupCountLabel(data: ModuleGroupData): string {
+  return data.countLabel ?? `${data.fileCount} files`;
+}
+
+/** Match PackageOverviewNode's visible meta row exactly: presentational/read-only groups omit the
+ * coupling pair, so reserving its width would unnecessarily enlarge every domain frame. */
+function groupMetaWidth(data: ModuleGroupData): number {
+  const count = monoTextWidth(groupCountLabel(data), 11);
+  return data.readOnly
+    ? count
+    : count + META_GAP + countsRowWidth(["uses", String(data.ce), "used by", String(data.ca)], 10.5, COUNTS_GAP);
 }
 
 /** Map one placed ELK node back to a React Flow node, wired to its parent frame when nested. */

@@ -5,15 +5,17 @@ import { buildModuleGraph } from "./moduleGraph";
 import { buildBlockDeps } from "./blockDeps";
 import { deriveServiceTree } from "./serviceClusterTree";
 import { frameIdOf } from "./serviceClusterEdges";
+import { isServiceDomainId } from "./serviceDomains";
+import { layoutModuleTree } from "../layout/moduleLevelLayout";
 
-function node(id: string, kind: string, parentId?: string, displayName?: string): GraphNode {
+function node(id: string, kind: string, parentId?: string, displayName?: string, file = "f.ts"): GraphNode {
   return {
     id,
     kind,
     qualifiedName: id,
     displayName: displayName ?? id,
     parentId: parentId ?? null,
-    location: { file: "f.ts", startLine: 1 },
+    location: { file, startLine: 1 },
   } as GraphNode;
 }
 
@@ -70,6 +72,7 @@ describe("deriveServiceTree scoping", () => {
     expect(tree.edges.some((e) => e.source === frameIdOf(BETA) && e.target === frameIdOf(GAMMA))).toBe(true);
     expect(ghostIds(tree)).toEqual([]);
     expect(tree.effectiveFocus).toBeNull();
+    expect(tree.nodes.some((item) => isServiceDomainId(item.id))).toBe(false);
   });
 
   it("scoped to {Alpha, Beta}: only their frames draw, the A→B wire stays, and the dropped B→Gamma coupling GHOSTS Gamma's lead", () => {
@@ -108,6 +111,127 @@ describe("deriveServiceTree scoping", () => {
     });
     expect(ghostIds(tree)).toEqual([]);
     expect(tree.edges.some((e) => e.ghost === true)).toBe(false);
+  });
+});
+
+describe("deriveServiceTree domain placement parents", () => {
+  const fixture = domainFixture();
+
+  it("starts large overviews as selectable, collapsed filesystem-domain cards", () => {
+    const tree = deriveServiceTree(fixture.index, null, NONE, fixture.graph, fixture.deps, flows);
+    const domains = tree.nodes.filter((item) => isServiceDomainId(item.id));
+
+    expect(domains.map((item) => (item.data as { label: string }).label)).toEqual(["analytics", "backend"]);
+    expect(domains.every((item) => item.kind === "serviceDomain" && item.parentId === null && item.isContainer && !item.isExpanded)).toBe(true);
+    expect(domains.map((item) => (item.data as { countLabel?: string }).countLabel)).toEqual(["6 services", "6 services"]);
+    expect(domains.map((item) => ({
+      label: (item.data as { label: string }).label,
+      ca: (item.data as { ca: number }).ca,
+      ce: (item.data as { ce: number }).ce,
+    }))).toEqual([
+      { label: "analytics", ca: 0, ce: 1 },
+      { label: "backend", ca: 1, ce: 0 },
+    ]);
+    expect(tree.nodes.some((item) => item.id.startsWith("svc:"))).toBe(false);
+    // Internal service couplings fold away; the one cross-domain dependency lifts to the cards.
+    expect(tree.edges).toHaveLength(1);
+    expect(tree.edges.every((edge) => isServiceDomainId(edge.source) && isServiceDomainId(edge.target))).toBe(true);
+  });
+
+  it("expands one domain inline and keeps the other collapsed", () => {
+    const collapsed = deriveServiceTree(fixture.index, null, NONE, fixture.graph, fixture.deps, flows);
+    const analytics = collapsed.nodes.find((item) => (item.data as { label?: string }).label === "analytics")!;
+    const backend = collapsed.nodes.find((item) => (item.data as { label?: string }).label === "backend")!;
+    const tree = deriveServiceTree(fixture.index, null, new Set([analytics.id]), fixture.graph, fixture.deps, flows);
+    const frames = tree.nodes.filter((item) => item.id.startsWith("svc:"));
+
+    expect(tree.nodes.find((item) => item.id === analytics.id)?.isExpanded).toBe(true);
+    expect(tree.nodes.find((item) => item.id === backend.id)?.isExpanded).toBe(false);
+    expect(frames).toHaveLength(6);
+    expect(frames.every((frame) => frame.parentId === analytics.id)).toBe(true);
+    expect(tree.edges.some((edge) => edge.source.startsWith("svc:") && edge.target === backend.id)).toBe(true);
+  });
+
+  it("navigates into a domain as a flat service level without drawing its wrapper", () => {
+    const overview = deriveServiceTree(fixture.index, null, NONE, fixture.graph, fixture.deps, flows);
+    const analytics = overview.nodes.find((item) => (item.data as { label?: string }).label === "analytics")!;
+    const tree = deriveServiceTree(fixture.index, analytics.id, NONE, fixture.graph, fixture.deps, flows);
+
+    expect(tree.effectiveFocus).toBe(analytics.id);
+    expect(tree.nodes.some((item) => isServiceDomainId(item.id))).toBe(false);
+    expect(tree.nodes.filter((item) => item.id.startsWith("svc:"))).toHaveLength(6);
+    expect(tree.nodes.filter((item) => item.id.startsWith("svc:")).every((item) => item.parentId === null)).toBe(true);
+  });
+
+  it("keeps scoped Service views flat even when the scope itself is large", () => {
+    const tree = deriveServiceTree(fixture.index, null, NONE, fixture.graph, fixture.deps, flows, {
+      scopeLeadIds: new Set(fixture.leads),
+    });
+
+    expect(tree.nodes.some((item) => isServiceDomainId(item.id))).toBe(false);
+    expect(tree.nodes.filter((item) => item.id.startsWith("svc:"))).toHaveLength(12);
+  });
+
+  it("keeps a focused service flat and free of placement-only parents", () => {
+    const focus = frameIdOf(fixture.leads[0]);
+    const tree = deriveServiceTree(fixture.index, focus, NONE, fixture.graph, fixture.deps, flows);
+
+    expect(tree.nodes.some((item) => isServiceDomainId(item.id))).toBe(false);
+    expect(tree.nodes.find((item) => item.id === focus)?.parentId).toBeNull();
+  });
+
+  it("lets ELK place the domain frames as separated parents while preserving every service frame", async () => {
+    const overview = deriveServiceTree(fixture.index, null, NONE, fixture.graph, fixture.deps, flows);
+    const expandedDomains = new Set(overview.nodes.filter((item) => isServiceDomainId(item.id)).map((item) => item.id));
+    const tree = deriveServiceTree(fixture.index, null, expandedDomains, fixture.graph, fixture.deps, flows);
+    const laid = await layoutModuleTree(tree.nodes, tree.edges);
+    const domains = laid.nodes.filter((item) => isServiceDomainId(item.id));
+
+    expect(domains).toHaveLength(2);
+    expect(domains.every((item) => item.selectable !== false && item.focusable !== false)).toBe(true);
+    expect(laid.nodes.filter((item) => item.id.startsWith("svc:"))).toHaveLength(12);
+    expect(domains.every((item) => item.parentId === undefined)).toBe(true);
+    expect(separation(rectOf(domains[0]), rectOf(domains[1]))).toBeGreaterThanOrEqual(40);
+    expect(laid.edges.map((edge) => edge.id).sort()).toEqual(tree.edges.map((edge) => edge.id).sort());
+  });
+
+  it("keeps a single large catch-all as one collapsible parent instead of falling back to 12 flat frames", () => {
+    const isolatedIndex = buildGraphIndex({ nodes: [...fixture.index.nodesById.values()], edges: [] } as unknown as GraphArtifact);
+    const isolatedGraph = buildModuleGraph(isolatedIndex);
+    const isolatedDeps = buildBlockDeps(isolatedIndex);
+    const overview = deriveServiceTree(isolatedIndex, null, NONE, isolatedGraph, isolatedDeps, flows, {
+      groupingMode: "dependency",
+    });
+    const domains = overview.nodes.filter((item) => isServiceDomainId(item.id));
+
+    expect(domains).toHaveLength(1);
+    expect(domains[0]).toMatchObject({ kind: "serviceDomain", isContainer: true, isExpanded: false });
+    expect(overview.nodes.some((item) => item.id.startsWith("svc:"))).toBe(false);
+
+    const expanded = deriveServiceTree(
+      isolatedIndex,
+      null,
+      new Set([domains[0].id]),
+      isolatedGraph,
+      isolatedDeps,
+      flows,
+      { groupingMode: "dependency" },
+    );
+    expect(expanded.nodes.filter((item) => item.id.startsWith("svc:"))).toHaveLength(12);
+    expect(expanded.nodes.filter((item) => item.id.startsWith("svc:")).every((item) => item.parentId === domains[0].id)).toBe(true);
+
+    const focused = deriveServiceTree(
+      isolatedIndex,
+      domains[0].id,
+      NONE,
+      isolatedGraph,
+      isolatedDeps,
+      flows,
+      { groupingMode: "dependency" },
+    );
+    expect(focused.effectiveFocus).toBe(domains[0].id);
+    expect(focused.nodes.some((item) => isServiceDomainId(item.id))).toBe(false);
+    expect(focused.nodes.filter((item) => item.id.startsWith("svc:"))).toHaveLength(12);
   });
 });
 
@@ -161,3 +285,49 @@ describe("deriveServiceTree focus (cluster zoom)", () => {
     expect(ghostIds(tree)).toEqual([`${ALPHA}.run`]);
   });
 });
+
+function domainFixture(): {
+  index: ReturnType<typeof buildGraphIndex>;
+  graph: ReturnType<typeof buildModuleGraph>;
+  deps: ReturnType<typeof buildBlockDeps>;
+  leads: string[];
+} {
+  const nodes: GraphNode[] = [node("ts:src", "package", undefined, "src", "src")];
+  const edges: GraphEdge[] = [];
+  const leads: string[] = [];
+  const domains = ["analytics", "backend"];
+  for (const domain of domains) {
+    for (let index = 0; index < 6; index += 1) {
+      const file = `src/aria/app/${domain}/service${index}.ts`;
+      const moduleId = `ts:${file}`;
+      const lead = `${moduleId}#${domain}${index}Service`;
+      const method = `${lead}.run`;
+      nodes.push(node(moduleId, "module", "ts:src", `service${index}.ts`, file));
+      nodes.push(node(lead, "class", moduleId, `${domain}${index}Service`, file));
+      nodes.push(node(method, "method", lead, "run", file));
+      leads.push(lead);
+    }
+  }
+  for (let index = 0; index < leads.length - 1; index += 1) {
+    edges.push({
+      id: `domain-edge-${index}`,
+      source: `${leads[index]}.run`,
+      target: `${leads[index + 1]}.run`,
+      kind: "calls",
+      resolution: "resolved",
+    } as GraphEdge);
+  }
+  const index = buildGraphIndex({ nodes, edges } as GraphArtifact);
+  return { index, graph: buildModuleGraph(index), deps: buildBlockDeps(index), leads };
+}
+
+function rectOf(node: { position: { x: number; y: number }; style?: unknown }) {
+  const style = (node.style ?? {}) as { width?: number; height?: number };
+  return { x: node.position.x, y: node.position.y, width: style.width ?? 0, height: style.height ?? 0 };
+}
+
+function separation(a: ReturnType<typeof rectOf>, b: ReturnType<typeof rectOf>): number {
+  const horizontal = Math.max(a.x - (b.x + b.width), b.x - (a.x + a.width), 0);
+  const vertical = Math.max(a.y - (b.y + b.height), b.y - (a.y + a.height), 0);
+  return Math.max(horizontal, vertical);
+}

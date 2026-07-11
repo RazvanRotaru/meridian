@@ -22,7 +22,7 @@ import { activeModuleSurfaceSpec } from "./surfaceSpec";
 import type { BlockData } from "../../derive/moduleLevel";
 
 const SELECT_CLICK_DELAY_MS = 250;
-const PACKAGE_KIND = "package";
+const GROUP_KINDS = new Set(["package", "serviceDomain"]);
 
 export interface NodeInteractionOverrides {
   /** Return true to fully handle the click and skip the shared select/toggle path. */
@@ -162,7 +162,7 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
     }, SELECT_CLICK_DELAY_MS);
   };
   // Double-click follows the surface's spec: a card whose kind the surface declares DIVABLE zooms
-  // (the Map dives packages AND files; the Service lens dives only its `svc:` cluster frames); any
+  // (the Map dives packages/files; the Service lens dives domains and `svc:` cluster frames); any
   // other package-kind container expands in place (the chevron's gesture). A GHOST reveals through
   // the spec (the Map refocuses at the definition; the Service lens opens the owning frame); a
   // callable BLOCK opens its logic flow (the map→logic link); everything else only selects. The
@@ -185,7 +185,7 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
     const { dive, divable } = spec.focus;
     if (dive !== null && divable(node.type, node.id)) {
       dive(surfaceActions, node.id);
-    } else if (node.type === PACKAGE_KIND) {
+    } else if (GROUP_KINDS.has(node.type ?? "") && (node.data as { readOnly?: boolean }).readOnly !== true) {
       toggleModuleExpand(node.id);
     } else if (node.type === "ghost") {
       spec.ghostReveal(surfaceActions, node.id);

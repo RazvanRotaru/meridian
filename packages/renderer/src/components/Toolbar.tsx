@@ -11,6 +11,7 @@ import { Panel } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { EnvSelector } from "./EnvSelector";
 import { ViewModeToggle } from "./ViewModeToggle";
+import { ServiceGroupingSelect } from "./ServiceGroupingSelect";
 import { SelectionPanel } from "./SelectionPanel";
 import { CompositionPanel } from "./composition/CompositionPanel";
 import { DepthSlider } from "./DepthSlider";
@@ -58,6 +59,11 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
             <Group label="Lens">
               <ViewModeToggle />
             </Group>
+            {isComposition ? (
+              <Group label="Cluster by">
+                <ServiceGroupingSelect />
+              </Group>
+            ) : null}
             <SelectionPanel />
 
             <Divider />

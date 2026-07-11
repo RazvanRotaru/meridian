@@ -14,25 +14,36 @@ import { scopeTarget } from "../state/selectionReveal";
 import { selectedAnchorIds } from "../state/lensPath";
 import { baseName } from "../derive/flowViewModel";
 import type { GraphIndex } from "../graph/graphIndex";
+import { deriveServiceDomains, isServiceDomainId, serviceDomainLabel } from "../derive/serviceDomains";
+import { clusteringFor } from "../derive/serviceClusteringCache";
+import type { ServiceGroupingMode } from "../derive/serviceClusteringModes";
 import { CountBadge, Divider, Pill, SectionLabel, TOKENS } from "./controlpanel/panelKit";
 
 export function SelectionPanel() {
   const viewMode = useBlueprint((state) => state.viewMode);
   const moduleSelected = useBlueprint((state) => state.moduleSelected);
   const serviceScope = useBlueprint((state) => state.serviceScope);
+  const serviceGroupingMode = useBlueprint((state) => state.serviceGroupingMode);
+  const serviceGroupingTargetSize = useBlueprint((state) => state.serviceGroupingTargetSize);
   const index = useBlueprint((state) => state.index);
   const { openServiceScope } = useBlueprintActions();
 
   // The active lens's OWN explicit picks (never its focus), svc:-frames normalized to their lead
   // units — the exact anchors `openServiceScope` will carry, via the same code path.
   const anchors = useMemo(() => selectedAnchorIds({ viewMode, moduleSelected }), [viewMode, moduleSelected]);
-  const scope = useMemo(() => scopeTarget(anchors, index), [anchors, index]);
+  const scope = useMemo(
+    () => scopeTarget(anchors, index, serviceGroupingMode, serviceGroupingTargetSize),
+    [anchors, index, serviceGroupingMode, serviceGroupingTargetSize],
+  );
 
   if (anchors.length === 0) {
     return null;
   }
   // Already inside a scoped Service view: the breadcrumb owns the exit, so re-scoping is hidden.
-  const showScope = !(viewMode === "call" && serviceScope !== null);
+  // A domain already is the Service lens's architectural scope; its double-click dive is the
+  // precise, non-explosive way to enter it, so the coupling-neighbour scope action is redundant.
+  const showScope = !(viewMode === "call" && serviceScope !== null)
+    && ![...moduleSelected].some(isServiceDomainId);
 
   return (
     <>
@@ -40,7 +51,7 @@ export function SelectionPanel() {
       <section style={SECTION_STYLE}>
         <SectionLabel>Selection</SectionLabel>
         <div style={HEADER_STYLE}>
-          <span style={NAME_STYLE}>{shortName(anchors[0], index)}</span>
+          <span style={NAME_STYLE}>{shortName(anchors[0], index, serviceGroupingMode, serviceGroupingTargetSize)}</span>
           {anchors.length > 1 ? <CountBadge>+{anchors.length - 1}</CountBadge> : null}
         </div>
         {showScope ? (
@@ -63,7 +74,18 @@ export function SelectionPanel() {
 
 /** The node's display name; falls back to the id's qualname (or its module's basename) for ids the
  * graph no longer holds — parsed through core's id grammar, which also strips `~n` ordinals. */
-function shortName(nodeId: string, index: GraphIndex): string {
+function shortName(nodeId: string, index: GraphIndex, groupingMode: ServiceGroupingMode, groupingTargetSize: number): string {
+  if (isServiceDomainId(nodeId)) {
+    const liveDomain = deriveServiceDomains(clusteringFor(index), groupingMode, groupingTargetSize).domainById.get(nodeId);
+    if (liveDomain) {
+      return liveDomain.label;
+    }
+    const legacyLabel = serviceDomainLabel(nodeId);
+    if (legacyLabel !== null) {
+      return legacyLabel;
+    }
+    return "Service group";
+  }
   const display = index.nodesById.get(nodeId)?.displayName;
   if (display !== undefined && display !== "") {
     return display;

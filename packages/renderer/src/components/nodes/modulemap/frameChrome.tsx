@@ -88,6 +88,7 @@ export function ExpandChevron({ id, isExpanded, collapsedTitle }: { id: string; 
         event.stopPropagation();
         toggleModuleExpand(id);
       }}
+      onDoubleClick={(event) => event.stopPropagation()}
     >
       {isExpanded ? "▾" : "▸"}
     </button>
