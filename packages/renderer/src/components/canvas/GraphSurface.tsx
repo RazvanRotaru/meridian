@@ -97,6 +97,9 @@ export interface GraphSurfaceProps {
   /** Wire chrome — hover naming (WireTooltip), the click-pinned Wire Inspector, direction pulses —
    * on for the module lenses, historically off on the minimal overlay (mostly lit at rest). */
   wireHover?: boolean;
+  /** Optional parent-node semantic zoom. The Map passes its current level's parent name; shared
+   * Service/UI/minimal surfaces omit it and retain their existing per-card orientation labels. */
+  zoomedOutLabel?: string;
   /** Extras that must render INSIDE the flow (beacon arrows, the overlay's ghost "+" ring). */
   flowExtras?: (view: SurfaceFlowView) => ReactNode;
   /** Floating chrome (breadcrumb, legends, panels, action strips), absolutely positioned over the canvas. */
@@ -156,7 +159,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
         {...READONLY_CANVAS_PROPS}
       >
         <CanvasChrome nodeColor={props.miniMapColor} />
-        <MapLod />
+        <MapLod nodes={reactFlowNodes} parentLabel={props.zoomedOutLabel} />
         {props.flowExtras?.({ nodes: paintedNodes, beacons })}
       </ReactFlow>
       {wire.hover ? <WireTooltip hover={wire.hover} /> : null}

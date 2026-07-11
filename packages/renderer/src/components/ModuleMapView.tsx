@@ -46,6 +46,7 @@ export function ModuleMapView() {
   const layoutStatus = useBlueprint((state) => state.moduleLayoutStatus);
   const effectiveFocus = useBlueprint((state) => state.moduleEffectiveFocus);
   const index = useBlueprint((state) => state.index);
+  const projectName = useBlueprint((state) => state.artifact.target.name);
   const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
   const showTests = useBlueprint((state) => state.showTests);
   const showPrivate = useBlueprint((state) => state.showPrivate);
@@ -56,6 +57,15 @@ export function ModuleMapView() {
   const { buildMinimalGraph, setModuleFocus, clearServiceScope, promoteGhost } = useBlueprintActions();
   // This lens's spec (Map or Service) — the highways flags read from it.
   const spec = activeModuleSurfaceSpec(viewMode);
+  // The Map-only semantic-zoom POC names the WHOLE visible level after its parent. At the repository
+  // overview the artifact target is that conceptual parent; below it, moduleEffectiveFocus is the
+  // chain-collapsed parent committed atomically with the nodes currently on screen.
+  const zoomedOutLabel =
+    viewMode === "modules"
+      ? effectiveFocus === null
+        ? projectName || spec.focus.rootLabel
+        : index.nodesById.get(effectiveFocus)?.displayName || effectiveFocus
+      : undefined;
   // The lens-lifetime hooks live HERE (not in GraphSurface, which unmounts under the overlay): a
   // pending single-click select still lands after the overlay opens, and the recenter reaction is
   // muted while covered — the overlay's own recenter must win — then re-fits the kept selection
@@ -118,6 +128,7 @@ export function ModuleMapView() {
       highways={spec.highways}
       miniMapColor={miniMapColor}
       interactions={interactions}
+      zoomedOutLabel={zoomedOutLabel}
       onInit={(instance) => {
         rfRef.current = instance;
       }}
