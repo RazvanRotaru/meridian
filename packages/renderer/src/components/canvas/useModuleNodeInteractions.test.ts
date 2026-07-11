@@ -3,8 +3,10 @@ import type { Node } from "@xyflow/react";
 import { moduleSurfaceSpec } from "./surfaceSpec";
 import {
   artifactOwnerOfStep,
+  ghostPaintSeedOverride,
   ghostGroupInteractionOf,
   navigationForNode,
+  retainsGhostPaintContext,
   selectionGestureFor,
   toggleExpandedGhostGroupIds,
 } from "./useModuleNodeInteractions";
@@ -39,6 +41,35 @@ describe("universal module-node selection", () => {
       expect(selectionGestureFor(candidate, { ctrlKey: true, metaKey: false }), candidate.type).toBe("toggle");
       expect(selectionGestureFor(candidate, { ctrlKey: false, metaKey: true }), candidate.type).toBe("toggle");
     }
+  });
+
+  it("keeps each ghost's paint provenance through its debounce and multi-selection membership", () => {
+    expect(retainsGhostPaintContext("ghost", new Set(["real"]), "ghost")).toBe(true);
+    expect(retainsGhostPaintContext("ghost", new Set(["ghost"]), null)).toBe(true);
+    expect(retainsGhostPaintContext("ghost", new Set(["ghost"]), "real")).toBe(true);
+    expect(retainsGhostPaintContext("ghost", new Set(["real"]), null)).toBe(false);
+    expect(retainsGhostPaintContext("ghost", new Set(["ghost", "real"]), null)).toBe(true);
+    expect(retainsGhostPaintContext("ghost", new Set(), null)).toBe(false);
+  });
+
+  it("unions provenance per Ctrl-selected ghost without dropping ordinary selected seeds", () => {
+    const contexts = new Map([
+      ["ghost-a", { targetId: "ghost-a", seedIds: new Set(["owner-a"]), viewMode: "modules", effectiveFocus: null }],
+      ["ghost-b", { targetId: "ghost-b", seedIds: new Set(["owner-b"]), viewMode: "modules", effectiveFocus: null }],
+    ]);
+
+    expect(ghostPaintSeedOverride(contexts, new Set(["ghost-a", "ghost-b"]), null))
+      .toEqual(new Set(["owner-a", "owner-b"]));
+    expect(ghostPaintSeedOverride(contexts, new Set(["ghost-a", "real"]), null))
+      .toEqual(new Set(["owner-a", "real"]));
+    // A pending plain click replaces the old selection, so only its own provenance paints.
+    expect(ghostPaintSeedOverride(contexts, new Set(["ghost-a"]), "ghost-b"))
+      .toEqual(new Set(["owner-b"]));
+    // A pending real-node click has no provenance of its own. Keep the current ghost's paint owner
+    // until the delayed real selection commits so an intervening repaint cannot move the target.
+    expect(ghostPaintSeedOverride(contexts, new Set(["ghost-a"]), "real"))
+      .toEqual(new Set(["owner-a"]));
+    expect(ghostPaintSeedOverride(contexts, new Set(["real"]), null)).toBeNull();
   });
 });
 

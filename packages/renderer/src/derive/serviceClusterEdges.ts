@@ -123,7 +123,10 @@ export function leadIdOf(frameId: string): string | null {
 }
 
 export function isOpen(cluster: ServiceCluster, expanded: ReadonlySet<string>): boolean {
-  return cluster.memberIds.length > 1 && expanded.has(frameIdOf(cluster.leadId));
+  // A service frame is an artificial parent even when it contains only its lead class. Keeping a
+  // one-member frame expandable is what lets cross-lens reveal paint the exact selected class id;
+  // opening it still exposes only that direct child, never the class's methods in the same action.
+  return cluster.memberIds.length > 0 && expanded.has(frameIdOf(cluster.leadId));
 }
 
 /** Decompose selected `svc:` frames and synthetic domains into their represented cluster members

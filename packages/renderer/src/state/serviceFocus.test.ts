@@ -204,6 +204,27 @@ describe("Service cluster focus (the containment dive)", () => {
     expect(store.getState().moduleSelected.has(ALPHA)).toBe(true);
   });
 
+  it("the lens-carry opens the selected class's domain and service frame so the class is painted", async () => {
+    const store = freshDomainStore();
+    const lead = "ts:src/aria/app/backend/service0.ts#backend0Service";
+    const backend = domainId(store, "backend");
+    const frame = frameIdOf(lead);
+    store.setState({ viewMode: "modules", moduleSelected: new Set([lead]) });
+
+    store.getState().setViewMode("call");
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+
+    const state = store.getState();
+    expect(state.moduleFocus).toBeNull();
+    expect(state.moduleSelected).toEqual(new Set([lead]));
+    expect(state.moduleExpanded.has(backend)).toBe(true);
+    expect(state.moduleExpanded.has(frame)).toBe(true);
+    // With no focused semantic parent, the active detail graph is the unstamped base layer.
+    const painted = state.moduleRfNodes.find((node) => node.id === lead);
+    expect(painted).toMatchObject({ id: lead, parentId: frame });
+    expect(painted?.hidden).not.toBe(true);
+  });
+
   it("leaving a FOCUSED Service lens carries the cluster's lead to the Map — never the svc: pseudo-id", () => {
     const store = freshStore();
     store.setState({ viewMode: "call", moduleFocus: frameIdOf(ALPHA), moduleEffectiveFocus: frameIdOf(ALPHA) });

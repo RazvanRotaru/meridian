@@ -110,6 +110,32 @@ export interface SurfaceFlowView {
   beacons: ReadonlySet<string>;
 }
 
+export interface SurfacePaintOwnership {
+  /** Literal store selection: it owns rings/extraction and must survive ghost pruning. */
+  protectedSelection: ReadonlySet<string>;
+  /** Semantic ids that own emphasis traversal for this paint. */
+  paintSeeds: ReadonlySet<string>;
+  /** The exact same traversal owners handed to highway extraction. */
+  highwaySeeds: ReadonlySet<string>;
+}
+
+/** Resolve the three deliberately distinct paint identities used by every GraphSurface mount.
+ * A PR row hover/click is a transient paint owner and therefore outranks stale ghost provenance;
+ * when review paint clears, captured ghost provenance resumes. Literal selection is always
+ * protected independently, so a transient preview cannot prune the card that still owns the ring
+ * and extraction action. */
+export function resolveSurfacePaintOwnership(
+  selected: ReadonlySet<string>,
+  reviewLit: ReadonlySet<string> | null,
+  reviewEmphasis: boolean,
+  ghostPaintOverride: ReadonlySet<string> | null,
+): SurfacePaintOwnership {
+  const paintSeeds = reviewEmphasis && reviewLit !== null
+    ? reviewLit
+    : ghostPaintOverride ?? selected;
+  return { protectedSelection: selected, paintSeeds, highwaySeeds: paintSeeds };
+}
+
 export interface GraphSurfaceProps {
   /** Laid-out (and per-surface visibility-filtered) nodes/edges — positions are never touched here. */
   nodes: Node[];
@@ -172,10 +198,6 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const relationVisibilityOverrides = useBlueprint((state) => state.relationVisibilityOverrides);
   const showHighways = useBlueprint((state) => state.showHighways);
   const groupGhostsByParent = useBlueprint((state) => state.groupGhostsByParent);
-  // Review rows own a transient hover preview; once it clears, fall back to the persistent graph or
-  // logic-flow selection. The override remains paint-only, so semantic populations keep their
-  // independently laid-out geometry and zoom handoff behavior.
-  const emphasized = props.reviewEmphasis === true ? reviewLit ?? selected : selected;
   const emphasisMode = props.emphasisMode ?? highlightMode;
   const groupGhosts = props.groupGhosts ?? groupGhostsByParent;
   // Keep the semantic controller mounted through the final parent handoff too: its ancestor list can
@@ -246,16 +268,25 @@ export function GraphSurface(props: GraphSurfaceProps) {
   // The ONE paint chain, isolated per semantic population. Main's ghost grouping can mint parent
   // cards and hierarchy spokes at paint time; stamping those outputs back onto their source depth
   // keeps them in the same cross-fade instead of leaking across hidden ancestor graphs.
+  const paintOwnership = useMemo(
+    () => resolveSurfacePaintOwnership(
+      selected,
+      reviewLit,
+      props.reviewEmphasis === true,
+      props.interactions.paintSelectionOverride,
+    ),
+    [selected, reviewLit, props.reviewEmphasis, props.interactions.paintSelectionOverride],
+  );
   const { nodes: paintedNodes, edges: paintedEdges, beacons } = useMemo(
-    () => paintSemanticLayers(props.nodes, props.edges, emphasized, radius, emphasisMode, {
+    () => paintSemanticLayers(props.nodes, props.edges, paintOwnership.protectedSelection, radius, emphasisMode, {
       policy: props.relations,
       overrides: relationVisibilityOverrides,
     }, {
       index,
       groupByParent: groupGhosts,
       expandedGroupIds: props.interactions.expandedGhostGroupIds,
-    }),
-    [props.nodes, props.edges, emphasized, radius, emphasisMode, props.relations, relationVisibilityOverrides, index, groupGhosts, props.interactions.expandedGhostGroupIds],
+    }, paintOwnership.paintSeeds),
+    [props.nodes, props.edges, paintOwnership, radius, emphasisMode, props.relations, relationVisibilityOverrides, index, groupGhosts, props.interactions.expandedGhostGroupIds],
   );
   // Group disclosure is deliberately downstream of the shared paint chain. It injects the
   // mount-local explicit-chevron callback without feeding a function back into derive/layout.
@@ -289,7 +320,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
       const prepared = prepareCanvasEdges(
         edges,
         paintedNodes,
-        emphasized,
+        paintOwnership.highwaySeeds,
         showHighways,
         props.highways,
         props.relations,
@@ -300,7 +331,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
       hierarchyEdges.push(...prepared.hierarchyEdges);
     }
     return { semanticEdges, hierarchyEdges };
-  }, [paintedEdges, paintedNodes, props.highways, props.relations, emphasized, showHighways]);
+  }, [paintedEdges, paintedNodes, props.highways, props.relations, paintOwnership.highwaySeeds, showHighways]);
   const wire = useWireHover(preparedEdges.semanticEdges, paintedNodes, props.wireHover === true);
   // Append hierarchy spokes AFTER interaction dressing too: their exact objects never acquire a
   // pulse, label, hit width, tooltip, inspector subject, or semantic z-order.
@@ -400,6 +431,7 @@ function paintSemanticLayers(
   mode: Parameters<typeof paintMinimalLevel>[4],
   relations: Parameters<typeof paintMinimalLevel>[5],
   ghostPresentation: Parameters<typeof paintMinimalLevel>[6],
+  paintSeedIds: Parameters<typeof paintMinimalLevel>[7],
 ): ReturnType<typeof paintMinimalLevel> {
   const nodesByDepth = new Map<number | undefined, Node[]>();
   const edgesByDepth = new Map<number | undefined, Edge[]>();
@@ -431,6 +463,7 @@ function paintSemanticLayers(
       mode,
       relations,
       ghostPresentation,
+      paintSeedIds,
     );
     paintedNodes.push(...(depth === undefined
       ? painted.nodes

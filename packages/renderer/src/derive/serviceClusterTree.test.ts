@@ -113,6 +113,29 @@ describe("deriveServiceTree scoping", () => {
     expect(ghostIds(tree)).toEqual([]);
     expect(tree.edges.some((e) => e.ghost === true)).toBe(false);
   });
+
+  it("opens a one-member service frame exactly one level to reveal its lead class", () => {
+    const frame = frameIdOf(ALPHA);
+    const collapsed = deriveServiceTree(index, null, NONE, graph, deps, flows, {
+      scopeLeadIds: new Set([ALPHA]),
+    });
+    expect(collapsed.nodes.find((item) => item.id === frame)).toMatchObject({
+      isContainer: true,
+      isExpanded: false,
+    });
+    expect(collapsed.nodes.some((item) => item.id === ALPHA)).toBe(false);
+
+    const expanded = deriveServiceTree(index, null, new Set([frame]), graph, deps, flows, {
+      scopeLeadIds: new Set([ALPHA]),
+    });
+    expect(expanded.nodes.find((item) => item.id === frame)?.isExpanded).toBe(true);
+    expect(expanded.nodes.find((item) => item.id === ALPHA)).toMatchObject({
+      parentId: frame,
+      kind: "unit",
+      isExpanded: false,
+    });
+    expect(expanded.nodes.some((item) => item.id === `${ALPHA}.run`)).toBe(false);
+  });
 });
 
 describe("deriveServiceTree extra-file expansion", () => {

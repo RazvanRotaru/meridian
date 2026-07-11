@@ -150,13 +150,60 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
   });
 
   it("Service lens renders svc: cluster frames wired by couplings, with no console/page errors", async () => {
-    // The composition surface merged into the Lens segmented control: the Service segment draws
-    // service clusters as `svc:` frames on the SHARED canvas (not scorecards).
+    // The composition surface merged into the Lens segmented control. Its root is now an honest
+    // hierarchy of artificial domain containers, not a flat wall of `svc:` frames. Synthetic
+    // parents must keep the same selection, extraction, expansion, and navigation contracts as
+    // every ordinary Map container.
     await lensButton(page, "Service").dispatchEvent("click");
-    await page.waitForSelector('.react-flow__node-package[data-id^="svc:"]', { timeout: 30_000 });
-    expect(await page.locator('.react-flow__node-package[data-id^="svc:"]').count()).toBeGreaterThan(1);
-    // …wired by cluster-coupling edges (at least one endpoint a svc: frame).
-    await expect.poll(() => page.locator(".react-flow__edge").count(), { timeout: 20_000 }).toBeGreaterThan(0);
+    const domains = page.locator('.react-flow__node-serviceDomain[data-id^="service-domain:"]');
+    await expect.poll(() => domains.count(), { timeout: 30_000 }).toBeGreaterThan(1);
+    expect(await page.locator('.react-flow__node-package[data-id^="svc:"]').count()).toBe(0);
+
+    // This fixture deterministically has six otherwise-unassigned service frames. Selecting their
+    // artificial parent selects exactly that one logical node and offers the universal extraction
+    // action; the parent does not need a special-case interaction path.
+    const domain = page.locator('.react-flow__node-serviceDomain[data-id="service-domain:unassigned"]');
+    expect(await domain.count()).toBe(1);
+    expect(await domain.getByText("6 unassigned groups", { exact: true }).count()).toBe(1);
+    await domain.dispatchEvent("click");
+    await page.getByRole("button", { name: "Extract selection (1)", exact: true }).waitFor();
+    expect(await page.locator("#meridian-control-panel").getByText("Unassigned code", { exact: true }).count()).toBe(1);
+
+    // Expansion is the explicit chevron action, separate from navigation. It reveals the domain's
+    // real `svc:` children in place and preserves their exact structural coupling kind. Calls are
+    // abundant in this fixture but intentionally remain a hidden Service overlay by default.
+    const expandDomain = domain.getByRole("button", { name: "Expand", exact: true });
+    expect(await expandDomain.count()).toBe(1);
+    await expandDomain.dispatchEvent("click");
+    const serviceFrames = page.locator('.react-flow__node-package[data-id^="svc:"]');
+    await expect.poll(() => serviceFrames.count(), { timeout: 30_000 }).toBe(6);
+    expect(await domain.getByRole("button", { name: "Collapse", exact: true }).count()).toBe(1);
+
+    // One domain action exposes only its direct synthetic `svc:` children. Every frame is still a
+    // collapsed container with its own explicit Expand action; no class/unit (or method/block)
+    // grandchild may leak through until that frame receives a separate action.
+    expect(await serviceFrames.getByRole("button", { name: "Expand", exact: true }).count()).toBe(6);
+    expect(await page.locator('.react-flow__node-unit[data-id^="ts:"]').count()).toBe(0);
+    expect(await page.locator('.react-flow__node-block[data-id^="ts:"]').count()).toBe(0);
+
+    const constructionCouplings = page.locator(
+      '.react-flow__edge[data-id^="dep:instantiates:"][aria-label*="svc:"]',
+    );
+    await expect.poll(() => constructionCouplings.count(), { timeout: 20_000 }).toBeGreaterThan(0);
+    expect(await page.locator('.react-flow__edge[data-id^="dep:calls:"]').count()).toBe(0);
+
+    // Double-click is navigation only: the domain becomes the effective focus, its service frames
+    // become the current level, and the containment trail records the synthetic parent. Semantic
+    // navigation may retain the parent as context, so focus + breadcrumb are the durable contract.
+    // Return to the root so later cross-lens tests start from the same neutral surface state.
+    await domain.dispatchEvent("dblclick");
+    await expect.poll(() => new URL(page.url()).searchParams.get("mfocus"), { timeout: 30_000 })
+      .toBe("service-domain:unassigned");
+    await expect.poll(() => serviceFrames.count(), { timeout: 30_000 }).toBeGreaterThan(1);
+    const containment = page.getByRole("navigation", { name: "Containment level" });
+    await containment.getByText("Unassigned code", { exact: true }).waitFor({ timeout: 30_000 });
+    await containment.getByRole("button", { name: "All services", exact: true }).dispatchEvent("click");
+    await domain.waitFor();
     expect(consoleErrors).toEqual([]);
     expect(pageErrors).toEqual([]);
   });
