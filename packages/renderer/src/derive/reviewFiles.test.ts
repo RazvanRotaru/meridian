@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { GraphArtifact, GraphNode, ReviewContext } from "@meridian/core";
+import type { GraphArtifact, GraphEdge, GraphNode, ReviewContext } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { applyFileToggle, applyUnitTick, checkStateOf, deriveReviewFiles, fileViewState } from "./reviewFiles";
 
@@ -18,6 +18,16 @@ function node(id: string, kind: string, file: string, start: number, end: number
     parentId,
     location: { file, startLine: start, endLine: end },
   } as GraphNode;
+}
+
+function edge(
+  id: string,
+  source: string,
+  target: string,
+  kind: string,
+  resolution?: GraphEdge["resolution"],
+): GraphEdge {
+  return { id, source, target, kind, resolution };
 }
 
 const NODES: GraphNode[] = [
@@ -40,7 +50,7 @@ describe("deriveReviewFiles", () => {
       { path: "docs/readme.md", status: "modified", hunks: [{ start: 1, end: 3 }] },
       { path: "src/a.ts", status: "modified", hunks: [{ start: 25, end: 30 }] },
     ]);
-    const files = deriveReviewFiles(context, ARTIFACT, INDEX);
+    const files = deriveReviewFiles(context, ARTIFACT, INDEX, { baseIndex: null });
     // src/a.ts sorts first despite "d" < "s": it is on the graph, the md file is not.
     expect(files.map((file) => [file.path, file.moduleId])).toEqual([
       ["src/a.ts", "ts:src/a.ts"],
@@ -55,11 +65,104 @@ describe("deriveReviewFiles", () => {
   });
 
   it("keeps a hunk-less changed file as a unit-less row (core's module-only fallback)", () => {
-    const files = deriveReviewFiles(contextOf([{ path: "src/a.ts", status: "modified" }]), ARTIFACT, INDEX);
+    const files = deriveReviewFiles(
+      contextOf([{ path: "src/a.ts", status: "modified" }]),
+      ARTIFACT,
+      INDEX,
+      { baseIndex: null },
+    );
     // The module node carries the "file changed" graph signal, but a container kind must never
     // render as a checkable unit — the file row itself represents it.
     expect(files[0].moduleId).toBe("ts:src/a.ts");
     expect(files[0].units).toEqual([]);
+  });
+
+  it("counts distinct unchanged caller files into changed units using resolved execution edges", () => {
+    const extraNodes = [
+      node("ts:src/b.ts#one", "function", "src/b.ts", 5, 8, null),
+      node("ts:src/b.ts#two", "function", "src/b.ts", 10, 14, null),
+      node("ts:src/c.ts#changing", "function", "src/c.ts", 5, 8, null),
+      node("ts:src/d.ts#construct", "function", "src/d.ts", 5, 8, null),
+      node("ts:src/e.ts#importer", "function", "src/e.ts", 5, 8, null),
+      node("ts:src/f.ts#guess", "function", "src/f.ts", 5, 8, null),
+    ];
+    const artifact = {
+      nodes: [...NODES, ...extraNodes],
+      edges: [
+        edge("calls-b1", "ts:src/b.ts#one", "ts:src/a.ts#Repo.save", "calls", "resolved"),
+        edge("renders-b2", "ts:src/b.ts#two", "ts:src/a.ts#Repo.save", "renders", "resolved"),
+        edge("calls-c", "ts:src/c.ts#changing", "ts:src/a.ts#Repo.save", "calls", "resolved"),
+        edge("instantiates-d", "ts:src/d.ts#construct", "ts:src/a.ts#Repo.save", "instantiates"),
+        edge("imports-e", "ts:src/e.ts#importer", "ts:src/a.ts#Repo.save", "imports", "resolved"),
+        edge("calls-f", "ts:src/f.ts#guess", "ts:src/a.ts#Repo.save", "calls", "unresolved"),
+      ],
+    } as unknown as GraphArtifact;
+    const index = buildGraphIndex(artifact);
+    const files = deriveReviewFiles(
+      contextOf([
+        { path: "src/a.ts", status: "modified", hunks: [{ start: 25, end: 30 }] },
+        { path: "src/c.ts", status: "modified", hunks: [{ start: 5, end: 8 }] },
+      ]),
+      artifact,
+      index,
+      { baseIndex: null },
+    );
+
+    expect(files.find((file) => file.path === "src/a.ts")).toMatchObject({
+      blastRadius: 2,
+      deletedImpact: null,
+    });
+  });
+
+  it("derives capped surviving callers and resolution caveats for a deleted baseline file", () => {
+    const deletedNodes = [
+      node("ts:src/gone.ts", "module", "src/gone.ts", 1, 50, null),
+      node("ts:src/gone.ts#gone", "function", "src/gone.ts", 10, 20, "ts:src/gone.ts"),
+    ];
+    const callerNodes = Array.from({ length: 9 }, (_, index) =>
+      node(`ts:src/live-${index}.ts#caller`, "function", `src/live-${index}.ts`, index + 1, index + 2, null),
+    );
+    const changingCaller = node("ts:src/changing.ts#caller", "function", "src/changing.ts", 3, 4, null);
+    const resolvedEdges = callerNodes.map((caller, index) =>
+      edge(`caller-${index}`, caller.id, "ts:src/gone.ts#gone", "calls", "resolved"),
+    );
+    const baseArtifact = {
+      nodes: [...deletedNodes, ...callerNodes, changingCaller],
+      edges: [
+        ...resolvedEdges,
+        edge("duplicate-caller", callerNodes[0].id, "ts:src/gone.ts", "renders", "resolved"),
+        edge("unresolved", callerNodes[0].id, "ts:src/gone.ts#gone", "calls", "unresolved"),
+        edge("external", callerNodes[1].id, "ts:src/gone.ts#gone", "calls", "external"),
+        edge("changed-caller", changingCaller.id, "ts:src/gone.ts#gone", "calls", "resolved"),
+      ],
+    } as unknown as GraphArtifact;
+    const activeArtifact = { nodes: [], edges: [] } as unknown as GraphArtifact;
+    const files = deriveReviewFiles(
+      contextOf([
+        { path: "src/gone.ts", status: "deleted" },
+        { path: "docs/gone.md", status: "deleted" },
+        { path: "src/changing.ts", status: "modified" },
+      ]),
+      activeArtifact,
+      buildGraphIndex(activeArtifact),
+      { baseIndex: buildGraphIndex(baseArtifact) },
+    );
+    const gone = files.find((file) => file.path === "src/gone.ts");
+
+    expect(gone?.deletedImpact).toMatchObject({
+      unresolvedCount: 2,
+      truncated: true,
+      omittedCallerCount: 1,
+    });
+    expect(gone?.deletedImpact?.callers).toHaveLength(8);
+    expect(gone?.deletedImpact?.callers[0]).toEqual({
+      nodeId: "ts:src/live-0.ts#caller",
+      displayName: "caller",
+      file: "src/live-0.ts",
+      line: 1,
+    });
+    expect(files.find((file) => file.path === "docs/gone.md")?.deletedImpact).toBeNull();
+    expect(files.find((file) => file.path === "src/changing.ts")?.deletedImpact).toBeNull();
   });
 });
 
@@ -70,7 +173,7 @@ describe("view state + tick transitions", () => {
     { path: "src/a.ts", status: "modified", hunks: [{ start: 25, end: 30 }, { start: 75, end: 80 }] },
     { path: "docs/readme.md", status: "deleted" },
   ]);
-  const [a, docs] = deriveReviewFiles(context, ARTIFACT, INDEX);
+  const [a, docs] = deriveReviewFiles(context, ARTIFACT, INDEX, { baseIndex: null });
 
   it("derives a unit-ful file's viewed state from its units (all done ⇒ done)", () => {
     let unitTicks: Record<string, { at: string; fingerprint: string }> = {};

@@ -126,7 +126,9 @@ export function restorePrReviewBaseline(
     reviewUnitTicks: progress?.unitTicks ?? {},
     reviewFileTicks: progress?.fileTicks ?? {},
     reviewComments: progress?.comments ?? [],
-    reviewFiles: baseline.review ? deriveReviewFiles(baseline.review.context, baseline.artifact, baseline.index) : [],
+    reviewFiles: baseline.review
+      ? deriveReviewFiles(baseline.review.context, baseline.artifact, baseline.index, { baseIndex: null })
+      : [],
     reviewPanelHidden: false,
     reviewSubmitStatus: "idle",
     reviewSubmitError: null,

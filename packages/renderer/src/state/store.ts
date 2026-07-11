@@ -255,8 +255,10 @@ export interface BlueprintState {
   review: ReviewData | null;
   /** Artifact node ids that are affected — the coupling set between the graph and the flow panel. */
   reviewAffectedIds: Set<string>;
-  /** Every changed file as a checklist row (touched units inside; empty units == not in the graph). */
+  /** Every changed file as a checklist row, with any touched code units nested inside it. */
   reviewFiles: ReviewFileRow[];
+  /** Checklist ordering preference. Ephemeral UI state: deliberately neither persisted nor URL-synced. */
+  reviewFilesSort: "path" | "risk";
   /** Per changed file (keyed by node.location.file): GitHub's +N/-M churn, shown as a marker before
    * the file card's name (files themselves are not coloured — only the touched blocks inside are). */
   reviewFileDelta: Record<string, { added: number; deleted: number }>;
@@ -427,6 +429,7 @@ export interface BlueprintState {
   rearrangeMinimalGraph(): void;
   minimalRelayout(): Promise<void>;
   setReviewLit(ids: Set<string> | null): void;
+  setReviewFilesSort(sort: "path" | "risk"): void;
   selectReviewNode(id: string | null): void;
   /** Isolate one change group on the Map (null = "All groups"): re-seed the minimal overlay with only
    * that group's module ids and relayout. A no-op outside a review or when already active. */
@@ -614,7 +617,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const bootReviewBaseline: PrReviewBaseline = { artifact: dependencies.artifact, index: dependencies.index, review };
   // The files checklist + persisted progress for an artifact-sourced review; a GitHub PR opened via
   // reviewPrInGraph re-derives both at runtime under its own reviewKey.
-  const reviewFiles = review ? deriveReviewFiles(review.context, dependencies.artifact, dependencies.index) : [];
+  const reviewFiles = review ? deriveReviewFiles(review.context, dependencies.artifact, dependencies.index, { baseIndex: null }) : [];
   const initialProgress = review ? readReviewProgress(review.context.reviewKey) : null;
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
@@ -699,6 +702,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     review,
     reviewAffectedIds: new Set(reviewFiles.flatMap((file) => file.units.map((unit) => unit.nodeId))),
     reviewFiles,
+    reviewFilesSort: "path",
     reviewFileDelta: {},
     reviewTicks: initialProgress?.ticks ?? {},
     reviewUnitTicks: initialProgress?.unitTicks ?? {},
@@ -1484,6 +1488,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ reviewLitNodeIds: ids });
     },
 
+    setReviewFilesSort(sort) {
+      set({ reviewFilesSort: sort });
+    },
+
     // Select a review block (from the panel); also lights it and CENTERS the graph on it — a panel
     // click must always end with the target visible, not selected somewhere off-screen.
     selectReviewNode(id) {
@@ -2116,7 +2124,7 @@ function applyPrReviewToMap(
   prFilesUrl: string,
   invalidateMinimalLayout: () => void,
 ): void {
-  const { prFiles, prSelected, artifact, index, prPreparedGraphId } = get();
+  const { prFiles, prSelected, artifact, index, prPreparedGraphId, prReviewBaseline } = get();
   if (prSelected === null) {
     return;
   }
@@ -2143,7 +2151,9 @@ function applyPrReviewToMap(
   // The files-first checklist: every changed file with its touched code units (the panel's primary
   // section). Derived from the SAME context/artifact as the affected set below, so a checked unit
   // corresponds 1:1 with an amber-ringed card.
-  const files = deriveReviewFiles(context, artifact, index);
+  const files = deriveReviewFiles(context, artifact, index, {
+    baseIndex: swapped ? (prReviewBaseline?.index ?? null) : null,
+  });
   // The modified code blocks (hunks ∩ node ranges); repaint main's changed-node channel to THIS PR
   // so the Map + minimal overlay ring the edited blocks amber (reused `--changed-since` highlight).
   const affected = computeAffectedNodes(artifact.nodes, context.changedFiles);
