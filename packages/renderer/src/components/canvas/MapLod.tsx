@@ -18,6 +18,14 @@ import { useStore } from "@xyflow/react";
 /** Below this zoom the reader is ORIENTING (shapes + names), not reading card details. */
 const ORIENTATION_MAX = 0.45;
 
+export type MapLodTier = "orientation" | "reading";
+
+/** The minimal review overlay keeps its card bodies readable/actionable even when fit-to-view lands
+ * below the Map's orientation threshold. The Map lenses retain their default semantic zoom. */
+export function mapLodTier(zoom: number, enabled = true): MapLodTier {
+  return enabled && zoom < ORIENTATION_MAX ? "orientation" : "reading";
+}
+
 const LOD_CSS = `
 .react-flow[data-map-tier="orientation"] .lod-hide {
   visibility: hidden;
@@ -74,7 +82,7 @@ const LOD_CSS = `
 }
 `;
 
-export function MapLod() {
+export function MapLod({ enabled = true }: { enabled?: boolean }) {
   const zoom = useStore((state) => state.transform[2]);
   const probeRef = useRef<HTMLSpanElement | null>(null);
   useEffect(() => {
@@ -83,11 +91,11 @@ export function MapLod() {
       return;
     }
     canvas.style.setProperty("--map-zoom", String(zoom));
-    const tier = zoom < ORIENTATION_MAX ? "orientation" : "reading";
+    const tier = mapLodTier(zoom, enabled);
     if (canvas.dataset.mapTier !== tier) {
       canvas.dataset.mapTier = tier;
     }
-  }, [zoom]);
+  }, [zoom, enabled]);
   return (
     <>
       <style>{LOD_CSS}</style>

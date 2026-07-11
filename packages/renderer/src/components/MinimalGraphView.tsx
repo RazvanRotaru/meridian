@@ -99,6 +99,7 @@ export function MinimalGraphView() {
       highways={MINIMAL_OVERLAY_HIGHWAYS}
       miniMapColor={minimalMiniMapColor}
       interactions={interactions}
+      orientationLod={false}
       onInit={(instance) => {
         rfRef.current = instance;
       }}

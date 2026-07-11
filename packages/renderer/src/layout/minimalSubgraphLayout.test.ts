@@ -39,6 +39,26 @@ const NODES = [
 ];
 const EDGES = [importEdge("m:a", "m:b")];
 
+// A rolled PR directory has no captured map rectangle: review setup intentionally starts its
+// minimal overlay from an empty base-position map. Its changed file lets the emitted summary data
+// exercise the same changedInside channel that renders the amber Δ chip.
+const ROLLED_GROUP_NODES: GraphNode[] = [
+  pkg("p:root", "root", null),
+  pkg("p:src", "src", "p:root"),
+  { ...mod("m:a", "src/a.ts", "p:src"), tags: ["changed"] },
+  mod("m:b", "src/b.ts", "p:src"),
+];
+
+function rolledGroupSpec() {
+  const index = buildGraphIndex({ nodes: ROLLED_GROUP_NODES, edges: [] } as unknown as GraphArtifact);
+  const graph = buildModuleGraph(index);
+  return buildMinimalSubgraph(index, graph, new Set(["p:src"]), new Set(["p:src"]), {
+    expanded: new Set(),
+    blockDeps: { edges: [] },
+    flows: {},
+  });
+}
+
 function specFor(expanded: string[]) {
   const index = buildGraphIndex({ nodes: NODES, edges: EDGES } as unknown as GraphArtifact);
   const graph = buildModuleGraph(index);
@@ -79,6 +99,28 @@ describe("layoutMinimalSubgraph", () => {
     const { nodes } = await layoutMinimalSubgraph(specFor([]), base);
     expect(rectOf(nodes.find((node) => node.id === "m:a")!)).toEqual(base["m:a"]);
     expect(rectOf(nodes.find((node) => node.id === "m:b")!)).toEqual(base["m:b"]);
+  });
+
+  it("renders an uncaptured rolled directory as the full read-only package summary card", async () => {
+    const { nodes } = await layoutMinimalSubgraph(rolledGroupSpec(), {});
+    const group = nodes.find((node) => node.id === "p:src");
+
+    expect(group).toMatchObject({
+      id: "p:src",
+      type: "package",
+      style: { width: 300, height: 60 },
+      data: {
+        label: "src",
+        fileCount: 2,
+        changedInside: 1,
+        ca: 0,
+        ce: 0,
+        isContainer: false,
+        isExpanded: false,
+        readOnly: true,
+        tier: "seed",
+      },
+    });
   });
 
   it("opens spacing so no two top-level file frames overlap once a file is expanded", async () => {
