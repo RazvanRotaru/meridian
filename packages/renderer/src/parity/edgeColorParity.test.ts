@@ -4,6 +4,11 @@
  * `layoutModuleTree` → the shared paint (`paintMinimalLevel`, exactly what GraphSurface runs) —
  * and asserted against the one palette (`theme/mapPalette` REL_COLORS + the UI lens's RENDERS_WIRE
  * and the import golds), so a surface can never fork a wire colour silently.
+ *
+ * A second case runs the wire-legibility passes GraphSurface applies AFTER the paint — salience
+ * fade → cycle fusion → pair-ribbon fold — and asserts those aggregates (a fused cycle, a folded
+ * ribbon's member strands) keep the same pinned colours on every surface, so the newer wire work
+ * can't recolour a strand or fork a lens either.
  */
 
 import { describe, expect, it } from "vitest";
@@ -12,6 +17,9 @@ import type { ViewMode } from "../derive/edgeSelection";
 import { moduleSurfaceSpec } from "../components/canvas/surfaceSpec";
 import { paintMinimalLevel } from "../components/paintMinimal";
 import { layoutModuleTree } from "../layout/moduleLevelLayout";
+import { fuseCycles, CYCLE_EDGE_TYPE } from "../layout/cycleFusion";
+import { foldPairRibbons, RIBBON_EDGE_TYPE } from "../layout/parallelWires";
+import { fadeFaintWires } from "../layout/wireSalience";
 import { IMPORT_CROSS, IMPORT_SIBLING, REL_COLORS } from "../theme/mapPalette";
 import { RENDERS_WIRE } from "../theme/edgeColors";
 import {
@@ -48,6 +56,20 @@ function wireClassOf(data: EdgeData): string {
     return data.crossFrame === true ? "import-cross" : "import-sibling";
   }
   return `unclassified:${String(data.category)}`;
+}
+
+/** Classify one PIPELINE edge into its (colour-class, stroke) pairs. A folded ribbon expands into
+ * its member strands (folding must never recolour a strand); a fused cycle keeps its kind, pinned
+ * like a plain wire of that kind; a leaf classifies by `wireClassOf`. */
+function classifyEdge(edge: Edge): Array<[string, string]> {
+  if (edge.type === RIBBON_EDGE_TYPE) {
+    const members = (edge.data as { members?: Edge[] } | undefined)?.members ?? [];
+    return members.map((strand) => [wireClassOf((strand.data ?? {}) as EdgeData), strokeOf(strand)]);
+  }
+  if (edge.type === CYCLE_EDGE_TYPE) {
+    return [[`cycle:${String((edge.data as { depKind?: string } | undefined)?.depKind)}`, strokeOf(edge)]];
+  }
+  return [[wireClassOf((edge.data ?? {}) as EdgeData), strokeOf(edge)]];
 }
 
 /** Run the surface's derived level through the REAL layout + paint chain and collect every
@@ -110,5 +132,75 @@ describe("EDGE COLOURS — one palette, every surface", () => {
         }
       }
     }
+  });
+
+  // GraphSurface runs three more passes AFTER paintMinimalLevel (highways off): salience fade
+  // (opacity only) → cycle fusion → pair-ribbon fold. They must not recolour a wire, and no surface
+  // may fork the result — the same one-palette contract as above, one pipeline layer deeper.
+  it("cycle fusion + ribbon folding keep every strand on its palette colour, on every surface", async () => {
+    const observed = new Map<string, Map<string, Set<string>>>();
+    let ribbons = 0;
+    for (const mode of MODULE_SURFACE_MODES) {
+      const tree = deriveFor(moduleSurfaceSpec(mode)!, INDEX, CACHES, DRAWN_DEEP[mode]);
+      const laid = await layoutModuleTree(tree.nodes, tree.edges);
+      const painted = paintMinimalLevel(laid.nodes, laid.edges, new Set<string>(), 2, "reach");
+      // The exact GraphSurface highways-off edge pipeline.
+      const folded = foldPairRibbons(fuseCycles(fadeFaintWires(painted.edges)));
+      ribbons += folded.filter((edge) => edge.type === RIBBON_EDGE_TYPE).length;
+      const byKind = new Map<string, Set<string>>();
+      for (const edge of folded) {
+        for (const [kind, stroke] of classifyEdge(edge)) {
+          const strokes = byKind.get(kind) ?? new Set<string>();
+          strokes.add(stroke);
+          byKind.set(kind, strokes);
+        }
+      }
+      observed.set(mode, byKind);
+    }
+    const expected: Record<string, string> = {
+      calls: REL_COLORS.calls,
+      instantiates: REL_COLORS.instantiates,
+      references: REL_COLORS.references,
+      renders: RENDERS_WIRE,
+      "import-cross": IMPORT_CROSS,
+      "import-sibling": IMPORT_SIBLING,
+      "dep-untyped-cross": IMPORT_CROSS,
+      // A fused cycle keeps its kind's colour — same pin as the plain wire it folds.
+      "cycle:calls": REL_COLORS.calls,
+      "cycle:instantiates": REL_COLORS.instantiates,
+      "cycle:references": REL_COLORS.references,
+    };
+    for (const [mode, byKind] of observed) {
+      for (const [kind, strokes] of byKind) {
+        expect(expected[kind], `surface "${mode}" painted an unpinned kind "${kind}" through the fold/fuse passes`).toBeDefined();
+        expect([...strokes], `surface "${mode}", kind "${kind}"`).toEqual([expected[kind]]);
+      }
+    }
+    // The ribbon fold is EXERCISED — the multi-kind ALPHA→ORDER pair folds on every surface, so an
+    // empty result can't pass this vacuously (a per-lens recolour would have to survive the pin).
+    expect(ribbons, "no ribbon folded — the fold pass is untested").toBeGreaterThanOrEqual(MODULE_SURFACE_MODES.length);
+    // Cross-surface: any class two surfaces both draw wears the identical stroke.
+    for (const [modeA, kindsA] of observed) {
+      for (const [modeB, kindsB] of observed) {
+        for (const [kind, strokes] of kindsA) {
+          if (kindsB.has(kind)) {
+            expect([...kindsB.get(kind)!], `${kind} differs between ${modeA} and ${modeB}`).toEqual([...strokes]);
+          }
+        }
+      }
+    }
+    // Cycle-fusion colour preservation. The shared fixture has no mutual same-kind pair by design —
+    // its one cross-cluster `calls` edge is load-bearing for surfaceParity's ghost/coupling facts,
+    // and reversing it perturbs them — so fuse a REAL painted `calls` strand with its mirror and
+    // assert the fused cycle keeps the kind's palette colour.
+    const mods = deriveFor(moduleSurfaceSpec("modules")!, INDEX, CACHES, DRAWN_DEEP.modules);
+    const laidMods = await layoutModuleTree(mods.nodes, mods.edges);
+    const paintedMods = paintMinimalLevel(laidMods.nodes, laidMods.edges, new Set<string>(), 2, "reach");
+    const callsLeaf = paintedMods.edges.find((edge) => wireClassOf((edge.data ?? {}) as EdgeData) === "calls");
+    expect(callsLeaf, "fixture drew no plain calls wire to fuse").toBeDefined();
+    const mirror: Edge = { ...callsLeaf!, id: `${callsLeaf!.id}:mirror`, source: callsLeaf!.target, target: callsLeaf!.source };
+    const fused = fuseCycles([callsLeaf!, mirror]).find((edge) => edge.type === CYCLE_EDGE_TYPE);
+    expect(fused, "fuseCycles did not fuse a mutual same-kind pair").toBeDefined();
+    expect(strokeOf(fused!)).toBe(REL_COLORS.calls);
   });
 });
