@@ -68,6 +68,7 @@ export function ModuleMapView() {
   const showTests = useBlueprint((state) => state.showTests);
   const showPrivate = useBlueprint((state) => state.showPrivate);
   const showHighways = useBlueprint((state) => state.showHighways);
+  const showCommons = useBlueprint((state) => state.showCommons);
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const viewMode = useBlueprint((state) => state.viewMode);
   const serviceScope = useBlueprint((state) => state.serviceScope);
@@ -143,7 +144,10 @@ export function ModuleMapView() {
         const boosted = edge.id === wireHover?.id || inspectedIds.has(edge.id);
         if (edge.type === RIBBON_EDGE_TYPE) {
           // The cable boosts as a WHOLE (every stripe lights); its stripes carry their own paint.
-          return { ...edge, interactionWidth: 16, data: { ...edge.data, pulse: true, boosted } };
+          // A fully invisible cable (all stripes opacity 0 — a commons pair at rest) must not keep
+          // a hit area: hovering empty canvas would pop a phantom tooltip and flash-light it.
+          const anyVisible = boosted || ((edge.data as RibbonEdgeData).members ?? []).some((member) => (member.style as { opacity?: number } | undefined)?.opacity !== 0);
+          return { ...edge, interactionWidth: anyVisible ? 16 : 0, data: { ...edge.data, pulse: true, boosted } };
         }
         return {
           ...edge,
@@ -151,7 +155,9 @@ export function ModuleMapView() {
           // theirs — same geometry as the default edge, plus the lit direction pulse. `pulse` is the
           // Map's opt-in: shared edge components draw dots ONLY where the surface asked for them.
           type: edge.type ?? WIRE_EDGE_TYPE,
-          interactionWidth: 14,
+          // An INVISIBLE wire (an unlit commons strand, opacity 0) must not be a hover/click target —
+          // a tooltip naming a wire the canvas doesn't show would be a haunting.
+          interactionWidth: (edge.style as { opacity?: number } | undefined)?.opacity === 0 && !boosted ? 0 : 14,
           data: { ...edge.data, pulse: true },
           style: boosted ? { ...edge.style, opacity: 1, strokeWidth: ((edge.style?.strokeWidth as number) ?? 1.5) + 1.2 } : edge.style,
         };
@@ -213,7 +219,7 @@ export function ModuleMapView() {
   const fitted = useRef(false);
   useEffect(() => {
     fitted.current = false;
-  }, [effectiveFocus, showTests, serviceScope]);
+  }, [effectiveFocus, showTests, serviceScope, showCommons]);
   useEffect(() => {
     if (!rfRef.current || nodes.length === 0 || fitted.current) {
       return;
@@ -311,6 +317,9 @@ function miniMapColor(node: Node): string {
   }
   if (node.type === "step" || node.type === "ghost") {
     return "#565E68";
+  }
+  if (node.type === "commonsDock") {
+    return "#5C4A2F"; // the tray's quiet amber, so the dock reads as one region on the minimap
   }
   // File dots wear the neutral file-family accent (category lives on the card's text chip, not a hue).
   return accentForKind("module");

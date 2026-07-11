@@ -13,6 +13,7 @@ import { useBlueprint } from "../../../state/StoreContext";
 import type { ModuleGroupData } from "../../../derive/moduleTree";
 import { cardSelectedStyle, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, DeltaChip, useNodeDiff } from "./changed";
+import { CommonsChips } from "./CommonsChips";
 
 // A neutral package hue — the cross-package coupling gold lives on the wires, not the boxes.
 const PACKAGE_ACCENT = "#5B9BE3";
@@ -55,6 +56,7 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
           <DeltaChip diff={diff} />
         </div>
         <Meta data={data} />
+        <CommonsChips chips={(data as { commonsChips?: string[] }).commonsChips} />
       </div>
     </div>
   );

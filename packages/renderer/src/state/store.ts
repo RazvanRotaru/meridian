@@ -213,6 +213,9 @@ export interface BlueprintState {
    * other Map toggles — off draws every edge individually. A selected node's own wires always draw
    * individually regardless, so you can read its links out of the highway they'd otherwise join. */
   showHighways: boolean;
+  /** Whether utility hubs demote into the COMMONS DOCK below the graph (commonsDemotion). A
+   * RELAYOUT toggle like Tests — the docked cards leave/rejoin ELK, so positions change. */
+  showCommons: boolean;
   /** Module categories painted OUT of the map (a render-time filter — never a re-derive). */
   hiddenCategories: Set<ModuleCategory>;
   /** Relationship kinds painted OUT of the map (calls / instantiates / extends / implements /
@@ -402,6 +405,7 @@ export interface BlueprintState {
   setModuleRadius(radius: number): void;
   toggleHighlightMode(): void;
   toggleHighways(): void;
+  toggleCommons(): void;
   toggleCategory(category: ModuleCategory): void;
   toggleRelKind(kind: string): void;
   resetCategoryFilter(): void;
@@ -657,6 +661,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleRadius: 1,
     highlightMode: "node",
     showHighways: true,
+    showCommons: true,
     hiddenCategories: new Set<ModuleCategory>(),
     hiddenRelKinds: new Set<string>(),
     moduleSelected: new Set<string>(),
@@ -1116,7 +1121,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // while "modules" derives the folder containment level for the current focus. The import graph
     // is built once (cached) and reused for every folder level.
     async moduleRelayout() {
-      const { index, moduleFocus, moduleExpanded, mapExtra, artifact, viewMode, showTests, serviceScope } = get();
+      const { index, moduleFocus, moduleExpanded, mapExtra, artifact, viewMode, showTests, showCommons, serviceScope } = get();
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
       const graph = (moduleGraph ??= buildModuleGraph(index));
@@ -1129,7 +1134,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (viewMode === "call") {
         layout = await deriveServiceLevelLayout(index, moduleExpanded, graph, deps, flows, scopeSetOf(serviceScope), mapExtra);
       } else {
-        layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, graph, deps, flows, mapExtra, hidden);
+        layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, graph, deps, flows, mapExtra, hidden, showCommons);
       }
       if (moduleLayoutSeq !== sequence) {
         return; // a newer focus change superseded this one.
@@ -1268,6 +1273,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // useMemo, no relayout.
     toggleHighways() {
       set({ showHighways: !get().showHighways });
+    },
+
+    // Park/unpark utility hubs in the commons dock. A RELAYOUT toggle (like Tests): the docked
+    // cards leave/rejoin ELK, so the level re-lays out and re-fits.
+    toggleCommons() {
+      set({ showCommons: !get().showCommons });
+      void get().moduleRelayout();
     },
 
     // Show/hide a module category. PAINT-ONLY: the surface filters the category's file cards out in
