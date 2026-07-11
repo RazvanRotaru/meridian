@@ -307,7 +307,7 @@ export interface BlueprintState {
    * components read it to decide whether to offer a "show source" control. */
   sourceUrl: string | null;
   /** POST endpoint for PR-head preparation; null when this session can't prepare one (plain
-   * `view`, older server). Reviews auto-prepare when present; it also gates the retry button. */
+   * `view`, older server). Gates prepare-first review entry and the fallback extract button. */
   analyzeUrl: string | null;
   /** PR API endpoints derived from the graph artifact URL; 404/network means this session lacks PRs. */
   prsUrl: string;
@@ -349,7 +349,7 @@ export interface BlueprintState {
   /** Files whose removed patch text exceeded the server-side cap, keyed like reviewRemovedByFile. */
   reviewRemovedTruncatedByFile: Record<string, boolean>;
   /** The review-PREPARATION lane: "preparing" while the server streams the clone→checkout→extract
-   * analysis of the PR head; "error" when that stream failed (the panel offers Retry); else "idle". */
+   * analysis of the PR head; "error" when that stream failed (Retry or base fallback); else "idle". */
   prReviewStatus: "idle" | "preparing" | "error";
   /** The analyze stage currently running server-side; null outside "preparing". */
   prPrepareStage: PrAnalyzeStage | null;
@@ -487,15 +487,19 @@ export interface BlueprintState {
   ensurePrSummary(number: number): Promise<void>;
   selectPr(number: number | null): Promise<void>;
   reviewPrInGraph(): Promise<void>;
+  /** Explicit fallback after prepare-first entry fails: review against the loaded base graph. */
+  reviewPrOnBaseGraph(): Promise<void>;
   /** Head extract: stream the server's clone→checkout→extract of the PR head, swap the
-   * loaded artifact for the head-accurate one, and re-run the review in head coordinates. On
-   * failure the review stays in sync mode (overlay intact) with the error in the prepare lane. */
+   * loaded artifact for the head-accurate one, and run the review in head coordinates. On an
+   * entry failure the PRs page stays put; a fallback review remains intact on manual failure. */
   prepareHeadGraph(): Promise<void>;
   /** Re-open a review whose overlay was soft-closed (Escape/Close/lens switch) WITHOUT re-running
    * the expensive head prepare: re-swap the already-prepared artifact (a plain GET) if there was
    * one, repaint the kept amber, and reseed the minimal overlay from `reviewAllSeedIds`. Guarded on
    * a live-but-collapsed review (`prReviewed !== null && minimalSeedIds.length === 0`). */
   resumePrReview(): Promise<void>;
+  /** Abandon an in-flight prepare-first entry; server work may continue behind the stale-seq guard. */
+  cancelPrReviewPreparation(): void;
   /** Dismiss the head-extraction failure warning: clears the prepare-error lane. */
   dismissPrepareError(): void;
   relayout(): Promise<void>;
@@ -517,7 +521,7 @@ export interface StoreDependencies {
   /** GET base for one changed file's text at the PR head ref (the review code panel's head-fetch). */
   prFileUrl?: string;
   /** POST endpoint for PR-head preparation. Null/absent (a plain `view` session, or an older
-   * server) leaves reviewPrInGraph on its synchronously-applied loaded-artifact review. */
+   * server) makes reviewPrInGraph use the synchronously-applied loaded-artifact review. */
   analyzeUrl?: string | null;
   /** The current GitHub artifact id — the analyze POST body's `id`. */
   graphId?: string | null;
@@ -630,6 +634,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let prFilesSeq = 0;
   let prFilesRequest: { number: number; sequence: number; promise: Promise<void> } | null = null;
   let prAnalyzeSeq = 0;
+  let prAnalyzeCancellation: { sequence: number; resolve: () => void } | null = null;
+  let prReviewEntryRequest: { number: number; promise: Promise<void> } | null = null;
   const prsNextPage: Record<PrsTab, number> = { open: 1, closed: 1 };
   // Rebuilding/closing the minimal overlay must discard any of its ELK passes still in flight; the
   // extracted review body shares this invalidation with the in-store actions that own the counter.
@@ -661,10 +667,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const prCommentsUrl = dependencies.prCommentsUrl;
   const prChecksUrl = dependencies.prChecksUrl;
   const prFileUrl = dependencies.prFileUrl ?? null;
-  // Null when the server can't prepare a PR head (no analyze route, or no stored GitHub artifact);
-  // reviewPrInGraph then falls back to the synchronous loaded-artifact review.
-  const analyzeUrl = dependencies.analyzeUrl ?? null;
   const analyzeGraphId = dependencies.graphId ?? null;
+  // The route alone is not a usable prepare capability: plain `view` still knows the route name,
+  // but has no stored graph id for the request. Expose null in that context so every consumer has
+  // one truthful capability flag and reviewPrInGraph takes its synchronous path.
+  const analyzeUrl = analyzeGraphId === null ? null : dependencies.analyzeUrl ?? null;
   const prReviewUrl = dependencies.prReviewUrl;
   // The composition tab opens on the WHOLE-SYSTEM overview (null root); file-rooting is the explicit
   // focus tool (⌘P / click a boundary or frame). Auto-rooting at the declared entry module proved a
@@ -1791,6 +1798,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
         return;
       }
+      if (previous === "prs") {
+        // A prepare-first review only owns the PRs waiting surface. Leaving it explicitly abandons
+        // the entry; the server stream may finish, but its sequence can no longer swap the graph.
+        get().cancelPrReviewPreparation();
+      }
       beginLensTransition(get, set);
       // The path nodes to carry — read BEFORE any state mutates the outgoing lens's selection/focus.
       const anchors = anchorNodeIds(get());
@@ -1834,6 +1846,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         get().setViewMode("prs");
         return;
       }
+      get().cancelPrReviewPreparation();
       const back = lensBeforePrs ?? "modules";
       lensBeforePrs = null;
       set({ viewMode: back });
@@ -1976,6 +1989,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       // A tab switch is also a selection reset, so invalidate every selected-PR response lane.
       prFilesSeq += 1;
+      get().cancelPrReviewPreparation();
       set({
         prsTab: tab,
         prsError: null,
@@ -2124,7 +2138,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const sequence = ++prFilesSeq;
       // Switching PRs abandons any review preparation in flight: bump its seq so a landing stream
       // is dropped, and clear the indicator so the panel never shows a stale progress/error card.
-      prAnalyzeSeq += 1;
+      get().cancelPrReviewPreparation();
       // Leaving the reviewed PR (a different number, or Back/Escape's null) ends the review
       // session: put the boot artifact back and re-lay the visible surface. A no-op outside one.
       if (restoreSelectedPrReview(get, set, invalidateArtifactCaches, bootReviewBaseline)) {
@@ -2241,10 +2255,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // Once the selected PR's files are ready, reviewing lands synchronously on main's Module-map
-    // minimal-graph surface (applyPrReviewToMap), against the loaded artifact. If selection's file
-    // lane is still pending, await that exact request first. A capable web session then upgrades
-    // that already-visible review in the background with the PR-head artifact.
+    // Once the selected PR's files are ready, a capable web session PREPARES first while the PRs
+    // page remains visible. Only the swapped PR-head graph is allowed to enter the Map. A plain
+    // view (no analyze capability) retains the synchronous loaded-artifact entry path.
     async reviewPrInGraph() {
       const selected = get().prSelected;
       if (selected === null) {
@@ -2259,20 +2272,47 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           return;
         }
       }
-      applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
-      const reviewState = get();
-      // The sync review above is the instant entry point; head preparation is deliberately
-      // fire-and-forget. Re-clicking Review while that same preparation is streaming must not
-      // launch a duplicate request, and an already-prepared review needs no automatic re-extract.
-      if (
-        analyzeUrl !== null
-        && analyzeGraphId !== null
-        && reviewState.prReviewed === selected
-        && reviewState.prPreparedGraphId === null
-        && reviewState.prReviewStatus !== "preparing"
-      ) {
-        void reviewState.prepareHeadGraph();
+      if (analyzeUrl === null || analyzeGraphId === null) {
+        await get().reviewPrOnBaseGraph();
+        return;
       }
+      // A double-click shares the one blocking entry promise; it must neither supersede the
+      // sequence nor let a later caller observe completion before the one server run finishes.
+      if (get().prReviewStatus === "preparing") {
+        if (prReviewEntryRequest?.number === selected) {
+          await prReviewEntryRequest.promise;
+        }
+        return;
+      }
+      const promise = get().prepareHeadGraph();
+      const request = { number: selected, promise };
+      prReviewEntryRequest = request;
+      try {
+        await promise;
+      } finally {
+        if (prReviewEntryRequest === request) {
+          prReviewEntryRequest = null;
+        }
+      }
+    },
+
+    // The old synchronous entry is now deliberately narrow: no analyze capability, or the user's
+    // explicit fallback after prepare-first failed. It never starts server preparation itself.
+    async reviewPrOnBaseGraph() {
+      const selected = get().prSelected;
+      if (selected === null) {
+        return;
+      }
+      if (get().prFiles === null) {
+        const inFlight = prFilesRequest?.number === selected && prFilesRequest.sequence === prFilesSeq
+          ? prFilesRequest.promise
+          : get().selectPr(selected);
+        await inFlight;
+        if (get().prSelected !== selected || get().prFiles === null) {
+          return;
+        }
+      }
+      applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
     },
 
     // Re-open a review whose overlay was soft-closed (Escape/Close/lens switch) — cheaply. The
@@ -2309,48 +2349,109 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().minimalRelayout();
     },
 
-    // The head extract auto-started by reviewPrInGraph (and retained as a manual retry): stream the
-    // clone→checkout→extract analysis into the prepare indicator, SWAP the loaded artifact for the
-    // prepared head-accurate one (saving the boot pair for the session-end restore), then re-run
-    // the review so marking, seeds, and the line diff all compute in the diff's own head
-    // coordinates — added files join the graph, deleted files leave it. On failure the sync review
-    // stays exactly as it was (overlay intact); only the prepare lane reports the error. A
-    // stale-seq guard drops an older stream when a newer preparation (or PR switch) supersedes it.
+    // Prepare-first entry (and the fallback review's manual "Extract head graph"): stream the
+    // clone→checkout→extract analysis, SWAP the loaded artifact for the prepared head-accurate one,
+    // then run the review so marking, seeds, and line diff all compute in HEAD coordinates. The
+    // stale-seq + identity guards drop a canceled entry, PR switch, or PRs-lens exit.
     async prepareHeadGraph() {
-      const prNumber = get().prReviewed;
-      const summary = selectedPrSummary(get());
-      if (prNumber === null || analyzeUrl === null || analyzeGraphId === null || summary === null) {
+      const state = get();
+      const prNumber = state.prReviewed ?? state.prSelected;
+      const enteringFromPrs = state.prReviewed === null;
+      const summary = selectedPrSummary(state, prNumber);
+      if (
+        prNumber === null
+        || analyzeUrl === null
+        || analyzeGraphId === null
+        || summary === null
+        || (enteringFromPrs && state.viewMode !== "prs")
+      ) {
         return;
       }
+      // A direct manual re-run supersedes the prior action just like Retry does through
+      // reviewPrInGraph; resolve its public waiter while its guarded stream drains.
+      prAnalyzeCancellation?.resolve();
       const sequence = ++prAnalyzeSeq;
-      set({ prReviewStatus: "preparing", prPrepareStage: "clone", prPrepareError: null, prPreparedGraphId: null, prPreparedHeadSha: null });
-      try {
-        const request = { id: analyzeGraphId, prNumber, baseRef: summary.baseRef, headRef: summary.headRef };
-        const analysis = await streamPrAnalysis(analyzeUrl, request, (stage) => {
-          if (prAnalyzeSeq === sequence) {
-            set({ prPrepareStage: stage });
+      let resolveCanceled!: () => void;
+      const canceled = new Promise<void>((resolve) => {
+        resolveCanceled = resolve;
+      });
+      const cancellation = { sequence, resolve: resolveCanceled };
+      prAnalyzeCancellation = cancellation;
+      const active = () => {
+        const current = get();
+        return prAnalyzeSeq === sequence
+          && current.prSelected === prNumber
+          && (enteringFromPrs
+            ? current.viewMode === "prs" && current.prReviewed === null
+            : current.prReviewed === prNumber);
+      };
+      set({
+        prReviewStatus: "preparing",
+        prPrepareStage: "clone",
+        prPrepareError: null,
+        prPreparedGraphId: null,
+        prPreparedHeadSha: null,
+        prReviewBlocked: null,
+      });
+      const work = (async () => {
+        try {
+          const request = { id: analyzeGraphId, prNumber, baseRef: summary.baseRef, headRef: summary.headRef };
+          const analysis = await streamPrAnalysis(analyzeUrl, request, (stage) => {
+            if (active()) {
+              set({ prPrepareStage: stage });
+            }
+          });
+          if (!active()) {
+            return;
           }
-        });
-        if (prAnalyzeSeq !== sequence) {
-          return; // a newer preparation (or PR switch) superseded this one.
+          // SWAP: load the prepared PR-head artifact and make it the CURRENT graph BEFORE the review
+          // body runs, so amber marking, seeds, and the line diff compute in HEAD coordinates.
+          const prepared = await fetchPreparedArtifact(get().graphUrl, analysis.graphId);
+          if (!active()) {
+            return;
+          }
+          swapToPreparedArtifact(get, set, prepared, invalidateArtifactCaches);
+          set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null, prPreparedGraphId: analysis.graphId, prPreparedHeadSha: analysis.headSha });
+          const entered = applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
+          if (!entered) {
+            // The zero-match decision was made against HEAD. Do not leak that unreviewed prepared
+            // graph behind the PRs page (or replace an explicit base fallback that still matches).
+            restorePrReviewBaseline(get, set, invalidateArtifactCaches, { endSession: enteringFromPrs });
+            if (!enteringFromPrs) {
+              set({ prPreparedGraphId: null, prPreparedHeadSha: null });
+            }
+          }
+        } catch (error) {
+          if (active()) {
+            // Derivation after a successful fetch is still part of preparation. If it throws after
+            // the swap, put the prior graph back before exposing the retry/fallback state.
+            if (get().prPreparedArtifactCurrent) {
+              restorePrReviewBaseline(get, set, invalidateArtifactCaches, { endSession: enteringFromPrs });
+              if (!enteringFromPrs) {
+                set({ prPreparedGraphId: null, prPreparedHeadSha: null });
+              }
+            }
+            set({ prReviewStatus: "error", prPrepareStage: null, prPrepareError: prepareErrorMessage(error) });
+          }
         }
-        // SWAP: load the prepared PR-head artifact and make it the CURRENT graph BEFORE the review
-        // body re-runs, so amber marking, seeds, and the line diff all compute in the hunks' own
-        // head coordinates (the loaded artifact is the analyzed branch — its line numbers drift).
-        const prepared = await fetchPreparedArtifact(get().graphUrl, analysis.graphId);
-        if (prAnalyzeSeq !== sequence) {
-          return; // abandoned while the artifact was in flight — an old preparation must not swap.
-        }
-        swapToPreparedArtifact(get, set, prepared, invalidateArtifactCaches);
-        // The swap marks the prepared artifact current BEFORE the re-review, so its head-mode
-        // guards read the loaded graph's coordinate space rather than mere cache availability.
-        set({ prReviewStatus: "idle", prPrepareStage: null, prPreparedGraphId: analysis.graphId, prPreparedHeadSha: analysis.headSha });
-        applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
-      } catch (error) {
-        if (prAnalyzeSeq === sequence) {
-          set({ prReviewStatus: "error", prPrepareStage: null, prPrepareError: prepareErrorMessage(error) });
+      })();
+      try {
+        // Cancel resolves the public/blocking action immediately. `work` deliberately keeps
+        // draining server output, but every landing point is fenced by `active()`.
+        await Promise.race([work, canceled]);
+      } finally {
+        if (prAnalyzeCancellation === cancellation) {
+          prAnalyzeCancellation = null;
         }
       }
+    },
+
+    cancelPrReviewPreparation() {
+      prAnalyzeSeq += 1;
+      const cancellation = prAnalyzeCancellation;
+      prAnalyzeCancellation = null;
+      cancellation?.resolve();
+      set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null });
     },
 
     dismissPrepareError() {
@@ -2382,7 +2483,7 @@ function applyPrReviewToMap(
   set: (partial: Partial<BlueprintState>) => void,
   prFilesUrl: string,
   invalidateMinimalLayout: () => void,
-): void {
+): boolean {
   const {
     prFiles,
     prSelected,
@@ -2394,7 +2495,7 @@ function applyPrReviewToMap(
     prReviewBaseline,
   } = get();
   if (prSelected === null) {
-    return;
+    return false;
   }
   // "Swapped" == the loaded artifact IS the prepared PR-head graph: node locations are already
   // head-relative, so every base→head remap below must stand down (running it would corrupt an
@@ -2427,7 +2528,7 @@ function applyPrReviewToMap(
           : `None of this PR's ${changedFileCount} changed files match this session's graph`,
       },
     });
-    return;
+    return false;
   }
   // This is a lens ENTRY (it lands on the Map lens below), so it owes the shared transition side
   // effects like every other entry point: a live Service scope must not survive into the review.
@@ -2572,6 +2673,7 @@ function applyPrReviewToMap(
   if (seeds.length > 0) {
     void get().minimalRelayout();
   }
+  return true;
 }
 
 /** The selected PR's summary row (its refs feed the analyze request); null when unavailable.
@@ -2619,6 +2721,13 @@ function relayoutActiveModuleSurface(get: () => BlueprintState): Promise<void> {
  * be forgotten four times over. openServiceScope runs it too, then SETS its own fresh scope.
  */
 function beginLensTransition(get: BlueprintStore["getState"], set: (partial: Partial<BlueprintState>) => void): void {
+  // Most lens entries route through setViewMode, but direct pivots (openLogicFlow,
+  // openComposition, openServiceScope) call this helper themselves. They must abandon the same
+  // prepare-first waiting lane before changing view. Successful prepared entry sets the lane idle
+  // before it calls this helper, so its own PRs → Map transition is deliberately not canceled.
+  if (get().viewMode === "prs" && get().prReviewStatus === "preparing") {
+    get().cancelPrReviewPreparation();
+  }
   if (get().minimalSeedIds.length > 0) {
     get().closeMinimalGraph();
   }

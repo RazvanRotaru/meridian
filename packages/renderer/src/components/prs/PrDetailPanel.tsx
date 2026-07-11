@@ -95,23 +95,23 @@ export function PrDetailPanel() {
       {(discussion?.reviews.approved.length ?? 0) > 0 || (discussion?.reviews.changesRequested.length ?? 0) > 0 || checks !== null ? (
         <ReviewStateRow reviews={discussion?.reviews ?? null} checks={checks} />
       ) : null}
-      <button
-        type="button"
-        style={REVIEW_STYLE}
-        disabled={!files || loading || preparing || allOutside}
-        title={allOutside ? "This PR's changes are outside this session's subfolder" : undefined}
-        onClick={() => void reviewPrInGraph()}
-      >
-        Review in graph
-      </button>
+      {preparing ? <PrPrepareProgress /> : reviewStatus === "error" ? <PrPrepareError /> : (
+        <button
+          type="button"
+          style={REVIEW_STYLE}
+          disabled={!files || loading || allOutside}
+          title={allOutside ? "This PR's changes are outside this session's subfolder" : undefined}
+          onClick={() => void reviewPrInGraph()}
+        >
+          Review in graph
+        </button>
+      )}
       {reviewBlocked?.number === selected ? <div style={NOTICE_STYLE}>{reviewBlocked.reason}</div> : null}
       {partiallyOutside ? (
         <div style={OUTSIDE_INFO_STYLE}>
           {outsideCount} of {totalFiles} changed files are outside {subdirLabel} and won't appear in this review.
         </div>
       ) : null}
-      {preparing ? <PrPrepareProgress /> : null}
-      {reviewStatus === "error" ? <PrPrepareError /> : null}
       {truncated ? <div style={NOTICE_STYLE}>File list truncated by the server.</div> : null}
       {files === null && loading ? <div style={LOADING_STYLE}>Loading files...</div> : null}
       {files === null && error ? <div style={ERROR_STYLE}>{error}</div> : null}

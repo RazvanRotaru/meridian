@@ -346,8 +346,7 @@ function headSelectedPrState(number: number) {
   };
 }
 
-/** Open the sync review and wait for its automatic head extraction to swap; returns the store plus
- * the boot pair for asserts. */
+/** Complete prepare-first entry; returns the swapped store plus the boot pair for restore asserts. */
 async function swappedReviewStore() {
   const fetchMock = routedFetch();
   vi.stubGlobal("fetch", fetchMock);
@@ -355,40 +354,60 @@ async function swappedReviewStore() {
   const bootIndex = store.getState().index;
   store.setState(headSelectedPrState(7));
   await store.getState().reviewPrInGraph();
-  await vi.waitFor(() => {
-    expect(store.getState().prPreparedGraphId).toBe("pr-head-1");
-  });
   return { store, bootIndex, fetchMock };
 }
 
 describe("PR head preparation (prepareHeadGraph)", () => {
-  it("applies the sync review immediately, then auto-starts head preparation in the background", async () => {
-    let releaseAnalyze!: (response: Response) => void;
-    const analyzeResponse = new Promise<Response>((resolve) => {
-      releaseAnalyze = resolve;
+  it("keeps the PRs view until the stream and prepared-graph swap complete", async () => {
+    const encoder = new TextEncoder();
+    let finishAnalyze!: () => void;
+    const analyzeStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('{"stage":"clone"}\n'));
+        finishAnalyze = () => {
+          controller.enqueue(encoder.encode('{"stage":"done","graphId":"pr-gated","headSha":"abc1234"}\n'));
+          controller.close();
+        };
+      },
     });
-    const fetchMock = vi.fn().mockReturnValue(analyzeResponse);
+    let releaseGraph!: (response: Response) => void;
+    const graphResponse = new Promise<Response>((resolve) => {
+      releaseGraph = resolve;
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => input.toString().includes("/api/pr/analyze")
+      ? Promise.resolve(new Response(analyzeStream, { status: 200 }))
+      : graphResponse);
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore(ANALYZE_DEPS);
     store.setState(selectedPrState(7));
 
     const review = store.getState().reviewPrInGraph();
-    // No analyze await has resolved, yet the sync review is already the visible Map entry.
-    expect(store.getState().viewMode).toBe("modules");
-    expect(store.getState().prReviewed).toBe(7);
-    expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts"]);
+    // The base graph is not an intermediate review while the stream is open.
+    expect(store.getState().viewMode).toBe("prs");
+    expect(store.getState().prReviewed).toBe(null);
+    expect(store.getState().review).toBe(null);
+    expect(store.getState().minimalSeedIds).toEqual([]);
     expect(store.getState().prReviewStatus).toBe("preparing");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/pr/analyze");
     expect(store.getState().prPreparedGraphId).toBe(null);
     expect(store.getState().prReviewBaseline).toBe(null);
-    await review; // fire-and-forget: review completion still does not wait for analyze.
-    expect(store.getState().prReviewStatus).toBe("preparing");
 
-    releaseAnalyze(ndjsonResponse([{ stage: "error", message: "test cleanup" }]));
+    finishAnalyze();
     await vi.waitFor(() => {
-      expect(store.getState().prReviewStatus).toBe("error");
+      expect(fetchMock.mock.calls.some((call) => call[0].toString().includes("/api/graph"))).toBe(true);
     });
+    // Even a completed stream cannot enter the Map before the commit-pinned artifact arrives.
+    expect(store.getState().viewMode).toBe("prs");
+    expect(store.getState().prReviewed).toBe(null);
+
+    releaseGraph(Response.json(HEAD_ARTIFACT));
+    await review;
+    expect(store.getState().viewMode).toBe("modules");
+    expect(store.getState().prReviewed).toBe(7);
+    expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts"]);
+    expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
+    expect(store.getState().prPreparedGraphId).toBe("pr-gated");
   });
 
   it("walks clone→checkout→extract, stores the prepared graph id + head sha, and re-lands the review's post-conditions", async () => {
@@ -403,23 +422,48 @@ describe("PR head preparation (prepareHeadGraph)", () => {
       }
     });
     await store.getState().reviewPrInGraph();
-    await vi.waitFor(() => {
-      expect(store.getState().prPreparedGraphId).toBe("pr-deadbeef");
-    });
-    expect(stages).toEqual([null, "clone", "checkout", "extract", null]);
+    expect(stages).toEqual(["clone", "checkout", "extract", null]);
     expect(store.getState().prReviewStatus).toBe("idle");
     expect(store.getState().prPrepareError).toBe(null);
     expect(store.getState().prPreparedGraphId).toBe("pr-deadbeef");
     expect(store.getState().prPreparedHeadSha).toBe("abc1234def5678900000");
     expect(store.getState().prPreparedArtifactCurrent).toBe(true);
-    // The analyze POST carries the contract body and starts only after the sync review lands.
+    // The analyze POST carries the contract body before any review state is applied.
     expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/pr/analyze");
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ id: "artifact-1", prNumber: 7, baseRef: "main", headRef: "feature" });
-    // After the stream the review re-runs against the SWAPPED-IN prepared artifact, landing the
-    // same Map post-conditions the synchronous review had.
+    // After the stream, the first review application runs against the swapped prepared artifact.
     expect(store.getState().viewMode).toBe("modules");
     expect(store.getState().prReviewed).toBe(7);
     expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts"]);
+  });
+
+  it("evaluates the zero-match guard against the prepared graph", async () => {
+    const unmatchedHead: GraphArtifact = {
+      ...HEAD_ARTIFACT,
+      nodes: [
+        node("ts:other", "package", "other"),
+        node("ts:other/b.ts", "module", "other/b.ts", "ts:other"),
+      ],
+    };
+    const fetchMock = routedFetch({ graph: () => Promise.resolve(Response.json(unmatchedHead)) });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore(ANALYZE_DEPS);
+    const bootIndex = store.getState().index;
+    store.setState(selectedPrState(7));
+
+    await store.getState().reviewPrInGraph();
+
+    expect(store.getState().viewMode).toBe("prs");
+    expect(store.getState().prReviewed).toBe(null);
+    expect(store.getState().review).toBe(null);
+    expect(store.getState().prReviewBlocked).toEqual({
+      number: 7,
+      reason: "None of this PR's 1 changed files match this session's graph",
+    });
+    // The HEAD graph was used for the decision, then the unreviewed swap was put away.
+    expect(store.getState().index).toBe(bootIndex);
+    expect(store.getState().prPreparedGraphId).toBe(null);
+    expect(store.getState().prReviewBaseline).toBe(null);
   });
 
   it("a second review while preparation is in flight does not start a duplicate", async () => {
@@ -443,37 +487,121 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     store.setState(selectedPrState(7));
     const firstReview = store.getState().reviewPrInGraph();
     const secondReview = store.getState().reviewPrInGraph();
-    await Promise.all([firstReview, secondReview]);
-    expect(fetchMock.mock.calls.filter(([input]) => input.toString().includes("/api/pr/analyze"))).toHaveLength(1);
-    expect(store.getState().prReviewStatus).toBe("preparing");
-    releaseFirst();
-    await vi.waitFor(() => {
-      expect(store.getState().prPreparedGraphId).toBe("pr-first");
+    let secondSettled = false;
+    void secondReview.then(() => {
+      secondSettled = true;
     });
-    // The one in-flight run upgrades the review most recently re-applied by the second click.
+    await Promise.resolve();
+    expect(fetchMock.mock.calls.filter(([input]) => input.toString().includes("/api/pr/analyze"))).toHaveLength(1);
+    expect(secondSettled).toBe(false);
+    expect(store.getState().prReviewStatus).toBe("preparing");
+    expect(store.getState().viewMode).toBe("prs");
+    releaseFirst();
+    await Promise.all([firstReview, secondReview]);
+    // The one in-flight run is the only entry and lands after its swap.
+    expect(store.getState().prPreparedGraphId).toBe("pr-first");
     expect(store.getState().prReviewed).toBe(7);
     expect(store.getState().prPreparedArtifactCurrent).toBe(true);
     expect(store.getState().prReviewStatus).toBe("idle");
     expect(store.getState().prPrepareStage).toBe(null);
   });
 
-  it("a failed extraction reports the error and leaves the sync review intact", async () => {
+  it("a failed prepare keeps the PRs view with an error and no review state", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ndjsonResponse([{ stage: "clone" }, { stage: "error", message: "clone failed" }])));
     const store = freshStore(ANALYZE_DEPS);
     store.setState(selectedPrState(7));
     await store.getState().reviewPrInGraph();
-    await vi.waitFor(() => {
-      expect(store.getState().prReviewStatus).toBe("error");
-    });
     expect(store.getState().prReviewStatus).toBe("error");
     expect(store.getState().prPrepareError).toBe("clone failed");
     expect(store.getState().prPrepareStage).toBe(null);
-    // The review REMAINS in sync mode: overlay intact, still on the Map, nothing swapped.
+    expect(store.getState().viewMode).toBe("prs");
+    expect(store.getState().prReviewed).toBe(null);
+    expect(store.getState().review).toBe(null);
+    expect(store.getState().reviewFiles).toEqual([]);
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().prPreparedGraphId).toBe(null);
+    expect(store.getState().prReviewBaseline).toBe(null);
+  });
+
+  it("reviewPrOnBaseGraph enters a synchronous review after prepare failure", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ndjsonResponse([{ stage: "error", message: "fetch failed" }])));
+    const store = freshStore(ANALYZE_DEPS);
+    const bootIndex = store.getState().index;
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+
+    await store.getState().reviewPrOnBaseGraph();
+
     expect(store.getState().viewMode).toBe("modules");
     expect(store.getState().prReviewed).toBe(7);
     expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts"]);
+    expect(store.getState().index).toBe(bootIndex);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(false);
+    expect(store.getState().reviewHeadRef).toBe("feature");
+  });
+
+  it("cancel bumps the prepare sequence and abandons entry", async () => {
+    const encoder = new TextEncoder();
+    let finishAnalyze!: () => void;
+    const analyzeStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('{"stage":"clone"}\n'));
+        finishAnalyze = () => {
+          controller.enqueue(encoder.encode('{"stage":"done","graphId":"pr-canceled"}\n'));
+          controller.close();
+        };
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(analyzeStream, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore(ANALYZE_DEPS);
+    store.setState(selectedPrState(7));
+    const review = store.getState().reviewPrInGraph();
+
+    expect(store.getState().prReviewStatus).toBe("preparing");
+    store.getState().cancelPrReviewPreparation();
+    expect(store.getState().prReviewStatus).toBe("idle");
+    expect(store.getState().prPrepareStage).toBe(null);
+    expect(store.getState().viewMode).toBe("prs");
+    await review; // cancellation settles the blocking entry; the server stream is still open.
+
+    finishAnalyze();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetchMock.mock.calls.filter(([input]) => input.toString().includes("/api/graph"))).toHaveLength(0);
+    expect(store.getState().prReviewed).toBe(null);
+    expect(store.getState().review).toBe(null);
     expect(store.getState().prPreparedGraphId).toBe(null);
-    expect(store.getState().prReviewBaseline).toBe(null);
+    expect(store.getState().artifact.generatedAt).toBe(ARTIFACT.generatedAt);
+  });
+
+  it("leaving the PRs view abandons an in-flight entry", async () => {
+    const encoder = new TextEncoder();
+    let finishAnalyze!: () => void;
+    const analyzeStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('{"stage":"clone"}\n'));
+        finishAnalyze = () => {
+          controller.enqueue(encoder.encode('{"stage":"done","graphId":"pr-left"}\n'));
+          controller.close();
+        };
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(analyzeStream, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore(ANALYZE_DEPS);
+    store.setState(selectedPrState(7));
+    const review = store.getState().reviewPrInGraph();
+
+    // Direct lens pivots bypass setViewMode but share beginLensTransition's cancellation guard.
+    store.getState().openComposition(CLASS_ID);
+    expect(store.getState().prReviewStatus).toBe("idle");
+    await review; // leaving the waiting surface settles entry without waiting on server work.
+    finishAnalyze();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(store.getState().viewMode).toBe("call");
+    expect(store.getState().prReviewed).toBe(null);
+    expect(fetchMock.mock.calls.filter(([input]) => input.toString().includes("/api/graph"))).toHaveLength(0);
   });
 
   it("without an analyzeUrl the review stays synchronous and never fetches", async () => {
@@ -506,24 +634,17 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore(ANALYZE_DEPS);
     store.setState(headSelectedPrState(7));
-    const prepareHeadGraph = store.getState().prepareHeadGraph;
-    let preparation!: Promise<void>;
-    store.setState({
-      prepareHeadGraph: () => {
-        preparation = prepareHeadGraph();
-        return preparation;
-      },
-    });
-    await store.getState().reviewPrInGraph();
+    const review = store.getState().reviewPrInGraph();
     // The stream has finished (done landed) and the artifact GET is in flight...
     await vi.waitFor(() => {
       expect(fetchMock.mock.calls.some((call) => call[0].toString().includes("/api/graph"))).toBe(true);
     });
     // ...when the reader switches PRs; the artifact landing later must not swap anything in.
     await store.getState().selectPr(8);
+    await review;
     releaseGraph(Response.json(HEAD_ARTIFACT));
-    await preparation;
-    // Still the boot graph in base coordinates (the sync review only stamped its line diff).
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Still the untouched boot graph in base coordinates.
     expect(store.getState().artifact.generatedAt).toBe(ARTIFACT.generatedAt);
     expect(store.getState().index.nodesById.get(METHOD_ID)?.location.startLine).toBe(10);
     expect(store.getState().prReviewBaseline).toBe(null);
@@ -549,21 +670,13 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore(ANALYZE_DEPS);
     store.setState(selectedPrState(7));
-    const prepareHeadGraph = store.getState().prepareHeadGraph;
-    let preparation!: Promise<void>;
-    store.setState({
-      prepareHeadGraph: () => {
-        preparation = prepareHeadGraph();
-        return preparation;
-      },
-    });
-    await store.getState().reviewPrInGraph();
-    expect(preparation).toBeDefined();
+    const review = store.getState().reviewPrInGraph();
     expect(store.getState().prReviewStatus).toBe("preparing");
     expect(fetchMock.mock.calls.filter(([input]) => input.toString().includes("/api/pr/analyze"))).toHaveLength(1);
     const select = store.getState().selectPr(8);
+    await review;
     releaseAnalyze();
-    await Promise.all([preparation, select]);
+    await Promise.all([select, new Promise((resolve) => setTimeout(resolve, 0))]);
     // The indicator reset with the switch, and the stale stream landed on nothing: no swap.
     expect(store.getState().prReviewStatus).toBe("idle");
     expect(store.getState().prPreparedGraphId).toBe(null);
@@ -585,8 +698,8 @@ describe("PR review artifact swap and restore", () => {
     // (method 10-12, class 3-20) it overlaps nothing, so this proves the review re-ran post-swap.
     expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID]));
     expect(store.getState().index.changedIds.has(METHOD_ID)).toBe(true);
-    // The pre-extract pair was saved for the session-end restore. Its amber never saw the head
-    // marking (the sync review before the extract only marked the file-module fallback).
+    // The boot pair was saved for the session-end restore and never received HEAD marking: the
+    // first review application happened only after the prepared artifact became current.
     expect(store.getState().prReviewBaseline?.artifact.generatedAt).toBe(ARTIFACT.generatedAt);
     expect(store.getState().prReviewBaseline?.index).toBe(bootIndex);
     expect(bootIndex.changedIds.has(METHOD_ID)).toBe(false);
@@ -606,8 +719,7 @@ describe("PR review artifact swap and restore", () => {
 
   it("returning to the PRs lens restores the boot pair and clears the review session", async () => {
     const { store, bootIndex } = await swappedReviewStore();
-    // Pile extra in-place amber onto the boot index (on top of the sync review's own marking),
-    // so the restore's clean-reapply is actually exercised.
+    // Pile in-place amber onto the boot index so the restore's clean-reapply is exercised.
     applyChangedIds(bootIndex, [METHOD_ID]);
     store.getState().setViewMode("prs");
     expect(store.getState().viewMode).toBe("prs");
@@ -648,9 +760,8 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().minimalSeedIds).toEqual([]);
   });
 
-  it("re-reviewing and re-extracting without leaving the session keeps the ORIGINAL pair as the baseline", async () => {
+  it("re-extracting without leaving the session keeps the ORIGINAL pair as the baseline", async () => {
     const { store, bootIndex } = await swappedReviewStore();
-    await store.getState().reviewPrInGraph();
     await store.getState().prepareHeadGraph();
     expect(store.getState().prReviewBaseline?.artifact.generatedAt).toBe(ARTIFACT.generatedAt);
     expect(store.getState().prReviewBaseline?.index).toBe(bootIndex);

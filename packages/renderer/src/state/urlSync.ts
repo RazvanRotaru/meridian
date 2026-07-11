@@ -24,6 +24,11 @@ export async function restoreFromUrl(store: BlueprintStore, search?: string): Pr
     return;
   }
   const nav = decodeNavState(new URLSearchParams(search ?? window.location.search));
+  const rebuildingReview = nav.reviewActive && nav.reviewPr !== null;
+  const restoredViewMode = rebuildingReview ? "prs" : nav.viewMode;
+  if (store.getState().viewMode === "prs" && restoredViewMode !== "prs") {
+    store.getState().cancelPrReviewPreparation();
+  }
   // Back/forward to a URL from before the review must end that session BEFORE its Map navigation
   // lands. selectPr(null) owns both review modes: it restores a saved prepared-graph baseline, or
   // seeds the boot baseline first for a synchronous review, then ends via restorePrReviewBaseline.
@@ -84,6 +89,11 @@ export function startUrlSync(store: BlueprintStore): () => void {
     const search = window.location.search;
     pendingRestores += 1;
     suppress = true;
+    // Cancel at event receipt, not inside the serialized restore: a prior rev=1 restore may be
+    // blocked on a long server stream, and the newly requested history entry must abandon it now.
+    if (store.getState().prReviewStatus === "preparing") {
+      store.getState().cancelPrReviewPreparation();
+    }
     const restore = restoreQueue.then(() => restoreFromUrl(store, search));
     // Keep the queue usable after a failed restore; completion is still observed below.
     restoreQueue = restore.catch(() => {});
@@ -111,8 +121,8 @@ async function restorePrReview(store: BlueprintStore, number: number): Promise<v
   if (store.getState().prSelected !== number || store.getState().prFiles === null) {
     return;
   }
-  // reviewPrInGraph applies the sync review before fire-and-forgetting PR-head preparation;
-  // awaiting it keeps the URL-write suppression ordered without waiting for that analysis.
+  // Prepare-first is blocking: a restored review stays on the PRs waiting surface until the cached
+  // or freshly prepared HEAD graph has swapped and reviewPrInGraph enters the Map.
   await store.getState().reviewPrInGraph();
 }
 
@@ -157,7 +167,9 @@ function applyEnvironment(store: BlueprintStore, environment: string | null | un
 export function structuralState(nav: NavState): Record<string, unknown> {
   const rebuildingReview = nav.reviewActive && nav.reviewPr !== null;
   return {
-    viewMode: nav.viewMode,
+    // A rev=1 restore must not expose the URL's base-graph Map while HEAD preparation is pending.
+    // reviewPrInGraph is the only successful transition from this waiting surface into modules.
+    viewMode: rebuildingReview ? "prs" : nav.viewMode,
     // The scoped Service sub-view is session-only (never URL-encoded), so NO history entry carries
     // it: restoring any entry — popstate back/forward included — must render the lens unscoped.
     serviceScope: null,

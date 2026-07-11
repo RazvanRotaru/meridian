@@ -3,7 +3,7 @@
  * per-file "viewed" check (ReviewFilesSection — the panel's primary content), then the affected
  * logic flows (ReviewFlowsSection), and a footer that submits the draft comments as one GitHub
  * review. The header tracks viewed-files progress, states the review's provenance (which graph,
- * which code), offers a retryable "Extract head graph", and Reset (ticks only — never drafts)
+ * which code), offers the fallback review's opt-in "Extract head graph", and Reset (ticks only — never drafts)
  * and Hide; a hidden panel gives the graph the full width, and MinimalGraphView's floating bar
  * grows a "Review" button to bring it back. Self-hides when there is no review.
  */
@@ -65,7 +65,10 @@ function Header({ review }: { review: ReviewData }) {
   const prReviewed = useBlueprint((state) => state.prReviewed);
   const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
   const preparing = useBlueprint((state) => state.prReviewStatus === "preparing");
-  const canExtract = useBlueprint((state) => state.prReviewed !== null && !state.prPreparedArtifactCurrent && state.analyzeUrl !== null);
+  const canExtract = useBlueprint((state) => state.prReviewed !== null
+    && !state.prPreparedArtifactCurrent
+    && state.prPreparedGraphId === null
+    && state.analyzeUrl !== null);
   const { resetReviewTicks, toggleReviewPanel, prepareHeadGraph } = useBlueprintActions();
   const viewed = countViewedFiles(files, unitTicks, fileTicks);
   const total = files.length;
@@ -131,7 +134,6 @@ function Header({ review }: { review: ReviewData }) {
 function PrProvenance({ ctx }: { ctx: ReviewData["context"] }) {
   const headSha = useBlueprint((state) => state.prPreparedHeadSha);
   const swapped = useBlueprint((state) => state.prPreparedArtifactCurrent);
-  const preparing = useBlueprint((state) => state.prReviewStatus === "preparing");
   // Real spaces live in the text nodes (not flex gaps) so the line's DOM text reads exactly
   // "<head> → <base> · <mode>" — greppable, copyable, e2e-assertable.
   return (
@@ -139,13 +141,7 @@ function PrProvenance({ ctx }: { ctx: ReviewData["context"] }) {
       <span style={REF_BRANCH}>{ctx.headRef ?? "head"}</span>
       <span style={REF_ARROW}>{" → "}</span>
       <span style={REF_BASE}>{ctx.baseRef ?? "base"}</span>
-      <span style={REF_BASE}>
-        {swapped
-          ? ` · head graph @${(headSha ?? "").slice(0, 7)}`
-          : preparing
-            ? " · extracting head…"
-            : " · base graph + head code"}
-      </span>
+      <span style={REF_BASE}>{swapped ? ` · head graph @${(headSha ?? "").slice(0, 7)}` : " · base graph + head code"}</span>
     </div>
   );
 }
