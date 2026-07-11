@@ -13,8 +13,10 @@ import { PullRequestIcon } from "./icons";
 import { PrReviewCard } from "./PrReviewCard";
 
 const ACTIVE_HUE = "#388BFD";
+const GITHUB_CONNECTION_HINT = "PR review needs a GitHub repository. Open one with meridian web <owner/repo>.";
 
 export function PrReviewSection() {
+  const githubSource = useBlueprint((state) => state.githubSource);
   const open = useBlueprint((state) => state.prsList.open);
   const hasMore = useBlueprint((state) => state.prsHasMore.open);
   const loading = useBlueprint((state) => state.prsLoading);
@@ -33,13 +35,17 @@ export function PrReviewSection() {
   const expanded = prReviewed !== null && reviewOpen && viewMode !== "prs";
 
   const unavailable = error === PRS_UNAVAILABLE_ERROR && open === null;
+  const disconnected = !githubSource;
+  // A stale/shared `?view=prs` URL can still land a non-GitHub graph on the PR page. Keep this
+  // control enabled there because it is the page's escape hatch back to the graph.
+  const disabled = disconnected && !onPrsPage;
 
   // Lazily fetch the open queue once so the collapsed bar can show a live count.
   useEffect(() => {
-    if (open === null && !loading && error === null) {
+    if (githubSource && open === null && !loading && error === null) {
       void loadPrs(1);
     }
-  }, [open, loading, error, loadPrs]);
+  }, [githubSource, open, loading, error, loadPrs]);
 
   // While expanded, always keep one PR selected so its files load for the card.
   useEffect(() => {
@@ -56,20 +62,29 @@ export function PrReviewSection() {
 
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      <div style={barStyle(expanded)}>
+      <div style={barStyle(expanded, disabled)} title={disabled ? GITHUB_CONNECTION_HINT : undefined}>
         <button
           type="button"
-          style={TOGGLE_STYLE}
-          title={onPrsPage ? "Back to the graph" : "Open the full Pull requests page"}
+          style={toggleStyle(disabled)}
+          title={
+            onPrsPage
+              ? "Back to the graph"
+              : disconnected
+                ? GITHUB_CONNECTION_HINT
+                : "Open the full Pull requests page"
+          }
           aria-pressed={onPrsPage}
+          disabled={disabled}
           onClick={togglePrsView}
         >
-          <span style={{ display: "inline-flex", color: onPrsPage || expanded ? ACTIVE_HUE : TOKENS.textMuted }}>
+          <span style={{ display: "inline-flex", color: disabled ? TOKENS.textDim : onPrsPage || expanded ? ACTIVE_HUE : TOKENS.textMuted }}>
             <PullRequestIcon size={15} />
           </span>
-          <span style={LABEL_STYLE}>PR review</span>
+          <span style={labelStyle(disabled)}>PR review</span>
           <span style={{ flex: 1 }} />
-          {!unavailable && open !== null ? (
+          {disabled ? (
+            <CountBadge style={UNAVAILABLE_BADGE_STYLE}>Unavailable</CountBadge>
+          ) : !unavailable && open !== null ? (
             <CountBadge style={badgeToneStyle(expanded)}>{hasMore ? `${count}+` : count} open</CountBadge>
           ) : null}
         </button>
@@ -109,22 +124,36 @@ const HINT_STYLE: React.CSSProperties = {
   background: "#0D1117",
 };
 
-const TOGGLE_STYLE: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 9,
-  flex: 1,
-  minWidth: 0,
-  border: "none",
-  background: "transparent",
-  padding: 0,
-  cursor: "pointer",
-  font: "inherit",
-  textAlign: "left",
-  color: TOKENS.text,
+const UNAVAILABLE_BADGE_STYLE: React.CSSProperties = {
+  color: TOKENS.textDim,
+  borderColor: "#252B34",
+  background: "#090C10",
+  fontWeight: 500,
 };
 
-function barStyle(expanded: boolean): React.CSSProperties {
+function labelStyle(disabled: boolean): React.CSSProperties {
+  return disabled ? { ...LABEL_STYLE, color: TOKENS.textDim } : LABEL_STYLE;
+}
+
+function toggleStyle(disabled: boolean): React.CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "center",
+    gap: 9,
+    flex: 1,
+    minWidth: 0,
+    border: "none",
+    background: "transparent",
+    padding: 0,
+    cursor: disabled ? "not-allowed" : "pointer",
+    pointerEvents: disabled ? "none" : "auto",
+    font: "inherit",
+    textAlign: "left",
+    color: TOKENS.text,
+  };
+}
+
+function barStyle(expanded: boolean, disabled: boolean): React.CSSProperties {
   return {
     display: "flex",
     alignItems: "center",
@@ -132,8 +161,9 @@ function barStyle(expanded: boolean): React.CSSProperties {
     boxSizing: "border-box",
     padding: "9px 8px 9px 12px",
     borderRadius: 10,
-    border: `1px solid ${expanded ? hexAlpha(ACTIVE_HUE, 0.55) : TOKENS.surfaceBorder}`,
-    background: expanded ? hexAlpha(ACTIVE_HUE, 0.08) : TOKENS.surface,
+    border: `1px ${disabled ? "dashed" : "solid"} ${expanded ? hexAlpha(ACTIVE_HUE, 0.55) : TOKENS.surfaceBorder}`,
+    background: disabled ? "#0B0E13" : expanded ? hexAlpha(ACTIVE_HUE, 0.08) : TOKENS.surface,
+    cursor: disabled ? "not-allowed" : undefined,
   };
 }
 

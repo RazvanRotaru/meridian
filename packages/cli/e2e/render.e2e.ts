@@ -23,6 +23,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
   let server: ChildProcess;
   let browser: Browser;
   let page: Page;
+  let viewUrl: string;
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
 
@@ -30,6 +31,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     const generated = generateGraph();
     graphDir = generated.dir;
     const view = await startView(generated.graphPath);
+    viewUrl = view.url;
     server = view.server;
     browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
     page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
@@ -52,7 +54,55 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     expect(pageErrors).toEqual([]);
   });
 
+  it("lets a disconnected PR deep link return to the graph", async () => {
+    await page.goto(`${viewUrl}?view=prs`, { waitUntil: "networkidle" });
+    const back = page.getByRole("button", { name: "PR review" });
+    await back.waitFor();
+    expect(await back.isEnabled()).toBe(true);
+    expect(await back.getAttribute("title")).toBe("Back to the graph");
+
+    await back.click();
+    await page.waitForSelector(".react-flow__node");
+    expect(new URL(page.url()).searchParams.get("view")).toBeNull();
+  });
+
   // Runs before the Service-lens switch below so it starts on the default Map lens.
+  it("collapses and restores the detailed controls while keeping the panel summary", async () => {
+    const panel = page.locator("#meridian-control-panel");
+    const controls = page.locator("#meridian-control-panel-controls");
+    const prReview = page.getByRole("button", { name: "PR review" });
+    const recenter = page.getByRole("button", { name: "Recenter on the current selection, or the whole graph if nothing is selected" });
+    const repositorySummary = panel.getByText("Repository · 1 package · 10 files", { exact: true });
+    const environment = panel.locator("select");
+    const unavailableBadge = panel.getByText("Unavailable", { exact: true });
+    const disclosure = panel.locator('button[aria-controls="meridian-control-panel-controls"]');
+    const expandedHeight = await panel.evaluate((element) => element.getBoundingClientRect().height);
+
+    expect(await prReview.isDisabled()).toBe(true);
+    expect(await unavailableBadge.isVisible()).toBe(true);
+    expect(await prReview.getAttribute("title")).toBe("PR review needs a GitHub repository. Open one with meridian web <owner/repo>.");
+    expect(await disclosure.getAttribute("aria-label")).toBe("Hide detailed controls");
+    expect(await disclosure.getAttribute("aria-expanded")).toBe("true");
+    await disclosure.click();
+    expect(await panel.isVisible()).toBe(true);
+    expect(await controls.isHidden()).toBe(true);
+    expect(await prReview.isVisible()).toBe(true);
+    expect(await recenter.isVisible()).toBe(true);
+    expect(await repositorySummary.isVisible()).toBe(true);
+    expect(await environment.isVisible()).toBe(true);
+    expect(await disclosure.getAttribute("aria-label")).toBe("Show detailed controls");
+    expect(await disclosure.getAttribute("aria-expanded")).toBe("false");
+    expect(await disclosure.evaluate((element) => document.activeElement === element)).toBe(true);
+    expect(await panel.evaluate((element) => element.getBoundingClientRect().height)).toBeLessThan(expandedHeight);
+
+    await disclosure.click();
+    expect(await controls.isVisible()).toBe(true);
+    expect(await disclosure.getAttribute("aria-label")).toBe("Hide detailed controls");
+    expect(await disclosure.getAttribute("aria-expanded")).toBe("true");
+    expect(await disclosure.evaluate((element) => document.activeElement === element)).toBe(true);
+    expect(await panel.evaluate((element) => element.getBoundingClientRect().height)).toBe(expandedHeight);
+  });
+
   it("keeps the Map legend static when selection changes", async () => {
     await page.getByRole("button", { name: /Legend/ }).click();
     const legend = page.getByRole("region", { name: "Map legend" });

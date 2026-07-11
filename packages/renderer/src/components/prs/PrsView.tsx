@@ -5,6 +5,7 @@ import { PrDetailPanel } from "./PrDetailPanel";
 import { PrsFilterBar } from "./PrsFilterBar";
 
 export function PrsView() {
+  const githubSource = useBlueprint((state) => state.githubSource);
   const tab = useBlueprint((state) => state.prsTab);
   const prs = useBlueprint((state) => state.prsList[state.prsTab]);
   const hasMore = useBlueprint((state) => state.prsHasMore[state.prsTab]);
@@ -32,12 +33,12 @@ export function PrsView() {
   const filtered = useMemo(() => filterPrs(prs, query, activeAuthor), [prs, query, activeAuthor]);
 
   useEffect(() => {
-    if (prs === null && !loading && error === null) {
+    if (githubSource && prs === null && !loading && error === null) {
       void loadPrs(1);
     }
-  }, [error, loadPrs, loading, prs]);
+  }, [error, githubSource, loadPrs, loading, prs]);
 
-  if (error === PRS_UNAVAILABLE_ERROR && prs === null) {
+  if (!githubSource || (error === PRS_UNAVAILABLE_ERROR && prs === null)) {
     return (
       <div style={PAGE_STYLE}>
         <div style={CENTER_STYLE}>

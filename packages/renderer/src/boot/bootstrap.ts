@@ -30,11 +30,14 @@ export async function bootstrap(): Promise<BootResult> {
     provider,
     hasOverlay: boot.hasOverlay,
     sourceUrl: boot.sourceUrl,
+    githubSource: boot.githubSource,
     prsUrl: prApi.prsUrl,
     prFilesUrl: prApi.prFilesUrl,
     prFileUrl: prApi.prFileUrl,
     graphUrl: boot.graphUrl,
     prReviewUrl: prApi.prReviewUrl,
+    analyzeUrl: boot.githubSource ? prApi.analyzeUrl : null,
+    graphId: boot.githubSource ? prApi.graphId : null,
   });
   // Restore the navigation state carried in the URL (or fall through to defaults) and run the
   // first layout, then start reflecting the store back into the URL for reload/back/forward.

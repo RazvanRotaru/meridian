@@ -55,6 +55,7 @@ describe("createBlueprintServer", () => {
     expect(html).toContain('window.__MERIDIAN__=');
     expect(html).toContain('"preselectedEnv":"staging"');
     expect(html).toContain('"defaultEnv":null');
+    expect(html).toContain('"githubSource":false');
   });
 
   it("serves real assets and falls back to index for unknown routes", async () => {

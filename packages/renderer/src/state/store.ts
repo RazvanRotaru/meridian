@@ -274,6 +274,8 @@ export interface BlueprintState {
   /** Base URL for on-demand source fetches; null when the server ships no source access. Node
    * components read it to decide whether to offer a "show source" control. */
   sourceUrl: string | null;
+  /** Whether this graph was loaded from a GitHub repository and can use the PR endpoints. */
+  githubSource: boolean;
   /** PR API endpoints derived from the graph artifact URL; 404/network means this session lacks PRs. */
   prsUrl: string;
   prFilesUrl: string;
@@ -420,6 +422,8 @@ export interface StoreDependencies {
   provider: TelemetryProvider | null;
   hasOverlay: boolean;
   sourceUrl: string | null;
+  /** Explicit source capability from the server boot contract; false for plain view/dev sessions. */
+  githubSource?: boolean;
   prsUrl: string;
   prFilesUrl: string;
   /** GET base for one changed file's text at the PR head ref (the review code panel's head-fetch). */
@@ -639,6 +643,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     provider: dependencies.provider,
     hasOverlay: dependencies.hasOverlay,
     sourceUrl,
+    githubSource: dependencies.githubSource ?? false,
     prsUrl,
     prFilesUrl,
     prsTab: "open",
@@ -1529,6 +1534,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // are dropped; only when NONE is placeable does it fall back to opening the lens at its top. The
     // logic view is a standalone render (its own ELK pass), so it neither dives nor relayouts.
     setViewMode(mode) {
+      if (mode === "prs" && !get().githubSource) {
+        return;
+      }
       const previous = get().viewMode;
       if (previous === mode) {
         // Re-clicking the ACTIVE Service tab is the escape hatch back to the FULL lens: the scoped
@@ -1729,6 +1737,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     async loadPrs(page) {
+      if (!get().githubSource) {
+        return;
+      }
       const tab = get().prsTab;
       const pageToLoad = page ?? prsNextPage[tab];
       const sequence = ++prsListSeq;
@@ -1766,6 +1777,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     async selectPr(number) {
+      if (number !== null && !get().githubSource) {
+        return;
+      }
       const sequence = ++prFilesSeq;
       // Switching PRs abandons any review preparation in flight: bump its seq so a landing stream
       // is dropped, and clear the indicator so the panel never shows a stale progress/error card.
