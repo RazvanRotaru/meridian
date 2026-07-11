@@ -3,11 +3,10 @@
   Meridian web landing page.
 
   Deliberately dependency-free (no build step, no framework): the `web` command serves this file
-  verbatim, injecting `window.__MERIDIAN_AUTH__` (is sign-in configured?) and an optional
-  `window.__MERIDIAN_PREFILL__`. The server contract is:
+  verbatim, injecting an optional `window.__MERIDIAN_PREFILL__`. The server contract is:
     POST /api/auth/device  -> { userCode, verificationUri, verificationUriComplete, intervalSeconds }
     GET  /api/auth/status  -> { signedIn, status, user? }         (server polls GitHub; token stays server-side)
-    GET  /api/auth/session -> { configured, signedIn, user? }
+    GET  /api/auth/session -> { signedIn, user? }
     POST /api/auth/logout  -> { signedIn:false }
     GET  /api/repos/search?q= -> { repos: [{ fullName, isPrivate, defaultBranch, description, ownerAvatarUrl }] }
     GET  /api/repos/mine   -> { repos: [same shape] }              (the signed-in user's repos)
@@ -478,12 +477,6 @@
         line-height: 1.5;
         color: var(--muted-3);
       }
-      .hint code {
-        font-family: var(--font-mono);
-        font-size: 10.5px;
-        color: var(--muted-2);
-      }
-
       button.primary {
         margin-top: 6px;
         padding: 12px;
@@ -516,11 +509,72 @@
         font-size: 13.5px;
         margin: 0;
       }
-      .status.busy {
-        color: var(--muted-2);
-      }
       .status.error {
         color: var(--red);
+      }
+
+      /* The same staged-progress pattern used while Meridian prepares a PR review. The landing is
+         served verbatim (no React build), so it mirrors the shared component's semantic states. */
+      .prepare-progress {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 15px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 10px;
+        background: rgba(11, 15, 20, 0.78);
+      }
+      .prepare-title {
+        color: #f0f6fc;
+        font-size: 13.5px;
+        font-weight: 650;
+      }
+      .prepare-steps {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 0;
+        margin: 0;
+        list-style: none;
+      }
+      .prepare-step {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        color: var(--text);
+        font-size: 13.5px;
+        font-weight: 500;
+      }
+      .prepare-dot {
+        width: 10px;
+        height: 10px;
+        flex-shrink: 0;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .prepare-step[data-state="active"] {
+        font-weight: 650;
+      }
+      .prepare-step[data-state="active"] .prepare-dot {
+        background: #388bfd;
+        box-shadow: 0 0 0 4px rgba(56, 139, 253, 0.2);
+      }
+      .prepare-step[data-state="done"] .prepare-dot {
+        background: #56c271;
+      }
+      .prepare-step[data-state="pending"] {
+        color: var(--muted-2);
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
       }
 
       .divider {
@@ -797,7 +851,29 @@
             </div>
 
             <button type="submit" class="primary" id="submit">Generate blueprint</button>
-            <div class="status" id="status"></div>
+            <section
+              class="prepare-progress"
+              id="prepare-progress"
+              hidden
+            >
+              <span class="sr-only" id="prepare-announcement" role="status" aria-live="polite" aria-atomic="true"></span>
+              <div class="prepare-title">Preparing blueprint</div>
+              <ol class="prepare-steps">
+                <li class="prepare-step" data-stage="source" data-state="pending">
+                  <span class="prepare-dot" aria-hidden="true"></span>
+                  <span id="prepare-source-label">Fetch repository</span>
+                </li>
+                <li class="prepare-step" data-stage="extract" data-state="pending">
+                  <span class="prepare-dot" aria-hidden="true"></span>
+                  <span>Generate code graph</span>
+                </li>
+                <li class="prepare-step" data-stage="open" data-state="pending">
+                  <span class="prepare-dot" aria-hidden="true"></span>
+                  <span>Open blueprint</span>
+                </li>
+              </ol>
+            </section>
+            <div class="status" id="status" role="status" aria-live="polite"></div>
           </form>
 
           <!-- GitHub-only: the whole sign-in block disappears in Local mode. -->
@@ -807,7 +883,7 @@
 
           <section id="auth">
             <div id="signin-area">
-              <button type="button" class="github" id="signin" hidden>
+              <button type="button" class="github" id="signin">
                 <svg width="15" height="15" viewBox="0 0 16 16" fill="#e6edf3" aria-hidden="true">
                   <path
                     d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"
@@ -815,10 +891,6 @@
                 </svg>
                 Sign in with GitHub
               </button>
-              <p class="hint" id="auth-disabled" hidden>
-                Sign-in is off — set <code>MERIDIAN_GITHUB_CLIENT_ID</code> (a GitHub OAuth app client id with Device
-                Flow enabled) to browse private repos. Public repos work without it.
-              </p>
               <div class="auth-msg" id="auth-msg"></div>
             </div>
             <div class="me" id="signedin" hidden>
@@ -854,7 +926,6 @@
     <script>
       const $ = (id) => document.getElementById(id);
       const status = $("status");
-      const authConfig = window.__MERIDIAN_AUTH__ || { configured: false };
       const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       let signedIn = false;
       let pollTimer = null;
@@ -931,15 +1002,17 @@
         }
       }
 
-      // --- server calls (always same-origin, JSON on POST) ---
+      // --- server calls (always same-origin, JSON requests) ---
       function apiGet(path) {
         return fetch(path, { credentials: "same-origin" });
       }
-      function apiPost(path, body) {
+      function apiPost(path, body, accept) {
+        const headers = { "content-type": "application/json" };
+        if (accept) headers.accept = accept;
         return fetch(path, {
           method: "POST",
           credentials: "same-origin",
-          headers: { "content-type": "application/json" },
+          headers,
           body: JSON.stringify(body || {}),
         });
       }
@@ -987,8 +1060,7 @@
         $("view-form").hidden = false;
         $("signedin").hidden = true;
         $("signin-area").hidden = false;
-        $("signin").hidden = !authConfig.configured;
-        $("auth-disabled").hidden = authConfig.configured;
+        $("signin").hidden = false;
         $("auth-divider").hidden = false;
         labelRepoField(false);
         hideResults();
@@ -1022,7 +1094,6 @@
 
       async function initAuth() {
         showSignedOut();
-        if (!authConfig.configured) return;
         try {
           const data = await (await apiGet("/api/auth/session")).json();
           if (data.signedIn) showSignedIn(data.user);
@@ -1303,8 +1374,110 @@
 
       // --- generate (the active toggle decides the source kind) ---
       function setStatus(text, kind) {
-        status.textContent = text;
         status.className = "status" + (kind ? " " + kind : "");
+        status.setAttribute("role", kind === "error" ? "alert" : "status");
+        status.setAttribute("aria-live", kind === "error" ? "assertive" : "polite");
+        status.textContent = text;
+      }
+
+      const generateStages = ["source", "extract", "open"];
+
+      function showPrepareProgress(sourceKind) {
+        $("prepare-source-label").textContent = sourceKind === "path" ? "Read repository" : "Fetch repository";
+        $("prepare-progress").hidden = false;
+        setPrepareStage("source");
+        reveal($("prepare-progress"));
+      }
+
+      function hidePrepareProgress() {
+        $("prepare-progress").hidden = true;
+        $("prepare-announcement").textContent = "";
+      }
+
+      function setPrepareStage(activeStage) {
+        const activeIndex = Math.max(0, generateStages.indexOf(activeStage));
+        document.querySelectorAll(".prepare-step").forEach((step, index) => {
+          const state = index < activeIndex ? "done" : index === activeIndex ? "active" : "pending";
+          step.dataset.state = state;
+          if (state === "active") step.setAttribute("aria-current", "step");
+          else step.removeAttribute("aria-current");
+        });
+        const activeStep = document.querySelector('.prepare-step[data-state="active"]');
+        $("prepare-announcement").textContent = "Preparing blueprint: " + activeStep.textContent.trim();
+      }
+
+      async function generateBlueprint(request) {
+        const response = await apiPost("/api/generate", request, "application/x-ndjson");
+        if (!response.ok || !response.body) {
+          throw expectedGenerationError(await generationResponseError(response));
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let result = null;
+        try {
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            buffer += decoder.decode(chunk.value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+            for (const line of lines) result = applyGenerateLine(line) || result;
+          }
+          buffer += decoder.decode();
+          result = applyGenerateLine(buffer) || result;
+        } finally {
+          reader.releaseLock();
+        }
+        if (!result || !result.id) {
+          throw expectedGenerationError("Generation ended without a blueprint.");
+        }
+        return result;
+      }
+
+      function applyGenerateLine(line) {
+        if (!line.trim()) return null;
+        let data;
+        try {
+          data = JSON.parse(line);
+        } catch {
+          return null;
+        }
+        if (data.stage === "source" || data.stage === "extract") {
+          setPrepareStage(data.stage);
+        } else if (data.stage === "done") {
+          setPrepareStage("open");
+          return data;
+        } else if (data.stage === "error") {
+          throw expectedGenerationError(data.message || "Generation failed.");
+        }
+        return null;
+      }
+
+      async function generationResponseError(response) {
+        try {
+          const data = await response.json();
+          if (data && typeof data.error === "string") return data.error;
+        } catch {
+          /* fall through to the status-based message */
+        }
+        return "Generation failed (" + response.status + ").";
+      }
+
+      function expectedGenerationError(message) {
+        const error = new Error(message);
+        error.expected = true;
+        return error;
+      }
+
+      function allowFinalStagePaint() {
+        const fallback = new Promise((resolve) => setTimeout(resolve, 120));
+        if (document.visibilityState !== "visible") return fallback;
+        const painted = new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+        return Promise.race([painted, fallback]);
       }
 
       function buildRequest() {
@@ -1332,21 +1505,23 @@
           return;
         }
         hideResults();
+        setStatus("", null);
         $("submit").disabled = true;
-        setStatus("Cloning + analyzing…", "busy");
+        showPrepareProgress(request.kind);
+        let navigating = false;
         try {
-          const response = await apiPost("/api/generate", request);
-          const data = await response.json();
-          if (response.ok && data.id) {
-            setStatus("Rendering…", "busy");
-            window.location = "/view?id=" + encodeURIComponent(data.id);
-            return;
-          }
-          setStatus(data.error || "Generation failed.", "error");
+          const data = await generateBlueprint(request);
+          navigating = true;
+          await allowFinalStagePaint();
+          window.location = "/view?id=" + encodeURIComponent(data.id);
         } catch (error) {
-          setStatus("Could not reach the server.", "error");
+          const message = error && error.expected ? error.message : "Could not reach the server.";
+          setStatus(message, "error");
         } finally {
-          $("submit").disabled = false;
+          if (!navigating) {
+            hidePrepareProgress();
+            $("submit").disabled = false;
+          }
         }
       });
 

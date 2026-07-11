@@ -14,6 +14,7 @@ import type { ArtifactSource } from "./web-source";
 import { SessionStore, markAuthorized } from "./session";
 import { sendJson } from "./http-response";
 import { WebError } from "./web-error";
+import { createGitHubClient } from "./github";
 
 describe("PR routes", () => {
   afterEach(() => {
@@ -534,7 +535,7 @@ function ctxWithSource(source: ArtifactSource, sessions = new SessionStore()): C
     staticAssets: { rendererRoot: "", indexHtml: "" },
     cwd: "",
     sessions,
-    github: null,
+    github: createGitHubClient({ clientId: "Iv1.test" }),
   } as Context;
 }
 

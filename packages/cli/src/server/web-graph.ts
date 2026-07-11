@@ -9,18 +9,66 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { GraphArtifact } from "@meridian/core";
+import { CliError } from "../errors";
 import { extractToArtifact } from "../extract-pipeline";
 import { resolveSource } from "./clone";
 import { sendHtml, sendJson } from "./http-response";
 import { injectViewBoot } from "./web-boot";
 import { githubTokenFor } from "./web-auth";
 import { artifactId, parseGenerateRequest, readJsonBody } from "./web-request";
+import type { GenerateRequest } from "./web-request";
+import { WebError } from "./web-error";
 import type { Context } from "./web-server";
 import { artifactSourceFor } from "./web-source";
 
 export async function handleGenerate(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
+  if (acceptsNdjson(request)) {
+    await handleGenerateStream(ctx, request, response);
+    return;
+  }
+
   const parsed = parseGenerateRequest(await readJsonBody(request));
-  const token = githubTokenFor(ctx, request, parsed.token);
+  const result = await generate(ctx, parsed, githubTokenFor(ctx, request, parsed.token));
+  sendJson(response, 200, result);
+}
+
+interface GenerateResult {
+  id: string;
+  target: string;
+  counts: { nodes: number; edges: number };
+  warnings: string[];
+}
+
+type GenerateStage = "source" | "extract";
+
+/**
+ * The opt-in streaming form of `/api/generate`. Keeping it behind the NDJSON Accept header leaves
+ * existing callers on the original one-shot JSON contract while the landing page can paint each
+ * real server-side boundary as it happens.
+ */
+async function handleGenerateStream(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
+  beginNdjson(response);
+  try {
+    const parsed = parseGenerateRequest(await readJsonBody(request));
+    const result = await generate(ctx, parsed, githubTokenFor(ctx, request, parsed.token), (stage) =>
+      writeLine(response, { stage }),
+    );
+    await writeLine(response, { stage: "done", ...result });
+  } catch (error) {
+    await writeLine(response, { stage: "error", message: safeGenerateMessage(error) });
+  } finally {
+    response.end();
+  }
+}
+
+/** Resolve/clone, extract, and retain one source. `onStage` fires immediately before each job. */
+async function generate(
+  ctx: Context,
+  parsed: GenerateRequest,
+  token: string | undefined,
+  onStage: (stage: GenerateStage) => void | Promise<void> = () => {},
+): Promise<GenerateResult> {
+  await onStage("source");
   const source = await resolveSource(
     { kind: parsed.kind, value: parsed.value, ref: parsed.ref, subdir: parsed.subdir },
     ctx.cwd,
@@ -31,6 +79,7 @@ export async function handleGenerate(ctx: Context, request: IncomingMessage, res
   // this never deletes the user's own directory.
   let retained = false;
   try {
+    await onStage("extract");
     const { artifact, warnings } = await extractToArtifact({
       absoluteRoot: source.dir,
       cwd: source.dir, // records target.root as "." — never leaks the temp clone path
@@ -49,12 +98,45 @@ export async function handleGenerate(ctx: Context, request: IncomingMessage, res
     ctx.tempCleanups.add(source.cleanup);
     retained = true;
     const counts = { nodes: artifact.nodes.length, edges: artifact.edges.length };
-    sendJson(response, 200, { id, target: source.target, counts, warnings });
+    return { id, target: source.target, counts, warnings };
   } finally {
     if (!retained) {
       source.cleanup();
     }
   }
+}
+
+function acceptsNdjson(request: IncomingMessage): boolean {
+  const accept = request.headers.accept;
+  const value = Array.isArray(accept) ? accept.join(",") : (accept ?? "");
+  return value
+    .split(",")
+    .some((part: string) => part.trim().split(";", 1)[0]?.toLowerCase() === "application/x-ndjson");
+}
+
+function beginNdjson(response: ServerResponse): void {
+  response.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-cache" });
+}
+
+/** Resolve once Node has handed the line off, yielding before CPU-heavy extraction begins. */
+function writeLine(response: ServerResponse, line: Record<string, unknown>): Promise<void> {
+  return new Promise((resolve, reject) => {
+    response.write(`${JSON.stringify(line)}\n`, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+/** Expected request/CLI failures are already browser-safe; never expose an unknown error. */
+function safeGenerateMessage(error: unknown): string {
+  if (error instanceof WebError || error instanceof CliError) {
+    return error.message;
+  }
+  return "internal error while generating the blueprint";
 }
 
 export function sendGraph(ctx: Context, response: ServerResponse, id: string | null): void {

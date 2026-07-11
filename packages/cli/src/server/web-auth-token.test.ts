@@ -8,6 +8,7 @@ import type { IncomingMessage } from "node:http";
 import { githubTokenFor } from "./web-auth";
 import type { AuthContext } from "./web-auth";
 import { SessionStore, markAuthorized } from "./session";
+import { createGitHubClient } from "./github";
 
 describe("githubTokenFor precedence", () => {
   const saved = { GITHUB_TOKEN: process.env.GITHUB_TOKEN, GH_TOKEN: process.env.GH_TOKEN };
@@ -57,7 +58,7 @@ describe("githubTokenFor precedence", () => {
 });
 
 function ctxWith(overrides: Partial<AuthContext> = {}): AuthContext {
-  return { sessions: new SessionStore(), github: null, ...overrides };
+  return { sessions: new SessionStore(), github: createGitHubClient({ clientId: "Iv1.test" }), ...overrides };
 }
 
 function requestWith(cookie?: string): IncomingMessage {

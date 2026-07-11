@@ -50,6 +50,17 @@ describe("createWebServer landing + errors", () => {
     expect(html).toContain("sindresorhus/type-fest");
   });
 
+  it("ships the staged, accessible blueprint preparation indicator", async () => {
+    const html = await (await fetch(`${base}/`)).text();
+    expect(html).toContain('id="prepare-progress"');
+    expect(html).toContain('role="status"');
+    expect(html).toContain('aria-live="polite"');
+    expect(html).toContain("Fetch repository");
+    expect(html).toContain("Generate code graph");
+    expect(html).toContain("Open blueprint");
+    expect(html).not.toContain("Cloning + analyzing…");
+  });
+
   it("400s malformed generate input without touching the network", async () => {
     const bad = await post("/api/generate", { kind: "github", value: "not a repo!!" });
     expect(bad.status).toBe(400);
@@ -103,25 +114,24 @@ describe("createWebServer generate -> view (offline path source)", () => {
   }, 60_000);
 });
 
-describe("createWebServer auth routes (sign-in not configured)", () => {
-  it("reports sign-in disabled and no session", async () => {
-    const data = await getJson<{ configured: boolean; signedIn: boolean }>(`${base}/api/auth/session`);
-    expect(data).toMatchObject({ configured: false, signedIn: false });
+describe("createWebServer auth routes (sign-in always available)", () => {
+  it("reports signed-out identity state without a configuration flag", async () => {
+    const data = await getJson<{ signedIn: boolean; user: unknown }>(`${base}/api/auth/session`);
+    expect(data).toEqual({ signedIn: false, user: null });
   });
 
-  it("injects the disabled auth config into the landing page", async () => {
+  it("always ships sign-in and no disabled/configured branch", async () => {
     const html = await (await fetch(`${base}/`)).text();
-    expect(html).toContain('window.__MERIDIAN_AUTH__={"configured":false}');
+    expect(html).toContain('class="github" id="signin">');
+    expect(html).not.toContain("Sign-in is off");
+    expect(html).not.toContain("auth-disabled");
+    expect(html).not.toContain("__MERIDIAN_AUTH__");
   });
 
   it("401s auth status and repo listing without a session", async () => {
     expect((await fetch(`${base}/api/auth/status`)).status).toBe(401);
     expect((await fetch(`${base}/api/repos/search?q=ky`)).status).toBe(401);
     expect((await fetch(`${base}/api/repos/mine`)).status).toBe(401);
-  });
-
-  it("400s device start when no client id is configured", async () => {
-    expect((await post("/api/auth/device", {})).status).toBe(400);
   });
 
   it("415s a POST without a JSON content type", async () => {
@@ -137,33 +147,6 @@ describe("createWebServer auth routes (sign-in not configured)", () => {
     const res = await fetch(`${base}/api/nope`);
     expect(res.status).toBe(404);
     expect(res.headers.get("content-type")).toContain("application/json");
-  });
-});
-
-describe("createWebServer with sign-in configured", () => {
-  let configuredRoot: string;
-  let configured: Server;
-  let configuredBase: string;
-
-  beforeAll(async () => {
-    configuredRoot = writeFakeRenderer();
-    configured = createWebServer({ rendererRoot: configuredRoot, webUiPath: WEB_UI, cwd: REPO_ROOT, githubClientId: "Iv1.test" });
-    configuredBase = await listenEphemeral(configured);
-  });
-
-  afterAll(() => {
-    configured.close();
-    rmSync(configuredRoot, { recursive: true, force: true });
-  });
-
-  it("advertises sign-in as configured without any network call", async () => {
-    const data = (await (await fetch(`${configuredBase}/api/auth/session`)).json()) as { configured: boolean };
-    expect(data.configured).toBe(true);
-  });
-
-  it("injects configured:true into the landing page", async () => {
-    const html = await (await fetch(`${configuredBase}/`)).text();
-    expect(html).toContain('window.__MERIDIAN_AUTH__={"configured":true}');
   });
 });
 

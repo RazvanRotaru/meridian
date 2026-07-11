@@ -19,6 +19,7 @@ import type { ArtifactSource } from "./web-source";
 import { SessionStore } from "./session";
 import { sendJson } from "./http-response";
 import { WebError } from "./web-error";
+import { createGitHubClient } from "./github";
 
 vi.mock("../extract-pipeline", () => ({ extractToArtifact: vi.fn() }));
 vi.mock("./git-exec", async (importOriginal) => {
@@ -206,7 +207,7 @@ function githubCtx(source: ArtifactSource = { kind: "github", owner: "org", repo
     staticAssets: { rendererRoot: "", indexHtml: "" },
     cwd: "",
     sessions: new SessionStore(),
-    github: null,
+    github: createGitHubClient({ clientId: "Iv1.test" }),
   } as Context;
 }
 
