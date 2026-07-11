@@ -14,6 +14,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { BaseEdge, getBezierPath, type EdgeProps } from "@xyflow/react";
+import { WireLabel, wireLabelText } from "./WireLabel";
 
 export const WIRE_EDGE_TYPE = "wire";
 
@@ -21,11 +22,12 @@ export function WireEdge({ id, sourceX, sourceY, targetX, targetY, sourcePositio
   if (isHiddenWire(data)) {
     return null;
   }
-  const [path] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
+  const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
   return (
     <>
       <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} interactionWidth={interactionWidth} />
       <WirePulse path={path} style={style} data={data} />
+      <WireLabel x={labelX} y={labelY} text={wireLabelText(data)} style={style} data={data} />
     </>
   );
 }

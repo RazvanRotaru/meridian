@@ -14,6 +14,7 @@
 
 import type { Edge } from "@xyflow/react";
 import { BUNDLE_EDGE_TYPE, type BundleEdgeData } from "./edgeBundling";
+import { CYCLE_EDGE_TYPE, type CycleEdgeData } from "./cycleFusion";
 
 export const RIBBON_EDGE_TYPE = "ribbon";
 
@@ -110,6 +111,9 @@ export function pairOf(inspected: Edge, edges: Edge[]): Edge[] {
   if (inspected.type === RIBBON_EDGE_TYPE) {
     const members = (inspected.data as RibbonEdgeData).members ?? [];
     return [...members].sort((a, b) => weightOf(b) - weightOf(a)); // the panel leads with the pair's main story
+  }
+  if (inspected.type === CYCLE_EDGE_TYPE) {
+    return (inspected.data as CycleEdgeData).members ?? [inspected]; // forward direction first
   }
   const pool = edges.flatMap((edge) =>
     edge.type === BUNDLE_EDGE_TYPE ? ((edge.data as BundleEdgeData).constituents ?? []) : [edge],

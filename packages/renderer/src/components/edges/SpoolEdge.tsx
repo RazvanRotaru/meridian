@@ -8,6 +8,7 @@
 import { BaseEdge, getBezierPath, Position, type EdgeProps } from "@xyflow/react";
 import type { SpoolEdgeData } from "../../layout/edgeSpooling";
 import { isHiddenWire, WirePulse } from "./WireEdge";
+import { WireLabel, wireLabelText } from "./WireLabel";
 
 /** Length of the straight shared-trunk segment at a hub's handle. Fixed and hub-derived on purpose:
  * every wire of the hub must share the gather point EXACTLY, so the trunk can't scale per-wire. */
@@ -65,11 +66,12 @@ export function SpoolEdge({
   }
   // Neither end can gather sanely → this wire is a plain curve, exactly as if it were never spooled.
   if (!sourceGather && !targetGather) {
-    const [plain] = getBezierPath({ sourceX, sourceY: source.y, targetX, targetY: target.y, sourcePosition, targetPosition });
+    const [plain, plainLabelX, plainLabelY] = getBezierPath({ sourceX, sourceY: source.y, targetX, targetY: target.y, sourcePosition, targetPosition });
     return (
       <>
         <BaseEdge id={id} path={plain} style={style} markerEnd={markerEnd} interactionWidth={interactionWidth} />
         <WirePulse path={plain} style={style} data={data} />
+        <WireLabel x={plainLabelX} y={plainLabelY} text={wireLabelText(data)} style={style} data={data} />
       </>
     );
   }
@@ -90,10 +92,14 @@ export function SpoolEdge({
     `C ${c1.x} ${c1.y} ${c2.x} ${c2.y} ${to.x} ${to.y}`,
     targetGather ? `L ${target.x} ${target.y}` : "",
   ].join(" ");
+  // The chip sits at the free curve's cubic midpoint: (P0 + 3C1 + 3C2 + P3) / 8.
+  const labelX = (from.x + 3 * c1.x + 3 * c2.x + to.x) / 8;
+  const labelY = (from.y + 3 * c1.y + 3 * c2.y + to.y) / 8;
   return (
     <>
       <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} interactionWidth={interactionWidth} />
       <WirePulse path={path} style={style} data={data} />
+      <WireLabel x={labelX} y={labelY} text={wireLabelText(data)} style={style} data={data} />
     </>
   );
 }
