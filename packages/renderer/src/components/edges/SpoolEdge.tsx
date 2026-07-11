@@ -7,7 +7,7 @@
 
 import { BaseEdge, getBezierPath, Position, type EdgeProps } from "@xyflow/react";
 import type { SpoolEdgeData } from "../../layout/edgeSpooling";
-import { WirePulse } from "./WireEdge";
+import { isHiddenWire, WirePulse } from "./WireEdge";
 
 /** Length of the straight shared-trunk segment at a hub's handle. Fixed and hub-derived on purpose:
  * every wire of the hub must share the gather point EXACTLY, so the trunk can't scale per-wire. */
@@ -46,6 +46,9 @@ export function SpoolEdge({
   data,
   interactionWidth,
 }: EdgeProps) {
+  if (isHiddenWire(data)) {
+    return null;
+  }
   const spoolEnd = (data as SpoolEdgeData).spoolEnd;
   const source: Point = { x: sourceX, y: sourceY };
   const target: Point = { x: targetX, y: targetY };

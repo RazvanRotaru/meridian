@@ -18,6 +18,9 @@ import { BaseEdge, getBezierPath, type EdgeProps } from "@xyflow/react";
 export const WIRE_EDGE_TYPE = "wire";
 
 export function WireEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style, markerEnd, data, interactionWidth }: EdgeProps) {
+  if (isHiddenWire(data)) {
+    return null;
+  }
   const [path] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
   return (
     <>
@@ -25,6 +28,12 @@ export function WireEdge({ id, sourceX, sourceY, targetX, targetY, sourcePositio
       <WirePulse path={path} style={style} data={data} />
     </>
   );
+}
+
+/** A wire the surface declared HIDDEN (an unlit commons strand) renders nothing at all — an
+ * opacity-0 SVG path still hit-tests its stroke, so it must not exist rather than be transparent. */
+export function isHiddenWire(data: EdgeProps["data"]): boolean {
+  return (data as { hidden?: boolean } | undefined)?.hidden === true;
 }
 
 /** The streak's one meaning is DIRECTION, so it glints in neutral ink — never a kind colour. */
