@@ -34,6 +34,8 @@ export async function bootstrap(): Promise<BootResult> {
     prsUrl: prApi.prsUrl,
     prOneUrl: prApi.prOneUrl,
     prFilesUrl: prApi.prFilesUrl,
+    prCommentsUrl: prApi.prCommentsUrl,
+    prChecksUrl: prApi.prChecksUrl,
     prFileUrl: prApi.prFileUrl,
     graphUrl: boot.graphUrl,
     prReviewUrl: prApi.prReviewUrl,

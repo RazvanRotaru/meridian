@@ -29,6 +29,19 @@ export async function getApi(fetchImpl: typeof fetch, url: string, token?: strin
   return response.json();
 }
 
+/** One GitHub collection page plus the only pagination metadata callers may expose. */
+export async function getApiPage(
+  fetchImpl: typeof fetch,
+  url: string,
+  token?: string,
+): Promise<{ json: unknown; hasNext: boolean }> {
+  const response = await apiRequest(fetchImpl, url, token);
+  if (!response.ok) {
+    throw apiError(response.status);
+  }
+  return { json: await response.json(), hasNext: linkHasNext(response.headers.get("link")) };
+}
+
 export async function getApiOrNull(fetchImpl: typeof fetch, url: string, token?: string): Promise<unknown | null> {
   const response = await apiRequest(fetchImpl, url, token);
   if (response.status === 404) {
@@ -83,6 +96,10 @@ function apiError(status: number): WebError {
     return new WebError(403, "GitHub API access was refused (rate limit or missing scope)");
   }
   return new WebError(502, `GitHub API request failed (status ${status})`);
+}
+
+function linkHasNext(link: string | null): boolean {
+  return link?.split(",").some((part) => /(?:^|;)\s*rel="?next"?(?:;|$)/i.test(part)) ?? false;
 }
 
 async function withTimeout(run: (signal: AbortSignal) => Promise<Response>): Promise<Response> {

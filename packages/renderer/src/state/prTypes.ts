@@ -15,8 +15,10 @@ export type PrFileStatus = "added" | "modified" | "removed" | "renamed";
 export interface PrSummary {
   number: number;
   title: string;
+  body: string | null;
   author: string;
   headRef: string;
+  headSha: string | null;
   baseRef: string;
   updatedAt: string;
   draft: boolean;
@@ -67,6 +69,35 @@ export interface PrFilesResponse {
 
 export interface PrOneResponse {
   pr: PrSummary;
+}
+
+export interface PrGitHubComment {
+  path: string;
+  line: number | null;
+  body: string;
+  author: string;
+  updatedAt: string;
+  url: string;
+}
+
+export interface PrReviewRollup {
+  approved: string[];
+  changesRequested: string[];
+  commented: number;
+}
+
+export interface PrDiscussionResult {
+  comments: PrGitHubComment[];
+  reviews: PrReviewRollup;
+  hasMore: boolean;
+}
+
+export interface PrChecks {
+  total: number;
+  passed: number;
+  failed: number;
+  pending: number;
+  url: string | null;
 }
 
 export const PRS_UNAVAILABLE_ERROR = "Pull requests unavailable";

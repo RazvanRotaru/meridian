@@ -33,6 +33,8 @@ function freshStore(): BlueprintStore {
     prsUrl: "/api/prs",
     prOneUrl: "/api/prs/one",
     prFilesUrl: "/api/prs/files",
+    prCommentsUrl: "/api/prs/comments",
+    prChecksUrl: "/api/prs/checks",
     prReviewUrl: "/api/prs/review",
   });
 }

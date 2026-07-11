@@ -1,7 +1,13 @@
 import { describe, expect, it, afterEach, vi } from "vitest";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
-import { handlePullRequestFiles, handlePullRequests, handleSubmitReview } from "./web-prs";
+import {
+  handlePullRequestChecks,
+  handlePullRequestComments,
+  handlePullRequestFiles,
+  handlePullRequests,
+  handleSubmitReview,
+} from "./web-prs";
 import type { Context } from "./web-server";
 import type { ArtifactSource } from "./web-source";
 import { SessionStore, markAuthorized } from "./session";
@@ -53,7 +59,21 @@ describe("PR routes", () => {
     );
     expect(captured.status()).toBe(200);
     expect(JSON.parse(captured.body())).toEqual({
-      prs: [{ number: 1, title: "Fix", author: "daria", headRef: "fix", baseRef: "", updatedAt: "2026-07-08T12:00:00Z", draft: false, state: "open", url: "" }],
+      prs: [
+        {
+          number: 1,
+          title: "Fix",
+          body: null,
+          author: "daria",
+          headRef: "fix",
+          headSha: null,
+          baseRef: "",
+          updatedAt: "2026-07-08T12:00:00Z",
+          draft: false,
+          state: "open",
+          url: "",
+        },
+      ],
       hasMore: false,
     });
     expect(seenAuth).toEqual(["Bearer gho_secret"]);
@@ -112,6 +132,134 @@ describe("PR routes", () => {
       // The unsafe `..` candidate is counted as outside but cannot influence the suggested root.
       suggestedSubdir: "packages/core/src",
     });
+  });
+
+  it("returns whitelisted comments and latest review states, and validates n before fetching", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.includes("/comments?")) {
+        return new Response(
+          JSON.stringify([
+            {
+              path: "packages/cli/src/a.ts",
+              line: 12,
+              body: "Please cover this branch",
+              user: { login: "mina", avatar_url: "raw field" },
+              updated_at: "2026-07-10T09:30:00Z",
+              html_url: "https://github.com/org/repo/pull/7#discussion_r1",
+              raw_secret: "not forwarded",
+            },
+            {
+              path: "packages/core/src/outside.ts",
+              line: 2,
+              body: "outside extraction root",
+              user: { login: "mina" },
+              updated_at: "2026-07-10T09:31:00Z",
+            },
+          ]),
+          { status: 200, headers: { link: '<https://api.github.com/page=2>; rel="next"' } },
+        );
+      }
+      return new Response(
+        JSON.stringify([
+          { user: { login: "alice" }, state: "APPROVED", submitted_at: "2026-07-09T10:00:00Z" },
+          { user: { login: "bob" }, state: "COMMENTED", submitted_at: "2026-07-09T11:00:00Z" },
+          { user: { login: "alice" }, state: "CHANGES_REQUESTED", submitted_at: "2026-07-09T12:00:00Z" },
+          { user: { login: "zoe" }, state: "APPROVED", submitted_at: "2026-07-09T13:00:00Z" },
+          { user: { login: "gone" }, state: "APPROVED", submitted_at: "2026-07-09T08:00:00Z" },
+          { user: { login: "gone" }, state: "DISMISSED", submitted_at: "2026-07-09T14:00:00Z" },
+        ]),
+        { status: 200 },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+    const ctx = ctxWithSource({ kind: "github", owner: "org", repo: "repo", subdir: "packages/cli" });
+    const captured = await invoke(
+      handlePullRequestComments,
+      ctx,
+      requestWith(undefined),
+      new URLSearchParams({ id: "artifact", n: "7" }),
+    );
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body())).toEqual({
+      comments: [
+        {
+          path: "src/a.ts",
+          line: 12,
+          body: "Please cover this branch",
+          author: "mina",
+          updatedAt: "2026-07-10T09:30:00Z",
+          url: "https://github.com/org/repo/pull/7#discussion_r1",
+        },
+      ],
+      reviews: { approved: ["zoe"], changesRequested: ["alice"], commented: 1 },
+      hasMore: true,
+    });
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://api.github.com/repos/org/repo/pulls/7/comments?per_page=100",
+      "https://api.github.com/repos/org/repo/pulls/7/reviews?per_page=100",
+    ]);
+
+    const invalid = await invoke(
+      handlePullRequestComments,
+      ctx,
+      requestWith(undefined),
+      new URLSearchParams({ id: "artifact", n: "0" }),
+    );
+    expect(invalid.status()).toBe(400);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns a capped checks rollup and validates n and sha before fetching", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request) =>
+      new Response(
+        JSON.stringify({
+          total_count: 4,
+          check_runs: [
+            { status: "completed", conclusion: "success", html_url: "https://github.com/org/repo/runs/1", name: "build" },
+            { status: "completed", conclusion: "failure", html_url: "https://github.com/org/repo/runs/2", name: "lint" },
+            { status: "in_progress", conclusion: null, html_url: "https://github.com/org/repo/runs/3", name: "test" },
+            { status: "completed", conclusion: "neutral", html_url: "https://github.com/org/repo/runs/4", name: "optional" },
+          ],
+          raw_secret: "not forwarded",
+        }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+    const ctx = ctxWithSource({ kind: "github", owner: "org", repo: "repo" });
+    const captured = await invoke(
+      handlePullRequestChecks,
+      ctx,
+      requestWith(undefined),
+      new URLSearchParams({ id: "artifact", n: "7", sha: "abcdef1234567" }),
+    );
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body())).toEqual({
+      total: 4,
+      passed: 2,
+      failed: 1,
+      pending: 1,
+      url: "https://github.com/org/repo/runs/2",
+    });
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      "https://api.github.com/repos/org/repo/commits/abcdef1234567/check-runs?per_page=100",
+    );
+
+    const badNumber = await invoke(
+      handlePullRequestChecks,
+      ctx,
+      requestWith(undefined),
+      new URLSearchParams({ id: "artifact", n: "0", sha: "abcdef1" }),
+    );
+    const badSha = await invoke(
+      handlePullRequestChecks,
+      ctx,
+      requestWith(undefined),
+      new URLSearchParams({ id: "artifact", n: "7", sha: "not-a-sha" }),
+    );
+    expect([badNumber.status(), badSha.status()]).toEqual([400, 400]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

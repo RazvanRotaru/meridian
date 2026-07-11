@@ -19,8 +19,10 @@ function pr(number: number, title = `PR ${number}`): PrSummary {
   return {
     number,
     title,
+    body: null,
     author: "octo",
     headRef: "feature",
+    headSha: null,
     baseRef: "main",
     updatedAt: "2026-07-08T00:00:00.000Z",
     draft: false,
@@ -59,6 +61,8 @@ function freshStore(extra?: Partial<StoreDependencies>) {
     prsUrl: "/api/prs?id=artifact-1",
     prOneUrl: "/api/prs/one?id=artifact-1",
     prFilesUrl: "/api/prs/files?id=artifact-1",
+    prCommentsUrl: "/api/prs/comments?id=artifact-1",
+    prChecksUrl: "/api/prs/checks?id=artifact-1",
     prReviewUrl: "/api/prs/review?id=artifact-1",
     ...extra,
   });

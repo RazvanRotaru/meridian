@@ -28,6 +28,10 @@ export interface PrApiUrls {
   prsUrl: string;
   prOneUrl: string;
   prFilesUrl: string;
+  /** GET target for existing inline comments and the latest review state per author. */
+  prCommentsUrl: string;
+  /** GET target for the selected PR head commit's check-run rollup. */
+  prChecksUrl: string;
   /** GET base for one changed file's text at the PR head ref (the review code panel). */
   prFileUrl: string;
   /** POST target for submitting a review with comments; 404s outside a `web` GitHub session. */
@@ -80,6 +84,8 @@ export function prApiUrlsFromGraphUrl(graphUrl: string): PrApiUrls {
     prsUrl: apiUrl("/api/prs", id),
     prOneUrl: apiUrl("/api/prs/one", id),
     prFilesUrl: apiUrl("/api/prs/files", id),
+    prCommentsUrl: apiUrl("/api/prs/comments", id),
+    prChecksUrl: apiUrl("/api/prs/checks", id),
     prFileUrl: apiUrl("/api/prs/file", id),
     prReviewUrl: apiUrl("/api/prs/review", id),
     analyzeUrl: "/api/pr/analyze",

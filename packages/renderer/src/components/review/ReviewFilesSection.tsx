@@ -12,6 +12,7 @@
 import { memo, useEffect, useMemo, useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { checkStateOf, fileViewState, type ReviewFileRow } from "../../derive/reviewFiles";
+import type { PrGitHubComment } from "../../state/prTypes";
 import type { ReviewComment, ReviewTick } from "../../state/reviewTicksPref";
 import { useActiveChangeGroup } from "./ChangeGroupStrip";
 import { CommentButton, CommentComposer, CommentList } from "./ReviewComments";
@@ -28,6 +29,9 @@ interface DraftCounts {
   line: number;
 }
 type DraftCountsByFile = ReadonlyMap<string, DraftCounts>;
+type GitHubCommentsByFile = ReadonlyMap<string, PrGitHubComment[]>;
+
+const NO_GITHUB_COMMENTS: readonly PrGitHubComment[] = [];
 
 const rowKey = (path: string, nodeId: string | null): string => nodeId ?? `file:${path}`;
 
@@ -37,6 +41,7 @@ function ReviewFilesSectionImpl() {
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
   const comments = useBlueprint((state) => state.reviewComments);
+  const discussion = useBlueprint((state) => state.prDiscussion);
   const { setReviewFilesSort } = useBlueprintActions();
   const activeGroup = useActiveChangeGroup();
   const [open, setOpen] = useState(true);
@@ -69,6 +74,14 @@ function ReviewFilesSectionImpl() {
     }
     return { byRow, countsByFile };
   }, [comments]);
+  const githubCommentsByFile = useMemo(() => {
+    const byFile = new Map<string, PrGitHubComment[]>();
+    for (const comment of discussion?.comments ?? NO_GITHUB_COMMENTS) {
+      const bucket = byFile.get(comment.path);
+      bucket ? bucket.push(comment) : byFile.set(comment.path, [comment]);
+    }
+    return byFile;
+  }, [discussion]);
   if (files.length === 0) {
     return null;
   }
@@ -100,6 +113,7 @@ function ReviewFilesSectionImpl() {
             fileTicks={fileTicks}
             drafts={draftIndex.byRow}
             draftCounts={draftIndex.countsByFile}
+            githubComments={githubCommentsByFile}
             composer={composer}
             onComposer={setComposer}
           />
@@ -114,10 +128,11 @@ function FileRow(props: {
   fileTicks: Record<string, ReviewTick>;
   drafts: DraftsByRow;
   draftCounts: DraftCountsByFile;
+  githubComments: GitHubCommentsByFile;
   composer: CommentTarget | null;
   onComposer: (target: CommentTarget | null) => void;
 }) {
-  const { file, unitTicks, fileTicks, drafts, draftCounts, composer, onComposer } = props;
+  const { file, unitTicks, fileTicks, drafts, draftCounts, githubComments, composer, onComposer } = props;
   const currentNodes = useBlueprint((state) => state.index.nodesById);
   const { toggleReviewFileViewed, addReviewComment, setReviewLit, focusReviewFile, selectReviewNode } = useBlueprintActions();
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
@@ -133,9 +148,10 @@ function FileRow(props: {
   const fileDrafts = drafts.get(rowKey(file.path, null)) ?? [];
   const counts = draftCounts.get(file.path) ?? { file: 0, unit: 0, line: 0 };
   const aggregateDraftCount = counts.file + counts.unit + counts.line;
+  const existingComments = githubComments.get(file.path) ?? NO_GITHUB_COMMENTS;
   const composerHere = composer !== null && composer.path === file.path && composer.nodeId === null;
   const doneUnits = file.units.filter((unit) => checkStateOf(unit.fingerprint, unitTicks[unit.nodeId]) === "done").length;
-  const hasBody = file.units.length > 0 || fileDrafts.length > 0 || file.deletedImpact !== null;
+  const hasBody = file.units.length > 0 || fileDrafts.length > 0 || existingComments.length > 0 || file.deletedImpact !== null;
   return (
     <div style={FILE_BLOCK}>
       <div
@@ -189,7 +205,8 @@ function FileRow(props: {
           count={aggregateDraftCount}
           active={composerHere}
           visible={hovered}
-          title={`${counts.file} file · ${counts.unit} unit · ${counts.line} line drafts`}
+          title={`${counts.file} file · ${counts.unit} unit · ${counts.line} line drafts${existingComments.length > 0 ? ` (${existingComments.length} on GitHub)` : ""}`}
+          suffix={existingComments.length > 0 ? `(${existingComments.length} on GitHub)` : undefined}
           onClick={() => {
             // The composer renders in the file body — opening it on a folded (viewed) file unfolds it.
             if (!composerHere) {
@@ -209,12 +226,13 @@ function FileRow(props: {
       </div>
       {expanded && (
         <>
-          {file.units.map((unit) => (
-            <UnitRow key={unit.nodeId} unit={unit} path={file.path} tick={unitTicks[unit.nodeId]} drafts={drafts.get(rowKey(file.path, unit.nodeId)) ?? []} composer={composer} onComposer={onComposer} />
-          ))}
           {file.deletedImpact !== null && (
             <DeletedImpact impact={file.deletedImpact} currentNodes={currentNodes} onSelect={selectReviewNode} />
           )}
+          <GitHubCommentList comments={existingComments} />
+          {file.units.map((unit) => (
+            <UnitRow key={unit.nodeId} unit={unit} path={file.path} tick={unitTicks[unit.nodeId]} drafts={drafts.get(rowKey(file.path, unit.nodeId)) ?? []} composer={composer} onComposer={onComposer} />
+          ))}
           <CommentList comments={fileDrafts} />
           {composerHere && (
             <CommentComposer placeholder={`Comment on ${basename(file.path)}…`} onAdd={(body) => addReviewComment(file.path, null, body)} onCancel={() => onComposer(null)} />
@@ -223,6 +241,60 @@ function FileRow(props: {
       )}
     </div>
   );
+}
+
+function GitHubCommentList(props: { comments: readonly PrGitHubComment[] }) {
+  if (props.comments.length === 0) {
+    return null;
+  }
+  return (
+    <div style={GITHUB_COMMENTS_LIST}>
+      {props.comments.map((comment, index) => (
+        <div key={`${comment.url}:${comment.updatedAt}:${index}`} style={GITHUB_COMMENT}>
+          <div style={GITHUB_COMMENT_META}>
+            {comment.line !== null ? <span style={GITHUB_LINE_CHIP}>L{comment.line}</span> : null}
+            {comment.url ? (
+              <a style={GITHUB_AUTHOR} href={comment.url} target="_blank" rel="noreferrer" title="Open comment on GitHub">
+                {comment.author}
+              </a>
+            ) : (
+              <span style={GITHUB_AUTHOR}>{comment.author}</span>
+            )}
+            <span style={GITHUB_TIME} title={comment.updatedAt}>{relativeTime(comment.updatedAt)}</span>
+          </div>
+          <div style={GITHUB_COMMENT_BODY}>{comment.body}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function relativeTime(updatedAt: string): string {
+  const timestamp = Date.parse(updatedAt);
+  if (!Number.isFinite(timestamp)) {
+    return "";
+  }
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 60) {
+    return "just now";
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes}m ago`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${hours}h ago`;
+  }
+  const days = Math.floor(hours / 24);
+  if (days < 30) {
+    return `${days}d ago`;
+  }
+  const months = Math.floor(days / 30);
+  if (months < 12) {
+    return `${months}mo ago`;
+  }
+  return `${Math.floor(months / 12)}y ago`;
 }
 
 function DeletedImpact(props: {
@@ -339,3 +411,10 @@ const CALLER_ROW: React.CSSProperties = { width: "100%", minWidth: 0, display: "
 const CALLER_NAME: React.CSSProperties = { minWidth: 0, color: "#E6EDF3", fontSize: 11.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const CALLER_LOCATION: React.CSSProperties = { color: "#5A6472", fontFamily: MONO, fontSize: 9.5, flexShrink: 0 };
 const IMPACT_NOTE: React.CSSProperties = { color: "#6E7781", fontSize: 10, fontStyle: "italic", paddingTop: 3 };
+const GITHUB_COMMENTS_LIST: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 5, padding: "3px 6px 5px 26px" };
+const GITHUB_COMMENT: React.CSSProperties = { border: "1px solid #2A2F37", background: "#11161D", borderRadius: 7, padding: "7px 8px" };
+const GITHUB_COMMENT_META: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6, marginBottom: 4, minWidth: 0 };
+const GITHUB_AUTHOR: React.CSSProperties = { color: "#E6EDF3", fontSize: 11, fontWeight: 650, textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const GITHUB_TIME: React.CSSProperties = { color: "#5A6472", fontSize: 9.5, flexShrink: 0 };
+const GITHUB_LINE_CHIP: React.CSSProperties = { flexShrink: 0, border: "1px solid rgba(125,211,252,0.35)", borderRadius: 4, padding: "0 4px", color: "#7DD3FC", fontFamily: MONO, fontSize: 9.5, fontWeight: 700, lineHeight: "14px" };
+const GITHUB_COMMENT_BODY: React.CSSProperties = { color: "#C9D1D9", fontSize: 11.5, lineHeight: "15px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: 6, overflow: "hidden" };

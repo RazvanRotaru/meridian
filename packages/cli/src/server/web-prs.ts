@@ -1,5 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { fetchFileAtRef, fetchPullRequest, fetchPullRequestFiles, listPullRequests } from "./github";
+import {
+  fetchCommitChecks,
+  fetchFileAtRef,
+  fetchPullRequest,
+  fetchPullRequestDiscussion,
+  fetchPullRequestFiles,
+  listPullRequests,
+} from "./github";
 import { submitPullRequestReview, type ReviewCommentInput } from "./github-review";
 import { sendJson } from "./http-response";
 import { githubTokenFor } from "./web-auth";
@@ -12,6 +19,7 @@ import { deepestCommonDirectory, partitionExtractionSubdir, restoreExtractionSub
 const GITHUB_SOURCE_ERROR = "pull requests need a GitHub-sourced session";
 /** Sanity bound; the 64KB body cap constrains the real payload long before this. */
 const MAX_REVIEW_COMMENTS = 100;
+const HEAD_SHA = /^[0-9a-f]{7,40}$/i;
 
 export async function handlePullRequests(
   ctx: Context,
@@ -69,6 +77,47 @@ export async function handlePullRequestOne(
   const number = parsePositiveInt(query.get("n"), "n");
   const pr = await fetchPullRequest(globalThis.fetch, { owner: source.owner, repo: source.repo, number, token: githubTokenFor(ctx, request) });
   sendJson(response, 200, { pr });
+}
+
+export async function handlePullRequestComments(
+  ctx: Context,
+  request: IncomingMessage,
+  response: ServerResponse,
+  query: URLSearchParams,
+): Promise<void> {
+  const source = githubSource(ctx, query.get("id"));
+  if (!source) {
+    sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
+    return;
+  }
+  // This validation must precede fetchPullRequestDiscussion, where the number enters URL paths.
+  const prNumber = parsePositiveInt(query.get("n"), "n");
+  const result = await fetchPullRequestDiscussion({
+    owner: source.owner,
+    repo: source.repo,
+    prNumber,
+    token: githubTokenFor(ctx, request),
+  });
+  const comments = partitionExtractionSubdir(result.comments, source.subdir).inside;
+  sendJson(response, 200, { ...result, comments });
+}
+
+export async function handlePullRequestChecks(
+  ctx: Context,
+  request: IncomingMessage,
+  response: ServerResponse,
+  query: URLSearchParams,
+): Promise<void> {
+  const source = githubSource(ctx, query.get("id"));
+  if (!source) {
+    sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
+    return;
+  }
+  // Validate both attacker-controlled path inputs before fetchCommitChecks constructs its URL.
+  parsePositiveInt(query.get("n"), "n");
+  const sha = parseHeadSha(query.get("sha"));
+  const checks = await fetchCommitChecks({ owner: source.owner, repo: source.repo, sha, token: githubTokenFor(ctx, request) });
+  sendJson(response, 200, checks);
 }
 
 /**
@@ -213,4 +262,11 @@ function parsePositiveInt(raw: string | null, name: string): number {
     throw new WebError(400, `${name} must be a positive integer`);
   }
   return value;
+}
+
+function parseHeadSha(raw: string | null): string {
+  if (!raw || !HEAD_SHA.test(raw)) {
+    throw new WebError(400, "sha must be a 7 to 40 character hexadecimal commit id");
+  }
+  return raw;
 }

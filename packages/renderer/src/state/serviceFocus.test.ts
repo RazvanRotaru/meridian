@@ -66,7 +66,19 @@ const ARTIFACT = {
 
 function freshStore(): BlueprintStore {
   const index = buildGraphIndex(ARTIFACT);
-  return createBlueprintStore({ artifact: ARTIFACT, index, provider: null, hasOverlay: false, sourceUrl: null, prsUrl: "", prFilesUrl: "", prReviewUrl: "", prOneUrl: "" });
+  return createBlueprintStore({
+    artifact: ARTIFACT,
+    index,
+    provider: null,
+    hasOverlay: false,
+    sourceUrl: null,
+    prsUrl: "",
+    prOneUrl: "",
+    prFilesUrl: "",
+    prCommentsUrl: "",
+    prChecksUrl: "",
+    prReviewUrl: "",
+  });
 }
 
 describe("Service cluster focus (the containment dive)", () => {

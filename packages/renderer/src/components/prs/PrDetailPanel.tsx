@@ -1,15 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { PrChangedFile, PrFileStatus } from "../../state/prTypes";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { PrChangedFile, PrChecks, PrFileStatus, PrReviewRollup } from "../../state/prTypes";
 import { generatePrSubdir } from "../../state/generatePrSubdir";
 import { selectedPrSummary } from "../../state/store";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { useClearOnEscape } from "../canvas/useClearOnEscape";
+import { PrChecksChip } from "./PrChecksChip";
 import { PrPrepareError, PrPrepareProgress } from "./PrPrepareProgress";
 
 export function PrDetailPanel() {
   const selected = useBlueprint((state) => state.prSelected);
   const summary = useBlueprint(selectedPrSummary);
   const files = useBlueprint((state) => state.prFiles);
+  const discussion = useBlueprint((state) => state.prDiscussion);
+  const checks = useBlueprint((state) => state.prChecks);
   const truncated = useBlueprint((state) => state.prFilesTruncated);
   const totalFiles = useBlueprint((state) => state.prFilesTotal);
   const outsideCount = useBlueprint((state) => state.prFilesOutside);
@@ -86,7 +89,11 @@ export function PrDetailPanel() {
         <div style={NUMBER_STYLE}>#{selected}</div>
       </div>
       <h2 style={TITLE_STYLE}>{summary?.title ?? `PR #${selected}`}</h2>
+      {summary?.body !== null && summary?.body !== undefined ? <PrBody key={`${selected}:${summary.updatedAt}`} body={summary.body} /> : null}
       {summary ? <div style={META_STYLE}>{summary.author} / {summary.headRef}</div> : null}
+      {(discussion?.reviews.approved.length ?? 0) > 0 || (discussion?.reviews.changesRequested.length ?? 0) > 0 || checks !== null ? (
+        <ReviewStateRow reviews={discussion?.reviews ?? null} checks={checks} />
+      ) : null}
       <button
         type="button"
         style={REVIEW_STYLE}
@@ -120,6 +127,52 @@ export function PrDetailPanel() {
   );
 }
 
+function PrBody(props: { body: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [truncated, setTruncated] = useState(false);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    const element = bodyRef.current;
+    if (expanded || element === null) {
+      return;
+    }
+    const measure = () => setTruncated(element.scrollHeight > element.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [expanded, props.body]);
+
+  return (
+    <div style={BODY_WRAP_STYLE}>
+      <div ref={bodyRef} style={expanded ? BODY_TEXT_STYLE : { ...BODY_TEXT_STYLE, ...BODY_CLAMP_STYLE }}>
+        {props.body}
+      </div>
+      {truncated ? (
+        <button type="button" style={BODY_TOGGLE_STYLE} onClick={() => setExpanded((value) => !value)}>
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function ReviewStateRow(props: { reviews: PrReviewRollup | null; checks: PrChecks | null }) {
+  const approved = props.reviews?.approved.length ?? 0;
+  const changesRequested = props.reviews?.changesRequested.length ?? 0;
+  return (
+    <div style={REVIEW_STATE_ROW_STYLE}>
+      {approved > 0 ? <span style={{ ...REVIEW_STATE_CHIP_STYLE, ...APPROVED_CHIP_STYLE }}>✓ approved {approved}</span> : null}
+      {changesRequested > 0 ? <span style={{ ...REVIEW_STATE_CHIP_STYLE, ...CHANGES_CHIP_STYLE }}>± changes requested {changesRequested}</span> : null}
+      <PrChecksChip checks={props.checks} />
+    </div>
+  );
+}
+
 function FileList(props: { files: readonly PrChangedFile[]; totalFiles: number }) {
   if (props.files.length === 0) {
     return props.totalFiles === 0 ? <div style={EMPTY_STYLE}>No changed files.</div> : null;
@@ -146,6 +199,14 @@ const BACK_STYLE: React.CSSProperties = { border: "1px solid #2A2F37", borderRad
 const NUMBER_STYLE: React.CSSProperties = { color: "#7DD3FC", fontWeight: 700, fontSize: 13 };
 const TITLE_STYLE: React.CSSProperties = { margin: "0 0 8px", color: "#F0F6FC", fontSize: 18, lineHeight: "24px" };
 const META_STYLE: React.CSSProperties = { color: "#8B949E", fontSize: 12, marginBottom: 14 };
+const BODY_WRAP_STYLE: React.CSSProperties = { margin: "0 0 10px" };
+const BODY_TEXT_STYLE: React.CSSProperties = { color: "#C9D1D9", fontSize: 12, lineHeight: "18px", whiteSpace: "pre-wrap", overflowWrap: "anywhere" };
+const BODY_CLAMP_STYLE: React.CSSProperties = { display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: 12, maxHeight: 216, overflow: "hidden" };
+const BODY_TOGGLE_STYLE: React.CSSProperties = { border: "none", background: "transparent", color: "#7DD3FC", cursor: "pointer", font: "inherit", fontSize: 11.5, padding: "4px 0 0" };
+const REVIEW_STATE_ROW_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, margin: "-6px 0 14px" };
+const REVIEW_STATE_CHIP_STYLE: React.CSSProperties = { display: "inline-flex", alignItems: "center", border: "1px solid", borderRadius: 999, padding: "2px 8px", fontSize: 11, fontWeight: 650, lineHeight: "16px", whiteSpace: "nowrap" };
+const APPROVED_CHIP_STYLE: React.CSSProperties = { color: "#86EFAC", borderColor: "#166534", background: "#0B1F13" };
+const CHANGES_CHIP_STYLE: React.CSSProperties = { color: "#FCA5A5", borderColor: "#7F1D1D", background: "#1A0E12" };
 const REVIEW_STYLE: React.CSSProperties = { width: "100%", border: "1px solid #56C271", borderRadius: 8, background: "#12301F", color: "#E6F6EA", padding: "10px 12px", cursor: "pointer", fontWeight: 750, marginBottom: 14 };
 const REEXTRACT_STYLE: React.CSSProperties = { ...REVIEW_STYLE, marginTop: 12, marginBottom: 0 };
 const OUTSIDE_INFO_STYLE: React.CSSProperties = { color: "#8B949E", fontSize: 12, lineHeight: "18px", margin: "-6px 0 14px" };

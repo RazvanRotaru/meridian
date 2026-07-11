@@ -53,6 +53,8 @@ import {
   PRS_UNAVAILABLE_ERROR,
   type LineEdit,
   type PrChangedFile,
+  type PrChecks,
+  type PrDiscussionResult,
   type PrFilesResponse,
   type PrListResponse,
   type PrOneResponse,
@@ -305,6 +307,8 @@ export interface BlueprintState {
   prsUrl: string;
   prOneUrl: string;
   prFilesUrl: string;
+  prCommentsUrl: string;
+  prChecksUrl: string;
   /** Exact web-session source used only by the subfolder recovery action. */
   prSessionSource: PrSessionSource | null;
   prsTab: PrsTab;
@@ -316,6 +320,10 @@ export interface BlueprintState {
   prsError: string | null;
   prSelected: number | null;
   prFiles: PrChangedFile[] | null;
+  /** Existing GitHub comments plus the latest review-state rollup for the selected PR. */
+  prDiscussion: Pick<PrDiscussionResult, "comments" | "reviews"> | null;
+  /** Check-run rollup for the selected PR's head commit. */
+  prChecks: PrChecks | null;
   prFilesTruncated: boolean;
   prFilesTotal: number;
   prFilesOutside: number;
@@ -487,6 +495,8 @@ export interface StoreDependencies {
   prsUrl: string;
   prOneUrl: string;
   prFilesUrl: string;
+  prCommentsUrl: string;
+  prChecksUrl: string;
   /** GET base for one changed file's text at the PR head ref (the review code panel's head-fetch). */
   prFileUrl?: string;
   /** POST endpoint for PR-head preparation. Null/absent (a plain `view` session, or an older
@@ -628,6 +638,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const prsUrl = dependencies.prsUrl;
   const prOneUrl = dependencies.prOneUrl;
   const prFilesUrl = dependencies.prFilesUrl;
+  const prCommentsUrl = dependencies.prCommentsUrl;
+  const prChecksUrl = dependencies.prChecksUrl;
   const prFileUrl = dependencies.prFileUrl ?? null;
   // Null when the server can't prepare a PR head (no analyze route, or no stored GitHub artifact);
   // reviewPrInGraph then falls back to the synchronous loaded-artifact review.
@@ -731,6 +743,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prsUrl,
     prOneUrl,
     prFilesUrl,
+    prCommentsUrl,
+    prChecksUrl,
     prSessionSource: dependencies.prSessionSource ?? null,
     prsTab: "open",
     prsList: { open: null, closed: null },
@@ -740,6 +754,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prsError: null,
     prSelected: null,
     prFiles: null,
+    prDiscussion: null,
+    prChecks: null,
     prFilesTruncated: false,
     prFilesTotal: 0,
     prFilesOutside: 0,
@@ -1880,11 +1896,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (get().prsTab === tab) {
         return;
       }
+      // A tab switch is also a selection reset, so invalidate every selected-PR response lane.
+      prFilesSeq += 1;
       set({
         prsTab: tab,
         prsError: null,
         prSelected: null,
         prFiles: null,
+        prDiscussion: null,
+        prChecks: null,
+        prsLoading: false,
         prFilesTruncated: false,
         prFilesTotal: 0,
         prFilesOutside: 0,
@@ -1969,6 +1990,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({
           prSelected: null,
           prFiles: null,
+          prDiscussion: null,
+          prChecks: null,
           prFilesTruncated: false,
           prFilesTotal: 0,
           prFilesOutside: 0,
@@ -1982,6 +2005,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({
         prSelected: number,
         prFiles: null,
+        prDiscussion: null,
+        prChecks: null,
         prFilesTruncated: false,
         prFilesTotal: 0,
         prFilesOutside: 0,
@@ -2014,6 +2039,35 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           prsLoading: false,
           prsError: null,
         });
+        // Discussion and checks are deliberately secondary to the changed-file load: the detail
+        // panel is usable as soon as files land, while these two independent lanes fill in quietly.
+        void fetchPrDiscussion(prCommentsUrl, number).then(
+          (discussion) => {
+            if (prFilesSeq === sequence && get().prSelected === number) {
+              set({ prDiscussion: { comments: discussion.comments, reviews: discussion.reviews } });
+            }
+          },
+          () => {
+            if (prFilesSeq === sequence && get().prSelected === number) {
+              console.warn("[meridian] PR discussion unavailable.");
+            }
+          },
+        );
+        const headSha = selectedPrSummary(get(), number)?.headSha ?? null;
+        if (headSha !== null) {
+          void fetchPrChecks(prChecksUrl, number, headSha).then(
+            (checks) => {
+              if (prFilesSeq === sequence && get().prSelected === number) {
+                set({ prChecks: checks });
+              }
+            },
+            () => {
+              if (prFilesSeq === sequence && get().prSelected === number) {
+                console.warn("[meridian] PR checks unavailable.");
+              }
+            },
+          );
+        }
       } catch {
         if (prFilesSeq === sequence && get().prSelected === number) {
           set({ prsLoading: false, prsError: PRS_UNAVAILABLE_ERROR });
@@ -2539,6 +2593,27 @@ function withToggledCategory(hidden: Set<ModuleCategory>, category: ModuleCatego
 
 function requestOrigin(): string {
   return typeof window === "undefined" ? "http://meridian.local" : window.location.origin;
+}
+
+async function fetchPrDiscussion(baseUrl: string, number: number): Promise<PrDiscussionResult> {
+  const url = new URL(baseUrl, requestOrigin());
+  url.searchParams.set("n", String(number));
+  const response = await fetch(url, { credentials: "same-origin" });
+  if (!response.ok) {
+    throw new Error("PR discussion unavailable");
+  }
+  return (await response.json()) as PrDiscussionResult;
+}
+
+async function fetchPrChecks(baseUrl: string, number: number, sha: string): Promise<PrChecks> {
+  const url = new URL(baseUrl, requestOrigin());
+  url.searchParams.set("n", String(number));
+  url.searchParams.set("sha", sha);
+  const response = await fetch(url, { credentials: "same-origin" });
+  if (!response.ok) {
+    throw new Error("PR checks unavailable");
+  }
+  return (await response.json()) as PrChecks;
 }
 
 async function errorMessage(response: Response): Promise<string> {

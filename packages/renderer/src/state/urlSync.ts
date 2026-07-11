@@ -48,8 +48,13 @@ export async function restoreFromUrl(store: BlueprintStore, search?: string): Pr
   if (nav.reviewActive && nav.reviewPr !== null) {
     await restorePrReview(store, nav.reviewPr);
   } else if (nav.prSelected !== null) {
-    // The plain PR-browser restore deliberately keeps its existing fire-and-forget behavior.
-    void store.getState().selectPr(nav.prSelected);
+    // The checks lane keys off the summary's head SHA after files land. A bookmarked PR can restore
+    // before either list page exists, so resolve its one-off summary first; the file/detail fetch
+    // itself stays fire-and-forget like the existing plain-browser restore.
+    await store.getState().ensurePrSummary(nav.prSelected);
+    if (selectedPrSummary(store.getState(), nav.prSelected) !== null) {
+      void store.getState().selectPr(nav.prSelected);
+    }
   }
   applyEnvironment(store, nav.environment);
   prevNav = navFrom(store.getState());
@@ -177,6 +182,8 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     prsTab: nav.prsTab,
     prSelected: null,
     prFiles: null,
+    prDiscussion: null,
+    prChecks: null,
     prFilesTruncated: false,
     prFilesTotal: 0,
     prFilesOutside: 0,
