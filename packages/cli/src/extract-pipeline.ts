@@ -20,7 +20,7 @@ import type {
 import { TypeScriptExtractor } from "@meridian/extractor-typescript";
 import { PythonExtractor } from "@meridian/extractor-python";
 import { CliError, EXIT } from "./errors";
-import { changedSinceMetadata } from "./git-diff";
+import { changedSinceMetadata, type GitDiffExecutor } from "./git-diff";
 import { rootRelativeToCwd } from "./paths";
 import { buildArtifact } from "./artifact-header";
 import { validateOrThrow } from "./validation";
@@ -43,6 +43,10 @@ export interface PipelineRequest {
   valueRefs?: boolean;
   /** Tag nodes the PR changed (git diff --merge-base <ref> vs the working tree) `"changed"`. */
   changedSince?: string;
+  /** Override the changed-since diff timeout for callers that operate on unusually large repos. */
+  changedSinceTimeoutMs?: number;
+  /** Credential-aware git runner for server-side partial clones; local extraction uses the default. */
+  changedSinceGitExecutor?: GitDiffExecutor;
   /** Display name for the artifact; the web flow passes the repo label so the title isn't a temp dir. */
   targetName?: string;
 }
@@ -138,7 +142,12 @@ async function changedRangesFor(
   if (!request.changedSince) {
     return null;
   }
-  return changedSinceMetadata(request.absoluteRoot, request.changedSince);
+  return changedSinceMetadata(
+    request.absoluteRoot,
+    request.changedSince,
+    request.changedSinceTimeoutMs,
+    request.changedSinceGitExecutor,
+  );
 }
 
 /** Tag the nodes the diff touched: core joins the ranges onto node spans (tags compose with "test"). */

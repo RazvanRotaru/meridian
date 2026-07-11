@@ -111,8 +111,8 @@ async function restorePrReview(store: BlueprintStore, number: number): Promise<v
   if (store.getState().prSelected !== number || store.getState().prFiles === null) {
     return;
   }
-  // reviewPrInGraph is intentionally sync-only; awaiting its declared Promise keeps this chain
-  // (and the URL-write suppression around it) complete before Forward restoration is released.
+  // reviewPrInGraph applies the sync review before fire-and-forgetting PR-head preparation;
+  // awaiting it keeps the URL-write suppression ordered without waiting for that analysis.
   await store.getState().reviewPrInGraph();
 }
 

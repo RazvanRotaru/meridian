@@ -307,7 +307,7 @@ export interface BlueprintState {
    * components read it to decide whether to offer a "show source" control. */
   sourceUrl: string | null;
   /** POST endpoint for PR-head preparation; null when this session can't prepare one (plain
-   * `view`, older server). Gates the review panel's "Extract head graph" button. */
+   * `view`, older server). Reviews auto-prepare when present; it also gates the retry button. */
   analyzeUrl: string | null;
   /** PR API endpoints derived from the graph artifact URL; 404/network means this session lacks PRs. */
   prsUrl: string;
@@ -487,7 +487,7 @@ export interface BlueprintState {
   ensurePrSummary(number: number): Promise<void>;
   selectPr(number: number | null): Promise<void>;
   reviewPrInGraph(): Promise<void>;
-  /** Opt-in head extract: stream the server's clone→checkout→extract of the PR head, swap the
+  /** Head extract: stream the server's clone→checkout→extract of the PR head, swap the
    * loaded artifact for the head-accurate one, and re-run the review in head coordinates. On
    * failure the review stays in sync mode (overlay intact) with the error in the prepare lane. */
   prepareHeadGraph(): Promise<void>;
@@ -517,7 +517,7 @@ export interface StoreDependencies {
   /** GET base for one changed file's text at the PR head ref (the review code panel's head-fetch). */
   prFileUrl?: string;
   /** POST endpoint for PR-head preparation. Null/absent (a plain `view` session, or an older
-   * server) makes reviewPrInGraph skip streaming and review the loaded artifact synchronously. */
+   * server) leaves reviewPrInGraph on its synchronously-applied loaded-artifact review. */
   analyzeUrl?: string | null;
   /** The current GitHub artifact id — the analyze POST body's `id`. */
   graphId?: string | null;
@@ -2243,7 +2243,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     // Once the selected PR's files are ready, reviewing lands synchronously on main's Module-map
     // minimal-graph surface (applyPrReviewToMap), against the loaded artifact. If selection's file
-    // lane is still pending, await that exact request first. Head extraction remains opt-in below.
+    // lane is still pending, await that exact request first. A capable web session then upgrades
+    // that already-visible review in the background with the PR-head artifact.
     async reviewPrInGraph() {
       const selected = get().prSelected;
       if (selected === null) {
@@ -2259,6 +2260,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
       }
       applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
+      const reviewState = get();
+      // The sync review above is the instant entry point; head preparation is deliberately
+      // fire-and-forget. Re-clicking Review while that same preparation is streaming must not
+      // launch a duplicate request, and an already-prepared review needs no automatic re-extract.
+      if (
+        analyzeUrl !== null
+        && analyzeGraphId !== null
+        && reviewState.prReviewed === selected
+        && reviewState.prPreparedGraphId === null
+        && reviewState.prReviewStatus !== "preparing"
+      ) {
+        void reviewState.prepareHeadGraph();
+      }
     },
 
     // Re-open a review whose overlay was soft-closed (Escape/Close/lens switch) — cheaply. The
@@ -2295,7 +2309,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().minimalRelayout();
     },
 
-    // The opt-in head extract behind the review panel's "Extract head graph": stream the server's
+    // The head extract auto-started by reviewPrInGraph (and retained as a manual retry): stream the
     // clone→checkout→extract analysis into the prepare indicator, SWAP the loaded artifact for the
     // prepared head-accurate one (saving the boot pair for the session-end restore), then re-run
     // the review so marking, seeds, and the line diff all compute in the diff's own head

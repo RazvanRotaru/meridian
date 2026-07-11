@@ -79,6 +79,7 @@ describe("runGit", () => {
 describe("runGitClone", () => {
   afterEach(() => {
     vi.mocked(spawn).mockReset();
+    vi.useRealTimers();
   });
 
   it("passes its argv through unchanged and resolves to undefined", async () => {
@@ -89,6 +90,17 @@ describe("runGitClone", () => {
     child.emit("close", 0);
     await expect(pending).resolves.toBeUndefined();
     expect(spawn).toHaveBeenCalledWith("git", args, expect.anything());
+  });
+
+  it("honors a per-call timeout without changing the shared clone default", async () => {
+    vi.useFakeTimers();
+    const child = nextChild();
+    const pending = runGitClone(["clone", "--", "https://github.com/o/r.git", "/tmp/x"], undefined, {
+      timeoutMs: 600_000,
+    });
+    vi.advanceTimersByTime(600_000);
+    await expect(pending).rejects.toThrow("git timed out after 600s");
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
   });
 
   it("flags auth-like clone failures with the token scrubbed", async () => {
