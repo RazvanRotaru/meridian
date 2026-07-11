@@ -35,7 +35,10 @@ import { spoolFanEdges, SPOOL_EDGE_TYPE } from "../layout/edgeSpooling";
 import { SpoolEdge } from "./edges/SpoolEdge";
 import { WireEdge, WIRE_EDGE_TYPE } from "./edges/WireEdge";
 import { RibbonEdge } from "./edges/RibbonEdge";
+import { CycleEdge } from "./edges/CycleEdge";
 import { foldPairRibbons, pairOf, RIBBON_EDGE_TYPE, type RibbonEdgeData } from "../layout/parallelWires";
+import { CYCLE_EDGE_TYPE, fuseCycles, type CycleEdgeData } from "../layout/cycleFusion";
+import { fadeFaintWires } from "../layout/wireSalience";
 import { WireTooltip, type WireHover } from "./WireTooltip";
 import { WireInspector } from "./WireInspector";
 import type { BlockData, UnitCardData } from "../derive/moduleLevel";
@@ -50,6 +53,7 @@ const moduleEdgeTypes: EdgeTypes = {
   [BUNDLE_EDGE_TYPE]: BundledEdge,
   [ROUTED_EDGE_TYPE]: RoutedEdge,
   [RIBBON_EDGE_TYPE]: RibbonEdge,
+  [CYCLE_EDGE_TYPE]: CycleEdge,
   [SPOOL_EDGE_TYPE]: SpoolEdge,
   [WIRE_EDGE_TYPE]: WireEdge,
 };
@@ -96,12 +100,18 @@ export function ModuleMapView() {
   // open-canvas fan-hub wires SPOOL into shared trunks. Off keeps plain curves — but the ribbon
   // fold still runs: overlapping same-pair strands are illegible in either mode. A selected node's
   // own wires always escape the container bundles so its links read out of the highway.
+  // Two salience passes precede the highways: dense levels FADE weight-1 strands (the pills filter
+  // by kind, this by strength), and A⇄B mutual pairs FUSE into one double-headed tension wire
+  // (typed, so every later pass leaves it alone).
+  const preppedEdges = useMemo(() => fuseCycles(fadeFaintWires(styledEdges)), [styledEdges]);
+  // The ribbon fold PRECEDES routing so a multi-kind pair rides a frame's rail as ONE striped
+  // cable (RibbonEdge draws the band along the routed path) instead of stacked strands.
   const bundledEdges = useMemo(
     () =>
       showHighways
-        ? spoolFanEdges(foldPairRibbons(routeFrameEdges(bundleEdges(styledEdges, styledNodes, selected), styledNodes)))
-        : foldPairRibbons(styledEdges),
-    [showHighways, styledEdges, styledNodes, selected],
+        ? spoolFanEdges(routeFrameEdges(foldPairRibbons(bundleEdges(preppedEdges, styledNodes, selected)), styledNodes))
+        : foldPairRibbons(preppedEdges),
+    [showHighways, preppedEdges, styledNodes, selected],
   );
 
   // Wire HOVER: pointing at one strand names it (kind × weight, source → target) and lights it
@@ -206,6 +216,20 @@ export function ModuleMapView() {
   );
   const onEdgeMouseEnter = (event: React.MouseEvent, edge: Edge) => {
     if (edge.type === BUNDLE_EDGE_TYPE) {
+      return;
+    }
+    // A fused cycle names both directions at once.
+    if (edge.type === CYCLE_EDGE_TYPE) {
+      const cycle = edge.data as CycleEdgeData;
+      setWireHover({
+        id: edge.id,
+        x: event.clientX,
+        y: event.clientY,
+        kind: `⇄ ${cycle.depKind ?? "wire"} ×${cycle.forwardWeight}/×${cycle.backwardWeight}`,
+        weight: 1,
+        source: labelById.get(edge.source) ?? edge.source,
+        target: labelById.get(edge.target) ?? edge.target,
+      });
       return;
     }
     // A ribbon names its whole cable: the per-kind breakdown IS the tooltip text.

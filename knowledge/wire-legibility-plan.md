@@ -55,9 +55,10 @@ down to real lines of code, and the field of wires must foreground the few that 
    stripe dashes can never share phase on parallel curves). Clicking the cable opens the pair
    inspector — one evidence section per kind.
 
-   Residual: multi-kind pairs whose target sits inside an expanded frame are ROUTED (gutter
-   rail) before the fold, so they still overlap on the rail — the pair inspector covers the
-   attribution, but the rail should learn ribbon stripes in a follow-up.
+   ✅ Rail ribbons (shipped with W3/W4): the fold now PRECEDES routing, and a routed cable
+   stripes CONCENTRICALLY along the rail path (heaviest kind as the core, lighter kinds as
+   rings) — one striped line through gate, rail, and peel-off; side-by-side offsets can't
+   follow a multi-segment rail, nested stroke widths follow any geometry.
 
 ## W2 — hub demotion (the commons dock) ✅ SHIPPED
 
@@ -75,7 +76,7 @@ toggle like Tests). Frames, packages, expanded files, and the entry file never d
 Residuals: paint-time kind filters can strand a docked hub's chips (dim them in a follow-up);
 invisible commons strands still count toward spool fan thresholds.
 
-## W3 — more grouping strategies
+## W3 — more grouping strategies (cycle fusion ✅ SHIPPED; ghost-grouping v2 deferred)
 
 - **Cycle fusion**: `A→B` + `B→A` fuse into one double-headed wire with an amber tension
   marker — mutual coupling is a smell, and today it renders as two curves the reader must
@@ -85,7 +86,7 @@ invisible commons strands still count toward spool fan thresholds.
 - **Ghost grouping v2**: at the orientation tier, fold ghost folder-cards one level further
   (per top-level package) so far-context density scales with zoom.
 
-## W4 — salience filtering
+## W4 — salience filtering ✅ SHIPPED (weight floor auto on dense levels; lit midpoint chips)
 
 - **Weight floor**: when a level draws more than ~N wires, fade weight-1 strands so heavy
   structural couplings pop first (the kind pills filter by *type*; this filters by *strength*).

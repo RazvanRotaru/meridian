@@ -52,9 +52,11 @@ export function routeFrameEdges(edges: Edge[], nodes: Node[]): Edge[] {
       frameIds.add(node.parentId);
     }
   }
-  // Pass 1: plan every routable edge (geometry, no path yet).
+  // Pass 1: plan every routable edge (geometry, no path yet). RIBBON cables route too — the fold
+  // now precedes routing, and a multi-kind pair must ride the rail as ONE striped line, not as
+  // stacked strands ("ribbon" is a string literal here: importing parallelWires would be circular).
   const planned = edges.map((edge) => {
-    if (edge.type !== undefined) {
+    if (edge.type !== undefined && edge.type !== "ribbon") {
       return { edge, plan: null }; // container highways and anything already custom keep their renderer
     }
     return { edge, plan: routePlan(edge, byId, rects, frameIds) };
@@ -63,11 +65,16 @@ export function routeFrameEdges(edges: Edge[], nodes: Node[]): Edge[] {
   // selection's strands stay individually followable from gate to peel-off. Unlit wires keep
   // overlapping into the single bus bar — collectively legible is exactly right at rest.
   const laneByEdge = assignLitLanes(planned);
-  // Pass 3: build paths.
+  // Pass 3: build paths. A routed RIBBON keeps its type (RibbonEdge draws the striped band along
+  // `routedPath`); plain wires retype to the routed renderer.
   return planned.map(({ edge, plan }) =>
     plan === null
       ? edge
-      : { ...edge, type: ROUTED_EDGE_TYPE, data: { ...edge.data, routedPath: planToPath(plan, laneByEdge.get(edge.id) ?? 0) } },
+      : {
+          ...edge,
+          type: edge.type === "ribbon" ? edge.type : ROUTED_EDGE_TYPE,
+          data: { ...edge.data, routedPath: planToPath(plan, laneByEdge.get(edge.id) ?? 0) },
+        },
   );
 }
 
@@ -130,7 +137,7 @@ const LANE_MAX = 3;
 function assignLitLanes(planned: ReadonlyArray<{ edge: Edge; plan: RoutePlan | null }>): Map<string, number> {
   const byRail = new Map<string, Array<{ id: string; ty: number }>>();
   for (const { edge, plan } of planned) {
-    if (plan === null || (edge.style as { opacity?: number } | undefined)?.opacity !== 1) {
+    if (plan === null || !isLitForLanes(edge)) {
       continue;
     }
     const group = byRail.get(plan.railKey) ?? [];
@@ -146,6 +153,16 @@ function assignLitLanes(planned: ReadonlyArray<{ edge: Edge; plan: RoutePlan | n
     });
   }
   return lanes;
+}
+
+/** Lit = full-opacity paint; a ribbon is lit when ANY of its folded strands is (its own style
+ * mirrors just the dominant member). */
+function isLitForLanes(edge: Edge): boolean {
+  if ((edge.style as { opacity?: number } | undefined)?.opacity === 1) {
+    return true;
+  }
+  const members = (edge.data as { members?: Edge[] } | undefined)?.members;
+  return members?.some((member) => (member.style as { opacity?: number } | undefined)?.opacity === 1) === true;
 }
 
 /** The SVG path for a plan; `lane` shifts the rail segment sideways for lit ribbon strands. */
