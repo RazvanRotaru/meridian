@@ -114,13 +114,16 @@ export function resolveServiceAnchors(
     }
     for (const { unitId, leadId } of owned) {
       owningLeads.add(leadId);
-      // Open the owning frame plus every container BELOW the unit on the path to the anchor (a
-      // method's flow frame, say); the unit itself is always-open in the service walk. A FILE
-      // anchor sits above its units, so it contributes the frames alone.
+      // Open the owning frame plus the unit only when the exact anchor lives BELOW it (a method,
+      // for example), then every deeper container on that path. Unit and FILE anchors stop at the
+      // frame so carrying/revealing either still opens exactly one containment level.
       moduleExpanded.add(frameIdOf(leadId));
       const domain = domainByLead.get(leadId);
       if (domain) {
         moduleExpanded.add(domain.id);
+      }
+      if (anchor !== unitId && index.isWithinFocus(unitId, anchor)) {
+        moduleExpanded.add(unitId);
       }
       for (const id of containersOnPath(anchor, index, unitId)) {
         moduleExpanded.add(id);

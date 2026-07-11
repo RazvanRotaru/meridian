@@ -6,7 +6,7 @@
  * Expand reveals ONE more containment level (the collapsed containers in scope). Collapse closes
  * EVERY open container in scope in a single click (a full collapse of the selection) — deliberately
  * not a one-level peel, so it behaves the same on surfaces whose open-ness isn't a plain expanded
- * set (the service lens's always-open unit cards, the Logic graph's XOR-from-default set).
+ * set (the Logic graph's XOR-from-default set).
  */
 
 export interface ExpandableNode {

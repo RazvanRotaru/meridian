@@ -114,6 +114,48 @@ describe("deriveServiceTree scoping", () => {
   });
 });
 
+describe("deriveServiceTree extra-file expansion", () => {
+  it("opens a TypeScript file one level without automatically opening its class definitions", () => {
+    const fileId = "ts:app/a.ts";
+    const fileOpen = deriveServiceTree(
+      index,
+      null,
+      new Set([fileId]),
+      graph,
+      deps,
+      flows,
+      { extraIds: new Set([fileId]) },
+    );
+
+    expect(fileOpen.nodes.find((item) => item.id === fileId)).toMatchObject({
+      kind: "file",
+      isExpanded: true,
+    });
+    expect(fileOpen.nodes.find((item) => item.id === ALPHA)).toMatchObject({
+      kind: "unit",
+      parentId: fileId,
+      isExpanded: false,
+    });
+    expect(fileOpen.nodes.some((item) => item.id === `${ALPHA}.run`)).toBe(false);
+
+    const classOpen = deriveServiceTree(
+      index,
+      null,
+      new Set([fileId, ALPHA]),
+      graph,
+      deps,
+      flows,
+      { extraIds: new Set([fileId]) },
+    );
+
+    expect(classOpen.nodes.find((item) => item.id === ALPHA)?.isExpanded).toBe(true);
+    expect(classOpen.nodes.find((item) => item.id === `${ALPHA}.run`)).toMatchObject({
+      kind: "block",
+      parentId: ALPHA,
+    });
+  });
+});
+
 describe("deriveServiceTree domain placement parents", () => {
   const fixture = domainFixture();
 
@@ -236,15 +278,21 @@ describe("deriveServiceTree domain placement parents", () => {
 });
 
 describe("deriveServiceTree focus (cluster zoom)", () => {
-  it("focus on a cluster draws ONLY that frame, force-expanded, and reports effectiveFocus", () => {
+  it("focus on a cluster opens the frame one level and requires an explicit unit expansion for methods", () => {
     const tree = deriveServiceTree(index, frameIdOf(BETA), NONE, graph, deps, flows);
     expect(frameIds(tree)).toEqual([frameIdOf(BETA)]);
     expect(tree.effectiveFocus).toBe(frameIdOf(BETA));
     const frame = tree.nodes.find((n) => n.id === frameIdOf(BETA))!;
     expect(frame.isExpanded).toBe(true);
-    // Members render at their usual depth: the unit card and its method block.
-    expect(tree.nodes.some((n) => n.id === BETA && n.kind === "unit")).toBe(true);
-    expect(tree.nodes.some((n) => n.id === `${BETA}.run` && n.kind === "block")).toBe(true);
+    expect(tree.nodes.find((n) => n.id === BETA)).toMatchObject({ kind: "unit", isExpanded: false });
+    expect(tree.nodes.some((n) => n.id === `${BETA}.run`)).toBe(false);
+
+    const unitOpen = deriveServiceTree(index, frameIdOf(BETA), new Set([BETA]), graph, deps, flows);
+    expect(unitOpen.nodes.find((n) => n.id === BETA)?.isExpanded).toBe(true);
+    expect(unitOpen.nodes.find((n) => n.id === `${BETA}.run`)).toMatchObject({
+      kind: "block",
+      parentId: BETA,
+    });
   });
 
   it("focus ghosts BOTH coupling directions as exact caller/callee methods without same-folder folding", () => {
@@ -252,8 +300,8 @@ describe("deriveServiceTree focus (cluster zoom)", () => {
     // The off-screen caller wires INTO Beta's drawn method and the off-screen callee wires OUT;
     // sharing ts:app no longer erases either callable identity.
     expect(ghostIds(tree)).toEqual([`${ALPHA}.run`, `${GAMMA}.run`]);
-    expect(ghostWire(tree, `${ALPHA}.run`, `${BETA}.run`)).toBeDefined();
-    expect(ghostWire(tree, `${BETA}.run`, `${GAMMA}.run`)).toBeDefined();
+    expect(ghostWire(tree, `${ALPHA}.run`, BETA)).toBeDefined();
+    expect(ghostWire(tree, BETA, `${GAMMA}.run`)).toBeDefined();
   });
 
   it("a non-svc or unknown focus is ignored: full lens, effectiveFocus null", () => {
@@ -269,9 +317,9 @@ describe("deriveServiceTree focus (cluster zoom)", () => {
     const tree = deriveServiceTree(index, frameIdOf(ALPHA), NONE, graph, deps, flows, { scopeLeadIds: new Set([ALPHA, BETA]) });
     expect(frameIds(tree)).toEqual([frameIdOf(ALPHA)]);
     expect(tree.effectiveFocus).toBe(frameIdOf(ALPHA));
-    // Alpha's code is drawn (forced open), so the walk tier ghosts Beta's exact called method.
+    // Alpha's unit is drawn but collapsed, so its side lifts while Beta stays an exact ghost method.
     expect(ghostIds(tree)).toEqual([`${BETA}.run`]);
-    expect(ghostWire(tree, `${ALPHA}.run`, `${BETA}.run`)).toBeDefined();
+    expect(ghostWire(tree, ALPHA, `${BETA}.run`)).toBeDefined();
   });
 
   it("a focus OUTSIDE the scope is ignored (the zoom can only dive what the scope kept)", () => {

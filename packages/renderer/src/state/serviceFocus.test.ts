@@ -158,6 +158,28 @@ describe("Service cluster focus (the containment dive)", () => {
     expect(store.getState().moduleRfNodes.some((n) => n.id === frameIdOf(BETA))).toBe(true);
   });
 
+  it("expands a native service frame one level without automatically opening its class members", async () => {
+    const store = freshStore();
+    const frame = frameIdOf(ALPHA);
+    store.setState({ viewMode: "call" });
+    await store.getState().moduleRelayout();
+
+    store.getState().toggleModuleExpand(frame);
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+    let ids = new Set(store.getState().moduleRfNodes.map((item) => item.id));
+    expect(ids.has(ALPHA)).toBe(true);
+    expect(ids.has(ORDER)).toBe(true);
+    expect(ids.has(`${ALPHA}.run`)).toBe(false);
+    expect(ids.has(`${ORDER}.load`)).toBe(false);
+    expect(store.getState().moduleRfNodes.find((item) => item.id === ALPHA)?.data).toMatchObject({ isExpanded: false });
+
+    store.getState().toggleModuleExpand(ALPHA);
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+    ids = new Set(store.getState().moduleRfNodes.map((item) => item.id));
+    expect(ids.has(`${ALPHA}.run`)).toBe(true);
+    expect(ids.has(`${ORDER}.load`)).toBe(false);
+  });
+
   it("focus composes with the scoped sub-view (zoom INSIDE the scope; the scope survives the dive)", async () => {
     const store = freshStore();
     store.setState({ moduleSelected: new Set([`${ALPHA}.run`]) });

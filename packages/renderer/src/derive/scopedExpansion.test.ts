@@ -91,15 +91,14 @@ describe("idsToCollapse", () => {
     expect(idsToCollapse(twoLevelsOpen(), ["a"])).toEqual(["a"]);
   });
 
-  it("returns an ALWAYS-OPEN child alongside its set-backed parent frame (service lens)", () => {
-    // A frame whose open-ness IS backed by the expansion set, holding an always-open unit card
-    // (its open-ness is NOT set-backed) with a collapsed method block. Collapse must still return
-    // the frame — otherwise the frame could never be closed (the Bug-1 regression).
-    const serviceLens: ExpandableNode[] = [
-      { id: "svc:frame", parentId: null, isContainer: true, isExpanded: true },
-      { id: "unit", parentId: "svc:frame", isContainer: true, isExpanded: true }, // always-open
-      { id: "method", parentId: "unit", isContainer: true, isExpanded: false },
+  it("returns a default-open descendant alongside its explicitly opened parent", () => {
+    // XOR-based surfaces can contain a child that is open by default rather than through their
+    // expansion set. A full collapse still returns both containers so the caller can close both.
+    const defaultOpenTree: ExpandableNode[] = [
+      { id: "call", parentId: null, isContainer: true, isExpanded: true },
+      { id: "loop", parentId: "call", isContainer: true, isExpanded: true },
+      { id: "step", parentId: "loop", isContainer: false, isExpanded: false },
     ];
-    expect(new Set(idsToCollapse(serviceLens, [null]))).toEqual(new Set(["svc:frame", "unit"]));
+    expect(new Set(idsToCollapse(defaultOpenTree, [null]))).toEqual(new Set(["call", "loop"]));
   });
 });
