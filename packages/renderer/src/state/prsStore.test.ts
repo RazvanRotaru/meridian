@@ -61,6 +61,7 @@ function freshStore(extra?: Partial<StoreDependencies>) {
     prsUrl: "/api/prs?id=artifact-1",
     prOneUrl: "/api/prs/one?id=artifact-1",
     prFilesUrl: "/api/prs/files?id=artifact-1",
+    prRelatedUrl: "/api/prs/related?id=artifact-1",
     prCommentsUrl: "/api/prs/comments?id=artifact-1",
     prChecksUrl: "/api/prs/checks?id=artifact-1",
     prReviewUrl: "/api/prs/review?id=artifact-1",

@@ -5,10 +5,11 @@
  * files — and the +/- counts — are available to the card.
  */
 
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { PRS_UNAVAILABLE_ERROR, type PrSummary } from "../../state/prTypes";
 import { selectedPrSummary } from "../../state/store";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
+import { filesInScope } from "../../derive/filesInScope";
 import { countViewedFiles } from "../../derive/reviewFiles";
 import { CountBadge, hexAlpha, TOKENS } from "./panelKit";
 import { PullRequestIcon } from "./icons";
@@ -28,8 +29,18 @@ export function PrReviewSection() {
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
   const viewMode = useBlueprint((state) => state.viewMode);
+  const sessionSource = useBlueprint((state) => state.prSessionSource);
+  const index = useBlueprint((state) => state.index);
+  const moduleSelected = useBlueprint((state) => state.moduleSelected);
+  const minimalSeedIds = useBlueprint((state) => state.minimalSeedIds);
+  const minimalRfNodes = useBlueprint((state) => state.minimalRfNodes);
+  const moduleRfNodes = useBlueprint((state) => state.moduleRfNodes);
   const onPrsPage = viewMode === "prs";
-  const { loadPrs, selectPr, reviewPrInGraph, resumePrReview, togglePrsView } = useBlueprintActions();
+  const { loadPrs, selectPr, reviewPrInGraph, resumePrReview, togglePrsView, exploreRelatedPrs } = useBlueprintActions();
+  const relatedPaths = useMemo(
+    () => filesInScope({ index, moduleSelected, minimalSeedIds, minimalRfNodes, moduleRfNodes }),
+    [index, minimalSeedIds, minimalRfNodes, moduleRfNodes, moduleSelected],
+  );
 
   // Expanded only while a PR review is the active on-screen surface: a PR is under review
   // (prReviewed), its minimal-graph overlay is open (minimalSeedIds), and we're not on the full
@@ -93,6 +104,17 @@ export function PrReviewSection() {
             ) : null}
           </button>
         )}
+        {sessionSource !== null ? (
+          <button
+            type="button"
+            style={RELATED_STYLE}
+            disabled={relatedPaths.length === 0}
+            title={relatedPaths.length === 0 ? "nothing in view yet" : "Find open PRs touching the files in view — or just the selected nodes"}
+            onClick={() => void exploreRelatedPrs()}
+          >
+            ⑂ Related PRs
+          </button>
+        ) : null}
       </div>
 
       {expanded ? <ExpandedBody unavailable={unavailable} open={open} current={current} onReview={reviewPrInGraph} /> : null}
@@ -147,10 +169,24 @@ const TOGGLE_STYLE: React.CSSProperties = {
   color: TOKENS.text,
 };
 
+const RELATED_STYLE: React.CSSProperties = {
+  width: "100%",
+  border: "none",
+  borderTop: `1px solid ${TOKENS.surfaceBorder}`,
+  background: "transparent",
+  color: TOKENS.textMuted,
+  padding: "7px 0 0",
+  cursor: "pointer",
+  font: "inherit",
+  fontSize: 12,
+  textAlign: "left",
+};
+
 function barStyle(expanded: boolean): React.CSSProperties {
   return {
     display: "flex",
-    alignItems: "center",
+    flexDirection: "column",
+    alignItems: "stretch",
     gap: 6,
     boxSizing: "border-box",
     padding: "9px 8px 9px 12px",

@@ -75,6 +75,7 @@ function freshStore(): BlueprintStore {
     prsUrl: "",
     prOneUrl: "",
     prFilesUrl: "",
+    prRelatedUrl: "",
     prCommentsUrl: "",
     prChecksUrl: "",
     prReviewUrl: "",

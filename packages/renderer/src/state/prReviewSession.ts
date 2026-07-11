@@ -154,6 +154,7 @@ export function restorePrReviewBaseline(
     moduleExpanded: new Set<string>(),
     minimalSeedIds: [],
     minimalMemberIds: [],
+    minimalRollups: {},
     minimalBasePositions: {},
     minimalArrange: false,
     minimalRfNodes: [],

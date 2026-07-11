@@ -6,6 +6,7 @@ import {
   handlePullRequestComments,
   handlePullRequestFiles,
   handlePullRequests,
+  handleRelatedPullRequests,
   handleSubmitReview,
 } from "./web-prs";
 import type { Context } from "./web-server";
@@ -131,6 +132,103 @@ describe("PR routes", () => {
       outsideCount: 2,
       // The unsafe `..` candidate is counted as outside but cannot influence the suggested root.
       suggestedSubdir: "packages/core/src",
+    });
+  });
+
+  it("finds related PRs, caches files by updatedAt, and drops parent-segment paths", async () => {
+    let updatedAt = "2026-07-08T12:00:00Z";
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.includes("/pulls?")) {
+        return new Response(
+          JSON.stringify([
+            {
+              number: 12,
+              title: "Touch renderer",
+              user: { login: "daria" },
+              head: { ref: "related", sha: "abcdef1234567" },
+              base: { ref: "main" },
+              updated_at: updatedAt,
+              draft: false,
+              state: "open",
+              html_url: "https://github.com/org/repo/pull/12",
+              secret: "not forwarded",
+            },
+          ]),
+          { status: 200 },
+        );
+      }
+      if (target.includes("/pulls/12/files?")) {
+        return new Response(
+          JSON.stringify([
+            { filename: "packages/cli/src/a.ts", status: "modified" },
+            { filename: "packages/cli/src/b.ts", status: "added" },
+            { filename: "packages/core/outside.ts", status: "modified" },
+          ]),
+          { status: 200 },
+        );
+      }
+      throw new Error(`unexpected GitHub URL: ${target}`);
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+    const ctx = ctxWithSource({ kind: "github", owner: "org", repo: "repo", subdir: "packages/cli" });
+    const dropped = await invoke(
+      handleRelatedPullRequests,
+      ctx,
+      bodyRequest({ paths: ["../outside.ts"] }),
+      new URLSearchParams({ id: "artifact" }),
+    );
+    expect(JSON.parse(dropped.body())).toEqual({ results: [], scanned: 0, hasMore: false, skipped: 0 });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const cappedPaths: unknown[] = [
+      "src/a.ts",
+      "./src/b.ts",
+      "../outside.ts",
+      ...Array.from({ length: 97 }, (_, index) => `unmatched/${index}.ts`),
+      42, // Entry 101 is outside the server cap and therefore cannot reject the request.
+    ];
+    const body = bodyRequest({ paths: cappedPaths });
+    const first = await invoke(handleRelatedPullRequests, ctx, body, new URLSearchParams({ id: "artifact" }));
+    expect(first.status()).toBe(200);
+    expect(JSON.parse(first.body())).toEqual({
+      results: [
+        {
+          number: 12,
+          title: "Touch renderer",
+          author: "daria",
+          headRef: "related",
+          updatedAt,
+          draft: false,
+          matchCount: 2,
+          matchedPaths: ["src/a.ts", "src/b.ts"],
+        },
+      ],
+      scanned: 1,
+      hasMore: false,
+      skipped: 0,
+    });
+
+    const second = await invoke(
+      handleRelatedPullRequests,
+      ctx,
+      bodyRequest({ paths: ["src/a.ts"] }),
+      new URLSearchParams({ id: "artifact" }),
+    );
+    expect(second.status()).toBe(200);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/pulls/12/files?")).length).toBe(1);
+
+    updatedAt = "2026-07-09T12:00:00Z";
+    await invoke(
+      handleRelatedPullRequests,
+      ctx,
+      bodyRequest({ paths: ["src/a.ts"] }),
+      new URLSearchParams({ id: "artifact" }),
+    );
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/pulls/12/files?")).length).toBe(2);
+    expect(ctx.prFilesCache.get("org/repo#12")).toEqual({
+      updatedAt,
+      paths: ["src/a.ts", "src/b.ts"],
     });
   });
 
@@ -392,6 +490,7 @@ function ctxWithSource(source: ArtifactSource, sessions = new SessionStore()): C
     graphs: new Map(),
     sourceRoots: new Map(),
     sources: new Map([["artifact", source]]),
+    prFilesCache: new Map(),
     tempCleanups: new Set(),
     rendererIndex: "",
     landingHtml: "",

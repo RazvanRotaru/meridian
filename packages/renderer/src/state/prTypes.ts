@@ -71,6 +71,34 @@ export interface PrOneResponse {
   pr: PrSummary;
 }
 
+/** Open PR returned by the bounded related-path scan. */
+export interface RelatedPr {
+  number: number;
+  title: string;
+  author: string;
+  headRef: string;
+  updatedAt: string;
+  draft: boolean;
+  matchCount: number;
+  matchedPaths: string[];
+}
+
+export interface RelatedPrsResponse {
+  results: RelatedPr[];
+  scanned: number;
+  hasMore: boolean;
+  skipped: number;
+}
+
+export interface RelatedPrsState {
+  paths: string[];
+  results: RelatedPr[];
+  scanned: number;
+  hasMore: boolean;
+  loading: boolean;
+  error: string | null;
+}
+
 export interface PrGitHubComment {
   path: string;
   line: number | null;

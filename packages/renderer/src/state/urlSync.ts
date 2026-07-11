@@ -171,6 +171,9 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     // redundant ELK pass with ids that may belong to the prior artifact.
     minimalSeedIds: rebuildingReview ? [] : nav.minimalSeedIds,
     minimalMemberIds: rebuildingReview ? [] : [...nav.minimalSeedIds],
+    // Rollup expansion is session-only. A review rebuild derives the mapping again from its files;
+    // an ordinary URL-carried package seed is already a valid opaque member without one.
+    minimalRollups: {},
     minimalArrange: false,
     minimalRfNodes: [],
     minimalRfEdges: [],

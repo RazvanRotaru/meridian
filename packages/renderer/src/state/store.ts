@@ -23,6 +23,8 @@ import type {
 } from "@meridian/core";
 import { applyChangedIds, applyChangedStatus, type GraphIndex } from "../graph/graphIndex";
 import { matchAffectedFiles } from "../derive/matchAffectedFiles";
+import { rollupSeeds } from "../derive/seedRollup";
+import { filesInScope } from "../derive/filesInScope";
 import type { TelemetryProvider } from "../telemetry/provider";
 import type { ViewMode } from "../derive/edgeSelection";
 import { relatedNodeIds, type FlowSelectionRef } from "../derive/flowBlocks";
@@ -61,6 +63,8 @@ import {
   type PrSessionSource,
   type PrSummary,
   type PrsTab,
+  type RelatedPrsResponse,
+  type RelatedPrsState,
 } from "./prTypes";
 import { headKindsWithin, headSpanFor } from "./headSpan";
 import { streamPrAnalysis, type PrAnalyzeStage } from "./prAnalysis";
@@ -239,6 +243,8 @@ export interface BlueprintState {
    * to it; removing a member drops from it. Ghosts are the members' on-map 1-hop ring, derived (not
    * stored). Reset restores it to the origin. */
   minimalMemberIds: string[];
+  /** Original rolled package → changed file modules. Retained while expanded so Reset can summarize. */
+  minimalRollups: Record<string, string[]>;
   /** The Module map's on-screen card positions, captured (absolute) when the overlay is BUILT, so the
    * overlay mirrors them: a captured card sits at its exact map spot, growth is placed around it.
    * Captured once at build (never on curation) so placed cards never jump; cleared on close. */
@@ -318,6 +324,8 @@ export interface BlueprintState {
   prsHasMore: Record<PrsTab, boolean>;
   prsLoading: boolean;
   prsError: string | null;
+  /** Session-only related-path filter; persists across page/lens switches until explicitly cleared. */
+  relatedPrs: RelatedPrsState | null;
   prSelected: number | null;
   prFiles: PrChangedFile[] | null;
   /** Existing GitHub comments plus the latest review-state rollup for the selected PR. */
@@ -438,6 +446,8 @@ export interface BlueprintState {
   promoteMinimalGhost(id: string, at?: { x: number; y: number }): void;
   demoteMinimalMember(id: string): void;
   resetMinimalGraph(): void;
+  /** Expand one rolled review package into its changed file cards. Reset is the only collapse-back. */
+  expandMinimalGroup(packageId: string): void;
   rearrangeMinimalGraph(): void;
   minimalRelayout(): Promise<void>;
   setReviewLit(ids: Set<string> | null): void;
@@ -468,6 +478,8 @@ export interface BlueprintState {
   closeCode(): void;
   setPrsTab(tab: PrsTab): void;
   loadPrs(page?: number): Promise<void>;
+  exploreRelatedPrs(): Promise<void>;
+  clearRelatedPrs(): void;
   ensurePrSummary(number: number): Promise<void>;
   selectPr(number: number | null): Promise<void>;
   reviewPrInGraph(): Promise<void>;
@@ -495,6 +507,7 @@ export interface StoreDependencies {
   prsUrl: string;
   prOneUrl: string;
   prFilesUrl: string;
+  prRelatedUrl: string;
   prCommentsUrl: string;
   prChecksUrl: string;
   /** GET base for one changed file's text at the PR head ref (the review code panel's head-fetch). */
@@ -609,6 +622,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // PR list/file fetches and PR-head preparation are independent async lanes; newer requests win
   // when the reader switches PRs (or re-clicks Review) mid-stream.
   let prsListSeq = 0;
+  let relatedPrsSeq = 0;
   let prFilesSeq = 0;
   let prAnalyzeSeq = 0;
   const prsNextPage: Record<PrsTab, number> = { open: 1, closed: 1 };
@@ -638,6 +652,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const prsUrl = dependencies.prsUrl;
   const prOneUrl = dependencies.prOneUrl;
   const prFilesUrl = dependencies.prFilesUrl;
+  const prRelatedUrl = dependencies.prRelatedUrl;
   const prCommentsUrl = dependencies.prCommentsUrl;
   const prChecksUrl = dependencies.prChecksUrl;
   const prFileUrl = dependencies.prFileUrl ?? null;
@@ -710,6 +725,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     serviceScope: null,
     minimalSeedIds: [],
     minimalMemberIds: [],
+    minimalRollups: {},
     minimalBasePositions: {},
     minimalArrange: false,
     minimalRfNodes: [],
@@ -752,6 +768,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prsHasMore: { open: false, closed: false },
     prsLoading: false,
     prsError: null,
+    relatedPrs: null,
     prSelected: null,
     prFiles: null,
     prDiscussion: null,
@@ -1360,7 +1377,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               reviewRemovedTruncatedByFile: {} as Record<string, boolean>,
             }
           : {};
-      set({ minimalSeedIds: origin, minimalMemberIds: origin, minimalBasePositions: captureMapPositions(get().moduleRfNodes), minimalArrange: false, prReviewed: null, ...clearPrReview });
+      set({
+        minimalSeedIds: origin,
+        minimalMemberIds: origin,
+        minimalRollups: {},
+        minimalBasePositions: captureMapPositions(get().moduleRfNodes),
+        minimalArrange: false,
+        prReviewed: null,
+        ...clearPrReview,
+      });
       void get().minimalRelayout();
     },
 
@@ -1379,7 +1404,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
       }
       minimalLayoutSeq += 1;
-      set({ minimalSeedIds: [], minimalMemberIds: [], minimalBasePositions: {}, minimalArrange: false, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
+      set({
+        minimalSeedIds: [],
+        minimalMemberIds: [],
+        minimalRollups: {},
+        minimalBasePositions: {},
+        minimalArrange: false,
+        minimalRfNodes: [],
+        minimalRfEdges: [],
+        minimalLayoutStatus: "idle",
+      });
     },
 
     // Promote a GHOST satellite into the working member set (the ghost "+" click). A satellite is a
@@ -1419,11 +1453,40 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Reset the overlay to its base: restore the working set to the origin selection AND drop any
     // re-arrangement (back to the captured map-mirror). A no-op when already at the origin and mirror.
     resetMinimalGraph() {
-      const { minimalSeedIds, minimalMemberIds, minimalArrange } = get();
-      if (sameMembers(minimalMemberIds, minimalSeedIds) && !minimalArrange) {
+      const { minimalSeedIds, minimalMemberIds, minimalRollups, minimalArrange } = get();
+      // Expanding a rollup replaces its package seed with file seeds. The retained mapping restores
+      // the ORIGINAL rolled package here, so Reset re-summarizes; there is intentionally no inline
+      // collapse-back gesture competing with the one-way "files ▸" affordance.
+      const origin = restoreRolledSeeds(minimalSeedIds, minimalRollups);
+      if (sameMembers(minimalMemberIds, origin) && sameMembers(minimalSeedIds, origin) && !minimalArrange) {
         return;
       }
-      set({ minimalMemberIds: [...minimalSeedIds], minimalArrange: false });
+      set({ minimalSeedIds: origin, minimalMemberIds: [...origin], minimalArrange: false });
+      void get().minimalRelayout();
+    },
+
+    // Decompose one rolled package into exactly the changed file modules it summarized. Expanding
+    // their package/module ancestry opens those files to declaration level through the overlay's
+    // existing shared moduleExpanded path; the retained rollup mapping is Reset's collapse target.
+    expandMinimalGroup(packageId) {
+      const { index, minimalSeedIds, minimalMemberIds, minimalRollups, moduleExpanded } = get();
+      const fileIds = minimalRollups[packageId];
+      if (!fileIds || (!minimalSeedIds.includes(packageId) && !minimalMemberIds.includes(packageId))) {
+        return;
+      }
+      const expanded = new Set(moduleExpanded);
+      for (const fileId of fileIds) {
+        for (const ancestor of index.ancestorsOf(fileId)) {
+          if (ancestor.kind === "package" || ancestor.kind === "module") {
+            expanded.add(ancestor.id);
+          }
+        }
+      }
+      set({
+        minimalSeedIds: replaceRollupSeed(minimalSeedIds, packageId, fileIds),
+        minimalMemberIds: replaceRollupSeed(minimalMemberIds, packageId, fileIds),
+        moduleExpanded: expanded,
+      });
       void get().minimalRelayout();
     },
 
@@ -1547,13 +1610,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // — a pure seed/member swap, no dimming and no bespoke graph. Mirrors applyPrReviewToMap's reset
     // of the minimal fields exactly so the overlay rebuilds identically.
     selectReviewGroup(groupId) {
-      const { review, reviewGroups, reviewActiveGroupId, reviewAllSeedIds } = get();
+      const { review, reviewFiles, reviewGroups, reviewActiveGroupId, index } = get();
       if (!review || !reviewGroups || groupId === reviewActiveGroupId) {
         return;
       }
       // An unknown id falls back to "All" — a stale group id can never strand the reader on an empty Map.
       const group = groupId === null ? null : reviewGroups.groups.find((candidate) => candidate.id === groupId) ?? null;
-      const nextSeeds = group ? group.moduleIds : reviewAllSeedIds;
+      const allowed = group === null ? null : new Set(group.moduleIds);
+      const matched = matchAffectedFiles(index, reviewFiles.map((file) => file.path)).matched
+        .filter((match) => allowed === null || allowed.has(match.moduleId));
+      // The threshold belongs to THIS isolated set, not the PR as a whole: an eight-file group stays
+      // eight file cards even when the full review was large enough to roll up.
+      const { seeds: nextSeeds, rolledUp } = rollupSeeds(matched, index);
+      const moduleExpanded = reviewExpansionForMatches(index, matched, rolledUp);
       invalidateMinimalLayout();
       set({
         reviewActiveGroupId: group ? group.id : null,
@@ -1561,6 +1630,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewLitNodeIds: null,
         minimalSeedIds: nextSeeds,
         minimalMemberIds: [...nextSeeds],
+        minimalRollups: rollupsRecord(rolledUp),
+        moduleExpanded,
         minimalBasePositions: {},
         minimalArrange: false,
         minimalRfNodes: [],
@@ -1953,6 +2024,72 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
+    async exploreRelatedPrs() {
+      // Resolve before navigation: entering the PRs page may close/restore a review overlay, but the
+      // request subject is the graph view the reader invoked this action from.
+      const paths = filesInScope(get());
+      if (paths.length === 0) {
+        return;
+      }
+      const sequence = ++relatedPrsSeq;
+      const subject: RelatedPrsState = {
+        paths,
+        results: [],
+        scanned: 0,
+        hasMore: false,
+        loading: true,
+        error: null,
+      };
+      set({ relatedPrs: subject });
+      if (get().viewMode !== "prs") {
+        get().setViewMode("prs");
+      }
+      // Identity is the subject guard: clearing or replacing the filter while either response body
+      // is in flight must not let this request resurrect stale related results.
+      const active = () => relatedPrsSeq === sequence && get().relatedPrs === subject;
+      try {
+        const response = await fetch(prRelatedUrl, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ paths }),
+        });
+        if (!active()) {
+          return;
+        }
+        if (!response.ok) {
+          const error = await errorMessage(response);
+          if (active()) {
+            set({ relatedPrs: { ...subject, loading: false, error } });
+          }
+          return;
+        }
+        const data = (await response.json()) as RelatedPrsResponse;
+        if (!active()) {
+          return;
+        }
+        set({
+          relatedPrs: {
+            paths,
+            results: data.results,
+            scanned: data.scanned,
+            hasMore: data.hasMore,
+            loading: false,
+            error: null,
+          },
+        });
+      } catch {
+        if (active()) {
+          set({ relatedPrs: { ...subject, loading: false, error: PRS_UNAVAILABLE_ERROR } });
+        }
+      }
+    },
+
+    clearRelatedPrs() {
+      relatedPrsSeq += 1;
+      set({ relatedPrs: null });
+    },
+
     async ensurePrSummary(number) {
       if (selectedPrSummary(get(), number) !== null) {
         return;
@@ -2015,6 +2152,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         prsError: null,
         ...prepareReset,
       });
+      // Related results intentionally carry only card fields. Resolve a full summary before the
+      // ordinary file/discussion/check lanes so a related card behaves exactly like a paged card.
+      if (selectedPrSummary(get(), number) === null) {
+        await get().ensurePrSummary(number);
+        if (prFilesSeq !== sequence || get().prSelected !== number) {
+          return;
+        }
+      }
       try {
         const url = new URL(prFilesUrl, requestOrigin());
         url.searchParams.set("n", String(number));
@@ -2089,7 +2234,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // expensive clone→checkout→extract NEVER re-runs here: a swapped review re-fetches its already-
     // prepared head artifact with one GET and re-swaps (against the SAME saved baseline); a sync
     // review keeps the boot artifact it never left. Then repaint the kept amber and reseed the
-    // overlay from reviewAllSeedIds. moduleExpanded survived the soft close, so pre-expansion replays.
+    // overlay from reviewAllSeedIds, rebuilding declaration-level expansion for those restored seeds.
     async resumePrReview() {
       const { prReviewed, minimalSeedIds, prPreparedGraphId, reviewAffectedIds, reviewAllSeedIds } = get();
       if (prReviewed === null || minimalSeedIds.length > 0) {
@@ -2105,10 +2250,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // Repaint the review's amber onto the current index — the soft close reset it to the boot
       // marking (and a re-swap built a fresh index). Same channel applyPrReviewToMap writes.
       applyChangedIds(get().index, [...reviewAffectedIds]);
+      const resumedMatches = matchAffectedFiles(get().index, get().reviewFiles.map((file) => file.path)).matched;
+      const resumedRollup = rollupSeeds(resumedMatches, get().index);
       set({
         viewMode: "modules",
         minimalSeedIds: reviewAllSeedIds,
         minimalMemberIds: [...reviewAllSeedIds],
+        minimalRollups: rollupsRecord(resumedRollup.rolledUp),
+        moduleExpanded: reviewExpansionForMatches(get().index, resumedMatches, resumedRollup.rolledUp),
+        reviewActiveGroupId: null,
         reviewPanelHidden: false,
       });
       void get().minimalRelayout();
@@ -2224,9 +2374,10 @@ function applyPrReviewToMap(
   // Colour each touched CODE BLOCK by its file's change kind (green added / gold modified / red
   // deleted). A file/module that only contains changes stays uncoloured — it shows a +/- stat instead.
   applyChangedStatus(index, affected.map((node) => [node.nodeId, node.status] as [string, ChangeStatus]));
-  // Seed the minimal graph from the changed FILES (seeds must be module ids).
+  // Small reviews stay file-shaped. Past ten matched files, dense immediate-parent sibling sets
+  // become one package summary card; sparse siblings remain individual file seeds.
   const matchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
-  const seeds = [...new Set(matchedFiles.map((match) => match.moduleId))].sort();
+  const { seeds, rolledUp } = rollupSeeds(matchedFiles, index);
   // Partition the change into disjoint groups (one per weakly-connected component of the changed
   // modules), sharing the SAME flow substrate the review rows already read. Stored so the rail can
   // offer per-group isolation; ignored (strip hidden) when the change is a single connected component.
@@ -2255,19 +2406,12 @@ function applyPrReviewToMap(
     changedRangesFromExtensions(artifact.extensions) !== null
       ? artifact
       : withPrLineDiff(artifact, index, context, matchedFiles, prSelected);
-  // Pre-expand the packages and file modules on the path to each changed block (packages too,
+  // Pre-expand the packages and file modules on the path to each changed file (packages too,
   // else deriveModuleTree never descends to the file — mirrors flowExplorer's
   // expandedModulePaths): review reads at declaration level (class/type cards), so classes stay
   // collapsed "N members" cards and blocks never chart flow steps — drilling deeper stays a
   // manual gesture.
-  const expanded = new Set<string>(seeds);
-  for (const node of affected) {
-    for (const ancestor of index.ancestorsOf(node.nodeId)) {
-      if (ancestor.kind === "package" || ancestor.kind === "module") {
-        expanded.add(ancestor.id);
-      }
-    }
-  }
+  const expanded = reviewExpansionForMatches(index, matchedFiles, rolledUp);
   invalidateMinimalLayout();
   // Capture the head ref + each changed file's real per-line diff (old/new spans + head-relative
   // added/modified lines), keyed by node.location.file, so opening a changed unit's </> fetches the
@@ -2346,6 +2490,7 @@ function applyPrReviewToMap(
     moduleExpanded: expanded,
     minimalSeedIds: seeds,
     minimalMemberIds: [...seeds],
+    minimalRollups: rollupsRecord(rolledUp),
     minimalBasePositions: {},
     minimalArrange: false,
     minimalRfNodes: [],
@@ -2429,6 +2574,64 @@ function sameMembers(a: readonly string[], b: readonly string[]): boolean {
   }
   const set = new Set(a);
   return b.every((id) => set.has(id));
+}
+
+function rollupsRecord(rolledUp: ReadonlyMap<string, string[]>): Record<string, string[]> {
+  return Object.fromEntries([...rolledUp].map(([packageId, fileIds]) => [packageId, [...fileIds]]));
+}
+
+/** Declaration-level expansion for the current review seed set. Non-rolled files retain their full
+ * package→file path; a rolled file stops at its summary package so nothing strictly inside opens. */
+function reviewExpansionForMatches(
+  index: GraphIndex,
+  matched: readonly { moduleId: string }[],
+  rolledUp: ReadonlyMap<string, readonly string[]>,
+): Set<string> {
+  const rolledPackageByFile = new Map<string, string>();
+  for (const [packageId, fileIds] of rolledUp) {
+    for (const fileId of fileIds) {
+      rolledPackageByFile.set(fileId, packageId);
+    }
+  }
+  const expanded = new Set<string>();
+  for (const match of matched) {
+    const rolledPackageId = rolledPackageByFile.get(match.moduleId);
+    let insideRolledPackage = false;
+    for (const ancestor of index.ancestorsOf(match.moduleId)) {
+      if (ancestor.id === rolledPackageId) {
+        insideRolledPackage = true;
+      }
+      if (
+        (ancestor.kind === "package" || ancestor.kind === "module")
+        && (!insideRolledPackage || ancestor.id === rolledPackageId)
+      ) {
+        expanded.add(ancestor.id);
+      }
+    }
+  }
+  return expanded;
+}
+
+function replaceRollupSeed(ids: readonly string[], packageId: string, fileIds: readonly string[]): string[] {
+  if (!ids.includes(packageId)) {
+    return [...ids];
+  }
+  return [...new Set(ids.flatMap((id) => (id === packageId ? fileIds : [id])))].sort();
+}
+
+/** Invert any expanded package→files substitutions while leaving ordinary seed ids untouched. */
+function restoreRolledSeeds(seedIds: readonly string[], rollups: Readonly<Record<string, string[]>>): string[] {
+  const restored = new Set(seedIds);
+  for (const [packageId, fileIds] of Object.entries(rollups)) {
+    if (!fileIds.some((fileId) => restored.has(fileId))) {
+      continue;
+    }
+    for (const fileId of fileIds) {
+      restored.delete(fileId);
+    }
+    restored.add(packageId);
+  }
+  return [...restored].sort();
 }
 
 /** The member a promoted ghost satellite becomes: a folder group-ghost joins as that folder, a

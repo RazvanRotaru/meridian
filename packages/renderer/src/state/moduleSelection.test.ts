@@ -38,6 +38,7 @@ function freshStore(): BlueprintStore {
     prsUrl: "/api/prs",
     prOneUrl: "/api/prs/one",
     prFilesUrl: "/api/prs/files",
+    prRelatedUrl: "/api/prs/related",
     prCommentsUrl: "/api/prs/comments",
     prChecksUrl: "/api/prs/checks",
     prReviewUrl: "/api/prs/review",

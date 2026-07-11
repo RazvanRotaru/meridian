@@ -166,6 +166,7 @@ function githubCtx(source: ArtifactSource = { kind: "github", owner: "org", repo
     graphs: new Map(),
     sourceRoots: new Map(),
     sources: new Map([["artifact", source]]),
+    prFilesCache: new Map(),
     tempCleanups: new Set(),
     rendererIndex: "",
     landingHtml: "",

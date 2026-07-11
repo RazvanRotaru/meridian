@@ -22,6 +22,7 @@ import {
   handlePullRequestFileContent,
   handlePullRequestFiles,
   handlePullRequestOne,
+  handleRelatedPullRequests,
   handlePullRequests,
   handleSubmitReview,
 } from "./web-prs";
@@ -52,6 +53,8 @@ export interface Context {
   sourceRoots: Map<string, string>;
   /** Per-id original source metadata retained for GitHub PR listing. */
   sources: Map<string, ArtifactSource>;
+  /** Per-PR extraction-relative changed paths, invalidated when GitHub's updated_at changes. */
+  prFilesCache: Map<string, { updatedAt: string; paths: string[] }>;
   /** Temp-clone removers, held until process exit so retained sources are cleaned on shutdown. */
   tempCleanups: Set<() => void>;
   rendererIndex: string;
@@ -84,6 +87,7 @@ function buildContext(config: WebServerConfig): Context {
     graphs: new Map(),
     sourceRoots: new Map(),
     sources: new Map(),
+    prFilesCache: new Map(),
     tempCleanups: new Set(),
     rendererIndex: readFileSync(indexPath, "utf8"),
     landingHtml: landing,
@@ -162,6 +166,10 @@ async function handleApiPost(ctx: Context, request: IncomingMessage, response: S
   }
   if (pathname === "/api/prs/review") {
     await handleSubmitReview(ctx, request, response, url.searchParams);
+    return;
+  }
+  if (pathname === "/api/prs/related") {
+    await handleRelatedPullRequests(ctx, request, response, url.searchParams);
     return;
   }
   sendJson(response, 404, { error: "unknown endpoint" });

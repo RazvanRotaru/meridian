@@ -270,7 +270,13 @@ function buildLeafGroupNodes(index: GraphIndex, ids: string[], context: NodeCont
       kind: "group" as const,
       parentId: null,
       tier: tierOf(node.id, context),
-      data: { label: node.displayName, fileCount: subtreeFileCount(index, node.id), ca: 0, ce: 0 },
+      data: {
+        label: node.displayName,
+        fileCount: subtreeFileCount(index, node.id),
+        changedInside: index.changedDescendants.get(node.id) ?? 0,
+        ca: 0,
+        ce: 0,
+      },
     }));
 }
 

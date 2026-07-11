@@ -48,9 +48,13 @@ export function MinimalGraphView() {
   const nodes = useBlueprint((state) => state.minimalRfNodes);
   const edges = useBlueprint((state) => state.minimalRfEdges);
   const selected = useBlueprint((state) => state.moduleSelected);
-  // "Grown" (Reset enabled) once the working set diverges from the origin OR the layout was re-arranged
-  // — Reset restores both, so it must light up for either.
-  const grown = useBlueprint((state) => !sameMembers(state.minimalMemberIds, state.minimalSeedIds) || state.minimalArrange);
+  // "Grown" (Reset enabled) once curation diverges, a rolled package was expanded into file seeds,
+  // or the layout was re-arranged — Reset restores all three.
+  const grown = useBlueprint((state) =>
+    !sameMembers(state.minimalMemberIds, state.minimalSeedIds)
+    || Object.keys(state.minimalRollups).some((packageId) => !state.minimalSeedIds.includes(packageId))
+    || state.minimalArrange,
+  );
   const reviewSelectedId = useBlueprint((state) => state.reviewSelectedId);
   const { closeMinimalGraph, promoteMinimalGhost, resetMinimalGraph, rearrangeMinimalGraph } = useBlueprintActions();
 
