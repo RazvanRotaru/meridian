@@ -53,7 +53,7 @@ export function ModuleMapView() {
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const viewMode = useBlueprint((state) => state.viewMode);
   const serviceScope = useBlueprint((state) => state.serviceScope);
-  const { buildMinimalGraph, setModuleFocus, clearServiceScope, pinGhostToCanvas } = useBlueprintActions();
+  const { buildMinimalGraph, setModuleFocus, clearServiceScope, promoteGhost } = useBlueprintActions();
   // This lens's spec (Map or Service) — the highways flags read from it.
   const spec = activeModuleSurfaceSpec(viewMode);
   // The lens-lifetime hooks live HERE (not in GraphSurface, which unmounts under the overlay): a
@@ -125,10 +125,10 @@ export function ModuleMapView() {
       flowExtras={(view) => (
         <>
           {renderBeacons(view)}
-          {/* The shared ghost "+" (unified-canvas phase D): on these lenses it PINS the ghost's home
-              file into mapExtra — the ⌘P add-to-view mechanism — so the charted coupling becomes a
-              permanent card. Only LIT ghosts survive the paint here, so the ring is selection-scoped. */}
-          <GhostPromoteRing nodes={view.nodes} title="Pin to canvas" onPromote={pinGhostToCanvas} />
+          {/* The shared ghost "+" action adds the ghost to whichever canvas is visible. Here that
+              means pinning its home file into mapExtra; in the minimal overlay the exact same action
+              adds its home member there. Only LIT ghosts survive this paint, so the ring is scoped. */}
+          <GhostPromoteRing nodes={view.nodes} title="Pin to canvas" onPromote={promoteGhost} />
         </>
       )}
     >

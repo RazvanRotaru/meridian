@@ -53,7 +53,7 @@ export function MinimalGraphView() {
   // — Reset restores both, so it must light up for either.
   const grown = useBlueprint((state) => !sameMembers(state.minimalMemberIds, state.minimalSeedIds) || state.minimalArrange);
   const reviewSelectedId = useBlueprint((state) => state.reviewSelectedId);
-  const { closeMinimalGraph, promoteMinimalGhost, resetMinimalGraph, rearrangeMinimalGraph } = useBlueprintActions();
+  const { closeMinimalGraph, promoteGhost, resetMinimalGraph, rearrangeMinimalGraph } = useBlueprintActions();
 
   // A review-panel click centers the viewport on the clicked node itself (recenterSeq bump); else
   // the selection is the recenter target, like every module surface.
@@ -99,7 +99,7 @@ export function MinimalGraphView() {
       onInit={(instance) => {
         rfRef.current = instance;
       }}
-      flowExtras={(view) => <GhostPromoteRing nodes={view.nodes} title="Add to the graph" onPromote={promoteMinimalGhost} />}
+      flowExtras={(view) => <GhostPromoteRing nodes={view.nodes} title="Add to the graph" onPromote={promoteGhost} />}
     >
       {/* The Map's own legend, in the Map's own corner (bottom-left, clear of the zoom controls) — the
           overlay shares the Map's colour vocabulary, so it shares the Map's key to it. The package row

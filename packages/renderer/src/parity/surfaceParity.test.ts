@@ -200,12 +200,12 @@ describe("PROMOTION — the ghost '+' pins the same home file into mapExtra on e
   it.each([...MODULE_SURFACE_MODES])("%s: pinning the dep ghost and the caller ghost", (mode) => {
     const store = freshStore();
     store.setState({ viewMode: mode });
-    store.getState().pinGhostToCanvas(BETA);
+    store.getState().promoteGhost(BETA);
     expect([...store.getState().mapExtra]).toEqual([B_FILE]);
-    store.getState().pinGhostToCanvas(APP_FN);
+    store.getState().promoteGhost(APP_FN);
     expect([...store.getState().mapExtra].sort()).toEqual([APP_FILE, B_FILE].sort());
     // Pinning the same ghost twice is a no-op — the pin set never duplicates.
-    store.getState().pinGhostToCanvas(BETA);
+    store.getState().promoteGhost(BETA);
     expect(store.getState().mapExtra.size).toBe(2);
   });
 
@@ -213,7 +213,7 @@ describe("PROMOTION — the ghost '+' pins the same home file into mapExtra on e
     for (const mode of ALL_VIEW_MODES.filter((m) => !MODULE_SURFACE_MODES.includes(m))) {
       const store = freshStore();
       store.setState({ viewMode: mode });
-      store.getState().pinGhostToCanvas(BETA);
+      store.getState().promoteGhost(BETA);
       expect(store.getState().mapExtra.size, `mode "${mode}"`).toBe(0);
     }
   });

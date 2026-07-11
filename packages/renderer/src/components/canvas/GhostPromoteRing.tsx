@@ -3,7 +3,8 @@
  * a subtle round "+" straddling its top-right corner — one gesture, one meaning: "make this ghost
  * permanent on this canvas". The minimal overlay promotes the satellite into its member ring;
  * Map/Service/UI pin the ghost's home file into `mapExtra` (the ⌘P palette's add-to-view mechanism)
- * — the mount decides via `onPromote`, and its `title` names the surface's verb. Drawn in CANVAS
+ * — the store's shared `promoteGhost` action chooses the active destination, while `title` names
+ * the surface's verb. Drawn in CANVAS
  * coordinates (ViewportPortal, so it must render INSIDE the flow), scaling with zoom exactly like
  * the card it sits on. Reads the PAINTED nodes: the paint re-bands lit ghosts selection-relative
  * (and the Map drops unlit ghosts entirely), so the "+" straddles the corner the card actually
