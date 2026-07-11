@@ -134,7 +134,7 @@ export function cachesFor(index: GraphIndex): SurfaceCaches {
 
 export function freshStore(): BlueprintStore {
   const index = freshIndex();
-  return createBlueprintStore({ artifact: ARTIFACT, index, provider: null, hasOverlay: false, sourceUrl: null, prsUrl: "", prFilesUrl: "", prReviewUrl: "" });
+  return createBlueprintStore({ artifact: ARTIFACT, index, provider: null, hasOverlay: false, sourceUrl: null, prsUrl: "", prFilesUrl: "", prReviewUrl: "", prOneUrl: "" });
 }
 
 /** Every ViewMode — exhaustive BY TYPE: a lens added to the `ViewMode` union fails typecheck here

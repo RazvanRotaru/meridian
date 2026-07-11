@@ -227,6 +227,8 @@ describe("urlState", () => {
     it("on the Service lens, keeps its root/selection AND the shared moduleFocus (the cluster zoom)", () => {
       const keys = [...encodeNav(everyLensVisited("call")).keys()].sort();
       expect(keys).toEqual(["csel", "mfocus", "root", "view"]);
+    });
+
     it("on the Map, does not leak a retained PR-browser selection", () => {
       expect(encodeNav({ ...emptyNav(), prSelected: 42 }).has("prn")).toBe(false);
     });

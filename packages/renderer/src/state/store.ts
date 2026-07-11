@@ -49,7 +49,6 @@ import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref"
 import { moduleRevealStateFor, nearestModuleIds } from "./flowExplorer";
 import { anchorNodeIds, mapRevealStateForMany, resolveServiceAnchors, serviceRevealStateForMany, uiRevealStateForMany } from "./lensPath";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
-import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
 import {
   PRS_UNAVAILABLE_ERROR,
   type LineEdit,
