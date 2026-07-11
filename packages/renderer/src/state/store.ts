@@ -308,6 +308,8 @@ export interface BlueprintState {
   prSessionSource: PrSessionSource | null;
   prsTab: PrsTab;
   prsList: Record<PrsTab, PrSummary[] | null>;
+  /** One-off summaries fetched for URL restores; unlike `prsList`, these are not loaded pages. */
+  prExtraSummaries: Record<number, PrSummary>;
   prsHasMore: Record<PrsTab, boolean>;
   prsLoading: boolean;
   prsError: string | null;
@@ -725,6 +727,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prSessionSource: dependencies.prSessionSource ?? null,
     prsTab: "open",
     prsList: { open: null, closed: null },
+    prExtraSummaries: {},
     prsHasMore: { open: false, closed: false },
     prsLoading: false,
     prsError: null,
@@ -1914,8 +1917,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     async ensurePrSummary(number) {
-      const listed = [...(get().prsList.open ?? []), ...(get().prsList.closed ?? [])];
-      if (listed.some((pr) => pr.number === number)) {
+      if (selectedPrSummary(get(), number) !== null) {
         return;
       }
       try {
@@ -1927,12 +1929,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           return;
         }
         const { pr } = (await response.json()) as PrOneResponse;
-        const existing = get().prsList[pr.state];
         set({
-          prsList: { ...get().prsList, [pr.state]: mergePrSummaries(existing ?? [], [pr]) },
-          // A singleton obtained by number is not page 1. Keep a load affordance so opening the
-          // PR browser can still fetch the real first page instead of looking permanently complete.
-          prsHasMore: { ...get().prsHasMore, [pr.state]: existing === null ? true : get().prsHasMore[pr.state] },
+          prExtraSummaries: { ...get().prExtraSummaries, [pr.number]: pr },
           prsError: null,
         });
       } catch {
@@ -2119,7 +2117,7 @@ function applyPrReviewToMap(
   prFilesUrl: string,
   invalidateMinimalLayout: () => void,
 ): void {
-  const { prFiles, prSelected, prsList, artifact, index, prPreparedGraphId } = get();
+  const { prFiles, prSelected, artifact, index, prPreparedGraphId } = get();
   if (prSelected === null) {
     return;
   }
@@ -2130,7 +2128,7 @@ function applyPrReviewToMap(
   // This is a lens ENTRY (it lands on the Map lens below), so it owes the shared transition side
   // effects like every other entry point: a live Service scope must not survive into the review.
   beginLensTransition(get, set);
-  const summary = [...(prsList.open ?? []), ...(prsList.closed ?? [])].find((pr) => pr.number === prSelected);
+  const summary = selectedPrSummary(get());
   const context = reviewContextFromPrFiles(
     {
       prNumber: prSelected,
@@ -2268,10 +2266,14 @@ function applyPrReviewToMap(
   }
 }
 
-/** The selected PR's summary row (its refs feed the analyze request); null when not listed. */
-function selectedPrSummary(state: BlueprintState): PrSummary | null {
-  const { prSelected, prsList } = state;
-  return [...(prsList.open ?? []), ...(prsList.closed ?? [])].find((pr) => pr.number === prSelected) ?? null;
+/** The selected PR's summary row (its refs feed the analyze request); null when unavailable.
+ * An explicit number lets URL restoration resolve a row before selecting it. */
+export function selectedPrSummary(state: BlueprintState, number: number | null = state.prSelected): PrSummary | null {
+  if (number === null) {
+    return null;
+  }
+  const { prsList, prExtraSummaries } = state;
+  return [...(prsList.open ?? []), ...(prsList.closed ?? [])].find((pr) => pr.number === number) ?? prExtraSummaries[number] ?? null;
 }
 
 /** End either review mode through the existing baseline restore. Sync mode normally has no saved

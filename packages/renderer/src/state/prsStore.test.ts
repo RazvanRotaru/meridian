@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GraphArtifact, GraphNode } from "@meridian/core";
 import { applyChangedIds, buildGraphIndex } from "../graph/graphIndex";
-import { createBlueprintStore, type StoreDependencies } from "./store";
+import { createBlueprintStore, selectedPrSummary, type StoreDependencies } from "./store";
 import type { PrSummary } from "./prTypes";
 
 function node(id: string, kind: string, file: string, parentId?: string, lines?: { start: number; end: number }): GraphNode {
@@ -87,24 +87,42 @@ describe("PR store slice", () => {
     expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/prs?id=artifact-1&state=open&page=1");
   });
 
-  it("fetches and merges a missing PR summary into its state tab", async () => {
+  it("fetches a missing PR summary into the extra cache without loading a page", async () => {
     const summary = { ...pr(42), state: "closed" as const };
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ pr: summary }));
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore();
     await store.getState().ensurePrSummary(42);
-    expect(store.getState().prsList.closed).toEqual([summary]);
-    expect(store.getState().prsHasMore.closed).toBe(true);
+    expect(store.getState().prExtraSummaries).toEqual({ 42: summary });
+    expect(store.getState().prsList).toEqual({ open: null, closed: null });
+    expect(store.getState().prsHasMore).toEqual({ open: false, closed: false });
+    store.setState({ prSelected: 42 });
+    expect(selectedPrSummary(store.getState())).toEqual(summary);
     expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/prs/one?id=artifact-1&n=42");
   });
 
-  it("does not fetch a PR summary already present in either list", async () => {
+  it("does not fetch a PR summary already present in a list or extra cache", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore();
-    store.setState({ prsList: { open: null, closed: [{ ...pr(42), state: "closed" }] } });
+    store.setState({
+      prsList: { open: null, closed: [{ ...pr(42), state: "closed" }] },
+      prExtraSummaries: { 7: pr(7) },
+    });
     await store.getState().ensurePrSummary(42);
+    await store.getState().ensurePrSummary(7);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("prefers a paged summary over a one-off cached summary", () => {
+    const listed = pr(42, "Listed PR");
+    const store = freshStore();
+    store.setState({
+      prSelected: 42,
+      prsList: { open: [listed], closed: null },
+      prExtraSummaries: { 42: pr(42, "Cached PR") },
+    });
+    expect(selectedPrSummary(store.getState())).toEqual(listed);
   });
 
   it("reviews a PR: lands on the Map, seeds the changed files, and joins their line diff", () => {

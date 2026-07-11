@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PrChangedFile, PrFileStatus, PrSummary } from "../../state/prTypes";
+import type { PrChangedFile, PrFileStatus } from "../../state/prTypes";
 import { generatePrSubdir } from "../../state/generatePrSubdir";
+import { selectedPrSummary } from "../../state/store";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { useClearOnEscape } from "../canvas/useClearOnEscape";
 import { PrPrepareError, PrPrepareProgress } from "./PrPrepareProgress";
 
 export function PrDetailPanel() {
   const selected = useBlueprint((state) => state.prSelected);
-  const summary = useBlueprint((state) => summaryFor(state.prSelected, state.prsList.open, state.prsList.closed));
+  const summary = useBlueprint(selectedPrSummary);
   const files = useBlueprint((state) => state.prFiles);
   const truncated = useBlueprint((state) => state.prFilesTruncated);
   const totalFiles = useBlueprint((state) => state.prFilesTotal);
@@ -137,17 +138,6 @@ function FileList(props: { files: readonly PrChangedFile[]; totalFiles: number }
 
 function extractionLabel(subdir: string): string {
   return subdir ? `${subdir}/` : "repo root";
-}
-
-function summaryFor(
-  selected: number | null,
-  open: readonly PrSummary[] | null,
-  closed: readonly PrSummary[] | null,
-): PrSummary | null {
-  if (selected === null) {
-    return null;
-  }
-  return [...(open ?? []), ...(closed ?? [])].find((pr) => pr.number === selected) ?? null;
 }
 
 const PANEL_STYLE: React.CSSProperties = { minHeight: 0, overflowY: "auto", border: "1px solid #2A2F37", borderRadius: 8, background: "#0E1116", padding: 18 };

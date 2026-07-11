@@ -9,7 +9,7 @@
  * the writer.
  */
 
-import type { BlueprintStore } from "./store";
+import { selectedPrSummary, type BlueprintStore } from "./store";
 import { decodeNavState, isNavigationChange, mergeNavIntoSearch, navFrom, type NavState } from "./urlState";
 
 // The last URL we reflected — the push-vs-replace decision compares against it, and it seeds the
@@ -92,8 +92,7 @@ export function startUrlSync(store: BlueprintStore): () => void {
 
 async function restorePrReview(store: BlueprintStore, number: number): Promise<void> {
   await store.getState().ensurePrSummary(number);
-  const summaries = store.getState().prsList;
-  if (![...(summaries.open ?? []), ...(summaries.closed ?? [])].some((pr) => pr.number === number)) {
+  if (selectedPrSummary(store.getState(), number) === null) {
     return;
   }
   await store.getState().selectPr(number);

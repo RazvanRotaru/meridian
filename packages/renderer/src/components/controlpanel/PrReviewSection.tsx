@@ -7,6 +7,7 @@
 
 import { useEffect } from "react";
 import { PRS_UNAVAILABLE_ERROR, type PrSummary } from "../../state/prTypes";
+import { selectedPrSummary } from "../../state/store";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { countViewedFiles } from "../../derive/reviewFiles";
 import { CountBadge, hexAlpha, TOKENS } from "./panelKit";
@@ -20,7 +21,7 @@ export function PrReviewSection() {
   const hasMore = useBlueprint((state) => state.prsHasMore.open);
   const loading = useBlueprint((state) => state.prsLoading);
   const error = useBlueprint((state) => state.prsError);
-  const selected = useBlueprint((state) => state.prSelected);
+  const current = useBlueprint(selectedPrSummary);
   const prReviewed = useBlueprint((state) => state.prReviewed);
   const reviewOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const reviewFiles = useBlueprint((state) => state.reviewFiles);
@@ -50,18 +51,16 @@ export function PrReviewSection() {
     }
   }, [open, loading, error, loadPrs]);
 
-  // While expanded, always keep one PR selected so its files load for the card.
+  // While expanded, select the first loaded PR only when there is no selected summary. A URL-restored
+  // PR may live outside the first page and is resolved from the one-off summary cache instead.
   useEffect(() => {
-    if (!expanded || !open || open.length === 0) {
+    if (!expanded || !open || open.length === 0 || current !== null) {
       return;
     }
-    if (selected === null || !open.some((pr) => pr.number === selected)) {
-      void selectPr(open[0].number);
-    }
-  }, [expanded, open, selected, selectPr]);
+    void selectPr(open[0].number);
+  }, [expanded, open, current, selectPr]);
 
   const count = open?.length ?? 0;
-  const current = open?.find((pr) => pr.number === selected) ?? open?.[0] ?? null;
 
   const highlighted = expanded || resumable;
   return (
@@ -107,16 +106,19 @@ function ExpandedBody(props: {
   current: PrSummary | null;
   onReview: () => void;
 }) {
-  if (props.unavailable) {
+  if (props.unavailable && props.current === null) {
     return <div style={HINT_STYLE}>Pull requests need a GitHub-sourced session — run <code>meridian web &lt;owner/repo&gt;</code>.</div>;
+  }
+  if (props.current !== null) {
+    return <PrReviewCard pr={props.current} onReview={props.onReview} />;
   }
   if (props.open === null) {
     return <div style={HINT_STYLE}>Loading pull requests…</div>;
   }
-  if (props.open.length === 0 || props.current === null) {
+  if (props.open.length === 0) {
     return <div style={HINT_STYLE}>No open pull requests.</div>;
   }
-  return <PrReviewCard pr={props.current} onReview={props.onReview} />;
+  return null;
 }
 
 const LABEL_STYLE: React.CSSProperties = { fontSize: 13.5, fontWeight: 500, color: TOKENS.text };
