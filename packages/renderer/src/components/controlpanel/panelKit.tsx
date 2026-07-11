@@ -1,7 +1,7 @@
 /**
  * Shared building blocks for the redesigned control panel — the design tokens plus the small
- * primitives (section label, divider, filter pill, count badge, icon button) every section reuses,
- * so the header, PR review, lens, overlays and filters read as one system.
+ * primitives (section label, divider, filter pill and count badge) every section reuses, so the
+ * header, PR review, lens, overlays and filters read as one system.
  */
 
 import type { ReactNode } from "react";
@@ -18,6 +18,8 @@ export const TOKENS = {
   pillBorder: "#2A2F37",
   badgeBg: "#0B0E13",
 } as const;
+
+export const CONTROL_PANEL_WIDTH = 296;
 
 const LABEL_ROW_STYLE: React.CSSProperties = {
   display: "flex",
@@ -144,28 +146,6 @@ function pillStyle(active: boolean, accent: string, disabled: boolean): React.CS
     border: `1px solid ${active ? hexAlpha(accent, 0.45) : TOKENS.pillBorder}`,
     background: active ? hexAlpha(accent, 0.14) : TOKENS.pillBg,
   };
-}
-
-const ICON_BUTTON_STYLE: React.CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  width: 34,
-  height: 34,
-  borderRadius: 8,
-  border: `1px solid ${TOKENS.surfaceBorder}`,
-  background: TOKENS.surface,
-  color: TOKENS.textMuted,
-  cursor: "pointer",
-  padding: 0,
-};
-
-export function IconButton(props: { children: ReactNode; title: string; onClick: () => void; style?: React.CSSProperties }) {
-  return (
-    <button type="button" style={{ ...ICON_BUTTON_STYLE, ...props.style }} title={props.title} onClick={props.onClick}>
-      {props.children}
-    </button>
-  );
 }
 
 /** Expand a `#rrggbb` to an rgba() string; used for the pill's translucent active tint/border. */

@@ -56,6 +56,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
 
   it("lets a disconnected PR deep link return to the graph", async () => {
     await page.goto(`${viewUrl}?view=prs`, { waitUntil: "networkidle" });
+    expect(await page.getByRole("group", { name: "Canvas actions" }).count()).toBe(0);
     const back = page.getByRole("button", { name: "PR review" });
     await back.waitFor();
     expect(await back.isEnabled()).toBe(true);
@@ -63,15 +64,19 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
 
     await back.click();
     await page.waitForSelector(".react-flow__node");
+    await page.getByRole("group", { name: "Canvas actions" }).waitFor();
     expect(new URL(page.url()).searchParams.get("view")).toBeNull();
   });
 
   // Runs before the Service-lens switch below so it starts on the default Map lens.
   it("collapses and restores the detailed controls while keeping the panel summary", async () => {
     const panel = page.locator("#meridian-control-panel");
+    const actionBar = page.getByRole("group", { name: "Canvas actions" });
     const controls = page.locator("#meridian-control-panel-controls");
     const prReview = page.getByRole("button", { name: "PR review" });
-    const recenter = page.getByRole("button", { name: "Recenter on the current selection, or the whole graph if nothing is selected" });
+    const recenter = actionBar.getByRole("button", { name: "Recenter view" });
+    const expand = actionBar.getByRole("button", { name: "Expand one level" });
+    const collapse = actionBar.getByRole("button", { name: "Collapse all" });
     const repositorySummary = panel.getByText("Repository · 1 package · 10 files", { exact: true });
     const environment = panel.locator("select");
     const unavailableBadge = panel.getByText("Unavailable", { exact: true });
@@ -83,10 +88,16 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     expect(await prReview.getAttribute("title")).toBe("PR review needs a GitHub repository. Open one with meridian web <owner/repo>.");
     expect(await disclosure.getAttribute("aria-label")).toBe("Hide detailed controls");
     expect(await disclosure.getAttribute("aria-expanded")).toBe("true");
+    expect(await actionBar.isVisible()).toBe(true);
+    expect(await recenter.isVisible()).toBe(true);
+    expect(await expand.isVisible()).toBe(true);
+    expect(await collapse.isVisible()).toBe(true);
+    expect(await panel.getByRole("button", { name: "Recenter view" }).count()).toBe(0);
     await disclosure.click();
     expect(await panel.isVisible()).toBe(true);
     expect(await controls.isHidden()).toBe(true);
     expect(await prReview.isVisible()).toBe(true);
+    expect(await actionBar.isVisible()).toBe(true);
     expect(await recenter.isVisible()).toBe(true);
     expect(await repositorySummary.isVisible()).toBe(true);
     expect(await environment.isVisible()).toBe(true);
@@ -103,6 +114,24 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     expect(await panel.evaluate((element) => element.getBoundingClientRect().height)).toBe(expandedHeight);
   });
 
+  it("keeps the compact action bar clear of canvas chrome at a narrow desktop width", async () => {
+    const packageNode = page.locator('[data-id="ts:src"]');
+    await packageNode.click();
+    const actionBar = page.getByRole("group", { name: "Canvas actions" });
+    await actionBar.getByRole("button", { name: "Extract selection (1)" }).waitFor();
+
+    try {
+      await page.setViewportSize({ width: 900, height: 600 });
+      await actionBar.getByRole("button", { name: "Recenter view" }).click();
+      await expectNoOverlap(actionBar, page.locator("#meridian-control-panel"));
+      await expectNoOverlap(actionBar, page.getByRole("button", { name: /Legend/ }));
+      await expectNoOverlap(actionBar, page.locator(".react-flow__minimap"));
+    } finally {
+      await page.setViewportSize({ width: 1400, height: 900 });
+      await page.locator(".react-flow__pane").dispatchEvent("click");
+    }
+  });
+
   it("keeps the Map legend static when selection changes", async () => {
     await page.getByRole("button", { name: /Legend/ }).click();
     const legend = page.getByRole("region", { name: "Map legend" });
@@ -111,11 +140,11 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
 
     const packageNode = page.locator('[data-id="ts:src"]');
     await packageNode.click();
-    await page.getByRole("button", { name: "Extract selection (1)" }).waitFor();
+    await page.getByRole("group", { name: "Canvas actions" }).getByRole("button", { name: "Extract selection (1)" }).waitFor();
     expect(await legend.innerText()).toBe(beforeSelection);
 
     await page.locator(".react-flow__pane").dispatchEvent("click");
-    await page.getByRole("button", { name: "Extract selection (1)" }).waitFor({ state: "detached" });
+    await page.getByRole("group", { name: "Canvas actions" }).getByRole("button", { name: "Extract selection (1)" }).waitFor({ state: "detached" });
     expect(await legend.innerText()).toBe(beforeSelection);
     await legend.getByTitle("Close").click();
   });
@@ -189,4 +218,15 @@ function statusText(page: Page): Promise<string> {
 /** A lens segment button inside the Lens segmented control (ViewModeToggle). */
 function lensButton(page: Page, label: string): Locator {
   return page.getByLabel("Lens").getByRole("button", { name: label, exact: true });
+}
+
+async function expectNoOverlap(first: Locator, second: Locator): Promise<void> {
+  const [a, b] = await Promise.all([first.boundingBox(), second.boundingBox()]);
+  expect(a).not.toBeNull();
+  expect(b).not.toBeNull();
+  if (!a || !b) {
+    return;
+  }
+  const overlaps = a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+  expect(overlaps).toBe(false);
 }

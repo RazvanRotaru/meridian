@@ -1,8 +1,7 @@
 /**
  * The Map lens's floating chrome, kept out of the surface component: the containment breadcrumb
- * (the zoom trail), the expand-all / collapse-all cluster acting on the CURRENT level, the
- * "Extract selection" action strip, and the empty-level card. All pure presentational — every
- * action arrives as a prop.
+ * (the zoom trail) and the empty-level card. Both are pure presentational controls. Selection
+ * extraction and hierarchy actions now live in the canvas-wide bottom action bar.
  */
 
 import type { Crumb } from "./canvas/surfaceSpec";
@@ -87,15 +86,6 @@ export function ServiceScopeBreadcrumb(props: {
   );
 }
 
-/** The floating action a selection (one card or more) reveals: extract it into the minimal-graph overlay. */
-export function BuildMinimalGraphButton(props: { count: number; onBuild: () => void }) {
-  return (
-    <button type="button" style={BUILD_BUTTON_STYLE} onClick={props.onBuild}>
-      Extract selection ({props.count})
-    </button>
-  );
-}
-
 /** Shown when a level is empty — a focus with no in-project files, so the lens is never a silent blank. */
 export function EmptyModuleMapCard(props: { focus: string | null }) {
   return (
@@ -163,20 +153,3 @@ const EMPTY_CARD_STYLE: React.CSSProperties = {
   color: "#7B8695",
 };
 const EMPTY_MARK_STYLE: React.CSSProperties = { fontSize: 22, opacity: 0.5 };
-// Floats bottom-center over the canvas; the emphasis green ties it to the selected cards' rings.
-const BUILD_BUTTON_STYLE: React.CSSProperties = {
-  position: "absolute",
-  bottom: 24,
-  left: "50%",
-  transform: "translateX(-50%)",
-  zIndex: 5,
-  border: "1px solid #2F5C3B",
-  borderRadius: 8,
-  background: "rgba(86,194,113,0.16)",
-  padding: "8px 16px",
-  cursor: "pointer",
-  font: "inherit",
-  fontSize: 13,
-  fontWeight: 700,
-  color: "#6BE38A",
-};
