@@ -46,17 +46,10 @@ function freshStore() {
 }
 
 describe("flow explorer store slice", () => {
-  it("expandPaths unions every ancestor path with one expanded set", () => {
-    const store = freshStore();
-    store.getState().expandPaths(["ts:pkg/src/a.ts#run", "ts:pkg/src/b.ts#leaf"]);
-    expect(store.getState().expanded).toEqual(new Set(["ts:pkg", "ts:pkg/src", "ts:pkg/src/a.ts", "ts:pkg/src/b.ts"]));
-  });
-
-  it("selectFlowEntry records emphasis and bulk-reveals related modules in the module map", () => {
+  it("selectFlowEntry records the selection and bulk-reveals related modules in the module map", () => {
     const store = freshStore();
     store.getState().selectFlowEntry({ rootId: "ts:pkg/src/a.ts#run", blockPath: [] });
     expect(store.getState().flowSelection).toEqual({ rootId: "ts:pkg/src/a.ts#run", blockPath: [] });
-    expect(store.getState().flowEmphasis).toEqual(new Set(["ts:pkg/src/a.ts#run", "ts:pkg/src/b.ts#leaf"]));
     expect(store.getState().moduleFocus).toBe("ts:pkg/src");
     expect(store.getState().moduleSelected).toEqual(new Set(["ts:pkg/src/a.ts", "ts:pkg/src/b.ts"]));
     expect(store.getState().moduleExpanded).toEqual(new Set(["ts:pkg/src/a.ts", "ts:pkg/src/b.ts"]));

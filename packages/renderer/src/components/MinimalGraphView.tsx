@@ -29,11 +29,12 @@
  */
 
 import { useEffect, useMemo, useRef } from "react";
-import { ViewportPortal, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
+import type { Edge, Node, ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { MapLegend } from "./MapLegend";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { GraphSurface } from "./canvas/GraphSurface";
+import { GhostPromoteRing } from "./canvas/GhostPromoteRing";
 import { MINIMAL_OVERLAY_HIGHWAYS } from "./canvas/surfaceSpec";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { useRecenter } from "./canvas/useRecenter";
@@ -97,7 +98,7 @@ export function MinimalGraphView() {
       onInit={(instance) => {
         rfRef.current = instance;
       }}
-      flowExtras={(view) => <GhostPromoteRing nodes={view.nodes} onPromote={promoteMinimalGhost} />}
+      flowExtras={(view) => <GhostPromoteRing nodes={view.nodes} title="Add to the graph" onPromote={promoteMinimalGhost} />}
     >
       {/* The Map's own legend, in the Map's own corner (bottom-left, clear of the zoom controls) — the
           overlay shares the Map's colour vocabulary, so it shares the Map's key to it. The package row
@@ -126,43 +127,6 @@ export function MinimalGraphView() {
   );
 }
 
-/** Each ghost SATELLITE carries an explicit "+" add affordance, drawn in CANVAS coordinates (via
- * ViewportPortal, so it must render INSIDE the flow) and scaling with zoom exactly like the card it
- * sits on. Reads the PAINTED nodes: the paint re-bands satellites selection-relative
- * (`repositionLitGhosts`), and the "+" must straddle the corner the card actually renders at. */
-function GhostPromoteRing(props: { nodes: Node[]; onPromote: (id: string) => void }) {
-  const ghostRects = useMemo(() => props.nodes.filter(isGhost).map(ghostRect), [props.nodes]);
-  return (
-    <ViewportPortal>
-      {ghostRects.map((rect) => (
-        <div key={rect.id} style={ghostAddWrap(rect)}>
-          <button type="button" style={ADD_GHOST_STYLE} onClick={() => props.onPromote(rect.id)} title="Add to the graph" aria-label="Add to the graph">
-            +
-          </button>
-        </div>
-      ))}
-    </ViewportPortal>
-  );
-}
-
-const isGhost = (node: Node): boolean => node.type === "ghost";
-
-// The "+" add button's size in FLOW units — so ViewportPortal scales it with the node at every zoom.
-const ADD_SIZE = 20;
-type GhostCorner = { id: string; x: number; y: number };
-
-// A satellite's top-right corner in absolute flow coords (ghosts are root-level, so position IS absolute).
-function ghostRect(node: Node): GhostCorner {
-  const width = ((node.style ?? {}) as { width?: number }).width ?? 0;
-  return { id: node.id, x: node.position.x + width, y: node.position.y };
-}
-
-// Centre the "+" on that corner (half in / half out). left/top:0 + translate is the ViewportPortal idiom;
-// it applies the canvas zoom/pan transform, so a flow-unit-sized child scales with the graph.
-function ghostAddWrap(corner: GhostCorner): React.CSSProperties {
-  return { position: "absolute", left: 0, top: 0, transform: `translate(${corner.x - ADD_SIZE / 2}px, ${corner.y - ADD_SIZE / 2}px)`, pointerEvents: "all" };
-}
-
 // Order-independent equality of two id lists — the "grown" check compares members against the origin.
 function sameMembers(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) {
@@ -175,21 +139,3 @@ function sameMembers(a: readonly string[], b: readonly string[]): boolean {
 // Top-RIGHT, because the Module map keeps its main Toolbar floating top-left over this overlay.
 const MINIMAL_PANEL_STYLE: React.CSSProperties = { ...PANEL_STYLE, left: "auto", right: 16 };
 const TITLE_STYLE: React.CSSProperties = { fontSize: 12, fontWeight: 700, color: "#E6EDF3" };
-
-// The subtle "add this ghost" affordance: a small round + straddling the ghost card's top-right corner
-// (half in, half out), not a loud button. Neutral until hovered so it stays quiet among many ghosts.
-const ADD_GHOST_STYLE: React.CSSProperties = {
-  width: 20,
-  height: 20,
-  borderRadius: "50%",
-  display: "grid",
-  placeItems: "center",
-  border: "1px solid #3A4452",
-  background: "#1B222C",
-  color: "#AEB8C4",
-  fontSize: 15,
-  fontWeight: 700,
-  lineHeight: 1,
-  cursor: "pointer",
-  boxShadow: "0 1px 3px rgba(0,0,0,0.45)",
-};

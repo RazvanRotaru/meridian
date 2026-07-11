@@ -1,16 +1,4 @@
-/** Shared shapes for the pure derive pipeline (visible nodes + lifted edges). */
-
-import type { GraphNode } from "@meridian/core";
-
-export interface VisibleNode {
-  id: string;
-  node: GraphNode;
-  /** Has at least one child — renders as a box ("N items") when collapsed, a frame when open. */
-  isContainer: boolean;
-  isExpanded: boolean;
-  depth: number;
-  childCount: number;
-}
+/** Shared shapes for the pure derive pipeline (lifted edges). */
 
 export interface LiftedEdge {
   id: string;

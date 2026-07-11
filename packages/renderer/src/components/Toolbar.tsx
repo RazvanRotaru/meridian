@@ -9,10 +9,8 @@ import type { ReactNode } from "react";
 import { Panel } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { EnvSelector } from "./EnvSelector";
-import { Breadcrumb } from "./Breadcrumb";
 import { ViewModeToggle } from "./ViewModeToggle";
 import { SelectionPanel } from "./SelectionPanel";
-import { FlowSelector } from "./FlowSelector";
 import { CompositionPanel } from "./composition/CompositionPanel";
 import { DepthSlider } from "./DepthSlider";
 import { ModuleCategoryToggles } from "./ModuleCategoryToggles";
@@ -25,11 +23,11 @@ import { Divider, SectionLabel, TOKENS } from "./controlpanel/panelKit";
 export function Toolbar(props: { preselectedEnv: string | null }) {
   const viewMode = useBlueprint((state) => state.viewMode);
   const hasOverlay = useBlueprint((state) => state.hasOverlay);
-  const focusId = useBlueprint((state) => state.focusId);
   const { resetCategoryFilter, resetRelationshipFilter } = useBlueprintActions();
 
   const isComposition = viewMode === "call";
-  const onModuleSurface = viewMode === "modules" || isComposition;
+  // Every module-family lens (Map / Service / UI — unified in phase C) wears the same dials.
+  const onModuleSurface = viewMode === "modules" || viewMode === "ui" || isComposition;
   const showExpandControls = viewMode !== "logic" && viewMode !== "prs";
 
   return (
@@ -50,7 +48,6 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
         <Divider />
         <Group label="Lens">
           <ViewModeToggle />
-          {focusId !== null ? <Breadcrumb /> : null}
         </Group>
         <SelectionPanel />
 
@@ -73,11 +70,6 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
 
             <DepthSlider />
             {isComposition ? <CompositionPanel /> : null}
-          </>
-        ) : viewMode === "ui" || viewMode === "logic" ? (
-          <>
-            <Divider />
-            <FlowSelector />
           </>
         ) : null}
       </div>

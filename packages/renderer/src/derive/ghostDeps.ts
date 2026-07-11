@@ -18,6 +18,10 @@ export type GhostData = {
   label: string;
   context: string;
   ghostKind: string;
+  /** A folder GROUP ghost's contributing home FILES — the files whose symbols actually folded into
+   * the card, recorded at fold time (groupGhosts.ts) so the "+" pin promotes THEM, never the
+   * folder's alphabetically-first files. Absent on individual ghosts. */
+  members?: string[];
   /** Paint-time flag: this ghost IS a selected call step's definition — its border flips to the
    * selection colour (the beacon read). Never set at derive time. */
   beacon?: boolean;

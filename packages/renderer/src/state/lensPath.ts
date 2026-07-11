@@ -18,7 +18,7 @@ import { UNIT_CARD_KINDS } from "../derive/blockDeps";
 import { frameIdOf, leadIdOf } from "../derive/serviceClusterEdges";
 import { clusteringFor } from "../derive/serviceClusteringCache";
 import { uiFocusTarget } from "../derive/uiFocus";
-import { commonPackageFocus, withAncestorsOfMany, type ModuleRevealState } from "./flowExplorer";
+import { commonPackageFocus, type ModuleRevealState } from "./flowExplorer";
 
 /** The store slice naming "where you are" in each lens — its selection, or failing that its focus. */
 export interface AnchorSource {
@@ -26,18 +26,16 @@ export interface AnchorSource {
   moduleSelected: ReadonlySet<string>;
   moduleEffectiveFocus: string | null;
   moduleFocus: string | null;
-  selectedId: string | null;
-  focusId: string | null;
   logicRoot: string | null;
 }
 
 /** The selection fields of `AnchorSource` — all `selectedAnchorIds` reads. */
-export type SelectionSource = Pick<AnchorSource, "viewMode" | "moduleSelected" | "selectedId">;
+export type SelectionSource = Pick<AnchorSource, "viewMode" | "moduleSelected">;
 
 /** The code nodes the reader is currently on, read from the ACTIVE lens; empty when nothing is
- * picked. Map/Service carry their WHOLE selection; UI and Logic are single-anchor lenses. A selected
- * `svc:` cluster frame is a pseudo-id absent from the graph, so it carries as its LEAD unit — a real
- * node every reveal below can place. */
+ * picked. The module-family lenses (Map/Service/UI) carry their WHOLE shared selection; Logic is a
+ * single-anchor lens. A selected `svc:` cluster frame is a pseudo-id absent from the graph, so it
+ * carries as its LEAD unit — a real node every reveal below can place. */
 export function anchorNodeIds(state: AnchorSource): string[] {
   return anchorIds(state, state);
 }
@@ -48,12 +46,6 @@ export function anchorNodeIds(state: AnchorSource): string[] {
  * selected, even when a lens has a focus to fall back on. */
 export function selectedAnchorIds(state: SelectionSource): string[] {
   return anchorIds(state, null);
-}
-
-export interface UiRevealState {
-  focusId: string | null;
-  expanded: Set<string>;
-  selectedId: string;
 }
 
 /** Reveal `anchors` on the folder Map: focus their deepest COMMON directory (null → repo root when
@@ -124,18 +116,63 @@ export function resolveServiceAnchors(anchors: readonly string[], index: GraphIn
   };
 }
 
-/** Reveal `anchors` in the UI (React composition) lens: expand every container chain and select the
- * FIRST placeable anchor (the UI lens is single-selection). UI's focused render-subtree dive is kept
- * only while it contains EVERY placeable anchor — else show the whole (renders-filtered) graph so no
- * anchor is hidden beneath the dive. Ids not in the graph are dropped; null when none survive. */
-export function uiRevealStateForMany(anchors: readonly string[], index: GraphIndex): UiRevealState | null {
+/** Reveal `anchors` in the UI lens — SHARED module spaces since the phase-C unification: keep the
+ * implicit render-subtree root (`moduleFocus` null) while it contains EVERY placeable anchor, else
+ * dive to the anchors' deepest common package so none hides outside the root; expand each anchor's
+ * container chain within that scope, and select them ALL (multi-select arrives with the shared
+ * slice). Ids not in the graph — and anchors the chosen scope cannot draw (see `uiDiveScope`) —
+ * are dropped; null when none survive. */
+export function uiRevealStateForMany(anchors: readonly string[], index: GraphIndex): ModuleRevealState | null {
   const placeable = anchors.filter((anchor) => index.nodesById.has(anchor));
   if (placeable.length === 0) {
     return null;
   }
   const target = uiFocusTarget(index);
-  const focusId = target !== null && placeable.every((anchor) => index.isWithinFocus(target, anchor)) ? target : null;
-  return { focusId, expanded: withAncestorsOfMany(placeable, index, new Set<string>()), selectedId: placeable[0] };
+  const withinRoot = target !== null && placeable.every((anchor) => index.isWithinFocus(target, anchor));
+  const scope = withinRoot ? { focus: null, root: target, anchors: placeable } : uiDiveScope(placeable, target, index);
+  if (scope === null) {
+    return null;
+  }
+  const moduleExpanded = new Set<string>();
+  for (const anchor of scope.anchors) {
+    for (const id of containersOnPath(anchor, index, scope.root)) {
+      moduleExpanded.add(id);
+    }
+  }
+  return { moduleFocus: scope.focus, moduleExpanded, moduleSelected: new Set(scope.anchors) };
+}
+
+/** A UI reveal's dive: the focus to store, the scope root for the expansion walk, and the anchors
+ * that scope actually draws. */
+interface UiRevealScope {
+  focus: string | null;
+  root: string | null;
+  anchors: string[];
+}
+
+/** The dive scope when the render root can't hold every anchor. On THIS lens a null `moduleFocus`
+ * means the RENDER ROOT (not the whole repo as on the Map), so "no common package" cannot fall back
+ * to null the way `mapRevealStateForMany` does — the reveal would land back on the render root with
+ * the out-of-root anchors selected but invisible, dimming the canvas against nothing. Instead:
+ * anchors sharing a package dive there; otherwise keep the render root and DROP the anchors it
+ * can't draw (the module contract's best-effort), diving to the first anchored package only when
+ * the root holds none. With no render root at all, null focus IS the whole repo — everything fits. */
+function uiDiveScope(placeable: string[], target: string | null, index: GraphIndex): UiRevealScope | null {
+  const common = commonPackageFocus(placeable, index);
+  if (common !== null || target === null) {
+    return { focus: common, root: common, anchors: placeable };
+  }
+  const withinRoot = placeable.filter((anchor) => index.isWithinFocus(target, anchor));
+  if (withinRoot.length > 0) {
+    return { focus: null, root: target, anchors: withinRoot };
+  }
+  for (const anchor of placeable) {
+    const focus = commonPackageFocus([anchor], index);
+    if (focus !== null) {
+      return { focus, root: focus, anchors: placeable.filter((each) => index.isWithinFocus(focus, each)) };
+    }
+  }
+  return null;
 }
 
 /** The ONE viewMode switch and the ONE `svc:`→lead normalization spot behind both anchor readers;
@@ -147,14 +184,13 @@ function anchorIds(selection: SelectionSource, fallback: AnchorSource | null): s
 function rawAnchorIds(selection: SelectionSource, fallback: AnchorSource | null): string[] {
   switch (selection.viewMode) {
     case "modules":
-    case "call": {
+    case "call":
+    case "ui": {
       if (selection.moduleSelected.size > 0) {
         return [...selection.moduleSelected];
       }
       return asSingleton(fallback !== null ? (fallback.moduleEffectiveFocus ?? fallback.moduleFocus) : null);
     }
-    case "ui":
-      return asSingleton(selection.selectedId ?? fallback?.focusId ?? null);
     case "logic":
       return asSingleton(fallback !== null ? fallback.logicRoot : null);
     default:

@@ -81,19 +81,19 @@ describe("expandAll / collapseAll — Map surface", () => {
   });
 });
 
-describe("expandAll / collapseAll — UI call-flow graph", () => {
+describe("expandAll / collapseAll — UI lens (the shared module surface since phase C)", () => {
   it("expandAll from a clean graph opens the root package one level", () => {
     const store = freshStore();
-    store.setState({ viewMode: "ui", focusId: null, expanded: new Set(), selectedId: null });
+    store.setState({ viewMode: "ui", moduleFocus: null, moduleExpanded: new Set(), moduleSelected: new Set() });
     store.getState().expandAll();
-    expect(store.getState().expanded.has("ts:pkg")).toBe(true);
+    expect(store.getState().moduleExpanded.has("ts:pkg")).toBe(true);
   });
 
   it("collapseAll fully collapses every open container", () => {
     const store = freshStore();
-    store.setState({ viewMode: "ui", focusId: null, expanded: new Set(["ts:pkg", "ts:pkg/src"]), selectedId: null });
+    store.setState({ viewMode: "ui", moduleFocus: null, moduleExpanded: new Set(["ts:pkg", "ts:pkg/src"]), moduleSelected: new Set() });
     store.getState().collapseAll();
-    expect(store.getState().expanded).toEqual(new Set());
+    expect(store.getState().moduleExpanded).toEqual(new Set());
   });
 });
 

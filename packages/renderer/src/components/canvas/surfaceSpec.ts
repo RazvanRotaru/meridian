@@ -1,10 +1,10 @@
 /**
- * The SurfaceSpec seam (unified-canvas phases A+B): the two module lenses — the folder Map and the
- * Service lens — declare how they differ from the shared canvas (`GraphSurface`), and a
- * viewMode → spec registry replaces the `viewMode === "call"` ternaries that used to be scattered
- * through the store (moduleRelayout / moduleTreeNodes / applyScoped / buildMinimalGraph) and the
- * interaction hook. Phase B gave the Service lens the Map's full capability set, per-surface where
- * the semantics differ:
+ * The SurfaceSpec seam (unified-canvas phases A–C): the three module lenses — the folder Map, the
+ * Service lens, and (since phase C) the renders-rooted UI lens — declare how they differ from the
+ * shared canvas (`GraphSurface`), and a viewMode → spec registry replaces the `viewMode === "call"`
+ * ternaries that used to be scattered through the store (moduleRelayout / moduleTreeNodes /
+ * applyScoped / buildMinimalGraph) and the interaction hook. Phase B gave the Service lens the
+ * Map's full capability set, per-surface where the semantics differ:
  *
  *   - FOCUS: both lenses zoom by double-click (`focus.dive` → moduleFocus), but the Map dives
  *     folders AND files while the Service lens dives ONLY `svc:` cluster frames (`divableKinds`);
@@ -27,7 +27,8 @@ import type { ModuleGraph } from "../../derive/moduleGraph";
 import type { BlockDeps } from "../../derive/blockDeps";
 import { deriveModuleTree, type ModuleTree } from "../../derive/moduleTree";
 import { deriveServiceTree } from "../../derive/serviceClusterTree";
-import { clusterMemberSeeds, leadIdOf } from "../../derive/serviceClusterEdges";
+import { deriveUiTree } from "../../derive/uiTree";
+import { clusterMemberSeeds, homeFileOf, leadIdOf } from "../../derive/serviceClusterEdges";
 import { clusteringFor } from "../../derive/serviceClusteringCache";
 import { scopeSetOf, type ServiceScope } from "../../state/serviceScope";
 
@@ -176,6 +177,26 @@ const SERVICE_SURFACE: SurfaceSpec = {
   highways: ALL_HIGHWAYS,
 };
 
+/** The UI lens (unified-canvas phase C): the Map's machinery over the RENDERS projection. Focus is
+ * the same containment dive (packages AND files — a double-clicked component card zooms into its
+ * render subtree's containment), ghosts reveal by refocusing at the definition (the Map's model),
+ * and minimal-graph seeds land on each selection's home FILE (the overlay draws file/folder boxes,
+ * never bare component symbols). */
+const UI_SURFACE: SurfaceSpec = {
+  deriveTree: (state, caches, extras = {}) =>
+    deriveUiTree(state.index, state.moduleFocus, state.moduleExpanded, caches.graph, caches.deps, caches.flows, extras.extraIds ?? EMPTY_IDS, extras.hiddenIds ?? EMPTY_IDS),
+  focus: {
+    dive: (actions, id) => actions.setModuleFocus(id),
+    divable: (nodeType) => nodeType === "package" || nodeType === "file",
+    rootLabel: "UI",
+    rootNoun: "components",
+    crumbs: crumbsFor,
+  },
+  ghostReveal: (actions, id) => actions.revealModule(id),
+  minimalSeeds: (selection, index) => [...new Set(selection.map((id) => homeFileOf(id, index)))],
+  highways: ALL_HIGHWAYS,
+};
+
 /** The minimal-graph overlay's Highways shape: SPOOL only — a flat graph has no containers to
  * pair-bundle and no frames to gutter-route. The overlay is deliberately NOT a SurfaceSpec yet:
  * its members+satellite tree is built by `minimalRelayout` (`buildMinimalSubgraph` mirrors
@@ -185,10 +206,10 @@ const SERVICE_SURFACE: SurfaceSpec = {
  * work; until a real deriveTree exists, exporting only the flags keeps every spec member honest. */
 export const MINIMAL_OVERLAY_HIGHWAYS: HighwayFlags = { bundling: false, routing: false, spooling: true };
 
-/** The strict registry: the two viewMode-keyed module surfaces; null for every non-module lens
- * (ui/logic/prs keep their own machinery until later phases). */
+/** The strict registry: the three viewMode-keyed module surfaces (Map / Service / UI — phase C
+ * folded the UI lens in); null for the lenses with their own render (logic) or no canvas (prs). */
 export function moduleSurfaceSpec(viewMode: ViewMode): SurfaceSpec | null {
-  return viewMode === "modules" ? MAP_SURFACE : viewMode === "call" ? SERVICE_SURFACE : null;
+  return viewMode === "modules" ? MAP_SURFACE : viewMode === "call" ? SERVICE_SURFACE : viewMode === "ui" ? UI_SURFACE : null;
 }
 
 /** The module surface a module-family action reads for ANY mode: the Map is the default — every

@@ -35,8 +35,9 @@ const MODULE_KIND = "module";
 const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
 
 /** Palette-added ids as extra roots — only real file/unit/block nodes `walk` can draw, sorted for a
- * stable order. A package/unknown id is dropped (the walk would need its subtree, not the raw pin). */
-function extraRoots(index: GraphIndex, extraIds: ReadonlySet<string>): string[] {
+ * stable order. A package/unknown id is dropped (the walk would need its subtree, not the raw pin).
+ * Exported for the UI lens's tree derive, which pins palette extras identically. */
+export function extraRoots(index: GraphIndex, extraIds: ReadonlySet<string>): string[] {
   return [...extraIds]
     .filter((id) => {
       const kind = index.nodesById.get(id)?.kind;
@@ -64,7 +65,7 @@ export function deriveModuleTree(
   // Palette-pinned nodes (⌘P "+") ride in as EXTRA top-level roots so an out-of-focus card joins the
   // current level; `walk`'s `seen` guard drops any that the focus subtree already draws.
   const roots = [...frontierRoots(index, effectiveFocus, graph), ...extraRoots(index, extraIds)];
-  const walked = walk(index, roots, expanded, flows, hiddenIds);
+  const walked = walkContainment(index, roots, expanded, flows, hiddenIds);
   const skeleton = walked.skeleton;
   const visibleIds = new Set(skeleton.map((entry) => entry.id));
   const lifted = liftEdges(importEdges(graph), visibleIds, index.parentOf);
@@ -134,7 +135,9 @@ function packageDepEdges(
   }));
 }
 
-function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>, flows: LogicFlows, hiddenIds: ReadonlySet<string>): CodeWalk {
+/** The Map's containment walk over packages/files/code — exported so the UI lens (deriveUiTree)
+ * draws the identical card set over its renders-rooted frontier. */
+export function walkContainment(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>, flows: LogicFlows, hiddenIds: ReadonlySet<string>): CodeWalk {
   const walked = createCodeWalk();
   const ctx = { index, expanded, flows };
   const visit = (id: string, parentId: string | null, depth: number): void => {

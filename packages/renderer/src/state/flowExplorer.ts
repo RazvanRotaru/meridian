@@ -7,18 +7,6 @@ export interface ModuleRevealState {
   moduleSelected: Set<string>;
 }
 
-export function withAncestorsOf(nodeId: string, index: GraphIndex, expanded: ReadonlySet<string>): Set<string> {
-  const next = new Set(expanded);
-  addAncestorsOf(next, nodeId, index);
-  return next;
-}
-
-export function withAncestorsOfMany(nodeIds: readonly string[], index: GraphIndex, expanded: ReadonlySet<string>): Set<string> {
-  const next = new Set(expanded);
-  nodeIds.forEach((nodeId) => addAncestorsOf(next, nodeId, index));
-  return next;
-}
-
 export function moduleRevealStateFor(nodeIds: readonly string[], index: GraphIndex): ModuleRevealState | null {
   const modules = uniqueModules(nodeIds, index);
   if (modules.length === 0) {
@@ -32,14 +20,11 @@ export function moduleRevealStateFor(nodeIds: readonly string[], index: GraphInd
   };
 }
 
-function addAncestorsOf(next: Set<string>, nodeId: string, index: GraphIndex): void {
-  const visited = new Set<string>();
-  let current: string | null | undefined = index.isContainer(nodeId) ? nodeId : index.parentOf.get(nodeId);
-  while (current && !visited.has(current)) {
-    visited.add(current);
-    next.add(current);
-    current = index.parentOf.get(current);
-  }
+/** The distinct home FILES (nearest module ancestor-or-self) of `nodeIds`, first-seen order — what
+ * a bulk reveal draws and selects. Exposed so the UI lens can run the same file normalization as
+ * `moduleRevealStateFor` before its own (render-root-aware) reveal picks the focus. */
+export function nearestModuleIds(nodeIds: readonly string[], index: GraphIndex): string[] {
+  return uniqueModules(nodeIds, index).map((module) => module.id);
 }
 
 function uniqueModules(nodeIds: readonly string[], index: GraphIndex): GraphNode[] {

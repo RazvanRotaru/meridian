@@ -6,6 +6,7 @@
 
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { BlueprintState } from "../../state/store";
+import { moduleSurfaceSpec } from "../canvas/surfaceSpec";
 import { COVERAGE_COLORS } from "../../theme/coverageColors";
 import { Pill } from "./panelKit";
 
@@ -27,7 +28,7 @@ export function OverlaysSection() {
   const showHighways = useBlueprint((state) => state.showHighways);
   const { toggleShowTests, toggleHighlightMode, togglePrivateMembers, toggleCoverageMode, toggleFlowExplorer, toggleHighways } = useBlueprintActions();
 
-  const onModuleSurface = viewMode === "modules" || viewMode === "call";
+  const onModuleSurface = moduleSurfaceSpec(viewMode) !== null;
   const onMap = viewMode === "modules";
   const noTests = testCount === 0;
   const noPrivate = privateCount === 0;

@@ -41,6 +41,16 @@ export function captureMapPositions(moduleRfNodes: readonly Node[]): Record<stri
   return positions;
 }
 
+/** The base rect a PROMOTED ghost's member box inherits (unified-canvas phase D): the ghost card's
+ * on-screen top-left at the member's own mirror footprint (the same fallback sizes the capture
+ * uses), so the permanent card lands under the reader's eye instead of `placeDisconnectedFiles`'
+ * far-right vertical band. */
+export function promotedMemberRect(at: { x: number; y: number }, isGroup: boolean): PlacedRect {
+  return isGroup
+    ? { x: at.x, y: at.y, width: GROUP_WIDTH, height: GROUP_HEIGHT }
+    : { x: at.x, y: at.y, width: FILE_WIDTH, height: FILE_HEIGHT };
+}
+
 /** Sum a node's `position` up its `parentId` chain to an absolute (canvas-space) point. */
 function absolutePosition(node: Node, byId: Map<string, Node>): { x: number; y: number } {
   let x = node.position.x;

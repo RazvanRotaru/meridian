@@ -107,8 +107,9 @@ export function clusterMemberSeeds(selection: readonly string[], index: GraphInd
 }
 
 /** A member unit's home FILE: the nearest module-kind ancestor-or-self. Ids with none (a folder,
- * an id the graph doesn't know) pass through unchanged. */
-function homeFileOf(id: string, index: GraphIndex): string {
+ * an id the graph doesn't know) pass through unchanged. Exported for the UI lens's minimal-graph
+ * seeds, which land component/unit selections on their home files the same way. */
+export function homeFileOf(id: string, index: GraphIndex): string {
   const ancestors = index.ancestorsOf(id);
   for (let i = ancestors.length - 1; i >= 0; i -= 1) {
     if (ancestors[i].kind === "module") {

@@ -5,19 +5,14 @@ import { DEFAULT_NAV, decodeNav, decodeNavState, encodeNav, isNavigationChange, 
 function emptyNav(): NavState {
   return {
     viewMode: "modules",
-    focusId: null,
     compRoot: null,
-    selectedId: null,
     compSelectedId: null,
     logicSelected: null,
-    flowRootId: null,
-    flowDepth: null,
     flowExplorerOpen: false,
     flowSelection: null,
     logicRoot: null,
     logicView: "graph",
     logicStack: [],
-    expanded: [],
     moduleFocus: null,
     minimalSeedIds: [],
     moduleExpanded: [],
@@ -52,19 +47,17 @@ describe("urlState", () => {
     expect(decodeNav(new URLSearchParams("lview=bogus")).logicView).toBeUndefined();
   });
 
-  it("round-trips a ui-graph view (focus, selection, expansion)", () => {
+  it("round-trips a ui-graph view over the SHARED module keys (mfocus + mexp)", () => {
     const nav: NavState = {
       ...emptyNav(),
       viewMode: "ui",
-      focusId: "ts:packages/orders/src/foo.ts#Bar.baz",
-      selectedId: "ts:packages/orders/src/foo.ts#Bar.qux",
-      expanded: ["ts:a#x", "ts:b#y"],
+      moduleFocus: "ts:packages/orders/src",
+      moduleExpanded: ["ts:a", "ts:b"],
     };
     expect(roundTrip(nav)).toEqual({
       viewMode: "ui",
-      focusId: "ts:packages/orders/src/foo.ts#Bar.baz",
-      selectedId: "ts:packages/orders/src/foo.ts#Bar.qux",
-      expanded: ["ts:a#x", "ts:b#y"],
+      moduleFocus: "ts:packages/orders/src",
+      moduleExpanded: ["ts:a", "ts:b"],
     });
   });
 
@@ -82,11 +75,6 @@ describe("urlState", () => {
       logicStack: ["ts:m.ts#A.run", "ts:m.ts#B.step"],
       logicSelected: "ts:m.ts#C.leaf",
     });
-  });
-
-  it("round-trips flow isolation with a depth", () => {
-    const nav: NavState = { ...emptyNav(), flowRootId: "ts:m.ts#entry", flowDepth: 3 };
-    expect(roundTrip(nav)).toEqual({ flowRootId: "ts:m.ts#entry", flowDepth: 3 });
   });
 
   it("round-trips the flow explorer open state and selected block ref", () => {
@@ -189,10 +177,10 @@ describe("urlState", () => {
   });
 
   it("preserves foreign params (web-mode id) while owning its own keys", () => {
-    const search = mergeNavIntoSearch("id=abc123", { ...emptyNav(), viewMode: "ui", focusId: "ts:m.ts#f" });
+    const search = mergeNavIntoSearch("id=abc123", { ...emptyNav(), viewMode: "ui", moduleFocus: "ts:pkg/src" });
     const params = new URLSearchParams(search);
     expect(params.get("id")).toBe("abc123");
-    expect(params.get("focus")).toBe("ts:m.ts#f");
+    expect(params.get("mfocus")).toBe("ts:pkg/src");
   });
 
   it("survives a node id with every special character intact (scalar + list)", () => {
@@ -211,9 +199,6 @@ describe("urlState", () => {
       return {
         ...emptyNav(),
         viewMode,
-        focusId: "ts:m.ts#uiDive",
-        selectedId: "ts:m.ts#uiSel",
-        expanded: ["ts:m.ts#x"],
         compRoot: "ts:pkg",
         compSelectedId: "ts:pkg#Unit",
         logicRoot: "ts:m.ts#run",
@@ -240,9 +225,9 @@ describe("urlState", () => {
       expect(keys).toEqual(["lroot", "lsel", "lstack", "view"]);
     });
 
-    it("on the ui graph, drops Map / logic / call / prs keys", () => {
+    it("on the ui graph, keeps the SHARED module keys and drops logic / call / prs keys", () => {
       const keys = [...encodeNav(everyLensVisited("ui")).keys()].sort();
-      expect(keys).toEqual(["expand", "focus", "sel", "view"]);
+      expect(keys).toEqual(["mexp", "mfocus", "view"]);
     });
 
     it("on the PR browser, drops every graph-lens key", () => {
@@ -256,10 +241,9 @@ describe("urlState", () => {
         viewMode: "modules",
         environment: "staging",
         flowExplorerOpen: true,
-        flowRootId: "ts:m.ts#entry",
       };
       const keys = [...encodeNav(nav).keys()].sort();
-      expect(keys).toEqual(["env", "fexp", "flow"]);
+      expect(keys).toEqual(["env", "fexp"]);
     });
   });
 
@@ -269,27 +253,28 @@ describe("urlState", () => {
     });
 
     it("resets an absent key to default (a dive undoes on back)", () => {
-      expect(decodeNavState(new URLSearchParams("focus=ts:a%23b")).focusId).toBe("ts:a#b");
-      // Navigating back to a URL with no focus must null focusId, not leave the stale dive.
-      expect(decodeNavState(new URLSearchParams("")).focusId).toBeNull();
+      expect(decodeNavState(new URLSearchParams("mfocus=ts:a")).moduleFocus).toBe("ts:a");
+      // Navigating back to a URL with no focus must null moduleFocus, not leave the stale dive.
+      expect(decodeNavState(new URLSearchParams("")).moduleFocus).toBeNull();
+      // A LEGACY pre-unification ui deep link's `focus` still lands on the shared module focus.
+      expect(decodeNavState(new URLSearchParams("view=ui&focus=ts:a%23b")).moduleFocus).toBe("ts:a#b");
     });
 
     it("merges present keys over defaults for a mixed URL", () => {
-      const nav = decodeNavState(new URLSearchParams("view=ui&sel=ts:m.ts%23f"));
+      const nav = decodeNavState(new URLSearchParams("view=ui&mfocus=ts:pkg%2Fsrc"));
       expect(nav.viewMode).toBe("ui");
-      expect(nav.selectedId).toBe("ts:m.ts#f");
+      expect(nav.moduleFocus).toBe("ts:pkg/src");
       // Untouched fields stay at their defaults.
-      expect(nav.focusId).toBeNull();
       expect(nav.logicStack).toEqual([]);
-      expect(nav.expanded).toEqual([]);
+      expect(nav.moduleExpanded).toEqual([]);
     });
   });
 
   describe("isNavigationChange", () => {
     const base = emptyNav();
 
-    it("is true when the focus changes", () => {
-      expect(isNavigationChange(base, { ...base, focusId: "ts:m.ts#f" })).toBe(true);
+    it("is true when the module focus changes", () => {
+      expect(isNavigationChange(base, { ...base, moduleFocus: "ts:pkg/src" })).toBe(true);
     });
 
     it("is true when the view mode changes", () => {
@@ -310,17 +295,17 @@ describe("urlState", () => {
     });
 
     it("is false for a selection-only change", () => {
-      expect(isNavigationChange(base, { ...base, selectedId: "ts:m.ts#f" })).toBe(false);
+      expect(isNavigationChange(base, { ...base, compSelectedId: "ts:m.ts#f" })).toBe(false);
     });
 
     it("is false for an expansion-only change", () => {
-      expect(isNavigationChange(base, { ...base, expanded: ["ts:m.ts#f"] })).toBe(false);
+      expect(isNavigationChange(base, { ...base, moduleExpanded: ["ts:m.ts#f"] })).toBe(false);
     });
   });
 
   it("sorts expanded ids so the URL is deterministic regardless of Set order", () => {
-    const nav = navFrom({ ...storeShape(), expanded: new Set(["ts:z#1", "ts:a#1", "ts:m#1"]) });
-    expect(nav.expanded).toEqual(["ts:a#1", "ts:m#1", "ts:z#1"]);
+    const nav = navFrom({ ...storeShape(), moduleExpanded: new Set(["ts:z#1", "ts:a#1", "ts:m#1"]) });
+    expect(nav.moduleExpanded).toEqual(["ts:a#1", "ts:m#1", "ts:z#1"]);
   });
 });
 
@@ -328,19 +313,14 @@ describe("urlState", () => {
 function storeShape() {
   return {
     viewMode: "modules" as const,
-    focusId: null,
     compRoot: null,
-    selectedId: null,
     compSelectedId: null,
     logicSelected: null,
-    flowRootId: null,
-    flowDepth: null,
     flowExplorerOpen: false,
     flowSelection: null,
     logicRoot: null,
     logicView: "graph" as const,
     logicStack: [] as string[],
-    expanded: new Set<string>(),
     moduleFocus: null,
     minimalSeedIds: [] as string[],
     moduleExpanded: new Set<string>(),

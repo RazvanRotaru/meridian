@@ -4,8 +4,8 @@
  * double-click a group card — that package/directory's children (sub-dirs as group cards, files as
  * file cards) wired by the import graph folded to this level. Nodes/edges are laid out in the
  * store (`moduleRfNodes`/`moduleRfEdges`); the base canvas runs the shared paint chain, highways,
- * hover, recenter, and interactions, configured by this lens's SurfaceSpec (Map or Service — both
- * mount here). Supplied by THIS mount, because they are Map/Service-specific:
+ * hover, recenter, and interactions, configured by this lens's SurfaceSpec (Map, Service, or the
+ * renders-rooted UI — all three mount here). Supplied by THIS mount, because they are lens-chrome:
  *
  *   1. `filterVisible` drops file cards a category/Tests toggle hides (group cards always stay) —
  *      a pure VISIBILITY filter over the laid-out graph, so positions are untouched;
@@ -27,6 +27,7 @@ import { CoveragePanel } from "./CoveragePanel";
 import { BeaconArrows } from "./BeaconArrows";
 import { MapLegend } from "./MapLegend";
 import { GraphSurface, SURFACE_STYLE, type SurfaceFlowView } from "./canvas/GraphSurface";
+import { GhostPromoteRing } from "./canvas/GhostPromoteRing";
 import { activeModuleSurfaceSpec } from "./canvas/surfaceSpec";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { useRecenter } from "./canvas/useRecenter";
@@ -50,7 +51,7 @@ export function ModuleMapView() {
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const viewMode = useBlueprint((state) => state.viewMode);
   const serviceScope = useBlueprint((state) => state.serviceScope);
-  const { buildMinimalGraph, setModuleFocus, clearServiceScope } = useBlueprintActions();
+  const { buildMinimalGraph, setModuleFocus, clearServiceScope, pinGhostToCanvas } = useBlueprintActions();
   // This lens's spec (Map or Service) — the highways flags read from it.
   const spec = activeModuleSurfaceSpec(viewMode);
   // The lens-lifetime hooks live HERE (not in GraphSurface, which unmounts under the overlay): a
@@ -118,7 +119,15 @@ export function ModuleMapView() {
         rfRef.current = instance;
       }}
       wireHover
-      flowExtras={renderBeacons}
+      flowExtras={(view) => (
+        <>
+          {renderBeacons(view)}
+          {/* The shared ghost "+" (unified-canvas phase D): on these lenses it PINS the ghost's home
+              file into mapExtra — the ⌘P add-to-view mechanism — so the charted coupling becomes a
+              permanent card. Only LIT ghosts survive the paint here, so the ring is selection-scoped. */}
+          <GhostPromoteRing nodes={view.nodes} title="Pin to canvas" onPromote={pinGhostToCanvas} />
+        </>
+      )}
     >
       {viewMode === "call" && serviceScope !== null ? (
         // The scoped Service sub-view's trail: "All services › <scope> ✕ [› <cluster>]" — the

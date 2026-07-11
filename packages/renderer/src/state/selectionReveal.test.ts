@@ -67,7 +67,6 @@ describe("scopeTarget", () => {
     const anchors = selectedAnchorIds({
       viewMode: "call",
       moduleSelected: new Set(["svc:ts:app/src/orders.ts#OrderService"]),
-      selectedId: null,
     });
     expect(anchors).toEqual(["ts:app/src/orders.ts#OrderService"]);
     expect(scopeTarget(anchors, index)).toEqual({ enabled: true, reason: null });
