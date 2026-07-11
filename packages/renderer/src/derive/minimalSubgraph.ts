@@ -6,9 +6,9 @@
  *   - PERSISTENT — a member the reader PROMOTED from a ghost (added to the working set).
  *   - GHOST      — NOT a tier but the Map's ghost projection (`ghostDepWires`): every code coupling
  *                  that LEAVES the member set charts its off-overlay end as a detached symbol
- *                  satellite (folded to its owning unit, same-folder crowds grouped by
- *                  `groupGhostEmission`), wired per coupling kind. The "+" on a satellite promotes
- *                  its home file/folder; the ring recomputes from the member set every build.
+ *                  satellite at its relation-aware semantic endpoint, wired per coupling kind.
+ *                  The "+" on a satellite promotes its home file/folder; the ring recomputes from
+ *                  the member set every build.
  * Members may be FILE (module) cards or GROUP (package/dir) leaf cards — a group member is a single
  * card, not a frame of its files. Import + per-kind dep wires connect member boxes (file-level edges
  * lifted to the member frontier). File members nest in their ancestor package frames (single-child
@@ -27,7 +27,6 @@ import type { ModulePackageData } from "./packageOverview";
 import type { BlockDeps } from "./blockDeps";
 import { depWireEdges } from "./codeWalk";
 import { ghostDepWires, withoutHidden, type GhostData, type GhostEmission } from "./ghostDeps";
-import { groupGhostEmission } from "./groupGhosts";
 import { crossesPackageBoundary, underlyingEdgesCrossPackage } from "./packageBoundary";
 import { walkFileCode, type FileCodeWalk, type MinimalExpansion } from "./minimalExpansion";
 
@@ -125,10 +124,10 @@ export function buildMinimalSubgraph(
  * an expanded member's walk) whose far end lifts to NO member charts that end as a symbol satellite,
  * exactly like `moduleTree`'s ghost level. Collapsed members anchor their own outside couplings; an
  * expanded file contributes its drawn unit/block frontier so selecting a nested declaration reveals
- * that declaration's satellites instead of leaving every wire attached to the file frame. Hidden
- * (test) ghosts drop BEFORE grouping so group counts stay honest, then same-folder crowds fold into
- * one folder group-ghost (the Highways treatment, `groupGhosts`) — the exact order of the Map's
- * `ghostLevel`.
+ * that declaration's satellites instead of leaving every wire attached to the file frame. Package
+ * members still lift descendant symbols onto their one member card. Hidden (test) ghosts drop before
+ * materialization, while every remaining semantic endpoint survives; parent grouping is a separate
+ * paint-time policy driven by the current selection.
  */
 function projectGhosts(index: GraphIndex, memberIds: ReadonlySet<string>, walks: Map<string, FileCodeWalk>, code: CodeContext, hiddenIds: ReadonlySet<string>): GhostEmission {
   const calls = [...walks.values()].flatMap((walk) => [...walk.calls]);
@@ -144,7 +143,7 @@ function projectGhosts(index: GraphIndex, memberIds: ReadonlySet<string>, walks:
     }
   }
   const raw = ghostDepWires(code.blockDeps, calls, visibleIds, index, (id) => codeIds.has(id), expandedBlocks);
-  return groupGhostEmission(withoutHidden(raw, hiddenIds), index);
+  return withoutHidden(raw, hiddenIds, index);
 }
 
 /** Ghost satellites as spec nodes: kind "ghost", the REAL artifact id, the Map's own GhostData. */
@@ -170,7 +169,7 @@ function ghostEdges(emission: GhostEmission): MinimalSubgraphEdge[] {
       outsideView: true,
       depKind: wire.kind,
       ghost: true,
-      underlyingEdgeIds: wire.underlyingEdgeIds,
+      underlyingEdgeIds: [...wire.underlyingEdgeIds],
     }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -379,7 +378,7 @@ function depEdges(index: GraphIndex, memberIds: ReadonlySet<string>, code: CodeC
     crossPackage: edge.crossPackage,
     outsideView: false,
     depKind: edge.depKind,
-    underlyingEdgeIds: edge.underlyingEdgeIds,
+    underlyingEdgeIds: [...(edge.underlyingEdgeIds ?? [])],
   }));
 }
 

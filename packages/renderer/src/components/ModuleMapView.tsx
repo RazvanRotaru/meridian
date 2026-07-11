@@ -126,9 +126,10 @@ export function ModuleMapView() {
       flowExtras={(view) => (
         <>
           {renderBeacons(view)}
-          {/* The shared ghost "+" action adds the ghost to whichever canvas is visible. Here that
-              means pinning its home file into mapExtra; in the minimal overlay the exact same action
-              adds its home member there. Only LIT ghosts survive this paint, so the ring is scoped. */}
+          {/* The shared ghost "+" action adds each canonical real-id ghost to whichever canvas is
+              visible. Here that means pinning its home file into mapExtra; in the minimal overlay
+              the same action adds its home member there. Persistent parent anchors have real ids,
+              stay promotable while they disclose children, and only LIT ghosts receive a ring. */}
           <GhostPromoteRing nodes={view.nodes} title="Pin to canvas" onPromote={promoteGhost} />
         </>
       )}

@@ -84,7 +84,7 @@ describe("Service cluster focus (the containment dive)", () => {
     expect(ids.has(ORDER)).toBe(true);
     expect(ids.has(frameIdOf(BETA))).toBe(false);
     // The off-zoom callee appears as a banded ghost card (kept OUT of ELK, still on the canvas).
-    const ghost = state.moduleRfNodes.find((n) => n.id === BETA);
+    const ghost = state.moduleRfNodes.find((n) => n.id === `${BETA}.run`);
     expect(ghost?.type).toBe("ghost");
   });
 

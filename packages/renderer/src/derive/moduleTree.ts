@@ -22,7 +22,8 @@ import { type ModuleGraph } from "./moduleGraph";
 import { collapseChain } from "./moduleLevel";
 import { containmentChildren, frontierRoots, subtreeFileCount } from "./moduleFrontier";
 import { BLOCK_KINDS, type BlockDeps, UNIT_CARD_KINDS } from "./blockDeps";
-import { ghostLevel, isDepAnchorKind } from "./ghostLevel";
+import { finishGhostTier, isDepAnchorKind, rawGhostEmission } from "./ghostLevel";
+import { folderGhostEmission, mergeGhostEmissions } from "./folderGhosts";
 import { liftEdges } from "./liftEdges";
 import { createCodeWalk, depWireEdges, flowChainEdges, stepCallEdges, visitCode, type CodeWalk, type Skeleton } from "./codeWalk";
 import { demoteCommons } from "./commonsDemotion";
@@ -78,7 +79,21 @@ export function deriveModuleTree(
   const overviewFold = effectiveFocus === null ? foldById(index) : new Map<string, ModulePackageData>();
   const nodes = skeleton.map((entry) => finalizeModuleNode(entry, index, graph, lifted, walked.stepData, overviewFold, hiddenIds));
   const kinds = kindsOf(skeleton);
-  const ghosts = ghostLevel(blockDeps, walked, visibleIds, index, kinds, hiddenIds);
+  // Folder-only frontiers have no code anchor, so their off-level relationships need a parallel
+  // same-tier projection: raw descendant imports/couplings become the complete set of peer-package ghosts.
+  // Semantic ghosts retain their existing code-only anchor policy and share the finishing pass.
+  const folderRelationships = [
+    ...index.edges.filter((edge) => edge.kind === "imports" && edge.resolution === "resolved"),
+    ...blockDeps.edges,
+  ];
+  const ghosts = finishGhostTier(
+    mergeGhostEmissions(
+      rawGhostEmission(blockDeps, walked, visibleIds, index, kinds),
+      folderGhostEmission(folderRelationships, visibleIds, index, hiddenIds),
+    ),
+    index,
+    hiddenIds,
+  );
   const isDepAnchor = (id: string) => isDepAnchorKind(kinds.get(id));
   const edges = [
     ...importTreeEdges(lifted, kinds, graph, index),

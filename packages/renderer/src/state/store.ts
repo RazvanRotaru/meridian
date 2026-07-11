@@ -186,6 +186,10 @@ export interface BlueprintState {
   /** Whether utility hubs demote into the COMMONS DOCK below the graph (commonsDemotion). A
    * RELAYOUT toggle like Tests — the docked cards leave/rejoin ELK, so positions change. */
   showCommons: boolean;
+  /** Whether the currently visible ghost neighbourhood collapses crowds of 4+ exact siblings under
+   * their immediate semantic parent. Paint-only: exact ghosts remain canonical in the derived tree,
+   * and disabling this reveals every related ghost without another ELK pass. */
+  groupGhostsByParent: boolean;
   /** Module categories painted OUT of the map (a render-time filter — never a re-derive). */
   hiddenCategories: Set<ModuleCategory>;
   /** Relationship kinds painted OUT of the map (calls / instantiates / extends / implements /
@@ -366,6 +370,7 @@ export interface BlueprintState {
   toggleHighlightMode(): void;
   toggleHighways(): void;
   toggleCommons(): void;
+  toggleGhostGrouping(): void;
   toggleCategory(category: ModuleCategory): void;
   toggleRelKind(kind: string): void;
   resetCategoryFilter(): void;
@@ -753,6 +758,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     highlightMode: "node",
     showHighways: true,
     showCommons: true,
+    groupGhostsByParent: true,
     hiddenCategories: new Set<ModuleCategory>(),
     hiddenRelKinds: new Set<string>(),
     moduleSelected: new Set<string>(),
@@ -1315,6 +1321,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     toggleCommons() {
       set({ showCommons: !get().showCommons });
       void get().moduleRelayout();
+    },
+
+    // Collapse/restore crowded ghost siblings at paint time. Exact ghost ids and their promotion
+    // payloads never leave the derived graph, so this does not relayout or mutate containment.
+    toggleGhostGrouping() {
+      set({ groupGhostsByParent: !get().groupGhostsByParent });
     },
 
     // Show/hide a module category. PAINT-ONLY: the surface filters the category's file cards out in

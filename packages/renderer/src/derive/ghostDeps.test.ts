@@ -1,80 +1,191 @@
 /**
- * Ghost dependencies read at SERVICE granularity: when a drawn code node depends on a class that
- * lives off the level (e.g. imported from another package), the ghost is the CLASS, not its
- * `constructor` / method blocks — and every member dep on that class folds into one ghost card.
- * A bare module-level function (no unit ancestor) stays a function ghost.
+ * Ghost dependencies keep the semantic endpoint that explains each relationship. Calls identify
+ * exact callables, type consumers identify the exact source callable, and structural/construction
+ * targets read as class/interface/object definitions. Module fallback endpoints remain honest.
  */
 
 import { describe, expect, it } from "vitest";
 import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
-import { buildGraphIndex } from "../graph/graphIndex";
+import { buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
 import { buildBlockDeps } from "./blockDeps";
-import { ghostDepWires } from "./ghostDeps";
+import { ghostDepWires, type GhostEmission } from "./ghostDeps";
 
 function node(id: string, kind: string, parentId?: string): GraphNode {
-  return { id, kind, qualifiedName: id.split("#").pop() ?? id, displayName: id.split(".").pop() ?? id, parentId, location: { file: id, startLine: 1 } };
+  const file = id.includes("#") ? id.slice(0, id.indexOf("#")) : id;
+  const label = id.split("#").pop()?.split(".").pop()?.split("/").pop() ?? id;
+  return { id, kind, qualifiedName: label, displayName: label, parentId, location: { file, startLine: 1 } };
 }
 
-function edge(kind: string, source: string, target: string): GraphEdge {
-  return { id: `${kind}@${source}|${target}`, source, target, kind, weight: 1 };
+function edge(id: string, kind: string, source: string, target: string, weight = 1): GraphEdge {
+  return { id, source, target, kind, weight, resolution: "resolved" } as GraphEdge;
 }
 
-// Consumer file with one drawn function `use`; an off-level service class `Svc` (ctor + method) in
-// another package, plus a bare module-level function `helper` — none of the service package drawn.
+const APP_PACKAGE = "ts:app";
+const APP_FILE = "ts:app/app.ts";
+const APP_TYPE = `${APP_FILE}#App`;
+const RUN = `${APP_TYPE}.run`;
+const SELECTED_TYPE = `${APP_FILE}#Request`;
+const LIB_PACKAGE = "ts:lib";
+const LIB_FILE = "ts:lib/worker.ts";
+const WORKER = `${LIB_FILE}#Worker`;
+const WORKER_CTOR = `${WORKER}.constructor`;
+const EXECUTE = `${WORKER}.execute`;
+const HELPER = `${LIB_FILE}#helper`;
+const BASE = `${LIB_FILE}#Base`;
+const PROTOCOL = `${LIB_FILE}#Protocol`;
+const CONSUMER = `${LIB_FILE}#Consumer`;
+const CONSUME = `${CONSUMER}.consume`;
+const FALLBACK_MODULE = "ts:lib/wire.ts";
+
 const NODES: GraphNode[] = [
-  node("ts:cons", "package"),
-  node("ts:cons/c.ts", "module", "ts:cons"),
-  node("ts:cons/c.ts#use", "function", "ts:cons/c.ts"),
-  node("ts:svc", "package"),
-  node("ts:svc/s.ts", "module", "ts:svc"),
-  node("ts:svc/s.ts#Svc", "class", "ts:svc/s.ts"),
-  node("ts:svc/s.ts#Svc.constructor", "method", "ts:svc/s.ts#Svc"),
-  node("ts:svc/s.ts#Svc.mount", "method", "ts:svc/s.ts#Svc"),
-  node("ts:svc/s.ts#helper", "function", "ts:svc/s.ts"),
+  { ...node(APP_PACKAGE, "package"), tags: ["npm-package"] },
+  node(APP_FILE, "module", APP_PACKAGE),
+  node(APP_TYPE, "class", APP_FILE),
+  node(RUN, "method", APP_TYPE),
+  node(SELECTED_TYPE, "interface", APP_FILE),
+  { ...node(LIB_PACKAGE, "package"), tags: ["npm-package"] },
+  node(LIB_FILE, "module", LIB_PACKAGE),
+  node(WORKER, "class", LIB_FILE),
+  node(WORKER_CTOR, "method", WORKER),
+  node(EXECUTE, "method", WORKER),
+  node(HELPER, "function", LIB_FILE),
+  node(BASE, "class", LIB_FILE),
+  node(PROTOCOL, "interface", LIB_FILE),
+  node(CONSUMER, "class", LIB_FILE),
+  node(CONSUME, "method", CONSUMER),
+  node(FALLBACK_MODULE, "module", LIB_PACKAGE),
 ];
 
-const EDGES: GraphEdge[] = [
-  edge("instantiates", "ts:cons/c.ts#use", "ts:svc/s.ts#Svc"),
-  edge("calls", "ts:cons/c.ts#use", "ts:svc/s.ts#Svc.mount"),
-  edge("calls", "ts:cons/c.ts#use", "ts:svc/s.ts#helper"),
-];
+function derive(
+  edges: GraphEdge[],
+  visible: string[],
+  code: string[],
+  calls: Array<{ stepId: string; blockId: string; target: string }> = [],
+): { index: GraphIndex; emission: GhostEmission } {
+  const index = buildGraphIndex({ nodes: NODES, edges } as unknown as GraphArtifact);
+  const codeIds = new Set(code);
+  const emission = ghostDepWires(buildBlockDeps(index), calls, new Set(visible), index, (id) => codeIds.has(id), new Set());
+  return { index, emission };
+}
 
-const ARTIFACT: GraphArtifact = {
-  schemaVersion: "1.0.0",
-  generatedAt: "2026-07-08T00:00:00.000Z",
-  generator: { name: "test", version: "0" },
-  target: { name: "fixture", root: ".", language: "typescript" },
-  nodes: NODES,
-  edges: EDGES,
-};
+const APP_VISIBLE = [APP_PACKAGE, APP_FILE, APP_TYPE, RUN, SELECTED_TYPE];
 
-const index = buildGraphIndex(ARTIFACT);
-const blockDeps = buildBlockDeps(index);
-// Only the consumer function's chain is drawn; the whole service package is off-level.
-const visibleIds = new Set(["ts:cons", "ts:cons/c.ts", "ts:cons/c.ts#use"]);
-const isCode = (id: string) => id === "ts:cons/c.ts#use";
+describe("ghostDepWires — relation-aware semantic endpoints", () => {
+  it("keeps exact called methods/functions and aggregates evidence without folding them to a class", () => {
+    const { emission } = derive(
+      [edge("call:1", "calls", RUN, EXECUTE), edge("call:2", "calls", RUN, EXECUTE, 2), edge("call:3", "calls", RUN, HELPER)],
+      APP_VISIBLE,
+      [RUN, APP_TYPE, SELECTED_TYPE],
+    );
 
-describe("ghostDepWires — service-level ghosts", () => {
-  const emission = ghostDepWires(blockDeps, [], visibleIds, index, isCode, new Set());
-  const ghostIds = [...emission.ghosts.keys()].sort();
-
-  it("ghosts the CLASS, never its constructor or method blocks", () => {
-    expect(ghostIds).toContain("ts:svc/s.ts#Svc");
-    expect(ghostIds).not.toContain("ts:svc/s.ts#Svc.constructor");
-    expect(ghostIds).not.toContain("ts:svc/s.ts#Svc.mount");
-    expect(emission.ghosts.get("ts:svc/s.ts#Svc")?.ghostKind).toBe("class");
+    expect([...emission.ghosts.keys()].sort()).toEqual([EXECUTE, HELPER].sort());
+    expect(emission.ghosts.has(WORKER)).toBe(false);
+    expect(emission.ghosts.get(EXECUTE)?.ghostKind).toBe("method");
+    const executeWire = emission.wires.find((wire) => wire.target === EXECUTE);
+    expect(executeWire).toMatchObject({ source: RUN, target: EXECUTE, kind: "calls", weight: 3 });
+    expect(executeWire?.underlyingEdgeIds.sort()).toEqual(["call:1", "call:2"]);
   });
 
-  it("folds a class's members into ONE service ghost card, with a wire per relationship kind", () => {
-    const toSvc = emission.wires.filter((wire) => wire.target === "ts:svc/s.ts#Svc");
-    // One ghost CARD for the class, but the constructor (instantiates) and the method call (calls)
-    // stay distinct wires so each can wear its own colour / be toggled.
-    expect(toSvc.every((w) => w.source === "ts:cons/c.ts#use")).toBe(true);
-    expect(toSvc.map((w) => w.kind).sort()).toEqual(["calls", "instantiates"]);
+  it("keeps an incoming caller method exact instead of raising it to its owning class", () => {
+    const { emission } = derive([edge("call:incoming", "calls", EXECUTE, RUN)], APP_VISIBLE, [RUN, APP_TYPE, SELECTED_TYPE]);
+
+    expect([...emission.ghosts.keys()]).toEqual([EXECUTE]);
+    expect(emission.ghosts.has(WORKER)).toBe(false);
+    expect(emission.wires[0]).toMatchObject({ source: EXECUTE, target: RUN, kind: "calls" });
   });
 
-  it("leaves a bare module-level function as its own ghost (no unit to lift to)", () => {
-    expect(ghostIds).toContain("ts:svc/s.ts#helper");
-    expect(emission.ghosts.get("ts:svc/s.ts#helper")?.ghostKind).toBe("function");
+  it("raises construction targets to their class while preserving extends/implements type identities", () => {
+    const { emission } = derive(
+      [
+        edge("new:worker", "instantiates", RUN, WORKER),
+        edge("extends:base", "extends", APP_TYPE, BASE),
+        edge("implements:protocol", "implements", APP_TYPE, PROTOCOL),
+      ],
+      APP_VISIBLE,
+      [RUN, APP_TYPE, SELECTED_TYPE],
+    );
+
+    // buildBlockDeps resolves `new Worker()` to the constructor block; the ghost projection raises
+    // that structural target back to the class definition rather than showing a constructor card.
+    expect([...emission.ghosts.keys()].sort()).toEqual([BASE, PROTOCOL, WORKER].sort());
+    expect(emission.ghosts.has(WORKER_CTOR)).toBe(false);
+    expect(emission.ghosts.get(WORKER)?.ghostKind).toBe("class");
+    expect(emission.ghosts.get(PROTOCOL)?.ghostKind).toBe("interface");
+    expect(emission.wires.find((wire) => wire.kind === "instantiates")).toMatchObject({ source: RUN, target: WORKER });
+  });
+
+  it("keeps the exact off-screen function/method that references a selected type", () => {
+    const { emission } = derive([edge("ref:consumer", "references", CONSUME, SELECTED_TYPE)], APP_VISIBLE, [RUN, APP_TYPE, SELECTED_TYPE]);
+
+    expect([...emission.ghosts.keys()]).toEqual([CONSUME]);
+    expect(emission.ghosts.has(CONSUMER)).toBe(false);
+    expect(emission.ghosts.get(CONSUME)?.ghostKind).toBe("method");
+    expect(emission.wires[0]).toMatchObject({ source: CONSUME, target: SELECTED_TYPE, kind: "references" });
+  });
+
+  it("keeps an extractor module fallback as a module instead of inventing a symbol or folder", () => {
+    const { emission } = derive([edge("ref:fallback", "references", RUN, FALLBACK_MODULE)], APP_VISIBLE, [RUN, APP_TYPE, SELECTED_TYPE]);
+
+    expect([...emission.ghosts.keys()]).toEqual([FALLBACK_MODULE]);
+    expect(emission.ghosts.get(FALLBACK_MODULE)?.ghostKind).toBe("module");
+    expect(emission.wires[0]).toMatchObject({ source: RUN, target: FALLBACK_MODULE, kind: "references" });
+  });
+
+  it("keeps a resolved step call on its exact method endpoint", () => {
+    const { emission } = derive([], APP_VISIBLE, [RUN, APP_TYPE, SELECTED_TYPE], [
+      { stepId: "step:run:0", blockId: RUN, target: WORKER_CTOR },
+    ]);
+
+    expect([...emission.ghosts.keys()]).toEqual([WORKER_CTOR]);
+    expect(emission.wires[0]).toEqual({
+      source: "step:run:0",
+      target: WORKER_CTOR,
+      weight: 1,
+      kind: "calls",
+      crossPackage: true,
+      underlyingEdgeIds: [],
+    });
+  });
+});
+
+describe("ghostDepWires — complete high-degree emission", () => {
+  it("keeps every incoming and outgoing semantic peer beyond the former twenty-item window", () => {
+    const peers = Array.from({ length: 23 }, (_, index) => {
+      const incomingFile = `ts:lib/incoming-${index}.ts`;
+      const incoming = `${incomingFile}#caller`;
+      const outgoingFile = `ts:lib/outgoing-${index}.ts`;
+      const outgoing = `${outgoingFile}#dependency`;
+      return {
+        nodes: [
+          node(incomingFile, "module", LIB_PACKAGE),
+          node(incoming, "function", incomingFile),
+          node(outgoingFile, "module", LIB_PACKAGE),
+          node(outgoing, "function", outgoingFile),
+        ],
+        edges: [
+          edge(`incoming:${index}`, "calls", incoming, RUN),
+          edge(`outgoing:${index}`, "calls", RUN, outgoing),
+        ],
+        incoming,
+        outgoing,
+      };
+    });
+    const edges = peers.flatMap((peer) => peer.edges);
+    const index = buildGraphIndex({ nodes: [...NODES, ...peers.flatMap((peer) => peer.nodes)], edges } as unknown as GraphArtifact);
+    const emission = ghostDepWires(
+      buildBlockDeps(index),
+      [],
+      new Set(APP_VISIBLE),
+      index,
+      (id) => id === RUN,
+      new Set(),
+    );
+
+    expect(emission.ghosts.size).toBe(46);
+    expect(emission.wires.filter((wire) => wire.target === RUN)).toHaveLength(23);
+    expect(emission.wires.filter((wire) => wire.source === RUN)).toHaveLength(23);
+    expect(emission.ghosts.has(peers[22].incoming)).toBe(true);
+    expect(emission.ghosts.has(peers[22].outgoing)).toBe(true);
+    expect(emission.wires.every((wire) => wire.underlyingEdgeIds.length === 1)).toBe(true);
   });
 });

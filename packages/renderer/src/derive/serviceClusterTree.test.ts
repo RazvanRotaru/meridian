@@ -123,14 +123,13 @@ describe("deriveServiceTree focus (cluster zoom)", () => {
     expect(tree.nodes.some((n) => n.id === `${BETA}.run` && n.kind === "block")).toBe(true);
   });
 
-  it("focus ghosts BOTH coupling directions through the Map's exact machinery — same-folder ghosts FOLD into one group card", () => {
+  it("focus ghosts BOTH coupling directions as exact caller/callee methods without same-folder folding", () => {
     const tree = deriveServiceTree(index, frameIdOf(BETA), NONE, graph, deps, flows);
-    // Alpha's and Gamma's leads both live under ts:app, so the Map's groupGhostEmission folds them
-    // into ONE folder group ghost (the reuse this phase pins), wired in BOTH directions: the
-    // off-screen caller INTO Beta's drawn method, the off-screen callee OUT of it.
-    expect(ghostIds(tree)).toEqual(["ts:app"]);
-    expect(ghostWire(tree, "ts:app", `${BETA}.run`)).toBeDefined();
-    expect(ghostWire(tree, `${BETA}.run`, "ts:app")).toBeDefined();
+    // The off-screen caller wires INTO Beta's drawn method and the off-screen callee wires OUT;
+    // sharing ts:app no longer erases either callable identity.
+    expect(ghostIds(tree)).toEqual([`${ALPHA}.run`, `${GAMMA}.run`]);
+    expect(ghostWire(tree, `${ALPHA}.run`, `${BETA}.run`)).toBeDefined();
+    expect(ghostWire(tree, `${BETA}.run`, `${GAMMA}.run`)).toBeDefined();
   });
 
   it("a non-svc or unknown focus is ignored: full lens, effectiveFocus null", () => {
@@ -146,9 +145,9 @@ describe("deriveServiceTree focus (cluster zoom)", () => {
     const tree = deriveServiceTree(index, frameIdOf(ALPHA), NONE, graph, deps, flows, { scopeLeadIds: new Set([ALPHA, BETA]) });
     expect(frameIds(tree)).toEqual([frameIdOf(ALPHA)]);
     expect(tree.effectiveFocus).toBe(frameIdOf(ALPHA));
-    // Alpha's code is drawn (forced open), so the walk tier ghosts Beta at the symbol level.
-    expect(ghostIds(tree)).toEqual([BETA]);
-    expect(ghostWire(tree, `${ALPHA}.run`, BETA)).toBeDefined();
+    // Alpha's code is drawn (forced open), so the walk tier ghosts Beta's exact called method.
+    expect(ghostIds(tree)).toEqual([`${BETA}.run`]);
+    expect(ghostWire(tree, `${ALPHA}.run`, `${BETA}.run`)).toBeDefined();
   });
 
   it("a focus OUTSIDE the scope is ignored (the zoom can only dive what the scope kept)", () => {
@@ -159,6 +158,6 @@ describe("deriveServiceTree focus (cluster zoom)", () => {
 
   it("walk-tier ghosts respect the Tests toggle (hiddenIds)", () => {
     const tree = deriveServiceTree(index, frameIdOf(BETA), NONE, graph, deps, flows, { hiddenIds: new Set([GAMMA]) });
-    expect(ghostIds(tree)).toEqual([ALPHA]);
+    expect(ghostIds(tree)).toEqual([`${ALPHA}.run`]);
   });
 });

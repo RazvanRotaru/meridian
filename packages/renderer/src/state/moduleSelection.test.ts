@@ -36,6 +36,13 @@ const ARTIFACT: GraphArtifact = {
       kind: "calls",
       resolution: "resolved",
     },
+    {
+      id: "calls:buildOrdersApp->OrderRoutes.list",
+      source: "ts:src/a.ts#buildOrdersApp",
+      target: "ts:src/routes.ts#OrderRoutes.list",
+      kind: "calls",
+      resolution: "resolved",
+    },
   ],
 };
 
@@ -159,6 +166,28 @@ describe("module-map selection set", () => {
     expect(state.moduleRfNodes).toContainEqual(expect.objectContaining({ id: ROUTES_UNIT, type: "unit" }));
     expect(state.moduleRfNodes.some((node) => node.id === ROUTES_UNIT && node.type === "ghost")).toBe(false);
   });
+
+  it("promotes an exact method through main's file→unit reveal path while preserving focus and selection", async () => {
+    const store = freshStore();
+    store.setState({
+      moduleFocus: "ts:src/a.ts",
+      moduleSelected: new Set([BUILD_ORDERS]),
+      moduleExpanded: new Set(["keep-open"]),
+    });
+    await store.getState().moduleRelayout();
+    expect(store.getState().moduleRfNodes).toContainEqual(expect.objectContaining({ id: ROUTES_METHOD, type: "ghost" }));
+
+    store.getState().promoteGhost(ROUTES_METHOD);
+    await store.getState().moduleRelayout();
+
+    const state = store.getState();
+    expect(state.mapExtra).toEqual(new Set([ROUTES_FILE]));
+    expect(state.moduleExpanded).toEqual(new Set(["keep-open", ROUTES_FILE, ROUTES_UNIT]));
+    expect(state.moduleFocus).toBe("ts:src/a.ts");
+    expect(state.moduleSelected).toEqual(new Set([BUILD_ORDERS]));
+    expect(state.moduleRfNodes).toContainEqual(expect.objectContaining({ id: ROUTES_METHOD, type: "block" }));
+    expect(state.moduleRfNodes.some((node) => node.id === ROUTES_METHOD && node.type === "ghost")).toBe(false);
+  });
 });
 
 describe("minimal-graph overlay (extract selection)", () => {
@@ -250,9 +279,9 @@ describe("minimal-graph overlay (extract selection)", () => {
     await store.getState().minimalRelayout();
 
     expect(store.getState().minimalMemberIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
-    expect(ghostIds(store)).toEqual([ROUTES_UNIT]);
-    expect(store.getState().minimalRfNodes.some((candidate) => candidate.id === DOWNSTREAM_UNIT)).toBe(false);
-    expect(store.getState().minimalRfNodes.some((candidate) => candidate.id === TERMINAL_UNIT)).toBe(false);
+    expect(ghostIds(store)).toEqual([ROUTES_UNIT, ROUTES_METHOD]);
+    expect(store.getState().minimalRfNodes.some((candidate) => candidate.id === DOWNSTREAM_METHOD)).toBe(false);
+    expect(store.getState().minimalRfNodes.some((candidate) => candidate.id === TERMINAL_METHOD)).toBe(false);
   });
 
   it("reveals a selected ghost's own ghost after promotion", async () => {
@@ -261,7 +290,7 @@ describe("minimal-graph overlay (extract selection)", () => {
 
     store.getState().selectModule(ROUTES_UNIT);
     expect(store.getState().moduleSelected).toEqual(new Set([ROUTES_UNIT]));
-    expect(ghostIds(store)).toEqual([ROUTES_UNIT]); // selection alone does not change membership
+    expect(ghostIds(store)).toEqual([ROUTES_UNIT, ROUTES_METHOD]); // selection alone does not change membership
 
     store.getState().promoteGhost(ROUTES_UNIT);
     await store.getState().minimalRelayout();
@@ -269,8 +298,8 @@ describe("minimal-graph overlay (extract selection)", () => {
     expect(store.getState().moduleSelected).toEqual(new Set([ROUTES_UNIT]));
     expect(store.getState().minimalMemberIds).toContain(ROUTES_FILE);
     expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: ROUTES_UNIT, type: "unit" }));
-    expect(ghostIds(store)).toEqual([DOWNSTREAM_UNIT]);
-    expect(store.getState().minimalRfNodes.some((candidate) => candidate.id === TERMINAL_UNIT)).toBe(false);
+    expect(ghostIds(store)).toEqual([DOWNSTREAM_METHOD]);
+    expect(store.getState().minimalRfNodes.some((candidate) => candidate.id === TERMINAL_METHOD)).toBe(false);
   });
 
   it("supports repeated ghost promotion so the minimal graph can expand hop by hop", async () => {
@@ -279,21 +308,21 @@ describe("minimal-graph overlay (extract selection)", () => {
 
     store.getState().promoteGhost(ROUTES_UNIT);
     await store.getState().minimalRelayout();
-    expect(ghostIds(store)).toEqual([DOWNSTREAM_UNIT]);
+    expect(ghostIds(store)).toEqual([DOWNSTREAM_METHOD]);
 
-    store.getState().selectModule(DOWNSTREAM_UNIT);
-    store.getState().promoteGhost(DOWNSTREAM_UNIT);
+    store.getState().selectModule(DOWNSTREAM_METHOD);
+    store.getState().promoteGhost(DOWNSTREAM_METHOD);
     await store.getState().minimalRelayout();
 
-    expect(store.getState().moduleSelected).toEqual(new Set([DOWNSTREAM_UNIT]));
+    expect(store.getState().moduleSelected).toEqual(new Set([DOWNSTREAM_METHOD]));
     expect(store.getState().minimalMemberIds).toEqual(["ts:src/a.ts", "ts:src/b.ts", ROUTES_FILE, DOWNSTREAM_FILE]);
-    expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: DOWNSTREAM_UNIT, type: "unit" }));
-    expect(ghostIds(store)).toEqual([TERMINAL_UNIT]);
+    expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: DOWNSTREAM_METHOD, type: "block" }));
+    expect(ghostIds(store)).toEqual([TERMINAL_METHOD]);
 
-    store.getState().promoteGhost(TERMINAL_UNIT);
+    store.getState().promoteGhost(TERMINAL_METHOD);
     await store.getState().minimalRelayout();
     expect(store.getState().minimalMemberIds).toContain(TERMINAL_FILE);
-    expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: TERMINAL_UNIT, type: "unit" }));
+    expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: TERMINAL_METHOD, type: "block" }));
     expect(ghostIds(store)).toEqual([]);
   });
 

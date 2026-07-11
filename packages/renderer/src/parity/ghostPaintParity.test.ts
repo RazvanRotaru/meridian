@@ -21,7 +21,7 @@ import {
   freshIndex,
   A_FILE,
   APP_FN,
-  BETA,
+  BETA_RUN,
   CORE,
   STORE_FILE,
   SVC_ALPHA,
@@ -68,14 +68,17 @@ async function laidSurfaces(): Promise<LaidSurface[]> {
 it("Map, Service, UI, and Minimal share selection-driven ghost pruning and reveal", async () => {
   const revealedBySurface = new Map<string, string[]>();
   for (const laid of await laidSurfaces()) {
+    // The underlying fact is Alpha.run → Beta.run, so every projection retains the concrete method
+    // endpoint instead of replacing it with the owning BetaService class.
+    const dependencyGhost = BETA_RUN;
     const rawGhosts = new Set(ghostIds(laid.nodes));
-    expect([...rawGhosts], `${laid.label}: fixture did not derive the shared ghost ring`).toEqual([APP_FN, BETA].sort());
+    expect([...rawGhosts], `${laid.label}: fixture did not derive the shared ghost ring`).toEqual([APP_FN, dependencyGhost].sort());
 
     const atRest = paintMinimalLevel(laid.nodes, laid.edges, new Set(), 1, "reach");
     expect(ghostIds(atRest.nodes), `${laid.label}: ghosts remained visible without a selection`).toEqual([]);
     expect(atRest.edges.filter(isGhostEdge), `${laid.label}: ghost wires remained visible without a selection`).toEqual([]);
 
-    const betaWire = laid.edges.find((edge) => isGhostEdge(edge) && edge.target === BETA);
+    const betaWire = laid.edges.find((edge) => isGhostEdge(edge) && edge.target === dependencyGhost);
     expect(betaWire, `${laid.label}: missing Alpha→Beta ghost wire`).toBeDefined();
     const anchor = betaWire!.source;
     const incidentGhosts = new Set<string>();
@@ -87,7 +90,7 @@ it("Map, Service, UI, and Minimal share selection-driven ghost pruning and revea
     const selected = paintMinimalLevel(laid.nodes, laid.edges, new Set([anchor]), 1, "reach");
     const revealed = ghostIds(selected.nodes);
     expect(revealed, `${laid.label}: selection did not reveal exactly its incident ghosts`).toEqual([...incidentGhosts].sort());
-    expect(revealed, `${laid.label}: dependency ghost was not revealed`).toContain(BETA);
+    expect(revealed, `${laid.label}: dependency ghost was not revealed`).toContain(dependencyGhost);
     expect(selected.edges.filter(isGhostEdge).every((edge) => edge.source === anchor || edge.target === anchor), `${laid.label}: unrelated ghost wire survived`).toBe(true);
     revealedBySurface.set(laid.label, revealed);
   }

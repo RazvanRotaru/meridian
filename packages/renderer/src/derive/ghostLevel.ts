@@ -2,9 +2,10 @@
  * The shared GHOST TIER over a walked module surface (extracted from moduleTree so the Map and the
  * Service lens emit the SAME projection): every coupling wire whose far end left the drawn skeleton
  * charts as a detached dashed ghost card instead of silently vanishing. The pipeline is fixed —
- * raw emission (`ghostDepWires`) → Tests-toggle filter (`withoutHidden`) → same-folder folding
- * (`groupGhostEmission`) → materialized nodes/edges — with a seam after the raw step so a surface
- * can drop ghosts it represents some OTHER way (the Service lens's drawn cluster frames).
+ * raw emission (`ghostDepWires`) → Tests-toggle filter (`withoutHidden`) → exact materialized
+ * nodes/edges — with a seam after the raw step so a surface can drop ghosts it represents some
+ * OTHER way (the Service lens's drawn cluster frames). Parent grouping is deliberately deferred to
+ * the paint pass, where it can count only the ghosts related to the current selection.
  * Ghost ids are always REAL artifact ids. Pure; no React, no ELK.
  */
 
@@ -12,7 +13,6 @@ import type { GraphIndex } from "../graph/graphIndex";
 import type { BlockDeps } from "./blockDeps";
 import type { CodeWalk, Skeleton } from "./codeWalk";
 import { ghostDepWires, withoutHidden, type GhostData, type GhostEmission } from "./ghostDeps";
-import { groupGhostEmission } from "./groupGhosts";
 import type { ModuleTreeEdge, VisibleModuleNode } from "./moduleTreeTypes";
 
 /** The ghost tier's yield, ready to append to a derived module tree. */
@@ -29,7 +29,7 @@ export function isDepAnchorKind(kind: Skeleton["kind"] | undefined): boolean {
   return kind === "unit" || kind === "block" || kind === "file";
 }
 
-/** The one-call path (the Map): raw → hidden filter → grouping → materialize. */
+/** The one-call path (the Map): raw → hidden filter → semantic materialization. */
 export function ghostLevel(
   blockDeps: BlockDeps,
   walked: CodeWalk,
@@ -58,12 +58,15 @@ export function rawGhostEmission(
   return ghostDepWires(blockDeps, walked.calls, visibleIds, index, isDepAnchor, walked.expandedBlocks);
 }
 
-/** Hidden (test) ghosts drop BEFORE grouping so group counts stay honest, then same-folder ghosts
- * fold into one group card (the Highways treatment for the ghost tier — see groupGhosts.ts). */
-export function finishGhostTier(emission: GhostEmission, index: GraphIndex, hiddenIds: ReadonlySet<string>): GhostTier {
-  const grouped = groupGhostEmission(withoutHidden(emission, hiddenIds), index);
-  const nodes = [...grouped.ghosts.entries()].map(([id, data]) => ghostNodeOf(id, data));
-  const edges: ModuleTreeEdge[] = grouped.wires.map((wire) => ({
+/** Hidden (test) ghosts drop before materialization; every remaining semantic id passes through. */
+export function finishGhostTier(
+  emission: GhostEmission,
+  index: GraphIndex,
+  hiddenIds: ReadonlySet<string>,
+): GhostTier {
+  const exact = withoutHidden(emission, hiddenIds, index);
+  const nodes = [...exact.ghosts.entries()].map(([id, data]) => ghostNodeOf(id, data));
+  const edges: ModuleTreeEdge[] = exact.wires.map((wire) => ({
     id: `gdep:${wire.kind}:${wire.source}->${wire.target}`,
     source: wire.source,
     target: wire.target,

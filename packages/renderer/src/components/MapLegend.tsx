@@ -45,7 +45,7 @@ export function MapLegend({ hasSteps, showPackages = true, showIpc = true }: Map
         <Row swatch={<Box color={FILE_ACCENT} />} text="file — expands into its declarations; its category is on the chip (UI / Utilities / Config)" />
         <Row swatch={<ChipSwatch label="KIND" color={accentForKind("class")} />} text="class / interface / object / type — a neutral grey; the kind chip names which" />
         <Row swatch={<Glyph text="ƒ" color={accentForKind("function")} />} text="method / function — double-click opens its logic flow" />
-        <Row swatch={<Dashed />} text="ghost — a definition/caller NOT on this level; double-click reveals it" />
+        <Row swatch={<Dashed />} text="ghost — related context outside this level; click inspects or expands a group, double-click reveals an exact node" />
       </Section>
       <Section title="Wires — by relationship (toggle each in the toolbar)">
         <Row swatch={<Line color={REL_COLORS.calls} />} text="calls — a behavioural call" />

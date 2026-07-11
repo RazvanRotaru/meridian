@@ -13,6 +13,7 @@ import { createTypeScriptExtractor } from "./index";
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const FIXTURE_ROOT = join(REPO_ROOT, "examples", "orders-service");
 const FIXTURE_PROJECT = join(FIXTURE_ROOT, "tsconfig.json");
+const SHOPFRONT_ROOT = join(REPO_ROOT, "examples", "shopfront");
 
 async function extractFixture(overrides = {}): Promise<ExtractionResult> {
   const extractor = createTypeScriptExtractor();
@@ -78,6 +79,33 @@ describe("TypeScriptExtractor over orders-service", () => {
     const result = await extractFixture();
     expect(hasEdge(result, "calls", "OrderService.getOrder", "OrderRepository.findById")).toBe(true);
     expect(hasEdge(result, "calls", "validateOrderRequest", "assertLineIsSane")).toBe(true);
+  });
+
+  it("attributes type references to their nearest semantic declaration", async () => {
+    const result = await extractFixture();
+
+    // Parameter and return annotations belong to the callable whose signature contains them.
+    expect(hasEdge(result, "references", "OrderRoutes.constructor", "OrderService")).toBe(true);
+    expect(hasEdge(result, "references", "OrderRoutes.handleCreateOrder", "OrderRequest")).toBe(true);
+    expect(hasEdge(result, "references", "OrderRoutes.handleCreateOrder", "ApiResponse")).toBe(true);
+    expect(hasEdge(result, "references", "validateOrderRequest", "OrderRequest")).toBe(true);
+
+    // An un-emitted property signature belongs to its owning interface, not the file module.
+    expect(hasEdge(result, "references", "OrderRequest", "OrderLine")).toBe(true);
+
+    // These used to be coarse module ghosts beside the precise callable/type ghosts above.
+    expect(hasEdge(result, "references", "src/api/orderRoutes.ts", "OrderService")).toBe(false);
+    expect(hasEdge(result, "references", "src/domain/order.ts", "OrderLine")).toBe(false);
+  });
+
+  it("keeps a genuinely top-level type reference on its module", async () => {
+    const result = await createTypeScriptExtractor().extract({
+      root: SHOPFRONT_ROOT,
+      project: join(SHOPFRONT_ROOT, "tsconfig.json"),
+    });
+
+    // `export const services: ShopfrontServices = ...` has no emitted declaration node of its own.
+    expect(hasEdge(result, "references", "src/app.ts", "ShopfrontServices")).toBe(true);
   });
 
   it("emits instantiates edges from buildOrdersApp", async () => {

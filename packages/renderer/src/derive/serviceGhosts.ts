@@ -2,8 +2,9 @@
  * The Service lens's GHOST TIER — the Map's honest-resolution rule applied to cluster space: a
  * coupling whose far end is NOT representable on this canvas charts as a detached ghost card
  * instead of silently vanishing. Two complementary raw sources, split by what the canvas can
- * anchor, merged BEFORE the shared finishing pass (Tests filter → same-folder folding) so one fact
- * can never draw twice — the tiers' cards dedupe by id and fold into the same folder groups:
+ * anchor, merged BEFORE the shared finishing pass (Tests filter → exact materialization) so one
+ * fact can never draw twice. The tiers' cards dedupe by real id; optional parent grouping happens
+ * later in the shared paint pass over the selection's complete lit neighbourhood:
  *
  *   - WALK tier: the shared `ghostLevel` projection over the drawn code skeleton (expanded frames'
  *     units/blocks), minus ghosts whose coupling ALREADY draws as a cluster frame wire
@@ -151,11 +152,11 @@ function skeletonRootOf(id: string, drawnParents: ReadonlyMap<string, string | n
 }
 
 /** Ghost the far end of couplings the scope/zoom dropped, anchored at the kept side's COLLAPSED
- * frame (an expanded frame's drawn code tells the same story through the walk tier instead). A
- * raw emission, so both tiers fold through ONE `groupGhostEmission` pass: same-folder leads join
- * the same folder group card, and a lead the walk already ghosted merges by id. A ghost lead
- * already ON canvas (a ⌘P-pinned card of a dropped cluster) is skipped — the pin IS the card, and
- * its couplings chart through the walk tier. */
+ * frame (an expanded frame's drawn code tells the same story through the walk tier instead). This
+ * remains an exact raw emission: a lead the walk already ghosted merges by real id, while optional
+ * parent grouping is deferred until paint knows which ghosts are lit. A ghost lead already ON
+ * canvas (a ⌘P-pinned card of a dropped cluster) is skipped — the pin IS the card, and its couplings
+ * chart through the walk tier. */
 function clusterGhostEmission(full: ServiceClustering, drawnLeads: ReadonlySet<string>, visibleIds: ReadonlySet<string>, index: GraphIndex): GhostEmission {
   const ghosts: GhostEmission["ghosts"] = new Map();
   const byPair = new Map<string, GhostWire>();

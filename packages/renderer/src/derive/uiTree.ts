@@ -10,7 +10,8 @@
  *     the lens keeps its cyan identity via the shared relationship paint) plus the dep wires of
  *     expanded cards, step chains, and step call wires — the Map's own code-level machinery.
  *   - GHOSTS ride the shared tier: an off-tree dep OR renders endpoint charts as a dashed ghost
- *     card exactly like the Map's off-level deps (same folding, same Tests filter).
+ *     card exactly like the Map's off-level deps (same exact derivation, Tests filter, and optional
+ *     paint-time parent grouping).
  *
  * Pure; no React, no ELK.
  */
@@ -28,6 +29,7 @@ import { depWireEdges, flowChainEdges, stepCallEdges, type Skeleton } from "./co
 import { finalizeModuleNode, foldById } from "./moduleTreeData";
 import { ghostData, nearestVisible, type GhostEmission, type GhostWire } from "./ghostDeps";
 import { finishGhostTier, isDepAnchorKind, rawGhostEmission } from "./ghostLevel";
+import { folderGhostEmission, mergeGhostEmissions } from "./folderGhosts";
 import type { LiftedEdge } from "./types";
 import { liftEdges } from "./liftEdges";
 import type { ModulePackageData } from "./packageOverview";
@@ -67,9 +69,12 @@ export function deriveUiTree(
   const nodes = walked.skeleton.map((entry) => finalizeModuleNode(entry, index, graph, lifted, walked.stepData, overviewFold, hiddenIds));
   const kinds = new Map(walked.skeleton.map((entry) => [entry.id, entry.kind]));
   const isDepAnchor = (id: string) => isDepAnchorKind(kinds.get(id));
-  const emission = mergeEmissions(
+  const emission = mergeGhostEmissions(
     rawGhostEmission(blockDeps, walked, visibleIds, index, kinds),
     rendersGhostEmission(renders, visibleIds, index, isDepAnchor),
+    // A folder-only UI frontier cannot anchor the symbol-level renders projection above. Keep the
+    // canvas at folder granularity by aggregating descendants onto the complete peer-folder set.
+    folderGhostEmission(renders, visibleIds, index, hiddenIds),
   );
   const ghosts = finishGhostTier(emission, index, hiddenIds);
   const edges = [
@@ -146,15 +151,4 @@ function rendersGhostEmission(
     }
   }
   return { ghosts, wires: [...byPair.values()] };
-}
-
-/** Union two ghost emissions (dep + renders) so ONE shared finishing pass folds and filters both. */
-function mergeEmissions(deps: GhostEmission | null, renders: GhostEmission): GhostEmission {
-  if (deps === null) {
-    return renders;
-  }
-  return {
-    ghosts: new Map([...deps.ghosts, ...renders.ghosts]),
-    wires: [...deps.wires, ...renders.wires],
-  };
 }

@@ -47,6 +47,7 @@ function ghostWire(source: string, target: string): ModuleTreeEdge {
     category: "dep",
     depKind: "calls",
     ghost: true,
+    underlyingEdgeIds: [`calls:${source}->${target}`],
   };
 }
 
@@ -94,7 +95,11 @@ describe("layoutModuleTree ghost placement", () => {
     expect(ghost.type).toBe("ghost");
     expect(ghost.parentId).toBeUndefined();
     const wire = laidEdges.find((edge) => edge.id === "gdep:calls:f:a->g:x");
-    expect(wire?.data).toMatchObject({ crossPackage: true, outsideView: true });
+    expect(wire?.data).toMatchObject({
+      crossPackage: true,
+      outsideView: true,
+      underlyingEdgeIds: ["calls:f:a->g:x"],
+    });
     // Fully outside the perimeter (past some edge), never inside the graph.
     expect(outsideBox(rectOf(ghost), coreBox(laid))).toBe(true);
   });
@@ -128,6 +133,22 @@ describe("layoutModuleTree ghost placement", () => {
     for (let i = 0; i < laid.length; i += 1) {
       for (let j = i + 1; j < laid.length; j += 1) {
         expect(overlaps(rects[i], rects[j])).toBe(false);
+      }
+    }
+  });
+
+  it("lays out every ghost beyond the former twenty-item evidence window", async () => {
+    const ghosts = Array.from({ length: 23 }, (_, index) => ghostNode(`g:${index}`));
+    const nodes = [fileNode("f:a"), ...ghosts];
+    const edges = ghosts.map((ghost) => ghostWire("f:a", ghost.id));
+    const { nodes: laid, edges: laidEdges } = await layoutModuleTree(nodes, edges);
+    const laidGhosts = laid.filter((node) => node.type === "ghost");
+
+    expect(laidGhosts).toHaveLength(23);
+    expect(laidEdges.filter((edge) => edge.id.startsWith("gdep:calls:"))).toHaveLength(23);
+    for (let i = 0; i < laidGhosts.length; i += 1) {
+      for (let j = i + 1; j < laidGhosts.length; j += 1) {
+        expect(overlaps(rectOf(laidGhosts[i]), rectOf(laidGhosts[j]))).toBe(false);
       }
     }
   });
