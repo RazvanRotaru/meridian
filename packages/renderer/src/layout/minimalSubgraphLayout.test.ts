@@ -237,6 +237,7 @@ describe("layoutMinimalSubgraph", () => {
       crossPackage: false,
       outsideView: false,
       category: "dep",
+      relationKind: "calls",
       depKind: "calls",
       ghost: false,
       underlyingEdgeIds: ["calls:fn:foo->fn:baz"],

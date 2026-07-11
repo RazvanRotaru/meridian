@@ -2,11 +2,11 @@
  * A GHOST card on the Map: a definition (or caller) a drawn code node is coupled to that is NOT on
  * this level — the relationship would otherwise silently vanish when its lift walks off the canvas.
  * Wears the Logic tab's ghost dialect (dashed border, muted fill, name + faint home file) so it
- * reads as detached context, never a peer card. An exact ghost's single click gives it a transient
- * blue inspection ring without disturbing the selected core node or moving the surrounding ghosts;
- * double-click REVEALS its definition. A crowded sibling set reuses its real parent ghost as a
- * persistent anchor: hover/focus previews the exact children and click expands/collapses their
- * neutral neighbour spokes without navigating or changing the primary selection.
+ * reads as detached context, never a peer card. A single click uses the graph's ordinary selection
+ * contract and a double-click REVEALS its definition. A crowded sibling set reuses its real parent
+ * ghost as a persistent anchor: hover/focus previews the exact children, while its dedicated
+ * chevron expands/collapses their neutral neighbour spokes. The card itself still selects/navigates
+ * like every other node.
  */
 
 import { memo, useState } from "react";
@@ -17,9 +17,9 @@ import type { GhostData } from "../../../derive/ghostDeps";
 import { cardSelectedStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
 
 type GhostViewData = GhostData & {
-  inspected?: boolean;
   ghostRole?: "parent-anchor";
   ghostExpanded?: boolean;
+  toggleGhostGroup?: (groupId: string) => void;
 };
 type GhostRfNode = Node<GhostViewData, "ghost">;
 
@@ -32,16 +32,16 @@ function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
   const accent = accentForKind(data.ghostKind);
   // Plain selection wears the ghost's OWN accent (heavier); a BEACON — a selected call step's
   // definition — keeps the green marker so it stands out as the thing pointed at.
-  const style = data.inspected ? GHOST_INSPECTED : selected ? cardSelectedStyle(GHOST, accent) : data.beacon ? GHOST_BEACON : GHOST;
+  const style = selected ? cardSelectedStyle(GHOST, accent) : data.beacon ? GHOST_BEACON : GHOST;
   const actionLabel = isGroup
-    ? `${data.label}, parent of ${groupMembers.length} related ghost nodes; click to ${groupExpanded ? "collapse" : "expand"}`
+    ? `${data.label}, parent of ${groupMembers.length} related ghost nodes; click to select, double-click to reveal`
     : `${data.label}, ${data.ghostKind}, off-screen definition; double-click to reveal`;
   return (
     <div
       className="lod-tint"
       role="button"
       tabIndex={0}
-      {...(isGroup ? { "aria-expanded": groupExpanded } : { "aria-pressed": data.inspected === true })}
+      aria-pressed={selected}
       aria-label={actionLabel}
       onMouseEnter={() => isGroup && setPreviewed(true)}
       onMouseLeave={() => setPreviewed(false)}
@@ -58,13 +58,29 @@ function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
       }}
       style={{ ...style, ...(isGroup ? GROUP_FRAME : null), "--lod-accent": accent } as React.CSSProperties}
       title={isGroup
-        ? `${data.label} — ${groupMembers.length} related ghosts; click to ${groupExpanded ? "collapse" : "expand"}`
+        ? `${data.label} — ${groupMembers.length} related ghosts; double-click to reveal the parent definition`
         : `${data.label} — off-screen; double-click to reveal it`}
     >
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <span className="lod-place">{middleTruncate(data.label)}</span>
       <div className="lod-card-body" style={HEAD}>
+        {isGroup ? (
+          <button
+            type="button"
+            style={DISCLOSURE}
+            aria-label={groupExpanded ? `Collapse related definitions for ${data.label}` : `Expand related definitions for ${data.label}`}
+            aria-expanded={groupExpanded}
+            title={groupExpanded ? "Collapse related definitions" : "Expand related definitions"}
+            onClick={(event) => {
+              event.stopPropagation();
+              data.toggleGhostGroup?.(data.ghostGroupId as string);
+            }}
+            onDoubleClick={(event) => event.stopPropagation()}
+          >
+            {groupExpanded ? "▾" : "▸"}
+          </button>
+        ) : null}
         {ghostGlyph(data.ghostKind) !== null && <span style={{ ...GLYPH, color: accent }}>{ghostGlyph(data.ghostKind)}</span>}
         <span style={LABEL}>{middleTruncate(data.label)}</span>
       </div>
@@ -129,16 +145,23 @@ const GHOST: React.CSSProperties = {
   cursor: "pointer",
 };
 const GHOST_BEACON: React.CSSProperties = { ...GHOST, borderColor: SELECT_ACCENT };
-// Blue and still dashed: this is transient inspection, visibly different from the neutral solid
-// selection ring and the green definition beacon.
-const INSPECT_ACCENT = "#78A9FF";
-const GHOST_INSPECTED: React.CSSProperties = {
-  ...GHOST,
-  borderColor: INSPECT_ACCENT,
-  background: "rgba(31,43,67,0.78)",
-  boxShadow: `0 0 0 2px ${INSPECT_ACCENT}66`,
-};
 const HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 5, minWidth: 0 };
+const DISCLOSURE: React.CSSProperties = {
+  flexShrink: 0,
+  width: 16,
+  height: 16,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 0,
+  border: "none",
+  borderRadius: 3,
+  background: "transparent",
+  color: "#9AA4B2",
+  cursor: "pointer",
+  font: "inherit",
+  fontSize: 11,
+};
 const GLYPH: React.CSSProperties = { fontSize: 9.5, flexShrink: 0, opacity: 0.8 };
 const LABEL: React.CSSProperties = {
   minWidth: 0,

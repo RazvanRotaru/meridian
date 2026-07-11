@@ -8,6 +8,7 @@
 
 import type { EdgeProps } from "@xyflow/react";
 import { MONO } from "../nodes/modulemap/frameChrome";
+import { relationKindOf } from "../../graph/relationEdge";
 
 const FONT_SIZE = 9;
 const PAD_X = 5;
@@ -42,8 +43,8 @@ export function WireLabel({ x, y, text, style, data, color }: WireLabelProps) {
 
 /** The chip text for an ordinary wire: its kind, with ×N only when the aggregate is plural. */
 export function wireLabelText(data: EdgeProps["data"]): string {
-  const d = data as { depKind?: string; category?: string; weight?: number } | undefined;
-  const kind = d?.depKind ?? d?.category ?? "";
+  const d = data as { weight?: number } | undefined;
+  const kind = relationKindOf(data) ?? "";
   if (!kind || kind === "flow") {
     return "";
   }

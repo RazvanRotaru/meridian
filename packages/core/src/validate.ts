@@ -28,6 +28,7 @@ const KNOWN_NODE_KINDS = new Set([
   "external", "unresolved", "channel", "system",
 ]);
 const KNOWN_EDGE_KINDS = new Set([
+  "registers", "binds", "provides", "injects", "owns", "aliases",
   "calls", "references", "imports", "extends", "implements", "instantiates", "renders",
   "sends", "handles",
 ]);

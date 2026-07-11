@@ -108,6 +108,13 @@ import {
   type ServiceGroupingTargetSize,
 } from "./serviceGroupingTargetSize";
 import { yieldForPaint } from "./yieldForPaint";
+import {
+  EMPTY_RELATION_VISIBILITY_OVERRIDES,
+  resetRelationsToPolicyDefaults,
+  showAllRelations,
+  toggleRelationOverride,
+  type RelationVisibilityOverrides,
+} from "../graph/relationVisibility";
 
 /**
  * The "All" setting for the related-flows depth dial: a depth larger than any real call-graph chain.
@@ -264,9 +271,9 @@ export interface BlueprintState {
   groupGhostsByParent: boolean;
   /** Module categories painted OUT of the map (a render-time filter — never a re-derive). */
   hiddenCategories: Set<ModuleCategory>;
-  /** Relationship kinds painted OUT of the map (calls / instantiates / extends / implements /
-   * references / imports / ipc) — a render-time filter, so isolating one kind is instant. */
-  hiddenRelKinds: Set<string>;
+  /** Sparse exact-kind visibility deviations, isolated by semantic lens id. A missing value follows
+   * that lens's policy default (for example Service calls are initially hidden); paint-only. */
+  relationVisibilityOverrides: RelationVisibilityOverrides;
   /** The selected node ids in the Module map (ctrl/cmd+click accumulates several); empty == none.
    * A repaint-only highlight — no relayout. */
   moduleSelected: Set<string>;
@@ -494,6 +501,8 @@ export interface BlueprintState {
   toggleRelKind(kind: string): void;
   resetCategoryFilter(): void;
   resetRelationshipFilter(): void;
+  /** Restore the active lens's declared relation defaults (distinct from “All”). */
+  resetRelationshipDefaults(): void;
   selectModule(id: string | null): void;
   toggleModuleSelect(id: string): void;
   /** Scope the Service lens to the current anchors' owning cluster(s) + 1-hop; no-op when nothing
@@ -972,7 +981,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     showCommons: true,
     groupGhostsByParent: true,
     hiddenCategories: new Set<ModuleCategory>(),
-    hiddenRelKinds: new Set<string>(),
+    relationVisibilityOverrides: EMPTY_RELATION_VISIBILITY_OVERRIDES,
     moduleSelected: new Set<string>(),
     moduleExpanded: new Set<string>(),
     mapExtra: new Set<string>(),
@@ -1508,7 +1517,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             break;
           }
           seenParents.add(stateKey);
-          const parent = spec.focus.semanticParent({ state: currentState, effectiveFocus: currentEffectiveFocus });
+          const parent = spec.navigation.semanticParent({ state: currentState, effectiveFocus: currentEffectiveFocus });
           if (parent === null) {
             break;
           }
@@ -1544,10 +1553,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         let laid: { nodes: Node[]; edges: Edge[] };
         let semanticLayers: SemanticAncestorLevel<SurfaceSemanticContext>[] = [];
         if (stack.layers.length < 2) {
-          laid = await layoutModuleTree(tree.nodes, tree.edges);
+          laid = await layoutModuleTree(tree.nodes, tree.edges, spec.relations);
         } else {
           const layouts = await Promise.all(
-            stack.layers.map((layer) => layoutModuleTree(layer.tree.nodes, layer.tree.edges)),
+            stack.layers.map((layer) => layoutModuleTree(layer.tree.nodes, layer.tree.edges, spec.relations)),
           );
           const composite = composeSemanticStackLayouts(layouts, stack);
           laid = composite ?? layouts[0];
@@ -1865,7 +1874,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     // Show/hide a relationship kind's wires. PAINT-ONLY, like the category filter — no relayout.
     toggleRelKind(kind) {
-      set({ hiddenRelKinds: withToggled(get().hiddenRelKinds, kind) });
+      const state = get();
+      const policy = activeModuleSurfaceSpec(state.viewMode).relations;
+      set({
+        relationVisibilityOverrides: toggleRelationOverride(
+          policy,
+          state.relationVisibilityOverrides,
+          kind,
+        ),
+      });
     },
 
     // Clear the category / relationship filters back to "show everything". PAINT-ONLY — no relayout.
@@ -1874,7 +1891,25 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     resetRelationshipFilter() {
-      set({ hiddenRelKinds: new Set<string>() });
+      const state = get();
+      const policy = activeModuleSurfaceSpec(state.viewMode).relations;
+      set({
+        relationVisibilityOverrides: showAllRelations(
+          policy,
+          state.relationVisibilityOverrides,
+        ),
+      });
+    },
+
+    resetRelationshipDefaults() {
+      const state = get();
+      const policy = activeModuleSurfaceSpec(state.viewMode).relations;
+      set({
+        relationVisibilityOverrides: resetRelationsToPolicyDefaults(
+          policy,
+          state.relationVisibilityOverrides,
+        ),
+      });
     },
 
     // Select a Module-map node, REPLACING the whole selection (pass null to clear) — the plain-click
@@ -2123,7 +2158,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           blockDeps: deps,
           flows,
           inspectionIds: flowInspectionIds(state, flows),
-        }, minimalArrange, hidden);
+        }, minimalArrange, hidden, activeModuleSurfaceSpec(get().viewMode).relations);
         if (minimalLayoutSeq !== sequence) {
           return; // a newer build/promote/demote/reset/re-arrange superseded this one.
         }
@@ -3782,7 +3817,13 @@ function applyScoped(
   // strict registry returns null for the logic lens, which keeps its own branch below.
   if (moduleSurfaceSpec(state.viewMode) !== null) {
     const scope = state.moduleSelected.size ? [...state.moduleSelected] : [null];
-    const ids = pick(moduleTreeNodes(state, getGraph(), getDeps()), scope);
+    // The minimal graph covers the registered lens while it is open. Its laid nodes are therefore
+    // the authoritative visible frontier for the canvas action bar; deriving the covered lens here
+    // would expand/collapse containers the user cannot see.
+    const visible = state.minimalSeedIds.length > 0
+      ? minimalVisibleNodes(state)
+      : moduleTreeNodes(state, getGraph(), getDeps());
+    const ids = pick(visible, scope);
     if (ids.length === 0) {
       return;
     }
@@ -3830,6 +3871,22 @@ function logicVisibleNodes(state: BlueprintState): ExpandableNode[] {
     .map((rfNode) => {
       const data = rfNode.data as { expandable: boolean; isExpanded?: boolean };
       return { id: rfNode.id, parentId: rfNode.parentId ?? null, isContainer: data.expandable, isExpanded: data.isExpanded === true };
+    });
+}
+
+/** The minimal overlay's CURRENT rendered containment frontier. Ghosts carry no expansion facts and
+ * are intentionally omitted; ordinary leaves remain so selection scoping retains the real tree. */
+function minimalVisibleNodes(state: BlueprintState): ExpandableNode[] {
+  return state.minimalRfNodes
+    .filter((rfNode) => typeof (rfNode.data as { isContainer?: unknown }).isContainer === "boolean")
+    .map((rfNode) => {
+      const data = rfNode.data as { isContainer: boolean; isExpanded?: boolean };
+      return {
+        id: rfNode.id,
+        parentId: rfNode.parentId ?? null,
+        isContainer: data.isContainer,
+        isExpanded: data.isExpanded === true,
+      };
     });
 }
 

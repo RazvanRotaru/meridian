@@ -12,8 +12,21 @@ export const UNIT_KINDS: ReadonlySet<string> = new Set(["class", "interface", "o
 /** The callable members a unit is measured over. */
 export const MEMBER_KINDS: ReadonlySet<string> = new Set(["function", "method"]);
 
-/** Edge kinds that express a dependency between units (references/imports are ignored for v1). */
-export const COUPLING_KINDS: ReadonlySet<string> = new Set(["calls", "instantiates", "extends", "implements", "references"]);
+/** Edge kinds that express a dependency between units. Imports stay at module-containment level;
+ * explicit composition, inheritance, construction, calls, and references retain exact evidence. */
+export const COUPLING_KINDS: ReadonlySet<string> = new Set([
+  "registers",
+  "binds",
+  "provides",
+  "injects",
+  "owns",
+  "aliases",
+  "calls",
+  "instantiates",
+  "extends",
+  "implements",
+  "references",
+]);
 
 const EXTERNAL_PREFIXES = ["ext:", "unresolved:"] as const;
 
@@ -132,7 +145,17 @@ export interface CouplingEdge {
   source: string;
   target: string;
   kinds: Set<string>;
+  /** Exact source-graph evidence retained per relationship kind. Consumers may project or bundle
+   * the pair, but must never erase whether it was a call, construction, or inheritance fact. */
+  evidenceByKind?: Map<string, CouplingKindEvidence>;
   inheritanceOnly: boolean;
+}
+
+export interface CouplingKindEvidence {
+  /** Sum of the source edges' weights (one when an extractor omitted an explicit weight). */
+  weight: number;
+  /** Stable source-graph edge ids for inspection and source attribution. */
+  underlyingEdgeIds: string[];
 }
 
 const INHERITANCE_KINDS: ReadonlySet<string> = new Set(["extends", "implements"]);
@@ -173,9 +196,30 @@ function addCouplingEdge(edge: GraphEdge, index: UnitIndex, byPair: Map<string, 
   const existing = byPair.get(key);
   if (existing) {
     existing.kinds.add(edge.kind);
+    addKindEvidence(existing, edge);
     return;
   }
-  byPair.set(key, { source: sourceUnit, target: targetUnit, kinds: new Set([edge.kind]), inheritanceOnly: false });
+  const coupling: CouplingEdge = {
+    source: sourceUnit,
+    target: targetUnit,
+    kinds: new Set([edge.kind]),
+    evidenceByKind: new Map(),
+    inheritanceOnly: false,
+  };
+  addKindEvidence(coupling, edge);
+  byPair.set(key, coupling);
+}
+
+function addKindEvidence(coupling: CouplingEdge, edge: GraphEdge): void {
+  const byKind = coupling.evidenceByKind ?? new Map<string, CouplingKindEvidence>();
+  coupling.evidenceByKind = byKind;
+  const existing = byKind.get(edge.kind);
+  if (existing) {
+    existing.weight += edge.weight ?? 1;
+    existing.underlyingEdgeIds.push(edge.id);
+    return;
+  }
+  byKind.set(edge.kind, { weight: edge.weight ?? 1, underlyingEdgeIds: [edge.id] });
 }
 
 /** True when one unit sits inside the other's containment subtree (via parentId) — e.g. a module

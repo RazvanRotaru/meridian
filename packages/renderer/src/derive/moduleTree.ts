@@ -159,6 +159,7 @@ function packageDepEdges(
     crossPackage: underlyingEdgesCrossPackage(e.underlyingEdgeIds, index),
     outsideView: false,
     category: "dep" as const,
+    relationKind: e.kind,
     depKind: e.kind,
     underlyingEdgeIds: e.underlyingEdgeIds,
   }));

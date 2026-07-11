@@ -75,6 +75,7 @@ export function finishGhostTier(
     crossPackage: wire.crossPackage,
     outsideView: true,
     category: "dep",
+    relationKind: wire.kind,
     depKind: wire.kind,
     ghost: true,
     // The artifact edges behind this wire — the Wire Inspector's evidence trail (every surface's

@@ -9,7 +9,8 @@ import type { GraphArtifact, GraphNode } from "@meridian/core";
 import type { Edge, Node } from "@xyflow/react";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { ghostGroupId } from "../derive/groupGhosts";
-import { emphasize, filterVisible, type HideOptions } from "./moduleMapPaint";
+import { emphasize, filterRelationsForLens, filterVisible, type HideOptions } from "./moduleMapPaint";
+import { SERVICE_RELATION_POLICY } from "../graph/lensRelationPolicy";
 
 /** Baseline options with nothing hidden; tests override the one filter they exercise. */
 const SHOW_ALL: HideOptions = {
@@ -242,5 +243,41 @@ describe("emphasize — complete semantic ghosts", () => {
     expect(expanded.edges.filter((edge) => edge.data?.ghostGroupAggregate === true)).toEqual([
       expect.objectContaining({ source: anchor.id, target: parentId }),
     ]);
+
+    // The parent is a paint-time card: selecting its real id must seed from the canonical children
+    // on the next repaint, or the selected card would immediately disappear.
+    const selectedParent = emphasize([anchor, ...ghosts], edges, new Set([parentId]), 1, "node", {
+      index,
+      groupByParent: true,
+      expandedGroupIds: new Set(),
+    });
+    expect(selectedParent.nodes.filter((node) => node.type === "ghost").map((node) => node.id)).toEqual([parentId]);
+    expect(selectedParent.edges).toEqual([
+      expect.objectContaining({ source: anchor.id, target: parentId }),
+    ]);
+  });
+});
+
+describe("lens relation filtering", () => {
+  it("starts Service on structure and can opt behavioral calls back in", () => {
+    const dep = (kind: string): Edge => ({
+      id: `${kind}:a->b`,
+      source: "a",
+      target: "b",
+      data: { category: "dep", relationKind: kind, depKind: kind },
+    } as Edge);
+    const edges = [
+      dep("registers"),
+      dep("extends"),
+      dep("calls"),
+      { id: "unknown-dep", source: "a", target: "b", data: { category: "dep" } } as Edge,
+      { id: "flow", source: "a", target: "b", data: { category: "flow" } } as Edge,
+    ];
+    const kindOf = (item: Edge) => item.data?.relationKind ?? item.data?.category;
+
+    expect(filterRelationsForLens(edges, SERVICE_RELATION_POLICY, {}).map(kindOf))
+      .toEqual(["registers", "extends", "flow"]);
+    expect(filterRelationsForLens(edges, SERVICE_RELATION_POLICY, { service: { calls: true } }))
+      .toHaveLength(4);
   });
 });

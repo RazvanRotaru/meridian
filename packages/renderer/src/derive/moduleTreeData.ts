@@ -87,6 +87,7 @@ export function importTreeEdges(
       crossPackage: underlyingEdgesCrossPackage(underlyingEdgeIds, index),
       outsideView: false,
       category: "import" as const,
+      relationKind: "imports",
       underlyingEdgeIds,
     };
   });

@@ -1,6 +1,7 @@
 /**
  * Service-centric composition clustering: each cluster is LED by a domain service and holds the
- * helper sub-services it is composed of (its efferent dependencies — repositories/stores/mappers/…).
+ * helper sub-services it is composed of (explicit registration/injection/construction — never
+ * incidental behavioral calls).
  * Clusters collapse to just the lead card by default; expanding reveals the sub-services it owns.
  * Inter-cluster wires read as "service A depends on service B". This replaces the by-folder tree
  * that produced a single god-service composed of everything.
@@ -18,13 +19,16 @@ const NONE_EXPANDED: ReadonlySet<string> = new Set();
 // A SERVICE lead is a class/object/module whose name reads as a domain service. Controllers/handlers
 // are deliberately excluded so leads stay true services, not transport entry-points.
 const SERVICE_KINDS: ReadonlySet<string> = new Set(["class", "object", "module"]);
-const SERVICE_RE = /(?:service|manager|facade|orchestrator|coordinator|engine|usecase|interactor|workflow|application|app)s?$/i;
+const SERVICE_RE = /(?:service|manager|facade|orchestrator|coordinator|engine|usecase|interactor|workflow|application|app|framework|container|registry)s?$/i;
 // Helper names only refine role metadata / seed selection — they never gate the clustering itself.
 const HELPER_RE = /(?:store|repository|repo|dao|client|provider|adapter|mapper|model|entity|dto|cache|factory|builder|validator|serializer|parser|formatter|config|options|settings|utils?|helper|logger|queue|emitter|middleware|guard|policy|strategy)s?$/i;
 
 export interface ServiceCluster {
   leadId: string;
   memberIds: string[];
+  /** Why this frame exists. `unassigned` is an honest discoverability bucket for units that no
+   * service seed reaches; it must never be counted or labelled as a service. */
+  provenance?: "named-service" | "inferred-service" | "unassigned";
 }
 
 /** The shared intermediate service-cluster derive: scorecard specs and the Module-map service lens
@@ -35,6 +39,15 @@ export interface ServiceClustering {
   metrics: Map<string, UnitMetrics>;
   membersByUnit: Map<string, GraphNode[]>;
   couplings: ReturnType<typeof couplingEdges>;
+}
+
+export function isUnassignedServiceCluster(cluster: ServiceCluster): boolean {
+  return cluster.provenance === "unassigned";
+}
+
+/** Honest root count: legacy/hand-built clusters without provenance are service frames. */
+export function serviceClusterCount(clustering: ServiceClustering): number {
+  return clustering.clusters.filter((cluster) => !isUnassignedServiceCluster(cluster)).length;
 }
 
 export function deriveServiceCompositionGraph(
@@ -85,11 +98,23 @@ function survivingUnits(metrics: Map<string, UnitMetrics>, couplings: ReturnType
   return survivors;
 }
 
-/** source → its efferent (depends-on) targets, skipping inheritance-only wires — the BFS graph. */
+const COMPOSITION_OWNERSHIP_KINDS: ReadonlySet<string> = new Set([
+  "registers",
+  "binds",
+  "provides",
+  "injects",
+  "owns",
+  "aliases",
+  "instantiates",
+]);
+
+/** source → explicitly composed/constructed targets — the ownership BFS. Behavioral calls and
+ * incidental references remain visible as optional overlays, but never decide which service owns
+ * another node. */
 function efferentAdjacency(couplings: ReturnType<typeof couplingEdges>): Map<string, string[]> {
   const adjacency = new Map<string, string[]>();
   for (const edge of couplings) {
-    if (edge.inheritanceOnly) {
+    if (![...edge.kinds].some((kind) => COMPOSITION_OWNERSHIP_KINDS.has(kind))) {
       continue;
     }
     const targets = adjacency.get(edge.source) ?? [];
@@ -190,7 +215,11 @@ function buildClusters(seeds: Set<string>, clusterOf: Map<string, string>, survi
       bySeed.get(seed)!.push(id);
     }
   }
-  const clusters: ServiceCluster[] = [...bySeed.entries()].map(([leadId, members]) => ({ leadId, memberIds: members.slice().sort() }));
+  const clusters: ServiceCluster[] = [...bySeed.entries()].map(([leadId, members]) => ({
+    leadId,
+    memberIds: members.slice().sort(),
+    provenance: isService(metrics.get(leadId)!) ? "named-service" : "inferred-service",
+  }));
 
   const unreachable = [...survivors].filter((id) => !clusterOf.has(id));
   const byFolder = new Map<string, string[]>();
@@ -200,7 +229,7 @@ function buildClusters(seeds: Set<string>, clusterOf: Map<string, string>, survi
   }
   for (const members of byFolder.values()) {
     const leadId = members.slice().sort((a, b) => degree(b) - degree(a) || a.localeCompare(b))[0];
-    clusters.push({ leadId, memberIds: members.slice().sort() });
+    clusters.push({ leadId, memberIds: members.slice().sort(), provenance: "unassigned" });
   }
   return clusters.sort((a, b) => a.leadId.localeCompare(b.leadId));
 }

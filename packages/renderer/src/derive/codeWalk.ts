@@ -159,6 +159,7 @@ export function depWireEdges(
       crossPackage: underlyingEdgesCrossPackage(edge.underlyingEdgeIds, index),
       outsideView: false,
       category: "dep" as const,
+      relationKind: edge.kind,
       depKind: edge.kind,
       underlyingEdgeIds: edge.underlyingEdgeIds,
     }));
@@ -197,6 +198,8 @@ export function stepCallEdges(walk: CodeWalk, visibleIds: ReadonlySet<string>, i
       crossPackage: crossesPackageBoundary(call.blockId, call.target, index),
       outsideView: false,
       category: "dep" as const,
+      relationKind: "calls",
+      depKind: "calls",
     });
   }
   return edges;

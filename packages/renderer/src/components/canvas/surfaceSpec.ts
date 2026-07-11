@@ -6,8 +6,9 @@
  * applyScoped / buildMinimalGraph) and the interaction hook. Phase B gave the Service lens the
  * Map's full capability set, per-surface where the semantics differ:
  *
- *   - FOCUS: both lenses zoom by double-click (`focus.dive` → moduleFocus), but the Map dives
- *     folders/files while the Service lens dives synthetic domains and `svc:` cluster frames;
+ *   - NAVIGATION: double-click follows `navigation.navigateInto` while Recenter remains a separate
+ *     canvas action; the Map navigates into folders/files while the Service lens navigates into
+ *     synthetic domains and `svc:` cluster frames;
  *     each surface names its own breadcrumb root and crumbs its own effective focus.
  *   - GHOST REVEAL: the Map refocuses at the definition (`revealModule` — a focus jump); the
  *     Service lens OPENS the owning cluster frame in place (`revealServiceGhost` — an expand,
@@ -30,11 +31,17 @@ import { deriveServiceTree } from "../../derive/serviceClusterTree";
 import { deriveUiTree } from "../../derive/uiTree";
 import { clusterMemberSeeds, homeFileOf, leadIdOf } from "../../derive/serviceClusterEdges";
 import { clusteringFor } from "../../derive/serviceClusteringCache";
-import { deriveServiceDomains, isServiceDomainId, SERVICE_DOMAIN_MIN_CLUSTERS } from "../../derive/serviceDomains";
+import { deriveServiceDomains, isServiceDomainId, shouldGroupServiceDomains } from "../../derive/serviceDomains";
 import type { ServiceGroupingMode } from "../../derive/serviceClusteringModes";
 import { semanticOuterLevel } from "../../derive/moduleSemanticComposite";
 import { resolveServiceAnchors } from "../../state/lensPath";
 import { scopeSetOf, serviceScopeFor, type ServiceScope } from "../../state/serviceScope";
+import {
+  MAP_RELATION_POLICY,
+  SERVICE_RELATION_POLICY,
+  UI_RELATION_POLICY,
+  type LensRelationPolicy,
+} from "../../graph/lensRelationPolicy";
 
 /** Which of the Visual Highways passes apply to a surface's shape (always bundle → route → spool). */
 export interface HighwayFlags {
@@ -104,16 +111,16 @@ export interface SurfaceSemanticParent {
   context?: Partial<Pick<SurfaceTreeState, "serviceScope">>;
 }
 
-/** A surface's zoom model: how a dive lands and how the trail reads. Every surface holds its zoom
- * in the ONE shared `moduleFocus` slot (phase C migrates the UI lens's `focusId` into it too), so
- * there is deliberately no per-spec `of(state)` accessor — read `state.moduleFocus` directly. */
-export interface SurfaceFocusModel {
-  /** Zoom into a container card (the double-click dive); null == the surface has no focus model
-   * (containers expand in place instead). */
-  dive: ((actions: SurfaceActions, id: string) => void) | null;
-  /** Whether the dive gesture applies to THIS card (by its React Flow node type + id); a refusing
-   * container falls back to expand-in-place, exactly the chevron's gesture. */
-  divable(nodeType: string | undefined, id: string): boolean;
+/** A surface's containment navigation model: where navigation lands and how its trail reads. The
+ * separate canvas Recenter/focus action owns camera focus; this model never means “focus the
+ * camera.” The semantic-parent resolver supplies outward hierarchy navigation without changing
+ * the universal double-click contract or treating expansion as navigation. */
+export interface SurfaceNavigationModel {
+  /** Navigate into a container card; null == the surface has no containment navigation model. */
+  navigateInto: ((actions: SurfaceActions, id: string) => void) | null;
+  /** Whether navigation-into applies to THIS card. Expansion never acts as a double-click fallback;
+   * it remains an explicit chevron/action. */
+  canNavigateInto(nodeType: string | undefined, id: string): boolean;
   /** The breadcrumb's root segment ("Repository" / "All services") and its count noun. */
   rootLabel: string;
   rootNoun: string;
@@ -132,13 +139,16 @@ export interface SurfaceFocusModel {
 }
 
 export interface SurfaceSpec {
+  /** Stable surface identity. State such as relation visibility is stored per id, so switching
+   * lenses never leaks Service's quiet defaults into Map or UI. */
+  id: "map" | "service" | "ui";
   /** Derive the surface's visible tree — the ONLY required difference between surfaces. Its
    * `effectiveFocus` output lands in the store as `moduleEffectiveFocus`, and the breadcrumb
    * renders from THAT laid-out slice, so the trail always matches the canvas on screen — even
    * mid-lens-switch, before the new layout lands. */
   deriveTree(state: SurfaceTreeState, caches: SurfaceCaches, extras?: SurfaceTreeExtras): ModuleTree;
-  /** The surface's zoom model — dive gesture, breadcrumb root + trail. */
-  focus: SurfaceFocusModel;
+  /** Double-click navigation and its breadcrumb root/trail. */
+  navigation: SurfaceNavigationModel;
   /** Surface a ghost card's real definition (the double-click gesture on a satellite). */
   ghostReveal(actions: SurfaceActions, id: string): void;
   /** How a selection seeds the minimal-graph overlay: real ids pass through; the Service lens
@@ -150,6 +160,9 @@ export interface SurfaceSpec {
     groupingMode?: ServiceGroupingMode,
     groupingTargetSize?: number,
   ): string[];
+  /** The semantic relationship story this lens tells. Shared layout/paint/highway/ghost passes
+   * consume this policy; lenses configure meaning, not graph machinery. */
+  relations: LensRelationPolicy;
   highways: HighwayFlags;
 }
 
@@ -202,7 +215,7 @@ function serviceCrumbs(
   }
   const service = { id: effectiveFocus, label: clustering.metrics.get(lead)?.displayName ?? lead };
   const domain = model.domainByLead.get(lead);
-  return clustering.clusters.length >= SERVICE_DOMAIN_MIN_CLUSTERS && domain
+  return shouldGroupServiceDomains(clustering) && domain
     ? [{ id: domain.id, label: domain.label }, service]
     : [service];
 }
@@ -234,7 +247,7 @@ function serviceSemanticParent({ state, effectiveFocus }: SurfaceSemanticParentC
     return null;
   }
   const label = clustering.metrics.get(lead)?.displayName ?? lead;
-  if (state.serviceScope === null && clustering.clusters.length >= SERVICE_DOMAIN_MIN_CLUSTERS) {
+  if (state.serviceScope === null && shouldGroupServiceDomains(clustering)) {
     const domain = model.domainByLead.get(lead);
     if (domain !== undefined) {
       return { focus: domain.id, anchorId: effectiveFocus, label };
@@ -261,13 +274,14 @@ function serviceSemanticParent({ state, effectiveFocus }: SurfaceSemanticParentC
 /** The folder Map: focus = moduleFocus (containment dive over folders AND files), ghosts reveal by
  * refocusing at the definition. */
 const MAP_SURFACE: SurfaceSpec = {
+  id: "map",
   // `showCommons` threads through as the hub-demotion switch: on, logger-grade utility hubs leave
   // ELK for the commons dock tray; off, they rejoin the level with ordinary wires.
   deriveTree: (state, caches, extras = {}) =>
     deriveModuleTree(state.index, state.moduleFocus, state.moduleExpanded, caches.graph, caches.deps, caches.flows, extras.extraIds ?? EMPTY_IDS, extras.hiddenIds ?? EMPTY_IDS, state.showCommons),
-  focus: {
-    dive: (actions, id) => actions.setModuleFocus(id),
-    divable: (nodeType) => nodeType === "package" || nodeType === "file",
+  navigation: {
+    navigateInto: (actions, id) => actions.setModuleFocus(id),
+    canNavigateInto: (nodeType) => nodeType === "package" || nodeType === "file",
     rootLabel: "Repository",
     rootNoun: "packages",
     crumbs: crumbsFor,
@@ -275,6 +289,7 @@ const MAP_SURFACE: SurfaceSpec = {
   },
   ghostReveal: (actions, id) => actions.revealModule(id),
   minimalSeeds: (selection) => [...selection],
+  relations: MAP_RELATION_POLICY,
   highways: ALL_HIGHWAYS,
 };
 
@@ -283,6 +298,7 @@ const MAP_SURFACE: SurfaceSpec = {
  * owning frame in place and NEVER sets a folder focus. The minimal overlay defers its gestures to
  * this spec while it covers the lens (`viewMode` stays "call"), exactly as before the extraction. */
 const SERVICE_SURFACE: SurfaceSpec = {
+  id: "service",
   deriveTree: (state, caches, extras = {}) =>
     deriveServiceTree(state.index, state.moduleFocus, state.moduleExpanded, caches.graph, caches.deps, caches.flows, {
       scopeLeadIds: scopeSetOf(state.serviceScope),
@@ -291,11 +307,11 @@ const SERVICE_SURFACE: SurfaceSpec = {
       groupingMode: state.serviceGroupingMode,
       groupingTargetSize: state.serviceGroupingTargetSize,
     }),
-  focus: {
-    dive: (actions, id) => actions.setModuleFocus(id),
+  navigation: {
+    navigateInto: (actions, id) => actions.setModuleFocus(id),
     // ONLY `svc:` cluster frames dive on this lens — a folder frame (the minimal overlay's home
     // boxes) or a file card keeps its expand/select gesture, never a junk focus.
-    divable: (nodeType, id) =>
+    canNavigateInto: (nodeType, id) =>
       (nodeType === "package" && leadIdOf(id) !== null)
       || (nodeType === "serviceDomain" && isServiceDomainId(id)),
     rootLabel: "All services",
@@ -305,6 +321,7 @@ const SERVICE_SURFACE: SurfaceSpec = {
   },
   ghostReveal: (actions, id) => actions.revealServiceGhost(id),
   minimalSeeds: clusterMemberSeeds,
+  relations: SERVICE_RELATION_POLICY,
   highways: ALL_HIGHWAYS,
 };
 
@@ -314,11 +331,12 @@ const SERVICE_SURFACE: SurfaceSpec = {
  * and minimal-graph seeds land on each selection's home FILE (the overlay draws file/folder boxes,
  * never bare component symbols). */
 const UI_SURFACE: SurfaceSpec = {
+  id: "ui",
   deriveTree: (state, caches, extras = {}) =>
     deriveUiTree(state.index, state.moduleFocus, state.moduleExpanded, caches.graph, caches.deps, caches.flows, extras.extraIds ?? EMPTY_IDS, extras.hiddenIds ?? EMPTY_IDS),
-  focus: {
-    dive: (actions, id) => actions.setModuleFocus(id),
-    divable: (nodeType) => nodeType === "package" || nodeType === "file",
+  navigation: {
+    navigateInto: (actions, id) => actions.setModuleFocus(id),
+    canNavigateInto: (nodeType) => nodeType === "package" || nodeType === "file",
     rootLabel: "UI",
     rootNoun: "components",
     crumbs: crumbsFor,
@@ -326,6 +344,7 @@ const UI_SURFACE: SurfaceSpec = {
   },
   ghostReveal: (actions, id) => actions.revealModule(id),
   minimalSeeds: (selection, index) => [...new Set(selection.map((id) => homeFileOf(id, index)))],
+  relations: UI_RELATION_POLICY,
   highways: ALL_HIGHWAYS,
 };
 

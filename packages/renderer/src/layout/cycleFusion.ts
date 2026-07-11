@@ -13,6 +13,8 @@
 
 import type { Edge } from "@xyflow/react";
 import { withBoundaryDash } from "./edgeBoundary";
+import { relationKindOf } from "../graph/relationEdge";
+import { withRelationLineStyle } from "../theme/relationTheme";
 
 export const CYCLE_EDGE_TYPE = "cycle";
 
@@ -20,6 +22,7 @@ export interface CycleEdgeData extends Record<string, unknown> {
   /** The two directional wires, FORWARD (matching the fused edge's source→target) first. */
   members: Edge[];
   depKind?: string;
+  relationKind?: string;
   /** Summed weights per direction, for the tooltip/chip (`⇄ calls ×5/×2`). */
   forwardWeight: number;
   backwardWeight: number;
@@ -61,6 +64,7 @@ export function fuseCycles(edges: Edge[]): Edge[] {
 /** One fused cycle wire: forward's geometry, both directions' evidence, the brighter emphasis. */
 function fuse(forward: Edge, backward: Edge): Edge {
   const forwardData = (forward.data ?? {}) as {
+    relationKind?: string;
     depKind?: string;
     weight?: number;
     underlyingEdgeIds?: string[];
@@ -77,17 +81,22 @@ function fuse(forward: Edge, backward: Edge): Edge {
   const litSide = (forward.style as { opacity?: number } | undefined)?.opacity === 1 ? forward : backward;
   const crossPackage = forwardData.crossPackage === true || backwardData.crossPackage === true;
   const outsideView = forwardData.outsideView === true || backwardData.outsideView === true;
+  const relationKind = relationKindOf(forward.data) ?? undefined;
   return {
-    id: `cycle:${forwardData.depKind ?? "wire"}:${forward.source}<->${forward.target}`,
+    id: `cycle:${relationKind ?? "wire"}:${forward.source}<->${forward.target}`,
     source: forward.source,
     target: forward.target,
     type: CYCLE_EDGE_TYPE,
     // Emphasis may choose either direction's paint, but boundary dashing is the OR of BOTH facts.
-    style: withBoundaryDash(litSide.style, { crossPackage, outsideView }),
+    style: withRelationLineStyle(
+      withBoundaryDash(litSide.style, { crossPackage, outsideView }),
+      { relationKind, crossPackage, outsideView },
+    ),
     markerEnd: forward.markerEnd,
     markerStart: backward.markerEnd, // the reverse direction's arrow, worn at the source end
     data: {
       members: [forward, backward],
+      relationKind,
       depKind: forwardData.depKind,
       crossFrame: forwardData.crossFrame,
       crossPackage,
@@ -100,10 +109,7 @@ function fuse(forward: Edge, backward: Edge): Edge {
   };
 }
 
-const kindOf = (edge: Edge): string => {
-  const data = edge.data as { depKind?: string; category?: string } | undefined;
-  return data?.depKind ?? data?.category ?? "wire";
-};
+const kindOf = (edge: Edge): string => relationKindOf(edge.data) ?? "wire";
 
 const directedKey = (edge: Edge, reversed = false): string =>
   reversed ? `${kindOf(edge)} ${edge.target} ${edge.source}` : `${kindOf(edge)} ${edge.source} ${edge.target}`;

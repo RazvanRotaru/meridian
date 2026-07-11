@@ -26,6 +26,8 @@ import type { ModuleCardData } from "../derive/moduleLevel";
 import type { ModulePackageData } from "../derive/packageOverview";
 import type { GhostData } from "../derive/ghostDeps";
 import type { ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
+import { MAP_RELATION_POLICY, type LensRelationPolicy } from "../graph/lensRelationPolicy";
+import { relationParticipatesInLayout } from "../graph/lensRelationPolicy";
 
 /** One expanded file laid out by the Map's own nested-ELK pass: its frame + child cards and their
  * intra-frame wires. The frame node (id === fileId) sits first, ready to be anchored. */
@@ -41,6 +43,7 @@ export async function layoutMinimalSubgraph(
   spec: MinimalSubgraphSpec,
   basePositions: Record<string, PlacedRect>,
   arrange = false,
+  relationPolicy: LensRelationPolicy = MAP_RELATION_POLICY,
 ): Promise<{ nodes: Node[]; edges: Edge[] }> {
   if (spec.nodes.length === 0) {
     return { nodes: [], edges: [] };
@@ -53,8 +56,10 @@ export async function layoutMinimalSubgraph(
   // calls/instantiates without redundant import edges, and discarding those wires makes ELK see a
   // connected member set as isolated cards. Ghost wires stay outside core placement.
   const importEdges = spec.edges.filter((edge) => edge.kind === "import").map((edge) => ({ source: edge.source, target: edge.target }));
-  const arrangeEdges = spec.edges.filter((edge) => edge.ghost !== true).map((edge) => ({ source: edge.source, target: edge.target }));
-  const laidByFile = await layoutExpansions(spec.expansions);
+  const arrangeEdges = spec.edges
+    .filter((edge) => edge.ghost !== true && minimalEdgeParticipatesInLayout(edge, relationPolicy))
+    .map((edge) => ({ source: edge.source, target: edge.target }));
+  const laidByFile = await layoutExpansions(spec.expansions, relationPolicy);
   // Mirror path overrides only expanded frames and group summary cards: captured FILE cards keep their
   // exact map footprint, while a package member must always use its own 300×60 summary-card footprint.
   // Arrange path needs every card's real size so ELK reserves the right footprint.
@@ -66,6 +71,14 @@ export async function layoutMinimalSubgraph(
   const placedIds = new Set([...nodes, ...banded].map((node) => node.id));
   const wires = spec.edges.filter((edge) => placedIds.has(edge.source) && placedIds.has(edge.target)).map(toRfEdge);
   return { nodes: [...nodes, ...banded], edges: [...wires, ...edges] };
+}
+
+function minimalEdgeParticipatesInLayout(
+  edge: MinimalSubgraphEdge,
+  relationPolicy: LensRelationPolicy,
+): boolean {
+  const kind = edge.kind === "import" ? "imports" : edge.depKind;
+  return kind !== undefined && relationParticipatesInLayout(relationPolicy, kind);
 }
 
 /** Band the ghost satellites outside the placed member core, exactly like the Map: `placeGhostBands`
@@ -89,6 +102,7 @@ function ghostSatellites(spec: MinimalSubgraphSpec, coreNodes: Node[]): Node[] {
       crossPackage: edge.crossPackage,
       outsideView: edge.outsideView,
       category: "dep" as const,
+      relationKind: edge.depKind,
       depKind: edge.depKind,
       ghost: true,
       underlyingEdgeIds: edge.underlyingEdgeIds,
@@ -140,10 +154,13 @@ async function mirrorPlacement(
 }
 
 /** Run the Map's per-file nested-ELK pass over each expanded file's subtree, keyed by file id. */
-async function layoutExpansions(expansions: MinimalExpansion[]): Promise<Map<string, LaidExpansion>> {
+async function layoutExpansions(
+  expansions: MinimalExpansion[],
+  relationPolicy: LensRelationPolicy,
+): Promise<Map<string, LaidExpansion>> {
   const laid = await Promise.all(
     expansions.map(async (exp) => {
-      const { nodes, edges } = await layoutModuleTree(exp.nodes, exp.edges);
+      const { nodes, edges } = await layoutModuleTree(exp.nodes, exp.edges, relationPolicy);
       return { fileId: exp.fileId, nodes, edges } satisfies LaidExpansion;
     }),
   );
@@ -243,6 +260,7 @@ function toRfEdge(edge: MinimalSubgraphEdge): Edge {
         crossPackage: edge.crossPackage,
         outsideView: edge.outsideView,
         category: "dep",
+        relationKind: edge.depKind,
         depKind: edge.depKind,
         // `outsideView` owns the dash semantic; `ghost` independently owns on-demand visibility.
         ghost: edge.ghost === true,
@@ -260,6 +278,7 @@ function toRfEdge(edge: MinimalSubgraphEdge): Edge {
       crossPackage: edge.crossPackage,
       outsideView: edge.outsideView,
       category: "import",
+      relationKind: "imports",
       ghost: edge.ghost === true,
       underlyingEdgeIds: edge.underlyingEdgeIds,
     },

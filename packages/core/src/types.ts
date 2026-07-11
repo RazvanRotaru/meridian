@@ -33,6 +33,12 @@ export type NodeKind =
   | (string & {});
 
 export type EdgeKind =
+  | "registers"
+  | "binds"
+  | "provides"
+  | "injects"
+  | "owns"
+  | "aliases"
   | "calls"
   | "references"
   | "imports"

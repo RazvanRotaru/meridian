@@ -109,7 +109,7 @@ export const SERVICE_GROUPING_INFO: Record<ServiceGroupingMode, ServiceGroupingI
     summary: "Finds dependency communities using the Constant Potts Model objective and Leiden-style refinement so strongly connected services tend to share a parent.",
     evidence: "The same normalized, typed static dependency affinity used by Dependency grouping supplies the weighted undirected graph.",
     optimization: "Custom fast-moving, refinement, and aggregation stages improve a CPM-style quality function. The selected target adjusts CPM resolution; graph structure still determines the uneven final sizes.",
-    implementation: "A custom deterministic Leiden + CPM–inspired heuristic, not a binding to the authors’ reference implementation. It does not claim every formal connectivity guarantee of published Leiden.",
+    implementation: "A custom deterministic implementation of the published Leiden three-phase structure with CPM and seeded positive-temperature refinement. It is not a binding to the reference leidenalg/igraph implementation and does not claim every formal guarantee of published Leiden.",
     caveat: "Target size is a soft resolution guide, not a balance bound. Communities can remain uneven and isolated services may stand alone.",
     badge: "Reference-inspired",
     sources: [LEIDEN_SOURCE, CPM_SOURCE, MERIDIAN_CLUSTERING_SOURCE],

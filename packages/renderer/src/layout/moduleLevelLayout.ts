@@ -20,6 +20,12 @@ import type { ModuleGroupData, ModuleTreeEdge, VisibleModuleNode } from "../deri
 import type { BlockData, ModuleCardData, UnitCardData } from "../derive/moduleLevel";
 import type { StepData } from "../derive/flowSteps";
 import type { GhostData } from "../derive/ghostDeps";
+import {
+  MAP_RELATION_POLICY,
+  relationParticipatesInLayout,
+  type LensRelationPolicy,
+} from "../graph/lensRelationPolicy";
+import { relationKindOf } from "../graph/relationEdge";
 
 const GROUP_HEIGHT = 76;
 const FILE_HEIGHT = 54;
@@ -94,7 +100,11 @@ const adapter: ElkNestAdapter<VisibleModuleNode> = {
 };
 
 /** Run ELK over the nested tree and map the placed (parent-relative) coordinates to React Flow. */
-export async function layoutModuleTree(nodes: VisibleModuleNode[], edges: ModuleTreeEdge[]): Promise<{ nodes: Node[]; edges: Edge[] }> {
+export async function layoutModuleTree(
+  nodes: VisibleModuleNode[],
+  edges: ModuleTreeEdge[],
+  relationPolicy: LensRelationPolicy = MAP_RELATION_POLICY,
+): Promise<{ nodes: Node[]; edges: Edge[] }> {
   if (nodes.length === 0) {
     return { nodes: [], edges: [] };
   }
@@ -108,13 +118,31 @@ export async function layoutModuleTree(nodes: VisibleModuleNode[], edges: Module
   const ghosts = nodes.filter((node) => node.kind === "ghost");
   const commons = nodes.filter(isCommons);
   const commonsIds = new Set(commons.map((node) => node.id));
-  const coreEdges = edges.filter((edge) => edge.ghost !== true && !commonsIds.has(edge.target) && !commonsIds.has(edge.source));
+  const coreEdges = layoutEdgesForPolicy(
+    edges.filter((edge) => edge.ghost !== true && !commonsIds.has(edge.target) && !commonsIds.has(edge.source)),
+    relationPolicy,
+  );
   const byId = new Map(core.map((node) => [node.id, node]));
   const laid = await runElkLayout(buildNestedElkGraph(core, coreEdges, adapter, CANVAS_ROOT_ELK_OPTIONS));
   const placed = emitReactFlowNodes(laid, (elkNode, parentId) => toNode(elkNode, parentId, byId));
   const banded = ghosts.length > 0 ? placeGhostBands(ghosts, edges.filter((edge) => edge.ghost === true), placed) : [];
   const docked = placeCommonsDock(commons, placed, leafSize);
   return { nodes: [...placed, ...banded, ...docked], edges: edges.map(toEdge) };
+}
+
+/** Select the relationships allowed to shape geometry. Exact lens policy owns semantic edges;
+ * kindless flow edges remain structural. A malformed kindless dependency is paint-only rather than
+ * silently becoming a call and pulling ELK's layers around. */
+export function layoutEdgesForPolicy(
+  edges: readonly ModuleTreeEdge[],
+  relationPolicy: LensRelationPolicy,
+): ModuleTreeEdge[] {
+  return edges.filter((edge) => {
+    const kind = relationKindOf(edge);
+    return kind === null
+      ? edge.category === "flow"
+      : relationParticipatesInLayout(relationPolicy, kind);
+  });
 }
 
 /** Every leaf card sizes to its own content so a long name is never clipped: blocks/steps/ghosts
@@ -281,6 +309,7 @@ function toEdge(edge: ModuleTreeEdge): Edge {
       outsideView: edge.outsideView,
       category: edge.category,
       ghost: edge.ghost === true,
+      relationKind: relationKindOf(edge) ?? undefined,
       depKind: edge.depKind,
       underlyingEdgeIds: edge.underlyingEdgeIds,
       commons: edge.commons === true,

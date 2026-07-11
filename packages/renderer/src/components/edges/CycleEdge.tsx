@@ -35,6 +35,6 @@ export function CycleEdge({ id, sourceX, sourceY, targetX, targetY, sourcePositi
 }
 
 function cycleLabelText(cycle: CycleEdgeData): string {
-  const kind = cycle.depKind ?? "wire";
+  const kind = cycle.relationKind ?? cycle.depKind ?? "wire";
   return `⇄ ${kind} ×${cycle.forwardWeight}/×${cycle.backwardWeight}`;
 }

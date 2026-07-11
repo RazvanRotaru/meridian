@@ -91,7 +91,7 @@ export function stampMinimalGraphAsSemanticDetail(graph: FlatMinimalGraph): { no
 export function minimalSourceGraphLabel(source: MinimalSourceGraphState): string {
   const spec = moduleSurfaceSpec(source.viewMode);
   if (spec !== null) {
-    const crumbs = spec.focus.crumbs(
+    const crumbs = spec.navigation.crumbs(
       source.moduleEffectiveFocus,
       source.index,
       source.serviceGroupingMode,
@@ -110,7 +110,7 @@ export function minimalSourceGraphLabel(source: MinimalSourceGraphState): string
   if (scopeLabel !== null) {
     return scopeLabel;
   }
-  return nonBlank(spec?.focus.rootLabel) ?? "Graph";
+  return nonBlank(spec?.navigation.rootLabel) ?? "Graph";
 }
 
 /** A metadata-only, one-step parent. Its opaque anchor deliberately need not exist in either graph. */

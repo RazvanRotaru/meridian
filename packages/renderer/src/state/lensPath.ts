@@ -17,7 +17,7 @@ import type { ViewMode } from "../derive/edgeSelection";
 import { UNIT_CARD_KINDS } from "../derive/blockDeps";
 import { frameIdOf, leadIdOf } from "../derive/serviceClusterEdges";
 import { clusteringFor } from "../derive/serviceClusteringCache";
-import { deriveServiceDomains, SERVICE_DOMAIN_MIN_CLUSTERS } from "../derive/serviceDomains";
+import { deriveServiceDomains, shouldGroupServiceDomains } from "../derive/serviceDomains";
 import type { ServiceGroupingMode } from "../derive/serviceClusteringModes";
 import { uiFocusTarget } from "../derive/uiFocus";
 import { commonPackageFocus, type ModuleRevealState } from "./flowExplorer";
@@ -101,7 +101,7 @@ export function resolveServiceAnchors(
   const clustering = clusteringFor(index);
   const { leadOf } = clustering;
   const domainModel = deriveServiceDomains(clustering, groupingMode, groupingTargetSize);
-  const domainByLead = clustering.clusters.length >= SERVICE_DOMAIN_MIN_CLUSTERS
+  const domainByLead = shouldGroupServiceDomains(clustering)
     ? domainModel.domainByLead
     : EMPTY_DOMAIN_BY_LEAD;
   const moduleExpanded = new Set<string>();

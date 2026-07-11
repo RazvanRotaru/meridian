@@ -16,11 +16,12 @@ import type { Edge } from "@xyflow/react";
 import type { GraphEdge } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { unitLabel } from "../derive/blockDeps";
-import { relColor } from "../theme/mapPalette";
+import { relationColor } from "../theme/relationTheme";
 import { BUNDLE_EDGE_TYPE, bundleLabel, type BundleEdgeData } from "../layout/edgeBundling";
 import { activeModuleSurfaceSpec } from "./canvas/surfaceSpec";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { MONO } from "./nodes/modulemap/frameChrome";
+import { relationKindOf } from "../graph/relationEdge";
 
 interface WireInspectorProps {
   /** The clicked strand's full ordered-pair stack, clicked strand FIRST (see `pairOf`). */
@@ -73,13 +74,13 @@ function PairBody({ pair, labelOf, onClose }: Omit<WireInspectorProps, "onDrill"
 /** One strand's evidence: its kind (coloured) × weight, then the concrete links with call sites. */
 function KindSection({ edge, name, onRevealed }: { edge: Edge; name: (id: string) => string; onRevealed: () => void }) {
   const index = useBlueprint((state) => state.index);
-  const data = edge.data as { depKind?: string; category?: string; weight?: number; underlyingEdgeIds?: string[] } | undefined;
-  const kind = data?.depKind ?? data?.category ?? "wire";
+  const data = edge.data as { weight?: number; underlyingEdgeIds?: string[] } | undefined;
+  const kind = relationKindOf(edge.data) ?? "wire";
   const links = useMemo(() => resolveLinks(data?.underlyingEdgeIds, index.edgesById), [data?.underlyingEdgeIds, index.edgesById]);
   return (
     <div style={SECTION}>
       <div style={SECTION_HEAD}>
-        <span style={{ ...KIND_DOT, background: relColor(kind) ?? "#8B95A3" }} />
+        <span style={{ ...KIND_DOT, background: relationColor(kind) ?? "#8B95A3" }} />
         <span style={SECTION_KIND}>
           {kind}
           {(data?.weight ?? 1) > 1 ? <span style={HEADER_WEIGHT}> ×{data?.weight}</span> : null}
@@ -114,15 +115,16 @@ function BundleBody({ edge, labelOf, onClose, onDrill }: Omit<WireInspectorProps
         count={bundle.constituents.length}
         render={(shown) =>
           bundle.constituents.slice(0, shown).map((member) => {
-            const data = member.data as { depKind?: string; category?: string; weight?: number } | undefined;
+            const data = member.data as { weight?: number } | undefined;
+            const kind = relationKindOf(member.data) ?? "wire";
             return (
               <button key={member.id} type="button" style={ROW_BUTTON} title="Inspect this wire" onClick={() => onDrill(member)}>
-                <span style={{ ...KIND_DOT, background: relColor(data?.depKind ?? "") ?? "#8B95A3" }} />
+                <span style={{ ...KIND_DOT, background: relationColor(kind) ?? "#8B95A3" }} />
                 <span style={ROW_MAIN}>
                   {name(member.source)} <span style={ARROW}>→</span> {name(member.target)}
                 </span>
                 <span style={ROW_KIND}>
-                  {data?.depKind ?? data?.category}
+                  {kind}
                   {(data?.weight ?? 1) > 1 ? ` ×${data?.weight}` : ""}
                 </span>
               </button>

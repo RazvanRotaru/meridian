@@ -30,9 +30,6 @@ import type { ServiceClustering } from "./serviceComposition";
 import { crossesPackageBoundary } from "./packageBoundary";
 
 const EMPTY_EMISSION: GhostEmission = { ghosts: new Map(), wires: [] };
-/** The wire kind cluster-level coupling ghosts ride through the shared pipeline: it keys their
- * `gdep:couple:` edge ids and per-pair aggregation, then strips back off the painted edge. */
-const COUPLE_KIND = "couple";
 
 /** The lens's whole ghost yield: walk + cluster raw emissions, merged, finished ONCE. */
 export function serviceGhostTier(
@@ -53,7 +50,7 @@ export function serviceGhostTier(
   if (merged.ghosts.size === 0) {
     return EMPTY_GHOST_TIER;
   }
-  return withoutCoupleDepKind(finishGhostTier(merged, index, hiddenIds));
+  return finishGhostTier(merged, index, hiddenIds);
 }
 
 /** The shared code-level projection, minus ghosts a drawn cluster frame wire already represents. */
@@ -191,17 +188,25 @@ function clusterGhostEmission(full: ServiceClustering, drawnLeads: ReadonlySet<s
     }
     ghosts.set(ghostLead, ghostData(ghostNode));
     const [source, target] = sourceDrawn ? [anchor, ghostLead] : [ghostLead, anchor];
-    const key = `${source} ${target}`;
     const crossPackage = crossesPackageBoundary(edge.source, edge.target, index);
-    const existing = byPair.get(key);
-    if (existing) {
-      existing.weight += 1;
-      existing.crossPackage ||= crossPackage;
-    } else {
-      // Cluster couplings are pair-level aggregates (design-metrics' CouplingEdge unions kinds
-      // without keeping artifact edge ids), so this tier has no per-site trail — the Wire
-      // Inspector shows the wire's section header alone, like flow/IPC wires.
-      byPair.set(key, { source, target, weight: 1, kind: COUPLE_KIND, crossPackage, underlyingEdgeIds: [] });
+    for (const kind of [...edge.kinds].sort()) {
+      const evidence = edge.evidenceByKind?.get(kind) ?? { weight: 1, underlyingEdgeIds: [] };
+      const key = `${source} ${target} ${kind}`;
+      const existing = byPair.get(key);
+      if (existing) {
+        existing.weight += evidence.weight;
+        existing.crossPackage ||= crossPackage;
+        existing.underlyingEdgeIds.push(...evidence.underlyingEdgeIds);
+      } else {
+        byPair.set(key, {
+          source,
+          target,
+          weight: evidence.weight,
+          kind,
+          crossPackage,
+          underlyingEdgeIds: [...evidence.underlyingEdgeIds],
+        });
+      }
     }
   }
   return { ghosts, wires: [...byPair.values()] };
@@ -222,14 +227,4 @@ function mergeEmissions(walkTier: GhostEmission, clusterTier: GhostEmission): Gh
     return walkTier;
   }
   return { ghosts: new Map([...walkTier.ghosts, ...clusterTier.ghosts]), wires: [...walkTier.wires, ...clusterTier.wires] };
-}
-
-/** The paint layer's relationship vocabulary must not learn the `couple` pseudo-kind: stripping
- * `depKind` keeps cluster-coupling ghost wires on the exact default read the old cluster tier had
- * (gold stroke, toggled with Calls). */
-function withoutCoupleDepKind(tier: GhostTier): GhostTier {
-  return {
-    nodes: tier.nodes,
-    edges: tier.edges.map((edge) => (edge.depKind === COUPLE_KIND ? { ...edge, depKind: undefined } : edge)),
-  };
 }

@@ -36,6 +36,7 @@ import { CYCLE_EDGE_TYPE, type CycleEdgeData } from "../../layout/cycleFusion";
 import { WIRE_EDGE_TYPE } from "../edges/WireEdge";
 import type { WireHover } from "../WireTooltip";
 import { isGhostHierarchyEdge, isInteractiveSemanticEdge } from "./presentationEdges";
+import { relationKindOf } from "../../graph/relationEdge";
 
 export interface WireInteractionApi {
   /** The input edges, z-ordered always; hover/inspector-boosted (and hit-widened) when enabled. */
@@ -170,22 +171,22 @@ export function useWireHover(edges: Edge[], nodes: Node[], enabled: boolean): Wi
 function hoverText(edge: Edge): { kind: string; weight: number } {
   if (edge.type === CYCLE_EDGE_TYPE) {
     const cycle = edge.data as CycleEdgeData;
-    return { kind: `⇄ ${cycle.depKind ?? "wire"} ×${cycle.forwardWeight}/×${cycle.backwardWeight}`, weight: 1 };
+    return { kind: `⇄ ${cycle.relationKind ?? cycle.depKind ?? "wire"} ×${cycle.forwardWeight}/×${cycle.backwardWeight}`, weight: 1 };
   }
   if (edge.type === RIBBON_EDGE_TYPE) {
     const members = (edge.data as RibbonEdgeData).members ?? [];
     const breakdown = [...members]
       .sort((a, b) => ((b.data as { weight?: number })?.weight ?? 1) - ((a.data as { weight?: number })?.weight ?? 1))
       .map((member) => {
-        const data = member.data as { depKind?: string; category?: string; weight?: number } | undefined;
+        const data = member.data as { weight?: number } | undefined;
         const weight = data?.weight ?? 1;
-        return `${data?.depKind ?? data?.category ?? "wire"}${weight > 1 ? ` ×${weight}` : ""}`;
+        return `${relationKindOf(member.data) ?? "wire"}${weight > 1 ? ` ×${weight}` : ""}`;
       })
       .join(" · ");
     return { kind: breakdown, weight: 1 };
   }
-  const data = edge.data as { depKind?: string; category?: string; weight?: number } | undefined;
-  return { kind: data?.depKind ?? data?.category ?? "wire", weight: data?.weight ?? 1 };
+  const data = edge.data as { weight?: number } | undefined;
+  return { kind: relationKindOf(edge.data) ?? "wire", weight: data?.weight ?? 1 };
 }
 
 /** Each node's top-level ancestor + nesting depth (cycle-guarded — the lenient viewer tolerates
