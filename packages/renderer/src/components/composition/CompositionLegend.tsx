@@ -22,7 +22,7 @@ export function CompositionLegend() {
       </div>
       <div style={HINT_STYLE}>
         <div><b style={KBD_STYLE}>click</b> → highlight a unit's dependencies</div>
-        <div><b style={KBD_STYLE}>double-click</b> → focus the view here</div>
+        <div><b style={KBD_STYLE}>double-click</b> → navigate into this node</div>
         <div><b style={KBD_STYLE}>⌘P</b> → jump to any file / package</div>
       </div>
     </section>

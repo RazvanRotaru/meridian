@@ -27,28 +27,51 @@ export function clusterCouplingEdges(
     if (source === null || target === null || source === target || (!isServiceContainer(source) && !isServiceContainer(target))) {
       continue;
     }
-    const key = `${source}->${target}`;
     const crossFrame = leadOf.get(edge.source) !== leadOf.get(edge.target);
     const crossPackage = crossesPackageBoundary(edge.source, edge.target, index);
-    const existing = byPair.get(key);
-    if (existing) {
-      existing.weight += 1;
-      existing.crossFrame = existing.crossFrame || crossFrame;
-      existing.crossPackage ||= crossPackage;
-    } else {
-      byPair.set(key, {
-        id: `dep:${key}`,
-        source,
-        target,
-        weight: 1,
-        crossFrame,
-        crossPackage,
-        outsideView: false,
-        category: "dep",
-      });
+    for (const [kind, evidence] of couplingEvidence(edge)) {
+      const key = `${kind}:${source}->${target}`;
+      const existing = byPair.get(key);
+      if (existing) {
+        existing.weight += evidence.weight;
+        existing.crossFrame = existing.crossFrame || crossFrame;
+        existing.crossPackage ||= crossPackage;
+        existing.underlyingEdgeIds = uniqueIds(existing.underlyingEdgeIds, evidence.underlyingEdgeIds);
+      } else {
+        byPair.set(key, {
+          id: `dep:${key}`,
+          source,
+          target,
+          weight: evidence.weight,
+          crossFrame,
+          crossPackage,
+          outsideView: false,
+          category: "dep",
+          relationKind: kind,
+          depKind: kind,
+          underlyingEdgeIds: [...evidence.underlyingEdgeIds],
+        });
+      }
     }
   }
   return [...byPair.values()];
+}
+
+interface KindEvidence {
+  weight: number;
+  underlyingEdgeIds: readonly string[];
+}
+
+/** Compatibility for hand-built/test couplings predating evidence retention: every declared kind
+ * still becomes its own typed wire, with a unit weight and no fabricated source attribution. */
+function couplingEvidence(edge: Couplings[number]): Array<[string, KindEvidence]> {
+  return [...edge.kinds]
+    .sort()
+    .map((kind) => [kind, edge.evidenceByKind?.get(kind) ?? { weight: 1, underlyingEdgeIds: [] }]);
+}
+
+function uniqueIds(existing: readonly string[] | undefined, incoming: readonly string[]): string[] {
+  return [...new Set([...(existing ?? []), ...incoming])];
 }
 
 export function clusterDegrees(couplings: Couplings, leadOf: Map<string, string>): ClusterDegrees {

@@ -1,6 +1,6 @@
 /**
- * The Map lens's CODE-BLOCK dependency substrate: the artifact's raw coupling edges (calls /
- * instantiates / extends / implements), kept at their real endpoints so a wire can attach to the
+ * The module lenses' CODE-BLOCK relationship substrate: the artifact's raw typed edges (service
+ * composition, calls, construction, inheritance, references), kept at their real endpoints so a wire can attach to the
  * SPECIFIC code block that uses the dependency — a method, a function, a type definition — not to
  * the class as a whole. Projected onto the visible frontier per level by `liftEdges`: with a
  * method node drawn the wire starts at that method; with only the class card/frame drawn it folds
@@ -51,7 +51,7 @@ export function constructionTarget(targetId: string, index: GraphIndex): string 
 }
 
 /** A visible-frontier dependency wire, ready for the level's edge set. `kind` is the underlying
- * coupling kind (calls / instantiates / extends / implements / references) so the paint layer can
+ * exact relationship kind so the paint layer can
  * colour and the toggles can filter per relationship type. */
 export interface LiftedDepEdge {
   source: string;

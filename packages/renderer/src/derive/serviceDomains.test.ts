@@ -2,7 +2,7 @@ import type { UnitMetrics } from "@meridian/design-metrics";
 import { describe, expect, it } from "vitest";
 import { SERVICE_GROUPING_OPTIONS } from "./serviceClusteringModes";
 import type { ServiceClustering } from "./serviceComposition";
-import { deriveServiceDomains, serviceDomainLabel } from "./serviceDomains";
+import { deriveServiceDomains, serviceDomainLabel, UNASSIGNED_SERVICE_DOMAIN_ID } from "./serviceDomains";
 
 describe("deriveServiceDomains", () => {
   it("keeps every service in exactly one artificial parent for every mode", () => {
@@ -46,6 +46,28 @@ describe("deriveServiceDomains", () => {
     expect(deriveServiceDomains(clustering, "domain")).not.toBe(deriveServiceDomains(clustering, "folder"));
     expect(deriveServiceDomains(clustering, "edge-cut", 6)).toBe(deriveServiceDomains(clustering, "edge-cut", 6));
     expect(deriveServiceDomains(clustering, "edge-cut", 6)).not.toBe(deriveServiceDomains(clustering, "edge-cut", 12));
+  });
+
+  it("keeps unreachable folder fallbacks behind one honest Unassigned parent", () => {
+    const clustering = fixture();
+    const fallback = "src/ui/ActionChipView.tsx";
+    clustering.clusters.push({ leadId: fallback, memberIds: [fallback, `${fallback}#Props`], provenance: "unassigned" });
+    clustering.leadOf.set(fallback, fallback);
+    clustering.leadOf.set(`${fallback}#Props`, fallback);
+    clustering.metrics.set(fallback, metric(fallback, "ActionChipView.tsx", fallback));
+    clustering.metrics.set(`${fallback}#Props`, metric(`${fallback}#Props`, "Props", fallback));
+
+    for (const option of SERVICE_GROUPING_OPTIONS) {
+      const model = deriveServiceDomains(clustering, option.id);
+      const unassigned = model.domainById.get(UNASSIGNED_SERVICE_DOMAIN_ID);
+      expect(unassigned).toMatchObject({
+        label: "Unassigned code",
+        kind: "unassigned",
+        leadIds: [fallback],
+      });
+      expect(model.domains.filter((domain) => domain.kind === "services").flatMap((domain) => domain.leadIds))
+        .not.toContain(fallback);
+    }
   });
 });
 

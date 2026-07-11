@@ -30,7 +30,7 @@ import { finalizeServiceDomainNode, finalizeServiceNode } from "./serviceCluster
 import { serviceGhostTier } from "./serviceGhosts";
 import {
   deriveServiceDomains,
-  SERVICE_DOMAIN_MIN_CLUSTERS,
+  shouldGroupServiceDomains,
   visibleServiceDomains,
   type ServiceDomain,
   type ServiceDomainModel,
@@ -64,8 +64,9 @@ export function deriveServiceTree(
   const full = clusteringFor(index);
   const scoped = scopedTo(full, options.scopeLeadIds);
   const domainModel = deriveServiceDomains(full, options.groupingMode, options.groupingTargetSize);
+  const groupsDomains = shouldGroupServiceDomains(full);
   const focusLead = resolveFocusLead(focus, scoped);
-  const focusDomain = resolveFocusDomain(focus, scoped, domainModel);
+  const focusDomain = resolveFocusDomain(focus, scoped, domainModel, groupsDomains);
   // FOCUS zooms INSIDE whatever the scope kept: a service narrows to one cluster; a synthetic
   // domain narrows to that domain's service leads and drops its own wrapper, like a Map folder dive.
   const clustering = focusLead !== null
@@ -84,7 +85,7 @@ export function deriveServiceTree(
   const domains = focusLead === null
     && focusDomain === null
     && options.scopeLeadIds === undefined
-    && clustering.clusters.length >= SERVICE_DOMAIN_MIN_CLUSTERS
+    && groupsDomains
     && visibleDomains.length > 0
     ? visibleDomains
     : [];
@@ -156,9 +157,9 @@ function resolveFocusDomain(
   focus: string | null,
   clustering: ServiceClustering,
   model: ServiceDomainModel,
+  groupsDomains: boolean,
 ): ServiceDomain | null {
-  const fullDomainSize = model.domains.reduce((sum, domain) => sum + domain.leadIds.length, 0);
-  if (focus === null || fullDomainSize < SERVICE_DOMAIN_MIN_CLUSTERS) {
+  if (focus === null || !groupsDomains) {
     return null;
   }
   const domain = model.domainById.get(focus);

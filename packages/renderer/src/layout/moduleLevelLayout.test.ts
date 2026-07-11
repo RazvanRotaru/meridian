@@ -9,7 +9,8 @@ import { describe, expect, it } from "vitest";
 import type { GhostData } from "../derive/ghostDeps";
 import type { ModuleCardData } from "../derive/moduleLevel";
 import type { ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
-import { layoutModuleTree } from "./moduleLevelLayout";
+import { layoutEdgesForPolicy, layoutModuleTree } from "./moduleLevelLayout";
+import { SERVICE_RELATION_POLICY, UI_RELATION_POLICY } from "../graph/lensRelationPolicy";
 
 function fileNode(id: string): VisibleModuleNode {
   const data: ModuleCardData = {
@@ -33,6 +34,21 @@ function ghostNode(id: string): VisibleModuleNode {
 
 function importEdge(source: string, target: string): ModuleTreeEdge {
   return { id: `imp:${source}->${target}`, source, target, weight: 1, crossFrame: false, crossPackage: false, outsideView: false, category: "import" };
+}
+
+function semanticEdge(kind: string): ModuleTreeEdge {
+  return {
+    id: `${kind}:a->b`,
+    source: "a",
+    target: "b",
+    weight: 1,
+    crossFrame: false,
+    crossPackage: false,
+    outsideView: false,
+    category: "dep",
+    relationKind: kind,
+    depKind: kind,
+  };
 }
 
 function ghostWire(source: string, target: string): ModuleTreeEdge {
@@ -160,5 +176,36 @@ describe("layoutModuleTree ghost placement", () => {
     expect(laid.every((node) => node.type !== "ghost")).toBe(true);
     expect(laid).toHaveLength(2);
     expect(laidEdges).toHaveLength(1);
+  });
+});
+
+describe("lens relation layout policy", () => {
+  const flow: ModuleTreeEdge = {
+    id: "flow:a->b",
+    source: "a",
+    target: "b",
+    weight: 1,
+    crossFrame: false,
+    crossPackage: false,
+    outsideView: false,
+    category: "flow",
+  };
+
+  it("keeps Service composition/inheritance constraints out of behavioral-call geometry", () => {
+    const edges = [semanticEdge("registers"), semanticEdge("extends"), semanticEdge("calls"), semanticEdge("imports"), flow];
+    expect(layoutEdgesForPolicy(edges, SERVICE_RELATION_POLICY).map((edge) => edge.id)).toEqual([
+      "registers:a->b",
+      "extends:a->b",
+      "flow:a->b",
+    ]);
+  });
+
+  it("lets renders shape UI while calls remain a paint-only overlay", () => {
+    const edges = [semanticEdge("renders"), semanticEdge("implements"), semanticEdge("calls"), flow];
+    expect(layoutEdgesForPolicy(edges, UI_RELATION_POLICY).map((edge) => edge.id)).toEqual([
+      "renders:a->b",
+      "implements:a->b",
+      "flow:a->b",
+    ]);
   });
 });

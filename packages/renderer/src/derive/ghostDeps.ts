@@ -32,7 +32,7 @@ export type GhostData = {
 };
 
 /** A wire between a drawn code node (or step) and a ghost; endpoints are REAL artifact/step ids.
- * `kind` is the underlying coupling kind (calls / instantiates / extends / implements / references)
+ * `kind` is the underlying exact relation kind
  * so an off-level dependency wears the same per-relationship colour as an on-level one. */
 export interface GhostWire {
   source: string;

@@ -45,8 +45,7 @@ const DRAWN_DEEP: Record<string, Arrangement> = {
 type EdgeData = { category?: string; depKind?: string; crossFrame?: boolean };
 const strokeOf = (edge: Edge): string => String((edge.style as { stroke?: string } | undefined)?.stroke);
 
-/** EVERY painted wire classifies — dep wires by depKind (a KINDLESS dep is the Service lens's
- * cluster-coupling aggregate, split by frame-crossing), imports by frame-crossing, and anything
+/** EVERY painted wire classifies — dep wires by exact depKind, imports by frame-crossing, and anything
  * else keeps its raw category so a new wire class FAILS the pin check instead of escaping it. */
 function wireClassOf(data: EdgeData): string {
   if (data.category === "dep") {
@@ -101,8 +100,6 @@ describe("EDGE COLOURS — one palette, every surface", () => {
       renders: RENDERS_WIRE,
       "import-cross": IMPORT_CROSS,
       "import-sibling": IMPORT_SIBLING,
-      // The Service lens's kindless cluster-coupling aggregate wears the SHARED cross-frame gold.
-      "dep-untyped-cross": IMPORT_CROSS,
     };
     for (const [mode, byKind] of observed) {
       for (const [kind, strokes] of byKind) {
@@ -110,18 +107,20 @@ describe("EDGE COLOURS — one palette, every surface", () => {
         expect([...strokes], `surface "${mode}", kind "${kind}"`).toEqual([expected[kind]]);
       }
     }
-    // The typed dep kinds are actually EXERCISED everywhere (an empty map would pass vacuously)…
-    for (const mode of MODULE_SURFACE_MODES) {
-      for (const kind of ["calls", "instantiates", "references"]) {
-        expect(observed.get(mode)!.has(kind), `surface "${mode}" never drew a "${kind}" wire`).toBe(true);
-      }
+    // Every shared kind is exercised on more than one surface. The Service overview is now an
+    // architectural projection: collapsed semantic/Unassigned parents legitimately hide a pair
+    // that remains drawn in Map/UI, so parity is “same kind, same colour wherever present.”
+    for (const kind of ["calls", "instantiates", "references"]) {
+      const surfaceCount = [...observed.values()].filter((kinds) => kinds.has(kind)).length;
+      expect(surfaceCount, `"${kind}" was not exercised across surfaces`).toBeGreaterThanOrEqual(2);
     }
     // …renders is the UI lens's projection (its cyan identity), imports the folder lenses' backdrop,
-    // and the Service lens's kindless coupling aggregate is exercised (not silently absent).
+    // and the Service lens preserves exact relationship kinds (no untyped aggregate).
     expect(observed.get("ui")!.has("renders")).toBe(true);
     expect(observed.get("modules")!.has("import-cross")).toBe(true);
     expect(observed.get("modules")!.has("import-sibling")).toBe(true);
-    expect(observed.get("call")!.has("dep-untyped-cross")).toBe(true);
+    expect(observed.get("call")!.has("calls")).toBe(true);
+    expect(observed.get("call")!.size).toBeGreaterThan(0);
     // Cross-surface equality: any kind two surfaces both draw wears the identical stroke.
     for (const [modeA, kindsA] of observed) {
       for (const [modeB, kindsB] of observed) {
@@ -164,7 +163,6 @@ describe("EDGE COLOURS — one palette, every surface", () => {
       renders: RENDERS_WIRE,
       "import-cross": IMPORT_CROSS,
       "import-sibling": IMPORT_SIBLING,
-      "dep-untyped-cross": IMPORT_CROSS,
       // A fused cycle keeps its kind's colour — same pin as the plain wire it folds.
       "cycle:calls": REL_COLORS.calls,
       "cycle:instantiates": REL_COLORS.instantiates,
@@ -176,9 +174,9 @@ describe("EDGE COLOURS — one palette, every surface", () => {
         expect([...strokes], `surface "${mode}", kind "${kind}"`).toEqual([expected[kind]]);
       }
     }
-    // The ribbon fold is EXERCISED — the multi-kind ALPHA→ORDER pair folds on every surface, so an
-    // empty result can't pass this vacuously (a per-lens recolour would have to survive the pin).
-    expect(ribbons, "no ribbon folded — the fold pass is untested").toBeGreaterThanOrEqual(MODULE_SURFACE_MODES.length);
+    // The ribbon fold is exercised in both code-oriented projections. Service's collapsed
+    // architectural parents may aggregate that pair away before paint.
+    expect(ribbons, "no ribbon folded — the fold pass is untested").toBeGreaterThanOrEqual(2);
     // Cross-surface: any class two surfaces both draw wears the identical stroke.
     for (const [modeA, kindsA] of observed) {
       for (const [modeB, kindsB] of observed) {

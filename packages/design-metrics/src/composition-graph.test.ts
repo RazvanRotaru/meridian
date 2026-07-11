@@ -50,7 +50,7 @@ describe("couplingEdges", () => {
     expect(couplingEdges(nodes, [edge("ts:m#f", "ts:m#A.a1")])).toEqual([]);
   });
 
-  it("dedupes two call sites between the same unit pair into one edge", () => {
+  it("dedupes a unit pair while retaining exact per-kind weights and evidence ids", () => {
     const nodes = [
       node("ts:m", "module"),
       node("ts:m#A", "class", "ts:m"),
@@ -60,10 +60,28 @@ describe("couplingEdges", () => {
       node("ts:m#B.b1", "method", "ts:m#B"),
       node("ts:m#B.b2", "method", "ts:m#B"),
     ];
-    const edges = [edge("ts:m#A.a1", "ts:m#B.b1"), edge("ts:m#A.a2", "ts:m#B.b2")];
+    const first = edge("ts:m#A.a1", "ts:m#B.b1");
+    first.weight = 2;
+    const second = edge("ts:m#A.a2", "ts:m#B.b2");
+    const inheritance = edge("ts:m#A", "ts:m#B", "implements");
+    const registration = edge("ts:m#A.a1", "ts:m#B", "registers");
+    const edges = [first, second, inheritance, registration];
     const result = couplingEdges(nodes, edges);
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({ source: "ts:m#A", target: "ts:m#B" });
+    expect([...result[0].kinds].sort()).toEqual(["calls", "implements", "registers"]);
+    expect(result[0].evidenceByKind?.get("calls")).toEqual({
+      weight: 3,
+      underlyingEdgeIds: [first.id, second.id],
+    });
+    expect(result[0].evidenceByKind?.get("implements")).toEqual({
+      weight: 1,
+      underlyingEdgeIds: [inheritance.id],
+    });
+    expect(result[0].evidenceByKind?.get("registers")).toEqual({
+      weight: 1,
+      underlyingEdgeIds: [registration.id],
+    });
   });
 
   it("flags an extends-only pair as inheritanceOnly", () => {

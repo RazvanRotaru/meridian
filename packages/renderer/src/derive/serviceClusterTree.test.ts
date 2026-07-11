@@ -5,8 +5,9 @@ import { buildModuleGraph } from "./moduleGraph";
 import { buildBlockDeps } from "./blockDeps";
 import { deriveServiceTree } from "./serviceClusterTree";
 import { frameIdOf } from "./serviceClusterEdges";
-import { isServiceDomainId } from "./serviceDomains";
+import { isServiceDomainId, UNASSIGNED_SERVICE_DOMAIN_ID } from "./serviceDomains";
 import { layoutModuleTree } from "../layout/moduleLevelLayout";
+import { moduleSurfaceSpec } from "../components/canvas/surfaceSpec";
 
 function node(id: string, kind: string, parentId?: string, displayName?: string, file = "f.ts"): GraphNode {
   return {
@@ -274,6 +275,87 @@ describe("deriveServiceTree domain placement parents", () => {
     expect(focused.effectiveFocus).toBe(domains[0].id);
     expect(focused.nodes.some((item) => isServiceDomainId(item.id))).toBe(false);
     expect(focused.nodes.filter((item) => item.id.startsWith("svc:"))).toHaveLength(12);
+  });
+});
+
+describe("deriveServiceTree unassigned discoverability", () => {
+  const nodes = [
+    node("ts:src", "package", undefined, "src", "src"),
+    node("ts:src/services/chat.ts", "module", "ts:src", "chat.ts", "src/services/chat.ts"),
+    node("ts:src/services/chat.ts#ChatService", "class", "ts:src/services/chat.ts", "ChatService", "src/services/chat.ts"),
+    node("ts:src/services/chat.ts#ChatService.run", "method", "ts:src/services/chat.ts#ChatService", "run", "src/services/chat.ts"),
+    node("ts:src/components/ActionChipView.tsx", "module", "ts:src", "ActionChipView.tsx", "src/components/ActionChipView.tsx"),
+    node("ts:src/components/ActionChipView.tsx#ActionChipView", "class", "ts:src/components/ActionChipView.tsx", "ActionChipView", "src/components/ActionChipView.tsx"),
+    node("ts:src/components/ActionChipView.tsx#ActionChipView.render", "method", "ts:src/components/ActionChipView.tsx#ActionChipView", "render", "src/components/ActionChipView.tsx"),
+  ];
+  const unassignedIndex = buildGraphIndex({ nodes, edges: [] } as unknown as GraphArtifact);
+  const unassignedGraph = buildModuleGraph(unassignedIndex);
+  const unassignedDeps = buildBlockDeps(unassignedIndex);
+
+  it("shows one collapsed Unassigned code parent without counting its units as services", () => {
+    const tree = deriveServiceTree(unassignedIndex, null, NONE, unassignedGraph, unassignedDeps, flows);
+    const unassigned = tree.nodes.find((item) => item.id === UNASSIGNED_SERVICE_DOMAIN_ID);
+
+    expect(unassigned).toMatchObject({ kind: "serviceDomain", isContainer: true, isExpanded: false });
+    expect(unassigned?.data).toMatchObject({
+      label: "Unassigned code",
+      countLabel: "1 unassigned group",
+      serviceDomainKind: "unassigned",
+    });
+    expect(tree.nodes.some((item) => item.id === frameIdOf("ts:src/components/ActionChipView.tsx#ActionChipView"))).toBe(false);
+  });
+
+  it("navigates into Unassigned code and reveals its ordinary expandable frames", () => {
+    const tree = deriveServiceTree(
+      unassignedIndex,
+      UNASSIGNED_SERVICE_DOMAIN_ID,
+      NONE,
+      unassignedGraph,
+      unassignedDeps,
+      flows,
+    );
+    expect(tree.effectiveFocus).toBe(UNASSIGNED_SERVICE_DOMAIN_ID);
+    expect(tree.nodes.some((item) => item.id === UNASSIGNED_SERVICE_DOMAIN_ID)).toBe(false);
+    expect(tree.nodes.find((item) => item.id === frameIdOf("ts:src/components/ActionChipView.tsx#ActionChipView"))?.data)
+      .toMatchObject({ countLabel: "1 unit" });
+  });
+
+  it("keeps one real service's domain navigation and breadcrumb when Unassigned forces grouping", () => {
+    const overview = deriveServiceTree(unassignedIndex, null, NONE, unassignedGraph, unassignedDeps, flows);
+    const serviceDomain = overview.nodes.find((item) =>
+      item.kind === "serviceDomain" && item.id !== UNASSIGNED_SERVICE_DOMAIN_ID);
+    expect(serviceDomain).toBeDefined();
+
+    const serviceSurface = moduleSurfaceSpec("call")!;
+    expect(serviceSurface.navigation.canNavigateInto(serviceDomain!.kind, serviceDomain!.id)).toBe(true);
+    const domainTree = deriveServiceTree(
+      unassignedIndex,
+      serviceDomain!.id,
+      NONE,
+      unassignedGraph,
+      unassignedDeps,
+      flows,
+    );
+    expect(domainTree.effectiveFocus).toBe(serviceDomain!.id);
+    expect(serviceSurface.navigation.crumbs(domainTree.effectiveFocus, unassignedIndex)).toEqual([{
+      id: serviceDomain!.id,
+      label: (serviceDomain!.data as { label: string }).label,
+    }]);
+
+    const chatLead = "ts:src/services/chat.ts#ChatService";
+    const serviceFrame = frameIdOf(chatLead);
+    const serviceTree = deriveServiceTree(
+      unassignedIndex,
+      serviceFrame,
+      NONE,
+      unassignedGraph,
+      unassignedDeps,
+      flows,
+    );
+    expect(serviceSurface.navigation.crumbs(serviceTree.effectiveFocus, unassignedIndex)).toEqual([
+      { id: serviceDomain!.id, label: (serviceDomain!.data as { label: string }).label },
+      { id: serviceFrame, label: "ChatService" },
+    ]);
   });
 });
 

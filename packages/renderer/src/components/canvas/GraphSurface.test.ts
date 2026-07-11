@@ -1,34 +1,38 @@
 import { describe, expect, it } from "vitest";
 import type { Node } from "@xyflow/react";
-import { decorateInspectedGhost, shouldVirtualizeCanvasNodes } from "./GraphSurface";
+import { decorateGhostGroupToggles, shouldVirtualizeCanvasNodes } from "./GraphSurface";
 import { MINIMAP_NODE_CAP } from "./flowCanvasProps";
 
 function node(id: string, type: string, x: number): Node {
   return { id, type, position: { x, y: 12 }, data: { label: id }, style: { width: 180, height: 50 } };
 }
 
-describe("decorateInspectedGhost", () => {
-  it("marks only the matching ghost without changing identity or geometry", () => {
+describe("decorateGhostGroupToggles", () => {
+  it("attaches the explicit disclosure action only to grouped parent ghosts", () => {
     const core = node("core", "file", 40);
-    const ghost = node("ghost", "ghost", 260);
-    const nodes = [core, ghost];
+    const exact = node("ghost", "ghost", 260);
+    const parent = {
+      ...node("parent", "ghost", 460),
+      data: { label: "parent", ghostGroupId: "parent", ghostExpanded: false },
+    };
+    const nodes = [core, exact, parent];
+    const toggle = () => undefined;
 
-    const decorated = decorateInspectedGhost(nodes, ghost.id);
+    const decorated = decorateGhostGroupToggles(nodes, toggle);
 
     expect(decorated).not.toBe(nodes);
     expect(decorated[0]).toBe(core);
-    expect(decorated[1]).not.toBe(ghost);
-    expect(decorated[1]).toMatchObject({ id: ghost.id, type: "ghost", position: ghost.position, style: ghost.style });
-    expect(decorated[1].position).toBe(ghost.position);
-    expect((decorated[1].data as { inspected?: boolean }).inspected).toBe(true);
-    expect((ghost.data as { inspected?: boolean }).inspected).toBeUndefined();
+    expect(decorated[1]).toBe(exact);
+    expect(decorated[2]).not.toBe(parent);
+    expect(decorated[2]).toMatchObject({ id: parent.id, type: "ghost", position: parent.position, style: parent.style });
+    expect(decorated[2].position).toBe(parent.position);
+    expect((decorated[2].data as { toggleGhostGroup?: unknown }).toggleGhostGroup).toBe(toggle);
+    expect((parent.data as { toggleGhostGroup?: unknown }).toggleGhostGroup).toBeUndefined();
   });
 
-  it("returns the original paint array when inspection is absent or no ghost matches", () => {
+  it("returns the original paint array when no grouped parent is present", () => {
     const nodes = [node("same-id", "file", 0), node("ghost", "ghost", 200)];
-    expect(decorateInspectedGhost(nodes, null)).toBe(nodes);
-    expect(decorateInspectedGhost(nodes, "missing")).toBe(nodes);
-    expect(decorateInspectedGhost(nodes, "same-id")).toBe(nodes);
+    expect(decorateGhostGroupToggles(nodes, () => undefined)).toBe(nodes);
   });
 });
 

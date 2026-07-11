@@ -50,15 +50,19 @@ export function finalizeServiceNode(
  * frame contract; only action boundaries translate its stable synthetic id to real service data. */
 export function finalizeServiceDomainNode(entry: Skeleton, domain: ServiceDomain): VisibleModuleNode {
   const count = entry.childCount;
+  const countLabel = domain.kind === "unassigned"
+    ? `${count} ${count === 1 ? "unassigned group" : "unassigned groups"}`
+    : `${count} ${count === 1 ? "service" : "services"}`;
   const data: ModuleGroupData = {
     label: domain.label,
     fileCount: count,
-    countLabel: `${count} ${count === 1 ? "service" : "services"}`,
+    countLabel,
     ca: domain.ca,
     ce: domain.ce,
     isContainer: entry.isContainer,
     isExpanded: entry.isExpanded,
     serviceDomain: true,
+    serviceDomainKind: domain.kind,
   };
   return { ...entry, data };
 }
@@ -73,6 +77,9 @@ function clusterData(
   return {
     label: metric?.displayName ?? cluster.leadId,
     fileCount: cluster.memberIds.length,
+    countLabel: cluster.provenance === "unassigned"
+      ? `${cluster.memberIds.length} ${cluster.memberIds.length === 1 ? "unit" : "units"}`
+      : undefined,
     ca: degrees.ca.get(cluster.leadId)?.size ?? 0,
     ce: degrees.ce.get(cluster.leadId)?.size ?? 0,
     isContainer: entry.isContainer,

@@ -63,8 +63,9 @@ describe("Service grouping information", () => {
     expect(SERVICE_GROUPING_INFO["coupling-cut"].implementation).toMatch(/custom Meridian/i);
     expect(SERVICE_GROUPING_INFO["coupling-cut"].implementation).toMatch(/does not guarantee the global minimum/i);
 
-    expect(SERVICE_GROUPING_INFO.leiden.implementation).toMatch(/custom deterministic Leiden/i);
-    expect(SERVICE_GROUPING_INFO.leiden.implementation).toMatch(/does not claim every formal connectivity guarantee/i);
+    expect(SERVICE_GROUPING_INFO.leiden.implementation).toMatch(/custom deterministic implementation/i);
+    expect(SERVICE_GROUPING_INFO.leiden.implementation).toMatch(/seeded positive-temperature refinement/i);
+    expect(SERVICE_GROUPING_INFO.leiden.implementation).toMatch(/does not claim every formal guarantee/i);
     expect(SERVICE_GROUPING_INFO.leiden.sources.map((source) => source.href)).toContain(
       "https://doi.org/10.1038/s41598-019-41695-z",
     );

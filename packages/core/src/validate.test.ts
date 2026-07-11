@@ -69,4 +69,17 @@ describe("validateArtifact", () => {
     expect(result.ok).toBe(true);
     expect(result.warnings.map((issue) => issue.code)).toContain("UNKNOWN_NODE_KIND");
   });
+
+  it("recognizes the service-composition edge vocabulary", () => {
+    const compositionKinds = ["registers", "binds", "provides", "injects", "owns", "aliases"] as const;
+    for (const kind of compositionKinds) {
+      const artifact = validArtifact();
+      const edge = artifact.edges[0]!;
+      edge.kind = kind;
+      edge.id = `${kind}@${edge.source}|${edge.target}`;
+      const result = validateArtifact(artifact);
+      expect(result.ok).toBe(true);
+      expect(result.warnings).toEqual([]);
+    }
+  });
 });

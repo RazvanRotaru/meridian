@@ -10,11 +10,13 @@
 
 import { type Edge, type Node } from "@xyflow/react";
 import type { GraphIndex } from "../graph/graphIndex";
-import { arrowMarker, CALLER_WIRE, IPC_WIRE, RENDERS_WIRE } from "../theme/edgeColors";
-import { IMPORT_CROSS, IMPORT_SIBLING, relColor } from "../theme/mapPalette";
+import { arrowMarker, CALLER_WIRE } from "../theme/edgeColors";
+import { IMPORT_CROSS, IMPORT_SIBLING } from "../theme/mapPalette";
 import { groupLitGhosts } from "../derive/groupGhosts";
 import { repositionLitGhosts } from "./ghostReposition";
 import { withBoundaryDash } from "../layout/edgeBoundary";
+import { relationKindOf } from "../graph/relationEdge";
+import { relationColor, withRelationLineStyle } from "../theme/relationTheme";
 
 // Wire colour = relationship TYPE (see baseStroke), the same whether or not it is selected.
 const CROSS_FRAME_COLOR = IMPORT_CROSS;
@@ -81,8 +83,13 @@ export function emphasize(
   ghostPresentation?: GhostPresentationOptions,
 ): EmphasizedLevel {
   const typeById = new Map(nodes.map((node) => [node.id, node.type]));
-  const active = [...activeIds].filter((id) => typeById.has(id));
-  const activeSet = new Set(active);
+  // A collapsed ghost group parent is a paint-time node, so its real parent id may be absent from
+  // the canonical layout array on the next repaint. Seed emphasis from the exact ghost children it
+  // represents; otherwise selecting that visible parent would immediately prune it off the canvas.
+  const active = selectionSeeds(activeIds, nodes, ghostPresentation).filter((id) => typeById.has(id));
+  // Protection must keep the reader's literal selection, not the expanded seed list. Protecting
+  // every child would prevent those children from folding back into their selected parent anchor.
+  const activeSet = new Set(activeIds);
   if (active.length === 0) {
     return pruneUnlitDeps({ nodes, edges: edges.map((edge) => styleEdge(edge, "none")), beacons: new Set() }, activeSet, ghostPresentation);
   }
@@ -103,6 +110,31 @@ export function emphasize(
   const styledEdges = edges.map((edge) => styleEdge(edge, near.has(edge.source) && near.has(edge.target) ? "near" : "none"));
   const styledNodes = nodes.map((node) => (near.has(node.id) ? node : dimNode(node)));
   return pruneUnlitDeps(applyBeacons({ nodes: styledNodes, edges: styledEdges }, active, typeById), activeSet, ghostPresentation);
+}
+
+/** Expand selected paint-time ghost parents to their canonical immediate children. All other ids
+ * pass through unchanged and order is stable, so ordinary selections are bit-for-bit equivalent. */
+export function selectionSeeds(
+  activeIds: ReadonlySet<string>,
+  nodes: readonly Node[],
+  ghostPresentation?: GhostPresentationOptions,
+): string[] {
+  const seeds = new Set(activeIds);
+  if (!ghostPresentation?.groupByParent) {
+    return [...seeds];
+  }
+  const coreIds = new Set(nodes.filter((node) => node.type !== "ghost").map((node) => node.id));
+  for (const node of nodes) {
+    if (node.type === "ghost") {
+      const parentId = ghostPresentation.index.parentOf.get(node.id);
+      // A real core parent is already a canonical emphasis seed; only paint-time ghost parents
+      // need reconstruction from their represented children.
+      if (typeof parentId === "string" && !coreIds.has(parentId) && activeIds.has(parentId)) {
+        seeds.add(node.id);
+      }
+    }
+  }
+  return [...seeds];
 }
 
 /**
@@ -289,8 +321,11 @@ function styleEdge(edge: Edge, emphasis: EdgeEmphasis): Edge {
   // Dash is independent of `crossFrame`: it means the wire leaves this view or its npm package.
   const stroke = baseStroke(edge);
   const width = weightWidth(edge);
-  const style = withBoundaryDash(
-    { stroke, strokeWidth: lit ? width + EMPHASIS_EXTRA : width, opacity: lit ? 1 : dimOpacity(edge) },
+  const style = withRelationLineStyle(
+    withBoundaryDash(
+      { stroke, strokeWidth: lit ? width + EMPHASIS_EXTRA : width, opacity: lit ? 1 : dimOpacity(edge) },
+      edge.data,
+    ),
     edge.data,
   );
   return { ...edge, animated: false, style, markerEnd: arrowMarker(stroke, 14) };
@@ -306,11 +341,11 @@ function weightWidth(edge: Edge): number {
 // kind its own hue (calls / instantiates / extends / implements / references), an import touching a
 // visible group card gold, everything else a quiet grey. Package/view boundary is encoded by dash.
 function baseStroke(edge: Edge): string {
-  if (isIpc(edge)) return IPC_WIRE;
-  // The UI lens's renders wires keep their historical cyan — the lens's identity colour — rather
-  // than joining the validated 5-kind coupling palette (renders rarely shares a canvas with them).
-  if (depKindOf(edge) === "renders") return RENDERS_WIRE;
-  const rel = relColor(depKindOf(edge));
+  const kind = relationKindOf(edge.data);
+  // Imports retain their established geometry cue: gold at a visible group/frame boundary, muted
+  // gold between peer files. The catalog owns their identity; crossFrame refines that one theme.
+  if (kind === "imports") return isCrossFrame(edge) ? CROSS_FRAME_COLOR : REST_COLOR;
+  const rel = relationColor(kind);
   if (rel) return rel;
   return isCrossFrame(edge) ? CROSS_FRAME_COLOR : REST_COLOR;
 }
@@ -324,5 +359,4 @@ const isCrossFrame = (edge: Edge): boolean => (edge.data as { crossFrame?: boole
 const isDep = (edge: Edge): boolean => (edge.data as { category?: string } | undefined)?.category === "dep";
 const isFlow = (edge: Edge): boolean => (edge.data as { category?: string } | undefined)?.category === "flow";
 const isIpc = (edge: Edge): boolean => (edge.data as { category?: string } | undefined)?.category === "ipc";
-const depKindOf = (edge: Edge): string | undefined => (edge.data as { depKind?: string } | undefined)?.depKind;
 const dimNode = (node: Node): Node => ({ ...node, style: { ...node.style, opacity: DIM_NODE_OPACITY } });

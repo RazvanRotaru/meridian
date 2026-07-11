@@ -13,9 +13,24 @@
  */
 
 import type { Edge, Node } from "@xyflow/react";
-import { emphasize, filterRelKinds, suppressRedundantImports, type EmphasizedLevel, type GhostPresentationOptions, type SurfaceEmphasisMode } from "./moduleMapPaint";
+import {
+  emphasize,
+  filterRelationsForLens,
+  filterRelKinds,
+  suppressRedundantImports,
+  type EmphasizedLevel,
+  type GhostPresentationOptions,
+  type SurfaceEmphasisMode,
+} from "./moduleMapPaint";
+import type { LensRelationPolicy } from "../graph/lensRelationPolicy";
+import type { RelationVisibilityOverrides } from "../graph/relationVisibility";
 
 const NO_HIDDEN_KINDS: ReadonlySet<string> = new Set();
+
+export interface RelationPaintOptions {
+  policy: LensRelationPolicy;
+  overrides: RelationVisibilityOverrides;
+}
 
 /**
  * Paint a laid-out level with the Map's own edge chain: suppress a pair's import wire when a typed
@@ -33,9 +48,19 @@ export function paintMinimalLevel(
   selected: ReadonlySet<string>,
   radius: number,
   mode: SurfaceEmphasisMode,
-  hiddenRelKinds: ReadonlySet<string> = NO_HIDDEN_KINDS,
+  relations: ReadonlySet<string> | RelationPaintOptions = NO_HIDDEN_KINDS,
   ghostPresentation?: GhostPresentationOptions,
 ): EmphasizedLevel {
   // The Map's exact order (GraphSurface): suppress redundant imports → filter toggled-off kinds → emphasize.
-  return emphasize(nodes, filterRelKinds(suppressRedundantImports(edges), hiddenRelKinds), selected, radius, mode, ghostPresentation);
+  const semantic = suppressRedundantImports(edges);
+  const visible = isRelationPaintOptions(relations)
+    ? filterRelationsForLens(semantic, relations.policy, relations.overrides)
+    : filterRelKinds(semantic, relations);
+  return emphasize(nodes, visible, selected, radius, mode, ghostPresentation);
+}
+
+function isRelationPaintOptions(
+  value: ReadonlySet<string> | RelationPaintOptions,
+): value is RelationPaintOptions {
+  return "policy" in value;
 }

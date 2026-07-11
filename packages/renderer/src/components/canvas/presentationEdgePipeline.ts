@@ -9,6 +9,11 @@ import { foldPairRibbons } from "../../layout/parallelWires";
 import { fadeFaintWires } from "../../layout/wireSalience";
 import type { HighwayFlags } from "./surfaceSpec";
 import { partitionPresentationEdges, type PartitionedPresentationEdges } from "./presentationEdges";
+import {
+  MAP_RELATION_POLICY,
+  relationHighwayWeight,
+  type LensRelationPolicy,
+} from "../../graph/lensRelationPolicy";
 
 /**
  * Prepare only semantic relationships for rendering. Hierarchy spokes are returned by identity and
@@ -21,11 +26,19 @@ export function prepareCanvasEdges(
   selected: ReadonlySet<string>,
   showHighways: boolean,
   flags: HighwayFlags,
+  relationPolicy: LensRelationPolicy = MAP_RELATION_POLICY,
 ): PartitionedPresentationEdges {
   const { semanticEdges, hierarchyEdges } = partitionPresentationEdges(edges);
   let prepared = fuseCycles(fadeFaintWires(semanticEdges));
   if (showHighways) {
-    if (flags.bundling) prepared = bundleEdges(prepared, nodes, selected);
+    if (flags.bundling) {
+      prepared = bundleEdges(
+        prepared,
+        nodes,
+        selected,
+        (kind) => relationHighwayWeight(relationPolicy, kind),
+      );
+    }
     prepared = foldPairRibbons(prepared);
     if (flags.routing) prepared = routeFrameEdges(prepared, nodes);
     if (flags.spooling) prepared = spoolFanEdges(prepared);

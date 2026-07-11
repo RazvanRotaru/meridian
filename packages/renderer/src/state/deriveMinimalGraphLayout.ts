@@ -14,6 +14,7 @@ import type { BlockDeps } from "../derive/blockDeps";
 import { buildMinimalSubgraph } from "../derive/minimalSubgraph";
 import { layoutMinimalSubgraph } from "../layout/minimalSubgraphLayout";
 import type { PlacedRect } from "../layout/minimalPlacement";
+import { MAP_RELATION_POLICY, type LensRelationPolicy } from "../graph/lensRelationPolicy";
 
 export interface MinimalGraphLayout {
   nodes: Node[];
@@ -40,6 +41,7 @@ export async function deriveMinimalGraphLayout(
   code: MinimalCodeInputs,
   arrange = false,
   hiddenIds: ReadonlySet<string> = new Set<string>(),
+  relationPolicy: LensRelationPolicy = MAP_RELATION_POLICY,
 ): Promise<MinimalGraphLayout> {
   const spec = buildMinimalSubgraph(
     index,
@@ -49,5 +51,5 @@ export async function deriveMinimalGraphLayout(
     { expanded: code.moduleExpanded, blockDeps: code.blockDeps, flows: code.flows, inspectionIds: code.inspectionIds },
     hiddenIds,
   );
-  return layoutMinimalSubgraph(spec, basePositions, arrange);
+  return layoutMinimalSubgraph(spec, basePositions, arrange, relationPolicy);
 }
