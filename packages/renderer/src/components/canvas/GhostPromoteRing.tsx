@@ -38,6 +38,7 @@ export function GhostPromoteRing(props: { nodes: Node[]; title: string; onPromot
         <div key={ghost.id} style={ghostAddWrap(ghost)}>
           <button
             type="button"
+            data-ghost-id={ghost.id}
             style={ADD_GHOST_STYLE}
             onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => {

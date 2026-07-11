@@ -138,6 +138,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
   // only top-level dimensions on the controlled user node, so expose the same numbers at the final
   // library boundary after the paint-only inspection decoration.
   const reactFlowNodes = useMemo(() => withReactFlowDimensions(displayedNodes), [displayedNodes]);
+  const virtualizeCanvas = shouldVirtualizeCanvasNodes(reactFlowNodes.length);
   // Presentation-only parent→member spokes split off before every semantic edge pass. The helper
   // runs salience, cycle, ribbon and enabled highway transforms only over actual relationships.
   const preparedEdges = useMemo(
@@ -176,14 +177,15 @@ export function GraphSurface(props: GraphSurfaceProps) {
         onEdgeMouseEnter={wire.onEdgeMouseEnter}
         onEdgeMouseLeave={wire.onEdgeMouseLeave}
         onEdgeClick={wire.onEdgeClick}
-        // A fully disclosed high-degree ghost neighbourhood may contain hundreds of off-viewport
-        // cards. Keep them canonical in state while asking React Flow to mount only visible DOM.
-        onlyRenderVisibleElements
+        // Keep the rendered canvas in 1:1 parity with the MiniMap while that navigation aid is
+        // present. Once the graph is too dense for a useful MiniMap, mount only visible cards so a
+        // fully disclosed high-degree ghost neighbourhood can still contain hundreds of nodes.
+        onlyRenderVisibleElements={virtualizeCanvas}
         // Manual z: basic mode ADDS a nested endpoint's node-z to the edge — see useWireHover's z rule.
         zIndexMode="manual"
         {...READONLY_CANVAS_PROPS}
       >
-        <CanvasChrome nodeColor={props.miniMapColor} minimap={reactFlowNodes.length <= MINIMAP_NODE_CAP} />
+        <CanvasChrome nodeColor={props.miniMapColor} minimap={!virtualizeCanvas} />
         <MapLod />
         {props.flowExtras?.({ nodes: displayedNodes, beacons })}
       </ReactFlow>
@@ -210,6 +212,12 @@ export function decorateInspectedGhost(nodes: Node[], inspectedGhostId: string |
   const decorated = [...nodes];
   decorated[index] = { ...node, data: { ...node.data, inspected: true } };
   return decorated;
+}
+
+/** MiniMap and viewport virtualization switch at the same boundary: below it every canonical
+ * node has both a canvas card and a MiniMap mark; above it both expensive representations go. */
+export function shouldVirtualizeCanvasNodes(nodeCount: number): boolean {
+  return nodeCount > MINIMAP_NODE_CAP;
 }
 
 /** The shared canvas root — exported so a mount's own replacement branches (the overlay split)

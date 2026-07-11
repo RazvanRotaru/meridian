@@ -96,17 +96,22 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
   });
 
   it("Map: the semantic ghost '+' pins its home file as a permanent card", async () => {
-    const ghosts = page.locator(".react-flow__node-ghost");
-    const first = ghosts.first();
-    const ghostId = await first.getAttribute("data-id");
+    const surface = mainCanvasFor(page, CLASS);
+    const promotion = surface.locator('button[aria-label="Pin to canvas"][data-ghost-id*="#"]').first();
+    await promotion.waitFor();
+    const ghostId = await promotion.getAttribute("data-ghost-id");
     expect(ghostId).toBeTruthy();
-    const beforePermanent = await page.locator(".react-flow__node:not(.react-flow__node-ghost)").count();
+    const homeId = ghostId!.split("#", 1)[0];
+    const exactGhost = surface.locator(`.react-flow__node-ghost[data-id="${ghostId}"]`);
+    const promotedHome = surface.locator(`.react-flow__node:not(.react-flow__node-ghost)[data-id="${homeId}"]`);
+    expect(await exactGhost.count()).toBe(1);
+    expect(await promotedHome.count()).toBe(0);
 
-    // Pin buttons follow the painted ghost order. The exact semantic satellite retires when its
-    // owning file joins the level as a real card.
-    await page.getByLabel("Pin to canvas").first().dispatchEvent("click");
-    await expect.poll(() => page.locator(".react-flow__node:not(.react-flow__node-ghost)").count(), { timeout: 20_000 }).toBeGreaterThan(beforePermanent);
-    await expect.poll(() => page.locator(`.react-flow__node-ghost[data-id="${ghostId}"]`).count(), { timeout: 20_000 }).toBe(0);
+    // The stable id binds this affordance to its exact painted satellite even when React Flow
+    // virtualizes off-screen cards. Its owning file joins the level and that satellite retires.
+    await promotion.dispatchEvent("click");
+    await expect.poll(() => promotedHome.count(), { timeout: 20_000 }).toBe(1);
+    await expect.poll(() => exactGhost.count(), { timeout: 20_000 }).toBe(0);
     expect(pageErrors).toEqual([]);
   });
 
