@@ -111,10 +111,9 @@ export function CanvasActionBar() {
               <CanvasActionSeparator orientation="vertical" />
               <CanvasActionButton
                 ariaLabel="Close extracted graph"
-                title="Return to the previous graph (Esc)"
+                title="Return to the previous graph"
                 icon={<CloseIcon size={18} />}
                 onClick={closeMinimalGraph}
-                ariaKeyShortcuts="Escape"
               />
             </CanvasActionGroup>
           </>

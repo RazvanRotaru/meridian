@@ -9,11 +9,12 @@
 
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import { useBlueprint } from "../../../state/StoreContext";
+import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { ModuleGroupData } from "../../../derive/moduleTree";
 import { cardSelectedStyle, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, DeltaChip, useNodeDiff } from "./changed";
 import { CommonsChips } from "./CommonsChips";
+import { TOKENS } from "../../controlpanel/panelKit";
 
 // A neutral package hue — the cross-package coupling gold lives on the wires, not the boxes.
 const PACKAGE_ACCENT = "#5B9BE3";
@@ -34,8 +35,13 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
  */
 export function GroupContainerNodeView({ id, data }: { id: string; data: ModuleGroupData }) {
   const selected = useBlueprint((state) => state.moduleSelected.has(id));
+  const rollupFileCount = useBlueprint((state) => state.minimalRollups[id]?.length ?? 0);
+  const { expandMinimalGroup } = useBlueprintActions();
   const diff = useNodeDiff(id);
   const chevron = data.isContainer ? <ExpandChevron id={id} isExpanded={data.isExpanded} /> : null;
+  const changedInside = data.readOnly && (data.changedInside ?? 0) > 0
+    ? <ChangedInsideChip count={data.changedInside as number} />
+    : null;
 
   if (data.isExpanded) {
     return (
@@ -45,8 +51,8 @@ export function GroupContainerNodeView({ id, data }: { id: string; data: ModuleG
         <FrameTitleBar chevron={chevron}>
           <span className="lod-label" style={TITLE_LABEL} title={id}>{data.label}</span>
           <span className="lod-hide" style={CONTENTS}>
-            <DeltaChip diff={diff} />
-            <Meta data={data} hideCoupling={data.readOnly} />
+            {data.readOnly ? changedInside : <DeltaChip diff={diff} />}
+            <Meta data={data} hideCoupling={data.readOnly} rollupFileCount={rollupFileCount} />
           </span>
         </FrameTitleBar>
       </div>
@@ -59,13 +65,20 @@ export function GroupContainerNodeView({ id, data }: { id: string; data: ModuleG
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div className="lod-rail" style={{ ...ACCENT_BAR, background: PACKAGE_ACCENT }} />
       <span className="lod-place">{data.label}</span>
-      <div className="lod-card-body" style={INNER}>
+      <div
+        className="lod-card-body"
+        style={rollupFileCount > 0 ? { ...INNER, cursor: "pointer" } : INNER}
+        onClick={rollupFileCount > 0 ? (event) => {
+          event.stopPropagation();
+          expandMinimalGroup(id);
+        } : undefined}
+      >
         <div style={HEADER}>
           {chevron}
           <span style={LABEL} title={id}>{data.label}</span>
-          <DeltaChip diff={diff} />
+          {data.readOnly ? changedInside : <DeltaChip diff={diff} />}
         </div>
-        <Meta data={data} hideCoupling={data.readOnly} />
+        <Meta data={data} hideCoupling={data.readOnly} rollupFileCount={rollupFileCount} />
         <CommonsChips chips={(data as { commonsChips?: string[] }).commonsChips} />
       </div>
     </div>
@@ -74,12 +87,14 @@ export function GroupContainerNodeView({ id, data }: { id: string; data: ModuleG
 
 /** File count + cross-package fan-in/out — shown compact in a title bar, block in a collapsed card.
  * `hideCoupling` drops the uses/used-by pair when the counts aren't meaningful (a filtered subgraph). */
-function Meta({ data, hideCoupling }: { data: PackageMetaData; hideCoupling?: boolean }) {
+function Meta({ data, hideCoupling, rollupFileCount = 0 }: { data: PackageMetaData; hideCoupling?: boolean; rollupFileCount?: number }) {
   const countLabel = data.countLabel ?? `${data.fileCount} files`;
   return (
     <div style={META}>
       <span style={FILES} title={data.countLabel ?? `${data.fileCount} source file(s)`}>{countLabel}</span>
-      {hideCoupling ? null : (
+      {rollupFileCount > 0 ? (
+        <span style={EXPAND_ROLLUP} title={`Expand ${rollupFileCount} changed file(s)`}>{rollupFileCount} files ▸</span>
+      ) : hideCoupling ? null : (
         <span style={COUNTS} title={`imports ${data.ce} · imported by ${data.ca}`}>
           <span style={COUNT_MUTED}>uses</span>
           <span style={COUNT_VALUE}>{data.ce}</span>
@@ -89,6 +104,10 @@ function Meta({ data, hideCoupling }: { data: PackageMetaData; hideCoupling?: bo
       )}
     </div>
   );
+}
+
+function ChangedInsideChip({ count }: { count: number }) {
+  return <span style={CHANGED_INSIDE} title={`${count} changed declarations inside`}>Δ {count}</span>;
 }
 
 /** Visibility-flip wrapper that stays out of flex layout (visibility inherits through it). */
@@ -139,6 +158,8 @@ const LABEL: React.CSSProperties = {
 };
 const META: React.CSSProperties = { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexShrink: 0 };
 const FILES: React.CSSProperties = { fontSize: 11, color: "#9AA4B2" };
+const EXPAND_ROLLUP: React.CSSProperties = { fontSize: 10.5, color: "#9AA4B2", flexShrink: 0 };
+const CHANGED_INSIDE: React.CSSProperties = { fontSize: 10, fontWeight: 700, color: TOKENS.reviewAmber, flexShrink: 0 };
 const COUNTS: React.CSSProperties = { display: "inline-flex", alignItems: "baseline", gap: 4, fontSize: 10.5 };
 const COUNT_MUTED: React.CSSProperties = { color: "#6C7683" };
 const COUNT_VALUE: React.CSSProperties = { color: "#C8D3E0", fontWeight: 600 };

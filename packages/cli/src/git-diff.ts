@@ -20,16 +20,22 @@ const MAX_BUFFER_BYTES = 32 * 1024 * 1024;
 /** Branch/tag/sha/HEAD~n shapes; refuses anything that could read as a `git diff` option. */
 const SAFE_REF = /^[A-Za-z0-9][A-Za-z0-9._\/~^-]*$/;
 
-export async function changedRangesSince(absoluteRoot: string, baseRef: string): Promise<ChangedRanges> {
-  const changed = await changedSinceMetadata(absoluteRoot, baseRef);
+/** Injectable so authenticated server flows can reuse their token-scrubbing git executor. */
+export type GitDiffExecutor = (absoluteRoot: string, args: string[], timeoutMs: number) => Promise<string>;
+
+export async function changedRangesSince(absoluteRoot: string, baseRef: string, timeoutMs?: number): Promise<ChangedRanges> {
+  const changed = await changedSinceMetadata(absoluteRoot, baseRef, timeoutMs);
   return changed.ranges;
 }
 
 export async function changedSinceMetadata(
   absoluteRoot: string,
   baseRef: string,
+  timeoutMs = DIFF_TIMEOUT_MS,
+  executeGitDiff: GitDiffExecutor = runGitDiff,
 ): Promise<{ ranges: ChangedRanges; stats: ChangedLineStats; kinds: ChangedLineKinds }> {
-  const stdout = await runGitDiff(absoluteRoot, validatedRef(baseRef));
+  const args = ["diff", "--merge-base", validatedRef(baseRef), "--relative", "--unified=0", "--no-color"];
+  const stdout = await executeGitDiff(absoluteRoot, args, timeoutMs);
   return parseUnifiedDiffWithStats(stdout);
 }
 
@@ -117,17 +123,16 @@ function parseHunk(line: string): { range: LineRange; added: number; deleted: nu
   };
 }
 
-function runGitDiff(absoluteRoot: string, ref: string): Promise<string> {
-  const args = ["-C", absoluteRoot, "diff", "--merge-base", ref, "--relative", "--unified=0", "--no-color"];
+function runGitDiff(absoluteRoot: string, args: string[], timeoutMs: number): Promise<string> {
   return new Promise((resolveDiff, rejectDiff) => {
-    const child = spawn("git", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("git", ["-C", absoluteRoot, ...args], { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let overflowed = false;
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      rejectDiff(new CliError(EXIT.io, `git diff timed out after ${DIFF_TIMEOUT_MS / 1000}s`));
-    }, DIFF_TIMEOUT_MS);
+      rejectDiff(new CliError(EXIT.io, `git diff timed out after ${timeoutMs / 1000}s`));
+    }, timeoutMs);
     child.stdout?.on("data", (chunk: Buffer) => {
       if (stdout.length < MAX_BUFFER_BYTES) {
         stdout += chunk.toString("utf8");
@@ -145,7 +150,7 @@ function runGitDiff(absoluteRoot: string, ref: string): Promise<string> {
     child.on("close", (code) => {
       clearTimeout(timer);
       if (code !== 0) {
-        rejectDiff(new CliError(EXIT.usage, gitFailureMessage(ref, stderr)));
+        rejectDiff(new CliError(EXIT.usage, gitFailureMessage(args[2] ?? "", stderr)));
         return;
       }
       if (overflowed) {

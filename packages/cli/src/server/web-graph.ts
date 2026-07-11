@@ -87,7 +87,7 @@ export function sendView(ctx: Context, response: ServerResponse, id: string | nu
     return;
   }
   const graphId = id as string;
-  sendHtml(response, injectViewBoot(ctx.rendererIndex, graphId, ctx.sources.get(graphId)?.kind === "github"));
+  sendHtml(response, injectViewBoot(ctx.rendererIndex, graphId, ctx.sources.get(graphId)));
 }
 
 function lookup(ctx: Context, id: string | null): GraphArtifact | undefined {

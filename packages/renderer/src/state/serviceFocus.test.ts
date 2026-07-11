@@ -69,7 +69,20 @@ const ARTIFACT = {
 
 function freshStore(): BlueprintStore {
   const index = buildGraphIndex(ARTIFACT);
-  return createBlueprintStore({ artifact: ARTIFACT, index, provider: null, hasOverlay: false, sourceUrl: null, prsUrl: "", prFilesUrl: "", prReviewUrl: "" });
+  return createBlueprintStore({
+    artifact: ARTIFACT,
+    index,
+    provider: null,
+    hasOverlay: false,
+    sourceUrl: null,
+    prsUrl: "",
+    prOneUrl: "",
+    prFilesUrl: "",
+    prRelatedUrl: "",
+    prCommentsUrl: "",
+    prChecksUrl: "",
+    prReviewUrl: "",
+  });
 }
 
 function freshDomainStore(): BlueprintStore {
@@ -97,7 +110,20 @@ function freshDomainStore(): BlueprintStore {
   }
   const artifact = { ...ARTIFACT, target: { ...ARTIFACT.target, name: "domains" }, nodes, edges } as GraphArtifact;
   const index = buildGraphIndex(artifact);
-  return createBlueprintStore({ artifact, index, provider: null, hasOverlay: false, sourceUrl: null, prsUrl: "", prFilesUrl: "", prReviewUrl: "" });
+  return createBlueprintStore({
+    artifact,
+    index,
+    provider: null,
+    hasOverlay: false,
+    sourceUrl: null,
+    prsUrl: "",
+    prOneUrl: "",
+    prFilesUrl: "",
+    prRelatedUrl: "",
+    prCommentsUrl: "",
+    prChecksUrl: "",
+    prReviewUrl: "",
+  });
 }
 
 function domainId(store: BlueprintStore, label: string, mode: ServiceGroupingMode = "folder"): string {

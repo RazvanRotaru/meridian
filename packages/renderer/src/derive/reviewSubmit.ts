@@ -32,7 +32,7 @@ export function buildReviewSubmission(
     if (line !== null) {
       submission.comments.push({ path: draft.path, line, body: draft.body });
     } else {
-      submission.notes.push({ path: draft.path, label: draft.anchorLabel, body: draft.body });
+      submission.notes.push({ path: draft.path, label: draft.line === null ? draft.anchorLabel : `L${draft.line}`, body: draft.body });
     }
   }
   return submission;
@@ -43,6 +43,10 @@ function anchorLine(draft: ReviewComment, files: readonly ReviewFileRow[], conte
   const hunks = anchorableHunks(draft.path, context);
   if (hunks.length === 0) {
     return null;
+  }
+  const explicitLine = draft.line;
+  if (explicitLine !== null) {
+    return hunks.some((hunk) => explicitLine >= hunk.start && explicitLine <= hunk.end) ? explicitLine : null;
   }
   if (draft.nodeId === null) {
     return hunks[0].start;
@@ -55,7 +59,7 @@ function anchorLine(draft: ReviewComment, files: readonly ReviewFileRow[], conte
 
 /** The file's hunks that can host a RIGHT-side comment: a pure-deletion hunk starts at 0 and names
  * no real new-side line, so it is not an anchor. */
-function anchorableHunks(path: string, context: ReviewContext): LineRange[] {
+export function anchorableHunks(path: string, context: ReviewContext): LineRange[] {
   const hunks = context.changedFiles.find((file) => file.path === path)?.hunks ?? [];
   return hunks.filter((hunk) => hunk.start >= 1);
 }

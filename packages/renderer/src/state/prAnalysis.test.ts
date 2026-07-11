@@ -37,9 +37,17 @@ describe("streamPrAnalysis", () => {
       vi.fn().mockResolvedValue(ndjsonResponse(['{"stage":"clone"}\n{"stage":"checkout"}\n{"stage":"extract"}\n{"stage":"done","graphId":"pr-abc"}\n'])),
     );
     const stages: PrAnalyzeStage[] = [];
-    const graphId = await streamPrAnalysis("/api/pr/analyze", REQUEST, (stage) => stages.push(stage));
+    const result = await streamPrAnalysis("/api/pr/analyze", REQUEST, (stage) => stages.push(stage));
     expect(stages).toEqual(["clone", "checkout", "extract"]);
-    expect(graphId).toBe("pr-abc");
+    expect(result.graphId).toBe("pr-abc");
+    // An older server's done line has no headSha — the provenance is honestly unknown, not "".
+    expect(result.headSha).toBe(null);
+  });
+
+  it("carries the done line's headSha (the commit the server analyzed)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ndjsonResponse(['{"stage":"done","graphId":"pr-abc","headSha":"abc1234def56789"}\n'])));
+    const result = await streamPrAnalysis("/api/pr/analyze", REQUEST, () => {});
+    expect(result).toEqual({ graphId: "pr-abc", headSha: "abc1234def56789" });
   });
 
   it("reassembles lines split across arbitrary chunk boundaries (final line unterminated)", async () => {
@@ -48,9 +56,9 @@ describe("streamPrAnalysis", () => {
     const chunks = ['{"stage":"cl', 'one"}\n{"stage":"check', 'out"}\n{"stage":"extract"}\n{"stage":"do', 'ne","graphId":"pr-split"}'];
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ndjsonResponse(chunks)));
     const stages: PrAnalyzeStage[] = [];
-    const graphId = await streamPrAnalysis("/api/pr/analyze", REQUEST, (stage) => stages.push(stage));
+    const result = await streamPrAnalysis("/api/pr/analyze", REQUEST, (stage) => stages.push(stage));
     expect(stages).toEqual(["clone", "checkout", "extract"]);
-    expect(graphId).toBe("pr-split");
+    expect(result.graphId).toBe("pr-split");
   });
 
   it("throws the error line's message", async () => {

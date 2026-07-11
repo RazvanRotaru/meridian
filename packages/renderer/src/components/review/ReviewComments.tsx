@@ -13,13 +13,16 @@ import { NO_FOCUS_RING } from "./reviewPanelKit";
 
 /** Shown only while its row is hovered (or already carries drafts / an open composer) — a panel
  * full of identical always-on icons reads as noise. Hidden, not unmounted, so columns never shift. */
-export function CommentButton(props: { count: number; active: boolean; visible: boolean; onClick: () => void }) {
-  const shown = props.visible || props.active || props.count > 0;
+export function CommentButton(props: { count: number; active: boolean; visible: boolean; title?: string; suffix?: string; onClick: () => void }) {
+  const shown = props.visible || props.active || props.count > 0 || props.suffix !== undefined;
+  const defaultTitle = props.count > 0
+    ? `${props.count} draft ${props.count === 1 ? "comment" : "comments"}`
+    : "Add a comment";
   return (
     <button
       type="button"
       style={{ ...COMMENT_BTN, ...(props.active || props.count > 0 ? COMMENT_BTN_ON : {}), visibility: shown ? "visible" : "hidden" }}
-      title={props.count > 0 ? `${props.count} draft ${props.count === 1 ? "comment" : "comments"}` : "Add a comment"}
+      title={props.title ?? defaultTitle}
       onClick={(event) => {
         event.stopPropagation();
         props.onClick();
@@ -27,6 +30,7 @@ export function CommentButton(props: { count: number; active: boolean; visible: 
     >
       <CommentIcon />
       {props.count > 0 && <span style={COMMENT_COUNT}>{props.count}</span>}
+      {props.suffix !== undefined && <span style={COMMENT_SUFFIX}>{props.suffix}</span>}
     </button>
   );
 }
@@ -40,6 +44,7 @@ export function CommentList(props: { comments: readonly ReviewComment[] }) {
     <div style={LIST}>
       {props.comments.map((comment) => (
         <div key={comment.id} style={DRAFT}>
+          {comment.line !== null ? <span style={LINE_CHIP}>{`L${comment.line}`}</span> : null}
           <div style={DRAFT_BODY}>{comment.body}</div>
           <button type="button" style={DRAFT_DELETE} title="Delete draft" onClick={() => deleteReviewComment(comment.id)}>
             ✕
@@ -51,7 +56,13 @@ export function CommentList(props: { comments: readonly ReviewComment[] }) {
 }
 
 /** The one inline composer: textarea + Add/Cancel. ⌘/ctrl-Enter adds, Escape cancels. */
-export function CommentComposer(props: { placeholder: string; onAdd: (body: string) => void; onCancel: () => void }) {
+export function CommentComposer(props: {
+  placeholder: string;
+  onAdd: (body: string) => void;
+  onCancel: () => void;
+  /** Keep an inline code-panel Escape from reaching the panel's own layer-stack closer. */
+  stopEscape?: boolean;
+}) {
   const [body, setBody] = useState("");
   const add = () => {
     if (body.trim().length > 0) {
@@ -73,6 +84,9 @@ export function CommentComposer(props: { placeholder: string; onAdd: (body: stri
             event.preventDefault();
             add();
           } else if (event.key === "Escape") {
+            if (props.stopEscape) {
+              event.stopPropagation();
+            }
             props.onCancel();
           }
         }}
@@ -145,8 +159,10 @@ function CommentIcon() {
 const COMMENT_BTN: React.CSSProperties = { font: "inherit", display: "inline-flex", alignItems: "center", gap: 3, border: "none", background: "transparent", cursor: "pointer", color: "#5A6472", padding: "2px 4px", borderRadius: 5, flexShrink: 0, ...NO_FOCUS_RING };
 const COMMENT_BTN_ON: React.CSSProperties = { color: "#7DD3FC" , ...NO_FOCUS_RING };
 const COMMENT_COUNT: React.CSSProperties = { fontSize: 10, fontWeight: 700 };
+const COMMENT_SUFFIX: React.CSSProperties = { color: "#5A6472", fontSize: 9.5, fontWeight: 500 };
 const LIST: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 4, padding: "2px 6px 4px 26px" };
 const DRAFT: React.CSSProperties = { display: "flex", alignItems: "flex-start", gap: 6, border: "1px solid #253041", background: "rgba(56,139,253,0.07)", borderRadius: 7, padding: "6px 8px" };
+const LINE_CHIP: React.CSSProperties = { flexShrink: 0, border: "1px solid rgba(125,211,252,0.35)", borderRadius: 4, padding: "0 4px", color: "#7DD3FC", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 9.5, fontWeight: 700, lineHeight: "14px" };
 const DRAFT_BODY: React.CSSProperties = { flex: 1, minWidth: 0, fontSize: 11.5, lineHeight: "15px", color: "#C9D1D9", whiteSpace: "pre-wrap", overflowWrap: "anywhere" };
 const DRAFT_DELETE: React.CSSProperties = { border: "none", background: "transparent", cursor: "pointer", color: "#5A6472", fontSize: 10, padding: 2, flexShrink: 0 , ...NO_FOCUS_RING };
 const COMPOSER: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6, padding: "2px 6px 6px 26px" };

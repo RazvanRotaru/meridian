@@ -46,7 +46,7 @@ describe("readReviewProgress", () => {
       ticks: { flow: { at: "t", fingerprint: "f" } },
       unitTicks: { unit: { at: "t", fingerprint: "u" } },
       fileTicks: { "a.ts": { at: "t", fingerprint: "h" } },
-      comments: [{ id: "1", path: "a.ts", nodeId: null, anchorLabel: null, body: "note", at: "t" }],
+      comments: [{ id: "1", path: "a.ts", nodeId: null, line: null, anchorLabel: null, body: "note", at: "t" }],
     };
     writeReviewProgress("scope", progress);
     expect(readReviewProgress("scope")).toEqual(progress);
@@ -67,6 +67,6 @@ describe("readReviewProgress", () => {
     stubStorage({
       "meridian.review.scope": JSON.stringify({ version: 2, ticks: {}, unitTicks: {}, fileTicks: {}, comments: [good, bad, "junk"] }),
     });
-    expect(readReviewProgress("scope").comments).toEqual([good]);
+    expect(readReviewProgress("scope").comments).toEqual([{ ...good, line: null }]);
   });
 });

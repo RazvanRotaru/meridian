@@ -55,11 +55,12 @@ export async function layoutMinimalSubgraph(
   const importEdges = spec.edges.filter((edge) => edge.kind === "import").map((edge) => ({ source: edge.source, target: edge.target }));
   const arrangeEdges = spec.edges.filter((edge) => edge.ghost !== true).map((edge) => ({ source: edge.source, target: edge.target }));
   const laidByFile = await layoutExpansions(spec.expansions);
-  // Mirror path overrides sizes ONLY for expanded frames (captured cards keep their captured size — the
-  // byte-for-byte mirror). Arrange path needs every card's real size so ELK reserves the right footprint.
+  // Mirror path overrides only expanded frames and group summary cards: captured FILE cards keep their
+  // exact map footprint, while a package member must always use its own 300×60 summary-card footprint.
+  // Arrange path needs every card's real size so ELK reserves the right footprint.
   const placement = arrange
     ? await arrangeMinimalCards(cards.map((card) => card.id), cardSizes(cards, laidByFile), arrangeEdges)
-    : await mirrorPlacement(cards, importEdges, basePositions, frameSizes(laidByFile), laidByFile.size > 0);
+    : await mirrorPlacement(cards, importEdges, basePositions, mirrorSizeOverrides(cards, laidByFile), laidByFile.size > 0);
   const { nodes, edges } = emitCards(cards, placement, laidByFile);
   const banded = ghostSatellites(spec, nodes);
   const placedIds = new Set([...nodes, ...banded].map((node) => node.id));
@@ -107,6 +108,19 @@ function cardSizes(cards: MinimalSubgraphNode[], laidByFile: Map<string, LaidExp
   const sizes: Record<string, { width: number; height: number }> = {};
   for (const card of cards) {
     sizes[card.id] = frames[card.id] ?? (card.kind === "group" ? { width: GROUP_WIDTH, height: GROUP_HEIGHT } : { width: FILE_WIDTH, height: FILE_HEIGHT });
+  }
+  return sizes;
+}
+
+/** The map-mirror keeps captured FILE geometry byte-for-byte, but an overlay group is always the
+ * package summary card (not whatever footprint its source map happened to use). Expanded files
+ * retain their ELK frame override. */
+function mirrorSizeOverrides(cards: MinimalSubgraphNode[], laidByFile: Map<string, LaidExpansion>): Record<string, { width: number; height: number }> {
+  const sizes = frameSizes(laidByFile);
+  for (const card of cards) {
+    if (card.kind === "group") {
+      sizes[card.id] = { width: GROUP_WIDTH, height: GROUP_HEIGHT };
+    }
   }
   return sizes;
 }

@@ -7,19 +7,21 @@ import type { Context } from "./web-server";
 import type { ArtifactSource } from "./web-source";
 
 describe("injectViewBoot", () => {
-  it("advertises PR availability only for a GitHub-sourced graph", () => {
-    const github = injectViewBoot("<head></head>", "graph-1", true);
-    const local = injectViewBoot("<head></head>", "graph-2", false);
+  it("exposes the exact PR-session source only for a GitHub-sourced graph", () => {
+    const github = injectViewBoot("<head></head>", "graph-1", { kind: "github", owner: "octo", repo: "repo" });
+    const local = injectViewBoot("<head></head>", "graph-2", { kind: "other" });
 
-    expect(github).toContain('"githubSource":true');
-    expect(local).toContain('"githubSource":false');
+    expect(github).toContain('"githubSource":{"repository":"octo/repo","subdir":""}');
+    expect(local).toContain('"githubSource":null');
   });
 });
 
 describe("sendView", () => {
-  it("derives PR availability from the stored artifact source", () => {
-    expect(capturedView({ kind: "github", owner: "octo", repo: "repo" })).toContain('"githubSource":true');
-    expect(capturedView({ kind: "other" })).toContain('"githubSource":false');
+  it("derives the exact PR-session source from the stored artifact source", () => {
+    expect(capturedView({ kind: "github", owner: "octo", repo: "repo" })).toContain(
+      '"githubSource":{"repository":"octo/repo","subdir":""}',
+    );
+    expect(capturedView({ kind: "other" })).toContain('"githubSource":null');
   });
 });
 

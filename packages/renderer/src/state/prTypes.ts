@@ -15,8 +15,10 @@ export type PrFileStatus = "added" | "modified" | "removed" | "renamed";
 export interface PrSummary {
   number: number;
   title: string;
+  body: string | null;
   author: string;
   headRef: string;
+  headSha: string | null;
   baseRef: string;
   updatedAt: string;
   draft: boolean;
@@ -38,8 +40,18 @@ export interface PrChangedFile {
   edits?: LineEdit[];
   /** Head-relative added/modified line spans (from the patch body) — the code panel's exact green/gold. */
   kinds?: ChangedLineSpan[];
+  /** Text removed by the patch, grouped by consecutive deletion run and anchored after a HEAD line. */
+  removed?: Array<{ afterNewLine: number; lines: string[] }>;
+  /** The patch carried more than the per-file cap of removed-line text. */
+  removedTruncated?: boolean;
   /** Renames only: the pre-image path (display-only — never matched against nodes). */
   previousPath?: string;
+}
+
+/** GitHub source identity exposed by the web session for a safe same-repository re-extract. */
+export interface PrSessionSource {
+  repository: string;
+  subdir: string;
 }
 
 export interface PrListResponse {
@@ -50,6 +62,70 @@ export interface PrListResponse {
 export interface PrFilesResponse {
   files: PrChangedFile[];
   truncated: boolean;
+  totalFiles: number;
+  outsideCount: number;
+  suggestedSubdir: string;
+}
+
+export interface PrOneResponse {
+  pr: PrSummary;
+}
+
+/** Open PR returned by the bounded related-path scan. */
+export interface RelatedPr {
+  number: number;
+  title: string;
+  author: string;
+  headRef: string;
+  updatedAt: string;
+  draft: boolean;
+  matchCount: number;
+  matchedPaths: string[];
+}
+
+export interface RelatedPrsResponse {
+  results: RelatedPr[];
+  scanned: number;
+  hasMore: boolean;
+  skipped: number;
+}
+
+export interface RelatedPrsState {
+  paths: string[];
+  results: RelatedPr[];
+  scanned: number;
+  hasMore: boolean;
+  loading: boolean;
+  error: string | null;
+}
+
+export interface PrGitHubComment {
+  path: string;
+  line: number | null;
+  body: string;
+  author: string;
+  updatedAt: string;
+  url: string;
+}
+
+export interface PrReviewRollup {
+  approved: string[];
+  changesRequested: string[];
+  commented: number;
+}
+
+export interface PrDiscussionResult {
+  comments: PrGitHubComment[];
+  reviews: PrReviewRollup;
+  hasMore: boolean;
+}
+
+export interface PrChecks {
+  total: number;
+  passed: number;
+  failed: number;
+  pending: number;
+  url: string | null;
 }
 
 export const PRS_UNAVAILABLE_ERROR = "Pull requests unavailable";

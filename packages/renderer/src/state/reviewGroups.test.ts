@@ -26,8 +26,10 @@ function pr(number: number): PrSummary {
   return {
     number,
     title: `PR ${number}`,
+    body: null,
     author: "octo",
     headRef: "feature",
+    headSha: null,
     baseRef: "main",
     updatedAt: "2026-07-10T00:00:00.000Z",
     draft: false,
@@ -77,7 +79,11 @@ function reviewedStore(files: Array<{ path: string }>, extra?: Partial<StoreDepe
     hasOverlay: false,
     sourceUrl: null,
     prsUrl: "/api/prs?id=artifact-1",
+    prOneUrl: "/api/prs/one?id=artifact-1",
     prFilesUrl: "/api/prs/files?id=artifact-1",
+    prRelatedUrl: "/api/prs/related?id=artifact-1",
+    prCommentsUrl: "/api/prs/comments?id=artifact-1",
+    prChecksUrl: "/api/prs/checks?id=artifact-1",
     prReviewUrl: "/api/prs/review?id=artifact-1",
     ...extra,
   });
@@ -117,10 +123,14 @@ describe("change groups in PR review", () => {
   it("selecting a group isolates the minimal overlay to its modules only", () => {
     const store = reviewedStore(MIXED_PR);
     const isolated = store.getState().reviewGroups!.groups[1];
+    // Group isolation owns its declaration-level expansion too; this simulates switching from a
+    // full-review rollup where the isolated file path was deliberately absent.
+    store.setState({ moduleExpanded: new Set() });
     store.getState().selectReviewGroup(isolated.id);
     expect(store.getState().reviewActiveGroupId).toBe(isolated.id);
     expect(store.getState().minimalSeedIds).toEqual([FILE_C]);
     expect(store.getState().minimalMemberIds).toEqual([FILE_C]);
+    expect(store.getState().moduleExpanded).toEqual(new Set([PACKAGE_ID, FILE_C]));
     expect(store.getState().reviewSelectedId).toBeNull();
   });
 

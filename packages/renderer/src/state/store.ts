@@ -23,6 +23,8 @@ import type {
 } from "@meridian/core";
 import { applyChangedIds, applyChangedStatus, type GraphIndex } from "../graph/graphIndex";
 import { matchAffectedFiles } from "../derive/matchAffectedFiles";
+import { rollupSeeds } from "../derive/seedRollup";
+import { filesInScope } from "../derive/filesInScope";
 import type { TelemetryProvider } from "../telemetry/provider";
 import type { ViewMode } from "../derive/edgeSelection";
 import { relatedNodeIds, type FlowSelectionRef } from "../derive/flowBlocks";
@@ -52,11 +54,27 @@ import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref"
 import { moduleRevealStateFor, nearestModuleIds } from "./flowExplorer";
 import { anchorNodeIds, mapRevealStateForMany, resolveServiceAnchors, serviceRevealStateForMany, uiRevealStateForMany } from "./lensPath";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
-import { PRS_UNAVAILABLE_ERROR, type LineEdit, type PrChangedFile, type PrFilesResponse, type PrFileStatus, type PrListResponse, type PrSummary, type PrsTab } from "./prTypes";
+import {
+  PRS_UNAVAILABLE_ERROR,
+  type LineEdit,
+  type PrChangedFile,
+  type PrChecks,
+  type PrDiscussionResult,
+  type PrFilesResponse,
+  type PrFileStatus,
+  type PrListResponse,
+  type PrOneResponse,
+  type PrSessionSource,
+  type PrSummary,
+  type PrsTab,
+  type RelatedPrsResponse,
+  type RelatedPrsState,
+} from "./prTypes";
 import { headKindsWithin, headSpanFor } from "./headSpan";
 import { streamPrAnalysis, type PrAnalyzeStage } from "./prAnalysis";
 import {
   fetchPreparedArtifact,
+  resetChangedIdsToArtifact,
   restorePrReviewBaseline,
   swapToPreparedArtifact,
   withPrLineDiff,
@@ -241,6 +259,8 @@ export interface BlueprintState {
    * to it; removing a member drops from it. Ghosts are the members' on-map 1-hop ring, derived (not
    * stored). Reset restores it to the origin. */
   minimalMemberIds: string[];
+  /** Original rolled package → changed file modules. Retained while expanded so Reset can summarize. */
+  minimalRollups: Record<string, string[]>;
   /** The Module map's on-screen card positions, captured (absolute) when the overlay is BUILT, so the
    * overlay mirrors them: a captured card sits at its exact map spot, growth is placed around it.
    * Captured once at build (never on curation) so placed cards never jump; cleared on close. */
@@ -259,8 +279,10 @@ export interface BlueprintState {
   review: ReviewData | null;
   /** Artifact node ids that are affected — the coupling set between the graph and the flow panel. */
   reviewAffectedIds: Set<string>;
-  /** Every changed file as a checklist row (touched units inside; empty units == not in the graph). */
+  /** Every changed file as a checklist row, with any touched code units nested inside it. */
   reviewFiles: ReviewFileRow[];
+  /** Checklist ordering preference. Ephemeral UI state: deliberately neither persisted nor URL-synced. */
+  reviewFilesSort: "path" | "risk";
   /** Per changed file (keyed by node.location.file): GitHub's +N/-M churn, shown as a marker before
    * the file card's name (files themselves are not coloured — only the touched blocks inside are). */
   reviewFileDelta: Record<string, { added: number; deleted: number; status?: PrFileStatus }>;
@@ -300,35 +322,66 @@ export interface BlueprintState {
   /** Base URL for on-demand source fetches; null when the server ships no source access. Node
    * components read it to decide whether to offer a "show source" control. */
   sourceUrl: string | null;
+  /** POST endpoint for PR-head preparation; null when this session can't prepare one (plain
+   * `view`, older server). Gates prepare-first review entry and the fallback extract button. */
+  analyzeUrl: string | null;
   /** Whether this graph was loaded from a GitHub repository and can use the PR endpoints. */
   githubSource: boolean;
   /** PR API endpoints derived from the graph artifact URL; 404/network means this session lacks PRs. */
   prsUrl: string;
+  prOneUrl: string;
   prFilesUrl: string;
+  prCommentsUrl: string;
+  prChecksUrl: string;
+  /** Exact web-session source used only by the subfolder recovery action. */
+  prSessionSource: PrSessionSource | null;
   prsTab: PrsTab;
   prsList: Record<PrsTab, PrSummary[] | null>;
+  /** One-off summaries fetched for URL restores; unlike `prsList`, these are not loaded pages. */
+  prExtraSummaries: Record<number, PrSummary>;
   prsHasMore: Record<PrsTab, boolean>;
   prsLoading: boolean;
   prsError: string | null;
+  /** Session-only related-path filter; persists across page/lens switches until explicitly cleared. */
+  relatedPrs: RelatedPrsState | null;
   prSelected: number | null;
   prFiles: PrChangedFile[] | null;
+  /** Existing GitHub comments plus the latest review-state rollup for the selected PR. */
+  prDiscussion: Pick<PrDiscussionResult, "comments" | "reviews"> | null;
+  /** Check-run rollup for the selected PR's head commit. */
+  prChecks: PrChecks | null;
   prFilesTruncated: boolean;
+  prFilesTotal: number;
+  prFilesOutside: number;
+  prFilesSuggestedSubdir: string;
+  /** The selected PR could not seed this session's graph; shown on the PR detail page. */
+  prReviewBlocked: { number: number; reason: string } | null;
   /** The PR whose changed files are currently highlighted in the graph (via "review in graph"). */
   prReviewed: number | null;
   /** Head ref of the PR under review — the code panel fetches changed files at this ref. Null off-review. */
   reviewHeadRef: string | null;
   /** Per changed file (keyed by node.location.file): the PR diff needed to slice + paint the head code. */
   reviewDiffByFile: Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>;
+  /** Removed patch text keyed like reviewDiffByFile. Positions are HEAD-side in both review modes. */
+  reviewRemovedByFile: Record<string, { afterNewLine: number; lines: string[] }[]>;
+  /** Files whose removed patch text exceeded the server-side cap, keyed like reviewRemovedByFile. */
+  reviewRemovedTruncatedByFile: Record<string, boolean>;
   /** The review-PREPARATION lane: "preparing" while the server streams the clone→checkout→extract
-   * analysis of the PR head; "error" when that stream failed (the panel offers Retry); else "idle". */
+   * analysis of the PR head; "error" when that stream failed (Retry or base fallback); else "idle". */
   prReviewStatus: "idle" | "preparing" | "error";
   /** The analyze stage currently running server-side; null outside "preparing". */
   prPrepareStage: PrAnalyzeStage | null;
   /** Why preparation failed; null outside "error". */
   prPrepareError: string | null;
   /** The server-side graph id of the prepared PR-head artifact (the analyze stream's "done"
-   * payload). The streamed review swaps the loaded artifact to it via `graphUrl`. */
+   * payload). Kept across a soft close so the review can resume without another extraction. */
   prPreparedGraphId: string | null;
+  /** The head commit the server analyzed for the prepared artifact (the "done" payload's
+   * provenance); shown in the review header. Set on swap, cleared with prPreparedGraphId. */
+  prPreparedHeadSha: string | null;
+  /** True only while the loaded artifact/index pair is the prepared PR-head graph. Unlike its id,
+   * this disarms on a soft baseline restore and re-arms when resumePrReview swaps the graph back. */
+  prPreparedArtifactCurrent: boolean;
   /** The boot artifact/index pair, saved ONCE when a streamed review swaps in the prepared PR-head
    * artifact and restored when the session ends (back to the PRs lens, switching PRs). Null outside
    * a swapped review — the synchronous fallback path never swaps, so it never sets this. */
@@ -413,9 +466,12 @@ export interface BlueprintState {
   closeMinimalGraph(): void;
   demoteMinimalMember(id: string): void;
   resetMinimalGraph(): void;
+  /** Expand one rolled review package into its changed file cards. Reset is the only collapse-back. */
+  expandMinimalGroup(packageId: string): void;
   rearrangeMinimalGraph(): void;
   minimalRelayout(activity?: LayoutActivity): Promise<void>;
   setReviewLit(ids: Set<string> | null): void;
+  setReviewFilesSort(sort: "path" | "risk"): void;
   selectReviewNode(id: string | null): void;
   /** Isolate one change group on the Map (null = "All groups"): re-seed the minimal overlay with only
    * that group's module ids and relayout. A no-op outside a review or when already active. */
@@ -426,7 +482,7 @@ export interface BlueprintState {
   focusReviewFile(path: string): void;
   toggleReviewUnitTick(nodeId: string): void;
   toggleReviewFileViewed(path: string): void;
-  addReviewComment(path: string, nodeId: string | null, body: string): void;
+  addReviewComment(path: string, nodeId: string | null, body: string, line?: number | null): void;
   deleteReviewComment(id: string): void;
   toggleReviewPanel(): void;
   submitReviewComments(): Promise<void>;
@@ -444,8 +500,26 @@ export interface BlueprintState {
   closeCode(): void;
   setPrsTab(tab: PrsTab): void;
   loadPrs(page?: number): Promise<void>;
+  exploreRelatedPrs(): Promise<void>;
+  clearRelatedPrs(): void;
+  ensurePrSummary(number: number): Promise<void>;
   selectPr(number: number | null): Promise<void>;
   reviewPrInGraph(): Promise<void>;
+  /** Explicit fallback after prepare-first entry fails: review against the loaded base graph. */
+  reviewPrOnBaseGraph(): Promise<void>;
+  /** Head extract: stream the server's clone→checkout→extract of the PR head, swap the
+   * loaded artifact for the head-accurate one, and run the review in head coordinates. On an
+   * entry failure the PRs page stays put; a fallback review remains intact on manual failure. */
+  prepareHeadGraph(): Promise<void>;
+  /** Re-open a review whose overlay was soft-closed (explicit Close/lens switch) WITHOUT re-running
+   * the expensive head prepare: re-swap the already-prepared artifact (a plain GET) if there was
+   * one, repaint the kept amber, and reseed the minimal overlay from `reviewAllSeedIds`. Guarded on
+   * a live-but-collapsed review (`prReviewed !== null && minimalSeedIds.length === 0`). */
+  resumePrReview(): Promise<void>;
+  /** Abandon an in-flight prepare-first entry; server work may continue behind the stale-seq guard. */
+  cancelPrReviewPreparation(): void;
+  /** Dismiss the head-extraction failure warning: clears the prepare-error lane. */
+  dismissPrepareError(): void;
   relayout(): Promise<void>;
 }
 
@@ -455,14 +529,17 @@ export interface StoreDependencies {
   provider: TelemetryProvider | null;
   hasOverlay: boolean;
   sourceUrl: string | null;
-  /** Explicit source capability from the server boot contract; false for plain view/dev sessions. */
-  githubSource?: boolean;
+  prSessionSource?: PrSessionSource | null;
   prsUrl: string;
+  prOneUrl: string;
   prFilesUrl: string;
+  prRelatedUrl: string;
+  prCommentsUrl: string;
+  prChecksUrl: string;
   /** GET base for one changed file's text at the PR head ref (the review code panel's head-fetch). */
   prFileUrl?: string;
   /** POST endpoint for PR-head preparation. Null/absent (a plain `view` session, or an older
-   * server) makes reviewPrInGraph skip streaming and review the loaded artifact synchronously. */
+   * server) makes reviewPrInGraph use the synchronously-applied loaded-artifact review. */
   analyzeUrl?: string | null;
   /** The current GitHub artifact id — the analyze POST body's `id`. */
   graphId?: string | null;
@@ -473,6 +550,19 @@ export interface StoreDependencies {
 }
 
 export type BlueprintStore = StoreApi<BlueprintState>;
+
+/** The `/api/source` base for the CURRENT graph: after a head-graph swap the server serves the
+ * PR-head checkout under the prepared graph id (web-pr-analyze registers its sourceRoots there),
+ * so the boot URL's `id` is exchanged — else every source fetch would read base-clone bytes
+ * against head-relative node locations. Every store source fetch must route through this. */
+function activeSourceUrl(state: BlueprintState): string | null {
+  if (state.sourceUrl === null || !state.prPreparedArtifactCurrent || state.prPreparedGraphId === null) {
+    return state.sourceUrl;
+  }
+  const url = new URL(state.sourceUrl, requestOrigin());
+  url.searchParams.set("id", state.prPreparedGraphId);
+  return url.toString();
+}
 
 /** `/api/source` URL for a node slice (or the whole file). */
 function baseSourceUrl(sourceUrl: string, location: NonNullable<GraphNode["location"]>, wholeFile: boolean): URL {
@@ -523,10 +613,15 @@ function codeLoadRequest(
   if (!node.location) {
     return null;
   }
+  // A prepared PR artifact has its own retained source root. Route every code surface through that
+  // graph id and keep it out of the GitHub head-file branch: its nodes and source already share HEAD
+  // coordinates, while the head-file fallback below exists for reviews on the loaded base artifact.
+  const preparedArtifactCurrent = state.prPreparedArtifactCurrent;
+  const resolvedSourceUrl = preparedArtifactCurrent ? activeSourceUrl(state) : sourceUrl;
   // A live PR review reads changed files from the PR head. The synchronous path holds BASE node
   // coordinates and therefore needs the edit map; a prepared artifact is already in HEAD
   // coordinates, so mapping it again would double-shift the preview after an earlier hunk.
-  const reviewDiff = state.prReviewed !== null && prFileUrl && state.reviewHeadRef
+  const reviewDiff = !preparedArtifactCurrent && state.prReviewed !== null && prFileUrl && state.reviewHeadRef
     ? state.reviewDiffByFile[node.location.file] ?? null
     : null;
   // A patch can be absent for a binary/oversized change, but the file is still a PR-head file. Its
@@ -534,14 +629,15 @@ function codeLoadRequest(
   // source just because GitHub omitted hunk detail. Removed files are the exception: no HEAD path
   // exists, so their old (entirely deleted) node span must come from the base source endpoint.
   const removedAtHead = state.reviewFileDelta[node.location.file]?.status === "removed";
-  const readsPrHead = !removedAtHead && state.prReviewed !== null && prFileUrl !== null && state.reviewHeadRef !== null
+  const readsPrHead = !preparedArtifactCurrent && !removedAtHead
+    && state.prReviewed !== null && prFileUrl !== null && state.reviewHeadRef !== null
     && (reviewDiff !== null || state.reviewFileDelta[node.location.file] !== undefined);
-  if (!readsPrHead && !sourceUrl) {
+  if (!readsPrHead && !resolvedSourceUrl) {
     return null;
   }
   const wholeFile = readsPrHead ? false : opts?.wholeFile ?? false;
   const headSpan = readsPrHead
-    ? state.prReviewBaseline !== null || reviewDiff === null
+    ? reviewDiff === null
       ? { start: node.location.startLine, end: node.location.endLine ?? node.location.startLine }
       : headSpanFor(node.location.startLine, node.location.endLine ?? node.location.startLine, reviewDiff.edits)
     : null;
@@ -549,14 +645,14 @@ function codeLoadRequest(
   // A prepared head artifact's local diff is keyed to the CURRENT node coordinates and is more
   // accurate than GitHub's possibly-truncated patch detail. The synchronous path still needs the
   // latter because its artifact/node coordinates are on the base side.
-  const artifactKinds = state.prReviewBaseline !== null
+  const artifactKinds = preparedArtifactCurrent
     ? changedLineKindsFromExtensions(state.artifact.extensions)?.[node.location.file]
     : undefined;
   return {
     node,
     url: readsPrHead
       ? prFileHeadUrl(prFileUrl!, node.location.file, state.reviewHeadRef!)
-      : baseSourceUrl(sourceUrl!, node.location, wholeFile),
+      : baseSourceUrl(resolvedSourceUrl!, node.location, wholeFile),
     baseLine,
     wholeFile,
     headSpan,
@@ -729,8 +825,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // PR list/file fetches and PR-head preparation are independent async lanes; newer requests win
   // when the reader switches PRs (or re-clicks Review) mid-stream.
   let prsListSeq = 0;
+  let relatedPrsSeq = 0;
   let prFilesSeq = 0;
+  let prFilesRequest: { number: number; sequence: number; promise: Promise<void> } | null = null;
   let prAnalyzeSeq = 0;
+  let prAnalyzeCancellation: { sequence: number; resolve: () => void } | null = null;
+  let prReviewEntryRequest: { number: number; promise: Promise<void> } | null = null;
   const prsNextPage: Record<PrsTab, number> = { open: 1, closed: 1 };
   // PR-head reads return an entire file. Share that response across every changed node in the file;
   // fetchCodeView still slices and annotates a separate node-specific view for each caller.
@@ -752,19 +852,26 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // valid `review` extension — e.g. a plain `web`/`view` session). Computed once (the artifact never
   // changes after boot); a GitHub PR opened via reviewPrInGraph can later populate `review` at runtime.
   const review = deriveReviewData(dependencies.artifact, dependencies.index);
+  const bootReviewBaseline: PrReviewBaseline = { artifact: dependencies.artifact, index: dependencies.index, review };
   // The files checklist + persisted progress for an artifact-sourced review; a GitHub PR opened via
   // reviewPrInGraph re-derives both at runtime under its own reviewKey.
-  const reviewFiles = review ? deriveReviewFiles(review.context, dependencies.artifact, dependencies.index) : [];
+  const reviewFiles = review ? deriveReviewFiles(review.context, dependencies.artifact, dependencies.index, { baseIndex: null }) : [];
   const initialProgress = review ? readReviewProgress(review.context.reviewKey) : null;
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
+  const githubSource = (dependencies.prSessionSource ?? null) !== null;
   const prsUrl = dependencies.prsUrl;
+  const prOneUrl = dependencies.prOneUrl;
   const prFilesUrl = dependencies.prFilesUrl;
+  const prRelatedUrl = dependencies.prRelatedUrl;
+  const prCommentsUrl = dependencies.prCommentsUrl;
+  const prChecksUrl = dependencies.prChecksUrl;
   const prFileUrl = dependencies.prFileUrl ?? null;
-  // Null when the server can't prepare a PR head (no analyze route, or no stored GitHub artifact);
-  // reviewPrInGraph then falls back to the synchronous loaded-artifact review.
-  const analyzeUrl = dependencies.analyzeUrl ?? null;
   const analyzeGraphId = dependencies.graphId ?? null;
+  // The route alone is not a usable prepare capability: plain `view` still knows the route name,
+  // but has no stored graph id for the request. Expose null in that context so every consumer has
+  // one truthful capability flag and reviewPrInGraph takes its synchronous path.
+  const analyzeUrl = analyzeGraphId === null ? null : dependencies.analyzeUrl ?? null;
   const prReviewUrl = dependencies.prReviewUrl;
   // The composition tab opens on the WHOLE-SYSTEM overview (null root); file-rooting is the explicit
   // focus tool (⌘P / click a boundary or frame). Auto-rooting at the declared entry module proved a
@@ -830,6 +937,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     serviceGroupingTargetSize: DEFAULT_SERVICE_GROUPING_TARGET_SIZE,
     minimalSeedIds: [],
     minimalMemberIds: [],
+    minimalRollups: {},
     minimalBasePositions: {},
     minimalArrange: false,
     minimalRfNodes: [],
@@ -839,6 +947,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     review,
     reviewAffectedIds: new Set(reviewFiles.flatMap((file) => file.units.map((unit) => unit.nodeId))),
     reviewFiles,
+    reviewFilesSort: "path",
     reviewFileDelta: {},
     reviewTicks: initialProgress?.ticks ?? {},
     reviewUnitTicks: initialProgress?.unitTicks ?? {},
@@ -859,24 +968,41 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     provider: dependencies.provider,
     hasOverlay: dependencies.hasOverlay,
     sourceUrl,
-    githubSource: dependencies.githubSource ?? false,
+    analyzeUrl,
+    githubSource,
     prsUrl,
+    prOneUrl,
     prFilesUrl,
+    prCommentsUrl,
+    prChecksUrl,
+    prSessionSource: dependencies.prSessionSource ?? null,
     prsTab: "open",
     prsList: { open: null, closed: null },
+    prExtraSummaries: {},
     prsHasMore: { open: false, closed: false },
     prsLoading: false,
     prsError: null,
+    relatedPrs: null,
     prSelected: null,
     prFiles: null,
+    prDiscussion: null,
+    prChecks: null,
     prFilesTruncated: false,
+    prFilesTotal: 0,
+    prFilesOutside: 0,
+    prFilesSuggestedSubdir: "",
+    prReviewBlocked: null,
     prReviewed: null,
     reviewHeadRef: null,
     reviewDiffByFile: {},
+    reviewRemovedByFile: {},
+    reviewRemovedTruncatedByFile: {},
     prReviewStatus: "idle",
     prPrepareStage: null,
     prPrepareError: null,
     prPreparedGraphId: null,
+    prPreparedHeadSha: null,
+    prPreparedArtifactCurrent: false,
     prReviewBaseline: null,
     graphUrl: dependencies.graphUrl ?? "",
     codeView: null,
@@ -1521,9 +1647,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               reviewSubmittedUrl: null,
               reviewHeadRef: null,
               reviewDiffByFile: {} as Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>,
+              reviewRemovedByFile: {} as Record<string, { afterNewLine: number; lines: string[] }[]>,
+              reviewRemovedTruncatedByFile: {} as Record<string, boolean>,
             }
           : {};
-      set({ minimalSeedIds: origin, minimalMemberIds: origin, minimalBasePositions: captureMapPositions(get().moduleRfNodes), minimalArrange: false, prReviewed: null, ...clearPrReview });
+      set({
+        minimalSeedIds: origin,
+        minimalMemberIds: origin,
+        minimalRollups: {},
+        minimalBasePositions: captureMapPositions(get().moduleRfNodes),
+        minimalArrange: false,
+        prReviewed: null,
+        ...clearPrReview,
+      });
       void get().minimalRelayout({ label: "Extracting selection…" });
     },
 
@@ -1531,8 +1667,28 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // can adjust it and rebuild without re-picking every card. Bumping the seq discards any ELK
     // pass still in flight, so a slow layout can't repopulate the arrays after the close.
     closeMinimalGraph() {
+      // Closing the overlay mid-review must not strand the reader on the swapped PR-head artifact
+      // (still amber-marked) under the plain Map — yet the review must stay RESUMABLE. Soft-restore
+      // the boot graph while keeping every review field (the chip + resumePrReview re-open from
+      // them); in sync mode (never swapped, so no baseline to restore) just strip the review's amber
+      // back to the boot artifact's own marking. No-op for a non-review overlay close.
+      if (get().prReviewed !== null) {
+        if (!restorePrReviewBaseline(get, set, invalidateArtifactCaches, { endSession: false })) {
+          resetChangedIdsToArtifact(get().artifact, get().index);
+        }
+      }
       minimalLayoutSeq += 1;
-      set({ minimalSeedIds: [], minimalMemberIds: [], minimalBasePositions: {}, minimalArrange: false, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle", minimalLayoutActivity: null });
+      set({
+        minimalSeedIds: [],
+        minimalMemberIds: [],
+        minimalRollups: {},
+        minimalBasePositions: {},
+        minimalArrange: false,
+        minimalRfNodes: [],
+        minimalRfEdges: [],
+        minimalLayoutStatus: "idle",
+        minimalLayoutActivity: null,
+      });
     },
 
     // Remove a MEMBER (the members-panel ✕); it reappears as a satellite iff a remaining member still
@@ -1551,12 +1707,41 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Reset the overlay to its base: restore the working set to the origin selection AND drop any
     // re-arrangement (back to the captured map-mirror). A no-op when already at the origin and mirror.
     resetMinimalGraph() {
-      const { minimalSeedIds, minimalMemberIds, minimalArrange } = get();
-      if (sameMembers(minimalMemberIds, minimalSeedIds) && !minimalArrange) {
+      const { minimalSeedIds, minimalMemberIds, minimalRollups, minimalArrange } = get();
+      // Expanding a rollup replaces its package seed with file seeds. The retained mapping restores
+      // the ORIGINAL rolled package here, so Reset re-summarizes; there is intentionally no inline
+      // collapse-back gesture competing with the one-way "files ▸" affordance.
+      const origin = restoreRolledSeeds(minimalSeedIds, minimalRollups);
+      if (sameMembers(minimalMemberIds, origin) && sameMembers(minimalSeedIds, origin) && !minimalArrange) {
         return;
       }
-      set({ minimalMemberIds: [...minimalSeedIds], minimalArrange: false });
+      set({ minimalSeedIds: origin, minimalMemberIds: [...origin], minimalArrange: false });
       void get().minimalRelayout({ label: "Resetting extracted graph…" });
+    },
+
+    // Decompose one rolled package into exactly the changed file modules it summarized. Expanding
+    // their package/module ancestry opens those files to declaration level through the overlay's
+    // existing shared moduleExpanded path; the retained rollup mapping is Reset's collapse target.
+    expandMinimalGroup(packageId) {
+      const { index, minimalSeedIds, minimalMemberIds, minimalRollups, moduleExpanded } = get();
+      const fileIds = minimalRollups[packageId];
+      if (!fileIds || (!minimalSeedIds.includes(packageId) && !minimalMemberIds.includes(packageId))) {
+        return;
+      }
+      const expanded = new Set(moduleExpanded);
+      for (const fileId of fileIds) {
+        for (const ancestor of index.ancestorsOf(fileId)) {
+          if (ancestor.kind === "package" || ancestor.kind === "module") {
+            expanded.add(ancestor.id);
+          }
+        }
+      }
+      set({
+        minimalSeedIds: replaceRollupSeed(minimalSeedIds, packageId, fileIds),
+        minimalMemberIds: replaceRollupSeed(minimalMemberIds, packageId, fileIds),
+        moduleExpanded: expanded,
+      });
+      void get().minimalRelayout({ label: "Expanding directory…" });
     },
 
     // Re-arrange: drop the captured map-mirror and run the canonical canvas ELK layout. It stays
@@ -1716,6 +1901,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ reviewLitNodeIds: ids });
     },
 
+    setReviewFilesSort(sort) {
+      set({ reviewFilesSort: sort });
+    },
+
     // Select a review block (from the panel); also lights it and CENTERS the graph on it — a panel
     // click must always end with the target visible, not selected somewhere off-screen.
     selectReviewNode(id) {
@@ -1747,13 +1936,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // — a pure seed/member swap, no dimming and no bespoke graph. Mirrors applyPrReviewToMap's reset
     // of the minimal fields exactly so the overlay rebuilds identically.
     selectReviewGroup(groupId) {
-      const { review, reviewGroups, reviewActiveGroupId, reviewAllSeedIds } = get();
+      const { review, reviewFiles, reviewGroups, reviewActiveGroupId, index } = get();
       if (!review || !reviewGroups || groupId === reviewActiveGroupId) {
         return;
       }
       // An unknown id falls back to "All" — a stale group id can never strand the reader on an empty Map.
       const group = groupId === null ? null : reviewGroups.groups.find((candidate) => candidate.id === groupId) ?? null;
-      const nextSeeds = group ? group.moduleIds : reviewAllSeedIds;
+      const allowed = group === null ? null : new Set(group.moduleIds);
+      const matched = matchAffectedFiles(index, reviewFiles.map((file) => file.path)).matched
+        .filter((match) => allowed === null || allowed.has(match.moduleId));
+      // The threshold belongs to THIS isolated set, not the PR as a whole: an eight-file group stays
+      // eight file cards even when the full review was large enough to roll up.
+      const { seeds: nextSeeds, rolledUp } = rollupSeeds(matched, index);
+      const moduleExpanded = reviewExpansionForMatches(index, matched, rolledUp);
       invalidateMinimalLayout();
       set({
         reviewActiveGroupId: group ? group.id : null,
@@ -1761,6 +1956,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewLitNodeIds: null,
         minimalSeedIds: nextSeeds,
         minimalMemberIds: [...nextSeeds],
+        minimalRollups: rollupsRecord(rolledUp),
+        moduleExpanded,
         minimalBasePositions: {},
         minimalArrange: false,
         minimalRfNodes: [],
@@ -1816,9 +2013,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       persistReviewProgress(get());
     },
 
-    // Add a draft comment on a file (nodeId null) or on a touched unit inside it. Drafts persist
-    // under the reviewKey until submitted or deleted.
-    addReviewComment(path, nodeId, body) {
+    // Add a draft comment on a file (nodeId null), touched unit, or explicit HEAD-side line. Drafts
+    // persist under the reviewKey until submitted or deleted.
+    addReviewComment(path, nodeId, body, line = null) {
       const { review, reviewComments, index } = get();
       const trimmed = body.trim();
       if (!review || trimmed.length === 0) {
@@ -1828,7 +2025,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         id: newCommentId(),
         path,
         nodeId,
-        anchorLabel: nodeId === null ? null : (index.nodesById.get(nodeId)?.displayName ?? null),
+        line,
+        anchorLabel: line === null ? (nodeId === null ? null : (index.nodesById.get(nodeId)?.displayName ?? null)) : `L${line}`,
         body: trimmed,
         at: new Date().toISOString(),
       };
@@ -1916,6 +2114,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
         return;
       }
+      if (previous === "prs") {
+        // A prepare-first review only owns the PRs waiting surface. Leaving it explicitly abandons
+        // the entry; the server stream may finish, but its sequence can no longer swap the graph.
+        get().cancelPrReviewPreparation();
+      }
       beginLensTransition(get, set);
       // The path nodes to carry — read BEFORE any state mutates the outgoing lens's selection/focus.
       const anchors = expandServiceSyntheticAnchors(
@@ -1971,6 +2174,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         get().setViewMode("prs");
         return;
       }
+      get().cancelPrReviewPreparation();
       const back = lensBeforePrs ?? "modules";
       lensBeforePrs = null;
       set({ viewMode: back });
@@ -2083,7 +2287,23 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (get().prsTab === tab) {
         return;
       }
-      set({ prsTab: tab, prsError: null, prSelected: null, prFiles: null, prFilesTruncated: false });
+      // A tab switch is also a selection reset, so invalidate every selected-PR response lane.
+      prFilesSeq += 1;
+      get().cancelPrReviewPreparation();
+      set({
+        prsTab: tab,
+        prsError: null,
+        prSelected: null,
+        prFiles: null,
+        prDiscussion: null,
+        prChecks: null,
+        prsLoading: false,
+        prFilesTruncated: false,
+        prFilesTotal: 0,
+        prFilesOutside: 0,
+        prFilesSuggestedSubdir: "",
+        prReviewBlocked: null,
+      });
       if (get().prsList[tab] === null) {
         void get().loadPrs(1);
       }
@@ -2129,6 +2349,94 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
+    async exploreRelatedPrs() {
+      // Resolve before navigation: entering the PRs page may close/restore a review overlay, but the
+      // request subject is the graph view the reader invoked this action from.
+      const paths = filesInScope(get());
+      if (paths.length === 0) {
+        return;
+      }
+      const sequence = ++relatedPrsSeq;
+      const subject: RelatedPrsState = {
+        paths,
+        results: [],
+        scanned: 0,
+        hasMore: false,
+        loading: true,
+        error: null,
+      };
+      set({ relatedPrs: subject });
+      if (get().viewMode !== "prs") {
+        get().setViewMode("prs");
+      }
+      // Identity is the subject guard: clearing or replacing the filter while either response body
+      // is in flight must not let this request resurrect stale related results.
+      const active = () => relatedPrsSeq === sequence && get().relatedPrs === subject;
+      try {
+        const response = await fetch(prRelatedUrl, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ paths }),
+        });
+        if (!active()) {
+          return;
+        }
+        if (!response.ok) {
+          const error = await errorMessage(response);
+          if (active()) {
+            set({ relatedPrs: { ...subject, loading: false, error } });
+          }
+          return;
+        }
+        const data = (await response.json()) as RelatedPrsResponse;
+        if (!active()) {
+          return;
+        }
+        set({
+          relatedPrs: {
+            paths,
+            results: data.results,
+            scanned: data.scanned,
+            hasMore: data.hasMore,
+            loading: false,
+            error: null,
+          },
+        });
+      } catch {
+        if (active()) {
+          set({ relatedPrs: { ...subject, loading: false, error: PRS_UNAVAILABLE_ERROR } });
+        }
+      }
+    },
+
+    clearRelatedPrs() {
+      relatedPrsSeq += 1;
+      set({ relatedPrs: null });
+    },
+
+    async ensurePrSummary(number) {
+      if (selectedPrSummary(get(), number) !== null) {
+        return;
+      }
+      try {
+        const url = new URL(prOneUrl, requestOrigin());
+        url.searchParams.set("n", String(number));
+        const response = await fetch(url, { credentials: "same-origin" });
+        if (!response.ok) {
+          set({ prsError: await errorMessage(response) });
+          return;
+        }
+        const { pr } = (await response.json()) as PrOneResponse;
+        set({
+          prExtraSummaries: { ...get().prExtraSummaries, [pr.number]: pr },
+          prsError: null,
+        });
+      } catch {
+        set({ prsError: PRS_UNAVAILABLE_ERROR });
+      }
+    },
+
     async selectPr(number) {
       if (number !== null && !get().githubSource) {
         return;
@@ -2136,87 +2444,324 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const sequence = ++prFilesSeq;
       // Switching PRs abandons any review preparation in flight: bump its seq so a landing stream
       // is dropped, and clear the indicator so the panel never shows a stale progress/error card.
-      prAnalyzeSeq += 1;
+      get().cancelPrReviewPreparation();
       // Leaving the reviewed PR (a different number, or Back/Escape's null) ends the review
       // session: put the boot artifact back and re-lay the visible surface. A no-op outside one.
-      if (restorePrReviewBaseline(get, set, invalidateArtifactCaches)) {
+      if (restoreSelectedPrReview(get, set, invalidateArtifactCaches, bootReviewBaseline)) {
         void get().relayout();
       }
       const prepareReset = { prReviewStatus: "idle" as const, prPrepareStage: null, prPrepareError: null };
       if (number === null) {
-        set({ prSelected: null, prFiles: null, prFilesTruncated: false, prsLoading: false, prsError: null, ...prepareReset });
+        set({
+          prSelected: null,
+          prFiles: null,
+          prDiscussion: null,
+          prChecks: null,
+          prFilesTruncated: false,
+          prFilesTotal: 0,
+          prFilesOutside: 0,
+          prFilesSuggestedSubdir: "",
+          prReviewBlocked: null,
+          prsLoading: false,
+          prsError: null,
+          ...prepareReset,
+        });
         return;
       }
-      set({ prSelected: number, prFiles: null, prFilesTruncated: false, prsLoading: true, prsError: null, ...prepareReset });
+      set({
+        prSelected: number,
+        prFiles: null,
+        prDiscussion: null,
+        prChecks: null,
+        prFilesTruncated: false,
+        prFilesTotal: 0,
+        prFilesOutside: 0,
+        prFilesSuggestedSubdir: "",
+        prReviewBlocked: null,
+        prsLoading: true,
+        prsError: null,
+        ...prepareReset,
+      });
+      const request = (async () => {
+        // Related results intentionally carry only card fields. Resolve a full summary before the
+        // ordinary file/discussion/check lanes so a related card behaves exactly like a paged card.
+        if (selectedPrSummary(get(), number) === null) {
+          await get().ensurePrSummary(number);
+          if (prFilesSeq !== sequence || get().prSelected !== number) {
+            return;
+          }
+        }
+        try {
+          const url = new URL(prFilesUrl, requestOrigin());
+          url.searchParams.set("n", String(number));
+          const response = await fetch(url, { credentials: "same-origin" });
+          if (prFilesSeq !== sequence || get().prSelected !== number) {
+            return;
+          }
+          if (!response.ok) {
+            set({ prsLoading: false, prsError: await errorMessage(response) });
+            return;
+          }
+          const data = (await response.json()) as PrFilesResponse;
+          if (prFilesSeq !== sequence || get().prSelected !== number) {
+            return;
+          }
+          set({
+            prFiles: data.files,
+            prFilesTruncated: data.truncated,
+            prFilesTotal: data.totalFiles ?? data.files.length,
+            prFilesOutside: data.outsideCount ?? 0,
+            prFilesSuggestedSubdir: data.suggestedSubdir ?? "",
+            prsLoading: false,
+            prsError: null,
+          });
+          // Discussion and checks are deliberately secondary to the changed-file load: the detail
+          // panel is usable as soon as files land, while these two independent lanes fill in quietly.
+          void fetchPrDiscussion(prCommentsUrl, number).then(
+            (discussion) => {
+              if (prFilesSeq === sequence && get().prSelected === number) {
+                set({ prDiscussion: { comments: discussion.comments, reviews: discussion.reviews } });
+              }
+            },
+            () => {
+              if (prFilesSeq === sequence && get().prSelected === number) {
+                console.warn("[meridian] PR discussion unavailable.");
+              }
+            },
+          );
+          const headSha = selectedPrSummary(get(), number)?.headSha ?? null;
+          if (headSha !== null) {
+            void fetchPrChecks(prChecksUrl, number, headSha).then(
+              (checks) => {
+                if (prFilesSeq === sequence && get().prSelected === number) {
+                  set({ prChecks: checks });
+                }
+              },
+              () => {
+                if (prFilesSeq === sequence && get().prSelected === number) {
+                  console.warn("[meridian] PR checks unavailable.");
+                }
+              },
+            );
+          }
+        } catch {
+          if (prFilesSeq === sequence && get().prSelected === number) {
+            set({ prsLoading: false, prsError: PRS_UNAVAILABLE_ERROR });
+          }
+        }
+      })();
+      const activeRequest = { number, sequence, promise: request };
+      prFilesRequest = activeRequest;
       try {
-        const url = new URL(prFilesUrl, requestOrigin());
-        url.searchParams.set("n", String(number));
-        const response = await fetch(url, { credentials: "same-origin" });
-        if (prFilesSeq !== sequence || get().prSelected !== number) {
-          return;
-        }
-        if (!response.ok) {
-          set({ prsLoading: false, prsError: await errorMessage(response) });
-          return;
-        }
-        const data = (await response.json()) as PrFilesResponse;
-        if (prFilesSeq !== sequence || get().prSelected !== number) {
-          return;
-        }
-        set({ prFiles: data.files, prFilesTruncated: data.truncated, prsLoading: false, prsError: null });
-      } catch {
-        if (prFilesSeq === sequence && get().prSelected === number) {
-          set({ prsLoading: false, prsError: PRS_UNAVAILABLE_ERROR });
+        await request;
+      } finally {
+        if (prFilesRequest === activeRequest) {
+          prFilesRequest = null;
         }
       }
     },
 
-    // Reviewing a PR lands on main's Module-map minimal-graph surface (applyPrReviewToMap). When
-    // the server can prepare the PR head (analyzeUrl + a stored artifact id + a known PR summary),
-    // it streams the clone→checkout→extract analysis into the prepare indicator, then SWAPS the
-    // loaded artifact for the prepared head-accurate one (saving the boot pair for the session-end
-    // restore) so the review computes in the diff's own coordinates. Without the endpoint (plain
-    // `view`, older server) it reviews the loaded artifact synchronously, as before — no swap.
-    // A stale-seq guard drops an older stream when a newer review (or PR switch) supersedes it.
+    // Once the selected PR's files are ready, a capable web session PREPARES first while the PRs
+    // page remains visible. Only the swapped PR-head graph is allowed to enter the Map. A plain
+    // view (no analyze capability) retains the synchronous loaded-artifact entry path.
     async reviewPrInGraph() {
-      const prNumber = get().prSelected;
-      if (prNumber === null) {
+      const selected = get().prSelected;
+      if (selected === null) {
         return;
       }
-      const summary = selectedPrSummary(get());
-      if (analyzeUrl === null || analyzeGraphId === null || summary === null) {
-        codePayloadCache.clear();
-        applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
-        return;
-      }
-      const sequence = ++prAnalyzeSeq;
-      set({ prReviewStatus: "preparing", prPrepareStage: "clone", prPrepareError: null, prPreparedGraphId: null });
-      try {
-        const request = { id: analyzeGraphId, prNumber, baseRef: summary.baseRef, headRef: summary.headRef };
-        const preparedGraphId = await streamPrAnalysis(analyzeUrl, request, (stage) => {
-          if (prAnalyzeSeq === sequence) {
-            set({ prPrepareStage: stage });
-          }
-        });
-        if (prAnalyzeSeq !== sequence) {
-          return; // a newer review (or PR switch) superseded this one.
+      if (get().prFiles === null) {
+        const inFlight = prFilesRequest?.number === selected && prFilesRequest.sequence === prFilesSeq
+          ? prFilesRequest.promise
+          : get().selectPr(selected);
+        await inFlight;
+        if (get().prSelected !== selected || get().prFiles === null) {
+          return;
         }
-        // SWAP: load the prepared PR-head artifact and make it the CURRENT graph BEFORE the review
-        // body runs, so amber marking, seeds, and the line diff all compute in the hunks' own
-        // head coordinates (the loaded artifact is the analyzed branch — its line numbers drift).
-        const prepared = await fetchPreparedArtifact(get().graphUrl, preparedGraphId);
-        if (prAnalyzeSeq !== sequence) {
-          return; // abandoned while the artifact was in flight — an old preparation must not swap.
+      }
+      if (analyzeUrl === null || analyzeGraphId === null) {
+        await get().reviewPrOnBaseGraph();
+        return;
+      }
+      // A double-click shares the one blocking entry promise; it must neither supersede the
+      // sequence nor let a later caller observe completion before the one server run finishes.
+      if (get().prReviewStatus === "preparing") {
+        if (prReviewEntryRequest?.number === selected) {
+          await prReviewEntryRequest.promise;
+        }
+        return;
+      }
+      const promise = get().prepareHeadGraph();
+      const request = { number: selected, promise };
+      prReviewEntryRequest = request;
+      try {
+        await promise;
+      } finally {
+        if (prReviewEntryRequest === request) {
+          prReviewEntryRequest = null;
+        }
+      }
+    },
+
+    // The old synchronous entry is now deliberately narrow: no analyze capability, or the user's
+    // explicit fallback after prepare-first failed. It never starts server preparation itself.
+    async reviewPrOnBaseGraph() {
+      const selected = get().prSelected;
+      if (selected === null) {
+        return;
+      }
+      if (get().prFiles === null) {
+        const inFlight = prFilesRequest?.number === selected && prFilesRequest.sequence === prFilesSeq
+          ? prFilesRequest.promise
+          : get().selectPr(selected);
+        await inFlight;
+        if (get().prSelected !== selected || get().prFiles === null) {
+          return;
+        }
+      }
+      applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
+    },
+
+    // Re-open a review whose overlay was soft-closed (explicit Close/lens switch) — cheaply. The
+    // expensive clone→checkout→extract NEVER re-runs here: a swapped review re-fetches its already-
+    // prepared head artifact with one GET and re-swaps (against the SAME saved baseline); a sync
+    // review keeps the boot artifact it never left. Then repaint the kept amber and reseed the
+    // overlay from reviewAllSeedIds, rebuilding declaration-level expansion for those restored seeds.
+    async resumePrReview() {
+      const { prReviewed, minimalSeedIds, prPreparedGraphId, reviewAffectedIds, reviewAllSeedIds } = get();
+      if (prReviewed === null || minimalSeedIds.length > 0) {
+        return;
+      }
+      if (prPreparedGraphId !== null) {
+        const prepared = await fetchPreparedArtifact(get().graphUrl, prPreparedGraphId);
+        if (get().prReviewed !== prReviewed || get().minimalSeedIds.length > 0) {
+          return; // the review moved on (or resumed elsewhere) while the artifact was in flight.
         }
         swapToPreparedArtifact(get, set, prepared, invalidateArtifactCaches);
-        set({ prReviewStatus: "idle", prPrepareStage: null, prPreparedGraphId: preparedGraphId });
-        codePayloadCache.clear();
-        applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
-      } catch (error) {
-        if (prAnalyzeSeq === sequence) {
-          set({ prReviewStatus: "error", prPrepareStage: null, prPrepareError: prepareErrorMessage(error) });
+      }
+      // Repaint the review's amber onto the current index — the soft close reset it to the boot
+      // marking (and a re-swap built a fresh index). Same channel applyPrReviewToMap writes.
+      applyChangedIds(get().index, [...reviewAffectedIds]);
+      const resumedMatches = matchAffectedFiles(get().index, get().reviewFiles.map((file) => file.path)).matched;
+      const resumedRollup = rollupSeeds(resumedMatches, get().index);
+      set({
+        viewMode: "modules",
+        minimalSeedIds: reviewAllSeedIds,
+        minimalMemberIds: [...reviewAllSeedIds],
+        minimalRollups: rollupsRecord(resumedRollup.rolledUp),
+        moduleExpanded: reviewExpansionForMatches(get().index, resumedMatches, resumedRollup.rolledUp),
+        reviewActiveGroupId: null,
+        reviewPanelHidden: false,
+      });
+      void get().minimalRelayout();
+    },
+
+    // Prepare-first entry (and the fallback review's manual "Extract head graph"): stream the
+    // clone→checkout→extract analysis, SWAP the loaded artifact for the prepared head-accurate one,
+    // then run the review so marking, seeds, and line diff all compute in HEAD coordinates. The
+    // stale-seq + identity guards drop a canceled entry, PR switch, or PRs-lens exit.
+    async prepareHeadGraph() {
+      const state = get();
+      const prNumber = state.prReviewed ?? state.prSelected;
+      const enteringFromPrs = state.prReviewed === null;
+      const summary = selectedPrSummary(state, prNumber);
+      if (
+        prNumber === null
+        || analyzeUrl === null
+        || analyzeGraphId === null
+        || summary === null
+        || (enteringFromPrs && state.viewMode !== "prs")
+      ) {
+        return;
+      }
+      // A direct manual re-run supersedes the prior action just like Retry does through
+      // reviewPrInGraph; resolve its public waiter while its guarded stream drains.
+      prAnalyzeCancellation?.resolve();
+      const sequence = ++prAnalyzeSeq;
+      let resolveCanceled!: () => void;
+      const canceled = new Promise<void>((resolve) => {
+        resolveCanceled = resolve;
+      });
+      const cancellation = { sequence, resolve: resolveCanceled };
+      prAnalyzeCancellation = cancellation;
+      const active = () => {
+        const current = get();
+        return prAnalyzeSeq === sequence
+          && current.prSelected === prNumber
+          && (enteringFromPrs
+            ? current.viewMode === "prs" && current.prReviewed === null
+            : current.prReviewed === prNumber);
+      };
+      set({
+        prReviewStatus: "preparing",
+        prPrepareStage: "clone",
+        prPrepareError: null,
+        prPreparedGraphId: null,
+        prPreparedHeadSha: null,
+        prReviewBlocked: null,
+      });
+      const work = (async () => {
+        try {
+          const request = { id: analyzeGraphId, prNumber, baseRef: summary.baseRef, headRef: summary.headRef };
+          const analysis = await streamPrAnalysis(analyzeUrl, request, (stage) => {
+            if (active()) {
+              set({ prPrepareStage: stage });
+            }
+          });
+          if (!active()) {
+            return;
+          }
+          // SWAP: load the prepared PR-head artifact and make it the CURRENT graph BEFORE the review
+          // body runs, so amber marking, seeds, and the line diff compute in HEAD coordinates.
+          const prepared = await fetchPreparedArtifact(get().graphUrl, analysis.graphId);
+          if (!active()) {
+            return;
+          }
+          swapToPreparedArtifact(get, set, prepared, invalidateArtifactCaches);
+          set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null, prPreparedGraphId: analysis.graphId, prPreparedHeadSha: analysis.headSha });
+          const entered = applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
+          if (!entered) {
+            // The zero-match decision was made against HEAD. Do not leak that unreviewed prepared
+            // graph behind the PRs page (or replace an explicit base fallback that still matches).
+            restorePrReviewBaseline(get, set, invalidateArtifactCaches, { endSession: enteringFromPrs });
+            if (!enteringFromPrs) {
+              set({ prPreparedGraphId: null, prPreparedHeadSha: null });
+            }
+          }
+        } catch (error) {
+          if (active()) {
+            // Derivation after a successful fetch is still part of preparation. If it throws after
+            // the swap, put the prior graph back before exposing the retry/fallback state.
+            if (get().prPreparedArtifactCurrent) {
+              restorePrReviewBaseline(get, set, invalidateArtifactCaches, { endSession: enteringFromPrs });
+              if (!enteringFromPrs) {
+                set({ prPreparedGraphId: null, prPreparedHeadSha: null });
+              }
+            }
+            set({ prReviewStatus: "error", prPrepareStage: null, prPrepareError: prepareErrorMessage(error) });
+          }
+        }
+      })();
+      try {
+        // Cancel resolves the public/blocking action immediately. `work` deliberately keeps
+        // draining server output, but every landing point is fenced by `active()`.
+        await Promise.race([work, canceled]);
+      } finally {
+        if (prAnalyzeCancellation === cancellation) {
+          prAnalyzeCancellation = null;
         }
       }
+    },
+
+    cancelPrReviewPreparation() {
+      prAnalyzeSeq += 1;
+      const cancellation = prAnalyzeCancellation;
+      prAnalyzeCancellation = null;
+      cancellation?.resolve();
+      set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null });
+    },
+
+    dismissPrepareError() {
+      set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null });
     },
 
     async relayout() {
@@ -2244,26 +2789,63 @@ function applyPrReviewToMap(
   set: (partial: Partial<BlueprintState>) => void,
   prFilesUrl: string,
   invalidateMinimalLayout: () => void,
-): void {
-  const { prFiles, prSelected, prsList, artifact, index } = get();
+): boolean {
+  const {
+    prFiles,
+    prSelected,
+    prFilesTotal,
+    prFilesOutside,
+    artifact,
+    index,
+    prPreparedArtifactCurrent,
+    prReviewBaseline,
+  } = get();
   if (prSelected === null) {
-    return;
+    return false;
+  }
+  // "Swapped" == the loaded artifact IS the prepared PR-head graph: node locations are already
+  // head-relative, so every base→head remap below must stand down (running it would corrupt an
+  // already-correct coordinate space — the #134 machinery is for the base-graph sync mode only).
+  const swapped = prPreparedArtifactCurrent;
+  const summary = selectedPrSummary(get());
+  const context = reviewContextFromPrFiles(
+    {
+      prNumber: prSelected,
+      headRef: summary?.headRef ?? null,
+      baseRef: summary?.baseRef ?? null,
+      scopeId: prFilesUrl,
+      files: prFiles ?? [],
+    },
+    // Base-side hunks mark base coordinates — right for the boot artifact, wrong for a head graph.
+    { baseSide: !swapped },
+  );
+  // Derive the overlay's seeds before ANY lens or review mutation. An empty review remains on the
+  // PR detail page, where the reader can re-extract and retry without losing the rest of the queue.
+  const matchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
+  const { seeds, rolledUp } = rollupSeeds(matchedFiles, index);
+  if (seeds.length === 0) {
+    const allOutside = (prFiles?.length ?? 0) === 0 && prFilesOutside > 0;
+    const changedFileCount = prFilesTotal > 0 ? prFilesTotal : (prFiles?.length ?? 0) + prFilesOutside;
+    set({
+      prReviewBlocked: {
+        number: prSelected,
+        reason: allOutside
+          ? "This PR's changes are outside this session's subfolder"
+          : `None of this PR's ${changedFileCount} changed files match this session's graph`,
+      },
+    });
+    return false;
   }
   // This is a lens ENTRY (it lands on the Map lens below), so it owes the shared transition side
   // effects like every other entry point: a live Service scope must not survive into the review.
   beginLensTransition(get, set);
-  const summary = [...(prsList.open ?? []), ...(prsList.closed ?? [])].find((pr) => pr.number === prSelected);
-  const context = reviewContextFromPrFiles({
-    prNumber: prSelected,
-    headRef: summary?.headRef ?? null,
-    scopeId: prFilesUrl,
-    files: prFiles ?? [],
-  });
   const review = deriveReviewDataFromContext(context, artifact, index);
   // The files-first checklist: every changed file with its touched code units (the panel's primary
   // section). Derived from the SAME context/artifact as the affected set below, so a checked unit
   // corresponds 1:1 with an amber-ringed card.
-  const files = deriveReviewFiles(context, artifact, index);
+  const files = deriveReviewFiles(context, artifact, index, {
+    baseIndex: swapped ? (prReviewBaseline?.index ?? null) : null,
+  });
   // The modified code blocks (hunks ∩ node ranges); repaint main's changed-node channel to THIS PR
   // so the Map + minimal overlay ring the edited blocks amber (reused `--changed-since` highlight).
   const affected = computeAffectedNodes(artifact.nodes, context.changedFiles);
@@ -2271,9 +2853,6 @@ function applyPrReviewToMap(
   // Colour each touched CODE BLOCK by its file's change kind (green added / gold modified / red
   // deleted). A file/module that only contains changes stays uncoloured — it shows a +/- stat instead.
   applyChangedStatus(index, affected.map((node) => [node.nodeId, node.status] as [string, ChangeStatus]));
-  // Seed the minimal graph from the changed FILES (seeds must be module ids).
-  const matchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
-  const seeds = [...new Set(matchedFiles.map((match) => match.moduleId))].sort();
   // Partition the change into disjoint groups (one per weakly-connected component of the changed
   // modules), sharing the SAME flow substrate the review rows already read. Stored so the rail can
   // offer per-group isolation; ignored (strip hidden) when the change is a single connected component.
@@ -2302,46 +2881,70 @@ function applyPrReviewToMap(
     changedRangesFromExtensions(artifact.extensions) !== null
       ? artifact
       : withPrLineDiff(artifact, index, context, matchedFiles, prSelected);
-  // Pre-expand the packages and file modules on the path to each changed block (packages too,
+  // Pre-expand the packages and file modules on the path to each changed file (packages too,
   // else deriveModuleTree never descends to the file — mirrors flowExplorer's
   // expandedModulePaths): review reads at declaration level (class/type cards), so classes stay
   // collapsed "N members" cards and blocks never chart flow steps — drilling deeper stays a
   // manual gesture.
-  const expanded = new Set<string>(seeds);
-  for (const node of affected) {
-    for (const ancestor of index.ancestorsOf(node.nodeId)) {
-      if (ancestor.kind === "package" || ancestor.kind === "module") {
-        expanded.add(ancestor.id);
-      }
-    }
-  }
+  const expanded = reviewExpansionForMatches(index, matchedFiles, rolledUp);
   invalidateMinimalLayout();
   // Capture the head ref + each changed file's real per-line diff (old/new spans + head-relative
   // added/modified lines), keyed by node.location.file, so opening a changed unit's </> fetches the
   // PR HEAD of that file and paints exactly its diff — code + highlight that match the PR, not base.
   // Keyed off the MATCHED node's location.file (same matching that seeds the graph), robust to any
   // path prefix. This is what makes the fast (synchronous) review show head code without re-extract.
-  const diffByPath = new Map<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>();
-  for (const file of prFiles ?? []) {
-    if (file.edits && file.edits.length > 0) {
-      diffByPath.set(file.path, { edits: file.edits, kinds: file.kinds ?? [] });
+  // SWAPPED mode carries neither field: node.location is already head-relative, so showCode's
+  // headSpanFor remap must never run — it reads the local head checkout via activeSourceUrl instead.
+  const reviewDiffByFile: Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }> = {};
+  if (!swapped) {
+    const diffByPath = new Map<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>();
+    for (const file of prFiles ?? []) {
+      if (file.edits && file.edits.length > 0) {
+        diffByPath.set(file.path, { edits: file.edits, kinds: file.kinds ?? [] });
+      }
+    }
+    for (const match of matchedFiles) {
+      const locFile = index.nodesById.get(match.moduleId)?.location?.file;
+      const diff = diffByPath.get(match.path);
+      if (locFile && diff) {
+        reviewDiffByFile[locFile] = diff;
+      }
     }
   }
-  const reviewDiffByFile: Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }> = {};
+  // Removed text is parsed from GitHub's patch in HEAD coordinates, so unlike the base→head edit
+  // remap above it is valid in BOTH sync and swapped reviews. Join through the same matched module
+  // path so the code panel can look it up with node.location.file in either graph.
+  const reviewRemovedByFile: Record<string, { afterNewLine: number; lines: string[] }[]> = {};
+  const reviewRemovedTruncatedByFile: Record<string, boolean> = {};
+  const removedByPath = new Map((prFiles ?? []).map((file) => [file.path, file]));
   for (const match of matchedFiles) {
     const locFile = index.nodesById.get(match.moduleId)?.location?.file;
-    const diff = diffByPath.get(match.path);
-    if (locFile && diff) {
-      reviewDiffByFile[locFile] = diff;
+    const prFile = removedByPath.get(match.path);
+    if (!locFile || !prFile) {
+      continue;
+    }
+    if ((prFile.removed?.length ?? 0) > 0) {
+      reviewRemovedByFile[locFile] = prFile.removed ?? [];
+    }
+    if (prFile.removedTruncated === true) {
+      reviewRemovedTruncatedByFile[locFile] = true;
     }
   }
   const progress = readReviewProgress(context.reviewKey);
   set({
     artifact: reviewedArtifact,
+    // Pin the index this review was computed on alongside its artifact: a mid-flow overlay close
+    // (beginLensTransition → closeMinimalGraph's soft restore, when re-seeding a swapped review) can
+    // swap the boot index back in, so the pair must be re-set together, not left to the prior swap.
+    index,
+    prPreparedArtifactCurrent: swapped,
     review,
+    prReviewBlocked: null,
     prReviewed: prSelected,
-    reviewHeadRef: summary?.headRef ?? null,
+    reviewHeadRef: swapped ? null : summary?.headRef ?? null,
     reviewDiffByFile,
+    reviewRemovedByFile,
+    reviewRemovedTruncatedByFile,
     reviewTicks: progress.ticks,
     reviewUnitTicks: progress.unitTicks,
     reviewFileTicks: progress.fileTicks,
@@ -2364,6 +2967,7 @@ function applyPrReviewToMap(
     moduleExpanded: expanded,
     minimalSeedIds: seeds,
     minimalMemberIds: [...seeds],
+    minimalRollups: rollupsRecord(rolledUp),
     minimalBasePositions: {},
     minimalArrange: false,
     minimalRfNodes: [],
@@ -2376,12 +2980,32 @@ function applyPrReviewToMap(
   if (seeds.length > 0) {
     void get().minimalRelayout({ label: "Preparing review graph…" });
   }
+  return true;
 }
 
-/** The selected PR's summary row (its refs feed the analyze request); null when not listed. */
-function selectedPrSummary(state: BlueprintState): PrSummary | null {
-  const { prSelected, prsList } = state;
-  return [...(prsList.open ?? []), ...(prsList.closed ?? [])].find((pr) => pr.number === prSelected) ?? null;
+/** The selected PR's summary row (its refs feed the analyze request); null when unavailable.
+ * An explicit number lets URL restoration resolve a row before selecting it. */
+export function selectedPrSummary(state: BlueprintState, number: number | null = state.prSelected): PrSummary | null {
+  if (number === null) {
+    return null;
+  }
+  const { prsList, prExtraSummaries } = state;
+  return [...(prsList.open ?? []), ...(prsList.closed ?? [])].find((pr) => pr.number === number) ?? prExtraSummaries[number] ?? null;
+}
+
+/** End either review mode through the existing baseline restore. Sync mode normally has no saved
+ * pair, so selectPr seeds the immutable boot pair just for this immediate end-session restore. */
+function restoreSelectedPrReview(
+  get: () => BlueprintState,
+  set: (partial: Partial<BlueprintState>) => void,
+  invalidateArtifactCaches: () => void,
+  bootBaseline: PrReviewBaseline,
+): boolean {
+  const state = get();
+  if (state.prReviewed !== null && state.prReviewBaseline === null) {
+    set({ prReviewBaseline: bootBaseline });
+  }
+  return restorePrReviewBaseline(get, set, invalidateArtifactCaches);
 }
 
 function prepareErrorMessage(error: unknown): string {
@@ -2406,6 +3030,13 @@ function relayoutActiveModuleSurface(get: () => BlueprintState, activity?: Layou
  * be forgotten four times over. openServiceScope runs it too, then SETS its own fresh scope.
  */
 function beginLensTransition(get: BlueprintStore["getState"], set: (partial: Partial<BlueprintState>) => void): void {
+  // Most lens entries route through setViewMode, but direct pivots (openLogicFlow,
+  // openComposition, openServiceScope) call this helper themselves. They must abandon the same
+  // prepare-first waiting lane before changing view. Successful prepared entry sets the lane idle
+  // before it calls this helper, so its own PRs → Map transition is deliberately not canceled.
+  if (get().viewMode === "prs" && get().prReviewStatus === "preparing") {
+    get().cancelPrReviewPreparation();
+  }
   if (get().minimalSeedIds.length > 0) {
     get().closeMinimalGraph();
   }
@@ -2430,6 +3061,64 @@ function sameMembers(a: readonly string[], b: readonly string[]): boolean {
   }
   const set = new Set(a);
   return b.every((id) => set.has(id));
+}
+
+function rollupsRecord(rolledUp: ReadonlyMap<string, string[]>): Record<string, string[]> {
+  return Object.fromEntries([...rolledUp].map(([packageId, fileIds]) => [packageId, [...fileIds]]));
+}
+
+/** Declaration-level expansion for the current review seed set. Non-rolled files retain their full
+ * package→file path; a rolled file stops at its summary package so nothing strictly inside opens. */
+function reviewExpansionForMatches(
+  index: GraphIndex,
+  matched: readonly { moduleId: string }[],
+  rolledUp: ReadonlyMap<string, readonly string[]>,
+): Set<string> {
+  const rolledPackageByFile = new Map<string, string>();
+  for (const [packageId, fileIds] of rolledUp) {
+    for (const fileId of fileIds) {
+      rolledPackageByFile.set(fileId, packageId);
+    }
+  }
+  const expanded = new Set<string>();
+  for (const match of matched) {
+    const rolledPackageId = rolledPackageByFile.get(match.moduleId);
+    let insideRolledPackage = false;
+    for (const ancestor of index.ancestorsOf(match.moduleId)) {
+      if (ancestor.id === rolledPackageId) {
+        insideRolledPackage = true;
+      }
+      if (
+        (ancestor.kind === "package" || ancestor.kind === "module")
+        && (!insideRolledPackage || ancestor.id === rolledPackageId)
+      ) {
+        expanded.add(ancestor.id);
+      }
+    }
+  }
+  return expanded;
+}
+
+function replaceRollupSeed(ids: readonly string[], packageId: string, fileIds: readonly string[]): string[] {
+  if (!ids.includes(packageId)) {
+    return [...ids];
+  }
+  return [...new Set(ids.flatMap((id) => (id === packageId ? fileIds : [id])))].sort();
+}
+
+/** Invert any expanded package→files substitutions while leaving ordinary seed ids untouched. */
+function restoreRolledSeeds(seedIds: readonly string[], rollups: Readonly<Record<string, string[]>>): string[] {
+  const restored = new Set(seedIds);
+  for (const [packageId, fileIds] of Object.entries(rollups)) {
+    if (!fileIds.some((fileId) => restored.has(fileId))) {
+      continue;
+    }
+    for (const fileId of fileIds) {
+      restored.delete(fileId);
+    }
+    restored.add(packageId);
+  }
+  return [...restored].sort();
 }
 
 /** Union the folder-Map containment gates needed to draw `anchors` into an existing expansion set.
@@ -2604,6 +3293,27 @@ function withToggledCategory(hidden: Set<ModuleCategory>, category: ModuleCatego
 
 function requestOrigin(): string {
   return typeof window === "undefined" ? "http://meridian.local" : window.location.origin;
+}
+
+async function fetchPrDiscussion(baseUrl: string, number: number): Promise<PrDiscussionResult> {
+  const url = new URL(baseUrl, requestOrigin());
+  url.searchParams.set("n", String(number));
+  const response = await fetch(url, { credentials: "same-origin" });
+  if (!response.ok) {
+    throw new Error("PR discussion unavailable");
+  }
+  return (await response.json()) as PrDiscussionResult;
+}
+
+async function fetchPrChecks(baseUrl: string, number: number, sha: string): Promise<PrChecks> {
+  const url = new URL(baseUrl, requestOrigin());
+  url.searchParams.set("n", String(number));
+  url.searchParams.set("sha", sha);
+  const response = await fetch(url, { credentials: "same-origin" });
+  if (!response.ok) {
+    throw new Error("PR checks unavailable");
+  }
+  return (await response.json()) as PrChecks;
 }
 
 async function errorMessage(response: Response): Promise<string> {

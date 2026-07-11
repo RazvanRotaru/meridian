@@ -1,8 +1,8 @@
 /**
  * The "Review in graph" preparation indicator, driven by the store's prepare lane: while the
  * server streams the PR-head analysis, a clone→checkout→extract step list with done/active/pending
- * dots (ported from the PR-analysis POC's PrAnalysisPane); on failure, the message plus a Retry
- * that simply re-invokes reviewPrInGraph.
+ * dots (ported from the PR-analysis POC's PrAnalysisPane); on failure, the message plus explicit
+ * Retry and base-graph fallback actions.
  */
 
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
@@ -12,13 +12,14 @@ type StepState = "done" | "active" | "pending";
 
 /** User-facing step labels for the analyze stream's real stage names. */
 const STAGES: ReadonlyArray<{ id: PrAnalyzeStage; label: string }> = [
-  { id: "clone", label: "Fetch repository" },
-  { id: "checkout", label: "Checkout PR head vs base" },
-  { id: "extract", label: "Generate graph & extract diff" },
+  { id: "clone", label: "Cloning repository…" },
+  { id: "checkout", label: "Fetching PR head + base…" },
+  { id: "extract", label: "Extracting the head graph…" },
 ];
 
 export function PrPrepareProgress() {
   const stage = useBlueprint((state) => state.prPrepareStage);
+  const { cancelPrReviewPreparation } = useBlueprintActions();
   const activeIndex = stage ? STAGES.findIndex((entry) => entry.id === stage) : 0;
   return (
     <section style={CARD}>
@@ -31,6 +32,9 @@ export function PrPrepareProgress() {
           </li>
         ))}
       </ol>
+      <button type="button" style={CANCEL} onClick={cancelPrReviewPreparation}>
+        Cancel
+      </button>
     </section>
   );
 }
@@ -44,21 +48,25 @@ export function PrPrepareInline() {
   return (
     <div style={INLINE_ROW}>
       <span style={stepDot("active")} />
-      <span style={INLINE_LABEL}>{label}…</span>
+      <span style={INLINE_LABEL}>{label}</span>
     </div>
   );
 }
 
 export function PrPrepareError() {
   const message = useBlueprint((state) => state.prPrepareError);
-  const { reviewPrInGraph } = useBlueprintActions();
+  const { reviewPrInGraph, reviewPrOnBaseGraph } = useBlueprintActions();
   return (
-    <section style={CARD}>
-      <div style={ERROR_TITLE}>Preparation failed</div>
+    <section style={ERROR_CARD}>
       <div style={ERROR_BODY}>{message ?? "PR analysis failed."}</div>
-      <button type="button" style={RETRY} onClick={() => void reviewPrInGraph()}>
-        Retry
-      </button>
+      <div style={ERROR_ACTIONS}>
+        <button type="button" style={RETRY} onClick={() => void reviewPrInGraph()}>
+          Retry
+        </button>
+        <button type="button" style={FALLBACK} onClick={() => void reviewPrOnBaseGraph()}>
+          Review on base graph instead
+        </button>
+      </div>
     </section>
   );
 }
@@ -105,10 +113,10 @@ const INLINE_ROW: React.CSSProperties = { display: "flex", alignItems: "center",
 const INLINE_LABEL: React.CSSProperties = { fontSize: 12, color: "#E6EDF3", fontWeight: 550 };
 const STEP_LIST: React.CSSProperties = { listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 12 };
 const STEP_ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 12 };
-const ERROR_TITLE: React.CSSProperties = { color: "#FCA5A5", fontSize: 13.5, fontWeight: 650 };
-const ERROR_BODY: React.CSSProperties = { color: "#C9D1D9", fontSize: 13, lineHeight: "19px" };
+const ERROR_CARD: React.CSSProperties = { ...CARD, borderColor: "#92400E", background: "#1C1409" };
+const ERROR_BODY: React.CSSProperties = { color: "#FBBF24", fontSize: 13, lineHeight: "19px" };
+const ERROR_ACTIONS: React.CSSProperties = { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 };
 const RETRY: React.CSSProperties = {
-  alignSelf: "flex-start",
   border: "1px solid #2A2F37",
   borderRadius: 8,
   background: "#161B22",
@@ -117,3 +125,5 @@ const RETRY: React.CSSProperties = {
   cursor: "pointer",
   fontWeight: 600,
 };
+const CANCEL: React.CSSProperties = { ...RETRY, alignSelf: "flex-start" };
+const FALLBACK: React.CSSProperties = { ...RETRY, borderColor: "#92400E", color: "#FDE68A", background: "transparent" };

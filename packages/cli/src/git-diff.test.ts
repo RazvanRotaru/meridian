@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { parseUnifiedDiff, parseUnifiedDiffWithStats, validatedRef } from "./git-diff";
+import { describe, expect, it, vi } from "vitest";
+import { changedSinceMetadata, parseUnifiedDiff, parseUnifiedDiffWithStats, validatedRef } from "./git-diff";
 
 const DIFF = [
   "diff --git a/src/orderService.ts b/src/orderService.ts",
@@ -76,6 +76,20 @@ describe("parseUnifiedDiffWithStats", () => {
     const parsed = parseUnifiedDiffWithStats(DIFF);
     expect(parsed.stats["src/removed.ts"]).toBeUndefined();
     expect(parsed.kinds["src/removed.ts"]).toBeUndefined();
+  });
+});
+
+describe("changedSinceMetadata", () => {
+  it("passes validated diff argv and a per-call timeout to an injected git executor", async () => {
+    const execute = vi.fn().mockResolvedValue(DIFF);
+    const result = await changedSinceMetadata("/repo/subdir", "origin/main", 300_000, execute);
+
+    expect(execute).toHaveBeenCalledWith(
+      "/repo/subdir",
+      ["diff", "--merge-base", "origin/main", "--relative", "--unified=0", "--no-color"],
+      300_000,
+    );
+    expect(result.ranges["src/orderService.ts"]).toHaveLength(2);
   });
 });
 

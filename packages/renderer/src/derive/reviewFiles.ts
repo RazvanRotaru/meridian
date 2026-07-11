@@ -10,10 +10,15 @@
  */
 
 import { computeAffectedNodes, NON_BLOCK_KINDS, rangesOverlap } from "@meridian/core";
-import type { ChangeStatus, GraphArtifact, LineRange, ReviewContext } from "@meridian/core";
+import type { ChangeStatus, GraphArtifact, GraphEdge, LineRange, ReviewContext } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { ReviewTick } from "../state/reviewTicksPref";
+import { buildInboundByTarget } from "./inboundEdges";
 import { matchAffectedFiles } from "./matchAffectedFiles";
+
+/** Kept in lockstep with core/coverage.ts: these edges mean execution reaches the target. */
+const EXECUTION_EDGE_KINDS: ReadonlySet<string> = new Set(["calls", "instantiates", "renders"]);
+const CALLER_CAP = 8;
 
 export interface ReviewUnitRow {
   nodeId: string;
@@ -28,15 +33,34 @@ export interface ReviewUnitRow {
   fingerprint: string;
 }
 
+export interface CallerRef {
+  nodeId: string;
+  displayName: string;
+  file: string;
+  line: number;
+}
+
+export interface DeletedImpact {
+  callers: CallerRef[];
+  unresolvedCount: number;
+  truncated: boolean;
+  /** Exact overflow behind the capped list, retained so the UI can name what was omitted. */
+  omittedCallerCount: number;
+}
+
 export interface ReviewFileRow {
   path: string;
   status: ChangeStatus;
-  /** The file's module node on the graph (a minimal-graph seed frame); null == not in the graph. */
+  /** The file's module node on the active graph; a deleted file may resolve only via deletedImpact. */
   moduleId: string | null;
   /** Touched code units, ordered by start line. Empty ⇒ the change mapped to no extracted block. */
   units: ReviewUnitRow[];
   /** File-level fingerprint (hunks digest) — staleness for the unit-less viewed tick. */
   fingerprint: string;
+  /** Distinct unchanged files with a direct, resolved execution edge into a changed unit. */
+  blastRadius: number;
+  /** Surviving direct callers into deleted code, resolved from the deletion-source graph. */
+  deletedImpact: DeletedImpact | null;
 }
 
 /** All changed files as review rows: in-graph files first (they are what the review is about; the
@@ -46,6 +70,7 @@ export function deriveReviewFiles(
   context: ReviewContext,
   artifact: GraphArtifact,
   index: GraphIndex,
+  options: { baseIndex: GraphIndex | null },
 ): ReviewFileRow[] {
   const affected = computeAffectedNodes(artifact.nodes, context.changedFiles);
   const unitsByFile = new Map<string, ReviewUnitRow[]>();
@@ -63,15 +88,102 @@ export function deriveReviewFiles(
   }
   const matches = matchAffectedFiles(index, context.changedFiles.map((file) => file.path));
   const moduleByPath = new Map(matches.matched.map((match) => [match.path, match.moduleId]));
+  const changedPaths = new Set(context.changedFiles.map((file) => file.path));
+  const deletedPaths = new Set(
+    context.changedFiles.filter((file) => file.status === "deleted").map((file) => file.path),
+  );
+  const activeInbound = buildInboundByTarget(index.edges, EXECUTION_EDGE_KINDS);
+  const deletionIndex = options.baseIndex ?? index;
+  const deletionInbound = options.baseIndex && deletedPaths.size > 0
+    ? buildInboundByTarget(options.baseIndex.edges, EXECUTION_EDGE_KINDS)
+    : activeInbound;
+  const deletionTargetsByPath = new Map<string, string[]>();
+  for (const node of deletionIndex.nodesById.values()) {
+    if (!deletedPaths.has(node.location.file)) {
+      continue;
+    }
+    const targets = deletionTargetsByPath.get(node.location.file);
+    targets ? targets.push(node.id) : deletionTargetsByPath.set(node.location.file, [node.id]);
+  }
   return [...context.changedFiles]
-    .map((file) => ({
-      path: file.path,
-      status: file.status,
-      moduleId: moduleByPath.get(file.path) ?? null,
-      units: (unitsByFile.get(file.path) ?? []).sort((a, b) => a.startLine - b.startLine),
-      fingerprint: hunksFingerprint(file.hunks),
-    }))
+    .map((file) => {
+      const units = (unitsByFile.get(file.path) ?? []).sort((a, b) => a.startLine - b.startLine);
+      return {
+        path: file.path,
+        status: file.status,
+        moduleId: moduleByPath.get(file.path) ?? null,
+        units,
+        fingerprint: hunksFingerprint(file.hunks),
+        blastRadius: blastRadiusOf(units, changedPaths, index, activeInbound),
+        deletedImpact: file.status === "deleted"
+          ? deletionImpactOf(deletionTargetsByPath.get(file.path), changedPaths, deletionIndex, deletionInbound)
+          : null,
+      };
+    })
     .sort(byGraphThenPath);
+}
+
+function blastRadiusOf(
+  units: readonly ReviewUnitRow[],
+  changedPaths: ReadonlySet<string>,
+  index: GraphIndex,
+  inbound: ReadonlyMap<string, GraphEdge[]>,
+): number {
+  const callerFiles = new Set<string>();
+  for (const unit of units) {
+    for (const edge of inbound.get(unit.nodeId) ?? []) {
+      if ((edge.resolution ?? "resolved") !== "resolved") {
+        continue;
+      }
+      const source = index.nodesById.get(edge.source);
+      if (source && !changedPaths.has(source.location.file)) {
+        callerFiles.add(source.location.file);
+      }
+    }
+  }
+  return callerFiles.size;
+}
+
+function deletionImpactOf(
+  targetIds: readonly string[] | undefined,
+  changedPaths: ReadonlySet<string>,
+  index: GraphIndex,
+  inbound: ReadonlyMap<string, GraphEdge[]>,
+): DeletedImpact | null {
+  if (!targetIds || targetIds.length === 0) {
+    return null;
+  }
+
+  const callers: CallerRef[] = [];
+  const seenCallers = new Set<string>();
+  let unresolvedCount = 0;
+  for (const targetId of targetIds) {
+    for (const edge of inbound.get(targetId) ?? []) {
+      const source = index.nodesById.get(edge.source);
+      if (!source || changedPaths.has(source.location.file)) {
+        continue;
+      }
+      if ((edge.resolution ?? "resolved") !== "resolved") {
+        unresolvedCount += 1;
+        continue;
+      }
+      if (seenCallers.has(source.id)) {
+        continue;
+      }
+      seenCallers.add(source.id);
+      if (callers.length === CALLER_CAP) {
+        continue;
+      }
+      callers.push({
+        nodeId: source.id,
+        displayName: source.displayName,
+        file: source.location.file,
+        line: source.location.startLine,
+      });
+    }
+  }
+  const omittedCallerCount = seenCallers.size - callers.length;
+  return { callers, unresolvedCount, truncated: omittedCallerCount > 0, omittedCallerCount };
 }
 
 function byGraphThenPath(a: ReviewFileRow, b: ReviewFileRow): number {
@@ -109,6 +221,16 @@ export function fileViewState(
     return "stale";
   }
   return states.every((state) => state === "done") ? "done" : "todo";
+}
+
+/** How many rows read as fully "viewed" (all their units done). ONE definition so the panel header,
+ * the collapsed rail, and the control-panel resume chip all report the same progress fraction. */
+export function countViewedFiles(
+  files: readonly ReviewFileRow[],
+  unitTicks: Record<string, ReviewTick>,
+  fileTicks: Record<string, ReviewTick>,
+): number {
+  return files.filter((file) => fileViewState(file, unitTicks, fileTicks) === "done").length;
 }
 
 /** The single unit-tick transition: done un-ticks; todo/stale ticks fresh. Returns a new record. */

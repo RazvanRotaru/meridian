@@ -5,17 +5,22 @@
 
 import {
   classifyQuery,
+  parseCheckRuns,
+  parsePullRequestComments,
   parsePullRequestFiles,
   parsePullRequestList,
+  parsePullRequestReviews,
   parseRepoList,
   parseRepoResult,
   parseSearchResults,
   parseUser,
+  toPrSummary,
 } from "./github-parse";
-import type { GitHubUser, PrFile, PrSummary, RepoSummary } from "./github-parse";
+import type { GitHubUser, PrChecks, PrDiscussionResult, PrFile, PrSummary, RepoSummary } from "./github-parse";
 import { interpretTokenResponse, parseDeviceCodeResponse, tokenRedeemBody } from "./github-auth";
 import type { DeviceCode, TokenPoll } from "./github-auth";
-import { API_ROOT, getApi, getApiOrNull, postForm, repoApi } from "./github-http";
+import { API_ROOT, getApi, getApiOrNull, getApiPage, postForm, repoApi } from "./github-http";
+import { asObject } from "./json-fields";
 import { submitPullRequestReviewWithFetch } from "./github-review";
 import type { SubmitReviewRequest, SubmitReviewResult } from "./github-review";
 
@@ -28,6 +33,8 @@ const LIST_MAX_PAGES = 4;
 const PR_PER_PAGE = 30;
 const PR_FILE_PER_PAGE = 100;
 const PR_FILE_CAP = 3_000;
+const PR_DISCUSSION_PER_PAGE = 100;
+const CHECK_RUN_PER_PAGE = 100;
 
 export interface GitHubClient {
   requestDeviceCode(): Promise<DeviceCode>;
@@ -58,6 +65,13 @@ export interface PullRequestsResult {
   hasMore: boolean;
 }
 
+export interface PullRequestRequest {
+  owner: string;
+  repo: string;
+  number: number;
+  token?: string;
+}
+
 export interface PullRequestFilesRequest {
   owner: string;
   repo: string;
@@ -68,6 +82,20 @@ export interface PullRequestFilesRequest {
 export interface PullRequestFilesResult {
   files: PrFile[];
   truncated: boolean;
+}
+
+export interface PullRequestDiscussionRequest {
+  owner: string;
+  repo: string;
+  prNumber: number;
+  token?: string;
+}
+
+export interface CommitChecksRequest {
+  owner: string;
+  repo: string;
+  sha: string;
+  token?: string;
 }
 
 export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
@@ -88,8 +116,45 @@ export function listPullRequests(request: PullRequestsRequest): Promise<PullRequ
   return listPullRequestsWithFetch(globalThis.fetch, request);
 }
 
+export async function fetchPullRequest(fetchImpl: typeof fetch, request: PullRequestRequest): Promise<PrSummary> {
+  const json = await getApi(fetchImpl, repoApi(request.owner, request.repo, `/pulls/${request.number}`), request.token);
+  return toPrSummary(asObject(json));
+}
+
 export function fetchPullRequestFiles(request: PullRequestFilesRequest): Promise<PullRequestFilesResult> {
   return fetchPullRequestFilesWithFetch(globalThis.fetch, request);
+}
+
+export async function fetchPullRequestDiscussion(request: PullRequestDiscussionRequest): Promise<PrDiscussionResult> {
+  const commentsParams = new URLSearchParams({ per_page: String(PR_DISCUSSION_PER_PAGE) });
+  const reviewsParams = new URLSearchParams({ per_page: String(PR_DISCUSSION_PER_PAGE) });
+  const [commentPage, reviewPage] = await Promise.all([
+    getApiPage(
+      globalThis.fetch,
+      repoApi(request.owner, request.repo, `/pulls/${request.prNumber}/comments?${commentsParams}`),
+      request.token,
+    ),
+    getApiPage(
+      globalThis.fetch,
+      repoApi(request.owner, request.repo, `/pulls/${request.prNumber}/reviews?${reviewsParams}`),
+      request.token,
+    ),
+  ]);
+  return {
+    comments: parsePullRequestComments(commentPage.json),
+    reviews: parsePullRequestReviews(reviewPage.json),
+    hasMore: commentPage.hasNext || reviewPage.hasNext,
+  };
+}
+
+export async function fetchCommitChecks(request: CommitChecksRequest): Promise<PrChecks> {
+  const params = new URLSearchParams({ per_page: String(CHECK_RUN_PER_PAGE) });
+  const json = await getApi(
+    globalThis.fetch,
+    repoApi(request.owner, request.repo, `/commits/${request.sha}/check-runs?${params}`),
+    request.token,
+  );
+  return parseCheckRuns(json);
 }
 
 export interface FileAtRefRequest {

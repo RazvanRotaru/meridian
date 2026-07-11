@@ -86,21 +86,23 @@ describe("parsePullRequestList", () => {
         number: 7,
         title: "Ship PR tab",
         user: { login: "daria", html_url: "https://evil.example" },
-        head: { ref: "feature/prs", sha: "abc" },
+        head: { ref: "feature/prs", sha: "abc1234" },
         base: { ref: "main", sha: "def" },
         html_url: "https://github.com/org/repo/pull/7",
         updated_at: "2026-07-08T12:00:00Z",
         draft: true,
         state: "open",
-        body: "not forwarded",
+        body: "  Explain the change.  ",
       },
     ]);
     expect(prs).toEqual([
       {
         number: 7,
         title: "Ship PR tab",
+        body: "Explain the change.",
         author: "daria",
         headRef: "feature/prs",
+        headSha: "abc1234",
         baseRef: "main",
         updatedAt: "2026-07-08T12:00:00Z",
         draft: true,
@@ -182,6 +184,11 @@ describe("parsePatchDetail", () => {
       { start: 13, end: 14, kind: "modified" },
       { start: 34, end: 34, kind: "added" },
     ]);
+    expect(detail.removed).toEqual([
+      { afterNewLine: 12, lines: ["  const old = 1;"] },
+      { afterNewLine: 57, lines: ["  gone();"] },
+    ]);
+    expect(detail.removedTruncated).toBe(false);
   });
 
   it("records each hunk's old/new spans for base→head line mapping", () => {
@@ -200,6 +207,7 @@ describe("parsePatchDetail", () => {
       { start: 34, end: 34 }, // the lone insertion
       { start: 58, end: 58 }, // the pure deletion's seam (the line it now precedes)
     ]);
+    expect(parsePatchDetail("@@ -1,2 +0,0 @@\n-one\n-two").hunks).toEqual([]);
   });
 
   it("also emits BASE-side ranges so a base-graph review marks nodes in base coordinates", () => {

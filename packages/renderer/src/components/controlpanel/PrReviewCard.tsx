@@ -10,6 +10,7 @@ import { useBlueprint } from "../../state/StoreContext";
 import { Divider, hexAlpha, TOKENS } from "./panelKit";
 import { ExternalLinkIcon } from "./icons";
 import { PrPrepareInline } from "../prs/PrPrepareProgress";
+import { PrChecksChip } from "../prs/PrChecksChip";
 
 const NUMBER_HUE = "#7DD3FC";
 const OPEN_HUE = "#56C271";
@@ -23,6 +24,7 @@ export function PrReviewCard(props: {
   const files = useBlueprint((state) => state.prFiles);
   const truncated = useBlueprint((state) => state.prFilesTruncated);
   const loading = useBlueprint((state) => state.prsLoading);
+  const checks = useBlueprint((state) => state.prChecks);
   const reviewed = useBlueprint((state) => state.prReviewed === props.pr.number);
   // The same prepare lane the PRs page's step indicator reads — this card fires the same
   // reviewPrInGraph, so while the server streams the PR-head analysis it must not re-fire, and
@@ -60,18 +62,20 @@ export function PrReviewCard(props: {
           {props.pr.headRef}
           {props.pr.baseRef ? <span style={{ color: TOKENS.textDim }}> → {props.pr.baseRef}</span> : null}
         </div>
-        <div style={AUTHOR_ROW_STYLE}>
-          <span style={avatarStyle(props.pr.author)}>{monogram(props.pr.author)}</span>
-          <span style={AUTHOR_NAME_STYLE}>{props.pr.author}</span>
-          <span style={{ flex: 1 }} />
-          {stats ? (
-            <span style={STATS_STYLE}>
-              <span style={{ color: ADD_HUE }}>+{stats.additions}</span>
-              <span style={{ color: DEL_HUE }}>-{stats.deletions}</span>
-            </span>
-          ) : null}
-        </div>
       </button>
+
+      <div style={AUTHOR_ROW_STYLE}>
+        <span style={avatarStyle(props.pr.author)}>{monogram(props.pr.author)}</span>
+        <span style={AUTHOR_NAME_STYLE}>{props.pr.author}</span>
+        <span style={{ flex: 1 }} />
+        {stats ? (
+          <span style={STATS_STYLE}>
+            <span style={{ color: ADD_HUE }}>+{stats.additions}</span>
+            <span style={{ color: DEL_HUE }}>-{stats.deletions}</span>
+          </span>
+        ) : null}
+        <PrChecksChip checks={checks} compact />
+      </div>
 
       {preparing ? <PrPrepareInline /> : null}
       {reviewStatus === "error" ? <div style={PREPARE_ERROR_STYLE}>{prepareError ?? "PR analysis failed."} Click the card to retry.</div> : null}

@@ -26,7 +26,11 @@ function freshStore() {
     hasOverlay: false,
     sourceUrl: null,
     prsUrl: "",
+    prOneUrl: "",
     prFilesUrl: "",
+    prRelatedUrl: "",
+    prCommentsUrl: "",
+    prChecksUrl: "",
     prReviewUrl: "",
   });
 }

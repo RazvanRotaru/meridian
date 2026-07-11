@@ -32,18 +32,20 @@ const FILES: ReviewFileRow[] = [
     status: "modified",
     moduleId: "ts:src/a.ts",
     fingerprint: "25-30,80-85",
+    blastRadius: 0,
+    deletedImpact: null,
     units: [
       { nodeId: "ts:src/a.ts#Repo", displayName: "Repo", kind: "class", startLine: 10, endLine: 60, depth: 0, isTest: false, fingerprint: "f1" },
       { nodeId: "ts:src/a.ts#helper", displayName: "helper", kind: "function", startLine: 78, endLine: 90, depth: 0, isTest: false, fingerprint: "f2" },
       { nodeId: "ts:src/a.ts#drifted", displayName: "drifted", kind: "function", startLine: 100, endLine: 110, depth: 0, isTest: false, fingerprint: "f3" },
     ],
   },
-  { path: "docs/readme.md", status: "deleted", moduleId: null, fingerprint: "whole-file", units: [] },
-  { path: "src/gone.ts", status: "deleted", moduleId: null, fingerprint: "0-1", units: [] },
+  { path: "docs/readme.md", status: "deleted", moduleId: null, fingerprint: "whole-file", blastRadius: 0, deletedImpact: null, units: [] },
+  { path: "src/gone.ts", status: "deleted", moduleId: null, fingerprint: "0-1", blastRadius: 0, deletedImpact: null, units: [] },
 ];
 
-function draft(path: string, nodeId: string | null, body: string, anchorLabel: string | null = null): ReviewComment {
-  return { id: body, path, nodeId, anchorLabel, body, at: "t" };
+function draft(path: string, nodeId: string | null, body: string, anchorLabel: string | null = null, line: number | null = null): ReviewComment {
+  return { id: body, path, nodeId, line, anchorLabel, body, at: "t" };
 }
 
 describe("buildReviewSubmission", () => {
@@ -63,6 +65,17 @@ describe("buildReviewSubmission", () => {
   it("anchors a file comment to the file's first changed line", () => {
     const submission = buildReviewSubmission([draft("src/a.ts", null, "file note")], FILES, CONTEXT);
     expect(submission.comments).toEqual([{ path: "src/a.ts", line: 25, body: "file note" }]);
+  });
+
+  it("honors an explicit line when it is still inside an anchorable hunk", () => {
+    const submission = buildReviewSubmission([draft("src/a.ts", "ts:src/a.ts#Repo", "right here", "Repo", 83)], FILES, CONTEXT);
+    expect(submission.comments).toEqual([{ path: "src/a.ts", line: 83, body: "right here" }]);
+  });
+
+  it("folds to a line-labeled note when an explicit line drifted outside the hunks", () => {
+    const submission = buildReviewSubmission([draft("src/a.ts", "ts:src/a.ts#helper", "still applies", "helper", 200)], FILES, CONTEXT);
+    expect(submission.comments).toEqual([]);
+    expect(submission.notes).toEqual([{ path: "src/a.ts", label: "L200", body: "still applies" }]);
   });
 
   it("turns a comment on a hunk-less file into a note, keeping its anchor label", () => {

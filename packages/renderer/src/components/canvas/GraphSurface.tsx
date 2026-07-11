@@ -101,6 +101,9 @@ export interface GraphSurfaceProps {
   /** Wire chrome — hover naming (WireTooltip), the click-pinned Wire Inspector, direction pulses —
    * on for the module lenses, historically off on the minimal overlay (mostly lit at rest). */
   wireHover?: boolean;
+  /** The Map's orientation LOD hides card bodies at low zoom. The review overlay opts out because
+   * its group summaries contain the explicit changed-files expansion action. */
+  orientationLod?: boolean;
   /** PR review only: show a scrollable source diff after dwelling over a directly changed node. */
   nodeDiffPreview?: boolean;
   /** Extras that must render INSIDE the flow (beacon arrows, the overlay's ghost "+" ring). */
@@ -189,7 +192,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
         {...READONLY_CANVAS_PROPS}
       >
         <CanvasChrome nodeColor={props.miniMapColor} minimap={!virtualizeCanvas} />
-        <MapLod />
+        <MapLod enabled={props.orientationLod !== false} />
         {props.flowExtras?.({ nodes: displayedNodes, beacons })}
       </ReactFlow>
       {wire.hover ? <WireTooltip hover={wire.hover} /> : null}

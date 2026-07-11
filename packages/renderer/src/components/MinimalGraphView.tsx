@@ -12,8 +12,8 @@
  * crowded sibling set folds under its persistent real parent; clicking that parent keeps it in
  * place and discloses exact children as outward neighbours. The floating members panel removes a
  * member (it returns as a satellite iff still coupled), while the shared bottom action bar
- * rearranges, resets, and closes the extracted graph. Escape closes too, returning to the active
- * lens with the selection kept. Wires are painted by the Map's OWN chain
+ * rearranges, resets, and closes the extracted graph, returning to the active lens with the
+ * selection kept. Wires are painted by the Map's OWN chain
  * (GraphSurface's, pinned by `paintMinimal`'s parity tests) and keyed by the Map's OWN `MapLegend`,
  * so the overlay's colour vocabulary is the Map's by construction. Highways here means SPOOLING
  * only: fan hubs gather their many wires into shared trunks (no containers to pair-bundle in this
@@ -27,14 +27,13 @@
  * navigation surfaces — for a satellite that's the Map's reveal-the-definition read). A plain
  * click NEVER promotes an exact ghost — promotion is the explicit "+" button, so curation is
  * deliberate; clicking a persistent parent group toggles its exact child neighbours. The only
- * page-specific gestures are that "+" (promote) and Escape/Close.
+ * page-specific gestures are that "+" (promote) and explicit Close.
  */
 
 import { useEffect, useMemo, useRef } from "react";
 import type { Edge, Node, ReactFlowInstance } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { MapLegend } from "./MapLegend";
-import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { GraphSurface } from "./canvas/GraphSurface";
 import { GhostPromoteRing } from "./canvas/GhostPromoteRing";
 import { MINIMAL_OVERLAY_HIGHWAYS } from "./canvas/surfaceSpec";
@@ -67,7 +66,7 @@ export function MinimalGraphView() {
 
   // Interactions ARE the Module map's own (the shared hook — called HERE so the debounce dies with
   // the overlay); a double-click closes the overlay first so the Map's navigate surfaces. No
-  // No `onBeforeClick`: a plain exact-ghost click inspects, a group click expands, and promotion
+  // `onBeforeClick`: a plain exact-ghost click inspects, a group click expands, and promotion
   // remains the explicit "+" button, so curation is deliberate.
   const interactions = useModuleNodeInteractions({
     onBeforeDoubleClick: () => {
@@ -75,8 +74,6 @@ export function MinimalGraphView() {
       return false;
     },
   });
-
-  useClearOnEscape(closeMinimalGraph, true);
 
   // Fit once per LAYOUT (build / promote / demote / reset / re-arrange) — unlike the Map's
   // per-LEVEL guard, so it stays in this mount rather than the shared surface.
@@ -98,6 +95,7 @@ export function MinimalGraphView() {
       highways={MINIMAL_OVERLAY_HIGHWAYS}
       miniMapColor={minimalMiniMapColor}
       interactions={interactions}
+      orientationLod={false}
       nodeDiffPreview={reviewActive}
       busy={layoutStatus === "laying-out" ? layoutActivity ?? undefined : undefined}
       onInit={(instance) => {

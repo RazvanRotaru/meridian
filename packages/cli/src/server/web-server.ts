@@ -16,7 +16,16 @@ import { SessionStore } from "./session";
 import { assertJsonContentType, assertSameOrigin } from "./web-guards";
 import { handleAuthSession, handleAuthStatus, handleDeviceStart, handleLogout, handleOwnRepos, handleRepoSearch } from "./web-auth";
 import { handleGenerate, sendGraph, sendMeta, sendView } from "./web-graph";
-import { handlePullRequestFileContent, handlePullRequestFiles, handlePullRequests, handleSubmitReview } from "./web-prs";
+import {
+  handlePullRequestChecks,
+  handlePullRequestComments,
+  handlePullRequestFileContent,
+  handlePullRequestFiles,
+  handlePullRequestOne,
+  handleRelatedPullRequests,
+  handlePullRequests,
+  handleSubmitReview,
+} from "./web-prs";
 import { handlePrAnalyze } from "./web-pr-analyze";
 import { handlePickFolder } from "./web-pick-folder";
 import type { ArtifactSource } from "./web-source";
@@ -44,6 +53,8 @@ export interface Context {
   sourceRoots: Map<string, string>;
   /** Per-id original source metadata retained for GitHub PR listing. */
   sources: Map<string, ArtifactSource>;
+  /** Per-PR repo-root changed paths, invalidated when GitHub's updated_at or head SHA changes. */
+  prFilesCache: Map<string, { updatedAt: string; headSha: string | null; paths: string[] }>;
   /** Temp-clone removers, held until process exit so retained sources are cleaned on shutdown. */
   tempCleanups: Set<() => void>;
   rendererIndex: string;
@@ -76,6 +87,7 @@ function buildContext(config: WebServerConfig): Context {
     graphs: new Map(),
     sourceRoots: new Map(),
     sources: new Map(),
+    prFilesCache: new Map(),
     tempCleanups: new Set(),
     rendererIndex: readFileSync(indexPath, "utf8"),
     landingHtml: landing,
@@ -156,6 +168,10 @@ async function handleApiPost(ctx: Context, request: IncomingMessage, response: S
     await handleSubmitReview(ctx, request, response, url.searchParams);
     return;
   }
+  if (pathname === "/api/prs/related") {
+    await handleRelatedPullRequests(ctx, request, response, url.searchParams);
+    return;
+  }
   sendJson(response, 404, { error: "unknown endpoint" });
 }
 
@@ -181,8 +197,20 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
     await handlePullRequests(ctx, request, response, url.searchParams);
     return;
   }
+  if (pathname === "/api/prs/one") {
+    await handlePullRequestOne(ctx, request, response, url.searchParams);
+    return;
+  }
   if (pathname === "/api/prs/files") {
     await handlePullRequestFiles(ctx, request, response, url.searchParams);
+    return;
+  }
+  if (pathname === "/api/prs/comments") {
+    await handlePullRequestComments(ctx, request, response, url.searchParams);
+    return;
+  }
+  if (pathname === "/api/prs/checks") {
+    await handlePullRequestChecks(ctx, request, response, url.searchParams);
     return;
   }
   if (pathname === "/api/prs/file") {

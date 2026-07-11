@@ -14,6 +14,7 @@ export const TOKENS = {
   textMuted: "#8B949E",
   textDim: "#6B7480",
   label: "#6E7A88",
+  reviewAmber: "#D29922",
   pillBg: "#0E1116",
   pillBorder: "#2A2F37",
   badgeBg: "#0B0E13",

@@ -13,6 +13,12 @@ const SEARCH_RESULT_LIMIT = 20;
 const LIST_RESULT_LIMIT = 100;
 const PR_LIST_RESULT_LIMIT = 30;
 const PR_FILE_RESULT_LIMIT = 100;
+const PR_COMMENT_RESULT_LIMIT = 100;
+const PR_REVIEW_RESULT_LIMIT = 100;
+const CHECK_RUN_RESULT_LIMIT = 100;
+const PR_BODY_LIMIT = 10_000;
+const PR_COMMENT_BODY_LIMIT = 2_000;
+const REMOVED_LINE_LIMIT = 500;
 
 export interface RepoSummary {
   fullName: string;
@@ -30,13 +36,44 @@ export interface GitHubUser {
 export interface PrSummary {
   number: number;
   title: string;
+  body: string | null;
   author: string;
   headRef: string;
+  headSha: string | null;
   baseRef: string;
   updatedAt: string;
   draft: boolean;
   state: "open" | "closed";
   url: string;
+}
+
+export interface PrGitHubComment {
+  path: string;
+  line: number | null;
+  body: string;
+  author: string;
+  updatedAt: string;
+  url: string;
+}
+
+export interface PrReviewRollup {
+  approved: string[];
+  changesRequested: string[];
+  commented: number;
+}
+
+export interface PrDiscussionResult {
+  comments: PrGitHubComment[];
+  reviews: PrReviewRollup;
+  hasMore: boolean;
+}
+
+export interface PrChecks {
+  total: number;
+  passed: number;
+  failed: number;
+  pending: number;
+  url: string | null;
 }
 
 /** One unified-diff hunk's old/new line spans — enough to map a base line number to its head line. */
@@ -64,6 +101,10 @@ export interface PrFile {
   /** Head-relative added/modified line spans, read from the patch BODY (not the context-padded hunk
    * header), so the code panel paints exactly the changed lines green/gold — not the whole hunk. */
   kinds?: ChangedLineSpan[];
+  /** Removed patch text grouped by deletion run and anchored after the preceding HEAD-side line. */
+  removed?: Array<{ afterNewLine: number; lines: string[] }>;
+  /** True when `removed` reached its per-file safety cap. */
+  removedTruncated?: boolean;
 }
 
 export type RepoQuery =
@@ -117,6 +158,89 @@ export function parsePullRequestFiles(json: unknown): PrFile[] {
   return json.slice(0, PR_FILE_RESULT_LIMIT).map((item) => toPrFile(asObject(item)));
 }
 
+export function parsePullRequestComments(json: unknown): PrGitHubComment[] {
+  if (!Array.isArray(json)) {
+    return [];
+  }
+  return json.slice(0, PR_COMMENT_RESULT_LIMIT).map((item) => {
+    const comment = asObject(item);
+    const line = comment.line;
+    return {
+      path: requireString(comment, "path"),
+      line: typeof line === "number" && Number.isSafeInteger(line) && line > 0 ? line : null,
+      body: requireString(comment, "body").slice(0, PR_COMMENT_BODY_LIMIT),
+      author: requireString(asObject(comment.user ?? {}), "login"),
+      updatedAt: requireString(comment, "updated_at"),
+      url: httpsOrNull(optionalString(comment, "html_url")) ?? "",
+    };
+  });
+}
+
+/** Latest submitted state per author. A dismissal removes that author's prior state from the rollup. */
+export function parsePullRequestReviews(json: unknown): PrReviewRollup {
+  if (!Array.isArray(json)) {
+    return { approved: [], changesRequested: [], commented: 0 };
+  }
+  const ordered = json
+    .slice(0, PR_REVIEW_RESULT_LIMIT)
+    .map((item, position) => {
+      const review = asObject(item);
+      const state = review.state;
+      const submittedAt = optionalString(review, "submitted_at");
+      const author = optionalString(asObject(review.user ?? {}), "login");
+      if (!author || !submittedAt || !isReviewState(state)) {
+        return null;
+      }
+      return { author, state, submittedAt, position };
+    })
+    .filter((review): review is NonNullable<typeof review> => review !== null)
+    .sort((left, right) => left.submittedAt.localeCompare(right.submittedAt) || left.position - right.position);
+  const latest = new Map<string, (typeof ordered)[number]>();
+  for (const review of ordered) {
+    if (review.state === "DISMISSED") {
+      latest.delete(review.author);
+    } else {
+      latest.set(review.author, review);
+    }
+  }
+  const states = [...latest.values()].sort(
+    (left, right) => left.submittedAt.localeCompare(right.submittedAt) || left.position - right.position,
+  );
+  return {
+    approved: states.filter((review) => review.state === "APPROVED").map((review) => review.author),
+    changesRequested: states.filter((review) => review.state === "CHANGES_REQUESTED").map((review) => review.author),
+    commented: states.filter((review) => review.state === "COMMENTED").length,
+  };
+}
+
+export function parseCheckRuns(json: unknown): PrChecks {
+  const runs = asObject(json).check_runs;
+  if (!Array.isArray(runs)) {
+    return { total: 0, passed: 0, failed: 0, pending: 0, url: null };
+  }
+  let passed = 0;
+  let failed = 0;
+  let pending = 0;
+  let failedUrl: string | null = null;
+  const capped = runs.slice(0, CHECK_RUN_RESULT_LIMIT);
+  for (const item of capped) {
+    const run = asObject(item);
+    const status = optionalString(run, "status");
+    const conclusion = optionalString(run, "conclusion");
+    if (status !== "completed" || conclusion === null) {
+      pending += 1;
+    } else if (conclusion === "success" || conclusion === "neutral" || conclusion === "skipped") {
+      passed += 1;
+    } else {
+      failed += 1;
+      if (failed === 1) {
+        failedUrl = httpsOrNull(optionalString(run, "html_url"));
+      }
+    }
+  }
+  return { total: capped.length, passed, failed, pending, url: failedUrl };
+}
+
 export function parseUser(json: unknown): GitHubUser {
   const body = asObject(json);
   return { login: requireString(body, "login"), avatarUrl: httpsOrNull(optionalString(body, "avatar_url")) };
@@ -150,18 +274,26 @@ function toRepoSummary(body: Record<string, unknown>): RepoSummary {
   };
 }
 
-function toPrSummary(body: Record<string, unknown>): PrSummary {
+export function toPrSummary(body: Record<string, unknown>): PrSummary {
+  const rawBody = optionalString(body, "body")?.trim().slice(0, PR_BODY_LIMIT) ?? "";
+  const head = asObject(body.head ?? {});
   return {
     number: Math.trunc(requireNumber(body, "number")),
     title: requireString(body, "title"),
+    body: rawBody.length > 0 ? rawBody : null,
     author: requireString(asObject(body.user ?? {}), "login"),
-    headRef: requireString(asObject(body.head ?? {}), "ref"),
+    headRef: requireString(head, "ref"),
+    headSha: optionalString(head, "sha"),
     baseRef: optionalString(asObject(body.base ?? {}), "ref") ?? "",
     updatedAt: requireString(body, "updated_at"),
     draft: body.draft === true,
     state: body.state === "closed" ? "closed" : "open",
     url: httpsOrNull(optionalString(body, "html_url")) ?? "",
   };
+}
+
+function isReviewState(value: unknown): value is "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED" {
+  return value === "APPROVED" || value === "CHANGES_REQUESTED" || value === "COMMENTED" || value === "DISMISSED";
 }
 
 function toPrFile(body: Record<string, unknown>): PrFile {
@@ -185,6 +317,12 @@ function toPrFile(body: Record<string, unknown>): PrFile {
     }
     if (detail.kinds.length > 0) {
       file.kinds = detail.kinds;
+    }
+    if (detail.removed.length > 0) {
+      file.removed = detail.removed;
+    }
+    if (detail.removedTruncated) {
+      file.removedTruncated = true;
     }
   }
   return file;
@@ -221,6 +359,10 @@ export interface PatchDetail {
   oldHunks: LineRange[];
   edits: LineEdit[];
   kinds: ChangedLineSpan[];
+  /** Removed patch text, one entry per contiguous deletion run, positioned in HEAD coordinates. */
+  removed: Array<{ afterNewLine: number; lines: string[] }>;
+  /** True when more than REMOVED_LINE_LIMIT deleted lines were present in this file's patch. */
+  removedTruncated: boolean;
 }
 
 /**
@@ -237,20 +379,25 @@ export function parsePatchDetail(patch: string): PatchDetail {
   const oldHunks: LineRange[] = [];
   const edits: LineEdit[] = [];
   const kinds: ChangedLineSpan[] = [];
+  const removed: Array<{ afterNewLine: number; lines: string[] }> = [];
   let newLine = 0;
   let oldLine = 0;
   let inHunk = false;
   let addRun: number[] = []; // new-side line numbers of the current contiguous `+` run
   let delRun: number[] = []; // old-side (base) line numbers of the current contiguous `-` run
+  let removedRun: string[] = [];
+  let removedAfterNewLine = 0;
+  let capturedRemovedLines = 0;
+  let removedTruncated = false;
   const flush = () => {
     if (addRun.length > 0) {
       const span = { start: addRun[0], end: addRun[addRun.length - 1] };
       kinds.push({ ...span, kind: delRun.length > 0 ? "modified" : "added" });
       hunks.push(span);
-    } else if (delRun.length > 0) {
+    } else if (delRun.length > 0 && newLine > 0) {
       // Pure deletion: no head line to paint, but the node it sat in changed — new-side seam at the
-      // line the removed block now precedes.
-      hunks.push({ start: Math.max(newLine, 1), end: Math.max(newLine, 1) });
+      // line the removed block now precedes. A whole-file deletion has no new-side seam to anchor.
+      hunks.push({ start: newLine, end: newLine });
     }
     // Base-side marking range: deleted/modified base lines, or a seam at the base insertion point.
     if (delRun.length > 0) {
@@ -261,10 +408,17 @@ export function parsePatchDetail(patch: string): PatchDetail {
     addRun = [];
     delRun = [];
   };
+  const flushRemoved = () => {
+    if (removedRun.length > 0) {
+      removed.push({ afterNewLine: removedAfterNewLine, lines: removedRun });
+      removedRun = [];
+    }
+  };
   for (const raw of patch.split("\n")) {
     const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(raw);
     if (header) {
       flush();
+      flushRemoved();
       const oldStart = Number(header[1]);
       const oldLines = header[2] === undefined ? 1 : Number(header[2]);
       const newStart = Number(header[3]);
@@ -280,19 +434,31 @@ export function parsePatchDetail(patch: string): PatchDetail {
     }
     const marker = raw[0];
     if (marker === "+") {
+      flushRemoved();
       addRun.push(newLine);
       newLine += 1;
     } else if (marker === "-") {
+      if (removedRun.length === 0) {
+        removedAfterNewLine = Math.max(newLine - 1, 0);
+      }
+      if (capturedRemovedLines < REMOVED_LINE_LIMIT) {
+        removedRun.push(raw.slice(1));
+        capturedRemovedLines += 1;
+      } else {
+        removedTruncated = true;
+      }
       delRun.push(oldLine);
       oldLine += 1;
     } else {
       flush(); // a context line ends any run
+      flushRemoved();
       oldLine += 1;
       newLine += 1;
     }
   }
   flush();
-  return { hunks, oldHunks, edits, kinds };
+  flushRemoved();
+  return { hunks, oldHunks, edits, kinds, removed, removedTruncated };
 }
 
 function prFileStatus(status: unknown): PrFile["status"] {

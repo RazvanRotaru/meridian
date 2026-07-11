@@ -63,11 +63,14 @@ export interface NavState {
   /** The active PR list tab and selected PR number, when the PR browser is open. */
   prsTab: PrsTab;
   prSelected: number | null;
+  /** The reviewed PR carried by a modules-lens URL; distinct from the PR-browser selection. */
+  reviewPr: number | null;
+  reviewActive: boolean;
   environment: string | null;
 }
 
 /** Every param key we own — listed once so `mergeNavIntoSearch` can clear them before rewriting. */
-const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "fexp", "fsel", "lroot", "lview", "lstack", "expand", "mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide", "sgroup", "sgsize", "prstate", "prn", "env"] as const; // focus/sel/expand/flow/depth are LEGACY (pre-unification ui + flow isolation): still cleared on rewrite so stale links tidy up, never written.
+const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "fexp", "fsel", "lroot", "lview", "lstack", "expand", "mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide", "sgroup", "sgsize", "prstate", "prn", "rev", "env"] as const; // focus/sel/expand/flow/depth are LEGACY (pre-unification ui + flow isolation): still cleared on rewrite so stale links tidy up, never written.
 
 /** Keys that ride along in EVERY lens: the lens itself, the telemetry env, and the cross-cutting
  * flow explorer (its panel is mounted regardless of the active lens, and reveals across the module
@@ -86,7 +89,8 @@ const LENS_KEYS: Record<ViewMode, readonly string[]> = {
   // The Service lens shares the module navigation state: `mfocus` holds a service/domain dive and
   // `mexp` holds inline service/domain containers, so both survive reload/back/share like Map.
   call: ["root", "csel", "mfocus", "mexp", "mgraph", "mdepth", "hmode", "mhide", "sgroup", "sgsize"],
-  modules: ["mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide"],
+  // An in-graph PR review is a Map-only surface: prn+rev live on the modules lens alone.
+  modules: ["mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide", "prn", "rev"],
   logic: ["lroot", "lview", "lstack", "lsel"],
   prs: ["prstate", "prn"],
 };
@@ -113,6 +117,8 @@ export const DEFAULT_NAV: NavState = {
   hiddenCategories: [],
   prsTab: "open",
   prSelected: null,
+  reviewPr: null,
+  reviewActive: false,
   environment: null,
 };
 
@@ -138,6 +144,7 @@ interface NavSource {
   hiddenCategories: ReadonlySet<string>;
   prsTab: PrsTab;
   prSelected: number | null;
+  prReviewed: number | null;
   environment: string | null;
 }
 
@@ -164,6 +171,8 @@ export function navFrom(state: NavSource): NavState {
     hiddenCategories: [...state.hiddenCategories].sort(),
     prsTab: state.prsTab,
     prSelected: state.prSelected,
+    reviewPr: state.prReviewed,
+    reviewActive: state.prReviewed !== null,
     environment: state.environment,
   };
 }
@@ -171,7 +180,8 @@ export function navFrom(state: NavSource): NavState {
 /** Encode to key->value pairs, omitting every field left at its default (keeps URLs minimal). */
 export function encodeNav(nav: NavState): Map<string, string> {
   const out = new Map<string, string>();
-  if (nav.viewMode !== "modules") out.set("view", nav.viewMode);
+  const activeReview = nav.viewMode === "modules" && nav.reviewPr !== null;
+  if (nav.viewMode !== "modules" || activeReview) out.set("view", nav.viewMode);
   setId(out, "root", nav.compRoot);
   setId(out, "csel", nav.compSelectedId);
   setId(out, "lsel", nav.logicSelected);
@@ -192,7 +202,12 @@ export function encodeNav(nav: NavState): Map<string, string> {
   if (nav.highlightMode !== "node") out.set("hmode", nav.highlightMode);
   setList(out, "mhide", nav.hiddenCategories);
   if (nav.prsTab !== "open") out.set("prstate", nav.prsTab);
-  if (nav.prSelected !== null) out.set("prn", String(nav.prSelected));
+  if (nav.viewMode === "prs" && nav.prSelected !== null) {
+    out.set("prn", String(nav.prSelected));
+  } else if (activeReview) {
+    out.set("prn", String(nav.reviewPr));
+    out.set("rev", "1");
+  }
   setId(out, "env", nav.environment);
   return scopeToView(out, nav.viewMode);
 }
@@ -249,9 +264,15 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   assignList(params, "mhide", out, "hiddenCategories");
   const prsTab = params.get("prstate");
   if (prsTab === "open" || prsTab === "closed") out.prsTab = prsTab;
-  const prSelected = params.get("prn");
-  if (prSelected !== null && Number.isInteger(Number(prSelected)) && Number(prSelected) > 0) {
-    out.prSelected = Number(prSelected);
+  const reviewActive = params.get("rev") === "1";
+  if (reviewActive) out.reviewActive = true;
+  const prNumber = params.get("prn");
+  if (prNumber !== null && Number.isInteger(Number(prNumber)) && Number(prNumber) > 0) {
+    if (reviewActive) {
+      out.reviewPr = Number(prNumber);
+    } else {
+      out.prSelected = Number(prNumber);
+    }
   }
   assignId(params, "env", out, "environment");
   return out;
@@ -283,6 +304,7 @@ export function isNavigationChange(prev: NavState, next: NavState): boolean {
     // Building/closing the minimal-graph overlay is a real navigation, so Back returns to the level
     // you built it from (the overlay's grown state is ephemeral and never in the URL).
     prev.minimalSeedIds.join(",") !== next.minimalSeedIds.join(",") ||
+    prev.reviewPr !== next.reviewPr ||
     prev.logicRoot !== next.logicRoot ||
     // logicView is deliberately absent: a sub-view flip is a presentation change (replaceState,
     // like a selection), so Back never replays tab switches — or their full-graph relayouts.

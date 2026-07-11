@@ -25,8 +25,8 @@ function authArgs(token?: string): string[] {
   return token ? ["-c", `http.extraHeader=AUTHORIZATION: basic ${base64Auth(token)}`] : [];
 }
 
-export function runGitClone(args: string[], token?: string): Promise<void> {
-  return spawnGit(args, { token, timeoutMs: CLONE_TIMEOUT_MS }).then(() => undefined);
+export function runGitClone(args: string[], token?: string, opts: { timeoutMs?: number } = {}): Promise<void> {
+  return spawnGit(args, { token, timeoutMs: opts.timeoutMs ?? CLONE_TIMEOUT_MS }).then(() => undefined);
 }
 
 /**

@@ -1,7 +1,7 @@
 /**
  * POST /api/pr/analyze behaviour with git and the extract pipeline mocked — no network, no real
  * git. Pins the NDJSON contract (clone → checkout → extract → done, or exactly one error line),
- * the full-history clone argv (no --depth/--single-branch), token-only-in-extraHeader, and the
+ * the blobless full-history clone argv (no --depth/--single-branch), token-only-in-extraHeader, and the
  * generate-mirroring temp lifecycle: retained + registered for exit cleanup on success, removed
  * immediately on failure.
  */
@@ -39,7 +39,8 @@ describe("handlePrAnalyze", () => {
     vi.stubEnv("GITHUB_TOKEN", "");
     vi.stubEnv("GH_TOKEN", "");
     vi.mocked(runGitClone).mockResolvedValue(undefined);
-    vi.mocked(runGit).mockResolvedValue("");
+    // rev-parse yields the analyzed head commit (with git's trailing newline); every other call "".
+    vi.mocked(runGit).mockImplementation((args) => Promise.resolve(args[0] === "rev-parse" ? "abc1234def5678900000aaaabbbbccccddddeeee\n" : ""));
     vi.mocked(extractToArtifact).mockResolvedValue({ artifact: ARTIFACT, warnings: ["w1"] } as never);
   });
 
@@ -57,7 +58,9 @@ describe("handlePrAnalyze", () => {
     expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
 
     const done = lines[3];
-    expect(done.graphId).toMatch(/^pr-[0-9a-f]{12}$/);
+    expect(done.graphId).toMatch(/^pr-[0-9a-f]{12}-[0-9a-f]{40}$/);
+    expect(done.headSha).toBe("abc1234def5678900000aaaabbbbccccddddeeee");
+    expect(String(done.graphId).endsWith(`-${done.headSha}`)).toBe(true);
     expect(done.counts).toEqual({ nodes: 1, edges: 0 });
     expect(done.changedFiles).toEqual([{ path: "src/a.ts", status: "modified" }]);
     expect(done.warnings).toEqual(["w1"]);
@@ -72,20 +75,42 @@ describe("handlePrAnalyze", () => {
     expect(existsSync(tmpDir)).toBe(false);
   });
 
+  it("stores force-pushed heads under different commit-pinned graph ids", async () => {
+    const ctx = githubCtx();
+    const first = (await invoke(ctx, BODY)).lines().at(-1)!;
+    vi.mocked(runGit).mockImplementation((args) => Promise.resolve(args[0] === "rev-parse" ? "fff1234def5678900000aaaabbbbccccddddeeee\n" : ""));
+    const second = (await invoke(ctx, BODY)).lines().at(-1)!;
+
+    expect(first.headSha).not.toBe(second.headSha);
+    expect(first.graphId).not.toBe(second.graphId);
+    expect(ctx.graphs.has(first.graphId as string)).toBe(true);
+    expect(ctx.graphs.has(second.graphId as string)).toBe(true);
+    for (const cleanup of ctx.tempCleanups) cleanup();
+  });
+
   it("clones full history and drives git in fetch-base, fetch-pr-head, detach order", async () => {
     await invoke(githubCtx(), BODY);
     const cloneArgs = vi.mocked(runGitClone).mock.calls[0][0];
     expect(cloneArgs).toContain("--no-tags");
+    expect(cloneArgs).toContain("--filter=blob:none");
     expect(cloneArgs).toContain("--");
     expect(cloneArgs).not.toContain("--depth");
     expect(cloneArgs).not.toContain("--single-branch");
     const tmpDir = clonedDir();
+    expect(vi.mocked(runGitClone).mock.calls[0][2]).toEqual({ timeoutMs: 600_000 });
     expect(vi.mocked(runGit).mock.calls).toEqual([
-      [["fetch", "origin", "main"], { cwd: tmpDir, token: "" }],
-      [["fetch", "origin", "pull/41/head"], { cwd: tmpDir, token: "" }],
-      [["checkout", "--detach", "FETCH_HEAD"], { cwd: tmpDir }],
+      [["fetch", "origin", "main"], { cwd: tmpDir, token: "", timeoutMs: 300_000 }],
+      [["fetch", "origin", "pull/41/head"], { cwd: tmpDir, token: "", timeoutMs: 300_000 }],
+      [["checkout", "--detach", "FETCH_HEAD"], { cwd: tmpDir, token: "", timeoutMs: 300_000 }],
+      [["rev-parse", "HEAD"], { cwd: tmpDir, timeoutMs: 300_000 }],
     ]);
-    expect(vi.mocked(extractToArtifact)).toHaveBeenCalledWith(expect.objectContaining({ changedSince: "origin/main" }));
+    expect(vi.mocked(extractToArtifact)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        changedSince: "origin/main",
+        changedSinceTimeoutMs: 300_000,
+        changedSinceGitExecutor: expect.any(Function),
+      }),
+    );
   });
 
   it("puts the env token ONLY in the clone's -c http.extraHeader, never raw in argv", async () => {
@@ -95,6 +120,17 @@ describe("handlePrAnalyze", () => {
     expect(cloneArgs.slice(0, 2)).toEqual(["-c", `http.extraHeader=AUTHORIZATION: basic ${base64Auth("env_secret")}`]);
     expect(cloneArgs.join(" ")).not.toContain("env_secret");
     expect(vi.mocked(runGit).mock.calls[0][1]).toMatchObject({ token: "env_secret" });
+    expect(vi.mocked(runGit).mock.calls[2][1]).toMatchObject({ token: "env_secret" });
+
+    const executeDiff = vi.mocked(extractToArtifact).mock.calls[0][0].changedSinceGitExecutor;
+    expect(executeDiff).toBeTypeOf("function");
+    const diffArgs = ["diff", "--merge-base", "origin/main", "--relative", "--unified=0", "--no-color"];
+    await executeDiff!("/tmp/private-repo", diffArgs, 300_000);
+    expect(runGit).toHaveBeenLastCalledWith(diffArgs, {
+      cwd: "/tmp/private-repo",
+      token: "env_secret",
+      timeoutMs: 300_000,
+    });
   });
 
   it("emits exactly one error line mid-pipeline and removes the temp dir", async () => {
@@ -163,6 +199,7 @@ function githubCtx(source: ArtifactSource = { kind: "github", owner: "org", repo
     graphs: new Map(),
     sourceRoots: new Map(),
     sources: new Map([["artifact", source]]),
+    prFilesCache: new Map(),
     tempCleanups: new Set(),
     rendererIndex: "",
     landingHtml: "",

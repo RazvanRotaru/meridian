@@ -7,9 +7,11 @@
  * The landing page gets a separate one-line prefill so a CLI positional can pre-fill the form.
  */
 
+import { canonicalExtractionSubdir, type ArtifactSource } from "./web-source";
+
 const HEAD_CLOSE = "</head>";
 
-export function injectViewBoot(html: string, id: string, githubSource: boolean): string {
+export function injectViewBoot(html: string, id: string, source: ArtifactSource | undefined): string {
   const boot = {
     graphUrl: `/api/graph?id=${id}`,
     metaUrl: `/api/meta?id=${id}`,
@@ -20,9 +22,15 @@ export function injectViewBoot(html: string, id: string, githubSource: boolean):
     envRequired: false,
     preselectedEnv: null,
     defaultEnv: null,
-    githubSource,
+    githubSource: githubBootSource(source),
   };
   return injectScript(html, `window.__MERIDIAN__=${escapeForScript(JSON.stringify(boot))}`);
+}
+
+function githubBootSource(source: ArtifactSource | undefined): { repository: string; subdir: string } | null {
+  return source?.kind === "github"
+    ? { repository: `${source.owner}/${source.repo}`, subdir: canonicalExtractionSubdir(source.subdir) }
+    : null;
 }
 
 export function injectPrefill(html: string, source: string | undefined): string {

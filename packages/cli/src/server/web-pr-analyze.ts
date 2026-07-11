@@ -6,9 +6,10 @@
  * This is the PR-review sibling of `/api/generate` (web-graph.ts): it stores the artifact under a
  * deterministic `pr-` id in `ctx.graphs`/`ctx.sourceRoots`/`ctx.sources` so the browser then loads
  * it with `GET /api/graph?id=` and slices code with `GET /api/source?id=`. Unlike generate it needs
- * FULL history (a shallow clone can't resolve `merge-base` against the base branch), so the clone
- * omits `--depth 1 --single-branch`. The token is resolved by the same precedence and never leaks —
- * it travels only in a scrubbed `http.extraHeader`, and any git failure is reduced to a safe message.
+ * FULL commit/tree history (a shallow clone can't resolve `merge-base` against the base branch),
+ * while a blobless partial clone lets checkout/diff fetch file contents lazily. The token is resolved
+ * by the same precedence and never leaks — it travels only in a scrubbed `http.extraHeader`, and any
+ * git failure is reduced to a safe message.
  */
 
 import { createHash } from "node:crypto";
@@ -29,6 +30,9 @@ import type { ArtifactSource } from "./web-source";
 import type { Context } from "./web-server";
 
 type GitHubSource = Extract<ArtifactSource, { kind: "github" }>;
+
+const ANALYZE_CLONE_TIMEOUT_MS = 600_000;
+const ANALYZE_GIT_TIMEOUT_MS = 300_000;
 
 export async function handlePrAnalyze(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
   const body = parsePrAnalyzeRequest(await readJsonBody(request));
@@ -61,13 +65,16 @@ async function streamAnalysis(
 
     writeLine(response, { stage: "checkout", message: `Fetching PR #${body.prNumber} head + base...` });
     await checkoutPrHead(tmpRoot, body.baseRef, body.prNumber, token);
+    // The exact commit the extraction below will analyze — provenance the browser pins the review
+    // to (a branch name can drift under a force-push; this SHA cannot).
+    const headSha = (await runGit(["rev-parse", "HEAD"], { cwd: tmpRoot, timeoutMs: ANALYZE_GIT_TIMEOUT_MS })).trim();
 
     writeLine(response, { stage: "extract", message: "Extracting modified nodes..." });
-    const { artifact, warnings } = await extractPr(tmpRoot, source, body.baseRef, label);
+    const { artifact, warnings } = await extractPr(tmpRoot, source, body.baseRef, label, token);
 
-    const graphId = storeArtifact(ctx, artifact, source, tmpRoot, body, removeTmp);
+    const graphId = storeArtifact(ctx, artifact, source, tmpRoot, body, headSha, removeTmp);
     retained = true;
-    writeLine(response, doneLine(graphId, artifact, warnings));
+    writeLine(response, doneLine(graphId, headSha, artifact, warnings));
   } catch (error) {
     writeLine(response, { stage: "error", message: safeMessage(error) });
   } finally {
@@ -78,14 +85,14 @@ async function streamAnalysis(
   }
 }
 
-/** A full clone (no `--depth 1`) so `git diff --merge-base <base>` has the history it needs. */
+/** Full commit/tree history, but no eager blobs, so merge-base works without a heavyweight clone. */
 async function cloneFullHistory(url: string, dir: string, token?: string): Promise<void> {
   const args: string[] = [];
   if (token) {
     args.push("-c", `http.extraHeader=AUTHORIZATION: basic ${base64Auth(token)}`);
   }
-  args.push("-c", "core.longpaths=true", "clone", "--no-tags", "--", url, dir);
-  await runGitClone(args, token);
+  args.push("-c", "core.longpaths=true", "clone", "--no-tags", "--filter=blob:none", "--", url, dir);
+  await runGitClone(args, token, { timeoutMs: ANALYZE_CLONE_TIMEOUT_MS });
 }
 
 /**
@@ -94,9 +101,9 @@ async function cloneFullHistory(url: string, dir: string, token?: string): Promi
  * detach onto FETCH_HEAD — so a fork's head resolves without depending on a local branch name.
  */
 async function checkoutPrHead(cwd: string, baseRef: string, prNumber: number, token?: string): Promise<void> {
-  await runGit(["fetch", "origin", baseRef], { cwd, token });
-  await runGit(["fetch", "origin", `pull/${prNumber}/head`], { cwd, token });
-  await runGit(["checkout", "--detach", "FETCH_HEAD"], { cwd });
+  await runGit(["fetch", "origin", baseRef], { cwd, token, timeoutMs: ANALYZE_GIT_TIMEOUT_MS });
+  await runGit(["fetch", "origin", `pull/${prNumber}/head`], { cwd, token, timeoutMs: ANALYZE_GIT_TIMEOUT_MS });
+  await runGit(["checkout", "--detach", "FETCH_HEAD"], { cwd, token, timeoutMs: ANALYZE_GIT_TIMEOUT_MS });
 }
 
 /** Extract from the (optionally subdir'd) clone, tagging nodes the PR touched vs `origin/<base>`. */
@@ -105,6 +112,7 @@ async function extractPr(
   source: GitHubSource,
   baseRef: string,
   label: string,
+  token?: string,
 ): Promise<{ artifact: GraphArtifact; warnings: string[] }> {
   const root = sanitizeSubdir(cloneDir, source.subdir);
   const { artifact, warnings } = await extractToArtifact({
@@ -114,6 +122,10 @@ async function extractPr(
     materializeBoundary: false,
     targetName: label,
     changedSince: `origin/${baseRef}`,
+    changedSinceTimeoutMs: ANALYZE_GIT_TIMEOUT_MS,
+    // A blobless diff may lazily fetch base-side blobs. Keep that fetch on the same argv-only,
+    // token-scrubbing executor as clone/fetch/checkout rather than persisting credentials in .git.
+    changedSinceGitExecutor: (absoluteRoot, args, timeoutMs) => runGit(args, { cwd: absoluteRoot, token, timeoutMs }),
   });
   return { artifact, warnings };
 }
@@ -124,9 +136,10 @@ function storeArtifact(
   source: GitHubSource,
   tmpRoot: string,
   body: PrAnalyzeRequest,
+  headSha: string,
   removeTmp: () => void,
 ): string {
-  const graphId = prGraphId(source, body);
+  const graphId = prGraphId(source, body, headSha);
   ctx.graphs.set(graphId, artifact);
   ctx.sourceRoots.set(graphId, sanitizeSubdir(tmpRoot, source.subdir));
   ctx.sources.set(graphId, { kind: "github", owner: source.owner, repo: source.repo, subdir: source.subdir });
@@ -134,11 +147,12 @@ function storeArtifact(
   return graphId;
 }
 
-/** The terminal `done` line: the new graph id, its counts, the changed files, and any warnings. */
-function doneLine(graphId: string, artifact: GraphArtifact, warnings: string[]): Record<string, unknown> {
+/** The terminal `done` line: the new graph id, the analyzed head commit, counts, changed files, warnings. */
+function doneLine(graphId: string, headSha: string, artifact: GraphArtifact, warnings: string[]): Record<string, unknown> {
   return {
     stage: "done",
     graphId,
+    headSha,
     counts: { nodes: artifact.nodes.length, edges: artifact.edges.length },
     changedFiles: changedFilesOf(artifact),
     warnings,
@@ -154,10 +168,11 @@ function changedFilesOf(artifact: GraphArtifact): { path: string; status: string
     .map((path) => ({ path, status: "modified" }));
 }
 
-/** Deterministic id so re-analyzing the same PR head overwrites rather than accumulating clones. */
-function prGraphId(source: GitHubSource, body: PrAnalyzeRequest): string {
-  const key = ["pr", source.owner, source.repo, source.subdir ?? "", body.prNumber, body.headRef].join(" ");
-  return `pr-${createHash("sha1").update(key).digest("hex").slice(0, 12)}`;
+/** Deterministic per-commit id: a force-pushed ref can never replace a stale client's artifact. */
+function prGraphId(source: GitHubSource, body: PrAnalyzeRequest, headSha: string): string {
+  const key = ["pr", source.owner, source.repo, source.subdir ?? "", body.prNumber, body.headRef, headSha].join(" ");
+  const keyDigest = createHash("sha1").update(key).digest("hex").slice(0, 12);
+  return `pr-${keyDigest}-${headSha}`;
 }
 
 function beginNdjson(response: ServerResponse): void {
