@@ -106,7 +106,6 @@ export function MinimalGraphView() {
           overlay mints only file/package cards and import/dep wires, never IPC. */}
       <MapLegend
         hasSteps={nodes.some((node) => node.type === "step")}
-        hasSelection={selected.size > 0}
         showPackages={nodes.some((node) => node.type === "package")}
         showIpc={false}
       />

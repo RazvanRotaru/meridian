@@ -52,6 +52,24 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     expect(pageErrors).toEqual([]);
   });
 
+  // Runs before the Service-lens switch below so it starts on the default Map lens.
+  it("keeps the Map legend static when selection changes", async () => {
+    await page.getByRole("button", { name: /Legend/ }).click();
+    const legend = page.getByRole("region", { name: "Map legend" });
+    const beforeSelection = await legend.innerText();
+    expect(beforeSelection).toContain("WHEN YOU SELECT");
+
+    const packageNode = page.locator('[data-id="ts:src"]');
+    await packageNode.click();
+    await page.getByRole("button", { name: "Extract selection (1)" }).waitFor();
+    expect(await legend.innerText()).toBe(beforeSelection);
+
+    await page.locator(".react-flow__pane").dispatchEvent("click");
+    await page.getByRole("button", { name: "Extract selection (1)" }).waitFor({ state: "detached" });
+    expect(await legend.innerText()).toBe(beforeSelection);
+    await legend.getByTitle("Close").click();
+  });
+
   it("Service lens renders svc: cluster frames wired by couplings, with no console/page errors", async () => {
     // The composition surface merged into the Lens segmented control: the Service segment draws
     // service clusters as `svc:` frames on the SHARED canvas (not scorecards).
