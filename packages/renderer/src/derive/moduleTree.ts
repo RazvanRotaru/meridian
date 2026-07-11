@@ -22,14 +22,13 @@ import { type ModuleGraph } from "./moduleGraph";
 import { collapseChain } from "./moduleLevel";
 import { containmentChildren, frontierRoots, subtreeFileCount } from "./moduleFrontier";
 import { BLOCK_KINDS, type BlockDeps, UNIT_CARD_KINDS } from "./blockDeps";
-import { ghostDepWires, withoutHidden } from "./ghostDeps";
-import { groupGhostEmission } from "./groupGhosts";
+import { ghostLevel, isDepAnchorKind } from "./ghostLevel";
 import { liftEdges } from "./liftEdges";
 import { createCodeWalk, depWireEdges, flowChainEdges, stepCallEdges, visitCode, type CodeWalk, type Skeleton } from "./codeWalk";
 import { demoteCommons } from "./commonsDemotion";
 import { finalizeModuleNode, foldById, importEdges, importTreeEdges } from "./moduleTreeData";
 import { ipcTreeEdges } from "./moduleIpc";
-import type { ModuleTree, ModuleTreeEdge, VisibleModuleNode } from "./moduleTreeTypes";
+import type { ModuleTree, ModuleTreeEdge } from "./moduleTreeTypes";
 export type { ModuleGroupData, ModuleTree, ModuleTreeEdge, VisibleModuleNode } from "./moduleTreeTypes";
 
 const MODULE_KIND = "module";
@@ -37,8 +36,9 @@ const MODULE_KIND = "module";
 const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
 
 /** Palette-added ids as extra roots — only real file/unit/block nodes `walk` can draw, sorted for a
- * stable order. A package/unknown id is dropped (the walk would need its subtree, not the raw pin). */
-function extraRoots(index: GraphIndex, extraIds: ReadonlySet<string>): string[] {
+ * stable order. A package/unknown id is dropped (the walk would need its subtree, not the raw pin).
+ * Exported for the UI lens's tree derive, which pins palette extras identically. */
+export function extraRoots(index: GraphIndex, extraIds: ReadonlySet<string>): string[] {
   return [...extraIds]
     .filter((id) => {
       const kind = index.nodesById.get(id)?.kind;
@@ -67,7 +67,7 @@ export function deriveModuleTree(
   // Palette-pinned nodes (⌘P "+") ride in as EXTRA top-level roots so an out-of-focus card joins the
   // current level; `walk`'s `seen` guard drops any that the focus subtree already draws.
   const roots = [...frontierRoots(index, effectiveFocus, graph), ...extraRoots(index, extraIds)];
-  const walked = walk(index, roots, expanded, flows, hiddenIds);
+  const walked = walkContainment(index, roots, expanded, flows, hiddenIds);
   const skeleton = walked.skeleton;
   const visibleIds = new Set(skeleton.map((entry) => entry.id));
   const lifted = liftEdges(importEdges(graph), visibleIds, index.parentOf);
@@ -96,14 +96,6 @@ export function deriveModuleTree(
   // toggle turns the whole treatment off (hubs rejoin ELK with ordinary wires).
   const demoted = demoteHubs ? demoteCommons([...nodes, ...ghosts.nodes], edges) : { nodes: [...nodes, ...ghosts.nodes], edges };
   return { nodes: demoted.nodes, edges: demoted.edges, effectiveFocus };
-}
-
-/** Off-screen relationships charted as detached GHOST cards + dashed wires — for every drawn dep
- * anchor (a unit/block, or a FILE card whose off-level typed deps fold onto it). */
-/** A drawn box a dependency wire may anchor to: code nodes and file cards — package groups use
- * the separate `packageDepEdges` path which lifts deps cleanly without code-level restrictions. */
-function isDepAnchorKind(kind: Skeleton["kind"] | undefined): boolean {
-  return kind === "unit" || kind === "block" || kind === "file";
 }
 
 /**
@@ -154,47 +146,9 @@ function packageDepEdges(
   }));
 }
 
-function ghostLevel(
-  blockDeps: BlockDeps,
-  walked: CodeWalk,
-  visibleIds: ReadonlySet<string>,
-  index: GraphIndex,
-  kinds: Map<string, Skeleton["kind"]>,
-  hiddenIds: ReadonlySet<string>,
-): { nodes: VisibleModuleNode[]; edges: ModuleTreeEdge[] } {
-  const isDepAnchor = (id: string) => isDepAnchorKind(kinds.get(id));
-  if (![...kinds.values()].some(isDepAnchorKind)) {
-    return { nodes: [], edges: [] };
-  }
-  const raw = ghostDepWires(blockDeps, walked.calls, visibleIds, index, isDepAnchor, walked.expandedBlocks);
-  // Hidden (test) ghosts drop BEFORE grouping so group counts stay honest, then same-folder ghosts
-  // fold into one group card (the Highways treatment for the ghost tier — see groupGhosts.ts).
-  const emission = groupGhostEmission(withoutHidden(raw, hiddenIds), index);
-  const nodes: VisibleModuleNode[] = [...emission.ghosts.entries()].map(([id, data]) => ({
-    id,
-    parentId: null,
-    kind: "ghost",
-    isContainer: false,
-    isExpanded: false,
-    depth: 0,
-    childCount: 0,
-    data,
-  }));
-  const edges: ModuleTreeEdge[] = emission.wires.map((wire) => ({
-    id: `gdep:${wire.kind}:${wire.source}->${wire.target}`,
-    source: wire.source,
-    target: wire.target,
-    weight: wire.weight,
-    crossFrame: false,
-    category: "dep",
-    depKind: wire.kind,
-    ghost: true,
-    underlyingEdgeIds: wire.underlyingEdgeIds,
-  }));
-  return { nodes, edges };
-}
-
-function walk(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>, flows: LogicFlows, hiddenIds: ReadonlySet<string>): CodeWalk {
+/** The Map's containment walk over packages/files/code — exported so the UI lens (deriveUiTree)
+ * draws the identical card set over its renders-rooted frontier. */
+export function walkContainment(index: GraphIndex, roots: string[], expanded: ReadonlySet<string>, flows: LogicFlows, hiddenIds: ReadonlySet<string>): CodeWalk {
   const walked = createCodeWalk();
   const ctx = { index, expanded, flows };
   const visit = (id: string, parentId: string | null, depth: number): void => {

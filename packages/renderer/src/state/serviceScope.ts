@@ -31,6 +31,29 @@ export function scopeSetOf(scope: ServiceScope | null): ReadonlySet<string> | un
   return scope === null ? undefined : new Set(scope.leadIds);
 }
 
+/** Widen a live scope by extra owning leads — a ghost reveal into a scoped-OUT cluster must draw
+ * the frame it opens, so the reveal grows the kept set instead of silently opening nothing. Null
+ * (unscoped) stays null; an already-covering scope returns unchanged; the label deliberately keeps
+ * naming the ORIGINAL owner (the trail still says where the scope came from), but its "(+K)" is
+ * recounted from the widened set so the trail never under-reports what is drawn. */
+export function widenServiceScope(scope: ServiceScope | null, owningLeads: readonly string[]): ServiceScope | null {
+  if (scope === null) {
+    return null;
+  }
+  const missing = owningLeads.filter((lead) => !scope.leadIds.includes(lead));
+  if (missing.length === 0) {
+    return scope;
+  }
+  const leadIds = [...scope.leadIds, ...missing].sort();
+  return { leadIds, label: recountedLabel(scope.label, leadIds.length) };
+}
+
+/** Strip a label's old " (+K)" suffix and re-derive it from the widened scope size. */
+function recountedLabel(label: string, scopeSize: number): string {
+  const name = label.replace(/ \(\+\d+\)$/, "");
+  return scopeSize > 1 ? `${name} (+${scopeSize - 1})` : name;
+}
+
 /** The breadcrumb trail's name for a scope: the first OWNING lead's display name, "+K" counting
  * every other cluster in scope (owning siblings and coupled neighbours alike). */
 function scopeLabel(leadId: string, scopeSize: number, clustering: ServiceClustering): string {

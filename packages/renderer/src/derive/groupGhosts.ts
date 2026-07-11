@@ -19,19 +19,27 @@ const GROUP_THRESHOLD = 2;
 
 export function groupGhostEmission(emission: GhostEmission, index: GraphIndex): GhostEmission {
   // Tally each ghost's home folder; ghosts without one (a root-level file's symbol) stay individual.
-  const folderOf = new Map<string, string>();
+  const fileOf = new Map<string, string>();
   const folderCounts = new Map<string, number>();
   for (const id of emission.ghosts.keys()) {
-    const folder = homeFolderOf(id, index);
-    if (folder !== null) {
-      folderOf.set(id, folder);
+    const file = homeFileOf(id, index);
+    const folder = file === null ? null : (index.parentOf.get(file) ?? null);
+    if (file !== null && folder !== null) {
+      fileOf.set(id, file);
       folderCounts.set(folder, (folderCounts.get(folder) ?? 0) + 1);
     }
   }
   const rewrite = new Map<string, string>();
-  for (const [id, folder] of folderOf) {
-    if ((folderCounts.get(folder) ?? 0) >= GROUP_THRESHOLD) {
+  // The group card remembers WHICH files contributed, so the "+" pin can promote exactly the files
+  // whose symbols it charted — not whatever the folder happens to list first.
+  const membersByFolder = new Map<string, Set<string>>();
+  for (const [id, file] of fileOf) {
+    const folder = index.parentOf.get(file) ?? null;
+    if (folder !== null && (folderCounts.get(folder) ?? 0) >= GROUP_THRESHOLD) {
       rewrite.set(id, folder);
+      const members = membersByFolder.get(folder) ?? new Set<string>();
+      members.add(file);
+      membersByFolder.set(folder, members);
     }
   }
   if (rewrite.size === 0) {
@@ -44,6 +52,7 @@ export function groupGhostEmission(emission: GhostEmission, index: GraphIndex): 
       label: folderLabel(folder, index),
       context: `${folderCounts.get(folder)} referenced symbols — double-click to open`,
       ghostKind: "package",
+      members: [...(membersByFolder.get(folder) ?? [])].sort(),
     });
   }
   return { ghosts, wires: aggregateWires(emission.wires, rewrite) };
@@ -67,14 +76,14 @@ function aggregateWires(wires: readonly GhostWire[], rewrite: ReadonlyMap<string
   return [...byKey.values()];
 }
 
-/** The ghost's home FOLDER: parent of the nearest module (file) ancestor-or-self; null when the
- * file sits at the containment root (nothing to group under). */
-function homeFolderOf(ghostId: string, index: GraphIndex): string | null {
+/** The ghost's home FILE: its nearest module ancestor-or-self; null when it has none (nothing to
+ * group under — grouping keys on the file's parent folder). */
+function homeFileOf(ghostId: string, index: GraphIndex): string | null {
   const seen = new Set<string>();
   let current: string | null | undefined = ghostId;
   while (current && !seen.has(current)) {
     if (index.nodesById.get(current)?.kind === MODULE_KIND) {
-      return index.parentOf.get(current) ?? null;
+      return current;
     }
     seen.add(current);
     current = index.parentOf.get(current) ?? null;

@@ -126,21 +126,20 @@ function ContainerRow(props: { row: CoverageRow }) {
   );
 }
 
-// Clicking a row navigates the ACTIVE surface to the node. The composition view ("call") has no
-// expand/collapse — its unit cards are class/module ids — so we highlight the unit itself (a
-// method row highlights its parent unit). The FlowCanvas ("ui") expands the path and selects.
+// Clicking a row navigates the ACTIVE surface to the node through the shared per-lens reveal
+// (revealInView: the Map/UI lenses refocus at the definition, the Service lens pins + selects).
+// The Service lens ALSO roots the composition side panel at the owning unit, so the scorecards
+// follow the click (a method row highlights its parent unit).
 function navigate(
   nodeId: string,
   viewMode: string,
   parentOf: ReadonlyMap<string, string | null>,
-  actions: { expandPath(id: string): void; select(id: string | null): void; selectCompUnit(id: string | null): void },
+  actions: { revealInView(id: string): void; selectCompUnit(id: string | null): void },
 ): void {
   if (viewMode === "call") {
     actions.selectCompUnit(unitIdFor(nodeId, parentOf));
-    return;
   }
-  actions.expandPath(nodeId);
-  actions.select(nodeId);
+  actions.revealInView(nodeId);
 }
 
 // A composition unit is a class/module; a method row's unit is its nearest such ancestor. Walk up

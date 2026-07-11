@@ -24,20 +24,15 @@ import type { PrsTab } from "./prTypes";
 /** The URL-worthy slice of the store — mirrors the navigation fields of BlueprintState. */
 export interface NavState {
   viewMode: ViewMode;
-  focusId: string | null;
   compRoot: string | null;
-  selectedId: string | null;
   compSelectedId: string | null;
   logicSelected: string | null;
-  flowRootId: string | null;
-  flowDepth: number | null;
   flowExplorerOpen: boolean;
   flowSelection: FlowSelectionRef | null;
   logicRoot: string | null;
   /** The Logic-flow projection on screen (exec graph by default) — see store.logicView. */
   logicView: LogicViewMode;
   logicStack: string[];
-  expanded: string[];
   /** The Module-map focus: the package/dir node zoomed into; null == the whole-repo overview. */
   moduleFocus: string | null;
   /** The OPEN minimal-graph overlay's seed file ids; empty == closed. Opening it is a navigation
@@ -59,19 +54,26 @@ export interface NavState {
 }
 
 /** Every param key we own — listed once so `mergeNavIntoSearch` can clear them before rewriting. */
-const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "fexp", "fsel", "lroot", "lview", "lstack", "expand", "mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide", "prstate", "prn", "env"] as const;
+const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "fexp", "fsel", "lroot", "lview", "lstack", "expand", "mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide", "prstate", "prn", "env"] as const; // focus/sel/expand/flow/depth are LEGACY (pre-unification ui + flow isolation): still cleared on rewrite so stale links tidy up, never written.
 
 /** Keys that ride along in EVERY lens: the lens itself, the telemetry env, and the cross-cutting
- * flow explorer / flow isolation (its panel is mounted regardless of the active lens, and reveals
- * across the ui and modules surfaces). These never get scoped out. */
-const SHARED_KEYS = new Set<string>(["view", "env", "flow", "depth", "fexp", "fsel"]);
+ * flow explorer (its panel is mounted regardless of the active lens, and reveals across the module
+ * surfaces). These never get scoped out. */
+const SHARED_KEYS = new Set<string>(["view", "env", "fexp", "fsel"]);
 
 /** The keys each lens OWNS. `encodeNav` emits a lens's own keys plus the shared ones and drops the
  * rest, so a Map URL never carries a stale Logic trail (and vice-versa). Typed over ViewMode so a
  * new lens must declare its keys here. */
 const LENS_KEYS: Record<ViewMode, readonly string[]> = {
-  ui: ["focus", "sel", "expand"],
-  call: ["root", "csel"],
+  // The UI lens shares the module keys since the phase-C unification: its dive is the shared
+  // `moduleFocus`, its in-place expansion the shared `moduleExpanded` — and the minimal-graph
+  // overlay + selection dials (mgraph/mdepth/hmode/mhide) ride the same shared slots, so their
+  // keys must survive here or Back/reload/share silently drops an overlay this lens built.
+  ui: ["mfocus", "mexp", "mgraph", "mdepth", "hmode", "mhide"],
+  // The Service lens shares `mfocus` with the Map: its cluster zoom is a `svc:` frame id in the
+  // same store field, so a Service deep link restores the dive like any other focus. It mounts
+  // the same overlay + dials as every module surface, so those keys survive here too.
+  call: ["root", "csel", "mfocus", "mgraph", "mdepth", "hmode", "mhide"],
   modules: ["mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide"],
   logic: ["lroot", "lview", "lstack", "lsel"],
   prs: ["prstate", "prn"],
@@ -80,19 +82,14 @@ const LENS_KEYS: Record<ViewMode, readonly string[]> = {
 /** The navigation state the app boots into — the baseline a restore resets absent keys back to. */
 export const DEFAULT_NAV: NavState = {
   viewMode: "modules",
-  focusId: null,
   compRoot: null,
-  selectedId: null,
   compSelectedId: null,
   logicSelected: null,
-  flowRootId: null,
-  flowDepth: null,
   flowExplorerOpen: false,
   flowSelection: null,
   logicRoot: null,
   logicView: "graph",
   logicStack: [],
-  expanded: [],
   moduleFocus: null,
   minimalSeedIds: [],
   moduleExpanded: [],
@@ -108,19 +105,14 @@ export const DEFAULT_NAV: NavState = {
 /** The BlueprintState shape we read from — a structural subset so tests need no full store. */
 interface NavSource {
   viewMode: ViewMode;
-  focusId: string | null;
   compRoot: string | null;
-  selectedId: string | null;
   compSelectedId: string | null;
   logicSelected: string | null;
-  flowRootId: string | null;
-  flowDepth: number | null;
   flowExplorerOpen: boolean;
   flowSelection: FlowSelectionRef | null;
   logicRoot: string | null;
   logicView: LogicViewMode;
   logicStack: readonly string[];
-  expanded: ReadonlySet<string>;
   moduleFocus: string | null;
   minimalSeedIds: readonly string[];
   moduleExpanded: ReadonlySet<string>;
@@ -137,19 +129,14 @@ interface NavSource {
 export function navFrom(state: NavSource): NavState {
   return {
     viewMode: state.viewMode,
-    focusId: state.focusId,
     compRoot: state.compRoot,
-    selectedId: state.selectedId,
     compSelectedId: state.compSelectedId,
     logicSelected: state.logicSelected,
-    flowRootId: state.flowRootId,
-    flowDepth: state.flowDepth,
     flowExplorerOpen: state.flowExplorerOpen,
     flowSelection: cloneFlowSelection(state.flowSelection),
     logicRoot: state.logicRoot,
     logicView: state.logicView,
     logicStack: [...state.logicStack],
-    expanded: [...state.expanded].sort(),
     moduleFocus: state.moduleFocus,
     // Sorted for a stable URL; seed order never affects the built graph.
     minimalSeedIds: [...state.minimalSeedIds].sort(),
@@ -167,19 +154,14 @@ export function navFrom(state: NavSource): NavState {
 export function encodeNav(nav: NavState): Map<string, string> {
   const out = new Map<string, string>();
   if (nav.viewMode !== "modules") out.set("view", nav.viewMode);
-  setId(out, "focus", nav.focusId);
   setId(out, "root", nav.compRoot);
-  setId(out, "sel", nav.selectedId);
   setId(out, "csel", nav.compSelectedId);
   setId(out, "lsel", nav.logicSelected);
-  setId(out, "flow", nav.flowRootId);
-  if (nav.flowDepth !== null) out.set("depth", String(nav.flowDepth));
   if (nav.flowExplorerOpen) out.set("fexp", "1");
   if (nav.flowSelection !== null) out.set("fsel", encodeFlowSelection(nav.flowSelection));
   setId(out, "lroot", nav.logicRoot);
   if (nav.logicView !== "graph") out.set("lview", nav.logicView);
   setList(out, "lstack", nav.logicStack);
-  setList(out, "expand", nav.expanded);
   setId(out, "mfocus", nav.moduleFocus);
   setList(out, "mgraph", nav.minimalSeedIds);
   setList(out, "mexp", nav.moduleExpanded);
@@ -213,14 +195,9 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   if (view === "call" || view === "ui" || view === "logic" || view === "modules" || view === "prs") {
     out.viewMode = view;
   }
-  assignId(params, "focus", out, "focusId");
   assignId(params, "root", out, "compRoot");
-  assignId(params, "sel", out, "selectedId");
   assignId(params, "csel", out, "compSelectedId");
   assignId(params, "lsel", out, "logicSelected");
-  assignId(params, "flow", out, "flowRootId");
-  const depth = params.get("depth");
-  if (depth !== null && !Number.isNaN(Number(depth))) out.flowDepth = Number(depth);
   if (params.get("fexp") === "1") out.flowExplorerOpen = true;
   const flowSelection = decodeFlowSelection(params.get("fsel"));
   if (flowSelection) out.flowSelection = flowSelection;
@@ -228,8 +205,10 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   const logicView = params.get("lview");
   if (logicView !== null && isLogicViewMode(logicView)) out.logicView = logicView;
   assignList(params, "lstack", out, "logicStack");
-  assignList(params, "expand", out, "expanded");
   assignId(params, "mfocus", out, "moduleFocus");
+  // Legacy pre-unification ui deep links carried the dive in `focus`; land it on the shared module
+  // focus (best-effort compat — `sel`/`expand` ids meant the retired private spaces and are dropped).
+  if (view === "ui" && out.moduleFocus === undefined) assignId(params, "focus", out, "moduleFocus");
   assignList(params, "mgraph", out, "minimalSeedIds");
   assignList(params, "mexp", out, "moduleExpanded");
   const moduleRadius = params.get("mdepth");
@@ -269,13 +248,11 @@ export function mergeNavIntoSearch(search: string, nav: NavState): string {
 export function isNavigationChange(prev: NavState, next: NavState): boolean {
   return (
     prev.viewMode !== next.viewMode ||
-    prev.focusId !== next.focusId ||
     prev.compRoot !== next.compRoot ||
     prev.moduleFocus !== next.moduleFocus ||
     // Building/closing the minimal-graph overlay is a real navigation, so Back returns to the level
     // you built it from (the overlay's grown state is ephemeral and never in the URL).
     prev.minimalSeedIds.join(",") !== next.minimalSeedIds.join(",") ||
-    prev.flowRootId !== next.flowRootId ||
     prev.logicRoot !== next.logicRoot ||
     // logicView is deliberately absent: a sub-view flip is a presentation change (replaceState,
     // like a selection), so Back never replays tab switches — or their full-graph relayouts.

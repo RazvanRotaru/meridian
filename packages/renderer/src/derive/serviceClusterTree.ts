@@ -3,65 +3,89 @@
  * cards, so the "call" tab reuses the Map layout, chrome, node components, and paint passes.
  *
  * Open clusters delegate every member to `codeWalk`, which is why a service member renders exactly
- * like that same node under an expanded file in the Map tab. This lens intentionally emits NO ghosts:
- * revealing a ghost would call `revealModule`, setting `moduleFocus`, and the Service lens must keep
- * `moduleFocus` null. Cluster coupling wires only emit when at least one endpoint is a `svc:` frame;
- * drawn-to-drawn code pairs are handled by `depWireEdges`, avoiding a duplicate wire.
+ * like that same node under an expanded file in the Map tab. The lens shares the Map's whole focus
+ * and ghost vocabulary (unified-canvas phase B):
+ *
+ *   - FOCUS is the containment zoom into ONE cluster: a `svc:` focus draws only that cluster's
+ *     frame, force-expanded, and flows out as `effectiveFocus` for the breadcrumb. Any other focus
+ *     id (a folder left by another lens, a stale frame) is ignored — full lens.
+ *   - GHOSTS chart every coupling the canvas cannot represent (`serviceGhosts.ts`): off-zoom /
+ *     out-of-scope clusters, and code-level deps whose cluster frame is not drawn. Ghost ids are
+ *     real artifact ids; `hiddenIds` (the Tests toggle) filters them exactly like the Map's tier.
+ *
+ * Cluster coupling wires only emit when at least one endpoint is a `svc:` frame; drawn-to-drawn
+ * code pairs are handled by `depWireEdges`, avoiding a duplicate wire.
  */
 
 import type { LogicFlows } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
-import { npmPackageIdOf } from "./compositionClusters";
 import { createCodeWalk, depWireEdges, flowChainEdges, stepCallEdges, visitCode, type CodeWalk, type Skeleton } from "./codeWalk";
-import { blockData, fileData, unitData } from "./moduleLevel";
 import type { ModuleGraph } from "./moduleGraph";
 import type { BlockDeps } from "./blockDeps";
-import { packageEntryModule } from "./packageOverview";
-import type { ServiceCluster, ServiceClustering } from "./serviceComposition";
+import type { ServiceClustering } from "./serviceComposition";
 import { clusteringFor } from "./serviceClusteringCache";
-import type { ModuleGroupData, ModuleTreeEdge, VisibleModuleNode } from "./moduleTree";
-import type { StepData } from "./flowSteps";
-import { clusterCouplingEdges, clusterDegrees, frameIdOf, isOpen, leadIdOf, type ClusterDegrees } from "./serviceClusterEdges";
+import type { ModuleTree } from "./moduleTree";
+import { clusterCouplingEdges, clusterDegrees, frameIdOf, isOpen, leadIdOf } from "./serviceClusterEdges";
+import { finalizeServiceNode } from "./serviceClusterData";
+import { serviceGhostTier } from "./serviceGhosts";
+
+export interface ServiceTreeOptions {
+  /** The scoped sub-view's kept cluster leads; undefined == the full lens. */
+  scopeLeadIds?: ReadonlySet<string>;
+  /** Palette-pinned (⌘P "+") extra top-level cards. */
+  extraIds?: ReadonlySet<string>;
+  /** The Tests toggle's hidden set — filters the GHOST tier (the walk itself never hid tests on
+   * this lens; that stands — test members hide at paint time like before). */
+  hiddenIds?: ReadonlySet<string>;
+}
 
 export function deriveServiceTree(
   index: GraphIndex,
+  focus: string | null,
   expanded: ReadonlySet<string>,
   graph: ModuleGraph,
   blockDeps: BlockDeps,
   flows: LogicFlows,
-  scopeLeadIds?: ReadonlySet<string>,
-  extraIds: ReadonlySet<string> = EMPTY_IDS,
-): { nodes: VisibleModuleNode[]; edges: ModuleTreeEdge[] } {
+  options: ServiceTreeOptions = {},
+): ModuleTree {
   // The memoized clustering (keyed by the index) — the SAME object the lens-carry and the scoped
   // sub-view's lead resolution read, so a relayout never re-clusters and scope leads always match.
-  const clustering = scopedTo(clusteringFor(index), scopeLeadIds);
+  const full = clusteringFor(index);
+  const scoped = scopedTo(full, options.scopeLeadIds);
+  const focusLead = resolveFocusLead(focus, scoped);
+  // FOCUS zooms INSIDE whatever the scope kept: the drawn set narrows to the one dived cluster.
+  const clustering = focusLead === null ? scoped : scopedTo(scoped, new Set([focusLead]));
   if (clustering.clusters.length === 0) {
-    return { nodes: [], edges: [] };
+    return { nodes: [], edges: [], effectiveFocus: null };
   }
-  const degrees = clusterDegrees(clustering.couplings, clustering.leadOf);
-  const walk = serviceWalk(clustering, index, expanded, flows);
-  // Palette-pinned nodes (⌘P "+") ride in as EXTRA top-level cards — this lens has no focus/frontier,
-  // so a unit/file/block that isn't inside an expanded cluster still joins the canvas. Already-visited
-  // ids (a member of an open cluster) are dropped by the walk's `seen` guard.
-  appendExtras(walk, extraIds, index, expanded, flows);
+  // Badges read at SCOPE level (never the zoom): diving must not re-count a cluster's neighbours.
+  const degrees = clusterDegrees(scoped.couplings, scoped.leadOf);
+  const walk = serviceWalk(clustering, index, expanded, flows, focusLead);
+  // Palette-pinned nodes (⌘P "+") ride in as EXTRA top-level cards — a unit/file/block that isn't
+  // inside an expanded cluster still joins the canvas. Already-visited ids (a member of an open
+  // cluster) are dropped by the walk's `seen` guard.
+  appendExtras(walk, options.extraIds ?? EMPTY_IDS, index, expanded, flows);
   const visibleIds = new Set(walk.skeleton.map((entry) => entry.id));
   const kinds = kindsOf(walk.skeleton);
   const isCode = (id: string) => kinds.get(id) === "unit" || kinds.get(id) === "block";
-  const nodes = walk.skeleton.map((entry) => finalize(entry, clustering, degrees, index, graph, walk));
+  const nodes = walk.skeleton.map((entry) => finalizeServiceNode(entry, clustering, degrees, index, graph, walk));
+  const drawnLeads = new Set(clustering.clusters.map((cluster) => cluster.leadId));
+  const ghosts = serviceGhostTier(full, drawnLeads, blockDeps, walk, visibleIds, index, kinds, options.hiddenIds ?? EMPTY_IDS);
   const edges = [
     ...clusterCouplingEdges(clustering.couplings, clustering.leadOf, visibleIds),
     ...depWireEdges(blockDeps, visibleIds, index, isCode, walk.expandedBlocks),
     ...flowChainEdges(walk),
     ...stepCallEdges(walk, visibleIds, index),
+    ...ghosts.edges,
   ].sort((a, b) => a.id.localeCompare(b.id));
-  return { nodes, edges };
+  return { nodes: [...nodes, ...ghosts.nodes], edges, effectiveFocus: focusLead === null ? null : frameIdOf(focusLead) };
 }
 
 /**
  * The scoped Service sub-view: keep only the clusters whose lead is in scope, and only the
  * couplings whose BOTH endpoints lift (via leadOf) into scope. An edge touching an out-of-scope
- * cluster is DROPPED, not ghosted — the same no-ghost invariant as the rest of this lens — so the
- * degree badges too count in-scope neighbours only, matching the wires actually drawn.
+ * cluster leaves this set and is GHOSTED by `serviceGhostTier` — the dropped fact still charts,
+ * as a dashed lead card, never a silent hole.
  */
 function scopedTo(clustering: ServiceClustering, scopeLeadIds: ReadonlySet<string> | undefined): ServiceClustering {
   if (scopeLeadIds === undefined) {
@@ -78,7 +102,17 @@ function scopedTo(clustering: ServiceClustering, scopeLeadIds: ReadonlySet<strin
   };
 }
 
-/** A shared empty set so the default `extraIds` argument never allocates per call. */
+/** The focused cluster's lead: a `svc:` focus id resolving to a cluster the scope kept; anything
+ * else — a folder id another lens left behind, a stale frame — is ignored (full lens). */
+function resolveFocusLead(focus: string | null, clustering: ServiceClustering): string | null {
+  const lead = focus === null ? null : leadIdOf(focus);
+  if (lead === null) {
+    return null;
+  }
+  return clustering.clusters.some((cluster) => cluster.leadId === lead) ? lead : null;
+}
+
+/** A shared empty set so the default option arguments never allocate per call. */
 const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
 
 /** Draw each palette-pinned id as a detached top-level card (unit/file/block), reusing `visitCode` so
@@ -98,18 +132,23 @@ function serviceWalk(
   index: GraphIndex,
   expanded: ReadonlySet<string>,
   flows: LogicFlows,
+  focusLead: string | null,
 ): CodeWalk {
   const walk = createCodeWalk();
   // The Service lens has always shown unit members inside service frames; only the folder Map gates units.
   const ctx = { index, expanded, flows, unitsAlwaysOpen: true };
   for (const cluster of [...clustering.clusters].sort((a, b) => a.leadId.localeCompare(b.leadId))) {
     const frameId = frameIdOf(cluster.leadId);
-    const isExpanded = isOpen(cluster, expanded);
+    // The FOCUSED cluster is the zoom: always open — even a single-member cluster, which the full
+    // lens draws as a bare frame card — so the dive always lands on the members.
+    const isFocus = cluster.leadId === focusLead;
+    const isContainer = isFocus ? cluster.memberIds.length > 0 : cluster.memberIds.length > 1;
+    const isExpanded = isFocus ? isContainer : isOpen(cluster, expanded);
     walk.skeleton.push({
       id: frameId,
       parentId: null,
       kind: "package",
-      isContainer: cluster.memberIds.length > 1,
+      isContainer,
       isExpanded,
       depth: 0,
       childCount: cluster.memberIds.length,
@@ -119,65 +158,6 @@ function serviceWalk(
     }
   }
   return walk;
-}
-
-function finalize(
-  entry: Skeleton,
-  clustering: ServiceClustering,
-  degrees: ClusterDegrees,
-  index: GraphIndex,
-  graph: ModuleGraph,
-  walk: CodeWalk,
-): VisibleModuleNode {
-  const data =
-    entry.kind === "package"
-      ? clusterData(clusterForFrame(entry.id, clustering), clustering, degrees, entry)
-      : entry.kind === "file"
-        ? fileData(entry.id, graph, index, entryModuleFor(entry.id, index), {
-            isContainer: entry.isContainer,
-            isExpanded: entry.isExpanded,
-            unitCount: entry.childCount,
-          })
-        : entry.kind === "unit"
-          ? unitData(entry.id, index, {
-              memberCount: entry.childCount,
-              isContainer: entry.isContainer,
-              isExpanded: entry.isExpanded,
-            })
-          : entry.kind === "block"
-            ? blockData(entry.id, index, { hasFlow: entry.isContainer, isExpanded: entry.isExpanded })
-            : (walk.stepData.get(entry.id) as StepData);
-  return { ...entry, data };
-}
-
-function clusterData(
-  cluster: ServiceCluster,
-  clustering: ServiceClustering,
-  degrees: ClusterDegrees,
-  entry: Skeleton,
-): ModuleGroupData {
-  const metric = clustering.metrics.get(cluster.leadId);
-  return {
-    label: metric?.displayName ?? cluster.leadId,
-    fileCount: cluster.memberIds.length,
-    ca: degrees.ca.get(cluster.leadId)?.size ?? 0,
-    ce: degrees.ce.get(cluster.leadId)?.size ?? 0,
-    isContainer: entry.isContainer,
-    isExpanded: entry.isExpanded,
-  };
-}
-
-function clusterForFrame(frameId: string, clustering: ServiceClustering): ServiceCluster {
-  const leadId = leadIdOf(frameId);
-  const cluster = clustering.clusters.find((item) => item.leadId === leadId);
-  if (!cluster) {
-    throw new Error(`Unknown service cluster frame: ${frameId}`);
-  }
-  return cluster;
-}
-
-function entryModuleFor(fileId: string, index: GraphIndex): string | null {
-  return packageEntryModule(index, npmPackageIdOf(fileId, index.nodesById) ?? fileId);
 }
 
 function kindsOf(skeleton: Skeleton[]): Map<string, Skeleton["kind"]> {

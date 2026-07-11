@@ -29,8 +29,8 @@ export async function restoreFromUrl(store: BlueprintStore): Promise<void> {
   // `environment` is deliberately excluded: nulling telemetry on every restore is undesirable, so it
   // is apply-only via applyEnvironment below.
   store.setState(structuralState(nav));
-  // The restored viewMode decides which layout pass runs; "call"/"ui" route through relayout()
-  // (compRelayout / deriveLayout), "logic" needs its own ELK pass. This is the boot's first layout.
+  // The restored viewMode decides which layout pass runs; every module surface routes through
+  // relayout() (→ moduleRelayout), "logic" needs its own ELK pass. This is the boot's first layout.
   if (store.getState().viewMode === "logic") {
     await store.getState().logicRelayout();
   } else {
@@ -110,8 +110,8 @@ function applyEnvironment(store: BlueprintStore, environment: string | null | un
   void store.getState().refreshTelemetry().catch(() => {});
 }
 
-// The structural fields of a full NavState as a store partial, the Set-valued ones (`expanded`,
-// `moduleExpanded`, `hiddenCategories`) rebuilt as Sets. Always the complete set (not a sparse patch) so absent URL
+// The structural fields of a full NavState as a store partial, the Set-valued ones (`moduleExpanded`,
+// `hiddenCategories`) rebuilt as Sets. Always the complete set (not a sparse patch) so absent URL
 // keys reset to their default. Excludes `environment`, which is apply-only (see restoreFromUrl).
 // Exported for the serviceScope tests, which assert a restore always resets the scope.
 export function structuralState(nav: NavState): Record<string, unknown> {
@@ -120,23 +120,17 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     // The scoped Service sub-view is session-only (never URL-encoded), so NO history entry carries
     // it: restoring any entry — popstate back/forward included — must render the lens unscoped.
     serviceScope: null,
-    focusId: nav.focusId,
     compRoot: nav.compRoot,
-    selectedId: nav.selectedId,
     compSelectedId: nav.compSelectedId,
     logicSelected: nav.logicSelected,
-    flowRootId: nav.flowRootId,
-    flowDepth: nav.flowDepth,
     flowExplorerOpen: nav.flowExplorerOpen,
     flowSelection: null,
-    flowEmphasis: new Set<string>(),
     flowPaneRfNodes: [],
     flowPaneRfEdges: [],
     flowPaneLayoutStatus: "idle",
     logicRoot: nav.logicRoot,
     logicView: nav.logicView,
     logicStack: nav.logicStack,
-    expanded: new Set(nav.expanded),
     moduleFocus: nav.moduleFocus,
     // Reset the overlay to the URL's state; a restore that carries no seeds closes it, one that
     // carries seeds reopens it at the seed base (members := origin; restoreFromUrl then rebuilds the

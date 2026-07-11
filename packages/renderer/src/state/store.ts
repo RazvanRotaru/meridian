@@ -1,8 +1,8 @@
 /**
- * The single zustand store. `expanded` starts EMPTY so only roots show (progressive
+ * The single zustand store. `moduleExpanded` starts EMPTY so only roots show (progressive
  * disclosure begins at the package/system level), and `environment` starts null and is NEVER
- * auto-set or defaulted to prod. Every structural mutation bumps `layoutSeq` and re-runs the
- * derive pipeline behind a stale guard so a slow ELK pass can never overwrite a newer one.
+ * auto-set or defaulted to prod. Every structural mutation bumps its surface's layout sequence and
+ * re-runs the derive pipeline behind a stale guard so a slow ELK pass can never overwrite a newer one.
  */
 
 import { createStore, type StoreApi } from "zustand/vanilla";
@@ -23,37 +23,32 @@ import type {
 } from "@meridian/core";
 import { applyChangedIds, applyChangedStatus, type GraphIndex } from "../graph/graphIndex";
 import { matchAffectedFiles } from "../derive/matchAffectedFiles";
-import type { BlueprintEdge, BlueprintNode } from "../layout/rfTypes";
 import type { TelemetryProvider } from "../telemetry/provider";
 import type { ViewMode } from "../derive/edgeSelection";
 import { relatedNodeIds, type FlowSelectionRef } from "../derive/flowBlocks";
-import { computeVisible } from "../derive/computeVisible";
 import { idsToExpand, idsToCollapse, type ExpandableNode } from "../derive/scopedExpansion";
 import type { LogicViewMode } from "../derive/flowViewModel";
-import { uiFocusTarget } from "../derive/uiFocus";
-import { deriveLayout } from "./deriveLayout";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveFlowPaneLayout } from "./deriveFlowPaneLayout";
-import { deriveCompositionLayout } from "./deriveCompositionLayout";
-import { deriveModuleLevelLayout, type ModuleLevelLayout } from "./deriveModuleMapLayout";
-import { deriveServiceLevelLayout } from "./deriveServiceMapLayout";
+import { layoutModuleTree } from "../layout/moduleLevelLayout";
 import { deriveMinimalGraphLayout } from "./deriveMinimalGraphLayout";
-import { captureMapPositions } from "./mapPositions";
+import { captureMapPositions, promotedMemberRect } from "./mapPositions";
 import type { PlacedRect } from "../layout/minimalPlacement";
 import { buildModuleGraph, type ModuleGraph } from "../derive/moduleGraph";
 import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/blockDeps";
+import type { GhostData } from "../derive/ghostDeps";
 import { buildUnitIndex, type UnitIndex } from "@meridian/design-metrics";
-import { deriveModuleTree, type VisibleModuleNode } from "../derive/moduleTree";
+import type { VisibleModuleNode } from "../derive/moduleTree";
 import { moduleChildContainerIds } from "../derive/moduleChildContainers";
-import { deriveServiceTree } from "../derive/serviceClusterTree";
-import { scopeSetOf, serviceScopeFor, type ServiceScope } from "./serviceScope";
+import { serviceScopeFor, widenServiceScope, type ServiceScope } from "./serviceScope";
+import { leadIdOf } from "../derive/serviceClusterEdges";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import type { HighlightMode } from "../components/moduleMapPaint";
+import { activeModuleSurfaceSpec, moduleSurfaceSpec } from "../components/canvas/surfaceSpec";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
-import { moduleRevealStateFor, withAncestorsOf, withAncestorsOfMany } from "./flowExplorer";
+import { moduleRevealStateFor, nearestModuleIds } from "./flowExplorer";
 import { anchorNodeIds, mapRevealStateForMany, resolveServiceAnchors, serviceRevealStateForMany, uiRevealStateForMany } from "./lensPath";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
-import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
 import { PRS_UNAVAILABLE_ERROR, type LineEdit, type PrChangedFile, type PrFilesResponse, type PrListResponse, type PrSummary, type PrsTab } from "./prTypes";
 import { headKindsWithin, headSpanFor } from "./headSpan";
 import { streamPrAnalysis, type PrAnalyzeStage } from "./prAnalysis";
@@ -106,10 +101,6 @@ export interface CodeView {
 export interface BlueprintState {
   artifact: GraphArtifact;
   index: GraphIndex;
-  expanded: Set<string>;
-  selectedId: string | null;
-  /** The dived-into container; null == the graph roots (top level). Never drawn — it IS the breadcrumb. */
-  focusId: string | null;
   /** Which relationship story is on screen: the call graph, or the React composition tree. */
   viewMode: ViewMode;
   /** Whether test code (nodes tagged/heuristically detected as tests) is drawn at all. */
@@ -118,10 +109,6 @@ export interface BlueprintState {
   coverageMode: boolean;
   /** Computed once, on first entering coverage mode (the artifact never changes after boot). */
   coverage: CoverageReport | null;
-  /** The entry node whose forward call-flow is isolated on screen; null == the whole graph. */
-  flowRootId: string | null;
-  /** Hop cap from the flow entry; null == follow the flow all the way. */
-  flowDepth: number | null;
   /** The callable whose intra-procedural logic flow the Logic-flow view charts; null == none picked yet. */
   logicRoot: NodeId | null;
   /** Which PROJECTION of the charted flow is on screen (exec graph / metro / blocks / timeline).
@@ -158,10 +145,9 @@ export interface BlueprintState {
   /** Nest consecutive same-owner calls under service frames in the Logic graph. Default OFF (flat):
    * the framing is opt-in, so the flow reads as plain blocks unless the reader turns it on. */
   nestByService: boolean;
-  /** Phase-1 Code flows explorer state: selection/emphasis are shared by the future tree and panes. */
+  /** Phase-1 Code flows explorer state: the selection is shared by the tree and panes. */
   flowExplorerOpen: boolean;
   flowSelection: FlowSelectionRef | null;
-  flowEmphasis: Set<string>;
   flowPaneRfNodes: LogicRfNode[];
   flowPaneRfEdges: LogicRfEdge[];
   flowPaneLayoutStatus: LayoutStatus;
@@ -169,11 +155,6 @@ export interface BlueprintState {
   logicRfNodes: LogicRfNode[];
   logicRfEdges: LogicRfEdge[];
   logicLayoutStatus: LayoutStatus;
-  /** The laid-out Service-composition graph (React Flow), recomputed via ELK whenever the "call"
-   * lens is (re)entered. Composition IS the "call" surface now — the old call graph no longer renders. */
-  compRfNodes: CompRfNode[];
-  compRfEdges: CompRfEdge[];
-  compLayoutStatus: LayoutStatus;
   /** The selected composition unit id; null == none. A repaint-only highlight — no relayout. */
   compSelectedId: string | null;
   /** EXPERIMENT: the callable method whose logic flow is previewed in the composition-tab side
@@ -293,10 +274,6 @@ export interface BlueprintState {
   reviewActiveGroupId: string | null;
   /** Snapshot of the full seed list at review time — the "All groups" restore target. */
   reviewAllSeedIds: string[];
-  rfNodes: BlueprintNode[];
-  rfEdges: BlueprintEdge[];
-  layoutStatus: LayoutStatus;
-  layoutSeq: number;
   /** Bumped by the Toolbar's "Recenter" action. The active graph surface subscribes to it and, on a
    * change, re-fits its viewport to the current selection — or to the whole graph when nothing is
    * selected. Ephemeral: never serialized to the URL (it is a signal, not navigation state). */
@@ -344,23 +321,13 @@ export interface BlueprintState {
   graphUrl: string;
   /** The open source view (inline panel or modal); null when nothing is being shown. */
   codeView: CodeView | null;
-  toggleExpand(nodeId: string): void;
-  expandPath(nodeId: string): void;
-  expandPaths(nodeIds: string[]): void;
   /** Reveal one more containment level within the current selection (or the whole view / root
-   * container when nothing is selected). Surface-aware: Map, UI graph, and Logic graph each. */
+   * container when nothing is selected). Surface-aware: module surfaces and the Logic graph each. */
   expandAll(): void;
   /** Fully collapse the current selection (or the whole view / root container when nothing is
    * selected) — closes every open container in scope in one click. Surface-aware. */
   collapseAll(): void;
   recenter(): void;
-  select(nodeId: string | null): void;
-  diveInto(nodeId: string): void;
-  diveTo(nodeId: string): void;
-  diveHome(): void;
-  isolateFlow(nodeId: string): void;
-  clearFlow(): void;
-  setFlowDepth(depth: number | null): void;
   toggleFlowExplorer(): void;
   selectFlowEntry(ref: FlowSelectionRef | null): void;
   flowPaneRelayout(): Promise<void>;
@@ -382,7 +349,6 @@ export interface BlueprintState {
   toggleHideGreyed(): void;
   toggleNestByService(): void;
   logicRelayout(): Promise<void>;
-  compRelayout(): Promise<void>;
   selectCompUnit(id: string | null): void;
   selectCompMethod(id: NodeId | null): void;
   compMethodRelayout(): Promise<void>;
@@ -393,12 +359,20 @@ export interface BlueprintState {
   setModuleFocus(id: string | null): void;
   toggleModuleExpand(nodeId: string): void;
   revealModule(nodeId: string): void;
+  /** The Service lens's ghost reveal: open the ghost's owning `svc:` cluster frame(s) IN PLACE
+   * (expansion union) and select it — never a folder focus. Unclustered ghosts select only. */
+  revealServiceGhost(nodeId: string): void;
   /** ⌘P palette navigate: reveal a picked symbol in the CURRENT map lens — the Map goes to its
    * definition (revealModule), the Service lens pins + selects it. Inert outside the map lenses. */
   revealInView(rawId: string): void;
   /** ⌘P palette "+": pin a picked symbol INTO the current map lens (its owning unit/file) as an extra
    * card, without navigating. Inert outside the map lenses. */
   addToView(rawId: string): void;
+  /** The ghost "+" on the Map/Service/UI canvases (unified-canvas phase D): pin the ghost's home
+   * FILE (a folder group-ghost: the contributing files it folded, bounded) into `mapExtra` — the
+   * same mechanism as addToView, so "make this ghost permanent on this canvas" is one meaning
+   * everywhere. */
+  pinGhostToCanvas(ghostId: string): void;
   expandModuleChildren(containerId: string | null): void;
   collapseModuleChildren(containerId: string | null): void;
   togglePrivateMembers(): void;
@@ -419,7 +393,9 @@ export interface BlueprintState {
   clearServiceScope(): void;
   buildMinimalGraph(): void;
   closeMinimalGraph(): void;
-  promoteMinimalGhost(id: string): void;
+  /** Promote a ghost satellite into the overlay's member set. `at` is the ghost card's on-screen
+   * top-left (flow coords) — when given, the promoted box INHERITS that spot (see the impl). */
+  promoteMinimalGhost(id: string, at?: { x: number; y: number }): void;
   demoteMinimalMember(id: string): void;
   resetMinimalGraph(): void;
   rearrangeMinimalGraph(): void;
@@ -535,8 +511,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let lensBeforePrs: ViewMode | null = null;
   // Monotonic seq to drop a stale Logic-graph layout when a newer open/drill/toggle supersedes it.
   let logicLayoutSeq = 0;
-  // Same guard for the composition layout — a newer relayout discards an older in-flight ELK pass.
-  let compLayoutSeq = 0;
   // And for the Module-map layout, so a newer focus change supersedes an older derivation.
   let moduleLayoutSeq = 0;
   // And for the Module-map selection's minimal-graph overlay (its own surface, its own guard).
@@ -608,9 +582,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   return createStore<BlueprintState>((set, get) => ({
     artifact: dependencies.artifact,
     index: dependencies.index,
-    expanded: new Set<string>(),
-    selectedId: null,
-    focusId: null,
     // A `meridian review` artifact opens straight on the review surface; everything else (plain
     // `view`, or a `web` GitHub session) opens on the Map — the default lens.
     viewMode: "modules",
@@ -619,8 +590,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     showTests: false,
     coverageMode: false,
     coverage: null,
-    flowRootId: null,
-    flowDepth: null,
     logicRoot: null,
     logicView: "graph",
     logicStack: [],
@@ -635,16 +604,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     nestByService: false,
     flowExplorerOpen: false,
     flowSelection: null,
-    flowEmphasis: new Set<string>(),
     flowPaneRfNodes: [],
     flowPaneRfEdges: [],
     flowPaneLayoutStatus: "idle",
     logicRfNodes: [],
     logicRfEdges: [],
     logicLayoutStatus: "idle",
-    compRfNodes: [],
-    compRfEdges: [],
-    compLayoutStatus: "idle",
     compSelectedId: null,
     compMethodId: null,
     compMethodRfNodes: [],
@@ -693,10 +658,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewGroups: null,
     reviewActiveGroupId: null,
     reviewAllSeedIds: [],
-    rfNodes: [],
-    rfEdges: [],
-    layoutStatus: "idle",
-    layoutSeq: 0,
     recenterSeq: 0,
     telemetry: {},
     environment: null,
@@ -724,21 +685,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     graphUrl: dependencies.graphUrl ?? "",
     codeView: null,
 
-    toggleExpand(nodeId) {
-      set({ expanded: withToggled(get().expanded, nodeId) });
-      void get().relayout();
-    },
-
-    expandPath(nodeId) {
-      set({ expanded: withAncestorsOf(nodeId, get().index, get().expanded) });
-      void get().relayout();
-    },
-
-    expandPaths(nodeIds) {
-      set({ expanded: withAncestorsOfMany(nodeIds, get().index, get().expanded) });
-      void get().relayout();
-    },
-
     // Reveal one more containment level, scoped to the current selection (or the whole view when
     // nothing is selected). Each surface reads its own visible frontier + selection and folds the
     // ids scopedExpansion picks into its own expansion set — see applyScoped below.
@@ -758,60 +704,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ recenterSeq: get().recenterSeq + 1 });
     },
 
-    select(nodeId) {
-      set({ selectedId: nodeId });
-    },
-
-    // Dive into a container (you are now INSIDE it, seeing its children). A no-op when already
-    // there so a stray double-click doesn't trigger a redundant relayout.
-    diveInto(nodeId) {
-      if (get().focusId === nodeId) {
-        return;
-      }
-      set({ focusId: nodeId });
-      void get().relayout();
-    },
-
-    // Jump to a breadcrumb segment (an ancestor of the current focus, or the current one).
-    diveTo(nodeId) {
-      if (get().focusId === nodeId) {
-        return;
-      }
-      set({ focusId: nodeId });
-      void get().relayout();
-    },
-
-    diveHome() {
-      if (get().focusId === null) {
-        return;
-      }
-      set({ focusId: null });
-      void get().relayout();
-    },
-
-    // Isolate the forward call-flow rooted at a node (always at full depth first — the reader
-    // dials it back with setFlowDepth). Selecting it keeps a highlight on the entry.
-    isolateFlow(nodeId) {
-      set({ flowRootId: nodeId, flowDepth: null, selectedId: nodeId });
-      void get().relayout();
-    },
-
-    clearFlow() {
-      if (get().flowRootId === null) {
-        return;
-      }
-      set({ flowRootId: null, flowDepth: null });
-      void get().relayout();
-    },
-
-    setFlowDepth(depth) {
-      if (get().flowDepth === depth) {
-        return;
-      }
-      set({ flowDepth: depth });
-      void get().relayout();
-    },
-
     toggleFlowExplorer() {
       const flowExplorerOpen = !get().flowExplorerOpen;
       set(flowExplorerOpen
@@ -819,7 +711,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         : {
             flowExplorerOpen,
             flowSelection: null,
-            flowEmphasis: new Set<string>(),
             flowPaneRfNodes: [],
             flowPaneRfEdges: [],
             flowPaneLayoutStatus: "idle",
@@ -830,7 +721,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (ref === null) {
         set({
           flowSelection: null,
-          flowEmphasis: new Set<string>(),
           flowPaneRfNodes: [],
           flowPaneRfEdges: [],
           flowPaneLayoutStatus: "idle",
@@ -840,11 +730,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const { artifact, index, viewMode } = get();
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const related = relatedNodeIds(index, flows, ref);
-      set({ flowSelection: ref, flowEmphasis: related });
-      if (viewMode === "ui") {
-        get().expandPaths([...related]);
-      } else if (viewMode === "modules") {
-        const reveal = moduleRevealStateFor([...related], index);
+      set({ flowSelection: ref });
+      // Both module lenses the explorer serves (Map + UI) bulk-reveal the flow's modules in the
+      // SHARED module spaces — the phase-C unification retired the ui lens's private expansion.
+      // The UI lens routes through its OWN reveal: a null focus means the RENDER ROOT there (not
+      // the repo), so the repo-rooted helper could select files the lens never draws.
+      if (viewMode === "modules" || viewMode === "ui") {
+        const reveal =
+          viewMode === "ui"
+            ? uiRevealStateForMany(nearestModuleIds([...related], index), index)
+            : moduleRevealStateFor([...related], index);
         if (reveal) {
           set({
             moduleFocus: reveal.moduleFocus,
@@ -889,17 +784,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // starts at default expansion; clear any prior selection (it means nothing in a new chart).
     openLogicFlow(nodeId) {
       beginLensTransition(get, set);
-      set({ viewMode: "logic", logicRoot: nodeId, logicStack: [nodeId], logicFocus: [], selectedId: nodeId, logicSelected: null, expandedLogic: new Set<string>() });
+      set({ viewMode: "logic", logicRoot: nodeId, logicStack: [nodeId], logicFocus: [], logicSelected: null, expandedLogic: new Set<string>() });
       void get().logicRelayout();
     },
 
-    // The logic→composition link: a call block's owning-unit chip opens that unit HERE, rooted and
-    // selected, so a reader can pivot from "who calls this" to "how healthy is the unit it lives in".
-    // No guard needed — compRelayout is idempotent, and rooting+selecting is always a fresh view.
+    // The logic→composition link: a call block's owning-unit chip opens the Service lens HERE with
+    // the unit revealed on canvas AND rooted/selected in the composition side panel, so a reader can
+    // pivot from "who calls this" to "how healthy is the unit it lives in".
     openComposition(unitId) {
       beginLensTransition(get, set);
-      set({ viewMode: "call", compRoot: unitId, compExpanded: new Set<string>(), compSelectedId: unitId });
-      void get().compRelayout();
+      const reveal = serviceRevealStateForMany([unitId], get().index);
+      set({ viewMode: "call", compRoot: unitId, compExpanded: new Set<string>(), compSelectedId: unitId, mapExtra: new Set<string>(), ...(reveal ?? MODULE_TOP_LEVEL) });
+      void get().moduleRelayout();
     },
 
     // Drill from a call node into its target's own flow — push it onto the trail, re-chart from it.
@@ -1016,28 +912,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ logicRfNodes: graph.nodes, logicRfEdges: graph.edges, logicLayoutStatus: "ready" });
     },
 
-    // Re-derive the Service-composition graph from the whole artifact through ELK, behind the same
-    // stale-seq guard. Reads the raw nodes/edges off the index (built from the artifact); the derive
-    // decides which units earn a card and wires their couplings.
-    async compRelayout() {
-      const { index, compRoot, compExpanded, showSolidMetrics } = get();
-      // The layout ALWAYS includes test units, so toggling the Tests filter never moves a production
-      // card — the composition view hides test cards in place (a repaint), it does not re-lay-out.
-      // A giant repo's first layout stays cheap anyway: aggregated altitudes only COUNT test units
-      // inside package summary cards, they never lay the individual cards out.
-      const nodes = [...index.nodesById.values()];
-      // deriveCompositionGraph self-decides whether to aggregate (based on how many unit cards the
-      // current root's view would draw) and recurses a level deeper on each drill, so the store just
-      // hands it the root.
-      const sequence = ++compLayoutSeq;
-      set({ compLayoutStatus: "laying-out" });
-      const graph = await deriveCompositionLayout(nodes, index.edges, compRoot, showSolidMetrics, compExpanded);
-      if (compLayoutSeq !== sequence) {
-        return; // a newer layout superseded this one.
-      }
-      set({ compRfNodes: graph.nodes, compRfEdges: graph.edges, compLayoutStatus: "ready" });
-    },
-
     // Select a composition unit (pass null to clear). The view renders straight from the laid-out
     // graph, so this needs no relayout — it only repaints the highlight.
     selectCompUnit(id) {
@@ -1077,10 +951,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ compMethodRfNodes: graph.nodes, compMethodRfEdges: graph.edges, compMethodLayoutStatus: "ready" });
     },
 
-    // Re-root the Service-composition graph at a module/package (null == whole system). Clears the
-    // selection, the code view, the aggregate-expand set, and the method-preview drawer — none carry
-    // meaning in a new rooted view — then re-lays out. When the root is unchanged it still clears the
-    // stale selection + code so navigation always returns to the graph first.
+    // Re-root the Service-composition side panel at a module/package (null == whole system). Clears
+    // the selection, the code view, the aggregate-expand set, and the method-preview drawer — none
+    // carry meaning in a new rooted view. When the root is unchanged it still clears the stale
+    // selection + code so navigation always returns to the graph first.
     setCompRoot(id) {
       const sameRoot = get().compRoot === id;
       // Root navigation should always return to the graph surface; if the root is unchanged, still
@@ -1092,57 +966,52 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       set({ compRoot: id, compExpanded: new Set<string>(), compSelectedId: null, compMethodId: null, compMethodRfNodes: [], compMethodRfEdges: [], compMethodLayoutStatus: "idle", codeView: null });
-      void get().compRelayout();
     },
 
-    // Inline-expand / collapse a package card in the AGGREGATED composition view: an expanded
-    // package renders as a frame holding the next level (sub-package cards / unit scorecards)
-    // while the rest of the overview stays put. Relayouts — the canvas gains/loses cards.
+    // Inline-expand / collapse a package card in the AGGREGATED composition panel: an expanded
+    // package renders as a frame holding the next level while the rest of the overview stays put.
     toggleCompExpand(id) {
       const next = new Set(get().compExpanded);
       if (!next.delete(id)) {
         next.add(id);
       }
       set({ compExpanded: next });
-      void get().compRelayout();
     },
 
     // Show/hide the per-card SOLID metrics (metric rows + smell chips) on the composition scorecards.
-    // Persisted across reloads; a relayout re-sizes the cards (compact when metrics are hidden).
+    // Persisted across reloads.
     toggleSolidMetrics() {
       const next = !get().showSolidMetrics;
       writeSolidMetricsPref(next);
       set({ showSolidMetrics: next });
-      void get().compRelayout();
     },
 
     // Re-derive the Module-surface LEVEL through ELK, behind the same stale-seq guard. BOTH lenses
-    // write this slice: the "call" lens feeds the same view a SERVICE-CLUSTER tree (no zoom/focus),
-    // while "modules" derives the folder containment level for the current focus. The import graph
-    // is built once (cached) and reused for every folder level.
+    // write this slice: the surface's SurfaceSpec derives the tree — the "call" lens a
+    // SERVICE-CLUSTER tree (no zoom/focus), "modules" the folder containment level for the current
+    // focus. The import graph is built once (cached) and reused for every level.
     async moduleRelayout() {
-      const { index, moduleFocus, moduleExpanded, mapExtra, artifact, viewMode, showTests, showCommons, serviceScope } = get();
+      const state = get();
       const sequence = ++moduleLayoutSeq;
       set({ moduleLayoutStatus: "laying-out" });
-      const graph = (moduleGraph ??= buildModuleGraph(index));
-      const deps = (blockDeps ??= buildBlockDeps(index));
-      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      const graph = (moduleGraph ??= buildModuleGraph(state.index));
+      const deps = (blockDeps ??= buildBlockDeps(state.index));
+      const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       // Hidden tests are EXCLUDED from the layout (not just painted out): test code can be half the
       // cards, and paint-hiding it kept a crater of empty space. toggleShowTests relayouts this lens.
-      const hidden = showTests ? EMPTY_HIDDEN_IDS : index.testIds;
-      let layout: ModuleLevelLayout;
-      if (viewMode === "call") {
-        layout = await deriveServiceLevelLayout(index, moduleExpanded, graph, deps, flows, scopeSetOf(serviceScope), mapExtra);
-      } else {
-        layout = await deriveModuleLevelLayout(index, moduleFocus, moduleExpanded, graph, deps, flows, mapExtra, hidden, showCommons);
-      }
+      // (The Service tree applies the hidden set to its GHOST tier only — cluster members still
+      // hide at paint time, exactly as its old branch did. The Commons toggle rides in as part of
+      // `state`: the Map's spec threads `showCommons` into its hub demotion; Service/UI ignore it.)
+      const hidden = state.showTests ? EMPTY_HIDDEN_IDS : state.index.testIds;
+      const tree = activeModuleSurfaceSpec(state.viewMode).deriveTree(state, { graph, deps, flows }, { extraIds: state.mapExtra, hiddenIds: hidden });
+      const laid = await layoutModuleTree(tree.nodes, tree.edges);
       if (moduleLayoutSeq !== sequence) {
         return; // a newer focus change superseded this one.
       }
       set({
-        moduleRfNodes: layout.nodes,
-        moduleRfEdges: layout.edges,
-        moduleEffectiveFocus: layout.effectiveFocus,
+        moduleRfNodes: laid.nodes,
+        moduleRfEdges: laid.edges,
+        moduleEffectiveFocus: tree.effectiveFocus,
         moduleLayoutStatus: "ready",
       });
     },
@@ -1191,13 +1060,49 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().moduleRelayout();
     },
 
-    // ⌘P palette NAVIGATE: reveal a picked symbol in the current map lens. The Map goes to its real
-    // definition (revealModule: refocus + expand its file/unit chain + select it). The Service lens has
-    // no focus, so it pins the symbol's owning card onto the canvas and selects it. Inert elsewhere —
-    // the palette opens a logic flow in logic/ui itself.
+    // GHOST reveal on the SERVICE lens — the expand-based sibling of revealModule: resolve the
+    // ghost through the shared service placement (resolveServiceAnchors — the same pass the
+    // lens-carry and the scope opener read) and OPEN its owning cluster frame(s) in place, frames
+    // UNIONED into the current expansion, the node selected. A folded FOLDER group-ghost
+    // decomposes to every clustered unit beneath the folder, opening ALL their frames (the folder
+    // id stays the selection — the same id revealModule selects for a group ghost). NEVER a folder
+    // focus (this lens's reveal is an expand, not a jump). A live cluster ZOOM survives only when
+    // it already contains the ghost — else it clears WITH its cluster's frame joining the union
+    // (the zoom drew that frame force-open; exiting must not collapse the reader's context), and a
+    // scoped sub-view WIDENS by the owning leads, so the opened frame is actually on canvas. An
+    // unclustered ghost (an unowned helper, a folder with no clustered units) has no frame to
+    // open: best-effort select only, mirroring revealModule's tolerance.
+    revealServiceGhost(nodeId) {
+      const { index, moduleExpanded, moduleFocus, serviceScope } = get();
+      const resolution = resolveServiceAnchors([nodeId], index);
+      if (resolution === null) {
+        set({ moduleSelected: new Set([nodeId]) });
+        return;
+      }
+      const focusLead = moduleFocus === null ? null : leadIdOf(moduleFocus);
+      const staysInFocus = focusLead !== null && resolution.owningLeads.every((lead) => lead === focusLead);
+      const expanded = new Set([...moduleExpanded, ...resolution.reveal.moduleExpanded]);
+      if (!staysInFocus && focusLead !== null && moduleFocus !== null) {
+        expanded.add(moduleFocus);
+      }
+      set({
+        moduleFocus: staysInFocus ? moduleFocus : null,
+        serviceScope: widenServiceScope(serviceScope, resolution.owningLeads),
+        moduleExpanded: expanded,
+        moduleSelected: resolution.reveal.moduleSelected,
+      });
+      // `moduleExpanded` is shared with the minimal overlay; when one covers this lens the reveal
+      // must re-lay the overlay the reader can see, not the Map beneath it.
+      void relayoutActiveModuleSurface(get);
+    },
+
+    // ⌘P palette NAVIGATE: reveal a picked symbol in the current map lens. The Map and UI lenses go
+    // to its real definition (revealModule: refocus + expand its file/unit chain + select it). The
+    // Service lens has no folder focus, so it pins the symbol's owning card onto the canvas and
+    // selects it. Inert elsewhere — the palette opens a logic flow in logic itself.
     revealInView(rawId) {
       const viewMode = get().viewMode;
-      if (viewMode === "modules") {
+      if (viewMode === "modules" || viewMode === "ui") {
         get().revealModule(rawId);
         return;
       }
@@ -1210,10 +1115,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     // ⌘P palette "+": pin a picked symbol's owning card (unit/file) INTO the current map lens WITHOUT
     // navigating — a scratch card unioned into the next relayout. A no-op when already pinned or off a
-    // map lens. Both lenses share `mapExtra`, so the same pin surfaces in either.
+    // map lens. All module lenses share `mapExtra`, so the same pin surfaces in each.
     addToView(rawId) {
       const viewMode = get().viewMode;
-      if (viewMode !== "call" && viewMode !== "modules") {
+      if (moduleSurfaceSpec(viewMode) === null) {
         return;
       }
       const card = resolveCard(rawId);
@@ -1221,6 +1126,26 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({ mapExtra: new Set(get().mapExtra).add(card) });
         void get().moduleRelayout();
       }
+    },
+
+    // The ghost "+" on the Map/Service/UI canvases (the general sibling of the overlay's promote):
+    // pin the ghost's HOME FILE — a folder group-ghost its files, bounded (`ghostPinIds`) — into
+    // `mapExtra`, addToView's exact mechanism, so the coupling the ghost charted becomes a permanent
+    // card. Placement deliberately stays ELK's: the pinned file re-enters the level WIRED to the
+    // very cards that anchored its ghost, so the layered flow seats it on the ghost band's own side
+    // (dependencies right, callers left) — seeding a fixed rect would just fight the next relayout.
+    pinGhostToCanvas(ghostId) {
+      if (moduleSurfaceSpec(get().viewMode) === null) {
+        return;
+      }
+      const pins = ghostPinIds(get().index, ghostId, drawnGhostMembers(get().moduleRfNodes, ghostId));
+      const mapExtra = new Set(get().mapExtra);
+      pins.forEach((pin) => mapExtra.add(pin));
+      if (mapExtra.size === get().mapExtra.size) {
+        return; // unknown ghost, or everything it resolves to is already pinned.
+      }
+      set({ mapExtra });
+      void get().moduleRelayout();
     },
 
     // Expand one containment level under the target. `null` means the current view frontier; a
@@ -1313,7 +1238,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // (members + their on-map 1-hop ghost ring). A fresh build discards any prior curation. Inert when
     // nothing is selected.
     buildMinimalGraph() {
-      const origin = [...get().moduleSelected];
+      // The active surface's spec decides how a selection seeds the overlay: identity on the Map,
+      // while the Service lens decomposes a selected `svc:` frame into its cluster's member units.
+      const origin = activeModuleSurfaceSpec(get().viewMode).minimalSeeds([...get().moduleSelected], get().index);
       if (origin.length === 0) {
         return;
       }
@@ -1357,14 +1284,22 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Promote a GHOST satellite into the working member set (the ghost "+" click). A satellite is a
     // SYMBOL (or a folder group-ghost) — members are file/package boxes — so the id resolves to its
     // home box first. The ring is then recomputed from the larger member set, so promoting reaches
-    // further. A no-op when the resolved box is already a member (or the id is unknown).
-    promoteMinimalGhost(id) {
-      const member = ghostMemberId(get().index, id);
-      const { minimalMemberIds } = get();
+    // further. A no-op when the resolved box is already a member (or the id is unknown). The new box
+    // INHERITS the clicked ghost card's on-screen spot (`at`, seeded into basePositions so the
+    // mirror placement treats it as CAPTURED — overriding even a stale map capture): the card stays
+    // under the reader's eye instead of `placeDisconnectedFiles` stacking every unconnected
+    // promotion into its far-right vertical band (the reported column-growth pathology).
+    promoteMinimalGhost(id, at) {
+      const { index, minimalMemberIds, minimalBasePositions } = get();
+      const member = ghostMemberId(index, id);
       if (member === null || minimalMemberIds.includes(member)) {
         return;
       }
-      set({ minimalMemberIds: [...minimalMemberIds, member] });
+      const basePositions =
+        at === undefined
+          ? minimalBasePositions
+          : { ...minimalBasePositions, [member]: promotedMemberRect(at, index.nodesById.get(member)?.kind !== "module") };
+      set({ minimalMemberIds: [...minimalMemberIds, member], minimalBasePositions: basePositions });
       void get().minimalRelayout();
     },
 
@@ -1656,14 +1591,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // in the incoming one, so Map ↔ Service ↔ UI stay on the same files/symbols instead of resetting
     // to the lens's top level. Anchors the target lens can't place (a bare folder in the Service lens)
     // are dropped; only when NONE is placeable does it fall back to opening the lens at its top. The
-    // logic view is a standalone render (no rfNodes/ELK), so it neither dives nor relayouts.
+    // logic view is a standalone render (its own ELK pass), so it neither dives nor relayouts.
     setViewMode(mode) {
       const previous = get().viewMode;
       if (previous === mode) {
-        // Re-clicking the ACTIVE Service tab is the escape hatch out of a scoped sub-view (the
-        // breadcrumb ✕ stays the primary exit); every other same-tab click remains a no-op.
+        // Re-clicking the ACTIVE Service tab is the escape hatch back to the FULL lens: the scoped
+        // sub-view exits AND any svc: cluster zoom clears (the breadcrumb stays the primary exit
+        // for each); every other same-tab click remains a no-op.
         if (mode === "call") {
           get().clearServiceScope();
+          const focus = get().moduleFocus;
+          if (focus !== null && leadIdOf(focus) !== null) {
+            get().setModuleFocus(null);
+          }
         }
         return;
       }
@@ -1688,24 +1628,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       // A shared/reloaded deep link is unaffected: it restores via setState on boot (not this click
-      // path), so an explicit ?mfocus=… / ?focus=… still opens exactly where the link points. The
-      // palette's "+" pins (`mapExtra`) are session scratch of the level we leave — always cleared.
-      if (mode === "modules") {
-        const reveal = mapRevealStateForMany(anchors, get().index);
-        set({ viewMode: mode, mapExtra: new Set<string>(), ...(reveal ?? MODULE_TOP_LEVEL) });
-        void get().moduleRelayout();
-        return;
-      }
-      if (mode === "call") {
-        const reveal = serviceRevealStateForMany(anchors, get().index);
-        set({ viewMode: mode, mapExtra: new Set<string>(), ...(reveal ?? MODULE_TOP_LEVEL) });
-        void get().moduleRelayout();
-        return;
-      }
-      // mode === "ui": reveal the anchors in the composition graph, else dive to the render subtree.
-      const reveal = uiRevealStateForMany(anchors, get().index);
-      set(reveal ? { viewMode: mode, ...reveal } : { viewMode: mode, focusId: uiFocusTarget(get().index) });
-      void get().relayout();
+      // path), so an explicit ?mfocus=… still opens exactly where the link points. The palette's
+      // "+" pins (`mapExtra`) are session scratch of the level we leave — always cleared. Every
+      // remaining mode is a module surface (Map / Service / UI) with its own anchor reveal.
+      const reveal =
+        mode === "modules"
+          ? mapRevealStateForMany(anchors, get().index)
+          : mode === "call"
+            ? serviceRevealStateForMany(anchors, get().index)
+            : uiRevealStateForMany(anchors, get().index);
+      set({ viewMode: mode, mapExtra: new Set<string>(), ...(reveal ?? MODULE_TOP_LEVEL) });
+      void get().moduleRelayout();
     },
 
     // The "PR review" control is a toggle: off → open the full PR page; on → resume the lens you came
@@ -1720,40 +1653,28 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const back = lensBeforePrs ?? "modules";
       lensBeforePrs = null;
       set({ viewMode: back });
-      if ((back === "modules" || back === "call") && get().moduleRfNodes.length === 0) {
+      if (moduleSurfaceSpec(back) !== null && get().moduleRfNodes.length === 0) {
         void get().moduleRelayout();
-      } else if (back === "ui" && get().rfNodes.length === 0) {
-        void get().relayout();
       }
     },
 
-    // Hiding tests while dived into (or having selected) test code would strand the view on
-    // nodes that no longer exist, so focus/selection — on every surface, including the
-    // composition graph's own selection/root — retreat home first.
+    // Hiding tests while having selected test code would strand the view on nodes that no longer
+    // exist, so selection — including the composition panel's own selection/root — retreats first.
     toggleShowTests() {
       const showTests = !get().showTests;
-      const { focusId, selectedId, compSelectedId, compRoot, moduleSelected, viewMode, index } = get();
+      const { compSelectedId, compRoot, moduleSelected, viewMode, index } = get();
       const strandedById = (id: string | null) => !showTests && id !== null && index.testIds.has(id);
-      const nextCompRoot = strandedById(compRoot) ? null : compRoot;
       set({
         showTests,
-        focusId: strandedById(focusId) ? null : focusId,
-        selectedId: strandedById(selectedId) ? null : selectedId,
         compSelectedId: strandedById(compSelectedId) ? null : compSelectedId,
-        compRoot: nextCompRoot,
+        compRoot: strandedById(compRoot) ? null : compRoot,
         moduleSelected: showTests ? moduleSelected : new Set([...moduleSelected].filter((id) => !index.testIds.has(id))),
       });
-      // The composition view hides test cards in place (paint-only), relayouting only when its OWN
-      // root was stranded inside now-hidden test code. The MODULE MAP relayouts instead: test code
-      // can be half a level's cards (and a wall of off-level test ghosts), and paint-hiding kept a
-      // crater of empty space — moduleRelayout re-derives the level with testIds excluded, so the
-      // survivors compact. Positions do move on this toggle, by design.
-      const paintOnlyMode = viewMode === "call" || viewMode === "modules";
-      const compRootChanged = nextCompRoot !== compRoot;
-      if (!paintOnlyMode || compRootChanged) {
-        void get().relayout();
-      }
-      if (viewMode === "modules") {
+      // The module surfaces (Map / Service / UI) re-derive: test code can be half a level's cards
+      // (and a wall of off-level test ghosts), and paint-hiding kept a crater of empty space —
+      // moduleRelayout re-derives the level with testIds excluded, so the survivors compact.
+      // Positions do move on this toggle, by design.
+      if (moduleSurfaceSpec(viewMode) !== null) {
         void get().moduleRelayout();
         // An open minimal overlay derives its ghost-satellite ring with the same hidden set, so the
         // toggle refreshes it too (else stale test satellites linger over the recomputed Map).
@@ -1994,27 +1915,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     async relayout() {
-      // The "call" lens IS the Map surface fed a service-cluster tree now (not the old scorecard
-      // composition graph), so it routes to the SAME moduleRelayout as "modules" — the branch by
-      // viewMode lives inside moduleRelayout itself. "ui" still derives below.
-      if (get().viewMode === "prs") {
-        set({ layoutStatus: "idle" });
-        return;
-      }
-      if (get().viewMode === "call" || get().viewMode === "modules") {
+      // Post-unification, every graph lens with an ELK canvas is a module surface ("modules" /
+      // "call" / "ui" — the registry decides): they all route through the ONE moduleRelayout.
+      // Logic owns its own pass (logicRelayout) and the PRs page has no canvas.
+      if (moduleSurfaceSpec(get().viewMode) !== null) {
         await get().moduleRelayout();
-        return;
       }
-      const sequence = get().layoutSeq + 1;
-      set({ layoutSeq: sequence, layoutStatus: "laying-out" });
-      const { index, expanded, focusId, viewMode, flowRootId, flowDepth, showTests } = get();
-      const hidden = showTests ? new Set<string>() : index.testIds;
-      const flow = flowRootId ? { rootId: flowRootId, depth: flowDepth } : null;
-      const graph = await deriveLayout(index, expanded, focusId, viewMode, hidden, flow);
-      if (get().layoutSeq !== sequence) {
-        return; // a newer toggle superseded this layout; discard the stale result.
-      }
-      set({ rfNodes: graph.nodes, rfEdges: graph.edges, layoutStatus: "ready" });
     },
   }));
 }
@@ -2198,6 +2104,16 @@ function beginLensTransition(get: BlueprintStore["getState"], set: (partial: Par
   if (get().serviceScope !== null) {
     set({ serviceScope: null });
   }
+  // A svc: cluster zoom is CALL-LENS state — stale on the next visit and meaningless anywhere
+  // else: clear it so a lens entry that lands back on "call" (openComposition's pivot) can't hide
+  // its target under a lingering zoom. ONLY the `svc:` grammar clears — a Map folder focus is that
+  // lens's own state and must survive. The relayout matters for entries that never re-lay the
+  // module surface themselves; any entry that does supersedes it via the layout sequence guard.
+  const focus = get().moduleFocus;
+  if (focus !== null && leadIdOf(focus) !== null) {
+    set({ moduleFocus: null });
+    void get().moduleRelayout();
+  }
 }
 
 /** Order-independent equality of two id lists — the minimal overlay's "members === origin" test. */
@@ -2229,6 +2145,40 @@ function ghostMemberId(index: GraphIndex, ghostId: string): string | null {
   return null;
 }
 
+/** Bound on how many of a folder group-ghost's files one "+" pins — a huge folder must not flood the level. */
+const FOLDER_PIN_CAP = 12;
+
+/** The contributing home FILES a drawn folder group-ghost recorded at fold time (GhostData.members)
+ * — the "+" pin's real payload; undefined on individual ghosts and unknown ids. */
+function drawnGhostMembers(nodes: readonly Node[], ghostId: string): readonly string[] | undefined {
+  const ghost = nodes.find((node) => node.id === ghostId);
+  return ghost === undefined ? undefined : (ghost.data as GhostData).members;
+}
+
+/** What the general ghost "+" pins into `mapExtra`: a symbol satellite pins its home FILE; a folder
+ * group-ghost the CONTRIBUTING files recorded on its card — the files whose symbols the ghost
+ * actually charted, so every pin lands wired to the level (falling back to the folder's direct
+ * files only for a card with no record). Id-sorted and CAPPED; `mapExtra` holds no containers
+ * (`extraRoots`/`appendExtras` only draw file/unit/block cards), so the folder id itself can't pin. */
+function ghostPinIds(index: GraphIndex, ghostId: string, members?: readonly string[]): string[] {
+  if (members !== undefined && members.length > 0) {
+    return [...members].sort().slice(0, FOLDER_PIN_CAP);
+  }
+  const member = ghostMemberId(index, ghostId);
+  if (member === null) {
+    return [];
+  }
+  if (index.nodesById.get(member)?.kind === "module") {
+    return [member];
+  }
+  return index
+    .childrenOf(member)
+    .filter((child) => child.kind === "module")
+    .map((child) => child.id)
+    .sort()
+    .slice(0, FOLDER_PIN_CAP);
+}
+
 function withToggled(expanded: Set<string>, nodeId: string): Set<string> {
   const next = new Set(expanded);
   if (next.has(nodeId)) {
@@ -2257,7 +2207,7 @@ type ScopedPick = (nodes: readonly ExpandableNode[], scope: readonly (string | n
  * The shared body of `expandAll`/`collapseAll`: read the active surface's visible frontier and
  * selection, let `pick` (idsToExpand reveals one level / idsToCollapse closes all open in scope)
  * choose the ids, then fold them into that surface's own expansion set — a plain add/remove on the
- * Map + UI graph, an XOR toggle on the Logic graph (its set is default-relative, so forcing a node
+ * module surfaces, an XOR toggle on the Logic graph (its set is default-relative, so forcing a node
  * to the picked state is a flip). No selection ⇒ `[null]` scope ≡ the root container.
  */
 function applyScoped(
@@ -2269,7 +2219,9 @@ function applyScoped(
   mode: "open" | "close",
 ): void {
   const state = get();
-  if (state.viewMode === "modules" || state.viewMode === "call") {
+  // A registered module surface (Map/Service/UI) shares one frontier read + expansion set; the
+  // strict registry returns null for the logic lens, which keeps its own branch below.
+  if (moduleSurfaceSpec(state.viewMode) !== null) {
     const scope = state.moduleSelected.size ? [...state.moduleSelected] : [null];
     const ids = pick(moduleTreeNodes(state, getGraph(), getDeps()), scope);
     if (ids.length === 0) {
@@ -2280,14 +2232,6 @@ function applyScoped(
     // expand/collapse must re-lay the overlay, not the covered Map — the same seam the in-place
     // toggle/expand/collapse actions route through.
     void relayoutActiveModuleSurface(get);
-  } else if (state.viewMode === "ui") {
-    const scope = state.selectedId !== null ? [state.selectedId] : [null];
-    const ids = pick(uiVisibleNodes(state), scope);
-    if (ids.length === 0) {
-      return;
-    }
-    set({ expanded: foldIds(state.expanded, ids, mode) });
-    void get().relayout();
   } else if (state.viewMode === "logic") {
     const ids = pick(logicVisibleNodes(state), [null]);
     if (ids.length === 0) {
@@ -2312,26 +2256,12 @@ function foldIds(expanded: ReadonlySet<string>, ids: readonly string[], mode: "o
   return next;
 }
 
-/** The Map surface's visible frontier (the folder Map or service-cluster tree) — the ONE place the
- * viewMode-based tree derive lives, shared by the scoped expand/collapse actions and applyScoped. */
+/** The Map surface's visible frontier (the folder Map or service-cluster tree), read through the
+ * SurfaceSpec registry — shared by the scoped expand/collapse actions and applyScoped. No
+ * extras (palette pins / hidden tests) here, exactly as the old per-viewMode derive calls. */
 function moduleTreeNodes(state: BlueprintState, graph: ModuleGraph, deps: BlockDeps): VisibleModuleNode[] {
   const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
-  const tree =
-    state.viewMode === "call"
-      ? deriveServiceTree(state.index, state.moduleExpanded, graph, deps, flows, scopeSetOf(state.serviceScope))
-      : deriveModuleTree(state.index, state.moduleFocus, state.moduleExpanded, graph, deps, flows);
-  return tree.nodes;
-}
-
-/** The UI call-flow graph's visible frontier as `ExpandableNode`s. */
-function uiVisibleNodes(state: BlueprintState): ExpandableNode[] {
-  const hidden = state.showTests ? new Set<string>() : state.index.testIds;
-  return computeVisible(state.index, state.expanded, state.focusId, hidden).map((visible) => ({
-    id: visible.id,
-    parentId: visible.node.parentId ?? null,
-    isContainer: visible.isContainer,
-    isExpanded: visible.isExpanded,
-  }));
+  return activeModuleSurfaceSpec(state.viewMode).deriveTree(state, { graph, deps, flows }).nodes;
 }
 
 /** The Logic graph's laid-out nodes as `ExpandableNode`s — expandable flags stand in for containment. */

@@ -122,8 +122,8 @@ function firstExistingModule(index: GraphIndex, candidateIds: string[]): string 
   return null;
 }
 
-// Mirrors flowReach's ENTRY_NAME (not exported there, so restated). Matched against the file's own
-// BASENAME, not the whole path — an `app/` directory must not make every file under it read as entry.
+// Entry-point-shaped file names. Matched against the file's own BASENAME, not the whole path — an
+// `app/` directory must not make every file under it read as entry.
 const ENTRY_MODULE_NAME = /^(main|index|bootstrap|app|entry|boot|server|start|root)\b/i;
 
 /** The shallowest entry-named module (fewest path segments), id tie-break — a stable default centre. */

@@ -27,8 +27,6 @@ export function minimalMiniMapColor(node: Node): string {
   return FILE_TINT;
 }
 
-export const SURFACE_STYLE: React.CSSProperties = { position: "relative", width: "100%", height: "100%", background: "#0E1116" };
-
 export const PANEL_STYLE: React.CSSProperties = {
   position: "absolute",
   top: 16,

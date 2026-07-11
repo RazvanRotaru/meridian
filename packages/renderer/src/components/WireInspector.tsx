@@ -18,6 +18,7 @@ import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { unitLabel } from "../derive/blockDeps";
 import { relColor } from "../theme/mapPalette";
 import { BUNDLE_EDGE_TYPE, bundleLabel, type BundleEdgeData } from "../layout/edgeBundling";
+import { activeModuleSurfaceSpec } from "./canvas/surfaceSpec";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { MONO } from "./nodes/modulemap/frameChrome";
 
@@ -160,17 +161,20 @@ function LinkRow({ link, name, onRevealed }: { link: GraphEdge; name: (id: strin
   );
 }
 
-/** A clickable endpoint name: reveals the symbol on the map (refocus + select), closing the panel —
- * the level under it is about to change, so a stale inspector must not linger. */
+/** A clickable endpoint name: reveals the symbol on the ACTIVE surface — the spec's own reveal
+ * gesture (the Map/UI refocus at the definition; the Service lens opens the owning cluster frame,
+ * never a folder focus) — closing the panel: the level under it is about to change, so a stale
+ * inspector must not linger. */
 function RevealName({ id, label, onRevealed }: { id: string; label: string; onRevealed: () => void }) {
-  const { revealModule } = useBlueprintActions();
+  const viewMode = useBlueprint((state) => state.viewMode);
+  const { setModuleFocus, revealModule, revealServiceGhost } = useBlueprintActions();
   return (
     <button
       type="button"
       style={NAME_BUTTON}
       title="Reveal on map"
       onClick={() => {
-        revealModule(id);
+        activeModuleSurfaceSpec(viewMode).ghostReveal({ setModuleFocus, revealModule, revealServiceGhost }, id);
         onRevealed();
       }}
     >

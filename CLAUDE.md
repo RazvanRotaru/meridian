@@ -91,6 +91,10 @@ renderer, run `pnpm --filter @meridian/cli copy-renderer` (or `prepack`).
   browser bundle. Core's main entry is browser-clean.
 - **ELK:** `hierarchyHandling: INCLUDE_CHILDREN` goes on the ROOT graph only (per-subgraph throws).
   Import `elkjs/lib/elk.bundled.js`. ELK child coords are parent-relative == React Flow `parentId`.
+- **ELK root options live ONLY in `renderer/src/layout/elkCanvasOptions.ts`** — never define
+  `elk.*` root-option literals anywhere else. A forked copy once dropped `elk.aspectRatio` and the
+  UI lens degenerated into a single vertical column (ELK stacks disconnected components without
+  it). Per-surface variation is container padding only.
 - **React Flow has no built-in expand/collapse** — it's ours (derive/computeVisible + liftEdges).
 - **TS 6 errors on deprecated `baseUrl`** (tsup's dts injects one) — `tsconfig.base.json` sets
   `"ignoreDeprecations": "6.0"`; keep it.

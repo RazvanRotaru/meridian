@@ -49,7 +49,7 @@ const FORMAT = "ts:app/lib/util.ts#format";
 const OTHER_FN = "ts:other/x.ts#run";
 
 describe("anchorNodeIds", () => {
-  const base = { moduleSelected: new Set<string>(), moduleEffectiveFocus: null, moduleFocus: null, selectedId: null, focusId: null, logicRoot: null };
+  const base = { moduleSelected: new Set<string>(), moduleEffectiveFocus: null, moduleFocus: null, logicRoot: null };
 
   it("returns ALL of the module selection on Map/Service, else the focus as a singleton", () => {
     expect(anchorNodeIds({ ...base, viewMode: "modules", moduleSelected: new Set([METHOD, SAVE]) })).toEqual([METHOD, SAVE]);
@@ -57,9 +57,9 @@ describe("anchorNodeIds", () => {
     expect(anchorNodeIds({ ...base, viewMode: "modules", moduleEffectiveFocus: "ts:app", moduleFocus: "ts:app/src" })).toEqual(["ts:app"]);
   });
 
-  it("reads selection then focus on UI, the root on Logic, nothing on PRs or when unanchored", () => {
-    expect(anchorNodeIds({ ...base, viewMode: "ui", selectedId: METHOD })).toEqual([METHOD]);
-    expect(anchorNodeIds({ ...base, viewMode: "ui", focusId: "ts:app/src/orders.ts" })).toEqual(["ts:app/src/orders.ts"]);
+  it("reads the shared module selection then focus on UI, the root on Logic, nothing on PRs or when unanchored", () => {
+    expect(anchorNodeIds({ ...base, viewMode: "ui", moduleSelected: new Set([METHOD]) })).toEqual([METHOD]);
+    expect(anchorNodeIds({ ...base, viewMode: "ui", moduleFocus: "ts:app/src/orders.ts" })).toEqual(["ts:app/src/orders.ts"]);
     expect(anchorNodeIds({ ...base, viewMode: "logic", logicRoot: METHOD })).toEqual([METHOD]);
     expect(anchorNodeIds({ ...base, viewMode: "prs" })).toEqual([]);
     expect(anchorNodeIds({ ...base, viewMode: "modules" })).toEqual([]);
@@ -70,7 +70,7 @@ describe("anchorNodeIds", () => {
     expect(anchors).toEqual([LEAD]);
     expect(mapRevealStateForMany(anchors, index)!.moduleSelected).toEqual(new Set([LEAD]));
     expect(serviceRevealStateForMany(anchors, index)!.moduleExpanded.has(frameIdOf(LEAD))).toBe(true);
-    expect(uiRevealStateForMany(anchors, index)!.selectedId).toBe(LEAD);
+    expect(uiRevealStateForMany(anchors, index)!.moduleSelected).toEqual(new Set([LEAD]));
   });
 });
 
@@ -133,9 +133,12 @@ describe("serviceRevealStateForMany", () => {
     expect(reveal!.moduleSelected).toEqual(new Set([METHOD]));
   });
 
-  it("returns null only when NO anchor lives in a clustered unit", () => {
-    expect(serviceRevealStateForMany(["ts:app/src", FORMAT], index)).toBeNull();
+  it("returns null only when NO anchor lives in a clustered unit (a folder decomposes to the units beneath it)", () => {
+    // lib/ holds only the bare helper function — no clustered unit anywhere beneath.
+    expect(serviceRevealStateForMany(["ts:app/lib", FORMAT], index)).toBeNull();
     expect(serviceRevealStateForMany([], index)).toBeNull();
+    // src/ DOES decompose: the clusters of the units beneath it open (the folder group-ghost reveal).
+    expect(serviceRevealStateForMany(["ts:app/src"], index)!.moduleExpanded.has(frameIdOf(LEAD))).toBe(true);
   });
 
   it("memoizes clustering per graph index", () => {
@@ -181,18 +184,21 @@ describe("file anchors resolve through their contained clustered units", () => {
 });
 
 describe("uiRevealStateForMany", () => {
-  it("expands the union of container chains and selects the FIRST placeable anchor", () => {
+  it("expands the union of container chains in the SHARED module spaces and selects every anchor", () => {
+    // No renders edges in this fixture, so the lens has no render root: the reveal dives to the
+    // anchors' deepest common package, exactly like the Map's reveal.
     const reveal = uiRevealStateForMany([METHOD, SAVE], index);
     expect(reveal).not.toBeNull();
-    expect(reveal!.selectedId).toBe(METHOD);
-    expect(reveal!.expanded.has("ts:app/src/orders.ts#OrderService")).toBe(true);
-    expect(reveal!.expanded.has("ts:app/src/repo.ts#OrderRepository")).toBe(true);
+    expect(reveal!.moduleFocus).toBe("ts:app/src");
+    expect(reveal!.moduleSelected).toEqual(new Set([METHOD, SAVE]));
+    expect(reveal!.moduleExpanded.has("ts:app/src/orders.ts#OrderService")).toBe(true);
+    expect(reveal!.moduleExpanded.has("ts:app/src/repo.ts#OrderRepository")).toBe(true);
   });
 
   it("drops ids that are not in the graph but keeps the placeable ones", () => {
     const reveal = uiRevealStateForMany(["ts:nope#ghost", METHOD], index);
     expect(reveal).not.toBeNull();
-    expect(reveal!.selectedId).toBe(METHOD);
+    expect(reveal!.moduleSelected).toEqual(new Set([METHOD]));
   });
 
   it("returns null only when NO anchor is in the graph", () => {
@@ -218,19 +224,21 @@ describe("uiRevealStateForMany render-subtree dive", () => {
   ] as GraphEdge[];
   const uiIndex = buildGraphIndex({ nodes: UI_NODES, edges: UI_EDGES } as GraphArtifact);
 
-  it("keeps the dive when EVERY anchor lives inside the render subtree", () => {
+  it("keeps the implicit render-subtree root (null focus) when EVERY anchor lives inside it", () => {
     const reveal = uiRevealStateForMany(["ts:web/ui/App.tsx#App", "ts:web/ui/Button.tsx#Button"], uiIndex);
     expect(reveal).not.toBeNull();
-    expect(reveal!.focusId).not.toBeNull();
-    expect(uiIndex.isWithinFocus(reveal!.focusId, "ts:web/ui/App.tsx#App")).toBe(true);
-    expect(uiIndex.isWithinFocus(reveal!.focusId, "ts:web/ui/Button.tsx#Button")).toBe(true);
+    // moduleFocus null == the lens's own render root; the container chains open beneath it.
+    expect(reveal!.moduleFocus).toBeNull();
+    expect(reveal!.moduleExpanded.has("ts:web/ui/App.tsx")).toBe(true);
+    expect(reveal!.moduleExpanded.has("ts:web/ui/Button.tsx")).toBe(true);
+    expect(reveal!.moduleSelected).toEqual(new Set(["ts:web/ui/App.tsx#App", "ts:web/ui/Button.tsx#Button"]));
   });
 
-  it("drops the dive when ANY anchor sits outside it, so all anchors stay reachable", () => {
+  it("dives to the anchors' common package when ANY anchor sits outside the render root", () => {
     const reveal = uiRevealStateForMany(["ts:web/ui/App.tsx#App", "ts:web/main.ts#main"], uiIndex);
     expect(reveal).not.toBeNull();
-    expect(reveal!.focusId).toBeNull();
-    expect(reveal!.selectedId).toBe("ts:web/ui/App.tsx#App");
-    expect(reveal!.expanded.has("ts:web/main.ts")).toBe(true);
+    expect(reveal!.moduleFocus).toBe("ts:web");
+    expect(reveal!.moduleSelected).toEqual(new Set(["ts:web/ui/App.tsx#App", "ts:web/main.ts#main"]));
+    expect(reveal!.moduleExpanded.has("ts:web/main.ts")).toBe(true);
   });
 });

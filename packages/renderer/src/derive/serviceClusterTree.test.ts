@@ -19,8 +19,9 @@ function node(id: string, kind: string, parentId?: string, displayName?: string)
 
 // Three service-named classes — each seeds its OWN cluster (seeds are terminal in the ownership
 // BFS) — coupled in a chain: Alpha → Beta → Gamma. Alpha never touches Gamma directly, which is
-// exactly the shape the scoped sub-view must respect: scope {Alpha, Beta} keeps the A→B wire but
-// draws nothing of Gamma, not even the B→G wire (no ghosts — the lens invariant).
+// exactly the shape the scoped sub-view must respect: scope {Alpha, Beta} keeps the A→B wire and
+// GHOSTS the dropped B→Gamma coupling as a card for Gamma's lead (honest resolution — the wire
+// must not silently vanish), while nothing of Gamma is drawn for real.
 const ALPHA = "ts:app/a.ts#AlphaService";
 const BETA = "ts:app/b.ts#BetaService";
 const GAMMA = "ts:app/c.ts#GammaService";
@@ -53,26 +54,111 @@ function frameIds(tree: { nodes: { id: string }[] }): string[] {
   return tree.nodes.map((n) => n.id).filter((id) => id.startsWith("svc:")).sort();
 }
 
+function ghostIds(tree: { nodes: { id: string; kind: string }[] }): string[] {
+  return tree.nodes.filter((n) => n.kind === "ghost").map((n) => n.id).sort();
+}
+
+function ghostWire(tree: { edges: { source: string; target: string; ghost?: boolean }[] }, source: string, target: string) {
+  return tree.edges.find((e) => e.ghost === true && e.source === source && e.target === target);
+}
+
 describe("deriveServiceTree scoping", () => {
-  it("unscoped, all three clusters and both coupling wires draw (the fixture sanity check)", () => {
-    const tree = deriveServiceTree(index, NONE, graph, deps, flows);
+  it("unscoped, all three clusters and both coupling wires draw, with NO ghosts (nothing is dropped)", () => {
+    const tree = deriveServiceTree(index, null, NONE, graph, deps, flows);
     expect(frameIds(tree)).toEqual([frameIdOf(ALPHA), frameIdOf(BETA), frameIdOf(GAMMA)].sort());
     expect(tree.edges.some((e) => e.source === frameIdOf(ALPHA) && e.target === frameIdOf(BETA))).toBe(true);
     expect(tree.edges.some((e) => e.source === frameIdOf(BETA) && e.target === frameIdOf(GAMMA))).toBe(true);
+    expect(ghostIds(tree)).toEqual([]);
+    expect(tree.effectiveFocus).toBeNull();
   });
 
-  it("scoped to {Alpha, Beta}: only their frames draw, the A→B wire stays, nothing touches Gamma", () => {
-    const tree = deriveServiceTree(index, NONE, graph, deps, flows, new Set([ALPHA, BETA]));
+  it("scoped to {Alpha, Beta}: only their frames draw, the A→B wire stays, and the dropped B→Gamma coupling GHOSTS Gamma's lead", () => {
+    const tree = deriveServiceTree(index, null, NONE, graph, deps, flows, { scopeLeadIds: new Set([ALPHA, BETA]) });
     expect(frameIds(tree)).toEqual([frameIdOf(ALPHA), frameIdOf(BETA)].sort());
     expect(tree.edges.some((e) => e.source === frameIdOf(ALPHA) && e.target === frameIdOf(BETA))).toBe(true);
+    // The out-of-scope endpoint is a GHOST card for its lead, wired from the in-scope frame.
+    expect(ghostIds(tree)).toEqual([GAMMA]);
+    expect(ghostWire(tree, frameIdOf(BETA), GAMMA)).toBeDefined();
+    // Nothing REAL of Gamma is drawn: no frame, and every non-ghost edge stays clear of it.
     const mentionsGamma = (id: string) => id.includes("GammaService");
-    expect(tree.nodes.some((n) => mentionsGamma(n.id))).toBe(false);
-    expect(tree.edges.some((e) => mentionsGamma(e.source) || mentionsGamma(e.target))).toBe(false);
+    expect(tree.nodes.some((n) => n.kind !== "ghost" && mentionsGamma(n.id))).toBe(false);
+    expect(tree.edges.some((e) => e.ghost !== true && (mentionsGamma(e.source) || mentionsGamma(e.target)))).toBe(false);
   });
 
-  it("scoped to a single cluster draws its frame alone, with no coupling wires at all", () => {
-    const tree = deriveServiceTree(index, NONE, graph, deps, flows, new Set([ALPHA]));
+  it("scoped to a single cluster ghosts its outbound coupling (Alpha → ghost Beta), nothing else", () => {
+    const tree = deriveServiceTree(index, null, NONE, graph, deps, flows, { scopeLeadIds: new Set([ALPHA]) });
     expect(frameIds(tree)).toEqual([frameIdOf(ALPHA)]);
-    expect(tree.edges).toEqual([]);
+    expect(ghostIds(tree)).toEqual([BETA]);
+    expect(ghostWire(tree, frameIdOf(ALPHA), BETA)).toBeDefined();
+    // B→Gamma has neither end in scope — no ghost, no wire.
+    expect(tree.nodes.some((n) => n.id.includes("GammaService"))).toBe(false);
+  });
+
+  it("an INBOUND dropped coupling ghosts the caller's lead, wired INTO the scoped frame", () => {
+    const tree = deriveServiceTree(index, null, NONE, graph, deps, flows, { scopeLeadIds: new Set([GAMMA]) });
+    expect(frameIds(tree)).toEqual([frameIdOf(GAMMA)]);
+    expect(ghostIds(tree)).toEqual([BETA]);
+    expect(ghostWire(tree, BETA, frameIdOf(GAMMA))).toBeDefined();
+  });
+
+  it("scope ghosts respect the Tests toggle (a hidden lead never ghosts)", () => {
+    const tree = deriveServiceTree(index, null, NONE, graph, deps, flows, {
+      scopeLeadIds: new Set([ALPHA, BETA]),
+      hiddenIds: new Set([GAMMA]),
+    });
+    expect(ghostIds(tree)).toEqual([]);
+    expect(tree.edges.some((e) => e.ghost === true)).toBe(false);
+  });
+});
+
+describe("deriveServiceTree focus (cluster zoom)", () => {
+  it("focus on a cluster draws ONLY that frame, force-expanded, and reports effectiveFocus", () => {
+    const tree = deriveServiceTree(index, frameIdOf(BETA), NONE, graph, deps, flows);
+    expect(frameIds(tree)).toEqual([frameIdOf(BETA)]);
+    expect(tree.effectiveFocus).toBe(frameIdOf(BETA));
+    const frame = tree.nodes.find((n) => n.id === frameIdOf(BETA))!;
+    expect(frame.isExpanded).toBe(true);
+    // Members render at their usual depth: the unit card and its method block.
+    expect(tree.nodes.some((n) => n.id === BETA && n.kind === "unit")).toBe(true);
+    expect(tree.nodes.some((n) => n.id === `${BETA}.run` && n.kind === "block")).toBe(true);
+  });
+
+  it("focus ghosts BOTH coupling directions through the Map's exact machinery — same-folder ghosts FOLD into one group card", () => {
+    const tree = deriveServiceTree(index, frameIdOf(BETA), NONE, graph, deps, flows);
+    // Alpha's and Gamma's leads both live under ts:app, so the Map's groupGhostEmission folds them
+    // into ONE folder group ghost (the reuse this phase pins), wired in BOTH directions: the
+    // off-screen caller INTO Beta's drawn method, the off-screen callee OUT of it.
+    expect(ghostIds(tree)).toEqual(["ts:app"]);
+    expect(ghostWire(tree, "ts:app", `${BETA}.run`)).toBeDefined();
+    expect(ghostWire(tree, `${BETA}.run`, "ts:app")).toBeDefined();
+  });
+
+  it("a non-svc or unknown focus is ignored: full lens, effectiveFocus null", () => {
+    const folderFocus = deriveServiceTree(index, "ts:app", NONE, graph, deps, flows);
+    expect(frameIds(folderFocus)).toHaveLength(3);
+    expect(folderFocus.effectiveFocus).toBeNull();
+    const staleFocus = deriveServiceTree(index, "svc:ts:app/z.ts#NopeService", NONE, graph, deps, flows);
+    expect(staleFocus.effectiveFocus).toBeNull();
+    expect(frameIds(staleFocus)).toHaveLength(3);
+  });
+
+  it("focus composes with scope: the zoom draws inside the kept set; couplings leaving the zoom ghost", () => {
+    const tree = deriveServiceTree(index, frameIdOf(ALPHA), NONE, graph, deps, flows, { scopeLeadIds: new Set([ALPHA, BETA]) });
+    expect(frameIds(tree)).toEqual([frameIdOf(ALPHA)]);
+    expect(tree.effectiveFocus).toBe(frameIdOf(ALPHA));
+    // Alpha's code is drawn (forced open), so the walk tier ghosts Beta at the symbol level.
+    expect(ghostIds(tree)).toEqual([BETA]);
+    expect(ghostWire(tree, `${ALPHA}.run`, BETA)).toBeDefined();
+  });
+
+  it("a focus OUTSIDE the scope is ignored (the zoom can only dive what the scope kept)", () => {
+    const tree = deriveServiceTree(index, frameIdOf(GAMMA), NONE, graph, deps, flows, { scopeLeadIds: new Set([ALPHA, BETA]) });
+    expect(tree.effectiveFocus).toBeNull();
+    expect(frameIds(tree)).toEqual([frameIdOf(ALPHA), frameIdOf(BETA)].sort());
+  });
+
+  it("walk-tier ghosts respect the Tests toggle (hiddenIds)", () => {
+    const tree = deriveServiceTree(index, frameIdOf(BETA), NONE, graph, deps, flows, { hiddenIds: new Set([GAMMA]) });
+    expect(ghostIds(tree)).toEqual([ALPHA]);
   });
 });

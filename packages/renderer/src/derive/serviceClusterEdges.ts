@@ -1,4 +1,6 @@
+import type { GraphIndex } from "../graph/graphIndex";
 import type { ModuleTreeEdge } from "./moduleTree";
+import { clusteringFor } from "./serviceClusteringCache";
 import type { ServiceCluster, ServiceClustering } from "./serviceComposition";
 
 type Couplings = ServiceClustering["couplings"];
@@ -79,6 +81,42 @@ export function leadIdOf(frameId: string): string | null {
 
 export function isOpen(cluster: ServiceCluster, expanded: ReadonlySet<string>): boolean {
   return cluster.memberIds.length > 1 && expanded.has(frameIdOf(cluster.leadId));
+}
+
+/** Decompose selected `svc:` frames into their cluster's members (a frame is a pseudo-id absent
+ * from the graph, so nothing downstream could draw it), then land every id on its home FILE —
+ * `buildMinimalSubgraph` draws file ("module") and folder boxes, so a bare unit id would chart as
+ * a bogus zero-file package card. Module/package ids pass through unchanged; an unknown frame
+ * contributes nothing. Union, deduped, selection-ordered — the minimal-graph seed translation for
+ * the Service lens. */
+export function clusterMemberSeeds(selection: readonly string[], index: GraphIndex): string[] {
+  const { clusters } = clusteringFor(index);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const id of selection) {
+    const lead = leadIdOf(id);
+    const ids = lead === null ? [id] : (clusters.find((cluster) => cluster.leadId === lead)?.memberIds ?? []);
+    for (const member of ids.map((memberId) => homeFileOf(memberId, index))) {
+      if (!seen.has(member)) {
+        seen.add(member);
+        out.push(member);
+      }
+    }
+  }
+  return out;
+}
+
+/** A member unit's home FILE: the nearest module-kind ancestor-or-self. Ids with none (a folder,
+ * an id the graph doesn't know) pass through unchanged. Exported for the UI lens's minimal-graph
+ * seeds, which land component/unit selections on their home files the same way. */
+export function homeFileOf(id: string, index: GraphIndex): string {
+  const ancestors = index.ancestorsOf(id);
+  for (let i = ancestors.length - 1; i >= 0; i -= 1) {
+    if (ancestors[i].kind === "module") {
+      return ancestors[i].id;
+    }
+  }
+  return id;
 }
 
 function representative(id: string, leadOf: Map<string, string>, visibleIds: ReadonlySet<string>): string | null {

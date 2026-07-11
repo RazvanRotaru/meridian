@@ -9,7 +9,7 @@
  */
 
 import { type Edge, type Node } from "@xyflow/react";
-import { arrowMarker, CALLER_WIRE, IPC_WIRE } from "../theme/edgeColors";
+import { arrowMarker, CALLER_WIRE, IPC_WIRE, RENDERS_WIRE } from "../theme/edgeColors";
 import { IMPORT_CROSS, IMPORT_SIBLING, relColor } from "../theme/mapPalette";
 import { repositionLitGhosts } from "./ghostReposition";
 
@@ -231,6 +231,9 @@ function weightWidth(edge: Edge): number {
 // import gold, everything else a quiet grey.
 function baseStroke(edge: Edge): string {
   if (isIpc(edge)) return IPC_WIRE;
+  // The UI lens's renders wires keep their historical cyan — the lens's identity colour — rather
+  // than joining the validated 5-kind coupling palette (renders rarely shares a canvas with them).
+  if (depKindOf(edge) === "renders") return RENDERS_WIRE;
   const rel = relColor(depKindOf(edge));
   if (rel) return rel;
   return isCrossFrame(edge) ? CROSS_FRAME_COLOR : REST_COLOR;

@@ -2,12 +2,12 @@
  * A global VS Code-style quick-open dialog: press Cmd+P (mac) / Ctrl+P (win/linux) in ANY view to
  * open a centered search box and type to substring-match nodes. What Enter does depends on the view:
  *
- *   - The MAP lenses (Map = "modules", Service = "call") REVEAL the pick — the Map goes to its
- *     definition, the Service lens pins + selects it — via `revealInView`, and every row carries a
- *     "+" that instead ADDS the node into the current lens (`addToView`) without navigating, grafting
- *     an out-of-scope symbol onto the canvas. ⌘/Ctrl+↵ adds from the keyboard; the palette stays open
- *     so several nodes can be added in a row.
- *   - Logic / UI views open the pick's intra-procedural logic flow (`openLogicFlow`); no "+" there.
+ *   - The MAP lenses (Map = "modules", Service = "call", UI = "ui") REVEAL the pick — Map/UI go to
+ *     its definition, the Service lens pins + selects it — via `revealInView`, and every row carries
+ *     a "+" that instead ADDS the node into the current lens (`addToView`) without navigating,
+ *     grafting an out-of-scope symbol onto the canvas. ⌘/Ctrl+↵ adds from the keyboard; the palette
+ *     stays open so several nodes can be added in a row.
+ *   - The Logic view opens the pick's intra-procedural logic flow (`openLogicFlow`); no "+" there.
  *
  * A picked symbol is resolved to the card the lens draws (its owning unit or module) by the store, so
  * searching a bare function still reveals/adds the class or file it lives in. Mounted once by
@@ -20,10 +20,10 @@ import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import type { ViewMode } from "../derive/edgeSelection";
 
 // The map lenses: here a pick is REVEALED (navigate) or ADDED ("+") into the current graph.
-const MAP_VIEWS: ReadonlySet<ViewMode> = new Set<ViewMode>(["call", "modules"]);
+const MAP_VIEWS: ReadonlySet<ViewMode> = new Set<ViewMode>(["call", "modules", "ui"]);
 // Map mode searches every navigable node — a bare function resolves to its owning unit/module on pick.
 const MAP_KINDS = new Set(["function", "method", "module", "package", "class", "interface", "object"]);
-// Logic/UI mode: only callables and modules have a meaningful logic flow to open.
+// Logic mode: only callables and modules have a meaningful logic flow to open.
 const LOGIC_KINDS = new Set(["function", "method", "module"]);
 // Cap the list so a huge graph never renders thousands of rows into the scroll container.
 const MAX_ROWS = 40;

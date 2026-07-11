@@ -10,6 +10,7 @@
 
 import type { ElkNode } from "elkjs/lib/elk-api";
 import type { Edge, Node } from "@xyflow/react";
+import { CANVAS_ROOT_ELK_OPTIONS } from "./elkCanvasOptions";
 import { runElkLayout } from "./elkLayout";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
 import { placeGhostBands } from "./ghostBandPlacement";
@@ -73,22 +74,10 @@ const CODE_BTN_WIDTH = pillWidth("</>", 9, { padX: 4 });
 const DELTA_CHIP_WIDTH = pillWidth("Δ 99", CHIP_FONT, { padX: 4, letterSpacing: CHIP_LETTER_SPACING });
 const TRAILING_BADGES = HEADER_GAP + DELTA_CHIP_WIDTH + HEADER_GAP + CODE_BTN_WIDTH;
 
-// Compaction options mirror buildElkGraph.ts (the call surface), where they were proven: NETWORK_
-// SIMPLEX placement + EDGE_LENGTH post-compaction close the half-empty frame interiors that plain
-// layering left behind, and 64px layers (was 120) stop long-span dummy nodes from inflating the
-// canvas. The aspect-ratio hint packs disconnected components toward a landscape viewport instead
-// of one tall column. (knowledge/map-readability-plan.md § P3 has the before/after evidence.)
-const ROOT_OPTIONS: Record<string, string> = {
-  "elk.algorithm": "layered",
-  "elk.direction": "RIGHT",
-  "elk.hierarchyHandling": "INCLUDE_CHILDREN",
-  "elk.spacing.nodeNode": "44",
-  "elk.layered.spacing.nodeNodeBetweenLayers": "64",
-  "elk.spacing.edgeNode": "28",
-  "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
-  "elk.layered.compaction.postCompaction.strategy": "EDGE_LENGTH",
-  "elk.aspectRatio": "1.6",
-};
+// Root options come from the ONE canonical definition (elkCanvasOptions.ts) — this module's set IS
+// that canon (NETWORK_SIMPLEX + EDGE_LENGTH compaction, 64px layers, the aspect-ratio component
+// packing; knowledge/map-readability-plan.md § P3 has the before/after evidence). Per-surface
+// variation is container padding ONLY, below.
 
 // Top padding leaves room for an expanded group's title bar; React Flow draws nothing there itself.
 // Left/right at 30 reserve the GUTTER the routed-edge rail rides (edgeRouting.ts, rail at +12):
@@ -121,7 +110,7 @@ export async function layoutModuleTree(nodes: VisibleModuleNode[], edges: Module
   const commonsIds = new Set(commons.map((node) => node.id));
   const coreEdges = edges.filter((edge) => edge.ghost !== true && !commonsIds.has(edge.target) && !commonsIds.has(edge.source));
   const byId = new Map(core.map((node) => [node.id, node]));
-  const laid = await runElkLayout(buildNestedElkGraph(core, coreEdges, adapter, ROOT_OPTIONS));
+  const laid = await runElkLayout(buildNestedElkGraph(core, coreEdges, adapter, CANVAS_ROOT_ELK_OPTIONS));
   const placed = emitReactFlowNodes(laid, (elkNode, parentId) => toNode(elkNode, parentId, byId));
   const banded = ghosts.length > 0 ? placeGhostBands(ghosts, edges.filter((edge) => edge.ghost === true), placed) : [];
   const docked = placeCommonsDock(commons, placed, leafSize);

@@ -19,14 +19,13 @@ import { CountBadge, Divider, Pill, SectionLabel, TOKENS } from "./controlpanel/
 export function SelectionPanel() {
   const viewMode = useBlueprint((state) => state.viewMode);
   const moduleSelected = useBlueprint((state) => state.moduleSelected);
-  const selectedId = useBlueprint((state) => state.selectedId);
   const serviceScope = useBlueprint((state) => state.serviceScope);
   const index = useBlueprint((state) => state.index);
   const { openServiceScope } = useBlueprintActions();
 
   // The active lens's OWN explicit picks (never its focus), svc:-frames normalized to their lead
   // units — the exact anchors `openServiceScope` will carry, via the same code path.
-  const anchors = useMemo(() => selectedAnchorIds({ viewMode, moduleSelected, selectedId }), [viewMode, moduleSelected, selectedId]);
+  const anchors = useMemo(() => selectedAnchorIds({ viewMode, moduleSelected }), [viewMode, moduleSelected]);
   const scope = useMemo(() => scopeTarget(anchors, index), [anchors, index]);
 
   if (anchors.length === 0) {

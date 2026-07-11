@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # pnpm 10 skips dependency build scripts; the esbuild binary can land non-executable (see CLAUDE.md)
+      - run: find node_modules/.pnpm -path '*@esbuild*/bin/esbuild' -exec chmod +x {} \;
+      - run: pnpm build
+      - run: pnpm typecheck
+      # includes the cross-lens parity suite (packages/renderer/src/parity) — the contract that
+      # Map / Service / UI / minimal-graph behave the same; see docs/plans/2026-07-10-unified-canvas-design.md
+      - run: pnpm test
+      - run: npx playwright install --with-deps chromium
+      # parity e2e only: render.e2e.ts has known pre-existing failures unrelated to parity
+      - run: pnpm --filter @meridian/cli e2e parity
