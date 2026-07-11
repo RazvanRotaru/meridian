@@ -53,8 +53,8 @@ export interface Context {
   sourceRoots: Map<string, string>;
   /** Per-id original source metadata retained for GitHub PR listing. */
   sources: Map<string, ArtifactSource>;
-  /** Per-PR extraction-relative changed paths, invalidated when GitHub's updated_at changes. */
-  prFilesCache: Map<string, { updatedAt: string; paths: string[] }>;
+  /** Per-PR repo-root changed paths, invalidated when GitHub's updated_at or head SHA changes. */
+  prFilesCache: Map<string, { updatedAt: string; headSha: string | null; paths: string[] }>;
   /** Temp-clone removers, held until process exit so retained sources are cleaned on shutdown. */
   tempCleanups: Set<() => void>;
   rendererIndex: string;

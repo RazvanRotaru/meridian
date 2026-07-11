@@ -61,8 +61,8 @@ interface RelatedPrCandidate {
 
 /**
  * POST /api/prs/related — scan at most 90 open PRs for exact path intersections. Browser paths
- * are extraction-relative, so comparison restores the extraction prefix while cached/result paths
- * stay in the renderer's extraction-relative vocabulary.
+ * are extraction-relative, so comparison restores the extraction prefix. Cached paths stay
+ * repo-root-relative while result paths use the requesting renderer's extraction-relative vocabulary.
  */
 export async function handleRelatedPullRequests(
   ctx: Context,
@@ -129,15 +129,17 @@ async function relatedPathsForPr(
 ): Promise<string[]> {
   const key = `${source.owner}/${source.repo}#${pr.number}`;
   const cached = ctx.prFilesCache.get(key);
-  if (cached?.updatedAt === pr.updatedAt) {
-    return cached.paths;
+  let repoPaths: string[];
+  if (cached?.updatedAt === pr.updatedAt && cached.headSha === pr.headSha) {
+    repoPaths = cached.paths;
+  } else {
+    // An old file list must never remain usable after GitHub reports a newer PR summary.
+    ctx.prFilesCache.delete(key);
+    const fetched = await fetchPullRequestFiles({ owner: source.owner, repo: source.repo, prNumber: pr.number, token });
+    repoPaths = dedupeSafePaths(fetched.files.map((file) => file.path));
+    ctx.prFilesCache.set(key, { updatedAt: pr.updatedAt, headSha: pr.headSha, paths: repoPaths });
   }
-  // An old file list must never remain usable after GitHub reports a newer PR summary.
-  ctx.prFilesCache.delete(key);
-  const fetched = await fetchPullRequestFiles({ owner: source.owner, repo: source.repo, prNumber: pr.number, token });
-  const paths = dedupeSafePaths(partitionExtractionSubdir(fetched.files, source.subdir).inside.map((file) => file.path));
-  ctx.prFilesCache.set(key, { updatedAt: pr.updatedAt, paths });
-  return paths;
+  return partitionExtractionSubdir(repoPaths.map((path) => ({ path })), source.subdir).inside.map((file) => file.path);
 }
 
 function parseRelatedPaths(raw: unknown, subdir: string | undefined): Set<string> {

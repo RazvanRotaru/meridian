@@ -394,10 +394,10 @@ export function parsePatchDetail(patch: string): PatchDetail {
       const span = { start: addRun[0], end: addRun[addRun.length - 1] };
       kinds.push({ ...span, kind: delRun.length > 0 ? "modified" : "added" });
       hunks.push(span);
-    } else if (delRun.length > 0) {
+    } else if (delRun.length > 0 && newLine > 0) {
       // Pure deletion: no head line to paint, but the node it sat in changed — new-side seam at the
-      // line the removed block now precedes.
-      hunks.push({ start: Math.max(newLine, 1), end: Math.max(newLine, 1) });
+      // line the removed block now precedes. A whole-file deletion has no new-side seam to anchor.
+      hunks.push({ start: newLine, end: newLine });
     }
     // Base-side marking range: deleted/modified base lines, or a seam at the base insertion point.
     if (delRun.length > 0) {

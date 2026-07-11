@@ -121,7 +121,7 @@ function Header({ review }: { review: ReviewData }) {
  * the graph itself IS the PR head, pinned to the analyzed commit. */
 function PrProvenance({ ctx }: { ctx: ReviewData["context"] }) {
   const headSha = useBlueprint((state) => state.prPreparedHeadSha);
-  const swapped = useBlueprint((state) => state.prPreparedGraphId !== null);
+  const swapped = useBlueprint((state) => state.prPreparedArtifactCurrent);
   // Real spaces live in the text nodes (not flex gaps) so the line's DOM text reads exactly
   // "<head> → <base> · <mode>" — greppable, copyable, e2e-assertable.
   return (

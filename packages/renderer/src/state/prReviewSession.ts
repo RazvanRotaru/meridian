@@ -63,6 +63,7 @@ export function swapToPreparedArtifact(
     artifact: prepared,
     index: buildGraphIndex(prepared),
     prReviewBaseline: baseline,
+    prPreparedArtifactCurrent: true,
     // The cached coverage report belongs to the outgoing artifact: recompute for the head graph
     // when coverage mode is showing, else drop it so the next toggle recomputes lazily.
     coverage: state.coverageMode ? computeCoverage(prepared.nodes, prepared.edges) : null,
@@ -107,6 +108,7 @@ export function restorePrReviewBaseline(
   const restoredGraph: Partial<BlueprintState> = {
     artifact: baseline.artifact,
     index: baseline.index,
+    prPreparedArtifactCurrent: false,
     coverage: get().coverageMode ? computeCoverage(baseline.artifact.nodes, baseline.artifact.edges) : null,
     codeView: null,
   };

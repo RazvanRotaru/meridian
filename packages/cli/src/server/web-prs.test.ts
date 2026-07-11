@@ -135,8 +135,9 @@ describe("PR routes", () => {
     });
   });
 
-  it("finds related PRs, caches files by updatedAt, and drops parent-segment paths", async () => {
+  it("finds related PRs, caches repo-root files by summary revision, and drops parent-segment paths", async () => {
     let updatedAt = "2026-07-08T12:00:00Z";
+    let headSha = "abcdef1234567";
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
       if (target.includes("/pulls?")) {
@@ -146,7 +147,7 @@ describe("PR routes", () => {
               number: 12,
               title: "Touch renderer",
               user: { login: "daria" },
-              head: { ref: "related", sha: "abcdef1234567" },
+              head: { ref: "related", sha: headSha },
               base: { ref: "main" },
               updated_at: updatedAt,
               draft: false,
@@ -218,7 +219,33 @@ describe("PR routes", () => {
     expect(second.status()).toBe(200);
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/pulls/12/files?")).length).toBe(1);
 
-    updatedAt = "2026-07-09T12:00:00Z";
+    ctx.sources.set("core-artifact", { kind: "github", owner: "org", repo: "repo", subdir: "packages/core" });
+    const otherSubdir = await invoke(
+      handleRelatedPullRequests,
+      ctx,
+      bodyRequest({ paths: ["outside.ts"] }),
+      new URLSearchParams({ id: "core-artifact" }),
+    );
+    expect(JSON.parse(otherSubdir.body())).toEqual({
+      results: [
+        {
+          number: 12,
+          title: "Touch renderer",
+          author: "daria",
+          headRef: "related",
+          updatedAt,
+          draft: false,
+          matchCount: 1,
+          matchedPaths: ["outside.ts"],
+        },
+      ],
+      scanned: 1,
+      hasMore: false,
+      skipped: 0,
+    });
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/pulls/12/files?")).length).toBe(1);
+
+    headSha = "fedcba7654321";
     await invoke(
       handleRelatedPullRequests,
       ctx,
@@ -226,9 +253,19 @@ describe("PR routes", () => {
       new URLSearchParams({ id: "artifact" }),
     );
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/pulls/12/files?")).length).toBe(2);
+
+    updatedAt = "2026-07-09T12:00:00Z";
+    await invoke(
+      handleRelatedPullRequests,
+      ctx,
+      bodyRequest({ paths: ["src/a.ts"] }),
+      new URLSearchParams({ id: "artifact" }),
+    );
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/pulls/12/files?")).length).toBe(3);
     expect(ctx.prFilesCache.get("org/repo#12")).toEqual({
       updatedAt,
-      paths: ["src/a.ts", "src/b.ts"],
+      headSha,
+      paths: ["packages/cli/src/a.ts", "packages/cli/src/b.ts", "packages/core/outside.ts"],
     });
   });
 

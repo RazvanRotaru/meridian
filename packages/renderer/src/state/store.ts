@@ -354,12 +354,14 @@ export interface BlueprintState {
   /** Why preparation failed; null outside "error". */
   prPrepareError: string | null;
   /** The server-side graph id of the prepared PR-head artifact (the analyze stream's "done"
-   * payload). Non-null == the loaded artifact IS the head graph ("swapped"); every head-mode
-   * guard (diff remap, base-side hunks, source routing) keys on it. */
+   * payload). Kept across a soft close so the review can resume without another extraction. */
   prPreparedGraphId: string | null;
   /** The head commit the server analyzed for the prepared artifact (the "done" payload's
    * provenance); shown in the review header. Set on swap, cleared with prPreparedGraphId. */
   prPreparedHeadSha: string | null;
+  /** True only while the loaded artifact/index pair is the prepared PR-head graph. Unlike its id,
+   * this disarms on a soft baseline restore and re-arms when resumePrReview swaps the graph back. */
+  prPreparedArtifactCurrent: boolean;
   /** The boot artifact/index pair, saved ONCE when a streamed review swaps in the prepared PR-head
    * artifact and restored when the session ends (back to the PRs lens, switching PRs). Null outside
    * a swapped review — the synchronous fallback path never swaps, so it never sets this. */
@@ -530,7 +532,7 @@ export type BlueprintStore = StoreApi<BlueprintState>;
  * so the boot URL's `id` is exchanged — else every source fetch would read base-clone bytes
  * against head-relative node locations. Every store source fetch must route through this. */
 function activeSourceUrl(state: BlueprintState): string | null {
-  if (state.sourceUrl === null || state.prPreparedGraphId === null) {
+  if (state.sourceUrl === null || !state.prPreparedArtifactCurrent || state.prPreparedGraphId === null) {
     return state.sourceUrl;
   }
   const url = new URL(state.sourceUrl, requestOrigin());
@@ -787,6 +789,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prPrepareError: null,
     prPreparedGraphId: null,
     prPreparedHeadSha: null,
+    prPreparedArtifactCurrent: false,
     prReviewBaseline: null,
     graphUrl: dependencies.graphUrl ?? "",
     codeView: null,
@@ -2297,7 +2300,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           return; // abandoned while the artifact was in flight — an old preparation must not swap.
         }
         swapToPreparedArtifact(get, set, prepared, invalidateArtifactCaches);
-        // prPreparedGraphId flips BEFORE the re-review: applyPrReviewToMap's head-mode guards key on it.
+        // The swap marks the prepared artifact current BEFORE the re-review, so its head-mode
+        // guards read the loaded graph's coordinate space rather than mere cache availability.
         set({ prReviewStatus: "idle", prPrepareStage: null, prPreparedGraphId: analysis.graphId, prPreparedHeadSha: analysis.headSha });
         applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
       } catch (error) {
@@ -2337,14 +2341,14 @@ function applyPrReviewToMap(
   prFilesUrl: string,
   invalidateMinimalLayout: () => void,
 ): void {
-  const { prFiles, prSelected, artifact, index, prPreparedGraphId, prReviewBaseline } = get();
+  const { prFiles, prSelected, artifact, index, prPreparedArtifactCurrent, prReviewBaseline } = get();
   if (prSelected === null) {
     return;
   }
   // "Swapped" == the loaded artifact IS the prepared PR-head graph: node locations are already
   // head-relative, so every base→head remap below must stand down (running it would corrupt an
   // already-correct coordinate space — the #134 machinery is for the base-graph sync mode only).
-  const swapped = prPreparedGraphId !== null;
+  const swapped = prPreparedArtifactCurrent;
   // This is a lens ENTRY (it lands on the Map lens below), so it owes the shared transition side
   // effects like every other entry point: a live Service scope must not survive into the review.
   beginLensTransition(get, set);
@@ -2462,6 +2466,7 @@ function applyPrReviewToMap(
     // (beginLensTransition → closeMinimalGraph's soft restore, when re-seeding a swapped review) can
     // swap the boot index back in, so the pair must be re-set together, not left to the prior swap.
     index,
+    prPreparedArtifactCurrent: swapped,
     review,
     prReviewed: prSelected,
     reviewHeadRef: swapped ? null : summary?.headRef ?? null,

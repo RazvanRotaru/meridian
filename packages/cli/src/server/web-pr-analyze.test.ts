@@ -58,8 +58,9 @@ describe("handlePrAnalyze", () => {
     expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
 
     const done = lines[3];
-    expect(done.graphId).toMatch(/^pr-[0-9a-f]{12}$/);
+    expect(done.graphId).toMatch(/^pr-[0-9a-f]{12}-[0-9a-f]{40}$/);
     expect(done.headSha).toBe("abc1234def5678900000aaaabbbbccccddddeeee");
+    expect(String(done.graphId).endsWith(`-${done.headSha}`)).toBe(true);
     expect(done.counts).toEqual({ nodes: 1, edges: 0 });
     expect(done.changedFiles).toEqual([{ path: "src/a.ts", status: "modified" }]);
     expect(done.warnings).toEqual(["w1"]);
@@ -72,6 +73,19 @@ describe("handlePrAnalyze", () => {
     expect(existsSync(tmpDir)).toBe(true);
     for (const cleanup of ctx.tempCleanups) cleanup();
     expect(existsSync(tmpDir)).toBe(false);
+  });
+
+  it("stores force-pushed heads under different commit-pinned graph ids", async () => {
+    const ctx = githubCtx();
+    const first = (await invoke(ctx, BODY)).lines().at(-1)!;
+    vi.mocked(runGit).mockImplementation((args) => Promise.resolve(args[0] === "rev-parse" ? "fff1234def5678900000aaaabbbbccccddddeeee\n" : ""));
+    const second = (await invoke(ctx, BODY)).lines().at(-1)!;
+
+    expect(first.headSha).not.toBe(second.headSha);
+    expect(first.graphId).not.toBe(second.graphId);
+    expect(ctx.graphs.has(first.graphId as string)).toBe(true);
+    expect(ctx.graphs.has(second.graphId as string)).toBe(true);
+    for (const cleanup of ctx.tempCleanups) cleanup();
   });
 
   it("clones full history and drives git in fetch-base, fetch-pr-head, detach order", async () => {

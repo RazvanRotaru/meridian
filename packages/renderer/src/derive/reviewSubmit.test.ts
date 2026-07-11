@@ -72,9 +72,10 @@ describe("buildReviewSubmission", () => {
     expect(submission.comments).toEqual([{ path: "src/a.ts", line: 83, body: "right here" }]);
   });
 
-  it("falls back to the unit heuristic when an explicit line drifted outside the hunks", () => {
+  it("folds to a line-labeled note when an explicit line drifted outside the hunks", () => {
     const submission = buildReviewSubmission([draft("src/a.ts", "ts:src/a.ts#helper", "still applies", "helper", 200)], FILES, CONTEXT);
-    expect(submission.comments).toEqual([{ path: "src/a.ts", line: 80, body: "still applies" }]);
+    expect(submission.comments).toEqual([]);
+    expect(submission.notes).toEqual([{ path: "src/a.ts", label: "L200", body: "still applies" }]);
   });
 
   it("turns a comment on a hunk-less file into a note, keeping its anchor label", () => {

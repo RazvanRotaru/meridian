@@ -32,7 +32,7 @@ export function buildReviewSubmission(
     if (line !== null) {
       submission.comments.push({ path: draft.path, line, body: draft.body });
     } else {
-      submission.notes.push({ path: draft.path, label: draft.anchorLabel, body: draft.body });
+      submission.notes.push({ path: draft.path, label: draft.line === null ? draft.anchorLabel : `L${draft.line}`, body: draft.body });
     }
   }
   return submission;
@@ -45,8 +45,8 @@ function anchorLine(draft: ReviewComment, files: readonly ReviewFileRow[], conte
     return null;
   }
   const explicitLine = draft.line;
-  if (explicitLine !== null && hunks.some((hunk) => explicitLine >= hunk.start && explicitLine <= hunk.end)) {
-    return explicitLine;
+  if (explicitLine !== null) {
+    return hunks.some((hunk) => explicitLine >= hunk.start && explicitLine <= hunk.end) ? explicitLine : null;
   }
   if (draft.nodeId === null) {
     return hunks[0].start;

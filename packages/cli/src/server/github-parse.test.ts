@@ -207,6 +207,7 @@ describe("parsePatchDetail", () => {
       { start: 34, end: 34 }, // the lone insertion
       { start: 58, end: 58 }, // the pure deletion's seam (the line it now precedes)
     ]);
+    expect(parsePatchDetail("@@ -1,2 +0,0 @@\n-one\n-two").hunks).toEqual([]);
   });
 
   it("also emits BASE-side ranges so a base-graph review marks nodes in base coordinates", () => {

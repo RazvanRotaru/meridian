@@ -332,6 +332,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     expect(store.getState().prPrepareError).toBe(null);
     expect(store.getState().prPreparedGraphId).toBe("pr-deadbeef");
     expect(store.getState().prPreparedHeadSha).toBe("abc1234def5678900000");
+    expect(store.getState().prPreparedArtifactCurrent).toBe(true);
     // The analyze POST carries the contract body (and is the FIRST fetch — the sync review made none).
     expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/pr/analyze");
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ id: "artifact-1", prNumber: 7, baseRef: "main", headRef: "feature" });
@@ -495,6 +496,7 @@ describe("PR review artifact swap and restore", () => {
     expect(changedSince?.baseRef).toBe("origin/main");
     expect(store.getState().prPreparedGraphId).toBe("pr-head-1");
     expect(store.getState().prPreparedHeadSha).toBe("abc1234def5678900000");
+    expect(store.getState().prPreparedArtifactCurrent).toBe(true);
     expect(store.getState().prReviewed).toBe(7);
     // Head-mode guards: node locations are already head-relative, so the #134 base→head remap
     // machinery must be disarmed — showCode reads the prepared checkout via /api/source instead.
@@ -517,6 +519,7 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().prReviewBaseline).toBe(null);
     expect(store.getState().prPreparedGraphId).toBe(null);
     expect(store.getState().prPreparedHeadSha).toBe(null);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(false);
     expect(store.getState().prReviewed).toBe(null);
     expect(store.getState().review).toBe(null);
     expect(store.getState().reviewAffectedIds.size).toBe(0);
@@ -551,5 +554,30 @@ describe("PR review artifact swap and restore", () => {
     await store.getState().prepareHeadGraph();
     expect(store.getState().prReviewBaseline?.artifact.generatedAt).toBe(ARTIFACT.generatedAt);
     expect(store.getState().prReviewBaseline?.index).toBe(bootIndex);
+  });
+
+  it("soft close keeps the prepared id but routes source to the boot graph until resume re-swaps", async () => {
+    const fetchMock = routedFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
+    const store = freshStore({ ...ANALYZE_DEPS, sourceUrl: "/api/source?id=artifact-1" });
+    store.setState(headSelectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    await store.getState().prepareHeadGraph();
+
+    store.getState().closeMinimalGraph();
+    expect(store.getState().artifact.generatedAt).toBe(ARTIFACT.generatedAt);
+    expect(store.getState().prPreparedGraphId).toBe("pr-head-1");
+    expect(store.getState().prPreparedArtifactCurrent).toBe(false);
+    await store.getState().showCode(store.getState().index.nodesById.get(METHOD_ID)!);
+    const bootSourceCall = fetchMock.mock.calls.filter((call) => call[0].toString().includes("/api/source")).at(-1)!;
+    expect(new URL(bootSourceCall[0].toString()).searchParams.get("id")).toBe("artifact-1");
+
+    await store.getState().resumePrReview();
+    expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(true);
+    await store.getState().showCode(store.getState().index.nodesById.get(METHOD_ID)!);
+    const headSourceCall = fetchMock.mock.calls.filter((call) => call[0].toString().includes("/api/source")).at(-1)!;
+    expect(new URL(headSourceCall[0].toString()).searchParams.get("id")).toBe("pr-head-1");
   });
 });

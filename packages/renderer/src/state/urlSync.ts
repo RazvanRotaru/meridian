@@ -24,6 +24,13 @@ export async function restoreFromUrl(store: BlueprintStore, search?: string): Pr
     return;
   }
   const nav = decodeNavState(new URLSearchParams(search ?? window.location.search));
+  // Back/forward to a URL from before the review must end that session BEFORE its Map navigation
+  // lands. selectPr(null) owns both review modes: it restores a saved prepared-graph baseline, or
+  // seeds the boot baseline first for a synchronous review, then ends via restorePrReviewBaseline.
+  const hasNoReview = !nav.reviewActive && nav.reviewPr === null && nav.prSelected === null;
+  if (hasNoReview && store.getState().prReviewed !== null) {
+    await store.getState().selectPr(null);
+  }
   // Apply the COMPLETE structural state (not just the keys the URL carried) so a back/forward to a
   // sparser URL resets fields the previous state had set — otherwise a dive/selection never undoes.
   // `environment` is deliberately excluded: nulling telemetry on every restore is undesirable, so it

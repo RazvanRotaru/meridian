@@ -68,7 +68,7 @@ async function streamAnalysis(
     writeLine(response, { stage: "extract", message: "Extracting modified nodes..." });
     const { artifact, warnings } = await extractPr(tmpRoot, source, body.baseRef, label);
 
-    const graphId = storeArtifact(ctx, artifact, source, tmpRoot, body, removeTmp);
+    const graphId = storeArtifact(ctx, artifact, source, tmpRoot, body, headSha, removeTmp);
     retained = true;
     writeLine(response, doneLine(graphId, headSha, artifact, warnings));
   } catch (error) {
@@ -127,9 +127,10 @@ function storeArtifact(
   source: GitHubSource,
   tmpRoot: string,
   body: PrAnalyzeRequest,
+  headSha: string,
   removeTmp: () => void,
 ): string {
-  const graphId = prGraphId(source, body);
+  const graphId = prGraphId(source, body, headSha);
   ctx.graphs.set(graphId, artifact);
   ctx.sourceRoots.set(graphId, sanitizeSubdir(tmpRoot, source.subdir));
   ctx.sources.set(graphId, { kind: "github", owner: source.owner, repo: source.repo, subdir: source.subdir });
@@ -158,10 +159,11 @@ function changedFilesOf(artifact: GraphArtifact): { path: string; status: string
     .map((path) => ({ path, status: "modified" }));
 }
 
-/** Deterministic id so re-analyzing the same PR head overwrites rather than accumulating clones. */
-function prGraphId(source: GitHubSource, body: PrAnalyzeRequest): string {
-  const key = ["pr", source.owner, source.repo, source.subdir ?? "", body.prNumber, body.headRef].join(" ");
-  return `pr-${createHash("sha1").update(key).digest("hex").slice(0, 12)}`;
+/** Deterministic per-commit id: a force-pushed ref can never replace a stale client's artifact. */
+function prGraphId(source: GitHubSource, body: PrAnalyzeRequest, headSha: string): string {
+  const key = ["pr", source.owner, source.repo, source.subdir ?? "", body.prNumber, body.headRef, headSha].join(" ");
+  const keyDigest = createHash("sha1").update(key).digest("hex").slice(0, 12);
+  return `pr-${keyDigest}-${headSha}`;
 }
 
 function beginNdjson(response: ServerResponse): void {
