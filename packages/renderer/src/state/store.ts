@@ -49,7 +49,7 @@ import type { ModuleCategory } from "../derive/moduleCategory";
 import type { HighlightMode } from "../components/moduleMapPaint";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import { moduleRevealStateFor, withAncestorsOf, withAncestorsOfMany } from "./flowExplorer";
-import { anchorNodeIds, mapRevealStateForMany, resolveServiceAnchors, serviceRevealStateForMany, uiRevealStateForMany } from "./lensPath";
+import { anchorNodeIds, mapRevealStateForMany, resolveServiceAnchors, reviewChangeReveal, serviceRevealStateForMany, uiRevealStateForMany } from "./lensPath";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { CompRfNode, CompRfEdge } from "../layout/compositionElk";
 import { PRS_UNAVAILABLE_ERROR, type PrChangedFile, type PrFilesResponse, type PrListResponse, type PrSummary, type PrsTab } from "./prTypes";
@@ -403,8 +403,8 @@ export interface BlueprintState {
   clearServiceScope(): void;
   buildMinimalGraph(): void;
   closeMinimalGraph(): void;
-  /** During a PR review: close the overlay and reveal its changed files on the Module map, kept
-   * COLLAPSED (no code-block expansion), with the review session + panel still live. */
+  /** During a PR review: close the overlay and dive into the changed file on the Module map,
+   * expanded down to the highlighted changed blocks, with the review session + panel still live. */
   collapseReviewToMap(): void;
   /** During a PR review: end the session (restore the boot graph, clear amber + panel) and return
    * to the lens the reader had open before they entered the PRs list. */
@@ -1282,16 +1282,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ minimalSeedIds: [], minimalMemberIds: [], minimalBasePositions: {}, minimalArrange: false, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
     },
 
-    // The PR review's gentler overlay exit: close the minimal graph and REVEAL its changed files on
-    // the Module map beneath — but COLLAPSED (mapRevealStateForMany expands the container chain down
-    // to each file card, never the files themselves, so classes/blocks stay folded), a far calmer
-    // landing than the pre-expanded map the review seeded. The review session is untouched (amber,
+    // The PR review's gentler overlay exit: close the minimal graph and DIVE into the changed file
+    // on the Module map beneath — focused as tightly as the edit allows (into the one changed file
+    // when it lives in one, so only its members show, no sibling neighbours), expanded down to the
+    // amber-highlighted changed blocks so the edit itself is the visible, selected card. Far calmer
+    // than the whole pre-expanded map the review seeded. The review session is untouched (amber,
     // `prReviewed`, and the panel all stay live — ModuleMapView keeps the panel docked once
     // `prReviewed` is set), so this is "see it on the map", not "leave the review".
     collapseReviewToMap() {
-      const { minimalSeedIds, index } = get();
+      const { minimalSeedIds, reviewAffectedIds, index } = get();
       minimalLayoutSeq += 1; // discard any overlay layout still in flight (as closeMinimalGraph does).
-      const reveal = mapRevealStateForMany(minimalSeedIds, index) ?? MODULE_TOP_LEVEL;
+      const reveal = reviewChangeReveal(minimalSeedIds, reviewAffectedIds, index) ?? MODULE_TOP_LEVEL;
       set({
         minimalSeedIds: [],
         minimalMemberIds: [],

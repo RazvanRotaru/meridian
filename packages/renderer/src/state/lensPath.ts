@@ -74,6 +74,26 @@ export function mapRevealStateForMany(anchors: readonly string[], index: GraphIn
   return { moduleFocus: focus, moduleExpanded, moduleSelected: new Set(placeable) };
 }
 
+/** Reveal a PR review's change on the Map as TIGHTLY as the edit allows: dive INTO the single changed
+ * file when every edit lives in one (so only its own members show — no sibling neighbours), else the
+ * changed files' common package. Then expand the container chain down to each affected block so the
+ * amber-highlighted edits are the visible, selected cards. Anchors fall back to the seed files when a
+ * change carries no block-level node (a file-only edit). Null when there is nothing to reveal. */
+export function reviewChangeReveal(seeds: readonly string[], affected: ReadonlySet<string>, index: GraphIndex): ModuleRevealState | null {
+  if (seeds.length === 0) {
+    return null;
+  }
+  const focus = seeds.length === 1 ? seeds[0] : commonPackageFocus(seeds, index);
+  const anchors = affected.size > 0 ? [...affected] : [...seeds];
+  const moduleExpanded = new Set<string>();
+  for (const anchor of anchors) {
+    for (const id of containersOnPath(anchor, index, focus)) {
+      moduleExpanded.add(id);
+    }
+  }
+  return { moduleFocus: focus, moduleExpanded, moduleSelected: new Set(anchors) };
+}
+
 /** Reveal `anchors` in the Service-cluster lens: open every service frame owning an anchor's unit(s)
  * — a FILE anchor resolves through ALL its contained clustered units — plus any block containers on
  * each path, and select them all. Anchors in no clustered unit (a bare folder, an unclustered

@@ -157,7 +157,7 @@ export function MinimalGraphView() {
           Reset
         </button>
         {prReviewActive && (
-          <button type="button" style={buttonStyle(false, false)} onClick={collapseReviewToMap} title="Show the changed files on the Module map, collapsed — the review panel stays open (Esc)">
+          <button type="button" style={buttonStyle(false, false)} onClick={collapseReviewToMap} title="Dive into the changed file on the Module map, expanded to the changed code — the review panel stays open (Esc)">
             Show on map
           </button>
         )}

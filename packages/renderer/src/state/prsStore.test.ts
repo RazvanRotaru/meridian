@@ -490,20 +490,20 @@ describe("PR review overlay exits (collapse to map / close to the prior lens)", 
     return store;
   }
 
-  it("collapseReviewToMap closes the overlay and reveals the changed file COLLAPSED, review still live", () => {
+  it("collapseReviewToMap dives into the changed file, expanded to the changed block, review still live", () => {
     const store = reviewedInMap(9);
     expect(store.getState().minimalSeedIds).toEqual([FILE_ID]); // sanity: the overlay was seeded.
     store.getState().collapseReviewToMap();
     // The overlay is gone...
     expect(store.getState().minimalSeedIds).toEqual([]);
     expect(store.getState().minimalRfNodes).toEqual([]);
-    // ...revealing the changed file as a selected card focused into its package, with the file, its
-    // class, and its method all still FOLDED (the calm landing, not the review's pre-expansion).
+    // ...diving INTO the changed file (its own members only, no sibling neighbours), with the class
+    // holding the edited method expanded so the amber method is the selected, visible card.
     expect(store.getState().viewMode).toBe("modules");
-    expect(store.getState().moduleFocus).toBe(PACKAGE_ID);
-    expect(store.getState().moduleSelected.has(FILE_ID)).toBe(true);
-    expect(store.getState().moduleExpanded.has(FILE_ID)).toBe(false);
-    expect(store.getState().moduleExpanded.has(CLASS_ID)).toBe(false);
+    expect(store.getState().moduleFocus).toBe(FILE_ID);
+    expect(store.getState().moduleExpanded.has(CLASS_ID)).toBe(true);
+    expect(store.getState().moduleExpanded.has(FILE_ID)).toBe(false); // the file IS the focus, not "expanded".
+    expect(store.getState().moduleSelected.has(METHOD_ID)).toBe(true);
     // The review session is untouched — prReviewed, the review, and the amber all stay, so the panel
     // stays docked (ModuleMapView keeps it while prReviewed is set).
     expect(store.getState().prReviewed).toBe(9);
