@@ -60,6 +60,7 @@ import { CycleEdge } from "../edges/CycleEdge";
 import { fadeFaintWires } from "../../layout/wireSalience";
 import { WireEdge, WIRE_EDGE_TYPE } from "../edges/WireEdge";
 import { withReactFlowDimensions } from "./reactFlowDimensions";
+import { useNodeDiffPreview } from "../review/useNodeDiffPreview";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
  * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "cycle" the
@@ -97,6 +98,8 @@ export interface GraphSurfaceProps {
   /** Wire chrome — hover naming (WireTooltip), the click-pinned Wire Inspector, direction pulses —
    * on for the module lenses, historically off on the minimal overlay (mostly lit at rest). */
   wireHover?: boolean;
+  /** PR review only: show a scrollable source diff after dwelling over a directly changed node. */
+  nodeDiffPreview?: boolean;
   /** Extras that must render INSIDE the flow (beacon arrows, the overlay's ghost "+" ring). */
   flowExtras?: (view: SurfaceFlowView) => ReactNode;
   /** Floating chrome (breadcrumb, legends, panels, action strips), absolutely positioned over the canvas. */
@@ -132,6 +135,8 @@ export function GraphSurface(props: GraphSurfaceProps) {
     [showHighways, preppedEdges, paintedNodes, selected, props.highways],
   );
   const wire = useWireHover(highwayEdges, paintedNodes, props.wireHover === true);
+  const nodeDiffEnabled = props.nodeDiffPreview === true;
+  const nodeDiff = useNodeDiffPreview(nodeDiffEnabled);
 
   return (
     <div style={SURFACE_STYLE}>
@@ -143,6 +148,10 @@ export function GraphSurface(props: GraphSurfaceProps) {
         onInit={props.onInit}
         onNodeClick={props.interactions.onNodeClick}
         onNodeDoubleClick={props.interactions.onNodeDoubleClick}
+        onNodeMouseEnter={nodeDiffEnabled ? nodeDiff.onNodeMouseEnter : undefined}
+        onNodeMouseMove={nodeDiffEnabled ? nodeDiff.onNodeMouseMove : undefined}
+        onNodeMouseLeave={nodeDiffEnabled ? nodeDiff.onNodeMouseLeave : undefined}
+        onPaneMouseMove={nodeDiffEnabled ? nodeDiff.onPaneMouseMove : undefined}
         onPaneClick={() => {
           // A pane click unpins the inspector AND clears the selection (the mount's handler).
           wire.clearInspected();
@@ -163,6 +172,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
       {wire.inspectedPair ? (
         <WireInspector pair={wire.inspectedPair} labelOf={wire.labelOf} onClose={wire.clearInspected} onDrill={wire.inspect} />
       ) : null}
+      {nodeDiff.layer}
       {props.children}
     </div>
   );
