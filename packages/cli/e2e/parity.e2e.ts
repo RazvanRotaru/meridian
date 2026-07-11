@@ -66,7 +66,7 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
     await page.waitForSelector(`[data-id="${CLASS}"]`);
     // …select the class (single click; the debounced select lights the extract strip)…
     await page.locator(`[data-id="${CLASS}"]`).dispatchEvent("click");
-    await page.waitForSelector('button:has-text("Extract selection (1)")');
+    await page.getByRole("button", { name: "Extract selection (1)" }).waitFor();
     expect(await hasSelectionRing(page, CLASS)).toBe(true);
     // …and expand the class via ITS chevron: member blocks nest inside, selection survives.
     await chevronOf(page, CLASS).dispatchEvent("click");
@@ -97,7 +97,7 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
       // The carry reveals + selects the SAME data-id on the incoming lens (frames opened /
       // containment focused as that lens requires), so the extract strip stays lit on one card.
       await page.waitForSelector(`[data-id="${CLASS}"]`, { timeout: 30_000 });
-      await page.waitForSelector('button:has-text("Extract selection (1)")', { timeout: 30_000 });
+      await page.getByRole("button", { name: "Extract selection (1)" }).waitFor({ timeout: 30_000 });
       expect(await hasSelectionRing(page, CLASS), `selection ring on the ${lens} lens`).toBe(true);
       const mainCanvas = mainCanvasFor(page, CLASS);
       await expect.poll(() => mainCanvas.count(), { timeout: 20_000 }).toBe(1);
