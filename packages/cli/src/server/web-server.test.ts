@@ -90,6 +90,7 @@ describe("createWebServer generate -> view (offline path source)", () => {
     expect(view).toContain(`"graphUrl":"/api/graph?id=${result.id}"`);
     expect(view).toContain('"hasOverlay":false');
     expect(view).toContain('"defaultEnv":null');
+    expect(view).toContain('"githubSource":false');
   }, 60_000);
 
   it("auto-detects Python for a pyproject tree", async () => {

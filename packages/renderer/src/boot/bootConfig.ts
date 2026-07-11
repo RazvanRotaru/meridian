@@ -17,6 +17,8 @@ export interface BootConfig {
   preselectedEnv: string | null;
   /** Base URL the renderer GETs to fetch a node's source; null when source isn't available. */
   sourceUrl: string | null;
+  /** True only when the loaded graph belongs to a GitHub repository with PR endpoints. */
+  githubSource: boolean;
   defaultEnv: null;
 }
 
@@ -34,7 +36,9 @@ export interface PrApiUrls {
   graphId: string | null;
 }
 
-interface InjectedConfig extends Omit<BootConfig, "defaultEnv"> {
+interface InjectedConfig extends Omit<BootConfig, "defaultEnv" | "githubSource"> {
+  /** Optional for compatibility with renderer HTML cached from before this capability existed. */
+  githubSource?: unknown;
   defaultEnv: unknown;
 }
 
@@ -55,6 +59,7 @@ const DEV_FALLBACK: BootConfig = {
   envRequired: true,
   preselectedEnv: null,
   sourceUrl: null,
+  githubSource: false,
   defaultEnv: null,
 };
 
@@ -83,7 +88,7 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
   if (injected.defaultEnv !== null) {
     throw new Error("boot contract violation: defaultEnv must never be defaulted (always null)");
   }
-  return { ...injected, defaultEnv: null };
+  return { ...injected, githubSource: injected.githubSource === true, defaultEnv: null };
 }
 
 function apiUrl(path: string, id: string | null): string {

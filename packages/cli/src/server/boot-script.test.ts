@@ -18,6 +18,7 @@ describe("injectBootScript", () => {
     const html = injectBootScript("<head></head>", { kind: "mock" }, "staging", null);
     expect(html).toContain('"preselectedEnv":"staging"');
     expect(html).toContain('"defaultEnv":null');
+    expect(html).toContain('"githubSource":false');
   });
 
   it("advertises the source endpoint only when a source root is configured", () => {

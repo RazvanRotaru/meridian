@@ -56,6 +56,7 @@ function freshStore(extra?: Partial<StoreDependencies>) {
     provider: null,
     hasOverlay: false,
     sourceUrl: null,
+    githubSource: true,
     prsUrl: "/api/prs?id=artifact-1",
     prFilesUrl: "/api/prs/files?id=artifact-1",
     prReviewUrl: "/api/prs/review?id=artifact-1",
@@ -68,6 +69,20 @@ afterEach(() => {
 });
 
 describe("PR store slice", () => {
+  it("does not call PR endpoints for a graph that is not connected to GitHub", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ githubSource: false });
+
+    await store.getState().loadPrs(1);
+    await store.getState().selectPr(8);
+    store.getState().togglePrsView();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(store.getState().prSelected).toBeNull();
+    expect(store.getState().viewMode).toBe("modules");
+  });
+
   it("appends paged PRs and dedupes by number", async () => {
     const fetchMock = vi
       .fn()

@@ -9,7 +9,7 @@
 
 const HEAD_CLOSE = "</head>";
 
-export function injectViewBoot(html: string, id: string): string {
+export function injectViewBoot(html: string, id: string, githubSource: boolean): string {
   const boot = {
     graphUrl: `/api/graph?id=${id}`,
     metaUrl: `/api/meta?id=${id}`,
@@ -20,6 +20,7 @@ export function injectViewBoot(html: string, id: string): string {
     envRequired: false,
     preselectedEnv: null,
     defaultEnv: null,
+    githubSource,
   };
   return injectScript(html, `window.__MERIDIAN__=${escapeForScript(JSON.stringify(boot))}`);
 }
