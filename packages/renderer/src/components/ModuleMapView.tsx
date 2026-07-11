@@ -144,21 +144,24 @@ export function ModuleMapView() {
         const boosted = edge.id === wireHover?.id || inspectedIds.has(edge.id);
         if (edge.type === RIBBON_EDGE_TYPE) {
           // The cable boosts as a WHOLE (every stripe lights); its stripes carry their own paint.
-          // A fully invisible cable (all stripes opacity 0 — a commons pair at rest) must not keep
-          // a hit area: hovering empty canvas would pop a phantom tooltip and flash-light it.
+          // A fully invisible cable (all stripes opacity 0 — a commons pair at rest) renders NOTHING
+          // (data.hidden → RibbonEdge returns null): an opacity-0 SVG path still hit-tests, so a
+          // pixel-precise hover would resurrect a wire only a SELECTION may light.
           const anyVisible = boosted || ((edge.data as RibbonEdgeData).members ?? []).some((member) => (member.style as { opacity?: number } | undefined)?.opacity !== 0);
-          return { ...edge, interactionWidth: anyVisible ? 16 : 0, data: { ...edge.data, pulse: true, boosted } };
+          return { ...edge, interactionWidth: anyVisible ? 16 : 0, data: { ...edge.data, pulse: true, boosted, hidden: !anyVisible } };
         }
+        // An INVISIBLE wire (an unlit commons strand, opacity 0) renders NOTHING — no path, no
+        // marker, no hit area (opacity 0 alone still hit-tests the stroke, so hovering the exact
+        // line would flash it back). It returns only when the emphasis pass lights it.
+        const invisible = (edge.style as { opacity?: number } | undefined)?.opacity === 0 && !boosted;
         return {
           ...edge,
           // Untyped edges retype to the Map's own plain curve AFTER the highway passes have claimed
           // theirs — same geometry as the default edge, plus the lit direction pulse. `pulse` is the
           // Map's opt-in: shared edge components draw dots ONLY where the surface asked for them.
           type: edge.type ?? WIRE_EDGE_TYPE,
-          // An INVISIBLE wire (an unlit commons strand, opacity 0) must not be a hover/click target —
-          // a tooltip naming a wire the canvas doesn't show would be a haunting.
-          interactionWidth: (edge.style as { opacity?: number } | undefined)?.opacity === 0 && !boosted ? 0 : 14,
-          data: { ...edge.data, pulse: true },
+          interactionWidth: invisible ? 0 : 14,
+          data: { ...edge.data, pulse: true, hidden: invisible },
           style: boosted ? { ...edge.style, opacity: 1, strokeWidth: ((edge.style?.strokeWidth as number) ?? 1.5) + 1.2 } : edge.style,
         };
       }),

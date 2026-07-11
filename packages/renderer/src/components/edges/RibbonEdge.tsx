@@ -18,7 +18,7 @@
 
 import { BaseEdge, getBezierPath, type EdgeProps } from "@xyflow/react";
 import { weightOf, type RibbonEdgeData } from "../../layout/parallelWires";
-import { WirePulse } from "./WireEdge";
+import { isHiddenWire, WirePulse } from "./WireEdge";
 
 /** Stripe geometry: width ≥ pitch so neighbouring stripes touch — one band, not parallel lines. */
 const STRIPE_PITCH = 2.2;
@@ -27,6 +27,9 @@ const STRIPE_WIDTH = 2.4;
 const NOTCH_DASH = "4 12";
 
 export function RibbonEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, data, interactionWidth }: EdgeProps) {
+  if (isHiddenWire(data)) {
+    return null;
+  }
   const ribbon = data as RibbonEdgeData;
   const members = ribbon.members ?? [];
   const center = (members.length - 1) / 2;

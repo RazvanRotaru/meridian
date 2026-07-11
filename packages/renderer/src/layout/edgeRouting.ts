@@ -44,7 +44,9 @@ export function routeFrameEdges(edges: Edge[], nodes: Node[]): Edge[] {
   const frameIds = new Set<string>();
   for (const node of nodes) {
     rects.set(node.id, absoluteRect(node, byId));
-    if (node.parentId) {
+    // The commons DOCK tray is a parent but NOT a frame: it has no gutter for a rail, and its
+    // wires are hidden at rest — a lit one should fly a plain curve into the docked card.
+    if (node.parentId && byId.get(node.parentId)?.type !== "commonsDock") {
       frameIds.add(node.parentId);
     }
   }
