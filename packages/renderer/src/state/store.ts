@@ -157,20 +157,9 @@ export interface BlueprintState {
   logicLayoutStatus: LayoutStatus;
   /** The selected composition unit id; null == none. A repaint-only highlight — no relayout. */
   compSelectedId: string | null;
-  /** EXPERIMENT: the callable method whose logic flow is previewed in the composition-tab side
-   * drawer; null == the drawer is closed. Picked by clicking a scorecard member. Its flow is laid
-   * out into `compMethodRf*` behind the `compMethodLayoutSeq` stale guard, mirroring logicRelayout. */
-  compMethodId: NodeId | null;
-  compMethodRfNodes: LogicRfNode[];
-  compMethodRfEdges: LogicRfEdge[];
-  compMethodLayoutStatus: LayoutStatus;
   /** The module/package the Service-composition tab is rooted at; null == the whole system. Defaults
    * to the app's first entry module. Only its subtree + 1-hop coupling neighbours are drawn. */
   compRoot: string | null;
-  /** The package cards the AGGREGATED composition view has inline-expanded — each renders as a
-   * frame holding the next level (sub-package cards / unit scorecards) instead of one summary card.
-   * Reset on re-root: a new root is a fresh aggregation altitude. */
-  compExpanded: ReadonlySet<string>;
   /** Whether the composition scorecards show their SOLID metric rows + smell chips. Off == a
    * structure-only view (kind + name), decluttered. Persisted to localStorage across reloads. */
   showSolidMetrics: boolean;
@@ -350,10 +339,7 @@ export interface BlueprintState {
   toggleNestByService(): void;
   logicRelayout(): Promise<void>;
   selectCompUnit(id: string | null): void;
-  selectCompMethod(id: NodeId | null): void;
-  compMethodRelayout(): Promise<void>;
   setCompRoot(id: string | null): void;
-  toggleCompExpand(id: string): void;
   toggleSolidMetrics(): void;
   moduleRelayout(): Promise<void>;
   setModuleFocus(id: string | null): void;
@@ -528,8 +514,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     unitIndex ??= buildUnitIndex([...dependencies.index.nodesById.values()]);
     return unitIndex.unitIdOf(id) ?? id;
   };
-  // And for the composition-tab method-preview drawer's logic layout (the EXPERIMENT surface).
-  let compMethodLayoutSeq = 0;
   // Same guard for the Code flows explorer's embedded flow preview pane.
   let flowPaneLayoutSeq = 0;
   // PR list/file fetches and PR-head preparation are independent async lanes; newer requests win
@@ -607,12 +591,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     logicRfEdges: [],
     logicLayoutStatus: "idle",
     compSelectedId: null,
-    compMethodId: null,
-    compMethodRfNodes: [],
-    compMethodRfEdges: [],
-    compMethodLayoutStatus: "idle",
     compRoot: defaultCompRoot,
-    compExpanded: new Set<string>(),
     showSolidMetrics: readSolidMetricsPref(),
     moduleRfNodes: [],
     moduleRfEdges: [],
@@ -790,7 +769,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     openComposition(unitId) {
       beginLensTransition(get, set);
       const reveal = serviceRevealStateForMany([unitId], get().index);
-      set({ viewMode: "call", compRoot: unitId, compExpanded: new Set<string>(), compSelectedId: unitId, mapExtra: new Set<string>(), ...(reveal ?? MODULE_TOP_LEVEL) });
+      set({ viewMode: "call", compRoot: unitId, compSelectedId: unitId, mapExtra: new Set<string>(), ...(reveal ?? MODULE_TOP_LEVEL) });
       void get().moduleRelayout();
     },
 
@@ -914,43 +893,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ compSelectedId: id });
     },
 
-    // EXPERIMENT — the composition→logic PREVIEW link. Pick (or clear with null) the method whose
-    // logic flow the side drawer charts, WITHOUT leaving the composition tab. A single click on a
-    // scorecard member fires this; it's a preview within the tab, not a tab switch (double-click a
-    // member still navigates to the full Logic tab). Kicks the drawer's own ELK relayout.
-    selectCompMethod(id) {
-      if (get().compMethodId === id) {
-        return;
-      }
-      set({ compMethodId: id });
-      void get().compMethodRelayout();
-    },
-
-    // Lay out the previewed method's logic flow into `compMethodRf*`, behind the compMethodLayoutSeq
-    // stale guard (a newer pick discards an older in-flight ELK pass), exactly like logicRelayout.
-    // Reuses the Logic-tab derive with a fresh (all-default) expansion, greyed leaves shown, and no
-    // service nesting — the preview is a fixed at-a-glance read, not the interactive Logic surface. A
-    // null pick (drawer closed) clears the arrays.
-    async compMethodRelayout() {
-      const { compMethodId, index, artifact } = get();
-      if (compMethodId === null) {
-        set({ compMethodRfNodes: [], compMethodRfEdges: [], compMethodLayoutStatus: "idle" });
-        return;
-      }
-      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
-      const sequence = ++compMethodLayoutSeq;
-      set({ compMethodLayoutStatus: "laying-out" });
-      const graph = await deriveLogicLayout(compMethodId, flows, index, new Set<string>(), { hideGreyed: false, nestByService: false });
-      if (compMethodLayoutSeq !== sequence) {
-        return; // a newer pick superseded this one.
-      }
-      set({ compMethodRfNodes: graph.nodes, compMethodRfEdges: graph.edges, compMethodLayoutStatus: "ready" });
-    },
-
     // Re-root the Service-composition side panel at a module/package (null == whole system). Clears
-    // the selection, the code view, the aggregate-expand set, and the method-preview drawer — none
-    // carry meaning in a new rooted view. When the root is unchanged it still clears the stale
-    // selection + code so navigation always returns to the graph first.
+    // the selection and the code view — neither carries meaning in a new rooted view. When the root
+    // is unchanged it still clears the stale selection + code so navigation always returns to the
+    // graph first.
     setCompRoot(id) {
       const sameRoot = get().compRoot === id;
       // Root navigation should always return to the graph surface; if the root is unchanged, still
@@ -961,17 +907,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
         return;
       }
-      set({ compRoot: id, compExpanded: new Set<string>(), compSelectedId: null, compMethodId: null, compMethodRfNodes: [], compMethodRfEdges: [], compMethodLayoutStatus: "idle", codeView: null });
-    },
-
-    // Inline-expand / collapse a package card in the AGGREGATED composition panel: an expanded
-    // package renders as a frame holding the next level while the rest of the overview stays put.
-    toggleCompExpand(id) {
-      const next = new Set(get().compExpanded);
-      if (!next.delete(id)) {
-        next.add(id);
-      }
-      set({ compExpanded: next });
+      set({ compRoot: id, compSelectedId: null, codeView: null });
     },
 
     // Show/hide the per-card SOLID metrics (metric rows + smell chips) on the composition scorecards.
