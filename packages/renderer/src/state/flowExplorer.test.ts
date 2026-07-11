@@ -58,4 +58,15 @@ describe("flow explorer store slice", () => {
     expect(store.getState().moduleSelected).toEqual(new Set(["ts:pkg/src/a.ts", "ts:pkg/src/b.ts"]));
     expect(store.getState().moduleExpanded).toEqual(new Set(["ts:pkg/src/a.ts", "ts:pkg/src/b.ts"]));
   });
+
+  it("does not reuse or clear the main Logic view selection outside PR review", () => {
+    const store = freshStore();
+    store.setState({ logicSelected: "ts:pkg/src/b.ts#leaf" });
+    store.getState().selectFlowEntry({ rootId: "ts:pkg/src/a.ts#run", blockPath: [] });
+    store.getState().selectFlowPaneTarget("ts:pkg/src/a.ts#run");
+    expect(store.getState().logicSelected).toBe("ts:pkg/src/b.ts#leaf");
+
+    store.getState().selectFlowEntry(null);
+    expect(store.getState().logicSelected).toBe("ts:pkg/src/b.ts#leaf");
+  });
 });

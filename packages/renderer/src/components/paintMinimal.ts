@@ -13,7 +13,7 @@
  */
 
 import type { Edge, Node } from "@xyflow/react";
-import { emphasize, filterRelKinds, suppressRedundantImports, type EmphasizedLevel, type GhostPresentationOptions, type HighlightMode } from "./moduleMapPaint";
+import { emphasize, filterRelKinds, suppressRedundantImports, type EmphasizedLevel, type GhostPresentationOptions, type SurfaceEmphasisMode } from "./moduleMapPaint";
 
 const NO_HIDDEN_KINDS: ReadonlySet<string> = new Set();
 
@@ -32,7 +32,7 @@ export function paintMinimalLevel(
   edges: Edge[],
   selected: ReadonlySet<string>,
   radius: number,
-  mode: HighlightMode,
+  mode: SurfaceEmphasisMode,
   hiddenRelKinds: ReadonlySet<string> = NO_HIDDEN_KINDS,
   ghostPresentation?: GhostPresentationOptions,
 ): EmphasizedLevel {

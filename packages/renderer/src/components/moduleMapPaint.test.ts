@@ -114,6 +114,44 @@ describe("emphasize — stale selection", () => {
   });
 });
 
+describe("emphasize — whole logic-flow subgraph", () => {
+  it("highlights flow members and their internal wire without revealing unrelated incident ghosts", () => {
+    const frame = fileNode("ts:root.ts", { data: { category: "app", isExpanded: true } });
+    const root: Node = {
+      id: "ts:root.ts#run",
+      type: "block",
+      parentId: frame.id,
+      position: { x: 0, y: 0 },
+      data: { blockKind: "function" },
+    } as Node;
+    const flowTarget = ghostNode("ts:flow.ts#target");
+    const unrelatedGhost = ghostNode("ts:other.ts#helper");
+    const unrelatedReal = fileNode("ts:unrelated.ts");
+    const internal = ghostEdge(root.id, flowTarget.id);
+    const outside = ghostEdge(root.id, unrelatedGhost.id);
+
+    const painted = emphasize(
+      [frame, root, flowTarget, unrelatedGhost, unrelatedReal],
+      [internal, outside],
+      new Set([root.id, flowTarget.id]),
+      1,
+      "subgraph",
+    );
+
+    expect(painted.nodes.map((node) => node.id)).toEqual([frame.id, root.id, flowTarget.id, unrelatedReal.id]);
+    expect(painted.nodes.find((node) => node.id === frame.id)?.style?.opacity).toBeUndefined();
+    expect(painted.nodes.find((node) => node.id === unrelatedReal.id)?.style?.opacity).toBe(0.28);
+    expect(painted.edges).toHaveLength(1);
+    expect(painted.edges[0]).toMatchObject({ id: internal.id, style: expect.objectContaining({ opacity: 1 }) });
+  });
+
+  it("retains an explicitly highlighted flow ghost even when its chart edge is absent", () => {
+    const isolated = ghostNode("ts:flow.ts#isolated");
+    const painted = emphasize([isolated], [], new Set([isolated.id]), 1, "subgraph");
+    expect(painted.nodes).toContainEqual(expect.objectContaining({ id: isolated.id }));
+  });
+});
+
 describe("emphasize — complete semantic ghosts", () => {
   it("shows every related caller and dependency", () => {
     const anchor = fileNode("ts:anchor.ts");

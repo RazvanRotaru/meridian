@@ -26,6 +26,9 @@ export interface MinimalCodeInputs {
   moduleExpanded: ReadonlySet<string>;
   blockDeps: BlockDeps;
   flows: LogicFlows;
+  /** PR flow review: exact drawn callables whose incident dependencies must stay attached to the
+   * callable instead of folding to their member files. */
+  inspectionIds?: ReadonlySet<string>;
 }
 
 export async function deriveMinimalGraphLayout(
@@ -43,7 +46,7 @@ export async function deriveMinimalGraphLayout(
     moduleGraph,
     memberIds,
     originIds,
-    { expanded: code.moduleExpanded, blockDeps: code.blockDeps, flows: code.flows },
+    { expanded: code.moduleExpanded, blockDeps: code.blockDeps, flows: code.flows, inspectionIds: code.inspectionIds },
     hiddenIds,
   );
   return layoutMinimalSubgraph(spec, basePositions, arrange);

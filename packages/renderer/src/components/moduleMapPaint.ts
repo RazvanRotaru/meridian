@@ -10,7 +10,7 @@
 import { type Edge, type Node } from "@xyflow/react";
 import type { ModuleCardData } from "../derive/moduleLevel";
 import type { ModuleCategory } from "../derive/moduleCategory";
-export { emphasize, type EmphasizedLevel, type GhostPresentationOptions, type HighlightMode } from "./moduleMapHighlight";
+export { emphasize, type EmphasizedLevel, type GhostPresentationOptions, type HighlightMode, type SurfaceEmphasisMode } from "./moduleMapHighlight";
 
 export interface HideOptions {
   hiddenCategories: ReadonlySet<ModuleCategory>;
