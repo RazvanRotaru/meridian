@@ -115,7 +115,7 @@ node id **and** the telemetry join key, so structure and runtime data never desy
 The contract is specified in
 [`knowledge/adr/0001-graph-artifact-schema.md`](knowledge/adr/0001-graph-artifact-schema.md) and
 published as JSON Schema at
-[`packages/core/schema/graph-artifact-1.0.0.json`](packages/core/schema/graph-artifact-1.0.0.json).
+[`packages/core/schema/graph-artifact-1.1.0.json`](packages/core/schema/graph-artifact-1.1.0.json).
 
 ## CLI
 

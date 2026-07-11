@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { linkArtifacts, type LinkSource } from "./link";
 import type { Port } from "./ports";
-import type { GraphNode } from "./types";
+import type { GraphEdge, GraphNode } from "./types";
 
 function node(id: string, kind: string, parentId: string | null = null): GraphNode {
   return { id, kind, qualifiedName: id, displayName: id, parentId, location: { file: "src/index.ts", startLine: 1 } };
@@ -39,6 +39,25 @@ describe("linkArtifacts", () => {
     const webRoot = linked.nodes.find((entry) => entry.id === "ts:checkout-web/src");
     expect(webRoot?.parentId).toBe("sys:checkout-web");
     expect(linked.nodes.filter((entry) => entry.kind === "system")).toHaveLength(2);
+  });
+
+  it("namespaces edge evidence files with the same system prefix as node locations", () => {
+    const evidenceEdge: GraphEdge = {
+      id: "calls@ts:src/index.ts#load|ts:src/index.ts#helper",
+      source: "ts:src/index.ts#load",
+      target: "ts:src/index.ts#helper",
+      kind: "calls",
+      weight: 1,
+      callSites: [{ file: "src/index.ts", line: 8, col: 2, endLine: 8, endCol: 19 }],
+    };
+    const linkedEvidence = linkArtifacts([{
+      ...WEB,
+      nodes: [...WEB.nodes, node("ts:src/index.ts#helper", "function", "ts:src/index.ts")],
+      edges: [evidenceEdge],
+    }]);
+    expect(linkedEvidence.edges[0]?.callSites).toEqual([
+      { file: "checkout-web/src/index.ts", line: 8, col: 2, endLine: 8, endCol: 19 },
+    ]);
   });
 
   it("joins the concrete HTTP exit onto the entry's route template through ONE channel", () => {

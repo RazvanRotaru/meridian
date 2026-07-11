@@ -53,6 +53,11 @@ describe("http ports", () => {
     expect(byChannel(ports, "GET /api/orders/123")).toBeTruthy();
     expect(ports.filter((port) => port.channel === null)).toHaveLength(1); // the template-URL fetch
     expect(ports.every((port) => port.direction === "out" && port.protocol === "http")).toBe(true);
+    expect(ports.every((port) =>
+      port.callSite.endLine !== undefined
+      && port.callSite.endCol !== undefined
+      && port.callSite.endLine >= port.callSite.line
+    )).toBe(true);
   });
 
   it("detects express route registrations as entries", async () => {

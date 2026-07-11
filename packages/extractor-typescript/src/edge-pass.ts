@@ -6,10 +6,12 @@
 
 import { Node, SyntaxKind, type ClassDeclaration } from "ts-morph";
 import type { CallSite, EdgeKind, ExtractionDiagnostic } from "@meridian/core";
-import { lineColOf, nodeKey, type NodeDescriptor } from "./model";
+import { callSiteOf, nodeKey, type NodeDescriptor } from "./model";
 import { resolveTarget, type CrossPackageResolver, type TargetResolution } from "./edge-resolve";
 import type { LoadedProject } from "./project-loader";
 import type { ResolutionIndex } from "./resolution-index";
+
+export { callSiteOf } from "./model";
 
 export interface RawEdge {
   source: string;
@@ -361,11 +363,6 @@ function enclosingSemanticDeclaration(site: Node, index: ResolutionIndex): strin
     current = current.getParent();
   }
   return null;
-}
-
-export function callSiteOf(node: Node, relPath: string): CallSite {
-  const position = lineColOf(node);
-  return { file: relPath, line: position.line, col: position.column };
 }
 
 export function recordThrow(resolution: TargetResolution, relPath: string, node: Node, diagnostics: ExtractionDiagnostic[]): void {

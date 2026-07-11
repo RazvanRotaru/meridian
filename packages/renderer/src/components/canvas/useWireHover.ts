@@ -23,12 +23,11 @@
  *     area (opacity 0 alone still hit-tests the stroke, so hovering the exact line would flash it
  *     back). They return only when the emphasis pass lights them.
  *
- * A surface that historically had no wire chrome (the minimal overlay) passes `enabled: false` and
- * gets ONLY the z-order dressing back — no hover, no inspector, no pulse, no retype — exactly its
- * pre-unification wires, just correctly under the cards.
+ * A surface may still pass `enabled: false` to receive only z-order dressing, without hover,
+ * inspection, evidence, pulse, or retyping.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Edge, Node } from "@xyflow/react";
 import { BUNDLE_EDGE_TYPE } from "../../layout/edgeBundling";
 import { pairOf, RIBBON_EDGE_TYPE, type RibbonEdgeData } from "../../layout/parallelWires";
@@ -56,7 +55,12 @@ export interface WireInteractionApi {
   onEdgeClick?: (event: React.MouseEvent, edge: Edge) => void;
 }
 
-export function useWireHover(edges: Edge[], nodes: Node[], enabled: boolean): WireInteractionApi {
+export function useWireHover(
+  edges: Edge[],
+  nodes: Node[],
+  enabled: boolean,
+  onInspectPair?: (pair: Edge[]) => void,
+): WireInteractionApi {
   const [hover, setHover] = useState<WireHover | null>(null);
   const [inspected, setInspected] = useState<Edge | null>(null);
   // Unpin whenever the wires re-derive (see the header): the pinned strand may no longer be drawn.
@@ -77,6 +81,12 @@ export function useWireHover(edges: Edge[], nodes: Node[], enabled: boolean): Wi
     () => (inspected === null || isGhostHierarchyEdge(inspected) ? null : pairOf(inspected, edges.filter(isInteractiveSemanticEdge))),
     [inspected, edges],
   );
+  const interactiveEdges = useMemo(() => edges.filter(isInteractiveSemanticEdge), [edges]);
+  const inspect = useCallback((edge: Edge) => {
+    if (!isInteractiveSemanticEdge(edge)) return;
+    setInspected(edge);
+    onInspectPair?.(pairOf(edge, interactiveEdges));
+  }, [interactiveEdges, onInspectPair]);
   const inspectedIds = useMemo(
     () => new Set(inspectedPair === null || inspected === null ? [] : [inspected.id, ...inspectedPair.map((edge) => edge.id)]),
     [inspected, inspectedPair],
@@ -154,14 +164,12 @@ export function useWireHover(edges: Edge[], nodes: Node[], enabled: boolean): Wi
     hover,
     inspectedPair,
     labelOf,
-    inspect: (edge) => {
-      if (isInteractiveSemanticEdge(edge)) setInspected(edge);
-    },
+    inspect,
     clearInspected: () => setInspected(null),
     onEdgeMouseEnter,
     onEdgeMouseLeave: () => setHover(null),
     onEdgeClick: (_event, edge) => {
-      if (isInteractiveSemanticEdge(edge)) setInspected(edge);
+      inspect(edge);
     },
   };
 }

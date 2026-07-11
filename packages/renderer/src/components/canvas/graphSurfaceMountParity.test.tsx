@@ -70,6 +70,9 @@ describe("GraphSurface mount semantic-navigation parity", () => {
 /** Every shared-canvas mount owes the complete declaration even while fitting temporarily disables
  * LOD/commit. Otherwise lifecycle state could make this test skip the very contract it protects. */
 function expectSemanticNavigationDeclaration(props: Record<string, unknown>): void {
+  // Every GraphSurface renders semantic artifact edges, so every mount must expose the same
+  // click-to-source evidence contract (including the minimal/PR overlay).
+  expect(props.wireHover, "wire source evidence was not enabled").toBe(true);
   expect(Object.hasOwn(props, "semanticCommitEnabled"), "semanticCommitEnabled was omitted").toBe(true);
   expect(Object.hasOwn(props, "semanticLayers"), "semanticLayers was omitted").toBe(true);
   expect(Object.hasOwn(props, "semanticDepths"), "semanticDepths was omitted").toBe(true);

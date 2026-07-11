@@ -7,7 +7,7 @@
  * still accepting any string a future language adapter needs.
  */
 
-export const SCHEMA_VERSION = "1.0.0" as const;
+export const SCHEMA_VERSION = "1.1.0" as const;
 
 export type LanguageTag =
   | "typescript"
@@ -110,8 +110,14 @@ export interface GraphNode {
 
 export interface CallSite {
   file: string;
+  /** Inclusive 1-based start line of the syntax occurrence that proves this edge. */
   line: number;
+  /** Inclusive start column when the extractor can recover it. */
   col?: number;
+  /** Line containing the end of the syntax occurrence. Omitted by point-only extractors. */
+  endLine?: number;
+  /** Exclusive end column on `endLine`. Requires both `col` and `endLine`. */
+  endCol?: number;
 }
 
 export interface GraphEdge {

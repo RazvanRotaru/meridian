@@ -8,7 +8,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { anchorableHunks } from "../derive/reviewSubmit";
+import { formatCallSite } from "../graph/edgeEvidence";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
+import { relationColor } from "../theme/relationTheme";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { CodeBlock } from "./CodeBlock";
 import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeKinds } from "./useChangedLines";
@@ -16,9 +18,10 @@ import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeK
 export function CodePanel() {
   const codeView = useBlueprint((state) => state.codeView);
   const review = useBlueprint((state) => state.review);
+  const index = useBlueprint((state) => state.index);
   const removed = useBlueprint((state) => codeView ? state.reviewRemovedByFile[codeView.node.location?.file ?? ""] ?? EMPTY_REMOVED : EMPTY_REMOVED);
   const removedTruncated = useBlueprint((state) => codeView ? state.reviewRemovedTruncatedByFile[codeView.node.location?.file ?? ""] === true : false);
-  const { closeCode, addReviewComment } = useBlueprintActions();
+  const { closeCode, addReviewComment, selectEdgeEvidence } = useBlueprintActions();
   const wholeFile = codeView?.wholeFile ?? false;
   // A PR-review panel carries its own head-relative diff; otherwise the artifact's `changedSince`
   // drives the paint. The hooks run unconditionally (rules of hooks) and are overridden when carried.
@@ -28,6 +31,16 @@ export function CodePanel() {
   const changedLines = codeView?.changedLines ?? hookChangedLines;
   const changedLineKinds = codeView?.changedLineKinds ?? hookChangedLineKinds;
   const summary = codeView?.changedLineKinds ? summarizeChangeKinds(codeView.changedLineKinds) : hookSummary;
+  const edgeEvidence = codeView?.edgeEvidence;
+  const activeEvidence = edgeEvidence?.contexts[edgeEvidence.activeIndex];
+  const evidenceLines = useMemo(() => {
+    if (!edgeEvidence) return EMPTY_EVIDENCE_LINES;
+    const lines = new Set<number>();
+    for (let line = edgeEvidence.focusStartLine; line <= edgeEvidence.focusEndLine; line += 1) {
+      lines.add(line);
+    }
+    return lines;
+  }, [edgeEvidence]);
   const open = codeView?.mode === "modal";
   const reviewFile = codeView?.node.location?.file ?? null;
   const reviewBaseLine = codeView?.baseLine ?? codeView?.node.location?.startLine ?? 1;
@@ -70,9 +83,16 @@ export function CodePanel() {
   // the file and lands on the first change, so its own span in the subtitle would be misleading too.
   const isHead = codeView.changedLineKinds !== undefined;
   const shownEnd = isHead ? baseLine + Math.max((code?.split("\n").length ?? 1) - 1, 0) : endLine ?? startLine;
-  const title = wholeFile ? (file.split("/").pop() ?? file) : node.displayName;
+  const evidenceTitle = activeEvidence
+    ? `${index.nodesById.get(activeEvidence.source)?.displayName ?? activeEvidence.source} → ${index.nodesById.get(activeEvidence.target)?.displayName ?? activeEvidence.target}`
+    : null;
+  const title = evidenceTitle ?? (wholeFile ? (file.split("/").pop() ?? file) : node.displayName);
   const range = shownEnd !== baseLine ? `${baseLine}-${shownEnd}` : String(baseLine);
-  const location = wholeFile ? file : `${file}:${range}`;
+  const location = activeEvidence && edgeEvidence
+    ? displayedEvidenceLocation(activeEvidence.site, edgeEvidence.focusStartLine, edgeEvidence.focusEndLine)
+    : wholeFile
+      ? file
+      : `${file}:${range}`;
 
   // A backdrop click closes; clicks inside the panel are swallowed so they don't reach it.
   return (
@@ -81,13 +101,44 @@ export function CodePanel() {
         style={PANEL_STYLE}
         role="dialog"
         aria-modal
-        aria-label="Source code"
+        aria-label={activeEvidence ? "Edge source evidence" : "Source code"}
         onClick={(event) => event.stopPropagation()}
       >
         <header style={HEADER_STYLE}>
           <div style={HEADER_TEXT_STYLE}>
             <div style={TITLE_STYLE} title={node.qualifiedName}>{title}</div>
             <div style={LOCATION_STYLE} title={file}>{location}</div>
+            {activeEvidence && edgeEvidence ? (
+              <div style={EVIDENCE_ROW_STYLE}>
+                <span style={{ ...EVIDENCE_DOT_STYLE, background: relationColor(activeEvidence.kind) ?? "#7DD3FC" }} />
+                <span style={EVIDENCE_KIND_STYLE}>{activeEvidence.kind}</span>
+                <span style={EVIDENCE_COUNT_STYLE}>
+                  Evidence {edgeEvidence.activeIndex + 1} of {edgeEvidence.contexts.length}
+                </span>
+                {edgeEvidence.contexts.length > 1 ? (
+                  <span style={EVIDENCE_NAV_STYLE}>
+                    <button
+                      type="button"
+                      style={EVIDENCE_NAV_BUTTON_STYLE}
+                      disabled={edgeEvidence.activeIndex === 0}
+                      aria-label="Previous edge evidence"
+                      onClick={() => void selectEdgeEvidence(edgeEvidence.activeIndex - 1)}
+                    >
+                      ‹
+                    </button>
+                    <button
+                      type="button"
+                      style={EVIDENCE_NAV_BUTTON_STYLE}
+                      disabled={edgeEvidence.activeIndex === edgeEvidence.contexts.length - 1}
+                      aria-label="Next edge evidence"
+                      onClick={() => void selectEdgeEvidence(edgeEvidence.activeIndex + 1)}
+                    >
+                      ›
+                    </button>
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
             {summary ? (
               <div style={SUMMARY_ROW_STYLE}>
                 <span style={ADDED_STYLE}>{`+${summary.added} lines`}</span>
@@ -110,6 +161,7 @@ export function CodePanel() {
               showGutter
               changedLines={changedLines}
               changedLineKinds={changedLineKinds}
+              evidenceLines={evidenceLines}
               commentableLines={commentableLines}
               onLineClick={commentableLines.size > 0 ? setActiveCommentLine : undefined}
               lineComposer={activeCommentLine === null || !commentableLines.has(activeCommentLine) ? null : {
@@ -129,7 +181,19 @@ export function CodePanel() {
 }
 
 const EMPTY_COMMENTABLE_LINES: ReadonlySet<number> = new Set<number>();
+const EMPTY_EVIDENCE_LINES: ReadonlySet<number> = new Set<number>();
 const EMPTY_REMOVED: readonly { afterNewLine: number; lines: string[] }[] = [];
+
+function displayedEvidenceLocation(
+  site: { file: string; line: number; col?: number; endLine?: number; endCol?: number },
+  shownStart: number,
+  shownEnd: number,
+): string {
+  if (shownStart === site.line && shownEnd === (site.endLine ?? site.line)) {
+    return formatCallSite(site);
+  }
+  return shownStart === shownEnd ? `${site.file}:${shownStart}` : `${site.file}:${shownStart}–${shownEnd}`;
+}
 
 const BACKDROP_STYLE: React.CSSProperties = {
   position: "absolute",
@@ -176,6 +240,34 @@ const LOCATION_STYLE: React.CSSProperties = {
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
+};
+const EVIDENCE_ROW_STYLE: React.CSSProperties = {
+  marginTop: 7,
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  minHeight: 24,
+};
+const EVIDENCE_DOT_STYLE: React.CSSProperties = { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 };
+const EVIDENCE_KIND_STYLE: React.CSSProperties = {
+  color: "#D8E4F0",
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  fontSize: 11,
+  fontWeight: 700,
+};
+const EVIDENCE_COUNT_STYLE: React.CSSProperties = { color: "#7B8695", fontSize: 10.5 };
+const EVIDENCE_NAV_STYLE: React.CSSProperties = { display: "inline-flex", gap: 4, marginLeft: 2 };
+const EVIDENCE_NAV_BUTTON_STYLE: React.CSSProperties = {
+  width: 24,
+  height: 22,
+  padding: 0,
+  border: "1px solid #364252",
+  borderRadius: 5,
+  background: "#111821",
+  color: "#B9D9F5",
+  fontSize: 17,
+  lineHeight: "18px",
+  cursor: "pointer",
 };
 const SUMMARY_ROW_STYLE: React.CSSProperties = {
   marginTop: 6,
