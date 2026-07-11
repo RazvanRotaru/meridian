@@ -10,7 +10,7 @@
 
 import { memo } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import { fileViewState } from "../../derive/reviewFiles";
+import { countViewedFiles } from "../../derive/reviewFiles";
 import type { ReviewData } from "../../derive/reviewData";
 import { PrPrepareInline } from "../prs/PrPrepareProgress";
 import { ChangeGroupStrip } from "./ChangeGroupStrip";
@@ -48,7 +48,7 @@ function CollapsedRail() {
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
   const { toggleReviewPanel } = useBlueprintActions();
-  const viewed = files.filter((file) => fileViewState(file, unitTicks, fileTicks) === "done").length;
+  const viewed = countViewedFiles(files, unitTicks, fileTicks);
   return (
     <button type="button" style={RAIL} onClick={toggleReviewPanel} title="Show the review panel">
       <span style={RAIL_GLYPH}>«</span>
@@ -66,7 +66,7 @@ function Header({ review }: { review: ReviewData }) {
   const preparing = useBlueprint((state) => state.prReviewStatus === "preparing");
   const canExtract = useBlueprint((state) => state.prReviewed !== null && state.prPreparedGraphId === null && state.analyzeUrl !== null);
   const { resetReviewTicks, toggleReviewPanel, prepareHeadGraph } = useBlueprintActions();
-  const viewed = files.filter((file) => fileViewState(file, unitTicks, fileTicks) === "done").length;
+  const viewed = countViewedFiles(files, unitTicks, fileTicks);
   const total = files.length;
   const ctx = review.context;
   return (

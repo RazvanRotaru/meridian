@@ -6,8 +6,8 @@
  * which escapes it as plain text children (never dangerouslySetInnerHTML).
  */
 
-import { useEffect } from "react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
+import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { CodeBlock } from "./CodeBlock";
 import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeKinds } from "./useChangedLines";
 
@@ -25,20 +25,9 @@ export function CodePanel() {
   const summary = codeView?.changedLineKinds ? summarizeChangeKinds(codeView.changedLineKinds) : hookSummary;
   const open = codeView?.mode === "modal";
 
-  // Escape closes the modal while it's open. Rebinding on `open` keeps the listener off the
-  // document when nothing is shown.
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        closeCode();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, closeCode]);
+  // Escape closes the modal while it's open — but as the TOP layer, so a modal opened over the
+  // PR-review overlay closes just itself and the next Escape reaches the overlay beneath it.
+  useClearOnEscape(closeCode, open);
 
   if (!codeView || codeView.mode !== "modal") {
     return null;

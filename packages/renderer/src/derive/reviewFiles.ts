@@ -111,6 +111,16 @@ export function fileViewState(
   return states.every((state) => state === "done") ? "done" : "todo";
 }
 
+/** How many rows read as fully "viewed" (all their units done). ONE definition so the panel header,
+ * the collapsed rail, and the control-panel resume chip all report the same progress fraction. */
+export function countViewedFiles(
+  files: readonly ReviewFileRow[],
+  unitTicks: Record<string, ReviewTick>,
+  fileTicks: Record<string, ReviewTick>,
+): number {
+  return files.filter((file) => fileViewState(file, unitTicks, fileTicks) === "done").length;
+}
+
 /** The single unit-tick transition: done un-ticks; todo/stale ticks fresh. Returns a new record. */
 export function applyUnitTick(
   ticks: Record<string, ReviewTick>,

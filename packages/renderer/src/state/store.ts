@@ -54,6 +54,7 @@ import { headKindsWithin, headSpanFor } from "./headSpan";
 import { streamPrAnalysis, type PrAnalyzeStage } from "./prAnalysis";
 import {
   fetchPreparedArtifact,
+  resetChangedIdsToArtifact,
   restorePrReviewBaseline,
   swapToPreparedArtifact,
   withPrLineDiff,
@@ -440,6 +441,11 @@ export interface BlueprintState {
    * loaded artifact for the head-accurate one, and re-run the review in head coordinates. On
    * failure the review stays in sync mode (overlay intact) with the error in the prepare lane. */
   prepareHeadGraph(): Promise<void>;
+  /** Re-open a review whose overlay was soft-closed (Escape/Close/lens switch) WITHOUT re-running
+   * the expensive head prepare: re-swap the already-prepared artifact (a plain GET) if there was
+   * one, repaint the kept amber, and reseed the minimal overlay from `reviewAllSeedIds`. Guarded on
+   * a live-but-collapsed review (`prReviewed !== null && minimalSeedIds.length === 0`). */
+  resumePrReview(): Promise<void>;
   /** Dismiss the head-extraction failure warning: clears the prepare-error lane. */
   dismissPrepareError(): void;
   relayout(): Promise<void>;
@@ -1305,6 +1311,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // can adjust it and rebuild without re-picking every card. Bumping the seq discards any ELK
     // pass still in flight, so a slow layout can't repopulate the arrays after the close.
     closeMinimalGraph() {
+      // Closing the overlay mid-review must not strand the reader on the swapped PR-head artifact
+      // (still amber-marked) under the plain Map — yet the review must stay RESUMABLE. Soft-restore
+      // the boot graph while keeping every review field (the chip + resumePrReview re-open from
+      // them); in sync mode (never swapped, so no baseline to restore) just strip the review's amber
+      // back to the boot artifact's own marking. No-op for a non-review overlay close.
+      if (get().prReviewed !== null) {
+        if (!restorePrReviewBaseline(get, set, invalidateArtifactCaches, { endSession: false })) {
+          resetChangedIdsToArtifact(get().artifact, get().index);
+        }
+      }
       minimalLayoutSeq += 1;
       set({ minimalSeedIds: [], minimalMemberIds: [], minimalBasePositions: {}, minimalArrange: false, minimalRfNodes: [], minimalRfEdges: [], minimalLayoutStatus: "idle" });
     },
@@ -1910,6 +1926,35 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
     },
 
+    // Re-open a review whose overlay was soft-closed (Escape/Close/lens switch) — cheaply. The
+    // expensive clone→checkout→extract NEVER re-runs here: a swapped review re-fetches its already-
+    // prepared head artifact with one GET and re-swaps (against the SAME saved baseline); a sync
+    // review keeps the boot artifact it never left. Then repaint the kept amber and reseed the
+    // overlay from reviewAllSeedIds. moduleExpanded survived the soft close, so pre-expansion replays.
+    async resumePrReview() {
+      const { prReviewed, minimalSeedIds, prPreparedGraphId, reviewAffectedIds, reviewAllSeedIds } = get();
+      if (prReviewed === null || minimalSeedIds.length > 0) {
+        return;
+      }
+      if (prPreparedGraphId !== null) {
+        const prepared = await fetchPreparedArtifact(get().graphUrl, prPreparedGraphId);
+        if (get().prReviewed !== prReviewed || get().minimalSeedIds.length > 0) {
+          return; // the review moved on (or resumed elsewhere) while the artifact was in flight.
+        }
+        swapToPreparedArtifact(get, set, prepared, invalidateArtifactCaches);
+      }
+      // Repaint the review's amber onto the current index — the soft close reset it to the boot
+      // marking (and a re-swap built a fresh index). Same channel applyPrReviewToMap writes.
+      applyChangedIds(get().index, [...reviewAffectedIds]);
+      set({
+        viewMode: "modules",
+        minimalSeedIds: reviewAllSeedIds,
+        minimalMemberIds: [...reviewAllSeedIds],
+        reviewPanelHidden: false,
+      });
+      void get().minimalRelayout();
+    },
+
     // The opt-in head extract behind the review panel's "Extract head graph": stream the server's
     // clone→checkout→extract analysis into the prepare indicator, SWAP the loaded artifact for the
     // prepared head-accurate one (saving the boot pair for the session-end restore), then re-run
@@ -2089,6 +2134,10 @@ function applyPrReviewToMap(
   const progress = readReviewProgress(context.reviewKey);
   set({
     artifact: reviewedArtifact,
+    // Pin the index this review was computed on alongside its artifact: a mid-flow overlay close
+    // (beginLensTransition → closeMinimalGraph's soft restore, when re-seeding a swapped review) can
+    // swap the boot index back in, so the pair must be re-set together, not left to the prior swap.
+    index,
     review,
     prReviewed: prSelected,
     reviewHeadRef: swapped ? null : summary?.headRef ?? null,

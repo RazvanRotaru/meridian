@@ -72,30 +72,55 @@ export function swapToPreparedArtifact(
 }
 
 /**
- * End the review session: put the boot artifact/index back and clear every review-owned field.
+ * Reset an index's amber changed-id marking to the artifact's OWN tag-derived set (usually none).
+ * `applyChangedIds` mutates whichever index is current when a review runs, so an index can carry a
+ * finished PR's amber set; this wipes those leftovers so the restored/plain graph shows exactly the
+ * boot marking. Shared by the baseline restore and the sync-mode overlay close (no baseline to swap).
+ */
+export function resetChangedIdsToArtifact(artifact: GraphArtifact, index: GraphIndex): void {
+  applyChangedIds(index, collectChangedIds(artifact.nodes));
+}
+
+/**
+ * Put the boot artifact/index back. Two modes:
+ *  - `endSession` (default true): the review session is over — clear every review-owned field and
+ *    the pre-expanded/seeded Map (leaving to the PRs lens, switching PRs).
+ *  - `endSession:false`: a SOFT close (the overlay closed mid-review) — restore the boot graph but
+ *    keep review/ticks/seeds/baseline/prepared-id so `resumePrReview` can re-open from them.
  * Returns false (a no-op) outside a swapped session, so callers can hook this unconditionally.
  */
 export function restorePrReviewBaseline(
   get: () => BlueprintState,
   set: (partial: Partial<BlueprintState>) => void,
   invalidateArtifactCaches: () => void,
+  options: { endSession?: boolean } = {},
 ): boolean {
+  const endSession = options.endSession ?? true;
   const baseline = get().prReviewBaseline;
   if (baseline === null) {
     return false;
   }
-  // `applyChangedIds` mutates whichever index is current when a review runs, so the baseline index
-  // can carry a PR's amber set (e.g. a synchronous fallback review earlier in the session).
-  // Reapply the artifact's OWN tag-derived set so the restored graph shows exactly the boot
-  // marking (usually none), never a finished review's leftovers.
-  applyChangedIds(baseline.index, collectChangedIds(baseline.artifact.nodes));
+  resetChangedIdsToArtifact(baseline.artifact, baseline.index);
   invalidateArtifactCaches();
+  // Both modes swap the boot graph back in, drop the (now-stale) code panel, and recompute coverage
+  // for the boot artifact when the coverage lens is showing (else drop it for a lazy recompute).
+  const restoredGraph: Partial<BlueprintState> = {
+    artifact: baseline.artifact,
+    index: baseline.index,
+    coverage: get().coverageMode ? computeCoverage(baseline.artifact.nodes, baseline.artifact.edges) : null,
+    codeView: null,
+  };
+  if (!endSession) {
+    // Soft close: the review stays fully populated (chip + resume). The overlay's own arrays are
+    // reset by closeMinimalGraph, and moduleFocus/Selected/Expanded stay so a resume replays them.
+    set(restoredGraph);
+    return true;
+  }
   // An artifact-sourced review (the boot artifact carried one) gets its checklist + progress back;
   // a plain session clears every review-owned field.
   const progress = baseline.review ? readReviewProgress(baseline.review.context.reviewKey) : null;
   set({
-    artifact: baseline.artifact,
-    index: baseline.index,
+    ...restoredGraph,
     review: baseline.review,
     reviewTicks: progress?.ticks ?? {},
     reviewUnitTicks: progress?.unitTicks ?? {},
@@ -118,8 +143,6 @@ export function restorePrReviewBaseline(
     prReviewBaseline: null,
     prPreparedGraphId: null,
     prPreparedHeadSha: null,
-    coverage: get().coverageMode ? computeCoverage(baseline.artifact.nodes, baseline.artifact.edges) : null,
-    codeView: null,
     // The review pre-expanded/seeded the Map around the PR; none of that is the reader's own
     // navigation, so the Map returns to its top level and the minimal overlay closes.
     moduleFocus: null,

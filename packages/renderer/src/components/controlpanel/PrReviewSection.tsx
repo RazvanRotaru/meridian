@@ -8,6 +8,7 @@
 import { useEffect } from "react";
 import { PRS_UNAVAILABLE_ERROR, type PrSummary } from "../../state/prTypes";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
+import { countViewedFiles } from "../../derive/reviewFiles";
 import { CountBadge, hexAlpha, TOKENS } from "./panelKit";
 import { PullRequestIcon } from "./icons";
 import { PrReviewCard } from "./PrReviewCard";
@@ -22,15 +23,23 @@ export function PrReviewSection() {
   const selected = useBlueprint((state) => state.prSelected);
   const prReviewed = useBlueprint((state) => state.prReviewed);
   const reviewOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
+  const reviewFiles = useBlueprint((state) => state.reviewFiles);
+  const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
+  const fileTicks = useBlueprint((state) => state.reviewFileTicks);
   const viewMode = useBlueprint((state) => state.viewMode);
   const onPrsPage = viewMode === "prs";
-  const { loadPrs, selectPr, reviewPrInGraph, togglePrsView } = useBlueprintActions();
+  const { loadPrs, selectPr, reviewPrInGraph, resumePrReview, togglePrsView } = useBlueprintActions();
 
   // Expanded only while a PR review is the active on-screen surface: a PR is under review
   // (prReviewed), its minimal-graph overlay is open (minimalSeedIds), and we're not on the full
   // Pull-requests page. Otherwise — the Map after closing the overlay, or the PRs page itself — it
   // stays collapsed so a stale reviewed PR never lingers in the card.
   const expanded = prReviewed !== null && reviewOpen && viewMode !== "prs";
+  // A live review whose overlay was closed (Escape/Close/lens switch) is still fully in the store —
+  // the bar becomes a one-click Resume chip instead of the plain toggle. Mutually exclusive with
+  // `expanded` (that needs the overlay open; this needs it closed).
+  const resumable = prReviewed !== null && !reviewOpen && viewMode !== "prs";
+  const viewed = countViewedFiles(reviewFiles, unitTicks, fileTicks);
 
   const unavailable = error === PRS_UNAVAILABLE_ERROR && open === null;
 
@@ -54,25 +63,37 @@ export function PrReviewSection() {
   const count = open?.length ?? 0;
   const current = open?.find((pr) => pr.number === selected) ?? open?.[0] ?? null;
 
+  const highlighted = expanded || resumable;
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      <div style={barStyle(expanded)}>
-        <button
-          type="button"
-          style={TOGGLE_STYLE}
-          title={onPrsPage ? "Back to the graph" : "Open the full Pull requests page"}
-          aria-pressed={onPrsPage}
-          onClick={togglePrsView}
-        >
-          <span style={{ display: "inline-flex", color: onPrsPage || expanded ? ACTIVE_HUE : TOKENS.textMuted }}>
-            <PullRequestIcon size={15} />
-          </span>
-          <span style={LABEL_STYLE}>PR review</span>
-          <span style={{ flex: 1 }} />
-          {!unavailable && open !== null ? (
-            <CountBadge style={badgeToneStyle(expanded)}>{hasMore ? `${count}+` : count} open</CountBadge>
-          ) : null}
-        </button>
+      <div style={barStyle(highlighted)}>
+        {resumable ? (
+          <button type="button" style={TOGGLE_STYLE} title="Reopen the PR review overlay" onClick={() => void resumePrReview()}>
+            <span style={{ display: "inline-flex", color: ACTIVE_HUE }}>
+              <PullRequestIcon size={15} />
+            </span>
+            <span style={LABEL_STYLE}>Resume review #{prReviewed}</span>
+            <span style={{ flex: 1 }} />
+            <CountBadge style={badgeToneStyle(true)}>{viewed}/{reviewFiles.length} viewed</CountBadge>
+          </button>
+        ) : (
+          <button
+            type="button"
+            style={TOGGLE_STYLE}
+            title={onPrsPage ? "Back to the graph" : "Open the full Pull requests page"}
+            aria-pressed={onPrsPage}
+            onClick={togglePrsView}
+          >
+            <span style={{ display: "inline-flex", color: onPrsPage || expanded ? ACTIVE_HUE : TOKENS.textMuted }}>
+              <PullRequestIcon size={15} />
+            </span>
+            <span style={LABEL_STYLE}>PR review</span>
+            <span style={{ flex: 1 }} />
+            {!unavailable && open !== null ? (
+              <CountBadge style={badgeToneStyle(expanded)}>{hasMore ? `${count}+` : count} open</CountBadge>
+            ) : null}
+          </button>
+        )}
       </div>
 
       {expanded ? <ExpandedBody unavailable={unavailable} open={open} current={current} onReview={reviewPrInGraph} /> : null}

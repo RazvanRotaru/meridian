@@ -1,6 +1,7 @@
-import { useEffect } from "react";
+import { useCallback } from "react";
 import type { PrChangedFile, PrFileStatus, PrSummary } from "../../state/prTypes";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
+import { useClearOnEscape } from "../canvas/useClearOnEscape";
 import { PrPrepareError, PrPrepareProgress } from "./PrPrepareProgress";
 
 export function PrDetailPanel() {
@@ -14,18 +15,9 @@ export function PrDetailPanel() {
   const { selectPr, reviewPrInGraph } = useBlueprintActions();
   const preparing = reviewStatus === "preparing";
 
-  useEffect(() => {
-    if (selected === null) {
-      return;
-    }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        void selectPr(null);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectPr, selected]);
+  // Escape deselects the PR, but only while this panel is the top Escape layer.
+  const deselect = useCallback(() => void selectPr(null), [selectPr]);
+  useClearOnEscape(deselect, selected !== null);
 
   if (selected === null) {
     return (
