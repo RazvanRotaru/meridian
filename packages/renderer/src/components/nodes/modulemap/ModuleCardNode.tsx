@@ -19,6 +19,8 @@ import { GhostNode } from "./GhostNode";
 import { cardSelectedStyle, CodeButton, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, useNodeDiff } from "./changed";
 import { CHANGED_COLORS } from "../../../theme/changedColors";
+import { CommonsChips } from "./CommonsChips";
+import { CommonsDockNode } from "./CommonsDockNode";
 
 // The file family's frame accent (the module cyan), used when an expanded card turns into a frame.
 const FILE_FRAME_ACCENT = "#3FB7C4";
@@ -82,11 +84,13 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
             <span style={COUNT_MUTED}>out</span>
             <span style={COUNT_VALUE}>{data.outCount}</span>
           </span>
+          <CommonsChips chips={data.commonsChips} />
         </div>
       </div>
     </div>
   );
 }
+
 
 /** Groups siblings for one visibility flip without disturbing the flex row (children keep laying
  * out as if the wrapper weren't there; `visibility` inherits through it). */
@@ -114,7 +118,7 @@ export const ModuleCardNode = memo(ModuleCardNodeImpl);
  * `block` is a leaf code block (a method, function, or type definition). A card the reader expands
  * becomes a frame whose children NEST inside it (parentId), so a level can hold nested frames —
  * mirroring the call graph's ContainerNode. */
-export const moduleNodeTypes = { file: ModuleCardNode, package: PackageOverviewNode, unit: UnitCardNode, block: BlockNode, step: StepNode, ghost: GhostNode };
+export const moduleNodeTypes = { file: ModuleCardNode, package: PackageOverviewNode, unit: UnitCardNode, block: BlockNode, step: StepNode, ghost: GhostNode, commonsDock: CommonsDockNode };
 
 const CARD: React.CSSProperties = {
   position: "relative",

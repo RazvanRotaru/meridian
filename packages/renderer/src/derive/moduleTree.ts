@@ -26,6 +26,7 @@ import { ghostDepWires, withoutHidden } from "./ghostDeps";
 import { groupGhostEmission } from "./groupGhosts";
 import { liftEdges } from "./liftEdges";
 import { createCodeWalk, depWireEdges, flowChainEdges, stepCallEdges, visitCode, type CodeWalk, type Skeleton } from "./codeWalk";
+import { demoteCommons } from "./commonsDemotion";
 import { finalizeModuleNode, foldById, importEdges, importTreeEdges } from "./moduleTreeData";
 import { ipcTreeEdges } from "./moduleIpc";
 import type { ModuleTree, ModuleTreeEdge, VisibleModuleNode } from "./moduleTreeTypes";
@@ -60,6 +61,7 @@ export function deriveModuleTree(
   flows: LogicFlows,
   extraIds: ReadonlySet<string> = EMPTY_IDS,
   hiddenIds: ReadonlySet<string> = EMPTY_IDS,
+  demoteHubs = true,
 ): ModuleTree {
   const effectiveFocus = focus === null ? null : collapseChain(index, focus);
   // Palette-pinned nodes (⌘P "+") ride in as EXTRA top-level roots so an out-of-focus card joins the
@@ -89,7 +91,11 @@ export function deriveModuleTree(
     ...ipcTreeEdges(index, visibleIds),
     ...ghosts.edges,
   ].sort((a, b) => a.id.localeCompare(b.id));
-  return { nodes: [...nodes, ...ghosts.nodes], edges, effectiveFocus };
+  // Hub treatment: utility files with logger-grade in-degree demote to the commons dock — their
+  // wires mark for paint-hiding and their dependents gain chips (commonsDemotion.ts). The Commons
+  // toggle turns the whole treatment off (hubs rejoin ELK with ordinary wires).
+  const demoted = demoteHubs ? demoteCommons([...nodes, ...ghosts.nodes], edges) : { nodes: [...nodes, ...ghosts.nodes], edges };
+  return { nodes: demoted.nodes, edges: demoted.edges, effectiveFocus };
 }
 
 /** Off-screen relationships charted as detached GHOST cards + dashed wires — for every drawn dep

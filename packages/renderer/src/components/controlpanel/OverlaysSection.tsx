@@ -12,6 +12,7 @@ import { Pill } from "./panelKit";
 const REACH_HUE = "#5B9BE3";
 const PRIVATE_HUE = "#7C8CA3";
 const HIGHWAYS_HUE = "#E8843C"; // orange — arterial/high-traffic edges; the one bold warm accent (diff amber is reserved)
+const COMMONS_HUE = "#B08F4E"; // the dock tray's quiet amber (a shelf, not an alert)
 
 export function OverlaysSection() {
   const viewMode = useBlueprint((state) => state.viewMode);
@@ -23,7 +24,8 @@ export function OverlaysSection() {
   const coverageMode = useBlueprint((state) => state.coverageMode);
   const coveragePercent = useBlueprint((state) => state.coverage?.summary.percent ?? null);
   const showHighways = useBlueprint((state) => state.showHighways);
-  const { toggleShowTests, toggleHighlightMode, togglePrivateMembers, toggleCoverageMode, toggleHighways } = useBlueprintActions();
+  const showCommons = useBlueprint((state) => state.showCommons);
+  const { toggleShowTests, toggleHighlightMode, togglePrivateMembers, toggleCoverageMode, toggleHighways, toggleCommons } = useBlueprintActions();
 
   const onModuleSurface = viewMode === "modules" || viewMode === "call";
   const onMap = viewMode === "modules";
@@ -78,6 +80,17 @@ export function OverlaysSection() {
           onClick={toggleHighways}
         >
           Highways
+        </Pill>
+      ) : null}
+      {onMap ? (
+        <Pill
+          active={showCommons}
+          accent={COMMONS_HUE}
+          indicator="square"
+          title={showCommons ? "Commons on: the level's utility hubs park in the dock below the graph (their wires hide until selected)" : "Commons off: utility hubs stay in the graph with all their wires"}
+          onClick={toggleCommons}
+        >
+          Commons
         </Pill>
       ) : null}
       <Pill

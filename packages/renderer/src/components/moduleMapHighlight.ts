@@ -236,8 +236,11 @@ function baseStroke(edge: Edge): string {
   return isCrossFrame(edge) ? CROSS_FRAME_COLOR : REST_COLOR;
 }
 
+// A COMMONS wire (into a demoted dock hub) is invisible at rest — its story is the dependent's
+// chip; the wire only draws when the selection lights it (commonsDemotion.ts).
 const dimOpacity = (edge: Edge): number =>
-  isIpc(edge) ? DIM_IPC_OPACITY : isFlow(edge) ? DIM_FLOW_OPACITY : isDep(edge) ? DIM_DEP_OPACITY : DIM_EDGE_OPACITY;
+  isCommons(edge) ? 0 : isIpc(edge) ? DIM_IPC_OPACITY : isFlow(edge) ? DIM_FLOW_OPACITY : isDep(edge) ? DIM_DEP_OPACITY : DIM_EDGE_OPACITY;
+const isCommons = (edge: Edge): boolean => (edge.data as { commons?: boolean } | undefined)?.commons === true;
 const isCrossFrame = (edge: Edge): boolean => (edge.data as { crossFrame?: boolean } | undefined)?.crossFrame === true;
 const isDep = (edge: Edge): boolean => (edge.data as { category?: string } | undefined)?.category === "dep";
 const isFlow = (edge: Edge): boolean => (edge.data as { category?: string } | undefined)?.category === "flow";

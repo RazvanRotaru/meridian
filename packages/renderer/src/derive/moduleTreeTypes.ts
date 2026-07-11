@@ -42,6 +42,8 @@ export interface ModuleTreeEdge {
   /** The artifact edge ids this wire aggregates — the Wire Inspector resolves them back to real
    * symbol→symbol links and their call sites. Absent on synthetic wires (flow chains, IPC). */
   underlyingEdgeIds?: string[];
+  /** The target is a demoted COMMONS hub (see commonsDemotion): hidden at rest, lit like any wire. */
+  commons?: boolean;
 }
 
 export interface ModuleTree {

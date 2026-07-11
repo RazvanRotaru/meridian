@@ -59,13 +59,21 @@ down to real lines of code, and the field of wires must foreground the few that 
    rail) before the fold, so they still overlap on the rail — the pair inspector covers the
    attribution, but the rail should learn ribbon stripes in a follow-up.
 
-## W2 — hub demotion (the commons dock)
+## W2 — hub demotion (the commons dock) ✅ SHIPPED
 
 The biggest spaghetti reducer: a handful of utility modules (logger/types/config) attract wires
-from everywhere. Nodes whose visible in-degree crosses a threshold leave the wire field: drawn
-once in a **commons dock** strip, each dependent card wears a tiny chip (`log`, `cfg`) instead
-of a wire. Selecting a commons card lights its real connections as usual; the inspector (W1)
-still attributes every chip. Touches layout (dock placement + wire suppression) — its own PR.
+from everywhere. A top-level leaf file whose distinct dependents reach the LEVEL-RELATIVE bar
+(`max(4, 30% of the level's other top cards)` — a fixed count misses a small level's logger)
+demotes: it leaves ELK entirely and parks inside the labelled DOCK TRAY — a non-interactive
+dashed shelf titled "COMMONS · n" (`commonsDockPlacement` emits it as the docked cards' parent,
+so ghost banding treats the dock as one footprint) — its wires hide at rest (paint opacity 0,
+non-hoverable, BOTH directions), and every dependent — file or directory card — wears a small
+chip naming it (nested member wires lift to their top-level frame for both the bar and the
+chips). Selecting a docked card lights its real connections; the Wire Inspector still
+attributes everything. The whole treatment is a TOGGLE ("Commons", beside Highways; a relayout
+toggle like Tests). Frames, packages, expanded files, and the entry file never demote.
+Residuals: paint-time kind filters can strand a docked hub's chips (dim them in a follow-up);
+invisible commons strands still count toward spool fan thresholds.
 
 ## W3 — more grouping strategies
 
