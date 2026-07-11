@@ -39,7 +39,8 @@ describe("handlePrAnalyze", () => {
     vi.stubEnv("GITHUB_TOKEN", "");
     vi.stubEnv("GH_TOKEN", "");
     vi.mocked(runGitClone).mockResolvedValue(undefined);
-    vi.mocked(runGit).mockResolvedValue("");
+    // rev-parse yields the analyzed head commit (with git's trailing newline); every other call "".
+    vi.mocked(runGit).mockImplementation((args) => Promise.resolve(args[0] === "rev-parse" ? "abc1234def5678900000aaaabbbbccccddddeeee\n" : ""));
     vi.mocked(extractToArtifact).mockResolvedValue({ artifact: ARTIFACT, warnings: ["w1"] } as never);
   });
 
@@ -58,6 +59,7 @@ describe("handlePrAnalyze", () => {
 
     const done = lines[3];
     expect(done.graphId).toMatch(/^pr-[0-9a-f]{12}$/);
+    expect(done.headSha).toBe("abc1234def5678900000aaaabbbbccccddddeeee");
     expect(done.counts).toEqual({ nodes: 1, edges: 0 });
     expect(done.changedFiles).toEqual([{ path: "src/a.ts", status: "modified" }]);
     expect(done.warnings).toEqual(["w1"]);
@@ -84,6 +86,7 @@ describe("handlePrAnalyze", () => {
       [["fetch", "origin", "main"], { cwd: tmpDir, token: "" }],
       [["fetch", "origin", "pull/41/head"], { cwd: tmpDir, token: "" }],
       [["checkout", "--detach", "FETCH_HEAD"], { cwd: tmpDir }],
+      [["rev-parse", "HEAD"], { cwd: tmpDir }],
     ]);
     expect(vi.mocked(extractToArtifact)).toHaveBeenCalledWith(expect.objectContaining({ changedSince: "origin/main" }));
   });

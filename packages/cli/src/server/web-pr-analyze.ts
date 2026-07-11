@@ -61,13 +61,16 @@ async function streamAnalysis(
 
     writeLine(response, { stage: "checkout", message: `Fetching PR #${body.prNumber} head + base...` });
     await checkoutPrHead(tmpRoot, body.baseRef, body.prNumber, token);
+    // The exact commit the extraction below will analyze — provenance the browser pins the review
+    // to (a branch name can drift under a force-push; this SHA cannot).
+    const headSha = (await runGit(["rev-parse", "HEAD"], { cwd: tmpRoot })).trim();
 
     writeLine(response, { stage: "extract", message: "Extracting modified nodes..." });
     const { artifact, warnings } = await extractPr(tmpRoot, source, body.baseRef, label);
 
     const graphId = storeArtifact(ctx, artifact, source, tmpRoot, body, removeTmp);
     retained = true;
-    writeLine(response, doneLine(graphId, artifact, warnings));
+    writeLine(response, doneLine(graphId, headSha, artifact, warnings));
   } catch (error) {
     writeLine(response, { stage: "error", message: safeMessage(error) });
   } finally {
@@ -134,11 +137,12 @@ function storeArtifact(
   return graphId;
 }
 
-/** The terminal `done` line: the new graph id, its counts, the changed files, and any warnings. */
-function doneLine(graphId: string, artifact: GraphArtifact, warnings: string[]): Record<string, unknown> {
+/** The terminal `done` line: the new graph id, the analyzed head commit, counts, changed files, warnings. */
+function doneLine(graphId: string, headSha: string, artifact: GraphArtifact, warnings: string[]): Record<string, unknown> {
   return {
     stage: "done",
     graphId,
+    headSha,
     counts: { nodes: artifact.nodes.length, edges: artifact.edges.length },
     changedFiles: changedFilesOf(artifact),
     warnings,

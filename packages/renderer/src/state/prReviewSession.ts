@@ -1,7 +1,7 @@
 /**
  * The PR-review artifact session: swap the loaded graph for the freshly-prepared PR-head artifact
  * (so the review computes in HEAD coordinates — the diff hunks' own line numbers), and restore the
- * boot pair when the review session ends. The store's `reviewPrInGraph` drives the swap behind its
+ * boot pair when the review session ends. The store's `prepareHeadGraph` drives the swap behind its
  * stale-seq guard; every session exit (back to the PRs lens, switching PRs) drives the restore, so
  * the coverage lives in the store actions, not in any one component. Only TYPES are imported from
  * the store (erased at build), so there is no runtime cycle.
@@ -12,7 +12,7 @@ import type { ChangedLineSpan, GraphArtifact, LineRange, ReviewContext } from "@
 import { loadArtifact } from "../boot/loadArtifact";
 import { applyChangedIds, buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
 import type { FileMatch } from "../derive/matchAffectedFiles";
-import type { ReviewData } from "../derive/reviewData";
+import { deriveReviewData, type ReviewData } from "../derive/reviewData";
 import { deriveReviewFiles } from "../derive/reviewFiles";
 import { readReviewProgress } from "./reviewTicksPref";
 import type { BlueprintState } from "./store";
@@ -50,7 +50,14 @@ export function swapToPreparedArtifact(
   invalidateArtifactCaches: () => void,
 ): void {
   const state = get();
-  const baseline = state.prReviewBaseline ?? { artifact: state.artifact, index: state.index, review: state.review };
+  // Snapshot the review the BOOT artifact itself carries (if any) — never the live PR review:
+  // the sync-first flow means a PR review is already running when the first head-extract swaps,
+  // and session-end restore must not resurrect it.
+  const baseline = state.prReviewBaseline ?? {
+    artifact: state.artifact,
+    index: state.index,
+    review: deriveReviewData(state.artifact, state.index),
+  };
   invalidateArtifactCaches();
   set({
     artifact: prepared,
@@ -110,6 +117,7 @@ export function restorePrReviewBaseline(
     reviewDiffByFile: {},
     prReviewBaseline: null,
     prPreparedGraphId: null,
+    prPreparedHeadSha: null,
     coverage: get().coverageMode ? computeCoverage(baseline.artifact.nodes, baseline.artifact.edges) : null,
     codeView: null,
     // The review pre-expanded/seeded the Map around the PR; none of that is the reader's own

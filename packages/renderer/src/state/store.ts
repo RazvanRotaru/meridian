@@ -285,6 +285,9 @@ export interface BlueprintState {
   /** Base URL for on-demand source fetches; null when the server ships no source access. Node
    * components read it to decide whether to offer a "show source" control. */
   sourceUrl: string | null;
+  /** POST endpoint for PR-head preparation; null when this session can't prepare one (plain
+   * `view`, older server). Gates the review panel's "Extract head graph" button. */
+  analyzeUrl: string | null;
   /** PR API endpoints derived from the graph artifact URL; 404/network means this session lacks PRs. */
   prsUrl: string;
   prFilesUrl: string;
@@ -310,8 +313,12 @@ export interface BlueprintState {
   /** Why preparation failed; null outside "error". */
   prPrepareError: string | null;
   /** The server-side graph id of the prepared PR-head artifact (the analyze stream's "done"
-   * payload). The streamed review swaps the loaded artifact to it via `graphUrl`. */
+   * payload). Non-null == the loaded artifact IS the head graph ("swapped"); every head-mode
+   * guard (diff remap, base-side hunks, source routing) keys on it. */
   prPreparedGraphId: string | null;
+  /** The head commit the server analyzed for the prepared artifact (the "done" payload's
+   * provenance); shown in the review header. Set on swap, cleared with prPreparedGraphId. */
+  prPreparedHeadSha: string | null;
   /** The boot artifact/index pair, saved ONCE when a streamed review swaps in the prepared PR-head
    * artifact and restored when the session ends (back to the PRs lens, switching PRs). Null outside
    * a swapped review — the synchronous fallback path never swaps, so it never sets this. */
@@ -429,6 +436,12 @@ export interface BlueprintState {
   loadPrs(page?: number): Promise<void>;
   selectPr(number: number | null): Promise<void>;
   reviewPrInGraph(): Promise<void>;
+  /** Opt-in head extract: stream the server's clone→checkout→extract of the PR head, swap the
+   * loaded artifact for the head-accurate one, and re-run the review in head coordinates. On
+   * failure the review stays in sync mode (overlay intact) with the error in the prepare lane. */
+  prepareHeadGraph(): Promise<void>;
+  /** Dismiss the head-extraction failure warning: clears the prepare-error lane. */
+  dismissPrepareError(): void;
   relayout(): Promise<void>;
 }
 
@@ -454,6 +467,19 @@ export interface StoreDependencies {
 }
 
 export type BlueprintStore = StoreApi<BlueprintState>;
+
+/** The `/api/source` base for the CURRENT graph: after a head-graph swap the server serves the
+ * PR-head checkout under the prepared graph id (web-pr-analyze registers its sourceRoots there),
+ * so the boot URL's `id` is exchanged — else every source fetch would read base-clone bytes
+ * against head-relative node locations. Every store source fetch must route through this. */
+function activeSourceUrl(state: BlueprintState): string | null {
+  if (state.sourceUrl === null || state.prPreparedGraphId === null) {
+    return state.sourceUrl;
+  }
+  const url = new URL(state.sourceUrl, requestOrigin());
+  url.searchParams.set("id", state.prPreparedGraphId);
+  return url.toString();
+}
 
 /** `/api/source` URL for a node slice (or the whole file). */
 function baseSourceUrl(sourceUrl: string, location: NonNullable<GraphNode["location"]>, wholeFile: boolean): URL {
@@ -664,6 +690,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     provider: dependencies.provider,
     hasOverlay: dependencies.hasOverlay,
     sourceUrl,
+    analyzeUrl,
     prsUrl,
     prFilesUrl,
     prsTab: "open",
@@ -681,6 +708,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prPrepareStage: null,
     prPrepareError: null,
     prPreparedGraphId: null,
+    prPreparedHeadSha: null,
     prReviewBaseline: null,
     graphUrl: dependencies.graphUrl ?? "",
     codeView: null,
@@ -1724,7 +1752,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const reviewDiff = st.prReviewed !== null && prFileUrl && st.reviewHeadRef
         ? st.reviewDiffByFile[node.location.file] ?? null
         : null;
-      if (!reviewDiff && !sourceUrl) {
+      // Post-swap the source id is exchanged for the prepared head graph's (whose checkout the
+      // server retained) — the local, commit-pinned read; the head-fetch branch never runs then
+      // (reviewHeadRef is nulled on swap, so reviewDiff above is always null).
+      const source = activeSourceUrl(st);
+      if (!reviewDiff && source === null) {
         return;
       }
       // Whole-file view (the diff `</>`) shows the entire file scrolled to the first change; a node
@@ -1745,7 +1777,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       try {
         const url = reviewDiff && st.reviewHeadRef
           ? prFileHeadUrl(prFileUrl!, node.location.file, st.reviewHeadRef)
-          : baseSourceUrl(sourceUrl!, node.location, wholeFile);
+          : baseSourceUrl(source!, node.location, wholeFile);
         const res = await fetch(url, { credentials: "same-origin" });
         if (get().codeView?.node.id !== node.id) {
           return;
@@ -1868,50 +1900,61 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // Reviewing a PR lands on main's Module-map minimal-graph surface (applyPrReviewToMap). When
-    // the server can prepare the PR head (analyzeUrl + a stored artifact id + a known PR summary),
-    // it streams the clone→checkout→extract analysis into the prepare indicator, then SWAPS the
-    // loaded artifact for the prepared head-accurate one (saving the boot pair for the session-end
-    // restore) so the review computes in the diff's own coordinates. Without the endpoint (plain
-    // `view`, older server) it reviews the loaded artifact synchronously, as before — no swap.
-    // A stale-seq guard drops an older stream when a newer review (or PR switch) supersedes it.
+    // Reviewing a PR ALWAYS lands synchronously on main's Module-map minimal-graph surface
+    // (applyPrReviewToMap), against the loaded artifact — no network, no swap. The head-accurate
+    // extraction is opt-in: prepareHeadGraph below, offered by the review panel's button.
     async reviewPrInGraph() {
-      const prNumber = get().prSelected;
-      if (prNumber === null) {
+      if (get().prSelected === null) {
         return;
       }
+      applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
+    },
+
+    // The opt-in head extract behind the review panel's "Extract head graph": stream the server's
+    // clone→checkout→extract analysis into the prepare indicator, SWAP the loaded artifact for the
+    // prepared head-accurate one (saving the boot pair for the session-end restore), then re-run
+    // the review so marking, seeds, and the line diff all compute in the diff's own head
+    // coordinates — added files join the graph, deleted files leave it. On failure the sync review
+    // stays exactly as it was (overlay intact); only the prepare lane reports the error. A
+    // stale-seq guard drops an older stream when a newer preparation (or PR switch) supersedes it.
+    async prepareHeadGraph() {
+      const prNumber = get().prReviewed;
       const summary = selectedPrSummary(get());
-      if (analyzeUrl === null || analyzeGraphId === null || summary === null) {
-        applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
+      if (prNumber === null || analyzeUrl === null || analyzeGraphId === null || summary === null) {
         return;
       }
       const sequence = ++prAnalyzeSeq;
-      set({ prReviewStatus: "preparing", prPrepareStage: "clone", prPrepareError: null, prPreparedGraphId: null });
+      set({ prReviewStatus: "preparing", prPrepareStage: "clone", prPrepareError: null, prPreparedGraphId: null, prPreparedHeadSha: null });
       try {
         const request = { id: analyzeGraphId, prNumber, baseRef: summary.baseRef, headRef: summary.headRef };
-        const preparedGraphId = await streamPrAnalysis(analyzeUrl, request, (stage) => {
+        const analysis = await streamPrAnalysis(analyzeUrl, request, (stage) => {
           if (prAnalyzeSeq === sequence) {
             set({ prPrepareStage: stage });
           }
         });
         if (prAnalyzeSeq !== sequence) {
-          return; // a newer review (or PR switch) superseded this one.
+          return; // a newer preparation (or PR switch) superseded this one.
         }
         // SWAP: load the prepared PR-head artifact and make it the CURRENT graph BEFORE the review
-        // body runs, so amber marking, seeds, and the line diff all compute in the hunks' own
+        // body re-runs, so amber marking, seeds, and the line diff all compute in the hunks' own
         // head coordinates (the loaded artifact is the analyzed branch — its line numbers drift).
-        const prepared = await fetchPreparedArtifact(get().graphUrl, preparedGraphId);
+        const prepared = await fetchPreparedArtifact(get().graphUrl, analysis.graphId);
         if (prAnalyzeSeq !== sequence) {
           return; // abandoned while the artifact was in flight — an old preparation must not swap.
         }
         swapToPreparedArtifact(get, set, prepared, invalidateArtifactCaches);
-        set({ prReviewStatus: "idle", prPrepareStage: null, prPreparedGraphId: preparedGraphId });
+        // prPreparedGraphId flips BEFORE the re-review: applyPrReviewToMap's head-mode guards key on it.
+        set({ prReviewStatus: "idle", prPrepareStage: null, prPreparedGraphId: analysis.graphId, prPreparedHeadSha: analysis.headSha });
         applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
       } catch (error) {
         if (prAnalyzeSeq === sequence) {
           set({ prReviewStatus: "error", prPrepareStage: null, prPrepareError: prepareErrorMessage(error) });
         }
       }
+    },
+
+    dismissPrepareError() {
+      set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null });
     },
 
     async relayout() {
@@ -1940,20 +1983,29 @@ function applyPrReviewToMap(
   prFilesUrl: string,
   invalidateMinimalLayout: () => void,
 ): void {
-  const { prFiles, prSelected, prsList, artifact, index } = get();
+  const { prFiles, prSelected, prsList, artifact, index, prPreparedGraphId } = get();
   if (prSelected === null) {
     return;
   }
+  // "Swapped" == the loaded artifact IS the prepared PR-head graph: node locations are already
+  // head-relative, so every base→head remap below must stand down (running it would corrupt an
+  // already-correct coordinate space — the #134 machinery is for the base-graph sync mode only).
+  const swapped = prPreparedGraphId !== null;
   // This is a lens ENTRY (it lands on the Map lens below), so it owes the shared transition side
   // effects like every other entry point: a live Service scope must not survive into the review.
   beginLensTransition(get, set);
   const summary = [...(prsList.open ?? []), ...(prsList.closed ?? [])].find((pr) => pr.number === prSelected);
-  const context = reviewContextFromPrFiles({
-    prNumber: prSelected,
-    headRef: summary?.headRef ?? null,
-    scopeId: prFilesUrl,
-    files: prFiles ?? [],
-  });
+  const context = reviewContextFromPrFiles(
+    {
+      prNumber: prSelected,
+      headRef: summary?.headRef ?? null,
+      baseRef: summary?.baseRef ?? null,
+      scopeId: prFilesUrl,
+      files: prFiles ?? [],
+    },
+    // Base-side hunks mark base coordinates — right for the boot artifact, wrong for a head graph.
+    { baseSide: !swapped },
+  );
   const review = deriveReviewDataFromContext(context, artifact, index);
   // The files-first checklist: every changed file with its touched code units (the panel's primary
   // section). Derived from the SAME context/artifact as the affected set below, so a checked unit
@@ -2016,18 +2068,22 @@ function applyPrReviewToMap(
   // PR HEAD of that file and paints exactly its diff — code + highlight that match the PR, not base.
   // Keyed off the MATCHED node's location.file (same matching that seeds the graph), robust to any
   // path prefix. This is what makes the fast (synchronous) review show head code without re-extract.
-  const diffByPath = new Map<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>();
-  for (const file of prFiles ?? []) {
-    if (file.edits && file.edits.length > 0) {
-      diffByPath.set(file.path, { edits: file.edits, kinds: file.kinds ?? [] });
-    }
-  }
+  // SWAPPED mode carries neither field: node.location is already head-relative, so showCode's
+  // headSpanFor remap must never run — it reads the local head checkout via activeSourceUrl instead.
   const reviewDiffByFile: Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }> = {};
-  for (const match of matchedFiles) {
-    const locFile = index.nodesById.get(match.moduleId)?.location?.file;
-    const diff = diffByPath.get(match.path);
-    if (locFile && diff) {
-      reviewDiffByFile[locFile] = diff;
+  if (!swapped) {
+    const diffByPath = new Map<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>();
+    for (const file of prFiles ?? []) {
+      if (file.edits && file.edits.length > 0) {
+        diffByPath.set(file.path, { edits: file.edits, kinds: file.kinds ?? [] });
+      }
+    }
+    for (const match of matchedFiles) {
+      const locFile = index.nodesById.get(match.moduleId)?.location?.file;
+      const diff = diffByPath.get(match.path);
+      if (locFile && diff) {
+        reviewDiffByFile[locFile] = diff;
+      }
     }
   }
   const progress = readReviewProgress(context.reviewKey);
@@ -2035,7 +2091,7 @@ function applyPrReviewToMap(
     artifact: reviewedArtifact,
     review,
     prReviewed: prSelected,
-    reviewHeadRef: summary?.headRef ?? null,
+    reviewHeadRef: swapped ? null : summary?.headRef ?? null,
     reviewDiffByFile,
     reviewTicks: progress.ticks,
     reviewUnitTicks: progress.unitTicks,
