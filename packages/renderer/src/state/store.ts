@@ -219,9 +219,8 @@ export interface BlueprintState {
    * overlay mirrors them: a captured card sits at its exact map spot, growth is placed around it.
    * Captured once at build (never on curation) so placed cards never jump; cleared on close. */
   minimalBasePositions: Record<string, PlacedRect>;
-  /** When true, the overlay ABANDONS the captured map-mirror and lays the current cards out fresh with a
-   * tidy left→right ELK pass (the "Re-arrange" action) — the fix for members that mirror far-apart map
-   * spots. Stays on (so promote/demote keep the tidy layout) until the overlay is rebuilt or closed. */
+  /** When true, the overlay abandons the captured map-mirror and lays the current cards out with the
+   * canonical canvas ELK pass. Stays on until the overlay is reset, rebuilt, or closed. */
   minimalArrange: boolean;
   /** The laid-out minimal subgraph for the overlay (flat, mirroring the map), under its own stale-seq guard. */
   minimalRfNodes: Node[];
@@ -1415,9 +1414,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().minimalRelayout();
     },
 
-    // Re-arrange: drop the captured map-mirror and lay the current cards out fresh (tidy left→right ELK),
-    // so members that mirror far-apart map spots snap into a compact, in-view graph. Stays on so later
-    // curation keeps the tidy layout. A no-op when already arranged.
+    // Re-arrange: drop the captured map-mirror and run the canonical canvas ELK layout once. It stays
+    // active so later curation keeps the arranged layout; repeated clicks are deliberately a no-op.
     rearrangeMinimalGraph() {
       if (get().minimalArrange) {
         return;

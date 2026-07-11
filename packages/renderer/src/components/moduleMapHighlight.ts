@@ -73,7 +73,11 @@ export function emphasize(nodes: Node[], edges: Edge[], activeIds: ReadonlySet<s
   if (active.every((id) => CODE_TYPES.has(typeById.get(id) ?? ""))) {
     return pruneUnlitDeps(applyBeacons(emphasizeDirected(nodes, edges, active, radius), active, typeById));
   }
-  const near = neighbourhood(edges, active, radius);
+  // A selected container means all code currently drawn inside it. Seed reach from those descendants
+  // just like node/directed mode does; otherwise an expanded file's outside-view wires (correctly
+  // anchored at its visible unit/block) disappear when the reader selects the file frame itself.
+  const seed = withDrawnDescendants(active, nodes);
+  const near = neighbourhood(edges, [...seed], radius);
   const styledEdges = edges.map((edge) => styleEdge(edge, near.has(edge.source) && near.has(edge.target) ? "near" : "none"));
   const styledNodes = nodes.map((node) => (near.has(node.id) ? node : dimNode(node)));
   return pruneUnlitDeps(applyBeacons({ nodes: styledNodes, edges: styledEdges }, active, typeById));

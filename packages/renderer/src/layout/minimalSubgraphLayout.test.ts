@@ -65,6 +65,19 @@ function couplingSpec() {
   });
 }
 
+// A dependency-only artifact: b.ts calls a.ts, but there is deliberately NO imports edge. The
+// arranged graph must still use that visible coupling as its rightward layout substrate.
+function depOnlyCouplingSpec() {
+  const nodes = [...NODES, fn("fn:baz", "baz", "m:b")];
+  const calls = { id: "calls:fn:baz->fn:foo", source: "fn:baz", target: "fn:foo", kind: "calls", resolution: "resolved" } as GraphEdge;
+  const index = buildGraphIndex({ nodes, edges: [calls] } as unknown as GraphArtifact);
+  return buildMinimalSubgraph(index, buildModuleGraph(index), new Set(["m:a", "m:b"]), new Set(["m:a", "m:b"]), {
+    expanded: new Set(),
+    blockDeps: { edges: [calls] },
+    flows: {},
+  });
+}
+
 // Two package.json-backed member files. With both members present the import is an on-view package
 // crossing; with only the source present, its call charts the target as an always-visible satellite.
 const CROSS_PACKAGE_NODES = [
@@ -134,6 +147,14 @@ describe("layoutMinimalSubgraph", () => {
     }
   });
 
+  it("uses visible dependency edges for arranged artifacts that have no import edges", async () => {
+    const { nodes } = await layoutMinimalSubgraph(depOnlyCouplingSpec(), {}, true);
+    const a = nodes.find((node) => node.id === "m:a")!;
+    const b = nodes.find((node) => node.id === "m:b")!;
+
+    expect(b.position.x).toBeLessThan(a.position.x);
+  });
+
   it("emits a dep wire data-only (category/depKind for the paint chain), with no baked style", async () => {
     const base: Record<string, PlacedRect> = {
       "m:a": { x: 0, y: 0, width: 210, height: 54 },
@@ -178,7 +199,7 @@ describe("layoutMinimalSubgraph", () => {
     });
   });
 
-  it("keeps satellite outsideView semantics through the deliberate ghost:false RF rewrite", async () => {
+  it("keeps satellite outsideView semantics and marks it for selection-driven visibility", async () => {
     const base: Record<string, PlacedRect> = {
       "m:left": { x: 0, y: 0, width: 210, height: 54 },
     };
@@ -189,7 +210,7 @@ describe("layoutMinimalSubgraph", () => {
       crossFrame: false,
       crossPackage: true,
       outsideView: true,
-      ghost: false,
+      ghost: true,
       underlyingEdgeIds: [CROSS_PACKAGE_CALL.id],
     });
   });

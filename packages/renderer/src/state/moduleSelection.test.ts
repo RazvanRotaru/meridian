@@ -4,7 +4,7 @@
  * and hiding tests strands test-code ids OUT of the set without touching production picks.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { GraphArtifact, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { createBlueprintStore, type BlueprintStore } from "./store";
@@ -43,11 +43,50 @@ const BUILD_ORDERS = "ts:src/a.ts#buildOrdersApp";
 const ROUTES_FILE = "ts:src/routes.ts";
 const ROUTES_UNIT = `${ROUTES_FILE}#OrderRoutes`;
 const ROUTES_METHOD = `${ROUTES_UNIT}.list`;
+const DOWNSTREAM_FILE = "ts:src/downstream.ts";
+const DOWNSTREAM_UNIT = `${DOWNSTREAM_FILE}#Downstream`;
+const DOWNSTREAM_METHOD = `${DOWNSTREAM_UNIT}.run`;
+const TERMINAL_FILE = "ts:src/terminal.ts";
+const TERMINAL_UNIT = `${TERMINAL_FILE}#Terminal`;
+const TERMINAL_METHOD = `${TERMINAL_UNIT}.run`;
 
-function freshStore(): BlueprintStore {
-  const index = buildGraphIndex(ARTIFACT);
+// A three-hop call chain whose first hop leaves the initial member set. It catches the overlay's
+// incremental contract: only the current members' one-hop ghosts are shown; promoting one ghost
+// makes its home file a member, which must expose the next hop so the graph can keep growing.
+const ITERATIVE_GHOST_ARTIFACT: GraphArtifact = {
+  ...ARTIFACT,
+  nodes: [
+    ...ARTIFACT.nodes,
+    node(DOWNSTREAM_FILE, "module", "src/downstream.ts", "ts:src"),
+    node(DOWNSTREAM_UNIT, "class", "src/downstream.ts", DOWNSTREAM_FILE),
+    node(DOWNSTREAM_METHOD, "method", "src/downstream.ts", DOWNSTREAM_UNIT),
+    node(TERMINAL_FILE, "module", "src/terminal.ts", "ts:src"),
+    node(TERMINAL_UNIT, "class", "src/terminal.ts", TERMINAL_FILE),
+    node(TERMINAL_METHOD, "method", "src/terminal.ts", TERMINAL_UNIT),
+  ],
+  edges: [
+    ...ARTIFACT.edges,
+    {
+      id: "calls:OrderRoutes.list->Downstream.run",
+      source: ROUTES_METHOD,
+      target: DOWNSTREAM_METHOD,
+      kind: "calls",
+      resolution: "resolved",
+    },
+    {
+      id: "calls:Downstream.run->Terminal.run",
+      source: DOWNSTREAM_METHOD,
+      target: TERMINAL_METHOD,
+      kind: "calls",
+      resolution: "resolved",
+    },
+  ],
+};
+
+function freshStore(artifact: GraphArtifact = ARTIFACT): BlueprintStore {
+  const index = buildGraphIndex(artifact);
   return createBlueprintStore({
-    artifact: ARTIFACT,
+    artifact,
     index,
     provider: null,
     hasOverlay: false,
@@ -131,6 +170,21 @@ describe("minimal-graph overlay (extract selection)", () => {
     return store;
   }
 
+  function withBuiltIterativeGhostGraph(): BlueprintStore {
+    const store = freshStore(ITERATIVE_GHOST_ARTIFACT);
+    store.getState().toggleModuleSelect("ts:src/a.ts");
+    store.getState().toggleModuleSelect("ts:src/b.ts");
+    store.getState().buildMinimalGraph();
+    return store;
+  }
+
+  const ghostIds = (store: BlueprintStore): string[] =>
+    store
+      .getState()
+      .minimalRfNodes.filter((candidate) => candidate.type === "ghost")
+      .map((candidate) => candidate.id)
+      .sort();
+
   it("buildMinimalGraph extracts the selection verbatim as members and origin", () => {
     const store = withBuiltGraph();
     expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
@@ -191,6 +245,58 @@ describe("minimal-graph overlay (extract selection)", () => {
     expect(state.minimalRfNodes.some((node) => node.id === ROUTES_METHOD)).toBe(true);
   });
 
+  it("derives the initial ghost ring from the current members without leaking later hops", async () => {
+    const store = withBuiltIterativeGhostGraph();
+    await store.getState().minimalRelayout();
+
+    expect(store.getState().minimalMemberIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
+    expect(ghostIds(store)).toEqual([ROUTES_UNIT]);
+    expect(store.getState().minimalRfNodes.some((candidate) => candidate.id === DOWNSTREAM_UNIT)).toBe(false);
+    expect(store.getState().minimalRfNodes.some((candidate) => candidate.id === TERMINAL_UNIT)).toBe(false);
+  });
+
+  it("reveals a selected ghost's own ghost after promotion", async () => {
+    const store = withBuiltIterativeGhostGraph();
+    await store.getState().minimalRelayout();
+
+    store.getState().selectModule(ROUTES_UNIT);
+    expect(store.getState().moduleSelected).toEqual(new Set([ROUTES_UNIT]));
+    expect(ghostIds(store)).toEqual([ROUTES_UNIT]); // selection alone does not change membership
+
+    store.getState().promoteGhost(ROUTES_UNIT);
+    await store.getState().minimalRelayout();
+
+    expect(store.getState().moduleSelected).toEqual(new Set([ROUTES_UNIT]));
+    expect(store.getState().minimalMemberIds).toContain(ROUTES_FILE);
+    expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: ROUTES_UNIT, type: "unit" }));
+    expect(ghostIds(store)).toEqual([DOWNSTREAM_UNIT]);
+    expect(store.getState().minimalRfNodes.some((candidate) => candidate.id === TERMINAL_UNIT)).toBe(false);
+  });
+
+  it("supports repeated ghost promotion so the minimal graph can expand hop by hop", async () => {
+    const store = withBuiltIterativeGhostGraph();
+    await store.getState().minimalRelayout();
+
+    store.getState().promoteGhost(ROUTES_UNIT);
+    await store.getState().minimalRelayout();
+    expect(ghostIds(store)).toEqual([DOWNSTREAM_UNIT]);
+
+    store.getState().selectModule(DOWNSTREAM_UNIT);
+    store.getState().promoteGhost(DOWNSTREAM_UNIT);
+    await store.getState().minimalRelayout();
+
+    expect(store.getState().moduleSelected).toEqual(new Set([DOWNSTREAM_UNIT]));
+    expect(store.getState().minimalMemberIds).toEqual(["ts:src/a.ts", "ts:src/b.ts", ROUTES_FILE, DOWNSTREAM_FILE]);
+    expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: DOWNSTREAM_UNIT, type: "unit" }));
+    expect(ghostIds(store)).toEqual([TERMINAL_UNIT]);
+
+    store.getState().promoteGhost(TERMINAL_UNIT);
+    await store.getState().minimalRelayout();
+    expect(store.getState().minimalMemberIds).toContain(TERMINAL_FILE);
+    expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: TERMINAL_UNIT, type: "unit" }));
+    expect(ghostIds(store)).toEqual([]);
+  });
+
   it("demoteMinimalMember removes a member but never empties the set", () => {
     const store = withBuiltGraph();
     store.getState().demoteMinimalMember("ts:src/b.ts");
@@ -206,13 +312,31 @@ describe("minimal-graph overlay (extract selection)", () => {
     store.getState().demoteMinimalMember("ts:src/b.ts");
     store.getState().resetMinimalGraph();
     expect(store.getState().minimalMemberIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
+    expect(store.getState().minimalArrange).toBe(false);
+  });
+
+  it("runs Re-arrange once and Reset restores the map mirror", () => {
+    const store = withBuiltGraph();
+    const relayout = vi.fn().mockResolvedValue(undefined);
+    store.setState({ minimalRelayout: relayout });
+
+    expect(store.getState().minimalArrange).toBe(false);
+    store.getState().rearrangeMinimalGraph();
+    expect(store.getState().minimalArrange).toBe(true);
+    store.getState().rearrangeMinimalGraph();
+    expect(relayout).toHaveBeenCalledOnce();
+
+    store.getState().resetMinimalGraph();
+    expect(store.getState().minimalArrange).toBe(false);
   });
 
   it("a fresh build resets any prior curation", () => {
     const store = withBuiltGraph();
     store.getState().promoteGhost("ts:src/a.test.ts");
+    store.getState().rearrangeMinimalGraph();
     store.getState().buildMinimalGraph();
     expect(store.getState().minimalMemberIds).toEqual(store.getState().minimalSeedIds);
+    expect(store.getState().minimalArrange).toBe(false);
   });
 
   it("closeMinimalGraph clears the overlay but keeps the selection for a rebuild", () => {
@@ -220,6 +344,7 @@ describe("minimal-graph overlay (extract selection)", () => {
     store.getState().closeMinimalGraph();
     expect(store.getState().minimalSeedIds).toEqual([]);
     expect(store.getState().minimalMemberIds).toEqual([]);
+    expect(store.getState().minimalArrange).toBe(false);
     expect(store.getState().moduleSelected.size).toBe(2);
   });
 
