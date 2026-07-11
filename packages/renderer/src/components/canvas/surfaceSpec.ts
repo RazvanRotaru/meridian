@@ -32,7 +32,9 @@ import { clusterMemberSeeds, homeFileOf, leadIdOf } from "../../derive/serviceCl
 import { clusteringFor } from "../../derive/serviceClusteringCache";
 import { deriveServiceDomains, isServiceDomainId, SERVICE_DOMAIN_MIN_CLUSTERS } from "../../derive/serviceDomains";
 import type { ServiceGroupingMode } from "../../derive/serviceClusteringModes";
-import { scopeSetOf, type ServiceScope } from "../../state/serviceScope";
+import { semanticOuterLevel } from "../../derive/moduleSemanticComposite";
+import { resolveServiceAnchors } from "../../state/lensPath";
+import { scopeSetOf, serviceScopeFor, type ServiceScope } from "../../state/serviceScope";
 
 /** Which of the Visual Highways passes apply to a surface's shape (always bundle → route → spool). */
 export interface HighwayFlags {
@@ -84,6 +86,24 @@ export interface Crumb {
   label: string;
 }
 
+/** The laid level plus the lens-local state needed to resolve its real enclosing graph. Passing the
+ * state object (rather than only two focus strings) lets a lens interpret "parent" inside its own
+ * projection — notably Service's scoped cluster neighbourhood. */
+export interface SurfaceSemanticParentContext {
+  state: SurfaceTreeState;
+  effectiveFocus: string | null;
+}
+
+/** One canonical graph immediately outside the current level. `context` is a narrow state override
+ * applied while deriving that outer tree; unspecified fields inherit from the current lens. This
+ * keeps the hierarchy generic without teaching the store what a Service scope means. */
+export interface SurfaceSemanticParent {
+  focus: string | null;
+  anchorId: string;
+  label: string;
+  context?: Partial<Pick<SurfaceTreeState, "serviceScope">>;
+}
+
 /** A surface's zoom model: how a dive lands and how the trail reads. Every surface holds its zoom
  * in the ONE shared `moduleFocus` slot (phase C migrates the UI lens's `focusId` into it too), so
  * there is deliberately no per-spec `of(state)` accessor — read `state.moduleFocus` directly. */
@@ -105,6 +125,10 @@ export interface SurfaceFocusModel {
     groupingMode?: ServiceGroupingMode,
     groupingTargetSize?: number,
   ): Crumb[];
+  /** Resolve the real graph which contains this level as one node. The caller derives that tree by
+   * changing `moduleFocus` to the returned focus, clearing level-local expansion, and applying the
+   * optional context override; null means this surface is already at its semantic root. */
+  semanticParent(context: SurfaceSemanticParentContext): SurfaceSemanticParent | null;
 }
 
 export interface SurfaceSpec {
@@ -143,6 +167,19 @@ export function crumbsFor(focus: string | null, index: GraphIndex): Crumb[] {
     .map((node) => ({ id: node.id, label: node.displayName ?? node.id }));
 }
 
+/** Map/UI share containment ancestry even though their edge projections differ. Their canonical
+ * outer focus/anchor pair is therefore the same resolver used by the original Map stack. */
+function containmentSemanticParent({ state, effectiveFocus }: SurfaceSemanticParentContext): SurfaceSemanticParent | null {
+  const parent = semanticOuterLevel(state.index, state.moduleFocus, effectiveFocus);
+  if (parent === null) {
+    return null;
+  }
+  return {
+    ...parent,
+    label: state.index.nodesById.get(parent.anchorId)?.displayName ?? parent.anchorId,
+  };
+}
+
 /** The Service trail: a synthetic filesystem domain followed by the focused service when present. */
 function serviceCrumbs(
   effectiveFocus: string | null,
@@ -170,6 +207,57 @@ function serviceCrumbs(
     : [service];
 }
 
+/** Resolve Service's real containment hierarchy. The dense unscoped lens is root → domain →
+ * service. A scoped or small lens stays flat; a direct service deep-link with no domain synthesizes
+ * the same localized neighbourhood as Service scope so its parent remains useful. Grouping inputs
+ * match deriveServiceTree, so changing strategy cannot leave parents on stale domain ids. */
+function serviceSemanticParent({ state, effectiveFocus }: SurfaceSemanticParentContext): SurfaceSemanticParent | null {
+  if (effectiveFocus === null) {
+    return null;
+  }
+  const clustering = clusteringFor(state.index);
+  const model = deriveServiceDomains(
+    clustering,
+    state.serviceGroupingMode,
+    state.serviceGroupingTargetSize,
+  );
+  const focusedDomain = model.domainById.get(effectiveFocus);
+  if (focusedDomain !== undefined) {
+    // Scoped overviews intentionally draw no domain cards, so such a stale/deep-linked focus has
+    // no canonical parent anchor in that projection.
+    return state.serviceScope === null
+      ? { focus: null, anchorId: focusedDomain.id, label: focusedDomain.label }
+      : null;
+  }
+  const lead = leadIdOf(effectiveFocus);
+  if (lead === null) {
+    return null;
+  }
+  const label = clustering.metrics.get(lead)?.displayName ?? lead;
+  if (state.serviceScope === null && clustering.clusters.length >= SERVICE_DOMAIN_MIN_CLUSTERS) {
+    const domain = model.domainByLead.get(lead);
+    if (domain !== undefined) {
+      return { focus: domain.id, anchorId: effectiveFocus, label };
+    }
+  }
+  const resolution = resolveServiceAnchors(
+    [lead],
+    state.index,
+    state.serviceGroupingMode,
+    state.serviceGroupingTargetSize,
+  );
+  if (resolution === null) {
+    return null;
+  }
+  const serviceScope = state.serviceScope ?? serviceScopeFor(resolution.owningLeads, state.index);
+  return {
+    focus: null,
+    anchorId: effectiveFocus,
+    label,
+    context: { serviceScope },
+  };
+}
+
 /** The folder Map: focus = moduleFocus (containment dive over folders AND files), ghosts reveal by
  * refocusing at the definition. */
 const MAP_SURFACE: SurfaceSpec = {
@@ -183,6 +271,7 @@ const MAP_SURFACE: SurfaceSpec = {
     rootLabel: "Repository",
     rootNoun: "packages",
     crumbs: crumbsFor,
+    semanticParent: containmentSemanticParent,
   },
   ghostReveal: (actions, id) => actions.revealModule(id),
   minimalSeeds: (selection) => [...selection],
@@ -212,6 +301,7 @@ const SERVICE_SURFACE: SurfaceSpec = {
     rootLabel: "All services",
     rootNoun: "services",
     crumbs: serviceCrumbs,
+    semanticParent: serviceSemanticParent,
   },
   ghostReveal: (actions, id) => actions.revealServiceGhost(id),
   minimalSeeds: clusterMemberSeeds,
@@ -232,6 +322,7 @@ const UI_SURFACE: SurfaceSpec = {
     rootLabel: "UI",
     rootNoun: "components",
     crumbs: crumbsFor,
+    semanticParent: containmentSemanticParent,
   },
   ghostReveal: (actions, id) => actions.revealModule(id),
   minimalSeeds: (selection, index) => [...new Set(selection.map((id) => homeFileOf(id, index)))],
@@ -239,12 +330,10 @@ const UI_SURFACE: SurfaceSpec = {
 };
 
 /** The minimal-graph overlay's Highways shape: SPOOL only — a flat graph has no containers to
- * pair-bundle and no frames to gutter-route. The overlay is deliberately NOT a SurfaceSpec yet:
- * its members+satellite tree is built by `minimalRelayout` (`buildMinimalSubgraph` mirrors
- * captured Map positions — a different input shape than `deriveTree`), and its gestures defer to
- * the UNDERLYING lens's spec by construction (`viewMode` stays "modules"/"call" while it covers
- * the Map, so the interaction hook resolves that spec). Folding it into the registry is phase C
- * work; until a real deriveTree exists, exporting only the flags keeps every spec member honest. */
+ * pair-bundle and no frames to gutter-route. Its members+satellite tree still comes from the
+ * separate `minimalRelayout` input shape rather than a SurfaceSpec `deriveTree`; semantic parity is
+ * supplied by `minimalSemanticSource` plus the same required GraphSurface/controller contract used
+ * here. Its gestures defer to the UNDERLYING lens's spec (`viewMode` stays modules/call/ui). */
 export const MINIMAL_OVERLAY_HIGHWAYS: HighwayFlags = { bundling: false, routing: false, spooling: true };
 
 /** The strict registry: the three viewMode-keyed module surfaces (Map / Service / UI — phase C

@@ -49,10 +49,27 @@ import { deriveServiceDomains, isServiceDomainId } from "../derive/serviceDomain
 import { SERVICE_GROUPING_OPTIONS, type ServiceGroupingMode } from "../derive/serviceClusteringModes";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import type { HighlightMode } from "../components/moduleMapPaint";
-import { activeModuleSurfaceSpec, moduleSurfaceSpec } from "../components/canvas/surfaceSpec";
+import {
+  activeModuleSurfaceSpec,
+  moduleSurfaceSpec,
+  type SurfaceSemanticParent,
+} from "../components/canvas/surfaceSpec";
+import {
+  composeSemanticStackLayouts,
+  prepareSemanticModuleStack,
+  retainSemanticStackFromDepth,
+  type SemanticAncestorLevel,
+  type SemanticOuterTree,
+} from "../derive/moduleSemanticComposite";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
 import { moduleRevealStateFor, nearestModuleIds } from "./flowExplorer";
-import { anchorNodeIds, mapRevealStateForMany, resolveServiceAnchors, serviceRevealStateForMany, uiRevealStateForMany } from "./lensPath";
+import {
+  anchorNodeIds,
+  mapRevealStateForMany,
+  resolveServiceAnchors,
+  serviceRevealStateForMany,
+  uiRevealStateForMany,
+} from "./lensPath";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import {
   PRS_UNAVAILABLE_ERROR,
@@ -108,6 +125,10 @@ export interface LayoutActivity {
   label: string;
   detail?: string;
 }
+
+/** Lens-owned state carried by an already-mounted semantic parent. The compositor treats this as
+ * opaque metadata; the surface spec supplies it and the generic commit applies it atomically. */
+type SurfaceSemanticContext = NonNullable<SurfaceSemanticParent["context"]>;
 
 /** The source view's state: which node, its fetched code, and the in-flight/error status.
  * `mode` decides where it renders — a compact panel inline on the node, or a centered modal. */
@@ -198,18 +219,21 @@ export interface BlueprintState {
   /** Whether the composition scorecards show their SOLID metric rows + smell chips. Off == a
    * structure-only view (kind + name), decluttered. Persisted to localStorage across reloads. */
   showSolidMetrics: boolean;
-  /** The laid-out Module-map LEVEL graph (one containment level, ELK-laid), recomputed whenever the
-   * "modules" lens is (re)entered or the focus changes. */
+  /** The laid-out shared module-family scene. A focused surface may contain the current level plus
+   * every canonical semantic parent supplied by that surface's spec. */
   moduleRfNodes: Node[];
   moduleRfEdges: Edge[];
   moduleLayoutStatus: LayoutStatus;
   moduleLayoutActivity: LayoutActivity | null;
-  /** The package/directory node the Module map is zoomed INTO; null == the whole-repo package overview
-   * (level 0). Double-clicking a group card descends; the breadcrumb ascends. */
+  /** The current surface's innermost semantic level; null == that surface's root. Double-click,
+   * breadcrumb, URL navigation, and outward semantic commits can change it; zoom-in never does. */
   moduleFocus: string | null;
   /** The node actually rendered from after chain-collapse (a single-child chain auto-descends); null
    * == the overview. Read by the surface for the containment breadcrumb. */
   moduleEffectiveFocus: string | null;
+  /** Every outward semantic transition already mounted in the canvas, nearest parent first.
+   * `depth` is also stamped into each layer's node/edge data as `semanticDepth`. */
+  moduleSemanticLayers: SemanticAncestorLevel<SurfaceSemanticContext>[];
   /** How many import hops the selection lights up — a PAINT-ONLY highlight radius (never a relayout;
    * containment, not this, bounds what's drawn). GHOST_DEPTH_ALL == the whole connected neighbourhood. */
   moduleRadius: number;
@@ -424,6 +448,9 @@ export interface BlueprintState {
   toggleSolidMetrics(): void;
   moduleRelayout(activity?: LayoutActivity): Promise<void>;
   setModuleFocus(id: string | null): void;
+  /** Commit an already-mounted semantic parent as real surface navigation. This consumes inner
+   * layers in place; unlike an explicit double-click/breadcrumb dive, it never runs ELK again. */
+  commitModuleSemanticParent(depth: number): boolean;
   toggleModuleExpand(nodeId: string): void;
   revealModule(nodeId: string): void;
   /** The Service lens's ghost reveal: open the ghost's owning `svc:` cluster frame(s) IN PLACE
@@ -921,6 +948,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleLayoutActivity: null,
     moduleFocus: null,
     moduleEffectiveFocus: null,
+    moduleSemanticLayers: [],
     moduleRadius: 1,
     highlightMode: "node",
     showHighways: true,
@@ -1106,6 +1134,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // starts at default expansion; clear any prior selection (it means nothing in a new chart).
     openLogicFlow(nodeId) {
       const state = get();
+      moduleLayoutSeq += 1;
       beginLensTransition(get, set);
       set({ viewMode: "logic", logicRoot: nodeId, logicStack: [nodeId], logicFocus: [], logicSelected: null, expandedLogic: new Set<string>() });
       void get().logicRelayout(nodeLayoutActivity(state, "Opening logic for", nodeId));
@@ -1123,7 +1152,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         get().serviceGroupingMode,
         get().serviceGroupingTargetSize,
       );
-      set({ viewMode: "call", compRoot: unitId, compSelectedId: unitId, mapExtra: new Set<string>(), ...(reveal ?? MODULE_TOP_LEVEL) });
+      set({
+        viewMode: "call",
+        compRoot: unitId,
+        compSelectedId: unitId,
+        mapExtra: new Set<string>(),
+        moduleRfNodes: [],
+        moduleRfEdges: [],
+        moduleSemanticLayers: [],
+        moduleEffectiveFocus: null,
+        // Composition pivots deliberately re-enter the full Service lens; unlike tab-to-tab path
+        // carry, they must not recreate the session-only scoped sub-view that the reader exited.
+        serviceScope: null,
+        ...(reveal ?? MODULE_TOP_LEVEL),
+      });
       void get().moduleRelayout(nodeLayoutActivity(state, "Opening service graph for", unitId));
     },
 
@@ -1295,10 +1337,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ showSolidMetrics: next });
     },
 
-    // Re-derive the Module-surface LEVEL through ELK, behind the same stale-seq guard. BOTH lenses
-    // write this slice: the surface's SurfaceSpec derives the tree — the "call" lens a
-    // SERVICE-CLUSTER tree (no zoom/focus), "modules" the folder containment level for the current
-    // focus. The import graph is built once (cached) and reused for every level.
+    // Re-derive the active module-family surface through ELK, behind the same stale-seq guard. The
+    // SurfaceSpec owns both its visible tree and its semantic-parent relation, so Map, Service, and
+    // UI all travel through this one hierarchy/composition path.
     async moduleRelayout(activity) {
       const sequence = ++moduleLayoutSeq;
       set({
@@ -1318,10 +1359,76 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // cards, and paint-hiding it kept a crater of empty space. toggleShowTests relayouts this lens.
         // (The Service tree applies the hidden set to its GHOST tier only — cluster members still
         // hide at paint time, exactly as its old branch did. The Commons toggle rides in as part of
-        // `state`: the Map's spec threads `showCommons` into its hub demotion; Service/UI ignore it.)
+        // `state`: the Map's spec threads `showCommons` into its hub demotion; Service/UI ignore it.
+        // Focused semantic composites disable the off-frame dock below so all detail stays enclosed.)
         const hidden = state.showTests ? EMPTY_HIDDEN_IDS : state.index.testIds;
-        const tree = activeModuleSurfaceSpec(state.viewMode).deriveTree(state, { graph, deps, flows }, { extraIds: state.mapExtra, hiddenIds: hidden });
-        const laid = await layoutModuleTree(tree.nodes, tree.edges);
+        const spec = activeModuleSurfaceSpec(state.viewMode);
+        // A focused surface mounts detail plus every real parent graph as independent ELK layers.
+        // Commons demotion stays disabled for focused composites: independent Map layouts would
+        // otherwise mint the same RF-only dock identity. Service/UI ignore this Map-only flag.
+        const semanticState = state.moduleFocus !== null ? { ...state, showCommons: false } : state;
+        const tree = spec.deriveTree(
+          semanticState,
+          { graph, deps, flows },
+          { extraIds: state.mapExtra, hiddenIds: hidden },
+        );
+        const outerTrees: SemanticOuterTree<SurfaceSemanticContext>[] = [];
+        let currentState = semanticState;
+        let currentEffectiveFocus = tree.effectiveFocus;
+        const seenParents = new Set<string>();
+        while (currentState.moduleFocus !== null && currentEffectiveFocus !== null) {
+          const stateKey = `${currentState.moduleFocus}\u0000${currentEffectiveFocus}`;
+          if (seenParents.has(stateKey)) {
+            break;
+          }
+          seenParents.add(stateKey);
+          const parent = spec.focus.semanticParent({ state: currentState, effectiveFocus: currentEffectiveFocus });
+          if (parent === null) {
+            break;
+          }
+          const parentState = {
+            ...currentState,
+            moduleFocus: parent.focus,
+            moduleExpanded: new Set<string>(),
+            ...(parent.context ?? {}),
+          };
+          const parentTree = spec.deriveTree(
+            parentState,
+            { graph, deps, flows },
+            { hiddenIds: hidden },
+          );
+          outerTrees.push({
+            level: {
+              depth: outerTrees.length + 1,
+              focus: parent.focus,
+              effectiveFocus: parentTree.effectiveFocus,
+              anchorId: parent.anchorId,
+              label: parent.label,
+              context: parent.context,
+            },
+            tree: parentTree,
+          });
+          if (parent.focus === null) {
+            break;
+          }
+          currentState = parentState;
+          currentEffectiveFocus = parentTree.effectiveFocus;
+        }
+        const stack = prepareSemanticModuleStack(tree, outerTrees);
+        let laid: { nodes: Node[]; edges: Edge[] };
+        let semanticLayers: SemanticAncestorLevel<SurfaceSemanticContext>[] = [];
+        if (stack.layers.length < 2) {
+          laid = await layoutModuleTree(tree.nodes, tree.edges);
+        } else {
+          const layouts = await Promise.all(
+            stack.layers.map((layer) => layoutModuleTree(layer.tree.nodes, layer.tree.edges)),
+          );
+          const composite = composeSemanticStackLayouts(layouts, stack);
+          laid = composite ?? layouts[0];
+          if (composite !== null) {
+            semanticLayers = stack.ancestors;
+          }
+        }
         if (moduleLayoutSeq !== sequence) {
           return; // a newer focus change superseded this one.
         }
@@ -1329,6 +1436,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           moduleRfNodes: laid.nodes,
           moduleRfEdges: laid.edges,
           moduleEffectiveFocus: tree.effectiveFocus,
+          moduleSemanticLayers: semanticLayers,
           moduleLayoutStatus: "ready",
           moduleLayoutActivity: null,
         });
@@ -1339,8 +1447,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // Zoom the Module map into a package/directory (null == back to the whole-repo overview). Clears
-    // the selection (it means nothing at a new level) and re-lays out. A no-op when already there.
+    // Explicitly dive the active module surface (null == its root). Clears the selection (it means
+    // nothing at a new level) and re-lays out. A no-op when already there. Wheel zoom-in is inert;
+    // this action remains the double-click/breadcrumb navigation path on every SurfaceSpec.
     setModuleFocus(id) {
       const state = get();
       if (state.moduleFocus === id) {
@@ -1352,6 +1461,46 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().moduleRelayout(id === null
         ? { label: "Returning to overview…" }
         : nodeLayoutActivity(state, "Opening", id));
+    },
+
+    // Crossing an outward semantic threshold is browser-back-shaped navigation on ANY registered
+    // module surface, but its target graph is already mounted and aligned. A coarse wheel sample may
+    // cross more than one band, so consume through the canonical graph actually visible at that
+    // depth. Surviving absolute markers stay stable through the camera reset.
+    commitModuleSemanticParent(depth) {
+      const state = get();
+      const target = state.moduleSemanticLayers.find((level) => level.depth === depth);
+      if (
+        moduleSurfaceSpec(state.viewMode) === null ||
+        state.moduleLayoutStatus !== "ready" ||
+        !Number.isInteger(depth) ||
+        target === undefined
+      ) {
+        return false;
+      }
+      const retained = retainSemanticStackFromDepth(
+        { nodes: state.moduleRfNodes, edges: state.moduleRfEdges },
+        depth,
+      );
+      if (retained === null) {
+        return false;
+      }
+
+      // A focus relayout requested immediately before the threshold must never overwrite this
+      // committed slice when its awaited ELK work completes.
+      moduleLayoutSeq += 1;
+      set({
+        ...(target.context ?? {}),
+        moduleFocus: target.focus,
+        moduleEffectiveFocus: target.effectiveFocus,
+        moduleRfNodes: retained.nodes,
+        moduleRfEdges: retained.edges,
+        moduleSemanticLayers: state.moduleSemanticLayers.filter((level) => level.depth > depth),
+        moduleSelected: new Set<string>(),
+        moduleExpanded: new Set<string>(),
+        mapExtra: new Set<string>(),
+      });
+      return true;
     },
 
     // Expand/collapse a card of the module surface IN PLACE (the service tab's cluster frames, the
@@ -1832,6 +1981,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({
         viewMode: "call",
         serviceScope: serviceScopeFor(resolution.owningLeads, index),
+        moduleRfNodes: [],
+        moduleRfEdges: [],
+        moduleSemanticLayers: [],
+        moduleEffectiveFocus: null,
         ...resolution.reveal,
         moduleExpanded: revealExpanded,
       });
@@ -2119,19 +2272,22 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // the entry; the server stream may finish, but its sequence can no longer swap the graph.
         get().cancelPrReviewPreparation();
       }
-      beginLensTransition(get, set);
       // The path nodes to carry — read BEFORE any state mutates the outgoing lens's selection/focus.
+      const outgoing = get();
       const anchors = expandServiceSyntheticAnchors(
-        anchorNodeIds(get()),
-        get().index,
-        get().serviceGroupingMode,
-        get().serviceGroupingTargetSize,
+        anchorNodeIds(outgoing),
+        outgoing.index,
+        outgoing.serviceGroupingMode,
+        outgoing.serviceGroupingTargetSize,
       );
+      beginLensTransition(get, set);
       if (mode === "logic") {
+        moduleLayoutSeq += 1;
         set({ viewMode: mode });
         return;
       }
       if (mode === "prs") {
+        moduleLayoutSeq += 1;
         // Returning to the PRs lens ends the review session: the boot artifact comes back so the
         // list is browsed against the graph the session booted with. No relayout here — the PRs
         // page has no canvas, and re-entering a graph lens always lays out afresh.
@@ -2148,18 +2304,33 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // path), so an explicit ?mfocus=… still opens exactly where the link points. The palette's
       // "+" pins (`mapExtra`) are session scratch of the level we leave — always cleared. Every
       // remaining mode is a module surface (Map / Service / UI) with its own anchor reveal.
+      const { index, serviceGroupingMode, serviceGroupingTargetSize } = get();
+      const serviceResolution = mode === "call"
+        ? resolveServiceAnchors(anchors, index, serviceGroupingMode, serviceGroupingTargetSize)
+        : null;
       const reveal =
         mode === "modules"
-          ? mapRevealStateForMany(anchors, get().index)
+          ? mapRevealStateForMany(anchors, index)
           : mode === "call"
-            ? serviceRevealStateForMany(
-              anchors,
-              get().index,
-              get().serviceGroupingMode,
-              get().serviceGroupingTargetSize,
-            )
-            : uiRevealStateForMany(anchors, get().index);
-      set({ viewMode: mode, mapExtra: new Set<string>(), ...(reveal ?? MODULE_TOP_LEVEL) });
+            ? serviceResolution?.reveal ?? null
+            : uiRevealStateForMany(anchors, index);
+      // The incoming spec must never render against the outgoing surface's scene while its ELK pass
+      // is in flight. Service also receives the same owner + one-hop scope as its anchor resolution;
+      // on large repositories this keeps lens carry local instead of synchronously mounting the
+      // entire call graph before the first frame can paint.
+      set({
+        viewMode: mode,
+        mapExtra: new Set<string>(),
+        moduleRfNodes: [],
+        moduleRfEdges: [],
+        moduleSemanticLayers: [],
+        moduleEffectiveFocus: null,
+        serviceScope:
+          mode === "call" && serviceResolution !== null
+            ? serviceScopeFor(serviceResolution.owningLeads, index)
+            : null,
+        ...(reveal ?? MODULE_TOP_LEVEL),
+      });
       void get().moduleRelayout({
         label: mode === "call" ? "Opening Service lens…" : mode === "ui" ? "Opening UI lens…" : "Opening Map lens…",
       });
@@ -3040,17 +3211,26 @@ function beginLensTransition(get: BlueprintStore["getState"], set: (partial: Par
   if (get().minimalSeedIds.length > 0) {
     get().closeMinimalGraph();
   }
-  if (get().serviceScope !== null) {
-    set({ serviceScope: null });
-  }
+  const state = get();
+  const focusedService = state.moduleFocus !== null
+    && (leadIdOf(state.moduleFocus) !== null || isServiceDomainId(state.moduleFocus));
+  const resetServiceScene = state.serviceScope !== null || focusedService;
   // A service/domain zoom is CALL-LENS state — stale on the next visit and meaningless anywhere
-  // else: clear it so a lens entry that lands back on "call" can't hide its target under a lingering
-  // zoom. Map folder focus is that lens's own state and survives. The relayout matters for entries that never re-lay the
-  // module surface themselves; any entry that does supersedes it via the layout sequence guard.
-  const focus = get().moduleFocus;
-  if (focus !== null && (leadIdOf(focus) !== null || isServiceDomainId(focus))) {
-    set({ moduleFocus: null });
-    void get().moduleRelayout();
+  // else: clear it so a lens entry that lands back on "call" (openComposition's pivot) can't hide
+  // its target under a lingering zoom. Only Service synthetic ids clear — a Map folder focus is that
+  // lens's own state and must survive. Every caller either lays out its destination or leaves the
+  // shared canvas, so deriving the old full Service root here would only add a large stale ELK pass.
+  if (resetServiceScene) {
+    set({
+      serviceScope: null,
+      ...(focusedService ? { moduleFocus: null } : {}),
+      moduleEffectiveFocus: null,
+      moduleRfNodes: [],
+      moduleRfEdges: [],
+      moduleSemanticLayers: [],
+      moduleLayoutStatus: "idle",
+      moduleLayoutActivity: null,
+    });
   }
 }
 

@@ -143,7 +143,9 @@ describe("Service cluster focus (the containment dive)", () => {
     expect(ids.has(frameIdOf(ALPHA))).toBe(true);
     expect(ids.has(ALPHA)).toBe(true);
     expect(ids.has(ORDER)).toBe(true);
-    expect(ids.has(frameIdOf(BETA))).toBe(false);
+    // The real parent graph is pre-mounted at depth 1 for semantic zoom; Beta is absent only from
+    // the current depth-0 detail population (and remains hidden at reading zoom).
+    expect(state.moduleRfNodes.some((n) => n.id === frameIdOf(BETA) && n.data.semanticDepth === 0)).toBe(false);
     // The off-zoom callee appears as a banded ghost card (kept OUT of ELK, still on the canvas).
     const ghost = state.moduleRfNodes.find((n) => n.id === `${BETA}.run`);
     expect(ghost?.type).toBe("ghost");
@@ -190,7 +192,7 @@ describe("Service cluster focus (the containment dive)", () => {
     const state = store.getState();
     expect(state.serviceScope).not.toBeNull();
     expect(state.moduleEffectiveFocus).toBe(frameIdOf(ALPHA));
-    expect(state.moduleRfNodes.some((n) => n.id === frameIdOf(BETA))).toBe(false);
+    expect(state.moduleRfNodes.some((n) => n.id === frameIdOf(BETA) && n.data.semanticDepth === 0)).toBe(false);
   });
 
   it("the lens-carry into the Service lens never dives (moduleFocus lands null)", () => {
@@ -219,14 +221,73 @@ describe("Service cluster focus (the containment dive)", () => {
     await store.getState().moduleRelayout();
 
     expect(store.getState().moduleEffectiveFocus).toBe(backend);
-    expect(store.getState().moduleRfNodes.some((item) => item.type === "serviceDomain")).toBe(false);
-    expect(store.getState().moduleRfNodes.filter((item) => item.id.startsWith("svc:"))).toHaveLength(6);
+    const visibleNodes = store.getState().moduleRfNodes.filter((item) => item.data.semanticDepth === 0);
+    expect(visibleNodes.some((item) => item.type === "serviceDomain")).toBe(false);
+    expect(visibleNodes.filter((item) => item.id.startsWith("svc:"))).toHaveLength(6);
 
     store.getState().setViewMode("call");
     expect(store.getState().moduleFocus).toBeNull();
     await store.getState().moduleRelayout();
     expect(store.getState().moduleRfNodes.filter((item) => item.type === "serviceDomain")).toHaveLength(2);
     expect(store.getState().moduleRfNodes.filter((item) => item.type === "serviceDomain").every((item) => (item.data as { isExpanded?: boolean }).isExpanded === false)).toBe(true);
+  });
+
+  it("prepares and commits the dense semantic chain service → domain → All services", async () => {
+    const store = freshDomainStore();
+    const lead = "ts:src/aria/app/backend/service0.ts#backend0Service";
+    const service = frameIdOf(lead);
+    const backend = domainId(store, "backend");
+    store.setState({ viewMode: "call", moduleFocus: service, serviceScope: null });
+    await store.getState().moduleRelayout();
+
+    expect(store.getState().moduleSemanticLayers).toHaveLength(2);
+    expect(store.getState().moduleSemanticLayers[0]).toMatchObject({
+      depth: 1,
+      focus: backend,
+      effectiveFocus: backend,
+      anchorId: service,
+      label: "backend0Service",
+    });
+    expect(store.getState().moduleSemanticLayers[1]).toMatchObject({
+      depth: 2,
+      focus: null,
+      effectiveFocus: null,
+      anchorId: backend,
+      label: "backend",
+    });
+
+    expect(store.getState().commitModuleSemanticParent(1)).toBe(true);
+    expect(store.getState().moduleFocus).toBe(backend);
+    expect(store.getState().moduleEffectiveFocus).toBe(backend);
+    expect(store.getState().serviceScope).toBeNull();
+    expect(store.getState().moduleSemanticLayers.map((layer) => layer.depth)).toEqual([2]);
+
+    expect(store.getState().commitModuleSemanticParent(2)).toBe(true);
+    expect(store.getState().moduleFocus).toBeNull();
+    expect(store.getState().moduleEffectiveFocus).toBeNull();
+    expect(store.getState().moduleSemanticLayers).toEqual([]);
+  });
+
+  it("skips synthetic domains when a focused service belongs to a scoped flat graph", async () => {
+    const store = freshDomainStore();
+    const lead = "ts:src/aria/app/backend/service0.ts#backend0Service";
+    const neighbour = "ts:src/aria/app/backend/service1.ts#backend1Service";
+    const service = frameIdOf(lead);
+    store.setState({
+      viewMode: "call",
+      moduleFocus: service,
+      serviceScope: { leadIds: [lead, neighbour], label: "backend0Service (+1)" },
+    });
+    await store.getState().moduleRelayout();
+
+    expect(store.getState().moduleSemanticLayers).toHaveLength(1);
+    expect(store.getState().moduleSemanticLayers[0]).toMatchObject({
+      depth: 1,
+      focus: null,
+      anchorId: service,
+      label: "backend0Service",
+      context: { serviceScope: { leadIds: [lead, neighbour] } },
+    });
   });
 
   it("leaving a focused domain carries its real service leads instead of the synthetic id", async () => {

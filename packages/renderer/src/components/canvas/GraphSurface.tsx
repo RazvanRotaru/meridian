@@ -21,22 +21,30 @@
  *     hook assigns (cross-canvas under everything; intra-frame at its nesting depth);
  *   - wire hover naming (WireTooltip) and the click-pinned Wire INSPECTOR (evidence down to
  *     file:line), opt-in via `wireHover` — the overlay historically has neither;
- *   - the semantic-zoom ORIENTATION tier (`MapLod`) — pure CSS level-of-detail over the shared
- *     cards' lod-* class tags, so every surface reads as a map at overview zoom.
+ *   - repeated semantic-zoom bands (`MapLod`, its legacy component name) — pure CSS visibility over
+ *     pre-mounted, independently laid parent graphs on every SurfaceSpec that supplies them.
  *
- * LIFECYCLE-bound behaviors deliberately stay in each MOUNT, because this component unmounts while
- * the minimal overlay replaces the Map's canvas and the Map lens must live on underneath: the
- * fit-once policy (the Map refits per LEVEL, its guard surviving the overlay; the overlay refits
- * per layout), the Toolbar recenter reaction (`useRecenter` — the Map's stays subscribed, muted,
- * so closing the overlay re-fits the kept selection), and the shared interaction hook
- * (`useModuleNodeInteractions` — its pending select must outlive the canvas swap). A mount passes
+ * LIFECYCLE-bound behaviors deliberately stay in each provider-owned MOUNT: the fit-once policy
+ * (the source fits per level; the overlay per layout), the Toolbar recenter reaction (`useRecenter`
+ * — the source remains subscribed but muted while covered), and the shared interaction hook
+ * (`useModuleNodeInteractions` — its pending select must outlive canvas paint changes). A mount passes
  * `onInit` + its `interactions` and keeps its own guards. Floating chrome (breadcrumb, legends,
  * panels, the extract strip) rides in the `children` slot; flow-anchored extras (beacon arrows,
  * the ghost "+" ring) in `flowExtras`, which receives the PAINTED view.
  */
 
-import { useMemo, type ReactNode } from "react";
-import { ReactFlow, type Edge, type EdgeTypes, type Node, type ReactFlowInstance } from "@xyflow/react";
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
+import {
+  ReactFlow,
+  ReactFlowProvider,
+  type Edge,
+  type EdgeTypes,
+  type Node,
+  type OnMove,
+  type OnMoveEnd,
+  type OnMoveStart,
+  type ReactFlowInstance,
+} from "@xyflow/react";
 import { useBlueprint } from "../../state/StoreContext";
 import { moduleNodeTypes } from "../nodes/modulemap/ModuleCardNode";
 import { paintMinimalLevel } from "../paintMinimal";
@@ -63,6 +71,16 @@ import { useNodeDiffPreview } from "../review/useNodeDiffPreview";
 import { GhostHierarchyEdge, GHOST_HIERARCHY_EDGE_TYPE } from "../edges/GhostHierarchyEdge";
 import { prepareCanvasEdges } from "./presentationEdgePipeline";
 import { GraphLayoutIndicator, type GraphLayoutIndicatorProps } from "./GraphLayoutIndicator";
+import {
+  appendClass,
+  semanticLayerClass,
+  SEMANTIC_LAYER_CLASS,
+} from "../../derive/moduleSemanticComposite";
+import {
+  normalizedSemanticDepths,
+  semanticCommitDepthForZoomChange,
+  type SemanticLodLayer,
+} from "./mapLodGeometry";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
  * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "cycle" the
@@ -79,6 +97,10 @@ const moduleEdgeTypes: EdgeTypes = {
   [WIRE_EDGE_TYPE]: WireEdge,
   [GHOST_HIERARCHY_EDGE_TYPE]: GhostHierarchyEdge,
 };
+
+/** Provider boundary for one isolated shared-canvas instance. Mounts import it from this module so
+ * React Flow runtime ownership stays behind the same seam as GraphSurface itself. */
+export { ReactFlowProvider as GraphSurfaceProvider };
 
 /** The painted view handed to `flowExtras`: emphasis-styled nodes + the selected-step beacons. */
 export interface SurfaceFlowView {
@@ -98,14 +120,29 @@ export interface GraphSurfaceProps {
   interactions: ModuleNodeHandlers;
   /** The mount keeps the fit-once guard and instance ref, so the init callback threads out to it. */
   onInit?: (instance: ReactFlowInstance<Node, Edge>) => void;
+  /** Override React Flow's mount-time fit when the mount manages its own detail-only viewport. */
+  autoFitView?: boolean;
   /** Wire chrome — hover naming (WireTooltip), the click-pinned Wire Inspector, direction pulses —
    * on for the module lenses, historically off on the minimal overlay (mostly lit at rest). */
   wireHover?: boolean;
-  /** The Map's orientation LOD hides card bodies at low zoom. The review overlay opts out because
-   * its group summaries contain the explicit changed-files expansion action. */
-  orientationLod?: boolean;
   /** PR review only: show a scrollable source diff after dwelling over a directly changed node. */
   nodeDiffPreview?: boolean;
+  /** Every shared-canvas mount declares its semantic scene explicitly. Empty means this particular
+   * scene is already at its root; omission is forbidden so a new mount cannot silently lose zoom
+   * navigation while still appearing to share GraphSurface. */
+  semanticLayers: readonly SemanticLodLayer[];
+  /** Absolute depths from the unfiltered canonical scene. */
+  semanticDepths: readonly number[];
+  /** Previous root depth held until the post-commit camera reset reaches normal reading zoom. */
+  semanticBandOriginDepth: number | undefined;
+  /** First preview threshold; both paint and commit detection must read this exact value. */
+  semanticFirstPreviewMax: number;
+  /** False while the mount establishes a programmatic reading viewport. */
+  semanticLodEnabled: boolean;
+  /** False while the semantic parent handoff owns the camera animation. */
+  semanticCommitEnabled: boolean;
+  /** Commit one parent when a user-driven outward move crosses its threshold. */
+  onSemanticCommit: (layer: SemanticLodLayer) => void;
   /** Extras that must render INSIDE the flow (beacon arrows, the overlay's ghost "+" ring). */
   flowExtras?: (view: SurfaceFlowView) => ReactNode;
   /** Floating chrome (breadcrumb, legends, panels, action strips), absolutely positioned over the canvas. */
@@ -122,11 +159,76 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const hiddenRelKinds = useBlueprint((state) => state.hiddenRelKinds);
   const showHighways = useBlueprint((state) => state.showHighways);
   const groupGhostsByParent = useBlueprint((state) => state.groupGhostsByParent);
+  // Keep the semantic controller mounted through the final parent handoff too: its ancestor list can
+  // already be empty while the retained root population is still fading in and resetting camera.
+  const hasSemanticComposite =
+    props.semanticLayers.length > 0 || props.semanticBandOriginDepth !== undefined;
+  const semanticCommitEnabled = props.semanticCommitEnabled;
+  const semanticDepths = useMemo(
+    () => normalizedSemanticDepths(props.semanticDepths),
+    [props.semanticDepths],
+  );
+  const previousUserZoom = useRef<number | null>(null);
+  const programmaticUserZoomArmed = useRef(false);
+  const onMoveStart = useCallback<OnMoveStart>((event, viewport) => {
+    if (!semanticCommitEnabled) {
+      previousUserZoom.current = null;
+      return;
+    }
+    // React Flow passes null for fitView/setCenter. Those camera moves must never become semantic
+    // navigation. Explicit zoom controls are the exception, armed by capture on their user event.
+    if (event != null || programmaticUserZoomArmed.current) {
+      previousUserZoom.current = viewport.zoom;
+    }
+  }, [semanticCommitEnabled]);
+  const onMove = useCallback<OnMove>((event, viewport) => {
+    if (!semanticCommitEnabled) {
+      previousUserZoom.current = null;
+      return;
+    }
+    if (event == null && !programmaticUserZoomArmed.current) {
+      // A semantic handoff's setCenter can run inside an active wheel gesture. Ignore its null-event
+      // camera callbacks without erasing the user's preceding sample, so outward movement can keep
+      // crossing farther levels continuously.
+      return;
+    }
+    const previousZoom = previousUserZoom.current;
+    // Advance the sample before the synchronous owner callback filters the mounted graph. If that
+    // causes an immediate rerender, another move sample starts from the camera position just seen.
+    previousUserZoom.current = viewport.zoom;
+    if (previousZoom === null) {
+      return;
+    }
+    const targetDepth = semanticCommitDepthForZoomChange(
+      previousZoom,
+      viewport.zoom,
+      semanticDepths,
+      props.semanticBandOriginDepth,
+      props.semanticFirstPreviewMax,
+    );
+    const target = props.semanticLayers.find((layer) => layer.depth === targetDepth);
+    if (target !== undefined) {
+      props.onSemanticCommit(target);
+    }
+  }, [props.onSemanticCommit, props.semanticLayers, props.semanticBandOriginDepth, props.semanticFirstPreviewMax, semanticCommitEnabled, semanticDepths]);
+  const onMoveEnd = useCallback<OnMoveEnd>((event) => {
+    if (event != null || programmaticUserZoomArmed.current) {
+      previousUserZoom.current = null;
+      programmaticUserZoomArmed.current = false;
+    }
+  }, []);
+  useEffect(() => {
+    if (!semanticCommitEnabled) {
+      previousUserZoom.current = null;
+      programmaticUserZoomArmed.current = false;
+    }
+  }, [semanticCommitEnabled]);
 
-  // The ONE paint chain: suppress redundant imports → drop toggled-off relationship kinds →
-  // emphasize (dim at rest, light the selection's N-hop reach). A pure repaint — positions hold.
+  // The ONE paint chain, isolated per semantic population. Main's ghost grouping can mint parent
+  // cards and hierarchy spokes at paint time; stamping those outputs back onto their source depth
+  // keeps them in the same cross-fade instead of leaking across hidden ancestor graphs.
   const { nodes: paintedNodes, edges: paintedEdges, beacons } = useMemo(
-    () => paintMinimalLevel(props.nodes, props.edges, selected, radius, highlightMode, hiddenRelKinds, {
+    () => paintSemanticLayers(props.nodes, props.edges, selected, radius, highlightMode, hiddenRelKinds, {
       index,
       groupByParent: groupGhostsByParent,
       expandedGroupIds: props.interactions.expandedGhostGroupIds,
@@ -145,12 +247,31 @@ export function GraphSurface(props: GraphSurfaceProps) {
   // library boundary after the paint-only inspection decoration.
   const reactFlowNodes = useMemo(() => withReactFlowDimensions(displayedNodes), [displayedNodes]);
   const virtualizeCanvas = shouldVirtualizeCanvasNodes(reactFlowNodes.length);
-  // Presentation-only parent→member spokes split off before every semantic edge pass. The helper
-  // runs salience, cycle, ribbon and enabled highway transforms only over actual relationships.
-  const preparedEdges = useMemo(
-    () => prepareCanvasEdges(paintedEdges, paintedNodes, selected, showHighways, props.highways),
-    [paintedEdges, paintedNodes, selected, showHighways, props.highways],
-  );
+  // Every semantic depth is an independent paint population. Process it through main's shared
+  // presentation pipeline separately so hidden ancestors cannot affect salience/highways, while
+  // parent→member hierarchy spokes remain outside semantic transforms and interaction dressing.
+  const preparedEdges = useMemo(() => {
+    const layers = new Map<number | undefined, Edge[]>();
+    for (const edge of paintedEdges) {
+      const depth = semanticDepthOf(edge);
+      const peers = layers.get(depth);
+      if (peers) {
+        peers.push(edge);
+      } else {
+        layers.set(depth, [edge]);
+      }
+    }
+    const semanticEdges: Edge[] = [];
+    const hierarchyEdges: Edge[] = [];
+    for (const [depth, edges] of layers) {
+      const prepared = prepareCanvasEdges(edges, paintedNodes, selected, showHighways, props.highways);
+      semanticEdges.push(...prepared.semanticEdges.map((edge) =>
+        depth === undefined ? edge : withSemanticDepth(edge, depth),
+      ));
+      hierarchyEdges.push(...prepared.hierarchyEdges);
+    }
+    return { semanticEdges, hierarchyEdges };
+  }, [paintedEdges, paintedNodes, props.highways, selected, showHighways]);
   const wire = useWireHover(preparedEdges.semanticEdges, paintedNodes, props.wireHover === true);
   // Append hierarchy spokes AFTER interaction dressing too: their exact objects never acquire a
   // pulse, label, hit width, tooltip, inspector subject, or semantic z-order.
@@ -162,8 +283,30 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const nodeDiff = useNodeDiffPreview(nodeDiffEnabled);
 
   return (
-    <div style={SURFACE_STYLE} aria-busy={props.busy ? "true" : undefined}>
+    <div
+      style={SURFACE_STYLE}
+      aria-busy={props.busy ? "true" : undefined}
+      onClickCapture={(event) => {
+        const target = event.target;
+        if (target instanceof Element && target.closest(".react-flow__controls-zoomout") !== null) {
+          // Controls uses the viewport API, whose move event is null just like fitView. Arm it before
+          // the button's target handler runs so this explicit user zoom follows semantic navigation.
+          programmaticUserZoomArmed.current = true;
+        }
+      }}
+      onWheelCapture={(event) => {
+        const target = event.target;
+        if (target instanceof Element && target.closest(".react-flow__minimap") !== null) {
+          // MiniMap wheel zoom also drives the main viewport through the API. The direction check in
+          // semanticCommitDepthForZoomChange keeps inward movement inert after this user-only arm.
+          programmaticUserZoomArmed.current = true;
+        }
+      }}
+    >
+      {/* A semantic composite contains hidden ancestor graphs at reading zoom. The mount performs a
+          depth-zero fit after layout; React Flow's whole-stack fit would pull the camera outward. */}
       <ReactFlow<Node, Edge>
+        className={hasSemanticComposite ? "semantic-composite" : undefined}
         nodes={reactFlowNodes}
         edges={renderedEdges}
         nodeTypes={moduleNodeTypes}
@@ -187,12 +330,23 @@ export function GraphSurface(props: GraphSurfaceProps) {
         // present. Once the graph is too dense for a useful MiniMap, mount only visible cards so a
         // fully disclosed high-degree ghost neighbourhood can still contain hundreds of nodes.
         onlyRenderVisibleElements={virtualizeCanvas}
+        onMoveStart={onMoveStart}
+        onMove={onMove}
+        onMoveEnd={onMoveEnd}
         // Manual z: basic mode ADDS a nested endpoint's node-z to the edge — see useWireHover's z rule.
         zIndexMode="manual"
         {...READONLY_CANVAS_PROPS}
+        fitView={props.autoFitView ?? !hasSemanticComposite}
       >
         <CanvasChrome nodeColor={props.miniMapColor} minimap={!virtualizeCanvas} />
-        <MapLod enabled={props.orientationLod !== false} />
+        <MapLod
+          nodes={reactFlowNodes}
+          semanticLayers={props.semanticLayers}
+          semanticDepths={semanticDepths}
+          semanticBandOriginDepth={props.semanticBandOriginDepth}
+          semanticFirstPreviewMax={props.semanticFirstPreviewMax}
+          semanticLodEnabled={props.semanticLodEnabled}
+        />
         {props.flowExtras?.({ nodes: displayedNodes, beacons })}
       </ReactFlow>
       {wire.hover ? <WireTooltip hover={wire.hover} /> : null}
@@ -204,6 +358,73 @@ export function GraphSurface(props: GraphSurfaceProps) {
       {props.busy ? <GraphLayoutIndicator {...props.busy} /> : null}
     </div>
   );
+}
+
+/** Run paint-time transforms independently for each mounted graph. Besides preventing selection
+ * salience from crossing levels, this assigns main's dynamically-created ghost groups/spokes to
+ * the same semantic layer as the exact ghosts they replaced. */
+function paintSemanticLayers(
+  nodes: Parameters<typeof paintMinimalLevel>[0],
+  edges: Parameters<typeof paintMinimalLevel>[1],
+  selected: Parameters<typeof paintMinimalLevel>[2],
+  radius: Parameters<typeof paintMinimalLevel>[3],
+  mode: Parameters<typeof paintMinimalLevel>[4],
+  hiddenRelKinds: Parameters<typeof paintMinimalLevel>[5],
+  ghostPresentation: Parameters<typeof paintMinimalLevel>[6],
+): ReturnType<typeof paintMinimalLevel> {
+  const nodesByDepth = new Map<number | undefined, Node[]>();
+  const edgesByDepth = new Map<number | undefined, Edge[]>();
+  const depths = new Set<number | undefined>();
+  for (const node of nodes) {
+    const depth = semanticDepthOf(node);
+    depths.add(depth);
+    const peers = nodesByDepth.get(depth);
+    if (peers) peers.push(node);
+    else nodesByDepth.set(depth, [node]);
+  }
+  for (const edge of edges) {
+    const depth = semanticDepthOf(edge);
+    depths.add(depth);
+    const peers = edgesByDepth.get(depth);
+    if (peers) peers.push(edge);
+    else edgesByDepth.set(depth, [edge]);
+  }
+
+  const paintedNodes: Node[] = [];
+  const paintedEdges: Edge[] = [];
+  const beacons = new Set<string>();
+  for (const depth of depths) {
+    const painted = paintMinimalLevel(
+      nodesByDepth.get(depth) ?? [],
+      edgesByDepth.get(depth) ?? [],
+      selected,
+      radius,
+      mode,
+      hiddenRelKinds,
+      ghostPresentation,
+    );
+    paintedNodes.push(...(depth === undefined
+      ? painted.nodes
+      : painted.nodes.map((node) => withSemanticDepth(node, depth))));
+    paintedEdges.push(...(depth === undefined
+      ? painted.edges
+      : painted.edges.map((edge) => withSemanticDepth(edge, depth))));
+    painted.beacons.forEach((id) => beacons.add(id));
+  }
+  return { nodes: paintedNodes, edges: paintedEdges, beacons };
+}
+
+function semanticDepthOf(entry: Node | Edge): number | undefined {
+  const depth = (entry.data as { semanticDepth?: unknown } | undefined)?.semanticDepth;
+  return typeof depth === "number" && Number.isInteger(depth) && depth >= 0 ? depth : undefined;
+}
+
+function withSemanticDepth<T extends Node | Edge>(entry: T, depth: number): T {
+  return {
+    ...entry,
+    data: { ...(entry.data ?? {}), semanticDepth: depth },
+    className: appendClass(appendClass(entry.className, SEMANTIC_LAYER_CLASS), semanticLayerClass(depth)),
+  } as T;
 }
 
 /** Add the transient inspection flag without feeding it back into layout or graph selection. */

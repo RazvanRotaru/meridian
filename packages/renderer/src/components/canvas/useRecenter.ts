@@ -19,8 +19,7 @@ const FIT_OPTIONS = { padding: 0.2, duration: 400, minZoom: 0.01 } as const;
 /** `maxZoom` caps how far a fit may zoom IN — pass it where the selection can be a single small
  * node (a method card), so "center on it" never becomes a full-viewport close-up. `enabled: false`
  * mutes a surface's reaction while it is NOT the active canvas (e.g. the Map underneath the
- * minimal overlay) — with two subscribers in one provider, the muted one would otherwise fit last
- * and win. */
+ * minimal overlay), preserving that covered surface's viewport for the outward handoff. */
 export function useRecenter(selectedIds: readonly string[], options?: { maxZoom?: number; enabled?: boolean }): void {
   const recenterSeq = useBlueprint((state) => state.recenterSeq);
   const { fitView, getNode } = useReactFlow();
@@ -30,15 +29,16 @@ export function useRecenter(selectedIds: readonly string[], options?: { maxZoom?
   latestIds.current = selectedIds;
   const maxZoom = options?.maxZoom;
   const enabled = options?.enabled ?? true;
-  const seenInitial = useRef(false);
+  // Track the signal itself, not merely whether the effect has run. `enabled` changes when an
+  // overlay covers/reveals a still-mounted source surface; that visibility change must preserve the
+  // source viewport rather than masquerade as a new recenter request.
+  const seenSeq = useRef(recenterSeq);
 
   useEffect(() => {
-    if (!seenInitial.current) {
-      seenInitial.current = true; // the mount value is the baseline, not a recenter request.
-      return;
-    }
-    if (!enabled) {
-      return; // still consumes the seq baseline above, so re-enabling never replays an old bump.
+    const requested = shouldApplyRecenter(seenSeq.current, recenterSeq, enabled);
+    seenSeq.current = recenterSeq;
+    if (!requested) {
+      return; // mount, cover/reveal, and signals consumed while covered do not fit the viewport.
     }
     // Drop selected ids with no node on screen so a stale/hidden selection falls back to the whole
     // graph rather than fitting to nothing (React Flow ignores unknown ids and would no-op).
@@ -49,4 +49,10 @@ export function useRecenter(selectedIds: readonly string[], options?: { maxZoom?
       nodes: present.length > 0 ? present.map((id) => ({ id })) : undefined,
     });
   }, [recenterSeq, fitView, getNode, maxZoom, enabled]);
+}
+
+/** Pure signal gate: visibility changes never fabricate a request, and a real request seen while
+ * covered is consumed rather than replayed when the source surface is revealed. */
+export function shouldApplyRecenter(seenSeq: number, currentSeq: number, enabled: boolean): boolean {
+  return currentSeq !== seenSeq && enabled;
 }

@@ -10,11 +10,13 @@
  *                   children charted, on every surface that draws the container.
  *   FOCUS           `spec.focus.dive` lands the same effectiveFocus/breadcrumb contract per
  *                   surface; clearing restores the root.
+ *   SEMANTIC PARENT each registered lens resolves its enclosing graph through the same contract.
  *   MINIMAL SEEDS   the same selection seeds the overlay onto the same HOME FILES everywhere
  *                   (`svc:` frames decomposed on the Service lens).
  *   PROMOTION       the ghost "+" pins the same home file into `mapExtra` on every surface.
  *
- * Edge-colour parity and the ELK-options identity lock live beside this file (parity/ siblings).
+ * GraphSurface mount parity (including Minimal Graph), edge-colour parity, and the ELK-options
+ * identity lock live beside this file / under components/canvas.
  */
 
 import { describe, expect, it } from "vitest";
@@ -172,6 +174,82 @@ describe("FOCUS — spec.focus.dive lands effectiveFocus + crumbs; clearing rest
 
   it.each([...MODULE_SURFACE_MODES])("%s: a ghost card is never divable (it reveals through the spec instead)", (mode) => {
     expect(spec(mode).focus.divable("ghost", BETA)).toBe(false);
+  });
+});
+
+describe("SEMANTIC PARENT — each lens resolves its own enclosing graph", () => {
+  it.each(["modules", "ui"] as const)("%s: containment parent uses the shared focus/anchor resolver", (mode) => {
+    const surface = spec(mode);
+    const parent = surface.focus.semanticParent({
+      state: {
+        index: INDEX,
+        moduleFocus: CORE,
+        moduleExpanded: new Set(),
+        serviceScope: null,
+        showCommons: true,
+      },
+      effectiveFocus: CORE,
+    });
+
+    expect(parent).toEqual({ focus: APP_PKG, anchorId: CORE, label: "core" });
+  });
+
+  it("Service: a direct focused link synthesizes a localized owner + neighbour parent scope", () => {
+    const surface = spec("call");
+    const state = {
+      index: INDEX,
+      moduleFocus: SVC_ALPHA,
+      moduleExpanded: new Set<string>(),
+      serviceScope: null,
+      showCommons: true,
+    };
+    const parent = surface.focus.semanticParent({ state, effectiveFocus: SVC_ALPHA });
+
+    expect(parent).toMatchObject({ focus: null, anchorId: SVC_ALPHA, label: "AlphaService" });
+    expect(parent?.context?.serviceScope?.label).toBe("AlphaService (+2)");
+    expect(new Set(parent?.context?.serviceScope?.leadIds)).toEqual(new Set([ALPHA, BETA, APP_FILE]));
+
+    // Applying the spec-owned override derives a real outer graph containing the collapsed anchor;
+    // the generic caller does not need to know how Service localization is represented.
+    const outer = surface.deriveTree(
+      {
+        ...state,
+        moduleFocus: parent!.focus,
+        moduleExpanded: new Set(),
+        ...parent!.context,
+      },
+      CACHES,
+    );
+    expect(outer.nodes.some((node) => node.id === SVC_ALPHA)).toBe(true);
+  });
+
+  it("Service: an existing localized scope is preserved by identity", () => {
+    const serviceScope = { leadIds: [ALPHA], label: "Alpha only" };
+    const parent = spec("call").focus.semanticParent({
+      state: {
+        index: INDEX,
+        moduleFocus: SVC_ALPHA,
+        moduleExpanded: new Set(),
+        serviceScope,
+        showCommons: true,
+      },
+      effectiveFocus: SVC_ALPHA,
+    });
+
+    expect(parent?.context?.serviceScope).toBe(serviceScope);
+  });
+
+  it.each([...MODULE_SURFACE_MODES])("%s: a semantic root has no parent", (mode) => {
+    expect(spec(mode).focus.semanticParent({
+      state: {
+        index: INDEX,
+        moduleFocus: null,
+        moduleExpanded: new Set(),
+        serviceScope: null,
+        showCommons: true,
+      },
+      effectiveFocus: null,
+    })).toBeNull();
   });
 });
 

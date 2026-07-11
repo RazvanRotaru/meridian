@@ -9,11 +9,14 @@
 
 import { Background, BackgroundVariant, Controls, MiniMap, type Node, useStore } from "@xyflow/react";
 
+export const CANVAS_MIN_ZOOM = 0.01;
+
 // The shared, generic-independent <ReactFlow> props. Read-only (not draggable/connectable) but
 // selectable — selection is driven into the store via each view's onNodeClick. Click-drag pans and
 // must never rubber-band select or text-highlight labels. A big flow can be hundreds of nodes, so
 // minZoom drops far below React Flow's 0.5 default (which clips large graphs) while zoom-in stays
-// capped; double-click is repurposed for diving, so the pane must not also zoom on it.
+// capped. Double-click is the surfaces' explicit dive gesture, so the shared pane never also applies
+// React Flow's built-in camera zoom.
 export const READONLY_CANVAS_PROPS = {
   colorMode: "dark",
   nodesDraggable: false,
@@ -23,8 +26,8 @@ export const READONLY_CANVAS_PROPS = {
   selectionOnDrag: false,
   style: { userSelect: "none" },
   fitView: true,
-  fitViewOptions: { padding: 0.2, minZoom: 0.01 },
-  minZoom: 0.01,
+  fitViewOptions: { padding: 0.2, minZoom: CANVAS_MIN_ZOOM },
+  minZoom: CANVAS_MIN_ZOOM,
   maxZoom: 4,
   zoomOnDoubleClick: false,
   proOptions: { hideAttribution: true },
