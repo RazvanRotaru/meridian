@@ -14,6 +14,7 @@
 
 import type { Edge, Node } from "@xyflow/react";
 import { relColor } from "../theme/mapPalette";
+import { withBoundaryDash } from "./edgeBoundary";
 
 /** The data payload on a bundled "highway" edge. Index signature so it satisfies React Flow's
  * `Edge.data` constraint (`Record<string, unknown>`). */
@@ -28,8 +29,12 @@ export interface BundleEdgeData extends Record<string, unknown> {
   constituents: Edge[];
   /** Whether ANY constituent was lit (opacity 1) by the emphasis pass. */
   hasLit: boolean;
-  /** Whether the bundle crosses a package boundary (→ dashed). */
+  /** Geometric/grouping signal retained for the bundle's established colour vocabulary. */
   crossFrame: boolean;
+  /** Whether ANY constituent's original dependency crosses an npm-package boundary. */
+  crossPackage: boolean;
+  /** Whether ANY constituent represents an endpoint outside the current view. */
+  outsideView: boolean;
   /** Synthesized category for compatibility with the paint layer. */
   category: "bundle";
   /** Source parent container id. */
@@ -150,11 +155,15 @@ function createBundleEdge(sourceParent: string, targetParent: string, edges: Edg
   // Tally relationship kinds
   const breakdown: Record<string, number> = {};
   let hasLit = false;
+  let crossPackage = false;
+  let outsideView = false;
 
   for (const edge of edges) {
-    const data = edge.data as { depKind?: string; category?: string } | undefined;
+    const data = edge.data as { depKind?: string; category?: string; crossPackage?: boolean; outsideView?: boolean } | undefined;
     const kind = data?.depKind ?? data?.category ?? "other";
     breakdown[kind] = (breakdown[kind] ?? 0) + 1;
+    crossPackage ||= data?.crossPackage === true;
+    outsideView ||= data?.outsideView === true;
     if ((edge.style as { opacity?: number } | undefined)?.opacity === 1) {
       hasLit = true;
     }
@@ -181,7 +190,9 @@ function createBundleEdge(sourceParent: string, targetParent: string, edges: Edg
     dominantKind,
     constituents: edges,
     hasLit,
-    crossFrame: true, // cross-container by definition
+    crossFrame: true, // cross-container by definition; colour/geometric signal, not dash semantics
+    crossPackage,
+    outsideView,
     category: "bundle",
     sourceParent,
     targetParent,
@@ -193,11 +204,7 @@ function createBundleEdge(sourceParent: string, targetParent: string, edges: Edg
     target: targetParent,
     type: BUNDLE_EDGE_TYPE,
     data: bundleData,
-    style: {
-      stroke: color,
-      strokeWidth: width,
-      opacity,
-    },
+    style: withBoundaryDash({ stroke: color, strokeWidth: width, opacity }, bundleData),
     interactionWidth: Math.max(width + 10, 18), // generous hit area
   };
 }

@@ -12,6 +12,7 @@ import { type Edge, type Node } from "@xyflow/react";
 import { arrowMarker, CALLER_WIRE, IPC_WIRE, RENDERS_WIRE } from "../theme/edgeColors";
 import { IMPORT_CROSS, IMPORT_SIBLING, relColor } from "../theme/mapPalette";
 import { repositionLitGhosts } from "./ghostReposition";
+import { withBoundaryDash } from "../layout/edgeBoundary";
 
 // Wire colour = relationship TYPE (see baseStroke), the same whether or not it is selected.
 const CROSS_FRAME_COLOR = IMPORT_CROSS;
@@ -211,13 +212,15 @@ type EdgeEmphasis = "near" | "downstream" | "upstream" | "none";
 function styleEdge(edge: Edge, emphasis: EdgeEmphasis): Edge {
   const lit = emphasis !== "none";
   // A wire ALWAYS keeps its relationship colour — selection never recolours it. Being selected reads
-  // by brightening + thickening (and dimming everything else); direction is the arrowhead's job. Dash
-  // means exactly one thing: the far end is off this level (a ghost).
+  // by brightening + thickening (and dimming everything else); direction is the arrowhead's job.
+  // Dash is independent of `crossFrame`: it means the wire leaves this view or its npm package.
   const stroke = baseStroke(edge);
-  // Dashed = crosses a package boundary; solid = stays within the same package.
-  const dash = isCrossFrame(edge) ? { strokeDasharray: "5 4" } : {};
   const width = weightWidth(edge);
-  return { ...edge, animated: false, style: { stroke, strokeWidth: lit ? width + EMPHASIS_EXTRA : width, opacity: lit ? 1 : dimOpacity(edge), ...dash }, markerEnd: arrowMarker(stroke, 14) };
+  const style = withBoundaryDash(
+    { stroke, strokeWidth: lit ? width + EMPHASIS_EXTRA : width, opacity: lit ? 1 : dimOpacity(edge) },
+    edge.data,
+  );
+  return { ...edge, animated: false, style, markerEnd: arrowMarker(stroke, 14) };
 }
 
 /** Log-clamped weight→width: w=1 → 1.1px, w=4 → 2.2px, w=16 → 3.3px, w≥64 → 4px cap. */
@@ -227,8 +230,8 @@ function weightWidth(edge: Edge): number {
 }
 
 // Colour tells the relationship TYPE, at rest AND when selected: IPC magenta, each code-dependency
-// kind its own hue (calls / instantiates / extends / implements / references), a boundary-crossing
-// import gold, everything else a quiet grey.
+// kind its own hue (calls / instantiates / extends / implements / references), an import touching a
+// visible group card gold, everything else a quiet grey. Package/view boundary is encoded by dash.
 function baseStroke(edge: Edge): string {
   if (isIpc(edge)) return IPC_WIRE;
   // The UI lens's renders wires keep their historical cyan — the lens's identity colour — rather

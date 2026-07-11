@@ -263,7 +263,17 @@ function toEdge(edge: ModuleTreeEdge): Edge {
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    data: { weight: edge.weight, crossFrame: edge.crossFrame, category: edge.category, ghost: edge.ghost === true, depKind: edge.depKind, underlyingEdgeIds: edge.underlyingEdgeIds, commons: edge.commons === true },
+    data: {
+      weight: edge.weight,
+      crossFrame: edge.crossFrame,
+      crossPackage: edge.crossPackage,
+      outsideView: edge.outsideView,
+      category: edge.category,
+      ghost: edge.ghost === true,
+      depKind: edge.depKind,
+      underlyingEdgeIds: edge.underlyingEdgeIds,
+      commons: edge.commons === true,
+    },
     // Edge hit-paths sit above nested frames' title bars and steal button clicks; Map edges are non-interactive.
     interactionWidth: 0,
   };

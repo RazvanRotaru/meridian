@@ -16,7 +16,17 @@ function file(id: string, extra: Partial<ModuleCardData> = {}, parentId: string 
 }
 
 function wire(source: string, target: string, ghost = false): ModuleTreeEdge {
-  return { id: `w:${source}->${target}`, source, target, weight: 1, crossFrame: false, category: "import", ghost };
+  return {
+    id: `w:${source}->${target}`,
+    source,
+    target,
+    weight: 1,
+    crossFrame: false,
+    crossPackage: false,
+    outsideView: ghost,
+    category: "import",
+    ghost,
+  };
 }
 
 const DEPENDENTS = ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"];

@@ -32,11 +32,22 @@ function ghostNode(id: string): VisibleModuleNode {
 }
 
 function importEdge(source: string, target: string): ModuleTreeEdge {
-  return { id: `imp:${source}->${target}`, source, target, weight: 1, crossFrame: false, category: "import" };
+  return { id: `imp:${source}->${target}`, source, target, weight: 1, crossFrame: false, crossPackage: false, outsideView: false, category: "import" };
 }
 
 function ghostWire(source: string, target: string): ModuleTreeEdge {
-  return { id: `gdep:calls:${source}->${target}`, source, target, weight: 1, crossFrame: false, category: "dep", depKind: "calls", ghost: true };
+  return {
+    id: `gdep:calls:${source}->${target}`,
+    source,
+    target,
+    weight: 1,
+    crossFrame: false,
+    crossPackage: true,
+    outsideView: true,
+    category: "dep",
+    depKind: "calls",
+    ghost: true,
+  };
 }
 
 interface Rect {
@@ -76,12 +87,14 @@ describe("layoutModuleTree ghost placement", () => {
   it("keeps the ELK core ghost-free and emits ghosts as root nodes OUTSIDE the core's perimeter", async () => {
     const nodes = [fileNode("f:a"), fileNode("f:b"), ghostNode("g:x")];
     const edges = [importEdge("f:a", "f:b"), ghostWire("f:a", "g:x")];
-    const { nodes: laid } = await layoutModuleTree(nodes, edges);
+    const { nodes: laid, edges: laidEdges } = await layoutModuleTree(nodes, edges);
 
     const ghost = laid.find((node) => node.id === "g:x")!;
     // Emitted as a ROOT node typed "ghost" — never nested, never fed to ELK.
     expect(ghost.type).toBe("ghost");
     expect(ghost.parentId).toBeUndefined();
+    const wire = laidEdges.find((edge) => edge.id === "gdep:calls:f:a->g:x");
+    expect(wire?.data).toMatchObject({ crossPackage: true, outsideView: true });
     // Fully outside the perimeter (past some edge), never inside the graph.
     expect(outsideBox(rectOf(ghost), coreBox(laid))).toBe(true);
   });

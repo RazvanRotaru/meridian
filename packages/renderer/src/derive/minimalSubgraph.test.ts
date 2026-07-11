@@ -17,6 +17,10 @@ function pkg(id: string, name: string, parentId: string | null): GraphNode {
   return { id, kind: "package", qualifiedName: id, displayName: name, parentId, location: { file: name, startLine: 1 } } as GraphNode;
 }
 
+function npmPkg(id: string, name: string, parentId: string | null): GraphNode {
+  return { ...pkg(id, name, parentId), tags: ["npm-package"] } as GraphNode;
+}
+
 function mod(id: string, file: string, parentId: string | null): GraphNode {
   return { id, kind: "module", qualifiedName: id, displayName: id, parentId, location: { file, startLine: 1 } } as GraphNode;
 }
@@ -35,7 +39,7 @@ function callsEdge(source: string, target: string): GraphEdge {
 
 /** members default to origin; `coupling` feeds the blockDeps substrate the ghost projection reads. */
 function build(nodes: GraphNode[], edges: GraphEdge[], members: string[], origin: string[] = members, coupling: GraphEdge[] = []) {
-  const index = buildGraphIndex({ nodes, edges } as unknown as GraphArtifact);
+  const index = buildGraphIndex({ nodes, edges: [...edges, ...coupling] } as unknown as GraphArtifact);
   return buildMinimalSubgraph(index, buildModuleGraph(index), new Set(members), new Set(origin), {
     expanded: new Set(),
     blockDeps: { edges: coupling },
@@ -49,7 +53,7 @@ function nodeById(nodes: MinimalSubgraphNode[], id: string): MinimalSubgraphNode
 
 // a → b → c → d, and e → a (source imports target); foo()/bar() in a, baz() in b, qux() in c.
 const NODES = [
-  pkg("p:root", "root", null),
+  npmPkg("p:root", "root", null),
   pkg("p:src", "src", "p:root"),
   mod("m:a", "src/a.ts", "p:src"),
   mod("m:b", "src/b.ts", "p:src"),
@@ -77,7 +81,17 @@ describe("buildMinimalSubgraph", () => {
     expect(satellite?.kind).toBe("ghost");
     expect(satellite?.tier).toBeNull();
     expect((satellite?.data as GhostData).ghostKind).toBe("function");
-    expect(edges.find((edge) => edge.ghost === true)).toMatchObject({ id: "gdep:calls:m:a->fn:baz", source: "m:a", target: "fn:baz", depKind: "calls", weight: 1 });
+    expect(edges.find((edge) => edge.ghost === true)).toMatchObject({
+      id: "gdep:calls:m:a->fn:baz",
+      source: "m:a",
+      target: "fn:baz",
+      depKind: "calls",
+      weight: 1,
+      crossFrame: false,
+      crossPackage: false,
+      outsideView: true,
+      underlyingEdgeIds: ["calls:fn:foo->fn:baz"],
+    });
   });
 
   it("folds two satellites sharing a home folder into ONE folder group-ghost, wires aggregated", () => {
@@ -114,7 +128,7 @@ describe("buildMinimalSubgraph", () => {
 
 // a lives in p:src, x lives in a sibling package p:lib; a imports x; a1() in a calls x1() in x.
 const CROSS_NODES = [
-  pkg("p:root", "root", null),
+  npmPkg("p:root", "root", null),
   pkg("p:src", "src", "p:root"),
   pkg("p:lib", "lib", "p:root"),
   mod("m:a", "src/a.ts", "p:src"),
@@ -124,15 +138,60 @@ const CROSS_NODES = [
 ];
 const CROSS_EDGES = [importEdge("m:a", "m:x")];
 
+// Two package.json-backed siblings under one workspace container: the original a→x endpoints really
+// do cross npm ownership (unlike CROSS_NODES, whose src/lib directories share p:root ownership).
+const BETWEEN_PACKAGE_NODES = [
+  pkg("p:workspace", "workspace", null),
+  npmPkg("p:app", "app", "p:workspace"),
+  mod("m:pa", "app/a.ts", "p:app"),
+  fn("fn:pa", "a", "m:pa"),
+  npmPkg("p:library", "library", "p:workspace"),
+  mod("m:px", "library/x.ts", "p:library"),
+  fn("fn:px", "x", "m:px"),
+];
+const BETWEEN_PACKAGE_IMPORTS = [importEdge("m:pa", "m:px")];
+
 describe("buildMinimalSubgraph — group members and cross-package wires", () => {
-  it("flags an import wire crossPackage when its two files sit in different package frames", () => {
+  it("keeps a directory-frame crossing separate from true npm-package ownership", () => {
     const cross = build(CROSS_NODES, CROSS_EDGES, ["m:a", "m:x"]).edges.find((edge) => edge.id === "min:m:a->m:x");
-    expect(cross?.crossPackage).toBe(true);
+    expect(cross).toMatchObject({ crossFrame: true, crossPackage: false, outsideView: false });
   });
 
-  it("leaves a same-package import wire's crossPackage false", () => {
+  it("leaves a same-directory, same-package import solid on both boundary axes", () => {
     const same = build(NODES, EDGES, ["m:a", "m:b"]).edges.find((edge) => edge.id === "min:m:a->m:b");
-    expect(same?.crossPackage).toBe(false);
+    expect(same).toMatchObject({ crossFrame: false, crossPackage: false, outsideView: false });
+  });
+
+  it("flags a true npm-package crossing from the original files, before member-box lifting", () => {
+    const cross = build(BETWEEN_PACKAGE_NODES, BETWEEN_PACKAGE_IMPORTS, ["m:pa", "m:px"]).edges.find(
+      (edge) => edge.id === "min:m:pa->m:px",
+    );
+    expect(cross).toMatchObject({
+      crossFrame: true,
+      crossPackage: true,
+      outsideView: false,
+      underlyingEdgeIds: ["imports:m:pa->m:px"],
+    });
+  });
+
+  it("computes dep package crossing from its original symbol edge, not the drawn member boxes", () => {
+    const samePackage = build(CROSS_NODES, CROSS_EDGES, ["m:a", "m:x"], ["m:a", "m:x"], [callsEdge("fn:a1", "fn:x1")])
+      .edges.find((edge) => edge.id === "dep:calls:m:a->m:x");
+    expect(samePackage).toMatchObject({ crossFrame: false, crossPackage: false, outsideView: false });
+
+    const crossPackage = build(
+      BETWEEN_PACKAGE_NODES,
+      BETWEEN_PACKAGE_IMPORTS,
+      ["m:pa", "m:px"],
+      ["m:pa", "m:px"],
+      [callsEdge("fn:pa", "fn:px")],
+    ).edges.find((edge) => edge.id === "dep:calls:m:pa->m:px");
+    expect(crossPackage).toMatchObject({
+      crossFrame: false,
+      crossPackage: true,
+      outsideView: false,
+      underlyingEdgeIds: ["calls:fn:pa->fn:px"],
+    });
   });
 
   it("extracts a selected PACKAGE as ONE leaf card, never a frame of its files", () => {
@@ -171,7 +230,7 @@ const DEP_NODES = [
 const DEP_IMPORTS = [importEdge("m:a", "m:b"), importEdge("m:b", "m:c")];
 
 function buildWithCoupling(coupling: GraphEdge[], members: string[] = ["m:a", "m:b"]) {
-  const index = buildGraphIndex({ nodes: DEP_NODES, edges: DEP_IMPORTS } as unknown as GraphArtifact);
+  const index = buildGraphIndex({ nodes: DEP_NODES, edges: [...DEP_IMPORTS, ...coupling] } as unknown as GraphArtifact);
   return buildMinimalSubgraph(index, buildModuleGraph(index), new Set(members), new Set(members), {
     expanded: new Set(),
     blockDeps: { edges: coupling },

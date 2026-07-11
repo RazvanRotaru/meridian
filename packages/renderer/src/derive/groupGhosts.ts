@@ -68,9 +68,17 @@ function aggregateWires(wires: readonly GhostWire[], rewrite: ReadonlyMap<string
     const existing = byKey.get(key);
     if (existing) {
       existing.weight += wire.weight;
+      existing.crossPackage ||= wire.crossPackage;
       existing.underlyingEdgeIds.push(...wire.underlyingEdgeIds);
     } else {
-      byKey.set(key, { source, target, weight: wire.weight, kind: wire.kind, underlyingEdgeIds: [...wire.underlyingEdgeIds] });
+      byKey.set(key, {
+        source,
+        target,
+        weight: wire.weight,
+        kind: wire.kind,
+        crossPackage: wire.crossPackage,
+        underlyingEdgeIds: [...wire.underlyingEdgeIds],
+      });
     }
   }
   return [...byKey.values()];
