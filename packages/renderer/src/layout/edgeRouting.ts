@@ -44,9 +44,11 @@ export function routeFrameEdges(edges: Edge[], nodes: Node[]): Edge[] {
   const frameIds = new Set<string>();
   for (const node of nodes) {
     rects.set(node.id, absoluteRect(node, byId));
-    // The commons DOCK tray is a parent but NOT a frame: it has no gutter for a rail, and its
-    // wires are hidden at rest — a lit one should fly a plain curve into the docked card.
-    if (node.parentId && byId.get(node.parentId)?.type !== "commonsDock") {
+    // Every parent with drawn children is a frame — INCLUDING the commons dock tray: its lit
+    // wires enter through a gate and ride the tray's rail like any frame's bus (the tray reserves
+    // the same 30px gutter). Hidden wires render nothing regardless (isHiddenWire), so routing
+    // them is free.
+    if (node.parentId) {
       frameIds.add(node.parentId);
     }
   }
@@ -91,14 +93,19 @@ function routePlan(edge: Edge, byId: Map<string, Node>, rects: Map<string, Rect>
   }
   // The OUTERMOST expanded frame around the target that does not also contain the source: the
   // boundary the wire must cross. None → open canvas or intra-frame; not ours to route.
-  const frame = entryFrame(edge.source, edge.target, byId, rects, frameIds);
-  if (!frame) {
+  const entry = entryFrame(edge.source, edge.target, byId, rects, frameIds);
+  if (!entry) {
     return null;
   }
+  const frame = entry.rect;
   const sy = source.y + source.h / 2;
   const ty = target.y + target.h / 2;
-  // Enter from whichever side of the frame the source sits on; the rail runs in that side's gutter.
-  const fromLeft = source.x + source.w / 2 <= frame.x + frame.w / 2;
+  // Enter from whichever side of the frame the SOURCE sits on — except the commons dock: its cards
+  // sit in a HORIZONTAL row, so a source-side gate's peel-off would travel the row and cross the
+  // sibling cards; entering nearest the TARGET keeps the peel out of them.
+  const horizontalRow = byId.get(entry.id)?.type === "commonsDock";
+  const anchor = horizontalRow ? target : source;
+  const fromLeft = anchor.x + anchor.w / 2 <= frame.x + frame.w / 2;
   // The gate sits at the source's height, clamped into the frame's edge span — below the title bar
   // (a wire through the frame's name is as bad as one through a card) and above the bottom edge —
   // so the outside leg stays flat and gates spread along the boundary instead of knotting.
@@ -179,17 +186,18 @@ function entryFrame(
   byId: Map<string, Node>,
   rects: Map<string, Rect>,
   frameIds: Set<string>,
-): Rect | null {
+): { id: string; rect: Rect } | null {
   const sourceAncestors = ancestorsOf(sourceId, byId);
-  let outermost: Rect | null = null;
+  let outermost: { id: string; rect: Rect } | null = null;
   let current = byId.get(targetId)?.parentId;
   const seen = new Set<string>();
   while (current && !seen.has(current)) {
     if (sourceAncestors.has(current)) {
       break; // shared container — from here up the frame holds BOTH ends
     }
-    if (frameIds.has(current)) {
-      outermost = rects.get(current) ?? outermost;
+    const rect = rects.get(current);
+    if (frameIds.has(current) && rect) {
+      outermost = { id: current, rect };
     }
     seen.add(current);
     current = byId.get(current)?.parentId;
