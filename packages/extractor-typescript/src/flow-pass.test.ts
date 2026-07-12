@@ -125,6 +125,45 @@ async function fetchData() { return {}; }
 async function track(x: unknown) {}
 async function send(x: unknown) { return x; }
 function log(x: unknown) {}
+
+export async function launchThenAwait() {
+  const pending = firstTask();
+  await pending;
+}
+
+export async function awaitDirectly() {
+  await firstTask();
+}
+
+export async function awaitStoredBarrier() {
+  const first = firstTask();
+  const second = secondTask();
+  await Promise.all([first, second]);
+}
+
+export async function awaitInlineBarrier() {
+  await Promise.all([firstTask(), secondTask()]);
+}
+
+export async function awaitInlineSettledBarrier() {
+  await Promise.allSettled([firstTask(), secondTask()]);
+}
+
+declare const taskTable: Record<string, (value?: unknown) => Promise<void>>;
+export async function awaitComputedCall(key: string) {
+  await taskTable[key]();
+}
+
+export async function awaitComputedCallWithAwaitedArgument(key: string) {
+  await taskTable[key](await firstTask());
+}
+
+export async function awaitDynamicImport() {
+  await import("./lazy.js");
+}
+
+async function firstTask() { return 1; }
+async function secondTask() { return 2; }
 `;
 
 // A module whose top-level runs at load: a call, a branch, a loop — plus declarations that do
@@ -282,6 +321,149 @@ describe("logic-flow pass", () => {
     const first = (stepsFor("checkout") ?? [])[0];
     expect(first).not.toHaveProperty("awaited");
     expect(first).not.toHaveProperty("detached");
+    expect(first).not.toHaveProperty("async");
+  });
+
+  it("links a stored Promise launch to a later single await (launchThenAwait)", () => {
+    const steps = stepsFor("launchThenAwait") ?? [];
+    expect(steps.map((step) => step.kind)).toEqual(["call", "await"]);
+    const launch = steps[0];
+    const join = steps[1];
+    expect(launch).toMatchObject({
+      kind: "call",
+      label: "firstTask",
+      async: { kind: "launch", binding: "pending", taskId: expect.any(String) },
+    });
+    expect(launch).not.toHaveProperty("awaited");
+    if (launch.kind === "call" && launch.async?.kind === "launch" && join.kind === "await") {
+      expect(join).toEqual({
+        kind: "await",
+        label: "await pending",
+        mode: "single",
+        inputs: [{ label: "pending", taskId: launch.async.taskId }],
+      });
+    }
+  });
+
+  it("keeps a direct call await on the existing call step (awaitDirectly)", () => {
+    const steps = stepsFor("awaitDirectly") ?? [];
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({
+      kind: "call",
+      label: "firstTask",
+      awaited: true,
+      async: { kind: "direct-await", taskId: expect.any(String) },
+    });
+    expect(steps[0].kind).not.toBe("await");
+  });
+
+  it("keeps a structural await gate for direct calls whose callee cannot be charted", () => {
+    expect(stepsFor("awaitComputedCall")).toEqual([
+      {
+        kind: "await",
+        label: "await taskTable[key]()",
+        mode: "single",
+        inputs: [{ label: "taskTable[key]()" }],
+      },
+    ]);
+    expect(stepsFor("awaitDynamicImport")).toEqual([
+      {
+        kind: "await",
+        label: 'await import("./lazy.js")',
+        mode: "single",
+        inputs: [{ label: 'import("./lazy.js")' }],
+      },
+    ]);
+
+    const nested = stepsFor("awaitComputedCallWithAwaitedArgument") ?? [];
+    expect(nested).toHaveLength(2);
+    expect(nested[0]).toMatchObject({
+      kind: "call",
+      label: "firstTask",
+      awaited: true,
+      async: { kind: "direct-await" },
+    });
+    expect(nested[1]).toEqual({
+      kind: "await",
+      label: "await taskTable[key](await firstTask())",
+      mode: "single",
+      inputs: [{ label: "taskTable[key](await firstTask())" }],
+    });
+  });
+
+  it("links stored Promise launches into an all barrier (awaitStoredBarrier)", () => {
+    const steps = stepsFor("awaitStoredBarrier") ?? [];
+    expect(callLabels(steps)).toEqual(["firstTask", "secondTask", "Promise.all"]);
+    const [first, second, barrier] = steps;
+    expect(first).toMatchObject({ kind: "call", async: { kind: "launch", binding: "first" } });
+    expect(second).toMatchObject({ kind: "call", async: { kind: "launch", binding: "second" } });
+    expect(barrier).toMatchObject({ kind: "call", awaited: true, async: { kind: "barrier", mode: "all" } });
+    if (
+      first.kind === "call" && first.async?.kind === "launch" &&
+      second.kind === "call" && second.async?.kind === "launch" &&
+      barrier.kind === "call"
+    ) {
+      expect(first.async.binding).toBe("first");
+      expect(second.async.binding).toBe("second");
+      expect(barrier).toMatchObject({ awaited: true });
+      expect(barrier.async).toEqual({
+        kind: "barrier",
+        mode: "all",
+        inputs: [
+          { label: "first", taskId: first.async.taskId },
+          { label: "second", taskId: second.async.taskId },
+        ],
+      });
+    }
+  });
+
+  it("links inline Promise launches into an all barrier (awaitInlineBarrier)", () => {
+    const steps = stepsFor("awaitInlineBarrier") ?? [];
+    expect(callLabels(steps)).toEqual(["firstTask", "secondTask", "Promise.all"]);
+    const [first, second, barrier] = steps;
+    expect(first).toMatchObject({ kind: "call", async: { kind: "launch" } });
+    expect(second).toMatchObject({ kind: "call", async: { kind: "launch" } });
+    expect(barrier).toMatchObject({ kind: "call", awaited: true, async: { kind: "barrier", mode: "all" } });
+    if (
+      first.kind === "call" && first.async?.kind === "launch" &&
+      second.kind === "call" && second.async?.kind === "launch" &&
+      barrier.kind === "call"
+    ) {
+      expect(first.async).not.toHaveProperty("binding");
+      expect(second.async).not.toHaveProperty("binding");
+      expect(barrier.async).toEqual({
+        kind: "barrier",
+        mode: "all",
+        inputs: [
+          { label: "firstTask", taskId: first.async.taskId },
+          { label: "secondTask", taskId: second.async.taskId },
+        ],
+      });
+    }
+  });
+
+  it("distinguishes an allSettled barrier while retaining awaited compatibility", () => {
+    const steps = stepsFor("awaitInlineSettledBarrier") ?? [];
+    expect(callLabels(steps)).toEqual(["firstTask", "secondTask", "Promise.allSettled"]);
+    const [first, second, barrier] = steps;
+    expect(first).toMatchObject({ kind: "call", async: { kind: "launch" } });
+    expect(second).toMatchObject({ kind: "call", async: { kind: "launch" } });
+    expect(barrier).toMatchObject({ kind: "call", awaited: true, async: { kind: "barrier", mode: "allSettled" } });
+    if (
+      first.kind === "call" && first.async?.kind === "launch" &&
+      second.kind === "call" && second.async?.kind === "launch" &&
+      barrier.kind === "call"
+    ) {
+      expect(barrier.awaited).toBe(true);
+      expect(barrier.async).toEqual({
+        kind: "barrier",
+        mode: "allSettled",
+        inputs: [
+          { label: "firstTask", taskId: first.async.taskId },
+          { label: "secondTask", taskId: second.async.taskId },
+        ],
+      });
+    }
   });
 
   it("charts a module's top-level code as its load-time flow, skipping declarations (boot)", () => {

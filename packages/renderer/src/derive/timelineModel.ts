@@ -58,6 +58,7 @@ class Builder {
       if (this.done) return; // dead steps after a return/throw
       if (step.kind === "exit") this.exit(step);
       else if (step.kind === "call") this.call(step, ghost);
+      else if (step.kind === "await") this.awaitValue(step);
       else if (step.kind === "loop") this.loop(step);
       else if (step.kind === "callback") this.callback(step);
       else if (isTryStep(step)) this.tryStep(step, ghost);
@@ -76,7 +77,7 @@ class Builder {
     if (step.detached) return this.detachCall(step);
     const d = callDisplay(step, this.flows, this.index);
     const color = d.method ? FLOW_COLORS.method : FLOW_COLORS.call;
-    this.mainRow.push({ t0: this.t, t1: this.t, kind: "chip", color, glyph: d.method ? "∷" : "ƒ", text: step.label, target: step.target, expandable: d.expandable, ghost });
+    this.mainRow.push({ t0: this.t, t1: this.t, kind: "chip", color, glyph: d.method ? "∷" : "ƒ", text: step.label, target: step.target, expandable: d.navigable, ghost });
     this.t += ADVANCE;
   }
 
@@ -85,15 +86,27 @@ class Builder {
     const t1 = t0 + AWAIT_SPAN; // execution HOLDS here — main shows a hatched suspended span…
     this.mainRow.push({ t0, t1, kind: "suspend", color: FLOW_COLORS.awaited, glyph: "⏸", text: "suspended" });
     const d = callDisplay(step, this.flows, this.index);
-    this.taskRow.push({ t0, t1, kind: "bar", color: FLOW_COLORS.awaited, glyph: "⏱", text: `await ${step.label}`, target: step.target, expandable: d.expandable });
+    this.taskRow.push({ t0, t1, kind: "bar", color: FLOW_COLORS.awaited, glyph: "⏱", text: `await ${step.label}`, target: step.target, expandable: d.navigable });
     this.connectors.push({ kind: "await", t: t0 }, { kind: "await", t: t1 }); // drop, then rise
+    this.t = t1 + GAP;
+  }
+
+  /** A promise launched earlier and consumed here. Its lifetime begins on the earlier call in the
+   * exec graph; this compact projection still makes the suspension gate explicit on the time axis. */
+  private awaitValue(step: Extract<FlowStep, { kind: "await" }>): void {
+    const t0 = this.t;
+    const t1 = t0 + AWAIT_SPAN;
+    this.mainRow.push({ t0, t1, kind: "suspend", color: FLOW_COLORS.awaited, glyph: "⏸", text: "suspended" });
+    this.taskRow.push({ t0, t1, kind: "bar", color: FLOW_COLORS.awaited, glyph: "⌟", text: step.label });
+    this.connectors.push({ kind: "await", t: t0 }, { kind: "await", t: t1 });
     this.t = t1 + GAP;
   }
 
   private detachCall(step: CallStep): void {
     const row = this.bgRows.length;
-    this.mainRow.push({ t0: this.t, t1: this.t, kind: "chip", color: FLOW_COLORS.detached, glyph: "⤳", text: step.label, target: step.target });
-    this.bgRows.push([{ t0: this.t, t1: OPEN, kind: "bar", color: FLOW_COLORS.detached, glyph: "⤳", text: `${step.label} · result dropped →`, target: step.target }]);
+    const d = callDisplay(step, this.flows, this.index);
+    this.mainRow.push({ t0: this.t, t1: this.t, kind: "chip", color: FLOW_COLORS.detached, glyph: "⤳", text: step.label, target: step.target, expandable: d.navigable });
+    this.bgRows.push([{ t0: this.t, t1: OPEN, kind: "bar", color: FLOW_COLORS.detached, glyph: "⤳", text: `${step.label} · result dropped →`, target: step.target, expandable: d.navigable }]);
     this.connectors.push({ kind: "detach", t: this.t, row });
     this.t += ADVANCE;
   }

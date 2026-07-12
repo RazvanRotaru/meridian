@@ -71,6 +71,8 @@ export type BranchStep = Extract<FlowStep, { kind: "branch" }>;
 
 /** What a call step is, for display: same expandability/provenance rules as the exec graph. */
 export interface CallDisplay {
+  /** Resolved to local code, so double-click can open the callable even when its flow is empty. */
+  navigable: boolean;
   /** Resolved to a callable that ships its own flow — double-click drills into it. */
   expandable: boolean;
   /** `receiver.method` labels read as method calls (the exec graph's heuristic, shared). */
@@ -80,10 +82,11 @@ export interface CallDisplay {
 }
 
 export function callDisplay(step: CallStep, flows: LogicFlows, index: GraphIndex): CallDisplay {
-  const expandable = step.resolution === "resolved" && step.target !== null && (flows[step.target]?.length ?? 0) > 0;
+  const navigable = step.resolution === "resolved" && step.target !== null;
+  const expandable = navigable && (flows[step.target!]?.length ?? 0) > 0;
   const target = step.target ? index.nodesById.get(step.target) : undefined;
   const method = target?.kind === "method" || step.label.includes(".");
-  return { expandable, method, provenance: step.target ? baseName(parseNodeId(step.target).modulePath) : null };
+  return { navigable, expandable, method, provenance: step.target ? baseName(parseNodeId(step.target).modulePath) : null };
 }
 
 /** A try/catch rides the branch step kind — discriminated structurally, never by its label. */

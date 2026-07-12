@@ -1,20 +1,56 @@
 /**
  * The intra-procedural "logic flow" model — a per-callable control-flow tree.
  *
- * A flow is an ordered list of `FlowStep`s: only method calls and control structures survive;
- * everything else collapses away. It rides in the artifact's `extensions` record under the
- * `logicFlow` key (no schema change, no version bump), keyed by the same `node.id` grammar the
- * rest of the graph joins on.
+ * A flow is an ordered list of `FlowStep`s: only method calls, async wait points, and control
+ * structures survive; everything else collapses away. It rides in the artifact's `extensions`
+ * record under the `logicFlow` key (no schema change, no version bump), keyed by the same `node.id`
+ * grammar the rest of the graph joins on.
  */
 
 import type { EdgeResolution, NodeId } from "./types";
+
+/** An async operation launched by a call and referred to by a later await. `taskId` is opaque and
+ * only needs to be unique inside its owning logic flow; `label` is the concise source expression
+ * shown at the join (usually a binding such as `invoice` or a callee such as `loadInvoice`). */
+export interface FlowAsyncInput {
+  label: string;
+  taskId?: string;
+}
+
+export type FlowBarrierMode = "all" | "allSettled";
+
+/** Rich async semantics layered onto the existing call step. The legacy `awaited`/`detached`
+ * booleans remain authoritative for old readers; new readers use this discriminator to draw the
+ * launch and its eventual join instead of treating every async call as an ordinary call node. */
+export type FlowCallAsync =
+  /** The call starts async work without holding the current flow. `binding` is present for the
+   * common `const pending = start()` form and absent for inline/detached launches. */
+  | { kind: "launch"; taskId: string; binding?: string }
+  /** `await start()` — launch and wait are one source expression, so a view can keep both marks on
+   * the same lane/node rather than manufacturing a later join. */
+  | { kind: "direct-await"; taskId: string }
+  /** The existing `Promise.all*` call is also the barrier node. Inputs point back to launch IDs when
+   * extraction can resolve them; value-only/unresolved operands still retain a readable label. */
+  | { kind: "barrier"; mode: FlowBarrierMode; inputs: FlowAsyncInput[] };
 
 export type FlowStep =
   /** `awaited` — the call sits under an `await` (execution holds for it). `detached` — the call's
    * result is deliberately dropped (`void expr` or an un-awaited Promise in statement position):
    * fire-and-forget work that outlives this flow. Both flags are absent (not false) when a call is
    * plain synchronous, so older artifacts and older readers agree byte-for-byte. */
-  | { kind: "call"; label: string; target: NodeId | null; resolution: EdgeResolution; awaited?: boolean; detached?: boolean }
+  | {
+      kind: "call";
+      label: string;
+      target: NodeId | null;
+      resolution: EdgeResolution;
+      awaited?: boolean;
+      detached?: boolean;
+      async?: FlowCallAsync;
+    }
+  /** A structural wait with no chartable call block of its own: usually `await pending`, where the
+   * task started earlier, and also unnameable direct operands such as `await import(...)`. Nameable
+   * calls retain their existing call step and use `call.async.kind === "direct-await"` instead. */
+  | { kind: "await"; label: string; mode: "single"; inputs: FlowAsyncInput[] }
   | { kind: "loop"; label: string; body: FlowStep[] }
   /** `branchKind` is the STRUCTURED discriminator (if/switch/try); older artifacts predate it, so
    * readers go through `branchKindOf`, which falls back to the label. Never sniff labels directly —

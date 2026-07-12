@@ -108,6 +108,7 @@ function remapStep(step: FlowStep, remap: (id: NodeId) => NodeId): FlowStep {
   switch (step.kind) {
     case "call":
       return { ...step, target: step.target === null ? null : remap(step.target) };
+    case "await":
     case "exit":
       return step; // no target to remap, no body to recurse into
     case "loop":

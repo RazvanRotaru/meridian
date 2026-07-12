@@ -60,9 +60,9 @@ function artifactFrom(result: ExtractionResult): GraphArtifact {
 }
 
 describe("TypeScriptExtractor over orders-service", () => {
-  it("extracts the focused execution-graph gallery exhibits", async () => {
+  it("extracts every focused execution-graph gallery exhibit", async () => {
     const result = await extractFixture({ includeExternal: true });
-    const exhibits = [
+    const exhibitNames = [
       "guidedTour",
       "directAwait",
       "launchThenAwait",
@@ -76,28 +76,80 @@ describe("TypeScriptExtractor over orders-service", () => {
       "externalAndDetached",
     ];
 
-    for (const method of exhibits) {
+    for (const method of exhibitNames) {
       expect(result.nodes.find((node) => node.id === galleryId(method))?.qualifiedName).toBe(
         `ExecutionGraphGallery.${method}`,
       );
       expect(result.flows?.[galleryId(method)]).toBeDefined();
     }
 
-    const barriers = [
-      ...(result.flows?.[galleryId("awaitAllBarrier")] ?? []),
-      ...(result.flows?.[galleryId("awaitAllSettledBarrier")] ?? []),
-    ].filter((step) => step.kind === "call" && step.label.startsWith("Promise."));
-    expect(barriers.map((step) => step.kind === "call" ? step.label : "")).toEqual([
-      "Promise.all",
-      "Promise.allSettled",
+    const direct = result.flows?.[galleryId("directAwait")] ?? [];
+    expect(direct[0]).toMatchObject({
+      kind: "call",
+      label: "this.fetchOrder",
+      awaited: true,
+      async: { kind: "direct-await" },
+    });
+
+    const launchThenAwait = result.flows?.[galleryId("launchThenAwait")] ?? [];
+    const inventoryLaunch = launchThenAwait[0];
+    expect(inventoryLaunch).toMatchObject({
+      kind: "call",
+      label: "this.fetchInventory",
+      async: { kind: "launch", binding: "inventoryTask" },
+    });
+    if (inventoryLaunch?.kind === "call" && inventoryLaunch.async?.kind === "launch") {
+      expect(launchThenAwait[3]).toEqual({
+        kind: "await",
+        label: "await inventoryTask",
+        mode: "single",
+        inputs: [{ label: "inventoryTask", taskId: inventoryLaunch.async.taskId }],
+      });
+    }
+
+    const all = result.flows?.[galleryId("awaitAllBarrier")] ?? [];
+    expect(all.slice(0, 3)).toEqual([
+      expect.objectContaining({ kind: "call", async: expect.objectContaining({ kind: "launch", binding: "reserveTask" }) }),
+      expect.objectContaining({ kind: "call", async: expect.objectContaining({ kind: "launch", binding: "paymentTask" }) }),
+      expect.objectContaining({
+        kind: "call",
+        async: expect.objectContaining({ kind: "launch", binding: "notificationTask" }),
+      }),
     ]);
-    expect(barriers.every((step) => step.kind === "call" && step.awaited)).toBe(true);
+    expect(all[3]).toMatchObject({
+      kind: "call",
+      label: "Promise.all",
+      awaited: true,
+      async: { kind: "barrier", mode: "all", inputs: expect.arrayContaining([expect.objectContaining({ taskId: expect.any(String) })]) },
+    });
+
+    const allSettled = result.flows?.[galleryId("awaitAllSettledBarrier")] ?? [];
+    expect(allSettled.slice(0, 3).every((step) => step.kind === "call" && step.async?.kind === "launch")).toBe(true);
+    expect(allSettled[3]).toMatchObject({
+      kind: "call",
+      label: "Promise.allSettled",
+      awaited: true,
+      async: { kind: "barrier", mode: "allSettled" },
+    });
 
     const decisions = result.flows?.[galleryId("nestedDecisions")] ?? [];
-    expect(decisions.filter((step) => step.kind === "branch").length).toBeGreaterThanOrEqual(3);
+    expect(decisions.map((step) => step.kind)).toEqual(["branch", "branch", "branch", "exit"]);
+    expect(decisions[0]).toMatchObject({ kind: "branch", branchKind: "if" });
+    expect(decisions[1]).toMatchObject({ kind: "branch", branchKind: "if" });
+    expect(decisions[2]).toMatchObject({ kind: "branch", branchKind: "switch" });
+    if (decisions[0]?.kind === "branch" && decisions[1]?.kind === "branch" && decisions[2]?.kind === "branch") {
+      expect(decisions[0].paths[0].body.at(-1)).toMatchObject({ kind: "exit", variant: "return" });
+      expect(decisions[1].paths[0].body[0]).toMatchObject({ kind: "branch", branchKind: "if" });
+      expect(decisions[1].paths[1].body[0]).toMatchObject({ kind: "branch", branchKind: "if" });
+      expect(decisions[2].paths.map((path) => path.role)).toEqual(["case", "case", "case", "default"]);
+      expect(decisions[2].paths[1].body.at(-1)).toMatchObject({ kind: "exit", variant: "return" });
+      expect(decisions[2].paths[3].body.at(-1)).toMatchObject({ kind: "exit", variant: "throw" });
+    }
 
     const loops = result.flows?.[galleryId("loopShapes")] ?? [];
-    expect(loops.filter((step) => step.kind === "loop").map((step) => step.label)).toEqual([
+    expect(loops).toHaveLength(4);
+    expect(loops.every((step) => step.kind === "loop")).toBe(true);
+    expect(loops.map((step) => step.label)).toEqual([
       "for let attempt = 0",
       "for each orderId",
       "while cursor < orderIds.length",
@@ -105,15 +157,32 @@ describe("TypeScriptExtractor over orders-service", () => {
     ]);
 
     const protectedFlow = result.flows?.[galleryId("tryCatchFinally")] ?? [];
-    expect(protectedFlow[0]).toMatchObject({ kind: "branch", label: "try/catch" });
+    expect(protectedFlow[0]).toMatchObject({ kind: "branch", branchKind: "try", label: "try/catch" });
+    if (protectedFlow[0]?.kind === "branch") {
+      expect(protectedFlow[0].paths.map((path) => path.role)).toEqual(["try", "catch", "finally"]);
+      expect(protectedFlow[0].paths[0].body[0]).toMatchObject({
+        kind: "call",
+        label: "this.performProtectedWork",
+        async: { kind: "direct-await" },
+      });
+    }
 
     const handOffs = result.flows?.[galleryId("callbackHandOffs")] ?? [];
-    expect(handOffs.some((step) => step.kind === "callback")).toBe(true);
-    expect(handOffs.some((step) => step.kind === "loop")).toBe(true);
+    expect(handOffs.map((step) => step.kind)).toEqual(["call", "callback", "call", "callback", "loop"]);
+    expect(handOffs.filter((step) => step.kind === "callback").map((step) => step.label)).toEqual([
+      "callback → setTimeout",
+      "callback → this.registerHandOff",
+    ]);
 
-    const boundary = result.flows?.[galleryId("externalAndDetached")] ?? [];
-    expect(boundary.some((step) => step.kind === "call" && step.resolution === "external")).toBe(true);
-    expect(boundary.filter((step) => step.kind === "call" && step.detached)).toHaveLength(2);
+    const detached = result.flows?.[galleryId("externalAndDetached")] ?? [];
+    expect(detached.slice(0, 2)).toEqual([
+      expect.objectContaining({ kind: "call", label: "console.info", resolution: "external" }),
+      expect.objectContaining({ kind: "call", label: "console.timeStamp", resolution: "external" }),
+    ]);
+    expect(detached.slice(2)).toEqual([
+      expect.objectContaining({ kind: "call", label: "this.publishTelemetry", detached: true }),
+      expect.objectContaining({ kind: "call", label: "this.refreshReadModel", detached: true }),
+    ]);
   });
 
   it("resolves the OrderRoutes call edges", async () => {

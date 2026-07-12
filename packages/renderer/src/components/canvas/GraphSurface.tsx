@@ -36,7 +36,6 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import {
-  ReactFlow,
   ReactFlowProvider,
   type Edge,
   type EdgeTypes,
@@ -52,7 +51,8 @@ import { moduleNodeTypes } from "../nodes/modulemap/ModuleCardNode";
 import { paintMinimalLevel } from "../paintMinimal";
 import { WireTooltip } from "../WireTooltip";
 import { EdgeInspectionDock } from "../EdgeInspectionDock";
-import { CanvasChrome, MINIMAP_NODE_CAP, READONLY_CANVAS_PROPS } from "./flowCanvasProps";
+import { MINIMAP_NODE_CAP } from "./flowCanvasProps";
+import { ReadonlyGraphCanvas } from "./ReadonlyGraphCanvas";
 import { MapLod } from "./MapLod";
 import { ghostGroupInteractionOf, type ModuleNodeHandlers } from "./useModuleNodeInteractions";
 import { useWireHover } from "./useWireHover";
@@ -461,7 +461,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
     >
       {/* A semantic composite contains hidden ancestor graphs at reading zoom. The mount performs a
           depth-zero fit after layout; React Flow's whole-stack fit would pull the camera outward. */}
-      <ReactFlow<Node, Edge>
+      <ReadonlyGraphCanvas<Node, Edge>
         className={hasSemanticComposite ? "semantic-composite" : undefined}
         nodes={reactFlowNodes}
         edges={renderedEdges}
@@ -495,13 +495,13 @@ export function GraphSurface(props: GraphSurfaceProps) {
         onMoveEnd={onMoveEnd}
         // Manual z: basic mode ADDS a nested endpoint's node-z to the edge — see useWireHover's z rule.
         zIndexMode="manual"
-        {...READONLY_CANVAS_PROPS}
         elementsSelectable={!props.readOnly}
         nodesFocusable={!props.readOnly}
         edgesFocusable={!props.readOnly}
         fitView={props.autoFitView ?? !hasSemanticComposite}
+        miniMapColor={props.miniMapColor}
+        minimap={!virtualizeCanvas}
       >
-        <CanvasChrome nodeColor={props.miniMapColor} minimap={!virtualizeCanvas} />
         <MapLod
           nodes={reactFlowNodes}
           semanticLayers={props.semanticLayers}
@@ -511,7 +511,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
           semanticLodEnabled={props.semanticLodEnabled}
         />
         {props.flowExtras?.({ nodes: displayedNodes, beacons })}
-      </ReactFlow>
+      </ReadonlyGraphCanvas>
       {wire.hover ? <WireTooltip hover={wire.hover} /> : null}
       {wire.inspectedPair ? (
         <EdgeInspectionDock pair={wire.inspectedPair} labelOf={wire.labelOf} onClose={wire.clearInspected} onDrill={wire.inspect} />

@@ -40,6 +40,8 @@ function RowNode({ step, ctx }: { step: FlowStep; ctx: RowCtx }) {
   switch (step.kind) {
     case "call":
       return <CallRow step={step} ctx={ctx} />;
+    case "await":
+      return <div style={AWAIT_ROW}><span style={AWAIT_GATE}>⌟</span><span>{step.label}</span></div>;
     case "exit":
       return <ExitChip step={step} />;
     case "loop":
@@ -94,8 +96,8 @@ function CallRow({ step, ctx }: { step: CallStep; ctx: RowCtx }) {
   const hasTarget = step.target !== null;
   const isSelected = ctx.selected !== null && step.target === ctx.selected;
   const dimmed = ctx.selected !== null && !isSelected;
-  const opacity = isSelected ? 1 : dimmed ? 0.55 : display.expandable ? 1 : 0.6;
-  const canDrill = ctx.drillEnabled && display.expandable;
+  const opacity = isSelected ? 1 : dimmed ? 0.55 : 1;
+  const canDrill = ctx.drillEnabled && display.navigable;
   const style: React.CSSProperties = {
     ...ROW,
     borderLeft: `3px solid ${accent}`,
@@ -186,6 +188,14 @@ const RET: React.CSSProperties = {
   fontWeight: 600,
   fontFamily: MONO,
 };
+const AWAIT_ROW: React.CSSProperties = {
+  ...ROW,
+  borderColor: `${FLOW_COLORS.awaited}99`,
+  borderLeft: `3px solid ${FLOW_COLORS.awaited}`,
+  color: FLOW_COLORS.ink,
+  background: `${FLOW_COLORS.awaited}0D`,
+};
+const AWAIT_GATE: React.CSSProperties = { color: FLOW_COLORS.awaited, fontSize: 16, lineHeight: 1 };
 const BLOCK: React.CSSProperties = { border: "1px solid", borderRadius: 7 };
 const BLOCK_HD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, padding: "6px 11px", fontSize: 11.5, fontWeight: 600, fontFamily: MONO };
 const BLOCK_NOTE: React.CSSProperties = { color: FLOW_COLORS.dim, fontWeight: 400, fontSize: 10 };

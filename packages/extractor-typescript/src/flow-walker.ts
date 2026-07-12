@@ -16,7 +16,7 @@ export interface FlowWalker {
   walk(node: Node, depth: number): FlowStep[];
   /** Walk a callable/control BODY: a block statement-by-statement, or a single expression. */
   walkBody(body: Node, depth: number): FlowStep[];
-  /** Awaited/detached flags for a call step (memoized per walker — see call-annotations). */
+  /** Legacy awaited/detached flags plus rich async launch/join metadata (memoized per walker). */
   annotate(node: CallExpression | NewExpression): CallAnnotations;
 }
 
