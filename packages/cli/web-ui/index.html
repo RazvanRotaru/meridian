@@ -51,6 +51,23 @@
       * {
         box-sizing: border-box;
       }
+      /* Slim, theme-matching scrollbars everywhere so no surface (the repo dropdown, the card)
+         falls back to the OS default — chunky on Windows, thin overlay on macOS. */
+      * {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+      }
+      *::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      *::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.14);
+        border-radius: 4px;
+      }
+      *::-webkit-scrollbar-track {
+        background: transparent;
+      }
       /* A component's own `display` (e.g. `.me { display: flex }`) outranks the UA `[hidden]` rule,
          so make `hidden` authoritative for every element the script toggles. */
       [hidden] {
