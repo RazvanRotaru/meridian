@@ -221,9 +221,23 @@ export class ExecutionGraphGallery {
     return `protected:${orderId}`;
   }
 
-  private async publishTelemetry(_orderId: string): Promise<void> {}
+  private async publishTelemetry(orderId: string): Promise<void> {
+    await this.shipTelemetryEnvelope(orderId);
+    this.recordCheckpoint("telemetry handed off");
+  }
 
-  private async refreshReadModel(_orderId: string): Promise<void> {}
+  private async refreshReadModel(orderId: string): Promise<void> {
+    const projection = await this.loadReadModelProjection(orderId);
+    this.storeReadModelProjection(projection);
+  }
+
+  private async shipTelemetryEnvelope(_orderId: string): Promise<void> {}
+
+  private async loadReadModelProjection(orderId: string): Promise<string> {
+    return `projection:${orderId}`;
+  }
+
+  private storeReadModelProjection(_projection: string): void {}
 
   private recordCheckpoint(_label: string): void {}
 
