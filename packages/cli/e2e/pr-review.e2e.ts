@@ -26,6 +26,12 @@ const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const WEB_UI = fileURLToPath(new URL("../web-ui/index.html", import.meta.url));
 const DRAFT_TEXT = "Please keep this tier boundary explicit.";
 const ORDER_SERVICE_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/services/orderService.ts" });
+const LOYALTY_TIERS_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing/loyaltyTiers.ts" });
+const LOYALTY_TIER_FUNCTION_ID = buildNodeId({
+  lang: "ts",
+  modulePath: "src/pricing/loyaltyTiers.ts",
+  qualname: "loyaltyTierFor",
+});
 const nativeFetch = globalThis.fetch.bind(globalThis);
 
 interface SubmittedReview {
@@ -75,6 +81,25 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await reviewFiles.waitFor({ timeout: 120_000 });
     const syncProvenance = page.getByText(/^pr-head → main · head graph @[0-9a-f]{7}$/);
     await syncProvenance.waitFor({ timeout: 120_000 });
+
+    // The whole-codebase overview is an alternate read-only surface, not a review close/reopen:
+    // the prepared HEAD artifact, change colours, and review rail must all stay live while it is open.
+    await page.getByRole("button", { name: "Highlight code in codebase" }).click();
+    const codebaseContext = page.getByRole("region", { name: "Codebase context graph" });
+    await codebaseContext.getByText("READ-ONLY", { exact: true }).waitFor();
+    await codebaseContext.locator(`[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor();
+    await codebaseContext.locator(`[data-id="${ORDER_SERVICE_MODULE_ID}"]`).waitFor();
+    const changedFunction = codebaseContext.locator(`[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
+    await changedFunction.waitFor();
+    await expect.poll(
+      () => changedFunction.evaluate((element) => getComputedStyle(element.firstElementChild as Element).backgroundImage),
+    ).not.toBe("none");
+    expect(await syncProvenance.count()).toBe(1);
+    expect(await page.getByText("Files changed", { exact: true }).count()).toBe(1);
+    expect(await codebaseContext.getByRole("button", { name: "Expand" }).count()).toBe(0);
+    await page.getByRole("button", { name: "Back to extracted graph" }).click();
+    await page.getByRole("region", { name: "Extracted selection" }).waitFor();
+    await syncProvenance.waitFor();
 
     // 4c — the added file is immediately in the prepared HEAD graph with reviewable units.
     let addedFile = reviewFileButton(page, "src/pricing/loyaltyTiers.ts");

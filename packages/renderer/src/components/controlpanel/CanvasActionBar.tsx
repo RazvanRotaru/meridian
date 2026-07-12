@@ -14,7 +14,9 @@ import {
 } from "./canvasActionBarKit";
 import { canvasActionPlacement, panelAnchorStyle, useSurfaceSize, type CanvasActionMode } from "./canvasActionBarLayout";
 import {
+  BackToGraphIcon,
   CloseIcon,
+  CodebaseHighlightIcon,
   CollapseIcon,
   ExpandIcon,
   ExtractSelectionIcon,
@@ -23,7 +25,21 @@ import {
   ResetIcon,
 } from "./icons";
 
-export function CanvasActionBar() {
+export interface CanvasActionBarProps {
+  minimalView?: "graph" | "codebase";
+  onShowCodebase?: () => void;
+  codebaseButtonRef?: React.Ref<HTMLButtonElement>;
+  onBackToGraph?: () => void;
+  backButtonRef?: React.Ref<HTMLButtonElement>;
+}
+
+export function CanvasActionBar({
+  minimalView = "graph",
+  onShowCodebase,
+  codebaseButtonRef,
+  onBackToGraph,
+  backButtonRef,
+}: CanvasActionBarProps = {}) {
   const selectedCount = useBlueprint((state) => state.moduleSelected.size);
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const minimalArranged = useBlueprint((state) => state.minimalArrange);
@@ -42,7 +58,8 @@ export function CanvasActionBar() {
   const [anchorRef, surfaceSize] = useSurfaceSize();
 
   const canExtract = selectedCount > 0 && !minimalOpen;
-  const mode: CanvasActionMode = minimalOpen ? "minimal" : canExtract ? "extract" : "base";
+  const codebaseView = minimalOpen && minimalView === "codebase";
+  const mode: CanvasActionMode = codebaseView ? "codebase" : minimalOpen ? "minimal" : canExtract ? "extract" : "base";
   const placement = canvasActionPlacement(surfaceSize?.width ?? null, mode, surfaceSize?.height ?? null);
   const boundaryOrientation = placement.layout === "row" ? "vertical" : "horizontal";
   return (
@@ -55,18 +72,22 @@ export function CanvasActionBar() {
             icon={<RecenterIcon size={18} />}
             onClick={recenter}
           />
-          <CanvasActionButton
-            ariaLabel="Expand one level"
-            title="Expand the selection one level, or the whole view when nothing is selected"
-            icon={<ExpandIcon size={18} />}
-            onClick={expandAll}
-          />
-          <CanvasActionButton
-            ariaLabel="Collapse all"
-            title="Collapse all open containers in the selection, or the whole view when nothing is selected"
-            icon={<CollapseIcon size={18} />}
-            onClick={collapseAll}
-          />
+          {codebaseView ? null : (
+            <>
+              <CanvasActionButton
+                ariaLabel="Expand one level"
+                title="Expand the selection one level, or the whole view when nothing is selected"
+                icon={<ExpandIcon size={18} />}
+                onClick={expandAll}
+              />
+              <CanvasActionButton
+                ariaLabel="Collapse all"
+                title="Collapse all open containers in the selection, or the whole view when nothing is selected"
+                icon={<CollapseIcon size={18} />}
+                onClick={collapseAll}
+              />
+            </>
+          )}
         </CanvasActionGroup>
         {canExtract ? (
           <>
@@ -83,7 +104,7 @@ export function CanvasActionBar() {
             </CanvasActionGroup>
           </>
         ) : null}
-        {minimalOpen ? (
+        {minimalOpen && !codebaseView ? (
           <>
             <CanvasActionSeparator orientation={boundaryOrientation} />
             <CanvasActionGroup label="Extracted graph actions">
@@ -108,7 +129,36 @@ export function CanvasActionBar() {
                 onClick={resetMinimalGraph}
                 disabled={!minimalChanged}
               />
+              {onShowCodebase === undefined ? null : (
+                <CanvasActionButton
+                  ariaLabel="Highlight code in codebase"
+                  title="Show this extracted graph highlighted in its whole-codebase context"
+                  icon={<CodebaseHighlightIcon size={18} />}
+                  onClick={onShowCodebase}
+                  buttonRef={codebaseButtonRef}
+                />
+              )}
               <CanvasActionSeparator orientation="vertical" />
+              <CanvasActionButton
+                ariaLabel="Close extracted graph"
+                title="Return to the previous graph"
+                icon={<CloseIcon size={18} />}
+                onClick={closeMinimalGraph}
+              />
+            </CanvasActionGroup>
+          </>
+        ) : null}
+        {codebaseView ? (
+          <>
+            <CanvasActionSeparator orientation={boundaryOrientation} />
+            <CanvasActionGroup label="Codebase view actions">
+              <CanvasActionButton
+                ariaLabel="Back to extracted graph"
+                title="Return to the curated extracted graph"
+                icon={<BackToGraphIcon size={18} />}
+                onClick={() => onBackToGraph?.()}
+                buttonRef={backButtonRef}
+              />
               <CanvasActionButton
                 ariaLabel="Close extracted graph"
                 title="Return to the previous graph"

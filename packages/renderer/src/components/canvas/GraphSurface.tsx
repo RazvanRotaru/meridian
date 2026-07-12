@@ -84,6 +84,7 @@ import {
 } from "./mapLodGeometry";
 import type { SurfaceEmphasisMode } from "../moduleMapHighlight";
 import type { LensRelationPolicy } from "../../graph/lensRelationPolicy";
+import { SurfaceInteractionScope } from "./SurfaceInteractionContext";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
  * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "cycle" the
@@ -123,16 +124,25 @@ export interface SurfacePaintOwnership {
 }
 
 /** Resolve the deliberately distinct paint identities used by every GraphSurface mount.
- * A PR row hover/click is a transient paint owner and therefore outranks stale ghost provenance;
- * when review paint clears, captured ghost provenance resumes. Literal selection is always
- * protected independently and owns local focus/highway extraction without replacing provenance,
- * so clicking a ghost keeps the visible frontier stable while drawing only that ghost's strands. */
+ * A surface-owned override (the frozen codebase context) is authoritative. Otherwise a PR row
+ * hover/click outranks stale ghost provenance, which resumes when review paint clears. Literal
+ * selection is always protected independently and owns local focus/highway extraction without
+ * replacing provenance, so clicking a ghost keeps the frontier while drawing only its strands. */
 export function resolveSurfacePaintOwnership(
   selected: ReadonlySet<string>,
   reviewLit: ReadonlySet<string> | null,
   reviewEmphasis: boolean,
   ghostPaintOverride: ReadonlySet<string> | null,
+  surfacePaintOverride: ReadonlySet<string> | null = null,
 ): SurfacePaintOwnership {
+  if (surfacePaintOverride !== null) {
+    return {
+      protectedSelection: selected,
+      paintSeeds: surfacePaintOverride,
+      focusSeeds: null,
+      highwaySeeds: surfacePaintOverride,
+    };
+  }
   const reviewOwnsPaint = reviewEmphasis && reviewLit !== null;
   const paintSeeds = reviewOwnsPaint
     ? reviewLit
@@ -196,10 +206,17 @@ export interface GraphSurfaceProps {
   children?: ReactNode;
   /** Retain the last committed graph underneath a blocking status overlay while its replacement is derived. */
   busy?: GraphLayoutIndicatorProps;
+  /** Frozen overview mode: pan/zoom and source inspection remain, graph selection/navigation do not. */
+  readOnly?: boolean;
+  /** Surface-local highlight set which does not mutate the Map/minimal graph's real selection. */
+  selectionOverride?: ReadonlySet<string>;
+  /** Separate paint owners when node rings and relationship emphasis intentionally differ. */
+  paintSelectionOverride?: ReadonlySet<string>;
 }
 
 export function GraphSurface(props: GraphSurfaceProps) {
-  const selected = useBlueprint((state) => state.moduleSelected);
+  const storeSelected = useBlueprint((state) => state.moduleSelected);
+  const selected = props.selectionOverride ?? storeSelected;
   const reviewLit = useBlueprint((state) => state.reviewLitNodeIds);
   const index = useBlueprint((state) => state.index);
   const radius = useBlueprint((state) => state.moduleRadius);
@@ -289,8 +306,9 @@ export function GraphSurface(props: GraphSurfaceProps) {
       reviewLit,
       props.reviewEmphasis === true,
       props.interactions.paintSelectionOverride,
+      props.paintSelectionOverride ?? null,
     ),
-    [selected, reviewLit, props.reviewEmphasis, props.interactions.paintSelectionOverride],
+    [selected, reviewLit, props.reviewEmphasis, props.interactions.paintSelectionOverride, props.paintSelectionOverride],
   );
   const { nodes: paintedNodes, edges: paintedEdges, beacons } = useMemo(
     () => paintSemanticLayers(props.nodes, props.edges, paintOwnership.protectedSelection, radius, emphasisMode, {
@@ -378,6 +396,10 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const nodeDiff = useNodeDiffPreview(nodeDiffEnabled);
 
   return (
+    <SurfaceInteractionScope
+      readOnly={props.readOnly === true}
+      selectionOverride={props.selectionOverride ?? null}
+    >
     <div
       style={SURFACE_STYLE}
       aria-busy={props.busy ? "true" : undefined}
@@ -407,16 +429,18 @@ export function GraphSurface(props: GraphSurfaceProps) {
         nodeTypes={moduleNodeTypes}
         edgeTypes={moduleEdgeTypes}
         onInit={props.onInit}
-        onNodeClick={props.interactions.onNodeClick}
-        onNodeDoubleClick={props.interactions.onNodeDoubleClick}
+        onNodeClick={props.readOnly ? undefined : props.interactions.onNodeClick}
+        onNodeDoubleClick={props.readOnly ? undefined : props.interactions.onNodeDoubleClick}
         onNodeMouseEnter={nodeDiffEnabled ? nodeDiff.onNodeMouseEnter : undefined}
         onNodeMouseMove={nodeDiffEnabled ? nodeDiff.onNodeMouseMove : undefined}
         onNodeMouseLeave={nodeDiffEnabled ? nodeDiff.onNodeMouseLeave : undefined}
         onPaneMouseMove={nodeDiffEnabled ? nodeDiff.onPaneMouseMove : undefined}
         onPaneClick={() => {
-          // A pane click unpins the inspector AND clears the selection (the mount's handler).
+          // A pane click always unpins the inspector. Frozen context views keep their fixed target set.
           wire.clearInspected();
-          props.interactions.onPaneClick();
+          if (!props.readOnly) {
+            props.interactions.onPaneClick();
+          }
         }}
         onEdgeMouseEnter={wire.onEdgeMouseEnter}
         onEdgeMouseLeave={wire.onEdgeMouseLeave}
@@ -431,6 +455,9 @@ export function GraphSurface(props: GraphSurfaceProps) {
         // Manual z: basic mode ADDS a nested endpoint's node-z to the edge — see useWireHover's z rule.
         zIndexMode="manual"
         {...READONLY_CANVAS_PROPS}
+        elementsSelectable={!props.readOnly}
+        nodesFocusable={!props.readOnly}
+        edgesFocusable={!props.readOnly}
         fitView={props.autoFitView ?? !hasSemanticComposite}
       >
         <CanvasChrome nodeColor={props.miniMapColor} minimap={!virtualizeCanvas} />
@@ -452,6 +479,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
       {props.children}
       {props.busy ? <GraphLayoutIndicator {...props.busy} /> : null}
     </div>
+    </SurfaceInteractionScope>
   );
 }
 

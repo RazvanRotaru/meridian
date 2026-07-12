@@ -3,7 +3,7 @@ import type { PanelPosition } from "@xyflow/react";
 import { CHROME_EDGE, MINIMAP_H } from "../canvas/flowCanvasProps";
 import { CONTROL_PANEL_WIDTH } from "./panelKit";
 
-export type CanvasActionMode = "base" | "extract" | "minimal";
+export type CanvasActionMode = "base" | "extract" | "minimal" | "codebase";
 export type CanvasActionLayout = "row" | "stacked";
 
 export interface CanvasActionPlacement {
@@ -30,10 +30,15 @@ export function canvasActionPlacement(
   if (surfaceWidth === null || (layout === "row" && surfaceWidth >= CONTROL_CLEARANCE * 2 + rowWidth)) {
     return { position: "bottom-center", layout };
   }
+  const edgeClampedLeft = Math.max(EDGE_GAP, surfaceWidth - barWidth - EDGE_GAP);
+  const fitsBesideControls = surfaceWidth - barWidth >= CONTROL_PANEL_END;
   return {
     position: "bottom-left",
     layout,
-    left: Math.min(CONTROL_CLEARANCE, Math.max(EDGE_GAP, surfaceWidth - barWidth - EDGE_GAP)),
+    left: Math.min(
+      CONTROL_CLEARANCE,
+      fitsBesideControls ? Math.max(CONTROL_PANEL_END, edgeClampedLeft) : edgeClampedLeft,
+    ),
     bottom: actionBarBottom(surfaceHeight, mode, layout),
   };
 }
@@ -77,12 +82,15 @@ export function panelAnchorStyle(placement: CanvasActionPlacement): React.CSSPro
     left: placement.left,
     bottom: placement.bottom,
     margin: 0,
-    maxWidth: `calc(100% - ${(placement.left ?? 0) + EDGE_GAP}px)`,
+    // Placement normally preserves EDGE_GAP. When a wider stacked group only just fits beside the
+    // controls, allow it to use the smaller remaining edge margin instead of becoming scrollable.
+    maxWidth: `calc(100% - ${placement.left ?? 0}px)`,
     zIndex: (placement.left ?? CONTROL_CLEARANCE) < CONTROL_CLEARANCE || (placement.bottom ?? NORMAL_BOTTOM) < NORMAL_BOTTOM ? 7 : 4,
   };
 }
 
 const EDGE_GAP = 16;
+const CONTROL_PANEL_END = CHROME_EDGE + CONTROL_PANEL_WIDTH;
 const CONTROL_CLEARANCE = CHROME_EDGE + CONTROL_PANEL_WIDTH + EDGE_GAP;
 const NORMAL_BOTTOM = MINIMAP_H + CHROME_EDGE + EDGE_GAP;
 const ROW_BAR_HEIGHT = 54;
@@ -94,12 +102,14 @@ const BASE_BAR_WIDTH = 144;
 const BAR_WIDTHS: Record<CanvasActionMode, number> = {
   base: BASE_BAR_WIDTH,
   extract: 217,
-  minimal: 299,
+  minimal: 344,
+  codebase: 198,
 };
 const STACKED_BAR_WIDTHS: Record<CanvasActionMode, number> = {
   base: BASE_BAR_WIDTH,
   extract: BASE_BAR_WIDTH,
-  minimal: 154,
+  minimal: 199,
+  codebase: 154,
 };
 const CENTERED_ANCHOR_STYLE: React.CSSProperties = {
   marginBottom: EDGE_GAP,

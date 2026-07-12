@@ -26,7 +26,7 @@ describe("GraphSurface mount semantic-navigation parity", () => {
 
   it.each([
     ["ModuleMapView", <ModuleMapView />],
-    ["MinimalGraphView", <MinimalGraphView />],
+    ["MinimalGraphView", <MinimalGraphView onShowCodebase={() => undefined} />],
   ])("%s declares whether and how it participates in semantic navigation", (_name, mount) => {
     renderToStaticMarkup(
       <StoreProvider store={freshStore()}>

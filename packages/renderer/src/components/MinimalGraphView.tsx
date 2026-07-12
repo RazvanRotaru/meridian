@@ -52,7 +52,13 @@ import { filterExternalGhosts } from "./moduleMapPaint";
 const RECENTER_OPTIONS = { maxZoom: 1 } as const;
 const MINIMAL_SEMANTIC_FIT = { minZoom: SEMANTIC_READING_MIN_ZOOM } as const;
 
-export function MinimalGraphView() {
+export function MinimalGraphView({
+  onShowCodebase,
+  codebaseButtonRef,
+}: {
+  onShowCodebase: () => void;
+  codebaseButtonRef?: React.Ref<HTMLButtonElement>;
+}) {
   const nodes = useBlueprint((state) => state.minimalRfNodes);
   const edges = useBlueprint((state) => state.minimalRfEdges);
   const selected = useBlueprint((state) => state.moduleSelected);
@@ -160,7 +166,7 @@ export function MinimalGraphView() {
           showIpc={false}
           relationPolicy={relations}
         />
-        <CanvasActionBar />
+        <CanvasActionBar onShowCodebase={onShowCodebase} codebaseButtonRef={codebaseButtonRef} />
         <MinimalMembersPanel />
       </GraphSurface>
     </div>

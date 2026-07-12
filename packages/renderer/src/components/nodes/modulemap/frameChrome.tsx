@@ -5,6 +5,7 @@
  */
 
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
+import { useSurfaceReadOnly } from "../../canvas/SurfaceInteractionContext";
 
 export const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 export const SELECT_ACCENT = "#6BE38A";
@@ -76,7 +77,11 @@ const CODE_BTN: React.CSSProperties = {
 
 /** The in-place expand/collapse chevron; stops propagation so it never also selects the card. */
 export function ExpandChevron({ id, isExpanded, collapsedTitle }: { id: string; isExpanded: boolean; collapsedTitle?: string }) {
+  const readOnly = useSurfaceReadOnly();
   const toggleModuleExpand = useBlueprintActions().toggleModuleExpand;
+  if (readOnly) {
+    return null;
+  }
   const label = isExpanded ? "Collapse" : "Expand";
   return (
     <button

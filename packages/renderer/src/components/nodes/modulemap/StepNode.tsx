@@ -10,7 +10,7 @@
 
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import { useBlueprint } from "../../../state/StoreContext";
+import { useSurfaceNodeSelected } from "../../canvas/SurfaceInteractionContext";
 import type { StepData } from "../../../derive/flowSteps";
 import { cardSelectedStyle, ExpandChevron, MONO, PIN } from "./frameChrome";
 import { CALL_RESOLVED, CALL_UNRESOLVED, CONSTRUCT } from "../../../theme/mapPalette";
@@ -20,7 +20,7 @@ const STEP_GLYPH: Record<StepData["stepKind"], string> = { call: "â†’", loop: "â
 type StepRfNode = Node<StepData, "step">;
 
 function StepNodeImpl({ id, data }: NodeProps<StepRfNode>) {
-  const selected = useBlueprint((state) => state.moduleSelected.has(id));
+  const selected = useSurfaceNodeSelected(id);
   // Calls tint by resolution (resolved = wire-out blue, unresolved = muted); constructs are amber.
   const glyphColor = data.stepKind === "call" ? (data.resolved ? CALL_RESOLVED : CALL_UNRESOLVED) : CONSTRUCT;
   const chevron = data.isContainer ? (

@@ -8,7 +8,7 @@
 
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import { useBlueprint } from "../../../state/StoreContext";
+import { useSurfaceNodeSelected } from "../../canvas/SurfaceInteractionContext";
 import { accentForKind, kindLetter } from "../../../theme/kindColors";
 import type { UnitCardData } from "../../../derive/moduleLevel";
 import { cardSelectedStyle, CodeButton, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
@@ -17,7 +17,7 @@ import { borderFor, useNodeDiff } from "./changed";
 type UnitRfNode = Node<UnitCardData, "unit">;
 
 function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
-  const selected = useBlueprint((state) => state.moduleSelected.has(id));
+  const selected = useSurfaceNodeSelected(id);
   const diff = useNodeDiff(id);
   const accent = accentForKind(data.unitKind);
   const chevron = data.isContainer ? (

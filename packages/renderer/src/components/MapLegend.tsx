@@ -26,6 +26,8 @@ interface MapLegendProps {
   showIpc?: boolean;
   /** The active lens's available semantic vocabulary. */
   relationPolicy?: LensRelationPolicy;
+  /** Frozen codebase context: describe marks without advertising disabled edit/navigation gestures. */
+  readOnly?: boolean;
 }
 
 export function MapLegend({
@@ -33,6 +35,7 @@ export function MapLegend({
   showPackages = true,
   showIpc = true,
   relationPolicy = MAP_RELATION_POLICY,
+  readOnly = false,
 }: MapLegendProps) {
   const [open, setOpen] = useState(false);
   const relationships = relationshipKindsForPolicy(relationPolicy)
@@ -52,14 +55,14 @@ export function MapLegend({
       </div>
       <Section title="Cards">
         {showPackages ? (
-          <Row swatch={<Box color={accentForKind("package")} />} text="package / directory — double-click to zoom in, chevron to expand in place" />
+          <Row swatch={<Box color={accentForKind("package")} />} text={readOnly ? "package / directory containing highlighted code" : "package / directory — double-click to zoom in, chevron to expand in place"} />
         ) : null}
-        <Row swatch={<Box color={FILE_ACCENT} />} text="file — expands into its declarations; its category is on the chip (UI / Utilities / Config)" />
+        <Row swatch={<Box color={FILE_ACCENT} />} text={readOnly ? "file — disclosed declarations match the extracted graph" : "file — expands into its declarations; its category is on the chip (UI / Utilities / Config)"} />
         <Row swatch={<ChipSwatch label="KIND" color={accentForKind("class")} />} text="class / interface / object / type — a neutral grey; the kind chip names which" />
-        <Row swatch={<Glyph text="ƒ" color={accentForKind("function")} />} text="method / function — double-click opens its logic flow" />
-        <Row swatch={<Dashed />} text="ghost — related context outside this level; click selects, double-click reveals, chevron discloses a group" />
+        <Row swatch={<Glyph text="ƒ" color={accentForKind("function")} />} text={readOnly ? "method / function in the located code path" : "method / function — double-click opens its logic flow"} />
+        <Row swatch={<Dashed />} text={readOnly ? "ghost — related code outside this located level" : "ghost — related context outside this level; click selects, double-click reveals, chevron discloses a group"} />
       </Section>
-      <Section title="Wires — by relationship (toggle each in the toolbar)">
+      <Section title={readOnly ? "Wires — by relationship" : "Wires — by relationship (toggle each in the toolbar)"}>
         {relationships.map((kind) => (
           <Row
             key={kind.key}
@@ -71,14 +74,14 @@ export function MapLegend({
       </Section>
       {hasSteps ? (
         <Section title="Flow steps">
-          <Row swatch={<Glyph text="→" color={CALL_RESOLVED} />} text="call (blue = resolved, grey = unresolved); expandable when its flow is charted" />
-          <Row swatch={<Glyph text="↻ ⑂ λ" color={CONSTRUCT} />} text="loop / branch / callback — expand to unroll the body" />
+          <Row swatch={<Glyph text="→" color={CALL_RESOLVED} />} text={readOnly ? "call (blue = resolved, grey = unresolved)" : "call (blue = resolved, grey = unresolved); expandable when its flow is charted"} />
+          <Row swatch={<Glyph text="↻ ⑂ λ" color={CONSTRUCT} />} text={readOnly ? "loop / branch / callback from the extracted flow" : "loop / branch / callback — expand to unroll the body"} />
           <Row swatch={<Glyph text="⏎" color={CONSTRUCT} />} text="return / throw — this path ends here" />
         </Section>
       ) : null}
-      <Section title="When you select">
-        <Row swatch={<Line color="#C8D3E0" />} text="a node's wires BRIGHTEN (keeping their colour), everything else dims; the arrow shows direction. ctrl/cmd+click adds to the selection" />
-        <Row swatch={<Ring />} text="green ring — a selected call step's definition; an edge-of-screen ➤ guides to it when off view" />
+      <Section title={readOnly ? "Highlighted context" : "When you select"}>
+        <Row swatch={<Line color="#C8D3E0" />} text={readOnly ? "bright wires and neutral rings locate the extracted graph; surrounding code stays dimmer" : "a node's wires BRIGHTEN (keeping their colour), everything else dims; the arrow shows direction. ctrl/cmd+click adds to the selection"} />
+        <Row swatch={<Ring />} text={readOnly ? "PR reviews keep their added / modified / deleted status colours instead of neutral rings" : "green ring — a selected call step's definition; an edge-of-screen ➤ guides to it when off view"} />
       </Section>
     </div>
   );

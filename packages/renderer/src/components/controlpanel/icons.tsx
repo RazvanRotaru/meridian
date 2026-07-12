@@ -59,6 +59,28 @@ export function ExtractSelectionIcon({ size = 15 }: IconProps) {
   );
 }
 
+/** Repository frame with lit cards — place the extracted code back in whole-codebase context. */
+export function CodebaseHighlightIcon({ size = 15 }: IconProps) {
+  return (
+    <svg {...svgProps(size)}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M3 9h18M8 4v5" />
+      <rect x="7" y="12" width="4" height="4" rx="1" />
+      <rect x="14" y="12" width="3" height="3" rx=".8" />
+    </svg>
+  );
+}
+
+/** Return from the frozen codebase overview to the curated extracted graph. */
+export function BackToGraphIcon({ size = 15 }: IconProps) {
+  return (
+    <svg {...svgProps(size)}>
+      <path d="m9 7-5 5 5 5" />
+      <path d="M4 12h10a6 6 0 0 1 6 6" />
+    </svg>
+  );
+}
+
 /** Four cards snapping into a grid — compact the extracted graph without changing its members. */
 export function RearrangeIcon({ size = 15 }: IconProps) {
   return (

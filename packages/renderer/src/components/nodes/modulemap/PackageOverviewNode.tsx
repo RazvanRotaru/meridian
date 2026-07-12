@@ -17,6 +17,7 @@ import { cardSelectedStyle, ExpandChevron, FrameTitleBar, frameSelectedStyle, fr
 import { borderFor, DeltaChip, useNodeDiff } from "./changed";
 import { CommonsChips } from "./CommonsChips";
 import { TOKENS } from "../../controlpanel/panelKit";
+import { useSurfaceNodeSelected, useSurfaceReadOnly } from "../../canvas/SurfaceInteractionContext";
 
 // A neutral package hue — the cross-package coupling gold lives on the wires, not the boxes.
 const PACKAGE_ACCENT = "#5B9BE3";
@@ -36,8 +37,9 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
  * Keep those mechanics here and let each React Flow node type be a thin semantic wrapper.
  */
 export function GroupContainerNodeView({ id, data }: { id: string; data: ModuleGroupData }) {
-  const selected = useBlueprint((state) => state.moduleSelected.has(id));
-  const rollupFileCount = useBlueprint((state) => state.minimalRollups[id]?.length ?? 0);
+  const selected = useSurfaceNodeSelected(id);
+  const readOnlySurface = useSurfaceReadOnly();
+  const rollupFileCount = useBlueprint((state) => readOnlySurface ? 0 : state.minimalRollups[id]?.length ?? 0);
   const { expandMinimalGroup } = useBlueprintActions();
   const diff = useNodeDiff(id);
   const chevron = data.isContainer ? <ExpandChevron id={id} isExpanded={data.isExpanded} /> : null;
