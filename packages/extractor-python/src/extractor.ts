@@ -21,6 +21,7 @@ import { buildStats } from "./stats";
 import type { AnalyzeOutput } from "./types";
 
 const MAX_DETECT_DEPTH = 5;
+const DETECT_SKIP_DIRS = new Set(["__pycache__", "node_modules", "site-packages", "venv", "worktrees", "dist", "build", "out"]);
 
 export class PythonExtractor implements LanguageExtractor {
   readonly language: LanguageTag = "python";
@@ -57,7 +58,7 @@ function containsPythonFile(directory: string, depth: number): boolean {
   return entries.some(
     (entry) =>
       entry.isDirectory() &&
-      entry.name !== "node_modules" &&
+      !DETECT_SKIP_DIRS.has(entry.name) &&
       !entry.name.startsWith(".") &&
       containsPythonFile(join(directory, entry.name), depth - 1),
   );
@@ -72,49 +73,27 @@ function readEntries(directory: string): Dirent[] {
 }
 
 function runExtraction(options: ExtractOptions): ExtractionResult {
-  const output = runPythonAnalyzer(options.root);
+  const output = runPythonAnalyzer(options);
   const index = buildNodes(output);
   const built = buildEdges(output, index, options);
-  const { nodes, renamed } = disambiguateIds(built.nodes);
   const stats = buildStats({
     files: output.modules.length,
-    nodes,
+    nodes: built.nodes,
     edges: built.edges,
     externalCallsDropped: built.externalCallsDropped,
     unresolvedCalls: built.unresolvedCalls,
   });
   const diagnostics = diagnosticsOf(output, built);
-  if (renamed > 0) {
-    diagnostics.push({ severity: "warn", message: `${renamed} colliding node id(s) disambiguated with ~n ordinals` });
+  if (index.renamed > 0) {
+    diagnostics.push({ severity: "warn", message: `${index.renamed} colliding node id(s) disambiguated with ~n ordinals` });
   }
-  return { language: "python", nodes, edges: built.edges, stats, diagnostics };
-}
-
-/**
- * Same-id collisions (a method defined twice under conditionals, a `chat.py` module beside a
- * `chat/` package) get the grammar's `~n` ordinal, mirroring the TS extractor's disambiguation.
- * The FIRST occurrence keeps the bare id, so edges and parentIds — which reference the bare
- * string — keep resolving; `generate` would otherwise fail closed on a duplicate-id error.
- */
-function disambiguateIds(nodes: ExtractionResult["nodes"]): { nodes: ExtractionResult["nodes"]; renamed: number } {
-  const seen = new Map<string, number>();
-  let renamed = 0;
-  const result = nodes.map((node) => {
-    const count = seen.get(node.id) ?? 0;
-    seen.set(node.id, count + 1);
-    if (count === 0) {
-      return node;
-    }
-    renamed += 1;
-    return { ...node, id: `${node.id}~${count}` };
-  });
-  return { nodes: result, renamed };
+  return { language: "python", nodes: built.nodes, edges: built.edges, stats, diagnostics };
 }
 
 function diagnosticsOf(output: AnalyzeOutput, built: EdgeResult): ExtractionDiagnostic[] {
   const diagnostics: ExtractionDiagnostic[] = output.diagnostics.map((message) => ({ severity: "warn", message }));
   if (built.externalCallsDropped > 0) {
-    diagnostics.push({ severity: "warn", message: `dropped ${built.externalCallsDropped} external call edge(s)` });
+    diagnostics.push({ severity: "warn", message: `dropped ${built.externalCallsDropped} external edge(s)` });
   }
   if (built.unresolvedCalls > 0) {
     diagnostics.push({ severity: "warn", message: `${built.unresolvedCalls} unresolved call(s)` });

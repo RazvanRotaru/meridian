@@ -159,4 +159,25 @@ describe("PythonExtractor over orders-service-py", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("resolves nested-class fields and locally constructed instances", async () => {
+    const root = await mkdtemp(join(tmpdir(), "meridian-pynested-class-"));
+    try {
+      await writeFile(join(root, "nested.py"), [
+        "class Dependency:",
+        "    def work(self):", "        return 1", "",
+        "def outer():",
+        "    class Inner:",
+        "        def __init__(self, dependency: Dependency):", "            self.dependency = dependency",
+        "        def run(self):", "            return self.dependency.work()", "",
+        "    instance = Inner(Dependency())", "    return instance.run()", "",
+      ].join("\n"));
+      const result = await createPythonExtractor().extract({ root });
+      expect(hasEdge(result, "calls", "outer.Inner.run", "Dependency.work")).toBe(true);
+      expect(hasEdge(result, "calls", "outer", "outer.Inner.run")).toBe(true);
+      expect(hasEdge(result, "instantiates", "outer", "outer.Inner")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

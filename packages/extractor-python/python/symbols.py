@@ -1,134 +1,143 @@
-"""Per-module symbol table: imports, module-level defs/classes, and class attr types.
-
-Resolution leans on three facts we can read statically: what names a module imports
-(and from where), which top-level functions/classes it defines, and the declared type
-of each ``self`` attribute. The last one is what lets ``self._pricing.price(...)`` find
-``PricingService.price`` in another module without a type checker.
-"""
+"""Module and lexical-scope bindings for conservative Python resolution."""
 
 from __future__ import annotations
 
 import ast
 
+from inference import infer_value_type, params_to_types, type_ref_of
+from project import ProjectIndex
+from scope import ScopeBindings, clone_scope
+from scope_flow import bind_body, bind_statement, function_start
+
+
+FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
+
 
 class SymbolTable:
-    """The names visible inside one module, indexed for call/attribute resolution."""
-
-    def __init__(self, module_path: str, in_project: frozenset[str]) -> None:
+    def __init__(self, module_path: str, project: ProjectIndex) -> None:
         self.module_path = module_path
-        self.in_project = in_project
-        self.from_imports: dict[str, tuple[str, str]] = {}  # alias -> (module, original)
-        self.module_imports: dict[str, str] = {}  # alias -> dotted module
-        self.local_funcs: set[str] = set()
-        self.local_classes: set[str] = set()
-        self.class_methods: dict[str, set[str]] = {}
-        self.class_attr_types: dict[str, dict[str, str]] = {}
+        self.project = project
+        self.module_scope = ScopeBindings()
+        self.class_attr_types: dict[str, dict[str, tuple[str, str]]] = {}
 
     def scan(self, tree: ast.Module) -> None:
-        for stmt in tree.body:
-            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                self.local_funcs.add(stmt.name)
-            elif isinstance(stmt, ast.ClassDef):
-                self.local_classes.add(stmt.name)
-                self._scan_class(stmt)
-            elif isinstance(stmt, ast.ImportFrom):
-                self._scan_import_from(stmt)
-            elif isinstance(stmt, ast.Import):
-                self._scan_import(stmt)
+        scope = ScopeBindings()
+        for statement in tree.body:
+            if isinstance(statement, ast.ClassDef):
+                self.scan_class(statement, statement.name, scope, scope)
+            bind_statement(statement, scope, self.module_path, None)
+        self.module_scope = scope
 
-    def _scan_import_from(self, stmt: ast.ImportFrom) -> None:
-        base = resolve_from_module(self.module_path, stmt)
-        if base is None:
-            return
-        for alias in stmt.names:
-            self.from_imports[alias.asname or alias.name] = (base, alias.name)
+    def scan_class(
+        self,
+        classdef: ast.ClassDef,
+        qualname: str,
+        definition_scope: ScopeBindings,
+        lexical_scope: ScopeBindings,
+    ) -> None:
+        attr_types: dict[str, tuple[str, str]] = {}
+        class_scope = clone_scope(lexical_scope)
+        for statement in classdef.body:
+            if isinstance(statement, FUNCTIONS) and statement.name == "__init__":
+                self.scan_init(statement, attr_types, class_scope)
+            elif isinstance(statement, ast.AnnAssign):
+                self.record_class_annotation(statement, attr_types, class_scope)
+            elif isinstance(statement, ast.ClassDef):
+                self.scan_class(
+                    statement, f"{qualname}.{statement.name}", class_scope, lexical_scope
+                )
+            bind_statement(statement, class_scope, self.module_path, qualname)
+        self.class_attr_types[qualname] = attr_types
 
-    def _scan_import(self, stmt: ast.Import) -> None:
-        for alias in stmt.names:
-            self.module_imports[alias.asname or alias.name] = alias.name
+    def scan_init(
+        self,
+        init: ast.FunctionDef | ast.AsyncFunctionDef,
+        attr_types: dict[str, tuple[str, str]],
+        definition_scope: ScopeBindings,
+    ) -> None:
+        param_refs = params_to_types(init.args)
+        param_types = {
+            name: located
+            for name, ref in param_refs.items()
+            if (located := self.locate_type(ref, definition_scope))
+        }
+        for node in walk_scope(init.body):
+            if isinstance(node, ast.AnnAssign) and is_self_attr(node.target):
+                located = self.locate_type(type_ref_of(node.annotation) or "", definition_scope)
+                if located:
+                    attr_types[node.target.attr] = located
+            elif isinstance(node, ast.Assign) and len(node.targets) == 1 and is_self_attr(node.targets[0]):
+                located = param_types.get(node.value.id) if isinstance(node.value, ast.Name) else None
+                type_ref = infer_value_type(node.value, param_refs)
+                located = located or (self.locate_type(type_ref, definition_scope) if type_ref else None)
+                if located:
+                    attr_types[node.targets[0].attr] = located
 
-    def _scan_class(self, classdef: ast.ClassDef) -> None:
-        methods: set[str] = set()
-        attr_types: dict[str, str] = {}
-        for stmt in classdef.body:
-            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                methods.add(stmt.name)
-                if stmt.name == "__init__":
-                    self._scan_init(stmt, attr_types)
-            elif isinstance(stmt, ast.AnnAssign):
-                record_annotation(stmt, attr_types)
-        self.class_methods[classdef.name] = methods
-        self.class_attr_types[classdef.name] = attr_types
+    def record_class_annotation(
+        self,
+        statement: ast.AnnAssign,
+        attr_types: dict[str, tuple[str, str]],
+        scope: ScopeBindings,
+    ) -> None:
+        if isinstance(statement.target, ast.Name):
+            located = self.locate_type(type_ref_of(statement.annotation) or "", scope)
+            if located:
+                attr_types[statement.target.id] = located
 
-    def _scan_init(self, init: ast.FunctionDef | ast.AsyncFunctionDef, attr_types: dict[str, str]) -> None:
-        param_types = params_to_types(init.args)
-        for stmt in ast.walk(init):
-            if isinstance(stmt, ast.AnnAssign):
-                record_annotation(stmt, attr_types)
-            elif isinstance(stmt, ast.Assign):
-                bind_self_attr(stmt, param_types, attr_types)
+    def scope_for(
+        self,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        qualname: str,
+        enclosing: ScopeBindings,
+        receiver_class: str | None = None,
+    ) -> ScopeBindings:
+        scope = function_start(function, enclosing, receiver_class, self.module_scope)
+        nested_scope = clone_scope(scope)
+        for statement in function.body:
+            if isinstance(statement, ast.ClassDef):
+                self.scan_class(
+                    statement, f"{qualname}.{statement.name}", nested_scope, nested_scope
+                )
+            bind_statement(statement, nested_scope, self.module_path, qualname)
+        bind_body(function.body, scope, self.module_path, qualname)
+        return scope
 
-
-def resolve_from_module(module_path: str, stmt: ast.ImportFrom) -> str | None:
-    """Resolve a ``from ... import`` to the dotted module the imported names live in.
-
-    Relative imports ascend from the importing module's package: ``level==1`` stays in it,
-    each extra dot climbs one more package, then the explicit ``from`` module is appended.
-    """
-    if stmt.level == 0:
-        return stmt.module  # absolute; may well be an external/stdlib module
-    package = module_path.split(".")[:-1]
-    ascend = stmt.level - 1
-    if ascend > len(package):
-        return None  # the import escapes the project root; treat as unknown
-    base = package[: len(package) - ascend]
-    if stmt.module:
-        base = base + stmt.module.split(".")
-    return ".".join(base) if base else None
-
-
-def params_to_types(args: ast.arguments) -> dict[str, str]:
-    """Map each annotated parameter to its simple type name (for ``self._x = param``)."""
-    result: dict[str, str] = {}
-    for param in args.posonlyargs + args.args + args.kwonlyargs:
-        type_name = type_name_of(param.annotation) if param.annotation else None
-        if type_name:
-            result[param.arg] = type_name
-    return result
-
-
-def bind_self_attr(assign: ast.Assign, param_types: dict[str, str], attr_types: dict[str, str]) -> None:
-    """Learn ``self._x``'s type from ``self._x = param`` where ``param`` was annotated."""
-    if len(assign.targets) != 1 or not is_self_attr(assign.targets[0]):
-        return
-    value = assign.value
-    if isinstance(value, ast.Name) and value.id in param_types:
-        attr_types[assign.targets[0].attr] = param_types[value.id]
-
-
-def record_annotation(stmt: ast.AnnAssign, attr_types: dict[str, str]) -> None:
-    """Record ``x: T`` (class-level) or ``self.x: T`` (in ``__init__``) attribute types."""
-    type_name = type_name_of(stmt.annotation)
-    if type_name is None:
-        return
-    if isinstance(stmt.target, ast.Name):
-        attr_types[stmt.target.id] = type_name
-    elif is_self_attr(stmt.target):
-        attr_types[stmt.target.attr] = type_name
+    def locate_type(self, type_ref: str, scope: ScopeBindings) -> tuple[str, str] | None:
+        if type_ref.split(".", 1)[0] in scope.shadowed:
+            return None
+        definition = scope.definitions.get(type_ref)
+        if definition and self.project.kind_of(self.module_path, definition) == "class":
+            return self.module_path, definition
+        if type_ref in scope.from_imports:
+            return self.project.locate_symbol(*scope.from_imports[type_ref])
+        parts = type_ref.split(".")
+        if parts[0] in scope.module_imports:
+            prefix = scope.module_imports[parts[0]]
+            return locate_qualified_type(self.project, prefix, parts[1:])
+        located = self.project.locate_symbol(self.module_path, type_ref)
+        return located if located and self.project.kind_of(*located) == "class" else None
 
 
-def type_name_of(annotation: ast.expr | None) -> str | None:
-    """Best-effort simple type name: ``Name`` directly, or the base of a subscript."""
-    if isinstance(annotation, ast.Name):
-        return annotation.id
-    if isinstance(annotation, ast.Subscript):
-        return type_name_of(annotation.value)
+def walk_scope(body: list[ast.stmt]):
+    stack: list[ast.AST] = list(reversed(body))
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, (*FUNCTIONS, ast.ClassDef, ast.Lambda)):
+            continue
+        stack.extend(reversed(list(ast.iter_child_nodes(node))))
+
+
+def locate_qualified_type(project: ProjectIndex, prefix: str, rest: list[str]) -> tuple[str, str] | None:
+    for split in range(len(rest), -1, -1):
+        module = ".".join([prefix, *rest[:split]])
+        actual = project.canonical_module(module)
+        if actual and split < len(rest):
+            located = project.locate_symbol(actual, ".".join(rest[split:]))
+            if located and project.kind_of(*located) == "class":
+                return located
     return None
 
 
 def is_self_attr(node: ast.expr) -> bool:
-    return (
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id in ("self", "cls")
-    )
+    return isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in ("self", "cls")
