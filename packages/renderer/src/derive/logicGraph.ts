@@ -629,6 +629,11 @@ const GREY_TITLE_CHROME = 30; // title padding (6+6) + border (2) + glyph (~8) +
 const GREY_TITLE_TAIL = 34; // room for the </> button (+ an occasional async badge)
 const GREY_MIN_WIDTH = 96;
 const GREY_MAX_WIDTH = 320;
+// A decision chip: the ◆ glyph, the `if`/`switch` keyword and its condition on one row. CHROME
+// covers the glyph, the inter-span gaps and the horizontal padding + border before the text.
+const BRANCH_CHROME = 40;
+const BRANCH_MIN_WIDTH = 120;
+const BRANCH_MAX_WIDTH = 360;
 
 function sizeFor(
   label: string,
@@ -637,10 +642,10 @@ function sizeFor(
   pins: PinModel | null,
 ): { width: number; height: number } {
   if (type === "branch") {
-    // A FIXED, glanceable decision diamond. Its content is always a single "X" (the condition is
-    // revealed on demand in an inline panel), so the node never tracks label length — it stays a
-    // small, constant marker, never a sprawling box.
-    return { width: 72, height: 56 };
+    // A decision CHIP sized to its condition: the ◆ glyph + `if`/`switch` keyword + the condition
+    // text on one row (clipped past the max, full on hover), so the actual decision is legible
+    // instead of a bare marker.
+    return { width: roundedClamp(BRANCH_MIN_WIDTH, BRANCH_MAX_WIDTH, BRANCH_CHROME + monoTextWidth(label, 12)), height: 40 };
   }
   if (greyed) {
     // A small chip, but sized so the priority name never clips under its tail.

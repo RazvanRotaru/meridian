@@ -390,7 +390,9 @@ function buildGhostCluster(target: NodeId, anchor: LogicRfNode, idPrefix: string
     };
   };
   const jumpNodes: Node[] = layout === "column" ? stackLeft() : fanRows();
-  const jumpEdges = buildChainEdges(ranked, target, anchor.id, idPrefix, a.containment);
+  // The entry cluster (a column to the LEFT of the entry) wires horizontally; the selection cluster
+  // (rows ABOVE the call site) keeps the vertical top/bottom chain.
+  const jumpEdges = buildChainEdges(ranked, target, anchor.id, idPrefix, a.containment, layout === "column");
   return { jumpNodes, jumpEdges, total };
 
   // A single column to the LEFT of the entry end-cap, vertically CENTRED on it so the entry sits at
@@ -435,16 +437,22 @@ function buildChainEdges(
   anchorNodeId: string,
   idPrefix: string,
   containment: Map<string, string[]>,
+  horizontal: boolean,
 ): Edge[] {
   const rendered = new Set(ranked.map(([root]) => root));
   const edges: Edge[] = [];
   const seenPairs = new Set<string>();
   const emitted = new Set<string>();
   const ghostId = (root: string) => `${idPrefix}${root}`;
+  // An edge LANDING ON THE ANCHOR runs a caller into the entry/call-site it feeds. In the entry
+  // cluster (`horizontal`) that caller sits to the LEFT, so its RIGHT edge wires into the anchor's
+  // LEFT — a level arrow, not one climbing from the caller's bottom corner. Ghost→ghost links keep
+  // the default top/bottom chain, and the selection cluster stays vertical throughout.
+  const anchorHandles = horizontal ? { source: "r" } : undefined;
 
   // Link each rendered caller X of `at` to `at`'s rendered node (`X ∈ containment.get(at)` ⇒ edge
   // X→at). Skips a self-call (a recursive root is its own caller) and any caller not rendered.
-  const linkCallers = (at: string, atNodeId: string, labeled: boolean) => {
+  const linkCallers = (at: string, atNodeId: string, labeled: boolean, handles?: { source?: string; target?: string }) => {
     for (const caller of containment.get(at) ?? []) {
       if (caller === at || !rendered.has(caller)) {
         continue;
@@ -456,13 +464,13 @@ function buildChainEdges(
       }
       seenPairs.add(pair);
       emitted.add(caller);
-      edges.push(jumpEdge(source, atNodeId, pair, labeled));
+      edges.push(jumpEdge(source, atNodeId, pair, labeled, handles));
     }
   };
 
-  // The target's direct callers point at the anchor (labeled "contains"); every rendered ghost's
-  // direct callers point at that ghost (unlabeled — a link in the chain, not a container).
-  linkCallers(target, anchorNodeId, true);
+  // The target's direct callers point at the anchor (labeled "contains", horizontal into the entry);
+  // every rendered ghost's direct callers point at that ghost (unlabeled — a link in the chain).
+  linkCallers(target, anchorNodeId, true, anchorHandles);
   for (const root of rendered) {
     linkCallers(root, ghostId(root), false);
   }
@@ -477,7 +485,7 @@ function buildChainEdges(
     const pair = `${source}->${anchorNodeId}`;
     seenPairs.add(pair);
     emitted.add(root);
-    edges.push(jumpEdge(source, anchorNodeId, pair, false));
+    edges.push(jumpEdge(source, anchorNodeId, pair, false, anchorHandles));
   }
   return edges;
 }
@@ -531,15 +539,18 @@ function absolutePos(node: LogicRfNode, byId: Map<string, LogicRfNode>): { x: nu
 }
 
 // The satellite wire: dashed, muted grey, no animation — it must not compete with the emphasized
-// exec thread. It runs FROM a caller ghost (in the row above) DOWN INTO the node one hop closer to
-// the selection (a deeper ghost, or the selected call site). Only a genuine DIRECT caller of the
-// selection wears the "contains" label; ghost→ghost links stay unlabeled — the chain speaks for
-// itself. The id is the source→target pair, which the caller has already deduped, so it's unique.
-function jumpEdge(source: string, target: string, pair: string, labeled: boolean): Edge {
+// exec thread. Only a genuine DIRECT caller of the selection wears the "contains" label; ghost→ghost
+// links stay unlabeled — the chain speaks for itself. The id is the source→target pair, which the
+// caller has already deduped, so it's unique. `handles` pins WHICH sides the wire attaches to: the
+// entry cluster wires a caller's RIGHT edge into the entry's LEFT (a clean horizontal arrow); the
+// selection cluster leaves them undefined so the wire drops from the ghost's bottom (the row above).
+function jumpEdge(source: string, target: string, pair: string, labeled: boolean, handles?: { source?: string; target?: string }): Edge {
   return {
     id: `jumpedge:${pair}`,
     source,
     target,
+    sourceHandle: handles?.source,
+    targetHandle: handles?.target,
     label: labeled ? "contains" : undefined,
     animated: false,
     style: { stroke: JUMP_MUTED, strokeWidth: 1.5, strokeDasharray: "4 3" },

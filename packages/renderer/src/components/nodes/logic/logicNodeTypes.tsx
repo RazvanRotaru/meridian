@@ -10,7 +10,6 @@
  * then/else/case wires leave labeled.
  */
 
-import { useState } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
@@ -218,36 +217,26 @@ function BranchNode({ data }: NodeProps<LogicRfNode>) {
   const logicSelected = useBlueprint((s) => s.logicSelected);
   const d = data as LogicNodeData;
   const select = selectStateFor(d.targetId, logicSelected);
-  // The diamond is a fixed marker: its content is always a single "X", so the flow stays glanceable
-  // and every decision reads the same until asked. The condition is revealed on demand.
-  const [open, setOpen] = useState(false);
-  const toggle = () => setOpen((v) => !v);
+  // A decision node shows the ACTUAL condition, not a placeholder: the ◆ glyph + sky accent read
+  // "control-flow at a glance", the `if`/`switch` keyword leads, and the condition follows (clipped
+  // to one line, full text on hover). Its then/else/case pins still leave as labeled exec edges.
+  const keyword = d.logicKind === "switch" ? "switch" : "if";
+  const condition = conditionText(d.label);
   return (
-    <div style={selectStyle(BRANCH_WRAP, select)}>
-      {/* Handles live OUTSIDE the diamond so the exec pins aren't clipped; they anchor at the
-          wrapper's left/right centre — the diamond's exec points. */}
+    <div style={selectStyle(BRANCH_BODY, select)} title={d.label}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-      {/* Double-click the shape (or the ▸ button below) drops the full condition into an inline panel
-          — no relayout, the diamond stays small. The condition also rides in the hover title. */}
-      <div style={BRANCH_SHAPE} title={d.label} onDoubleClick={(e) => { e.stopPropagation(); toggle(); }}>
-        <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={BRANCH_SVG} aria-hidden="true">
-          <polygon points="50,1 99,50 50,99 1,50" fill={BRANCH_FILL} stroke={BRANCH_ACCENT} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
-        </svg>
-        <span style={BRANCH_LABEL}>X</span>
-      </div>
-      <div style={BRANCH_DROPDOWN}>
-        <ExpandButton expanded={open} onToggle={toggle} />
-        {open ? <div style={BRANCH_CONDITION}>{conditionText(d.label)}</div> : null}
-      </div>
+      <span style={BRANCH_GLYPH} aria-hidden>◆</span>
+      <span style={BRANCH_KEYWORD}>{keyword}</span>
+      <span style={BRANCH_COND}>{condition}</span>
     </div>
   );
 }
 
 /**
- * The full decision condition for the Branch node's inline panel: the leading `if`/`switch` keyword is
- * dropped (the diamond shape already says "decision"), leaving just the condition expression. NOT
- * truncated — the panel exists precisely to show the whole thing.
+ * The decision condition shown on a Branch node: the leading `if`/`switch` keyword is dropped (the
+ * node renders that separately), leaving just the condition expression. The node clips it to one
+ * line and carries the full text in its hover title.
  */
 function conditionText(label: string): string {
   return label.replace(/^(if|switch)\b\s*/, "").trim() || label;
@@ -406,10 +395,14 @@ function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
   // it just shows WHICH tests exercise this method, so it takes no click and shows no pointer cursor.
   return (
     <div style={withChanged(isTest ? JUMP_TEST_BODY : JUMP_BODY, changed ? changedRing : null, "none")} onClick={isTest ? undefined : () => openLogicFlow(d.rootId)} title={isTest ? `Test: ${d.label}` : `Open flow: ${d.label}`}>
-      {/* Target pin on top (a deeper caller's wire lands here) + source pin on the bottom (this
-          node's wire drops to the node one hop closer to the selection): the chain wires top→down. */}
+      {/* DEFAULT handles (id-less) keep the vertical chain — target on top (a deeper caller lands
+          here), source on the bottom (drops to the node one hop closer). The extra id'd side handles
+          let the ENTRY cluster wire HORIZONTALLY instead: a caller's RIGHT edge into the entry's LEFT
+          (see buildChainEdges), so the arrow runs level rather than up from a bottom corner. */}
       <Handle type="target" position={Position.Top} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Bottom} style={PIN} isConnectable={false} />
+      <Handle id="l" type="target" position={Position.Left} style={PIN} isConnectable={false} />
+      <Handle id="r" type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={JUMP_HEAD}>
         <span style={{ ...JUMP_GLYPH, ...(isTest ? { color: COVERAGE_COLORS.test } : {}) }}>{isTest ? "🧪" : "↗"}</span>
         <span style={NAME} title={d.label}>{d.label}</span>
@@ -549,8 +542,6 @@ const CONTROL_GLYPH: Record<string, string> = { loop: "↻", try: "⚠", callbac
 // blue family without being mistaken for a call block — the brighter, cyan-leaning tone stays clear
 // of the deeper azure call accent and the indigo method accent.
 const BRANCH_ACCENT = FLOW_COLORS.branch;
-// Near-canvas dark so the diamond is outline-first, never a flood of colour.
-const BRANCH_FILL = "rgba(11,14,19,0.72)";
 // A calm green marks the flow's START (evokes a "play"/entry point); a muted slate marks the neutral
 // synthetic EXIT end-cap — deliberately quiet so it reads as a terminus, not another step.
 const ENTRY_ACCENT = FLOW_COLORS.entry;
@@ -581,61 +572,27 @@ const BODY: React.CSSProperties = {
 };
 const GREY_BODY: React.CSSProperties = { ...BODY, opacity: 0.6, background: "#0E1116" };
 
-// A branch renders as an outline diamond (the classic decision shape) so it never reads as a
-// rectangular building block. The wrapper hosts the exec pins and any selection dim.
-const BRANCH_WRAP: React.CSSProperties = { position: "relative", width: "100%", height: "100%", fontFamily: MONO };
-// The shape is a centring frame for the SVG diamond and its overlaid caption.
-const BRANCH_SHAPE: React.CSSProperties = {
-  position: "relative",
+// A branch is a decision CHIP: a compact rounded node in the sky branch-accent with a ◆ glyph and
+// the condition shown inline. Not a rectangular building block (no pins, one row, no provenance);
+// the shape + accent read "decision", the text says WHICH decision. Sized to its condition by the
+// layout (logicGraph sizeFor), clipped to one line here with the full text on hover.
+const BRANCH_BODY: React.CSSProperties = {
   width: "100%",
   height: "100%",
+  boxSizing: "border-box",
   display: "flex",
   alignItems: "center",
-  justifyContent: "center",
-};
-// clip-path can't paint a border, so the diamond outline is an SVG polygon; non-scaling-stroke keeps
-// the stroke a constant width while the polygon stretches (preserveAspectRatio="none") to the box.
-const BRANCH_SVG: React.CSSProperties = { position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "visible" };
-// The single "X" marker sits ABOVE the diamond, centred on its middle.
-const BRANCH_LABEL: React.CSSProperties = {
-  position: "relative",
-  color: BRANCH_ACCENT,
-  fontSize: 14,
-  fontWeight: 700,
-  lineHeight: 1,
-};
-// The reveal affordance hangs just below the diamond (wrapper overflow is visible), holding the
-// expand toggle and, once open, the condition panel. A high z-index keeps it above neighbouring rows.
-const BRANCH_DROPDOWN: React.CSSProperties = {
-  position: "absolute",
-  top: "100%",
-  left: "50%",
-  transform: "translateX(-50%)",
-  marginTop: 3,
-  display: "flex",
-  flexDirection: "column",
-  alignItems: "center",
-  gap: 4,
-  zIndex: 10,
-  // Size to content (not the ~72px diamond it hangs off), so the condition panel fills its own width
-  // instead of collapsing to a one-char-per-line column against the narrow absolute containing block.
-  width: "max-content",
-  maxWidth: 320,
-};
-const BRANCH_CONDITION: React.CSSProperties = {
-  fontFamily: MONO,
-  fontSize: 11,
-  color: "#D7E3EF",
-  background: "#10151C",
+  gap: 6,
+  padding: "0 12px",
   border: `1px solid ${BRANCH_ACCENT}`,
-  borderRadius: 6,
-  padding: "5px 9px",
-  maxWidth: 320,
-  whiteSpace: "normal",
-  wordBreak: "break-word",
-  lineHeight: 1.4,
-  boxShadow: "0 4px 14px rgba(0,0,0,0.4)",
+  borderRadius: 7,
+  background: "rgba(91,180,232,0.10)",
+  fontFamily: MONO,
+  overflow: "hidden",
 };
+const BRANCH_GLYPH: React.CSSProperties = { color: BRANCH_ACCENT, fontSize: 10, flexShrink: 0 };
+const BRANCH_KEYWORD: React.CSSProperties = { color: BRANCH_ACCENT, fontSize: 12, fontWeight: 700, flexShrink: 0 };
+const BRANCH_COND: React.CSSProperties = { color: "#D7E3EF", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 };
 
 function titleStyle(accent: string): React.CSSProperties {
   return {
@@ -758,14 +715,17 @@ const TERMINAL_BASE: React.CSSProperties = {
 };
 const ENTRY_BODY: React.CSSProperties = { ...TERMINAL_BASE, border: `1px solid ${ENTRY_ACCENT}`, background: "rgba(79,180,119,0.12)", color: "#CDEAD9" };
 const EXIT_BODY: React.CSSProperties = { ...TERMINAL_BASE, justifyContent: "center", border: `1px solid ${EXIT_ACCENT}`, background: "rgba(138,147,160,0.10)", color: "#B7C0CC" };
-// A return/throw cap: warm red so a dead-ending path is unmissable; squared on the entry side and
-// rounded on the far side, a one-way cap rather than a two-ended pill.
+// A return/throw cap: a clean rounded chip in warm red so a dead-ending path is unmissable, with a
+// heavier left rail where the exec thread lands to read as a terminus. Uniform corners — distinct
+// from the pill-shaped entry/exit caps and from the call blocks, and free of the lopsided half-pill
+// it used to be.
 const RETURN_BODY: React.CSSProperties = {
   ...TERMINAL_BASE,
   fontSize: 11,
   border: `1px solid ${RETURN_ACCENT}`,
-  borderRadius: "6px 999px 999px 6px",
-  background: "rgba(224,108,108,0.10)",
+  borderLeft: `3px solid ${RETURN_ACCENT}`,
+  borderRadius: 7,
+  background: "rgba(224,108,108,0.12)",
   color: "#F0C9C9",
 };
 const TERMINAL_GLYPH: React.CSSProperties = { fontSize: 10, flexShrink: 0, opacity: 0.85 };
