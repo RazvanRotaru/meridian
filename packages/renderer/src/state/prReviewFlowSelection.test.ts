@@ -179,10 +179,14 @@ function freshStore(extra?: Partial<StoreDependencies>) {
   });
 }
 
-async function activeReviewStore(reviewFlowSplitView: ReviewFlowSplitView = "graph") {
+async function activeReviewStore(
+  reviewFlowSplitView: ReviewFlowSplitView = "graph",
+  reviewOpenFlowSplitOnSelect = true,
+) {
   const store = freshStore();
   store.setState({
     reviewFlowSplitView,
+    reviewOpenFlowSplitOnSelect,
     viewMode: "prs",
     prSelected: 17,
     prsList: { open: [pr(17)], closed: null },
@@ -223,6 +227,7 @@ async function impactedFlowReviewStore() {
   const store = freshStore({ artifact, index: buildGraphIndex(artifact) });
   store.setState({
     reviewFlowSplitView: "graph",
+    reviewOpenFlowSplitOnSelect: true,
     viewMode: "prs",
     prSelected: 17,
     prsList: { open: [pr(17)], closed: null },
@@ -266,6 +271,74 @@ describe("PR-review logic-flow selection", () => {
       expect(store.getState().flowPaneRfNodes.length).toBeGreaterThan(0);
 
       store.getState().setReviewFlowSplitView(alternateView);
+      expect(store.getState().flowPaneLayoutStatus).toBe("idle");
+      expect(store.getState().flowPaneRfNodes).toEqual([]);
+      expect(store.getState().flowPaneRfEdges).toEqual([]);
+    },
+  );
+
+  it("keeps graph context selected without deriving the disabled split", async () => {
+    const store = await activeReviewStore("graph", false);
+
+    store.getState().selectFlowEntry(FLOW_SELECTION);
+
+    await vi.waitFor(() => {
+      expect(store.getState().minimalLayoutStatus).toBe("ready");
+      expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: ROOT_METHOD, type: "block" }));
+    });
+    expect(store.getState().flowSelection).toEqual(FLOW_SELECTION);
+    expect(store.getState().reviewFlowBaseline).not.toBeNull();
+    expect(store.getState().moduleSelected).toEqual(new Set([ROOT_METHOD, TARGET_FUNCTION]));
+    expect(store.getState().flowPaneLayoutStatus).toBe("idle");
+    expect(store.getState().flowPaneRfNodes).toEqual([]);
+    expect(store.getState().flowPaneRfEdges).toEqual([]);
+
+    // Choosing Graph while its pane is disabled must remain layout-free.
+    store.getState().setReviewFlowSplitView("graph");
+    expect(store.getState().flowPaneLayoutStatus).toBe("idle");
+
+    store.getState().setReviewOpenFlowSplitOnSelect(true);
+    await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
+    expect(store.getState().flowPaneRfNodes.length).toBeGreaterThan(0);
+
+    const baseline = store.getState().reviewFlowBaseline;
+    store.getState().setReviewOpenFlowSplitOnSelect(false);
+    expect(store.getState().flowSelection).toEqual(FLOW_SELECTION);
+    expect(store.getState().reviewFlowBaseline).toBe(baseline);
+    expect(store.getState().moduleSelected).toEqual(new Set([ROOT_METHOD, TARGET_FUNCTION]));
+    expect(store.getState().flowPaneLayoutStatus).toBe("idle");
+    expect(store.getState().flowPaneRfNodes).toEqual([]);
+    expect(store.getState().flowPaneRfEdges).toEqual([]);
+  });
+
+  it("does not let an in-flight Graph layout repopulate a disabled split", async () => {
+    const store = await activeReviewStore("graph", false);
+    store.getState().selectFlowEntry(FLOW_SELECTION);
+    // Enable directly so this test owns exactly one layout promise rather than racing the action's
+    // automatic pass with a second manual one.
+    store.setState({ reviewOpenFlowSplitOnSelect: true });
+    const pendingLayout = store.getState().flowPaneRelayout();
+    expect(store.getState().flowPaneLayoutStatus).toBe("laying-out");
+
+    store.getState().setReviewOpenFlowSplitOnSelect(false);
+    await pendingLayout;
+
+    expect(store.getState().flowSelection).toEqual(FLOW_SELECTION);
+    expect(store.getState().flowPaneLayoutStatus).toBe("idle");
+    expect(store.getState().flowPaneRfNodes).toEqual([]);
+    expect(store.getState().flowPaneRfEdges).toEqual([]);
+  });
+
+  it.each(["timeline", "metro", "blocks"] as const)(
+    "re-enables an active %s split without deriving ELK",
+    async (alternateView) => {
+      const store = await activeReviewStore(alternateView, false);
+      store.getState().selectFlowEntry(FLOW_SELECTION);
+      await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+      store.getState().setReviewOpenFlowSplitOnSelect(true);
+
+      expect(store.getState().flowSelection).toEqual(FLOW_SELECTION);
       expect(store.getState().flowPaneLayoutStatus).toBe("idle");
       expect(store.getState().flowPaneRfNodes).toEqual([]);
       expect(store.getState().flowPaneRfEdges).toEqual([]);

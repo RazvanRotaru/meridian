@@ -7,7 +7,7 @@ import { CanvasChrome, READONLY_CANVAS_PROPS } from "../canvas/flowCanvasProps";
 import type { LogicNodeData } from "../../derive/logicGraph";
 import { stepsAt, type FlowSelectionRef } from "../../derive/flowBlocks";
 import { blockBreadcrumbs } from "./flowBlockLabels";
-import { ancestorSelection, selectionKey } from "./flowSelection";
+import { ancestorSelection, REVIEW_FLOW_SPLIT_ID, selectionKey } from "./flowSelection";
 import { useLogicFlows } from "./useFlowTree";
 import { TimelineView } from "../logicviews/TimelineView";
 import { METRO_COMPACT_TOP_PADDING, MetroView } from "../logicviews/MetroView";
@@ -21,9 +21,10 @@ export function FlowPane() {
   const nodesById = useBlueprint((state) => state.index.nodesById);
   const reviewActive = useBlueprint((state) => state.flowSelection !== null && state.reviewFlowBaseline !== null);
   const reviewFlowSplitView = useBlueprint((state) => state.reviewFlowSplitView);
+  const reviewOpenFlowSplitOnSelect = useBlueprint((state) => state.reviewOpenFlowSplitOnSelect);
   const flows = useLogicFlows();
   const { selectFlowEntry, openLogicFlow } = useBlueprintActions();
-  if (selection === null) {
+  if (selection === null || !flowPaneShouldRender(reviewActive, reviewOpenFlowSplitOnSelect)) {
     return null;
   }
   const rootLabel = nodesById.get(selection.rootId)?.displayName ?? selection.rootId;
@@ -31,7 +32,11 @@ export function FlowPane() {
   const presentation = flowPanePresentation(reviewActive, reviewFlowSplitView);
   const viewKey = `${presentation}:${selectionKey(selection)}`;
   return (
-    <aside style={reviewActive ? REVIEW_DRAWER : DRAWER} aria-label={reviewActive ? "Logic flow review" : "Code flow"}>
+    <aside
+      id={reviewActive ? REVIEW_FLOW_SPLIT_ID : undefined}
+      style={reviewActive ? REVIEW_DRAWER : DRAWER}
+      aria-label={reviewActive ? "Logic flow review" : "Code flow"}
+    >
       <header style={HEADER}>
         <div style={TITLE_ROW}>
           <span style={GLYPH}>ƒ</span>
@@ -77,6 +82,12 @@ export function flowPanePresentation(
   reviewFlowSplitView: ReviewFlowSplitView,
 ): ReviewFlowSplitView {
   return reviewActive ? reviewFlowSplitView : "graph";
+}
+
+/** Hiding the PR split is presentation-only: the selection still drives the upper graph. The
+ * ordinary Code-flow explorer ignores this review preference and always keeps its pane. */
+export function flowPaneShouldRender(reviewActive: boolean, openFlowSplitOnSelect: boolean): boolean {
+  return !reviewActive || openFlowSplitOnSelect;
 }
 
 type AlternateFlowPaneMode = Exclude<ReviewFlowSplitView, "graph">;

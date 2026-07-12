@@ -366,6 +366,9 @@ export interface BlueprintState {
   /** Projection shown in the PR review's bottom logic-flow split. This browser-local reader
    * preference is deliberately separate from the full Logic lens's URL-synced `logicView`. */
   reviewFlowSplitView: ReviewFlowSplitView;
+  /** Whether selecting an impacted PR flow also opens its bottom split. The flow remains selected
+   * and highlighted in the main graph when this browser-local preference is off. */
+  reviewOpenFlowSplitOnSelect: boolean;
   /** Hides the review side panel so the graph takes the full width; session-only. */
   reviewPanelHidden: boolean;
   reviewSubmitStatus: "idle" | "submitting";
@@ -579,6 +582,7 @@ export interface BlueprintState {
   addReviewComment(path: string, nodeId: string | null, body: string, line?: number | null): void;
   deleteReviewComment(id: string): void;
   setReviewFlowSplitView(view: ReviewFlowSplitView): void;
+  setReviewOpenFlowSplitOnSelect(open: boolean): void;
   toggleReviewPanel(): void;
   submitReviewComments(): Promise<void>;
   setViewMode(mode: ViewMode): void;
@@ -1123,6 +1127,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewFileTicks: initialProgress?.fileTicks ?? {},
     reviewComments: initialProgress?.comments ?? [],
     reviewFlowSplitView: reviewPreferences.flowSplitView,
+    reviewOpenFlowSplitOnSelect: reviewPreferences.openFlowSplitOnSelect,
     reviewPanelHidden: false,
     reviewSubmitStatus: "idle",
     reviewSubmitError: null,
@@ -1244,10 +1249,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const related = relatedNodeIds(index, flows, ref);
       const reviewFlow = state.review !== null && state.minimalSeedIds.length > 0;
       if (reviewFlow) {
-        const needsExecutionGraph = state.reviewFlowSplitView === "graph";
+        const needsExecutionGraph = state.reviewOpenFlowSplitOnSelect && state.reviewFlowSplitView === "graph";
         if (!needsExecutionGraph) {
-          // Alternate projections derive directly from FlowStep[]. Invalidate and discard any
-          // older ELK result instead of paying for an execution graph that is not mounted.
+          // Hidden splits and alternate projections do not mount this execution graph. Invalidate
+          // and discard any older ELK result instead of paying for invisible work.
           flowPaneLayoutSeq += 1;
         }
         const reviewFlowBaseline = state.reviewFlowBaseline ?? {
@@ -2660,8 +2665,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     setReviewFlowSplitView(view) {
-      writeReviewPreferences({ version: 1, flowSplitView: view });
       const state = get();
+      writeReviewPreferences({
+        version: 2,
+        flowSplitView: view,
+        openFlowSplitOnSelect: state.reviewOpenFlowSplitOnSelect,
+      });
       const reviewFlowOpen = state.review !== null
         && state.minimalSeedIds.length > 0
         && state.flowSelection !== null
@@ -2670,7 +2679,36 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (!reviewFlowOpen) {
         return;
       }
-      if (view !== "graph") {
+      if (!state.reviewOpenFlowSplitOnSelect || view !== "graph") {
+        flowPaneLayoutSeq += 1;
+        set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
+        return;
+      }
+      void get().flowPaneRelayout();
+    },
+
+    setReviewOpenFlowSplitOnSelect(open) {
+      const state = get();
+      if (state.reviewOpenFlowSplitOnSelect === open) {
+        return;
+      }
+      writeReviewPreferences({
+        version: 2,
+        flowSplitView: state.reviewFlowSplitView,
+        openFlowSplitOnSelect: open,
+      });
+      const reviewFlowSelected = state.review !== null
+        && state.minimalSeedIds.length > 0
+        && state.flowSelection !== null
+        && state.reviewFlowBaseline !== null;
+      set({
+        reviewOpenFlowSplitOnSelect: open,
+        ...(reviewFlowSelected ? { recenterSeq: state.recenterSeq + 1 } : {}),
+      });
+      if (!reviewFlowSelected) {
+        return;
+      }
+      if (!open || state.reviewFlowSplitView !== "graph") {
         flowPaneLayoutSeq += 1;
         set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
         return;

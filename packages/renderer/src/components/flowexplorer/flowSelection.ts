@@ -1,5 +1,7 @@
 import type { FlowBlockSegment, FlowSelectionRef } from "../../derive/flowBlocks";
 
+export const REVIEW_FLOW_SPLIT_ID = "review-logic-flow-split";
+
 export function sameFlowSelection(a: FlowSelectionRef | null, b: FlowSelectionRef | null): boolean {
   if (a === null || b === null) {
     return a === b;
