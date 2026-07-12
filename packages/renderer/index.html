@@ -11,6 +11,14 @@
         height: 100%;
         margin: 0;
       }
+      /* PR review is a focused, explicit-close surface. While it is preparing or open, suppress
+         horizontal viewport overscroll so a trackpad swipe cannot become browser Back. The class
+         is owned by prReviewNavigationGuard; x-only containment leaves vertical review scrolling
+         and ordinary Back/Forward controls untouched. */
+      html.mrd-pr-review-navigation-lock,
+      html.mrd-pr-review-navigation-lock body {
+        overscroll-behavior-x: none;
+      }
       body {
         background: #0e1116;
         color: #e6edf3;

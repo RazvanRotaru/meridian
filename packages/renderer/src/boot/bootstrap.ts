@@ -12,6 +12,7 @@ import { restoreFromUrl, startUrlSync } from "../state/urlSync";
 import { prApiUrlsFromGraphUrl, readBootConfig, type BootConfig } from "./bootConfig";
 import { loadArtifact } from "./loadArtifact";
 import { loadEnvironments } from "./loadEnvironments";
+import { startPrReviewNavigationGuard } from "./prReviewNavigationGuard";
 
 export interface BootResult {
   store: BlueprintStore;
@@ -19,35 +20,45 @@ export interface BootResult {
 }
 
 export async function bootstrap(): Promise<BootResult> {
-  const boot = readBootConfig();
-  const artifact = await loadArtifact(boot.graphUrl);
-  const index = buildGraphIndex(artifact);
-  const provider = await buildProvider(boot);
-  const prApi = prApiUrlsFromGraphUrl(boot.graphUrl);
-  const store = createBlueprintStore({
-    artifact,
-    index,
-    provider,
-    hasOverlay: boot.hasOverlay,
-    sourceUrl: boot.sourceUrl,
-    prSessionSource: boot.githubSource,
-    prsUrl: prApi.prsUrl,
-    prOneUrl: prApi.prOneUrl,
-    prFilesUrl: prApi.prFilesUrl,
-    prRelatedUrl: prApi.prRelatedUrl,
-    prCommentsUrl: prApi.prCommentsUrl,
-    prChecksUrl: prApi.prChecksUrl,
-    prFileUrl: prApi.prFileUrl,
-    graphUrl: boot.graphUrl,
-    prReviewUrl: prApi.prReviewUrl,
-    analyzeUrl: boot.githubSource ? prApi.analyzeUrl : null,
-    graphId: boot.githubSource ? prApi.graphId : null,
-  });
-  // Restore the navigation state carried in the URL (or fall through to defaults) and run the
-  // first layout, then start reflecting the store back into the URL for reload/back/forward.
-  await restoreFromUrl(store);
-  startUrlSync(store);
-  return { store, boot };
+  // Start synchronously, before the first artifact/provider await: a `rev=1` reload must be guarded
+  // from its first splash frame, including the time before a store exists to say `preparing`.
+  const navigationGuard = startPrReviewNavigationGuard();
+  try {
+    const boot = readBootConfig();
+    const artifact = await loadArtifact(boot.graphUrl);
+    const index = buildGraphIndex(artifact);
+    const provider = await buildProvider(boot);
+    const prApi = prApiUrlsFromGraphUrl(boot.graphUrl);
+    const store = createBlueprintStore({
+      artifact,
+      index,
+      provider,
+      hasOverlay: boot.hasOverlay,
+      sourceUrl: boot.sourceUrl,
+      prSessionSource: boot.githubSource,
+      prsUrl: prApi.prsUrl,
+      prOneUrl: prApi.prOneUrl,
+      prFilesUrl: prApi.prFilesUrl,
+      prRelatedUrl: prApi.prRelatedUrl,
+      prCommentsUrl: prApi.prCommentsUrl,
+      prChecksUrl: prApi.prChecksUrl,
+      prFileUrl: prApi.prFileUrl,
+      graphUrl: boot.graphUrl,
+      prReviewUrl: prApi.prReviewUrl,
+      analyzeUrl: boot.githubSource ? prApi.analyzeUrl : null,
+      graphId: boot.githubSource ? prApi.graphId : null,
+    });
+    navigationGuard.bindStore(store);
+    // Restore the navigation state carried in the URL (or fall through to defaults) and run the
+    // first layout, then start reflecting the store back into the URL for reload/back/forward.
+    await restoreFromUrl(store);
+    navigationGuard.completeInitialRestore();
+    startUrlSync(store);
+    return { store, boot };
+  } catch (error) {
+    navigationGuard.dispose();
+    throw error;
+  }
 }
 
 async function buildProvider(boot: BootConfig): Promise<TelemetryProvider | null> {
