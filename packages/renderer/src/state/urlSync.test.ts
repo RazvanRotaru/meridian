@@ -105,6 +105,25 @@ describe("restoreFromUrl review exit", () => {
     expect(store.getState().flowPaneLayoutStatus).toBe("idle");
   });
 
+  it("enters telemetry mode for a deep-linked request trace", async () => {
+    const store = freshStore();
+    stubWindow();
+    const search = new URLSearchParams({
+      view: "logic",
+      lroot: FILE_ID,
+      lview: "request",
+    }).toString();
+
+    await restoreFromUrl(store, search);
+
+    expect(store.getState()).toMatchObject({
+      viewMode: "logic",
+      logicRoot: FILE_ID,
+      logicView: "request",
+      telemetryMode: true,
+    });
+  });
+
   it("restores an explicit telemetry source before an arbitrary environment", async () => {
     const provider: TelemetryProvider = {
       id: "demo",

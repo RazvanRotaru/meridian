@@ -1,5 +1,5 @@
 /**
- * The OVERLAYS row: paint/lens switches (Tests, Reach, Private, Coverage) as unified pills.
+ * The OVERLAYS row: paint/lens switches (Tests, Reach, Private, Telemetry, Coverage) as unified pills.
  * Each pill is shown only where it means something for the active lens (e.g. Reach/Private only on
  * the module surface, Tests never in the Logic view), and carries its count where one exists.
  */
@@ -17,6 +17,7 @@ const PRIVATE_HUE = "#7C8CA3";
 const GHOST_GROUP_HUE = "#8C83D9";
 const HIGHWAYS_HUE = "#E8843C"; // orange — arterial/high-traffic edges; the one bold warm accent (diff amber is reserved)
 const COMMONS_HUE = "#B08F4E"; // the dock tray's quiet amber (a shelf, not an alert)
+const TELEMETRY_HUE = "#58C9A3";
 
 export function OverlaysSection() {
   const viewMode = useBlueprint((state) => state.viewMode);
@@ -27,12 +28,16 @@ export function OverlaysSection() {
   const privateCount = useBlueprint((state) => state.index.privateIds.size);
   const coverageMode = useBlueprint((state) => state.coverageMode);
   const coveragePercent = useBlueprint((state) => state.coverage?.summary.percent ?? null);
+  const telemetryMode = useBlueprint((state) => state.telemetryMode);
+  const telemetryAvailable = useBlueprint((state) => (
+    state.hasOverlay || state.provider !== null || state.telemetrySources.length > 0
+  ));
   const showHighways = useBlueprint((state) => state.showHighways);
   const showCommons = useBlueprint((state) => state.showCommons);
   const showExternalGhosts = useBlueprint((state) => state.showExternalGhosts);
   const hasExternalGhosts = useBlueprint(hasExternalDependencies);
   const groupGhostsByParent = useBlueprint((state) => state.groupGhostsByParent);
-  const { toggleShowTests, toggleHighlightMode, togglePrivateMembers, toggleCoverageMode, toggleHighways, toggleCommons, toggleExternalGhosts, toggleGhostGrouping } = useBlueprintActions();
+  const { toggleShowTests, toggleHighlightMode, togglePrivateMembers, toggleCoverageMode, toggleTelemetryMode, toggleHighways, toggleCommons, toggleExternalGhosts, toggleGhostGrouping } = useBlueprintActions();
 
   const onModuleSurface = moduleSurfaceSpec(viewMode) !== null;
   const onMap = viewMode === "modules";
@@ -121,6 +126,17 @@ export function OverlaysSection() {
           onClick={toggleCommons}
         >
           Commons
+        </Pill>
+      ) : null}
+      {telemetryAvailable ? (
+        <Pill
+          active={telemetryMode}
+          accent={TELEMETRY_HUE}
+          indicator="square"
+          title={telemetryMode ? "Leave telemetry mode" : "Show request telemetry controls and runtime evidence"}
+          onClick={toggleTelemetryMode}
+        >
+          Telemetry
         </Pill>
       ) : null}
       <Pill

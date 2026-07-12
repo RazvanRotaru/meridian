@@ -1,7 +1,7 @@
 /**
- * The collapsible top-left control panel: its project identity, explicit request-data source gate,
- * and PR review remain visible while the detailed lens / overlay /
- * filter controls fold away. Canvas-wide actions live in the separate bottom action bar. Categories,
+ * The collapsible top-left control panel: its project identity and PR review remain visible while
+ * the detailed lens / overlay / filter controls fold away. Telemetry mode adds its explicit
+ * request-data source gate on demand. Canvas-wide actions live in the separate bottom action bar. Categories,
  * relationships and the module-only dials show on the module surface (Map + Service); the
  * composition worklist rides along on the Service lens.
  */
@@ -29,6 +29,7 @@ const CONTROL_PANEL_CONTROLS_ID = "meridian-control-panel-controls";
 export function Toolbar(props: { preselectedEnv: string | null }) {
   const [controlsCollapsed, setControlsCollapsed] = useState(false);
   const viewMode = useBlueprint((state) => state.viewMode);
+  const telemetryMode = useBlueprint((state) => state.telemetryMode);
   const hasOverlay = useBlueprint((state) => state.hasOverlay);
   const provider = useBlueprint((state) => state.provider);
   const telemetrySources = useBlueprint((state) => state.telemetrySources);
@@ -42,7 +43,7 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
       <div id={CONTROL_PANEL_ID} style={PANEL_STYLE}>
         <ControlPanelHeader />
 
-        {hasOverlay || provider !== null || telemetrySources.length > 0 ? (
+        {telemetryMode && (hasOverlay || provider !== null || telemetrySources.length > 0) ? (
           <>
             <Divider />
             <EnvSelector preselectedEnv={props.preselectedEnv} />
