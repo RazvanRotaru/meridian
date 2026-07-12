@@ -70,13 +70,13 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
       <span className="lod-place">{data.label}</span>
       <div className="lod-card-body" style={INNER}>
         <div style={HEADER}>
-          {chevron}
           <DiffStat delta={delta} />
           <span style={LABEL} title={data.fullPath}>{data.label}</span>
           <span className="lod-hide" style={CONTENTS}>
             {entryBadge}
             <CodeButton id={id} />
           </span>
+          {chevron}
         </div>
         <div style={META}>
           <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
