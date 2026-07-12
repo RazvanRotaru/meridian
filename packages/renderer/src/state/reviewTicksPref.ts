@@ -29,6 +29,12 @@ export interface ReviewComment {
   nodeId: string | null;
   /** Explicit HEAD-side line selected in the code panel; null == use the file/unit heuristic. */
   line: number | null;
+  /** The PR revision changed after this line was selected. Keep the draft, but submit it as a
+   * labeled review note rather than risking an inline comment on unrelated code at the same line. */
+  lineStale?: boolean;
+  /** Immutable PR revision identity captured with a fresh line draft. Missing provenance on a live
+   * PR is treated conservatively as stale when the draft is restored. */
+  lineRevision?: string | null;
   /** Display name captured at write time, so the draft still reads if the node later vanishes. */
   anchorLabel: string | null;
   body: string;
@@ -122,6 +128,8 @@ function isComment(value: unknown): value is StoredReviewComment {
     typeof comment.path === "string" &&
     (comment.nodeId === null || typeof comment.nodeId === "string") &&
     (comment.line === undefined || comment.line === null || typeof comment.line === "number") &&
+    (comment.lineStale === undefined || typeof comment.lineStale === "boolean") &&
+    (comment.lineRevision === undefined || comment.lineRevision === null || typeof comment.lineRevision === "string") &&
     (comment.anchorLabel === null || typeof comment.anchorLabel === "string") &&
     typeof comment.body === "string" &&
     comment.body.trim().length > 0 &&

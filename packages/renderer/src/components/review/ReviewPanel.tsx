@@ -8,7 +8,7 @@
  * is no review.
  */
 
-import { memo } from "react";
+import { memo, useEffect } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { countViewedFiles } from "../../derive/reviewFiles";
 import type { ReviewData } from "../../derive/reviewData";
@@ -22,6 +22,7 @@ import { NO_FOCUS_RING } from "./reviewPanelKit";
 function ReviewPanelImpl() {
   const review = useBlueprint((state) => state.review);
   const hidden = useBlueprint((state) => state.reviewPanelHidden);
+  usePrReviewFreshnessWatcher();
   if (!review) {
     return null;
   }
@@ -41,18 +42,60 @@ function ReviewPanelImpl() {
   );
 }
 
+/** Keep an open PR review pinned to an honestly-current head. The check is deliberately quiet:
+ * only a changed revision surfaces UI, while transient background failures leave the review alone. */
+function usePrReviewFreshnessWatcher() {
+  const prReviewed = useBlueprint((state) => state.prReviewed);
+  const revision = useBlueprint((state) => state.prReviewRevision);
+  const { checkPrReviewFreshness } = useBlueprintActions();
+  useEffect(() => {
+    if (prReviewed === null || revision === null || typeof window === "undefined" || typeof document === "undefined") {
+      return;
+    }
+    let checking = false;
+    const checkWhileVisible = () => {
+      if (document.visibilityState === "hidden" || checking) {
+        return;
+      }
+      checking = true;
+      void checkPrReviewFreshness()
+        .catch(() => {})
+        .finally(() => {
+          checking = false;
+        });
+    };
+    checkWhileVisible();
+    const interval = window.setInterval(checkWhileVisible, 60_000);
+    window.addEventListener("focus", checkWhileVisible);
+    document.addEventListener("visibilitychange", checkWhileVisible);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", checkWhileVisible);
+      document.removeEventListener("visibilitychange", checkWhileVisible);
+    };
+  }, [checkPrReviewFreshness, prReviewed, revision]);
+}
+
 /** The hidden panel folds to a slim rail in place — the reopen affordance stays exactly where the
  * panel was instead of popping up somewhere else. The whole rail is the button. */
 function CollapsedRail() {
   const files = useBlueprint((state) => state.reviewFiles);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
+  const stale = useBlueprint((state) => state.prReviewStale || state.prReviewRefreshing);
   const { toggleReviewPanel } = useBlueprintActions();
   const viewed = countViewedFiles(files, unitTicks, fileTicks);
   return (
-    <button type="button" style={RAIL} onClick={toggleReviewPanel} title="Show the review panel">
+    <button
+      type="button"
+      style={stale ? { ...RAIL, ...RAIL_STALE } : RAIL}
+      onClick={toggleReviewPanel}
+      aria-label={stale ? "PR review — new changes available" : "Show the review panel"}
+      title={stale ? "New pull request changes available — show the review panel to refresh" : "Show the review panel"}
+    >
       <span style={RAIL_GLYPH}>«</span>
       <span style={RAIL_LABEL}>PR review</span>
+      {stale && <span style={RAIL_STALE_DOT} aria-hidden="true" />}
       {files.length > 0 && <span style={RAIL_COUNT}>{viewed}/{files.length}</span>}
     </button>
   );
@@ -65,11 +108,13 @@ function Header({ review }: { review: ReviewData }) {
   const prReviewed = useBlueprint((state) => state.prReviewed);
   const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
   const preparing = useBlueprint((state) => state.prReviewStatus === "preparing");
+  const stale = useBlueprint((state) => state.prReviewStale);
+  const refreshing = useBlueprint((state) => state.prReviewRefreshing);
   const canExtract = useBlueprint((state) => state.prReviewed !== null
     && !state.prPreparedArtifactCurrent
     && state.prPreparedGraphId === null
     && state.analyzeUrl !== null);
-  const { resetReviewTicks, toggleReviewPanel, prepareHeadGraph } = useBlueprintActions();
+  const { resetReviewTicks, toggleReviewPanel, prepareHeadGraph, refreshPrReview } = useBlueprintActions();
   const viewed = countViewedFiles(files, unitTicks, fileTicks);
   const total = files.length;
   const addedUnmatched = files.filter((file) => file.status === "added" && file.moduleId === null).length;
@@ -79,7 +124,23 @@ function Header({ review }: { review: ReviewData }) {
       <div style={HEADER_TOP}>
         <span style={HEADER_TITLE}>PR review</span>
         <span style={{ flex: 1 }} />
-        {preparing ? <PrPrepareInline /> : canExtract && (
+        {(stale || refreshing) && (
+          <button
+            type="button"
+            style={{ ...STALE_BTN, ...(refreshing || preparing ? STALE_BTN_DISABLED : {}) }}
+            disabled={refreshing || preparing}
+            aria-busy={refreshing || preparing}
+            title={refreshing
+              ? "Refreshing pull request changes"
+              : preparing
+                ? "Finish preparing the current head before refreshing"
+                : "Refresh this review at the latest pull request head"}
+            onClick={() => void refreshPrReview()}
+          >
+            {refreshing ? "Refreshing…" : "New changes · Refresh"}
+          </button>
+        )}
+        {!refreshing && (preparing ? <PrPrepareInline /> : canExtract && (
           <button
             type="button"
             style={EXTRACT_BTN}
@@ -88,7 +149,7 @@ function Header({ review }: { review: ReviewData }) {
           >
             Extract head graph
           </button>
-        )}
+        ))}
         {total > 0 && (
           <button type="button" style={RESET_BTN} title="Clear every reviewed tick (drafts are kept)" onClick={resetReviewTicks}>
             Reset
@@ -150,6 +211,8 @@ function PrProvenance({ ctx }: { ctx: ReviewData["context"] }) {
  * server's short reason, and dismisses via the prepare-error lane. */
 function ExtractFailedWarning() {
   const error = useBlueprint((state) => state.prPrepareError);
+  const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
+  const stale = useBlueprint((state) => state.prReviewStale);
   const { dismissPrepareError } = useBlueprintActions();
   if (error === null) {
     return null;
@@ -157,7 +220,10 @@ function ExtractFailedWarning() {
   return (
     <div style={EXTRACT_WARNING}>
       <span style={{ flex: 1 }}>
-        Head extraction failed — still reviewing on the base graph. <span style={EXTRACT_WARNING_DETAIL}>{error}</span>
+        {preparedArtifactCurrent || stale
+          ? "Head refresh failed — prior review contents remain in view. "
+          : "Head extraction failed — still reviewing on the base graph. "}
+        <span style={EXTRACT_WARNING_DETAIL}>{error}</span>
       </span>
       <button type="button" style={WARNING_DISMISS} title="Dismiss" onClick={dismissPrepareError}>
         ×
@@ -186,6 +252,8 @@ const HEADER_BTN: React.CSSProperties = { font: "inherit", border: "1px solid #2
 const RESET_BTN: React.CSSProperties = { ...HEADER_BTN };
 const HIDE_BTN: React.CSSProperties = { ...HEADER_BTN };
 const EXTRACT_BTN: React.CSSProperties = { ...HEADER_BTN };
+const STALE_BTN: React.CSSProperties = { ...HEADER_BTN, borderColor: "#9A7B2D", background: "rgba(210,153,34,0.12)", color: "#D29922" };
+const STALE_BTN_DISABLED: React.CSSProperties = { cursor: "wait", opacity: 0.75 };
 const RAIL: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
@@ -205,6 +273,8 @@ const RAIL: React.CSSProperties = {
 const RAIL_GLYPH: React.CSSProperties = { fontSize: 13, fontWeight: 700, color: "#9AA4B2", lineHeight: 1 };
 const RAIL_LABEL: React.CSSProperties = { writingMode: "vertical-rl", fontSize: 11, fontWeight: 700, letterSpacing: 0.5, color: "#9AA4B2", textTransform: "uppercase" };
 const RAIL_COUNT: React.CSSProperties = { fontSize: 9, fontWeight: 600, color: "#9AA4B2", background: "#1B212A", borderRadius: 8, padding: "3px 2px", writingMode: "vertical-rl" };
+const RAIL_STALE: React.CSSProperties = { borderLeftColor: "#9A7B2D" };
+const RAIL_STALE_DOT: React.CSSProperties = { width: 7, height: 7, borderRadius: 999, background: "#D29922", boxShadow: "0 0 0 3px rgba(210,153,34,0.12)" };
 const HEADER_REF: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6, fontFamily: MONO, fontSize: 11 };
 // The PR provenance line flows inline (its spaces are text, not gaps) — see PrProvenance.
 const PROVENANCE: React.CSSProperties = { fontFamily: MONO, fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };

@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import {
   RollupExpandControl,
+  RollupExpandableBody,
   activateRollupExpansion,
 } from "./PackageOverviewNode";
 
@@ -17,7 +18,34 @@ describe("review rollup expansion", () => {
     expect(markup).toContain("3 files ▸");
   });
 
-  it("consumes only the explicit control click before expanding", () => {
+  it("makes the rolled directory body itself an expansion surface", () => {
+    const expand = vi.fn();
+    const element = RollupExpandableBody({
+      expandable: true,
+      onExpand: expand,
+      children: "directory",
+    });
+    const stopPropagation = vi.fn();
+
+    expect(element.props.style).toMatchObject({ cursor: "pointer" });
+    element.props.onClick?.({ stopPropagation } as never);
+
+    expect(stopPropagation).toHaveBeenCalledOnce();
+    expect(expand).toHaveBeenCalledOnce();
+  });
+
+  it("leaves ordinary package bodies inert", () => {
+    const element = RollupExpandableBody({
+      expandable: false,
+      onExpand: vi.fn(),
+      children: "directory",
+    });
+
+    expect(element.props.style).not.toMatchObject({ cursor: "pointer" });
+    expect(element.props.onClick).toBeUndefined();
+  });
+
+  it("consumes the explicit control click before expanding", () => {
     const stopPropagation = vi.fn();
     const expand = vi.fn();
 

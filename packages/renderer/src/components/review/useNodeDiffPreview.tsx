@@ -6,10 +6,10 @@
  * and scroll it. Loaded and in-flight views are cached per mounted review graph/node.
  */
 
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type SyntheticEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type SyntheticEvent } from "react";
 import { createPortal } from "react-dom";
 import type { Node as FlowNode } from "@xyflow/react";
-import type { GraphNode } from "@meridian/core";
+import type { GraphNode, ReviewContext } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { CodeView } from "../../state/store";
 import { CodeBlock } from "../CodeBlock";
@@ -254,6 +254,9 @@ function NodeDiffPreviewCard(props: {
   onMouseLeave(): void;
 }) {
   const { preview } = props;
+  const review = useBlueprint((state) => state.review);
+  const prReviewed = useBlueprint((state) => state.prReviewed);
+  const { addReviewComment } = useBlueprintActions();
   const hookChangedLines = useChangedLines(preview.node);
   const hookChangedLineKinds = useLineChangeKinds(preview.node);
   const hookSummary = useChangeSummary(preview.node);
@@ -265,6 +268,18 @@ function NodeDiffPreviewCard(props: {
   const placement = placeNodeDiffPreview(preview.anchor, preview.bounds);
   const baseLine = preview.view?.baseLine ?? preview.node.location.startLine;
   const code = preview.view?.code ?? null;
+  const reviewFile = preview.node.location.file;
+  const lineCommentsEnabled = previewFileAllowsLineComments(
+    reviewFile,
+    prReviewed,
+    review?.context.changedFiles ?? EMPTY_CHANGED_FILES,
+  );
+  const commentableLines = useMemo(
+    () => visiblePreviewCommentLines(baseLine, code, lineCommentsEnabled),
+    [baseLine, code, lineCommentsEnabled],
+  );
+  const [activeCommentLine, setActiveCommentLine] = useState<number | null>(null);
+  useEffect(() => setActiveCommentLine(null), [preview.node.id, baseLine]);
   const shownEnd = code === null
     ? preview.node.location.endLine ?? baseLine
     : baseLine + Math.max(code.split("\n").length - 1, 0);
@@ -308,12 +323,45 @@ function NodeDiffPreviewCard(props: {
             showGutter
             changedLines={changedLines}
             changedLineKinds={changedLineKinds}
+            commentableLines={commentableLines}
+            onLineClick={commentableLines.size > 0 ? setActiveCommentLine : undefined}
+            lineComposer={activeCommentLine === null || !commentableLines.has(activeCommentLine) ? null : {
+              line: activeCommentLine,
+              onAdd: (body) => addReviewComment(reviewFile, null, body, activeCommentLine),
+              onCancel: () => setActiveCommentLine(null),
+            }}
           />
         ) : null}
         {preview.view?.truncated ? <div style={TRUNCATED_STYLE}>Snippet truncated by the server.</div> : null}
       </div>
     </div>
   );
+}
+
+/** Every source row in a PR hover preview is HEAD-side and can carry a pending review comment. */
+export function visiblePreviewCommentLines(
+  baseLine: number,
+  code: string | null,
+  enabled: boolean,
+): ReadonlySet<number> {
+  if (!enabled || code === null) {
+    return EMPTY_COMMENTABLE_LINES;
+  }
+  return new Set(Array.from({ length: code.split("\n").length }, (_value, index) => baseLine + index));
+}
+
+/** Deleted files have no RIGHT-side HEAD source to anchor, even if a synchronous review can still
+ * preview their base-side text. Only surviving changed files expose line-comment actions. */
+export function previewFileAllowsLineComments(
+  path: string,
+  prReviewed: number | null,
+  changedFiles: ReviewContext["changedFiles"],
+): boolean {
+  if (prReviewed === null) {
+    return false;
+  }
+  const file = changedFiles.find((candidate) => candidate.path === path);
+  return file !== undefined && file.status !== "deleted";
 }
 
 function rectOf(rect: DOMRect): PreviewRect {
@@ -327,6 +375,9 @@ function boundsOf(rect: DOMRect): PreviewBounds {
 function clamp(value: number, low: number, high: number): number {
   return Math.min(Math.max(value, low), high);
 }
+
+const EMPTY_COMMENTABLE_LINES: ReadonlySet<number> = new Set<number>();
+const EMPTY_CHANGED_FILES: ReviewContext["changedFiles"] = [];
 
 const PANEL_STYLE: React.CSSProperties = {
   position: "fixed",

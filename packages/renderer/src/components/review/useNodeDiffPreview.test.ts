@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { placeNodeDiffPreview, type PreviewRect } from "./useNodeDiffPreview";
+import { placeNodeDiffPreview, previewFileAllowsLineComments, visiblePreviewCommentLines, type PreviewRect } from "./useNodeDiffPreview";
 
 function rect(overrides: Partial<PreviewRect> = {}): PreviewRect {
   return {
@@ -53,5 +53,29 @@ describe("placeNodeDiffPreview", () => {
     expect(placement.left).toBeGreaterThanOrEqual(112);
     expect(placement.left + placement.width).toBeLessThanOrEqual(588);
     expect(placement.top).toBe(62);
+  });
+});
+
+describe("visiblePreviewCommentLines", () => {
+  it("offers every visible HEAD-side row in an active PR review", () => {
+    expect([...visiblePreviewCommentLines(19, "one\ntwo\nthree", true)]).toEqual([19, 20, 21]);
+  });
+
+  it("offers no line targets outside an active PR review or before source loads", () => {
+    expect(visiblePreviewCommentLines(19, "one\ntwo", false).size).toBe(0);
+    expect(visiblePreviewCommentLines(19, null, true).size).toBe(0);
+  });
+});
+
+describe("previewFileAllowsLineComments", () => {
+  it("requires an active PR and a surviving changed HEAD file", () => {
+    const files = [
+      { path: "src/live.ts", status: "modified" as const },
+      { path: "src/gone.ts", status: "deleted" as const },
+    ];
+    expect(previewFileAllowsLineComments("src/live.ts", 77, files)).toBe(true);
+    expect(previewFileAllowsLineComments("src/gone.ts", 77, files)).toBe(false);
+    expect(previewFileAllowsLineComments("src/other.ts", 77, files)).toBe(false);
+    expect(previewFileAllowsLineComments("src/live.ts", null, files)).toBe(false);
   });
 });

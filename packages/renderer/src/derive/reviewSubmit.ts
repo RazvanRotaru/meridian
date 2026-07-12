@@ -1,14 +1,12 @@
 /**
- * Turn the panel's draft comments into the ONE GitHub review submission: inline comments anchored
- * to new-side diff lines, plus anchorless NOTES the server folds into the review body. GitHub only
- * accepts an inline comment on a line the diff actually shows, so each anchor is derived from the
- * same parsed hunks the review graph was built from (core's rangesOverlap) — a unit comment lands
- * on the first changed line inside the unit's span, a file comment on the file's first changed
- * line. Anything without a real diff line to stand on — a deleted file (its new-side hunk starts
- * at 0), an unparsed patch, a unit that vanished or drifted off every hunk after a push — becomes
- * a note, NEVER a guessed anchor: a misplaced inline comment on an unrelated line is worse than a
- * body paragraph. Notes keep the subdir-STRIPPED path; the server restores the repo-root prefix
- * when it assembles the body (web-prs.ts), which is why the body is not built as prose here.
+ * Turn the panel's draft comments into the ONE GitHub review submission. The UI can draft on every
+ * visible HEAD line, matching GitHub's current Files changed experience, but GitHub's public review
+ * API only guarantees inline creation inside the unified diff's context-padded hunk ranges. Keep an
+ * explicit line inline when it is in that API-safe context; otherwise preserve it as an L-prefixed
+ * note in the review body instead of risking failure of the entire review. Row-level comments still
+ * derive a tight changed-line anchor. Deleted/unparsed files and vanished/drifted units likewise
+ * become notes, NEVER guessed anchors. Notes keep the subdir-STRIPPED path; the server restores the
+ * repo-root prefix when it assembles the body (web-prs.ts).
  */
 
 import { rangesOverlap, type LineRange, type ReviewContext } from "@meridian/core";
@@ -20,15 +18,18 @@ export interface ReviewSubmission {
   notes: { path: string; label: string | null; body: string }[];
 }
 
+export type ReviewCommentRanges = Readonly<Record<string, readonly LineRange[]>>;
+
 /** Build the submission payload. Pure; preserves draft order within each list. */
 export function buildReviewSubmission(
   drafts: readonly ReviewComment[],
   files: readonly ReviewFileRow[],
   context: ReviewContext,
+  commentRangesByFile: ReviewCommentRanges = EMPTY_COMMENT_RANGES,
 ): ReviewSubmission {
   const submission: ReviewSubmission = { comments: [], notes: [] };
   for (const draft of drafts) {
-    const line = anchorLine(draft, files, context);
+    const line = anchorLine(draft, files, context, commentRangesByFile);
     if (line !== null) {
       submission.comments.push({ path: draft.path, line, body: draft.body });
     } else {
@@ -39,14 +40,28 @@ export function buildReviewSubmission(
 }
 
 /** The new-side diff line a draft anchors to; null ⇒ fold it into the body as a note. */
-function anchorLine(draft: ReviewComment, files: readonly ReviewFileRow[], context: ReviewContext): number | null {
+function anchorLine(
+  draft: ReviewComment,
+  files: readonly ReviewFileRow[],
+  context: ReviewContext,
+  commentRangesByFile: ReviewCommentRanges,
+): number | null {
   const hunks = anchorableHunks(draft.path, context);
   if (hunks.length === 0) {
     return null;
   }
   const explicitLine = draft.line;
   if (explicitLine !== null) {
-    return hunks.some((hunk) => explicitLine >= hunk.start && explicitLine <= hunk.end) ? explicitLine : null;
+    if (draft.lineStale === true) {
+      return null;
+    }
+    // `hunks` is intentionally tight (actual edit lines) for graph marking; `commentRangesByFile`
+    // comes from the patch headers and includes GitHub's surrounding context rows. Artifact-only
+    // reviews have no header map, so their tight hunks remain the conservative fallback.
+    const ranges = commentRangesByFile[draft.path] ?? hunks;
+    return explicitLine >= 1 && ranges.some((range) => explicitLine >= range.start && explicitLine <= range.end)
+      ? explicitLine
+      : null;
   }
   if (draft.nodeId === null) {
     return hunks[0].start;
@@ -67,3 +82,5 @@ export function anchorableHunks(path: string, context: ReviewContext): LineRange
 function unitOf(nodeId: string, files: readonly ReviewFileRow[], path: string): ReviewUnitRow | undefined {
   return files.find((file) => file.path === path)?.units.find((unit) => unit.nodeId === nodeId);
 }
+
+const EMPTY_COMMENT_RANGES: ReviewCommentRanges = {};

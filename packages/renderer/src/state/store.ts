@@ -17,6 +17,7 @@ import type {
   FlowStep,
   GraphArtifact,
   GraphNode,
+  LineRange,
   LogicFlows,
   NodeId,
   NodeMetrics,
@@ -94,6 +95,7 @@ import {
 } from "./prTypes";
 import { headKindsWithin, headSpanFor } from "./headSpan";
 import { streamPrAnalysis, type PrAnalyzeStage } from "./prAnalysis";
+import { isPrReviewStale, prReviewRevisionKey, reviewRevision, type PrReviewRevision } from "./prReviewFreshness";
 import {
   fetchPreparedArtifact,
   resetChangedIdsToArtifact,
@@ -420,10 +422,19 @@ export interface BlueprintState {
   prReviewBlocked: { number: number; reason: string } | null;
   /** The PR whose changed files are currently highlighted in the graph (via "review in graph"). */
   prReviewed: number | null;
+  /** Exact GitHub content revision currently rendered by the review. It remains immutable while a
+   * freshness check updates the summary cache, so a newly pushed head can be compared honestly. */
+  prReviewRevision: PrReviewRevision | null;
+  /** A newer head/base revision exists on GitHub than the one currently rendered. */
+  prReviewStale: boolean;
+  /** The stale review is fetching fresh PR data and rebuilding its graph in place. */
+  prReviewRefreshing: boolean;
   /** Head ref of the PR under review — the code panel fetches changed files at this ref. Null off-review. */
   reviewHeadRef: string | null;
   /** Per changed file (keyed by node.location.file): the PR diff needed to slice + paint the head code. */
   reviewDiffByFile: Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>;
+  /** Context-padded new-side hunk ranges accepted by GitHub's public inline-review API. */
+  reviewCommentRangesByFile: Record<string, LineRange[]>;
   /** Removed patch text keyed like reviewDiffByFile. Positions are HEAD-side in both review modes. */
   reviewRemovedByFile: Record<string, { afterNewLine: number; lines: string[] }[]>;
   /** Files whose removed patch text exceeded the server-side cap, keyed like reviewRemovedByFile. */
@@ -585,6 +596,10 @@ export interface BlueprintState {
   clearRelatedPrs(): void;
   ensurePrSummary(number: number): Promise<void>;
   selectPr(number: number | null): Promise<void>;
+  /** Quietly compare the live GitHub head with the revision currently rendered. */
+  checkPrReviewFreshness(): Promise<void>;
+  /** Replace a stale review's files, discussion, checks, and graph without a page reload. */
+  refreshPrReview(): Promise<void>;
   reviewPrInGraph(): Promise<void>;
   /** Explicit fallback after prepare-first entry fails: review against the loaded base graph. */
   reviewPrOnBaseGraph(): Promise<void>;
@@ -965,6 +980,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let relatedPrsSeq = 0;
   let prFilesSeq = 0;
   let prFilesRequest: { number: number; sequence: number; promise: Promise<void> } | null = null;
+  let prFreshnessRequest: { number: number; revision: PrReviewRevision; promise: Promise<void> } | null = null;
+  let prReviewRefreshSeq = 0;
   let prAnalyzeSeq = 0;
   let prAnalyzeCancellation: { sequence: number; resolve: () => void } | null = null;
   let prReviewEntryRequest: { number: number; promise: Promise<void> } | null = null;
@@ -1135,8 +1152,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prFilesSuggestedSubdir: "",
     prReviewBlocked: null,
     prReviewed: null,
+    prReviewRevision: null,
+    prReviewStale: false,
+    prReviewRefreshing: false,
     reviewHeadRef: null,
     reviewDiffByFile: {},
+    reviewCommentRangesByFile: {},
     reviewRemovedByFile: {},
     reviewRemovedTruncatedByFile: {},
     prReviewStatus: "idle",
@@ -2093,8 +2114,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               reviewSubmitStatus: "idle" as const,
               reviewSubmitError: null,
               reviewSubmittedUrl: null,
+              prReviewRevision: null,
+              prReviewStale: false,
+              prReviewRefreshing: false,
               reviewHeadRef: null,
               reviewDiffByFile: {} as Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>,
+              reviewCommentRangesByFile: {} as Record<string, LineRange[]>,
               reviewRemovedByFile: {} as Record<string, { afterNewLine: number; lines: string[] }[]>,
               reviewRemovedTruncatedByFile: {} as Record<string, boolean>,
             }
@@ -2132,6 +2157,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // pass still in flight, so a slow layout can't repopulate the arrays after the close.
     closeMinimalGraph() {
       const stateBeforeClose = get();
+      // A user close/lens transition wins over a refresh. Invalidate both its data-fetch lane and
+      // any streamed head preparation so a late response cannot reopen the overlay they just left.
+      if (stateBeforeClose.prReviewRefreshing) {
+        prReviewRefreshSeq += 1;
+        get().cancelPrReviewPreparation();
+        set({ prReviewRefreshing: false });
+      }
       const flowBaseline = stateBeforeClose.reviewFlowBaseline;
       const reviewFlowOpen = stateBeforeClose.review !== null
         && stateBeforeClose.flowSelection !== null
@@ -2572,16 +2604,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Add a draft comment on a file (nodeId null), touched unit, or explicit HEAD-side line. Drafts
     // persist under the reviewKey until submitted or deleted.
     addReviewComment(path, nodeId, body, line = null) {
-      const { review, reviewComments, index } = get();
+      const { review, reviewComments, index, prReviewRevision } = get();
       const trimmed = body.trim();
       if (!review || trimmed.length === 0) {
         return;
       }
+      const lineRevision = line === null ? null : prReviewRevisionKey(prReviewRevision);
       const comment: ReviewComment = {
         id: newCommentId(),
         path,
         nodeId,
         line,
+        ...(lineRevision === null ? {} : { lineRevision }),
         anchorLabel: line === null ? (nodeId === null ? null : (index.nodesById.get(nodeId)?.displayName ?? null)) : `L${line}`,
         body: trimmed,
         at: new Date().toISOString(),
@@ -2608,11 +2642,29 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // review body (reviewSubmit.ts). Only the drafts SNAPSHOTTED here are cleared on success — a
     // comment added while the POST is in flight stays a draft; a failed submit keeps everything.
     async submitReviewComments() {
-      const { review, reviewComments, reviewFiles, prReviewed: prNumber, reviewSubmitStatus } = get();
-      if (!review || prNumber === null || reviewComments.length === 0 || reviewSubmitStatus === "submitting") {
+      const {
+        review,
+        reviewComments,
+        reviewFiles,
+        reviewCommentRangesByFile,
+        prReviewed: prNumber,
+        reviewSubmitStatus,
+        prReviewStale,
+        prReviewRefreshing,
+        prReviewStatus,
+      } = get();
+      if (
+        !review
+        || prNumber === null
+        || reviewComments.length === 0
+        || reviewSubmitStatus === "submitting"
+        || prReviewStale
+        || prReviewRefreshing
+        || prReviewStatus === "preparing"
+      ) {
         return;
       }
-      const submission = buildReviewSubmission(reviewComments, reviewFiles, review.context);
+      const submission = buildReviewSubmission(reviewComments, reviewFiles, review.context, reviewCommentRangesByFile);
       const submittedIds = new Set(reviewComments.map((comment) => comment.id));
       const submittedKey = review.context.reviewKey;
       set({ reviewSubmitStatus: "submitting", reviewSubmitError: null });
@@ -3201,6 +3253,137 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
+    // GitHub's Files changed view quietly notices when the pull-request head moves, but leaves the
+    // reader on the revision they started reviewing until they explicitly refresh. The loaded
+    // revision object is captured when applyPrReviewToMap runs; refreshing the summary cache here
+    // therefore cannot erase the comparison baseline. Focus/visibility/interval scheduling lives
+    // in ReviewPanel, while this action owns request sharing and stale-result guards.
+    async checkPrReviewFreshness() {
+      const { prReviewed: number, prReviewRevision: revision, prReviewRefreshing } = get();
+      if (number === null || revision === null || prReviewRefreshing) {
+        return;
+      }
+      const inFlight = prFreshnessRequest;
+      if (inFlight?.number === number && inFlight.revision === revision) {
+        await inFlight.promise;
+        return;
+      }
+      const promise = (async () => {
+        try {
+          const latest = await fetchPrSummary(prOneUrl, number);
+          const current = get();
+          if (current.prReviewed !== number || current.prReviewRevision !== revision || current.prReviewRefreshing) {
+            return;
+          }
+          set({
+            ...refreshedPrSummaryState(current, latest),
+            prReviewStale: isPrReviewStale(revision, latest),
+          });
+        } catch {
+          // Freshness is advisory. A transient GitHub/network failure must not interrupt review or
+          // replace the page's stronger load/submit errors with a noisy polling warning.
+        }
+      })();
+      const request = { number, revision, promise };
+      prFreshnessRequest = request;
+      try {
+        await promise;
+      } finally {
+        if (prFreshnessRequest === request) {
+          prFreshnessRequest = null;
+        }
+      }
+    },
+
+    // Refresh a stale review in place. Drafts/ticks remain live under the stable reviewKey; the
+    // fresh files, discussion, checks, and (when available) prepared head artifact replace the old
+    // content only after their guarded requests land. Failures leave the previous review visible.
+    async refreshPrReview() {
+      const before = get();
+      const number = before.prReviewed;
+      const revision = before.prReviewRevision;
+      if (
+        number === null
+        || revision === null
+        || !before.prReviewStale
+        || before.prReviewRefreshing
+        || before.prReviewStatus === "preparing"
+        || before.reviewSubmitStatus === "submitting"
+        || before.viewMode !== "modules"
+        || before.minimalSeedIds.length === 0
+      ) {
+        return;
+      }
+      const sequence = ++prReviewRefreshSeq;
+      const active = () => prReviewRefreshSeq === sequence && sameReviewRefresh(get(), number, revision);
+      set({ prReviewRefreshing: true, prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null });
+      try {
+        const latest = await fetchPrSummary(prOneUrl, number);
+        if (!active()) {
+          return;
+        }
+        const [files, discussion, checks] = await Promise.all([
+          fetchPrFiles(prFilesUrl, number),
+          fetchPrDiscussion(prCommentsUrl, number).catch(() => null),
+          latest.headSha === null ? Promise.resolve(null) : fetchPrChecks(prChecksUrl, number, latest.headSha).catch(() => null),
+        ]);
+        if (!active()) {
+          return;
+        }
+        const current = get();
+        set({
+          ...refreshedPrSummaryState(current, latest),
+          prFiles: files.files,
+          prFilesTruncated: files.truncated,
+          prFilesTotal: files.totalFiles ?? files.files.length,
+          prFilesOutside: files.outsideCount ?? 0,
+          prFilesSuggestedSubdir: files.suggestedSubdir ?? "",
+          prDiscussion: discussion === null ? null : { comments: discussion.comments, reviews: discussion.reviews },
+          // Checks are commit-specific. A failed/unsupported refresh must clear the prior head's
+          // rollup instead of presenting it as if it described the new revision.
+          prChecks: checks,
+        });
+
+        if (analyzeUrl !== null && analyzeGraphId !== null) {
+          await get().prepareHeadGraph();
+        } else {
+          // Older/plain view sessions cannot build a head artifact. Re-run the synchronous review
+          // against the immutable boot graph so the new GitHub hunks replace the synthesized diff;
+          // using the already-reviewed artifact here would accidentally retain its old stamp.
+          const previous = get();
+          invalidateArtifactCaches();
+          set({
+            artifact: bootReviewBaseline.artifact,
+            index: bootReviewBaseline.index,
+            coverage: previous.coverageMode ? computeCoverage(bootReviewBaseline.artifact.nodes, bootReviewBaseline.artifact.edges) : null,
+            codeView: null,
+          });
+          if (!applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout)) {
+            // The refreshed PR no longer intersects this extraction. Keep the old review rather than
+            // silently replacing it with an empty/base canvas; the stale control remains retryable.
+            invalidateArtifactCaches();
+            set({
+              artifact: previous.artifact,
+              index: previous.index,
+              coverage: previous.coverage,
+              codeView: null,
+              prReviewBlocked: null,
+              prReviewStatus: "error",
+              prPrepareError: "The refreshed pull request no longer matches this graph.",
+            });
+          }
+        }
+      } catch (error) {
+        if (active()) {
+          set({ prReviewStatus: "error", prPrepareStage: null, prPrepareError: refreshErrorMessage(error) });
+        }
+      } finally {
+        if (prReviewRefreshSeq === sequence && get().prReviewed === number) {
+          set({ prReviewRefreshing: false });
+        }
+      }
+    },
+
     // Once the selected PR's files are ready, a capable web session PREPARES first while the PRs
     // page remains visible. Only the swapped PR-head graph is allowed to enter the Map. A plain
     // view (no analyze capability) retains the synchronous loaded-artifact entry path.
@@ -3329,7 +3512,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const state = get();
       const prNumber = state.prReviewed ?? state.prSelected;
       const enteringFromPrs = state.prReviewed === null;
+      const refreshingExistingReview = !enteringFromPrs && state.prReviewRefreshing;
       const summary = selectedPrSummary(state, prNumber);
+      // A refresh/manual re-extract can start while an older prepared review is still current.
+      // Keep that exact graph as a transactional fallback: a clone/fetch/derive failure must not
+      // throw the reader back to the boot graph or discard the review they were looking at.
+      const previousPrepared = !enteringFromPrs && state.prPreparedArtifactCurrent
+        ? {
+            artifact: state.artifact,
+            index: state.index,
+            coverage: state.coverage,
+            graphId: state.prPreparedGraphId,
+            headSha: state.prPreparedHeadSha,
+          }
+        : null;
       if (
         prNumber === null
         || analyzeUrl === null
@@ -3355,16 +3551,35 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           && current.prSelected === prNumber
           && (enteringFromPrs
             ? current.viewMode === "prs" && current.prReviewed === null
-            : current.prReviewed === prNumber);
+            : current.prReviewed === prNumber)
+          && (!refreshingExistingReview
+            || (current.prReviewRefreshing && current.viewMode === "modules" && current.minimalSeedIds.length > 0));
       };
       set({
         prReviewStatus: "preparing",
         prPrepareStage: "clone",
         prPrepareError: null,
-        prPreparedGraphId: null,
-        prPreparedHeadSha: null,
+        ...(previousPrepared === null ? { prPreparedGraphId: null, prPreparedHeadSha: null } : {}),
         prReviewBlocked: null,
       });
+      let swappedNewArtifact = false;
+      const restorePreviousPrepared = () => {
+        if (previousPrepared === null) {
+          return false;
+        }
+        invalidateArtifactCaches();
+        set({
+          artifact: previousPrepared.artifact,
+          index: previousPrepared.index,
+          coverage: previousPrepared.coverage,
+          codeView: null,
+          prPreparedArtifactCurrent: true,
+          prPreparedGraphId: previousPrepared.graphId,
+          prPreparedHeadSha: previousPrepared.headSha,
+          prReviewBlocked: null,
+        });
+        return true;
+      };
       const work = (async () => {
         try {
           const request = { id: analyzeGraphId, prNumber, baseRef: summary.baseRef, headRef: summary.headRef };
@@ -3383,23 +3598,33 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             return;
           }
           swapToPreparedArtifact(get, set, prepared, invalidateArtifactCaches);
+          swappedNewArtifact = true;
           set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null, prPreparedGraphId: analysis.graphId, prPreparedHeadSha: analysis.headSha });
           const entered = applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout);
           if (!entered) {
             // The zero-match decision was made against HEAD. Do not leak that unreviewed prepared
             // graph behind the PRs page (or replace an explicit base fallback that still matches).
-            restorePrReviewBaseline(get, set, invalidateArtifactCaches, { endSession: enteringFromPrs });
-            if (!enteringFromPrs) {
+            if (!restorePreviousPrepared()) {
+              restorePrReviewBaseline(get, set, invalidateArtifactCaches, { endSession: enteringFromPrs });
+            }
+            if (!enteringFromPrs && previousPrepared === null) {
               set({ prPreparedGraphId: null, prPreparedHeadSha: null });
+            }
+            if (get().prReviewRefreshing) {
+              set({
+                prReviewStatus: "error",
+                prPrepareStage: null,
+                prPrepareError: "The refreshed pull request no longer matches this graph.",
+              });
             }
           }
         } catch (error) {
           if (active()) {
             // Derivation after a successful fetch is still part of preparation. If it throws after
             // the swap, put the prior graph back before exposing the retry/fallback state.
-            if (get().prPreparedArtifactCurrent) {
+            if (swappedNewArtifact && !restorePreviousPrepared()) {
               restorePrReviewBaseline(get, set, invalidateArtifactCaches, { endSession: enteringFromPrs });
-              if (!enteringFromPrs) {
+              if (!enteringFromPrs && previousPrepared === null) {
                 set({ prPreparedGraphId: null, prPreparedHeadSha: null });
               }
             }
@@ -3464,7 +3689,13 @@ function applyPrReviewToMap(
     artifact,
     index,
     prPreparedArtifactCurrent,
+    prPreparedHeadSha,
     prReviewBaseline,
+    review: liveReview,
+    reviewTicks: liveReviewTicks,
+    reviewUnitTicks: liveReviewUnitTicks,
+    reviewFileTicks: liveReviewFileTicks,
+    reviewComments: liveReviewComments,
   } = get();
   if (prSelected === null) {
     return false;
@@ -3485,6 +3716,16 @@ function applyPrReviewToMap(
     // Base-side hunks mark base coordinates — right for the boot artifact, wrong for a head graph.
     { baseSide: !swapped },
   );
+  // A refresh re-enters this same reviewKey. Carry the in-memory progress directly so drafts made
+  // while persistence is unavailable (or while the refresh request is in flight) cannot disappear.
+  const liveProgress = liveReview?.context.reviewKey === context.reviewKey
+    ? {
+        ticks: liveReviewTicks,
+        unitTicks: liveReviewUnitTicks,
+        fileTicks: liveReviewFileTicks,
+        comments: liveReviewComments,
+      }
+    : null;
   // Derive the overlay's seeds before ANY lens or review mutation. An empty review remains on the
   // PR detail page, where the reader can re-extract and retry without losing the rest of the queue.
   const matchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
@@ -3502,9 +3743,13 @@ function applyPrReviewToMap(
     });
     return false;
   }
-  // This is a lens ENTRY (it lands on the Map lens below), so it owes the shared transition side
-  // effects like every other entry point: a live Service scope must not survive into the review.
-  beginLensTransition(get, set);
+  // A first entry/manual re-extract owes every shared lens-transition side effect. An in-place
+  // refresh is already on this review surface; its final atomic state replaces the old overlay.
+  // Skipping closeMinimalGraph here is also essential: a user close cancels refresh, while this
+  // internal replacement must not cancel itself.
+  if (!get().prReviewRefreshing) {
+    beginLensTransition(get, set);
+  }
   const review = deriveReviewDataFromContext(context, artifact, index);
   // The files-first checklist: every changed file with its touched code units (the panel's primary
   // section). Derived from the SAME context/artifact as the affected set below, so a checked unit
@@ -3562,6 +3807,21 @@ function applyPrReviewToMap(
   // SWAPPED mode carries neither field: node.location is already head-relative, so showCode's
   // headSpanFor remap must never run — it reads the local head checkout via activeSourceUrl instead.
   const reviewDiffByFile: Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }> = {};
+  const reviewCommentRangesByFile: Record<string, LineRange[]> = {};
+  const prFileByPath = new Map((prFiles ?? []).map((file) => [file.path, file]));
+  for (const match of matchedFiles) {
+    const locFile = index.nodesById.get(match.moduleId)?.location?.file;
+    const edits = prFileByPath.get(match.path)?.edits;
+    if (!locFile || !edits) {
+      continue;
+    }
+    const ranges = edits
+      .filter((edit) => edit.newStart >= 1 && edit.newLines > 0)
+      .map((edit) => ({ start: edit.newStart, end: edit.newStart + edit.newLines - 1 }));
+    if (ranges.length > 0) {
+      reviewCommentRangesByFile[locFile] = ranges;
+    }
+  }
   if (!swapped) {
     const diffByPath = new Map<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>();
     for (const file of prFiles ?? []) {
@@ -3582,10 +3842,9 @@ function applyPrReviewToMap(
   // path so the code panel can look it up with node.location.file in either graph.
   const reviewRemovedByFile: Record<string, { afterNewLine: number; lines: string[] }[]> = {};
   const reviewRemovedTruncatedByFile: Record<string, boolean> = {};
-  const removedByPath = new Map((prFiles ?? []).map((file) => [file.path, file]));
   for (const match of matchedFiles) {
     const locFile = index.nodesById.get(match.moduleId)?.location?.file;
-    const prFile = removedByPath.get(match.path);
+    const prFile = prFileByPath.get(match.path);
     if (!locFile || !prFile) {
       continue;
     }
@@ -3596,7 +3855,11 @@ function applyPrReviewToMap(
       reviewRemovedTruncatedByFile[locFile] = true;
     }
   }
-  const progress = readReviewProgress(context.reviewKey);
+  const progress = liveProgress ?? readReviewProgress(context.reviewKey);
+  const loadedRevision = summary === null ? null : reviewRevision(summary, swapped ? prPreparedHeadSha : null);
+  const reviewComments = reconcileReviewLineAnchors(progress.comments, loadedRevision);
+  const lineAnchorsInvalidated = reviewComments !== progress.comments;
+  const revisionMismatch = loadedRevision !== null && summary !== null && isPrReviewStale(loadedRevision, summary);
   set({
     artifact: reviewedArtifact,
     // Pin the index this review was computed on alongside its artifact: a mid-flow overlay close
@@ -3607,14 +3870,19 @@ function applyPrReviewToMap(
     review,
     prReviewBlocked: null,
     prReviewed: prSelected,
+    prReviewRevision: loadedRevision,
+    // If the head moved during a long extraction, its exact analyzed SHA and the earlier summary/file
+    // snapshot disagree. Surface Refresh immediately instead of pretending those mixed inputs match.
+    prReviewStale: revisionMismatch,
     reviewHeadRef: swapped ? null : summary?.headRef ?? null,
     reviewDiffByFile,
+    reviewCommentRangesByFile,
     reviewRemovedByFile,
     reviewRemovedTruncatedByFile,
     reviewTicks: progress.ticks,
     reviewUnitTicks: progress.unitTicks,
     reviewFileTicks: progress.fileTicks,
-    reviewComments: progress.comments,
+    reviewComments,
     reviewPanelHidden: false,
     reviewSubmitStatus: "idle",
     reviewSubmitError: null,
@@ -3647,12 +3915,37 @@ function applyPrReviewToMap(
     minimalLayoutStatus: seeds.length > 0 ? "laying-out" : "idle",
     minimalLayoutActivity: seeds.length > 0 ? { label: "Preparing review graph…" } : null,
   });
+  if (lineAnchorsInvalidated) {
+    // The stable reviewKey intentionally carries drafts across pushes. Persist the invalidated
+    // anchor marker with them so a reload cannot make an old numeric line look current again.
+    persistReviewProgress(get());
+  }
   // Lay out the underlying Map (correct if the reader closes the overlay) and, when seeded, the overlay.
   void get().moduleRelayout({ label: "Preparing review map…" });
   if (seeds.length > 0) {
     void get().minimalRelayout({ label: "Preparing review graph…" });
   }
   return true;
+}
+
+/** A line number belongs to one immutable HEAD revision. On refresh OR a later restored session,
+ * preserve draft text/labels but permanently disarm anchors without matching provenance. Legacy
+ * drafts have no provenance and are therefore conservative notes. File/unit drafts use semantic
+ * heuristics at submit time and can continue to re-anchor safely. */
+function reconcileReviewLineAnchors(comments: ReviewComment[], revision: PrReviewRevision | null): ReviewComment[] {
+  const currentRevision = prReviewRevisionKey(revision);
+  if (currentRevision === null) {
+    return comments;
+  }
+  let changed = false;
+  const next = comments.map((comment) => {
+    if (comment.line === null || comment.lineStale === true || comment.lineRevision === currentRevision) {
+      return comment;
+    }
+    changed = true;
+    return { ...comment, lineStale: true };
+  });
+  return changed ? next : comments;
 }
 
 /** The selected PR's summary row (its refs feed the analyze request); null when unavailable.
@@ -4083,10 +4376,68 @@ function requestOrigin(): string {
   return typeof window === "undefined" ? "http://meridian.local" : window.location.origin;
 }
 
+async function fetchPrSummary(baseUrl: string, number: number): Promise<PrSummary> {
+  const url = new URL(baseUrl, requestOrigin());
+  url.searchParams.set("n", String(number));
+  const response = await fetch(url, { credentials: "same-origin", cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(await errorMessage(response));
+  }
+  return ((await response.json()) as PrOneResponse).pr;
+}
+
+async function fetchPrFiles(baseUrl: string, number: number): Promise<PrFilesResponse> {
+  const url = new URL(baseUrl, requestOrigin());
+  url.searchParams.set("n", String(number));
+  const response = await fetch(url, { credentials: "same-origin", cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(await errorMessage(response));
+  }
+  return (await response.json()) as PrFilesResponse;
+}
+
+/** Keep every place selectedPrSummary can read in sync with a forced one-PR refresh. The extra
+ * cache alone is insufficient because paged rows intentionally take precedence. */
+function refreshedPrSummaryState(
+  state: Pick<BlueprintState, "prsList" | "prExtraSummaries">,
+  latest: PrSummary,
+): Pick<BlueprintState, "prsList" | "prExtraSummaries"> {
+  const refreshList = (tab: PrsTab, list: PrSummary[] | null): PrSummary[] | null => {
+    if (list === null) {
+      return null;
+    }
+    if (!list.some((pr) => pr.number === latest.number)) {
+      return list; // a one-off summary must not pollute a paged queue.
+    }
+    return latest.state === tab
+      ? list.map((pr) => (pr.number === latest.number ? latest : pr))
+      : list.filter((pr) => pr.number !== latest.number);
+  };
+  return {
+    prsList: {
+      open: refreshList("open", state.prsList.open),
+      closed: refreshList("closed", state.prsList.closed),
+    },
+    prExtraSummaries: { ...state.prExtraSummaries, [latest.number]: latest },
+  };
+}
+
+function sameReviewRefresh(state: BlueprintState, number: number, revision: PrReviewRevision): boolean {
+  return state.prReviewed === number
+    && state.prReviewRevision === revision
+    && state.prReviewRefreshing
+    && state.viewMode === "modules"
+    && state.minimalSeedIds.length > 0;
+}
+
+function refreshErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message.length > 0 ? error.message : "Could not refresh pull request contents.";
+}
+
 async function fetchPrDiscussion(baseUrl: string, number: number): Promise<PrDiscussionResult> {
   const url = new URL(baseUrl, requestOrigin());
   url.searchParams.set("n", String(number));
-  const response = await fetch(url, { credentials: "same-origin" });
+  const response = await fetch(url, { credentials: "same-origin", cache: "no-store" });
   if (!response.ok) {
     throw new Error("PR discussion unavailable");
   }
@@ -4097,7 +4448,7 @@ async function fetchPrChecks(baseUrl: string, number: number, sha: string): Prom
   const url = new URL(baseUrl, requestOrigin());
   url.searchParams.set("n", String(number));
   url.searchParams.set("sha", sha);
-  const response = await fetch(url, { credentials: "same-origin" });
+  const response = await fetch(url, { credentials: "same-origin", cache: "no-store" });
   if (!response.ok) {
     throw new Error("PR checks unavailable");
   }

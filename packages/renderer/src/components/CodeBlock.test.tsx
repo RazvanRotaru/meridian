@@ -30,3 +30,21 @@ describe("CodeBlock edge evidence", () => {
     expect(html).toContain("#7DD3FC");
   });
 });
+
+describe("CodeBlock review comments", () => {
+  it("marks only commentable source rows and gives each one an accessible line action", () => {
+    const html = renderToStaticMarkup(createElement(CodeBlock, {
+      code: "first\nsecond\nthird",
+      startLine: 40,
+      showGutter: true,
+      commentableLines: new Set([41]),
+      onLineClick: () => undefined,
+    }));
+
+    expect(html.match(/data-review-comment-line=/g)).toHaveLength(1);
+    expect(html).toContain('data-review-comment-line="41"');
+    expect(html).toContain('aria-label="Comment on line 41"');
+    expect(html).not.toContain('aria-label="Comment on line 40"');
+    expect(html).not.toContain('aria-label="Comment on line 42"');
+  });
+});
