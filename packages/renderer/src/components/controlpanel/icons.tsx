@@ -59,6 +59,16 @@ export function ExtractSelectionIcon({ size = 15 }: IconProps) {
   );
 }
 
+/** A card with a minus — remove view-local membership without implying code deletion. */
+export function RemoveSelectionIcon({ size = 15 }: IconProps) {
+  return (
+    <svg {...svgProps(size)}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M8 12h8" />
+    </svg>
+  );
+}
+
 /** Repository frame with lit cards — place the extracted code back in whole-codebase context. */
 export function CodebaseHighlightIcon({ size = 15 }: IconProps) {
   return (

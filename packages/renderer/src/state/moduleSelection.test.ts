@@ -7,7 +7,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { GraphArtifact, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
-import { createBlueprintStore, type BlueprintStore } from "./store";
+import {
+  createBlueprintStore,
+  removableModuleSelectionCount,
+  type BlueprintStore,
+} from "./store";
 
 function node(id: string, kind: string, file: string, parentId?: string): GraphNode {
   return { id, kind, qualifiedName: id, displayName: id, parentId, location: { file, startLine: 1 } };
@@ -56,6 +60,9 @@ const DOWNSTREAM_METHOD = `${DOWNSTREAM_UNIT}.run`;
 const TERMINAL_FILE = "ts:src/terminal.ts";
 const TERMINAL_UNIT = `${TERMINAL_FILE}#Terminal`;
 const TERMINAL_METHOD = `${TERMINAL_UNIT}.run`;
+const GROUPED_FILE = "ts:src/grouped.ts";
+const GROUPED_UNIT = `${GROUPED_FILE}#GroupedWorkers`;
+const GROUPED_METHODS = ["one", "two", "three", "four"].map((name) => `${GROUPED_UNIT}.${name}`);
 
 // A three-hop call chain whose first hop leaves the initial member set. It catches the overlay's
 // incremental contract: only the current members' one-hop ghosts are shown; promoting one ghost
@@ -87,6 +94,29 @@ const ITERATIVE_GHOST_ARTIFACT: GraphArtifact = {
       kind: "calls",
       resolution: "resolved",
     },
+  ],
+};
+
+// Four exact sibling ghosts fold into their real class parent during paint. The parent id itself is
+// deliberately absent from the raw laid ghost tier, which exercises selection retention for a
+// promoted parent reconstructed only after paint.
+const GROUPED_GHOST_ARTIFACT: GraphArtifact = {
+  ...ARTIFACT,
+  nodes: [
+    ...ARTIFACT.nodes,
+    node(GROUPED_FILE, "module", "src/grouped.ts", "ts:src"),
+    node(GROUPED_UNIT, "class", "src/grouped.ts", GROUPED_FILE),
+    ...GROUPED_METHODS.map((id) => node(id, "method", "src/grouped.ts", GROUPED_UNIT)),
+  ],
+  edges: [
+    ...ARTIFACT.edges,
+    ...GROUPED_METHODS.map((target, index) => ({
+      id: `calls:buildOrdersApp->GroupedWorkers.${index}`,
+      source: BUILD_ORDERS,
+      target,
+      kind: "calls",
+      resolution: "resolved" as const,
+    })),
   ],
 };
 
@@ -216,6 +246,178 @@ describe("module-map selection set", () => {
   });
 });
 
+describe("remove selected canvas additions", () => {
+  it("is a strict no-op for a canonical-only selection", () => {
+    const store = freshStore();
+    const moduleRelayout = vi.fn(async () => {});
+    store.setState({
+      moduleSelected: new Set([BUILD_ORDERS]),
+      moduleExpanded: new Set(["keep-open"]),
+      moduleRelayout,
+    });
+
+    expect(removableModuleSelectionCount(store.getState())).toBe(0);
+    store.getState().removeSelectionFromView();
+
+    expect(store.getState().moduleSelected).toEqual(new Set([BUILD_ORDERS]));
+    expect(store.getState().moduleExpanded).toEqual(new Set(["keep-open"]));
+    expect(store.getState().mapExtra).toEqual(new Set());
+    expect(moduleRelayout).not.toHaveBeenCalled();
+  });
+
+  it("does not let a selected canonical container sweep descendant additions", () => {
+    const store = freshStore(ITERATIVE_GHOST_ARTIFACT);
+    const moduleRelayout = vi.fn(async () => {});
+    const mapExtra = new Set([ROUTES_FILE]);
+    const moduleSelected = new Set(["ts:src"]);
+    const moduleGhostInspection = {
+      anchorIds: new Set([BUILD_ORDERS]),
+      visitedIds: new Set([DOWNSTREAM_METHOD]),
+    };
+    store.setState({ mapExtra, moduleSelected, moduleGhostInspection, moduleRelayout });
+
+    expect(removableModuleSelectionCount(store.getState())).toBe(0);
+    store.getState().removeSelectionFromView();
+
+    expect(store.getState().mapExtra).toBe(mapExtra);
+    expect(store.getState().moduleSelected).toBe(moduleSelected);
+    expect(store.getState().moduleGhostInspection).toBe(moduleGhostInspection);
+    expect(moduleRelayout).not.toHaveBeenCalled();
+  });
+
+  it("reverses only the files contributed by a promoted folder ghost", () => {
+    const store = freshStore(ITERATIVE_GHOST_ARTIFACT);
+    const moduleRelayout = vi.fn(async () => {});
+    store.setState({
+      moduleSelected: new Set(["ts:src"]),
+      mapExtra: new Set([ROUTES_FILE]),
+      moduleRfNodes: [{
+        id: "ts:src",
+        type: "ghost",
+        position: { x: 0, y: 0 },
+        data: { members: [ROUTES_FILE, DOWNSTREAM_FILE] },
+      }],
+      moduleRelayout,
+    });
+
+    store.getState().promoteGhost("ts:src");
+
+    expect(store.getState().mapExtra).toEqual(new Set([ROUTES_FILE, DOWNSTREAM_FILE]));
+    expect(store.getState().mapGhostPins).toEqual(new Map([
+      ["ts:src", new Set([DOWNSTREAM_FILE])],
+    ]));
+    expect(removableModuleSelectionCount(store.getState())).toBe(1);
+    moduleRelayout.mockClear();
+
+    store.getState().removeSelectionFromView();
+
+    expect(store.getState().mapExtra).toEqual(new Set([ROUTES_FILE]));
+    expect(store.getState().mapGhostPins).toEqual(new Map());
+    expect(store.getState().moduleSelected).toEqual(new Set(["ts:src"]));
+    expect(moduleRelayout).toHaveBeenCalledOnce();
+  });
+
+  it("retains a promoted grouped-parent selection which paint reconstructs after removal", async () => {
+    const store = freshStore(GROUPED_GHOST_ARTIFACT);
+    store.setState({ moduleFocus: "ts:src/a.ts" });
+    await store.getState().moduleRelayout();
+    expect(store.getState().moduleRfNodes.some((candidate) => candidate.id === GROUPED_UNIT)).toBe(false);
+    expect(GROUPED_METHODS.every((id) =>
+      store.getState().moduleRfNodes.some((candidate) => candidate.id === id && candidate.type === "ghost"))).toBe(true);
+
+    store.getState().selectModule(GROUPED_UNIT);
+    store.getState().promoteGhost(GROUPED_UNIT);
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+    expect(store.getState().mapExtra).toEqual(new Set([GROUPED_FILE]));
+    expect(store.getState().mapGhostPins).toEqual(new Map([[GROUPED_UNIT, new Set([GROUPED_FILE])]]));
+
+    store.getState().removeSelectionFromView();
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+
+    expect(store.getState().mapExtra).toEqual(new Set());
+    expect(store.getState().moduleSelected).toEqual(new Set([GROUPED_UNIT]));
+    expect(store.getState().moduleRfNodes.some((candidate) => candidate.id === GROUPED_UNIT)).toBe(false);
+    expect(GROUPED_METHODS.every((id) =>
+      store.getState().moduleRfNodes.some((candidate) => candidate.id === id && candidate.type === "ghost"))).toBe(true);
+  });
+
+  it("maps an exact selected method back to its owning file pin and retains it during admission", () => {
+    const store = freshStore();
+    const moduleRelayout = vi.fn(async () => {});
+    store.setState({
+      moduleSelected: new Set([ROUTES_METHOD]),
+      moduleExpanded: new Set(["keep-open", ROUTES_FILE, ROUTES_UNIT]),
+      mapExtra: new Set([ROUTES_FILE]),
+      moduleRelayout,
+    });
+
+    expect(removableModuleSelectionCount(store.getState())).toBe(1);
+    store.getState().removeSelectionFromView();
+
+    expect(store.getState().mapExtra).toEqual(new Set());
+    expect(store.getState().moduleSelected).toEqual(new Set([ROUTES_METHOD]));
+    expect(store.getState().moduleExpanded).toEqual(new Set(["keep-open", ROUTES_FILE, ROUTES_UNIT]));
+    expect(moduleRelayout).toHaveBeenCalledOnce();
+  });
+
+  it("removes a mixed multi-selection atomically and retains affected picks during admission", () => {
+    const store = freshStore(ITERATIVE_GHOST_ARTIFACT);
+    const moduleRelayout = vi.fn(async () => {});
+    const inspection = {
+      anchorIds: new Set([BUILD_ORDERS]),
+      visitedIds: new Set([ROUTES_METHOD, DOWNSTREAM_METHOD]),
+    };
+    store.setState({
+      moduleSelected: new Set([BUILD_ORDERS, ROUTES_METHOD, DOWNSTREAM_METHOD]),
+      moduleExpanded: new Set(["keep-open"]),
+      mapExtra: new Set([ROUTES_FILE, DOWNSTREAM_FILE]),
+      moduleGhostInspection: inspection,
+      moduleRelayout,
+    });
+    const published = vi.fn();
+    const unsubscribe = store.subscribe(published);
+
+    expect(removableModuleSelectionCount(store.getState())).toBe(2);
+    store.getState().removeSelectionFromView();
+    unsubscribe();
+
+    const state = store.getState();
+    expect(state.mapExtra).toEqual(new Set());
+    expect(state.moduleGhostInspection).toBeNull();
+    expect(state.moduleSelected).toEqual(new Set([BUILD_ORDERS, ROUTES_METHOD, DOWNSTREAM_METHOD]));
+    expect(state.moduleExpanded).toEqual(new Set(["keep-open"]));
+    expect(state.moduleLayoutStatus).toBe("laying-out");
+    expect(published).toHaveBeenCalledOnce();
+    expect(published.mock.calls[0][0]).toMatchObject({
+      moduleGhostInspection: null,
+      moduleLayoutStatus: "laying-out",
+    });
+    expect(moduleRelayout).toHaveBeenCalledOnce();
+  });
+
+  it("removes only inspection roots covered by the selection", () => {
+    const store = freshStore(ITERATIVE_GHOST_ARTIFACT);
+    const moduleRelayout = vi.fn(async () => {});
+    store.setState({
+      moduleSelected: new Set([ROUTES_METHOD]),
+      moduleGhostInspection: {
+        anchorIds: new Set([BUILD_ORDERS]),
+        visitedIds: new Set([ROUTES_METHOD, DOWNSTREAM_METHOD]),
+      },
+      moduleRelayout,
+    });
+
+    store.getState().removeSelectionFromView();
+
+    expect(store.getState().moduleGhostInspection).toEqual({
+      anchorIds: new Set([BUILD_ORDERS]),
+      visitedIds: new Set([DOWNSTREAM_METHOD]),
+    });
+    expect(store.getState().moduleSelected).toEqual(new Set([ROUTES_METHOD]));
+    expect(moduleRelayout).toHaveBeenCalledOnce();
+  });
+});
+
 describe("module ghost inspection", () => {
   async function inspectionStore(): Promise<BlueprintStore> {
     const store = freshStore(ITERATIVE_GHOST_ARTIFACT);
@@ -327,6 +529,67 @@ describe("module ghost inspection", () => {
       }),
     }));
     expect((nodeWithId(store, ROUTES_METHOD)?.data as { ghostInspectionPreview?: boolean }).ghostInspectionPreview).toBeUndefined();
+  });
+
+  it("removes a committed preview back to its ghost card in one action", async () => {
+    const store = await inspectionStore();
+    store.getState().inspectModuleGhost([ROUTES_METHOD], [BUILD_ORDERS], false);
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+    store.getState().promoteGhost(ROUTES_METHOD);
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+    const expanded = new Set(store.getState().moduleExpanded);
+
+    store.getState().selectModule(ROUTES_METHOD);
+    store.getState().removeSelectionFromView();
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+
+    const state = store.getState();
+    expect(state.mapExtra).toEqual(new Set());
+    expect(state.moduleGhostInspection).toBeNull();
+    expect(state.moduleSelected).toEqual(new Set([ROUTES_METHOD]));
+    expect(state.moduleExpanded).toEqual(expanded);
+    expect(nodeWithId(store, ROUTES_METHOD)).toEqual(expect.objectContaining({ type: "ghost" }));
+    expect(nodeWithId(store, DOWNSTREAM_METHOD)).toBeUndefined();
+  });
+
+  it("removes a directly pinned ghost while retaining its selected ghost ring", async () => {
+    const store = await inspectionStore();
+    store.getState().selectModule(ROUTES_METHOD);
+    store.getState().promoteGhost(ROUTES_METHOD);
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+    expect(store.getState().moduleGhostInspection).toBeNull();
+    expect(store.getState().mapExtra).toEqual(new Set([ROUTES_FILE]));
+    expect(nodeWithId(store, ROUTES_METHOD)).toEqual(expect.objectContaining({ type: "block" }));
+
+    store.getState().removeSelectionFromView();
+    expect(store.getState().moduleLayoutStatus).toBe("laying-out");
+    expect(store.getState().moduleSelected).toEqual(new Set([ROUTES_METHOD]));
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+
+    expect(store.getState().mapExtra).toEqual(new Set());
+    expect(store.getState().moduleSelected).toEqual(new Set([ROUTES_METHOD]));
+    expect(removableModuleSelectionCount(store.getState())).toBe(0);
+    expect(nodeWithId(store, ROUTES_METHOD)).toEqual(expect.objectContaining({ type: "ghost" }));
+  });
+
+  it("prunes a removed palette-only card in the winning superseding layout", async () => {
+    const store = await inspectionStore();
+    store.getState().addToView(DOWNSTREAM_METHOD);
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+    expect(store.getState().mapExtra).toEqual(new Set([DOWNSTREAM_UNIT]));
+    expect(nodeWithId(store, DOWNSTREAM_UNIT)).toEqual(expect.objectContaining({ type: "unit" }));
+
+    store.getState().selectModule(DOWNSTREAM_UNIT);
+    store.getState().removeSelectionFromView();
+    expect(store.getState().moduleLayoutStatus).toBe("laying-out");
+    expect(store.getState().moduleSelected).toEqual(new Set([DOWNSTREAM_UNIT]));
+    // Simulate an immediate second structural action superseding Remove's own in-flight layout.
+    void store.getState().moduleRelayout({ label: "Superseding removal…" });
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+
+    expect(store.getState().mapExtra).toEqual(new Set());
+    expect(store.getState().moduleSelected).toEqual(new Set());
+    expect(nodeWithId(store, DOWNSTREAM_UNIT)).toBeUndefined();
   });
 
   it("clears inspection when navigating to another module level", async () => {
