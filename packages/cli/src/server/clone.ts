@@ -14,11 +14,11 @@ import { join, resolve, sep } from "node:path";
 import { resolveAgainst } from "../paths";
 import { WebError } from "./web-error";
 import { base64Auth, runGitClone } from "./git-exec";
+import { isAllowedCloneRef } from "./git-ref";
 
 export { base64Auth };
 
 const OWNER_REPO = /^[\w.-]+\/[\w.-]+$/;
-const SAFE_REF = /^[\w.\-/]+$/;
 const SHELL_METACHARS = /[\s;&|`$<>()]/;
 
 export interface SourceRequest {
@@ -119,7 +119,7 @@ function resolveLocalPath(value: string, cwd: string): ResolvedSource {
 }
 
 async function cloneGitHub(request: SourceRequest, token?: string): Promise<ResolvedSource> {
-  if (request.ref && !SAFE_REF.test(request.ref)) {
+  if (request.ref && !isAllowedCloneRef(request.ref)) {
     throw new WebError(400, "branch contains illegal characters");
   }
   const url = parseGitHubSource(request.value);

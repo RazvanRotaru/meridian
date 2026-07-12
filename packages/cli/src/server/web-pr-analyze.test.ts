@@ -100,7 +100,7 @@ describe("handlePrAnalyze", () => {
     const tmpDir = clonedDir();
     expect(vi.mocked(runGitClone).mock.calls[0][2]).toEqual({ timeoutMs: 600_000 });
     expect(vi.mocked(runGit).mock.calls).toEqual([
-      [["fetch", "origin", "main"], { cwd: tmpDir, token: "", timeoutMs: 300_000 }],
+      [["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"], { cwd: tmpDir, token: "", timeoutMs: 300_000 }],
       [["fetch", "origin", "pull/41/head"], { cwd: tmpDir, token: "", timeoutMs: 300_000 }],
       [["checkout", "--detach", "FETCH_HEAD"], { cwd: tmpDir, token: "", timeoutMs: 300_000 }],
       [["rev-parse", "HEAD"], { cwd: tmpDir, timeoutMs: 300_000 }],
@@ -169,6 +169,17 @@ describe("handlePrAnalyze", () => {
     }
     expect(runGitClone).not.toHaveBeenCalled();
     expect(runGit).not.toHaveBeenCalled();
+  });
+
+  it("accepts the same valid Git branch names as repository generation", async () => {
+    const body = { ...BODY, baseRef: "release+candidate@team", headRef: "unicode/ramură" };
+    const captured = await invoke(githubCtx(), body);
+
+    expect(captured.status()).toBe(200);
+    expect(runGit).toHaveBeenCalledWith(
+      ["fetch", "origin", `+refs/heads/${body.baseRef}:refs/remotes/origin/${body.baseRef}`],
+      expect.objectContaining({ timeoutMs: 300_000 }),
+    );
   });
 
   it("404s a non-GitHub artifact source without streaming", async () => {

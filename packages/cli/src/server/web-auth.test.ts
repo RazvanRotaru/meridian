@@ -1,16 +1,16 @@
 /**
- * `/api/repos/mine` + `/api/auth/session`. The load-bearing guarantees: with no usable token at all
- * (no session, no env, no gh fallback) `/api/repos/mine` 401s without ever touching GitHub; a `gh`
- * fallback token signs the UI in and lists repos WITHOUT an interactive session; and the token itself
- * is never forwarded — only the whitelisted repo summaries and identity are.
+ * `/api/repos/*` + `/api/auth/session`. The load-bearing guarantees: with no usable token at all
+ * (no session, no env, no gh fallback) `/api/repos/mine` 401s without ever touching GitHub, while
+ * public branch discovery still runs anonymously; a `gh` fallback token signs the UI in and reaches
+ * private data WITHOUT an interactive session; tokens are never forwarded to the browser.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { handleAuthSession, handleOwnRepos } from "./web-auth";
+import { handleAuthSession, handleOwnRepos, handleRepoBranches } from "./web-auth";
 import type { AuthContext } from "./web-auth";
 import { SessionStore, markAuthorized } from "./session";
-import type { GitHubClient } from "./github";
+import type { BranchesRequest, GitHubClient } from "./github";
 import type { GitHubUser, RepoSummary } from "./github-parse";
 
 const REPO: RepoSummary = {
@@ -88,6 +88,55 @@ describe("handleAuthSession", () => {
   });
 });
 
+describe("handleRepoBranches", () => {
+  const saved = { GITHUB_TOKEN: process.env.GITHUB_TOKEN, GH_TOKEN: process.env.GH_TOKEN };
+  beforeEach(() => {
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.GH_TOKEN;
+  });
+  afterEach(() => {
+    restoreEnv("GITHUB_TOKEN", saved.GITHUB_TOKEN);
+    restoreEnv("GH_TOKEN", saved.GH_TOKEN);
+  });
+
+  it("lists a signed-out public repo with no token", async () => {
+    const seen: BranchesRequest[] = [];
+    const ctx: AuthContext = { sessions: new SessionStore(), github: githubBranches(["main", "next"], seen) };
+    const captured = capturedResponse();
+
+    await handleRepoBranches(ctx, requestWith(undefined), captured.response, "https://github.com/public-org/project.git");
+
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body())).toEqual({ branches: ["main", "next"] });
+    expect(seen).toEqual([{ owner: "public-org", repo: "project", token: undefined }]);
+  });
+
+  it("passes an available token for private repository discovery", async () => {
+    const seen: BranchesRequest[] = [];
+    const ctx: AuthContext = {
+      sessions: new SessionStore(),
+      github: githubBranches(["main"], seen),
+      fallbackToken: "gho_gh_cli",
+    };
+    const captured = capturedResponse();
+
+    await handleRepoBranches(ctx, requestWith(undefined), captured.response, "private-org/project");
+
+    expect(captured.status()).toBe(200);
+    expect(seen[0]).toEqual({ owner: "private-org", repo: "project", token: "gho_gh_cli" });
+  });
+
+  it("rejects fuzzy or non-GitHub repository input before calling GitHub", async () => {
+    const ctx: AuthContext = { sessions: new SessionStore(), github: neverCalledGitHub() };
+    const captured = capturedResponse();
+
+    await handleRepoBranches(ctx, requestWith(undefined), captured.response, "search words");
+
+    expect(captured.status()).toBe(400);
+    expect(JSON.parse(captured.body())).toEqual({ error: "repository must be owner/repo or a github.com URL" });
+  });
+});
+
 function requestWith(cookie: string | undefined): IncomingMessage {
   return { headers: cookie ? { cookie } : {} } as IncomingMessage;
 }
@@ -111,6 +160,16 @@ function githubListing(repos: RepoSummary[]): GitHubClient {
   return { ...neverCalledGitHub(), listOwnRepos: async () => repos };
 }
 
+function githubBranches(branches: string[], seen: BranchesRequest[]): GitHubClient {
+  return {
+    ...neverCalledGitHub(),
+    listBranches: async (request) => {
+      seen.push(request);
+      return branches;
+    },
+  };
+}
+
 function neverCalledGitHub(): GitHubClient {
   const reject = () => Promise.reject(new Error("unexpected GitHub call"));
   return {
@@ -119,6 +178,7 @@ function neverCalledGitHub(): GitHubClient {
     getUser: reject,
     searchRepos: reject,
     listOwnRepos: reject,
+    listBranches: reject,
     listPullRequests: reject,
     fetchPullRequestFiles: reject,
     submitPullRequestReview: reject,

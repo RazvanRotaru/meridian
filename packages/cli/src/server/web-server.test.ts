@@ -48,6 +48,25 @@ describe("createWebServer landing + errors", () => {
     expect(html).toContain("Read your codebase");
     expect(html).toContain("window.__MERIDIAN_PREFILL__=");
     expect(html).toContain("sindresorhus/type-fest");
+    expect(html).toContain('id="ref-trigger"');
+    expect(html).toContain('id="ref-options"');
+    expect(html).toContain("/api/repos/branches?repo=");
+    expect(html).toContain('CUSTOM_BRANCH_VALUE = ":custom"');
+    expect(html).toContain('id="custom-ref"');
+    expect(html).toContain('id="intent-review"');
+    expect(html).toContain('id="pr-author-trigger"');
+    expect(html).toContain('id="pr-author-options"');
+    expect(html).toContain('id="pr-query"');
+    expect(html).toContain('role="combobox"');
+    expect(html).toContain('aria-controls="pr-results"');
+    expect(html).toContain('id="pr-results"');
+    expect(html).toContain("/api/repos/pulls?repo=");
+    expect(html).toContain('"&view=modules&prn="');
+    expect(html).not.toContain("<select");
+    expect(html).not.toContain('id="pr-number"');
+    expect(html).not.toContain('id="subdir"');
+    expect(html).not.toContain("Source subfolder");
+    expect(html).not.toContain('$("repo").addEventListener("change"');
   });
 
   it("ships the staged, accessible blueprint preparation indicator", async () => {
@@ -68,6 +87,18 @@ describe("createWebServer landing + errors", () => {
 
     const missing = await post("/api/generate", { kind: "path" });
     expect(missing.status).toBe(400);
+  });
+
+  it("routes branch discovery and rejects a non-exact repository before touching GitHub", async () => {
+    const response = await fetch(`${base}/api/repos/branches?repo=${encodeURIComponent("search words")}`);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "repository must be owner/repo or a github.com URL" });
+  });
+
+  it("routes repository PR discovery and validates its exact query before touching GitHub", async () => {
+    const response = await fetch(`${base}/api/repos/pulls?repo=org%2Frepo&state=all&page=1`);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "state must be 'open' or 'closed'" });
   });
 
   it("404s an unknown graph id", async () => {

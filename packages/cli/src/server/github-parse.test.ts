@@ -7,12 +7,14 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyQuery,
+  parseBranchList,
   parsePatchDetail,
   parsePullRequestComments,
   parsePullRequestFiles,
   parsePullRequestList,
   parseRepoList,
   parseRepoResult,
+  parseRepoSlug,
   parseSearchResults,
   parseUser,
 } from "./github-parse";
@@ -26,6 +28,38 @@ describe("classifyQuery", () => {
   it("treats free text as a fuzzy search and blank input as nothing", () => {
     expect(classifyQuery("autopilot agents")).toEqual({ kind: "search", term: "autopilot agents" });
     expect(classifyQuery("   ")).toBeNull();
+  });
+});
+
+describe("parseRepoSlug", () => {
+  it("accepts only exact owner/repo identities", () => {
+    expect(parseRepoSlug(" org/repo ")).toEqual({ owner: "org", repo: "repo" });
+    expect(parseRepoSlug("https://github.com/org/repo.git")).toEqual({ owner: "org", repo: "repo" });
+    expect(parseRepoSlug("https://github.com/org/repo.git/")).toEqual({ owner: "org", repo: "repo" });
+    expect(parseRepoSlug("repo search words")).toBeNull();
+    expect(parseRepoSlug("https://example.com/org/repo")).toBeNull();
+  });
+});
+
+describe("parseBranchList", () => {
+  it("keeps only branch names accepted by the clone path", () => {
+    expect(parseBranchList([
+      { name: "main" },
+      { name: "feature/dropdown" },
+      { name: "release-1.2" },
+      { name: "feature+picker@team" },
+      { name: "@" },
+      { name: "bad branch" },
+      { name: "bad~branch" },
+      { name: "--upload-pack=evil" },
+      { name: "" },
+      {},
+    ])).toEqual(["main", "feature/dropdown", "release-1.2", "feature+picker@team", "@"]);
+  });
+
+  it("returns nothing for a non-list response and caps one GitHub page", () => {
+    expect(parseBranchList({ branches: [] })).toEqual([]);
+    expect(parseBranchList(Array.from({ length: 120 }, (_unused, index) => ({ name: `branch-${index}` })))).toHaveLength(100);
   });
 });
 

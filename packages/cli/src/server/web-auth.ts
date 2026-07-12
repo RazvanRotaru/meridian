@@ -10,6 +10,7 @@ import { sendJson } from "./http-response";
 import { requestHeader } from "./web-guards";
 import type { GitHubClient } from "./github";
 import type { DeviceCode, TokenPoll } from "./github-auth";
+import { parseRepoSlug } from "./github-parse";
 import type { GitHubUser } from "./github-parse";
 import { SessionStore, applySlowDown, clearedCookie, markAuthorized, pollDue, readSessionId, scheduleRetry, sessionCookie } from "./session";
 import type { Session } from "./session";
@@ -87,6 +88,25 @@ export async function handleOwnRepos(ctx: AuthContext, request: IncomingMessage,
     return;
   }
   sendJson(response, 200, { repos: await ctx.github.listOwnRepos(token) });
+}
+
+/**
+ * Branch discovery deliberately accepts an absent token so the signed-out public-repository flow
+ * remains useful. When available, the normal token chain transparently unlocks private repos.
+ */
+export async function handleRepoBranches(
+  ctx: AuthContext,
+  request: IncomingMessage,
+  response: ServerResponse,
+  repository: string,
+): Promise<void> {
+  const slug = parseRepoSlug(repository);
+  if (!slug) {
+    sendJson(response, 400, { error: "repository must be owner/repo or a github.com URL" });
+    return;
+  }
+  const token = githubTokenFor(ctx, request);
+  sendJson(response, 200, { branches: await ctx.github.listBranches({ ...slug, token }) });
 }
 
 /** The session token feeding a clone (cookie → session), or undefined when not signed in. */

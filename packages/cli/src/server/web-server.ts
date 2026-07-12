@@ -14,7 +14,15 @@ import type { GitHubClient } from "./github";
 import type { GitHubUser } from "./github-parse";
 import { SessionStore } from "./session";
 import { assertJsonContentType, assertSameOrigin } from "./web-guards";
-import { handleAuthSession, handleAuthStatus, handleDeviceStart, handleLogout, handleOwnRepos, handleRepoSearch } from "./web-auth";
+import {
+  handleAuthSession,
+  handleAuthStatus,
+  handleDeviceStart,
+  handleLogout,
+  handleOwnRepos,
+  handleRepoBranches,
+  handleRepoSearch,
+} from "./web-auth";
 import { handleGenerate, sendGraph, sendMeta, sendView } from "./web-graph";
 import {
   handlePullRequestChecks,
@@ -28,6 +36,7 @@ import {
 } from "./web-prs";
 import { handlePrAnalyze } from "./web-pr-analyze";
 import { handlePickFolder } from "./web-pick-folder";
+import { handleRepoPullRequests } from "./web-repo-pulls";
 import type { ArtifactSource } from "./web-source";
 import { sendSource } from "./source-serve";
 
@@ -223,6 +232,14 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
   }
   if (pathname === "/api/auth/session") {
     handleAuthSession(ctx, request, response);
+    return;
+  }
+  if (pathname === "/api/repos/branches") {
+    await handleRepoBranches(ctx, request, response, url.searchParams.get("repo") ?? "");
+    return;
+  }
+  if (pathname === "/api/repos/pulls") {
+    await handleRepoPullRequests(ctx, request, response, url.searchParams);
     return;
   }
   if (pathname === "/api/repos/search") {
