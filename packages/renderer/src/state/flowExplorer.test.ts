@@ -53,7 +53,7 @@ function freshStore() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("flow explorer store slice", () => {
-  it("defaults PR flow reviews to Timeline and persists projection changes", () => {
+  it("persists projection and split-opening preferences without clobbering either choice", () => {
     const persisted = new Map<string, string>();
     vi.stubGlobal("window", {
       localStorage: {
@@ -64,15 +64,40 @@ describe("flow explorer store slice", () => {
     const store = freshStore();
 
     expect(store.getState().reviewFlowSplitView).toBe("timeline");
+    expect(store.getState().reviewOpenFlowSplitOnSelect).toBe(true);
+    store.getState().setReviewOpenFlowSplitOnSelect(false);
+    expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
+      version: 2,
+      flowSplitView: "timeline",
+      openFlowSplitOnSelect: false,
+    });
     for (const { mode } of LOGIC_VIEW_MODES) {
       store.getState().setReviewFlowSplitView(mode);
       expect(store.getState().reviewFlowSplitView).toBe(mode);
       expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
-        version: 1,
+        version: 2,
         flowSplitView: mode,
+        openFlowSplitOnSelect: false,
       });
       expect(freshStore().getState().reviewFlowSplitView).toBe(mode);
+      expect(freshStore().getState().reviewOpenFlowSplitOnSelect).toBe(false);
     }
+    store.getState().setReviewOpenFlowSplitOnSelect(true);
+    expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
+      version: 2,
+      flowSplitView: "timeline",
+      openFlowSplitOnSelect: true,
+    });
+  });
+
+  it("keeps the ordinary Code-flow execution graph when review split opening is disabled", async () => {
+    const store = freshStore();
+    store.getState().setReviewOpenFlowSplitOnSelect(false);
+
+    store.getState().selectFlowEntry({ rootId: "ts:pkg/src/a.ts#run", blockPath: [] });
+
+    await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
+    expect(store.getState().flowPaneRfNodes.length).toBeGreaterThan(0);
   });
 
   it("selectFlowEntry records the selection and bulk-reveals related modules in the module map", () => {

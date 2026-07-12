@@ -1,9 +1,10 @@
 /**
  * The pinned "Impacted logic flows" section of the review panel. Directly changed flows are already
  * represented by their changed file/code-block rows and by the review graph, so this list contains
- * only flows that call into changed code. Selecting a row opens the reusable Logic flow pane below
- * the Map while the upper graph highlights the flow. The capped row list scrolls independently so
- * it and Change groups stay visible above the primary changed-files scroller.
+ * only flows that call into changed code. Selecting a row highlights and reveals the flow in the
+ * upper graph; the reader's review preference decides whether its reusable Logic pane also opens
+ * below. The capped row list scrolls independently so it and Change groups stay visible above the
+ * primary changed-files scroller.
  */
 
 import { memo, useMemo, useState } from "react";
@@ -14,6 +15,7 @@ import { basename, CARET, EMPTY_NOTE, MONO, NO_FOCUS_RING, SECTION_COUNT, SECTIO
 import type { ReviewTick } from "../../state/reviewTicksPref";
 import type { GraphIndex } from "../../graph/graphIndex";
 import { relatedNodeIds } from "../../derive/flowBlocks";
+import { REVIEW_FLOW_SPLIT_ID } from "../flowexplorer/flowSelection";
 
 function ReviewFlowsSectionImpl() {
   const review = useBlueprint((state) => state.review);
@@ -67,10 +69,18 @@ function FlowRow(props: {
 }) {
   const { row, review, index, ticks, spansGroups } = props;
   const flowSelection = useBlueprint((state) => state.flowSelection);
+  const openFlowSplitOnSelect = useBlueprint((state) => state.reviewOpenFlowSplitOnSelect);
   const { toggleReviewTick, setReviewLit, selectFlowEntry } = useBlueprintActions();
   const tick = tickStateOf(row, ticks);
   const ref = useMemo(() => ({ rootId: row.flow.flowId, blockPath: [] }), [row.flow.flowId]);
-  const selected = flowSelection?.rootId === ref.rootId && flowSelection.blockPath.length === 0;
+  // A nested block selection still belongs to this flow. Keep its owning row active, and let the
+  // row's toggle close the whole inspection rather than pretending the split collapsed.
+  const selected = flowSelection?.rootId === ref.rootId;
+  const splitOpen = selected && openFlowSplitOnSelect;
+  const actionTitle = selected
+    ? splitOpen ? "Close logic flow review" : "Clear logic flow highlight"
+    : openFlowSplitOnSelect ? "Review this logic flow below the graph" : "Highlight this logic flow in the graph";
+  const disclosureGlyph = openFlowSplitOnSelect ? selected ? "▾" : "▸" : selected ? "•" : "";
   // Preview the same complete set a click persists: root + every recursively resolved call target,
   // not just changed targets. The shared graph paint consumes this transient hover channel.
   const litSet = useMemo(() => relatedNodeIds(index, review.flows, ref), [index, review.flows, ref]);
@@ -87,14 +97,16 @@ function FlowRow(props: {
         <button
           type="button"
           style={ROW_MAIN}
-          title={selected ? "Close logic flow review" : "Review this logic flow below the graph"}
-          aria-expanded={selected}
+          title={actionTitle}
+          aria-pressed={selected}
+          aria-expanded={openFlowSplitOnSelect ? selected : undefined}
+          aria-controls={openFlowSplitOnSelect ? REVIEW_FLOW_SPLIT_ID : undefined}
           onClick={() => {
             setReviewLit(null);
             selectFlowEntry(selected ? null : ref);
           }}
         >
-          <span style={CARET}>{selected ? "▾" : "▸"}</span>
+          <span style={CARET} aria-hidden="true">{disclosureGlyph}</span>
           <span style={ROW_NAME} title={row.displayName}>{row.displayName}</span>
           {spansGroups && <span style={SPANS_CHIP} title="this flow touches multiple change groups">spans groups</span>}
           {row.isTest && <span style={TEST_CHIP}>test</span>}

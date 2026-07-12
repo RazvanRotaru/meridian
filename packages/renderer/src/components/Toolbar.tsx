@@ -30,8 +30,11 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
   const [controlsCollapsed, setControlsCollapsed] = useState(false);
   const viewMode = useBlueprint((state) => state.viewMode);
   const hasOverlay = useBlueprint((state) => state.hasOverlay);
-  const flowPaneOpen = useBlueprint((state) => state.flowSelection !== null);
-  const reviewFlowOpen = useBlueprint((state) => state.flowSelection !== null && state.reviewFlowBaseline !== null);
+  const flowPaneOpen = useBlueprint((state) => state.flowSelection !== null
+    && (state.reviewFlowBaseline === null || state.reviewOpenFlowSplitOnSelect));
+  const reviewFlowOpen = useBlueprint((state) => state.flowSelection !== null
+    && state.reviewFlowBaseline !== null
+    && state.reviewOpenFlowSplitOnSelect);
   const { resetCategoryFilter, resetRelationshipFilter } = useBlueprintActions();
 
   const isComposition = viewMode === "call";

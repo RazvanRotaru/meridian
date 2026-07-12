@@ -8,13 +8,15 @@ import { LOGIC_VIEW_MODES } from "../../derive/flowViewModel";
 import type { ReviewFlowSplitView } from "../../state/reviewPreferences";
 
 const HEADING_ID = "review-preferences-heading";
-const DESCRIPTION_ID = "review-flow-view-description";
+const PROJECTION_DESCRIPTION_ID = "review-flow-view-description";
 const NOTE_ID = "review-preferences-storage-note";
 const RADIO_NAME = "review-flow-split-view";
 
 interface ReviewPreferencesPaneProps {
   flowView: ReviewFlowSplitView;
+  openFlowSplitOnSelect: boolean;
   onFlowViewChange: (view: ReviewFlowSplitView) => void;
+  onOpenFlowSplitOnSelectChange: (open: boolean) => void;
   onClose: () => void;
 }
 
@@ -62,9 +64,25 @@ export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
         </button>
       </div>
 
-      <fieldset style={FIELDSET} aria-describedby={`${DESCRIPTION_ID} ${NOTE_ID}`}>
-        <legend style={LEGEND}>Logic flow split view</legend>
-        <p id={DESCRIPTION_ID} style={DESCRIPTION}>Shown below the graph when you open an impacted logic flow.</p>
+      <fieldset style={BEHAVIOR_FIELDSET} aria-describedby={NOTE_ID}>
+        <legend style={LEGEND}>Logic flow behavior</legend>
+        <label style={optionStyle(props.openFlowSplitOnSelect)}>
+          <input
+            type="checkbox"
+            checked={props.openFlowSplitOnSelect}
+            style={RADIO}
+            onChange={(event) => props.onOpenFlowSplitOnSelectChange(event.currentTarget.checked)}
+          />
+          <span style={OPTION_COPY}>
+            <span style={OPTION_TITLE}>Open split view when selecting a logic flow</span>
+            <span style={OPTION_DESCRIPTION}>When off, the flow stays highlighted in the review graph without opening the lower panel.</span>
+          </span>
+        </label>
+      </fieldset>
+
+      <fieldset style={FIELDSET} aria-describedby={`${PROJECTION_DESCRIPTION_ID} ${NOTE_ID}`}>
+        <legend style={LEGEND}>Split view presentation</legend>
+        <p id={PROJECTION_DESCRIPTION_ID} style={DESCRIPTION}>Choose what appears below the graph when the split view opens.</p>
         <div style={OPTION_LIST}>
           {OPTIONS.map((option) => {
             const selected = props.flowView === option.value;
@@ -91,7 +109,7 @@ export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
         </div>
       </fieldset>
 
-      <p id={NOTE_ID} style={NOTE}>Saved in this browser. This preference affects only the PR review split view.</p>
+      <p id={NOTE_ID} style={NOTE}>Saved in this browser. These preferences apply only to PR review.</p>
     </section>
   );
 }
@@ -131,6 +149,7 @@ const CLOSE_BUTTON: CSSProperties = {
 };
 
 const FIELDSET: CSSProperties = { minWidth: 0, margin: 0, padding: 0, border: "none" };
+const BEHAVIOR_FIELDSET: CSSProperties = { ...FIELDSET, marginBottom: 14 };
 const LEGEND: CSSProperties = {
   padding: 0,
   color: "#9AA4B2",

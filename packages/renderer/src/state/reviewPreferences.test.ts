@@ -25,16 +25,24 @@ afterEach(() => {
 });
 
 describe("reviewPreferences", () => {
-  it("defaults the logic-flow split to Timeline when no preference is stored", () => {
+  it("defaults to Timeline with split opening enabled when no preference is stored", () => {
     stubStorage();
 
-    expect(readReviewPreferences()).toEqual({ version: 1, flowSplitView: "timeline" });
+    expect(readReviewPreferences()).toEqual({
+      version: 2,
+      flowSplitView: "timeline",
+      openFlowSplitOnSelect: true,
+    });
     expect(DEFAULT_REVIEW_PREFERENCES.flowSplitView).toBe("timeline");
+    expect(DEFAULT_REVIEW_PREFERENCES.openFlowSplitOnSelect).toBe(true);
   });
 
-  it.each(LOGIC_VIEW_MODES.map(({ mode }) => mode))("round-trips the %s split view", (flowSplitView) => {
+  it.each(LOGIC_VIEW_MODES.flatMap(({ mode }) => [
+    { flowSplitView: mode, openFlowSplitOnSelect: true },
+    { flowSplitView: mode, openFlowSplitOnSelect: false },
+  ]))("round-trips $flowSplitView with split opening=$openFlowSplitOnSelect", (choice) => {
     const data = stubStorage();
-    const preferences: ReviewPreferences = { version: 1, flowSplitView };
+    const preferences: ReviewPreferences = { version: 2, ...choice };
 
     writeReviewPreferences(preferences);
 
@@ -42,11 +50,49 @@ describe("reviewPreferences", () => {
     expect(JSON.parse(data["meridian.prReviewPreferences"])).toEqual(preferences);
   });
 
-  it("rejects malformed, unknown-version, and unsupported split-view records", () => {
+  it.each(LOGIC_VIEW_MODES.map(({ mode }) => mode))("migrates the v1 %s choice with split opening enabled", (flowSplitView) => {
+    stubStorage({
+      "meridian.prReviewPreferences": JSON.stringify({ version: 1, flowSplitView }),
+    });
+
+    expect(readReviewPreferences()).toEqual({
+      version: 2,
+      flowSplitView,
+      openFlowSplitOnSelect: true,
+    });
+  });
+
+  it("defaults malformed v2 fields independently", () => {
+    const data = stubStorage({
+      "meridian.prReviewPreferences": JSON.stringify({
+        version: 2,
+        flowSplitView: "blocks",
+        openFlowSplitOnSelect: "no",
+      }),
+    });
+    expect(readReviewPreferences()).toEqual({
+      version: 2,
+      flowSplitView: "blocks",
+      openFlowSplitOnSelect: true,
+    });
+
+    data["meridian.prReviewPreferences"] = JSON.stringify({
+      version: 2,
+      flowSplitView: "bogus",
+      openFlowSplitOnSelect: false,
+    });
+    expect(readReviewPreferences()).toEqual({
+      version: 2,
+      flowSplitView: "timeline",
+      openFlowSplitOnSelect: false,
+    });
+  });
+
+  it("rejects malformed, unknown-version, and unsupported v1 records", () => {
     const data = stubStorage({ "meridian.prReviewPreferences": "not json" });
     expect(readReviewPreferences()).toEqual(DEFAULT_REVIEW_PREFERENCES);
 
-    data["meridian.prReviewPreferences"] = JSON.stringify({ version: 2, flowSplitView: "graph" });
+    data["meridian.prReviewPreferences"] = JSON.stringify({ version: 3, flowSplitView: "graph" });
     expect(readReviewPreferences()).toEqual(DEFAULT_REVIEW_PREFERENCES);
 
     data["meridian.prReviewPreferences"] = JSON.stringify({ version: 1, flowSplitView: "bogus" });
@@ -56,7 +102,7 @@ describe("reviewPreferences", () => {
   it("falls back safely when localStorage is absent or throws", () => {
     vi.stubGlobal("window", undefined);
     expect(readReviewPreferences()).toEqual(DEFAULT_REVIEW_PREFERENCES);
-    expect(() => writeReviewPreferences({ version: 1, flowSplitView: "graph" })).not.toThrow();
+    expect(() => writeReviewPreferences({ version: 2, flowSplitView: "graph", openFlowSplitOnSelect: false })).not.toThrow();
 
     vi.stubGlobal("window", {
       localStorage: {
@@ -65,6 +111,6 @@ describe("reviewPreferences", () => {
       },
     });
     expect(readReviewPreferences()).toEqual(DEFAULT_REVIEW_PREFERENCES);
-    expect(() => writeReviewPreferences({ version: 1, flowSplitView: "graph" })).not.toThrow();
+    expect(() => writeReviewPreferences({ version: 2, flowSplitView: "graph", openFlowSplitOnSelect: false })).not.toThrow();
   });
 });

@@ -12,16 +12,19 @@ const STORAGE_KEY = "meridian.prReviewPreferences";
 export type ReviewFlowSplitView = LogicViewMode;
 
 export interface ReviewPreferences {
-  version: 1;
+  version: 2;
   flowSplitView: ReviewFlowSplitView;
+  openFlowSplitOnSelect: boolean;
 }
 
 export const DEFAULT_REVIEW_PREFERENCES: Readonly<ReviewPreferences> = {
-  version: 1,
+  version: 2,
   flowSplitView: "timeline",
+  openFlowSplitOnSelect: true,
 };
 
-/** Load the current reader's preferences, falling back as a whole for unknown or corrupt records. */
+/** Load the current reader's preferences, migrating v1 and defaulting malformed v2 fields
+ * independently so one damaged choice does not erase the other valid one. */
 export function readReviewPreferences(): ReviewPreferences {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -48,14 +51,22 @@ function coerce(value: unknown): ReviewPreferences {
     return defaults();
   }
   const record = value as Record<string, unknown>;
-  if (
-    record.version !== 1
-    || typeof record.flowSplitView !== "string"
-    || !isLogicViewMode(record.flowSplitView)
-  ) {
+  if (record.version === 1) {
+    if (typeof record.flowSplitView !== "string" || !isLogicViewMode(record.flowSplitView)) {
+      return defaults();
+    }
+    return { version: 2, flowSplitView: record.flowSplitView, openFlowSplitOnSelect: true };
+  }
+  if (record.version !== 2) {
     return defaults();
   }
-  return { version: 1, flowSplitView: record.flowSplitView };
+  const flowSplitView = typeof record.flowSplitView === "string" && isLogicViewMode(record.flowSplitView)
+    ? record.flowSplitView
+    : DEFAULT_REVIEW_PREFERENCES.flowSplitView;
+  const openFlowSplitOnSelect = typeof record.openFlowSplitOnSelect === "boolean"
+    ? record.openFlowSplitOnSelect
+    : DEFAULT_REVIEW_PREFERENCES.openFlowSplitOnSelect;
+  return { version: 2, flowSplitView, openFlowSplitOnSelect };
 }
 
 function defaults(): ReviewPreferences {

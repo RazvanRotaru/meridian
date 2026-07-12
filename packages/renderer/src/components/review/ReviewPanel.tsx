@@ -25,7 +25,8 @@ function ReviewPanelImpl() {
   const hidden = useBlueprint((state) => state.reviewPanelHidden);
   usePrReviewFreshnessWatcher();
   const flowView = useBlueprint((state) => state.reviewFlowSplitView);
-  const { setReviewFlowSplitView } = useBlueprintActions();
+  const openFlowSplitOnSelect = useBlueprint((state) => state.reviewOpenFlowSplitOnSelect);
+  const { setReviewFlowSplitView, setReviewOpenFlowSplitOnSelect } = useBlueprintActions();
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const preferencesButtonRef = useRef<HTMLButtonElement | null>(null);
   const closePreferences = () => {
@@ -66,7 +67,9 @@ function ReviewPanelImpl() {
           <div style={PREFERENCES_LAYER}>
             <ReviewPreferencesPane
               flowView={flowView}
+              openFlowSplitOnSelect={openFlowSplitOnSelect}
               onFlowViewChange={setReviewFlowSplitView}
+              onOpenFlowSplitOnSelectChange={setReviewOpenFlowSplitOnSelect}
               onClose={closePreferences}
             />
           </div>
