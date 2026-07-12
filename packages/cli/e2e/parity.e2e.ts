@@ -26,6 +26,7 @@ const CLASS = "ts:src/services/cartService.ts#CartService";
 const METHOD = `${CLASS}.addItem`;
 const METHOD_STEP = `step:${METHOD}:0`;
 const SERVICE_FRAME = `svc:${CLASS}`;
+const INSPECTABLE_GHOST = "ts:src/app.ts#buildServices";
 const SELECTION_RING_RGB = "220, 230, 242"; // frameChrome SELECTION_RING #DCE6F2
 
 let graphDir: string | undefined;
@@ -94,42 +95,74 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
     expect(pageErrors).toEqual([]);
   });
 
-  it("Map: ghost inspection selects only the ghost and preserves every ghost position", async () => {
-    await page.waitForSelector(".react-flow__node-ghost");
-    const ghosts = page.locator(".react-flow__node-ghost");
-    const first = ghosts.first();
-    const firstId = await first.getAttribute("data-id");
-    expect(firstId).toBeTruthy();
-    const before = await ghostGeometry(page);
+  it("Map: ghost inspection materializes one path without moving existing cards", async () => {
+    const surface = mainCanvasFor(page, CLASS);
+    // This fixture function is an exact, drawable ghost here (not a grouped parent or external
+    // endpoint), so its click deterministically starts the temporary inspection path.
+    const inspectableGhost = surface.locator(
+      `.react-flow__node-ghost[data-id="${INSPECTABLE_GHOST}"]:visible`,
+    );
+    await inspectableGhost.waitFor();
+    const inspectedId = await inspectableGhost.getAttribute("data-id");
+    expect(inspectedId).toBe(INSPECTABLE_GHOST);
+    const inspectedTransform = await inspectableGhost.evaluate(
+      (element) => (element as HTMLElement).style.transform,
+    );
+    const beforeAllIds = new Set((await visibleNodeTransforms(surface)).map(({ id }) => id));
+    // Selection-relative paint may retire unrelated satellite ghosts. The durable cards already
+    // on the level—and the exact ghost being materialized—are the retained geometry contract.
+    const before = await visibleNodeTransforms(surface, null, false);
+    const beforeIds = before.map(({ id }) => id);
 
-    await first.dispatchEvent("click");
-    // Wait beyond the click/double-click window so the sole ghost selection is stable.
-    await page.waitForTimeout(350);
+    await inspectableGhost.dispatchEvent("click");
+    await expectSoleSelection(page, inspectedId!, surface);
+    const materialized = surface.locator(
+      `.react-flow__node:not(.react-flow__node-ghost)[data-id="${inspectedId}"]:visible`,
+    );
+    await expect.poll(() => materialized.count(), { timeout: 20_000 }).toBe(1);
+    expect(await materialized.evaluate((element) => (element as HTMLElement).style.transform))
+      .toBe(inspectedTransform);
 
-    await expectSoleSelection(page, firstId!);
-    expect(await ghostGeometry(page)).toEqual(before);
+    // Inspection is additive: the clicked ghost becomes a real preview and may disclose a new
+    // frontier, while every card the reader had already seen keeps its exact flow-coordinate slot.
+    await expect
+      .poll(() => visibleNodeTransforms(surface, beforeIds), { timeout: 20_000 })
+      .toEqual(before);
+    await expect
+      .poll(async () => {
+        const after = await visibleNodeTransforms(surface);
+        return after.some(({ id }) => !beforeAllIds.has(id));
+      }, { timeout: 20_000 })
+      .toBe(true);
     expect(pageErrors).toEqual([]);
   });
 
-  it("Map: the semantic ghost '+' pins its home file as a permanent card", async () => {
+  it("Map: the temporary node '+' pins its home file as a permanent card", async () => {
     const surface = mainCanvasFor(page, CLASS);
-    const promotion = surface.locator('button[aria-label="Pin to canvas"][data-ghost-id*="#"]:visible').first();
-    await promotion.waitFor();
-    const ghostId = await promotion.getAttribute("data-ghost-id");
-    expect(ghostId).toBeTruthy();
-    const homeId = ghostId!.split("#", 1)[0];
-    // Semantic ancestors remain deliberately mounted for outward zoom. Assert the active painted
-    // population, not a hidden parent layer which may already contain the same real home card.
-    const exactGhost = surface.locator(`.react-flow__node-ghost[data-id="${ghostId}"]:visible`);
-    const promotedHome = surface.locator(`.react-flow__node:not(.react-flow__node-ghost)[data-id="${homeId}"]:visible`);
-    expect(await exactGhost.count()).toBe(1);
-    expect(await promotedHome.count()).toBe(0);
+    const candidate = surface.locator('button[aria-label="Pin to canvas"][data-ghost-id*="#"]:visible').first();
+    await candidate.waitFor();
+    const targetId = await candidate.getAttribute("data-ghost-id");
+    expect(targetId).toBeTruthy();
+    const targetPin = surface.locator(
+      `button[aria-label="Pin to canvas"][data-ghost-id="${targetId}"]:visible`,
+    );
+    const classicGhost = surface.locator(`.react-flow__node-ghost[data-id="${targetId}"]:visible`);
+    const realTarget = surface.locator(
+      `.react-flow__node:not(.react-flow__node-ghost)[data-id="${targetId}"]:visible`,
+    );
+    expect(await classicGhost.count() + await realTarget.count()).toBe(1);
 
-    // The stable id binds this affordance to its exact painted satellite even when React Flow
-    // virtualizes off-screen cards. Its owning file joins the level and that satellite retires.
-    await promotion.dispatchEvent("click");
+    const homeId = targetId!.split("#", 1)[0];
+    const promotedHome = surface.locator(`.react-flow__node:not(.react-flow__node-ghost)[data-id="${homeId}"]:visible`);
+
+    // The stable id binds the affordance to either a classic ghost or a real temporary inspection
+    // preview. Promotion commits its home file, retires the temporary control, and leaves the exact
+    // target rendered as a real card.
+    await targetPin.dispatchEvent("click");
     await expect.poll(() => promotedHome.count(), { timeout: 20_000 }).toBe(1);
-    await expect.poll(() => exactGhost.count(), { timeout: 20_000 }).toBe(0);
+    await expect.poll(() => targetPin.count(), { timeout: 20_000 }).toBe(0);
+    await expect.poll(() => classicGhost.count(), { timeout: 20_000 }).toBe(0);
+    await expect.poll(() => realTarget.count(), { timeout: 20_000 }).toBe(1);
     expect(pageErrors).toEqual([]);
   });
 
@@ -346,13 +379,30 @@ function selectedNodeIds(surface: Locator): Promise<string[]> {
   );
 }
 
-/** Stable-position regression: both the viewport and every ghost wrapper transform must be exact. */
-async function ghostGeometry(page: Page): Promise<{ viewport: string | null; ghosts: Array<{ id: string | null; transform: string }> }> {
-  const viewport = await page.locator(".react-flow__viewport").getAttribute("style");
-  const ghosts = await page.locator(".react-flow__node-ghost").evaluateAll((elements) =>
-    elements
-      .map((element) => ({ id: element.getAttribute("data-id"), transform: (element as HTMLElement).style.transform }))
-      .sort((a, b) => (a.id ?? "").localeCompare(b.id ?? "")),
+type NodeTransform = { id: string; transform: string };
+
+/** Stable-position regression for additive inspection: compare only ids already presented to the
+ * reader. The viewport may finish a prior fit animation and the new frontier may add more cards. */
+function visibleNodeTransforms(
+  surface: Locator,
+  onlyIds: readonly string[] | null = null,
+  includeGhosts = true,
+): Promise<NodeTransform[]> {
+  const selector = includeGhosts
+    ? ".react-flow__node[data-id]:visible"
+    : ".react-flow__node:not(.react-flow__node-ghost)[data-id]:visible";
+  return surface.locator(selector).evaluateAll(
+    (elements, ids) => {
+      const wanted = ids === null ? null : new Set(ids);
+      return elements
+        .flatMap((element) => {
+          const id = element.getAttribute("data-id");
+          return id !== null && (wanted === null || wanted.has(id))
+            ? [{ id, transform: (element as HTMLElement).style.transform }]
+            : [];
+        })
+        .sort((a, b) => a.id.localeCompare(b.id));
+    },
+    onlyIds === null ? null : [...onlyIds],
   );
-  return { viewport, ghosts };
 }
