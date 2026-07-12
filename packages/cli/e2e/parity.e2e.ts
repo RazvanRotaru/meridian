@@ -59,12 +59,27 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
     server?.kill("SIGINT");
   });
 
-  it("Map: select the class, expand via its chevron — selection ring + nested member blocks", async () => {
+  it("Map: the focused MiniMap contains only the current graph", async () => {
     // Drill the containment: repo overview → src → the services folder (file cards drawn).
     await dive(page, ROOT);
     await page.waitForSelector(`[data-id="${SERVICES}"]`);
     await dive(page, SERVICES);
     await page.waitForSelector(`[data-id="${FILE}"]`);
+    const focusedMap = mainCanvasFor(page, FILE);
+    await expect
+      .poll(async () => {
+        const [all, visible] = await Promise.all([
+          focusedMap.locator(".react-flow__nodes > .react-flow__node").count(),
+          focusedMap.locator(".react-flow__nodes > .react-flow__node:visible").count(),
+        ]);
+        return all > visible;
+      }, { timeout: 20_000 })
+      .toBe(true);
+    await expectMiniMapParity(focusedMap, "focused Map");
+    expect(pageErrors).toEqual([]);
+  });
+
+  it("Map: select the class, expand via its chevron — selection ring + nested member blocks", async () => {
     // Open the file frame via ITS chevron (never a navigation) so the class card is drawn…
     await chevronOf(page, FILE).dispatchEvent("click");
     await page.waitForSelector(`[data-id="${CLASS}"]`);
@@ -257,24 +272,38 @@ function activeCanvasFor(page: Page): Locator {
   );
 }
 
-/** The active module surface draws every controlled React Flow node once in its own MiniMap. */
+/** The active module surface draws exactly its current graph once in its own MiniMap. Semantic
+ * ancestors stay mounted for outward zoom, but their canvas cards and MiniMap marks are hidden. */
 async function expectMiniMapParity(surface: Locator, lens: string): Promise<void> {
-  const canvasNodes = surface.locator(".react-flow__nodes > .react-flow__node");
+  const canvasNodes = surface.locator(".react-flow__nodes > .react-flow__node:visible");
   const miniMap = surface.locator('[data-testid="rf__minimap"]');
+  const miniMapNodes = miniMap.locator(".react-flow__minimap-node:visible");
   await expect.poll(() => miniMap.count(), { timeout: 20_000 }).toBe(1);
   await expect.poll(() => canvasNodes.count(), { timeout: 20_000 }).toBeGreaterThan(0);
   await expect
     .poll(async () => {
       const [canvasCount, miniMapCount] = await Promise.all([
         canvasNodes.count(),
-        miniMap.locator(".react-flow__minimap-node").count(),
+        miniMapNodes.count(),
       ]);
       return canvasCount === miniMapCount ? "match" : `${canvasCount} canvas / ${miniMapCount} minimap`;
     }, { timeout: 20_000 })
     .toBe("match");
+  const activeDepth = await surface.getAttribute("data-map-semantic-depth");
+  if (activeDepth !== null) {
+    await expect
+      .poll(
+        () => miniMapNodes.evaluateAll(
+          (nodes, depth) => nodes.length > 0 && nodes.every((node) => node.classList.contains(`semantic-layer-${depth}`)),
+          activeDepth,
+        ),
+        { timeout: 20_000 },
+      )
+      .toBe(true);
+  }
   const [canvasCount, miniMapCount] = await Promise.all([
     canvasNodes.count(),
-    miniMap.locator(".react-flow__minimap-node").count(),
+    miniMapNodes.count(),
   ]);
   expect(miniMapCount, `MiniMap nodes on the ${lens} lens`).toBe(canvasCount);
 }
