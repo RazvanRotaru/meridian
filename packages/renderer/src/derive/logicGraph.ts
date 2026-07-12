@@ -404,7 +404,8 @@ class LogicGraphBuilder {
     }
     if (step.kind === "loop" || step.kind === "callback") {
       const bodies: FlowPath[] = [{ label: step.label, body: step.body }];
-      return this.container(parentId, path, id, step.kind, step.label, bodies, step.body.length);
+      const fullLabel = step.kind === "loop" ? step.fullLabel : undefined;
+      return this.container(parentId, path, id, step.kind, step.label, bodies, step.body.length, fullLabel);
     }
     if (branchKindOf(step) === "try") {
       const count = step.paths.reduce((sum, p) => sum + p.body.length, 0);
@@ -475,11 +476,13 @@ class LogicGraphBuilder {
     label: string,
     bodies: FlowPath[],
     childCount: number,
+    fullLabel?: string,
   ): { entry: string; exits: Exit[] } {
     const isExpanded = this.expandedState(id, true);
     const data: LogicNodeData = {
       logicKind,
       label,
+      fullLabel,
       targetId: null,
       resolution: null,
       expandable: true,

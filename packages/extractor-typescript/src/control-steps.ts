@@ -13,7 +13,7 @@ import type {
   TryStatement,
 } from "ts-morph";
 import type { FlowPath, FlowStep } from "@meridian/core";
-import { forLabel, forOfLabel, ifLabel, ifLabelFull, switchLabel, switchLabelFull, truncate, whileLabel } from "./flow-labels";
+import { forLabel, forLabelFull, forOfLabel, forOfLabelFull, ifLabel, ifLabelFull, switchLabel, switchLabelFull, truncate, whileLabel, whileLabelFull } from "./flow-labels";
 import type { FlowWalker } from "./flow-walker";
 
 export function controlStep(node: Node, walker: FlowWalker, depth: number): FlowStep | null {
@@ -33,7 +33,12 @@ export function controlStep(node: Node, walker: FlowWalker, depth: number): Flow
 }
 
 function loopStep(node: IterationStatement, walker: FlowWalker, depth: number): FlowStep {
-  return { kind: "loop", label: loopLabel(node), body: walker.walkBody(node.getStatement(), depth + 1) };
+  const label = loopLabel(node);
+  const full = loopLabelFull(node);
+  const body = walker.walkBody(node.getStatement(), depth + 1);
+  // Carry the untruncated header only when the label was actually clipped (short loops stay
+  // byte-for-byte identical to older artifacts), mirroring the branch steps.
+  return { kind: "loop", label, body, ...(full !== label ? { fullLabel: full } : {}) };
 }
 
 function loopLabel(node: IterationStatement): string {
@@ -44,6 +49,16 @@ function loopLabel(node: IterationStatement): string {
     return whileLabel(node);
   }
   return Node.isForStatement(node) ? forLabel(node) : "loop";
+}
+
+function loopLabelFull(node: IterationStatement): string {
+  if (Node.isForOfStatement(node) || Node.isForInStatement(node)) {
+    return forOfLabelFull(node);
+  }
+  if (Node.isWhileStatement(node) || Node.isDoStatement(node)) {
+    return whileLabelFull(node);
+  }
+  return Node.isForStatement(node) ? forLabelFull(node) : "loop";
 }
 
 // `else if` chains nest: the `else` path holds the trailing `if` as its own single branch step.

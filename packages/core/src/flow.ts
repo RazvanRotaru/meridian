@@ -15,7 +15,9 @@ export type FlowStep =
    * fire-and-forget work that outlives this flow. Both flags are absent (not false) when a call is
    * plain synchronous, so older artifacts and older readers agree byte-for-byte. */
   | { kind: "call"; label: string; target: NodeId | null; resolution: EdgeResolution; awaited?: boolean; detached?: boolean }
-  | { kind: "loop"; label: string; body: FlowStep[] }
+  /** `fullLabel` mirrors the branch step's: the UNTRUNCATED loop header (`while …`, `for …`,
+   * `for each …`) for the hover, present only when `label` was clipped for the compact display. */
+  | { kind: "loop"; label: string; body: FlowStep[]; fullLabel?: string }
   /** `branchKind` is the STRUCTURED discriminator (if/switch/try); older artifacts predate it, so
    * readers go through `branchKindOf`, which falls back to the label. Never sniff labels directly —
    * a `case catchAll:` label is presentation, not semantics.

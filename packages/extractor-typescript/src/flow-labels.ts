@@ -77,6 +77,21 @@ export function forLabel(node: ForStatement): string {
   return initializer ? `for ${truncate(initializer.getText())}` : "loop";
 }
 
+/** The UNTRUNCATED loop headers, for the loop node's hover — the whole binding/condition/initializer
+ * on one line (see `ifLabelFull`). */
+export function forOfLabelFull(node: ForOfStatement | ForInStatement): string {
+  return `for each ${flatten(bindingText(node))}`;
+}
+
+export function whileLabelFull(node: WhileStatement | DoStatement): string {
+  return `while ${flatten(node.getExpression().getText())}`;
+}
+
+export function forLabelFull(node: ForStatement): string {
+  const initializer = node.getInitializer();
+  return initializer ? `for ${flatten(initializer.getText())}` : "loop";
+}
+
 export function ifLabel(node: IfStatement): string {
   return `if ${truncate(node.getExpression().getText())}`;
 }

@@ -77,7 +77,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
     ? <CoverageBattery verdict={covVerdict} />
     : null;
   if (d.isContainer) {
-    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} select={select} badge={battery} changedRing={changed ? changedRing : null} />;
+    return <ContainerFrame accent={accent} label={d.label} fullLabel={d.fullLabel} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} select={select} badge={battery} changedRing={changed ? changedRing : null} />;
   }
   const codeNode = d.targetId ? index.nodesById.get(d.targetId) : undefined;
   const canCode = Boolean(codeNode?.location) && Boolean(sourceUrl);
@@ -196,7 +196,7 @@ function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
   const accent = CONTROL_ACCENT[d.logicKind] ?? LOOP_ACCENT;
   const glyph = CONTROL_GLYPH[d.logicKind] ?? "↻";
   if (d.isContainer) {
-    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={null} select={select} />;
+    return <ContainerFrame accent={accent} label={d.label} fullLabel={d.fullLabel} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={null} select={select} />;
   }
   // No whole-node onClick: a single click on a container would fight both node selection and the
   // double-click-to-dive gesture. Collapse/expand is the explicit title button only (collapsed → ▸).
@@ -205,7 +205,7 @@ function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
       <ExecPins />
       <div style={titleStyle(accent)}>
         <span style={GLYPH}>{glyph}</span>
-        <span style={NAME} title={d.label}>{d.label}</span>
+        <span style={NAME} title={d.fullLabel ?? d.label}>{d.label}</span>
         <span style={COUNT}>{d.childCount}</span>
         <ExpandButton expanded={false} onToggle={() => toggleLogicExpand(id)} />
       </div>
@@ -236,14 +236,14 @@ function BranchNode({ data }: NodeProps<LogicRfNode>) {
 /** A framed container (expanded call / loop / try): a title bar sits over ELK's reserved top pad;
  * child nodes render in the space below. Collapse is the explicit ▾ button in the title tail — the
  * whole-title click was removed so it no longer fights node selection / double-click-to-dive. */
-function ContainerFrame(props: { accent: string; label: string; glyph: string; onToggle: () => void; provenance: LogicNodeData["provenance"]; select: SelectState; badge?: React.ReactNode; changedRing?: string | null }) {
+function ContainerFrame(props: { accent: string; label: string; fullLabel?: string; glyph: string; onToggle: () => void; provenance: LogicNodeData["provenance"]; select: SelectState; badge?: React.ReactNode; changedRing?: string | null }) {
   return (
     <div style={withChanged(selectStyle(frameStyle(props.accent), props.select), props.changedRing ?? null, props.select)}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div style={frameTitleStyle(props.accent)}>
         <span style={GLYPH}>{props.glyph}</span>
-        <span style={NAME}>{props.label}</span>
+        <span style={NAME} title={props.fullLabel ?? props.label}>{props.label}</span>
         {props.provenance ? <span style={FRAME_PROV}>{props.provenance.pkg} › {props.provenance.module}</span> : null}
         <span style={TITLE_TAIL}>
           {props.badge}

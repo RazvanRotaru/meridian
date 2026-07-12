@@ -106,6 +106,15 @@ describe("deriveLogicGraph", () => {
     expect(execData(branches[1]).fullLabel).toBeUndefined();
   });
 
+  it("carries a loop's fullLabel onto the container node for the hover, and leaves it undefined when absent", () => {
+    const clipped: FlowStep = { kind: "loop", label: "while a && b && c && …", fullLabel: "while a && b && c && d && e", body: [call("t", "ext:l#t", "external")] };
+    const short: FlowStep = { kind: "loop", label: "for each x", body: [call("s", "ext:l#s", "external")] };
+    const { nodes } = deriveLogicGraph("r", { r: [clipped, short] }, makeIndex([]), NONE, { hideGreyed: false });
+    const controls = nodes.filter((n) => n.type === "control");
+    expect(execData(controls[0]).fullLabel).toBe("while a && b && c && d && e");
+    expect(execData(controls[1]).fullLabel).toBeUndefined();
+  });
+
   it("renders try/catch as a container, not a branch node", () => {
     const tryStep: FlowStep = { kind: "branch", label: "try/catch", paths: [{ label: "try", body: [call("t", "ext:l#t", "external")] }, { label: "catch e", body: [call("c", "ext:l#c", "external")] }] };
     const { nodes } = deriveLogicGraph("r", { r: [tryStep] }, makeIndex([]), NONE, { hideGreyed: false });

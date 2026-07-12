@@ -132,6 +132,13 @@ export function longGuard(user: { role: string; active: boolean; verified: boole
   }
 }
 function grant() {}
+
+export function longLoop(items: number[]) {
+  while (items.length > 0 && items[0] > 0 && items[items.length - 1] < 100) {
+    drain();
+  }
+}
+function drain() {}
 `;
 
 // A module whose top-level runs at load: a call, a branch, a loop — plus declarations that do
@@ -217,6 +224,24 @@ describe("logic-flow pass", () => {
     const b = branch as Extract<FlowStep, { kind: "branch" }>;
     expect(b.label).toBe("if items.length === 0");
     expect(b.fullLabel).toBeUndefined();
+  });
+
+  it("keeps the full loop header on a truncated loop label for the hover (longLoop)", () => {
+    const loop = stepsFor("longLoop")?.find((step) => step.kind === "loop");
+    expect(loop?.kind).toBe("loop");
+    const l = loop as Extract<FlowStep, { kind: "loop" }>;
+    expect(l.label.startsWith("while ")).toBe(true);
+    expect(l.label.endsWith("…")).toBe(true);
+    expect(l.label).not.toContain("< 100"); // the tail was clipped from the compact label…
+    expect(l.fullLabel).toContain("< 100"); // …but survives whole in the hover form
+    expect(l.fullLabel).not.toContain("…");
+  });
+
+  it("omits a loop's fullLabel when its header already fits (sumScores)", () => {
+    const loop = stepsFor("sumScores")?.find((step) => step.kind === "loop");
+    const l = loop as Extract<FlowStep, { kind: "loop" }>;
+    expect(l.label).toBe("for each id");
+    expect(l.fullLabel).toBeUndefined();
   });
 
   it("emits linear calls in source order with resolved targets (checkout)", () => {
