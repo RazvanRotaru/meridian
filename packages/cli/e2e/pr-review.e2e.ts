@@ -28,6 +28,7 @@ const DRAFT_TEXT = "Please keep this tier boundary explicit.";
 const EXISTING_COMMENT_TEXT = "Should this threshold stay aligned with the billing tier?";
 const EXISTING_COMMENT_LINE = 2;
 const ORDER_SERVICE_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/services/orderService.ts" });
+const PRICING_SERVICE_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing/pricingService.ts" });
 const LOYALTY_TIERS_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing/loyaltyTiers.ts" });
 const LOYALTY_TIER_FUNCTION_ID = buildNodeId({
   lang: "ts",
@@ -91,6 +92,8 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await codebaseContext.getByText("READ-ONLY", { exact: true }).waitFor();
     await codebaseContext.locator(`[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor();
     await codebaseContext.locator(`[data-id="${ORDER_SERVICE_MODULE_ID}"]`).waitFor();
+    const unchangedModule = codebaseContext.locator(`[data-id="${PRICING_SERVICE_MODULE_ID}"]`);
+    await unchangedModule.waitFor();
     const changedFunction = codebaseContext.locator(`[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
     await changedFunction.waitFor();
     await expect.poll(
@@ -99,6 +102,17 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await syncProvenance.count()).toBe(1);
     expect(await page.getByText("Files changed", { exact: true }).count()).toBe(1);
     expect(await codebaseContext.getByRole("button", { name: "Expand" }).count()).toBe(0);
+    // A nested preview remains reachable even when the pointer crosses its now-previewable parent.
+    await changedFunction.hover();
+    const codePreview = page.getByRole("dialog", { name: /^Code preview for / });
+    await codePreview.waitFor();
+    await codePreview.getByTitle("src/pricing/loyaltyTiers.ts").waitFor();
+    await codePreview.hover();
+    expect(await codePreview.isVisible()).toBe(true);
+    // Hover source is available throughout an active review, including nodes untouched by its diff.
+    await unchangedModule.hover();
+    await codePreview.getByText("src/pricing/pricingService.ts", { exact: true }).waitFor();
+    await codePreview.getByText("export class PricingService {", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Back to extracted graph" }).click();
     await page.getByRole("region", { name: "Extracted selection" }).waitFor();
     await syncProvenance.waitFor();
@@ -117,7 +131,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     const loyaltyTierNode = extractedReviewSurface.locator(`[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
     await loyaltyTierNode.waitFor();
     await loyaltyTierNode.hover();
-    const loyaltyPreview = page.getByRole("dialog", { name: "Diff preview for loyaltyTierFor" });
+    const loyaltyPreview = page.getByRole("dialog", { name: "Code preview for loyaltyTierFor" });
     await loyaltyPreview.waitFor();
     await loyaltyPreview.getByText(EXISTING_COMMENT_TEXT, { exact: true }).waitFor();
 

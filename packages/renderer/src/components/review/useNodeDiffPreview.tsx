@@ -1,5 +1,5 @@
 /**
- * Hover-to-preview for directly changed nodes on the PR review graph. React Flow owns the node
+ * Hover-to-preview for every source-located node on the PR review graph. React Flow owns the node
  * elements (and scales/clips them with the canvas), so this hook listens at the shared surface and
  * portals one fixed, interactive card to document.body. A short dwell avoids fetching source while
  * the pointer merely crosses the graph; a leave grace lets the pointer bridge the gap into the card
@@ -84,6 +84,19 @@ export function placeNodeDiffPreview(anchor: PreviewRect, bounds: PreviewBounds)
 
 type LocatedGraphNode = GraphNode & { location: NonNullable<GraphNode["location"]> };
 
+/** Resolve hover source by graph identity alone. PR change membership only decorates the preview;
+ * it must never decide whether an otherwise source-located node can open one. */
+export function codePreviewNode(
+  nodesById: ReadonlyMap<string, GraphNode>,
+  nodeId: string,
+): LocatedGraphNode | null {
+  const node = nodesById.get(nodeId);
+  if (!node?.location) {
+    return null;
+  }
+  return node;
+}
+
 interface PreviewState {
   node: LocatedGraphNode;
   anchor: PreviewRect;
@@ -103,7 +116,6 @@ export interface NodeDiffPreviewControls {
 
 export function useNodeDiffPreview(enabled: boolean): NodeDiffPreviewControls {
   const index = useBlueprint((state) => state.index);
-  const affectedIds = useBlueprint((state) => state.reviewAffectedIds);
   const reviewKey = useBlueprint((state) => state.review?.context.reviewKey ?? null);
   const codeModalOpen = useBlueprint((state) => state.codeView?.mode === "modal");
   const { loadCodePreview } = useBlueprintActions();
@@ -143,6 +155,12 @@ export function useNodeDiffPreview(enabled: boolean): NodeDiffPreviewControls {
     clearCloseTimer();
     closeTimer.current = setTimeout(hideNow, CLOSE_GRACE_MS);
   }, [clearCloseTimer, clearOpenTimer, hideNow]);
+  const holdPreview = useCallback(() => {
+    // Reaching the portal can cross a located ancestor of the hovered node. Cancel that ancestor's
+    // dwell so it cannot replace the card after the pointer has already arrived at the current one.
+    clearOpenTimer();
+    clearCloseTimer();
+  }, [clearCloseTimer, clearOpenTimer]);
 
   useEffect(() => {
     cache.current.clear();
@@ -167,20 +185,14 @@ export function useNodeDiffPreview(enabled: boolean): NodeDiffPreviewControls {
       hideNow();
       return;
     }
-    if (!affectedIds.has(flowNode.id)) {
-      // Changed members live inside unchanged file/unit frames. Crossing one of those frames on the
-      // way to the portal must retain the same grace period as an ordinary node leave, otherwise
-      // the parent enter event makes an already-visible card impossible to reach.
-      scheduleHide();
-      return;
-    }
-    const graphNode = index.nodesById.get(flowNode.id);
-    if (!graphNode?.location) {
+    const graphNode = codePreviewNode(index.nodesById, flowNode.id);
+    if (!graphNode) {
       scheduleHide();
       return;
     }
     // Returning from the card to the same node should keep the already-loaded preview steady.
     if (activeId.current === graphNode.id) {
+      clearOpenTimer();
       return;
     }
     // React Flow can emit many moves during the dwell. Keep the original timer instead of pushing
@@ -190,20 +202,17 @@ export function useNodeDiffPreview(enabled: boolean): NodeDiffPreviewControls {
       return;
     }
     clearOpenTimer();
-    requestToken.current += 1;
-    activeId.current = null;
-    setPreview(null);
     const target = event.currentTarget as HTMLElement;
     const anchor = rectOf(target.getBoundingClientRect());
     const pane = target.closest<HTMLElement>(".react-flow")?.getBoundingClientRect();
     const bounds = pane
       ? boundsOf(pane)
       : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
-    const token = requestToken.current;
     pendingId.current = graphNode.id;
     openTimer.current = setTimeout(() => {
       openTimer.current = null;
       pendingId.current = null;
+      const token = ++requestToken.current;
       activeId.current = graphNode.id;
       setPreview({ node: graphNode, anchor, bounds, loading: true, view: null, unavailable: false });
       const key = `${reviewKey ?? "review"}|${graphNode.id}|${graphNode.location.startLine}:${graphNode.location.endLine ?? graphNode.location.startLine}`;
@@ -227,13 +236,13 @@ export function useNodeDiffPreview(enabled: boolean): NodeDiffPreviewControls {
         });
       });
     }, OPEN_DWELL_MS);
-  }, [affectedIds, clearCloseTimer, clearOpenTimer, codeModalOpen, enabled, hideNow, index, loadCodePreview, reviewKey, scheduleHide]);
+  }, [clearCloseTimer, clearOpenTimer, codeModalOpen, enabled, hideNow, index, loadCodePreview, reviewKey, scheduleHide]);
 
   const layer = preview && !codeModalOpen && typeof document !== "undefined"
     ? createPortal(
         <NodeDiffPreviewCard
           preview={preview}
-          onMouseEnter={clearCloseTimer}
+          onMouseEnter={holdPreview}
           onMouseLeave={scheduleHide}
         />,
         document.body,
@@ -292,7 +301,7 @@ function NodeDiffPreviewCard(props: {
     <div
       className="nodrag nopan nowheel"
       role="dialog"
-      aria-label={`Diff preview for ${preview.node.displayName}`}
+      aria-label={`Code preview for ${preview.node.displayName}`}
       style={{ ...PANEL_STYLE, ...placement }}
       onMouseEnter={props.onMouseEnter}
       onMouseLeave={props.onMouseLeave}
@@ -314,8 +323,8 @@ function NodeDiffPreviewCard(props: {
         ) : null}
       </header>
       <div style={BODY_STYLE}>
-        {preview.loading ? <div style={STATUS_STYLE}>Loading diff…</div> : null}
-        {preview.unavailable ? <div style={STATUS_STYLE}>Source preview is unavailable for this change.</div> : null}
+        {preview.loading ? <div style={STATUS_STYLE}>Loading code…</div> : null}
+        {preview.unavailable ? <div style={STATUS_STYLE}>Source preview is unavailable.</div> : null}
         {preview.view?.error ? <div style={ERROR_STYLE}>{preview.view.error}</div> : null}
         {code !== null ? (
           <CodeBlock
