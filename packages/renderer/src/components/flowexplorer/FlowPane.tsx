@@ -1,17 +1,26 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { ReactFlow, ReactFlowProvider, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
+import type { LogicFlows } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { logicNodeTypes } from "../nodes/logic/logicNodeTypes";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "../canvas/flowCanvasProps";
 import type { LogicNodeData } from "../../derive/logicGraph";
+import { stepsAt, type FlowSelectionRef } from "../../derive/flowBlocks";
 import { blockBreadcrumbs } from "./flowBlockLabels";
 import { ancestorSelection, selectionKey } from "./flowSelection";
 import { useLogicFlows } from "./useFlowTree";
+import { TimelineView } from "../logicviews/TimelineView";
+import { METRO_COMPACT_TOP_PADDING, MetroView } from "../logicviews/MetroView";
+import { BlocksView } from "../logicviews/BlocksView";
+import { FLOW_COLORS, type FlowViewProps } from "../../derive/flowViewModel";
+import { BASE_Y as METRO_MAIN_LINE_Y } from "../../derive/metroSpec";
+import type { ReviewFlowSplitView } from "../../state/reviewPreferences";
 
 export function FlowPane() {
   const selection = useBlueprint((state) => state.flowSelection);
   const nodesById = useBlueprint((state) => state.index.nodesById);
   const reviewActive = useBlueprint((state) => state.flowSelection !== null && state.reviewFlowBaseline !== null);
+  const reviewFlowSplitView = useBlueprint((state) => state.reviewFlowSplitView);
   const flows = useLogicFlows();
   const { selectFlowEntry, openLogicFlow } = useBlueprintActions();
   if (selection === null) {
@@ -19,6 +28,8 @@ export function FlowPane() {
   }
   const rootLabel = nodesById.get(selection.rootId)?.displayName ?? selection.rootId;
   const crumbs = blockBreadcrumbs(flows, selection);
+  const presentation = flowPanePresentation(reviewActive, reviewFlowSplitView);
+  const viewKey = `${presentation}:${selectionKey(selection)}`;
   return (
     <aside style={reviewActive ? REVIEW_DRAWER : DRAWER} aria-label={reviewActive ? "Logic flow review" : "Code flow"}>
       <header style={HEADER}>
@@ -47,12 +58,107 @@ export function FlowPane() {
         </nav>
       </header>
       <div style={BODY}>
-        <ReactFlowProvider key={selectionKey(selection)}>
-          <FlowPaneSurface />
-        </ReactFlowProvider>
+        {presentation === "graph" ? (
+          <ReactFlowProvider key={viewKey}>
+            <FlowPaneSurface />
+          </ReactFlowProvider>
+        ) : (
+          <FlowPaneProjection key={viewKey} mode={presentation} selection={selection} flows={flows} />
+        )}
       </div>
     </aside>
   );
+}
+
+/** The persisted preference affects PR review only; the general Code flows explorer deliberately
+ * retains its established execution graph even when the same user prefers another projection. */
+export function flowPanePresentation(
+  reviewActive: boolean,
+  reviewFlowSplitView: ReviewFlowSplitView,
+): ReviewFlowSplitView {
+  return reviewActive ? reviewFlowSplitView : "graph";
+}
+
+type AlternateFlowPaneMode = Exclude<ReviewFlowSplitView, "graph">;
+
+function FlowPaneProjection(props: {
+  mode: AlternateFlowPaneMode;
+  selection: FlowSelectionRef;
+  flows: LogicFlows;
+}) {
+  const index = useBlueprint((state) => state.index);
+  const logicSelected = useBlueprint((state) => state.logicSelected);
+  const { selectFlowPaneTarget } = useBlueprintActions();
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const steps = useMemo(
+    () => stepsAt(props.flows, props.selection) ?? [],
+    [props.flows, props.selection],
+  );
+
+  // Metro's main line sits midway down its full transit-map canvas. On the short review drawer,
+  // center that line initially while leaving upper and lower branch lanes reachable by scrolling.
+  useEffect(() => {
+    if (props.mode !== "metro") {
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      const surface = scrollRef.current;
+      if (surface !== null) {
+        surface.scrollTop = Math.max(0, METRO_COMPACT_TOP_PADDING + METRO_MAIN_LINE_Y - surface.clientHeight / 2);
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [props.mode, steps]);
+
+  if (steps.length === 0) {
+    return (
+      <div style={SURFACE_FILL} data-flow-pane-view={props.mode}>
+        <PaneMessage mark="∅" text="This block has no charted call flow." />
+      </div>
+    );
+  }
+
+  const viewProps: FlowViewProps = {
+    rootId: props.selection.rootId,
+    steps,
+    flows: props.flows,
+    index,
+    selected: logicSelected,
+    onSelect: (target) => selectFlowPaneTarget(target === logicSelected ? null : target),
+    // The execution-graph split has no drill gesture. Keep parity across review projections; the
+    // explicit "Open in Logic flow" action above owns navigation out of the review experience.
+    onDrill: () => undefined,
+  };
+
+  return (
+    <div
+      ref={scrollRef}
+      style={ALTERNATE_SURFACE}
+      data-flow-pane-view={props.mode}
+      onClick={() => selectFlowPaneTarget(null)}
+    >
+      <AlternateProjection mode={props.mode} viewProps={viewProps} />
+    </div>
+  );
+}
+
+/** Exhaustive alternate-view dispatch: adding a Logic mode fails type-checking until it has a real
+ * split renderer, so a preference can never silently fall back to the execution graph. */
+function AlternateProjection(props: { mode: AlternateFlowPaneMode; viewProps: FlowViewProps }) {
+  switch (props.mode) {
+    case "timeline":
+      return <TimelineView {...props.viewProps} density="compact" drillEnabled={false} />;
+    case "metro":
+      return <MetroView {...props.viewProps} density="compact" drillEnabled={false} />;
+    case "blocks":
+      return <BlocksView {...props.viewProps} density="compact" drillEnabled={false} />;
+    default:
+      return assertNever(props.mode);
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unsupported flow-pane projection: ${String(value)}`);
 }
 
 function FlowPaneSurface() {
@@ -82,36 +188,42 @@ function FlowPaneSurface() {
   }, [nodes, status]);
 
   if (nodes.length === 0 && status === "laying-out") {
-    return <PaneMessage mark="…" text="Laying out flow." />;
+    return <GraphSurface><PaneMessage mark="…" text="Laying out flow." /></GraphSurface>;
   }
   if (nodes.length === 0 && status === "ready") {
-    return <PaneMessage mark="∅" text="This block has no charted call flow." />;
+    return <GraphSurface><PaneMessage mark="∅" text="This block has no charted call flow." /></GraphSurface>;
   }
   if (status === "error") {
-    return <PaneMessage mark="!" text="Could not lay out this flow." />;
+    return <GraphSurface><PaneMessage mark="!" text="Could not lay out this flow." /></GraphSurface>;
   }
   return (
-    <ReactFlow<Node, Edge>
-      nodes={nodes}
-      edges={edges}
-      nodeTypes={logicNodeTypes}
-      onInit={(instance) => {
-        rfRef.current = instance;
-        fittedNodes.current = null;
-        fitReadyNodes(instance);
-      }}
-      onNodeClick={(_event, node) => {
-        const target = artifactTargetOf(node);
-        if (target !== null) {
-          selectFlowPaneTarget(target === logicSelected ? null : target);
-        }
-      }}
-      onPaneClick={() => selectFlowPaneTarget(null)}
-      {...READONLY_CANVAS_PROPS}
-    >
-      <CanvasChrome nodeColor={miniMapColor} />
-    </ReactFlow>
+    <GraphSurface>
+      <ReactFlow<Node, Edge>
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={logicNodeTypes}
+        onInit={(instance) => {
+          rfRef.current = instance;
+          fittedNodes.current = null;
+          fitReadyNodes(instance);
+        }}
+        onNodeClick={(_event, node) => {
+          const target = artifactTargetOf(node);
+          if (target !== null) {
+            selectFlowPaneTarget(target === logicSelected ? null : target);
+          }
+        }}
+        onPaneClick={() => selectFlowPaneTarget(null)}
+        {...READONLY_CANVAS_PROPS}
+      >
+        <CanvasChrome nodeColor={miniMapColor} />
+      </ReactFlow>
+    </GraphSurface>
   );
+}
+
+function GraphSurface(props: { children: React.ReactNode }) {
+  return <div style={SURFACE_FILL} data-flow-pane-view="graph">{props.children}</div>;
 }
 
 /** Call blocks map directly to their artifact target. Structural controls and entry/exit caps have
@@ -214,6 +326,15 @@ const CRUMB: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 const BODY: React.CSSProperties = { position: "relative", flex: 1, minHeight: 0 };
+const SURFACE_FILL: React.CSSProperties = { position: "relative", width: "100%", height: "100%" };
+const ALTERNATE_SURFACE: React.CSSProperties = {
+  ...SURFACE_FILL,
+  overflow: "auto",
+  overscrollBehavior: "contain",
+  backgroundColor: FLOW_COLORS.canvas,
+  backgroundImage: "radial-gradient(#1B2230 1px, transparent 1px)",
+  backgroundSize: "22px 22px",
+};
 const EMPTY: React.CSSProperties = {
   position: "absolute",
   inset: 0,

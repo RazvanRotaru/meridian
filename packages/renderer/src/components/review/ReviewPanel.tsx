@@ -8,7 +8,7 @@
  * is no review.
  */
 
-import { memo, useEffect } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { countViewedFiles } from "../../derive/reviewFiles";
 import type { ReviewData } from "../../derive/reviewData";
@@ -18,11 +18,20 @@ import { ReviewFilesSection } from "./ReviewFilesSection";
 import { ReviewFlowsSection } from "./ReviewFlowsSection";
 import { SubmitReviewFooter } from "./ReviewComments";
 import { NO_FOCUS_RING } from "./reviewPanelKit";
+import { ReviewPreferencesPane } from "./ReviewPreferencesPane";
 
 function ReviewPanelImpl() {
   const review = useBlueprint((state) => state.review);
   const hidden = useBlueprint((state) => state.reviewPanelHidden);
   usePrReviewFreshnessWatcher();
+  const flowView = useBlueprint((state) => state.reviewFlowSplitView);
+  const { setReviewFlowSplitView } = useBlueprintActions();
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const preferencesButtonRef = useRef<HTMLButtonElement | null>(null);
+  const closePreferences = () => {
+    setPreferencesOpen(false);
+    preferencesButtonRef.current?.focus();
+  };
   if (!review) {
     return null;
   }
@@ -31,13 +40,38 @@ function ReviewPanelImpl() {
   }
   return (
     <div style={PANEL}>
-      <Header review={review} />
-      <ChangeGroupStrip />
-      <ReviewFlowsSection />
-      <div style={SCROLL}>
-        <ReviewFilesSection />
+      <Header
+        review={review}
+        preferencesOpen={preferencesOpen}
+        preferencesButtonRef={preferencesButtonRef}
+        onTogglePreferences={() => preferencesOpen ? closePreferences() : setPreferencesOpen(true)}
+      />
+      <div style={BODY_STACK}>
+        {/* Keep the review body mounted while preferences cover it: file/flow fold state and an
+            in-progress comment composer live locally in these children and must survive a settings
+            visit. `inert` + visibility remove the covered controls from every interaction path. */}
+        <div
+          style={{ ...REVIEW_BODY, visibility: preferencesOpen ? "hidden" : "visible" }}
+          inert={preferencesOpen}
+          aria-hidden={preferencesOpen || undefined}
+        >
+          <ChangeGroupStrip />
+          <ReviewFlowsSection />
+          <div style={SCROLL}>
+            <ReviewFilesSection />
+          </div>
+          <SubmitReviewFooter />
+        </div>
+        {preferencesOpen ? (
+          <div style={PREFERENCES_LAYER}>
+            <ReviewPreferencesPane
+              flowView={flowView}
+              onFlowViewChange={setReviewFlowSplitView}
+              onClose={closePreferences}
+            />
+          </div>
+        ) : null}
       </div>
-      <SubmitReviewFooter />
     </div>
   );
 }
@@ -101,7 +135,14 @@ function CollapsedRail() {
   );
 }
 
-function Header({ review }: { review: ReviewData }) {
+function Header(props: {
+  review: ReviewData;
+  preferencesOpen: boolean;
+  preferencesButtonRef: React.RefObject<HTMLButtonElement | null>;
+  onTogglePreferences: () => void;
+}) {
+  const { review, preferencesOpen, preferencesButtonRef, onTogglePreferences } = props;
+  const [preferencesFocusVisible, setPreferencesFocusVisible] = useState(false);
   const files = useBlueprint((state) => state.reviewFiles);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
@@ -155,6 +196,23 @@ function Header({ review }: { review: ReviewData }) {
             Reset
           </button>
         )}
+        <button
+          ref={preferencesButtonRef}
+          type="button"
+          style={{
+            ...(preferencesOpen ? SETTINGS_BTN_ACTIVE : SETTINGS_BTN),
+            ...(preferencesFocusVisible ? SETTINGS_BTN_FOCUS : {}),
+          }}
+          aria-label="Review preferences"
+          aria-expanded={preferencesOpen}
+          aria-controls="review-preferences-pane"
+          title="Review preferences"
+          onClick={onTogglePreferences}
+          onFocus={(event) => setPreferencesFocusVisible(event.currentTarget.matches(":focus-visible"))}
+          onBlur={() => setPreferencesFocusVisible(false)}
+        >
+          ⚙
+        </button>
         <button type="button" style={HIDE_BTN} title="Hide the review panel" onClick={toggleReviewPanel}>
           »
         </button>
@@ -254,6 +312,14 @@ const HIDE_BTN: React.CSSProperties = { ...HEADER_BTN };
 const EXTRACT_BTN: React.CSSProperties = { ...HEADER_BTN };
 const STALE_BTN: React.CSSProperties = { ...HEADER_BTN, borderColor: "#9A7B2D", background: "rgba(210,153,34,0.12)", color: "#D29922" };
 const STALE_BTN_DISABLED: React.CSSProperties = { cursor: "wait", opacity: 0.75 };
+const SETTINGS_BTN: React.CSSProperties = { ...HEADER_BTN, width: 25, padding: "3px 0", fontSize: 12 };
+const SETTINGS_BTN_ACTIVE: React.CSSProperties = {
+  ...SETTINGS_BTN,
+  border: "1px solid #39754A",
+  background: "rgba(86,194,113,0.12)",
+  color: "#72D38A",
+};
+const SETTINGS_BTN_FOCUS: React.CSSProperties = { outline: "2px solid #58A6FF", outlineOffset: 2 };
 const RAIL: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
@@ -290,4 +356,7 @@ const WARNING: React.CSSProperties = { fontSize: 11, color: "#D29922", backgroun
 const EXTRACT_WARNING: React.CSSProperties = { ...WARNING, display: "flex", alignItems: "flex-start", gap: 6 };
 const EXTRACT_WARNING_DETAIL: React.CSSProperties = { color: "#9A7B2D" };
 const WARNING_DISMISS: React.CSSProperties = { font: "inherit", border: "none", background: "transparent", color: "#D29922", cursor: "pointer", padding: 0, lineHeight: "14px", fontSize: 13, ...NO_FOCUS_RING };
+const BODY_STACK: React.CSSProperties = { position: "relative", flex: 1, minHeight: 0 };
+const REVIEW_BODY: React.CSSProperties = { display: "flex", flexDirection: "column", width: "100%", height: "100%", minHeight: 0 };
+const PREFERENCES_LAYER: React.CSSProperties = { position: "absolute", inset: 0, display: "flex" };
 const SCROLL: React.CSSProperties = { flex: 1, minHeight: 0, overflowY: "auto", padding: "8px 10px 24px" };

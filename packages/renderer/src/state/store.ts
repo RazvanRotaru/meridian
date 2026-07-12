@@ -64,6 +64,11 @@ import {
   type SemanticOuterTree,
 } from "../derive/moduleSemanticComposite";
 import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref";
+import {
+  readReviewPreferences,
+  writeReviewPreferences,
+  type ReviewFlowSplitView,
+} from "./reviewPreferences";
 import { moduleRevealStateFor, nearestModuleIds } from "./flowExplorer";
 import {
   anchorNodeIds,
@@ -358,6 +363,9 @@ export interface BlueprintState {
   reviewFileTicks: Record<string, ReviewTick>;
   /** Draft review comments (file- or unit-anchored), persisted until submitted. */
   reviewComments: ReviewComment[];
+  /** Projection shown in the PR review's bottom logic-flow split. This browser-local reader
+   * preference is deliberately separate from the full Logic lens's URL-synced `logicView`. */
+  reviewFlowSplitView: ReviewFlowSplitView;
   /** Hides the review side panel so the graph takes the full width; session-only. */
   reviewPanelHidden: boolean;
   reviewSubmitStatus: "idle" | "submitting";
@@ -570,6 +578,7 @@ export interface BlueprintState {
   toggleReviewFileViewed(path: string): void;
   addReviewComment(path: string, nodeId: string | null, body: string, line?: number | null): void;
   deleteReviewComment(id: string): void;
+  setReviewFlowSplitView(view: ReviewFlowSplitView): void;
   toggleReviewPanel(): void;
   submitReviewComments(): Promise<void>;
   setViewMode(mode: ViewMode): void;
@@ -1013,6 +1022,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // reviewPrInGraph re-derives both at runtime under its own reviewKey.
   const reviewFiles = review ? deriveReviewFiles(review.context, dependencies.artifact, dependencies.index, { baseIndex: null }) : [];
   const initialProgress = review ? readReviewProgress(review.context.reviewKey) : null;
+  const reviewPreferences = readReviewPreferences();
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
   const githubSource = (dependencies.prSessionSource ?? null) !== null;
@@ -1112,6 +1122,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewUnitTicks: initialProgress?.unitTicks ?? {},
     reviewFileTicks: initialProgress?.fileTicks ?? {},
     reviewComments: initialProgress?.comments ?? [],
+    reviewFlowSplitView: reviewPreferences.flowSplitView,
     reviewPanelHidden: false,
     reviewSubmitStatus: "idle",
     reviewSubmitError: null,
@@ -1233,6 +1244,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const related = relatedNodeIds(index, flows, ref);
       const reviewFlow = state.review !== null && state.minimalSeedIds.length > 0;
       if (reviewFlow) {
+        const needsExecutionGraph = state.reviewFlowSplitView === "graph";
+        if (!needsExecutionGraph) {
+          // Alternate projections derive directly from FlowStep[]. Invalidate and discard any
+          // older ELK result instead of paying for an execution graph that is not mounted.
+          flowPaneLayoutSeq += 1;
+        }
         const reviewFlowBaseline = state.reviewFlowBaseline ?? {
           moduleSelected: new Set(state.moduleSelected),
           moduleExpanded: new Set(state.moduleExpanded),
@@ -1268,8 +1285,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           reviewFlowBaseline,
           reviewLitNodeIds: null,
           reviewSelectedId: null,
+          ...(!needsExecutionGraph
+            ? {
+                flowPaneRfNodes: [] as LogicRfNode[],
+                flowPaneRfEdges: [] as LogicRfEdge[],
+                flowPaneLayoutStatus: "idle" as const,
+              }
+            : {}),
         });
-        void get().flowPaneRelayout();
+        if (needsExecutionGraph) {
+          void get().flowPaneRelayout();
+        }
         const recenterIfCurrent = () => {
           if (get().flowSelection === ref && get().logicSelected === null) {
             set({ recenterSeq: get().recenterSeq + 1 });
@@ -2631,6 +2657,25 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       set({ reviewComments: get().reviewComments.filter((comment) => comment.id !== id), reviewSubmittedUrl: null, reviewSubmitError: null });
       persistReviewProgress(get());
+    },
+
+    setReviewFlowSplitView(view) {
+      writeReviewPreferences({ version: 1, flowSplitView: view });
+      const state = get();
+      const reviewFlowOpen = state.review !== null
+        && state.minimalSeedIds.length > 0
+        && state.flowSelection !== null
+        && state.reviewFlowBaseline !== null;
+      set({ reviewFlowSplitView: view });
+      if (!reviewFlowOpen) {
+        return;
+      }
+      if (view !== "graph") {
+        flowPaneLayoutSeq += 1;
+        set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
+        return;
+      }
+      void get().flowPaneRelayout();
     },
 
     toggleReviewPanel() {

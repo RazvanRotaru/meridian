@@ -15,20 +15,21 @@ import type { RowCtx } from "./blocksRows";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
-export function BlocksView(props: FlowViewProps) {
+export function BlocksView(props: FlowViewProps & { density?: "full" | "compact"; drillEnabled?: boolean }) {
   const ctx: RowCtx = {
     flows: props.flows,
     index: props.index,
     selected: props.selected,
     onSelect: props.onSelect,
     onDrill: props.onDrill,
+    drillEnabled: props.drillEnabled !== false,
   };
   const rootName = props.index.nodesById.get(props.rootId)?.displayName ?? props.rootId;
   // Selection clicks repaint this component; the whole-tree walk must not re-run for them.
   const handoffs = useMemo(() => collectHandoffs(props.steps), [props.steps]);
 
   return (
-    <div style={WRAP}>
+    <div style={props.density === "compact" ? COMPACT_WRAP : WRAP}>
       <div style={COLUMN}>
         <div style={ENTRY}>▶ {rootName}</div>
         <Rows steps={props.steps} ctx={ctx} />
@@ -65,6 +66,14 @@ const WRAP: React.CSSProperties = {
   padding: "70px 26px 60px",
   fontFamily: MONO,
   color: FLOW_COLORS.ink,
+};
+const COMPACT_WRAP: React.CSSProperties = {
+  ...WRAP,
+  width: "max-content",
+  minWidth: "100%",
+  boxSizing: "border-box",
+  justifyContent: "flex-start",
+  padding: "16px 20px 36px",
 };
 const COLUMN: React.CSSProperties = { width: 680, flex: "none", display: "flex", flexDirection: "column", gap: 7 };
 const ENTRY: React.CSSProperties = {

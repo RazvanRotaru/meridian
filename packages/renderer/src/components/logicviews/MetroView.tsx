@@ -1,8 +1,9 @@
 /**
  * The Metro projection: the flow's exec thread drawn as a transit map. Thin — all geometry is the
  * pure `layoutMetro` spec; this only paints it. One <svg> holds the polylines + station marks; HTML
- * label divs float above so text stays crisp. Selection is by target (every call site of the picked
- * callee haloes), a click selects, a double-click drills into an expandable callee.
+ * labels float above so text stays crisp. Selection is by target (every call site of the picked
+ * callee haloes), a click selects, and Shift+Enter or a double-click drills into an expandable
+ * callee when drilling is enabled.
  */
 
 import type { CSSProperties } from "react";
@@ -13,17 +14,26 @@ import { layoutMetro } from "../../derive/metroLayout";
 import type { MetroStation } from "../../derive/metroSpec";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
+export const METRO_COMPACT_TOP_PADDING = 20;
 
-export function MetroView(props: FlowViewProps) {
+export function MetroView(props: FlowViewProps & { density?: "full" | "compact"; drillEnabled?: boolean }) {
   const rootName = props.index.nodesById.get(props.rootId)?.displayName ?? "flow";
+  const compact = props.density === "compact";
+  const drillEnabled = props.drillEnabled !== false;
   const spec = useMemo(
     () => layoutMetro(props.steps, props.flows, props.index, rootName),
     [props.steps, props.flows, props.index, rootName],
   );
   return (
-    <div style={{ padding: "80px 40px 40px" }}>
+    <div style={compact ? COMPACT_WRAP : FULL_WRAP}>
       <div style={{ position: "relative", width: spec.width, height: spec.height }}>
-        <svg width={spec.width} height={spec.height} style={{ position: "absolute", inset: 0, overflow: "visible" }}>
+        <svg
+          width={spec.width}
+          height={spec.height}
+          aria-hidden="true"
+          focusable="false"
+          style={{ position: "absolute", inset: 0, overflow: "visible" }}
+        >
           <defs>
             <marker id="metro-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M0 1 L9 5 L0 9 Z" fill={FLOW_COLORS.detached} />
@@ -47,7 +57,16 @@ export function MetroView(props: FlowViewProps) {
           ))}
         </svg>
         {spec.stations.map((s, i) =>
-          s.name ? <Label key={i} s={s} selected={props.selected} onSelect={props.onSelect} onDrill={props.onDrill} /> : null,
+          s.name ? (
+            <Label
+              key={i}
+              s={s}
+              selected={props.selected}
+              onSelect={props.onSelect}
+              onDrill={props.onDrill}
+              drillEnabled={drillEnabled}
+            />
+          ) : null,
         )}
         {spec.labels.map((l, i) => (
           <div key={i} style={caption(l.x, l.y, l.color)}>
@@ -88,13 +107,15 @@ function Mark({ s, selected }: { s: MetroStation; selected: FlowViewProps["selec
 }
 
 /** The floating HTML label for a station (name bold, sub dim), alternating above/below the line. */
-function Label({ s, selected, onSelect, onDrill }: {
+function Label({ s, selected, onSelect, onDrill, drillEnabled }: {
   s: MetroStation;
   selected: FlowViewProps["selected"];
   onSelect: FlowViewProps["onSelect"];
   onDrill: FlowViewProps["onDrill"];
+  drillEnabled: boolean;
 }) {
   const clickable = s.target != null;
+  const selectedStation = selected !== null && s.target === selected;
   const dimmed = selected !== null && s.target !== selected;
   const gap = s.kind === "interchange" ? 62 : s.sub ? 46 : 32;
   const top = s.labelSide < 0 ? s.y - gap : s.y + 13;
@@ -110,26 +131,45 @@ function Label({ s, selected, onSelect, onDrill }: {
     opacity: dimmed ? 0.55 : 1,
     userSelect: "none",
   };
-  return (
-    <div
-      style={style}
-      onClick={(e) => {
-        if (!clickable) return;
-        e.stopPropagation();
-        onSelect(s.target ?? null);
-      }}
-      onDoubleClick={(e) => {
-        if (!clickable || !s.expandable) return;
-        e.stopPropagation();
-        onDrill(s.target!);
-      }}
-    >
+  const copy = (
+    <>
       {/* Termini are the only marks whose NAME carries the line colour (▶ entry / ⏎ return). */}
       <span style={{ display: "block", fontSize: 10.5, fontWeight: 600, color: s.kind === "terminus" ? s.color : FLOW_COLORS.ink, whiteSpace: "nowrap" }}>
         {s.name}
       </span>
       {s.sub ? <span style={{ display: "block", fontSize: 9, color: FLOW_COLORS.dim, whiteSpace: "nowrap" }}>{s.sub}</span> : null}
-    </div>
+    </>
+  );
+  if (!clickable) {
+    return <div style={style}>{copy}</div>;
+  }
+  const canDrill = drillEnabled && s.expandable;
+  return (
+    <button
+      type="button"
+      aria-pressed={selectedStation}
+      aria-keyshortcuts={canDrill ? "Shift+Enter" : undefined}
+      title={canDrill ? "Shift+Enter to open this call's logic flow" : undefined}
+      style={{ ...style, appearance: "none", margin: 0, padding: 0, border: "none", background: "transparent" }}
+      onClick={(event) => {
+        event.stopPropagation();
+        onSelect(s.target ?? null);
+      }}
+      onDoubleClick={(event) => {
+        if (!canDrill) return;
+        event.stopPropagation();
+        onDrill(s.target!);
+      }}
+      onKeyDown={(event) => {
+        if (canDrill && event.key === "Enter" && event.shiftKey) {
+          event.preventDefault();
+          event.stopPropagation();
+          onDrill(s.target!);
+        }
+      }}
+    >
+      {copy}
+    </button>
   );
 }
 
@@ -171,3 +211,11 @@ function caption(x: number, y: number, color: string): CSSProperties {
     pointerEvents: "none",
   };
 }
+
+const FULL_WRAP: CSSProperties = { padding: "80px 40px 40px" };
+const COMPACT_WRAP: CSSProperties = {
+  width: "max-content",
+  minWidth: "100%",
+  boxSizing: "border-box",
+  padding: `${METRO_COMPACT_TOP_PADDING}px 20px 32px`,
+};
