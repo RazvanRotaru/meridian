@@ -134,6 +134,214 @@ describe("emphasize — ghost selection uses the drawn endpoint as its paint see
     expect(fromGhost).toEqual(fromCore);
   });
 
+  it("focuses a selected ghost's adjacent block without removing or moving sibling ghosts", () => {
+    const placeOrder = `${CORE}.placeOrder`;
+    const assemble = `${CORE}.assemble`;
+    const email = member(1);
+    const pricing = member(2);
+    const nodes = [
+      coreNode(),
+      codeMemberNode(placeOrder),
+      codeMemberNode(assemble),
+      ghostNode(email, 0),
+      ghostNode(pricing, 1),
+    ];
+    const edges = [
+      ghostEdge(email, 0, placeOrder),
+      // The real orders-service fixture fans both calls out of placeOrder. Literal ghost focus must
+      // light only the selected Email strand; resolving back to placeOrder would light Pricing too.
+      ghostEdge(pricing, 1, placeOrder),
+    ];
+    const options = presentation(2, false);
+    const fromCore = emphasize(nodes, edges, new Set([CORE]), 1, "node", options);
+    const provenance = paintSeedsOf(fromCore.nodes, email);
+
+    const fromEmail = emphasize(
+      nodes,
+      edges,
+      new Set([email]),
+      1,
+      "node",
+      options,
+      provenance,
+      new Set([email]),
+    );
+
+    const ghostGeometry = (level: typeof fromCore) => level.nodes
+      .filter((node) => node.type === "ghost")
+      .map((node) => ({ id: node.id, position: node.position, parentId: node.parentId }));
+    expect(ghostGeometry(fromEmail)).toEqual(ghostGeometry(fromCore));
+    expect(fromEmail.nodes.find((node) => node.id === placeOrder)?.style?.opacity).toBeUndefined();
+    expect(fromEmail.nodes.find((node) => node.id === assemble)?.style?.opacity).toBe(0.28);
+    expect(fromEmail.nodes.find((node) => node.id === email)?.style?.opacity).toBeUndefined();
+    expect(fromEmail.nodes.find((node) => node.id === pricing)?.style?.opacity).toBe(0.28);
+    expect(fromEmail.edges).toHaveLength(2);
+    expect(fromEmail.edges.find((edge) => edge.target === email)?.style?.opacity).toBe(1);
+    expect(fromEmail.edges.find((edge) => edge.target === pricing)?.style?.opacity).toBe(0.4);
+  });
+
+  it("focuses literal adjacency for selected ghosts from independent provenance families", () => {
+    const ownerA = `${CORE}.ownerA`;
+    const ownerB = `${CORE}.ownerB`;
+    const ghostA = member(1);
+    const siblingA = member(2);
+    const ghostB = member(3);
+    const siblingB = member(4);
+    const nodes = [
+      coreNode(),
+      codeMemberNode(ownerA),
+      codeMemberNode(ownerB),
+      ghostNode(ghostA, 0),
+      ghostNode(siblingA, 1),
+      ghostNode(ghostB, 2),
+      ghostNode(siblingB, 3),
+    ];
+    const edges = [
+      ghostEdge(ghostA, 0, ownerA),
+      ghostEdge(siblingA, 1, ownerA),
+      ghostEdge(ghostB, 2, ownerB),
+      ghostEdge(siblingB, 3, ownerB),
+    ];
+    const options = presentation(4, false);
+    const fromOwners = emphasize(nodes, edges, new Set([ownerA, ownerB]), 1, "node", options);
+    const focused = emphasize(
+      nodes,
+      edges,
+      new Set([ghostA, ghostB]),
+      1,
+      "node",
+      options,
+      new Set([ownerA, ownerB]),
+      new Set([ghostA, ghostB]),
+    );
+
+    const ghostGeometry = (level: typeof focused) => level.nodes
+      .filter((node) => node.type === "ghost")
+      .map((node) => ({ id: node.id, position: node.position }));
+    expect(ghostGeometry(focused)).toEqual(ghostGeometry(fromOwners));
+    expect(focused.nodes.find((node) => node.id === ownerA)?.style?.opacity).toBeUndefined();
+    expect(focused.nodes.find((node) => node.id === ownerB)?.style?.opacity).toBeUndefined();
+    expect(focused.nodes.find((node) => node.id === ghostA)?.style?.opacity).toBeUndefined();
+    expect(focused.nodes.find((node) => node.id === ghostB)?.style?.opacity).toBeUndefined();
+    expect(focused.nodes.find((node) => node.id === siblingA)?.style?.opacity).toBe(0.28);
+    expect(focused.nodes.find((node) => node.id === siblingB)?.style?.opacity).toBe(0.28);
+    expect(focused.edges.find((edge) => edge.target === ghostA)?.style?.opacity).toBe(1);
+    expect(focused.edges.find((edge) => edge.target === ghostB)?.style?.opacity).toBe(1);
+    expect(focused.edges.find((edge) => edge.target === siblingA)?.style?.opacity).toBe(0.4);
+    expect(focused.edges.find((edge) => edge.target === siblingB)?.style?.opacity).toBe(0.4);
+  });
+
+  it("keeps a nested call step's visible block ancestors highlighted from a ghost selection", () => {
+    const placeOrder = `${CORE}.placeOrder`;
+    const callStep = `step:${placeOrder}:4`;
+    const email = member(1);
+    const nodes = [
+      coreNode(),
+      codeMemberNode(placeOrder),
+      {
+        id: callStep,
+        type: "step",
+        parentId: placeOrder,
+        position: { x: 10, y: 10 },
+        data: { stepKind: "call" },
+        style: { width: 160, height: 40 },
+      } as Node,
+      ghostNode(email, 0),
+    ];
+    const edges = [ghostEdge(email, 0, callStep)];
+    const options = presentation(1, false);
+    const fromPlaceOrder = emphasize(nodes, edges, new Set([placeOrder]), 1, "node", options);
+    const fromEmail = emphasize(
+      nodes,
+      edges,
+      new Set([email]),
+      1,
+      "node",
+      options,
+      paintSeedsOf(fromPlaceOrder.nodes, email, [placeOrder]),
+      new Set([email]),
+    );
+
+    expect(fromEmail.nodes.find((node) => node.id === callStep)?.style?.opacity).toBeUndefined();
+    expect(fromEmail.nodes.find((node) => node.id === placeOrder)?.style?.opacity).toBeUndefined();
+    expect(fromEmail.nodes.find((node) => node.id === CORE)?.style?.opacity).toBeUndefined();
+    expect(fromEmail.edges[0].style?.opacity).toBe(1);
+  });
+
+  it("clears provenance beacons before focusing a ghost's literal adjacency", () => {
+    const placeOrder = `${CORE}.placeOrder`;
+    const callStep = `step:${placeOrder}:4`;
+    const email = member(1);
+    const realDefinition = "ts:notifications.ts#EmailService";
+    const nodes = [
+      coreNode(),
+      codeMemberNode(placeOrder),
+      {
+        id: callStep,
+        type: "step",
+        parentId: placeOrder,
+        position: { x: 10, y: 10 },
+        data: { stepKind: "call" },
+      } as Node,
+      ghostNode(email, 0),
+      { id: realDefinition, type: "file", position: { x: 700, y: 0 }, data: {} } as Node,
+    ];
+    const edges: Edge[] = [
+      ghostEdge(email, 0, callStep),
+      {
+        id: "real-definition",
+        source: callStep,
+        target: realDefinition,
+        data: { category: "dep", relationKind: "calls", depKind: "calls" },
+      } as Edge,
+    ];
+    const focused = emphasize(
+      nodes,
+      edges,
+      new Set([email]),
+      1,
+      "node",
+      presentation(1, false),
+      new Set([callStep]),
+      new Set([email]),
+    );
+
+    const definition = focused.nodes.find((node) => node.id === realDefinition);
+    expect(focused.beacons).toEqual(new Set());
+    expect(definition?.style?.opacity).toBe(0.28);
+    expect(definition?.style?.boxShadow).toBeUndefined();
+    expect(definition?.style?.borderRadius).toBeUndefined();
+  });
+
+  it("keeps container neighbourhood semantics for a ghost plus file selection in reach mode", () => {
+    const fileA: Node = { id: "file-a", type: "file", position: { x: 0, y: 0 }, data: {} } as Node;
+    const fileB: Node = { id: "file-b", type: "file", position: { x: 300, y: 0 }, data: {} } as Node;
+    const fileC: Node = { id: "file-c", type: "file", position: { x: 600, y: 0 }, data: {} } as Node;
+    const email = member(1);
+    const ghost = ghostNode(email, 0);
+    const ghostWire = ghostEdge(email, 0, fileA.id);
+    const importWire: Edge = {
+      id: "file-b->file-c",
+      source: fileB.id,
+      target: fileC.id,
+      data: { category: "import", relationKind: "imports", depKind: "imports" },
+    } as Edge;
+
+    const focused = emphasize(
+      [fileA, fileB, fileC, ghost],
+      [ghostWire, importWire],
+      new Set([email, fileB.id]),
+      1,
+      "reach",
+      presentation(1, false),
+      new Set([fileA.id, fileB.id]),
+      new Set([email, fileB.id]),
+    );
+
+    expect(focused.nodes.find((node) => node.id === fileC.id)?.style?.opacity).toBeUndefined();
+    expect(focused.edges.find((edge) => edge.id === importWire.id)?.style?.opacity).toBe(1);
+  });
+
   it("reconstructs a collapsed grouped ghost's exact members and preserves its grouped frontier and geometry", () => {
     const { nodes, edges } = scene(4);
     const options = presentation(4, true);
@@ -152,6 +360,27 @@ describe("emphasize — ghost selection uses the drawn endpoint as its paint see
       paintSeedsOf(fromCore.nodes, PARENT),
     );
     expect(fromGroup).toEqual(fromCore);
+
+    const focusedGroup = emphasize(
+      nodes,
+      edges,
+      new Set([PARENT]),
+      1,
+      "node",
+      options,
+      paintSeedsOf(fromCore.nodes, PARENT),
+      new Set([PARENT]),
+    );
+    expect(focusedGroup.nodes.filter((node) => node.type === "ghost").map((node) => ({
+      id: node.id,
+      position: node.position,
+    }))).toEqual(fromCore.nodes.filter((node) => node.type === "ghost").map((node) => ({
+      id: node.id,
+      position: node.position,
+    })));
+    expect(focusedGroup.nodes.find((node) => node.id === CORE)?.style?.opacity).toBeUndefined();
+    expect(focusedGroup.nodes.find((node) => node.id === PARENT)?.style?.opacity).toBeUndefined();
+    expect(focusedGroup.edges.find((edge) => edge.data?.ghostGroupAggregate === true)?.style?.opacity).toBe(1);
   });
 
   it("keeps an exact selected child inside its expanded group with the full family and geometry unchanged", () => {
@@ -178,6 +407,31 @@ describe("emphasize — ghost selection uses the drawn endpoint as its paint see
     // This pins the complete node/edge objects, including parent-relative positions. Selection may
     // change identity in the store, but disclosure and paint must not rewrite the visible scene.
     expect(fromExactChild).toEqual(fromCore);
+
+    const focusedExactChild = emphasize(
+      nodes,
+      edges,
+      new Set([member(1)]),
+      1,
+      "node",
+      options,
+      paintSeedsOf(fromCore.nodes, member(1)),
+      new Set([member(1)]),
+    );
+    expect(focusedExactChild.nodes.filter((node) => node.type === "ghost").map((node) => ({
+      id: node.id,
+      position: node.position,
+      parentId: node.parentId,
+    }))).toEqual(fromCore.nodes.filter((node) => node.type === "ghost").map((node) => ({
+      id: node.id,
+      position: node.position,
+      parentId: node.parentId,
+    })));
+    expect(focusedExactChild.nodes.find((node) => node.id === CORE)?.style?.opacity).toBeUndefined();
+    expect(focusedExactChild.nodes.find((node) => node.id === PARENT)?.style?.opacity).toBeUndefined();
+    expect(focusedExactChild.nodes.find((node) => node.id === member(1))?.style?.opacity).toBeUndefined();
+    expect(focusedExactChild.nodes.find((node) => node.id === member(2))?.style?.opacity).toBe(0.28);
+    expect(focusedExactChild.edges.find((edge) => edge.data?.ghostGroupAggregate === true)?.style?.opacity).toBe(1);
   });
 
   it("resolves and retains Ctrl-selected ghost provenance per owner instead of their global file LCA", () => {

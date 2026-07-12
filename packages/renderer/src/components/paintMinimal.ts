@@ -51,13 +51,14 @@ export function paintMinimalLevel(
   relations: ReadonlySet<string> | RelationPaintOptions = NO_HIDDEN_KINDS,
   ghostPresentation?: GhostPresentationOptions,
   paintSeedIds: ReadonlySet<string> = selected,
+  focusSeedIds: ReadonlySet<string> | null = null,
 ): EmphasizedLevel {
   // The Map's exact order (GraphSurface): suppress redundant imports → filter toggled-off kinds → emphasize.
   const semantic = suppressRedundantImports(edges);
   const visible = isRelationPaintOptions(relations)
     ? filterRelationsForLens(semantic, relations.policy, relations.overrides)
     : filterRelKinds(semantic, relations);
-  return emphasize(nodes, visible, selected, radius, mode, ghostPresentation, paintSeedIds);
+  return emphasize(nodes, visible, selected, radius, mode, ghostPresentation, paintSeedIds, focusSeedIds);
 }
 
 function isRelationPaintOptions(

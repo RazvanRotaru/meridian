@@ -116,25 +116,34 @@ export interface SurfacePaintOwnership {
   protectedSelection: ReadonlySet<string>;
   /** Semantic ids that own emphasis traversal for this paint. */
   paintSeeds: ReadonlySet<string>;
-  /** The exact same traversal owners handed to highway extraction. */
+  /** Literal selection repainted over a retained ghost frontier for direct-node adjacency. */
+  focusSeeds: ReadonlySet<string> | null;
+  /** Literal selection handed to highway extraction; provenance must not unbundle unrelated wires. */
   highwaySeeds: ReadonlySet<string>;
 }
 
-/** Resolve the three deliberately distinct paint identities used by every GraphSurface mount.
+/** Resolve the deliberately distinct paint identities used by every GraphSurface mount.
  * A PR row hover/click is a transient paint owner and therefore outranks stale ghost provenance;
  * when review paint clears, captured ghost provenance resumes. Literal selection is always
- * protected independently, so a transient preview cannot prune the card that still owns the ring
- * and extraction action. */
+ * protected independently and owns local focus/highway extraction without replacing provenance,
+ * so clicking a ghost keeps the visible frontier stable while drawing only that ghost's strands. */
 export function resolveSurfacePaintOwnership(
   selected: ReadonlySet<string>,
   reviewLit: ReadonlySet<string> | null,
   reviewEmphasis: boolean,
   ghostPaintOverride: ReadonlySet<string> | null,
 ): SurfacePaintOwnership {
-  const paintSeeds = reviewEmphasis && reviewLit !== null
+  const reviewOwnsPaint = reviewEmphasis && reviewLit !== null;
+  const paintSeeds = reviewOwnsPaint
     ? reviewLit
     : ghostPaintOverride ?? selected;
-  return { protectedSelection: selected, paintSeeds, highwaySeeds: paintSeeds };
+  const focusSeeds = !reviewOwnsPaint && ghostPaintOverride !== null
+    ? selected
+    : null;
+  const highwaySeeds = !reviewOwnsPaint && ghostPaintOverride !== null
+    ? selected
+    : paintSeeds;
+  return { protectedSelection: selected, paintSeeds, focusSeeds, highwaySeeds };
 }
 
 export interface GraphSurfaceProps {
@@ -291,7 +300,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
       index,
       groupByParent: groupGhosts,
       expandedGroupIds: props.interactions.expandedGhostGroupIds,
-    }, paintOwnership.paintSeeds),
+    }, paintOwnership.paintSeeds, paintOwnership.focusSeeds),
     [props.nodes, props.edges, paintOwnership, radius, emphasisMode, props.relations, relationVisibilityOverrides, index, groupGhosts, props.interactions.expandedGhostGroupIds],
   );
   // Group disclosure is deliberately downstream of the shared paint chain. It injects the
@@ -458,6 +467,7 @@ function paintSemanticLayers(
   relations: Parameters<typeof paintMinimalLevel>[5],
   ghostPresentation: Parameters<typeof paintMinimalLevel>[6],
   paintSeedIds: Parameters<typeof paintMinimalLevel>[7],
+  focusSeedIds: Parameters<typeof paintMinimalLevel>[8],
 ): ReturnType<typeof paintMinimalLevel> {
   const nodesByDepth = new Map<number | undefined, Node[]>();
   const edgesByDepth = new Map<number | undefined, Edge[]>();
@@ -490,6 +500,7 @@ function paintSemanticLayers(
       relations,
       ghostPresentation,
       paintSeedIds,
+      focusSeedIds,
     );
     paintedNodes.push(...(depth === undefined
       ? painted.nodes

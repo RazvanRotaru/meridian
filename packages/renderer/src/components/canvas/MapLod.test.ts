@@ -31,6 +31,10 @@ describe("MapLod", () => {
     expect(css).toContain('[data-map-semantic-depth="3"] .semantic-layer-3');
     expect(css.match(/semantic-layer-1/g)).toHaveLength(1);
     expect(css).not.toContain("semantic-layer--1");
+    expect(MAP_LOD_CSS).toContain("filter: opacity(0) !important;");
+    expect(css).toContain("filter: opacity(1) !important;");
+    expect(MAP_LOD_CSS).not.toContain(".semantic-layer {\n  opacity:");
+    expect(css).not.toContain("opacity: 1 !important;");
     expect(MAP_LOD_CSS).not.toContain("semantic-detail");
     expect(MAP_LOD_CSS).not.toContain("semantic-context");
   });
