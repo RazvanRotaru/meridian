@@ -108,7 +108,9 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
     const inspectedTransform = await inspectableGhost.evaluate(
       (element) => (element as HTMLElement).style.transform,
     );
-    const beforeAllIds = new Set((await visibleNodeTransforms(surface)).map(({ id }) => id));
+    const beforeAll = await visibleNodeTransforms(surface);
+    const beforeById = new Map(beforeAll.map(({ id, transform }) => [id, transform]));
+    const beforeAllIds = new Set(beforeById.keys());
     // Selection-relative paint may retire unrelated satellite ghosts. The durable cards already
     // on the level—and the exact ghost being materialized—are the retained geometry contract.
     const before = await visibleNodeTransforms(surface, null, false);
@@ -130,6 +132,19 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
       .toEqual(before);
     await expect
       .poll(async () => {
+        const afterById = new Map((await visibleNodeTransforms(surface)).map(({ id, transform }) => [id, transform]));
+        return [...beforeAllIds]
+          .flatMap((id) => {
+            const previous = beforeById.get(id);
+            const next = afterById.get(id);
+            return previous !== undefined && next !== undefined && previous !== next
+              ? [`${id}: ${previous} -> ${next}`]
+              : [];
+          });
+      }, { timeout: 20_000 })
+      .toEqual([]);
+    await expect
+      .poll(async () => {
         const after = await visibleNodeTransforms(surface);
         return after.some(({ id }) => !beforeAllIds.has(id));
       }, { timeout: 20_000 })
@@ -139,10 +154,7 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
 
   it("Map: the temporary node '+' pins its home file as a permanent card", async () => {
     const surface = mainCanvasFor(page, CLASS);
-    const candidate = surface.locator('button[aria-label="Pin to canvas"][data-ghost-id*="#"]:visible').first();
-    await candidate.waitFor();
-    const targetId = await candidate.getAttribute("data-ghost-id");
-    expect(targetId).toBeTruthy();
+    const targetId = INSPECTABLE_GHOST;
     const targetPin = surface.locator(
       `button[aria-label="Pin to canvas"][data-ghost-id="${targetId}"]:visible`,
     );
@@ -150,14 +162,16 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
     const realTarget = surface.locator(
       `.react-flow__node:not(.react-flow__node-ghost)[data-id="${targetId}"]:visible`,
     );
-    expect(await classicGhost.count() + await realTarget.count()).toBe(1);
+    await expect.poll(() => targetPin.count(), { timeout: 20_000 }).toBe(1);
+    await expect.poll(() => realTarget.count(), { timeout: 20_000 }).toBe(1);
+    expect(await classicGhost.count()).toBe(0);
 
-    const homeId = targetId!.split("#", 1)[0];
+    const homeId = targetId.split("#", 1)[0];
     const promotedHome = surface.locator(`.react-flow__node:not(.react-flow__node-ghost)[data-id="${homeId}"]:visible`);
 
-    // The stable id binds the affordance to either a classic ghost or a real temporary inspection
-    // preview. Promotion commits its home file, retires the temporary control, and leaves the exact
-    // target rendered as a real card.
+    // The stable id binds the affordance to the real temporary inspection preview. Promotion
+    // commits its home file, retires the temporary control, and leaves the exact target rendered
+    // as a real card.
     await targetPin.dispatchEvent("click");
     await expect.poll(() => promotedHome.count(), { timeout: 20_000 }).toBe(1);
     await expect.poll(() => targetPin.count(), { timeout: 20_000 }).toBe(0);
