@@ -101,6 +101,8 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await expect.poll(
       () => changedFunction.evaluate((element) => getComputedStyle(element.firstElementChild as Element).backgroundImage),
     ).not.toBe("none");
+    await waitForGraphViewportToSettle(codebaseContext);
+    await page.mouse.move(0, 0);
     expect(await syncProvenance.count()).toBe(1);
     expect(await page.getByText("Files changed", { exact: true }).count()).toBe(1);
 
@@ -288,6 +290,21 @@ async function teardown(): Promise<void> {
 
 function reviewFileButton(page: Page, path: string): Locator {
   return page.locator(`button[title^="${path}"]`);
+}
+
+async function waitForGraphViewportToSettle(surface: Locator): Promise<void> {
+  const viewport = surface.locator(".react-flow__viewport");
+  await viewport.waitFor();
+  let previous = await viewport.getAttribute("style");
+  let stableSamples = 0;
+  // Layout-ready precedes React Flow's scheduled camera fit. Wait through that animation so the
+  // node cannot move away while the hover preview's dwell timer is running on a slower runner.
+  await expect.poll(async () => {
+    const current = await viewport.getAttribute("style");
+    stableSamples = current === previous ? stableSamples + 1 : 0;
+    previous = current;
+    return stableSamples;
+  }, { interval: 100, timeout: 5_000 }).toBeGreaterThanOrEqual(3);
 }
 
 async function generateSession(baseUrl: string): Promise<{ id: string }> {
