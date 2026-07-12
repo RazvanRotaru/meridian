@@ -3,7 +3,7 @@ import type { ModuleTreeEdge } from "./moduleTree";
 import { clusteringFor } from "./serviceClusteringCache";
 import type { ServiceCluster, ServiceClustering } from "./serviceComposition";
 import { crossesPackageBoundary } from "./packageBoundary";
-import { deriveServiceDomains, isServiceDomainId } from "./serviceDomains";
+import { deriveServiceDomains, isServiceDomainId, serviceDomainById } from "./serviceDomains";
 import type { ServiceGroupingMode } from "./serviceClusteringModes";
 
 type Couplings = ServiceClustering["couplings"];
@@ -143,12 +143,12 @@ export function clusterMemberSeeds(
 ): string[] {
   const clustering = clusteringFor(index);
   const { clusters } = clustering;
-  const domains = deriveServiceDomains(clustering, groupingMode, groupingTargetSize).domainById;
+  const domains = deriveServiceDomains(clustering, groupingMode, groupingTargetSize);
   const out: string[] = [];
   const seen = new Set<string>();
   for (const id of selection) {
     const lead = leadIdOf(id);
-    const domain = domains.get(id);
+    const domain = serviceDomainById(domains, id);
     const ids = lead !== null
       ? (clusters.find((cluster) => cluster.leadId === lead)?.memberIds ?? [])
       : domain
@@ -175,12 +175,12 @@ export function expandServiceSyntheticAnchors(
   groupingTargetSize?: number,
 ): string[] {
   const clustering = clusteringFor(index);
-  const domains = deriveServiceDomains(clustering, groupingMode, groupingTargetSize).domainById;
+  const domains = deriveServiceDomains(clustering, groupingMode, groupingTargetSize);
   const out: string[] = [];
   const seen = new Set<string>();
   for (const id of ids) {
     const lead = leadIdOf(id);
-    const domain = domains.get(id);
+    const domain = serviceDomainById(domains, id);
     const expanded = lead !== null ? [lead] : domain ? domain.leadIds : isServiceDomainId(id) ? [] : [id];
     for (const anchor of expanded) {
       if (!seen.has(anchor)) {

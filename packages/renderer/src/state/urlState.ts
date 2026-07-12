@@ -21,7 +21,9 @@ import { isLogicViewMode, type LogicViewMode } from "../derive/flowViewModel";
 import type { HighlightMode } from "../components/moduleMapPaint";
 import type { PrsTab } from "./prTypes";
 import {
+  DEFAULT_SERVICE_GROUPING_LABEL_MODE,
   SERVICE_GROUPING_OPTIONS,
+  type ServiceGroupingLabelMode,
   type ServiceGroupingMode,
 } from "../derive/serviceClusteringModes";
 import {
@@ -48,6 +50,8 @@ export interface NavState {
   serviceGroupingMode: ServiceGroupingMode;
   /** Preferred member count for balanced Service partitions. */
   serviceGroupingTargetSize: ServiceGroupingTargetSize;
+  /** One or two ranked semantic concepts in inferred Service parent labels. */
+  serviceGroupingLabelMode: ServiceGroupingLabelMode;
   /** The OPEN minimal-graph overlay's seed file ids; empty == closed. Opening it is a navigation
    * (a place you can go Back from), so it lives here and in `isNavigationChange`. The overlay's grown
    * state (committed ghosts + expansions) is ephemeral exploration, deliberately not in the URL. */
@@ -70,7 +74,7 @@ export interface NavState {
 }
 
 /** Every param key we own — listed once so `mergeNavIntoSearch` can clear them before rewriting. */
-const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "fexp", "fsel", "lroot", "lview", "lstack", "expand", "mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide", "sgroup", "sgsize", "prstate", "prn", "rev", "env"] as const; // focus/sel/expand/flow/depth are LEGACY (pre-unification ui + flow isolation): still cleared on rewrite so stale links tidy up, never written.
+const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "fexp", "fsel", "lroot", "lview", "lstack", "expand", "mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide", "sgroup", "sgsize", "sglabels", "prstate", "prn", "rev", "env"] as const; // focus/sel/expand/flow/depth are LEGACY (pre-unification ui + flow isolation): still cleared on rewrite so stale links tidy up, never written.
 
 /** Keys that ride along in EVERY lens: the lens itself, the telemetry env, and the cross-cutting
  * flow explorer (its panel is mounted regardless of the active lens, and reveals across the module
@@ -88,7 +92,7 @@ const LENS_KEYS: Record<ViewMode, readonly string[]> = {
   ui: ["mfocus", "mexp", "mgraph", "mdepth", "hmode", "mhide"],
   // The Service lens shares the module navigation state: `mfocus` holds a service/domain dive and
   // `mexp` holds inline service/domain containers, so both survive reload/back/share like Map.
-  call: ["root", "csel", "mfocus", "mexp", "mgraph", "mdepth", "hmode", "mhide", "sgroup", "sgsize"],
+  call: ["root", "csel", "mfocus", "mexp", "mgraph", "mdepth", "hmode", "mhide", "sgroup", "sgsize", "sglabels"],
   // An in-graph PR review is a Map-only surface: prn+rev live on the modules lens alone.
   modules: ["mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide", "prn", "rev"],
   logic: ["lroot", "lview", "lstack", "lsel"],
@@ -109,6 +113,7 @@ export const DEFAULT_NAV: NavState = {
   moduleFocus: null,
   serviceGroupingMode: "folder",
   serviceGroupingTargetSize: DEFAULT_SERVICE_GROUPING_TARGET_SIZE,
+  serviceGroupingLabelMode: DEFAULT_SERVICE_GROUPING_LABEL_MODE,
   minimalSeedIds: [],
   moduleExpanded: [],
   moduleRadius: 1,
@@ -136,6 +141,7 @@ interface NavSource {
   moduleFocus: string | null;
   serviceGroupingMode: ServiceGroupingMode;
   serviceGroupingTargetSize: ServiceGroupingTargetSize;
+  serviceGroupingLabelMode: ServiceGroupingLabelMode;
   minimalSeedIds: readonly string[];
   moduleExpanded: ReadonlySet<string>;
   moduleRadius: number;
@@ -163,6 +169,7 @@ export function navFrom(state: NavSource): NavState {
     moduleFocus: state.moduleFocus,
     serviceGroupingMode: state.serviceGroupingMode,
     serviceGroupingTargetSize: state.serviceGroupingTargetSize,
+    serviceGroupingLabelMode: state.serviceGroupingLabelMode,
     // Sorted for a stable URL; seed order never affects the built graph.
     minimalSeedIds: [...state.minimalSeedIds].sort(),
     moduleExpanded: [...state.moduleExpanded].sort(),
@@ -199,6 +206,9 @@ export function encodeNav(nav: NavState): Map<string, string> {
   if (nav.serviceGroupingMode !== "folder") out.set("sgroup", nav.serviceGroupingMode);
   if (nav.serviceGroupingTargetSize !== DEFAULT_SERVICE_GROUPING_TARGET_SIZE) {
     out.set("sgsize", String(nav.serviceGroupingTargetSize));
+  }
+  if (nav.serviceGroupingLabelMode !== DEFAULT_SERVICE_GROUPING_LABEL_MODE) {
+    out.set("sglabels", nav.serviceGroupingLabelMode);
   }
   setList(out, "mgraph", nav.minimalSeedIds);
   setList(out, "mexp", nav.moduleExpanded);
@@ -258,6 +268,10 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   const groupingTargetSize = Number(params.get("sgsize"));
   if (params.has("sgsize") && isServiceGroupingTargetSize(groupingTargetSize)) {
     out.serviceGroupingTargetSize = groupingTargetSize;
+  }
+  const groupingLabelMode = params.get("sglabels");
+  if (groupingLabelMode === "single" || groupingLabelMode === "pair") {
+    out.serviceGroupingLabelMode = groupingLabelMode;
   }
   // Legacy pre-unification ui deep links carried the dive in `focus`; land it on the shared module
   // focus (best-effort compat — `sel`/`expand` ids meant the retired private spaces and are dropped).

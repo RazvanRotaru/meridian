@@ -5,13 +5,14 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import {
   SERVICE_GROUPING_OPTIONS,
+  type ServiceGroupingLabelMode,
   type ServiceGroupingMode,
 } from "../derive/serviceClusteringModes";
 import {
   SERVICE_GROUPING_TARGET_SIZES,
   type ServiceGroupingTargetSize,
 } from "../state/serviceGroupingTargetSize";
-import { TOKENS } from "./controlpanel/panelKit";
+import { Pill, TOKENS } from "./controlpanel/panelKit";
 import { ExternalLinkIcon, InfoIcon } from "./controlpanel/icons";
 
 const DESCRIPTION: Record<ServiceGroupingMode, string> = {
@@ -187,6 +188,7 @@ export const SERVICE_GROUPING_INFO: Record<ServiceGroupingMode, ServiceGroupingI
 export function ServiceGroupingSelect() {
   const mode = useBlueprint((state) => state.serviceGroupingMode);
   const targetSize = useBlueprint((state) => state.serviceGroupingTargetSize);
+  const labelMode = useBlueprint((state) => state.serviceGroupingLabelMode);
   const scoped = useBlueprint((state) => state.serviceScope !== null);
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const layoutPending = useBlueprint((state) => state.moduleLayoutStatus === "laying-out");
@@ -194,6 +196,7 @@ export function ServiceGroupingSelect() {
   const {
     setServiceGroupingMode: setMode,
     setServiceGroupingTargetSize: setTargetSize,
+    setServiceGroupingLabelMode: setLabelMode,
   } = useBlueprintActions();
   const disabled = scoped || minimalOpen || layoutPending;
   const [infoOpen, setInfoOpen] = useState(false);
@@ -267,6 +270,12 @@ export function ServiceGroupingSelect() {
         </button>
       </div>
       <span id={HELP_ID} style={HELP_STYLE}>{reason ?? DESCRIPTION[mode]}</span>
+      <ServiceGroupingLabelModeControl
+        mode={mode}
+        labelMode={labelMode}
+        disabled={disabled}
+        onChange={setLabelMode}
+      />
       <ServiceGroupingTargetSizeControl
         mode={mode}
         targetSize={targetSize}
@@ -277,6 +286,48 @@ export function ServiceGroupingSelect() {
         <ServiceGroupingInfoPanel mode={mode} id={infoId} headingId={headingId} />
       ) : null}
     </div>
+  );
+}
+
+/** Semantic techniques can name a generated parent with either their strongest shared concept or
+ * multiple distinct concepts. Folder labels come directly from paths, so the switch stays
+ * visible but unavailable there rather than suggesting that it changes path-derived names. */
+export function ServiceGroupingLabelModeControl(props: {
+  mode: ServiceGroupingMode;
+  labelMode: ServiceGroupingLabelMode;
+  disabled: boolean;
+  onChange(mode: ServiceGroupingLabelMode): void;
+}) {
+  const pair = props.labelMode === "pair";
+  const available = props.mode !== "folder";
+  const disabled = props.disabled || !available;
+  const title = !available
+    ? "Folder grouping uses repository path labels"
+    : pair
+      ? "Use only the strongest shared concept in each generated label"
+      : "Add multiple distinct shared concepts to each generated label";
+  return (
+    <>
+      <div style={SIZE_ROW_STYLE} role="group" aria-label="Cluster label detail">
+        <span style={SIZE_LABEL_STYLE}>Labels</span>
+        <Pill
+          active={pair}
+          indicator="square"
+          disabled={disabled}
+          title={title}
+          onClick={() => props.onChange(pair ? "single" : "pair")}
+        >
+          Multi-part labels
+        </Pill>
+      </div>
+      <span style={SIZE_HELP_STYLE}>
+        {!available
+          ? "Folder names come directly from repository paths."
+          : pair
+            ? "Shows multiple distinct concepts, separated by slashes."
+            : "Shows only the strongest shared concept."}
+      </span>
+    </>
   );
 }
 
