@@ -30,19 +30,14 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
   const [controlsCollapsed, setControlsCollapsed] = useState(false);
   const viewMode = useBlueprint((state) => state.viewMode);
   const hasOverlay = useBlueprint((state) => state.hasOverlay);
-  const flowPaneOpen = useBlueprint((state) => state.flowSelection !== null
-    && (state.reviewFlowBaseline === null || state.reviewOpenFlowSplitOnSelect));
-  const reviewFlowOpen = useBlueprint((state) => state.flowSelection !== null
-    && state.reviewFlowBaseline !== null
-    && state.reviewOpenFlowSplitOnSelect);
   const { resetCategoryFilter, resetRelationshipFilter } = useBlueprintActions();
 
   const isComposition = viewMode === "call";
   // Every module-family lens (Map / Service / UI — unified in phase C) wears the same dials.
   const onModuleSurface = viewMode === "modules" || viewMode === "ui" || isComposition;
   return (
-    <Panel position="top-left">
-      <div id={CONTROL_PANEL_ID} style={panelStyle(flowPaneOpen, reviewFlowOpen)}>
+    <Panel position="top-left" style={PANEL_HOST_STYLE}>
+      <div id={CONTROL_PANEL_ID} style={PANEL_STYLE}>
         <ControlPanelHeader />
 
         {hasOverlay ? (
@@ -137,9 +132,6 @@ const PANEL_STYLE: React.CSSProperties = {
   gap: 11,
   padding: 16,
   width: CONTROL_PANEL_WIDTH,
-  maxHeight: "calc(100vh - 24px)",
-  overflowY: "auto",
-  overflowX: "hidden",
   boxSizing: "border-box",
   borderRadius: 14,
   border: `1px solid ${TOKENS.surfaceBorder}`,
@@ -147,18 +139,14 @@ const PANEL_STYLE: React.CSSProperties = {
   backdropFilter: "blur(8px)",
 };
 
-/** Keep the global control panel inside the upper graph when a bottom flow pane is open. React
- * Flow's outer <Panel> is viewport-positioned, so its ordinary 100vh cap would otherwise cover the
- * split's flow entry nodes. Each pane owns the complementary share (30% in review, 40% elsewhere). */
-function panelStyle(flowPaneOpen: boolean, reviewFlowOpen: boolean): React.CSSProperties {
-  if (!flowPaneOpen) {
-    return PANEL_STYLE;
-  }
-  return {
-    ...PANEL_STYLE,
-    maxHeight: reviewFlowOpen ? "calc(70vh - 24px)" : "calc(60vh - 24px)",
-  };
-}
+/** The Panel itself is absolutely positioned inside the live graph pane, so this relative cap
+ * follows every split drag instead of assuming a fixed 60/70vh complement. */
+const PANEL_HOST_STYLE: React.CSSProperties = {
+  maxHeight: "calc(100% - 30px)",
+  overflowY: "auto",
+  overflowX: "hidden",
+  borderRadius: 14,
+};
 const PR_CONTROLS_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column" };
 const CONTROLS_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 11 };
 const HIDDEN_CONTROLS_STYLE: React.CSSProperties = { ...CONTROLS_STYLE, display: "none" };
