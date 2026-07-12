@@ -324,6 +324,10 @@ export interface BlueprintState {
    * (their owning unit/file) so an out-of-view symbol joins the Map or Service canvas. Shared by both
    * lenses (they share the module slice). Session-only; cleared on a focus/lens change. */
   mapExtra: Set<string>;
+  /** Exact pin roots newly contributed by each promoted ghost. Folder ghosts need this provenance
+   * because their selected package id contains (rather than sits beneath) the pinned files; it lets
+   * Remove reverse only that promotion without sweeping unrelated pins under the same folder. */
+  mapGhostPins: Map<string, ReadonlySet<string>>;
   /** Temporary exact roots traversed by clicking ghosts. They expose one more call-neighbour ring
    * without committing those nodes to `mapExtra`; clicking outside the retained path clears them. */
   moduleGhostInspection: ModuleGhostInspection | null;
@@ -559,6 +563,10 @@ export interface BlueprintState {
    * into `mapExtra`; while the minimal overlay is open it adds the home member to that overlay and
    * preserves the clicked card's position. Both destinations open the target's containment path. */
   promoteGhost(ghostId: string, at?: { x: number; y: number }): void;
+  /** Remove the selected additions from the current Map/Service/UI canvas. Persistent `mapExtra`
+   * pins and selected temporary inspection roots are reversed together; canonical graph members
+   * are never hidden. Multi-selection membership commits as one state change and one relayout. */
+  removeSelectionFromView(): void;
   expandModuleChildren(containerId: string | null): void;
   collapseModuleChildren(containerId: string | null): void;
   togglePrivateMembers(): void;
@@ -988,6 +996,89 @@ function nodeLayoutActivity(state: BlueprintState, verb: string, id: string | nu
   return { label: label ? `${verb} ${label}…` : `${verb}…` };
 }
 
+interface ModuleSelectionRemovalPlan {
+  /** Selected ids covered by at least one removable addition. */
+  selectionIds: string[];
+  /** Selected promoted-ghost ids which can remain valid as paint-created parent ghosts even when
+   * they are absent from the settled raw layout. */
+  provenanceSelectionIds: string[];
+  /** Persistent extra roots covered by the selection. */
+  mapExtraIds: string[];
+  /** Temporary inspection roots covered by the selection. */
+  visitedIds: string[];
+}
+
+/** Number of selected scopes on which the action-bar Remove control can operate. Kept as a
+ * primitive selector so the action bar does not rerender on unrelated store updates. */
+export function removableModuleSelectionCount(state: BlueprintState): number {
+  return moduleSelectionRemovalPlan(state).selectionIds.length;
+}
+
+/** Resolve selection against both canonical GraphIndex ancestry and the active canvas's drawn
+ * ancestry. The latter matters for Service/UI frames whose semantic parents are presentation-only.
+ * Only an added root equal to or containing a selection is removable: selecting a canonical
+ * ancestor must never sweep unrelated additions from beneath it. */
+function moduleSelectionRemovalPlan(state: BlueprintState): ModuleSelectionRemovalPlan {
+  const inspectionVisited = state.moduleGhostInspection?.visitedIds;
+  if (
+    state.moduleSelected.size === 0
+    || state.minimalSeedIds.length > 0
+    || moduleSurfaceSpec(state.viewMode) === null
+    || (state.mapExtra.size === 0 && (inspectionVisited?.size ?? 0) === 0)
+  ) {
+    return { selectionIds: [], provenanceSelectionIds: [], mapExtraIds: [], visitedIds: [] };
+  }
+
+  const selected = [...state.moduleSelected];
+  let drawnById: Map<string, Node> | null = null;
+  const contains = (ancestorId: string, descendantId: string): boolean => {
+    if (state.index.isWithinFocus(ancestorId, descendantId)) {
+      return true;
+    }
+    drawnById ??= new Map(state.moduleRfNodes.map((node) => [node.id, node]));
+    const seen = new Set<string>();
+    let current: string | null | undefined = descendantId;
+    while (current !== null && current !== undefined && !seen.has(current)) {
+      if (current === ancestorId) {
+        return true;
+      }
+      seen.add(current);
+      current = drawnById.get(current)?.parentId;
+    }
+    return false;
+  };
+  const coversSelection = (rootId: string, selectedId: string): boolean =>
+    contains(rootId, selectedId);
+
+  const mapExtraIds = new Set([...state.mapExtra]
+    .filter((rootId) => selected.some((selectedId) => coversSelection(rootId, selectedId)))
+  );
+  const provenanceSelections = new Set<string>();
+  for (const selectedId of selected) {
+    for (const pinId of state.mapGhostPins.get(selectedId) ?? []) {
+      if (!state.mapExtra.has(pinId)) continue;
+      mapExtraIds.add(pinId);
+      provenanceSelections.add(selectedId);
+    }
+  }
+  const visitedIds = [...(inspectionVisited ?? [])]
+    .filter((rootId) => selected.some((selectedId) => coversSelection(rootId, selectedId)))
+    .sort();
+  const sortedMapExtraIds = [...mapExtraIds].sort();
+  const removableRoots = [...sortedMapExtraIds, ...visitedIds];
+  const selectionIds = selected
+    .filter((selectedId) =>
+      provenanceSelections.has(selectedId)
+      || removableRoots.some((rootId) => coversSelection(rootId, selectedId)))
+    .sort();
+  return {
+    selectionIds,
+    provenanceSelectionIds: [...provenanceSelections].sort(),
+    mapExtraIds: sortedMapExtraIds,
+    visitedIds,
+  };
+}
+
 export function createBlueprintStore(dependencies: StoreDependencies): BlueprintStore {
   // The lens to resume when the PR-review page is toggled back off; null == none captured yet.
   let lensBeforePrs: ViewMode | null = null;
@@ -995,6 +1086,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let logicLayoutSeq = 0;
   // And for the Module-map layout, so a newer focus change supersedes an older derivation.
   let moduleLayoutSeq = 0;
+  // Selected ids whose just-removed membership may leave no settled card. Any winning module
+  // layout consumes this set, so a superseded Remove layout cannot strand a palette-only pick.
+  const pendingModuleSelectionPrune = new Set<string>();
   // And for the Module-map selection's minimal-graph overlay (its own surface, its own guard).
   let minimalLayoutSeq = 0;
   // The file import graph, built once per ARTIFACT on first module-map relayout and reused for
@@ -1135,6 +1229,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleSelected: new Set<string>(),
     moduleExpanded: new Set<string>(),
     mapExtra: new Set<string>(),
+    mapGhostPins: new Map<string, ReadonlySet<string>>(),
     moduleGhostInspection: null,
     showPrivate: true,
     serviceScope: null,
@@ -1470,6 +1565,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         compRoot: unitId,
         compSelectedId: unitId,
         mapExtra: new Set<string>(),
+        mapGhostPins: new Map<string, ReadonlySet<string>>(),
         moduleRfNodes: [],
         moduleRfEdges: [],
         moduleSemanticLayers: [],
@@ -1815,11 +1911,24 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         if (moduleLayoutSeq !== sequence) {
           return; // a newer focus change superseded this one.
         }
+        const latest = get();
+        let moduleSelected = latest.moduleSelected;
+        if (pendingModuleSelectionPrune.size > 0) {
+          const visibleIds = new Set(laid.nodes.map((node) => node.id));
+          const staleIds = [...pendingModuleSelectionPrune].filter((id) =>
+            latest.moduleSelected.has(id) && !visibleIds.has(id));
+          if (staleIds.length > 0) {
+            moduleSelected = new Set(latest.moduleSelected);
+            staleIds.forEach((id) => moduleSelected.delete(id));
+          }
+          pendingModuleSelectionPrune.clear();
+        }
         set({
           moduleRfNodes: laid.nodes,
           moduleRfEdges: laid.edges,
           moduleEffectiveFocus: tree.effectiveFocus,
           moduleSemanticLayers: semanticLayers,
+          moduleSelected,
           moduleLayoutStatus: "ready",
           moduleLayoutActivity: null,
         });
@@ -1845,6 +1954,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleSelected: new Set<string>(),
         moduleExpanded: new Set<string>(),
         mapExtra: new Set<string>(),
+        mapGhostPins: new Map<string, ReadonlySet<string>>(),
         moduleGhostInspection: null,
       });
       void get().moduleRelayout(id === null
@@ -1898,6 +2008,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleSelected: new Set<string>(),
         moduleExpanded: new Set<string>(),
         mapExtra: new Set<string>(),
+        mapGhostPins: new Map<string, ReadonlySet<string>>(),
         moduleGhostInspection: null,
       });
       return true;
@@ -1937,6 +2048,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleExpanded: expanded,
         moduleSelected: new Set([nodeId]),
         mapExtra: new Set<string>(), // a focus jump ends the scratch "+" pins from the level we left.
+        mapGhostPins: new Map<string, ReadonlySet<string>>(),
         moduleGhostInspection: null,
       });
       void get().moduleRelayout(nodeLayoutActivity(state, "Opening", nodeId));
@@ -2067,14 +2179,77 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // the level wired to the cards that anchored the ghost, so a captured rect would fight relayout.
       const pins = ghostPinIds(state.index, ghostId, drawnGhostMembers(state.moduleRfNodes, ghostId));
       const mapExtra = new Set(state.mapExtra);
-      pins.forEach((pin) => mapExtra.add(pin));
-      if (mapExtra.size === state.mapExtra.size && moduleExpanded.size === state.moduleExpanded.size) {
+      const newlyPinned = pins.filter((pin) => !mapExtra.has(pin));
+      newlyPinned.forEach((pin) => mapExtra.add(pin));
+      let mapGhostPins = state.mapGhostPins;
+      if (newlyPinned.length > 0) {
+        mapGhostPins = new Map(state.mapGhostPins);
+        const ownedPins = new Set(mapGhostPins.get(ghostId) ?? []);
+        newlyPinned.forEach((pin) => ownedPins.add(pin));
+        mapGhostPins.set(ghostId, ownedPins);
+      }
+      if (
+        mapExtra.size === state.mapExtra.size
+        && moduleExpanded.size === state.moduleExpanded.size
+        && mapGhostPins === state.mapGhostPins
+      ) {
         return; // unknown ghost, or its home file and reveal path are already present.
       }
       // Keep the current lens focus and selection. `mapRevealStateForMany` contributes expansion ids
       // only; adopting its other fields would unexpectedly navigate away from the canvas being edited.
-      set({ mapExtra, moduleExpanded });
+      set({ mapExtra, mapGhostPins, moduleExpanded });
       void get().moduleRelayout(nodeLayoutActivity(state, "Adding", member));
+    },
+
+    // Remove is the exact inverse of canvas admission, not an arbitrary graph hide. It can demote
+    // a selected temporary preview, unpin its committed home card, or batch both. Inspection roots
+    // outside the selection stay retained, and expansion remains untouched so re-adding a card does
+    // not forget how the reader had opened it.
+    removeSelectionFromView() {
+      const state = get();
+      const plan = moduleSelectionRemovalPlan(state);
+      if (plan.mapExtraIds.length === 0 && plan.visitedIds.length === 0) {
+        return;
+      }
+
+      const mapExtra = new Set(state.mapExtra);
+      plan.mapExtraIds.forEach((id) => mapExtra.delete(id));
+      const mapGhostPins = new Map<string, ReadonlySet<string>>();
+      for (const [ghostId, pinIds] of state.mapGhostPins) {
+        const remaining = new Set([...pinIds].filter((id) => !plan.mapExtraIds.includes(id)));
+        if (remaining.size > 0) {
+          mapGhostPins.set(ghostId, remaining);
+        }
+      }
+
+      let moduleGhostInspection = state.moduleGhostInspection;
+      if (moduleGhostInspection !== null && plan.visitedIds.length > 0) {
+        const visitedIds = new Set(moduleGhostInspection.visitedIds);
+        plan.visitedIds.forEach((id) => visitedIds.delete(id));
+        moduleGhostInspection = visitedIds.size === 0
+          ? null
+          : { anchorIds: new Set(moduleGhostInspection.anchorIds), visitedIds };
+      }
+
+      const firstRemoved = plan.selectionIds[0] ?? plan.mapExtraIds[0] ?? plan.visitedIds[0] ?? null;
+      const activity = nodeLayoutActivity(state, "Removing", firstRemoved);
+      const paintValidSelections = new Set(plan.provenanceSelectionIds);
+      plan.selectionIds
+        .filter((id) => !paintValidSelections.has(id))
+        .forEach((id) => pendingModuleSelectionPrune.add(id));
+      // Publish teardown and the admission barrier together. Otherwise a subscriber can observe a
+      // null inspection key while layout still says "ready" and briefly admit the stale raw scene.
+      set({
+        mapExtra,
+        mapGhostPins,
+        moduleGhostInspection,
+        moduleLayoutStatus: "laying-out",
+        moduleLayoutActivity: activity,
+      });
+      // Keep the literal selection through admission so a demoted real card can return as the same
+      // selected ghost, retaining its siblings and wires. Palette-only cards may truly disappear;
+      // after the settled scene arrives, prune only those selected ids which have no drawn form.
+      void get().moduleRelayout(activity);
     },
 
     // Expand one containment level under the target. `null` means the current view frontier; a
@@ -3028,6 +3203,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({
         viewMode: mode,
         mapExtra: new Set<string>(),
+        mapGhostPins: new Map<string, ReadonlySet<string>>(),
         moduleRfNodes: [],
         moduleRfEdges: [],
         moduleSemanticLayers: [],

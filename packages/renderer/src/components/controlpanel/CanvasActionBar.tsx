@@ -6,6 +6,7 @@
 
 import { Panel } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
+import { removableModuleSelectionCount } from "../../state/store";
 import {
   CanvasActionBarFrame,
   CanvasActionButton,
@@ -20,6 +21,7 @@ import {
   CollapseIcon,
   ExpandIcon,
   ExtractSelectionIcon,
+  RemoveSelectionIcon,
   RearrangeIcon,
   RecenterIcon,
   ResetIcon,
@@ -41,6 +43,7 @@ export function CanvasActionBar({
   backButtonRef,
 }: CanvasActionBarProps = {}) {
   const selectedCount = useBlueprint((state) => state.moduleSelected.size);
+  const removableCount = useBlueprint(removableModuleSelectionCount);
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const minimalArranged = useBlueprint((state) => state.minimalArrange);
   const minimalChanged = useBlueprint(
@@ -51,6 +54,7 @@ export function CanvasActionBar({
     expandAll,
     collapseAll,
     buildMinimalGraph,
+    removeSelectionFromView,
     rearrangeMinimalGraph,
     resetMinimalGraph,
     closeMinimalGraph,
@@ -100,6 +104,17 @@ export function CanvasActionBar({
                 title="Extract the current selection into a focused graph"
                 icon={<ExtractSelectionIcon size={18} />}
                 onClick={buildMinimalGraph}
+              />
+              <CanvasActionButton
+                ariaLabel="Remove added nodes in selection"
+                title={
+                  removableCount > 0
+                    ? "Remove added nodes associated with the current selection from this view"
+                    : "Only nodes added to this view can be removed"
+                }
+                icon={<RemoveSelectionIcon size={18} />}
+                onClick={removeSelectionFromView}
+                disabled={removableCount === 0}
               />
             </CanvasActionGroup>
           </>

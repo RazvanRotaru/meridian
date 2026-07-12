@@ -1,17 +1,25 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { ReactFlowProvider } from "@xyflow/react";
 import { describe, expect, it } from "vitest";
+import type { GraphArtifact, GraphNode } from "@meridian/core";
+import { buildGraphIndex } from "../../graph/graphIndex";
+import { createBlueprintStore } from "../../state/store";
+import { StoreProvider } from "../../state/StoreContext";
+import { CanvasActionBar } from "./CanvasActionBar";
 import { canvasActionPlacement, panelAnchorStyle } from "./canvasActionBarLayout";
 
 describe("canvasActionPlacement", () => {
   it("centers each single-row footprint at its exact clearance threshold", () => {
     expect(canvasActionPlacement(798, "base")).toEqual({ position: "bottom-center", layout: "row" });
-    expect(canvasActionPlacement(871, "extract")).toEqual({ position: "bottom-center", layout: "row" });
+    expect(canvasActionPlacement(916, "extract")).toEqual({ position: "bottom-center", layout: "row" });
     expect(canvasActionPlacement(998, "minimal")).toEqual({ position: "bottom-center", layout: "row" });
     expect(canvasActionPlacement(852, "codebase")).toEqual({ position: "bottom-center", layout: "row" });
   });
 
   it("moves a full row beside the control panel when centering would overlap it", () => {
     expect(canvasActionPlacement(797, "base")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(870, "extract")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(915, "extract")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
     expect(canvasActionPlacement(997, "minimal")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
     expect(canvasActionPlacement(851, "codebase")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
   });
@@ -27,7 +35,8 @@ describe("canvasActionPlacement", () => {
     expect(canvasActionPlacement(520, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 311, bottom: 181 });
     expect(canvasActionPlacement(540, "codebase")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
     expect(canvasActionPlacement(541, "codebase")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(559, "extract")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(605, "extract")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(604, "extract")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
   });
 
   it("keeps the short stacked layout when the side lane disappears", () => {
@@ -56,3 +65,102 @@ describe("canvasActionPlacement", () => {
     });
   });
 });
+
+describe("CanvasActionBar Remove action", () => {
+  it("is described and aria-disabled for canonical selections, then enabled for an added card", () => {
+    const store = actionBarStore();
+    store.setState({ moduleSelected: new Set([ACTION_METHOD]) });
+
+    const disabledMarkup = renderActionBar(store);
+    const disabledButton = removeButtonMarkup(disabledMarkup);
+    expect(disabledButton).toContain('aria-disabled="true"');
+    expect(describedText(disabledMarkup, disabledButton)).toBe("Only nodes added to this view can be removed");
+
+    store.setState({ mapExtra: new Set([ACTION_FILE]) });
+    const enabledMarkup = renderActionBar(store);
+    const enabledButton = removeButtonMarkup(enabledMarkup);
+    expect(enabledButton).not.toContain("aria-disabled");
+    expect(describedText(enabledMarkup, enabledButton)).toBe(
+      "Remove added nodes associated with the current selection from this view",
+    );
+  });
+});
+
+const ACTION_FILE = "ts:src/action.ts";
+const ACTION_METHOD = `${ACTION_FILE}#Action.run`;
+
+function actionNode(id: string, kind: string, parentId?: string): GraphNode {
+  return {
+    id,
+    kind,
+    qualifiedName: id,
+    displayName: id,
+    parentId,
+    location: { file: "src/action.ts", startLine: 1 },
+  };
+}
+
+function actionBarStore() {
+  const artifact: GraphArtifact = {
+    schemaVersion: "1.0.0",
+    generatedAt: "2026-07-12T00:00:00.000Z",
+    generator: { name: "test", version: "0" },
+    target: { name: "fixture", root: ".", language: "typescript" },
+    nodes: [
+      actionNode("ts:src", "package"),
+      actionNode(ACTION_FILE, "module", "ts:src"),
+      actionNode(`${ACTION_FILE}#Action`, "class", ACTION_FILE),
+      actionNode(ACTION_METHOD, "method", `${ACTION_FILE}#Action`),
+    ],
+    edges: [],
+  };
+  return createBlueprintStore({
+    artifact,
+    index: buildGraphIndex(artifact),
+    provider: null,
+    hasOverlay: false,
+    sourceUrl: null,
+    prsUrl: "/api/prs",
+    prOneUrl: "/api/prs/one",
+    prFilesUrl: "/api/prs/files",
+    prRelatedUrl: "/api/prs/related",
+    prCommentsUrl: "/api/prs/comments",
+    prChecksUrl: "/api/prs/checks",
+    prReviewUrl: "/api/prs/review",
+  });
+}
+
+function renderActionBar(store: ReturnType<typeof actionBarStore>): string {
+  // Zustand's server snapshot is normally the store's boot state. For this static component test,
+  // make the explicitly prepared current state the hydration snapshot for the duration of render.
+  const getInitialState = store.getInitialState;
+  store.getInitialState = store.getState;
+  try {
+    return renderToStaticMarkup(createElement(
+      StoreProvider,
+      {
+        store,
+        children: createElement(ReactFlowProvider, null, createElement(CanvasActionBar)),
+      },
+    ));
+  } finally {
+    store.getInitialState = getInitialState;
+  }
+}
+
+function removeButtonMarkup(markup: string): string {
+  const button = markup.match(/<button[^>]*aria-label="Remove added nodes in selection"[^>]*>/)?.[0];
+  expect(button).toBeDefined();
+  return button!;
+}
+
+function describedText(markup: string, button: string): string {
+  const id = button.match(/aria-describedby="([^"]+)"/)?.[1];
+  expect(id).toBeDefined();
+  const descriptionStart = markup.indexOf(`id="${id}"`);
+  expect(descriptionStart).toBeGreaterThanOrEqual(0);
+  const descriptionEnd = markup.indexOf("</span>", descriptionStart);
+  expect(descriptionEnd).toBeGreaterThan(descriptionStart);
+  const description = markup.slice(descriptionStart, descriptionEnd);
+  return description.slice(description.indexOf(">") + 1);
+}

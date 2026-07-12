@@ -101,7 +101,7 @@ export const MINIMAL_MEMBERS_MAX_HEIGHT_OFFSET = MEMBERS_PANEL_TOP + NORMAL_BOTT
 const BASE_BAR_WIDTH = 144;
 const BAR_WIDTHS: Record<CanvasActionMode, number> = {
   base: BASE_BAR_WIDTH,
-  extract: 217,
+  extract: 262,
   minimal: 344,
   codebase: 198,
 };
