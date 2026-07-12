@@ -4,8 +4,9 @@
  * the file card can't drift apart on the expand affordance or the frame treatment.
  */
 
+import { isSourceBackedNode } from "../../../derive/sourceBackedNode";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
-import { useSurfaceReadOnly } from "../../canvas/SurfaceInteractionContext";
+import { useSurfaceReadOnly, useSurfaceToggleExpand } from "../../canvas/SurfaceInteractionContext";
 
 export const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 export const SELECT_ACCENT = "#6BE38A";
@@ -34,13 +35,14 @@ export function FrameTitleBar({
  * spans the whole file), with its changed lines marked in the gutter + rows (+ added / − deleted /
  * ~ modified). Scoped to the unit on purpose: a changed function should show the function, not the
  * whole file it sits in. Shown for changed AND unchanged nodes. Needs a source location AND the
- * server serving source (`sourceUrl`), so it never dangles; a directory/package node has none.
+ * server serving source (`sourceUrl`), so it never dangles. Structural and boundary nodes carry
+ * pseudo-locations for graph semantics, but those locations do not name readable source files.
  */
 export function CodeButton({ id }: { id: string }) {
   const node = useBlueprint((state) => state.index.nodesById.get(id));
   const sourceUrl = useBlueprint((state) => state.sourceUrl);
   const { showCode, expandCode } = useBlueprintActions();
-  if (!node?.location || !sourceUrl) {
+  if (!isSourceBackedNode(node) || !sourceUrl) {
     return null;
   }
   return (
@@ -78,8 +80,10 @@ const CODE_BTN: React.CSSProperties = {
 /** The in-place expand/collapse chevron; stops propagation so it never also selects the card. */
 export function ExpandChevron({ id, isExpanded, collapsedTitle }: { id: string; isExpanded: boolean; collapsedTitle?: string }) {
   const readOnly = useSurfaceReadOnly();
-  const toggleModuleExpand = useBlueprintActions().toggleModuleExpand;
-  if (readOnly) {
+  const surfaceToggleExpand = useSurfaceToggleExpand();
+  const storeToggleExpand = useBlueprintActions().toggleModuleExpand;
+  const toggleExpand = resolveSurfaceExpandAction(readOnly, surfaceToggleExpand, storeToggleExpand);
+  if (toggleExpand === null) {
     return null;
   }
   const label = isExpanded ? "Collapse" : "Expand";
@@ -91,13 +95,23 @@ export function ExpandChevron({ id, isExpanded, collapsedTitle }: { id: string; 
       aria-label={label}
       onClick={(event) => {
         event.stopPropagation();
-        toggleModuleExpand(id);
+        toggleExpand(id);
       }}
       onDoubleClick={(event) => event.stopPropagation()}
     >
       {isExpanded ? "▾" : "▸"}
     </button>
   );
+}
+
+/** Read-only normally suppresses structural gestures, but a surface may provide a local disclosure
+ * action which takes precedence over the shared store action. Kept pure for contract tests. */
+export function resolveSurfaceExpandAction(
+  readOnly: boolean,
+  surfaceAction: ((nodeId: string) => void) | null,
+  storeAction: (nodeId: string) => void,
+): ((nodeId: string) => void) | null {
+  return surfaceAction ?? (readOnly ? null : storeAction);
 }
 
 /** An expanded card's near-transparent frame, tinted by the card family's accent. */

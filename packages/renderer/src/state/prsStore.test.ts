@@ -712,6 +712,18 @@ describe("PR store slice", () => {
     expect(store.getState().codeView).toBe(openModal);
   });
 
+  it("does not issue a source request for a package directory", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ sourceUrl: "/api/source?id=artifact-1" });
+    const packageNode = store.getState().index.nodesById.get(PACKAGE_ID)!;
+
+    expect(await store.getState().loadCodePreview(packageNode)).toBeNull();
+    await store.getState().showCode(packageNode);
+    expect(store.getState().codeView).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("reads a changed file from the PR head even when GitHub omitted its patch", async () => {
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
     const fullCode = Array.from({ length: 20 }, (_value, index) => `line${index + 1}`).join("\n");

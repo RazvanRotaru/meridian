@@ -170,6 +170,7 @@ export function restorePrReviewBaseline(
     minimalSeedIds: [],
     minimalMemberIds: [],
     minimalRollups: {},
+    minimalRollupSeedOrigin: null,
     minimalBasePositions: {},
     minimalArrange: false,
     minimalRfNodes: [],

@@ -39,7 +39,8 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
 export function GroupContainerNodeView({ id, data }: { id: string; data: ModuleGroupData }) {
   const selected = useSurfaceNodeSelected(id);
   const readOnlySurface = useSurfaceReadOnly();
-  const rollupFileCount = useBlueprint((state) => readOnlySurface ? 0 : state.minimalRollups[id]?.length ?? 0);
+  const changedRollupFileCount = useBlueprint((state) => state.minimalRollups[id]?.length ?? 0);
+  const rollupFileCount = rollupExpansionFileCount(data.fileCount, changedRollupFileCount, readOnlySurface);
   const { expandMinimalGroup } = useBlueprintActions();
   const diff = useNodeDiff(id);
   const chevron = data.isContainer ? <ExpandChevron id={id} isExpanded={data.isExpanded} /> : null;
@@ -115,6 +116,12 @@ export function RollupExpandableBody({
   );
 }
 
+/** A review rollup's changed-file list decides whether the disclosure exists, while the control
+ * advertises the complete source subtree it will actually reveal. */
+export function rollupExpansionFileCount(totalFileCount: number, changedFileCount: number, readOnly: boolean): number {
+  return !readOnly && changedFileCount > 0 ? totalFileCount : 0;
+}
+
 /** File count + cross-package fan-in/out — shown compact in a title bar, block in a collapsed card.
  * `hideCoupling` drops the uses/used-by pair when the counts aren't meaningful (a filtered subgraph). */
 function Meta({
@@ -149,17 +156,18 @@ function Meta({
 /** The review rollup's explicit one-way disclosure gesture. Click/double-click propagation stops
  * here so activating the button cannot also select or navigate the package. */
 export function RollupExpandControl({ count, onExpand }: { count: number; onExpand(): void }) {
+  const noun = count === 1 ? "file" : "files";
   return (
     <button
       type="button"
       className="nodrag nopan"
       style={EXPAND_ROLLUP}
-      title={`Expand ${count} changed file(s)`}
-      aria-label={`Expand ${count} changed file(s)`}
+      title={`Expand all ${count} source ${noun}`}
+      aria-label={`Expand all ${count} source ${noun}`}
       onClick={(event) => activateRollupExpansion(event, onExpand)}
       onDoubleClick={(event) => event.stopPropagation()}
     >
-      {count} files ▸
+      {count} {noun} ▸
     </button>
   );
 }

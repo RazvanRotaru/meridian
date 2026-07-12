@@ -1,5 +1,5 @@
 /**
- * Hover-to-preview for every source-located node on the PR review graph. React Flow owns the node
+ * Hover-to-preview for every source-backed node on the PR review graph. React Flow owns the node
  * elements (and scales/clips them with the canvas), so this hook listens at the shared surface and
  * portals one fixed, interactive card to document.body. A short dwell avoids fetching source while
  * the pointer merely crosses the graph; a leave grace lets the pointer bridge the gap into the card
@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import { createPortal } from "react-dom";
 import type { Node as FlowNode } from "@xyflow/react";
 import type { GraphNode, ReviewContext } from "@meridian/core";
+import { isSourceBackedNode } from "../../derive/sourceBackedNode";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { CodeView } from "../../state/store";
 import { CodeBlock } from "../CodeBlock";
@@ -85,13 +86,13 @@ export function placeNodeDiffPreview(anchor: PreviewRect, bounds: PreviewBounds)
 type LocatedGraphNode = GraphNode & { location: NonNullable<GraphNode["location"]> };
 
 /** Resolve hover source by graph identity alone. PR change membership only decorates the preview;
- * it must never decide whether an otherwise source-located node can open one. */
+ * it must never decide whether an otherwise source-backed node can open one. */
 export function codePreviewNode(
   nodesById: ReadonlyMap<string, GraphNode>,
   nodeId: string,
 ): LocatedGraphNode | null {
   const node = nodesById.get(nodeId);
-  if (!node?.location) {
+  if (!isSourceBackedNode(node)) {
     return null;
   }
   return node;

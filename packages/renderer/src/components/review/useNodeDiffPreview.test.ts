@@ -83,19 +83,33 @@ describe("placeNodeDiffPreview", () => {
 });
 
 describe("codePreviewNode", () => {
-  it("allows every source-located node regardless of PR change membership", () => {
-    const unchanged: GraphNode = {
-      id: "unchanged",
-      kind: "method",
-      qualifiedName: "unchanged",
-      displayName: "unchanged",
+  function node(id: string, kind: string, file: string): GraphNode {
+    return {
+      id,
+      kind,
+      qualifiedName: id,
+      displayName: id,
       parentId: null,
-      location: { file: "src/unchanged.ts", startLine: 4, endLine: 8 },
+      location: { file, startLine: 4, endLine: 8 },
     };
+  }
+
+  it("allows every source-backed node regardless of PR change membership", () => {
+    const unchanged = node("ts:src/unchanged.ts#run", "method", "src/unchanged.ts");
     const nodes = new Map([[unchanged.id, unchanged]]);
 
     expect(codePreviewNode(nodes, unchanged.id)).toBe(unchanged);
     expect(codePreviewNode(nodes, "synthetic-hover-card")).toBeNull();
+  });
+
+  it.each([
+    node("ts:src/services", "package", "src/services"),
+    node("sys:web", "system", "web"),
+    node("ext:typescript/lib.es5.d.ts#Error", "external", "typescript/lib.es5.d.ts"),
+    node("unresolved:?", "unresolved", "?"),
+    node("ipc:http/GET+/orders", "channel", "(http)"),
+  ])("does not preview structural or synthetic node $id", (candidate) => {
+    expect(codePreviewNode(new Map([[candidate.id, candidate]]), candidate.id)).toBeNull();
   });
 });
 

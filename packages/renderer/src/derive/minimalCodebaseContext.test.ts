@@ -4,6 +4,7 @@ import { buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
 import { buildBlockDeps } from "./blockDeps";
 import { buildModuleGraph } from "./moduleGraph";
 import {
+  applyMinimalCodebaseExpansionOverrides,
   deriveMinimalCodebaseContext,
   type MinimalCodebaseContext,
 } from "./minimalCodebaseContext";
@@ -83,6 +84,23 @@ function derive(
 
 function visibleIds(context: MinimalCodebaseContext): Set<string> {
   return new Set(context.tree.nodes.filter((entry) => entry.kind !== "ghost").map((entry) => entry.id));
+}
+
+function applyExpansion(
+  context: MinimalCodebaseContext,
+  overrides: ReadonlyMap<string, boolean>,
+): MinimalCodebaseContext {
+  return applyMinimalCodebaseExpansionOverrides(
+    context,
+    {
+      index: INDEX,
+      moduleGraph: buildModuleGraph(INDEX),
+      blockDeps: buildBlockDeps(INDEX),
+      flows: {},
+      demoteCommons: false,
+    },
+    overrides,
+  );
 }
 
 function expectHighlightsDrawn(context: MinimalCodebaseContext): void {
@@ -219,5 +237,35 @@ describe("deriveMinimalCodebaseContext", () => {
     expect(context?.reveal.moduleExpanded).toEqual(new Set());
     expect(context?.highlightTargetIds).toEqual(new Set([APP]));
     expectHighlightsDrawn(context as MinimalCodebaseContext);
+  });
+
+  it("locally collapses an auto-opened target path without changing focus or availability", () => {
+    const canonical = derive([METHOD_A, FUNCTION_B]) as MinimalCodebaseContext;
+    const context = applyExpansion(canonical, new Map([[FEATURE_A, false]]));
+
+    expect(context.reveal.moduleFocus).toBe(SRC);
+    expect(context.tree.effectiveFocus).toBe(SRC);
+    expect(context.reveal.moduleExpanded.has(FEATURE_A)).toBe(false);
+    expect(visibleIds(context).has(METHOD_A)).toBe(false);
+    expect(visibleIds(context).has(FUNCTION_B)).toBe(true);
+    expect(context.highlightTargetIds).toEqual(new Set([FEATURE_A, FUNCTION_B]));
+    expect(context.reveal.moduleSelected).toEqual(context.highlightTargetIds);
+    expect(context.unresolvedTargetIds).toEqual(new Set());
+    expectHighlightsDrawn(context);
+  });
+
+  it("locally opens a collapsed non-descendant package without changing canonical targets", () => {
+    const canonical = derive([FEATURE_A, FEATURE_B]) as MinimalCodebaseContext;
+    const context = applyExpansion(canonical, new Map([[FEATURE_A, true]]));
+
+    expect(context.reveal.moduleFocus).toBe(SRC);
+    expect(context.tree.nodes.find((entry) => entry.id === FEATURE_A)).toMatchObject({
+      isContainer: true,
+      isExpanded: true,
+    });
+    expect(visibleIds(context).has(FILE_A)).toBe(true);
+    expect(context.highlightTargetIds).toEqual(new Set([FEATURE_A, FEATURE_B]));
+    expect(context.unresolvedTargetIds).toEqual(new Set());
+    expectHighlightsDrawn(context);
   });
 });

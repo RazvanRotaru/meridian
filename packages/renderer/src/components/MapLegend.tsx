@@ -26,7 +26,8 @@ interface MapLegendProps {
   showIpc?: boolean;
   /** The active lens's available semantic vocabulary. */
   relationPolicy?: LensRelationPolicy;
-  /** Frozen codebase context: describe marks without advertising disabled edit/navigation gestures. */
+  /** Read-only codebase context: omit disabled selection/navigation gestures while retaining local
+   * chevron disclosure, which changes only this presentation. */
   readOnly?: boolean;
 }
 
@@ -55,11 +56,11 @@ export function MapLegend({
       </div>
       <Section title="Cards">
         {showPackages ? (
-          <Row swatch={<Box color={accentForKind("package")} />} text={readOnly ? "package / directory containing highlighted code" : "package / directory — double-click to zoom in, chevron to expand in place"} />
+          <Row swatch={<Box color={accentForKind("package")} />} text={readOnly ? "package / directory containing highlighted code — chevron expands in place" : "package / directory — double-click to zoom in, chevron to expand in place"} />
         ) : null}
-        <Row swatch={<Box color={FILE_ACCENT} />} text={readOnly ? "file — disclosed declarations match the extracted graph" : "file — expands into its declarations; its category is on the chip (UI / Utilities / Config)"} />
+        <Row swatch={<Box color={FILE_ACCENT} />} text={readOnly ? "file — chevron discloses declarations in this context" : "file — expands into its declarations; its category is on the chip (UI / Utilities / Config)"} />
         <Row swatch={<ChipSwatch label="KIND" color={accentForKind("class")} />} text="class / interface / object / type — a neutral grey; the kind chip names which" />
-        <Row swatch={<Glyph text="ƒ" color={accentForKind("function")} />} text={readOnly ? "method / function in the located code path" : "method / function — double-click opens its logic flow"} />
+        <Row swatch={<Glyph text="ƒ" color={accentForKind("function")} />} text={readOnly ? "method / function in the located code path — chevron discloses a charted flow" : "method / function — double-click opens its logic flow"} />
         <Row swatch={<Dashed />} text={readOnly ? "ghost — related code outside this located level" : "ghost — related context outside this level; click selects, double-click reveals, chevron discloses a group"} />
       </Section>
       <Section title={readOnly ? "Wires — by relationship" : "Wires — by relationship (toggle each in the toolbar)"}>
@@ -74,8 +75,8 @@ export function MapLegend({
       </Section>
       {hasSteps ? (
         <Section title="Flow steps">
-          <Row swatch={<Glyph text="→" color={CALL_RESOLVED} />} text={readOnly ? "call (blue = resolved, grey = unresolved)" : "call (blue = resolved, grey = unresolved); expandable when its flow is charted"} />
-          <Row swatch={<Glyph text="↻ ⑂ λ" color={CONSTRUCT} />} text={readOnly ? "loop / branch / callback from the extracted flow" : "loop / branch / callback — expand to unroll the body"} />
+          <Row swatch={<Glyph text="→" color={CALL_RESOLVED} />} text={readOnly ? "call (blue = resolved, grey = unresolved) — chevron discloses a charted flow" : "call (blue = resolved, grey = unresolved); expandable when its flow is charted"} />
+          <Row swatch={<Glyph text="↻ ⑂ λ" color={CONSTRUCT} />} text={readOnly ? "loop / branch / callback — chevron unrolls the body locally" : "loop / branch / callback — expand to unroll the body"} />
           <Row swatch={<Glyph text="⏎" color={CONSTRUCT} />} text="return / throw — this path ends here" />
         </Section>
       ) : null}

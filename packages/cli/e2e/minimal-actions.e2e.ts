@@ -81,7 +81,8 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
       .getByRole("button", { name: "Highlight code in codebase" }).count()).toBe(0);
 
     // The context action swaps only the graph pane: all curated members are placed in their
-    // canonical Map ancestry, while curation controls and node expansion gestures are frozen.
+    // canonical Map ancestry. Curation/navigation stay frozen, while card chevrons disclose code
+    // locally without mutating the extracted graph underneath.
     await highlightInCodebase.click();
     const contextGraph = page.getByRole("region", { name: "Codebase context graph" });
     await contextGraph.getByText("READ-ONLY", { exact: true }).waitFor();
@@ -102,8 +103,15 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
       expect(memberBounds!.y + memberBounds!.height).toBeLessThanOrEqual(contextBounds!.y + contextBounds!.height);
     }
     expect(await contextGraph.getByRole("region", { name: "Extracted selection" }).count()).toBe(0);
-    expect(await contextGraph.getByRole("button", { name: "Expand" }).count()).toBe(0);
-    expect(await contextGraph.getByRole("button", { name: "Collapse" }).count()).toBe(0);
+    const contextMember = contextGraph.locator(`[data-id="${MEMBER_FILES[0]}"]`);
+    const contextNodeCount = await contextGraph.locator(".react-flow__node").count();
+    const expansionParam = new URL(page.url()).searchParams.get("mexp");
+    await contextMember.getByRole("button", { name: "Expand" }).click();
+    await contextMember.getByRole("button", { name: "Collapse" }).waitFor();
+    await expect.poll(() => contextGraph.locator(".react-flow__node").count()).toBeGreaterThan(contextNodeCount);
+    await contextMember.getByRole("button", { name: "Collapse" }).click();
+    await contextMember.getByRole("button", { name: "Expand" }).waitFor();
+    expect(new URL(page.url()).searchParams.get("mexp")).toBe(expansionParam);
     expect(await actionBar.getByRole("button", { name: "Expand one level" }).count()).toBe(0);
     expect(await actionBar.getByRole("button", { name: "Rearrange extracted graph" }).count()).toBe(0);
 
