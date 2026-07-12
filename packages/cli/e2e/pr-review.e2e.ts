@@ -94,11 +94,11 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await page.getByRole("button", { name: "Highlight code in codebase" }).click();
     const codebaseContext = page.getByRole("region", { name: "Codebase context graph" });
     await codebaseContext.getByText("READ-ONLY", { exact: true }).waitFor();
-    await codebaseContext.locator(`[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor();
-    await codebaseContext.locator(`[data-id="${ORDER_SERVICE_MODULE_ID}"]`).waitFor();
-    const unchangedModule = codebaseContext.locator(`[data-id="${PRICING_SERVICE_MODULE_ID}"]`);
+    await codebaseContext.locator(`.react-flow__node[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor();
+    await codebaseContext.locator(`.react-flow__node[data-id="${ORDER_SERVICE_MODULE_ID}"]`).waitFor();
+    const unchangedModule = codebaseContext.locator(`.react-flow__node[data-id="${PRICING_SERVICE_MODULE_ID}"]`);
     await unchangedModule.waitFor();
-    const changedFunction = codebaseContext.locator(`[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
+    const changedFunction = codebaseContext.locator(`.react-flow__node[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
     await changedFunction.waitFor();
     await expect.poll(
       () => changedFunction.evaluate((element) => getComputedStyle(element.firstElementChild as Element).backgroundImage),
@@ -124,12 +124,12 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await codePreview.waitFor({ state: "detached" });
 
     const expansionParam = new URL(page.url()).searchParams.get("mexp");
-    const pricingContext = codebaseContext.locator(`[data-id="${PRICING_PACKAGE_ID}"]`);
+    const pricingContext = codebaseContext.locator(`.react-flow__node[data-id="${PRICING_PACKAGE_ID}"]`);
     await pricingContext.getByRole("button", { name: "Collapse" }).click();
-    await codebaseContext.locator(`[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor({ state: "detached" });
-    await codebaseContext.locator(`[data-id="${ORDER_SERVICE_MODULE_ID}"]`).waitFor();
+    await codebaseContext.locator(`.react-flow__node[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor({ state: "detached" });
+    await codebaseContext.locator(`.react-flow__node[data-id="${ORDER_SERVICE_MODULE_ID}"]`).waitFor();
     await pricingContext.getByRole("button", { name: "Expand" }).click();
-    await codebaseContext.locator(`[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor();
+    await codebaseContext.locator(`.react-flow__node[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor();
     await changedFunction.waitFor();
     expect(new URL(page.url()).searchParams.get("mexp")).toBe(expansionParam);
     await page.getByRole("button", { name: "Back to extracted graph" }).click();
@@ -147,8 +147,13 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     // 4d — existing GitHub comments live on their HEAD source line in both canvas code hosts;
     // the review-panel control hides and restores that layer without disabling either host.
     const extractedReviewSurface = page.getByRole("region", { name: "Extracted graph" });
-    const loyaltyTierNode = extractedReviewSurface.locator(`[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
+    const loyaltyTierNode = extractedReviewSurface.locator(`.react-flow__node[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
     await loyaltyTierNode.waitFor();
+    const loyaltyCommentIndicator = extractedReviewSurface
+      .locator(`[data-review-comment-node-id="${LOYALTY_TIER_FUNCTION_ID}"]`)
+      .getByRole("img", { name: "1 review comment" });
+    await loyaltyCommentIndicator.waitFor();
+    expect(await extractedReviewSurface.locator(`[data-review-comment-node-id="${ORDER_SERVICE_MODULE_ID}"]`).count()).toBe(0);
     await loyaltyTierNode.hover();
     const loyaltyPreview = page.getByRole("dialog", { name: "Code preview for loyaltyTierFor" });
     await loyaltyPreview.waitFor();
@@ -159,6 +164,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await hideComments.getAttribute("aria-pressed")).toBe("true");
     await hideComments.click();
     await loyaltyPreview.waitFor({ state: "detached" });
+    await loyaltyCommentIndicator.waitFor({ state: "detached" });
     const viewComments = page.getByRole("button", { name: "View comments", exact: true });
     await viewComments.waitFor();
     expect(await viewComments.getAttribute("aria-pressed")).toBe("false");
@@ -168,6 +174,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await loyaltyPreview.getByText(EXISTING_COMMENT_TEXT, { exact: true }).count()).toBe(0);
     await viewComments.click();
     await loyaltyPreview.waitFor({ state: "detached" });
+    await loyaltyCommentIndicator.waitFor();
     await hideComments.waitFor();
     expect(await hideComments.getAttribute("aria-pressed")).toBe("true");
 
@@ -232,7 +239,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     // intentionally retained source copy of the same file card.
     const extractedSurface = page.getByRole("region", { name: "Extracted graph" });
     const codeButton = extractedSurface.locator(
-      `[data-id="${ORDER_SERVICE_MODULE_ID}"] button[aria-label="View source"]`,
+      `.react-flow__node[data-id="${ORDER_SERVICE_MODULE_ID}"] button[aria-label="View source"]`,
     );
     await codeButton.waitFor({ timeout: 60_000 });
     await codeButton.click();
