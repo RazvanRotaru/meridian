@@ -97,6 +97,15 @@ describe("deriveLogicGraph", () => {
     expect(edges).toContainEqual(expect.objectContaining({ source: "r::0", target: after.id, kind: "branch", label: "else" }));
   });
 
+  it("carries a branch's fullLabel onto the diamond for the hover, and leaves it undefined when absent", () => {
+    const clipped: FlowStep = { kind: "branch", label: "if a && b && c && …", fullLabel: "if a && b && c && d && e", paths: [{ label: "then", body: [] }] };
+    const short: FlowStep = { kind: "branch", label: "if ok", paths: [{ label: "then", body: [] }] };
+    const { nodes } = deriveLogicGraph("r", { r: [clipped, short] }, makeIndex([]), NONE, { hideGreyed: false });
+    const branches = nodes.filter((n) => n.type === "branch");
+    expect(execData(branches[0]).fullLabel).toBe("if a && b && c && d && e");
+    expect(execData(branches[1]).fullLabel).toBeUndefined();
+  });
+
   it("renders try/catch as a container, not a branch node", () => {
     const tryStep: FlowStep = { kind: "branch", label: "try/catch", paths: [{ label: "try", body: [call("t", "ext:l#t", "external")] }, { label: "catch e", body: [call("c", "ext:l#c", "external")] }] };
     const { nodes } = deriveLogicGraph("r", { r: [tryStep] }, makeIndex([]), NONE, { hideGreyed: false });

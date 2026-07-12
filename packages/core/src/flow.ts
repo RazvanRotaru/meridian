@@ -18,8 +18,13 @@ export type FlowStep =
   | { kind: "loop"; label: string; body: FlowStep[] }
   /** `branchKind` is the STRUCTURED discriminator (if/switch/try); older artifacts predate it, so
    * readers go through `branchKindOf`, which falls back to the label. Never sniff labels directly —
-   * a `case catchAll:` label is presentation, not semantics. */
-  | { kind: "branch"; label: string; paths: FlowPath[]; branchKind?: BranchKind }
+   * a `case catchAll:` label is presentation, not semantics.
+   *
+   * `fullLabel` is the UNTRUNCATED condition, kept for the hover/tooltip when `label` was clipped to
+   * a glanceable form — so the diamond can read compact yet reveal the whole `if`/`switch` on hover.
+   * Absent (not equal to `label`) when the condition already fit, so short branches stay byte-for-byte
+   * identical to older artifacts; readers fall back to `label`. */
+  | { kind: "branch"; label: string; paths: FlowPath[]; branchKind?: BranchKind; fullLabel?: string }
   /** An inline callback handed to a call (`useEffect(() => …)`, `setTimeout(() => …)`) or bound
    * to a JSX attribute (`onClick={() => …}`). Its body nests here rather than charting as flat
    * siblings, because HANDING OVER a callback asserts nothing about when — or whether — it runs. */

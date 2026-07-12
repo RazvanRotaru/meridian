@@ -24,6 +24,10 @@ export type LogicNodeType = "block" | "control" | "branch" | "servicegroup" | "t
 export type LogicNodeData = {
   logicKind: "call" | "loop" | "try" | "callback" | "if" | "switch" | "service";
   label: string;
+  /** The untruncated `if`/`switch` condition, shown on the branch diamond's HOVER when `label` was
+   * clipped for the compact on-node display. Undefined when the condition already fit (the hover
+   * then falls back to `label`, which carries it in full). Only set on branch nodes. */
+  fullLabel?: string;
   targetId: string | null;
   resolution: EdgeResolution | null;
   expandable: boolean;
@@ -505,6 +509,9 @@ class LogicGraphBuilder {
     const data: LogicNodeData = {
       logicKind: branchKindOf(step) === "switch" ? "switch" : "if",
       label: step.label,
+      // The whole condition for the hover; undefined for a short one, where the diamond falls back
+      // to `label` (which is then already complete).
+      fullLabel: step.fullLabel,
       targetId: null,
       resolution: null,
       expandable: false,

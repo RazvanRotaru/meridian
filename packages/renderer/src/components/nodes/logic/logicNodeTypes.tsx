@@ -222,7 +222,7 @@ function BranchNode({ data }: NodeProps<LogicRfNode>) {
   // leave as labeled exec edges; the exec pins sit at the wrapper's left/right centre — the diamond's
   // side vertices — so the thread runs through the decision point.
   return (
-    <div style={selectStyle(BRANCH_WRAP, select)} title={d.label}>
+    <div style={selectStyle(BRANCH_WRAP, select)} title={d.fullLabel ?? d.label}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={BRANCH_SVG} aria-hidden="true">

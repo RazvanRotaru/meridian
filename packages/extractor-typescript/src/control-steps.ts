@@ -13,7 +13,7 @@ import type {
   TryStatement,
 } from "ts-morph";
 import type { FlowPath, FlowStep } from "@meridian/core";
-import { forLabel, forOfLabel, ifLabel, switchLabel, truncate, whileLabel } from "./flow-labels";
+import { forLabel, forOfLabel, ifLabel, ifLabelFull, switchLabel, switchLabelFull, truncate, whileLabel } from "./flow-labels";
 import type { FlowWalker } from "./flow-walker";
 
 export function controlStep(node: Node, walker: FlowWalker, depth: number): FlowStep | null {
@@ -54,12 +54,18 @@ function ifStep(node: IfStatement, walker: FlowWalker, depth: number): FlowStep 
   if (elseStatement) {
     paths.push({ label: "else", role: "else", body: walker.walkBody(elseStatement, depth + 1) });
   }
-  return { kind: "branch", branchKind: "if", label: ifLabel(node), paths };
+  const label = ifLabel(node);
+  const full = ifLabelFull(node);
+  // Only carry the untruncated form when it actually adds something (the label was clipped), so a
+  // short `if` stays byte-for-byte identical to older artifacts.
+  return { kind: "branch", branchKind: "if", label, paths, ...(full !== label ? { fullLabel: full } : {}) };
 }
 
 function switchStep(node: SwitchStatement, walker: FlowWalker, depth: number): FlowStep {
   const paths = node.getClauses().map((clause) => clausePath(clause, walker, depth));
-  return { kind: "branch", branchKind: "switch", label: switchLabel(node), paths };
+  const label = switchLabel(node);
+  const full = switchLabelFull(node);
+  return { kind: "branch", branchKind: "switch", label, paths, ...(full !== label ? { fullLabel: full } : {}) };
 }
 
 function clausePath(clause: CaseOrDefaultClause, walker: FlowWalker, depth: number): FlowPath {

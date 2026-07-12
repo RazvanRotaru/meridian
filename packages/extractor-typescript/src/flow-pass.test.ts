@@ -125,6 +125,13 @@ async function fetchData() { return {}; }
 async function track(x: unknown) {}
 async function send(x: unknown) { return x; }
 function log(x: unknown) {}
+
+export function longGuard(user: { role: string; active: boolean; verified: boolean; banned: boolean }) {
+  if (user.role === "admin" && user.active && user.verified && !user.banned) {
+    grant();
+  }
+}
+function grant() {}
 `;
 
 // A module whose top-level runs at load: a call, a branch, a loop — plus declarations that do
@@ -191,6 +198,25 @@ function allCallLabels(steps: FlowStep[]): string[] {
 describe("logic-flow pass", () => {
   it("omits a callable with no calls or control structures (add)", () => {
     expect(stepsFor("add")).toBeUndefined();
+  });
+
+  it("keeps the full condition on a truncated branch label for the hover (longGuard)", () => {
+    const branch = stepsFor("longGuard")?.find((step) => step.kind === "branch");
+    expect(branch?.kind).toBe("branch");
+    const b = branch as Extract<FlowStep, { kind: "branch" }>;
+    // The displayed label stays compact — clipped with an ellipsis.
+    expect(b.label.startsWith("if ")).toBe(true);
+    expect(b.label.endsWith("…")).toBe(true);
+    // …but the hover carries the whole condition, nothing lost.
+    expect(b.fullLabel).toBe('if user.role === "admin" && user.active && user.verified && !user.banned');
+    expect(b.fullLabel).not.toContain("…");
+  });
+
+  it("omits fullLabel when the condition already fits (render)", () => {
+    const branch = stepsFor("render")?.find((step) => step.kind === "branch");
+    const b = branch as Extract<FlowStep, { kind: "branch" }>;
+    expect(b.label).toBe("if items.length === 0");
+    expect(b.fullLabel).toBeUndefined();
   });
 
   it("emits linear calls in source order with resolved targets (checkout)", () => {

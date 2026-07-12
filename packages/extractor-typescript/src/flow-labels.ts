@@ -85,7 +85,23 @@ export function switchLabel(node: SwitchStatement): string {
   return `switch ${truncate(node.getExpression().getText())}`;
 }
 
+/** The UNTRUNCATED `if …`/`switch …` — the whole condition on one line, for the branch node's
+ * hover. Whitespace is still flattened (a multi-line condition reads as one line), but nothing is
+ * clipped, so the tooltip reveals the full expression the compact `label` had to cut. */
+export function ifLabelFull(node: IfStatement): string {
+  return `if ${flatten(node.getExpression().getText())}`;
+}
+
+export function switchLabelFull(node: SwitchStatement): string {
+  return `switch ${flatten(node.getExpression().getText())}`;
+}
+
+/** Collapse runs of whitespace to single spaces and trim — the glanceable one-line form. */
+function flatten(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 export function truncate(text: string): string {
-  const flat = text.replace(/\s+/g, " ").trim();
+  const flat = flatten(text);
   return flat.length > MAX_COND ? `${flat.slice(0, MAX_COND - 1)}…` : flat;
 }
