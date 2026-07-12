@@ -63,6 +63,28 @@ const TERMINAL_METHOD = `${TERMINAL_UNIT}.run`;
 const GROUPED_FILE = "ts:src/grouped.ts";
 const GROUPED_UNIT = `${GROUPED_FILE}#GroupedWorkers`;
 const GROUPED_METHODS = ["one", "two", "three", "four"].map((name) => `${GROUPED_UNIT}.${name}`);
+const NESTED_PACKAGE = "ts:src/nested";
+const NESTED_FILE = "ts:src/nested/c.ts";
+const UNROLLED_PACKAGE = "ts:src/small";
+const UNROLLED_FILE = "ts:src/small/only.ts";
+const OUTSIDE_PACKAGE = "ts:tools";
+const OUTSIDE_FILE = "ts:tools/tool.ts";
+
+// Two rollup packages can be nested when both a directory and its child directory own enough
+// directly changed files. Expanding the outer summary must replace the inner summary too, while an
+// unrelated ordinary seed survives expansion and Reset unchanged.
+const NESTED_ROLLUP_ARTIFACT: GraphArtifact = {
+  ...ARTIFACT,
+  nodes: [
+    ...ARTIFACT.nodes,
+    node(NESTED_PACKAGE, "package", "src/nested", "ts:src"),
+    node(NESTED_FILE, "module", "src/nested/c.ts", NESTED_PACKAGE),
+    node(UNROLLED_PACKAGE, "package", "src/small", "ts:src"),
+    node(UNROLLED_FILE, "module", "src/small/only.ts", UNROLLED_PACKAGE),
+    node(OUTSIDE_PACKAGE, "package", "tools"),
+    node(OUTSIDE_FILE, "module", "tools/tool.ts", OUTSIDE_PACKAGE),
+  ],
+};
 
 // A three-hop call chain whose first hop leaves the initial member set. It catches the overlay's
 // incremental contract: only the current members' one-hop ghosts are shown; promoting one ghost
@@ -857,6 +879,48 @@ describe("minimal-graph overlay (extract selection)", () => {
     store.getState().resetMinimalGraph();
     expect(store.getState().minimalMemberIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
     expect(store.getState().minimalArrange).toBe(false);
+  });
+
+  it("expands a rolled package to every descendant file and Reset restores nested summaries", () => {
+    const store = freshStore(NESTED_ROLLUP_ARTIFACT);
+    const relayout = vi.fn().mockResolvedValue(undefined);
+    const changedFiles = ["ts:src/a.ts", "ts:src/b.ts"];
+    const original = ["ts:src", NESTED_PACKAGE, UNROLLED_FILE, OUTSIDE_FILE].sort();
+    store.setState({
+      minimalSeedIds: original,
+      minimalMemberIds: [...original],
+      minimalRollups: {
+        "ts:src": changedFiles,
+        [NESTED_PACKAGE]: [NESTED_FILE],
+      },
+      minimalRelayout: relayout,
+    });
+
+    store.getState().expandMinimalGroup("ts:src");
+
+    const allDescendantFiles = NESTED_ROLLUP_ARTIFACT.nodes
+      .filter((candidate) => candidate.kind === "module" && store.getState().index.isWithinFocus("ts:src", candidate.id))
+      .map((candidate) => candidate.id)
+      .sort();
+    expect(store.getState().minimalSeedIds).toEqual([...allDescendantFiles, OUTSIDE_FILE].sort());
+    expect(store.getState().minimalMemberIds).toEqual([...allDescendantFiles, OUTSIDE_FILE].sort());
+    expect(store.getState().minimalSeedIds).not.toContain(NESTED_PACKAGE);
+    // Unchanged files become ordinary collapsed file cards; only the rollup's changed files retain
+    // review's automatic declaration-level expansion.
+    expect(store.getState().moduleExpanded).toEqual(new Set(["ts:src", ...changedFiles]));
+    expect(store.getState().minimalRollups).toEqual({
+      "ts:src": changedFiles,
+      [NESTED_PACKAGE]: [NESTED_FILE],
+    });
+    expect(store.getState().minimalRollupSeedOrigin).toEqual(original);
+
+    store.getState().resetMinimalGraph();
+
+    expect(store.getState().minimalSeedIds).toEqual(original);
+    expect(store.getState().minimalMemberIds).toEqual(original);
+    expect(store.getState().minimalSeedIds).toContain(UNROLLED_FILE);
+    expect(store.getState().minimalRollupSeedOrigin).toBeNull();
+    expect(relayout).toHaveBeenCalledTimes(2);
   });
 
   it("re-runs Re-arrange and Reset restores the map mirror", () => {

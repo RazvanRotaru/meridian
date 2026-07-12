@@ -1,12 +1,15 @@
-/** Frozen Map projection which locates the open minimal graph in whole-codebase context. */
+/** Read-only Map projection which locates the open minimal graph in locally-disclosable context. */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Edge, Node } from "@xyflow/react";
 import type { LogicFlows } from "@meridian/core";
 import { useBlueprint } from "../state/StoreContext";
 import { buildModuleGraph } from "../derive/moduleGraph";
 import { buildBlockDeps } from "../derive/blockDeps";
-import { deriveMinimalCodebaseContext } from "../derive/minimalCodebaseContext";
+import {
+  applyMinimalCodebaseExpansionOverrides,
+  deriveMinimalCodebaseContext,
+} from "../derive/minimalCodebaseContext";
 import { layoutModuleTree } from "../layout/moduleLevelLayout";
 import { MAP_RELATION_POLICY } from "../graph/lensRelationPolicy";
 import { GraphSurface } from "./canvas/GraphSurface";
@@ -79,7 +82,7 @@ export function MinimalCodebaseView({
     ])],
     [currentMinimalNodes, index, memberIds],
   );
-  const context = useMemo(
+  const canonicalContext = useMemo(
     () => deriveMinimalCodebaseContext({
       index,
       moduleGraph,
@@ -93,6 +96,44 @@ export function MinimalCodebaseView({
     }),
     [blockDeps, contextTargetIds, flows, index, moduleGraph, retainedExpandedIds, rollups, showTests],
   );
+  // Context disclosure is intentionally local to this mount. The canvas remains read-only for
+  // selection/navigation, and leaving this tab drops the overrides without ever touching the
+  // hidden minimal graph's shared moduleExpanded state.
+  const [expansionOverrides, setExpansionOverrides] = useState<ReadonlyMap<string, boolean>>(
+    () => new Map(),
+  );
+  const context = useMemo(
+    () => canonicalContext === null
+      ? null
+      : applyMinimalCodebaseExpansionOverrides(
+          canonicalContext,
+          {
+            index,
+            moduleGraph,
+            blockDeps,
+            flows,
+            hiddenIds: showTests ? undefined : index.testIds,
+            demoteCommons: false,
+          },
+          expansionOverrides,
+        ),
+    [blockDeps, canonicalContext, expansionOverrides, flows, index, moduleGraph, showTests],
+  );
+  const toggleContextExpand = useCallback((nodeId: string) => {
+    if (context === null) {
+      return;
+    }
+    const node = context.tree.nodes.find((candidate) => candidate.id === nodeId);
+    if (!node?.isContainer) {
+      return;
+    }
+    const nextExpanded = !context.reveal.moduleExpanded.has(nodeId);
+    setExpansionOverrides((current) => {
+      const next = new Map(current);
+      next.set(nodeId, nextExpanded);
+      return next;
+    });
+  }, [context]);
   const [layout, setLayout] = useState(EMPTY_LAYOUT);
   const [layoutStatus, setLayoutStatus] = useState<ContextLayoutStatus>("laying-out");
 
@@ -154,6 +195,7 @@ export function MinimalCodebaseView({
       miniMapColor={minimalMiniMapColor}
       interactions={READ_ONLY_INTERACTIONS}
       readOnly
+      onToggleExpand={toggleContextExpand}
       // PR nodes keep their added/modified/deleted rings; a neutral selection ring would mask the
       // very change colours this overview exists to locate. Paint still emphasizes the full set.
       selectionOverride={reviewActive ? EMPTY_HIGHLIGHTS : highlighted}

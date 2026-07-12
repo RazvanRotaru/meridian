@@ -35,6 +35,15 @@ export interface DeriveMinimalCodebaseContextArgs {
   demoteCommons?: boolean;
 }
 
+export interface MinimalCodebaseExpansionArgs {
+  index: GraphIndex;
+  moduleGraph: ModuleGraph;
+  blockDeps: BlockDeps;
+  flows: LogicFlows;
+  hiddenIds?: ReadonlySet<string>;
+  demoteCommons?: boolean;
+}
+
 export interface MinimalCodebaseContext {
   /** The ordinary Map tree, ready for layoutModuleTree. */
   tree: ModuleTree;
@@ -42,7 +51,8 @@ export interface MinimalCodebaseContext {
   reveal: MinimalCodebaseRevealState;
   /** Members after package-rollup substitution, first-seen and de-duplicated. */
   normalizedTargetIds: string[];
-  /** Exact ids to emphasize. Every id is guaranteed to be a non-ghost node in `tree.nodes`. */
+  /** Visible ids to emphasize: exact targets normally, or their deepest visible ancestor after a
+   * local collapse. Every id is guaranteed to be a non-ghost node in `tree.nodes`. */
   highlightTargetIds: Set<string>;
   /** Unknown or Map-unrenderable normalized targets. */
   unresolvedTargetIds: Set<string>;
@@ -79,8 +89,7 @@ export function deriveMinimalCodebaseContext(
     return null;
   }
 
-  const targetPathIds = new Set(knownTargetIds.flatMap((id) => index.ancestorsOf(id).map((node) => node.id)));
-  const contextHiddenIds = new Set([...hiddenIds].filter((id) => !targetPathIds.has(id)));
+  const contextHiddenIds = hiddenOutsideTargetPaths(knownTargetIds, hiddenIds, index);
   const candidates = minimalCodebaseFocusCandidates(knownTargetIds, index);
   let best: CandidateContext | null = null;
   for (const focus of candidates) {
@@ -131,6 +140,109 @@ export function deriveMinimalCodebaseContext(
     highlightTargetIds,
     unresolvedTargetIds: new Set(normalizedTargetIds.filter((id) => !highlightTargetIds.has(id))),
   };
+}
+
+/** Apply view-local disclosure to an already-selected canonical context. The focus is deliberately
+ * fixed: collapsing a highlighted path must not make the LCA search jump to a wider repository
+ * level. These overrides are presentation state only and never enter the shared moduleExpanded set.
+ *
+ * A collapsed target remains locatable through its deepest visible ancestor. Availability is still
+ * canonical, so hiding a known target does not misreport it as an unresolved extraction. */
+export function applyMinimalCodebaseExpansionOverrides(
+  context: MinimalCodebaseContext,
+  args: MinimalCodebaseExpansionArgs,
+  overrides: ReadonlyMap<string, boolean>,
+): MinimalCodebaseContext {
+  if (overrides.size === 0) {
+    return context;
+  }
+  const expanded = new Set(context.reveal.moduleExpanded);
+  for (const [id, isExpanded] of overrides) {
+    if (isExpanded) {
+      expanded.add(id);
+    } else {
+      expanded.delete(id);
+    }
+  }
+  if (sameIds(expanded, context.reveal.moduleExpanded)) {
+    return context;
+  }
+
+  const {
+    index,
+    moduleGraph,
+    blockDeps,
+    flows,
+    hiddenIds = EMPTY_IDS,
+    demoteCommons = true,
+  } = args;
+  const knownTargetIds = context.normalizedTargetIds.filter((id) => index.nodesById.has(id));
+  const contextHiddenIds = hiddenOutsideTargetPaths(knownTargetIds, hiddenIds, index);
+  const tree = deriveModuleTree(
+    index,
+    context.reveal.moduleFocus,
+    expanded,
+    moduleGraph,
+    blockDeps,
+    flows,
+    EMPTY_IDS,
+    contextHiddenIds,
+    demoteCommons,
+  );
+  const visibleIds = new Set(
+    tree.nodes.filter((node) => node.kind !== "ghost").map((node) => node.id),
+  );
+  const canonicalTargets = context.normalizedTargetIds.filter(
+    (id) => !context.unresolvedTargetIds.has(id),
+  );
+  const highlightTargetIds = new Set<string>();
+  for (const targetId of canonicalTargets) {
+    const representative = deepestVisibleAncestor(targetId, visibleIds, index);
+    if (representative !== null) {
+      highlightTargetIds.add(representative);
+    }
+  }
+  const drawnIds = new Set(tree.nodes.map((node) => node.id));
+  const moduleExpanded = new Set([...expanded].filter((id) => drawnIds.has(id)));
+  return {
+    ...context,
+    tree,
+    reveal: {
+      moduleFocus: context.reveal.moduleFocus,
+      moduleExpanded,
+      moduleSelected: new Set(highlightTargetIds),
+    },
+    highlightTargetIds,
+  };
+}
+
+function deepestVisibleAncestor(
+  targetId: string,
+  visibleIds: ReadonlySet<string>,
+  index: GraphIndex,
+): string | null {
+  const path = index.ancestorsOf(targetId);
+  for (let position = path.length - 1; position >= 0; position -= 1) {
+    if (visibleIds.has(path[position].id)) {
+      return path[position].id;
+    }
+  }
+  return null;
+}
+
+function hiddenOutsideTargetPaths(
+  knownTargetIds: readonly string[],
+  hiddenIds: ReadonlySet<string>,
+  index: GraphIndex,
+): Set<string> {
+  const targetPathIds = new Set(
+    knownTargetIds.flatMap((id) => index.ancestorsOf(id).map((node) => node.id)),
+  );
+  return new Set([...hiddenIds].filter((id) => !targetPathIds.has(id)));
+}
+
+function sameIds(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  return left.size === right.size && [...left].every((id) => right.has(id));
 }
 
 function normalizeTargets(

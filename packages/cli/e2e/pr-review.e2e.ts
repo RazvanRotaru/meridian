@@ -28,6 +28,7 @@ const DRAFT_TEXT = "Please keep this tier boundary explicit.";
 const EXISTING_COMMENT_TEXT = "Should this threshold stay aligned with the billing tier?";
 const EXISTING_COMMENT_LINE = 2;
 const ORDER_SERVICE_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/services/orderService.ts" });
+const PRICING_PACKAGE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing" });
 const PRICING_SERVICE_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing/pricingService.ts" });
 const LOYALTY_TIERS_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing/loyaltyTiers.ts" });
 const LOYALTY_TIER_FUNCTION_ID = buildNodeId({
@@ -86,7 +87,8 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await syncProvenance.waitFor({ timeout: 120_000 });
 
     // The whole-codebase overview is an alternate read-only surface, not a review close/reopen:
-    // the prepared HEAD artifact, change colours, and review rail must all stay live while it is open.
+    // the prepared HEAD artifact, change colours, and review rail stay live, while its chevrons
+    // disclose context locally without changing the hidden extracted graph's expansion state.
     await page.getByRole("button", { name: "Highlight code in codebase" }).click();
     const codebaseContext = page.getByRole("region", { name: "Codebase context graph" });
     await codebaseContext.getByText("READ-ONLY", { exact: true }).waitFor();
@@ -101,18 +103,31 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     ).not.toBe("none");
     expect(await syncProvenance.count()).toBe(1);
     expect(await page.getByText("Files changed", { exact: true }).count()).toBe(1);
-    expect(await codebaseContext.getByRole("button", { name: "Expand" }).count()).toBe(0);
-    // A nested preview remains reachable even when the pointer crosses its now-previewable parent.
+
+    // A nested preview remains reachable even when the pointer crosses its previewable parent.
     await changedFunction.hover();
-    const codePreview = page.getByRole("dialog", { name: /^Code preview for / });
-    await codePreview.waitFor();
-    await codePreview.getByTitle("src/pricing/loyaltyTiers.ts").waitFor();
-    await codePreview.hover();
-    expect(await codePreview.isVisible()).toBe(true);
+    const contextLoyaltyPreview = page.getByRole("dialog", { name: "Code preview for loyaltyTierFor" });
+    await contextLoyaltyPreview.waitFor();
+    await contextLoyaltyPreview.getByTitle("src/pricing/loyaltyTiers.ts").waitFor();
+    await contextLoyaltyPreview.hover();
+    expect(await contextLoyaltyPreview.isVisible()).toBe(true);
     // Hover source is available throughout an active review, including nodes untouched by its diff.
     await unchangedModule.hover();
+    const codePreview = page.getByRole("dialog", { name: /^Code preview for / });
     await codePreview.getByText("src/pricing/pricingService.ts", { exact: true }).waitFor();
     await codePreview.getByText("export class PricingService {", { exact: true }).waitFor();
+    await page.mouse.move(0, 0);
+    await codePreview.waitFor({ state: "detached" });
+
+    const expansionParam = new URL(page.url()).searchParams.get("mexp");
+    const pricingContext = codebaseContext.locator(`[data-id="${PRICING_PACKAGE_ID}"]`);
+    await pricingContext.getByRole("button", { name: "Collapse" }).click();
+    await codebaseContext.locator(`[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor({ state: "detached" });
+    await codebaseContext.locator(`[data-id="${ORDER_SERVICE_MODULE_ID}"]`).waitFor();
+    await pricingContext.getByRole("button", { name: "Expand" }).click();
+    await codebaseContext.locator(`[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor();
+    await changedFunction.waitFor();
+    expect(new URL(page.url()).searchParams.get("mexp")).toBe(expansionParam);
     await page.getByRole("button", { name: "Back to extracted graph" }).click();
     await page.getByRole("region", { name: "Extracted selection" }).waitFor();
     await syncProvenance.waitFor();

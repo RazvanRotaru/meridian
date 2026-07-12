@@ -4,9 +4,10 @@ import {
   RollupExpandControl,
   RollupExpandableBody,
   activateRollupExpansion,
+  rollupExpansionFileCount,
 } from "./PackageOverviewNode";
 
-describe("review rollup expansion", () => {
+describe("review directory expansion", () => {
   it("renders a dedicated accessible button instead of making the card body the control", () => {
     const markup = renderToStaticMarkup(
       <RollupExpandControl count={3} onExpand={() => undefined} />,
@@ -14,8 +15,14 @@ describe("review rollup expansion", () => {
 
     expect(markup).toContain('<button type="button"');
     expect(markup).toContain('class="nodrag nopan"');
-    expect(markup).toContain('aria-label="Expand 3 changed file(s)"');
+    expect(markup).toContain('aria-label="Expand all 3 source files"');
     expect(markup).toContain("3 files ▸");
+  });
+
+  it("advertises every source file rather than only the changed rollup members", () => {
+    expect(rollupExpansionFileCount(6, 5, false)).toBe(6);
+    expect(rollupExpansionFileCount(6, 0, false)).toBe(0);
+    expect(rollupExpansionFileCount(6, 5, true)).toBe(0);
   });
 
   it("makes the rolled directory body itself an expansion surface", () => {

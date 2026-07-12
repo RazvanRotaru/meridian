@@ -6,6 +6,7 @@
 
 import { diagnoseUnit, type Tone, type UnitMetrics } from "@meridian/design-metrics";
 import type { GraphNode } from "@meridian/core";
+import { isSourceBackedNode } from "../../derive/sourceBackedNode";
 import { useBlueprintActions } from "../../state/StoreContext";
 import { useChangeSummary } from "../useChangedLines";
 
@@ -27,7 +28,7 @@ function Diagnosis({ unit, node }: { unit: UnitMetrics; node: GraphNode | null }
   const tone = TONE_COLOR[diagnosis.tone];
   const { showCode, expandCode } = useBlueprintActions();
   const summary = useChangeSummary(node ?? undefined);
-  const canOpen = Boolean(node?.location);
+  const canOpen = isSourceBackedNode(node);
   return (
     <div style={BODY_STYLE}>
       <div style={VERDICT_STYLE}>

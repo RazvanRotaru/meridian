@@ -24,6 +24,7 @@ import type {
 } from "@meridian/core";
 import { applyChangedIds, applyChangedStatus, type GraphIndex } from "../graph/graphIndex";
 import { matchAffectedFiles } from "../derive/matchAffectedFiles";
+import { isSourceBackedNode } from "../derive/sourceBackedNode";
 import { rollupSeeds } from "../derive/seedRollup";
 import { filesInScope } from "../derive/filesInScope";
 import type { TelemetryProvider } from "../telemetry/provider";
@@ -353,6 +354,9 @@ export interface BlueprintState {
   minimalMemberIds: string[];
   /** Original rolled package → changed file modules. Retained while expanded so Reset can summarize. */
   minimalRollups: Record<string, string[]>;
+  /** Exact seed set immediately before the first explicit all-files rollup expansion. Unlike the
+   * changed-file rollup map, this preserves unrolled nested file seeds so Reset is lossless. */
+  minimalRollupSeedOrigin: string[] | null;
   /** The Module map's on-screen card positions, captured (absolute) when the overlay is BUILT, so the
    * overlay mirrors them: a captured card sits at its exact map spot, growth is placed around it.
    * Captured once at build (never on curation) so placed cards never jump; cleared on close. */
@@ -599,7 +603,8 @@ export interface BlueprintState {
   closeMinimalGraph(): void;
   demoteMinimalMember(id: string): void;
   resetMinimalGraph(): void;
-  /** Expand one rolled review package into its changed file cards. Reset is the only collapse-back. */
+  /** Expand one rolled review package into every real descendant file card. The retained changed-
+   * file rollup still drives review flow targeting; Reset is the only collapse-back. */
   expandMinimalGroup(packageId: string): void;
   rearrangeMinimalGraph(): void;
   minimalRelayout(activity?: LayoutActivity): Promise<void>;
@@ -812,7 +817,7 @@ function codeLoadRequest(
   sourceUrl: string | null,
   prFileUrl: string | null,
 ): CodeLoadRequest | null {
-  if (!node.location) {
+  if (!isSourceBackedNode(node)) {
     return null;
   }
   // A prepared PR artifact has its own retained source root. Route every code surface through that
@@ -1239,6 +1244,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     minimalSeedIds: [],
     minimalMemberIds: [],
     minimalRollups: {},
+    minimalRollupSeedOrigin: null,
     minimalBasePositions: {},
     minimalArrange: false,
     minimalRfNodes: [],
@@ -2478,6 +2484,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalSeedIds: origin,
         minimalMemberIds: origin,
         minimalRollups: {},
+        minimalRollupSeedOrigin: null,
         minimalBasePositions,
         minimalArrange: false,
         moduleGhostInspection: null,
@@ -2533,6 +2540,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalSeedIds: [],
         minimalMemberIds: [],
         minimalRollups: {},
+        minimalRollupSeedOrigin: null,
         minimalBasePositions: {},
         minimalArrange: false,
         minimalRfNodes: [],
@@ -2568,29 +2576,47 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Reset the overlay to its base: restore the working set to the origin selection AND drop any
     // re-arrangement (back to the captured map-mirror). A no-op when already at the origin and mirror.
     resetMinimalGraph() {
-      const { minimalSeedIds, minimalMemberIds, minimalRollups, minimalArrange } = get();
-      // Expanding a rollup replaces its package seed with file seeds. The retained mapping restores
-      // the ORIGINAL rolled package here, so Reset re-summarizes; there is intentionally no inline
-      // collapse-back gesture competing with the one-way "files ▸" affordance.
-      const origin = restoreRolledSeeds(minimalSeedIds, minimalRollups);
-      if (sameMembers(minimalMemberIds, origin) && sameMembers(minimalSeedIds, origin) && !minimalArrange) {
+      const { minimalSeedIds, minimalMemberIds, minimalRollups, minimalRollupSeedOrigin, minimalArrange } = get();
+      // Explicit all-file expansion snapshots its exact seed origin; changed-file-only substitutions
+      // (used by flow review) remain invertible from the retained rollup map. There is intentionally
+      // no inline collapse-back gesture competing with the one-way "files ▸" affordance.
+      const origin = minimalRollupSeedOrigin ?? restoreRolledSeeds(minimalSeedIds, minimalRollups);
+      if (
+        minimalRollupSeedOrigin === null
+        && sameMembers(minimalMemberIds, origin)
+        && sameMembers(minimalSeedIds, origin)
+        && !minimalArrange
+      ) {
         return;
       }
-      set({ minimalSeedIds: origin, minimalMemberIds: [...origin], minimalArrange: false });
+      set({
+        minimalSeedIds: origin,
+        minimalMemberIds: [...origin],
+        minimalRollupSeedOrigin: null,
+        minimalArrange: false,
+      });
       void get().minimalRelayout({ label: "Resetting extracted graph…" });
     },
 
-    // Decompose one rolled package into exactly the changed file modules it summarized. Expanding
-    // their package/module ancestry opens those files to declaration level through the overlay's
-    // existing shared moduleExpanded path; the retained rollup mapping is Reset's collapse target.
+    // Decompose one rolled package into every real file module below it, including unchanged files.
+    // Only the changed files it summarized inherit review's declaration-level pre-expansion; the
+    // remaining files stay collapsed and expose their normal per-file chevrons. Keep the original
+    // changed-file mapping intact for flow targeting and Reset's collapse-back semantics.
     expandMinimalGroup(packageId) {
-      const { index, minimalSeedIds, minimalMemberIds, minimalRollups, moduleExpanded } = get();
-      const fileIds = minimalRollups[packageId];
-      if (!fileIds || (!minimalSeedIds.includes(packageId) && !minimalMemberIds.includes(packageId))) {
+      const { index, minimalSeedIds, minimalMemberIds, minimalRollups, minimalRollupSeedOrigin, moduleExpanded } = get();
+      const changedFileIds = minimalRollups[packageId];
+      if (!changedFileIds || (!minimalSeedIds.includes(packageId) && !minimalMemberIds.includes(packageId))) {
+        return;
+      }
+      moduleGraph ??= buildModuleGraph(index);
+      const fileIds = [...moduleGraph.fileIds]
+        .filter((fileId) => index.isWithinFocus(packageId, fileId))
+        .sort();
+      if (fileIds.length === 0) {
         return;
       }
       const expanded = new Set(moduleExpanded);
-      for (const fileId of fileIds) {
+      for (const fileId of changedFileIds) {
         for (const ancestor of index.ancestorsOf(fileId)) {
           if (ancestor.kind === "package" || ancestor.kind === "module") {
             expanded.add(ancestor.id);
@@ -2598,8 +2624,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
       }
       set({
-        minimalSeedIds: replaceRollupSeed(minimalSeedIds, packageId, fileIds),
-        minimalMemberIds: replaceRollupSeed(minimalMemberIds, packageId, fileIds),
+        minimalSeedIds: replaceRollupSubtreeWithFiles(minimalSeedIds, packageId, fileIds, index),
+        minimalMemberIds: replaceRollupSubtreeWithFiles(minimalMemberIds, packageId, fileIds, index),
+        minimalRollupSeedOrigin: minimalRollupSeedOrigin ?? [...minimalSeedIds],
         moduleExpanded: expanded,
       });
       void get().minimalRelayout({ label: "Expanding directory…" });
@@ -2897,6 +2924,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalSeedIds: nextSeeds,
         minimalMemberIds: [...nextSeeds],
         minimalRollups: rollupsRecord(rolledUp),
+        minimalRollupSeedOrigin: null,
         moduleExpanded,
         minimalBasePositions: {},
         minimalArrange: false,
@@ -3931,6 +3959,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalSeedIds: reviewAllSeedIds,
         minimalMemberIds: [...reviewAllSeedIds],
         minimalRollups: rollupsRecord(resumedRollup.rolledUp),
+        minimalRollupSeedOrigin: null,
         moduleExpanded: reviewExpansionForMatches(get().index, resumedMatches, resumedRollup.rolledUp),
         reviewActiveGroupId: null,
         reviewPanelHidden: false,
@@ -4346,6 +4375,7 @@ function applyPrReviewToMap(
     minimalSeedIds: seeds,
     minimalMemberIds: [...seeds],
     minimalRollups: rollupsRecord(rolledUp),
+    minimalRollupSeedOrigin: null,
     minimalBasePositions: {},
     minimalArrange: false,
     minimalRfNodes: [],
@@ -4608,7 +4638,25 @@ function replaceRollupSeed(ids: readonly string[], packageId: string, fileIds: r
   return [...new Set(ids.flatMap((id) => (id === packageId ? fileIds : [id])))].sort();
 }
 
-/** Invert any expanded package→files substitutions while leaving ordinary seed ids untouched. */
+/** Replace one rolled package's complete member subtree with its exact real-file frontier. Removing
+ * nested rollup package ids avoids drawing an inner summary beside the files that already replaced
+ * it when an outer package is expanded. */
+function replaceRollupSubtreeWithFiles(
+  ids: readonly string[],
+  packageId: string,
+  fileIds: readonly string[],
+  index: GraphIndex,
+): string[] {
+  if (!ids.includes(packageId)) {
+    return [...ids];
+  }
+  const outside = ids.filter((id) => !index.isWithinFocus(packageId, id));
+  return [...new Set([...outside, ...fileIds])].sort();
+}
+
+/** Invert changed-file-only substitutions (for example temporary flow review). Explicit all-file
+ * expansion uses `minimalRollupSeedOrigin` instead because this map cannot distinguish injected
+ * unchanged files from ordinary nested file seeds that were already in the origin. */
 function restoreRolledSeeds(seedIds: readonly string[], rollups: Readonly<Record<string, string[]>>): string[] {
   const restored = new Set(seedIds);
   for (const [packageId, fileIds] of Object.entries(rollups)) {

@@ -21,6 +21,7 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 import type { CoverageReport, GraphArtifact, GraphNode, LogicFlows, NodeId } from "@meridian/core";
+import { isSourceBackedNode } from "../derive/sourceBackedNode";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { GHOST_DEPTH_ALL } from "../state/store";
 import { logicNodeTypes, SELECT_ACCENT, type JumpFlowNodeData } from "./nodes/logic/logicNodeTypes";
@@ -847,7 +848,7 @@ function EmptyFlowCard(props: { rootId: NodeId }) {
   const { showCode, expandCode } = useBlueprintActions();
   const rootNode = index.nodesById.get(props.rootId);
   const rootName = rootNode?.displayName ?? props.rootId;
-  const canShowCode = Boolean(rootNode?.location) && Boolean(sourceUrl);
+  const canShowCode = isSourceBackedNode(rootNode) && Boolean(sourceUrl);
   return (
     <div style={EMPTY_WRAP_STYLE}>
       <div style={EMPTY_CARD_STYLE}>

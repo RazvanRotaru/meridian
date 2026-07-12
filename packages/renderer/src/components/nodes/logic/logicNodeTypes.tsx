@@ -16,6 +16,7 @@ import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
 import type { LogicNodeData, TerminalData } from "../../../derive/logicGraph";
 import { FLOW_COLORS } from "../../../derive/flowViewModel";
+import { isSourceBackedNode } from "../../../derive/sourceBackedNode";
 import { coverageAccent, coverageVerdict, COVERAGE_COLORS, type CoverageVerdict } from "../../../theme/coverageColors";
 import { CodeInlinePanel } from "../../CodeInlinePanel";
 import { CHANGED_ACCENT, changedColor } from "../../ChangedBadge";
@@ -76,7 +77,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
     return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} select={select} badge={battery} changedRing={changed ? changedRing : null} />;
   }
   const codeNode = d.targetId ? index.nodesById.get(d.targetId) : undefined;
-  const canCode = Boolean(codeNode?.location) && Boolean(sourceUrl);
+  const canCode = isSourceBackedNode(codeNode) && Boolean(sourceUrl);
   // The inline box shows only for THIS block's own target, and only while the store keeps it in
   // the compact "inline" mode (the modal takes over once expandCode flips mode → "modal").
   const showingInline = codeNode != null && codeView != null && codeView.node.id === codeNode.id && codeView.mode === "inline";

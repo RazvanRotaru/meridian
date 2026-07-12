@@ -109,6 +109,11 @@ const moduleEdgeTypes: EdgeTypes = {
   [GHOST_HIERARCHY_EDGE_TYPE]: GhostHierarchyEdge,
 };
 
+// React Flow gives a node wrapper `pointer-events: none` when it is neither selectable/draggable nor
+// subscribed to mouse handlers. A read-only context with local chevrons needs pointer delivery to
+// those nested buttons, while the wrapper click itself must remain inert.
+const LOCAL_DISCLOSURE_NODE_CLICK = () => undefined;
+
 /** Provider boundary for one isolated shared-canvas instance. Mounts import it from this module so
  * React Flow runtime ownership stays behind the same seam as GraphSurface itself. */
 export { ReactFlowProvider as GraphSurfaceProvider };
@@ -220,6 +225,9 @@ export interface GraphSurfaceProps {
   selectionOverride?: ReadonlySet<string>;
   /** Separate paint owners when node rings and relationship emphasis intentionally differ. */
   paintSelectionOverride?: ReadonlySet<string>;
+  /** Presentation-local containment disclosure. This remains available on a read-only surface
+   * without re-enabling selection/navigation or mutating the shared module expansion state. */
+  onToggleExpand?: (nodeId: string) => void;
   /** Non-null while an additive exploration path owns the scene. Existing painted positions are
    * retained for one key; changing/clearing the key starts or ends that presentation session. */
   positionRetentionKey?: string | null;
@@ -429,6 +437,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
     <SurfaceInteractionScope
       readOnly={props.readOnly === true}
       selectionOverride={props.selectionOverride ?? null}
+      onToggleExpand={props.onToggleExpand ?? null}
     >
     <div
       style={SURFACE_STYLE}
@@ -459,7 +468,9 @@ export function GraphSurface(props: GraphSurfaceProps) {
         nodeTypes={moduleNodeTypes}
         edgeTypes={moduleEdgeTypes}
         onInit={props.onInit}
-        onNodeClick={props.readOnly ? undefined : props.interactions.onNodeClick}
+        onNodeClick={props.readOnly
+          ? (props.onToggleExpand === undefined ? undefined : LOCAL_DISCLOSURE_NODE_CLICK)
+          : props.interactions.onNodeClick}
         onNodeDoubleClick={props.readOnly ? undefined : props.interactions.onNodeDoubleClick}
         onNodeMouseEnter={nodeDiffEnabled ? nodeDiff.onNodeMouseEnter : undefined}
         onNodeMouseMove={nodeDiffEnabled ? nodeDiff.onNodeMouseMove : undefined}
