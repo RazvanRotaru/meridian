@@ -16,23 +16,32 @@
         color: #e6edf3;
         font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
       }
-      /* Slim, theme-matching scrollbars — mirrors the landing card's `.card-scroll` so scroll
-         surfaces (the PR page's list + detail panel) don't fall back to default OS chrome. */
+      /* Slim, theme-matching scrollbars applied GLOBALLY so NO scroll surface falls back to the OS
+         default. Windows/Chromium draws chunky, always-on scrollbars unless styled; macOS uses thin
+         auto-hiding overlay scrollbars — which is why the default only jars on Windows. Modern
+         Chromium honours the standard `scrollbar-*` props (thin + coloured, so the ::-webkit width
+         is superseded there); the ::-webkit rules remain as a fallback for older engines. The
+         `.mrd-scroll` class is kept as an explicit opt-in alias for the same treatment. */
+      *,
       .mrd-scroll {
         scrollbar-width: thin;
         scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
       }
+      *::-webkit-scrollbar,
       .mrd-scroll::-webkit-scrollbar {
         width: 8px;
         height: 8px;
       }
+      *::-webkit-scrollbar-thumb,
       .mrd-scroll::-webkit-scrollbar-thumb {
         background: rgba(255, 255, 255, 0.12);
         border-radius: 4px;
       }
+      *::-webkit-scrollbar-thumb:hover,
       .mrd-scroll::-webkit-scrollbar-thumb:hover {
         background: rgba(255, 255, 255, 0.2);
       }
+      *::-webkit-scrollbar-track,
       .mrd-scroll::-webkit-scrollbar-track {
         background: transparent;
       }
