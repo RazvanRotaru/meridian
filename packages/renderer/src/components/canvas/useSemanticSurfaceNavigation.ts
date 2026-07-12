@@ -7,8 +7,8 @@
  * Two commit adapters cover both surface shapes without forking timing:
  *
  *   - `retained-anchor` synchronously discards inner layers in the same canvas. The hook holds the
- *     old threshold origin through the shared layer fade, centres the retained anchor, and returns
- *     to reading zoom.
+ *     old threshold origin through the camera reset, centres the retained anchor, and returns to
+ *     reading zoom.
  *   - `exit` leaves the current surface mounted for the same shared fade, then invokes an adapter
  *     which may unmount it (for example, an overlay revealing its source surface underneath).
  */
@@ -92,7 +92,7 @@ export interface SemanticSurfaceNavigationController {
 }
 
 const HANDOFF_READING_ZOOM = 1;
-const HANDOFF_ZOOM_DURATION_MS = 420;
+const HANDOFF_ZOOM_DURATION_MS = 280;
 const HANDOFF_END_BUFFER_MS = 24;
 const DEFAULT_FIT: Required<Pick<SemanticSurfaceFitOptions, "padding" | "duration" | "minZoom">> = {
   padding: 0.2,
@@ -107,7 +107,6 @@ export const SEMANTIC_READING_MIN_ZOOM =
 interface PendingRetainedParent {
   depth: number;
   anchorId: string;
-  zoom: number;
   resetConsumed: boolean;
   started: boolean;
 }
@@ -125,6 +124,17 @@ export function semanticResetDisposition(
     return "preserve-exit";
   }
   return retainedPending && !retainedResetConsumed ? "consume-retained" : "reset";
+}
+
+/** Start the retained-parent camera reset in the current layout pass and return the delay before
+ * releasing handoff ownership. Reduced motion keeps the final settling buffer but skips animation. */
+export function beginSemanticRetainedCameraReset(
+  setReadingCenter: (duration: number) => void,
+  reducedMotion: boolean,
+): number {
+  const duration = reducedMotion ? 0 : HANDOFF_ZOOM_DURATION_MS;
+  setReadingCenter(duration);
+  return duration + HANDOFF_END_BUFFER_MS;
 }
 
 /** Pure depth collection shared by the hook and its callers' tests. Layer metadata participates so
@@ -227,7 +237,6 @@ export function useSemanticSurfaceNavigation({
     const pending: PendingRetainedParent = {
       depth: target.depth,
       anchorId: target.anchorId,
-      zoom: instance.getViewport().zoom,
       resetConsumed: false,
       started: false,
     };
@@ -298,9 +307,9 @@ export function useSemanticSurfaceNavigation({
     return () => window.clearTimeout(timer);
   }, [exitPending]);
 
-  // Centre the canonical retained anchor immediately at the collapse zoom, let its population fade
-  // in, then restore reading zoom around that same point. Timers live outside this layout effect so
-  // a harmless node-array identity change cannot strand the handoff halfway through.
+  // Pan and zoom to the canonical retained anchor as its population switches in, rather than
+  // parking at the collapse zoom for the layer fade. The release timer lives outside this layout
+  // effect so a harmless node-array identity change cannot strand the handoff halfway through.
   useLayoutEffect(() => {
     const pending = pendingRetainedRef.current;
     const instance = instanceRef.current;
@@ -325,17 +334,12 @@ export function useSemanticSurfaceNavigation({
     const rect = absoluteRectOf(anchor, new Map(nodes.map((node) => [node.id, node])));
     const centerX = rect.x + rect.width / 2;
     const centerY = rect.y + rect.height / 2;
-    void instance.setCenter(centerX, centerY, { zoom: pending.zoom, duration: 0 });
-
-    const reducedMotion = prefersReducedMotion();
-    const revealDelay = reducedMotion ? 0 : SEMANTIC_LAYER_FADE_MS;
-    const zoomDuration = reducedMotion ? 0 : HANDOFF_ZOOM_DURATION_MS;
-    const zoomTimer = window.setTimeout(() => {
+    const releaseDelay = beginSemanticRetainedCameraReset((duration) => {
       void instance.setCenter(centerX, centerY, {
         zoom: HANDOFF_READING_ZOOM,
-        duration: zoomDuration,
+        duration,
       });
-    }, revealDelay);
+    }, prefersReducedMotion());
     const releaseTimer = window.setTimeout(() => {
       void instance.setCenter(centerX, centerY, {
         zoom: HANDOFF_READING_ZOOM,
@@ -348,8 +352,8 @@ export function useSemanticSurfaceNavigation({
       // the ordinary reading window instead of inheriting a small child graph's fitted threshold.
       setSemanticFirstPreviewMax(SEMANTIC_FIRST_PREVIEW_MAX);
       setSemanticLodEnabled(true);
-    }, revealDelay + zoomDuration + HANDOFF_END_BUFFER_MS);
-    handoffTimersRef.current = [zoomTimer, releaseTimer];
+    }, releaseDelay);
+    handoffTimersRef.current = [releaseTimer];
   }, [instanceReady, layoutStatus, nodes]);
 
   useEffect(() => {

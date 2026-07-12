@@ -1,6 +1,7 @@
 import type { Node } from "@xyflow/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  beginSemanticRetainedCameraReset,
   nodesAtCurrentSemanticDepth,
   SEMANTIC_READING_MIN_ZOOM,
   semanticResetDisposition,
@@ -68,5 +69,27 @@ describe("exit navigation lifecycle", () => {
     expect(semanticResetDisposition(true, false, false)).toBe("preserve-exit");
     expect(semanticResetDisposition(false, true, false)).toBe("consume-retained");
     expect(semanticResetDisposition(false, true, true)).toBe("reset");
+  });
+});
+
+describe("retained parent camera handoff", () => {
+  it("starts the reading camera immediately and releases after its short animation", () => {
+    const setReadingCenter = vi.fn();
+
+    const releaseDelay = beginSemanticRetainedCameraReset(setReadingCenter, false);
+
+    expect(setReadingCenter).toHaveBeenCalledOnce();
+    expect(setReadingCenter).toHaveBeenCalledWith(280);
+    expect(releaseDelay).toBe(304);
+  });
+
+  it("skips camera animation when reduced motion is preferred", () => {
+    const setReadingCenter = vi.fn();
+
+    const releaseDelay = beginSemanticRetainedCameraReset(setReadingCenter, true);
+
+    expect(setReadingCenter).toHaveBeenCalledOnce();
+    expect(setReadingCenter).toHaveBeenCalledWith(0);
+    expect(releaseDelay).toBe(24);
   });
 });

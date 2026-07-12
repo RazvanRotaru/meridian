@@ -27,17 +27,30 @@ export interface GhostSpot {
   y: number;
 }
 
-export function GhostPromoteRing(props: { nodes: Node[]; title: string; onPromote: (id: string, at: GhostSpot) => void }) {
+interface GhostPromoteRingProps {
+  nodes: Node[];
+  title: string;
+  onPromote: (id: string, at: GhostSpot) => void;
+}
+
+/** Keep the viewport subscriber out of the tree when this scene has no promotion affordances. */
+export function GhostPromoteRing(props: GhostPromoteRingProps) {
+  const candidates = useMemo(() => promotableGhostNodes(props.nodes), [props.nodes]);
+  if (candidates.length === 0) {
+    return null;
+  }
+  return <VisibleGhostPromoteRing {...props} candidates={candidates} />;
+}
+
+function VisibleGhostPromoteRing(props: GhostPromoteRingProps & { candidates: readonly Node[] }) {
   const viewport = useViewport();
   const width = useStore((state) => state.width);
   const height = useStore((state) => state.height);
+  const byId = useMemo(() => new Map(props.nodes.map((node) => [node.id, node])), [props.nodes]);
   const ghosts = useMemo(
-    () => {
-      const byId = new Map(props.nodes.map((node) => [node.id, node]));
-      return visiblePromotableGhostNodes(props.nodes, viewport, width, height)
-        .map((node) => ghostCorner(node, byId));
-    },
-    [props.nodes, viewport, width, height],
+    () => visiblePromotableGhostNodesFrom(props.candidates, byId, viewport, width, height)
+      .map((node) => ghostCorner(node, byId)),
+    [props.candidates, byId, viewport, width, height],
   );
   return (
     <ViewportPortal>
@@ -101,8 +114,25 @@ export function visiblePromotableGhostNodes(
 ): Node[] {
   if (canvasWidth <= 0 || canvasHeight <= 0 || viewport.zoom <= 0) return [];
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  return promotableGhostNodes(nodes)
-    .filter((node) => intersectsViewport(node, byId, viewport, canvasWidth, canvasHeight));
+  return visiblePromotableGhostNodesFrom(
+    promotableGhostNodes(nodes),
+    byId,
+    viewport,
+    canvasWidth,
+    canvasHeight,
+  );
+}
+
+function visiblePromotableGhostNodesFrom(
+  candidates: readonly Node[],
+  byId: ReadonlyMap<string, Node>,
+  viewport: Viewport,
+  canvasWidth: number,
+  canvasHeight: number,
+): Node[] {
+  if (canvasWidth <= 0 || canvasHeight <= 0 || viewport.zoom <= 0) return [];
+  return candidates.filter((node) =>
+    intersectsViewport(node, byId, viewport, canvasWidth, canvasHeight));
 }
 
 const VIEWPORT_OVERSCAN = 24;
