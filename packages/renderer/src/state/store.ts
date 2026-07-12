@@ -2145,6 +2145,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         if (!restorePrReviewBaseline(get, set, invalidateArtifactCaches, { endSession: false })) {
           resetChangedIdsToArtifact(get().artifact, get().index);
         }
+        // Both branches above reset the changed-node marking to the boot set, but the review is
+        // still live (soft close) and the lens we're transitioning INTO — Logic, Service — reads
+        // this very channel to ring the PR's edited nodes (BlockNode's changedStatus, the logic
+        // entry cap's changedIds). Re-apply the affected set to the now-current index so the
+        // overlay survives the lens change instead of only ever showing on the Map; this is the
+        // same repaint resumePrReview does when re-opening from the chip.
+        applyChangedIds(get().index, [...get().reviewAffectedIds]);
       }
       minimalLayoutSeq += 1;
       flowPaneLayoutSeq += 1;

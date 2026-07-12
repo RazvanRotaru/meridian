@@ -193,6 +193,34 @@ describe("PR store slice", () => {
     expect(expanded.has(METHOD_ID)).toBe(false);
   });
 
+  it("keeps the PR's changed-node marking when leaving the Map for the Logic lens", () => {
+    const store = freshStore();
+    store.setState({
+      viewMode: "prs",
+      prSelected: 11,
+      prsList: { open: [pr(11)], closed: null },
+      // The hunk overlaps the METHOD's range (10-12), so the method is an affected code block.
+      prFiles: [{ path: "src/a.ts", status: "modified", additions: 2, deletions: 0, hunks: [{ start: 10, end: 11 }] }],
+    });
+    store.getState().reviewPrInGraph();
+    // Sanity: the review marked the edited method on the current index — the ring channel the Map,
+    // the minimal overlay AND the logic view all read.
+    expect(store.getState().index.changedIds.has(METHOD_ID)).toBe(true);
+    expect(store.getState().index.changedStatus.get(METHOD_ID)).toBeDefined();
+
+    // Leaving the Map for the Logic lens soft-closes the review overlay. The review stays live
+    // (resumable), so its changed-node marking must survive the transition: the logic view reads
+    // the very same channel (BlockNode's changedStatus, the entry cap's changedIds) to ring the
+    // PR's edits. Without re-application, the lens transition wipes it and the logic view shows
+    // nothing changed even though the review is active.
+    store.getState().setViewMode("logic");
+
+    expect(store.getState().viewMode).toBe("logic");
+    expect(store.getState().reviewAffectedIds.has(METHOD_ID)).toBe(true);
+    expect(store.getState().index.changedIds.has(METHOD_ID)).toBe(true);
+    expect(store.getState().index.changedStatus.get(METHOD_ID)).toBeDefined();
+  });
+
   it("waits for the selected PR's files, then keeps a zero-match review on the PRs page", async () => {
     let resolveFiles!: (response: Response) => void;
     const filesResponse = new Promise<Response>((resolve) => {
