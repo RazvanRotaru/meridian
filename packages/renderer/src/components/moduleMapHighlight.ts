@@ -17,6 +17,7 @@ import { repositionLitGhosts } from "./ghostReposition";
 import { withBoundaryDash } from "../layout/edgeBoundary";
 import { relationKindOf } from "../graph/relationEdge";
 import { relationColor, withRelationLineStyle } from "../theme/relationTheme";
+import { isInteractiveSemanticEdge } from "./canvas/presentationEdges";
 
 // Wire colour = relationship TYPE (see baseStroke), the same whether or not it is selected.
 const CROSS_FRAME_COLOR = IMPORT_CROSS;
@@ -82,6 +83,7 @@ export function emphasize(
   mode: SurfaceEmphasisMode,
   ghostPresentation?: GhostPresentationOptions,
   paintSeedIds: ReadonlySet<string> = activeIds,
+  focusSeedIds: ReadonlySet<string> | null = null,
 ): EmphasizedLevel {
   const typeById = new Map(nodes.map((node) => [node.id, node.type]));
   // Selection identity and paint traversal deliberately differ for ghosts. The store retains the
@@ -93,18 +95,38 @@ export function emphasize(
   // every child would prevent those children from folding back into their selected parent anchor.
   const activeSet = new Set(activeIds);
   if (active.length === 0) {
-    return pruneUnlitDeps({ nodes, edges: edges.map((edge) => styleEdge(edge, "none")), beacons: new Set() }, activeSet, paintSeedIds, ghostPresentation);
+    return focusRetainedSelection(
+      pruneUnlitDeps({ nodes, edges: edges.map((edge) => styleEdge(edge, "none")), beacons: new Set() }, activeSet, paintSeedIds, ghostPresentation),
+      focusSeedIds,
+      radius,
+      mode,
+    );
   }
   if (mode === "subgraph") {
     // Whole-flow mode intentionally carries ids that may be materialized only as incident ghosts;
     // preserve that complete semantic seed set instead of filtering it to the current node array.
-    return pruneUnlitDeps(emphasizeInducedSubgraph(nodes, edges, new Set(paintSeedIds)), activeSet, paintSeedIds, ghostPresentation);
+    return focusRetainedSelection(
+      pruneUnlitDeps(emphasizeInducedSubgraph(nodes, edges, new Set(paintSeedIds)), activeSet, paintSeedIds, ghostPresentation),
+      focusSeedIds,
+      radius,
+      mode,
+    );
   }
   if (mode === "node") {
-    return pruneUnlitDeps(applyBeacons(emphasizeIncident(nodes, edges, active), active, typeById), activeSet, paintSeedIds, ghostPresentation);
+    return focusRetainedSelection(
+      pruneUnlitDeps(applyBeacons(emphasizeIncident(nodes, edges, active), active, typeById), activeSet, paintSeedIds, ghostPresentation),
+      focusSeedIds,
+      radius,
+      mode,
+    );
   }
   if (active.every((id) => CODE_TYPES.has(typeById.get(id) ?? ""))) {
-    return pruneUnlitDeps(applyBeacons(emphasizeDirected(nodes, edges, active, radius), active, typeById), activeSet, paintSeedIds, ghostPresentation);
+    return focusRetainedSelection(
+      pruneUnlitDeps(applyBeacons(emphasizeDirected(nodes, edges, active, radius), active, typeById), activeSet, paintSeedIds, ghostPresentation),
+      focusSeedIds,
+      radius,
+      mode,
+    );
   }
   // A selected container means all code currently drawn inside it. Seed reach from those descendants
   // just like node/directed mode does; otherwise an expanded file's outside-view wires (correctly
@@ -113,7 +135,12 @@ export function emphasize(
   const near = neighbourhood(edges, [...seed], radius);
   const styledEdges = edges.map((edge) => styleEdge(edge, near.has(edge.source) && near.has(edge.target) ? "near" : "none"));
   const styledNodes = nodes.map((node) => (near.has(node.id) ? node : dimNode(node)));
-  return pruneUnlitDeps(applyBeacons({ nodes: styledNodes, edges: styledEdges }, active, typeById), activeSet, paintSeedIds, ghostPresentation);
+  return focusRetainedSelection(
+    pruneUnlitDeps(applyBeacons({ nodes: styledNodes, edges: styledEdges }, active, typeById), activeSet, paintSeedIds, ghostPresentation),
+    focusSeedIds,
+    radius,
+    mode,
+  );
 }
 
 /**
@@ -344,6 +371,99 @@ function withGhostPaintProvenance(
   return changed ?? [...nodes];
 }
 
+/** Repaint a retained ghost frontier from the literal selection without running disclosure again.
+ * Provenance decides which satellites survive and where they sit; this second, paint-only pass
+ * gives the clicked ghost the same incident-neighbour read as an ordinary node. */
+function focusRetainedSelection(
+  level: EmphasizedLevel,
+  focusSeedIds: ReadonlySet<string> | null,
+  radius: number,
+  mode: SurfaceEmphasisMode,
+): EmphasizedLevel {
+  if (focusSeedIds === null || focusSeedIds.size === 0) return level;
+  // The first pass has already written dim/bright opacity and may have beaconed the selected
+  // ghost through its provenance step. Remove only that paint before applying literal adjacency;
+  // geometry, grouping metadata and every retained node/edge stay intact.
+  const nodes = level.nodes.map((node) => clearNodeEmphasis(node, level.beacons.has(node.id)));
+  const semanticEdges = level.edges.filter(isInteractiveSemanticEdge);
+  const active = visibleFocusSeeds(focusSeedIds, nodes, semanticEdges);
+  if (active.length === 0) return level;
+  const typeById = new Map(nodes.map((node) => [node.id, node.type]));
+  let focused: { nodes: Node[]; edges: Edge[] };
+  if (mode === "reach" && active.every((id) => CODE_TYPES.has(typeById.get(id) ?? ""))) {
+    focused = emphasizeDirected(nodes, semanticEdges, active, radius);
+  } else if (mode === "reach") {
+    const seed = withDrawnDescendants(active, nodes);
+    const near = neighbourhood(semanticEdges, [...seed], radius);
+    const visibleNear = withDrawnAncestors(near, nodes);
+    focused = {
+      nodes: nodes.map((node) => (visibleNear.has(node.id) ? node : dimNode(node))),
+      edges: semanticEdges.map((edge) => styleEdge(
+        edge,
+        near.has(edge.source) && near.has(edge.target) ? "near" : "none",
+      )),
+    };
+  } else {
+    focused = emphasizeIncident(nodes, semanticEdges, active);
+  }
+  const beaconed = applyBeacons(focused, active, typeById);
+  const focusedById = new Map(beaconed.edges.map((edge) => [edge.id, edge]));
+  return {
+    nodes: beaconed.nodes,
+    edges: level.edges.map((edge) => focusedById.get(edge.id) ?? edge),
+    beacons: beaconed.beacons,
+  };
+}
+
+/** Resolve exact/grouped literal ids onto the ghost cards that survived presentation. Expanded
+ * exact children keep their own card but share semantic evidence through the persistent parent, so
+ * matching aggregate metadata adds that parent as a focus alias without traversing hierarchy spokes. */
+function visibleFocusSeeds(
+  focusSeedIds: ReadonlySet<string>,
+  nodes: readonly Node[],
+  edges: readonly Edge[],
+): string[] {
+  const visible = new Set<string>();
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  for (const node of nodes) {
+    const groupedIds = (node.data as { groupedGhostIds?: unknown }).groupedGhostIds;
+    if (
+      focusSeedIds.has(node.id)
+      || (node.type === "ghost"
+        && Array.isArray(groupedIds)
+        && groupedIds.some((id) => typeof id === "string" && focusSeedIds.has(id)))
+    ) {
+      visible.add(node.id);
+    }
+  }
+  for (const edge of edges) {
+    const groupedIds = (edge.data as { groupedGhostIds?: unknown }).groupedGhostIds;
+    if (
+      !Array.isArray(groupedIds)
+      || !groupedIds.some((id) => typeof id === "string" && focusSeedIds.has(id))
+    ) continue;
+    if (nodeById.get(edge.source)?.type === "ghost") visible.add(edge.source);
+    if (nodeById.get(edge.target)?.type === "ghost") visible.add(edge.target);
+  }
+  return [...visible];
+}
+
+function clearNodeEmphasis(node: Node, wasBeacon: boolean): Node {
+  const beacon = wasBeacon || (node.data as { beacon?: unknown }).beacon === true;
+  const paintedOpacity = node.style?.opacity !== undefined;
+  if (!beacon && !paintedOpacity) return node;
+  const style = { ...node.style };
+  delete style.opacity;
+  let data = node.data;
+  if (beacon) {
+    delete style.borderRadius;
+    delete style.boxShadow;
+    data = { ...node.data };
+    delete (data as { beacon?: unknown }).beacon;
+  }
+  return { ...node, data, style };
+}
+
 const isGhostEdge = (edge: Edge): boolean => (edge.data as { ghost?: boolean } | undefined)?.ghost === true;
 const isLit = (edge: Edge): boolean => (edge.style as { opacity?: number } | undefined)?.opacity === 1;
 
@@ -390,7 +510,10 @@ function emphasizeIncident(nodes: Node[], edges: Edge[], activeIds: readonly str
     }
     return styleEdge(edge, emphasis);
   });
-  const styledNodes = nodes.map((node) => (litNodes.has(node.id) ? node : dimNode(node)));
+  // A nested step is the semantic endpoint, but its visible block/unit/file frames must stay opaque
+  // too; otherwise parent opacity attenuates the highlighted child subtree in React Flow.
+  const visibleLitNodes = withDrawnAncestors(litNodes, nodes);
+  const styledNodes = nodes.map((node) => (visibleLitNodes.has(node.id) ? node : dimNode(node)));
   return { nodes: styledNodes, edges: styledEdges };
 }
 
@@ -422,7 +545,7 @@ function emphasizeDirected(nodes: Node[], edges: Edge[], activeIds: readonly str
   const codeEdges = edges.filter((edge) => isDep(edge) || isFlow(edge));
   const down = directedReach(codeEdges, seed, radius, "forward");
   const up = directedReach(codeEdges, seed, radius, "reverse");
-  const near = new Set([...seed, ...down.nodes, ...up.nodes]);
+  const near = withDrawnAncestors(new Set([...seed, ...down.nodes, ...up.nodes]), nodes);
   const styledEdges = edges.map((edge) => (down.edges.has(edge.id) ? styleEdge(edge, "downstream") : up.edges.has(edge.id) ? styleEdge(edge, "upstream") : styleEdge(edge, "none")));
   const styledNodes = nodes.map((node) => (near.has(node.id) ? node : dimNode(node)));
   return { nodes: styledNodes, edges: styledEdges };

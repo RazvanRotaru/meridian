@@ -3,6 +3,7 @@ import type { Edge, Node } from "@xyflow/react";
 import { bundleEdges, bundleLabel, BUNDLE_EDGE_TYPE, type BundleEdgeData } from "./edgeBundling";
 import { BOUNDARY_DASH_PATTERN, type EdgeBoundaryData } from "./edgeBoundary";
 import { IMPORT_CROSS } from "../theme/mapPalette";
+import { CYCLE_EDGE_TYPE, fuseCycles } from "./cycleFusion";
 
 // Two packages, each holding three files. All three files in A import their counterpart in B, so the
 // A→B pair carries three cross-container edges — exactly the bundle threshold.
@@ -66,6 +67,45 @@ describe("bundleEdges", () => {
     expect(highways).toHaveLength(1);
     expect((highways[0].data as BundleEdgeData).count).toBe(3);
     expect(result.some((e) => e.id === "e2" && e.type !== BUNDLE_EDGE_TYPE)).toBe(true);
+  });
+
+  it("extracts a grouped ghost aggregate when an exact represented child is selected", () => {
+    const groupedBase = edge("grouped", "a1", "b1");
+    const grouped = {
+      ...groupedBase,
+      data: {
+        ...groupedBase.data,
+        ghostGroupAggregate: true,
+        groupedGhostIds: ["ghost:one", "ghost:two"],
+      },
+    } as Edge;
+    const fourth = edge("e4", "a1", "b1");
+    const result = bundleEdges([grouped, ...crossEdges, fourth], nodes, new Set(["ghost:two"]));
+
+    expect(result).toContainEqual(expect.objectContaining({ id: "grouped" }));
+    const highway = result.find((item) => item.type === BUNDLE_EDGE_TYPE);
+    expect((highway?.data as BundleEdgeData | undefined)?.count).toBe(4);
+  });
+
+  it("extracts a fused cycle whose grouped member represents the selected ghost", () => {
+    const groupedBase = edge("grouped-forward", "a1", "b1");
+    const grouped = {
+      ...groupedBase,
+      data: {
+        ...groupedBase.data,
+        ghostGroupAggregate: true,
+        groupedGhostIds: ["ghost:one", "ghost:two"],
+      },
+    } as Edge;
+    const reverse = edge("grouped-reverse", "b1", "a1");
+    const [cycle] = fuseCycles([grouped, reverse]);
+    expect(cycle.type).toBe(CYCLE_EDGE_TYPE);
+
+    const result = bundleEdges([cycle, ...crossEdges], nodes, new Set(["ghost:two"]));
+
+    expect(result).toContainEqual(expect.objectContaining({ type: CYCLE_EDGE_TYPE }));
+    const highway = result.find((item) => item.type === BUNDLE_EDGE_TYPE);
+    expect((highway?.data as BundleEdgeData | undefined)?.count).toBe(3);
   });
 
   it("never bundles intra-container edges", () => {

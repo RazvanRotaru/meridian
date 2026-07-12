@@ -90,8 +90,10 @@ export function bundleWidth(count: number): number {
  * Intra-container edges and edges at the top level (no parent) pass through unchanged.
  *
  * `selected` un-bundles on demand: any edge incident to a selected node draws individually so the
- * reader can trace that node's own links out of the highway they'd otherwise disappear into. The
- * rest of the highway stays merged (its count drops by the extracted edges).
+ * reader can trace that node's own links out of the highway they'd otherwise disappear into.
+ * Paint-time ghost groups retain exact child identity in `groupedGhostIds`; selecting one of those
+ * children extracts the aggregate strand that visibly represents it. The rest of the highway stays
+ * merged (its count drops by the extracted edges).
  */
 export function bundleEdges(
   edges: Edge[],
@@ -129,8 +131,9 @@ export function bundleEdges(
       continue;
     }
 
-    // A selected node's own wires always draw individually — never folded into a highway.
-    if (selected.has(edge.source) || selected.has(edge.target)) {
+    // A selected node's own wires always draw individually — never folded into a highway. Grouped
+    // ghost children are presentation aliases, so their exact ids match the aggregate's metadata.
+    if (selectionTouches(edge, selected)) {
       passThrough.push(edge);
       continue;
     }
@@ -157,6 +160,25 @@ export function bundleEdges(
     }
   }
   return result;
+}
+
+function selectionTouches(edge: Edge, selected: ReadonlySet<string>): boolean {
+  if (selected.has(edge.source) || selected.has(edge.target)) return true;
+  const data = edge.data as { ghostGroupAggregate?: unknown; groupedGhostIds?: unknown; members?: unknown } | undefined;
+  const groupedMatch = data?.ghostGroupAggregate === true
+    && Array.isArray(data.groupedGhostIds)
+    && data.groupedGhostIds.some((id) => typeof id === "string" && selected.has(id));
+  if (groupedMatch) return true;
+  // Cycle fusion runs before bundling and keeps each original aggregate only as a member. Walk the
+  // small presentation aggregate so an exact ghost selection still reaches its represented strand.
+  return Array.isArray(data?.members)
+    && data.members.some((member) => isEdgeLike(member) && selectionTouches(member, selected));
+}
+
+function isEdgeLike(value: unknown): value is Edge {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as { source?: unknown; target?: unknown };
+  return typeof candidate.source === "string" && typeof candidate.target === "string";
 }
 
 /** Create a single highway bundle edge connecting two parent containers. */

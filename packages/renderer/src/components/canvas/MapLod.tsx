@@ -35,13 +35,15 @@ export const MAP_LOD_CSS = `
 }
 
 /* Every semantic population starts hidden. Per-depth rules generated from the layer metadata reveal
-   exactly one complete graph, so adding another level needs no new component or CSS role. */
+   exactly one complete graph, so adding another level needs no new component or CSS role. Filter
+   opacity is deliberately separate from each node/edge's inline selection opacity: using the
+   opacity property here would force the active layer to 1 and erase adjacency emphasis. */
 .react-flow.semantic-composite .semantic-layer {
-  opacity: 0 !important;
+  filter: opacity(0) !important;
   visibility: hidden !important;
   pointer-events: none !important;
-  transition: opacity ${SEMANTIC_LAYER_FADE_MS}ms ease-out, visibility 0s linear ${SEMANTIC_LAYER_FADE_MS}ms;
-  will-change: opacity;
+  transition: filter ${SEMANTIC_LAYER_FADE_MS}ms ease-out, visibility 0s linear ${SEMANTIC_LAYER_FADE_MS}ms;
+  will-change: filter;
 }
 
 /* Preview preserves the active graph's topology and full cards, changing only its text visibility.
@@ -76,10 +78,10 @@ export function semanticLayerVisibilityCss(layerDepths: readonly number[]): stri
     .map(
       (depth) => `
 .react-flow.semantic-composite[data-map-semantic-depth="${depth}"] .semantic-layer-${depth} {
-  opacity: 1 !important;
+  filter: opacity(1) !important;
   visibility: visible !important;
   pointer-events: auto !important;
-  transition: opacity ${SEMANTIC_LAYER_FADE_MS}ms ease-out, visibility 0s linear 0s;
+  transition: filter ${SEMANTIC_LAYER_FADE_MS}ms ease-out, visibility 0s linear 0s;
 }`,
     )
     .join("");
