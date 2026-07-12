@@ -34,7 +34,7 @@ export function FlowPane() {
   return (
     <aside
       id={reviewActive ? REVIEW_FLOW_SPLIT_ID : undefined}
-      style={reviewActive ? REVIEW_DRAWER : DRAWER}
+      style={DRAWER}
       aria-label={reviewActive ? "Logic flow review" : "Code flow"}
     >
       <header style={HEADER}>
@@ -268,30 +268,19 @@ const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
 const DRAWER: React.CSSProperties = {
   width: "100%",
+  height: "100%",
   minWidth: 0,
-  flex: "0 0 40%",
-  minHeight: 240,
-  maxHeight: "55%",
+  minHeight: 0,
   boxSizing: "border-box",
   display: "flex",
   flexDirection: "column",
+  overflow: "hidden",
   background: "#0B0E13",
-  borderTop: "1px solid #222732",
-  boxShadow: "0 -12px 32px rgba(0,0,0,0.35)",
   color: "#D6DEE9",
 };
 
-// PR logic review is an exact horizontal split: the graph keeps the upper 70% of the full canvas
-// and this flow surface owns the lower 30%. Remove the generic pane's minimum/maximum constraints,
-// which would otherwise break the ratio on shorter windows.
-const REVIEW_DRAWER: React.CSSProperties = {
-  ...DRAWER,
-  flex: "0 0 30%",
-  minHeight: 0,
-  maxHeight: "30%",
-};
-
 const HEADER: React.CSSProperties = {
+  flexShrink: 0,
   display: "flex",
   flexDirection: "column",
   gap: 8,
