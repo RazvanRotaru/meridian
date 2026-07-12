@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { PrReviewSection } from "../components/controlpanel/PrReviewSection";
 import { ReviewPanel } from "../components/review/ReviewPanel";
 import { applyChangedIds, buildGraphIndex } from "../graph/graphIndex";
+import { restorePrReviewBaseline, swapToPreparedArtifact } from "./prReviewSession";
 import { createBlueprintStore, selectedPrSummary, type StoreDependencies } from "./store";
 import { StoreProvider } from "./StoreContext";
 import type { PrSummary } from "./prTypes";
@@ -1117,6 +1118,29 @@ describe("PR head preparation (prepareHeadGraph)", () => {
 });
 
 describe("PR review artifact swap and restore", () => {
+  it("drops source ghost inspection on both prepared swap and soft baseline restore", () => {
+    const store = freshStore();
+    const inspection = {
+      anchorIds: new Set([CLASS_ID]),
+      visitedIds: new Set([METHOD_ID]),
+    };
+    const invalidateArtifactCaches = vi.fn();
+    store.setState({ moduleGhostInspection: inspection });
+
+    swapToPreparedArtifact(store.getState, store.setState, HEAD_ARTIFACT, invalidateArtifactCaches);
+
+    expect(store.getState().moduleGhostInspection).toBeNull();
+    store.setState({ moduleGhostInspection: inspection });
+
+    expect(restorePrReviewBaseline(
+      store.getState,
+      store.setState,
+      invalidateArtifactCaches,
+      { endSession: false },
+    )).toBe(true);
+    expect(store.getState().moduleGhostInspection).toBeNull();
+  });
+
   it("swaps in the prepared artifact and reviews in HEAD coordinates, saving the boot pair once", async () => {
     const { store, bootIndex, fetchMock } = await swappedReviewStore();
     // The prepared artifact was fetched from the boot graph endpoint with the id exchanged.

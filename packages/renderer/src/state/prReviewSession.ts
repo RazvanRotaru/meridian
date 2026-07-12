@@ -69,6 +69,8 @@ export function swapToPreparedArtifact(
     coverage: state.coverageMode ? computeCoverage(prepared.nodes, prepared.edges) : null,
     // An open code panel shows the outgoing artifact's node/lines — stale against the new graph.
     codeView: null,
+    // Preview roots belong to the outgoing artifact/projection and must never cross the swap.
+    moduleGhostInspection: null,
   });
 }
 
@@ -111,6 +113,7 @@ export function restorePrReviewBaseline(
     prPreparedArtifactCurrent: false,
     coverage: get().coverageMode ? computeCoverage(baseline.artifact.nodes, baseline.artifact.edges) : null,
     codeView: null,
+    moduleGhostInspection: null,
   };
   if (!endSession) {
     // Soft close: the review stays fully populated (chip + resume). The overlay's own arrays are

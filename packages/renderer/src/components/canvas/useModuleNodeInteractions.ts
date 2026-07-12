@@ -14,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { NodeMouseHandler, Node } from "@xyflow/react";
+import type { Edge, NodeMouseHandler, Node } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { activeModuleSurfaceSpec, type SurfaceSpec } from "./surfaceSpec";
 import type { BlockData } from "../../derive/moduleLevel";
@@ -24,6 +24,9 @@ const SELECT_CLICK_DELAY_MS = 250;
 export interface NodeInteractionOverrides {
   /** A pre-navigation side effect; navigation always continues afterward. */
   onBeforeDoubleClick?: (event: React.MouseEvent, node: Node) => void;
+  /** Source module surfaces can traverse ghosts without pinning them. The minimal overlay keeps its
+   * existing explicit membership model and therefore leaves this disabled. */
+  enableGhostInspection?: boolean;
 }
 
 /** The hook's result — what a mount threads into its GraphSurface's <ReactFlow>. */
@@ -46,6 +49,76 @@ export interface GhostPaintContext {
   seedIds: ReadonlySet<string>;
   viewMode: string;
   effectiveFocus: string | null;
+}
+
+export interface GhostInspectionRequest {
+  /** Exact artifact to materialize temporarily (group parents must disclose an exact child first). */
+  visitedIds: string[];
+  /** Real cards incident to the clicked ghost in the unpainted, unbundled graph. */
+  anchorIds: string[];
+}
+
+/** Resolve exploration from the canonical pre-paint graph, not from a highway/group aggregate.
+ * This is why a ghost reached through a bundled highway still discovers its exact adjacent card. */
+export function ghostInspectionRequestFor(
+  node: Node,
+  rawNodes: readonly Node[],
+  rawEdges: readonly Edge[],
+): GhostInspectionRequest | null {
+  if (node.type !== "ghost") {
+    return null;
+  }
+  const data = node.data as {
+    groupedGhostIds?: unknown;
+    ghostPaintSeedIds?: unknown;
+    members?: unknown;
+  };
+  const groupedIds = stringIds(data.groupedGhostIds);
+  const memberIds = stringIds(data.members);
+  // A grouped/folder ghost can stand for an unbounded family, and its presentation id may not be a
+  // drawable replacement. Keep its normal select/disclose behavior; inspection starts from an
+  // exact child after the reader opens the group.
+  if (groupedIds.length > 0 || memberIds.length > 0) {
+    return null;
+  }
+  const representedIds = new Set([node.id]);
+  const visitedIds = [node.id];
+  const rawById = new Map(rawNodes.map((candidate) => [candidate.id, candidate]));
+  const anchorIds = new Set<string>();
+  for (const edge of rawEdges) {
+    if ((edge.data as { ghost?: unknown } | undefined)?.ghost !== true) continue;
+    const sourceRepresented = representedIds.has(edge.source);
+    const targetRepresented = representedIds.has(edge.target);
+    if (sourceRepresented === targetRepresented) continue;
+    const otherId = sourceRepresented ? edge.target : edge.source;
+    if (rawById.get(otherId)?.type !== "ghost") anchorIds.add(otherId);
+  }
+  // Older/restored paint state can lack a matching raw edge after presentation filtering. Its
+  // per-ghost provenance is still exact enough to retain the entry ring.
+  if (anchorIds.size === 0) {
+    for (const id of stringIds(data.ghostPaintSeedIds)) {
+      if (rawById.get(id)?.type !== "ghost") anchorIds.add(id);
+    }
+  }
+  return { visitedIds, anchorIds: [...anchorIds].sort() };
+}
+
+function stringIds(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((id): id is string => typeof id === "string" && id.length > 0)
+    : [];
+}
+
+/** Temporary real previews disappear when an outside modifier-click ends/re-roots inspection.
+ * Drop only those ids from the accumulated selection; committed/pinned path cards remain valid. */
+export function ghostInspectionSelectionsToDrop(
+  selected: ReadonlySet<string>,
+  rawNodes: readonly Node[],
+): string[] {
+  const previewIds = new Set(rawNodes
+    .filter((node) => (node.data as { ghostInspectionPreview?: unknown }).ghostInspectionPreview === true)
+    .map((node) => node.id));
+  return [...selected].filter((id) => previewIds.has(id));
 }
 
 /** Provenance is valid through its own debounce and for as long as that ghost remains selected. */
@@ -105,6 +178,9 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
   const showPrivate = useBlueprint((s) => s.showPrivate);
   const groupGhostsByParent = useBlueprint((s) => s.groupGhostsByParent);
   const moduleSelected = useBlueprint((s) => s.moduleSelected);
+  const moduleNodes = useBlueprint((s) => s.moduleRfNodes);
+  const moduleEdges = useBlueprint((s) => s.moduleRfEdges);
+  const moduleGhostInspection = useBlueprint((s) => s.moduleGhostInspection);
   // The minimal overlay reuses the UNDERLYING lens's spec by construction (`viewMode` stays
   // "modules"/"call" while it covers the Map), so its gestures are the Map's/Service's exactly.
   const spec = activeModuleSurfaceSpec(viewMode);
@@ -116,9 +192,12 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
     revealServiceGhost,
     revealInView,
     openLogicFlow,
+    inspectModuleGhost,
+    clearModuleGhostInspection,
   } = useBlueprintActions();
   const pendingSelectTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const pendingSelectId = useRef<string | null>(null);
+  const pendingSelectCommit = useRef<(() => void) | null>(null);
   const [expandedGhostGroupIds, setExpandedGhostGroupIds] = useState<Set<string>>(() => new Set());
   const [ghostPaintContexts, setGhostPaintContexts] = useState<Map<string, GhostPaintContext>>(() => new Map());
   const toggleGhostGroup = useCallback((groupId: string) => {
@@ -131,14 +210,15 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
     }
     pendingSelectTimer.current = null;
     pendingSelectId.current = null;
+    pendingSelectCommit.current = null;
   };
   const flushPendingSelect = () => {
-    const pendingId = pendingSelectId.current;
-    if (pendingId === null) {
+    const commit = pendingSelectCommit.current;
+    if (commit === null) {
       return;
     }
     clearPendingSelect();
-    selectModule(pendingId);
+    commit();
   };
   // Clear any pending single-click select on unmount so a queued timeout can't fire after teardown.
   useEffect(
@@ -148,6 +228,7 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
       }
       pendingSelectTimer.current = null;
       pendingSelectId.current = null;
+      pendingSelectCommit.current = null;
     },
     [],
   );
@@ -211,6 +292,35 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
     });
   }, [moduleSelected]);
 
+  const updateGhostInspection = (node: Node) => {
+    if (overrides.enableGhostInspection !== true) {
+      return;
+    }
+    const onRetainedPath = (node.data as { ghostInspectionPath?: unknown }).ghostInspectionPath === true;
+    const request = ghostInspectionRequestFor(node, moduleNodes, moduleEdges);
+    if (request !== null) {
+      const accepted = inspectModuleGhost(
+        request.visitedIds,
+        request.anchorIds,
+        moduleGhostInspection !== null && onRetainedPath,
+      );
+      if (accepted) {
+        // The clicked id will become a real temporary card after relayout, so its old ghost-owner
+        // provenance must not keep painting only the entry anchor. A rejected external/package
+        // request retains its ordinary stable ghost provenance.
+        setGhostPaintContexts(new Map());
+      } else if (moduleGhostInspection !== null && !onRetainedPath) {
+        // A real but non-drawable external/package ghost cannot start a replacement path, yet it is
+        // still an outside click and therefore ends the prior inspection session.
+        clearModuleGhostInspection();
+      }
+      return;
+    }
+    if (moduleGhostInspection !== null && !onRetainedPath) {
+      clearModuleGhostInspection();
+    }
+  };
+
   const onNodeClick: NodeMouseHandler<Node> = (event, node) => {
     // Selection is deliberately type-agnostic: real cards, synthetic parents, exact ghosts and
     // grouped ghost parents all enter the same selection (and therefore extraction) path.
@@ -218,16 +328,28 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
     if (gesture === "toggle") {
       flushPendingSelect();
       rememberGhostPaintContext(node, gesture);
+      const outsideInspection = moduleGhostInspection !== null
+        && (node.data as { ghostInspectionPath?: unknown }).ghostInspectionPath !== true;
+      if (outsideInspection) {
+        ghostInspectionSelectionsToDrop(moduleSelected, moduleNodes).forEach(toggleModuleSelect);
+      }
+      updateGhostInspection(node);
       toggleModuleSelect(node.id);
       return;
     }
     clearPendingSelect();
     rememberGhostPaintContext(node, gesture);
     pendingSelectId.current = node.id;
-    pendingSelectTimer.current = window.setTimeout(() => {
+    pendingSelectCommit.current = () => {
+      updateGhostInspection(node);
       selectModule(node.id);
+    };
+    pendingSelectTimer.current = window.setTimeout(() => {
+      const commit = pendingSelectCommit.current;
       pendingSelectTimer.current = null;
       pendingSelectId.current = null;
+      pendingSelectCommit.current = null;
+      commit?.();
     }, SELECT_CLICK_DELAY_MS);
   };
   // Double-click is navigation only. Expansion/collapse belongs exclusively to the node chevrons
@@ -259,6 +381,9 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
   const onPaneClick = () => {
     clearPendingSelect();
     setGhostPaintContexts(new Map());
+    if (overrides.enableGhostInspection === true) {
+      clearModuleGhostInspection();
+    }
     selectModule(null);
   };
 

@@ -180,6 +180,50 @@ describe("emphasize — ghost selection uses the drawn endpoint as its paint see
     expect(fromEmail.edges.find((edge) => edge.target === pricing)?.style?.opacity).toBe(0.4);
   });
 
+  it("retains the earlier ghost ring and one-hop frontier while pruning ghosts outside inspection", () => {
+    const visited = `${CORE}.email`;
+    const sibling = member(1);
+    const frontier = member(2);
+    const outside = member(3);
+    const visitedNode: Node = {
+      ...codeMemberNode(visited),
+      parentId: undefined,
+      data: { blockKind: "method", ghostInspectionPath: true, ghostInspectionVisited: true, ghostInspectionPreview: true },
+    };
+    const siblingNode = { ...ghostNode(sibling, 0), data: { ...ghostNode(sibling, 0).data, ghostInspectionPath: true } };
+    const frontierNode = { ...ghostNode(frontier, 1), data: { ...ghostNode(frontier, 1).data, ghostInspectionPath: true } };
+    const bridge: Edge = {
+      id: "bridge",
+      source: CORE,
+      target: visited,
+      data: { category: "dep", relationKind: "calls", depKind: "calls", ghostInspectionPath: true },
+    };
+    const retainedSibling = {
+      ...ghostEdge(sibling, 0),
+      data: { ...ghostEdge(sibling, 0).data, ghostInspectionPath: true },
+    };
+    const retainedFrontier = {
+      ...ghostEdge(frontier, 1, visited),
+      data: { ...ghostEdge(frontier, 1, visited).data, ghostInspectionPath: true },
+    };
+    const unrelated = ghostEdge(outside, 2);
+
+    const focused = emphasize(
+      [coreNode(), visitedNode, siblingNode, frontierNode, ghostNode(outside, 2)],
+      [bridge, retainedSibling, retainedFrontier, unrelated],
+      new Set([visited]),
+      1,
+      "node",
+    );
+
+    expect(focused.nodes.map((node) => node.id)).toContain(sibling);
+    expect(focused.nodes.map((node) => node.id)).toContain(frontier);
+    expect(focused.nodes.map((node) => node.id)).not.toContain(outside);
+    expect(focused.edges.find((edge) => edge.id === retainedSibling.id)?.style?.opacity).toBe(0.4);
+    expect(focused.edges.find((edge) => edge.id === retainedFrontier.id)?.style?.opacity).toBe(1);
+    expect(focused.edges.some((edge) => edge.id === unrelated.id)).toBe(false);
+  });
+
   it("focuses literal adjacency for selected ghosts from independent provenance families", () => {
     const ownerA = `${CORE}.ownerA`;
     const ownerB = `${CORE}.ownerB`;

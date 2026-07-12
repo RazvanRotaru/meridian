@@ -101,9 +101,31 @@ function outsideBox(r: Rect, box: Box): boolean {
 }
 
 describe("layoutModuleTree ghost placement", () => {
+  it("outlines a transient inspection preview without changing its measured geometry", async () => {
+    const ordinary = fileNode("f:a");
+    const preview: VisibleModuleNode = {
+      ...ordinary,
+      data: { ...ordinary.data, ghostInspectionPath: true, ghostInspectionVisited: true, ghostInspectionPreview: true },
+    };
+    const [plainLayout, previewLayout] = await Promise.all([
+      layoutModuleTree([ordinary], []),
+      layoutModuleTree([preview], []),
+    ]);
+    const plain = plainLayout.nodes[0];
+    const inspected = previewLayout.nodes[0];
+
+    expect(inspected.style).toMatchObject({
+      width: plain.style?.width,
+      height: plain.style?.height,
+      outline: "1px dashed #596575",
+      outlineOffset: 3,
+    });
+    expect(inspected.position).toEqual(plain.position);
+  });
+
   it("keeps the ELK core ghost-free and emits ghosts as root nodes OUTSIDE the core's perimeter", async () => {
     const nodes = [fileNode("f:a"), fileNode("f:b"), ghostNode("g:x")];
-    const edges = [importEdge("f:a", "f:b"), ghostWire("f:a", "g:x")];
+    const edges = [importEdge("f:a", "f:b"), { ...ghostWire("f:a", "g:x"), ghostInspectionPath: true as const }];
     const { nodes: laid, edges: laidEdges } = await layoutModuleTree(nodes, edges);
 
     const ghost = laid.find((node) => node.id === "g:x")!;
@@ -115,6 +137,7 @@ describe("layoutModuleTree ghost placement", () => {
       crossPackage: true,
       outsideView: true,
       underlyingEdgeIds: ["calls:f:a->g:x"],
+      ghostInspectionPath: true,
     });
     // Fully outside the perimeter (past some edge), never inside the graph.
     expect(outsideBox(rectOf(ghost), coreBox(laid))).toBe(true);
