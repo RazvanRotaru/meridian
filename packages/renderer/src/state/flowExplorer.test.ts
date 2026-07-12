@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FlowStep, GraphArtifact, GraphNode } from "@meridian/core";
+import { LOGIC_VIEW_MODES } from "../derive/flowViewModel";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { createBlueprintStore } from "./store";
 
@@ -49,7 +50,31 @@ function freshStore() {
   });
 }
 
+afterEach(() => vi.unstubAllGlobals());
+
 describe("flow explorer store slice", () => {
+  it("defaults PR flow reviews to Timeline and persists projection changes", () => {
+    const persisted = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => persisted.get(key) ?? null,
+        setItem: (key: string, value: string) => void persisted.set(key, value),
+      },
+    });
+    const store = freshStore();
+
+    expect(store.getState().reviewFlowSplitView).toBe("timeline");
+    for (const { mode } of LOGIC_VIEW_MODES) {
+      store.getState().setReviewFlowSplitView(mode);
+      expect(store.getState().reviewFlowSplitView).toBe(mode);
+      expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
+        version: 1,
+        flowSplitView: mode,
+      });
+      expect(freshStore().getState().reviewFlowSplitView).toBe(mode);
+    }
+  });
+
   it("selectFlowEntry records the selection and bulk-reveals related modules in the module map", () => {
     const store = freshStore();
     store.getState().selectFlowEntry({ rootId: "ts:pkg/src/a.ts#run", blockPath: [] });

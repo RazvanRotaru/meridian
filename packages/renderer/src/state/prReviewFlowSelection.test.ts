@@ -5,6 +5,7 @@ import type { FlowSelectionRef } from "../derive/flowBlocks";
 import { paintMinimalLevel } from "../components/paintMinimal";
 import { createBlueprintStore, type StoreDependencies } from "./store";
 import type { PrSummary } from "./prTypes";
+import type { ReviewFlowSplitView } from "./reviewPreferences";
 
 function node(
   id: string,
@@ -178,9 +179,10 @@ function freshStore(extra?: Partial<StoreDependencies>) {
   });
 }
 
-async function activeReviewStore() {
+async function activeReviewStore(reviewFlowSplitView: ReviewFlowSplitView = "graph") {
   const store = freshStore();
   store.setState({
+    reviewFlowSplitView,
     viewMode: "prs",
     prSelected: 17,
     prsList: { open: [pr(17)], closed: null },
@@ -220,6 +222,7 @@ async function impactedFlowReviewStore() {
   } as unknown as GraphArtifact;
   const store = freshStore({ artifact, index: buildGraphIndex(artifact) });
   store.setState({
+    reviewFlowSplitView: "graph",
     viewMode: "prs",
     prSelected: 17,
     prsList: { open: [pr(17)], closed: null },
@@ -247,6 +250,28 @@ async function impactedFlowReviewStore() {
 }
 
 describe("PR-review logic-flow selection", () => {
+  it.each(["timeline", "metro", "blocks"] as const)(
+    "skips execution-graph ELK for %s and derives it only when requested",
+    async (alternateView) => {
+      const store = await activeReviewStore(alternateView);
+
+      store.getState().selectFlowEntry(FLOW_SELECTION);
+      await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+      expect(store.getState().flowPaneLayoutStatus).toBe("idle");
+      expect(store.getState().flowPaneRfNodes).toEqual([]);
+      expect(store.getState().flowPaneRfEdges).toEqual([]);
+
+      store.getState().setReviewFlowSplitView("graph");
+      await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
+      expect(store.getState().flowPaneRfNodes.length).toBeGreaterThan(0);
+
+      store.getState().setReviewFlowSplitView(alternateView);
+      expect(store.getState().flowPaneLayoutStatus).toBe("idle");
+      expect(store.getState().flowPaneRfNodes).toEqual([]);
+      expect(store.getState().flowPaneRfEdges).toEqual([]);
+    },
+  );
+
   it("opens the exact flow on the review graph, reveals its nested root, and resets on close", async () => {
     const store = await activeReviewStore();
     const reviewExpansion = new Set(store.getState().moduleExpanded);

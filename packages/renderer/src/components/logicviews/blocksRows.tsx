@@ -2,8 +2,8 @@
  * The recursive body of the Blocks (structogram) view: one `FlowStep[]` rendered as a stack of rows
  * and nested scope blocks. Nesting mirrors the source — a branch/loop/try/callback is a bordered
  * block whose children recurse through the same `<Rows>`, so arbitrary depth just works. Calls carry
- * the SAME interaction contract as the exec graph (select-by-target, double-click-to-drill); the
- * selection/drill wiring rides down through `RowCtx` so this file needs no store access.
+ * the SAME interaction contract as the exec graph (select-by-target, Shift+Enter/double-click to
+ * drill); the selection/drill wiring rides down through `RowCtx` so this file needs no store access.
  */
 
 import type { FlowStep, LogicFlows, NodeId } from "@meridian/core";
@@ -23,6 +23,7 @@ export interface RowCtx {
   selected: NodeId | null;
   onSelect: (target: NodeId | null) => void;
   onDrill: (target: NodeId) => void;
+  drillEnabled: boolean;
 }
 
 export function Rows({ steps, ctx }: { steps: FlowStep[]; ctx: RowCtx }) {
@@ -94,32 +95,54 @@ function CallRow({ step, ctx }: { step: CallStep; ctx: RowCtx }) {
   const isSelected = ctx.selected !== null && step.target === ctx.selected;
   const dimmed = ctx.selected !== null && !isSelected;
   const opacity = isSelected ? 1 : dimmed ? 0.55 : display.expandable ? 1 : 0.6;
-
-  return (
-    <div
-      style={{
-        ...ROW,
-        borderLeft: `3px solid ${accent}`,
-        opacity,
-        cursor: hasTarget ? "pointer" : "default",
-        boxShadow: isSelected ? `0 0 0 2px ${FLOW_COLORS.select}` : "none",
-      }}
-      onClick={(e) => {
-        e.stopPropagation();
-        if (hasTarget) ctx.onSelect(step.target);
-      }}
-      onDoubleClick={(e) => {
-        e.stopPropagation();
-        if (display.expandable) ctx.onDrill(step.target!);
-      }}
-    >
+  const canDrill = ctx.drillEnabled && display.expandable;
+  const style: React.CSSProperties = {
+    ...ROW,
+    borderLeft: `3px solid ${accent}`,
+    opacity,
+    cursor: hasTarget ? "pointer" : "default",
+    boxShadow: isSelected ? `0 0 0 2px ${FLOW_COLORS.select}` : "none",
+  };
+  const copy = (
+    <>
       <span style={{ ...GLYPH, color: accent }}>{display.method ? "∷" : "ƒ"}</span>
       <span style={NAME}>{step.label}</span>
       {display.provenance ? <span style={PROV}>{display.provenance}</span> : null}
       <span style={SPRING} />
       {step.awaited ? <Badge accent={FLOW_COLORS.awaited} text="⏱ AWAIT" /> : null}
       {step.detached ? <Badge accent={FLOW_COLORS.detached} text="⤳ DETACHED" /> : null}
-    </div>
+    </>
+  );
+
+  if (!hasTarget) {
+    return <div style={style}>{copy}</div>;
+  }
+  return (
+    <button
+      type="button"
+      aria-pressed={isSelected}
+      aria-keyshortcuts={canDrill ? "Shift+Enter" : undefined}
+      title={canDrill ? "Shift+Enter to open this call's logic flow" : undefined}
+      style={{ ...style, width: "100%", appearance: "none", margin: 0, color: "inherit", textAlign: "left" }}
+      onClick={(event) => {
+        event.stopPropagation();
+        ctx.onSelect(step.target);
+      }}
+      onDoubleClick={(event) => {
+        if (!canDrill) return;
+        event.stopPropagation();
+        ctx.onDrill(step.target!);
+      }}
+      onKeyDown={(event) => {
+        if (canDrill && event.key === "Enter" && event.shiftKey) {
+          event.preventDefault();
+          event.stopPropagation();
+          ctx.onDrill(step.target!);
+        }
+      }}
+    >
+      {copy}
+    </button>
   );
 }
 
