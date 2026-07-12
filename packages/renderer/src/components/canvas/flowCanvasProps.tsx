@@ -52,6 +52,11 @@ export const LEGEND_PILL_H = 28; // its collapsed height (see MapLegend PILL)
 const CONTROLS_COLUMN = CHROME_EDGE + MINIMAP_W + CHROME_GAP; // shared with the Legend pill, left of the minimap
 const CONTROLS_BOTTOM = LEGEND_BOTTOM + LEGEND_PILL_H + CHROME_GAP; // clear of the Legend pill below
 
+// React Flow does not carry a controlled node's className onto its MiniMap mark unless this callback
+// is supplied. Forwarding it keeps semantic-layer visibility in lockstep with the main canvas, so
+// pre-mounted parent graphs remain available to semantic zoom without also appearing in the MiniMap.
+const miniMapNodeClassName = (node: Node): string => node.className ?? "";
+
 // The three chrome children every read-only surface renders: a dotted background, the zoom/fit
 // controls (interactive toggle hidden — the graph is read-only), and a pannable minimap tinted per
 // node by the view's own colour fn. Controls stack above the Legend pill (left of the minimap); with
@@ -72,7 +77,7 @@ export function CanvasChrome({ nodeColor, minimap = true }: { nodeColor: (node: 
       {/* Lighter mask + a per-node stroke: the old 0.7 mask over near-black node fills made the
           minimap read as an empty rectangle; the stroke keeps tiny nodes visible at any density. */}
       {showMinimap ? (
-        <MiniMap pannable zoomable nodeColor={nodeColor} nodeStrokeColor="#4B5563" nodeStrokeWidth={3} maskColor="rgba(8,10,14,0.55)" style={{ width: MINIMAP_W, height: MINIMAP_H, background: "#161B22" }} />
+        <MiniMap pannable zoomable nodeColor={nodeColor} nodeClassName={miniMapNodeClassName} nodeStrokeColor="#4B5563" nodeStrokeWidth={3} maskColor="rgba(8,10,14,0.55)" style={{ width: MINIMAP_W, height: MINIMAP_H, background: "#161B22" }} />
       ) : null}
     </>
   );
