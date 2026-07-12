@@ -72,6 +72,9 @@ const GHOST_HEIGHT = 42;
 const GHOST_ROW_GAP = 5;
 const GHOST_CHROME = 2 + 9 + 9; // border + inner padding (left 9 + right 9)
 const CODE_GLYPH_WIDTH = 9; // the ƒ / τ / kind glyph on code + ghost cards
+// Temporary ghost-inspection roots are ordinary exact cards in ELK. An outline (rather than a
+// border) distinguishes their reversible status without changing the measured box or its layout.
+const GHOST_INSPECTION_PREVIEW_OUTLINE = "1px dashed #596575";
 // Every located card (file, unit, block) now trails a `</>` code button, and a changed one also a
 // "Δ n" chip. Reserve room for both in the label row so a long name is never crowded out — the clip
 // the reader hit on `f cons…` / `f _ensu…`. Δ is over-reserved on unchanged cards (the layout can't
@@ -287,11 +290,16 @@ function toNode(elkNode: ElkNode, parentId: string | undefined, byId: Map<string
     return null;
   }
   const placement = parentRelativePlacement(elkNode, parentId);
+  const preview = node.data.ghostInspectionPreview === true;
   return {
     id: node.id,
     type: node.kind,
     position: placement.position,
-    style: { width: placement.width, height: placement.height },
+    style: {
+      width: placement.width,
+      height: placement.height,
+      ...(preview ? { outline: GHOST_INSPECTION_PREVIEW_OUTLINE, outlineOffset: 3 } : {}),
+    },
     data: node.data,
     ...(placement.parentId ? { parentId: placement.parentId, extent: placement.extent } : {}),
   };
@@ -313,6 +321,7 @@ function toEdge(edge: ModuleTreeEdge): Edge {
       depKind: edge.depKind,
       underlyingEdgeIds: edge.underlyingEdgeIds,
       commons: edge.commons === true,
+      ghostInspectionPath: edge.ghostInspectionPath === true,
     },
     // Edge hit-paths sit above nested frames' title bars and steal button clicks; Map edges are non-interactive.
     interactionWidth: 0,

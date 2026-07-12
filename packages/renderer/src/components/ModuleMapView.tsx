@@ -124,6 +124,7 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
   const nodes = useBlueprint((state) => state.moduleRfNodes);
   const edges = useBlueprint((state) => state.moduleRfEdges);
   const selected = useBlueprint((state) => state.moduleSelected);
+  const ghostInspection = useBlueprint((state) => state.moduleGhostInspection);
   const layoutStatus = useBlueprint((state) => state.moduleLayoutStatus);
   const layoutActivity = useBlueprint((state) => state.moduleLayoutActivity);
   const rawFocus = useBlueprint((state) => state.moduleFocus);
@@ -144,7 +145,7 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
 
   // The source remains mounted while covered. Its recenter subscription is muted so a toolbar
   // signal cannot disturb the viewport which Minimal Graph will reveal on outward navigation.
-  const interactions = useModuleNodeInteractions();
+  const interactions = useModuleNodeInteractions({ enableGhostInspection: true });
   useRecenter(useMemo(() => [...selected], [selected]), { enabled: !covered });
 
   // Category/test/external hiding is a pure visibility filter over already-laid geometry. External
@@ -187,6 +188,12 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
 
   const isEmpty = semanticNavigation.currentNodes.length === 0 && layoutStatus === "ready";
   const busy = layoutStatus === "laying-out" ? layoutActivity ?? undefined : undefined;
+  const inspectionPositionKey = ghostInspection === null
+    ? null
+    : JSON.stringify([
+        [...ghostInspection.anchorIds].sort(),
+        ghostInspection.visitedIds.values().next().value ?? null,
+      ]);
 
   return (
     <GraphSurface
@@ -196,6 +203,7 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
       relations={spec.relations}
       miniMapColor={miniMapColor}
       interactions={interactions}
+      positionRetentionKey={inspectionPositionKey}
       busy={busy}
       autoFitView={false}
       semanticLayers={semanticLayers}
@@ -211,7 +219,7 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
         <>
           {renderBeacons(view)}
           {/* Canonical real-id ghosts remain promotable while persistent parent anchors disclose
-              their children; only lit ghosts receive the shared ring. */}
+              their children; temporary real previews share the same explicit commit ring. */}
           <GhostPromoteRing nodes={view.nodes} title="Pin to canvas" onPromote={promoteGhost} />
         </>
       )}

@@ -202,6 +202,8 @@ function parentNode(group: ParentGroup, index: GraphIndex, existing?: Node): Nod
   const semanticMembers = [...group.members.values()]
     .sort((a, b) => a.node.id.localeCompare(b.node.id))
     .map(({ node }) => ({ id: node.id, data: semanticSummary(node) }));
+  const ghostInspectionPath = [...group.members.values()].some(({ node }) =>
+    (node.data as { ghostInspectionPath?: unknown }).ghostInspectionPath === true);
   const data: GhostGroupData = {
     ...(existingData ?? { label: parentLabel, context: "", ghostKind: parent.kind }),
     label: parentLabel,
@@ -219,6 +221,7 @@ function parentNode(group: ParentGroup, index: GraphIndex, existing?: Node): Nod
     ghostDirection: preferredDirection(directions),
     groupedGhostIds: semanticMembers.map((member) => member.id),
     groupedGhostCount: semanticMembers.length,
+    ...(ghostInspectionPath ? { ghostInspectionPath: true } : {}),
   };
   return {
     ...representative,
@@ -331,6 +334,9 @@ function mergeEvidenceEdge(existing: Edge, incoming: Edge, incomingGroupedGhostI
       ...(underlyingEdgeIds.length > 0 ? { underlyingEdgeIds } : {}),
       ...(groupedGhostIds.length > 0
         ? { ghostGroupAggregate: true, groupedGhostIds, groupedGhostCount: groupedGhostIds.length }
+        : {}),
+      ...(existingData.ghostInspectionPath === true || incomingData.ghostInspectionPath === true
+        ? { ghostInspectionPath: true }
         : {}),
     },
     style: existing.style ?? incoming.style,

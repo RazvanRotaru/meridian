@@ -42,7 +42,8 @@ import { levelChildren, type NavChild } from "../derive/breadcrumbNav";
 import { buildBlockDeps, UNIT_CARD_KINDS, type BlockDeps } from "../derive/blockDeps";
 import type { GhostData } from "../derive/ghostDeps";
 import { buildUnitIndex, type UnitIndex } from "@meridian/design-metrics";
-import type { VisibleModuleNode } from "../derive/moduleTree";
+import { extraRoots, type VisibleModuleNode } from "../derive/moduleTree";
+import { decorateGhostInspectionTree } from "../derive/ghostInspection";
 import { moduleChildContainerIds } from "../derive/moduleChildContainers";
 import { serviceScopeFor, widenServiceScope, type ServiceScope } from "./serviceScope";
 import { expandServiceSyntheticAnchors, leadIdOf } from "../derive/serviceClusterEdges";
@@ -143,6 +144,14 @@ export type LayoutStatus = "idle" | "laying-out" | "ready" | "error";
 export interface LayoutActivity {
   label: string;
   detail?: string;
+}
+
+/** Session-only, read-before-pinning exploration of off-level call neighbours. Exact artifact ids
+ * temporarily join the current tree as roots, while the anchors retain the ring from which the
+ * reader entered the path. Nothing here is URL encoded or written to the permanent `mapExtra` set. */
+export interface ModuleGhostInspection {
+  anchorIds: Set<string>;
+  visitedIds: Set<string>;
 }
 
 /** Lens-owned state carried by an already-mounted semantic parent. The compositor treats this as
@@ -310,6 +319,9 @@ export interface BlueprintState {
    * (their owning unit/file) so an out-of-view symbol joins the Map or Service canvas. Shared by both
    * lenses (they share the module slice). Session-only; cleared on a focus/lens change. */
   mapExtra: Set<string>;
+  /** Temporary exact roots traversed by clicking ghosts. They expose one more call-neighbour ring
+   * without committing those nodes to `mapExtra`; clicking outside the retained path clears them. */
+  moduleGhostInspection: ModuleGhostInspection | null;
   /** Whether `private`-tagged members are painted on the Map. PAINT-ONLY like Tests/categories —
    * privates always get their space in the layout, so toggling never reshuffles positions. */
   showPrivate: boolean;
@@ -508,6 +520,10 @@ export interface BlueprintState {
   setCompRoot(id: string | null): void;
   toggleSolidMetrics(): void;
   moduleRelayout(activity?: LayoutActivity): Promise<void>;
+  /** Reveal the exact clicked ghost(s) as temporary roots. `extend` unions into the current path;
+   * false starts a new path from the supplied real anchors. */
+  inspectModuleGhost(nodeIds: readonly string[], anchorIds: readonly string[], extend: boolean): boolean;
+  clearModuleGhostInspection(): void;
   setModuleFocus(id: string | null): void;
   /** The navigable cards shown at a given Map focus — powers the breadcrumb dropdowns (the nodes you
    * can go into from that level). Read-only; reuses the cached module import graph + hidden-tests set. */
@@ -1100,6 +1116,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleSelected: new Set<string>(),
     moduleExpanded: new Set<string>(),
     mapExtra: new Set<string>(),
+    moduleGhostInspection: null,
     showPrivate: true,
     serviceScope: null,
     serviceGroupingMode: "folder",
@@ -1323,10 +1340,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             moduleFocus: reveal.moduleFocus,
             moduleExpanded: reveal.moduleExpanded,
             moduleSelected: reveal.moduleSelected,
+            moduleGhostInspection: null,
           });
           void get().moduleRelayout({ label: "Revealing selected flow…" });
         } else {
-          set({ moduleSelected: new Set<string>() });
+          set({ moduleSelected: new Set<string>(), moduleGhostInspection: null });
+          if (state.moduleGhostInspection !== null) {
+            void get().moduleRelayout({ label: "Closing ghost exploration…" });
+          }
         }
       }
       void get().flowPaneRelayout();
@@ -1607,6 +1628,51 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ showSolidMetrics: next });
     },
 
+    // Clicking a ghost is exploratory, not curation: chart the exact artifact as a temporary root
+    // so the ordinary derive pipeline emits its next dependency ring. The retained anchors keep the
+    // ring the reader entered from; only the shared "+" action writes permanent `mapExtra` state.
+    inspectModuleGhost(nodeIds, anchorIds, extend) {
+      const state = get();
+      if (state.minimalSeedIds.length > 0 || moduleSurfaceSpec(state.viewMode) === null) {
+        return false;
+      }
+      const validVisited = extraRoots(state.index, new Set(nodeIds));
+      if (validVisited.length === 0) {
+        return false;
+      }
+      const prior = extend ? state.moduleGhostInspection : null;
+      const visitedIds = new Set(prior?.visitedIds ?? []);
+      validVisited.forEach((id) => visitedIds.add(id));
+      const anchorSet = new Set(prior?.anchorIds ?? []);
+      // Direct adjacency from a later frontier click explains which visited node exposed it, but it
+      // is not a new provenance owner. Only the path's original entry anchors retain their complete
+      // mixed-relation ghost ring; visited nodes contribute calls only.
+      if (prior === null) {
+        anchorIds
+          .filter((id) => typeof id === "string" && id.length > 0)
+          .forEach((id) => anchorSet.add(id));
+      }
+      const next: ModuleGhostInspection = { anchorIds: anchorSet, visitedIds };
+      if (
+        state.moduleGhostInspection !== null
+        && sameStringSet(state.moduleGhostInspection.anchorIds, next.anchorIds)
+        && sameStringSet(state.moduleGhostInspection.visitedIds, next.visitedIds)
+      ) {
+        return true;
+      }
+      set({ moduleGhostInspection: next });
+      void get().moduleRelayout(nodeLayoutActivity(state, "Exploring calls from", validVisited[0]));
+      return true;
+    },
+
+    clearModuleGhostInspection() {
+      if (get().moduleGhostInspection === null) {
+        return;
+      }
+      set({ moduleGhostInspection: null });
+      void get().moduleRelayout({ label: "Closing ghost exploration…" });
+    },
+
     // Re-derive the active module-family surface through ELK, behind the same stale-seq guard. The
     // SurfaceSpec owns both its visible tree and its semantic-parent relation, so Map, Service, and
     // UI all travel through this one hierarchy/composition path.
@@ -1637,11 +1703,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // Commons demotion stays disabled for focused composites: independent Map layouts would
         // otherwise mint the same RF-only dock identity. Service/UI ignore this Map-only flag.
         const semanticState = state.moduleFocus !== null ? { ...state, showCommons: false } : state;
-        const tree = spec.deriveTree(
+        const transientIds = state.moduleGhostInspection?.visitedIds;
+        const extraIds = transientIds === undefined || transientIds.size === 0
+          ? state.mapExtra
+          : new Set([...state.mapExtra, ...transientIds]);
+        let tree = spec.deriveTree(
           semanticState,
           { graph, deps, flows },
-          { extraIds: state.mapExtra, hiddenIds: hidden },
+          { extraIds, hiddenIds: hidden },
         );
+        if (state.moduleGhostInspection !== null) {
+          tree = decorateGhostInspectionTree(tree, state.index, state.moduleGhostInspection, state.mapExtra);
+        }
         const outerTrees: SemanticOuterTree<SurfaceSemanticContext>[] = [];
         let currentState = semanticState;
         let currentEffectiveFocus = tree.effectiveFocus;
@@ -1662,11 +1735,29 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             moduleExpanded: new Set<string>(),
             ...(parent.context ?? {}),
           };
-          const parentTree = spec.deriveTree(
+          let parentTree = spec.deriveTree(
             parentState,
             { graph, deps, flows },
             { hiddenIds: hidden },
           );
+          if (state.moduleGhostInspection !== null) {
+            // Outer semantic layers intentionally receive no temporary roots, but their canonical
+            // ancestors (and a Service layer's synthetic anchor) are still inside the retained
+            // path. Mark them so clicking the visible enclosing card does not end exploration.
+            parentTree = decorateGhostInspectionTree(
+              parentTree,
+              state.index,
+              state.moduleGhostInspection,
+              state.mapExtra,
+            );
+            parentTree = {
+              ...parentTree,
+              nodes: parentTree.nodes.map((node) =>
+                node.id === parent.anchorId
+                  ? { ...node, data: { ...node.data, ghostInspectionPath: true } }
+                  : node),
+            };
+          }
           outerTrees.push({
             level: {
               depth: outerTrees.length + 1,
@@ -1727,7 +1818,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       // A new level is a fresh id space, so the prior expansion set means nothing here — clear it so
       // the new level opens with only its frontier shown (mirrors logic's reset-on-drill).
-      set({ moduleFocus: id, moduleSelected: new Set<string>(), moduleExpanded: new Set<string>(), mapExtra: new Set<string>() });
+      set({
+        moduleFocus: id,
+        moduleSelected: new Set<string>(),
+        moduleExpanded: new Set<string>(),
+        mapExtra: new Set<string>(),
+        moduleGhostInspection: null,
+      });
       void get().moduleRelayout(id === null
         ? { label: "Returning to overview…" }
         : nodeLayoutActivity(state, "Opening", id));
@@ -1779,6 +1876,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleSelected: new Set<string>(),
         moduleExpanded: new Set<string>(),
         mapExtra: new Set<string>(),
+        moduleGhostInspection: null,
       });
       return true;
     },
@@ -1817,6 +1915,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleExpanded: expanded,
         moduleSelected: new Set([nodeId]),
         mapExtra: new Set<string>(), // a focus jump ends the scratch "+" pins from the level we left.
+        moduleGhostInspection: null,
       });
       void get().moduleRelayout(nodeLayoutActivity(state, "Opening", nodeId));
     },
@@ -1838,7 +1937,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const { index, moduleExpanded, moduleFocus, serviceScope, serviceGroupingMode, serviceGroupingTargetSize } = state;
       const resolution = resolveServiceAnchors([nodeId], index, serviceGroupingMode, serviceGroupingTargetSize);
       if (resolution === null) {
-        set({ moduleSelected: new Set([nodeId]) });
+        set({ moduleSelected: new Set([nodeId]), moduleGhostInspection: null });
+        if (state.moduleGhostInspection !== null) {
+          void get().moduleRelayout(nodeLayoutActivity(state, "Revealing", nodeId));
+        }
         return;
       }
       const focusLead = moduleFocus === null ? null : leadIdOf(moduleFocus);
@@ -1859,6 +1961,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         serviceScope: widenServiceScope(serviceScope, resolution.owningLeads),
         moduleExpanded: expanded,
         moduleSelected: resolution.reveal.moduleSelected,
+        moduleGhostInspection: null,
       });
       // `moduleExpanded` is shared with the minimal overlay; when one covers this lens the reveal
       // must re-lay the overlay the reader can see, not the Map beneath it.
@@ -1878,7 +1981,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (viewMode === "call") {
         const state = get();
         const card = resolveCard(rawId);
-        set({ mapExtra: new Set(state.mapExtra).add(card), moduleSelected: new Set([card]) });
+        set({
+          mapExtra: new Set(state.mapExtra).add(card),
+          moduleSelected: new Set([card]),
+          moduleGhostInspection: null,
+        });
         void get().moduleRelayout(nodeLayoutActivity(state, "Revealing", card));
       }
     },
@@ -2165,16 +2272,24 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (get().flowSelection !== null) {
         flowPaneLayoutSeq += 1;
       }
+      const inspectedSource = get().moduleGhostInspection !== null;
+      const minimalBasePositions = captureMapPositions(get().moduleRfNodes);
       set({
         minimalSeedIds: origin,
         minimalMemberIds: origin,
         minimalRollups: {},
-        minimalBasePositions: captureMapPositions(get().moduleRfNodes),
+        minimalBasePositions,
         minimalArrange: false,
+        moduleGhostInspection: null,
         prReviewed: null,
         ...clearArtifactReviewFlow,
         ...clearPrReview,
       });
+      if (inspectedSource) {
+        // The overlay commits its own explicit member set. Rebuild the still-mounted source without
+        // reversible preview roots so closing the overlay cannot resurrect the exploration path.
+        void get().moduleRelayout({ label: "Restoring source graph…" });
+      }
       void get().minimalRelayout({ label: "Extracting selection…" });
     },
 
@@ -2411,7 +2526,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (get().serviceScope === null) {
         return;
       }
-      set({ serviceScope: null });
+      set({ serviceScope: null, moduleGhostInspection: null });
       void get().moduleRelayout({ label: "Returning to all services…" });
     },
 
@@ -3506,6 +3621,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         const staleFlowOpen = get().flowSelection !== null;
         flowPaneLayoutSeq += 1;
         set({
+          moduleGhostInspection: null,
           flowSelection: null,
           logicSelected: null,
           flowPaneRfNodes: [],
@@ -3546,6 +3662,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewActiveGroupId: null,
         reviewPanelHidden: false,
       });
+      // The source Map remains mounted beneath the overlay. Rebuild it against the current
+      // artifact without any base-session inspection roots so closing review cannot reveal stale
+      // preview cards.
+      void get().moduleRelayout({ label: "Preparing review map…" });
       void get().minimalRelayout();
     },
 
@@ -4051,6 +4171,11 @@ function beginLensTransition(get: BlueprintStore["getState"], set: (partial: Par
     get().closeMinimalGraph();
   }
   const state = get();
+  // Ghost-path inspection belongs to the exact current projection. A real lens transition leaves
+  // it behind; ordinary paint/layout toggles never route through this helper and therefore retain it.
+  if (state.moduleGhostInspection !== null) {
+    set({ moduleGhostInspection: null });
+  }
   const focusedService = state.moduleFocus !== null
     && (leadIdOf(state.moduleFocus) !== null || isServiceDomainId(state.moduleFocus));
   const resetServiceScene = state.serviceScope !== null || focusedService;

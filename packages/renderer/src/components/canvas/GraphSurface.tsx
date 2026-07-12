@@ -5,8 +5,9 @@
  *   - the Map's card/edge component vocabulary (`moduleNodeTypes` + bundle/routed/ribbon/cycle/
  *     spool/wire edges);
  *   - the paint chain (`suppressRedundantImports` → `filterRelKinds` → `emphasize`, via
- *     `paintMinimalLevel` so the overlay's colour-parity unit tests pin exactly what runs here) —
- *     pure over the laid-out arrays, so a repaint never moves a card;
+ *     `paintMinimalLevel` so the overlay's colour-parity unit tests pin exactly what runs here).
+ *     Ordinary repaints preserve layout geometry; a ghost-inspection session additionally locks
+ *     every already-presented card while its additive frontier grows;
  *   - the wire SALIENCE passes, canvas-wide by construction: dense levels FADE weight-1 strands
  *     (`fadeFaintWires` — the pills filter by kind, this by strength) and A⇄B mutual pairs FUSE
  *     into one double-headed tension wire (`fuseCycles` — typed, so every later pass leaves it
@@ -33,7 +34,7 @@
  * the ghost "+" ring) in `flowExtras`, which receives the PAINTED view.
  */
 
-import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -85,6 +86,11 @@ import {
 import type { SurfaceEmphasisMode } from "../moduleMapHighlight";
 import type { LensRelationPolicy } from "../../graph/lensRelationPolicy";
 import { SurfaceInteractionScope } from "./SurfaceInteractionContext";
+import {
+  applyAdditiveNodePositions,
+  captureAdditiveNodePositions,
+  type AdditiveNodePositionLedger,
+} from "./additiveNodePositions";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
  * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "cycle" the
@@ -157,7 +163,8 @@ export function resolveSurfacePaintOwnership(
 }
 
 export interface GraphSurfaceProps {
-  /** Laid-out (and per-surface visibility-filtered) nodes/edges — positions are never touched here. */
+  /** Laid-out (and per-surface visibility-filtered) nodes/edges. Only an opted-in additive
+   * inspection session can replace candidate positions with geometry already shown to the reader. */
   nodes: Node[];
   edges: Edge[];
   /** Which Highways passes this surface's shape supports (from its SurfaceSpec). */
@@ -212,6 +219,9 @@ export interface GraphSurfaceProps {
   selectionOverride?: ReadonlySet<string>;
   /** Separate paint owners when node rings and relationship emphasis intentionally differ. */
   paintSelectionOverride?: ReadonlySet<string>;
+  /** Non-null while an additive exploration path owns the scene. Existing painted positions are
+   * retained for one key; changing/clearing the key starts or ends that presentation session. */
+  positionRetentionKey?: string | null;
 }
 
 export function GraphSurface(props: GraphSurfaceProps) {
@@ -321,11 +331,19 @@ export function GraphSurface(props: GraphSurfaceProps) {
     }, paintOwnership.paintSeeds, paintOwnership.focusSeeds),
     [props.nodes, props.edges, paintOwnership, radius, emphasisMode, props.relations, relationVisibilityOverrides, index, groupGhosts, props.interactions.expandedGhostGroupIds],
   );
+  // Inspection is an append-only read of the graph. ELK, semantic composition and selection-
+  // relative ghost banding may all propose a fresh scene after each hop; retain the absolute
+  // geometry the reader has already seen and admit only newly discovered cards at new positions.
+  const retainedPaintedNodes = useRetainedPaintedNodePositions(
+    paintedNodes,
+    paintedEdges,
+    props.positionRetentionKey ?? null,
+  );
   // Group disclosure is deliberately downstream of the shared paint chain. It injects the
   // mount-local explicit-chevron callback without feeding a function back into derive/layout.
   const displayedNodes = useMemo(
-    () => decorateGhostGroupToggles(paintedNodes, props.interactions.toggleGhostGroup),
-    [paintedNodes, props.interactions.toggleGhostGroup],
+    () => decorateGhostGroupToggles(retainedPaintedNodes, props.interactions.toggleGhostGroup),
+    [retainedPaintedNodes, props.interactions.toggleGhostGroup],
   );
   // The module-family layouts keep their canonical geometry in `style.width/height`, which all
   // routing and overlay passes below intentionally continue to read. React Flow's MiniMap checks
@@ -352,7 +370,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
     for (const [depth, edges] of layers) {
       const prepared = prepareCanvasEdges(
         edges,
-        paintedNodes,
+        retainedPaintedNodes,
         paintOwnership.highwaySeeds,
         showHighways,
         props.highways,
@@ -364,7 +382,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
       hierarchyEdges.push(...prepared.hierarchyEdges);
     }
     return { semanticEdges, hierarchyEdges };
-  }, [paintedEdges, paintedNodes, props.highways, props.relations, paintOwnership.highwaySeeds, showHighways]);
+  }, [paintedEdges, retainedPaintedNodes, props.highways, props.relations, paintOwnership.highwaySeeds, showHighways]);
   const openWireEvidence = useCallback((pair: Edge[]) => {
     const contexts = edgeEvidenceForPair(pair, index.edgesById);
     inspectionOwnsSource.current = contexts.length > 0;
@@ -374,7 +392,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
   }, [index.edgesById, showEdgeEvidence]);
   const wire = useWireHover(
     preparedEdges.semanticEdges,
-    paintedNodes,
+    retainedPaintedNodes,
     props.wireHover === true,
     openWireEvidence,
     closeEdgeEvidence,
@@ -481,6 +499,41 @@ export function GraphSurface(props: GraphSurfaceProps) {
     </div>
     </SurfaceInteractionScope>
   );
+}
+
+interface RetainedPaintSession {
+  key: string;
+  ledger: AdditiveNodePositionLedger;
+}
+
+/** Commit presentation geometry only after React commits it. This keeps render pure while still
+ * letting the first inspection render seed from the exact scene visible immediately before click. */
+function useRetainedPaintedNodePositions(
+  nodes: Node[],
+  edges: Edge[],
+  sessionKey: string | null,
+): Node[] {
+  const lastCommittedNodes = useRef<Node[]>(nodes);
+  const session = useRef<RetainedPaintSession | null>(null);
+  const retained = useMemo(() => {
+    if (sessionKey === null) {
+      return { nodes, ledger: null };
+    }
+    const prior = session.current?.key === sessionKey
+      ? session.current.ledger
+      : captureAdditiveNodePositions(lastCommittedNodes.current);
+    const ledger = captureAdditiveNodePositions(nodes, prior, edges);
+    return { nodes: applyAdditiveNodePositions(nodes, ledger), ledger };
+  }, [nodes, edges, sessionKey]);
+
+  useLayoutEffect(() => {
+    lastCommittedNodes.current = retained.nodes;
+    session.current = sessionKey === null || retained.ledger === null
+      ? null
+      : { key: sessionKey, ledger: retained.ledger };
+  }, [retained, sessionKey]);
+
+  return retained.nodes;
 }
 
 /** Run paint-time transforms independently for each mounted graph. Besides preventing selection

@@ -274,14 +274,24 @@ function pruneUnlitDeps(
 ): EmphasizedLevel {
   // Keep a ghost wire when it is LIT, or when it beacons a selected step's definition (withheld at
   // opacity 0 so the definition rings through it) — else off-level ghosts drop until pointed at.
-  const eligibleEdges = level.edges.filter((edge) => !isGhostEdge(edge) || isLit(edge) || level.beacons.has(edge.target) || level.beacons.has(edge.source));
+  const eligibleEdges = level.edges.filter((edge) =>
+    !isGhostEdge(edge)
+    || isLit(edge)
+    || isGhostInspectionPath(edge)
+    || level.beacons.has(edge.target)
+    || level.beacons.has(edge.source));
   const kept = new Set<string>();
   for (const edge of eligibleEdges) {
     kept.add(edge.source);
     kept.add(edge.target);
   }
   const exactNodes = level.nodes.filter(
-    (node) => node.type !== "ghost" || kept.has(node.id) || level.beacons.has(node.id) || activeIds.has(node.id),
+    (node) =>
+      node.type !== "ghost"
+      || kept.has(node.id)
+      || isGhostInspectionPath(node)
+      || level.beacons.has(node.id)
+      || activeIds.has(node.id),
   );
   // A disclosed exact child is already independently addressable inside its expanded parent. Do
   // not remove it from that parent's grouping bucket merely because it is selected: doing so can
@@ -466,6 +476,8 @@ function clearNodeEmphasis(node: Node, wasBeacon: boolean): Node {
 
 const isGhostEdge = (edge: Edge): boolean => (edge.data as { ghost?: boolean } | undefined)?.ghost === true;
 const isLit = (edge: Edge): boolean => (edge.style as { opacity?: number } | undefined)?.opacity === 1;
+const isGhostInspectionPath = (value: Node | Edge): boolean =>
+  (value.data as { ghostInspectionPath?: unknown } | undefined)?.ghostInspectionPath === true;
 
 /** Whole-flow emphasis is an induced-subgraph read: every resolved flow node and its rendered
  * containment ancestors remain opaque, and only relationships joining two flow nodes light up.
