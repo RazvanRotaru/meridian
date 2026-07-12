@@ -112,6 +112,52 @@ describe("createWebServer generate -> view (offline path source)", () => {
     const graph = await getJson<{ target: { language: string } }>(`${base}/api/graph?id=${result.id}`);
     expect(graph.target.language).toBe("python");
   }, 60_000);
+
+  it("keeps and materializes declared external imports for the rendered graph", async () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-web-external-"));
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "package.json"), JSON.stringify({
+      name: "web-external-fixture",
+      private: true,
+      dependencies: { rxjs: "^7.0.0" },
+    }));
+    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
+      compilerOptions: { target: "ES2022", module: "ESNext", strict: true },
+      include: ["src/**/*.ts"],
+    }));
+    writeFileSync(join(root, "src/store.ts"), [
+      "import { BehaviorSubject } from 'rxjs';",
+      "export class Store {",
+      "  readonly value = new BehaviorSubject(0);",
+      "}",
+    ].join("\n"));
+
+    try {
+      const result = (await (await post("/api/generate", { kind: "path", value: root })).json()) as GenerateResult;
+      const graph = await getJson<{
+        nodes: Array<{ id: string; kind: string; parentId?: string | null }>;
+        edges: Array<{ kind: string; resolution: string; target: string }>;
+      }>(`${base}/api/graph?id=${result.id}`);
+
+      expect(graph.nodes).toContainEqual(expect.objectContaining({
+        id: "ext:__external__",
+        kind: "external",
+        parentId: null,
+      }));
+      expect(graph.nodes).toContainEqual(expect.objectContaining({
+        id: "ext:rxjs#BehaviorSubject",
+        kind: "external",
+        parentId: "ext:__external__",
+      }));
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        kind: "imports",
+        resolution: "external",
+        target: "ext:rxjs#BehaviorSubject",
+      }));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 describe("createWebServer auth routes (sign-in always available)", () => {

@@ -4,7 +4,8 @@
  * dependencies, honoring the exclude globs.
  */
 
-import { isAbsolute } from "node:path";
+import { existsSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { Project, ts, type SourceFile } from "ts-morph";
 import type { ExtractOptions } from "@meridian/core";
 import { DEFAULT_EXCLUDES, isExcluded } from "./glob";
@@ -77,18 +78,18 @@ function globCompilerOptions(root: string): ts.CompilerOptions {
 }
 
 /**
- * Per-package mode: load ONE workspace unit into its own project, deliberately WITHOUT the
- * workspace aliases — cross-package imports must dead-end here (they become pending refs the
- * join resolves) instead of pulling sibling source into this program. Paths stay relative to
- * the WORKSPACE root, so node ids are identical to whole-program extraction.
+ * Per-package mode: load ONE workspace unit into its own project. A package-local tsconfig supplies
+ * its aliases/compiler options, but files are still added only from the bounded unit globs; we do
+ * not synthesize whole-workspace aliases here. Cross-package imports remain pending for the join.
+ * Paths stay relative to the WORKSPACE root, so node ids match whole-program extraction.
  */
 export function loadUnitProject(
   root: string,
-  unit: { include: string[]; exclude: string[] },
+  unit: { dir: string; include: string[]; exclude: string[] },
   options: ExtractOptions,
   memberPaths?: ReadonlySet<string>,
 ): LoadedProject {
-  const project = new Project({ compilerOptions: { allowJs: true } });
+  const project = unitProject(root, unit.dir);
   const excludes = [...(options.exclude ?? DEFAULT_EXCLUDES), ...unit.exclude];
   // Feed the excludes to the globber as NEGATIONS, not just a post-filter: otherwise ts-morph
   // parses every matched file (node_modules, dist, and — for the rest unit — sibling packages)
@@ -100,6 +101,19 @@ export function loadUnitProject(
   // memberPaths (manifest mode) makes the structural pass tag exactly the declared members as
   // package boundaries; undefined (scan fallback) tags by package.json presence, as before.
   return memberPaths ? { sourceFiles, relativePathOf, root, memberPaths } : { sourceFiles, relativePathOf, root };
+}
+
+function unitProject(root: string, unitDir: string): Project {
+  const unitConfig = join(root, unitDir, "tsconfig.json");
+  const rootConfig = join(root, "tsconfig.json");
+  const tsConfigFilePath = existsSync(unitConfig) ? unitConfig : existsSync(rootConfig) ? rootConfig : null;
+  if (tsConfigFilePath === null) {
+    return new Project({ compilerOptions: { allowJs: true } });
+  }
+  // Read compiler options only. Source ownership remains the unit globs below, and skipping the
+  // tsconfig file-add phase also skips ts-morph's recursive dependency loading. Package config
+  // wins; otherwise a root/shared config still supplies aliases to every bounded unit.
+  return new Project({ tsConfigFilePath, skipAddingFilesFromTsConfig: true });
 }
 
 // Exclude globs as anchored `!` negations. Bare patterns (`**/node_modules/**`) anchor under

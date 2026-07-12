@@ -35,7 +35,7 @@ export interface PipelineRequest {
   depth?: ExtractOptions["depth"];
   includeExternal?: boolean;
   includeUnresolved?: boolean;
-  /** `generate` materializes boundary nodes; the web flow keeps the graph lean (default off). */
+  /** Turn retained `ext:` / `unresolved:` targets into renderer-visible boundary nodes. */
   materializeBoundary: boolean;
   /** Drop test code from the artifact entirely (`--exclude-tests`); default is include + tag. */
   excludeTests?: boolean;

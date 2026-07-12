@@ -9,7 +9,7 @@ import type { GraphArtifact, GraphNode } from "@meridian/core";
 import type { Edge, Node } from "@xyflow/react";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { ghostGroupId } from "../derive/groupGhosts";
-import { emphasize, filterRelationsForLens, filterVisible, type HideOptions } from "./moduleMapPaint";
+import { emphasize, filterExternalGhosts, filterRelationsForLens, filterVisible, type HideOptions } from "./moduleMapPaint";
 import { SERVICE_RELATION_POLICY } from "../graph/lensRelationPolicy";
 
 /** Baseline options with nothing hidden; tests override the one filter they exercise. */
@@ -74,6 +74,38 @@ describe("filterVisible — subtree closure", () => {
     // The private block vanishes IN PLACE — the frame and its sibling keep their positions.
     expect(shown.nodes.map((n) => n.id)).toEqual(["ts:svc.ts", "ts:svc.ts#S.run"]);
     expect(shown.edges).toEqual([]);
+  });
+});
+
+describe("filterExternalGhosts", () => {
+  it("hides only ext: ghost cards and their incident wires without moving the remaining graph", () => {
+    const source = fileNode("ts:src/app.ts", { position: { x: 12, y: 34 } });
+    const external = ghostNode("ext:rxjs#BehaviorSubject", "external");
+    const workspace = ghostNode("ts:src/service.ts#Service");
+    const unresolved = ghostNode("unresolved:dynamic-call", "unresolved");
+    const nodes = [source, external, workspace, unresolved];
+    const externalWire = ghostEdge(source.id, external.id);
+    const workspaceWire = ghostEdge(source.id, workspace.id);
+    const unresolvedWire = ghostEdge(source.id, unresolved.id);
+    const legacyDanglingExternalWire = ghostEdge(source.id, "ext:legacy-package#missing-node");
+
+    const shown = filterExternalGhosts(
+      nodes,
+      [externalWire, workspaceWire, unresolvedWire, legacyDanglingExternalWire],
+      false,
+    );
+
+    expect(shown.nodes.map((node) => node.id)).toEqual([source.id, workspace.id, unresolved.id]);
+    expect(shown.edges.map((wire) => wire.id)).toEqual([workspaceWire.id, unresolvedWire.id]);
+    expect(shown.nodes[0].position).toEqual({ x: 12, y: 34 });
+  });
+
+  it("returns the laid-out arrays unchanged while external ghosts are enabled", () => {
+    const nodes = [fileNode("ts:src/app.ts"), ghostNode("ext:rxjs#BehaviorSubject", "external")];
+    const edges = [ghostEdge(nodes[0].id, nodes[1].id)];
+    const shown = filterExternalGhosts(nodes, edges, true);
+    expect(shown.nodes).toBe(nodes);
+    expect(shown.edges).toBe(edges);
   });
 });
 

@@ -79,10 +79,40 @@ function crossPackageResolver(workspace: Workspace, root: string): CrossPackageR
         return null;
       }
       const targetAbs = toPosix(resolve(dirname(fromFileAbsPath), specifier));
-      const rel = relativeToRoot(root, targetAbs);
-      return isUnderRoot(rel) ? rel : null;
+      return crossUnitFile(workspace, root, fromFileAbsPath, targetAbs);
     },
+    resolveFile: (fromFileAbsPath, targetFileAbsPath) =>
+      crossUnitFile(workspace, root, fromFileAbsPath, targetFileAbsPath),
   };
+}
+
+function crossUnitFile(
+  workspace: Workspace,
+  root: string,
+  fromFileAbsPath: string,
+  targetFileAbsPath: string,
+): string | null {
+  if (toPosix(targetFileAbsPath).includes("/node_modules/")) {
+    return null;
+  }
+  const from = relativeToRoot(root, absoluteRoot(fromFileAbsPath));
+  const target = relativeToRoot(root, absoluteRoot(targetFileAbsPath));
+  if (!isUnderRoot(from) || !isUnderRoot(target)) {
+    return null;
+  }
+  const sourceUnit = unitContaining(workspace, from);
+  const targetUnit = unitContaining(workspace, target);
+  return sourceUnit !== null && targetUnit !== null && sourceUnit !== targetUnit ? target : null;
+}
+
+function unitContaining(workspace: Workspace, file: string): WorkspaceUnit | null {
+  let match: WorkspaceUnit | null = null;
+  for (const unit of workspace.units) {
+    if ((unit.dir === "" || file.startsWith(`${unit.dir}/`)) && (match === null || unit.dir.length > match.dir.length)) {
+      match = unit;
+    }
+  }
+  return match;
 }
 
 /** Analyze one unit in isolation; every ts-morph reference dies when this returns. */
@@ -98,9 +128,9 @@ function extractUnit(
   const diagnostics: ExtractionDiagnostic[] = [];
   const { descriptors, moduleByFilePath } = buildStructure(loaded, NODE_ID_LANGUAGE);
   assignFinalIds(descriptors);
-  const index = buildResolutionIndex(descriptors);
+  const index = buildResolutionIndex(descriptors, moduleByFilePath, loaded.root);
   const behavioural = collectRawEdges(loaded, descriptors, index, moduleByFilePath, diagnostics, resolver);
-  const imports = collectImportEdges(loaded, moduleByFilePath, resolver);
+  const imports = collectImportEdges(loaded, moduleByFilePath, index, resolver);
   const valueRefs = options.valueRefs ? collectValueRefEdges(loaded, index, moduleByFilePath, diagnostics, resolver) : [];
   const keepIds = survivorIdsAtDepth(descriptors, depth);
   const flows = buildLogicFlows(descriptors, index, keepIds, moduleSourcesById(loaded, moduleByFilePath));

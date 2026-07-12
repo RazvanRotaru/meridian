@@ -25,6 +25,7 @@ export interface ExtractOptions {
   include?: string[];
   exclude?: string[];
   depth?: ExtractionDepth;
+  /** Keep library/builtin/package dependency edges as `ext:` boundary targets. */
   includeExternal?: boolean;
   includeUnresolved?: boolean;
   emitImportEdges?: boolean;
@@ -40,6 +41,7 @@ export interface ExtractionStats {
   nodeCountByKind: Record<string, number>;
   edgeCountByResolution: Record<string, number>;
   summaryCoverage: { withSummary: number; total: number };
+  /** Legacy field name; counts all external edges dropped by policy, including imports. */
   externalCallsDropped: number;
   unresolvedCalls: number;
 }

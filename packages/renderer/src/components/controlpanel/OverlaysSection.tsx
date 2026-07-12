@@ -4,10 +4,12 @@
  * the module surface, Tests never in the Logic view), and carries its count where one exists.
  */
 
+import { EXTERNAL_CONTAINER_ID } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { BlueprintState } from "../../state/store";
 import { moduleSurfaceSpec } from "../canvas/surfaceSpec";
 import { COVERAGE_COLORS } from "../../theme/coverageColors";
+import { accentForKind } from "../../theme/kindColors";
 import { Pill } from "./panelKit";
 
 const REACH_HUE = "#5B9BE3";
@@ -27,8 +29,10 @@ export function OverlaysSection() {
   const coveragePercent = useBlueprint((state) => state.coverage?.summary.percent ?? null);
   const showHighways = useBlueprint((state) => state.showHighways);
   const showCommons = useBlueprint((state) => state.showCommons);
+  const showExternalGhosts = useBlueprint((state) => state.showExternalGhosts);
+  const hasExternalGhosts = useBlueprint(hasExternalDependencies);
   const groupGhostsByParent = useBlueprint((state) => state.groupGhostsByParent);
-  const { toggleShowTests, toggleHighlightMode, togglePrivateMembers, toggleCoverageMode, toggleHighways, toggleCommons, toggleGhostGrouping } = useBlueprintActions();
+  const { toggleShowTests, toggleHighlightMode, togglePrivateMembers, toggleCoverageMode, toggleHighways, toggleCommons, toggleExternalGhosts, toggleGhostGrouping } = useBlueprintActions();
 
   const onModuleSurface = moduleSurfaceSpec(viewMode) !== null;
   const onMap = viewMode === "modules";
@@ -72,6 +76,18 @@ export function OverlaysSection() {
           onClick={togglePrivateMembers}
         >
           Private
+        </Pill>
+      ) : null}
+      {onModuleSurface ? (
+        <Pill
+          active={showExternalGhosts && hasExternalGhosts}
+          accent={accentForKind("external")}
+          indicator="square"
+          disabled={!hasExternalGhosts}
+          title={!hasExternalGhosts ? "No external package ghosts in this graph" : showExternalGhosts ? "Hide external package ghosts" : "Show external package ghosts"}
+          onClick={toggleExternalGhosts}
+        >
+          External packages
         </Pill>
       ) : null}
       {onModuleSurface ? (
@@ -129,6 +145,12 @@ function countTestFiles(state: BlueprintState): number {
     }
   }
   return count;
+}
+
+function hasExternalDependencies(state: BlueprintState): boolean {
+  return state.index.childrenByParent
+    .get(EXTERNAL_CONTAINER_ID)
+    ?.some((node) => node.id.startsWith("ext:")) ?? false;
 }
 
 const ROW_STYLE: React.CSSProperties = { display: "flex", flexWrap: "wrap", gap: 7 };

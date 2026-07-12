@@ -85,7 +85,8 @@ async function generate(
       cwd: source.dir, // records target.root as "." — never leaks the temp clone path
       language: parsed.lang,
       depth: "function",
-      materializeBoundary: false,
+      includeExternal: true,
+      materializeBoundary: true,
       // Opt-in via MERIDIAN_VALUE_REFS: emit `references` edges for imported symbols used as values,
       // so bare `imports` wires resolve into traceable dependencies (extra type-checker work).
       valueRefs: process.env.MERIDIAN_VALUE_REFS === "1",

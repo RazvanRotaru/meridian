@@ -79,6 +79,16 @@ export function deriveModuleTree(
   const overviewFold = effectiveFocus === null ? foldById(index) : new Map<string, ModulePackageData>();
   const nodes = skeleton.map((entry) => finalizeModuleNode(entry, index, graph, lifted, walked.stepData, overviewFold, hiddenIds));
   const kinds = kindsOf(skeleton);
+  // External imports deliberately stay out of `ModuleGraph`: they are boundary relationships, not
+  // source-file adjacency. Once the CLI materializes their `ext:` targets, include them only in the
+  // detailed ghost tier so a visible file can point at the imported package symbol without making
+  // that symbol pretend to be an in-project module.
+  const ghostDependencies: BlockDeps = {
+    edges: [
+      ...blockDeps.edges,
+      ...index.edges.filter((edge) => edge.kind === "imports" && edge.resolution === "external"),
+    ],
+  };
   // Folder-only frontiers have no code anchor, so their off-level relationships need a parallel
   // same-tier projection: raw descendant imports/couplings become the complete set of peer-package ghosts.
   // Semantic ghosts retain their existing code-only anchor policy and share the finishing pass.
@@ -88,7 +98,7 @@ export function deriveModuleTree(
   ];
   const ghosts = finishGhostTier(
     mergeGhostEmissions(
-      rawGhostEmission(blockDeps, walked, visibleIds, index, kinds),
+      rawGhostEmission(ghostDependencies, walked, visibleIds, index, kinds),
       folderGhostEmission(folderRelationships, visibleIds, index, hiddenIds),
     ),
     index,

@@ -57,9 +57,9 @@ export function moduleSourcesById(
 
 export function appendDropDiagnostics(diagnostics: ExtractionDiagnostic[], built: EdgeBuildResult): void {
   if (built.externalCallsDropped > 0) {
-    diagnostics.push({ severity: "warn", message: `dropped ${built.externalCallsDropped} external call edge(s)` });
+    diagnostics.push({ severity: "warn", message: `dropped ${built.externalCallsDropped} external edge(s)` });
   }
   if (built.unresolvedCalls > 0) {
-    diagnostics.push({ severity: "warn", message: `${built.unresolvedCalls} unresolved call(s)` });
+    diagnostics.push({ severity: "warn", message: `${built.unresolvedCalls} unresolved edge(s)` });
   }
 }

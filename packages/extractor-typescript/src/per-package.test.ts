@@ -32,20 +32,53 @@ beforeAll(async () => {
   write("packages/core/package.json", JSON.stringify({ name: "@fix/core" }));
   write(
     "packages/core/src/index.ts",
-    'export { parseOrder } from "./orders";\nexport { helper } from "./helpers";\nexport * from "@fix/util";\n',
+    'export { parseOrder } from "./orders";\nexport { helper } from "./helpers";\nexport * from "@util-alias/index";\n',
   );
   write(
     "packages/core/src/orders.ts",
-    'import { normalize } from "@fix/util";\nexport function parseOrder(raw: string): string {\n  return normalize(raw);\n}\n',
+    'import { normalize } from "@fix/util";\nimport { rootAliased } from "@core-local/rootAlias";\n' +
+      "export function parseOrder(raw: string): string {\n  return rootAliased() + normalize(raw);\n}\n",
   );
+  write("packages/core/src/rootAlias.ts", 'export function rootAliased(): string {\n  return "";\n}\n');
   write("packages/core/src/helpers.ts", "export function helper(): number {\n  return 1;\n}\n");
+  write("packages/core/src/alias.ts", "export function aliasOnly(): number {\n  return 1;\n}\n");
   write("packages/ui/package.json", JSON.stringify({ name: "@fix/ui" }));
+  write("packages/ui/tsconfig.json", JSON.stringify({
+    compilerOptions: { baseUrl: ".", paths: { "@ui/*": ["src/*"], "@alias/*": ["../core/src/*"] } },
+    include: ["src/**/*.ts"],
+  }));
+  write("packages/ui/src/local.ts", "export function localOnly(): number {\n  return 1;\n}\n");
   write(
     "packages/ui/src/app.ts",
     'import { helper, normalize, parseOrder } from "@fix/core";\nimport { helper as helperDirect } from "@fix/core/helpers";\n' +
-      "export function runApp(): string {\n  helper();\n  helperDirect();\n  return parseOrder(normalize(\" x \"));\n}\n",
+      'import { localOnly } from "@ui/local";\n' +
+      'import { aliasOnly } from "@alias/alias";\n' +
+      "export function runApp(): string {\n  helper();\n  helperDirect();\n  localOnly();\n  aliasOnly();\n  return parseOrder(normalize(\" x \"));\n}\n",
   );
-  write("tools/audit.ts", 'import { normalize } from "@fix/util";\nexport function audit(): string {\n  return normalize("z");\n}\n');
+  write("tools/local.ts", "export function auditLocal(): void {}\n");
+  write(
+    "tools/audit.ts",
+    'import { normalize } from "@fix/util";\nimport { auditLocal } from "@tools/local";\n' +
+      'export function audit(): string {\n  auditLocal();\n  return normalize("z");\n}\n',
+  );
+  write("tsconfig.json", JSON.stringify({
+    compilerOptions: {
+      baseUrl: ".",
+      moduleResolution: "node",
+      paths: {
+        "@fix/util": ["packages/util/src/index.ts"],
+        "@fix/util/*": ["packages/util/src/*"],
+        "@fix/core": ["packages/core/src/index.ts"],
+        "@fix/core/*": ["packages/core/src/*"],
+        "@ui/*": ["packages/ui/src/*"],
+        "@alias/*": ["packages/core/src/*"],
+        "@core-local/*": ["packages/core/src/*"],
+        "@util-alias/*": ["packages/util/src/*"],
+        "@tools/*": ["tools/*"],
+      },
+    },
+    include: ["packages/**/*.ts", "tools/**/*.ts"],
+  }));
   result = extractPerPackage({ root });
 });
 
@@ -93,28 +126,42 @@ describe("extractPerPackage", () => {
     expect(resolvedEdge(result, "imports", "ts:packages/ui/src/app.ts", "ts:packages/core/src/helpers.ts")).toBeDefined();
   });
 
+  it("honours a package-local tsconfig alias without externalizing it", () => {
+    expect(
+      resolvedEdge(result, "calls", "ts:packages/ui/src/app.ts#runApp", "ts:packages/ui/src/local.ts#localOnly"),
+    ).toBeDefined();
+    expect(
+      resolvedEdge(result, "imports", "ts:packages/ui/src/app.ts", "ts:packages/ui/src/local.ts"),
+    ).toBeDefined();
+  });
+
+  it("joins a package-local alias whose target is in another workspace unit", () => {
+    expect(
+      resolvedEdge(result, "calls", "ts:packages/ui/src/app.ts#runApp", "ts:packages/core/src/alias.ts#aliasOnly"),
+    ).toBeDefined();
+    expect(
+      resolvedEdge(result, "imports", "ts:packages/ui/src/app.ts", "ts:packages/core/src/alias.ts"),
+    ).toBeDefined();
+  });
+
+  it("honours a root-only alias inside a unit with no package tsconfig", () => {
+    expect(
+      resolvedEdge(
+        result,
+        "calls",
+        "ts:packages/core/src/orders.ts#parseOrder",
+        "ts:packages/core/src/rootAlias.ts#rootAliased",
+      ),
+    ).toBeDefined();
+  });
+
   it("keeps files outside every package in the graph (rest unit)", () => {
     expect(result.nodes.some((node) => node.id === "ts:tools/audit.ts#audit")).toBe(true);
     expect(resolvedEdge(result, "calls", "ts:tools/audit.ts#audit", "ts:packages/util/src/index.ts#normalize")).toBeDefined();
+    expect(resolvedEdge(result, "calls", "ts:tools/audit.ts#audit", "ts:tools/local.ts#auditLocal")).toBeDefined();
   });
 
   it("produces the same nodes and resolved edges as a whole-program tsconfig extraction", async () => {
-    write(
-      "tsconfig.json",
-      JSON.stringify({
-        compilerOptions: {
-          baseUrl: ".",
-          moduleResolution: "node",
-          paths: {
-            "@fix/util": ["packages/util/src/index.ts"],
-            "@fix/util/*": ["packages/util/src/*"],
-            "@fix/core": ["packages/core/src/index.ts"],
-            "@fix/core/*": ["packages/core/src/*"],
-          },
-        },
-        include: ["packages/**/*.ts", "tools/**/*.ts"],
-      }),
-    );
     const whole = await createTypeScriptExtractor().extract({ root, project: join(root, "tsconfig.json") });
     const ids = (extraction: ExtractionResult) => [...extraction.nodes.map((node) => node.id)].sort();
     const resolvedTuples = (extraction: ExtractionResult) =>

@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { GraphArtifact, GraphEdge, GraphNode, LogicFlows } from "@meridian/core";
+import { materializeBoundaryNodes, type GraphArtifact, type GraphEdge, type GraphNode, type LogicFlows } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { buildModuleGraph } from "./moduleGraph";
 import { buildBlockDeps } from "./blockDeps";
@@ -449,6 +449,40 @@ describe("deriveModuleTree — ghost relationships (off-screen endpoints)", () =
     const withExt = [...edges, callEdge("ts:pkg/src/orders/svc.ts#OrderService.place", "ext:stripe#charge")];
     const tree = treeOf(nodes, withExt, "ts:pkg/src/orders", ["ts:pkg/src/orders/svc.ts", "ts:pkg/src/orders/svc.ts#OrderService"]);
     expect(tree.nodes.filter((n) => n.kind === "ghost").map((n) => n.id)).toEqual(["ts:pkg/src/billing/pay.ts#PaymentGateway.charge"]);
+  });
+
+  it("charts a materialized external import as a boundary ghost from the visible file", () => {
+    const { nodes, edges } = ghostFixture();
+    const source = "ts:pkg/src/orders/svc.ts";
+    const target = "ext:rxjs#BehaviorSubject";
+    const externalImport = {
+      id: `imports:${source}->${target}`,
+      source,
+      target,
+      kind: "imports",
+      resolution: "external",
+    } as GraphEdge;
+    const allEdges = [...edges, externalImport];
+    const materialized = materializeBoundaryNodes(nodes, allEdges);
+    const tree = treeOf(materialized, allEdges, "ts:pkg/src/orders", [
+      source,
+      `${source}#OrderService`,
+    ]);
+
+    expect(tree.nodes.find((node) => node.id === target)).toMatchObject({
+      kind: "ghost",
+      data: { label: "BehaviorSubject", context: "rxjs", ghostKind: "external" },
+    });
+    expect(tree.edges.find((edge) => edge.id === `gdep:imports:${source}->${target}`)).toMatchObject({
+      source,
+      target,
+      category: "dep",
+      relationKind: "imports",
+      ghost: true,
+      outsideView: true,
+      crossPackage: true,
+      underlyingEdgeIds: [externalImport.id],
+    });
   });
 });
 

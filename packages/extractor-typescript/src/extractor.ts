@@ -129,9 +129,9 @@ function runSingleProjectExtraction(options: ExtractOptions): ExtractionResult {
   const diagnostics: ExtractionDiagnostic[] = [];
   const { descriptors, moduleByFilePath } = buildStructure(loaded, NODE_ID_LANGUAGE);
   assignFinalIds(descriptors);
-  const index = buildResolutionIndex(descriptors);
+  const index = buildResolutionIndex(descriptors, moduleByFilePath, loaded.root);
   const behavioural = collectRawEdges(loaded, descriptors, index, moduleByFilePath, diagnostics);
-  const imports = collectImportEdges(loaded, moduleByFilePath);
+  const imports = collectImportEdges(loaded, moduleByFilePath, index);
   const valueRefs = options.valueRefs ? collectValueRefEdges(loaded, index, moduleByFilePath, diagnostics) : [];
   const built = buildEdges([...behavioural, ...imports, ...valueRefs], options);
   const collapsed = collapseToDepth(buildGraphNodes(descriptors), built.edges, options.depth ?? "function");

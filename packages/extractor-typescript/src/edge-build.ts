@@ -24,6 +24,7 @@ interface AggregatedEdge {
 
 export interface EdgeBuildResult {
   edges: GraphEdge[];
+  /** Legacy field name retained in the extraction contract; now counts every external edge. */
   externalCallsDropped: number;
   unresolvedCalls: number;
 }

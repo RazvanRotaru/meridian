@@ -137,10 +137,10 @@ function addResolvedCompositionEdge(
 ): void {
   const resolution = resolveTarget(target, index, resolver);
   recordThrow(resolution, relPath, site, diagnostics);
-  // Composition describes known code structure, not a speculative dynamic/external dependency.
-  // A pending ref is retained in bounded per-package extraction so the workspace join can make it
-  // resolved; every other unresolved/external value is deliberately ignored.
-  if (resolution.resolution !== "resolved" && resolution.pending === undefined) {
+  // A checker- or import-identified external service is still known composition; buildEdges applies
+  // the includeExternal policy later. Only genuinely unresolved values are speculative and dropped.
+  // Pending workspace refs survive so the bounded join can make them resolved.
+  if (resolution.resolution === "unresolved" && resolution.pending === undefined) {
     return;
   }
   const source = enclosingSemanticDeclaration(site, index)

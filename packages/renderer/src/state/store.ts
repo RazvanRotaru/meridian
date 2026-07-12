@@ -280,6 +280,9 @@ export interface BlueprintState {
   /** Whether utility hubs demote into the COMMONS DOCK below the graph (commonsDemotion). A
    * RELAYOUT toggle like Tests — the docked cards leave/rejoin ELK, so positions change. */
   showCommons: boolean;
+  /** Whether package/library boundary ghosts (`ext:` ids) are painted. Paint-only: the external
+   * nodes and their incident wires remain in the laid-out graph, so toggling never moves cards. */
+  showExternalGhosts: boolean;
   /** Whether the currently visible ghost neighbourhood collapses crowds of 4+ exact siblings under
    * their immediate semantic parent. Paint-only: exact ghosts remain canonical in the derived tree,
    * and disabling this reveals every related ghost without another ELK pass. */
@@ -511,6 +514,7 @@ export interface BlueprintState {
   toggleHighlightMode(): void;
   toggleHighways(): void;
   toggleCommons(): void;
+  toggleExternalGhosts(): void;
   toggleGhostGrouping(): void;
   toggleCategory(category: ModuleCategory): void;
   toggleRelKind(kind: string): void;
@@ -1058,6 +1062,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     highlightMode: "node",
     showHighways: true,
     showCommons: true,
+    showExternalGhosts: true,
     groupGhostsByParent: true,
     hiddenCategories: new Set<ModuleCategory>(),
     relationVisibilityOverrides: EMPTY_RELATION_VISIBILITY_OVERRIDES,
@@ -1937,6 +1942,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const showCommons = !get().showCommons;
       set({ showCommons });
       void get().moduleRelayout({ label: showCommons ? "Showing shared utilities…" : "Hiding shared utilities…" });
+    },
+
+    // Show/hide external package/library ghosts and their wires in place. If a hidden external was
+    // selected, discard only that selection so the remaining visible graph does not dim around a
+    // stale id. Workspace and unresolved boundary selections survive.
+    toggleExternalGhosts() {
+      const showExternalGhosts = !get().showExternalGhosts;
+      const moduleSelected = get().moduleSelected;
+      set({
+        showExternalGhosts,
+        moduleSelected: showExternalGhosts
+          ? moduleSelected
+          : new Set([...moduleSelected].filter((id) => !id.startsWith("ext:"))),
+      });
     },
 
     // Collapse/restore crowded ghost siblings at paint time. Exact ghost ids and their promotion
