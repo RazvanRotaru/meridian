@@ -863,19 +863,47 @@ describe("minimal-graph overlay (extract selection)", () => {
     expect(ghostIds(store)).toEqual([]);
   });
 
-  it("demoteMinimalMember removes a member but never empties the set", () => {
+  it("removes selected promoted members from the minimal graph in one relayout", () => {
     const store = withBuiltGraph();
-    store.getState().demoteMinimalMember("ts:src/b.ts");
-    expect(store.getState().minimalMemberIds).toEqual(["ts:src/a.ts"]);
-    // The last member can't be removed.
-    store.getState().demoteMinimalMember("ts:src/a.ts");
-    expect(store.getState().minimalMemberIds).toEqual(["ts:src/a.ts"]);
+    const minimalRelayout = vi.fn(async () => {});
+    store.setState({
+      minimalMemberIds: ["ts:src/a.ts", "ts:src/b.ts", "ts:src/a.test.ts", ROUTES_FILE],
+      moduleSelected: new Set(["ts:src/a.test.ts", ROUTES_METHOD]),
+      minimalRelayout,
+    });
+
+    expect(removableModuleSelectionCount(store.getState())).toBe(2);
+    store.getState().removeSelectionFromView();
+
+    expect(store.getState().minimalMemberIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
+    expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
+    expect(store.getState().moduleSelected).toEqual(new Set(["ts:src/a.test.ts", ROUTES_METHOD]));
+    expect(minimalRelayout).toHaveBeenCalledOnce();
+  });
+
+  it("keeps source members, ancestor-contained additions, and the final member protected", () => {
+    const store = withBuiltGraph();
+    const minimalRelayout = vi.fn(async () => {});
+    store.setState({
+      minimalMemberIds: ["ts:src/a.ts", "ts:src/b.ts", ROUTES_FILE],
+      moduleSelected: new Set(["ts:src"]),
+      minimalRelayout,
+    });
+
+    expect(removableModuleSelectionCount(store.getState())).toBe(0);
+    store.getState().removeSelectionFromView();
+    expect(store.getState().minimalMemberIds).toEqual(["ts:src/a.ts", "ts:src/b.ts", ROUTES_FILE]);
+
+    store.setState({ minimalMemberIds: [ROUTES_FILE], moduleSelected: new Set([ROUTES_METHOD]) });
+    expect(removableModuleSelectionCount(store.getState())).toBe(0);
+    store.getState().removeSelectionFromView();
+    expect(store.getState().minimalMemberIds).toEqual([ROUTES_FILE]);
+    expect(minimalRelayout).not.toHaveBeenCalled();
   });
 
   it("resetMinimalGraph restores the working set to the origin", () => {
     const store = withBuiltGraph();
     store.getState().promoteGhost("ts:src/a.test.ts");
-    store.getState().demoteMinimalMember("ts:src/b.ts");
     store.getState().resetMinimalGraph();
     expect(store.getState().minimalMemberIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
     expect(store.getState().minimalArrange).toBe(false);
