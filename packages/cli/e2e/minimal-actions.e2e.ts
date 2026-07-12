@@ -70,11 +70,62 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
     const rearrange = extractedActions.getByRole("button", { name: "Rearrange extracted graph" });
     const reset = extractedActions.getByRole("button", { name: "Reset extracted graph" });
     const close = extractedActions.getByRole("button", { name: "Close extracted graph" });
+    const highlightInCodebase = extractedActions.getByRole("button", { name: "Highlight code in codebase" });
     await extractedActions.waitFor();
     expect(await extract.count()).toBe(0);
     expect(await rearrange.isEnabled()).toBe(true);
     expect(await reset.isDisabled()).toBe(true);
     expect(await close.isVisible()).toBe(true);
+    expect(await highlightInCodebase.isVisible()).toBe(true);
+    expect(await page.getByRole("region", { name: "Extracted selection" })
+      .getByRole("button", { name: "Highlight code in codebase" }).count()).toBe(0);
+
+    // The context action swaps only the graph pane: all curated members are placed in their
+    // canonical Map ancestry, while curation controls and node expansion gestures are frozen.
+    await highlightInCodebase.click();
+    const contextGraph = page.getByRole("region", { name: "Codebase context graph" });
+    await contextGraph.getByText("READ-ONLY", { exact: true }).waitFor();
+    await expect.poll(
+      () => page.evaluate(() => document.activeElement?.getAttribute("aria-label")),
+    ).toBe("Back to extracted graph");
+    await contextGraph.getByText(`${MEMBER_FILES.length} graph nodes highlighted`, { exact: true }).waitFor();
+    const contextBounds = await contextGraph.boundingBox();
+    expect(contextBounds).not.toBeNull();
+    for (const member of MEMBER_FILES) {
+      const contextMember = contextGraph.locator(`[data-id="${member}"]`);
+      await contextMember.waitFor();
+      const memberBounds = await contextMember.boundingBox();
+      expect(memberBounds).not.toBeNull();
+      expect(memberBounds!.x).toBeGreaterThanOrEqual(contextBounds!.x);
+      expect(memberBounds!.y).toBeGreaterThanOrEqual(contextBounds!.y);
+      expect(memberBounds!.x + memberBounds!.width).toBeLessThanOrEqual(contextBounds!.x + contextBounds!.width);
+      expect(memberBounds!.y + memberBounds!.height).toBeLessThanOrEqual(contextBounds!.y + contextBounds!.height);
+    }
+    expect(await contextGraph.getByRole("region", { name: "Extracted selection" }).count()).toBe(0);
+    expect(await contextGraph.getByRole("button", { name: "Expand" }).count()).toBe(0);
+    expect(await contextGraph.getByRole("button", { name: "Collapse" }).count()).toBe(0);
+    expect(await actionBar.getByRole("button", { name: "Expand one level" }).count()).toBe(0);
+    expect(await actionBar.getByRole("button", { name: "Rearrange extracted graph" }).count()).toBe(0);
+
+    await page.setViewportSize({ width: 520, height: 500 });
+    await expect.poll(async () => {
+      const [graph, summary] = await Promise.all([
+        contextGraph.boundingBox(),
+        contextGraph.getByRole("region", { name: "Codebase context summary" }).boundingBox(),
+      ]);
+      return graph !== null && summary !== null
+        && summary.x >= graph.x
+        && summary.x + summary.width <= graph.x + graph.width;
+    }, { timeout: 5_000 }).toBe(true);
+    expect(await centerIsHit(actionBar.getByRole("button", { name: "Back to extracted graph" }))).toBe(true);
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await actionBar.getByRole("button", { name: "Back to extracted graph" }).click();
+    await page.getByRole("region", { name: "Extracted selection" }).waitFor();
+    await expect.poll(
+      () => page.evaluate(() => document.activeElement?.getAttribute("aria-label")),
+    ).toBe("Highlight code in codebase");
+    await extractedActions.waitFor();
+    expect(await reset.isDisabled()).toBe(true);
 
     try {
       await page.setViewportSize({ width: 520, height: 500 });

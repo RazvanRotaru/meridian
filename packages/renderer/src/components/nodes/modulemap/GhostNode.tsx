@@ -11,7 +11,7 @@
 
 import { memo, useState } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import { useBlueprint } from "../../../state/StoreContext";
+import { useSurfaceNodeSelected, useSurfaceReadOnly } from "../../canvas/SurfaceInteractionContext";
 import { accentForKind } from "../../../theme/kindColors";
 import type { GhostData } from "../../../derive/ghostDeps";
 import { cardSelectedStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
@@ -24,7 +24,8 @@ type GhostViewData = GhostData & {
 type GhostRfNode = Node<GhostViewData, "ghost">;
 
 function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
-  const selected = useBlueprint((state) => state.moduleSelected.has(id));
+  const selected = useSurfaceNodeSelected(id);
+  const readOnly = useSurfaceReadOnly();
   const [previewed, setPreviewed] = useState(false);
   const groupMembers = data.semanticMembers ?? [];
   const isGroup = data.ghostRole === "parent-anchor" && typeof data.ghostGroupId === "string" && groupMembers.length > 0;
@@ -33,21 +34,23 @@ function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
   // Plain selection wears the ghost's OWN accent (heavier); a BEACON — a selected call step's
   // definition — keeps the green marker so it stands out as the thing pointed at.
   const style = selected ? cardSelectedStyle(GHOST, accent) : data.beacon ? GHOST_BEACON : GHOST;
-  const actionLabel = isGroup
-    ? `${data.label}, parent of ${groupMembers.length} related ghost nodes; click to select, double-click to reveal`
-    : `${data.label}, ${data.ghostKind}, off-screen definition; double-click to reveal`;
+  const actionLabel = readOnly
+    ? `${data.label}, ${data.ghostKind}, related code outside this context`
+    : isGroup
+      ? `${data.label}, parent of ${groupMembers.length} related ghost nodes; click to select, double-click to reveal`
+      : `${data.label}, ${data.ghostKind}, off-screen definition; double-click to reveal`;
   return (
     <div
       className="lod-tint"
-      role="button"
-      tabIndex={0}
-      aria-pressed={selected}
+      role={readOnly ? undefined : "button"}
+      tabIndex={readOnly ? undefined : 0}
+      aria-pressed={readOnly ? undefined : selected}
       aria-label={actionLabel}
       onMouseEnter={() => isGroup && setPreviewed(true)}
       onMouseLeave={() => setPreviewed(false)}
       onFocus={() => isGroup && setPreviewed(true)}
       onBlur={() => setPreviewed(false)}
-      onKeyDown={(event) => {
+      onKeyDown={readOnly ? undefined : (event) => {
         if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
           event.preventDefault();
           event.stopPropagation();
@@ -57,7 +60,9 @@ function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
         }
       }}
       style={{ ...style, ...(isGroup ? GROUP_FRAME : null), "--lod-accent": accent } as React.CSSProperties}
-      title={isGroup
+      title={readOnly
+        ? `${data.label} — related code outside this context`
+        : isGroup
         ? `${data.label} — ${groupMembers.length} related ghosts; double-click to reveal the parent definition`
         : `${data.label} — off-screen; double-click to reveal it`}
     >
@@ -65,7 +70,7 @@ function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <span className="lod-place">{middleTruncate(data.label)}</span>
       <div className="lod-card-body" style={HEAD}>
-        {isGroup ? (
+        {isGroup && !readOnly ? (
           <button
             type="button"
             style={DISCLOSURE}
@@ -85,7 +90,7 @@ function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
         <span style={LABEL}>{middleTruncate(data.label)}</span>
       </div>
       {data.context ? <div className="lod-card-body" style={CONTEXT}>{data.context}</div> : null}
-      {isGroup && previewed ? (
+      {isGroup && previewed && !readOnly ? (
         <div role="tooltip" style={GROUP_PREVIEW}>
           <div style={GROUP_PREVIEW_TITLE}>
             {groupMembers.length} related definitions · {groupExpanded ? "expanded" : "collapsed"}

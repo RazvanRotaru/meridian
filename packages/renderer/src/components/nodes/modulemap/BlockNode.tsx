@@ -9,7 +9,7 @@
 
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import { useBlueprint } from "../../../state/StoreContext";
+import { useSurfaceNodeSelected } from "../../canvas/SurfaceInteractionContext";
 import { accentForKind, kindLetter } from "../../../theme/kindColors";
 import type { BlockData } from "../../../derive/moduleLevel";
 import { cardSelectedStyle, CodeButton, ExpandChevron, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
@@ -18,7 +18,7 @@ import { borderFor, useNodeDiff } from "./changed";
 type BlockRfNode = Node<BlockData, "block">;
 
 function BlockNodeImpl({ id, data }: NodeProps<BlockRfNode>) {
-  const selected = useBlueprint((state) => state.moduleSelected.has(id));
+  const selected = useSurfaceNodeSelected(id);
   const diff = useNodeDiff(id);
   const accent = accentForKind(data.blockKind);
   const chevron = data.hasFlow ? <ExpandChevron id={id} isExpanded={data.isExpanded} collapsedTitle="Expand — chart this flow in place" /> : null;

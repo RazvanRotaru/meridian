@@ -21,7 +21,7 @@
  * containment trail) navigates back out. Recenter/focus is a separate explicit canvas action.
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Node } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { EmptyModuleMapCard, ServiceScopeBreadcrumb } from "./ModuleMapChrome";
@@ -43,6 +43,7 @@ import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { useRecenter } from "./canvas/useRecenter";
 import { useSemanticSurfaceNavigation } from "./canvas/useSemanticSurfaceNavigation";
 import { MinimalGraphView } from "./MinimalGraphView";
+import { MinimalCodebaseView } from "./MinimalCodebaseView";
 import { ReviewPanel } from "./review/ReviewPanel";
 import { accentForKind } from "../theme/kindColors";
 import type { BlockData, UnitCardData } from "../derive/moduleLevel";
@@ -54,6 +55,31 @@ const SERVICE_DOMAIN_KIND = "serviceDomain";
 
 export function ModuleMapView() {
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
+  const [minimalView, setMinimalView] = useState<"graph" | "codebase">("graph");
+  const codebaseButtonRef = useRef<HTMLButtonElement>(null);
+  const backButtonRef = useRef<HTMLButtonElement>(null);
+  const focusTransfer = useRef<"graph" | "codebase" | null>(null);
+  useEffect(() => {
+    if (!minimalOpen) {
+      focusTransfer.current = null;
+      setMinimalView("graph");
+      return;
+    }
+    if (focusTransfer.current !== minimalView) return;
+    focusTransfer.current = null;
+    const frame = window.requestAnimationFrame(() => {
+      (minimalView === "codebase" ? backButtonRef : codebaseButtonRef).current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [minimalOpen, minimalView]);
+  const showCodebase = () => {
+    focusTransfer.current = "codebase";
+    setMinimalView("codebase");
+  };
+  const showExtractedGraph = () => {
+    focusTransfer.current = "graph";
+    setMinimalView("graph");
+  };
   return (
     <div style={SURFACE_STYLE}>
       {/* Simultaneously mounted ReactFlow instances need isolated stores; otherwise the overlay's
@@ -73,9 +99,17 @@ export function ModuleMapView() {
       {minimalOpen ? (
         <div data-graph-surface="minimal" style={MINIMAL_OVERLAY_STYLE}>
           <div style={REVIEW_SPLIT_STYLE}>
-            <div style={REVIEW_GRAPH_STYLE} role="region" aria-label="PR review graph">
+            <div
+              style={REVIEW_GRAPH_STYLE}
+              role="region"
+              aria-label={minimalView === "codebase" ? "Codebase context graph" : "Extracted graph"}
+            >
               <GraphSurfaceProvider>
-                <MinimalGraphView />
+                {minimalView === "codebase" ? (
+                  <MinimalCodebaseView onBackToGraph={showExtractedGraph} backButtonRef={backButtonRef} />
+                ) : (
+                  <MinimalGraphView onShowCodebase={showCodebase} codebaseButtonRef={codebaseButtonRef} />
+                )}
               </GraphSurfaceProvider>
             </div>
             <ReviewPanel />

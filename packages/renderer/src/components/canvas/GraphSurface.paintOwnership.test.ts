@@ -45,6 +45,24 @@ describe("GraphSurface paint ownership", () => {
     expect(clearedReview.focusSeeds).toBe(selected);
   });
 
+  it("lets a frozen context emphasize targets without giving them selection rings", () => {
+    const noRings = new Set<string>();
+    const contextTargets = new Set(["changed-a", "changed-b"]);
+
+    const ownership = resolveSurfacePaintOwnership(
+      noRings,
+      new Set(["review-hover"]),
+      true,
+      new Set(["ghost-owner"]),
+      contextTargets,
+    );
+
+    expect(ownership.protectedSelection).toBe(noRings);
+    expect(ownership.paintSeeds).toBe(contextTargets);
+    expect(ownership.focusSeeds).toBeNull();
+    expect(ownership.highwaySeeds).toBe(contextTargets);
+  });
+
   it("extracts only strands represented by the literal selection while retaining its paint owner's highway strand", () => {
     const container = (id: string): Node => ({ id, type: "file", position: { x: 0, y: 0 }, data: {} });
     const child = (id: string, parentId: string): Node => ({

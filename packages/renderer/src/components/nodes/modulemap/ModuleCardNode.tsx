@@ -10,6 +10,7 @@
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint } from "../../../state/StoreContext";
+import { useSurfaceNodeSelected } from "../../canvas/SurfaceInteractionContext";
 import type { ModuleCardData } from "../../../derive/moduleLevel";
 import { PackageOverviewNode } from "./PackageOverviewNode";
 import { ServiceDomainNode } from "./ServiceDomainNode";
@@ -29,7 +30,7 @@ const FILE_FRAME_ACCENT = "#3FB7C4";
 type ModuleCardRfNode = Node<ModuleCardData, "file">;
 
 function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
-  const selected = useBlueprint((state) => state.moduleSelected.has(id));
+  const selected = useSurfaceNodeSelected(id);
   const diff = useNodeDiff(id);
   // A file is NOT coloured (only its touched blocks are); instead it shows GitHub's +N/-M churn before
   // its name, so a reviewer sees which files the PR touched and how heavily.

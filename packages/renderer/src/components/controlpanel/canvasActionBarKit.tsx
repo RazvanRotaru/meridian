@@ -44,6 +44,7 @@ export function CanvasActionButton(props: {
   badge?: number;
   disabled?: boolean;
   ariaKeyShortcuts?: string;
+  buttonRef?: React.Ref<HTMLButtonElement>;
 }) {
   const baseStyle = props.primary ? PRIMARY_ACTION_STYLE : ACTION_STYLE;
   const descriptionId = useId();
@@ -51,6 +52,7 @@ export function CanvasActionButton(props: {
   return (
     <span style={BUTTON_WRAPPER_STYLE} title={props.title}>
       <button
+        ref={props.buttonRef}
         type="button"
         style={props.disabled ? { ...baseStyle, ...DISABLED_ACTION_STYLE } : baseStyle}
         aria-label={props.ariaLabel}
