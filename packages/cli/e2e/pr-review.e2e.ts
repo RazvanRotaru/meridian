@@ -25,6 +25,8 @@ import {
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const WEB_UI = fileURLToPath(new URL("../web-ui/index.html", import.meta.url));
 const DRAFT_TEXT = "Please keep this tier boundary explicit.";
+const EXISTING_COMMENT_TEXT = "Should this threshold stay aligned with the billing tier?";
+const EXISTING_COMMENT_LINE = 2;
 const ORDER_SERVICE_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/services/orderService.ts" });
 const LOYALTY_TIERS_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing/loyaltyTiers.ts" });
 const LOYALTY_TIER_FUNCTION_ID = buildNodeId({
@@ -109,12 +111,50 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await addedUnits.count()).toBeGreaterThan(0);
     expect(await addedFile.getByText("added — extract head to view", { exact: true }).count()).toBe(0);
 
-    // 4d — one unit tick completes the added file and advances the header fraction.
+    // 4d — existing GitHub comments live on their HEAD source line in both canvas code hosts;
+    // the review-panel control hides and restores that layer without disabling either host.
+    const extractedReviewSurface = page.getByRole("region", { name: "Extracted selection" }).locator("xpath=..");
+    const loyaltyTierNode = extractedReviewSurface.locator(`[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
+    await loyaltyTierNode.waitFor();
+    await loyaltyTierNode.hover();
+    const loyaltyPreview = page.getByRole("dialog", { name: "Diff preview for loyaltyTierFor" });
+    await loyaltyPreview.waitFor();
+    await loyaltyPreview.getByText(EXISTING_COMMENT_TEXT, { exact: true }).waitFor();
+
+    const hideComments = page.getByRole("button", { name: "Hide comments", exact: true });
+    await hideComments.waitFor();
+    expect(await hideComments.getAttribute("aria-pressed")).toBe("true");
+    await hideComments.click();
+    await loyaltyPreview.waitFor({ state: "detached" });
+    const viewComments = page.getByRole("button", { name: "View comments", exact: true });
+    await viewComments.waitFor();
+    expect(await viewComments.getAttribute("aria-pressed")).toBe("false");
+
+    await loyaltyTierNode.hover();
+    await loyaltyPreview.waitFor();
+    expect(await loyaltyPreview.getByText(EXISTING_COMMENT_TEXT, { exact: true }).count()).toBe(0);
+    await viewComments.click();
+    await loyaltyPreview.waitFor({ state: "detached" });
+    await hideComments.waitFor();
+    expect(await hideComments.getAttribute("aria-pressed")).toBe("true");
+
+    await loyaltyTierNode.hover();
+    await loyaltyPreview.waitFor();
+    await loyaltyPreview.getByText(EXISTING_COMMENT_TEXT, { exact: true }).waitFor();
+    const loyaltyCodeButton = loyaltyTierNode.getByRole("button", { name: "View source" });
+    await loyaltyCodeButton.click();
+    const loyaltySourceDialog = page.getByRole("dialog", { name: "Source code" });
+    await loyaltySourceDialog.waitFor();
+    await loyaltySourceDialog.getByText(EXISTING_COMMENT_TEXT, { exact: true }).waitFor();
+    await page.keyboard.press("Escape");
+    await loyaltySourceDialog.waitFor({ state: "detached" });
+
+    // 4e — one unit tick completes the added file and advances the header fraction.
     await page.getByText("0/2 files viewed", { exact: true }).waitFor();
     await addedBlock.getByTitle("Mark as reviewed").first().click();
     await page.getByText("1/2 files viewed", { exact: true }).waitFor();
 
-    // 4e — comment on that unit and submit exactly one GitHub review payload.
+    // 4f — comment on that unit and submit exactly one GitHub review payload.
     addedFile = reviewFileButton(page, "src/pricing/loyaltyTiers.ts");
     addedBlock = addedFile.locator("xpath=../..");
     await addedBlock.getByTitle("Expand").click();
@@ -142,7 +182,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
       },
     ]);
 
-    // 4f — URL-backed reload restores the review; the checked unit remains in localStorage.
+    // 4g — URL-backed reload restores the review; the checked unit remains in localStorage.
     const storedTick = await storedUnitTicks(page);
     expect(Object.keys(storedTick.unitTicks)).toHaveLength(1);
     await page.waitForFunction(() => new URL(window.location.href).searchParams.get("rev") === "1");
@@ -152,7 +192,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await syncProvenance.waitFor();
     expect(await storedUnitTicks(page)).toEqual(storedTick);
 
-    // 4g — Escape closes the source modal only; repeated Escape leaves the overlay in place, and
+    // 4h — Escape closes the source modal only; repeated Escape leaves the overlay in place, and
     // explicit Close parks the review for the text-only Resume chip.
     // The source graph stays mounted beneath Minimal Graph so outward semantic zoom can reveal its
     // exact viewport. Scope this raw CSS locator to the extracted surface rather than matching the
@@ -257,9 +297,26 @@ function fakeGitHub(source: PrReviewFixture, captured: SubmittedReview[]): typeo
     if (request.method === "GET" && path === "/repos/e2e/shop/pulls/7/files") {
       return json(source.files.map((file) => file.api));
     }
-    if (request.method === "GET" && (path.endsWith("/pulls/7/comments") || path.endsWith("/pulls/7/reviews"))) {
-      return json([]);
+    if (request.method === "GET" && path.endsWith("/pulls/7/comments")) {
+      return json([
+        {
+          id: 7001,
+          pull_request_review_id: 77,
+          path: "src/pricing/loyaltyTiers.ts",
+          commit_id: source.headSha,
+          original_commit_id: source.headSha,
+          line: EXISTING_COMMENT_LINE,
+          original_line: EXISTING_COMMENT_LINE,
+          side: "RIGHT",
+          body: EXISTING_COMMENT_TEXT,
+          user: { login: "existing-reviewer" },
+          created_at: "2026-07-11T09:30:00Z",
+          updated_at: "2026-07-11T09:30:00Z",
+          html_url: "https://github.com/e2e/shop/pull/7#discussion_r7001",
+        },
+      ]);
     }
+    if (request.method === "GET" && path.endsWith("/pulls/7/reviews")) return json([]);
     if (request.method === "POST" && path === "/repos/e2e/shop/pulls/7/reviews") {
       captured.push((await request.json()) as SubmittedReview);
       return json({ html_url: "http://stub/review" });

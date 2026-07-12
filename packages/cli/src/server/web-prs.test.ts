@@ -279,6 +279,7 @@ describe("PR routes", () => {
             {
               path: "packages/cli/src/a.ts",
               line: 12,
+              side: "RIGHT",
               body: "Please cover this branch",
               user: { login: "mina", avatar_url: "raw field" },
               updated_at: "2026-07-10T09:30:00Z",
@@ -288,6 +289,7 @@ describe("PR routes", () => {
             {
               path: "packages/core/src/outside.ts",
               line: 2,
+              side: "LEFT",
               body: "outside extraction root",
               user: { login: "mina" },
               updated_at: "2026-07-10T09:31:00Z",
@@ -322,6 +324,7 @@ describe("PR routes", () => {
         {
           path: "src/a.ts",
           line: 12,
+          side: "RIGHT",
           body: "Please cover this branch",
           author: "mina",
           updatedAt: "2026-07-10T09:30:00Z",

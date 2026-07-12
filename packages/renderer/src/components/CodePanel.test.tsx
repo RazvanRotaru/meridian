@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { ChangeStatus, GraphArtifact, GraphNode } from "@meridian/core";
 import { describe, expect, it } from "vitest";
 import { buildGraphIndex } from "../graph/graphIndex";
+import type { PrGitHubComment } from "../state/prTypes";
 import { createBlueprintStore } from "../state/store";
 import { StoreProvider } from "../state/StoreContext";
 import { CodePanel } from "./CodePanel";
@@ -24,7 +25,30 @@ const ARTIFACT: GraphArtifact = {
   edges: [],
 };
 
-function sourceModal(options: { live: boolean; status?: ChangeStatus }) {
+function existingComment(
+  body: string,
+  line: number | null,
+  overrides: Partial<PrGitHubComment> = {},
+): PrGitHubComment {
+  return {
+    path: FILE,
+    line,
+    side: "RIGHT",
+    body,
+    author: "octo",
+    updatedAt: "2026-07-12T00:00:00.000Z",
+    url: "https://github.com/o/r/pull/77#discussion_r1",
+    ...overrides,
+  };
+}
+
+function sourceModal(options: {
+  live: boolean;
+  status?: ChangeStatus;
+  comments?: PrGitHubComment[];
+  commentsVisible?: boolean;
+  reviewPathAlias?: string;
+}) {
   const status = options.status ?? "modified";
   const store = createBlueprintStore({
     artifact: ARTIFACT,
@@ -54,6 +78,22 @@ function sourceModal(options: { live: boolean; status?: ChangeStatus }) {
       flows: {},
     },
     prReviewed: options.live ? 77 : null,
+    prDiscussion: {
+      comments: options.comments ?? [],
+      reviews: { approved: [], changesRequested: [], commented: 0 },
+    },
+    reviewCommentsVisible: options.commentsVisible ?? true,
+    ...(options.reviewPathAlias ? {
+      reviewFiles: [{
+        path: options.reviewPathAlias,
+        status,
+        moduleId: NODE.id,
+        units: [],
+        fingerprint: "test-file",
+        blastRadius: 0,
+        deletedImpact: null,
+      }],
+    } : {}),
     reviewFileDelta: {
       [FILE]: { added: 1, deleted: status === "deleted" ? 4 : 1, status: status === "deleted" ? "removed" : "modified" },
     },
@@ -94,5 +134,57 @@ describe("CodePanel review comments", () => {
     const markup = sourceModal({ live: true, status: "deleted" });
 
     expect(markup).not.toContain('aria-label="Comment on line ');
+  });
+
+  it("renders only visible RIGHT-side GitHub comments in the source modal", () => {
+    const markup = sourceModal({
+      live: true,
+      comments: [
+        existingComment("Visible modal comment", 19),
+        existingComment("Base-side comment", 19, { side: "LEFT" }),
+        existingComment("Other file comment", 19, { path: "src/other.ts" }),
+        existingComment("Outside modal range", 21),
+        existingComment("Outdated comment", null, { side: null }),
+      ],
+    });
+
+    expect(markup).toContain('data-existing-review-comments-line="19"');
+    expect(markup).toContain("Visible modal comment");
+    expect(markup).not.toContain("Base-side comment");
+    expect(markup).not.toContain("Other file comment");
+    expect(markup).not.toContain("Outside modal range");
+    expect(markup).not.toContain("Outdated comment");
+  });
+
+  it("hides existing comments without disabling line drafting", () => {
+    const markup = sourceModal({
+      live: true,
+      commentsVisible: false,
+      comments: [existingComment("Hidden modal comment", 19)],
+    });
+
+    expect(markup).not.toContain("data-existing-review-comments-line");
+    expect(markup).not.toContain("Hidden modal comment");
+    expect(markup.match(/aria-label="Comment on line /g)).toHaveLength(4);
+  });
+
+  it("does not leak a previously selected PR's discussion into non-PR source", () => {
+    const markup = sourceModal({
+      live: false,
+      comments: [existingComment("Stale PR comment", 19)],
+    });
+
+    expect(markup).not.toContain("Stale PR comment");
+  });
+
+  it("maps a PR path alias onto the matching canvas file", () => {
+    const alias = "repo/src/order.ts";
+    const markup = sourceModal({
+      live: true,
+      reviewPathAlias: alias,
+      comments: [existingComment("Aliased path comment", 19, { path: alias })],
+    });
+
+    expect(markup).toContain("Aliased path comment");
   });
 });

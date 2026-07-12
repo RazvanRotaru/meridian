@@ -15,8 +15,10 @@ import { checkStateOf, fileViewState, type ReviewFileRow } from "../../derive/re
 import type { PrGitHubComment } from "../../state/prTypes";
 import type { ReviewComment, ReviewTick } from "../../state/reviewTicksPref";
 import { useActiveChangeGroup } from "./ChangeGroupStrip";
+import { ExistingCommentLinks, ExistingCommentList } from "./ExistingReviewComments";
 import { CommentButton, CommentComposer, CommentList } from "./ReviewComments";
 import { UnitRow } from "./ReviewUnitRow";
+import { isHeadSideReviewComment } from "./useCodeReviewComments";
 import { basename, CARET, MONO, NO_FOCUS_RING, SECTION_COUNT, SECTION_HEAD, SECTION_TITLE, TICK_BTN, TICK_COLOR, TICK_GLYPH, type CommentTarget } from "./reviewPanelKit";
 
 const STATUS_COLOR: Record<string, string> = { added: "#3FB950", modified: "#D29922", deleted: "#F85149", renamed: "#7DD3FC" };
@@ -42,6 +44,7 @@ function ReviewFilesSectionImpl() {
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
   const comments = useBlueprint((state) => state.reviewComments);
   const discussion = useBlueprint((state) => state.prDiscussion);
+  const commentsVisible = useBlueprint((state) => state.reviewCommentsVisible);
   const { setReviewFilesSort } = useBlueprintActions();
   const activeGroup = useActiveChangeGroup();
   const [open, setOpen] = useState(true);
@@ -117,6 +120,7 @@ function ReviewFilesSectionImpl() {
             drafts={draftIndex.byRow}
             draftCounts={draftIndex.countsByFile}
             githubComments={githubCommentsByFile}
+            commentsVisible={commentsVisible}
             composer={composer}
             onComposer={setComposer}
           />
@@ -132,10 +136,11 @@ function FileRow(props: {
   drafts: DraftsByRow;
   draftCounts: DraftCountsByFile;
   githubComments: GitHubCommentsByFile;
+  commentsVisible: boolean;
   composer: CommentTarget | null;
   onComposer: (target: CommentTarget | null) => void;
 }) {
-  const { file, unitTicks, fileTicks, drafts, draftCounts, githubComments, composer, onComposer } = props;
+  const { file, unitTicks, fileTicks, drafts, draftCounts, githubComments, commentsVisible, composer, onComposer } = props;
   const currentNodes = useBlueprint((state) => state.index.nodesById);
   const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
   const { toggleReviewFileViewed, addReviewComment, setReviewLit, focusReviewFile, selectReviewNode } = useBlueprintActions();
@@ -153,9 +158,18 @@ function FileRow(props: {
   const counts = draftCounts.get(file.path) ?? { file: 0, unit: 0, line: 0 };
   const aggregateDraftCount = counts.file + counts.unit + counts.line;
   const existingComments = githubComments.get(file.path) ?? NO_GITHUB_COMMENTS;
+  // Current HEAD-line bodies move to canvas code. Keep their GitHub links in the rail because the
+  // source service may truncate a very large file before that line; comments with no safe canvas
+  // placement (old side, no line, deleted/unmatched file, or no link) retain their full fallback.
+  const canvasComments = existingComments.filter(
+    (comment) => file.moduleId !== null && file.status !== "deleted" && comment.url.length > 0 && isHeadSideReviewComment(comment),
+  );
+  const fallbackComments = existingComments.filter(
+    (comment) => !canvasComments.includes(comment),
+  );
   const composerHere = composer !== null && composer.path === file.path && composer.nodeId === null;
   const doneUnits = file.units.filter((unit) => checkStateOf(unit.fingerprint, unitTicks[unit.nodeId]) === "done").length;
-  const hasBody = file.units.length > 0 || fileDrafts.length > 0 || existingComments.length > 0 || file.deletedImpact !== null;
+  const hasBody = file.units.length > 0 || fileDrafts.length > 0 || (commentsVisible && existingComments.length > 0) || file.deletedImpact !== null;
   return (
     <div style={FILE_BLOCK}>
       <div
@@ -237,7 +251,18 @@ function FileRow(props: {
           {file.deletedImpact !== null && (
             <DeletedImpact impact={file.deletedImpact} currentNodes={currentNodes} onSelect={selectReviewNode} />
           )}
-          <GitHubCommentList comments={existingComments} />
+          {commentsVisible && canvasComments.length > 0 ? (
+            <div style={COMMENT_FALLBACK}>
+              <div style={COMMENT_FALLBACK_LABEL}>Canvas comments · open on GitHub</div>
+              <ExistingCommentLinks comments={canvasComments} />
+            </div>
+          ) : null}
+          {commentsVisible && fallbackComments.length > 0 ? (
+            <div style={COMMENT_FALLBACK}>
+              <div style={COMMENT_FALLBACK_LABEL}>Comments kept in the panel</div>
+              <ExistingCommentList comments={fallbackComments} showLocation />
+            </div>
+          ) : null}
           {file.units.map((unit) => (
             <UnitRow key={unit.nodeId} unit={unit} path={file.path} tick={unitTicks[unit.nodeId]} drafts={drafts.get(rowKey(file.path, unit.nodeId)) ?? []} composer={composer} onComposer={onComposer} />
           ))}
@@ -249,60 +274,6 @@ function FileRow(props: {
       )}
     </div>
   );
-}
-
-function GitHubCommentList(props: { comments: readonly PrGitHubComment[] }) {
-  if (props.comments.length === 0) {
-    return null;
-  }
-  return (
-    <div style={GITHUB_COMMENTS_LIST}>
-      {props.comments.map((comment, index) => (
-        <div key={`${comment.url}:${comment.updatedAt}:${index}`} style={GITHUB_COMMENT}>
-          <div style={GITHUB_COMMENT_META}>
-            {comment.line !== null ? <span style={GITHUB_LINE_CHIP}>L{comment.line}</span> : null}
-            {comment.url ? (
-              <a style={GITHUB_AUTHOR} href={comment.url} target="_blank" rel="noreferrer" title="Open comment on GitHub">
-                {comment.author}
-              </a>
-            ) : (
-              <span style={GITHUB_AUTHOR}>{comment.author}</span>
-            )}
-            <span style={GITHUB_TIME} title={comment.updatedAt}>{relativeTime(comment.updatedAt)}</span>
-          </div>
-          <div style={GITHUB_COMMENT_BODY}>{comment.body}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function relativeTime(updatedAt: string): string {
-  const timestamp = Date.parse(updatedAt);
-  if (!Number.isFinite(timestamp)) {
-    return "";
-  }
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  if (seconds < 60) {
-    return "just now";
-  }
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) {
-    return `${minutes}m ago`;
-  }
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) {
-    return `${hours}h ago`;
-  }
-  const days = Math.floor(hours / 24);
-  if (days < 30) {
-    return `${days}d ago`;
-  }
-  const months = Math.floor(days / 30);
-  if (months < 12) {
-    return `${months}mo ago`;
-  }
-  return `${Math.floor(months / 12)}y ago`;
 }
 
 function DeletedImpact(props: {
@@ -419,10 +390,5 @@ const CALLER_ROW: React.CSSProperties = { width: "100%", minWidth: 0, display: "
 const CALLER_NAME: React.CSSProperties = { minWidth: 0, color: "#E6EDF3", fontSize: 11.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const CALLER_LOCATION: React.CSSProperties = { color: "#5A6472", fontFamily: MONO, fontSize: 9.5, flexShrink: 0 };
 const IMPACT_NOTE: React.CSSProperties = { color: "#6E7781", fontSize: 10, fontStyle: "italic", paddingTop: 3 };
-const GITHUB_COMMENTS_LIST: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 5, padding: "3px 6px 5px 26px" };
-const GITHUB_COMMENT: React.CSSProperties = { border: "1px solid #2A2F37", background: "#11161D", borderRadius: 7, padding: "7px 8px" };
-const GITHUB_COMMENT_META: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6, marginBottom: 4, minWidth: 0 };
-const GITHUB_AUTHOR: React.CSSProperties = { color: "#E6EDF3", fontSize: 11, fontWeight: 650, textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
-const GITHUB_TIME: React.CSSProperties = { color: "#5A6472", fontSize: 9.5, flexShrink: 0 };
-const GITHUB_LINE_CHIP: React.CSSProperties = { flexShrink: 0, border: "1px solid rgba(125,211,252,0.35)", borderRadius: 4, padding: "0 4px", color: "#7DD3FC", fontFamily: MONO, fontSize: 9.5, fontWeight: 700, lineHeight: "14px" };
-const GITHUB_COMMENT_BODY: React.CSSProperties = { color: "#C9D1D9", fontSize: 11.5, lineHeight: "15px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: 6, overflow: "hidden" };
+const COMMENT_FALLBACK: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 5, margin: "3px 6px 5px 26px" };
+const COMMENT_FALLBACK_LABEL: React.CSSProperties = { color: "#7B8695", fontSize: 9.5, fontWeight: 650 };

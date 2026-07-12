@@ -50,6 +50,7 @@ export interface PrSummary {
 export interface PrGitHubComment {
   path: string;
   line: number | null;
+  side: "LEFT" | "RIGHT" | null;
   body: string;
   author: string;
   updatedAt: string;
@@ -165,9 +166,11 @@ export function parsePullRequestComments(json: unknown): PrGitHubComment[] {
   return json.slice(0, PR_COMMENT_RESULT_LIMIT).map((item) => {
     const comment = asObject(item);
     const line = comment.line;
+    const side = comment.side;
     return {
       path: requireString(comment, "path"),
       line: typeof line === "number" && Number.isSafeInteger(line) && line > 0 ? line : null,
+      side: side === "LEFT" || side === "RIGHT" ? side : null,
       body: requireString(comment, "body").slice(0, PR_COMMENT_BODY_LIMIT),
       author: requireString(asObject(comment.user ?? {}), "login"),
       updatedAt: requireString(comment, "updated_at"),

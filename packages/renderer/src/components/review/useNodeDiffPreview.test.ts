@@ -1,5 +1,24 @@
 import { describe, expect, it } from "vitest";
+import type { PrGitHubComment } from "../../state/prTypes";
+import { codeReviewComments, isHeadSideReviewComment } from "./useCodeReviewComments";
 import { placeNodeDiffPreview, previewFileAllowsLineComments, visiblePreviewCommentLines, type PreviewRect } from "./useNodeDiffPreview";
+
+function existingComment(
+  body: string,
+  line: number | null,
+  overrides: Partial<PrGitHubComment> = {},
+): PrGitHubComment {
+  return {
+    path: "src/live.ts",
+    line,
+    side: "RIGHT",
+    body,
+    author: "octo",
+    updatedAt: "2026-07-12T00:00:00.000Z",
+    url: "https://github.com/o/r/pull/7#discussion_r1",
+    ...overrides,
+  };
+}
 
 function rect(overrides: Partial<PreviewRect> = {}): PreviewRect {
   return {
@@ -77,5 +96,54 @@ describe("previewFileAllowsLineComments", () => {
     expect(previewFileAllowsLineComments("src/gone.ts", 77, files)).toBe(false);
     expect(previewFileAllowsLineComments("src/other.ts", 77, files)).toBe(false);
     expect(previewFileAllowsLineComments("src/live.ts", null, files)).toBe(false);
+  });
+});
+
+describe("codeReviewComments", () => {
+  it("keeps exact-path RIGHT-side comments inside the visible absolute line range", () => {
+    const comments = [
+      existingComment("first visible line", 19),
+      existingComment("first reply", 20),
+      existingComment("second reply", 20, { author: "mina" }),
+      existingComment("last visible line", 21),
+      existingComment("before range", 18),
+      existingComment("after range", 22),
+      existingComment("other file", 20, { path: "src/other.ts" }),
+      existingComment("base side", 20, { side: "LEFT" }),
+      existingComment("unknown side", 20, { side: null }),
+      existingComment("outdated", null, { side: null }),
+    ];
+
+    expect(codeReviewComments(comments, "src/live.ts", 19, "one\ntwo\nthree", true).map((comment) => comment.body)).toEqual([
+      "first visible line",
+      "first reply",
+      "second reply",
+      "last visible line",
+    ]);
+  });
+
+  it("returns no comments when the layer is hidden or the source slice is unavailable", () => {
+    const comments = [existingComment("visible", 19)];
+
+    expect(codeReviewComments(comments, "src/live.ts", 19, "one", false)).toEqual([]);
+    expect(codeReviewComments(comments, null, 19, "one", true)).toEqual([]);
+    expect(codeReviewComments(comments, "src/live.ts", 19, null, true)).toEqual([]);
+  });
+
+  it("accepts the PR path aliases that resolve to one canvas file", () => {
+    const comments = [existingComment("prefixed PR path", 19, { path: "repo/src/live.ts" })];
+
+    expect(codeReviewComments(comments, ["src/live.ts", "repo/src/live.ts"], 19, "one", true).map((comment) => comment.body)).toEqual([
+      "prefixed PR path",
+    ]);
+  });
+});
+
+describe("isHeadSideReviewComment", () => {
+  it("requires both a current line and the RIGHT diff side", () => {
+    expect(isHeadSideReviewComment(existingComment("head", 19))).toBe(true);
+    expect(isHeadSideReviewComment(existingComment("base", 19, { side: "LEFT" }))).toBe(false);
+    expect(isHeadSideReviewComment(existingComment("unknown", 19, { side: null }))).toBe(false);
+    expect(isHeadSideReviewComment(existingComment("outdated", null, { side: null }))).toBe(false);
   });
 });

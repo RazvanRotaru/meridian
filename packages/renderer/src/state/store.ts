@@ -390,6 +390,9 @@ export interface BlueprintState {
   reviewOpenFlowSplitOnSelect: boolean;
   /** Hides the review side panel so the graph takes the full width; session-only. */
   reviewPanelHidden: boolean;
+  /** Shows existing GitHub review comments in canvas source widgets. Session-only; draft comment
+   * composers and the submit queue stay available independently of this reader-facing layer. */
+  reviewCommentsVisible: boolean;
   reviewSubmitStatus: "idle" | "submitting";
   reviewSubmitError: string | null;
   /** html_url of the last submitted review; shows a "view on GitHub" confirmation. */
@@ -609,6 +612,7 @@ export interface BlueprintState {
   setReviewFlowSplitView(view: ReviewFlowSplitView): void;
   setReviewOpenFlowSplitOnSelect(open: boolean): void;
   toggleReviewPanel(): void;
+  toggleReviewCommentsVisible(): void;
   submitReviewComments(): Promise<void>;
   setViewMode(mode: ViewMode): void;
   /** Toggle the full PR-review page: open it, or (when already open) resume the lens you came from. */
@@ -1017,6 +1021,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let prsListSeq = 0;
   let relatedPrsSeq = 0;
   let prFilesSeq = 0;
+  // Every discussion read (selection, refresh, or post-submit) shares one last-started-wins lane.
+  let prDiscussionSeq = 0;
   let prFilesRequest: { number: number; sequence: number; promise: Promise<void> } | null = null;
   let prFreshnessRequest: { number: number; revision: PrReviewRevision; promise: Promise<void> } | null = null;
   let prReviewRefreshSeq = 0;
@@ -1156,6 +1162,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewFlowSplitView: reviewPreferences.flowSplitView,
     reviewOpenFlowSplitOnSelect: reviewPreferences.openFlowSplitOnSelect,
     reviewPanelHidden: false,
+    reviewCommentsVisible: true,
     reviewSubmitStatus: "idle",
     reviewSubmitError: null,
     reviewSubmittedUrl: null,
@@ -2859,6 +2866,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ reviewPanelHidden: !get().reviewPanelHidden });
     },
 
+    toggleReviewCommentsVisible() {
+      set({ reviewCommentsVisible: !get().reviewCommentsVisible });
+    },
+
     // Submit every draft as ONE GitHub review (event COMMENT): unit/file drafts become inline
     // comments anchored to new-side diff lines, the rest ride as notes the server folds into the
     // review body (reviewSubmit.ts). Only the drafts SNAPSHOTTED here are cleared on success — a
@@ -2874,6 +2885,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         prReviewStale,
         prReviewRefreshing,
         prReviewStatus,
+        prReviewRevision: submittedRevision,
       } = get();
       if (
         !review
@@ -2912,6 +2924,24 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             reviewComments: get().reviewComments.filter((comment) => !submittedIds.has(comment.id)),
             reviewSubmittedUrl: data.url ?? "",
           });
+          // Any submitted inline drafts are now existing GitHub comments. Refresh that read model
+          // so a successful canvas submission does not make them disappear until the next reload.
+          // Submission success stands even if this secondary read fails.
+          try {
+            const discussionSequence = ++prDiscussionSeq;
+            const discussion = await fetchPrDiscussion(prCommentsUrl, prNumber);
+            const current = get();
+            if (
+              prDiscussionSeq === discussionSequence
+              && current.prReviewed === prNumber
+              && current.review?.context.reviewKey === submittedKey
+              && current.prReviewRevision === submittedRevision
+            ) {
+              set({ prDiscussion: { comments: discussion.comments, reviews: discussion.reviews } });
+            }
+          } catch {
+            console.warn("[meridian] Submitted review discussion could not be refreshed.");
+          }
         } else {
           set({ reviewSubmitStatus: "idle" });
         }
@@ -3356,6 +3386,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       const sequence = ++prFilesSeq;
+      prDiscussionSeq += 1;
       // Switching PRs abandons any review preparation in flight: bump its seq so a landing stream
       // is dropped, and clear the indicator so the panel never shows a stale progress/error card.
       get().cancelPrReviewPreparation();
@@ -3431,14 +3462,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           });
           // Discussion and checks are deliberately secondary to the changed-file load: the detail
           // panel is usable as soon as files land, while these two independent lanes fill in quietly.
+          const discussionSequence = ++prDiscussionSeq;
           void fetchPrDiscussion(prCommentsUrl, number).then(
             (discussion) => {
-              if (prFilesSeq === sequence && get().prSelected === number) {
+              if (prDiscussionSeq === discussionSequence && prFilesSeq === sequence && get().prSelected === number) {
                 set({ prDiscussion: { comments: discussion.comments, reviews: discussion.reviews } });
               }
             },
             () => {
-              if (prFilesSeq === sequence && get().prSelected === number) {
+              if (prDiscussionSeq === discussionSequence && prFilesSeq === sequence && get().prSelected === number) {
                 console.warn("[meridian] PR discussion unavailable.");
               }
             },
@@ -3544,6 +3576,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         if (!active()) {
           return;
         }
+        const discussionSequence = ++prDiscussionSeq;
         const [files, discussion, checks] = await Promise.all([
           fetchPrFiles(prFilesUrl, number),
           fetchPrDiscussion(prCommentsUrl, number).catch(() => null),
@@ -3560,7 +3593,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           prFilesTotal: files.totalFiles ?? files.files.length,
           prFilesOutside: files.outsideCount ?? 0,
           prFilesSuggestedSubdir: files.suggestedSubdir ?? "",
-          prDiscussion: discussion === null ? null : { comments: discussion.comments, reviews: discussion.reviews },
+          ...(prDiscussionSeq === discussionSequence
+            ? { prDiscussion: discussion === null ? null : { comments: discussion.comments, reviews: discussion.reviews } }
+            : {}),
           // Checks are commit-specific. A failed/unsupported refresh must clear the prior head's
           // rollup instead of presenting it as if it described the new revision.
           prChecks: checks,

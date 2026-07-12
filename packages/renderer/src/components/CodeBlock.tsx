@@ -9,6 +9,8 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangedLineKind } from "@meridian/core";
+import type { PrGitHubComment } from "../state/prTypes";
+import { ExistingCommentList } from "./review/ExistingReviewComments";
 import { CommentComposer } from "./review/ReviewComments";
 
 const COLOR = {
@@ -73,6 +75,7 @@ export function CodeBlock({
   onLineClick,
   commentableLines,
   lineComposer,
+  existingComments = EMPTY_EXISTING_COMMENTS,
   removedRows,
   removedTruncated = false,
 }: {
@@ -95,6 +98,8 @@ export function CodeBlock({
   commentableLines?: ReadonlySet<number>;
   /** The panel-owned composer shown immediately below its absolute source row. */
   lineComposer?: { line: number; onAdd: (body: string) => void; onCancel: () => void } | null;
+  /** Existing GitHub RIGHT-side comments already filtered to this visible file slice. */
+  existingComments?: readonly PrGitHubComment[];
   /** Removed patch text, grouped by the absolute new-side line emitted immediately before it. */
   removedRows?: ReadonlyMap<number, string[]>;
   /** The patch parser hit its per-file removed-line cap. */
@@ -111,6 +116,15 @@ export function CodeBlock({
     }
   }, [code]);
   const highlightedLines = useMemo(() => splitHighlightedLines(pieces), [pieces]);
+  const existingCommentsByLine = useMemo(() => {
+    const byLine = new Map<number, PrGitHubComment[]>();
+    for (const comment of existingComments) {
+      if (comment.line === null) continue;
+      const bucket = byLine.get(comment.line);
+      bucket ? bucket.push(comment) : byLine.set(comment.line, [comment]);
+    }
+    return byLine;
+  }, [existingComments]);
   const listingRef = useRef<HTMLDivElement>(null);
   // Edge evidence is the reader's explicit target, so it wins the initial scroll position. A
   // regular source panel still lands on its first diff as before.
@@ -123,8 +137,9 @@ export function CodeBlock({
     if (firstFocus === null) {
       return;
     }
-    container.scrollTop = Math.max(0, (firstFocus - startLine - 3) * LINE_HEIGHT_PX);
-  }, [code, startLine, changedLines, changedLineKinds, evidenceLines]);
+    const row = container.querySelector<HTMLTableRowElement>(`tr[data-source-line="${firstFocus}"]`);
+    container.scrollTop = Math.max(0, (row?.offsetTop ?? (firstFocus - startLine) * LINE_HEIGHT_PX) - 3 * LINE_HEIGHT_PX);
+  }, [code, startLine, changedLines, changedLineKinds, evidenceLines, existingCommentsByLine]);
   // GitHub reveals its line-comment affordance when the pointer is anywhere on the source row.
   // Restricting this to the narrow gutter made the control effectively undiscoverable while
   // reading/selecting code, especially in the modal and compact hover preview.
@@ -154,9 +169,11 @@ export function CodeBlock({
             const evidence = evidenceLines?.has(lineNo) ?? false;
             const commentable = onLineClick !== undefined && (commentableLines?.has(lineNo) ?? false);
             const composerOpen = lineComposer?.line === lineNo;
+            const lineComments = existingCommentsByLine.get(lineNo) ?? EMPTY_EXISTING_COMMENTS;
             return (
               <Fragment key={`line-${lineNo}`}>
                 <tr
+                  data-source-line={lineNo}
                   data-edge-evidence-line={evidence ? "true" : undefined}
                   data-review-comment-line={commentable ? lineNo : undefined}
                   onMouseEnter={() => setHoveredLine(lineNo)}
@@ -196,6 +213,13 @@ export function CodeBlock({
                     {line.length > 0 ? line : " "}
                   </td>
                 </tr>
+                {lineComments.length > 0 ? (
+                  <tr data-existing-review-comments-line={lineNo}>
+                    <td colSpan={gutterVisible ? 2 : 1} style={EXISTING_COMMENT_CELL_STYLE}>
+                      <ExistingCommentList comments={lineComments} />
+                    </td>
+                  </tr>
+                ) : null}
                 {composerOpen ? (
                   <tr>
                     <td colSpan={gutterVisible ? 2 : 1} style={COMPOSER_CELL_STYLE}>
@@ -343,6 +367,7 @@ function kindGutterStyle(kind: ChangedLineKind): React.CSSProperties {
 
 // Shared by the styles below and the scroll-to-diff math — keep the three in sync.
 const LINE_HEIGHT_PX = 17;
+const EMPTY_EXISTING_COMMENTS: readonly PrGitHubComment[] = [];
 
 const PRE_STYLE: React.CSSProperties = {
   margin: 0,
@@ -427,6 +452,7 @@ const CODE_CELL_STYLE: React.CSSProperties = {
   whiteSpace: "pre",
 };
 const COMPOSER_CELL_STYLE: React.CSSProperties = { padding: "6px 0 2px", background: "rgba(56,139,253,0.04)" };
+const EXISTING_COMMENT_CELL_STYLE: React.CSSProperties = { padding: "6px 8px 7px 26px", background: "rgba(56,139,253,0.04)" };
 const GHOST_ROW_STYLE: React.CSSProperties = { background: "rgba(240,120,124,0.14)" };
 const GHOST_GUTTER_STYLE: React.CSSProperties = { color: "#F0787C", background: "rgba(50,22,27,0.96)", fontWeight: 700 };
 const GHOST_CODE_STYLE: React.CSSProperties = { color: "#E98A8E", textDecoration: "line-through" };

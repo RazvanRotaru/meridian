@@ -102,6 +102,7 @@ export interface RelatedPrsState {
 export interface PrGitHubComment {
   path: string;
   line: number | null;
+  side: "LEFT" | "RIGHT" | null;
   body: string;
   author: string;
   updatedAt: string;

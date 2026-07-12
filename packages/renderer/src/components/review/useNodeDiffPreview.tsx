@@ -14,6 +14,7 @@ import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { CodeView } from "../../state/store";
 import { CodeBlock } from "../CodeBlock";
 import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeKinds } from "../useChangedLines";
+import { useCodeReviewComments } from "./useCodeReviewComments";
 
 const OPEN_DWELL_MS = 220;
 const CLOSE_GRACE_MS = 180;
@@ -269,6 +270,7 @@ function NodeDiffPreviewCard(props: {
   const baseLine = preview.view?.baseLine ?? preview.node.location.startLine;
   const code = preview.view?.code ?? null;
   const reviewFile = preview.node.location.file;
+  const existingComments = useCodeReviewComments(reviewFile, baseLine, code);
   const lineCommentsEnabled = previewFileAllowsLineComments(
     reviewFile,
     prReviewed,
@@ -330,6 +332,7 @@ function NodeDiffPreviewCard(props: {
               onAdd: (body) => addReviewComment(reviewFile, null, body, activeCommentLine),
               onCancel: () => setActiveCommentLine(null),
             }}
+            existingComments={existingComments}
           />
         ) : null}
         {preview.view?.truncated ? <div style={TRUNCATED_STYLE}>Snippet truncated by the server.</div> : null}

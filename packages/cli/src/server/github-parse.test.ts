@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyQuery,
   parsePatchDetail,
+  parsePullRequestComments,
   parsePullRequestFiles,
   parsePullRequestList,
   parseRepoList,
@@ -141,6 +142,67 @@ describe("parsePullRequestFiles", () => {
       { path: "src/new.ts", status: "added", additions: 12, deletions: 0 },
       { path: "src/changed.ts", status: "modified", additions: 3, deletions: 7 },
       { path: "src/weird.ts", status: "modified", additions: 0, deletions: 0 },
+    ]);
+  });
+});
+
+describe("parsePullRequestComments", () => {
+  it("projects LEFT/RIGHT sides strictly and strips every non-whitelisted field", () => {
+    expect(parsePullRequestComments([
+      {
+        path: "src/right.ts",
+        line: 12,
+        side: "RIGHT",
+        body: "Head-side note",
+        user: { login: "mina", avatar_url: "not forwarded" },
+        updated_at: "2026-07-10T09:30:00Z",
+        html_url: "https://github.com/org/repo/pull/7#discussion_r1",
+        raw_secret: "not forwarded",
+      },
+      {
+        path: "src/left.ts",
+        line: 4,
+        side: "LEFT",
+        body: "Base-side note",
+        user: { login: "lee" },
+        updated_at: "2026-07-10T09:31:00Z",
+      },
+      {
+        path: "src/unknown.ts",
+        line: 0,
+        side: "right",
+        body: "Malformed coordinates",
+        user: { login: "sam" },
+        updated_at: "2026-07-10T09:32:00Z",
+      },
+    ])).toEqual([
+      {
+        path: "src/right.ts",
+        line: 12,
+        side: "RIGHT",
+        body: "Head-side note",
+        author: "mina",
+        updatedAt: "2026-07-10T09:30:00Z",
+        url: "https://github.com/org/repo/pull/7#discussion_r1",
+      },
+      {
+        path: "src/left.ts",
+        line: 4,
+        side: "LEFT",
+        body: "Base-side note",
+        author: "lee",
+        updatedAt: "2026-07-10T09:31:00Z",
+        url: "",
+      },
+      {
+        path: "src/unknown.ts",
+        line: null,
+        side: null,
+        body: "Malformed coordinates",
+        author: "sam",
+        updatedAt: "2026-07-10T09:32:00Z",
+        url: "",
+      },
     ]);
   });
 });

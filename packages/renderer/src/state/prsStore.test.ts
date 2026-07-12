@@ -8,7 +8,7 @@ import { applyChangedIds, buildGraphIndex } from "../graph/graphIndex";
 import { restorePrReviewBaseline, swapToPreparedArtifact } from "./prReviewSession";
 import { createBlueprintStore, selectedPrSummary, type StoreDependencies } from "./store";
 import { StoreProvider } from "./StoreContext";
-import type { PrSummary } from "./prTypes";
+import type { PrGitHubComment, PrSummary } from "./prTypes";
 
 function node(id: string, kind: string, file: string, parentId?: string, lines?: { start: number; end: number }): GraphNode {
   return {
@@ -188,13 +188,36 @@ describe("PR store slice", () => {
   });
 
   it("keeps added review comments local until Submit review performs the one POST", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({ url: "https://github.com/o/r/pull/7#pullrequestreview-1" }));
+    let submittedPath = "";
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = input.toString();
+      if (url.includes("/api/prs/review")) {
+        return Promise.resolve(Response.json({ url: "https://github.com/o/r/pull/7#pullrequestreview-1" }));
+      }
+      if (url.includes("/api/prs/comments")) {
+        return Promise.resolve(Response.json({
+          comments: [{
+            path: submittedPath,
+            line: 1,
+            side: "RIGHT",
+            body: "Keep this in the review draft",
+            author: "octo",
+            updatedAt: "2026-07-12T00:00:00.000Z",
+            url: "https://github.com/o/r/pull/7#discussion_r1",
+          }],
+          reviews: { approved: [], changesRequested: [], commented: 1 },
+          hasMore: false,
+        }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore();
     store.setState(selectedPrState(7));
     await store.getState().reviewPrInGraph();
 
     const path = store.getState().reviewFiles[0].path;
+    submittedPath = path;
     store.getState().addReviewComment(path, null, "Keep this in the review draft");
 
     expect(store.getState().reviewComments).toHaveLength(1);
@@ -202,7 +225,7 @@ describe("PR store slice", () => {
 
     await store.getState().submitReviewComments();
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/prs/review?id=artifact-1");
     expect(fetchMock.mock.calls[0][1]?.method).toBe("POST");
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
@@ -210,7 +233,80 @@ describe("PR store slice", () => {
       comments: [{ path, line: 1, body: "Keep this in the review draft" }],
       notes: [],
     });
+    expect(fetchMock.mock.calls[1][0].toString()).toBe("http://meridian.local/api/prs/comments?id=artifact-1&n=7");
     expect(store.getState().reviewComments).toEqual([]);
+    expect(store.getState().prDiscussion?.comments[0]?.body).toBe("Keep this in the review draft");
+  });
+
+  it("toggles existing canvas comments while keeping rail links and unsafe full-body fallbacks", async () => {
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    const path = store.getState().reviewFiles[0].path;
+    const comments: PrGitHubComment[] = [
+      {
+        path,
+        line: 1,
+        side: "RIGHT",
+        body: "Moved into the canvas code row",
+        author: "octo",
+        updatedAt: "2026-07-12T00:00:00.000Z",
+        url: "https://github.com/o/r/pull/7#discussion_r1",
+      },
+      {
+        path,
+        line: 1,
+        side: "LEFT",
+        body: "Base-side fallback stays in the rail",
+        author: "mina",
+        updatedAt: "2026-07-12T00:01:00.000Z",
+        url: "https://github.com/o/r/pull/7#discussion_r2",
+      },
+      {
+        path,
+        line: 999,
+        side: "RIGHT",
+        body: "Truncated-source comment body stays out of the rail",
+        author: "zoe",
+        updatedAt: "2026-07-12T00:02:00.000Z",
+        url: "https://github.com/o/r/pull/7#discussion_r3",
+      },
+    ];
+    const discussion = {
+      comments,
+      reviews: { approved: [], changesRequested: [], commented: 3 },
+    };
+    store.setState({ prDiscussion: discussion });
+    const renderPanel = () => {
+      const state = store.getState();
+      Object.assign(store, { getInitialState: () => state });
+      return renderToStaticMarkup(
+        createElement(StoreProvider, { store, children: createElement(ReviewPanel) }),
+      );
+    };
+
+    expect(store.getState().reviewCommentsVisible).toBe(true);
+    const visible = renderPanel();
+    expect(visible).toContain("3 existing comments");
+    expect(visible).toMatch(/<button(?=[^>]*aria-pressed="true")[^>]*>Hide comments<\/button>/);
+    expect(visible).not.toContain("Moved into the canvas code row");
+    expect(visible).toContain("Base-side fallback stays in the rail");
+    expect(visible).not.toContain("Truncated-source comment body stays out of the rail");
+    expect(visible).toContain("https://github.com/o/r/pull/7#discussion_r1");
+    expect(visible).toContain("https://github.com/o/r/pull/7#discussion_r3");
+
+    store.getState().toggleReviewCommentsVisible();
+
+    expect(store.getState().reviewCommentsVisible).toBe(false);
+    expect(store.getState().prDiscussion).toBe(discussion);
+    const hidden = renderPanel();
+    expect(hidden).toContain("3 existing comments");
+    expect(hidden).toMatch(/<button(?=[^>]*aria-pressed="false")[^>]*>View comments<\/button>/);
+    expect(hidden).not.toContain("Moved into the canvas code row");
+    expect(hidden).not.toContain("Base-side fallback stays in the rail");
+    expect(hidden).not.toContain("Truncated-source comment body stays out of the rail");
+    expect(hidden).not.toContain("https://github.com/o/r/pull/7#discussion_r1");
+    expect(hidden).not.toContain("https://github.com/o/r/pull/7#discussion_r3");
   });
 
   it("does not submit review comments programmatically while the review is stale or refreshing", async () => {
@@ -266,6 +362,58 @@ describe("PR store slice", () => {
     await submit;
     expect(store.getState().reviewSubmitStatus).toBe("idle");
     expect(store.getState().reviewComments).toEqual([]);
+  });
+
+  it("lets only the newest post-submit discussion refresh update the canvas comments", async () => {
+    let resolveFirstDiscussion!: (response: Response) => void;
+    const firstDiscussion = new Promise<Response>((resolve) => {
+      resolveFirstDiscussion = resolve;
+    });
+    let discussionReads = 0;
+    const discussionResponse = (body: string) => Response.json({
+      comments: [{
+        path: "repo/src/a.ts",
+        line: 1,
+        side: "RIGHT",
+        body,
+        author: "octo",
+        updatedAt: "2026-07-12T00:00:00.000Z",
+        url: `https://github.com/o/r/pull/7#${body}`,
+      }],
+      reviews: { approved: [], changesRequested: [], commented: 1 },
+      hasMore: false,
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/api/prs/review")) {
+        return Promise.resolve(Response.json({ url: "https://github.com/o/r/pull/7#review" }));
+      }
+      if (url.includes("/api/prs/comments")) {
+        discussionReads += 1;
+        return discussionReads === 1 ? firstDiscussion : Promise.resolve(discussionResponse("newer-comment"));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    const path = store.getState().reviewFiles[0].path;
+    store.getState().addReviewComment(path, null, "first draft");
+
+    const firstSubmit = store.getState().submitReviewComments();
+    await vi.waitFor(() => expect(discussionReads).toBe(1));
+    expect(store.getState().reviewSubmitStatus).toBe("idle");
+    store.getState().addReviewComment(path, null, "second draft");
+    await store.getState().submitReviewComments();
+    expect(store.getState().prDiscussion?.comments[0]?.body).toBe("newer-comment");
+
+    resolveFirstDiscussion(discussionResponse("older-comment"));
+    await firstSubmit;
+
+    expect(store.getState().prDiscussion?.comments[0]?.body).toBe("newer-comment");
+    expect(fetchMock.mock.calls.filter(([input]) => input.toString().includes("/api/prs/review"))).toHaveLength(2);
+    expect(discussionReads).toBe(2);
   });
 
   it("keeps the review fresh at the loaded head and marks it stale when that head changes", async () => {
@@ -325,7 +473,7 @@ describe("PR store slice", () => {
       suggestedSubdir: "",
     };
     const discussion = {
-      comments: [{ path: "repo/src/a.ts", line: 10, body: "Already on GitHub", author: "octo", updatedAt: latest.updatedAt, url: latest.url }],
+      comments: [{ path: "repo/src/a.ts", line: 10, side: "RIGHT" as const, body: "Already on GitHub", author: "octo", updatedAt: latest.updatedAt, url: latest.url }],
       reviews: { approved: ["reviewer"], changesRequested: [], commented: 1 },
       hasMore: false,
     };

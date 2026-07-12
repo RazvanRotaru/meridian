@@ -13,6 +13,7 @@ import type { CodeView } from "../state/store";
 import { relationColor } from "../theme/relationTheme";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { CodeBlock } from "./CodeBlock";
+import { useCodeReviewComments } from "./review/useCodeReviewComments";
 import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeKinds } from "./useChangedLines";
 
 export function CodePanel() {
@@ -82,6 +83,7 @@ function SourcePanel({
   const reviewBaseLine = codeView.baseLine ?? codeView.node.location?.startLine ?? 1;
   const visibleLineCount = codeView.code === null ? 0 : codeView.code.split("\n").length;
   const visibleEnd = reviewBaseLine + Math.max(visibleLineCount - 1, 0);
+  const existingComments = useCodeReviewComments(reviewFile, reviewBaseLine, codeView.code);
   const commentableLines = useMemo(() => {
     if (reviewFile === null || review === null) {
       return EMPTY_COMMENTABLE_LINES;
@@ -213,6 +215,7 @@ function SourcePanel({
                 onAdd: (body) => addReviewComment(file, null, body, activeCommentLine),
                 onCancel: () => setActiveCommentLine(null),
               }}
+              existingComments={existingComments}
               removedRows={visibleRemovedRows}
               removedTruncated={removedTruncated}
             />

@@ -17,6 +17,7 @@ import { anchorableHunks } from "../derive/reviewSubmit";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import type { CodeView } from "../state/store";
 import { CodeBlock } from "./CodeBlock";
+import { useCodeReviewComments } from "./review/useCodeReviewComments";
 import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeKinds } from "./useChangedLines";
 
 export function CodeInlinePanel({
@@ -46,6 +47,7 @@ export function CodeInlinePanel({
   const summary = codeView.changedLineKinds ? summarizeChangeKinds(codeView.changedLineKinds) : hookSummary;
   const { file, startLine, endLine } = node.location;
   const baseLine = codeView.baseLine ?? startLine;
+  const existingComments = useCodeReviewComments(file, baseLine, code);
   const visibleLineCount = code === null ? 0 : code.split("\n").length;
   const visibleEnd = baseLine + Math.max(visibleLineCount - 1, 0);
   const commentableLines = useMemo(() => {
@@ -125,6 +127,7 @@ export function CodeInlinePanel({
               onAdd: (body) => addReviewComment(file, null, body, activeCommentLine),
               onCancel: () => setActiveCommentLine(null),
             }}
+            existingComments={existingComments}
             removedRows={visibleRemovedRows}
             removedTruncated={removedTruncated}
           />
