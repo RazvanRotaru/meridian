@@ -10,6 +10,7 @@ import { useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { ReviewComment } from "../../state/reviewTicksPref";
 import { NO_FOCUS_RING } from "./reviewPanelKit";
+import { MessageIcon } from "./MessageIcon";
 
 /** Shown only while its row is hovered (or already carries drafts / an open composer) — a panel
  * full of identical always-on icons reads as noise. Hidden, not unmounted, so columns never shift. */
@@ -28,7 +29,7 @@ export function CommentButton(props: { count: number; active: boolean; visible: 
         props.onClick();
       }}
     >
-      <CommentIcon />
+      <MessageIcon />
       {props.count > 0 && <span style={COMMENT_COUNT}>{props.count}</span>}
       {props.suffix !== undefined && <span style={COMMENT_SUFFIX}>{props.suffix}</span>}
     </button>
@@ -165,14 +166,6 @@ export function SubmitReviewFooter() {
         </div>
       )}
     </div>
-  );
-}
-
-function CommentIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-      <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.75.75 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z" />
-    </svg>
   );
 }
 

@@ -105,6 +105,7 @@ import {
   RequestGraphNodeBadges,
   RequestGraphOverlayPanel,
 } from "../RequestGraphOverlayChrome";
+import { ReviewCommentNodeIndicators } from "../review/ReviewCommentNodeIndicators";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
  * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "cycle" the
@@ -584,6 +585,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
           semanticFirstPreviewMax={props.semanticFirstPreviewMax}
           semanticLodEnabled={props.semanticLodEnabled}
         />
+        {nodeDiffEnabled ? <ReviewCommentNodeIndicators visibleNodes={requestPaintedNodes} /> : null}
         {projectedRequestNodes === null ? null : (
           <RequestGraphNodeBadges visibleNodes={requestPaintedNodes} evidenceByNodeId={projectedRequestNodes} />
         )}
