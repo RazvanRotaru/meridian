@@ -18,8 +18,8 @@
  * local names (a syntactic prefilter), skips positions already covered by another pass, and only
  * the survivors hit the type checker via `resolveTarget`. That resolution also handles shadowing and
  * aliasing honestly — a local `const Foo` reusing an imported name resolves to the local (not the
- * import), so it never mints a spurious cross-module edge. Only concrete, cross-module `resolved`
- * targets become edges; anything intra-file, external, or unresolved is dropped as noise.
+ * import), so it never mints a spurious cross-module edge. Concrete cross-module and import-known
+ * external values become edges; unresolved and intra-file values remain noise.
  */
 
 import { Node, SyntaxKind, type SourceFile } from "ts-morph";
@@ -69,17 +69,20 @@ function collectFileValueRefs(
     }
     const resolution = resolveTarget(id, index, resolver, moduleByFilePath);
     recordThrow(resolution, relPath, id, diagnostics);
-    // Only concrete cross-module targets clarify an import wire. Intra-file resolutions (a shadowing
-    // local, a self-reference) and external/unresolved ones add no meaning the imports pass lacks.
-    if (resolution.resolution !== "resolved" || !resolution.resolvedTarget) {
+    if (resolution.resolution === "unresolved") {
       continue;
     }
-    if (position === "type" && !resolution.viaModuleFallback) {
+    if (position === "type" && (resolution.resolution !== "resolved" || !resolution.viaModuleFallback)) {
       continue; // a type ref with a real node is the edge pass's edge — re-emitting doubles its weight
     }
     const source = enclosingCallable(id, index) ?? moduleId;
-    if (source === "" || moduleOf(source) === moduleOf(resolution.resolvedTarget)) {
+    if (source === "") {
       continue;
+    }
+    if (resolution.resolution === "resolved") {
+      if (!resolution.resolvedTarget || moduleOf(source) === moduleOf(resolution.resolvedTarget)) {
+        continue; // local shadow/self-reference: not a dependency
+      }
     }
     edges.push({ source, kind: "references", resolution, callSite: callSiteOf(id, relPath) });
   }

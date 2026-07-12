@@ -1,7 +1,7 @@
 /**
  * Boundary-node materialization.
  *
- * When an extractor is asked to include external/unresolved call targets, those targets are
+ * When an extractor is asked to include external/unresolved dependency targets, those targets are
  * pseudo-ids (`ext:` / `unresolved:`) that reference nothing in the tree. This turns each into
  * a real leaf node grouped under a synthetic "External" container, so the renderer can draw
  * the honest boundary edges (dim/dashed) instead of silently dropping them. It runs after
@@ -47,7 +47,7 @@ function externalContainer(): GraphNode {
     displayName: "External",
     parentId: null,
     location: { file: "", startLine: 1 },
-    summary: "calls that leave the analyzed code — libraries, builtins, dynamic targets",
+    summary: "dependencies that leave the analyzed code — libraries, builtins, dynamic targets",
   };
 }
 

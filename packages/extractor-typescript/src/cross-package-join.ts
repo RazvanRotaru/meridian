@@ -15,6 +15,8 @@ export interface PendingReexport {
   file: string;
   /** The cross-package specifier being re-exported from. */
   specifier: string;
+  /** Workspace-relative target when the specifier is a tsconfig alias rather than a package name. */
+  targetFile?: string;
   /** Renamed re-exports (`export { local as exported } from`); null for `export *`. */
   names: { exported: string; local: string }[] | null;
 }
@@ -66,7 +68,7 @@ function createResolver(summaries: UnitSummary[]): Resolver {
       fileByRelPath.set(file, { summary, file });
     }
   }
-  const exportsOf = createExportTableResolver(byName);
+  const exportsOf = createExportTableResolver(byName, fileByRelPath);
   return (pending) => {
     // A relative import records the target FILE directly; a bare specifier resolves by package.
     const ref =
@@ -146,7 +148,10 @@ interface ResolvedTable {
  * dependencies was mid-recursion (a cycle) is returned for this query yet left uncached, so a
  * later top-level query recomputes it fully instead of inheriting a name-losing snapshot.
  */
-function createExportTableResolver(byName: Map<string | null, UnitSummary>): (ref: FileRef) => Map<string, string> {
+function createExportTableResolver(
+  byName: Map<string | null, UnitSummary>,
+  fileByRelPath: Map<string, FileRef>,
+): (ref: FileRef) => Map<string, string> {
   const memo = new Map<string, Map<string, string>>();
   const onStack = new Set<string>();
   const resolve = (ref: FileRef): ResolvedTable => {
@@ -159,7 +164,7 @@ function createExportTableResolver(byName: Map<string | null, UnitSummary>): (re
       return { table: new Map(), complete: false };
     }
     onStack.add(key);
-    const resolved = assembleExports(ref, byName, resolve);
+    const resolved = assembleExports(ref, byName, fileByRelPath, resolve);
     onStack.delete(key);
     if (resolved.complete) {
       memo.set(key, resolved.table);
@@ -172,6 +177,7 @@ function createExportTableResolver(byName: Map<string | null, UnitSummary>): (re
 function assembleExports(
   ref: FileRef,
   byName: Map<string | null, UnitSummary>,
+  fileByRelPath: Map<string, FileRef>,
   resolve: (ref: FileRef) => ResolvedTable,
 ): ResolvedTable {
   const table = new Map<string, string>();
@@ -180,7 +186,9 @@ function assembleExports(
     if (reexport.file !== ref.file) {
       continue;
     }
-    const target = fileFor(byName, reexport.specifier);
+    const target = reexport.targetFile === undefined
+      ? fileFor(byName, reexport.specifier)
+      : fileForPath(fileByRelPath, reexport.targetFile);
     if (target === null) {
       continue;
     }

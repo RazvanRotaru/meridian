@@ -107,6 +107,8 @@ describe("handlePrAnalyze", () => {
     ]);
     expect(vi.mocked(extractToArtifact)).toHaveBeenCalledWith(
       expect.objectContaining({
+        includeExternal: true,
+        materializeBoundary: true,
         changedSince: "origin/main",
         changedSinceTimeoutMs: 300_000,
         changedSinceGitExecutor: expect.any(Function),

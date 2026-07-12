@@ -25,7 +25,7 @@ import { useMemo } from "react";
 import type { Node } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { EmptyModuleMapCard, LevelBreadcrumb, ServiceScopeBreadcrumb } from "./ModuleMapChrome";
-import { filterVisible } from "./moduleMapPaint";
+import { filterExternalGhosts, filterVisible } from "./moduleMapPaint";
 import { CoveragePanel } from "./CoveragePanel";
 import { BeaconArrows } from "./BeaconArrows";
 import { MapLegend } from "./MapLegend";
@@ -98,6 +98,7 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
   const hiddenCategories = useBlueprint((state) => state.hiddenCategories);
   const showTests = useBlueprint((state) => state.showTests);
   const showPrivate = useBlueprint((state) => state.showPrivate);
+  const showExternalGhosts = useBlueprint((state) => state.showExternalGhosts);
   const showCommons = useBlueprint((state) => state.showCommons);
   const viewMode = useBlueprint((state) => state.viewMode);
   const serviceScope = useBlueprint((state) => state.serviceScope);
@@ -111,16 +112,20 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
   const interactions = useModuleNodeInteractions();
   useRecenter(useMemo(() => [...selected], [selected]), { enabled: !covered });
 
-  // Category/test hiding is a pure visibility filter over already-laid geometry.
+  // Category/test/external hiding is a pure visibility filter over already-laid geometry. External
+  // ghosts are removed before GraphSurface groups crowds, so the synthetic External card vanishes too.
   const { nodes: shownNodes, edges: shownEdges } = useMemo(
-    () => filterVisible(nodes, edges, {
-      hiddenCategories,
-      showTests,
-      testIds: index.testIds,
-      showPrivate,
-      privateIds: index.privateIds,
-    }),
-    [nodes, edges, hiddenCategories, showTests, showPrivate, index.testIds, index.privateIds],
+    () => {
+      const visible = filterVisible(nodes, edges, {
+        hiddenCategories,
+        showTests,
+        testIds: index.testIds,
+        showPrivate,
+        privateIds: index.privateIds,
+      });
+      return filterExternalGhosts(visible.nodes, visible.edges, showExternalGhosts);
+    },
+    [nodes, edges, hiddenCategories, showTests, showPrivate, showExternalGhosts, index.testIds, index.privateIds],
   );
 
   // All module-family surfaces use this controller. The mount contributes only its store commit

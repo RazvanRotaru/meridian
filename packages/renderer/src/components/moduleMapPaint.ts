@@ -40,6 +40,29 @@ export function filterVisible(nodes: Node[], edges: Edge[], options: HideOptions
   return { nodes: keptNodes, edges: keptEdges };
 }
 
+/**
+ * Hide external package/library ghosts (`ext:` ids) and every wire touching them. This deliberately
+ * does not hide workspace ghosts or `unresolved:` boundary ghosts. It runs before ghost grouping,
+ * so an external crowd cannot be reminted as an "External" parent while the overlay is off.
+ */
+export function filterExternalGhosts(
+  nodes: Node[],
+  edges: Edge[],
+  showExternalGhosts: boolean,
+): { nodes: Node[]; edges: Edge[] } {
+  if (showExternalGhosts) {
+    return { nodes, edges };
+  }
+  const keptNodes = nodes.filter((node) => node.type !== "ghost" || !isExternalId(node.id));
+  const keptEdges = edges.filter((edge) => !isExternalId(edge.source) && !isExternalId(edge.target));
+  if (keptNodes.length === nodes.length && keptEdges.length === edges.length) {
+    return { nodes, edges };
+  }
+  return { nodes: keptNodes, edges: keptEdges };
+}
+
+const isExternalId = (id: string): boolean => id.startsWith("ext:");
+
 /** The relationship-toggle key an edge answers to; null means non-semantic flow or malformed data. */
 function relKeyOf(edge: Edge): string | null {
   return relationKindOf(edge.data);

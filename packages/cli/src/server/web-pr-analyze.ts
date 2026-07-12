@@ -119,7 +119,8 @@ async function extractPr(
     absoluteRoot: root,
     cwd: root, // records target.root as "." — never leaks the temp clone path
     depth: "function",
-    materializeBoundary: false,
+    includeExternal: true,
+    materializeBoundary: true,
     targetName: label,
     changedSince: `origin/${baseRef}`,
     changedSinceTimeoutMs: ANALYZE_GIT_TIMEOUT_MS,

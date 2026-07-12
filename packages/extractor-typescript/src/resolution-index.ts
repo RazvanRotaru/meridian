@@ -4,6 +4,7 @@
  * semantic declaration node -> node id (for type-reference SOURCES).
  */
 
+import { externalSpecifierMatcher, type ExternalSpecifierMatcher } from "./external-specifier";
 import { nodeKey, type NodeDescriptor } from "./model";
 
 export interface ResolutionIndex {
@@ -11,9 +12,17 @@ export interface ResolutionIndex {
   sourceByCallableKey: Map<string, string>;
   sourceBySemanticDeclKey: Map<string, string>;
   nodeIds: Set<string>;
+  /** Absolute paths selected into this extraction. Import-based external fallback uses this to
+   * distinguish an out-of-scope alias target from an in-project symbol we simply do not emit. */
+  sourceFilePaths: ReadonlySet<string>;
+  isExternalSpecifier: ExternalSpecifierMatcher;
 }
 
-export function buildResolutionIndex(descriptors: NodeDescriptor[]): ResolutionIndex {
+export function buildResolutionIndex(
+  descriptors: NodeDescriptor[],
+  moduleByFilePath: ReadonlyMap<string, NodeDescriptor>,
+  root: string,
+): ResolutionIndex {
   const targetByDeclKey = new Map<string, string>();
   const sourceByCallableKey = new Map<string, string>();
   const sourceBySemanticDeclKey = new Map<string, string>();
@@ -34,5 +43,12 @@ export function buildResolutionIndex(descriptors: NodeDescriptor[]): ResolutionI
       sourceByCallableKey.set(nodeKey(descriptor.callableNode), descriptor.finalId);
     }
   }
-  return { targetByDeclKey, sourceByCallableKey, sourceBySemanticDeclKey, nodeIds };
+  return {
+    targetByDeclKey,
+    sourceByCallableKey,
+    sourceBySemanticDeclKey,
+    nodeIds,
+    sourceFilePaths: new Set(moduleByFilePath.keys()),
+    isExternalSpecifier: externalSpecifierMatcher(root),
+  };
 }

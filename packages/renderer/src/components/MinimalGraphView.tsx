@@ -46,6 +46,7 @@ import {
 import { MinimalMembersPanel } from "./MinimalMembersPanel";
 import { CanvasActionBar } from "./controlpanel/CanvasActionBar";
 import { minimalMiniMapColor } from "./minimalGraphStyles";
+import { filterExternalGhosts } from "./moduleMapPaint";
 
 // A review-panel click centers on a single (possibly tiny) method card, so cap how far the fit zooms in.
 const RECENTER_OPTIONS = { maxZoom: 1 } as const;
@@ -67,6 +68,7 @@ export function MinimalGraphView() {
   const serviceScope = useBlueprint((state) => state.serviceScope);
   const serviceGroupingMode = useBlueprint((state) => state.serviceGroupingMode);
   const serviceGroupingTargetSize = useBlueprint((state) => state.serviceGroupingTargetSize);
+  const showExternalGhosts = useBlueprint((state) => state.showExternalGhosts);
   const { closeMinimalGraph, promoteGhost } = useBlueprintActions();
   const relations = activeModuleSurfaceSpec(viewMode).relations;
 
@@ -100,9 +102,13 @@ export function MinimalGraphView() {
     serviceGroupingMode,
     serviceGroupingTargetSize,
   };
+  const visibleGraph = useMemo(
+    () => filterExternalGhosts(nodes, edges, showExternalGhosts),
+    [edges, nodes, showExternalGhosts],
+  );
   const semanticScene = useMemo(
-    () => adaptMinimalGraphToSemanticSource({ nodes, edges }, sourceRef.current!),
-    [edges, nodes],
+    () => adaptMinimalGraphToSemanticSource(visibleGraph, sourceRef.current!),
+    [visibleGraph],
   );
   const semanticNavigation = useSemanticSurfaceNavigation({
     nodes: semanticScene.nodes,
@@ -149,8 +155,8 @@ export function MinimalGraphView() {
             overlay shares the Map's colour vocabulary, so it shares the Map's key to it. The package row
             shows only when a group member/ghost card is actually present; IPC opts out always. */}
         <MapLegend
-          hasSteps={nodes.some((node) => node.type === "step")}
-          showPackages={nodes.some((node) => node.type === "package")}
+          hasSteps={visibleGraph.nodes.some((node) => node.type === "step")}
+          showPackages={visibleGraph.nodes.some((node) => node.type === "package")}
           showIpc={false}
           relationPolicy={relations}
         />

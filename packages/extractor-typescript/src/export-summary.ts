@@ -10,6 +10,7 @@ import { Node } from "ts-morph";
 import type { ExportDeclaration, SourceFile } from "ts-morph";
 import type { PendingReexport, UnitSummary } from "./cross-package-join";
 import type { CrossPackageResolver } from "./edge-resolve";
+import { resolvedModuleFile } from "./import-reference";
 import { nodeKey } from "./model";
 import type { LoadedProject } from "./project-loader";
 import type { ResolutionIndex } from "./resolution-index";
@@ -27,7 +28,7 @@ export function buildUnitSummary(
   for (const sourceFile of loaded.sourceFiles) {
     const relPath = loaded.relativePathOf(sourceFile);
     exportsByFile.set(relPath, exportTable(sourceFile, index));
-    collectPendingReexports(sourceFile, relPath, resolver, pendingReexports);
+    collectPendingReexports(sourceFile, relPath, index, resolver, pendingReexports);
   }
   return {
     dir: unit.dir,
@@ -84,20 +85,23 @@ function exportedDeclarationsOf(sourceFile: SourceFile): ReadonlyMap<string, Nod
 function collectPendingReexports(
   sourceFile: SourceFile,
   relPath: string,
+  index: ResolutionIndex,
   resolver: CrossPackageResolver,
   out: PendingReexport[],
 ): void {
   for (const declaration of sourceFile.getExportDeclarations()) {
-    if (declaration.getModuleSpecifierSourceFile()) {
+    const specifier = declaration.getModuleSpecifierValue();
+    const targetFile = specifier ? resolvedModuleFile(declaration, specifier) : null;
+    if (targetFile && index.sourceFilePaths.has(targetFile)) {
       continue; // resolved in-package: getExportedDeclarations already flattened it
     }
-    const specifier = declaration.getModuleSpecifierValue();
-    if (!specifier || !resolver.matches(specifier)) {
+    const aliasedTarget = targetFile ? resolver.resolveFile(sourceFile.getFilePath(), targetFile) : null;
+    if (!specifier || (!resolver.matches(specifier) && aliasedTarget === null)) {
       continue;
     }
     const names = reexportedNames(declaration);
     if (names !== undefined) {
-      out.push({ file: relPath, specifier, names });
+      out.push({ file: relPath, specifier, names, ...(aliasedTarget === null ? {} : { targetFile: aliasedTarget }) });
     }
   }
 }

@@ -148,6 +148,28 @@ describe("module-map selection set", () => {
     expect(store.getState().moduleSelected).toEqual(new Set(["ts:src/a.ts"]));
   });
 
+  it("toggles external ghosts without relayout and drops only selected ext: ids when hiding", () => {
+    const store = freshStore();
+    const moduleRelayout = vi.fn(async () => {});
+    const minimalRelayout = vi.fn(async () => {});
+    store.setState({
+      moduleSelected: new Set(["ts:src/a.ts", "ext:rxjs#BehaviorSubject", "unresolved:dynamic-call"]),
+      moduleRelayout,
+      minimalRelayout,
+    });
+
+    expect(store.getState().showExternalGhosts).toBe(true);
+    store.getState().toggleExternalGhosts();
+    expect(store.getState().showExternalGhosts).toBe(false);
+    expect(store.getState().moduleSelected).toEqual(new Set(["ts:src/a.ts", "unresolved:dynamic-call"]));
+
+    store.getState().toggleExternalGhosts();
+    expect(store.getState().showExternalGhosts).toBe(true);
+    expect(store.getState().moduleSelected).toEqual(new Set(["ts:src/a.ts", "unresolved:dynamic-call"]));
+    expect(moduleRelayout).not.toHaveBeenCalled();
+    expect(minimalRelayout).not.toHaveBeenCalled();
+  });
+
   it("pinning a class ghost adds and opens its home file without navigating the current canvas", async () => {
     const store = freshStore();
     store.setState({

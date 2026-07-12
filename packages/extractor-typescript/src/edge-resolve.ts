@@ -5,10 +5,12 @@
  * degrades to `unresolved` rather than aborting the pass.
  */
 
-import { Node, SyntaxKind, type Symbol as TsSymbol } from "ts-morph";
+import { Node, type Symbol as TsSymbol } from "ts-morph";
 import type { EdgeResolution } from "@meridian/core";
+import { importedSymbolReference, type ImportedSymbolReference } from "./import-reference";
 import { nodeKey } from "./model";
 import { posixBasename } from "./paths";
+import { throughLocalReexports } from "./reexport-reference";
 import type { ResolutionIndex } from "./resolution-index";
 
 export interface TargetResolution {
@@ -49,10 +51,12 @@ const UNRESOLVED: TargetResolution = {
  * Per-package mode's view of the rest of the workspace. `matches` recognizes a bare sibling
  * package specifier (`@scope/pkg[/sub]`); `resolveRelative` turns a RELATIVE specifier that
  * escapes the current unit into the workspace-relative base path of its target file (or null).
+ * `resolveFile` performs the same boundary check for a checker-resolved tsconfig alias target.
  */
 export interface CrossPackageResolver {
   matches(specifier: string): boolean;
   resolveRelative(fromFileAbsPath: string, specifier: string): string | null;
+  resolveFile(fromFileAbsPath: string, targetFileAbsPath: string): string | null;
 }
 
 export function resolveTarget(
@@ -63,9 +67,13 @@ export function resolveTarget(
 ): TargetResolution {
   try {
     const original = calleeSymbol(callee);
+    const imported = importedSymbolReference(callee, original);
     const symbol = aliasedSymbol(original);
     const declaration = implementationDeclaration(symbol);
     const classified = symbol && declaration ? classifyDeclaration(declaration, symbol, index) : UNRESOLVED;
+    const dependencyImport = classified.resolution === "resolved" || imported === null
+      ? imported
+      : throughLocalReexports(imported, index.sourceFilePaths) ?? imported;
     // Opt-in module fallback (the value-ref pass): a symbol with no emitted node — a type alias,
     // a plain const — still names a real in-project dependency. Resolve it to the declaring
     // file's MODULE node so the relationship survives instead of dropping as unresolved.
@@ -79,9 +87,18 @@ export function resolveTarget(
     // because an installed monorepo resolves a sibling package through its node_modules copy
     // (a real .d.ts/.ts), which classifies external here; only the join knows it is in-project.
     if (classified.resolution !== "resolved" && resolver) {
-      const pending = pendingCrossPackageRef(callee, original, resolver);
+      const pending = pendingCrossPackageRef(dependencyImport, resolver);
       if (pending) {
         return { ...classified, pending };
+      }
+    }
+    // Prefer the public import identity over a package manager's physical declaration path. This
+    // also recovers dependencies when node_modules is absent or a tsconfig alias lands outside the
+    // selected root. A selected target is never externalized merely because its symbol is unemitted.
+    if (classified.resolution !== "resolved" && dependencyImport) {
+      const external = externalImportedSymbol(dependencyImport, index);
+      if (external) {
+        return external;
       }
     }
     return classified;
@@ -94,168 +111,17 @@ export function resolveTarget(
  * In per-package mode a cross-package reference cannot resolve to a declaration — the module is
  * not in this unit's project (or resolves only to its node_modules copy). Recover WHAT was
  * referenced from WHERE so the join (cross-package-join.ts) can resolve it against the target
- * package's summary: either a `<ns>.member` access on a namespace import, or the original
- * symbol's own import/re-export binding — each pointing at a sibling package by bare name or a
- * boundary-crossing relative path.
+ * package's summary. Import recovery is shared with external classification so installed and
+ * dependency-less worktrees agree on the same exported name.
  */
-function pendingCrossPackageRef(callee: Node, original: TsSymbol | undefined, resolver: CrossPackageResolver): PendingRef | null {
-  return (
-    namespaceMemberRef(callee, resolver) ??
-    classMemberRef(callee, resolver) ??
-    receiverTypedRef(callee, resolver) ??
-    bindingRef(original, resolver)
-  );
-}
-
-/**
- * `receiver.method()` where `receiver`'s type is a class/interface imported from a sibling
- * package — the dominant cross-package member-call shape (`const x = new Sibling(); x.m()` or a
- * parameter typed by a sibling interface). The receiver's type is read from LOCAL syntax (a
- * `new X()` initializer or a type annotation), so the sibling's source is never loaded; the
- * join keys the call under `TypeName.method` against that package's member table.
- */
-function receiverTypedRef(callee: Node, resolver: CrossPackageResolver): PendingRef | null {
-  if (!Node.isPropertyAccessExpression(callee)) {
+function pendingCrossPackageRef(
+  imported: ImportedSymbolReference | null,
+  resolver: CrossPackageResolver,
+): PendingRef | null {
+  if (imported === null) {
     return null;
   }
-  const typeIdentifier = receiverTypeIdentifier(callee.getExpression());
-  if (typeIdentifier === null) {
-    return null;
-  }
-  const binding = namedImportBinding(typeIdentifier);
-  if (binding === null) {
-    return null;
-  }
-  return pendingFor(binding.specifier, `${binding.importedName}.${callee.getNameNode().getText()}`, binding.fromFile, resolver);
-}
-
-/** The identifier naming a receiver's class/interface, from a `new X()` or a type annotation. */
-function receiverTypeIdentifier(receiver: Node): Node | null {
-  const fromNew = newExpressionClass(receiver);
-  if (fromNew !== null) {
-    return fromNew;
-  }
-  if (!Node.isIdentifier(receiver)) {
-    return null;
-  }
-  const declaration = receiver.getSymbol()?.getDeclarations().find(isTypedBinding);
-  if (declaration === undefined) {
-    return null;
-  }
-  return annotatedTypeIdentifier(declaration) ?? newExpressionClass(initializerOf(declaration));
-}
-
-function newExpressionClass(node: Node | undefined): Node | null {
-  if (node && Node.isNewExpression(node)) {
-    const expression = node.getExpression();
-    return Node.isIdentifier(expression) ? expression : null;
-  }
-  return null;
-}
-
-function isTypedBinding(node: Node): boolean {
-  return Node.isVariableDeclaration(node) || Node.isParameterDeclaration(node) || Node.isPropertyDeclaration(node);
-}
-
-function annotatedTypeIdentifier(declaration: Node): Node | null {
-  const typeNode = (declaration as { getTypeNode?(): Node | undefined }).getTypeNode?.();
-  if (typeNode && Node.isTypeReference(typeNode)) {
-    const name = typeNode.getTypeName();
-    return Node.isIdentifier(name) ? name : null;
-  }
-  return null;
-}
-
-function initializerOf(declaration: Node): Node | undefined {
-  return (declaration as { getInitializer?(): Node | undefined }).getInitializer?.();
-}
-
-/**
- * `ImportedClass.method()` on a class/value imported from a sibling package — the member call
- * resolves inside that package. Found by scanning THIS file's imports (not the symbol, whose
- * alias the checker may have already followed into the target file), so it works whether or not
- * the specifier resolved on disk. The join keys it under `ExportedName.member`.
- */
-function classMemberRef(callee: Node, resolver: CrossPackageResolver): PendingRef | null {
-  if (!Node.isPropertyAccessExpression(callee)) {
-    return null;
-  }
-  const object = callee.getExpression();
-  if (!Node.isIdentifier(object)) {
-    return null;
-  }
-  const binding = namedImportBinding(object);
-  if (binding === null) {
-    return null;
-  }
-  return pendingFor(binding.specifier, `${binding.importedName}.${callee.getNameNode().getText()}`, binding.fromFile, resolver);
-}
-
-interface ImportBinding {
-  /** The name on the exporting side (`import { A as B }` -> `A`; `default` for a default import). */
-  importedName: string;
-  specifier: string;
-  fromFile: string;
-}
-
-/** The named/default import in `identifier`'s own file that binds its text, scanned structurally. */
-function namedImportBinding(identifier: Node): ImportBinding | null {
-  const sourceFile = identifier.getSourceFile();
-  const name = identifier.getText();
-  for (const declaration of sourceFile.getImportDeclarations()) {
-    const specifier = declaration.getModuleSpecifierValue();
-    for (const named of declaration.getNamedImports()) {
-      if ((named.getAliasNode() ?? named.getNameNode()).getText() === name) {
-        return { importedName: named.getNameNode().getText(), specifier, fromFile: sourceFile.getFilePath() };
-      }
-    }
-    if (declaration.getDefaultImport()?.getText() === name) {
-      return { importedName: "default", specifier, fromFile: sourceFile.getFilePath() };
-    }
-  }
-  return null;
-}
-
-/** `import * as ns from "@pkg"; ns.member()` — the member resolves inside @pkg, not here. */
-function namespaceMemberRef(callee: Node, resolver: CrossPackageResolver): PendingRef | null {
-  if (!Node.isPropertyAccessExpression(callee)) {
-    return null;
-  }
-  const object = callee.getExpression();
-  if (!Node.isIdentifier(object)) {
-    return null;
-  }
-  const carrier = namespaceImportDecl(object.getSymbol());
-  if (carrier === null) {
-    return null;
-  }
-  return pendingFor(carrier.specifier, callee.getNameNode().getText(), carrier.fromFile, resolver);
-}
-
-function namespaceImportDecl(symbol: TsSymbol | undefined): { specifier: string; fromFile: string } | null {
-  for (const declaration of symbol?.getDeclarations() ?? []) {
-    if (Node.isNamespaceImport(declaration)) {
-      const specifier = declaration.getFirstAncestorByKind(SyntaxKind.ImportDeclaration)?.getModuleSpecifierValue();
-      if (specifier) {
-        return { specifier, fromFile: declaration.getSourceFile().getFilePath() };
-      }
-    }
-  }
-  return null;
-}
-
-function bindingRef(original: TsSymbol | undefined, resolver: CrossPackageResolver): PendingRef | null {
-  for (const declaration of original?.getDeclarations() ?? []) {
-    const exportedName = importedNameOf(declaration);
-    const specifier = exportedName === null ? null : bindingSpecifier(declaration);
-    if (specifier !== null) {
-      const pending = pendingFor(specifier, exportedName as string, declaration.getSourceFile().getFilePath(), resolver);
-      if (pending) {
-        return pending;
-      }
-    }
-  }
-  return null;
+  return pendingFor(imported.specifier, imported.exportedName, imported.fromFile, resolver, imported.targetFile);
 }
 
 /** A pending ref for a bare sibling-package specifier, or a boundary-crossing relative one. */
@@ -264,30 +130,19 @@ function pendingFor(
   exportedName: string | null,
   fromFileAbsPath: string,
   resolver: CrossPackageResolver,
+  resolvedFileAbsPath: string | null = null,
 ): PendingRef | null {
+  if (resolvedFileAbsPath !== null) {
+    const targetFile = resolver.resolveFile(fromFileAbsPath, resolvedFileAbsPath);
+    if (targetFile !== null) {
+      return { specifier, exportedName, targetFile };
+    }
+  }
   if (resolver.matches(specifier)) {
     return { specifier, exportedName };
   }
   const targetFile = resolver.resolveRelative(fromFileAbsPath, specifier);
   return targetFile === null ? null : { specifier, exportedName, targetFile };
-}
-
-/** The name on the far (exporting) side of the binding: `import { X as Y }` imports X. */
-function importedNameOf(declaration: Node): string | null {
-  if (Node.isImportSpecifier(declaration) || Node.isExportSpecifier(declaration)) {
-    return declaration.getNameNode().getText();
-  }
-  if (Node.isImportClause(declaration)) {
-    return "default";
-  }
-  return null;
-}
-
-function bindingSpecifier(declaration: Node): string | null {
-  const carrier =
-    declaration.getFirstAncestorByKind(SyntaxKind.ImportDeclaration) ??
-    declaration.getFirstAncestorByKind(SyntaxKind.ExportDeclaration);
-  return carrier?.getModuleSpecifierValue() ?? null;
 }
 
 function calleeSymbol(callee: Node): TsSymbol | undefined {
@@ -296,6 +151,9 @@ function calleeSymbol(callee: Node): TsSymbol | undefined {
   }
   if (Node.isIdentifier(callee)) {
     return callee.getSymbol();
+  }
+  if (Node.isQualifiedName(callee)) {
+    return callee.getRight().getSymbol();
   }
   return undefined;
 }
@@ -348,6 +206,45 @@ function moduleFallbackTarget(
     threw: false,
     viaModuleFallback: true,
   };
+}
+
+function externalImportedSymbol(
+  imported: ImportedSymbolReference,
+  index: ResolutionIndex,
+): TargetResolution | null {
+  if (imported.targetFile !== null && index.sourceFilePaths.has(imported.targetFile)) {
+    return null;
+  }
+  // A missing relative lookup is a broken/local import, not evidence of an external package.
+  if (imported.targetFile === null && imported.specifier.startsWith(".")) {
+    return null;
+  }
+  if (imported.targetFile === null && !index.isExternalSpecifier(imported.fromFile, imported.specifier)) {
+    return null;
+  }
+  return externalImportTarget(imported.specifier, imported.exportedName);
+}
+
+/** A stable external identity derived from public import syntax rather than declaration layout. */
+export function externalImportTarget(specifier: string, exportedName: string | null): TargetResolution {
+  return {
+    resolution: "external",
+    resolvedTarget: null,
+    externalModulePath: escapeExternalIdPart(specifier),
+    externalQualname: exportedName === null ? null : escapeExternalIdPart(exportedName),
+    threw: false,
+  };
+}
+
+/** Keep the node-id delimiters out while leaving ordinary `@scope/pkg/subpath` readable. */
+function escapeExternalIdPart(value: string): string {
+  if (value === "__external__") {
+    return "%5F%5Fexternal%5F%5F"; // never collide with core's synthetic External container
+  }
+  return value.replace(/[%#~\s]/gu, (character) => {
+    if (character === "~") return "%7E";
+    return encodeURIComponent(character);
+  });
 }
 
 function isExternalDeclaration(declaration: Node): boolean {
