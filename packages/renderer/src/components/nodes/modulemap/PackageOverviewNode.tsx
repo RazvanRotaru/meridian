@@ -5,8 +5,8 @@
  * whose body lets React Flow draw the nested children inside it, exactly like the call graph's
  * ContainerNode. Double-clicking the card still re-roots into it (handled by the surface); the
  * chevron is the coexisting inline gesture. Review rollups expose their separate one-way expansion
- * as an explicit "files" button, leaving the rest of the card to the universal surface handlers.
- * A green ring marks the selection, read from the store.
+ * across the card body as well as through an explicit accessible "files" button. A green ring marks
+ * the selection, read from the store.
  */
 
 import { memo } from "react";
@@ -74,7 +74,7 @@ export function GroupContainerNodeView({ id, data }: { id: string; data: ModuleG
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div className="lod-rail" style={{ ...ACCENT_BAR, background: PACKAGE_ACCENT }} />
       <span className="lod-place">{data.label}</span>
-      <div className="lod-card-body" style={INNER}>
+      <RollupExpandableBody expandable={rollupFileCount > 0} onExpand={() => expandMinimalGroup(id)}>
         <div style={HEADER}>
           {chevron}
           <span style={LABEL} title={id}>{data.label}</span>
@@ -87,7 +87,30 @@ export function GroupContainerNodeView({ id, data }: { id: string; data: ModuleG
           onExpandRollup={() => expandMinimalGroup(id)}
         />
         <CommonsChips chips={(data as { commonsChips?: string[] }).commonsChips} />
-      </div>
+      </RollupExpandableBody>
+    </div>
+  );
+}
+
+/** A rolled directory is itself the disclosure surface: readers naturally click the card they want
+ * to open. The nested button remains for keyboard/accessibility discovery and stops propagation, so
+ * activating it still performs exactly one expansion. */
+export function RollupExpandableBody({
+  expandable,
+  onExpand,
+  children,
+}: {
+  expandable: boolean;
+  onExpand(): void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className="lod-card-body"
+      style={expandable ? { ...INNER, cursor: "pointer" } : INNER}
+      onClick={expandable ? (event) => activateRollupExpansion(event, onExpand) : undefined}
+    >
+      {children}
     </div>
   );
 }
@@ -123,8 +146,8 @@ function Meta({
   );
 }
 
-/** The review rollup's one-way disclosure gesture. Click/double-click propagation stops here so
- * it cannot also select or navigate the package; every other pixel of the card remains untouched. */
+/** The review rollup's explicit one-way disclosure gesture. Click/double-click propagation stops
+ * here so activating the button cannot also select or navigate the package. */
 export function RollupExpandControl({ count, onExpand }: { count: number; onExpand(): void }) {
   return (
     <button

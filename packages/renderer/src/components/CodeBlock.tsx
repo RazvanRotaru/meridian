@@ -125,7 +125,10 @@ export function CodeBlock({
     }
     container.scrollTop = Math.max(0, (firstFocus - startLine - 3) * LINE_HEIGHT_PX);
   }, [code, startLine, changedLines, changedLineKinds, evidenceLines]);
-  const [hoveredGutterLine, setHoveredGutterLine] = useState<number | null>(null);
+  // GitHub reveals its line-comment affordance when the pointer is anywhere on the source row.
+  // Restricting this to the narrow gutter made the control effectively undiscoverable while
+  // reading/selecting code, especially in the modal and compact hover preview.
+  const [hoveredLine, setHoveredLine] = useState<number | null>(null);
   if (startLine === undefined) {
     return <pre style={{ ...PRE_STYLE, maxHeight }}>{renderHighlightedLines(highlightedLines)}</pre>;
   }
@@ -153,20 +156,21 @@ export function CodeBlock({
             const composerOpen = lineComposer?.line === lineNo;
             return (
               <Fragment key={`line-${lineNo}`}>
-                <tr data-edge-evidence-line={evidence ? "true" : undefined}>
+                <tr
+                  data-edge-evidence-line={evidence ? "true" : undefined}
+                  data-review-comment-line={commentable ? lineNo : undefined}
+                  onMouseEnter={() => setHoveredLine(lineNo)}
+                  onMouseLeave={() => setHoveredLine((current) => current === lineNo ? null : current)}
+                >
                   {gutterVisible ? (
-                    <td
-                      style={GUTTER_CELL_STYLE}
-                      onMouseEnter={() => setHoveredGutterLine(lineNo)}
-                      onMouseLeave={() => setHoveredGutterLine((current) => current === lineNo ? null : current)}
-                    >
+                    <td style={GUTTER_CELL_STYLE}>
                       <div style={GUTTER_CONTENT_STYLE}>
                         {commentable ? (
                           <button
                             type="button"
                             style={{
                               ...LINE_COMMENT_BUTTON_STYLE,
-                              visibility: hoveredGutterLine === lineNo || composerOpen ? "visible" : "hidden",
+                              visibility: hoveredLine === lineNo || composerOpen ? "visible" : "hidden",
                             }}
                             aria-label={`Comment on line ${lineNo}`}
                             title={`Comment on line ${lineNo}`}

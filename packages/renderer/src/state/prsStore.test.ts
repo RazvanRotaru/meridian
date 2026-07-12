@@ -3,6 +3,7 @@ import type { GraphArtifact, GraphNode } from "@meridian/core";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PrReviewSection } from "../components/controlpanel/PrReviewSection";
+import { ReviewPanel } from "../components/review/ReviewPanel";
 import { applyChangedIds, buildGraphIndex } from "../graph/graphIndex";
 import { createBlueprintStore, selectedPrSummary, type StoreDependencies } from "./store";
 import { StoreProvider } from "./StoreContext";
@@ -72,6 +73,23 @@ function freshStore(extra?: Partial<StoreDependencies>) {
     prReviewUrl: "/api/prs/review?id=artifact-1",
     ...extra,
   });
+}
+
+function stubReviewStorage(): Record<string, string> {
+  const data: Record<string, string> = {};
+  vi.stubGlobal("window", {
+    location: { origin: "http://meridian.local" },
+    localStorage: {
+      getItem: (key: string) => data[key] ?? null,
+      setItem: (key: string, value: string) => {
+        data[key] = value;
+      },
+      removeItem: (key: string) => {
+        delete data[key];
+      },
+    },
+  });
+  return data;
 }
 
 afterEach(() => {
@@ -166,6 +184,253 @@ describe("PR store slice", () => {
     const changedSince = (store.getState().artifact.extensions as { changedSince?: { files?: Record<string, unknown>; kinds?: Record<string, unknown> } })?.changedSince;
     expect(changedSince?.files?.["src/a.ts"]).toEqual([{ start: 1, end: 1 }]);
     expect(changedSince?.kinds?.["src/a.ts"]).toEqual([{ start: 1, end: 1, kind: "added" }]);
+  });
+
+  it("keeps added review comments local until Submit review performs the one POST", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ url: "https://github.com/o/r/pull/7#pullrequestreview-1" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+
+    const path = store.getState().reviewFiles[0].path;
+    store.getState().addReviewComment(path, null, "Keep this in the review draft");
+
+    expect(store.getState().reviewComments).toHaveLength(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await store.getState().submitReviewComments();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/prs/review?id=artifact-1");
+    expect(fetchMock.mock.calls[0][1]?.method).toBe("POST");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      number: 7,
+      comments: [{ path, line: 1, body: "Keep this in the review draft" }],
+      notes: [],
+    });
+    expect(store.getState().reviewComments).toEqual([]);
+  });
+
+  it("does not submit review comments programmatically while the review is stale or refreshing", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    store.getState().addReviewComment(store.getState().reviewFiles[0].path, null, "Wait for current contents");
+    const drafts = store.getState().reviewComments;
+
+    store.setState({ prReviewStale: true, prReviewRefreshing: false });
+    await store.getState().submitReviewComments();
+    store.setState({ prReviewStale: false, prReviewRefreshing: true });
+    await store.getState().submitReviewComments();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(store.getState().reviewComments).toBe(drafts);
+    expect(store.getState().reviewSubmitStatus).toBe("idle");
+  });
+
+  it("does not refresh or duplicate-submit while a review POST is already in flight", async () => {
+    let resolveSubmit!: (response: Response) => void;
+    const submitResponse = new Promise<Response>((resolve) => {
+      resolveSubmit = resolve;
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = input.toString();
+      return url.includes("/api/prs/review")
+        ? submitResponse
+        : Promise.reject(new Error(`Unexpected request while submitting: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    store.getState().addReviewComment(store.getState().reviewFiles[0].path, null, "Submit once");
+
+    const submit = store.getState().submitReviewComments();
+    expect(store.getState().reviewSubmitStatus).toBe("submitting");
+    store.setState({ prReviewStale: true });
+    await Promise.all([
+      store.getState().refreshPrReview(),
+      store.getState().submitReviewComments(),
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/prs/review?id=artifact-1");
+    expect(store.getState().prReviewRefreshing).toBe(false);
+    expect(store.getState().reviewComments).toHaveLength(1);
+
+    resolveSubmit(Response.json({ url: "https://github.com/o/r/pull/7#pullrequestreview-1" }));
+    await submit;
+    expect(store.getState().reviewSubmitStatus).toBe("idle");
+    expect(store.getState().reviewComments).toEqual([]);
+  });
+
+  it("keeps the review fresh at the loaded head and marks it stale when that head changes", async () => {
+    const loaded = { ...pr(7), headSha: "head-1" };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ pr: { ...loaded, updatedAt: "2026-07-12T10:00:00.000Z" } }))
+      .mockResolvedValueOnce(Response.json({ pr: { ...loaded, headSha: "head-2" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    store.setState({ ...selectedPrState(7), prsList: { open: [loaded], closed: null } });
+    await store.getState().reviewPrInGraph();
+
+    await store.getState().checkPrReviewFreshness();
+    expect(store.getState().prReviewStale).toBe(false);
+
+    await store.getState().checkPrReviewFreshness();
+    expect(store.getState().prReviewStale).toBe(true);
+    expect(selectedPrSummary(store.getState())?.headSha).toBe("head-2");
+    expect(fetchMock.mock.calls.map(([input]) => input.toString())).toEqual([
+      "http://meridian.local/api/prs/one?id=artifact-1&n=7",
+      "http://meridian.local/api/prs/one?id=artifact-1&n=7",
+    ]);
+  });
+
+  it("ignores a late freshness response after the rendered review revision changes", async () => {
+    let resolveFreshness!: (response: Response) => void;
+    const freshnessResponse = new Promise<Response>((resolve) => {
+      resolveFreshness = resolve;
+    });
+    const fetchMock = vi.fn().mockReturnValue(freshnessResponse);
+    vi.stubGlobal("fetch", fetchMock);
+    const loaded = { ...pr(7), headSha: "head-1" };
+    const store = freshStore();
+    store.setState({ ...selectedPrState(7), prsList: { open: [loaded], closed: null } });
+    await store.getState().reviewPrInGraph();
+
+    const freshness = store.getState().checkPrReviewFreshness();
+    const replacementRevision = { ...store.getState().prReviewRevision!, headSha: "head-2" };
+    store.setState({ prReviewRevision: replacementRevision, prReviewStale: false });
+    resolveFreshness(Response.json({ pr: { ...loaded, headSha: "head-3" } }));
+    await freshness;
+
+    expect(store.getState().prReviewRevision).toBe(replacementRevision);
+    expect(store.getState().prReviewStale).toBe(false);
+    expect(selectedPrSummary(store.getState())?.headSha).toBe("head-1");
+  });
+
+  it("refreshes a stale synchronous review from GitHub while preserving its draft comments", async () => {
+    const loaded = { ...pr(7), headSha: "head-1" };
+    const latest = { ...loaded, headSha: "head-2", updatedAt: "2026-07-12T11:00:00.000Z" };
+    const refreshedFiles = {
+      files: [{ path: "repo/src/a.ts", status: "modified" as const, additions: 2, deletions: 1, hunks: [{ start: 10, end: 11 }] }],
+      truncated: false,
+      totalFiles: 1,
+      outsideCount: 0,
+      suggestedSubdir: "",
+    };
+    const discussion = {
+      comments: [{ path: "repo/src/a.ts", line: 10, body: "Already on GitHub", author: "octo", updatedAt: latest.updatedAt, url: latest.url }],
+      reviews: { approved: ["reviewer"], changesRequested: [], commented: 1 },
+      hasMore: false,
+    };
+    const checks = { total: 2, passed: 1, failed: 0, pending: 1, url: `${latest.url}/checks` };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/api/prs/one")) return Promise.resolve(Response.json({ pr: latest }));
+      if (url.includes("/api/prs/files")) return Promise.resolve(Response.json(refreshedFiles));
+      if (url.includes("/api/prs/comments")) return Promise.resolve(Response.json(discussion));
+      if (url.includes("/api/prs/checks")) return Promise.resolve(Response.json(checks));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    store.setState({ ...selectedPrState(7), prsList: { open: [loaded], closed: null } });
+    await store.getState().reviewPrInGraph();
+    const path = store.getState().reviewFiles[0].path;
+    store.getState().addReviewComment(path, null, "Keep my local draft");
+    const drafts = store.getState().reviewComments;
+    store.setState({ prReviewStale: true });
+
+    await store.getState().refreshPrReview();
+
+    expect(fetchMock.mock.calls.map(([input]) => input.toString()).sort()).toEqual([
+      "http://meridian.local/api/prs/checks?id=artifact-1&n=7&sha=head-2",
+      "http://meridian.local/api/prs/comments?id=artifact-1&n=7",
+      "http://meridian.local/api/prs/files?id=artifact-1&n=7",
+      "http://meridian.local/api/prs/one?id=artifact-1&n=7",
+    ].sort());
+    expect(selectedPrSummary(store.getState())?.headSha).toBe("head-2");
+    expect(store.getState().prFiles).toEqual(refreshedFiles.files);
+    expect(store.getState().prDiscussion).toEqual({ comments: discussion.comments, reviews: discussion.reviews });
+    expect(store.getState().prChecks).toEqual(checks);
+    expect(store.getState().review?.context.changedFiles[0].hunks).toEqual([{ start: 10, end: 11 }]);
+    expect(store.getState().reviewComments).toEqual(drafts);
+    expect(store.getState().prReviewRevision?.headSha).toBe("head-2");
+    expect(store.getState().prReviewStale).toBe(false);
+    expect(store.getState().prReviewRefreshing).toBe(false);
+  });
+
+  it("a close cancels a deferred synchronous refresh without repopulating its overlay or revision", async () => {
+    let resolveFiles!: (response: Response) => void;
+    const filesResponse = new Promise<Response>((resolve) => {
+      resolveFiles = resolve;
+    });
+    const loaded = { ...pr(7), headSha: "head-1" };
+    const latest = { ...loaded, headSha: "head-2", updatedAt: "2026-07-12T11:00:00.000Z" };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/api/prs/one")) return Promise.resolve(Response.json({ pr: latest }));
+      if (url.includes("/api/prs/files")) return filesResponse;
+      if (url.includes("/api/prs/comments")) {
+        return Promise.resolve(Response.json({ comments: [], reviews: { approved: [], changesRequested: [], commented: 0 }, hasMore: false }));
+      }
+      if (url.includes("/api/prs/checks")) {
+        return Promise.resolve(Response.json({ total: 0, passed: 0, failed: 0, pending: 0, url: null }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    store.setState({ ...selectedPrState(7), prsList: { open: [loaded], closed: null } });
+    await store.getState().reviewPrInGraph();
+    const revision = store.getState().prReviewRevision;
+    const review = store.getState().review;
+    store.setState({ prReviewStale: true });
+
+    const refresh = store.getState().refreshPrReview();
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some(([input]) => input.toString().includes("/api/prs/files"))).toBe(true));
+    store.getState().closeMinimalGraph();
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().prReviewRefreshing).toBe(false);
+
+    resolveFiles(Response.json({
+      files: [{ path: "repo/src/a.ts", status: "modified", additions: 2, deletions: 1, hunks: [{ start: 10, end: 11 }] }],
+      truncated: false,
+      totalFiles: 1,
+      outsideCount: 0,
+      suggestedSubdir: "",
+    }));
+    await refresh;
+
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().minimalMemberIds).toEqual([]);
+    expect(store.getState().prReviewRevision).toBe(revision);
+    expect(store.getState().review).toBe(review);
+    expect(store.getState().prReviewStale).toBe(true);
+    expect(selectedPrSummary(store.getState())?.headSha).toBe("head-1");
+  });
+
+  it("renders the stale review refresh control and its disabled refreshing state", async () => {
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    store.getInitialState = store.getState;
+    const renderPanel = () => renderToStaticMarkup(
+      createElement(StoreProvider, { store, children: createElement(ReviewPanel) }),
+    );
+
+    store.setState({ prReviewStale: true });
+    expect(renderPanel()).toContain("New changes · Refresh");
+
+    store.setState({ prReviewRefreshing: true });
+    const refreshing = renderPanel();
+    expect(refreshing).toContain("Refreshing…");
+    expect(refreshing).toMatch(/<button[^>]*disabled=""[^>]*aria-busy="true"[^>]*>Refreshing…<\/button>/);
   });
 
   it("pre-expands changed files to declaration level only: the class stays a collapsed card", () => {
@@ -399,6 +664,38 @@ const HEAD_ARTIFACT: GraphArtifact = {
   } as GraphArtifact["extensions"],
 };
 
+const REFRESHED_HEAD_SHA = "def5678abc1234000000";
+const REFRESHED_GRAPH_ID = "pr-head-2";
+const REFRESHED_SUMMARY: PrSummary = {
+  ...pr(7),
+  headSha: REFRESHED_HEAD_SHA,
+  updatedAt: "2026-07-12T12:00:00.000Z",
+};
+const REFRESHED_FILES = {
+  files: [{ path: "src/a.ts", status: "modified" as const, additions: 2, deletions: 1, hunks: [{ start: 31, end: 31 }] }],
+  truncated: false,
+  totalFiles: 1,
+  outsideCount: 0,
+  suggestedSubdir: "",
+};
+const REFRESHED_HEAD_ARTIFACT: GraphArtifact = {
+  ...HEAD_ARTIFACT,
+  generatedAt: "2026-07-12T12:00:00.000Z",
+  nodes: [
+    node(PACKAGE_ID, "package", "src"),
+    node(FILE_ID, "module", "src/a.ts", PACKAGE_ID),
+    node(CLASS_ID, "class", "src/a.ts", FILE_ID, { start: 3, end: 40 }),
+    node(METHOD_ID, "method", "src/a.ts", CLASS_ID, { start: 30, end: 32 }),
+  ],
+  extensions: {
+    changedSince: {
+      baseRef: "origin/main",
+      files: { "src/a.ts": [{ start: 31, end: 31 }] },
+      kinds: { "src/a.ts": [{ start: 31, end: 31, kind: "modified" }] },
+    },
+  } as GraphArtifact["extensions"],
+};
+
 /** A fetch stub routing the three endpoints a head extraction hits; `graph` overrides the GET. */
 function routedFetch(options?: { graphId?: string; graph?: () => Promise<Response> }) {
   const graphId = options?.graphId ?? "pr-head-1";
@@ -413,6 +710,34 @@ function routedFetch(options?: { graphId?: string; graph?: () => Promise<Respons
       return options?.graph ? options.graph() : Promise.resolve(Response.json(HEAD_ARTIFACT));
     }
     return Promise.resolve(Response.json({ files: [], truncated: false }));
+  });
+}
+
+/** Route an in-place refresh of an already prepared review, optionally failing before graph fetch. */
+function preparedRefreshFetch(options: { analyzeError?: string } = {}) {
+  return vi.fn((input: RequestInfo | URL) => {
+    const url = input.toString();
+    if (url.includes("/api/prs/one")) {
+      return Promise.resolve(Response.json({ pr: REFRESHED_SUMMARY }));
+    }
+    if (url.includes("/api/prs/files")) {
+      return Promise.resolve(Response.json(REFRESHED_FILES));
+    }
+    if (url.includes("/api/prs/comments")) {
+      return Promise.resolve(Response.json({ comments: [], reviews: { approved: [], changesRequested: [], commented: 0 }, hasMore: false }));
+    }
+    if (url.includes("/api/prs/checks")) {
+      return Promise.resolve(Response.json({ total: 1, passed: 1, failed: 0, pending: 0, url: null }));
+    }
+    if (url.includes("/api/pr/analyze")) {
+      return Promise.resolve(options.analyzeError
+        ? ndjsonResponse([{ stage: "clone" }, { stage: "error", message: options.analyzeError }])
+        : ndjsonResponse([{ stage: "clone" }, { stage: "checkout" }, { stage: "extract" }, { stage: "done", graphId: REFRESHED_GRAPH_ID, headSha: REFRESHED_HEAD_SHA }]));
+    }
+    if (url.includes("/api/graph")) {
+      return Promise.resolve(Response.json(REFRESHED_HEAD_ARTIFACT));
+    }
+    return Promise.reject(new Error(`Unexpected request: ${url}`));
   });
 }
 
@@ -821,6 +1146,152 @@ describe("PR review artifact swap and restore", () => {
     // machinery must be disarmed — showCode reads the prepared checkout via /api/source instead.
     expect(store.getState().reviewHeadRef).toBe(null);
     expect(store.getState().reviewDiffByFile).toEqual({});
+  });
+
+  it("refreshes a stale prepared review onto the new analyzed head without losing drafts", async () => {
+    const { store, bootIndex } = await swappedReviewStore();
+    const previousArtifact = store.getState().artifact;
+    const path = store.getState().reviewFiles[0].path;
+    store.getState().addReviewComment(path, null, "Carry this draft to the new head");
+    // L31 exists in both revisions and remains inside the refreshed hunk context. The numeric
+    // coincidence must not let an old-revision draft silently attach to different new code.
+    store.getState().addReviewComment(path, null, "Keep this old line safely", 31);
+    const drafts = store.getState().reviewComments;
+    store.setState({ prReviewStale: true });
+    const fetchMock = preparedRefreshFetch();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await store.getState().refreshPrReview();
+
+    expect(store.getState().artifact).not.toBe(previousArtifact);
+    expect(store.getState().artifact.generatedAt).toBe(REFRESHED_HEAD_ARTIFACT.generatedAt);
+    expect(store.getState().index.nodesById.get(METHOD_ID)?.location.startLine).toBe(30);
+    expect(store.getState().prPreparedGraphId).toBe(REFRESHED_GRAPH_ID);
+    expect(store.getState().prPreparedHeadSha).toBe(REFRESHED_HEAD_SHA);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(true);
+    expect(store.getState().prReviewRevision?.headSha).toBe(REFRESHED_HEAD_SHA);
+    expect(store.getState().prReviewStale).toBe(false);
+    expect(store.getState().prReviewRefreshing).toBe(false);
+    expect(store.getState().reviewComments[0]).toEqual(drafts[0]);
+    expect(store.getState().reviewComments[1]).toEqual({ ...drafts[1], lineStale: true });
+    expect(store.getState().review?.context.changedFiles[0].hunks).toEqual([{ start: 31, end: 31 }]);
+    expect(selectedPrSummary(store.getState())?.headSha).toBe(REFRESHED_HEAD_SHA);
+    // Replacing one prepared head must retain the original boot graph as the session restore target.
+    expect(store.getState().prReviewBaseline?.artifact.generatedAt).toBe(ARTIFACT.generatedAt);
+    expect(store.getState().prReviewBaseline?.index).toBe(bootIndex);
+    expect(fetchMock.mock.calls.some(([input]) => input.toString().includes(`/api/graph?id=${REFRESHED_GRAPH_ID}`))).toBe(true);
+  });
+
+  it("disarms a persisted line draft when a new session opens on a later head", async () => {
+    stubReviewStorage();
+    const { store: firstSession } = await swappedReviewStore();
+    const path = firstSession.getState().reviewFiles[0].path;
+    firstSession.getState().addReviewComment(path, null, "Drafted on the old head", 31);
+    const oldDraft = firstSession.getState().reviewComments[0];
+    expect(oldDraft.lineRevision).toContain("abc1234def5678900000");
+
+    const reloaded = freshStore(ANALYZE_DEPS);
+    reloaded.setState({
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [REFRESHED_SUMMARY], closed: null },
+      prFiles: REFRESHED_FILES.files,
+      prFilesTotal: REFRESHED_FILES.totalFiles,
+      prFilesOutside: REFRESHED_FILES.outsideCount,
+      prFilesSuggestedSubdir: REFRESHED_FILES.suggestedSubdir,
+    });
+    vi.stubGlobal("fetch", preparedRefreshFetch());
+
+    await reloaded.getState().reviewPrInGraph();
+
+    expect(reloaded.getState().prReviewRevision?.headSha).toBe(REFRESHED_HEAD_SHA);
+    expect(reloaded.getState().reviewComments).toEqual([{ ...oldDraft, lineStale: true }]);
+  });
+
+  it("keeps the prior prepared review visible when refresh analysis fails before a swap", async () => {
+    const { store } = await swappedReviewStore();
+    const path = store.getState().reviewFiles[0].path;
+    store.getState().addReviewComment(path, null, "Do not lose this draft on refresh failure", 31);
+    const before = store.getState();
+    store.setState({ prReviewStale: true });
+    const fetchMock = preparedRefreshFetch({ analyzeError: "refresh clone failed" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await store.getState().refreshPrReview();
+
+    expect(store.getState().artifact).toBe(before.artifact);
+    expect(store.getState().index).toBe(before.index);
+    expect(store.getState().prPreparedGraphId).toBe(before.prPreparedGraphId);
+    expect(store.getState().prPreparedHeadSha).toBe(before.prPreparedHeadSha);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(true);
+    expect(store.getState().review).toBe(before.review);
+    expect(store.getState().reviewComments).toBe(before.reviewComments);
+    expect(store.getState().prReviewRevision).toBe(before.prReviewRevision);
+    expect(store.getState().prReviewStale).toBe(true);
+    expect(store.getState().prReviewRefreshing).toBe(false);
+    expect(store.getState().prReviewStatus).toBe("error");
+    expect(store.getState().prPrepareError).toBe("refresh clone failed");
+    expect(store.getState().viewMode).toBe("modules");
+    expect(store.getState().prReviewed).toBe(7);
+    expect(fetchMock.mock.calls.some(([input]) => input.toString().includes("/api/graph"))).toBe(false);
+  });
+
+  it("closing during prepared refresh cancels the analyze waiter promptly and rejects its late graph", async () => {
+    const { store } = await swappedReviewStore();
+    const oldRevision = store.getState().prReviewRevision;
+    const oldGraphId = store.getState().prPreparedGraphId;
+    const oldHeadSha = store.getState().prPreparedHeadSha;
+    store.getState().addReviewComment(store.getState().reviewFiles[0].path, null, "Keep this resumable draft");
+    const drafts = store.getState().reviewComments;
+    store.setState({ prReviewStale: true });
+    const encoder = new TextEncoder();
+    let finishAnalyze!: () => void;
+    const analyzeStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('{"stage":"clone"}\n'));
+        finishAnalyze = () => {
+          controller.enqueue(encoder.encode(`{"stage":"done","graphId":"${REFRESHED_GRAPH_ID}","headSha":"${REFRESHED_HEAD_SHA}"}\n`));
+          controller.close();
+        };
+      },
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/api/prs/one")) return Promise.resolve(Response.json({ pr: REFRESHED_SUMMARY }));
+      if (url.includes("/api/prs/files")) return Promise.resolve(Response.json(REFRESHED_FILES));
+      if (url.includes("/api/prs/comments")) {
+        return Promise.resolve(Response.json({ comments: [], reviews: { approved: [], changesRequested: [], commented: 0 }, hasMore: false }));
+      }
+      if (url.includes("/api/prs/checks")) {
+        return Promise.resolve(Response.json({ total: 1, passed: 1, failed: 0, pending: 0, url: null }));
+      }
+      if (url.includes("/api/pr/analyze")) return Promise.resolve(new Response(analyzeStream, { status: 200 }));
+      if (url.includes("/api/graph")) return Promise.resolve(Response.json(REFRESHED_HEAD_ARTIFACT));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const refresh = store.getState().refreshPrReview();
+    await vi.waitFor(() => expect(store.getState().prReviewStatus).toBe("preparing"));
+    store.getState().closeMinimalGraph();
+    const settledPromptly = await Promise.race([
+      refresh.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 250)),
+    ]);
+
+    finishAnalyze();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settledPromptly).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => input.toString().includes("/api/graph"))).toBe(false);
+    expect(store.getState().artifact.generatedAt).toBe(ARTIFACT.generatedAt);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(false);
+    expect(store.getState().prPreparedGraphId).toBe(oldGraphId);
+    expect(store.getState().prPreparedHeadSha).toBe(oldHeadSha);
+    expect(store.getState().prReviewRevision).toBe(oldRevision);
+    expect(store.getState().reviewComments).toBe(drafts);
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().prReviewRefreshing).toBe(false);
+    expect(store.getState().prReviewStatus).toBe("idle");
   });
 
   it("previews a prepared node in its existing HEAD coordinates without double-shifting it", async () => {

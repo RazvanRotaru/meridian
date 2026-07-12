@@ -46,7 +46,7 @@ describe("readReviewProgress", () => {
       ticks: { flow: { at: "t", fingerprint: "f" } },
       unitTicks: { unit: { at: "t", fingerprint: "u" } },
       fileTicks: { "a.ts": { at: "t", fingerprint: "h" } },
-      comments: [{ id: "1", path: "a.ts", nodeId: null, line: null, anchorLabel: null, body: "note", at: "t" }],
+      comments: [{ id: "1", path: "a.ts", nodeId: null, line: 12, lineStale: true, lineRevision: "rev-a", anchorLabel: "L12", body: "note", at: "t" }],
     };
     writeReviewProgress("scope", progress);
     expect(readReviewProgress("scope")).toEqual(progress);

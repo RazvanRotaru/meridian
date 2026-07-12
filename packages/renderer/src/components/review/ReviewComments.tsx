@@ -44,7 +44,14 @@ export function CommentList(props: { comments: readonly ReviewComment[] }) {
     <div style={LIST}>
       {props.comments.map((comment) => (
         <div key={comment.id} style={DRAFT}>
-          {comment.line !== null ? <span style={LINE_CHIP}>{`L${comment.line}`}</span> : null}
+          {comment.line !== null ? (
+            <span
+              style={comment.lineStale ? { ...LINE_CHIP, ...LINE_CHIP_STALE } : LINE_CHIP}
+              title={comment.lineStale ? "Line anchor is from a previous PR revision; this draft will submit as a review note" : undefined}
+            >
+              {`L${comment.line}${comment.lineStale ? " · previous revision" : ""}`}
+            </span>
+          ) : null}
           <div style={DRAFT_BODY}>{comment.body}</div>
           <button type="button" style={DRAFT_DELETE} title="Delete draft" onClick={() => deleteReviewComment(comment.id)}>
             ✕
@@ -108,12 +115,16 @@ export function SubmitReviewFooter() {
   const count = useBlueprint((state) => state.reviewComments.length);
   const prReviewed = useBlueprint((state) => state.prReviewed);
   const status = useBlueprint((state) => state.reviewSubmitStatus);
+  const stale = useBlueprint((state) => state.prReviewStale);
+  const refreshing = useBlueprint((state) => state.prReviewRefreshing);
+  const preparing = useBlueprint((state) => state.prReviewStatus === "preparing");
   const error = useBlueprint((state) => state.reviewSubmitError);
   const submittedUrl = useBlueprint((state) => state.reviewSubmittedUrl);
   const { submitReviewComments } = useBlueprintActions();
   if (count === 0 && !error && submittedUrl === null) {
     return null;
   }
+  const submitDisabled = status === "submitting" || stale || refreshing || preparing;
   return (
     <div style={FOOTER}>
       {count > 0 && (
@@ -123,11 +134,20 @@ export function SubmitReviewFooter() {
             {prReviewed === null ? " (local notes)" : ""}
           </span>
           {prReviewed !== null && (
-            <button type="button" style={SUBMIT_BTN} disabled={status === "submitting"} onClick={() => void submitReviewComments()}>
+            <button
+              type="button"
+              style={{ ...SUBMIT_BTN, ...(submitDisabled ? SUBMIT_BTN_DISABLED : {}) }}
+              disabled={submitDisabled}
+              title={stale || refreshing ? "Refresh new pull request changes before submitting" : preparing ? "Wait for head preparation to finish" : undefined}
+              onClick={() => void submitReviewComments()}
+            >
               {status === "submitting" ? "Submitting…" : "Submit review"}
             </button>
           )}
         </div>
+      )}
+      {count > 0 && prReviewed !== null && stale && !refreshing && (
+        <div style={FOOTER_STALE}>Refresh new changes before submitting this review.</div>
       )}
       {error && <div style={FOOTER_ERROR}>{error}</div>}
       {/* "" means submitted but GitHub returned no usable link — still confirm, just without one. */}
@@ -163,6 +183,7 @@ const COMMENT_SUFFIX: React.CSSProperties = { color: "#5A6472", fontSize: 9.5, f
 const LIST: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 4, padding: "2px 6px 4px 26px" };
 const DRAFT: React.CSSProperties = { display: "flex", alignItems: "flex-start", gap: 6, border: "1px solid #253041", background: "rgba(56,139,253,0.07)", borderRadius: 7, padding: "6px 8px" };
 const LINE_CHIP: React.CSSProperties = { flexShrink: 0, border: "1px solid rgba(125,211,252,0.35)", borderRadius: 4, padding: "0 4px", color: "#7DD3FC", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 9.5, fontWeight: 700, lineHeight: "14px" };
+const LINE_CHIP_STALE: React.CSSProperties = { color: "#D29922", borderColor: "rgba(210,153,34,0.42)", background: "rgba(210,153,34,0.10)" };
 const DRAFT_BODY: React.CSSProperties = { flex: 1, minWidth: 0, fontSize: 11.5, lineHeight: "15px", color: "#C9D1D9", whiteSpace: "pre-wrap", overflowWrap: "anywhere" };
 const DRAFT_DELETE: React.CSSProperties = { border: "none", background: "transparent", cursor: "pointer", color: "#5A6472", fontSize: 10, padding: 2, flexShrink: 0 , ...NO_FOCUS_RING };
 const COMPOSER: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6, padding: "2px 6px 6px 26px" };
@@ -174,6 +195,8 @@ const FOOTER: React.CSSProperties = { borderTop: "1px solid #20262F", padding: "
 const FOOTER_ROW: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 };
 const FOOTER_COUNT: React.CSSProperties = { fontSize: 12, color: "#9AA4B2" };
 const SUBMIT_BTN: React.CSSProperties = { font: "inherit", border: "1px solid #2F5C3B", background: "rgba(86,194,113,0.16)", color: "#6BE38A", borderRadius: 7, padding: "5px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", ...NO_FOCUS_RING };
+const SUBMIT_BTN_DISABLED: React.CSSProperties = { cursor: "not-allowed", opacity: 0.6 };
+const FOOTER_STALE: React.CSSProperties = { fontSize: 11, color: "#D29922" };
 const FOOTER_ERROR: React.CSSProperties = { fontSize: 11, color: "#F85149", background: "rgba(248,81,73,0.08)", borderRadius: 5, padding: "4px 8px" };
 const FOOTER_DONE: React.CSSProperties = { fontSize: 12, color: "#6BE38A" };
 const FOOTER_LINK: React.CSSProperties = { color: "#7DD3FC" };

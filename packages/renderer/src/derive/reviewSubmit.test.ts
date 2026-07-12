@@ -1,9 +1,9 @@
 /**
  * Draft comments → the one GitHub review submission: unit comments anchor to the first changed
  * line INSIDE the unit, file comments to the file's first changed line, and anything without a
- * real diff line to stand on — no hunks, a whole-file-deletion hunk (start 0), a vanished or
- * drifted unit — becomes a NOTE for the server to fold into the review body. Never dropped,
- * never anchored by guesswork.
+ * real new-side API anchor to stand on — no hunks, a whole-file-deletion hunk (start 0), a vanished
+ * or drifted unit, or a visible line outside the public API's diff context — becomes a NOTE for the
+ * server to fold into the review body. Never dropped, never anchored by guesswork.
  */
 
 import { describe, expect, it } from "vitest";
@@ -67,15 +67,49 @@ describe("buildReviewSubmission", () => {
     expect(submission.comments).toEqual([{ path: "src/a.ts", line: 25, body: "file note" }]);
   });
 
-  it("honors an explicit line when it is still inside an anchorable hunk", () => {
+  it("honors an explicit line inside an anchorable hunk", () => {
     const submission = buildReviewSubmission([draft("src/a.ts", "ts:src/a.ts#Repo", "right here", "Repo", 83)], FILES, CONTEXT);
     expect(submission.comments).toEqual([{ path: "src/a.ts", line: 83, body: "right here" }]);
   });
 
-  it("folds to a line-labeled note when an explicit line drifted outside the hunks", () => {
-    const submission = buildReviewSubmission([draft("src/a.ts", "ts:src/a.ts#helper", "still applies", "helper", 200)], FILES, CONTEXT);
+  it("keeps an explicit context line inline using the patch header's API-safe range", () => {
+    const submission = buildReviewSubmission(
+      [draft("src/a.ts", "ts:src/a.ts#helper", "right here too", "helper", 78)],
+      FILES,
+      CONTEXT,
+      { "src/a.ts": [{ start: 77, end: 88 }] },
+    );
+    expect(submission.comments).toEqual([{ path: "src/a.ts", line: 78, body: "right here too" }]);
+    expect(submission.notes).toEqual([]);
+  });
+
+  it("folds a previous-revision line draft even when the same number remains API-anchorable", () => {
+    const previousRevision = { ...draft("src/a.ts", null, "old L78", null, 78), lineStale: true };
+    const submission = buildReviewSubmission(
+      [previousRevision],
+      FILES,
+      CONTEXT,
+      { "src/a.ts": [{ start: 77, end: 88 }] },
+    );
     expect(submission.comments).toEqual([]);
-    expect(submission.notes).toEqual([{ path: "src/a.ts", label: "L200", body: "still applies" }]);
+    expect(submission.notes).toEqual([{ path: "src/a.ts", label: "L78", body: "old L78" }]);
+  });
+
+  it("folds a visible line outside public API diff context into a labeled review note", () => {
+    const submission = buildReviewSubmission(
+      [draft("src/a.ts", "ts:src/a.ts#helper", "still applies", "helper", 70)],
+      FILES,
+      CONTEXT,
+      { "src/a.ts": [{ start: 77, end: 88 }] },
+    );
+    expect(submission.comments).toEqual([]);
+    expect(submission.notes).toEqual([{ path: "src/a.ts", label: "L70", body: "still applies" }]);
+  });
+
+  it("rejects a non-positive explicit line instead of sending an invalid GitHub anchor", () => {
+    const submission = buildReviewSubmission([draft("src/a.ts", null, "invalid", null, 0)], FILES, CONTEXT);
+    expect(submission.comments).toEqual([]);
+    expect(submission.notes).toEqual([{ path: "src/a.ts", label: "L0", body: "invalid" }]);
   });
 
   it("turns a comment on a hunk-less file into a note, keeping its anchor label", () => {
