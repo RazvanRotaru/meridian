@@ -24,6 +24,7 @@ import { collapseChains, type ChainCollapse } from "./collapseChains";
 import { subtreeFileCount } from "./moduleFrontier";
 import type { ModuleCardData } from "./moduleLevel";
 import type { ModulePackageData } from "./packageOverview";
+import type { ModuleGroupData } from "./moduleTree";
 import type { BlockDeps } from "./blockDeps";
 import { depWireEdges } from "./codeWalk";
 import { ghostDepWires, withoutHidden, type GhostData, type GhostEmission } from "./ghostDeps";
@@ -43,7 +44,7 @@ export interface MinimalSubgraphNode {
   tier: MinimalTier | null;
   /** Joined path segments when this frame is a collapsed package chain. */
   collapsedLabel?: string;
-  data: ModuleCardData | ModulePackageData | GhostData;
+  data: ModuleCardData | ModulePackageData | ModuleGroupData | GhostData;
 }
 
 export interface MinimalSubgraphEdge {
@@ -81,6 +82,8 @@ export interface CodeContext {
   expanded: ReadonlySet<string>;
   blockDeps: BlockDeps;
   flows: LogicFlows;
+  /** Group members whose ordinary Map chevron performs a surface-local disclosure. */
+  expandableGroupIds?: ReadonlySet<string>;
   /** Exact visible callables under PR flow-node inspection. Their incident dependencies bypass the
    * ordinary member-file fold so wires remain attached to the selected block. */
   inspectionIds?: ReadonlySet<string>;
@@ -106,7 +109,14 @@ export function buildMinimalSubgraph(
   const { keptNodeIds, fileCountByGroup } = closeOverAncestors(index, fileVisible);
   const collapse = collapseChains(index, keptNodeIds);
   const walks = walkVisibleFiles(index, graph, fileVisible, code);
-  const context: NodeContext = { memberIds, originIds, collapse, fileCountByGroup, walks };
+  const context: NodeContext = {
+    memberIds,
+    originIds,
+    collapse,
+    fileCountByGroup,
+    walks,
+    expandableGroupIds: code.expandableGroupIds ?? EMPTY_IDS,
+  };
   const emission = projectGhosts(index, memberIds, walks, code, hiddenIds);
   const inspection = inspectionDepEdges(index, memberIds, walks, code);
   const dependencies = mergeProjectedDepEdges([
@@ -252,6 +262,7 @@ interface NodeContext {
   collapse: ChainCollapse;
   fileCountByGroup: Map<string, number>;
   walks: Map<string, FileCodeWalk>;
+  expandableGroupIds: ReadonlySet<string>;
 }
 
 /** Walk every member FILE's code once (with the shared `expanded` set): the file card reads its
@@ -359,6 +370,8 @@ function buildLeafGroupNodes(index: GraphIndex, ids: string[], context: NodeCont
         changedInside: index.changedDescendants.get(node.id) ?? 0,
         ca: 0,
         ce: 0,
+        isContainer: context.expandableGroupIds.has(node.id),
+        isExpanded: false,
       },
     }));
 }

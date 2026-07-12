@@ -11,8 +11,8 @@ export type ModuleGroupData = ModulePackageData & {
   /** A first-class synthetic Service container (`backend`, `analytics`, ...), never an artifact id. */
   serviceDomain?: boolean;
   serviceDomainKind?: "services" | "unassigned";
-  /** A presentational frame (the minimal-graph overlay): no expand/collapse actions, no package
-   * coupling counts (they aren't computed for a filtered subgraph). Absent on the real Map. */
+  /** A filtered/presentational package card: package coupling counts are not computed. Structural
+   * interaction availability is owned separately by the active SurfaceInteractionContext. */
   readOnly?: boolean;
 };
 

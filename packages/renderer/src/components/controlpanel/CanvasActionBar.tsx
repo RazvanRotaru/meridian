@@ -47,7 +47,9 @@ export function CanvasActionBar({
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const minimalArranged = useBlueprint((state) => state.minimalArrange);
   const minimalChanged = useBlueprint(
-    (state) => !sameMembers(state.minimalMemberIds, state.minimalSeedIds) || state.minimalArrange,
+    (state) => !sameMembers(state.minimalMemberIds, state.minimalSeedIds)
+      || state.minimalArrange
+      || Object.keys(state.minimalRollups).some((id) => state.moduleExpanded.has(id)),
   );
   const {
     recenter,
@@ -150,8 +152,8 @@ export function CanvasActionBar({
                 ariaLabel="Reset extracted graph"
                 title={
                   minimalChanged
-                    ? "Restore the original selection and map positions"
-                    : "Already matches the original selection and map positions"
+                    ? "Restore the original selection, collapsed rollups, and map positions"
+                    : "Already matches the original selection, disclosure, and map positions"
                 }
                 icon={<ResetIcon size={18} />}
                 onClick={resetMinimalGraph}

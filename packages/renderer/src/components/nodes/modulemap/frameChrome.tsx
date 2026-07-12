@@ -23,8 +23,8 @@ export function FrameTitleBar({
 }) {
   return (
     <div style={TITLE_BAR}>
-      {chevron}
       {children}
+      {chevron}
     </div>
   );
 }

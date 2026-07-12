@@ -12,6 +12,8 @@ import type { Node } from "@xyflow/react";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { buildModuleGraph } from "../derive/moduleGraph";
 import { buildMinimalSubgraph } from "../derive/minimalSubgraph";
+import { deriveModuleTree } from "../derive/moduleTree";
+import { minimalRollupExpansions } from "../derive/minimalRollupExpansion";
 import { layoutMinimalSubgraph } from "./minimalSubgraphLayout";
 import type { PlacedRect } from "./minimalPlacement";
 
@@ -59,7 +61,29 @@ function rolledGroupSpec() {
     expanded: new Set(),
     blockDeps: { edges: [] },
     flows: {},
+    expandableGroupIds: new Set(["p:src"]),
   });
+}
+
+function expandedRolledGroup() {
+  const index = buildGraphIndex({ nodes: ROLLED_GROUP_NODES, edges: [] } as unknown as GraphArtifact);
+  const graph = buildModuleGraph(index);
+  const memberIds = new Set(["m:a", "m:b"]);
+  const spec = buildMinimalSubgraph(index, graph, memberIds, memberIds, {
+    expanded: new Set(),
+    blockDeps: { edges: [] },
+    flows: {},
+  });
+  const tree = deriveModuleTree(
+    index,
+    null,
+    new Set(["p:root", "p:src"]),
+    graph,
+    { edges: [] },
+    {},
+  );
+  const [expansion] = minimalRollupExpansions(tree, index, new Set(["p:src"]));
+  return { spec, expansion: { ...expansion, tier: "seed" as const } };
 }
 
 function specFor(expanded: string[]) {
@@ -177,7 +201,7 @@ describe("layoutMinimalSubgraph", () => {
     expect(rectOf(nodes.find((node) => node.id === "m:b")!)).toEqual(base["m:b"]);
   });
 
-  it("renders an uncaptured rolled directory as the full read-only package summary card", async () => {
+  it("renders a rolled directory with the ordinary expandable Map package contract", async () => {
     const { nodes } = await layoutMinimalSubgraph(rolledGroupSpec(), {});
     const group = nodes.find((node) => node.id === "p:src");
 
@@ -191,12 +215,33 @@ describe("layoutMinimalSubgraph", () => {
         changedInside: 1,
         ca: 0,
         ce: 0,
-        isContainer: false,
+        isContainer: true,
         isExpanded: false,
         readOnly: true,
         tier: "seed",
       },
     });
+  });
+
+  it("keeps an opened rollup as the ordinary Map package frame around its contained files", async () => {
+    const { spec, expansion } = expandedRolledGroup();
+    const base = { "p:src": { x: 25, y: 35, width: 300, height: 60 } };
+
+    const { nodes } = await layoutMinimalSubgraph(spec, base, false, undefined, [expansion]);
+    const group = nodes.find((node) => node.id === "p:src");
+    const files = nodes.filter((node) => node.type === "file");
+
+    expect(group).toMatchObject({
+      id: "p:src",
+      type: "package",
+      data: { isContainer: true, isExpanded: true, tier: "seed" },
+    });
+    expect(files.map((node) => node.id).sort()).toEqual(["m:a", "m:b"]);
+    expect(files).toEqual(expect.arrayContaining([
+      expect.objectContaining({ parentId: "p:src", extent: "parent" }),
+      expect.objectContaining({ parentId: "p:src", extent: "parent" }),
+    ]));
+    expect(nodes.filter((node) => node.id === "p:src")).toHaveLength(1);
   });
 
   it("opens spacing so no two top-level file frames overlap once a file is expanded", async () => {

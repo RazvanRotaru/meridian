@@ -225,7 +225,6 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     minimalMemberIds: rebuildingReview ? [] : [...nav.minimalSeedIds],
     // Rollup expansion is session-only. A review rebuild derives the mapping again from its files.
     minimalRollups: {},
-    minimalRollupSeedOrigin: null,
     minimalArrange: false,
     minimalRfNodes: [],
     minimalRfEdges: [],

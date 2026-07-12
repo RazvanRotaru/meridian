@@ -10,6 +10,7 @@ import { buildGraphIndex } from "../graph/graphIndex";
 import {
   createBlueprintStore,
   removableModuleSelectionCount,
+  reviewExpansionForMatches,
   type BlueprintStore,
 } from "./store";
 
@@ -71,8 +72,8 @@ const OUTSIDE_PACKAGE = "ts:tools";
 const OUTSIDE_FILE = "ts:tools/tool.ts";
 
 // Two rollup packages can be nested when both a directory and its child directory own enough
-// directly changed files. Expanding the outer summary must replace the inner summary too, while an
-// unrelated ordinary seed survives expansion and Reset unchanged.
+// directly changed files. Opening the outer summary must retain one outer frame and own the nested
+// rollup exactly once, while an unrelated ordinary seed remains unchanged.
 const NESTED_ROLLUP_ARTIFACT: GraphArtifact = {
   ...ARTIFACT,
   nodes: [
@@ -650,6 +651,19 @@ describe("minimal-graph overlay (extract selection)", () => {
       .map((candidate) => candidate.id)
       .sort();
 
+  it("pre-arms changed files but starts a review rollup at its collapsed package", () => {
+    const index = buildGraphIndex(NESTED_ROLLUP_ARTIFACT);
+    const expanded = reviewExpansionForMatches(
+      index,
+      [{ moduleId: "ts:src/a.ts" }, { moduleId: "ts:src/b.ts" }],
+      new Map([["ts:src", ["ts:src/a.ts", "ts:src/b.ts"]]]),
+    );
+
+    expect(expanded.has("ts:src")).toBe(false);
+    expect(expanded.has("ts:src/a.ts")).toBe(true);
+    expect(expanded.has("ts:src/b.ts")).toBe(true);
+  });
+
   it("clears source inspection and relays out the still-mounted source when extracting", () => {
     const store = freshStore(ITERATIVE_GHOST_ARTIFACT);
     const inspectionAtRelayout: unknown[] = [];
@@ -909,14 +923,16 @@ describe("minimal-graph overlay (extract selection)", () => {
     expect(store.getState().minimalArrange).toBe(false);
   });
 
-  it("expands a rolled package to every descendant file and Reset restores nested summaries", () => {
+  it("opens and closes a rolled package without changing membership or selection", () => {
     const store = freshStore(NESTED_ROLLUP_ARTIFACT);
     const relayout = vi.fn().mockResolvedValue(undefined);
     const changedFiles = ["ts:src/a.ts", "ts:src/b.ts"];
     const original = ["ts:src", NESTED_PACKAGE, UNROLLED_FILE, OUTSIDE_FILE].sort();
+    const selection = new Set(["ts:src", NESTED_PACKAGE, UNROLLED_FILE, OUTSIDE_FILE]);
     store.setState({
       minimalSeedIds: original,
       minimalMemberIds: [...original],
+      moduleSelected: selection,
       minimalRollups: {
         "ts:src": changedFiles,
         [NESTED_PACKAGE]: [NESTED_FILE],
@@ -924,30 +940,88 @@ describe("minimal-graph overlay (extract selection)", () => {
       minimalRelayout: relayout,
     });
 
-    store.getState().expandMinimalGroup("ts:src");
-
-    const allDescendantFiles = NESTED_ROLLUP_ARTIFACT.nodes
-      .filter((candidate) => candidate.kind === "module" && store.getState().index.isWithinFocus("ts:src", candidate.id))
-      .map((candidate) => candidate.id)
-      .sort();
-    expect(store.getState().minimalSeedIds).toEqual([...allDescendantFiles, OUTSIDE_FILE].sort());
-    expect(store.getState().minimalMemberIds).toEqual([...allDescendantFiles, OUTSIDE_FILE].sort());
-    expect(store.getState().minimalSeedIds).not.toContain(NESTED_PACKAGE);
-    // Unchanged files become ordinary collapsed file cards; only the rollup's changed files retain
-    // review's automatic declaration-level expansion.
-    expect(store.getState().moduleExpanded).toEqual(new Set(["ts:src", ...changedFiles]));
-    expect(store.getState().minimalRollups).toEqual({
-      "ts:src": changedFiles,
-      [NESTED_PACKAGE]: [NESTED_FILE],
-    });
-    expect(store.getState().minimalRollupSeedOrigin).toEqual(original);
-
-    store.getState().resetMinimalGraph();
+    store.getState().toggleModuleExpand("ts:src");
 
     expect(store.getState().minimalSeedIds).toEqual(original);
     expect(store.getState().minimalMemberIds).toEqual(original);
-    expect(store.getState().minimalSeedIds).toContain(UNROLLED_FILE);
-    expect(store.getState().minimalRollupSeedOrigin).toBeNull();
+    expect(store.getState().moduleSelected).toEqual(selection);
+    expect(store.getState().moduleExpanded).toContain("ts:src");
+
+    store.getState().toggleModuleExpand("ts:src");
+
+    expect(store.getState().minimalSeedIds).toEqual(original);
+    expect(store.getState().minimalMemberIds).toEqual(original);
+    expect(store.getState().moduleSelected).toEqual(selection);
+    expect(store.getState().moduleExpanded).not.toContain("ts:src");
+    expect(relayout).toHaveBeenCalledTimes(2);
+  });
+
+  it("lays an opened rolled package as one retained frame with canonical nested Map nodes", async () => {
+    const store = freshStore(NESTED_ROLLUP_ARTIFACT);
+    store.setState({
+      minimalSeedIds: ["ts:src"],
+      minimalMemberIds: ["ts:src"],
+      minimalRollups: { "ts:src": ["ts:src/a.ts", "ts:src/b.ts"] },
+      moduleExpanded: new Set(["ts:src"]),
+    });
+
+    await store.getState().minimalRelayout();
+
+    const state = store.getState();
+    const group = state.minimalRfNodes.find((candidate) => candidate.id === "ts:src");
+    expect(group).toMatchObject({
+      id: "ts:src",
+      type: "package",
+      data: { isExpanded: true, tier: "seed" },
+    });
+    expect(state.minimalRfNodes.filter((candidate) => candidate.id === "ts:src")).toHaveLength(1);
+    expect(state.minimalRfNodes).toContainEqual(expect.objectContaining({
+      id: "ts:src/a.ts",
+      type: "file",
+      parentId: "ts:src",
+      extent: "parent",
+    }));
+    expect(state.minimalSeedIds).toEqual(["ts:src"]);
+    expect(state.minimalMemberIds).toEqual(["ts:src"]);
+  });
+
+  it("routes canvas-wide expand and collapse through the shared rollup expansion set", () => {
+    const store = freshStore(NESTED_ROLLUP_ARTIFACT);
+    const relayout = vi.fn().mockResolvedValue(undefined);
+    const changedFiles = ["ts:src/a.ts", "ts:src/b.ts"];
+    store.setState({
+      viewMode: "modules",
+      minimalSeedIds: ["ts:src"],
+      minimalMemberIds: ["ts:src"],
+      minimalRollups: { "ts:src": changedFiles },
+      minimalRfNodes: [{
+        id: "ts:src",
+        type: "package",
+        position: { x: 0, y: 0 },
+        data: { isContainer: true, isExpanded: false },
+      }],
+      minimalRelayout: relayout,
+    });
+
+    store.getState().expandAll();
+
+    expect(store.getState().minimalSeedIds).toEqual(["ts:src"]);
+    expect(store.getState().minimalMemberIds).toEqual(["ts:src"]);
+    expect(store.getState().moduleExpanded).toContain("ts:src");
+
+    store.setState({
+      minimalRfNodes: [{
+        id: "ts:src",
+        type: "package",
+        position: { x: 0, y: 0 },
+        data: { isContainer: true, isExpanded: true },
+      }],
+    });
+    store.getState().collapseAll();
+
+    expect(store.getState().moduleExpanded).not.toContain("ts:src");
+    expect(store.getState().minimalSeedIds).toEqual(["ts:src"]);
+    expect(store.getState().minimalMemberIds).toEqual(["ts:src"]);
     expect(relayout).toHaveBeenCalledTimes(2);
   });
 

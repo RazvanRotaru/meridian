@@ -22,19 +22,24 @@ import { layoutModuleTree } from "./moduleLevelLayout";
 import { placeGhostBands } from "./ghostBandPlacement";
 import type { MinimalSubgraphEdge, MinimalSubgraphNode, MinimalSubgraphSpec, MinimalTier } from "../derive/minimalSubgraph";
 import type { MinimalExpansion } from "../derive/minimalExpansion";
+import type { MinimalRollupExpansion } from "../derive/minimalRollupExpansion";
 import type { ModuleCardData } from "../derive/moduleLevel";
-import type { ModulePackageData } from "../derive/packageOverview";
 import type { GhostData } from "../derive/ghostDeps";
-import type { ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
+import type { ModuleGroupData, ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
 import { MAP_RELATION_POLICY, type LensRelationPolicy } from "../graph/lensRelationPolicy";
 import { relationParticipatesInLayout } from "../graph/lensRelationPolicy";
 
-/** One expanded file laid out by the Map's own nested-ELK pass: its frame + child cards and their
- * intra-frame wires. The frame node (id === fileId) sits first, ready to be anchored. */
+/** One expanded Map subtree laid out by the Map's own nested-ELK pass. Its root sits first, ready to
+ * be anchored among the minimal graph's other top-level cards. */
 interface LaidExpansion {
-  fileId: string;
+  rootId: string;
   nodes: Node[];
   edges: Edge[];
+  nodeIds: ReadonlySet<string>;
+}
+
+export interface MinimalRollupLayoutExpansion extends MinimalRollupExpansion {
+  tier: MinimalTier;
 }
 
 /** Mirror the map: place each visible card at its captured spot (others relative), nest each expanded
@@ -44,33 +49,114 @@ export async function layoutMinimalSubgraph(
   basePositions: Record<string, PlacedRect>,
   arrange = false,
   relationPolicy: LensRelationPolicy = MAP_RELATION_POLICY,
+  groupExpansions: readonly MinimalRollupLayoutExpansion[] = [],
 ): Promise<{ nodes: Node[]; edges: Edge[] }> {
   if (spec.nodes.length === 0) {
     return { nodes: [], edges: [] };
   }
-  // Only tiered LEAF cards enter placement (a file, or a group member); tier-null containment frames
-  // are flattened away, and ghost satellites band AFTER the members are placed (never inside ELK).
-  const cards = spec.nodes.filter((node) => node.tier !== null);
+  const groupNodeIds = new Set(groupExpansions.flatMap((expansion) => expansion.nodes.map((node) => node.id)));
+  const laidByRoot = await layoutExpansions(
+    spec.expansions.filter((expansion) => !groupNodeIds.has(expansion.fileId)),
+    groupExpansions,
+    relationPolicy,
+  );
+  // Tiered leaf cards enter placement, except descendants already owned by an expanded package
+  // frame. Each such frame contributes one virtual top-level card at its retained package id.
+  const cards = [
+    ...spec.nodes.filter((node) => node.tier !== null && !groupNodeIds.has(node.id)),
+    ...groupRootCards(groupExpansions),
+  ];
+  const expansionOwner = expansionOwnerByNode(laidByRoot);
   // The map-mirror still grows along imports, matching the Map's own placement substrate. Re-arrange
   // uses every INTERNAL visible relation: valid artifacts (including the bundled sample) may carry
   // calls/instantiates without redundant import edges, and discarding those wires makes ELK see a
   // connected member set as isolated cards. Ghost wires stay outside core placement.
-  const importEdges = spec.edges.filter((edge) => edge.kind === "import").map((edge) => ({ source: edge.source, target: edge.target }));
+  const importEdges = projectPlacementEdges(
+    spec.edges.filter((edge) => edge.kind === "import"),
+    expansionOwner,
+  );
   const arrangeEdges = spec.edges
     .filter((edge) => edge.ghost !== true && minimalEdgeParticipatesInLayout(edge, relationPolicy))
-    .map((edge) => ({ source: edge.source, target: edge.target }));
-  const laidByFile = await layoutExpansions(spec.expansions, relationPolicy);
+    .map((edge) => projectPlacementEdge(edge, expansionOwner))
+    .filter((edge): edge is { source: string; target: string } => edge !== null);
   // Mirror path overrides only expanded frames and group summary cards: captured FILE cards keep their
   // exact map footprint, while a package member must always use its own 300×60 summary-card footprint.
   // Arrange path needs every card's real size so ELK reserves the right footprint.
   const placement = arrange
-    ? await arrangeMinimalCards(cards.map((card) => card.id), cardSizes(cards, laidByFile), arrangeEdges)
-    : await mirrorPlacement(cards, importEdges, basePositions, mirrorSizeOverrides(cards, laidByFile), laidByFile.size > 0);
-  const { nodes, edges } = emitCards(cards, placement, laidByFile);
+    ? await arrangeMinimalCards(cards.map((card) => card.id), cardSizes(cards, laidByRoot), arrangeEdges)
+    : await mirrorPlacement(cards, importEdges, basePositions, mirrorSizeOverrides(cards, laidByRoot), laidByRoot.size > 0);
+  const { nodes, edges } = emitCards(cards, placement, laidByRoot);
   const banded = ghostSatellites(spec, nodes);
   const placedIds = new Set([...nodes, ...banded].map((node) => node.id));
-  const wires = spec.edges.filter((edge) => placedIds.has(edge.source) && placedIds.has(edge.target)).map(toRfEdge);
+  const wires = spec.edges
+    .filter((edge) => placedIds.has(edge.source) && placedIds.has(edge.target))
+    .filter((edge) => !insideSameExpansion(edge, expansionOwner))
+    .map(toRfEdge);
   return { nodes: [...nodes, ...banded], edges: [...wires, ...edges] };
+}
+
+/** Represent each opened package as one top-level placement card. Emission replaces it with the
+ * already-laid canonical frame and leaves every child parent-relative inside that frame. */
+function groupRootCards(expansions: readonly MinimalRollupLayoutExpansion[]): MinimalSubgraphNode[] {
+  return expansions.flatMap((expansion) => {
+    const root = expansion.nodes.find((node) => node.id === expansion.rootId);
+    return root === undefined
+      ? []
+      : [{
+          id: expansion.rootId,
+          kind: "group" as const,
+          parentId: null,
+          tier: expansion.tier,
+          data: root.data as ModuleGroupData,
+        }];
+  });
+}
+
+/** Every nested endpoint belongs to its top-level expansion root for outer-card placement. */
+function expansionOwnerByNode(laidByRoot: ReadonlyMap<string, LaidExpansion>): Map<string, string> {
+  const owner = new Map<string, string>();
+  for (const [rootId, expansion] of laidByRoot) {
+    expansion.nodeIds.forEach((nodeId) => owner.set(nodeId, rootId));
+  }
+  return owner;
+}
+
+function projectPlacementEdges(
+  edges: readonly MinimalSubgraphEdge[],
+  owner: ReadonlyMap<string, string>,
+): Array<{ source: string; target: string }> {
+  const projected: Array<{ source: string; target: string }> = [];
+  const seen = new Set<string>();
+  for (const edge of edges) {
+    const placed = projectPlacementEdge(edge, owner);
+    if (placed === null) {
+      continue;
+    }
+    const key = `${placed.source}\u0000${placed.target}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      projected.push(placed);
+    }
+  }
+  return projected;
+}
+
+function projectPlacementEdge(
+  edge: Pick<MinimalSubgraphEdge, "source" | "target">,
+  owner: ReadonlyMap<string, string>,
+): { source: string; target: string } | null {
+  const source = owner.get(edge.source) ?? edge.source;
+  const target = owner.get(edge.target) ?? edge.target;
+  return source === target ? null : { source, target };
+}
+
+/** Canonical Map layout already emitted relationships wholly inside an expanded subtree. */
+function insideSameExpansion(
+  edge: Pick<MinimalSubgraphEdge, "source" | "target">,
+  owner: ReadonlyMap<string, string>,
+): boolean {
+  const sourceOwner = owner.get(edge.source);
+  return sourceOwner !== undefined && sourceOwner === owner.get(edge.target);
 }
 
 function minimalEdgeParticipatesInLayout(
@@ -117,8 +203,8 @@ const GROUP_HEIGHT = 60;
 
 /** The rendered size of every leaf card: an expanded file's ELK frame size, else a group card's wider
  * package box, else the file-card default. Feeds both placement paths so spacing matches the render. */
-function cardSizes(cards: MinimalSubgraphNode[], laidByFile: Map<string, LaidExpansion>): Record<string, { width: number; height: number }> {
-  const frames = frameSizes(laidByFile);
+function cardSizes(cards: MinimalSubgraphNode[], laidByRoot: Map<string, LaidExpansion>): Record<string, { width: number; height: number }> {
+  const frames = frameSizes(laidByRoot);
   const sizes: Record<string, { width: number; height: number }> = {};
   for (const card of cards) {
     sizes[card.id] = frames[card.id] ?? (card.kind === "group" ? { width: GROUP_WIDTH, height: GROUP_HEIGHT } : { width: FILE_WIDTH, height: FILE_HEIGHT });
@@ -129,10 +215,10 @@ function cardSizes(cards: MinimalSubgraphNode[], laidByFile: Map<string, LaidExp
 /** The map-mirror keeps captured FILE geometry byte-for-byte, but an overlay group is always the
  * package summary card (not whatever footprint its source map happened to use). Expanded files
  * retain their ELK frame override. */
-function mirrorSizeOverrides(cards: MinimalSubgraphNode[], laidByFile: Map<string, LaidExpansion>): Record<string, { width: number; height: number }> {
-  const sizes = frameSizes(laidByFile);
+function mirrorSizeOverrides(cards: MinimalSubgraphNode[], laidByRoot: Map<string, LaidExpansion>): Record<string, { width: number; height: number }> {
+  const sizes = frameSizes(laidByRoot);
   for (const card of cards) {
-    if (card.kind === "group") {
+    if (card.kind === "group" && sizes[card.id] === undefined) {
       sizes[card.id] = { width: GROUP_WIDTH, height: GROUP_HEIGHT };
     }
   }
@@ -153,28 +239,46 @@ async function mirrorPlacement(
   return hasExpansion ? reflowMinimalFiles(cards.map((card) => card.id), seed, importEdges) : seed;
 }
 
-/** Run the Map's per-file nested-ELK pass over each expanded file's subtree, keyed by file id. */
+/** Run the Map's nested-ELK pass over expanded files and rolled package subtrees, keyed by root. */
 async function layoutExpansions(
-  expansions: MinimalExpansion[],
+  fileExpansions: MinimalExpansion[],
+  groupExpansions: readonly MinimalRollupLayoutExpansion[],
   relationPolicy: LensRelationPolicy,
 ): Promise<Map<string, LaidExpansion>> {
+  const expansions = [
+    ...fileExpansions.map((expansion) => ({
+      rootId: expansion.fileId,
+      nodes: expansion.nodes,
+      edges: expansion.edges,
+    })),
+    ...groupExpansions.map((expansion) => ({
+      rootId: expansion.rootId,
+      nodes: expansion.nodes,
+      edges: expansion.edges,
+    })),
+  ];
   const laid = await Promise.all(
     expansions.map(async (exp) => {
       const { nodes, edges } = await layoutModuleTree(exp.nodes, exp.edges, relationPolicy);
-      return { fileId: exp.fileId, nodes, edges } satisfies LaidExpansion;
+      return {
+        rootId: exp.rootId,
+        nodes,
+        edges,
+        nodeIds: new Set(exp.nodes.map((node) => node.id)),
+      } satisfies LaidExpansion;
     }),
   );
-  return new Map(laid.map((entry) => [entry.fileId, entry]));
+  return new Map(laid.map((entry) => [entry.rootId, entry]));
 }
 
-/** The ELK-sized frame box per expanded file (its width/height), for placement to reserve space. */
-function frameSizes(laidByFile: Map<string, LaidExpansion>): Record<string, { width: number; height: number }> {
+/** The ELK-sized frame box per expanded root, for placement to reserve space. */
+function frameSizes(laidByRoot: Map<string, LaidExpansion>): Record<string, { width: number; height: number }> {
   const sizes: Record<string, { width: number; height: number }> = {};
-  for (const [fileId, laid] of laidByFile) {
-    const frame = laid.nodes.find((node) => node.id === fileId);
+  for (const [rootId, laid] of laidByRoot) {
+    const frame = laid.nodes.find((node) => node.id === rootId);
     const style = (frame?.style ?? {}) as { width?: number; height?: number };
     if (typeof style.width === "number" && typeof style.height === "number") {
-      sizes[fileId] = { width: style.width, height: style.height };
+      sizes[rootId] = { width: style.width, height: style.height };
     }
   }
   return sizes;
@@ -185,7 +289,7 @@ function frameSizes(laidByFile: Map<string, LaidExpansion>): Record<string, { wi
 function emitCards(
   cards: MinimalSubgraphNode[],
   placement: Record<string, PlacedRect>,
-  laidByFile: Map<string, LaidExpansion>,
+  laidByRoot: Map<string, LaidExpansion>,
 ): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
@@ -194,14 +298,12 @@ function emitCards(
     if (!rect) {
       continue;
     }
-    if (card.kind === "group") {
-      nodes.push(toGroupCardNode(card, rect));
-      continue;
-    }
-    const laid = laidByFile.get(card.id);
+    const laid = laidByRoot.get(card.id);
     if (laid) {
       nodes.push(...anchorExpansion(laid.nodes, card.id, card.tier, rect));
       edges.push(...laid.edges);
+    } else if (card.kind === "group") {
+      nodes.push(toGroupCardNode(card, rect));
     } else {
       nodes.push(toFileNode(card, rect));
     }
@@ -212,10 +314,10 @@ function emitCards(
 /** Move an expanded file's laid subtree so its frame sits at `rect`: only the frame node (the sole
  * root) is repositioned — its children are parent-relative, so they ride along untouched. The frame
  * keeps its overlay `tier` so an expanded origin still reads seed like its collapsed card. */
-function anchorExpansion(laidNodes: Node[], fileId: string, tier: MinimalTier | null, rect: PlacedRect): Node[] {
+function anchorExpansion(laidNodes: Node[], rootId: string, tier: MinimalTier | null, rect: PlacedRect): Node[] {
   return laidNodes.map((node) =>
-    node.id === fileId
-      ? { ...node, position: { x: rect.x, y: rect.y }, data: { ...(node.data as ModuleCardData), tier } }
+    node.id === rootId
+      ? { ...node, position: { x: rect.x, y: rect.y }, data: { ...node.data, tier } }
       : node,
   );
 }
@@ -232,14 +334,15 @@ function toFileNode(node: MinimalSubgraphNode, rect: PlacedRect): Node {
 }
 
 // A group member is the Map's own `package` card at an absolute position — ONE card, never a frame
-// of files. `readOnly` hides the (unmeaningful in a subgraph) coupling counts.
+// of files. `readOnly` hides the (unmeaningful in a subgraph) coupling counts. Expandability is
+// already carried by the ordinary ModuleGroupData contract; the shared chevron owns disclosure.
 function toGroupCardNode(node: MinimalSubgraphNode, rect: PlacedRect): Node {
   return {
     id: node.id,
     type: "package",
     position: { x: rect.x, y: rect.y },
     style: { width: rect.width, height: rect.height },
-    data: { ...(node.data as ModulePackageData), isContainer: false, isExpanded: false, readOnly: true, tier: node.tier },
+    data: { ...(node.data as ModuleGroupData), readOnly: true, tier: node.tier },
   };
 }
 
