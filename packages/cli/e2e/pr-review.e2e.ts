@@ -103,21 +103,8 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     ).not.toBe("none");
     expect(await syncProvenance.count()).toBe(1);
     expect(await page.getByText("Files changed", { exact: true }).count()).toBe(1);
-    const expansionParam = new URL(page.url()).searchParams.get("mexp");
-    const pricingContext = codebaseContext.locator(`[data-id="${PRICING_PACKAGE_ID}"]`);
-    await pricingContext.getByRole("button", { name: "Collapse" }).click();
-    await codebaseContext.locator(`[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor({ state: "detached" });
-    await codebaseContext.locator(`[data-id="${ORDER_SERVICE_MODULE_ID}"]`).waitFor();
-    await pricingContext.getByRole("button", { name: "Expand" }).click();
-    await codebaseContext.locator(`[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor();
-    await changedFunction.waitFor();
-    expect(new URL(page.url()).searchParams.get("mexp")).toBe(expansionParam);
-    // The disclosure relayout can move another card under the chevron's resting pointer and open a
-    // transient preview. Clear that pointer-owned state before targeting the nested function.
-    const transientPreview = page.getByRole("dialog", { name: /^Code preview for / });
-    await page.mouse.move(0, 0);
-    await transientPreview.waitFor({ state: "detached" });
-    // A nested preview remains reachable even when the pointer crosses its now-previewable parent.
+
+    // A nested preview remains reachable even when the pointer crosses its previewable parent.
     await changedFunction.hover();
     const contextLoyaltyPreview = page.getByRole("dialog", { name: "Code preview for loyaltyTierFor" });
     await contextLoyaltyPreview.waitFor();
@@ -129,6 +116,18 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     const codePreview = page.getByRole("dialog", { name: /^Code preview for / });
     await codePreview.getByText("src/pricing/pricingService.ts", { exact: true }).waitFor();
     await codePreview.getByText("export class PricingService {", { exact: true }).waitFor();
+    await page.mouse.move(0, 0);
+    await codePreview.waitFor({ state: "detached" });
+
+    const expansionParam = new URL(page.url()).searchParams.get("mexp");
+    const pricingContext = codebaseContext.locator(`[data-id="${PRICING_PACKAGE_ID}"]`);
+    await pricingContext.getByRole("button", { name: "Collapse" }).click();
+    await codebaseContext.locator(`[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor({ state: "detached" });
+    await codebaseContext.locator(`[data-id="${ORDER_SERVICE_MODULE_ID}"]`).waitFor();
+    await pricingContext.getByRole("button", { name: "Expand" }).click();
+    await codebaseContext.locator(`[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor();
+    await changedFunction.waitFor();
+    expect(new URL(page.url()).searchParams.get("mexp")).toBe(expansionParam);
     await page.getByRole("button", { name: "Back to extracted graph" }).click();
     await page.getByRole("region", { name: "Extracted selection" }).waitFor();
     await syncProvenance.waitFor();

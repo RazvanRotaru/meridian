@@ -77,7 +77,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     const recenter = actionBar.getByRole("button", { name: "Recenter view" });
     const expand = actionBar.getByRole("button", { name: "Expand one level" });
     const collapse = actionBar.getByRole("button", { name: "Collapse all" });
-    const repositorySummary = panel.getByText("Repository · 1 package · 10 files", { exact: true });
+    const repositorySummary = panel.getByText("Repository · 1 package · 11 files", { exact: true });
     const environment = panel.locator("select");
     const unavailableBadge = panel.getByText("Unavailable", { exact: true });
     const disclosure = panel.locator('button[aria-controls="meridian-control-panel-controls"]');
@@ -159,12 +159,16 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     await expect.poll(() => domains.count(), { timeout: 30_000 }).toBeGreaterThan(1);
     expect(await page.locator('.react-flow__node-package[data-id^="svc:"]').count()).toBe(0);
 
-    // This fixture deterministically has six otherwise-unassigned service frames. Selecting their
-    // artificial parent selects exactly that one logical node and offers the universal extraction
-    // action; the parent does not need a special-case interaction path.
+    // The fixture's otherwise-unassigned service frames grow as showcase source is added. Read the
+    // displayed total so the test verifies disclosure parity without baking in fixture cardinality.
+    // Selecting their artificial parent still selects exactly one logical node and offers the
+    // universal extraction action; the parent does not need a special-case interaction path.
     const domain = page.locator('.react-flow__node-serviceDomain[data-id="service-domain:unassigned"]');
     expect(await domain.count()).toBe(1);
-    expect(await domain.getByText("6 unassigned groups", { exact: true }).count()).toBe(1);
+    const unassignedMatch = (await domain.innerText()).match(/(\d+) unassigned groups/);
+    expect(unassignedMatch).not.toBeNull();
+    const unassignedGroupCount = Number(unassignedMatch?.[1] ?? 0);
+    expect(unassignedGroupCount).toBeGreaterThan(0);
     await domain.dispatchEvent("click");
     await page.getByRole("button", { name: "Extract selection (1)", exact: true }).waitFor();
     expect(await page.locator("#meridian-control-panel").getByText("Unassigned code", { exact: true }).count()).toBe(1);
@@ -176,13 +180,13 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     expect(await expandDomain.count()).toBe(1);
     await expandDomain.dispatchEvent("click");
     const serviceFrames = page.locator('.react-flow__node-package[data-id^="svc:"]');
-    await expect.poll(() => serviceFrames.count(), { timeout: 30_000 }).toBe(6);
+    await expect.poll(() => serviceFrames.count(), { timeout: 30_000 }).toBe(unassignedGroupCount);
     expect(await domain.getByRole("button", { name: "Collapse", exact: true }).count()).toBe(1);
 
     // One domain action exposes only its direct synthetic `svc:` children. Every frame is still a
     // collapsed container with its own explicit Expand action; no class/unit (or method/block)
     // grandchild may leak through until that frame receives a separate action.
-    expect(await serviceFrames.getByRole("button", { name: "Expand", exact: true }).count()).toBe(6);
+    expect(await serviceFrames.getByRole("button", { name: "Expand", exact: true }).count()).toBe(unassignedGroupCount);
     expect(await page.locator('.react-flow__node-unit[data-id^="ts:"]').count()).toBe(0);
     expect(await page.locator('.react-flow__node-block[data-id^="ts:"]').count()).toBe(0);
 
