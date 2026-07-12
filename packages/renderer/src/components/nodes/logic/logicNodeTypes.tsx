@@ -14,7 +14,8 @@ import { useState } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
-import type { LogicNodeData, TerminalData } from "../../../derive/logicGraph";
+import { inputPinText, type LogicNodeData, type TerminalData } from "../../../derive/logicGraph";
+import { PIN_COLORS, PIN_ROW_H, type PinCategory, type PinModel } from "../../../derive/signaturePins";
 import { FLOW_COLORS } from "../../../derive/flowViewModel";
 import { coverageAccent, coverageVerdict, COVERAGE_COLORS, type CoverageVerdict } from "../../../theme/coverageColors";
 import { CodeInlinePanel } from "../../CodeInlinePanel";
@@ -36,11 +37,15 @@ function withChanged(base: React.CSSProperties, ring: string | null, select: Sel
   return { ...base, borderColor: ring, boxShadow: `0 0 0 1px ${ring}66` };
 }
 
-function ExecPins() {
+// The white execution pins (left in / right out). `top` pins them to a fixed height instead of the
+// node's vertical centre — a call block sets it to the title bar, so the exec thread enters and
+// leaves along the "exec row" (Blueprints-style) and never crosses the data-pin rows below.
+function ExecPins({ top }: { top?: number } = {}) {
+  const style = top === undefined ? PIN : { ...PIN, top, transform: "none" as const };
   return (
     <>
-      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-      <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+      <Handle type="target" position={Position.Left} style={style} isConnectable={false} />
+      <Handle type="source" position={Position.Right} style={style} isConnectable={false} />
     </>
   );
 }
@@ -122,7 +127,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   return (
     <div style={WRAP}>
       <div style={withChanged(selectStyle(BODY, select), changed ? changedRing : null, select)}>
-        <ExecPins />
+        <ExecPins top={EXEC_PIN_TOP} />
         <div style={titleStyle(accent)}>
           <span style={GLYPH}>{glyph}</span>
           <span style={NAME} title={d.label}>{d.label}</span>
@@ -144,9 +149,10 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
             drops the provenance line and shows just name + signature. A standalone/external call (or a
             definition grid cell) keeps its `pkg › module` provenance. */}
         {!d.framed && d.provenance ? <div style={PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.pkg} › {d.provenance.module}</div> : null}
-        {/* The signature — WHAT the block calls. Definition grid cells are a fixed compact size, so
-            they opt out; only in-flow call blocks carry it. */}
-        {!d.definition && d.signature ? <div style={SIGNATURE} title={d.signature}>{d.signature}</div> : null}
+        {/* The typed data ports — WHAT the block consumes and produces. Input pins on the left edge,
+            an output pin on the right, colour-coded by type. Definition grid cells stay compact
+            (they carry no pins); a call with no knowable I/O renders none. */}
+        {d.pins ? <DataPinRows pins={d.pins} /> : null}
       </div>
       {inline}
     </div>
@@ -332,6 +338,46 @@ function ExpandButton(props: { expanded: boolean; onToggle: () => void }) {
       {props.expanded ? "▾" : "▸"}
     </button>
   );
+}
+
+/**
+ * The typed data ports of a call block — the Blueprints data pins. Each callee PARAMETER is an input
+ * row (a coloured port on the left edge + `name: type`); the RETURN is one output row (the type + a
+ * port on the right edge). A capped overflow of params collapses into a muted "+N more" so the
+ * truncation is stated, not hidden. Colours are the shared PIN_COLORS families.
+ */
+function DataPinRows({ pins }: { pins: PinModel }) {
+  return (
+    <div style={PIN_SECTION}>
+      {pins.inputs.map((pin, i) => (
+        <div key={`in:${i}`} style={PIN_ROW} title={inputPinText(pin)}>
+          <DataDot category={pin.category} />
+          <span style={PIN_NAME}>{pin.rest ? "..." : ""}{pin.name}{pin.optional ? "?" : ""}</span>
+          {pin.type ? <span style={PIN_TYPE}>: {pin.type}</span> : null}
+        </div>
+      ))}
+      {pins.hiddenInputs > 0 ? (
+        <div style={PIN_ROW}><span style={PIN_MORE}>+{pins.hiddenInputs} more</span></div>
+      ) : null}
+      {pins.output ? (
+        <div style={PIN_ROW_OUT} title={`returns ${pins.output.type}`}>
+          <span style={PIN_TYPE_OUT}>{pins.output.type}</span>
+          <DataDot category={pins.output.category} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** One data port dot, coloured by its type family. A `void` port is a hollow ring (the block
+ * produces nothing there); an `array` port squares into a "list" nub; every other type is a filled
+ * dot in its family colour. */
+function DataDot({ category }: { category: PinCategory }) {
+  const color = PIN_COLORS[category];
+  if (category === "void") {
+    return <span style={{ ...DOT_BASE, background: "transparent", border: `1.5px solid ${color}`, boxShadow: "none" }} />;
+  }
+  return <span style={{ ...(category === "array" ? DOT_LIST : DOT_BASE), background: color }} />;
 }
 
 /**
@@ -750,9 +796,30 @@ const TITLE_TAIL: React.CSSProperties = { marginLeft: "auto", display: "flex", a
 const EXPAND_BTN: React.CSSProperties = { border: "none", background: "rgba(0,0,0,0.18)", color: "inherit", borderRadius: 4, padding: "1px 6px", fontSize: 10, lineHeight: 1, fontFamily: MONO, cursor: "pointer" };
 const NAME: React.CSSProperties = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const PROV: React.CSSProperties = { padding: "4px 8px", fontSize: 10, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
-// The signature line: dimmer than provenance (secondary detail), mono, one clipped line — the full
-// text rides the hover title so a long signature never widens the block.
-const SIGNATURE: React.CSSProperties = { padding: "0 8px 3px", fontSize: 9.5, color: "#5F6874", fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+// ---- data pins (typed I/O ports) ----------------------------------------------------------------
+// Where the white exec pins sit on a call block: pinned to the title bar's height so the exec thread
+// runs along the top "exec row" (Blueprints-style), clear of the data rows below.
+const EXEC_PIN_TOP = 15;
+
+// The pin section sits below the provenance line, divided by a hairline. Each row is exactly
+// PIN_ROW_H tall (the value shared with the layout sizing) so the drawn ports fill the box the
+// layout reserved — the node's measured height and its rendered rows can't drift apart.
+const PIN_SECTION: React.CSSProperties = { display: "flex", flexDirection: "column", borderTop: "1px solid #1E242D", paddingTop: 2 };
+const PIN_ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6, height: PIN_ROW_H, padding: "0 8px 0 6px", minWidth: 0 };
+// The output row mirrors an input reversed: the produced type, then a right-edge port.
+const PIN_ROW_OUT: React.CSSProperties = { ...PIN_ROW, justifyContent: "flex-end", padding: "0 6px 0 8px" };
+// The param name reads in ink (priority); its `: type` trails dimmer and truncates first.
+const PIN_NAME: React.CSSProperties = { fontSize: 11, color: "#C8D3E0", flexShrink: 0, whiteSpace: "nowrap" };
+const PIN_TYPE: React.CSSProperties = { fontSize: 11, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 };
+// The output type reads a touch brighter than an input's — it's the value the step hands onward.
+const PIN_TYPE_OUT: React.CSSProperties = { fontSize: 11, color: "#AEB9C7", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 };
+// The honest "+N more" when the param cap hid some inputs — muted, but never silent.
+const PIN_MORE: React.CSSProperties = { fontSize: 10, color: "#6C7683", fontStyle: "italic" };
+// A data port: a filled dot coloured by type family. flex-none so a port never shrinks under a long
+// type; the dark ring keeps a light port legible on the block's dark body.
+const DOT_BASE: React.CSSProperties = { width: 9, height: 9, borderRadius: "50%", flexShrink: 0, boxShadow: "0 0 0 1px rgba(0,0,0,0.35)" };
+// `array` squares off into a "list" nub, distinguishing a collection from a scalar port at a glance.
+const DOT_LIST: React.CSSProperties = { ...DOT_BASE, borderRadius: 2 };
 // The service frame: a neutral-bordered container (like the composition card) with a health-tinted
 // left rail, hosting the run's call blocks. Body transparent so ELK-placed children render over it.
 function serviceFrameStyle(health: string): React.CSSProperties {

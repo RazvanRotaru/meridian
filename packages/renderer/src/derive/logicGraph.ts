@@ -14,6 +14,7 @@ import type { GraphIndex } from "../graph/graphIndex";
 import { baseName, callDisplay } from "./flowViewModel";
 import type { LogicOwner, OwnerLookup } from "./logicOwner";
 import { clamp, monoTextWidth } from "../layout/measure";
+import { buildPinModel, PIN_ROW_H, type PinModel } from "./signaturePins";
 
 /** No owner/signature enrichment — the default when a caller (e.g. a unit test) supplies no lookup. */
 const NO_OWNER: OwnerLookup = () => null;
@@ -58,6 +59,11 @@ export type LogicNodeData = {
   /** The call's result is deliberately dropped (`void`-ed / un-awaited Promise): fire-and-forget
    * work that outlives this flow (rendered as a detached ⤳ badge). */
   detached?: boolean;
+  /** The typed data ports drawn on the block — input pins (the callee's params) and an output pin
+   * (its return), derived from the resolved target's `signature`. Null/absent when nothing is known
+   * (external/unresolved call, or a `foo()` with no params and no return) so a gap shows honestly
+   * rather than as a guessed port. Only set on non-greyed in-flow call blocks. */
+  pins?: PinModel | null;
 };
 
 /**
@@ -426,6 +432,7 @@ class LogicGraphBuilder {
     const expandable = display.expandable;
     const greyed = !expandable;
     const isExpanded = expandable && this.expandedState(id, false);
+    const signature = step.target ? this.index.nodesById.get(step.target)?.signature ?? null : null;
     const data: LogicNodeData = {
       logicKind: "call",
       label: step.label,
@@ -438,7 +445,9 @@ class LogicGraphBuilder {
       provenance: provenanceOf(step.target, step.resolution, this.index),
       childCount: expandable && step.target ? this.flows[step.target].length : 0,
       callKind: display.method ? "method" : "function",
-      signature: step.target ? this.index.nodesById.get(step.target)?.signature : undefined,
+      signature: signature ?? undefined,
+      // A greyed leaf stays a compact chip (no ports); every other in-flow call shows its typed I/O.
+      pins: greyed ? null : buildPinModel(signature),
       owner: this.ownerLookup(step.target),
       framed,
       awaited: step.awaited,
@@ -551,7 +560,7 @@ class LogicGraphBuilder {
   private push(id: string, parentId: string | null, type: LogicNodeType, data: LogicNodeData, greyed: boolean): void {
     const spec: LogicNodeSpec = { id, parentId, type, data };
     if (!data.isContainer) {
-      const { width, height } = sizeFor(data.label, greyed, type, Boolean(data.signature));
+      const { width, height } = sizeFor(data.label, greyed, type, data.pins ?? null);
       spec.width = width;
       spec.height = height;
     }
@@ -586,10 +595,11 @@ function firstSegment(path: string): string {
   return path.split("/")[0] ?? path;
 }
 
-// The signature line's vertical band a non-greyed block grows by. Named so the render height (in
-// logicNodeTypes) and the laid-out box stay in lockstep. The owner is now the enclosing service
-// frame, not a per-block row, so a block only grows for its signature.
-const SIGNATURE_ROW_H = 16;
+// A call block's fixed chrome above its data pins — the title bar plus the provenance line plus
+// padding. The pin rows (PIN_ROW_H each) stack below it; a block with NO pins keeps the original
+// flat height instead. Kept here so the laid-out box matches the render in logicNodeTypes.
+const PIN_BLOCK_BASE = 58;
+const FLAT_BLOCK_HEIGHT = 66;
 // End-caps are compact pills — no provenance or disclosure. The EXIT cap only ever says "EXIT", so it
 // keeps a fixed width; the ENTRY cap wears the flow's own callable name (+ an ENTRY tag), so it sizes
 // to that name rather than clipping it.
@@ -624,7 +634,7 @@ function sizeFor(
   label: string,
   greyed: boolean,
   type: LogicNodeType,
-  hasSignature: boolean,
+  pins: PinModel | null,
 ): { width: number; height: number } {
   if (type === "branch") {
     // A FIXED, glanceable decision diamond. Its content is always a single "X" (the condition is
@@ -636,8 +646,48 @@ function sizeFor(
     // A small chip, but sized so the priority name never clips under its tail.
     return { width: roundedClamp(GREY_MIN_WIDTH, GREY_MAX_WIDTH, GREY_TITLE_CHROME + monoTextWidth(label, GREY_TITLE_FONT) + GREY_TITLE_TAIL), height: 30 };
   }
-  // Fit glyph + name + the title tail; the signature row adds its band below so it never clips either.
-  return { width: roundedClamp(BLOCK_MIN_WIDTH, BLOCK_MAX_WIDTH, BLOCK_TITLE_CHROME + monoTextWidth(label, BLOCK_TITLE_FONT) + BLOCK_TITLE_TAIL), height: 66 + (hasSignature ? SIGNATURE_ROW_H : 0) };
+  // Fit glyph + name + the title tail; the widest pin row must clear the box too, so a long
+  // `param: Type` never clips under the node's right edge.
+  const titleWidth = BLOCK_TITLE_CHROME + monoTextWidth(label, BLOCK_TITLE_FONT) + BLOCK_TITLE_TAIL;
+  const width = roundedClamp(BLOCK_MIN_WIDTH, BLOCK_MAX_WIDTH, Math.max(titleWidth, pinRowWidth(pins)));
+  const rows = pinRowCount(pins);
+  // A block with pins grows one PIN_ROW_H band per port row below its chrome; one with none keeps
+  // the original flat height (an unresolved/void-only call stays compact).
+  const height = rows === 0 ? FLAT_BLOCK_HEIGHT : PIN_BLOCK_BASE + rows * PIN_ROW_H;
+  return { width, height };
+}
+
+/** How many port rows a block draws: one per shown input, one for the "+N hidden" row when the cap
+ * bit, and one for the output. Zero when there are no pins at all. */
+function pinRowCount(pins: PinModel | null): number {
+  if (!pins) {
+    return 0;
+  }
+  return pins.inputs.length + (pins.hiddenInputs > 0 ? 1 : 0) + (pins.output ? 1 : 0);
+}
+
+// A pin row is `[dot] name?: type` (inputs) or `type [dot]` (output), set in the 11px mono stack;
+// this chrome covers the dot, its gaps and the row's horizontal padding.
+const PIN_ROW_FONT = 11;
+const PIN_ROW_CHROME = 26;
+
+/** The widest port row's pixel width, so the node box fits its longest `param: Type`. Zero for a
+ * block with no pins (its width then tracks the title alone, exactly as before). */
+function pinRowWidth(pins: PinModel | null): number {
+  if (!pins) {
+    return 0;
+  }
+  const widths = pins.inputs.map((pin) => monoTextWidth(inputPinText(pin), PIN_ROW_FONT));
+  if (pins.output) {
+    widths.push(monoTextWidth(pins.output.type, PIN_ROW_FONT));
+  }
+  return PIN_ROW_CHROME + Math.max(0, ...widths);
+}
+
+/** The label a single input pin renders — `...`/`?` markers folded in, `: type` when annotated. */
+export function inputPinText(pin: { name: string; type: string | null; optional: boolean; rest: boolean }): string {
+  const head = `${pin.rest ? "..." : ""}${pin.name}${pin.optional ? "?" : ""}`;
+  return pin.type ? `${head}: ${pin.type}` : head;
 }
 
 function roundedClamp(min: number, max: number, value: number): number {
