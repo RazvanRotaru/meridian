@@ -166,7 +166,7 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
       semanticCommitEnabled={semanticNavigation.semanticCommitEnabled}
       onSemanticCommit={semanticNavigation.onSemanticCommit}
       onInit={semanticNavigation.onInit}
-      wireHover
+      wireHover={!covered}
       flowExtras={(view) => (
         <>
           {renderBeacons(view)}

@@ -3,8 +3,8 @@
  *
  * Tier 1 is the zod schema (structural shape). Tier 2 is the cross-array invariants zod
  * cannot express: id uniqueness, parentId acyclicity, edge-endpoint existence, edge-id
- * determinism, and the never-default-prod telemetry contract. Unknown vocabulary is a
- * warning, never an error.
+ * determinism, call-site range ordering, and the never-default-prod telemetry contract. Unknown
+ * vocabulary is a warning, never an error.
  */
 
 import { graphArtifactSchema } from "./schema";
@@ -97,6 +97,7 @@ function checkEdgeIntegrity(edges: GraphEdge[], nodeIds: Set<string>, errors: Va
   for (const edge of edges) {
     checkEdgeId(edge, errors);
     checkEdgeWeight(edge, errors);
+    checkCallSiteRanges(edge, errors);
     checkEdgeEndpoints(edge, nodeIds, errors);
   }
 }
@@ -114,6 +115,37 @@ function checkEdgeWeight(edge: GraphEdge, errors: ValidationIssue[]): void {
       code: "WEIGHT_MISMATCH",
       message: `edge ${edge.id} weight ${edge.weight} != ${edge.callSites.length} call sites`,
     });
+  }
+}
+
+/** Cross-field range rules deliberately live in Tier 2: JSON Schema can express each optional
+ * integer's shape, but draft 2020-12 has no portable way to compare one property with another. */
+function checkCallSiteRanges(edge: GraphEdge, errors: ValidationIssue[]): void {
+  for (const [index, site] of (edge.callSites ?? []).entries()) {
+    const prefix = `edge ${edge.id} callSites[${index}]`;
+    if (site.endLine !== undefined && site.endLine < site.line) {
+      errors.push({
+        code: "CALL_SITE_RANGE",
+        message: `${prefix} endLine ${site.endLine} precedes line ${site.line}`,
+      });
+    }
+    if (site.endCol !== undefined && (site.col === undefined || site.endLine === undefined)) {
+      errors.push({
+        code: "CALL_SITE_RANGE",
+        message: `${prefix} endCol requires both col and endLine`,
+      });
+    }
+    if (
+      site.endLine === site.line
+      && site.col !== undefined
+      && site.endCol !== undefined
+      && site.endCol < site.col
+    ) {
+      errors.push({
+        code: "CALL_SITE_RANGE",
+        message: `${prefix} endCol ${site.endCol} precedes col ${site.col}`,
+      });
+    }
   }
 }
 

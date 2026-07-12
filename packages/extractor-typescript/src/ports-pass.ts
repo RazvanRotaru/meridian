@@ -16,7 +16,7 @@
 
 import { Node, SyntaxKind, type CallExpression, type SourceFile } from "ts-morph";
 import type { Port } from "@meridian/core";
-import { lineColOf, nodeKey, type NodeDescriptor } from "./model";
+import { callSiteOf, nodeKey, type NodeDescriptor } from "./model";
 import type { LoadedProject } from "./project-loader";
 import type { ResolutionIndex } from "./resolution-index";
 
@@ -107,14 +107,13 @@ function matchCall(
   moduleByFilePath: Map<string, NodeDescriptor>,
 ): Port | null {
   const callee = call.getExpression();
-  const position = lineColOf(call);
   const emit = (direction: "in" | "out", protocol: string, channel: string | null, label: string): Port => ({
     nodeId: owningNodeId(call, index, moduleByFilePath),
     direction,
     protocol,
     channel,
     label: label.slice(0, LABEL_CAP),
-    callSite: { file: relPath, line: position.line, col: position.column },
+    callSite: callSiteOf(call, relPath),
   });
 
   // fetch("/api/x", { method: "POST" }) — the global, no import to anchor on.

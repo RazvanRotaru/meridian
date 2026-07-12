@@ -18,6 +18,22 @@ describe("aggregateEdges", () => {
     expect(edges[0]!.callSites).toHaveLength(2);
   });
 
+  it("preserves exact syntax ranges through aggregation and depth collapse", () => {
+    const ranged: RawGraphEdge = {
+      ...raw("py:m#A.f", "py:m#B.g", 3),
+      callSite: { file: "f.py", line: 3, col: 4, endLine: 5, endCol: 9 },
+    };
+    const aggregated = aggregateEdges([ranged]);
+    expect(aggregated[0]!.callSites).toEqual([ranged.callSite]);
+    expect(collapseToDepth([
+      node("py:m", "module"),
+      node("py:m#A", "class", "py:m"),
+      node("py:m#A.f", "method", "py:m#A"),
+      node("py:m#B", "class", "py:m"),
+      node("py:m#B.g", "method", "py:m#B"),
+    ], aggregated, "class").edges[0]!.callSites).toEqual([ranged.callSite]);
+  });
+
   it("keeps different kinds between the same pair separate", () => {
     const edges = aggregateEdges([raw("py:m#A", "py:m#B", 1, "calls"), raw("py:m#A", "py:m#B", 1, "instantiates")]);
     expect(edges.map((edge) => edge.kind).sort()).toEqual(["calls", "instantiates"]);

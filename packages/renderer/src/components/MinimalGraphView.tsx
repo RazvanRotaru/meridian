@@ -129,6 +129,7 @@ export function MinimalGraphView() {
         miniMapColor={minimalMiniMapColor}
         interactions={interactions}
         nodeDiffPreview={reviewActive}
+        wireHover
         reviewEmphasis={reviewActive}
         emphasisMode={reviewFlowOpen ? (reviewSelectedId === null ? "subgraph" : "node") : undefined}
         groupGhosts={reviewFlowOpen && reviewSelectedId !== null ? false : undefined}

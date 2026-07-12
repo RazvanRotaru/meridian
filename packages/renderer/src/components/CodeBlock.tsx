@@ -69,6 +69,7 @@ export function CodeBlock({
   showGutter = false,
   changedLines,
   changedLineKinds,
+  evidenceLines,
   onLineClick,
   commentableLines,
   lineComposer,
@@ -86,6 +87,8 @@ export function CodeBlock({
   changedLines?: ReadonlySet<number>;
   /** Per-line change kinds (`added`/`modified`/`deleted`) for colored backgrounds/gutter markers. */
   changedLineKinds?: ReadonlyMap<number, ChangedLineKind>;
+  /** Absolute source rows that prove the selected graph edge. Styled independently from PR diffs. */
+  evidenceLines?: ReadonlySet<number>;
   /** Opens the controlled line composer. Only the gutter affordance invokes this callback. */
   onLineClick?: (line: number) => void;
   /** Absolute HEAD-side lines allowed to host a RIGHT-side review comment. */
@@ -109,19 +112,19 @@ export function CodeBlock({
   }, [code]);
   const highlightedLines = useMemo(() => splitHighlightedLines(pieces), [pieces]);
   const listingRef = useRef<HTMLDivElement>(null);
-  // Land on the diff: when the listing knows its changed lines, open scrolled to the first one
-  // (minus a little context) instead of the top of the span.
+  // Edge evidence is the reader's explicit target, so it wins the initial scroll position. A
+  // regular source panel still lands on its first diff as before.
   useEffect(() => {
     const container = listingRef.current;
     if (!container || startLine === undefined) {
       return;
     }
-    const firstChanged = firstChangedLine(changedLineKinds, changedLines);
-    if (firstChanged === null) {
+    const firstFocus = firstFocusedLine(evidenceLines, changedLineKinds, changedLines);
+    if (firstFocus === null) {
       return;
     }
-    container.scrollTop = Math.max(0, (firstChanged - startLine - 3) * LINE_HEIGHT_PX);
-  }, [code, startLine, changedLines, changedLineKinds]);
+    container.scrollTop = Math.max(0, (firstFocus - startLine - 3) * LINE_HEIGHT_PX);
+  }, [code, startLine, changedLines, changedLineKinds, evidenceLines]);
   const [hoveredGutterLine, setHoveredGutterLine] = useState<number | null>(null);
   if (startLine === undefined) {
     return <pre style={{ ...PRE_STYLE, maxHeight }}>{renderHighlightedLines(highlightedLines)}</pre>;
@@ -145,11 +148,12 @@ export function CodeBlock({
             const lineNo = startLine + index;
             const kind = changedLineKinds?.get(lineNo);
             const changed = changedLines?.has(lineNo) ?? false;
+            const evidence = evidenceLines?.has(lineNo) ?? false;
             const commentable = onLineClick !== undefined && (commentableLines?.has(lineNo) ?? false);
             const composerOpen = lineComposer?.line === lineNo;
             return (
               <Fragment key={`line-${lineNo}`}>
-                <tr>
+                <tr data-edge-evidence-line={evidence ? "true" : undefined}>
                   {gutterVisible ? (
                     <td
                       style={GUTTER_CELL_STYLE}
@@ -176,15 +180,15 @@ export function CodeBlock({
                         ) : null}
                         <span
                           aria-hidden="true"
-                          style={kind ? kindGutterStyle(kind) : changed ? CHANGED_LINE_STYLE : undefined}
+                          style={kind ? kindGutterStyle(kind) : evidence ? EVIDENCE_GUTTER_STYLE : changed ? CHANGED_LINE_STYLE : undefined}
                         >
-                          {lineMarker(kind, changed)}
+                          {lineMarker(kind, changed, evidence)}
                           {lineNo}
                         </span>
                       </div>
                     </td>
                   ) : null}
-                  <td style={{ ...CODE_CELL_STYLE, ...(lineRowStyle(kind) ?? {}) }}>
+                  <td style={{ ...CODE_CELL_STYLE, ...(lineRowStyle(kind) ?? {}), ...(evidence ? EVIDENCE_ROW_STYLE : {}) }}>
                     {line.length > 0 ? line : " "}
                   </td>
                 </tr>
@@ -237,10 +241,14 @@ function GhostRow(props: { text: string; showGutter: boolean; marker?: boolean }
   );
 }
 
-function firstChangedLine(
+function firstFocusedLine(
+  evidenceLines?: ReadonlySet<number>,
   changedLineKinds?: ReadonlyMap<number, ChangedLineKind>,
   changedLines?: ReadonlySet<number>,
 ): number | null {
+  if (evidenceLines && evidenceLines.size > 0) {
+    return Math.min(...evidenceLines);
+  }
   if (changedLineKinds && changedLineKinds.size > 0) {
     return Math.min(...changedLineKinds.keys());
   }
@@ -292,8 +300,18 @@ function renderHighlightedLines(
   ));
 }
 
-function lineMarker(kind: ChangedLineKind | undefined, changed: boolean): string {
-  return kind === "added" ? "+ " : kind === "deleted" ? "- " : kind === "modified" ? "~ " : changed ? "● " : "";
+function lineMarker(kind: ChangedLineKind | undefined, changed: boolean, evidence: boolean): string {
+  return kind === "added"
+    ? "+ "
+    : kind === "deleted"
+      ? "- "
+      : kind === "modified"
+        ? "~ "
+        : evidence
+          ? "› "
+          : changed
+            ? "● "
+            : "";
 }
 
 function lineRowStyle(kind: ChangedLineKind | undefined): React.CSSProperties | undefined {
@@ -376,6 +394,7 @@ const LINE_COMMENT_BUTTON_STYLE: React.CSSProperties = {
   flexShrink: 0,
 };
 const CHANGED_LINE_STYLE: React.CSSProperties = { color: "#E2A33C", fontWeight: 700 };
+const EVIDENCE_GUTTER_STYLE: React.CSSProperties = { color: "#7DD3FC", fontWeight: 800 };
 const CODE_LINE_STYLE: React.CSSProperties = { display: "block", width: "100%" };
 const ADDED_GUTTER_STYLE: React.CSSProperties = { color: "#56C271", fontWeight: 700 };
 const MODIFIED_GUTTER_STYLE: React.CSSProperties = { color: "#E6B84D", fontWeight: 700 };
@@ -391,6 +410,10 @@ const MODIFIED_ROW_STYLE: React.CSSProperties = {
 const DELETED_ROW_STYLE: React.CSSProperties = {
   background: "rgba(240,120,124,0.20)",
   boxShadow: "inset 3px 0 0 #F0787C",
+};
+const EVIDENCE_ROW_STYLE: React.CSSProperties = {
+  backgroundImage: "linear-gradient(rgba(56,139,253,0.14), rgba(56,139,253,0.14))",
+  boxShadow: "inset 3px 0 0 #7DD3FC, inset 0 0 0 1px rgba(125,211,252,0.28)",
 };
 const CODE_CELL_STYLE: React.CSSProperties = {
   height: LINE_HEIGHT_PX,

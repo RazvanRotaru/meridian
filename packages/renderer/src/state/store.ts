@@ -72,6 +72,10 @@ import {
 } from "./lensPath";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import {
+  edgeEvidenceKey,
+  type EdgeEvidenceContext,
+} from "../graph/edgeEvidence";
+import {
   PRS_UNAVAILABLE_ERROR,
   type LineEdit,
   type PrChangedFile,
@@ -138,13 +142,14 @@ export interface LayoutActivity {
 type SurfaceSemanticContext = NonNullable<SurfaceSemanticParent["context"]>;
 
 /** The source view's state: which node, its fetched code, and the in-flight/error status.
- * `mode` decides where it renders — a compact panel inline on the node, or a centered modal. */
+ * `mode` decides where it renders — compact inline, or in the large source host (the centered node
+ * modal or, when `edgeEvidence` is present, the graph-local inspection dock). */
 export interface CodeView {
   node: GraphNode;
   code: string | null;
   loading: boolean;
   error: string | null;
-  /** Where the code shows: a compact panel hanging off the node, or a blown-up centered modal. */
+  /** Where the code shows: a compact panel hanging off the node, or a large source surface. */
   mode: "inline" | "modal";
   /** The server capped the snippet; the panel shows a note when set. */
   truncated?: boolean;
@@ -158,6 +163,16 @@ export interface CodeView {
    * the highlight is exactly its added/modified lines, even on the synchronous (base-graph) review. */
   changedLineKinds?: ReadonlyMap<number, ChangedLineKind>;
   changedLines?: ReadonlySet<number>;
+  /** Edge-click mode: the concrete syntax occurrences behind the aggregate wire and the currently
+   * loaded one. Its focus range is in the coordinates of the code being shown (HEAD during a
+   * synchronous PR review, otherwise artifact/source coordinates). Presence moves the large source
+   * surface into the graph-local edge inspection dock. */
+  edgeEvidence?: {
+    contexts: readonly EdgeEvidenceContext[];
+    activeIndex: number;
+    focusStartLine: number;
+    focusEndLine: number;
+  };
 }
 
 export interface BlueprintState {
@@ -548,6 +563,12 @@ export interface BlueprintState {
   /** Load one node's review diff for the hover preview without taking over the global code modal. */
   loadCodePreview(node: GraphNode): Promise<CodeView | null>;
   showCode(node: GraphNode, opts?: { wholeFile?: boolean }): Promise<void>;
+  /** Open contextual source beside the clicked wire's inspector. */
+  showEdgeEvidence(contexts: readonly EdgeEvidenceContext[], activeIndex?: number): Promise<void>;
+  /** Move the open edge-source pane to another occurrence, loading its file/context on demand. */
+  selectEdgeEvidence(index: number): Promise<void>;
+  /** Close edge source only; a stale graph surface must never dismiss ordinary node/PR source. */
+  closeEdgeEvidence(): void;
   expandCode(): void;
   closeCode(): void;
   setPrsTab(tab: PrsTab): void;
@@ -653,6 +674,62 @@ interface CodePayload {
 }
 
 type CodePayloadCache = Map<string, Promise<CodePayload>>;
+
+/** Generous surrounding source for edge evidence: enough to understand the declaration/control
+ * flow without asking the source server for only the proving line or risking its 2,000-line cap. */
+export const EDGE_EVIDENCE_CONTEXT_LINES = 80;
+
+function edgeEvidenceNode(
+  context: EdgeEvidenceContext,
+  activeIndex: number,
+  state: BlueprintState,
+): GraphNode {
+  const source = state.index.nodesById.get(context.source);
+  const target = state.index.nodesById.get(context.target);
+  const endLine = Math.max(context.site.line, context.site.endLine ?? context.site.line);
+  const displayName = `${source?.displayName ?? context.source} → ${target?.displayName ?? context.target}`;
+  const location = {
+    file: context.site.file,
+    startLine: Math.max(1, context.site.line - EDGE_EVIDENCE_CONTEXT_LINES),
+    endLine: endLine + EDGE_EVIDENCE_CONTEXT_LINES,
+    startCol: context.site.col,
+  };
+  return source
+    ? {
+        ...source,
+        id: `edge-evidence:${encodeURIComponent(context.edgeId)}:${activeIndex}`,
+        qualifiedName: displayName,
+        displayName,
+        location,
+      }
+    : {
+        id: `edge-evidence:${encodeURIComponent(context.edgeId)}:${activeIndex}`,
+        kind: "module",
+        qualifiedName: displayName,
+        displayName,
+        parentId: null,
+        location,
+      };
+}
+
+/** Map artifact/base evidence onto the source coordinates codeLoadRequest will display. */
+function displayedEvidenceSpan(
+  context: EdgeEvidenceContext,
+  state: BlueprintState,
+  prFileUrl: string | null,
+): { start: number; end: number } {
+  const start = context.site.line;
+  const end = Math.max(start, context.site.endLine ?? start);
+  const diff = state.reviewDiffByFile[context.site.file] ?? null;
+  const removedAtHead = state.reviewFileDelta[context.site.file]?.status === "removed";
+  const readsPrHead =
+    !state.prPreparedArtifactCurrent
+    && !removedAtHead
+    && state.prReviewed !== null
+    && prFileUrl !== null
+    && state.reviewHeadRef !== null;
+  return readsPrHead && diff !== null ? headSpanFor(start, end, diff.edits) : { start, end };
+}
 
 /** Resolve the source request once so click-to-open and hover-preview read identical code. */
 function codeLoadRequest(
@@ -883,6 +960,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let prAnalyzeSeq = 0;
   let prAnalyzeCancellation: { sequence: number; resolve: () => void } | null = null;
   let prReviewEntryRequest: { number: number; promise: Promise<void> } | null = null;
+  // Edge-evidence context switches are asynchronous source reads; only the latest click may win.
+  let edgeEvidenceSeq = 0;
   const prsNextPage: Record<PrsTab, number> = { open: 1, closed: 1 };
   // PR-head reads return an entire file. Share that response across every changed node in the file;
   // fetchCodeView still slices and annotates a separate node-specific view for each caller.
@@ -2732,6 +2811,69 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ codeView: { ...view, mode: get().codeView?.mode ?? "inline" } });
     },
 
+    async showEdgeEvidence(contexts, activeIndex = 0) {
+      if (contexts.length === 0) {
+        get().closeEdgeEvidence();
+        return;
+      }
+      const selectedIndex = Math.min(Math.max(Math.trunc(activeIndex), 0), contexts.length - 1);
+      const context = contexts[selectedIndex]!;
+      const node = edgeEvidenceNode(context, selectedIndex, get());
+      const request = codeLoadRequest(node, undefined, get(), sourceUrl, prFileUrl);
+      if (!request) {
+        get().closeEdgeEvidence();
+        return; // The pinned inspector remains visible and truthfully reports attribution only.
+      }
+      const span = displayedEvidenceSpan(context, get(), prFileUrl);
+      const edgeEvidence = {
+        contexts: [...contexts],
+        activeIndex: selectedIndex,
+        focusStartLine: span.start,
+        focusEndLine: span.end,
+      };
+      const sequence = ++edgeEvidenceSeq;
+      const selectionKey = edgeEvidenceKey(context);
+      set({
+        codeView: {
+          node,
+          code: null,
+          loading: true,
+          error: null,
+          mode: "modal",
+          baseLine: request.baseLine,
+          wholeFile: false,
+          edgeEvidence,
+        },
+      });
+      const view = await fetchCodeView(request, "modal", codePayloadCache);
+      const current = get().codeView;
+      const currentContext = current?.edgeEvidence?.contexts[current.edgeEvidence.activeIndex];
+      if (
+        sequence !== edgeEvidenceSeq
+        || currentContext === undefined
+        || edgeEvidenceKey(currentContext) !== selectionKey
+      ) {
+        return;
+      }
+      set({ codeView: { ...view, mode: "modal", edgeEvidence } });
+    },
+
+    async selectEdgeEvidence(index) {
+      const contexts = get().codeView?.edgeEvidence?.contexts;
+      if (!contexts || index < 0 || index >= contexts.length) {
+        return;
+      }
+      await get().showEdgeEvidence(contexts, index);
+    },
+
+    closeEdgeEvidence() {
+      if (get().codeView?.edgeEvidence === undefined) {
+        return;
+      }
+      edgeEvidenceSeq += 1;
+      set({ codeView: null });
+    },
+
     // Blow the current inline panel up into the centered modal. A no-op when nothing is shown.
     expandCode() {
       const { codeView } = get();
@@ -2742,6 +2884,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     closeCode() {
+      if (get().codeView?.edgeEvidence !== undefined) {
+        edgeEvidenceSeq += 1;
+      }
       set({ codeView: null });
     },
 

@@ -1,6 +1,6 @@
 /**
  * Clear/close on Escape as a LAYERED stack: many surfaces mount this hook at once (the minimal-graph
- * overlay, the code modal opened on top of it, the wire inspector, the PR detail panel), but a single
+ * overlay, the code modal opened on top of it, the edge inspection dock, the PR detail panel), but a single
  * Escape must close only the TOPMOST one. Each active consumer pushes a token onto a shared module
  * stack on mount and removes it on unmount/inactive; a keypress fires `clear()` only for the token
  * currently on top, so the modal-over-overlay case closes the modal first and the overlay next.

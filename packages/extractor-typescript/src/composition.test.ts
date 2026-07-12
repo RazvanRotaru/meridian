@@ -77,6 +77,13 @@ describe("explicit service-container composition", () => {
   it("emits registers from an enclosing function to resolvable registered classes", () => {
     expect(edges("registers", "configure", "EmailService")).toHaveLength(1);
     expect(edges("registers", "configure", "AuditService")).toHaveLength(1);
+    expect(edges("registers", "configure", "EmailService")[0]?.callSites?.[0]).toMatchObject({
+      file: "src/container.ts",
+      line: 14,
+      endLine: 14,
+    });
+    expect(edges("registers", "configure", "EmailService")[0]?.callSites?.[0]?.endCol)
+      .toBeGreaterThan(edges("registers", "configure", "EmailService")[0]?.callSites?.[0]?.col ?? 0);
   });
 
   it("uses the module as owner for a top-level registration", () => {

@@ -72,7 +72,7 @@ export function linkArtifacts(sources: LinkSource[]): LinkedGraph {
         nodes.push(mapped);
       }
     }
-    edges.push(...stripped.edges.map((edge) => remapEdge(edge, remap)));
+    edges.push(...stripped.edges.map((edge) => remapEdge(edge, source.name, remap)));
     ports.push(...stripped.ports.map((port) => remapPort(port, source.name, remap)));
     mergeLogicFlow(logicFlow, source.logicFlow, remap);
     entryModules.push(...(source.entryModules ?? []).map(remap));
@@ -169,10 +169,16 @@ function remapNode(node: GraphNode, name: string, remap: (id: NodeId) => NodeId)
   };
 }
 
-function remapEdge(edge: GraphEdge, remap: (id: NodeId) => NodeId): GraphEdge {
+function remapEdge(edge: GraphEdge, name: string, remap: (id: NodeId) => NodeId): GraphEdge {
   const source = remap(edge.source);
   const target = remap(edge.target);
-  return { ...edge, id: `${edge.kind}@${source}|${target}`, source, target };
+  return {
+    ...edge,
+    id: `${edge.kind}@${source}|${target}`,
+    source,
+    target,
+    callSites: edge.callSites?.map((site) => ({ ...site, file: `${name}/${site.file}` })),
+  };
 }
 
 function remapPort(port: Port, name: string, remap: (id: NodeId) => NodeId): Port {

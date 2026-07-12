@@ -19,9 +19,13 @@ import { unitLabel } from "../derive/blockDeps";
 import { relationColor } from "../theme/relationTheme";
 import { BUNDLE_EDGE_TYPE, bundleLabel, type BundleEdgeData } from "../layout/edgeBundling";
 import { activeModuleSurfaceSpec } from "./canvas/surfaceSpec";
-import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { MONO } from "./nodes/modulemap/frameChrome";
 import { relationKindOf } from "../graph/relationEdge";
+import {
+  artifactLinksForWire,
+  edgeEvidenceForLink,
+  formatCallSite,
+} from "../graph/edgeEvidence";
 
 interface WireInspectorProps {
   /** The clicked strand's full ordered-pair stack, clicked strand FIRST (see `pairOf`). */
@@ -37,7 +41,6 @@ const ROW_CAP = 12;
 const SITE_CAP = 6;
 
 export function WireInspector({ pair, labelOf, onClose, onDrill }: WireInspectorProps) {
-  useClearOnEscape(onClose, true);
   return (
     <div style={PANEL}>
       {pair[0].type === BUNDLE_EDGE_TYPE ? (
@@ -74,9 +77,13 @@ function PairBody({ pair, labelOf, onClose }: Omit<WireInspectorProps, "onDrill"
 /** One strand's evidence: its kind (coloured) × weight, then the concrete links with call sites. */
 function KindSection({ edge, name, onRevealed }: { edge: Edge; name: (id: string) => string; onRevealed: () => void }) {
   const index = useBlueprint((state) => state.index);
-  const data = edge.data as { weight?: number; underlyingEdgeIds?: string[] } | undefined;
+  const data = edge.data as { weight?: number } | undefined;
   const kind = relationKindOf(edge.data) ?? "wire";
-  const links = useMemo(() => resolveLinks(data?.underlyingEdgeIds, index.edgesById), [data?.underlyingEdgeIds, index.edgesById]);
+  const links = useMemo(
+    () => artifactLinksForWire(edge, index.edgesById)
+      .sort((a, b) => (b.callSites?.length ?? b.weight ?? 1) - (a.callSites?.length ?? a.weight ?? 1)),
+    [edge, index.edgesById],
+  );
   return (
     <div style={SECTION}>
       <div style={SECTION_HEAD}>
@@ -140,6 +147,9 @@ function BundleBody({ edge, labelOf, onClose, onDrill }: Omit<WireInspectorProps
  * is the SECTION's story (its coloured header) — repeating it per row would be noise. */
 function LinkRow({ link, name, onRevealed }: { link: GraphEdge; name: (id: string) => string; onRevealed: () => void }) {
   const sites = link.callSites ?? [];
+  const contexts = useMemo(() => edgeEvidenceForLink(link), [link]);
+  const { showEdgeEvidence } = useBlueprintActions();
+  const openSite = (index: number) => void showEdgeEvidence(contexts, index);
   return (
     <div style={ROW}>
       <div style={ROW_TOP}>
@@ -152,11 +162,21 @@ function LinkRow({ link, name, onRevealed }: { link: GraphEdge; name: (id: strin
       {sites.length > 0 ? (
         <div style={SITES}>
           {sites.slice(0, SITE_CAP).map((site, i) => (
-            <span key={i} style={SITE_CHIP} title={`${site.file}:${site.line}`}>
-              {site.file.split("/").pop()}:{site.line}
-            </span>
+            <button
+              key={i}
+              type="button"
+              style={SITE_CHIP}
+              title={`Open source evidence at ${formatCallSite(site)}`}
+              onClick={() => openSite(i)}
+            >
+              {formatCallSite({ ...site, file: site.file.split("/").pop() ?? site.file })}
+            </button>
           ))}
-          {sites.length > SITE_CAP ? <span style={SITE_MORE}>+{sites.length - SITE_CAP} more</span> : null}
+          {sites.length > SITE_CAP ? (
+            <button type="button" style={SITE_MORE} onClick={() => openSite(SITE_CAP)}>
+              +{sites.length - SITE_CAP} more
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -199,7 +219,7 @@ function Header({ kind, weight, onClose }: { kind: string; weight: number; onClo
 
 function CloseButton({ onClose }: { onClose: () => void }) {
   return (
-    <button type="button" style={CLOSE} title="Close (Esc)" onClick={onClose}>
+    <button type="button" style={CLOSE} title="Close (Esc)" aria-label="Close edge inspection" onClick={onClose}>
       ✕
     </button>
   );
@@ -221,26 +241,12 @@ function CappedRows({ count, render }: { count: number; render: (shown: number) 
   );
 }
 
-/** The wire's artifact edges, deduped (defensive — an id should appear once) and heaviest first. */
-function resolveLinks(ids: string[] | undefined, edgesById: ReadonlyMap<string, GraphEdge>): GraphEdge[] {
-  if (!ids || ids.length === 0) {
-    return [];
-  }
-  const links = [...new Set(ids)].map((id) => edgesById.get(id)).filter((edge): edge is GraphEdge => edge !== undefined);
-  return links.sort((a, b) => (b.callSites?.length ?? b.weight ?? 1) - (a.callSites?.length ?? a.weight ?? 1));
-}
-
 const PANEL: React.CSSProperties = {
-  position: "absolute",
-  top: 12,
-  right: 12,
-  zIndex: 20,
-  width: 360,
-  maxHeight: "62%",
+  width: "min(360px, 36vw)",
+  minWidth: 260,
+  maxHeight: "min(72vh, 700px)",
   overflowY: "auto",
   background: "rgba(22, 27, 34, 0.97)",
-  border: "1px solid #30363d",
-  borderRadius: 8,
   padding: "8px 10px",
   fontFamily: MONO,
 };
@@ -293,8 +299,18 @@ const SITE_CHIP: React.CSSProperties = {
   border: "1px solid #262D38",
   borderRadius: 4,
   padding: "1px 5px",
+  cursor: "pointer",
+  fontFamily: MONO,
 };
-const SITE_MORE: React.CSSProperties = { fontSize: 9, color: "#565E68", alignSelf: "center" };
+const SITE_MORE: React.CSSProperties = {
+  border: "none",
+  background: "none",
+  padding: 0,
+  fontSize: 9,
+  color: "#778391",
+  alignSelf: "center",
+  cursor: "pointer",
+};
 const SHOW_ALL: React.CSSProperties = {
   marginTop: 2,
   border: "1px solid #30363d",
