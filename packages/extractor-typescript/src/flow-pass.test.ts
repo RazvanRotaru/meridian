@@ -263,6 +263,8 @@ describe("logic-flow pass", () => {
     if (branch.kind === "branch") {
       expect(branch.label).toBe("if items.length === 0");
       expect(branch.paths.map((path) => path.label)).toEqual(["then", "else"]);
+      expect(branch.source).toMatchObject({ file: "specimens.ts", line: expect.any(Number) });
+      expect(branch.paths.map((path) => path.pathId)).toEqual(["then", "else"]);
       expect(callLabels(branch.paths[0].body)).toEqual(["emptyState"]);
       expect(callLabels(branch.paths[1].body)).toEqual(["list"]);
     }
@@ -284,7 +286,9 @@ describe("logic-flow pass", () => {
       if (branch.kind === "branch") {
         expect(branch.paths.map((path) => path.label)).toEqual(["then"]);
         // The early return is charted, not swallowed: the then-path visibly EXITS the flow.
-        expect(branch.paths[0].body).toEqual([{ kind: "exit", variant: "return", label: "res" }]);
+        expect(branch.paths[0].body).toEqual([
+          expect.objectContaining({ kind: "exit", variant: "return", label: "res", source: expect.objectContaining({ file: "specimens.ts" }) }),
+        ]);
       }
     }
   });
@@ -298,7 +302,7 @@ describe("logic-flow pass", () => {
     if (guard.kind === "branch") {
       expect(guard.paths.map((path) => path.label)).toEqual(["then"]);
       expect(guard.paths[0].body.map((step) => step.kind)).toEqual(["call", "call", "exit"]);
-      expect(guard.paths[0].body[2]).toEqual({ kind: "exit", variant: "return", label: "reject()" });
+      expect(guard.paths[0].body[2]).toMatchObject({ kind: "exit", variant: "return", label: "reject()", source: { file: "specimens.ts", line: expect.any(Number) } });
     }
 
     expect(steps[1]).toMatchObject({ kind: "call", label: "fetchData", awaited: true });
@@ -314,7 +318,7 @@ describe("logic-flow pass", () => {
     if (steps[5].kind === "callback") {
       expect(callLabels(steps[5].body)).toEqual(["log"]);
     }
-    expect(steps[6]).toEqual({ kind: "exit", variant: "return", label: "data" });
+    expect(steps[6]).toMatchObject({ kind: "exit", variant: "return", label: "data", source: { file: "specimens.ts", line: expect.any(Number) } });
   });
 
   it("leaves plain synchronous calls unflagged (checkout)", () => {

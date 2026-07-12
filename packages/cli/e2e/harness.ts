@@ -80,9 +80,19 @@ export function runCli(args: string[]): { code: number; stderr: string } {
 }
 
 export function startView(graphPath: string, port = 4399): Promise<{ server: ChildProcess; url: string }> {
+  return startViewProcess(graphPath, ["--overlay", "mock", "--env", "staging"], port);
+}
+
+/** Launch the ordinary local-view path with no startup telemetry source selected. The server still
+ * advertises its explicit built-in demo catalog; browser coverage owns choosing and loading it. */
+export function startViewWithoutOverlay(graphPath: string, port = 4399): Promise<{ server: ChildProcess; url: string }> {
+  return startViewProcess(graphPath, [], port);
+}
+
+function startViewProcess(graphPath: string, telemetryArgs: string[], port: number): Promise<{ server: ChildProcess; url: string }> {
   const server = spawn(
     process.execPath,
-    [CLI, "view", graphPath, "--overlay", "mock", "--env", "staging", "--no-open", "--port", String(port)],
+    [CLI, "view", graphPath, ...telemetryArgs, "--no-open", "--port", String(port)],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   return new Promise((resolve, reject) => {

@@ -14,6 +14,7 @@ import { validateOrThrow } from "../validation";
 import { pinnedIsoOrUndefined } from "../clock";
 import { Reporter } from "../reporter";
 import type { GlobalOptions } from "../reporter";
+import { normalizeTelemetryEnvironment } from "../telemetry-environment";
 
 export interface MockOptions extends GlobalOptions {
   env: string;
@@ -26,8 +27,9 @@ export function runMock(graph: string, options: MockOptions): void {
   const cwd = resolveCwd(options.cwd);
   const graphPath = resolveAgainst(cwd, graph);
   const { artifact } = validateOrThrow(readJsonFile(graphPath), `graph ${graphPath}`);
-  const outPath = resolveAgainst(cwd, options.out ?? defaultOut(options.env));
-  const overlay = mint(artifact, options);
+  const env = normalizeTelemetryEnvironment(options.env);
+  const outPath = resolveAgainst(cwd, options.out ?? defaultOut(env));
+  const overlay = mint(artifact, env, options);
   writeJsonAtomic(outPath, overlay);
   report(reporter, overlay, outPath);
 }
@@ -36,8 +38,8 @@ function defaultOut(env: string): string {
   return `blueprint.overlay.${env}.json`;
 }
 
-function mint(artifact: GraphArtifact, options: MockOptions): Overlay {
-  return buildMockOverlay(artifact, options.env, {
+function mint(artifact: GraphArtifact, env: string, options: MockOptions): Overlay {
+  return buildMockOverlay(artifact, env, {
     seed: options.seed,
     generatedAt: pinnedIsoOrUndefined(),
   });

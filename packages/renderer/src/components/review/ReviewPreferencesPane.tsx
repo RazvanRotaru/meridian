@@ -4,7 +4,7 @@
  */
 
 import type { CSSProperties } from "react";
-import { LOGIC_VIEW_MODES } from "../../derive/flowViewModel";
+import { STATIC_LOGIC_VIEW_MODES } from "../../derive/flowViewModel";
 import type { ReviewFlowSplitView } from "../../state/reviewPreferences";
 
 const HEADING_ID = "review-preferences-heading";
@@ -44,11 +44,13 @@ const OPTION_DETAILS: Record<ReviewFlowSplitView, {
   },
 };
 
-// Keep the recommended default first, then follow the canonical Logic-view order. Deriving the
-// list from LOGIC_VIEW_MODES means a future projection cannot silently disappear from preferences.
+// Keep the recommended default first, then follow the canonical static Logic-view order. Deriving
+// the list here means a future reusable projection cannot silently disappear from preferences.
 const OPTIONS = [
   "timeline" as const,
-  ...LOGIC_VIEW_MODES.map(({ mode }) => mode).filter((mode) => mode !== "timeline"),
+  ...STATIC_LOGIC_VIEW_MODES
+    .map(({ mode }) => mode)
+    .filter((mode) => mode !== "timeline"),
 ].map((value) => ({ value, ...OPTION_DETAILS[value] }));
 
 export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {

@@ -14,7 +14,7 @@ import type { GraphArtifact } from "@meridian/core";
 import { CliError, EXIT } from "../errors";
 import { injectBootScript } from "./boot-script";
 import type { OverlaySource } from "./overlay-source";
-import { sendGraph, sendMeta, sendOverlay } from "./api";
+import { sendGraph, sendMeta, sendOverlay, sendTraces } from "./api";
 import { sendSource } from "./source-serve";
 import { serveStatic } from "./static-files";
 import type { StaticAssets } from "./static-files";
@@ -46,7 +46,7 @@ function loadAssets(config: ServerConfig): StaticAssets {
 function route(config: ServerConfig, assets: StaticAssets, request: IncomingMessage, response: ServerResponse): void {
   const url = new URL(request.url ?? "/", "http://localhost");
   if (url.pathname === "/api/meta") {
-    sendMeta(response, config.artifact, config.overlay);
+    sendMeta(response, config.artifact, config.overlay, config.preselectedEnv);
     return;
   }
   if (url.pathname === "/api/graph") {
@@ -54,7 +54,25 @@ function route(config: ServerConfig, assets: StaticAssets, request: IncomingMess
     return;
   }
   if (url.pathname === "/api/overlay") {
-    sendOverlay(response, config.artifact, config.overlay, url.searchParams.get("env"));
+    sendOverlay(
+      response,
+      config.artifact,
+      config.overlay,
+      url.searchParams.get("env"),
+      url.searchParams.get("source"),
+      config.preselectedEnv,
+    );
+    return;
+  }
+  if (url.pathname === "/api/traces") {
+    sendTraces(
+      response,
+      config.artifact,
+      config.overlay,
+      url.searchParams.get("env"),
+      url.searchParams.get("source"),
+      config.preselectedEnv,
+    );
     return;
   }
   if (url.pathname === "/api/source") {

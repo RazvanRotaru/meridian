@@ -8,7 +8,7 @@ import { blockOpenKeysForSelection, entryOpenKeysForSelection, withOpenKeys } fr
 export function FlowExplorerPanel() {
   const open = useBlueprint((state) => state.flowExplorerOpen);
   const viewMode = useBlueprint((state) => state.viewMode);
-  const selection = useBlueprint((state) => state.flowSelection);
+  const selection = useBlueprint((state) => state.flowPaneOrigin === "request" ? null : state.flowSelection);
   const { selectFlowEntry } = useBlueprintActions();
   const tree = useFlowTree();
   const flows = useLogicFlows();

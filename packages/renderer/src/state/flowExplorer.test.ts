@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FlowStep, GraphArtifact, GraphNode } from "@meridian/core";
-import { LOGIC_VIEW_MODES } from "../derive/flowViewModel";
+import { STATIC_LOGIC_VIEW_MODES } from "../derive/flowViewModel";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { createBlueprintStore } from "./store";
 
@@ -71,7 +71,7 @@ describe("flow explorer store slice", () => {
       flowSplitView: "timeline",
       openFlowSplitOnSelect: false,
     });
-    for (const { mode } of LOGIC_VIEW_MODES) {
+    for (const { mode } of STATIC_LOGIC_VIEW_MODES) {
       store.getState().setReviewFlowSplitView(mode);
       expect(store.getState().reviewFlowSplitView).toBe(mode);
       expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({

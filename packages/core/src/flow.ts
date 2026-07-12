@@ -33,12 +33,25 @@ export type FlowCallAsync =
    * extraction can resolve them; value-only/unresolved operands still retain a readable label. */
   | { kind: "barrier"; mode: FlowBarrierMode; inputs: FlowAsyncInput[] };
 
+/** Portable source anchor emitted with a static flow step. The POC combines it with the owning
+ * callable to correlate runtime events without serializing machine-specific absolute paths;
+ * production instrumentation should additionally use a generated site id. */
+export interface FlowSourceAnchor {
+  file: string;
+  line: number;
+  col?: number;
+}
+
+interface LocatedFlowStep {
+  source?: FlowSourceAnchor;
+}
+
 export type FlowStep =
   /** `awaited` — the call sits under an `await` (execution holds for it). `detached` — the call's
    * result is deliberately dropped (`void expr` or an un-awaited Promise in statement position):
    * fire-and-forget work that outlives this flow. Both flags are absent (not false) when a call is
    * plain synchronous, so older artifacts and older readers agree byte-for-byte. */
-  | {
+  | ({
       kind: "call";
       label: string;
       target: NodeId | null;
@@ -46,24 +59,24 @@ export type FlowStep =
       awaited?: boolean;
       detached?: boolean;
       async?: FlowCallAsync;
-    }
+    } & LocatedFlowStep)
   /** A structural wait with no chartable call block of its own: usually `await pending`, where the
    * task started earlier, and also unnameable direct operands such as `await import(...)`. Nameable
    * calls retain their existing call step and use `call.async.kind === "direct-await"` instead. */
-  | { kind: "await"; label: string; mode: "single"; inputs: FlowAsyncInput[] }
-  | { kind: "loop"; label: string; body: FlowStep[] }
+  | ({ kind: "await"; label: string; mode: "single"; inputs: FlowAsyncInput[] } & LocatedFlowStep)
+  | ({ kind: "loop"; label: string; body: FlowStep[] } & LocatedFlowStep)
   /** `branchKind` is the STRUCTURED discriminator (if/switch/try); older artifacts predate it, so
    * readers go through `branchKindOf`, which falls back to the label. Never sniff labels directly —
    * a `case catchAll:` label is presentation, not semantics. */
-  | { kind: "branch"; label: string; paths: FlowPath[]; branchKind?: BranchKind }
+  | ({ kind: "branch"; label: string; paths: FlowPath[]; branchKind?: BranchKind } & LocatedFlowStep)
   /** An inline callback handed to a call (`useEffect(() => …)`, `setTimeout(() => …)`) or bound
    * to a JSX attribute (`onClick={() => …}`). Its body nests here rather than charting as flat
    * siblings, because HANDING OVER a callback asserts nothing about when — or whether — it runs. */
-  | { kind: "callback"; label: string; body: FlowStep[] }
+  | ({ kind: "callback"; label: string; body: FlowStep[] } & LocatedFlowStep)
   /** A `return` or `throw`: this path of the flow ENDS here. Downstream views need this to stop
    * pretending a guard's then-branch rejoins the flow — everything after an exiting `if` is really
    * the else branch. `label` is the truncated returned/thrown expression, null for a bare return. */
-  | { kind: "exit"; variant: ExitVariant; label: string | null };
+  | ({ kind: "exit"; variant: ExitVariant; label: string | null } & LocatedFlowStep);
 
 export type ExitVariant = "return" | "throw";
 
@@ -78,6 +91,12 @@ export interface FlowPath {
   body: FlowStep[];
   /** Absent in older artifacts — read through `pathRole`, which falls back to the label. */
   role?: FlowPathRole;
+  /** Runtime `branch.taken.pathId` join. Extractors use a semantic id (`then`, `else`, `catch`,
+   * case text, …); generated probes must emit the same id for this source path. */
+  pathId?: string;
+  /** Optional path-specific anchor, primarily for catch clauses whose telemetry fires at `catch`
+   * rather than at the enclosing `try` statement. */
+  source?: FlowSourceAnchor;
 }
 
 /** Callable node id -> its ordered logic flow. Lives under `artifact.extensions.logicFlow`. */

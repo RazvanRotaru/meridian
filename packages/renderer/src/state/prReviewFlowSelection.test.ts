@@ -605,6 +605,26 @@ describe("PR-review logic-flow selection", () => {
     expect(store.getState().moduleSelected).toEqual(new Set());
   });
 
+  it("does not carry a request telemetry split across a resumed PR artifact", async () => {
+    const store = await activeReviewStore();
+    store.getState().closeMinimalGraph();
+    store.setState({
+      flowSelection: null,
+      flowPaneOrigin: "request",
+      requestFlowTraceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      requestFlowExpansionOverrides: new Set(["runtime-occurrence"]),
+      flowPaneLayoutStatus: "ready",
+    });
+
+    await store.getState().resumePrReview();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    expect(store.getState().flowPaneOrigin).toBeNull();
+    expect(store.getState().requestFlowTraceId).toBeNull();
+    expect(store.getState().requestFlowExpansionOverrides).toEqual(new Set());
+    expect(store.getState().flowPaneLayoutStatus).toBe("idle");
+  });
+
   it("preserves ordinary review selection across a soft close and resume when no flow is open", async () => {
     const store = await activeReviewStore();
     store.setState({

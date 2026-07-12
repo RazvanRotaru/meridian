@@ -5,11 +5,14 @@
  * privacy settings, storage quotas, and non-browser test environments can make localStorage throw.
  */
 
-import { isLogicViewMode, type LogicViewMode } from "../derive/flowViewModel";
+import { STATIC_LOGIC_VIEW_MODES, type StaticLogicViewMode } from "../derive/flowViewModel";
 
 const STORAGE_KEY = "meridian.prReviewPreferences";
 
-export type ReviewFlowSplitView = LogicViewMode;
+/** Request trace is an observed-telemetry surface, not a static PR-review projection. Keeping the
+ * preference vocabulary narrower prevents a telemetry source from becoming a persisted review
+ * layout choice. */
+export type ReviewFlowSplitView = StaticLogicViewMode;
 
 export interface ReviewPreferences {
   version: 2;
@@ -52,7 +55,7 @@ function coerce(value: unknown): ReviewPreferences {
   }
   const record = value as Record<string, unknown>;
   if (record.version === 1) {
-    if (typeof record.flowSplitView !== "string" || !isLogicViewMode(record.flowSplitView)) {
+    if (typeof record.flowSplitView !== "string" || !isReviewFlowSplitView(record.flowSplitView)) {
       return defaults();
     }
     return { version: 2, flowSplitView: record.flowSplitView, openFlowSplitOnSelect: true };
@@ -60,7 +63,7 @@ function coerce(value: unknown): ReviewPreferences {
   if (record.version !== 2) {
     return defaults();
   }
-  const flowSplitView = typeof record.flowSplitView === "string" && isLogicViewMode(record.flowSplitView)
+  const flowSplitView = typeof record.flowSplitView === "string" && isReviewFlowSplitView(record.flowSplitView)
     ? record.flowSplitView
     : DEFAULT_REVIEW_PREFERENCES.flowSplitView;
   const openFlowSplitOnSelect = typeof record.openFlowSplitOnSelect === "boolean"
@@ -71,4 +74,8 @@ function coerce(value: unknown): ReviewPreferences {
 
 function defaults(): ReviewPreferences {
   return { ...DEFAULT_REVIEW_PREFERENCES };
+}
+
+function isReviewFlowSplitView(value: string): value is ReviewFlowSplitView {
+  return STATIC_LOGIC_VIEW_MODES.some((entry) => entry.mode === value);
 }

@@ -49,17 +49,27 @@ function ExecPins() {
 }
 
 function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
-  const { toggleLogicExpand, showCode, expandCode, closeCode } = useBlueprintActions();
+  const { toggleLogicExpand, toggleRequestFlowExpand, showCode, expandCode, closeCode } = useBlueprintActions();
   const index = useBlueprint((s) => s.index);
   const sourceUrl = useBlueprint((s) => s.sourceUrl);
   const logicSelected = useBlueprint((s) => s.logicSelected);
+  const requestOpen = useBlueprint((s) => s.flowPaneOrigin === "request");
+  const requestSelected = useBlueprint((s) => (
+    s.flowPaneOrigin === "request" && s.moduleSelected.size === 1
+      ? [...s.moduleSelected][0] ?? null
+      : null
+  ));
   const codeView = useBlueprint((s) => s.codeView);
   const coverage = useBlueprint((s) => (s.coverageMode ? s.coverage : null));
   const d = data as LogicNodeData;
-  const select = selectStateFor(d.targetId, logicSelected);
+  const select = selectStateFor(d.targetId, d.runtime ? requestSelected : logicSelected);
   const changedStatus = d.targetId ? index.changedStatus.get(d.targetId) : undefined;
   const changed = changedStatus !== undefined;
   const changedRing = changedColor(changedStatus);
+  if (d.runtime) {
+    return <RequestRuntimeBlock id={id} data={d} select={select} />;
+  }
+  const toggleExpand = requestOpen ? toggleRequestFlowExpand : toggleLogicExpand;
   // A method call (one made through a receiver / a class method) reads apart from a free function at a
   // glance: a distinct glyph, and a small indigo shift off the blue call accent. A "defined here" node
   // keeps its teal DECLARATION accent regardless (its declaration-ness dominates), gaining only the
@@ -78,7 +88,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   if (d.isContainer) {
     return (
       <div style={WRAP}>
-        <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={d.provenance} select={select} badge={battery} changedRing={changed ? changedRing : null} nestedDetachedCount={d.nestedDetachedCount} />
+        <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleExpand(id)} provenance={d.provenance} select={select} badge={battery} changedRing={changed ? changedRing : null} nestedDetachedCount={d.nestedDetachedCount} />
         <AsyncDecoration d={d} />
       </div>
     );
@@ -154,7 +164,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
                 dead ▸. (Existing non-definition blocks are unaffected: non-greyed ⇒ expandable.)
                 Definition nodes also omit it: they're a grid appended after layout, so expand-in-place
                 never re-nests them — double-click to drill is their gesture instead. */}
-            {d.expandable && !d.definition ? <ExpandButton expanded={false} onToggle={() => toggleLogicExpand(id)} /> : null}
+            {d.expandable && !d.definition ? <ExpandButton expanded={false} onToggle={() => toggleExpand(id)} /> : null}
             {codeButton}
           </span>
         </div>
@@ -171,6 +181,99 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
       {inline}
     </div>
   );
+}
+
+/** One concrete request moment. It deliberately reads apart from a static call block: the title
+ * says what was observed (span/decision/loop/exception), while the body carries caller/timing and
+ * privacy-safe captured values. The normal exec pins let the existing Logic layout draw the actual
+ * request order through these occurrence-specific cards. */
+function RequestRuntimeBlock(props: { id: string; data: LogicNodeData; select: SelectState }) {
+  const { toggleRequestFlowExpand } = useBlueprintActions();
+  const runtime = props.data.runtime!;
+  const accent = runtimeAccent(runtime.kind, runtime.status);
+  const glyph = runtime.kind === "span"
+    ? "▶"
+    : runtime.kind === "branch"
+      ? "◆"
+      : runtime.kind === "loop"
+        ? "↻"
+        : runtime.kind === "exception"
+        ? "⚡"
+          : "⤳";
+  if (props.data.isContainer) {
+    return (
+      <div
+        style={selectStyle(frameStyle(accent), props.select)}
+        data-request-runtime-kind={runtime.kind}
+        data-request-runtime-status={runtime.status}
+        data-request-runtime-target={props.data.targetId ?? undefined}
+        data-request-runtime-expanded="true"
+        title={[runtime.detail, ...(runtime.badges ?? [])].filter(Boolean).join(" · ")}
+      >
+        <ExecPins />
+        <div style={runtimeTitleStyle(accent)}>
+          <span style={GLYPH}>{glyph}</span>
+          <span style={NAME}>{props.data.label}</span>
+          <span style={RUNTIME_KIND}>{runtime.kind}</span>
+          {runtime.durationMs === undefined ? null : <span style={RUNTIME_DURATION}>{formatRuntimeDuration(runtime.durationMs)}</span>}
+          {runtime.eventCount === undefined || runtime.eventCount === 0 ? null : <span style={RUNTIME_EVENT_COUNT}>{runtime.eventCount} evt</span>}
+          {runtime.badges?.slice(0, 2).map((badge, index) => (
+            <span key={`${index}:${badge}`} style={RUNTIME_FRAME_BADGE} title={badge}>{badge}</span>
+          ))}
+          {(runtime.badges?.length ?? 0) > 2 ? <span style={RUNTIME_MORE}>+{runtime.badges!.length - 2}</span> : null}
+          {runtime.status === undefined ? null : <span style={runtimeStatusStyle(runtime.status)}>{runtime.status}</span>}
+          <ExpandButton expanded onToggle={() => toggleRequestFlowExpand(props.id)} />
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={WRAP}>
+      <div
+        style={selectStyle({ ...RUNTIME_BODY, cursor: props.data.targetId === null ? "default" : "pointer" }, props.select)}
+        data-request-runtime-kind={runtime.kind}
+        data-request-runtime-status={runtime.status}
+        data-request-runtime-target={props.data.targetId ?? undefined}
+        data-request-runtime-expanded="false"
+        title={props.data.targetId === null ? undefined : "Highlight this observed code node on the graph"}
+      >
+        <ExecPins />
+        <div style={runtimeTitleStyle(accent)}>
+          <span style={GLYPH}>{glyph}</span>
+          <span style={NAME} title={props.data.label}>{props.data.label}</span>
+          <span style={RUNTIME_KIND}>{runtime.kind}</span>
+          {runtime.durationMs === undefined ? null : <span style={RUNTIME_DURATION}>{formatRuntimeDuration(runtime.durationMs)}</span>}
+          {runtime.eventCount === undefined || runtime.eventCount === 0 ? null : <span style={RUNTIME_EVENT_COUNT}>{runtime.eventCount} evt</span>}
+          {runtime.status === undefined ? null : <span style={runtimeStatusStyle(runtime.status)}>{runtime.status}</span>}
+          {props.data.expandable ? <ExpandButton expanded={false} onToggle={() => toggleRequestFlowExpand(props.id)} /> : null}
+        </div>
+        {runtime.detail ? <div style={RUNTIME_DETAIL} title={runtime.detail}>{runtime.detail}</div> : null}
+        {runtime.badges && runtime.badges.length > 0 ? (
+          <div style={RUNTIME_BADGES}>
+            {runtime.badges.slice(0, 3).map((badge, index) => (
+              <span key={`${index}:${badge}`} style={RUNTIME_BADGE} title={badge}>{badge}</span>
+            ))}
+            {runtime.badges.length > 3 ? <span style={RUNTIME_MORE}>+{runtime.badges.length - 3}</span> : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function runtimeAccent(kind: NonNullable<LogicNodeData["runtime"]>["kind"], status: NonNullable<LogicNodeData["runtime"]>["status"]): string {
+  if (status === "error") return "#D75B64";
+  if (kind === "span") return status === "ok" ? "#58C9A3" : "#657181";
+  if (kind === "branch") return "#E6B84D";
+  if (kind === "loop") return "#61C4D8";
+  if (kind === "exception") return "#D98A5B";
+  return "#9B7BD8";
+}
+
+function formatRuntimeDuration(durationMs: number): string {
+  if (durationMs >= 1000) return `${(durationMs / 1000).toFixed(2)}s`;
+  if (durationMs >= 10) return `${durationMs.toFixed(1)}ms`;
+  return `${durationMs.toFixed(2)}ms`;
 }
 
 /**
@@ -204,14 +307,16 @@ function ServiceGroupNode({ data }: NodeProps<LogicRfNode>) {
 }
 
 function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
-  const { toggleLogicExpand } = useBlueprintActions();
+  const { toggleLogicExpand, toggleRequestFlowExpand } = useBlueprintActions();
   const logicSelected = useBlueprint((s) => s.logicSelected);
+  const requestOpen = useBlueprint((s) => s.flowPaneOrigin === "request");
   const d = data as LogicNodeData;
   const select = selectStateFor(d.targetId, logicSelected);
+  const toggleExpand = requestOpen ? toggleRequestFlowExpand : toggleLogicExpand;
   const accent = CONTROL_ACCENT[d.logicKind] ?? LOOP_ACCENT;
   const glyph = CONTROL_GLYPH[d.logicKind] ?? "↻";
   if (d.isContainer) {
-    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleLogicExpand(id)} provenance={null} select={select} />;
+    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleExpand(id)} provenance={null} select={select} />;
   }
   // No whole-node onClick: a single click on a container would fight both node selection and the
   // double-click-to-dive gesture. Collapse/expand is the explicit title button only (collapsed → ▸).
@@ -222,7 +327,7 @@ function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
         <span style={GLYPH}>{glyph}</span>
         <span style={NAME} title={d.label}>{d.label}</span>
         <span style={COUNT}>{d.childCount}</span>
-        <ExpandButton expanded={false} onToggle={() => toggleLogicExpand(id)} />
+        <ExpandButton expanded={false} onToggle={() => toggleExpand(id)} />
       </div>
     </div>
   );
@@ -377,7 +482,7 @@ function ContainerFrame(props: { accent: string; label: string; glyph: string; o
           <NestedDetachedBadge count={props.nestedDetachedCount} />
           {props.badge}
           {props.changedRing ? <ChangedTag color={props.changedRing} /> : null}
-          <ExpandButton expanded onToggle={props.onToggle} />
+          {props.onToggle ? <ExpandButton expanded onToggle={props.onToggle} /> : null}
         </span>
       </div>
       {(props.nestedDetachedCount ?? 0) > 0 ? <span style={NESTED_DETACHED_RAIL} aria-hidden="true" /> : null}
@@ -540,11 +645,13 @@ function DetachedTail() {
 }
 
 function ExpandButton(props: { expanded: boolean; onToggle: () => void }) {
+  const actionLabel = props.expanded ? "collapse" : "expand in place";
   return (
     <button
       type="button"
       style={EXPAND_BTN}
-      title={props.expanded ? "collapse" : "expand in place"}
+      title={actionLabel}
+      aria-label={actionLabel}
       aria-expanded={props.expanded}
       onClick={(e) => {
         e.stopPropagation();
@@ -796,6 +903,16 @@ function scopeGlyph(scope: LogicNodeData["callScope"], fallback: string): string
   return scope === "external" ? "↗" : scope === "unresolved" ? "?" : fallback;
 }
 
+const RUNTIME_BODY: React.CSSProperties = { ...BODY, borderColor: "#34404C", background: "#0F151C" };
+const RUNTIME_KIND: React.CSSProperties = { flexShrink: 0, border: "1px solid rgba(5,12,17,0.28)", borderRadius: 999, padding: "1px 5px", fontSize: 8, letterSpacing: "0.05em", textTransform: "uppercase", opacity: 0.78 };
+const RUNTIME_DURATION: React.CSSProperties = { flexShrink: 0, marginLeft: "auto", fontSize: 9.5, fontVariantNumeric: "tabular-nums", opacity: 0.82 };
+const RUNTIME_EVENT_COUNT: React.CSSProperties = { flexShrink: 0, fontSize: 8.5, fontVariantNumeric: "tabular-nums", opacity: 0.82 };
+const RUNTIME_FRAME_BADGE: React.CSSProperties = { minWidth: 0, maxWidth: 170, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", border: "1px solid rgba(5,12,17,0.28)", borderRadius: 999, padding: "1px 6px", fontSize: 8.5, fontWeight: 500 };
+const RUNTIME_DETAIL: React.CSSProperties = { padding: "7px 9px 3px", color: "#9EACBC", fontSize: 9.5, lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const RUNTIME_BADGES: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "4px 8px 7px", overflow: "hidden" };
+const RUNTIME_BADGE: React.CSSProperties = { minWidth: 0, maxWidth: 190, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", border: "1px solid #334150", borderRadius: 999, background: "rgba(101,137,166,0.09)", color: "#AAB9C8", padding: "1px 6px", fontSize: 8.5 };
+const RUNTIME_MORE: React.CSSProperties = { flexShrink: 0, color: "#768697", fontSize: 8.5 };
+
 // A branch renders as an outline diamond (the classic decision shape) so it never reads as a
 // rectangular building block. The wrapper hosts the exec pins and any selection dim.
 const BRANCH_WRAP: React.CSSProperties = { position: "relative", width: "100%", height: "100%", fontFamily: MONO };
@@ -910,6 +1027,27 @@ function titleStyle(accent: string): React.CSSProperties {
     color: "#0B0E13",
     fontSize: 12,
     fontWeight: 700,
+  };
+}
+
+function runtimeTitleStyle(accent: string): React.CSSProperties {
+  return {
+    ...titleStyle(accent),
+    minHeight: 29,
+    boxSizing: "border-box",
+  };
+}
+
+function runtimeStatusStyle(status: "unset" | "ok" | "error"): React.CSSProperties {
+  return {
+    flexShrink: 0,
+    border: "1px solid rgba(5,12,17,0.28)",
+    borderRadius: 999,
+    padding: "1px 5px",
+    fontSize: 8,
+    textTransform: "uppercase",
+    color: status === "error" ? "#3D0710" : "#0B1B17",
+    background: status === "error" ? "rgba(255,228,230,0.45)" : "rgba(232,255,247,0.35)",
   };
 }
 

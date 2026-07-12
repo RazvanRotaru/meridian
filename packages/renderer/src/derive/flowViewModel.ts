@@ -12,13 +12,21 @@ import { branchKindOf, parseNodeId } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 
 /** Which projection of the logic flow is on screen. "graph" is the exec-pins canvas (the default). */
-export type LogicViewMode = "graph" | "metro" | "blocks" | "timeline";
+export type LogicViewMode = "graph" | "metro" | "blocks" | "timeline" | "request";
+export type StaticLogicViewMode = Exclude<LogicViewMode, "request">;
 
-export const LOGIC_VIEW_MODES: ReadonlyArray<{ mode: LogicViewMode; label: string }> = [
+/** Static projections are reusable in PR review; request is a telemetry-backed surface and stays
+ * outside that preference vocabulary. */
+export const STATIC_LOGIC_VIEW_MODES: ReadonlyArray<{ mode: StaticLogicViewMode; label: string }> = [
   { mode: "graph", label: "Exec graph" },
   { mode: "metro", label: "Metro" },
   { mode: "blocks", label: "Blocks" },
   { mode: "timeline", label: "Timeline" },
+];
+
+export const LOGIC_VIEW_MODES: ReadonlyArray<{ mode: LogicViewMode; label: string }> = [
+  ...STATIC_LOGIC_VIEW_MODES,
+  { mode: "request", label: "Request trace" },
 ];
 
 export function isLogicViewMode(value: string): value is LogicViewMode {

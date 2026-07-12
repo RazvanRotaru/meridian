@@ -130,7 +130,10 @@ describe("createWebServer generate -> view (offline path source)", () => {
     const view = await (await fetch(`${base}/view?id=${result.id}`)).text();
     expect(view).toContain("window.__MERIDIAN__=");
     expect(view).toContain(`"graphUrl":"/api/graph?id=${result.id}"`);
+    expect(view).toContain('"traceUrl":"/api/traces"');
     expect(view).toContain('"hasOverlay":false');
+    expect(view).toContain('"telemetrySources":[]');
+    expect(view).toContain('"preselectedTelemetrySourceId":null');
     expect(view).toContain('"defaultEnv":null');
     // A path-sourced session has no GitHub identity: the boot contract carries null (a GitHub
     // session carries the {repository, subdir} source object instead of the old boolean).
@@ -224,6 +227,14 @@ describe("createWebServer auth routes (sign-in always available)", () => {
     const res = await fetch(`${base}/api/nope`);
     expect(res.status).toBe(404);
     expect(res.headers.get("content-type")).toContain("application/json");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("keeps request telemetry unavailable in web mode", async () => {
+    const res = await fetch(`${base}/api/traces?env=staging`);
+    expect(res.status).toBe(400);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/no telemetry traces/i) });
   });
 });
 

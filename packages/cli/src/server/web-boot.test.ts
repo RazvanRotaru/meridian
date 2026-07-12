@@ -11,6 +11,10 @@ describe("injectViewBoot", () => {
     const github = injectViewBoot("<head></head>", "graph-1", { kind: "github", owner: "octo", repo: "repo" });
     const local = injectViewBoot("<head></head>", "graph-2", { kind: "other" });
 
+    expect(github).toContain('"traceUrl":"/api/traces"');
+    expect(local).toContain('"traceUrl":"/api/traces"');
+    expect(github).toContain('"telemetrySources":[]');
+    expect(github).toContain('"preselectedTelemetrySourceId":null');
     expect(github).toContain('"githubSource":{"repository":"octo/repo","subdir":""}');
     expect(local).toContain('"githubSource":null');
   });

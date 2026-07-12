@@ -26,9 +26,12 @@ import { PrsView } from "./prs/PrsView";
 // code". Both anchor to this relatively-positioned wrapper.
 export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
   const viewMode = useBlueprint((state) => state.viewMode);
-  const flowPaneOpen = useBlueprint((state) => state.flowSelection !== null
-    && flowPaneShouldRender(state.reviewFlowBaseline !== null, state.reviewOpenFlowSplitOnSelect));
-  const reviewFlowOpen = useBlueprint((state) => state.flowSelection !== null
+  const flowPaneOpen = useBlueprint((state) => state.flowPaneOrigin === "request"
+    ? state.requestFlowTraceId !== null
+    : state.flowSelection !== null
+      && flowPaneShouldRender(state.reviewFlowBaseline !== null, state.reviewOpenFlowSplitOnSelect));
+  const reviewFlowOpen = useBlueprint((state) => state.flowPaneOrigin !== "request"
+    && state.flowSelection !== null
     && state.reviewFlowBaseline !== null
     && state.reviewOpenFlowSplitOnSelect);
   return (

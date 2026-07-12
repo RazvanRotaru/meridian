@@ -1,6 +1,6 @@
 /**
- * The collapsible top-left control panel: its project identity, mandatory environment gate (when
- * the artifact ships an overlay), and PR review remain visible while the detailed lens / overlay /
+ * The collapsible top-left control panel: its project identity, explicit request-data source gate,
+ * and PR review remain visible while the detailed lens / overlay /
  * filter controls fold away. Canvas-wide actions live in the separate bottom action bar. Categories,
  * relationships and the module-only dials show on the module surface (Map + Service); the
  * composition worklist rides along on the Service lens.
@@ -30,6 +30,8 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
   const [controlsCollapsed, setControlsCollapsed] = useState(false);
   const viewMode = useBlueprint((state) => state.viewMode);
   const hasOverlay = useBlueprint((state) => state.hasOverlay);
+  const provider = useBlueprint((state) => state.provider);
+  const telemetrySources = useBlueprint((state) => state.telemetrySources);
   const { resetCategoryFilter, resetRelationshipFilter } = useBlueprintActions();
 
   const isComposition = viewMode === "call";
@@ -40,7 +42,7 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
       <div id={CONTROL_PANEL_ID} style={PANEL_STYLE}>
         <ControlPanelHeader />
 
-        {hasOverlay ? (
+        {hasOverlay || provider !== null || telemetrySources.length > 0 ? (
           <>
             <Divider />
             <EnvSelector preselectedEnv={props.preselectedEnv} />

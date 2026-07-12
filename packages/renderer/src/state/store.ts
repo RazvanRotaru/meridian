@@ -21,19 +21,34 @@ import type {
   LogicFlows,
   NodeId,
   NodeMetrics,
+  RequestTrace,
+  TraceBundle,
+  TraceGraphRef,
 } from "@meridian/core";
 import { applyChangedIds, applyChangedStatus, type GraphIndex } from "../graph/graphIndex";
 import { matchAffectedFiles } from "../derive/matchAffectedFiles";
 import { isSourceBackedNode } from "../derive/sourceBackedNode";
 import { rollupSeeds } from "../derive/seedRollup";
 import { filesInScope } from "../derive/filesInScope";
-import type { TelemetryProvider } from "../telemetry/provider";
+import { deriveRequestGraphOverlay } from "../derive/requestGraphOverlay";
+import { traceGraphRefMismatches } from "../derive/requestTimelineModel";
+import {
+  deriveMinimalCodebaseContext,
+  type MinimalCodebaseContext,
+} from "../derive/minimalCodebaseContext";
+import type { LogicNodeData } from "../derive/logicGraph";
+import type {
+  TelemetryProvider,
+  TelemetrySourceDescriptor,
+  TelemetrySourceRegistration,
+} from "../telemetry/provider";
 import type { ViewMode } from "../derive/edgeSelection";
 import { relatedNodeIds, type FlowSelectionRef } from "../derive/flowBlocks";
 import { idsToExpand, idsToCollapse, type ExpandableNode } from "../derive/scopedExpansion";
 import type { LogicViewMode } from "../derive/flowViewModel";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveFlowPaneLayout } from "./deriveFlowPaneLayout";
+import { deriveRequestFlowPaneLayout } from "./deriveRequestFlowPaneLayout";
 import { layoutModuleTree } from "../layout/moduleLevelLayout";
 import { deriveMinimalGraphLayout } from "./deriveMinimalGraphLayout";
 import { captureMapPositions, promotedMemberRect } from "./mapPositions";
@@ -144,6 +159,7 @@ import {
 export const GHOST_DEPTH_ALL = 99;
 
 export type LayoutStatus = "idle" | "laying-out" | "ready" | "error";
+export type FlowPaneOrigin = "explorer" | "request";
 
 /** One in-flight layout request's copy. It is snapshotted at the initiating action, never inferred
  * later from sticky lens settings, and cleared only by that request's winning completion/failure. */
@@ -248,6 +264,15 @@ export interface BlueprintState {
   /** Phase-1 Code flows explorer state: the selection is shared by the tree and panes. */
   flowExplorerOpen: boolean;
   flowSelection: FlowSelectionRef | null;
+  /** Why the shared split pane is open. Request inspection deliberately reuses its Logic layout
+   * without inheriting the explorer/PR reveal semantics. */
+  flowPaneOrigin: FlowPaneOrigin | null;
+  /** The captured request owning a runtime-derived split. Kept separate from `flowSelection`, which
+   * always denotes one static artifact flow and must never collapse repeated request occurrences. */
+  requestFlowTraceId: string | null;
+  /** Request-occurrence/static-child ids toggled away from Exec's defaults. Empty means every
+   * top-level request occurrence is collapsed; nested call/control ids retain Exec's XOR semantics. */
+  requestFlowExpansionOverrides: Set<string>;
   flowPaneRfNodes: LogicRfNode[];
   flowPaneRfEdges: LogicRfEdge[];
   flowPaneLayoutStatus: LayoutStatus;
@@ -421,7 +446,23 @@ export interface BlueprintState {
    * selected. Ephemeral: never serialized to the URL (it is a signal, not navigation state). */
   recenterSeq: number;
   telemetry: Record<string, NodeMetrics>;
+  /** Request executions captured for the explicitly loaded environment. */
+  requestTraces: RequestTrace[];
+  selectedTraceId: string | null;
+  /** Artifact identity carried by the bundle; navigation is disabled unless this exactly matches
+   * the loaded graph. Kept beside traces so the UI never has to infer provenance from node ids. */
+  traceGraphRef: TraceGraphRef | null;
+  /** Producer-declared provenance. Mock captures are synthetic demos and must never be presented as
+   * observed production evidence. */
+  traceSource: TraceBundle["source"] | null;
+  telemetryLoading: boolean;
+  telemetryError: string | null;
+  traceLoading: boolean;
+  traceError: string | null;
   environment: string | null;
+  /** Selectable source metadata is serializable; transports stay in the store's private catalog. */
+  telemetrySources: TelemetrySourceDescriptor[];
+  telemetrySourceId: string | null;
   provider: TelemetryProvider | null;
   hasOverlay: boolean;
   /** Base URL for on-demand source fetches; null when the server ships no source access. Node
@@ -514,10 +555,12 @@ export interface BlueprintState {
   recenter(): void;
   toggleFlowExplorer(): void;
   selectFlowEntry(ref: FlowSelectionRef | null): void;
-  /** Select one artifact node from the bottom flow pane. In a PR review this narrows the Map to
-   * that node's incident relationships (including its on-demand ghosts); null restores the whole
-   * selected flow as the graph emphasis. Outside review it is the pane-local selection only. */
+  /** Select one artifact node from the bottom flow pane. Request execution reveals/highlights the
+   * exact observed node on the graph; PR review narrows the Map to that node's incident relationships
+   * (including on-demand ghosts). Null clears request emphasis or restores the whole review flow. */
   selectFlowPaneTarget(nodeId: NodeId | null): void;
+  /** Expand/collapse one occurrence (or one namespaced static child) in the request split only. */
+  toggleRequestFlowExpand(nodeId: string): void;
   flowPaneRelayout(): Promise<void>;
   /** The logic flow charted for a callable, or undefined when it has none (empty body). */
   logicFlowFor(nodeId: string): FlowStep[] | undefined;
@@ -632,7 +675,14 @@ export interface BlueprintState {
   togglePrsView(): void;
   toggleShowTests(): void;
   toggleCoverageMode(): void;
+  /** Show every exact graph node observed by the selected request in the cheapest canonical Map
+   * scope. Reuses Minimal Graph's LCA/ancestor-expansion path and preserves request split context. */
+  revealSelectedTraceInCodebase(): void;
+  /** Open the selected request's reconstructed execution in the shared split pane. */
+  openSelectedRequestFlowPane(): void;
+  setTelemetrySource(id: string | null): void;
   setEnvironment(environment: string): void;
+  setSelectedTrace(traceId: string | null): void;
   refreshTelemetry(): Promise<void>;
   /** Load one node's review diff for the hover preview without taking over the global code modal. */
   loadCodePreview(node: GraphNode): Promise<CodeView | null>;
@@ -678,6 +728,8 @@ export interface StoreDependencies {
   artifact: GraphArtifact;
   index: GraphIndex;
   provider: TelemetryProvider | null;
+  telemetrySources?: TelemetrySourceRegistration[];
+  telemetrySourceId?: string | null;
   hasOverlay: boolean;
   sourceUrl: string | null;
   prSessionSource?: PrSessionSource | null;
@@ -1084,7 +1136,62 @@ function moduleSelectionRemovalPlan(state: BlueprintState): ModuleSelectionRemov
   };
 }
 
+function telemetryRegistrations(dependencies: StoreDependencies): TelemetrySourceRegistration[] {
+  if (dependencies.telemetrySources !== undefined) {
+    const seen = new Set<string>();
+    return dependencies.telemetrySources.flatMap((source) => {
+      if (seen.has(source.id)) return [];
+      seen.add(source.id);
+      return [{ ...source, environments: [...source.environments] }];
+    });
+  }
+  const provider = dependencies.provider;
+  if (provider === null) return [];
+  const kind = provider.id === "tempo" ? "tempo" : provider.id === "file" ? "file" : "mock";
+  return [{
+    id: provider.id,
+    kind,
+    label: kind === "tempo" ? "Tempo" : kind === "file" ? "Saved telemetry snapshot" : "Telemetry",
+    provenance: kind === "tempo" ? "observed" : kind === "file" ? "saved" : "synthetic",
+    environments: [...provider.listEnvironments()],
+    supportsMetrics: true,
+    supportsTraces: kind !== "file",
+    provider,
+  }];
+}
+
+function initialSourceId(
+  dependencies: StoreDependencies,
+  catalog: ReadonlyMap<string, TelemetrySourceRegistration>,
+): string | null {
+  // Supplying a catalog opts into explicit source selection. Legacy single-provider dependencies
+  // remain selected so existing embedders/tests keep their pre-catalog behavior.
+  const requested = dependencies.telemetrySources === undefined
+    ? dependencies.telemetrySourceId ?? dependencies.provider?.id ?? null
+    : dependencies.telemetrySourceId ?? null;
+  return requested !== null && catalog.has(requested) ? requested : null;
+}
+
+function sourceDescriptor(source: TelemetrySourceRegistration): TelemetrySourceDescriptor {
+  return {
+    id: source.id,
+    kind: source.kind,
+    label: source.label,
+    provenance: source.provenance,
+    environments: [...source.environments],
+    ...(source.environmentMode === undefined ? {} : { environmentMode: source.environmentMode }),
+    supportsMetrics: source.supportsMetrics,
+    supportsTraces: source.supportsTraces,
+  };
+}
+
 export function createBlueprintStore(dependencies: StoreDependencies): BlueprintStore {
+  const sourceRegistrations = telemetryRegistrations(dependencies);
+  const telemetrySourceCatalog = new Map(sourceRegistrations.map((source) => [source.id, source]));
+  const initialTelemetrySourceId = initialSourceId(dependencies, telemetrySourceCatalog);
+  const initialTelemetryProvider = initialTelemetrySourceId === null
+    ? null
+    : telemetrySourceCatalog.get(initialTelemetrySourceId)?.provider ?? null;
   // The lens to resume when the PR-review page is toggled back off; null == none captured yet.
   let lensBeforePrs: ViewMode | null = null;
   // Monotonic seq to drop a stale Logic-graph layout when a newer open/drill/toggle supersedes it.
@@ -1104,6 +1211,23 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const EMPTY_HIDDEN_IDS: ReadonlySet<string> = new Set<string>();
   // The code-dependency substrate (coupling edges at their real endpoints), same lifecycle.
   let blockDeps: BlockDeps | null = null;
+  // Request bulk-reveal and one-node clicks both install the same canonical Map projection. Keep
+  // artifact/cached-graph plumbing in one seam so those entry points cannot drift in disclosure.
+  const requestCodebaseContextFor = (
+    state: BlueprintState,
+    targetIds: readonly string[],
+  ): MinimalCodebaseContext | null => {
+    const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+    return deriveMinimalCodebaseContext({
+      index: state.index,
+      moduleGraph: (moduleGraph ??= buildModuleGraph(state.index)),
+      blockDeps: (blockDeps ??= buildBlockDeps(state.index)),
+      flows,
+      minimalMemberIds: targetIds,
+      hiddenIds: state.showTests ? EMPTY_HIDDEN_IDS : state.index.testIds,
+      demoteCommons: false,
+    });
+  };
   // The composition unit index (member → owning unit), built lazily on the first ⌘P reveal/add so a
   // picked symbol resolves to the unit/module card that draws it. Cached like moduleGraph/blockDeps.
   let unitIndex: UnitIndex | null = null;
@@ -1115,6 +1239,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   };
   // Same guard for the Code flows explorer's embedded flow preview pane.
   let flowPaneLayoutSeq = 0;
+  // Request-runtime clicks can trigger Map relayouts. Keep their camera handoff last-write-wins too:
+  // A → B → A must not let the first A's slower layout recenter over the final A selection.
+  let requestTargetRevealSeq = 0;
   // PR list/file fetches and PR-head preparation are independent async lanes; newer requests win
   // when the reader switches PRs (or re-clicks Review) mid-stream.
   let prsListSeq = 0;
@@ -1126,6 +1253,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let prFreshnessRequest: { number: number; revision: PrReviewRevision; promise: Promise<void> } | null = null;
   let prReviewRefreshSeq = 0;
   let prAnalyzeSeq = 0;
+  // Aggregate metrics and request traces share one invalidation sequence. Each settles independently,
+  // while a newer load/environment prevents either stale channel from repainting the store.
+  let telemetryFetchSeq = 0;
   let prAnalyzeCancellation: { sequence: number; resolve: () => void } | null = null;
   let prReviewEntryRequest: { number: number; promise: Promise<void> } | null = null;
   // Edge-evidence context switches are asynchronous source reads; only the latest click may win.
@@ -1205,6 +1335,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     nestByService: false,
     flowExplorerOpen: false,
     flowSelection: null,
+    flowPaneOrigin: null,
+    requestFlowTraceId: null,
+    requestFlowExpansionOverrides: new Set<string>(),
     flowPaneRfNodes: [],
     flowPaneRfEdges: [],
     flowPaneLayoutStatus: "idle",
@@ -1274,8 +1407,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewAllSeedIds: [],
     recenterSeq: 0,
     telemetry: {},
+    requestTraces: [],
+    selectedTraceId: null,
+    traceGraphRef: null,
+    traceSource: null,
+    telemetryLoading: false,
+    telemetryError: null,
+    traceLoading: false,
+    traceError: null,
     environment: null,
-    provider: dependencies.provider,
+    telemetrySources: sourceRegistrations.map(sourceDescriptor),
+    telemetrySourceId: initialTelemetrySourceId,
+    provider: initialTelemetryProvider,
     hasOverlay: dependencies.hasOverlay,
     sourceUrl,
     analyzeUrl,
@@ -1360,8 +1503,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           && state.flowSelection !== null
           && baseline !== null;
         flowPaneLayoutSeq += 1;
+        requestTargetRevealSeq += 1;
         set({
           flowSelection: null,
+          flowPaneOrigin: null,
+          requestFlowTraceId: null,
+          requestFlowExpansionOverrides: new Set<string>(),
           flowPaneRfNodes: [],
           flowPaneRfEdges: [],
           flowPaneLayoutStatus: "idle",
@@ -1417,6 +1564,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           || !sameMembers(minimalMemberIds, state.minimalMemberIds);
         set({
           flowSelection: ref,
+          flowPaneOrigin: "explorer",
+          requestFlowTraceId: null,
+          requestFlowExpansionOverrides: new Set<string>(),
           logicSelected: null,
           moduleSelected: related,
           moduleExpanded,
@@ -1448,7 +1598,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
         return;
       }
-      set({ flowSelection: ref });
+      set({
+        flowSelection: ref,
+        flowPaneOrigin: "explorer",
+        requestFlowTraceId: null,
+        requestFlowExpansionOverrides: new Set<string>(),
+      });
       // Both module lenses the explorer serves (Map + UI) bulk-reveal the flow's modules in the
       // SHARED module spaces — the phase-C unification retired the ui lens's private expansion.
       // The UI lens routes through its OWN reveal: a null focus means the RENDER ROOT there (not
@@ -1476,8 +1631,179 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().flowPaneRelayout();
     },
 
+    revealSelectedTraceInCodebase() {
+      const state = get();
+      if (
+        state.minimalSeedIds.length > 0
+        || state.moduleLayoutStatus === "laying-out"
+        || (state.viewMode !== "modules" && state.viewMode !== "call" && state.viewMode !== "ui")
+      ) {
+        return;
+      }
+      const trace = state.selectedTraceId === null
+        ? null
+        : state.requestTraces.find((candidate) => candidate.traceId === state.selectedTraceId) ?? null;
+      if (trace === null || traceGraphRefMismatches(state.traceGraphRef, state.artifact).length > 0) {
+        return;
+      }
+
+      // The request renderer accepts only the trace contract's exact node-id join. Feed the same
+      // proven set into Minimal Graph's canonical codebase projection so runtime labels or source
+      // coordinates can never become inferred graph evidence during reveal.
+      const exactNodeIds = [...deriveRequestGraphOverlay(trace, state.index).nodesById.keys()];
+      if (exactNodeIds.length === 0) {
+        return;
+      }
+      const context = requestCodebaseContextFor(state, exactNodeIds);
+      if (context === null) {
+        return;
+      }
+
+      const traceId = trace.traceId;
+      const revealedIds = [...context.highlightTargetIds];
+      set(canonicalRequestMapPatch(state, context));
+      // Do not route through selectModule/setViewMode: both are ordinary navigation and would close
+      // the request-origin Logic split. Once the canonical tree is ready, the existing recenter
+      // signal fits all revealed exact ids because context.reveal selected them as one set.
+      void get().moduleRelayout({ label: `Revealing ${revealedIds.length} observed node${revealedIds.length === 1 ? "" : "s"}…` }).then(() => {
+        const current = get();
+        if (current.selectedTraceId === traceId && current.viewMode === "modules") {
+          set({ recenterSeq: current.recenterSeq + 1 });
+        }
+      });
+    },
+
+    openSelectedRequestFlowPane() {
+      const state = get();
+      if (
+        (state.viewMode !== "modules" && state.viewMode !== "call" && state.viewMode !== "ui")
+        || state.minimalSeedIds.length > 0
+        || (state.flowSelection !== null && state.flowPaneOrigin !== "request")
+      ) {
+        return;
+      }
+      const trace = state.selectedTraceId === null
+        ? null
+        : state.requestTraces.find((candidate) => candidate.traceId === state.selectedTraceId) ?? null;
+      if (
+        trace === null
+        || traceGraphRefMismatches(state.traceGraphRef, state.artifact).length > 0
+      ) {
+        return;
+      }
+      if (state.flowPaneOrigin === "request" && state.requestFlowTraceId === trace.traceId) {
+        return;
+      }
+      requestTargetRevealSeq += 1;
+      set({
+        flowSelection: null,
+        flowPaneOrigin: "request",
+        requestFlowTraceId: trace.traceId,
+        requestFlowExpansionOverrides: new Set<string>(),
+        flowPaneRfNodes: [],
+        flowPaneRfEdges: [],
+        flowPaneLayoutStatus: "laying-out",
+      });
+      void get().flowPaneRelayout();
+    },
+
+    toggleRequestFlowExpand(nodeId) {
+      const state = get();
+      if (state.flowPaneOrigin !== "request" || state.flowPaneLayoutStatus !== "ready") {
+        return;
+      }
+      const node = state.flowPaneRfNodes.find((candidate) => candidate.id === nodeId);
+      const data = node?.data as Partial<LogicNodeData> | undefined;
+      if (data?.expandable !== true) {
+        return;
+      }
+      set({
+        requestFlowExpansionOverrides: withToggled(state.requestFlowExpansionOverrides, nodeId),
+        flowPaneLayoutStatus: "laying-out",
+      });
+      void get().flowPaneRelayout();
+    },
+
     selectFlowPaneTarget(nodeId) {
       const state = get();
+      if (state.flowPaneOrigin === "request") {
+        const revealSequence = ++requestTargetRevealSeq;
+        const trace = state.requestFlowTraceId === null
+          ? null
+          : state.requestTraces.find((candidate) => candidate.traceId === state.requestFlowTraceId) ?? null;
+        const graphTarget = nodeId !== null
+          && trace !== null
+          && requestFlowContainsTarget(state, trace, nodeId)
+          && traceGraphRefMismatches(state.traceGraphRef, state.artifact).length === 0
+          && state.index.nodesById.has(nodeId)
+          ? nodeId
+          : null;
+        if (graphTarget === null) {
+          // Empty-pane clicks clear only the map emphasis. An unmapped runtime occurrence has no
+          // graph node to invent, so clicking it is deliberately inert.
+          if (nodeId === null) set({ moduleSelected: new Set<string>() });
+          return;
+        }
+
+        // Minimal Graph is a separately curated surface. Match the bulk request reveal contract:
+        // do not silently replace or relayout it from a split-pane click.
+        if (state.minimalSeedIds.length > 0) {
+          return;
+        }
+
+        const traceId = state.requestFlowTraceId;
+        const targetSet = new Set([graphTarget]);
+        const semanticDepths = state.moduleRfNodes
+          .map((node) => (node.data as { semanticDepth?: unknown }).semanticDepth)
+          .filter((depth): depth is number => typeof depth === "number" && Number.isFinite(depth));
+        const currentSemanticDepth = semanticDepths.length === 0 ? null : Math.min(...semanticDepths);
+        const targetAlreadyDrawn = state.moduleRfNodes.some((node) => {
+          if (node.id !== graphTarget || node.type === "ghost") return false;
+          const depth = (node.data as { semanticDepth?: unknown }).semanticDepth;
+          return currentSemanticDepth === null
+            ? depth === undefined
+            : depth === currentSemanticDepth;
+        });
+        const showTests = state.showTests || state.index.testIds.has(graphTarget);
+        const recenterIfCurrent = () => {
+          const current = get();
+          if (
+            revealSequence === requestTargetRevealSeq
+            && current.flowPaneOrigin === "request"
+            && current.requestFlowTraceId === traceId
+            && current.moduleLayoutStatus === "ready"
+            && current.moduleSelected.has(graphTarget)
+          ) {
+            set({ recenterSeq: current.recenterSeq + 1 });
+          }
+        };
+
+        // If the exact node already belongs to the mounted graph, this is a paint + camera action:
+        // retain the reader's curation, remove filters that could conceal the target, and highlight it.
+        if (targetAlreadyDrawn) {
+          set({
+            moduleSelected: targetSet,
+            hiddenCategories: new Set<ModuleCategory>(),
+            showPrivate: true,
+            showTests,
+          });
+          // No layout is pending on the fast path; its current graph is already ready by definition.
+          const current = get();
+          if (current.moduleLayoutStatus === "ready" || current.moduleLayoutStatus === "idle") {
+            set({ recenterSeq: current.recenterSeq + 1 });
+          }
+          return;
+        }
+
+        // An absent exact target may be behind any package/file/unit gate, represented only by a
+        // ghost, or rolled into another lens. Reuse Minimal Graph's canonical “show in codebase”
+        // projection: it returns only after proving this exact id is a REAL node in the derived tree.
+        const context = requestCodebaseContextFor(state, [graphTarget]);
+        if (context === null || !context.highlightTargetIds.has(graphTarget)) return;
+        set(canonicalRequestMapPatch(state, context));
+        void get().moduleRelayout({ label: `Revealing ${state.index.nodesById.get(graphTarget)?.displayName ?? graphTarget} from request…` }).then(recenterIfCurrent);
+        return;
+      }
       const selection = state.flowSelection;
       if (selection === null) {
         return;
@@ -1519,7 +1845,42 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     async flowPaneRelayout() {
-      const { flowSelection, index, artifact } = get();
+      const {
+        flowSelection,
+        flowPaneOrigin,
+        requestFlowTraceId,
+        requestFlowExpansionOverrides,
+        index,
+        artifact,
+      } = get();
+      if (flowPaneOrigin === "request") {
+        const trace = requestFlowTraceId === null
+          ? null
+          : get().requestTraces.find((candidate) => candidate.traceId === requestFlowTraceId) ?? null;
+        if (trace === null) {
+          set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
+          return;
+        }
+        const sequence = ++flowPaneLayoutSeq;
+        const traceId = trace.traceId;
+        set({ flowPaneLayoutStatus: "laying-out" });
+        const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+        const graph = await deriveRequestFlowPaneLayout(
+          trace,
+          index,
+          flows,
+          requestFlowExpansionOverrides,
+        );
+        if (
+          flowPaneLayoutSeq !== sequence
+          || get().flowPaneOrigin !== "request"
+          || get().requestFlowTraceId !== traceId
+        ) {
+          return;
+        }
+        set({ flowPaneRfNodes: graph.nodes, flowPaneRfEdges: graph.edges, flowPaneLayoutStatus: "ready" });
+        return;
+      }
       if (flowSelection === null) {
         set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
         return;
@@ -2475,7 +2836,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             reviewFlowBaseline: null,
           }
         : {};
-      if (get().flowSelection !== null) {
+      if (get().flowSelection !== null || get().flowPaneOrigin === "request") {
         flowPaneLayoutSeq += 1;
       }
       const inspectedSource = get().moduleGhostInspection !== null;
@@ -2489,6 +2850,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalArrange: false,
         moduleGhostInspection: null,
         prReviewed: null,
+        ...requestFlowPaneReset(get()),
         ...clearArtifactReviewFlow,
         ...clearPrReview,
       });
@@ -3301,19 +3663,152 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       });
     },
 
+    setTelemetrySource(id) {
+      const registration = id === null ? undefined : telemetrySourceCatalog.get(id);
+      const telemetrySourceId = registration?.id ?? null;
+      if (get().telemetrySourceId === telemetrySourceId && get().provider === (registration?.provider ?? null)) {
+        return;
+      }
+      telemetryFetchSeq += 1;
+      if (get().flowPaneOrigin === "request") flowPaneLayoutSeq += 1;
+      set({
+        telemetrySourceId,
+        provider: registration?.provider ?? null,
+        environment: null,
+        telemetry: {},
+        requestTraces: [],
+        selectedTraceId: null,
+        traceGraphRef: null,
+        traceSource: null,
+        telemetryLoading: false,
+        telemetryError: null,
+        traceLoading: false,
+        traceError: null,
+        ...requestFlowPaneReset(get()),
+      });
+    },
+
     setEnvironment(environment) {
-      set({ environment });
+      telemetryFetchSeq += 1;
+      if (get().flowPaneOrigin === "request") flowPaneLayoutSeq += 1;
+      set({
+        environment,
+        telemetry: {},
+        requestTraces: [],
+        selectedTraceId: null,
+        traceGraphRef: null,
+        traceSource: null,
+        telemetryLoading: false,
+        telemetryError: null,
+        traceLoading: false,
+        traceError: null,
+        ...requestFlowPaneReset(get()),
+      });
+    },
+
+    setSelectedTrace(traceId) {
+      if (traceId !== null && !get().requestTraces.some((trace) => trace.traceId === traceId)) {
+        return;
+      }
+      if (get().selectedTraceId === traceId) return;
+      const requestPaneOpen = get().flowPaneOrigin === "request";
+      if (!requestPaneOpen) {
+        set({ selectedTraceId: traceId });
+        return;
+      }
+      flowPaneLayoutSeq += 1;
+      requestTargetRevealSeq += 1;
+      if (traceId === null) {
+        set({ selectedTraceId: null, ...requestFlowPaneReset(get()) });
+        return;
+      }
+      set({
+        selectedTraceId: traceId,
+        requestFlowTraceId: traceId,
+        requestFlowExpansionOverrides: new Set<string>(),
+        flowPaneRfNodes: [],
+        flowPaneRfEdges: [],
+        flowPaneLayoutStatus: "laying-out",
+      });
+      void get().flowPaneRelayout();
     },
 
     async refreshTelemetry() {
-      const { provider, environment } = get();
+      const { provider, environment, telemetrySourceId } = get();
       if (environment === null) {
         throw new Error("refreshTelemetry called before an environment was selected");
       }
       if (!provider) {
         return;
       }
-      set({ telemetry: await provider.fetchMetrics(environment) });
+      const sequence = ++telemetryFetchSeq;
+      const descriptor = telemetrySourceId === null ? null : telemetrySourceCatalog.get(telemetrySourceId) ?? null;
+      const supportsMetrics = descriptor?.supportsMetrics ?? true;
+      const supportsTraces = descriptor?.supportsTraces ?? true;
+      set({
+        telemetryLoading: supportsMetrics,
+        telemetryError: null,
+        traceLoading: supportsTraces,
+        traceError: null,
+      });
+      const stillCurrent = () => telemetryFetchSeq === sequence
+        && get().environment === environment
+        && get().telemetrySourceId === telemetrySourceId;
+
+      // Each channel commits independently. A slow or hung trace backend must not hold an already
+      // available metrics overlay hostage (and vice versa), while both retain the same stale-env guard.
+      const metricsTask = supportsMetrics
+        ? Promise.resolve()
+          .then(() => provider.fetchMetrics(environment))
+          .then(
+            (telemetry) => {
+              if (stillCurrent()) set({ telemetry, telemetryLoading: false, telemetryError: null });
+            },
+            (reason: unknown) => {
+              if (stillCurrent()) set({ telemetryLoading: false, telemetryError: telemetryFailure(reason, "Metrics unavailable.") });
+            },
+          )
+        : Promise.resolve();
+      const tracesTask = supportsTraces
+        ? Promise.resolve()
+          .then(() => provider.fetchTraces(environment))
+          .then(
+            (bundle) => {
+              if (!stillCurrent()) return;
+              const current = get();
+              const selectedTraceId = current.selectedTraceId !== null
+                && bundle.traces.some((trace) => trace.traceId === current.selectedTraceId)
+                ? current.selectedTraceId
+                : newestTrace(bundle.traces)?.traceId ?? null;
+              const keepRequestPane = current.flowPaneOrigin === "request"
+                && selectedTraceId !== null
+                && traceGraphRefMismatches(bundle.graphRef, current.artifact).length === 0;
+              if (current.flowPaneOrigin === "request") flowPaneLayoutSeq += 1;
+              set({
+                requestTraces: bundle.traces,
+                selectedTraceId,
+                traceGraphRef: bundle.graphRef,
+                traceSource: bundle.source,
+                traceLoading: false,
+                traceError: null,
+                ...(keepRequestPane
+                  ? {
+                      requestFlowTraceId: selectedTraceId,
+                      requestFlowExpansionOverrides: new Set<string>(),
+                      flowPaneRfNodes: [] as LogicRfNode[],
+                      flowPaneRfEdges: [] as LogicRfEdge[],
+                      flowPaneLayoutStatus: "laying-out" as const,
+                    }
+                  : requestFlowPaneReset(current)),
+              });
+              if (keepRequestPane) void get().flowPaneRelayout();
+            },
+            (reason: unknown) => {
+              if (stillCurrent()) set({ traceLoading: false, traceError: telemetryFailure(reason, "Request traces unavailable.") });
+            },
+          )
+        : Promise.resolve();
+      await Promise.all([metricsTask, tracesTask]);
     },
 
     // Hover previews have their own local lifecycle. Loading through this action reuses the exact
@@ -3919,15 +4414,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // closed. It belongs to that Map, not the resumed review/head artifact; clear it before any
       // possible artifact swap so only a flow selected inside the review enters review mode.
       const clearResumeFlow = () => {
-        const staleFlowOpen = get().flowSelection !== null;
+        const staleFlowOpen = get().flowSelection !== null || get().flowPaneOrigin === "request";
         flowPaneLayoutSeq += 1;
         set({
           moduleGhostInspection: null,
-          flowSelection: null,
+          ...requestFlowPaneReset(),
           logicSelected: null,
-          flowPaneRfNodes: [],
-          flowPaneRfEdges: [],
-          flowPaneLayoutStatus: "idle",
           reviewFlowBaseline: null,
           ...(staleFlowOpen
             ? {
@@ -4359,11 +4851,8 @@ function applyPrReviewToMap(
     reviewFileDelta,
     reviewLitNodeIds: null,
     reviewSelectedId: null,
-    flowSelection: null,
+    ...requestFlowPaneReset(),
     logicSelected: null,
-    flowPaneRfNodes: [],
-    flowPaneRfEdges: [],
-    flowPaneLayoutStatus: "idle",
     reviewFlowBaseline: null,
     reviewGroups: changeGroups,
     reviewActiveGroupId: null,
@@ -4479,6 +4968,9 @@ function beginLensTransition(get: BlueprintStore["getState"], set: (partial: Par
   if (state.moduleGhostInspection !== null) {
     set({ moduleGhostInspection: null });
   }
+  if (state.flowPaneOrigin === "request") {
+    set(requestFlowPaneReset());
+  }
   const focusedService = state.moduleFocus !== null
     && (leadIdOf(state.moduleFocus) !== null || isServiceDomainId(state.moduleFocus));
   const resetServiceScene = state.serviceScope !== null || focusedService;
@@ -4499,6 +4991,74 @@ function beginLensTransition(get: BlueprintStore["getState"], set: (partial: Par
       moduleLayoutActivity: null,
     });
   }
+}
+
+type CanonicalRequestMapKey =
+  | "viewMode"
+  | "mapExtra"
+  | "mapGhostPins"
+  | "moduleGhostInspection"
+  | "moduleRfNodes"
+  | "moduleRfEdges"
+  | "moduleSemanticLayers"
+  | "moduleEffectiveFocus"
+  | "serviceScope"
+  | "moduleFocus"
+  | "moduleExpanded"
+  | "moduleSelected"
+  | "hiddenCategories"
+  | "showPrivate"
+  | "showTests";
+
+/** Install one canonical folder-Map reveal without routing through ordinary lens navigation, which
+ * would close the request split. Both bulk and one-node request entry points use this exact patch. */
+function canonicalRequestMapPatch(
+  state: Pick<BlueprintState, "index" | "showTests">,
+  context: MinimalCodebaseContext,
+): Pick<BlueprintState, CanonicalRequestMapKey> {
+  return {
+    viewMode: "modules",
+    mapExtra: new Set<string>(),
+    mapGhostPins: new Map<string, ReadonlySet<string>>(),
+    moduleGhostInspection: null,
+    moduleRfNodes: [],
+    moduleRfEdges: [],
+    moduleSemanticLayers: [],
+    moduleEffectiveFocus: null,
+    serviceScope: null,
+    ...context.reveal,
+    // An explicit reveal must not leave a target paint-hidden by a prior preference.
+    hiddenCategories: new Set<ModuleCategory>(),
+    showPrivate: true,
+    showTests: state.showTests || [...context.highlightTargetIds].some((id) => state.index.testIds.has(id)),
+  };
+}
+
+/** A click may target either a top-level runtime span or a mapped static node grafted inside an
+ * expanded span. The latter has no dedicated span, but its exact artifact target is present in the
+ * rendered request pane and is therefore safe to reveal. */
+function requestFlowContainsTarget(
+  state: Pick<BlueprintState, "flowPaneRfNodes">,
+  trace: RequestTrace,
+  targetId: string,
+): boolean {
+  return trace.spans.some((span) => span.nodeId === targetId)
+    || state.flowPaneRfNodes.some((node) => (
+      (node.data as Partial<LogicNodeData>).targetId === targetId
+    ));
+}
+
+function requestFlowPaneReset(state?: BlueprintState): Partial<BlueprintState> {
+  if (state !== undefined && state.flowPaneOrigin !== "request") return {};
+  return {
+    flowSelection: null,
+    flowPaneOrigin: null,
+    requestFlowTraceId: null,
+    requestFlowExpansionOverrides: new Set<string>(),
+    flowPaneRfNodes: [],
+    flowPaneRfEdges: [],
+    flowPaneLayoutStatus: "idle",
+  };
 }
 
 /** Order-independent equality of two id lists — the minimal overlay's "members === origin" test. */
@@ -4956,6 +5516,27 @@ async function errorMessage(response: Response): Promise<string> {
   } catch {
     return "Could not load pull requests.";
   }
+}
+
+/** Browser-safe telemetry failure text. Providers already omit secrets from their messages; unknown
+ * rejection values still collapse to a fixed fallback rather than being stringified into the UI. */
+function telemetryFailure(reason: unknown, fallback: string): string {
+  return reason instanceof Error && reason.message.length > 0 ? reason.message : fallback;
+}
+
+function newestTrace(traces: readonly RequestTrace[]): RequestTrace | undefined {
+  return traces.reduce<RequestTrace | undefined>((newest, trace) => {
+    if (newest === undefined) return trace;
+    try {
+      const startedAt = BigInt(trace.startedAtUnixNano);
+      const newestStartedAt = BigInt(newest.startedAtUnixNano);
+      if (startedAt !== newestStartedAt) return startedAt > newestStartedAt ? trace : newest;
+    } catch {
+      // A validated provider cannot reach this branch. Keep the choice deterministic for custom
+      // test/dev providers instead of throwing out of a successful trace-channel refresh.
+    }
+    return trace.traceId < newest.traceId ? trace : newest;
+  }, undefined);
 }
 
 async function submitErrorMessage(response: Response): Promise<string> {

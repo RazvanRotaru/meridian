@@ -9,7 +9,15 @@
 
 import { type Edge, type Node } from "@xyflow/react";
 import type { ElkNode } from "elkjs/lib/elk-api";
-import type { LogicEdgeSpec, LogicGraphSpec, LogicNodeData, LogicNodeSpec, LogicNodeType as ExecNodeType, TerminalData } from "../derive/logicGraph";
+import type {
+  LogicEdgeSpec,
+  LogicGraphSpec,
+  LogicNodeData,
+  LogicNodeSpec,
+  LogicNodeType as ExecNodeType,
+  RequestEdgeTraversalEvidence,
+  TerminalData,
+} from "../derive/logicGraph";
 import { arrowMarker } from "../theme/edgeColors";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
 
@@ -39,6 +47,9 @@ export type LogicRfEdgeData = {
   targetPort?: string;
   taskId?: string;
   branchRole?: LogicEdgeSpec["branchRole"];
+  requestFlowDisposition?: "observed" | "context";
+  requestFlowEvidence?: RequestEdgeTraversalEvidence | null;
+  requestTraceId?: string;
 };
 export type LogicRfEdge = Edge<LogicRfEdgeData>;
 export const LOGIC_ASYNC_EDGE_TYPE = "logicAsync";

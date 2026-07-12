@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LOGIC_VIEW_MODES } from "../derive/flowViewModel";
+import { STATIC_LOGIC_VIEW_MODES } from "../derive/flowViewModel";
 import {
   DEFAULT_REVIEW_PREFERENCES,
   readReviewPreferences,
   writeReviewPreferences,
   type ReviewPreferences,
+  type ReviewFlowSplitView,
 } from "./reviewPreferences";
+
+const REVIEW_FLOW_MODES: ReviewFlowSplitView[] = STATIC_LOGIC_VIEW_MODES.map(({ mode }) => mode);
 
 function stubStorage(initial: Record<string, string> = {}): Record<string, string> {
   const data = { ...initial };
@@ -37,7 +40,7 @@ describe("reviewPreferences", () => {
     expect(DEFAULT_REVIEW_PREFERENCES.openFlowSplitOnSelect).toBe(true);
   });
 
-  it.each(LOGIC_VIEW_MODES.flatMap(({ mode }) => [
+  it.each(REVIEW_FLOW_MODES.flatMap((mode) => [
     { flowSplitView: mode, openFlowSplitOnSelect: true },
     { flowSplitView: mode, openFlowSplitOnSelect: false },
   ]))("round-trips $flowSplitView with split opening=$openFlowSplitOnSelect", (choice) => {
@@ -50,7 +53,7 @@ describe("reviewPreferences", () => {
     expect(JSON.parse(data["meridian.prReviewPreferences"])).toEqual(preferences);
   });
 
-  it.each(LOGIC_VIEW_MODES.map(({ mode }) => mode))("migrates the v1 %s choice with split opening enabled", (flowSplitView) => {
+  it.each(REVIEW_FLOW_MODES)("migrates the v1 %s choice with split opening enabled", (flowSplitView) => {
     stubStorage({
       "meridian.prReviewPreferences": JSON.stringify({ version: 1, flowSplitView }),
     });
@@ -97,6 +100,13 @@ describe("reviewPreferences", () => {
 
     data["meridian.prReviewPreferences"] = JSON.stringify({ version: 1, flowSplitView: "bogus" });
     expect(readReviewPreferences()).toEqual(DEFAULT_REVIEW_PREFERENCES);
+
+    data["meridian.prReviewPreferences"] = JSON.stringify({ version: 2, flowSplitView: "request", openFlowSplitOnSelect: false });
+    expect(readReviewPreferences()).toEqual({
+      version: 2,
+      flowSplitView: "timeline",
+      openFlowSplitOnSelect: false,
+    });
   });
 
   it("falls back safely when localStorage is absent or throws", () => {

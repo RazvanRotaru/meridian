@@ -6,7 +6,12 @@
  * rather than letting the SPA infer an environment.
  */
 
-import { hasOverlay, overlayKind } from "./overlay-source";
+import {
+  hasOverlay,
+  overlayKind,
+  preselectedTelemetrySourceId,
+  telemetrySourceDescriptors,
+} from "./overlay-source";
 import type { OverlaySource } from "./overlay-source";
 
 const HEAD_CLOSE = "</head>";
@@ -35,9 +40,12 @@ function bootJson(overlay: OverlaySource, preselectedEnv: string | null, sourceR
     graphUrl: "/api/graph",
     metaUrl: "/api/meta",
     overlayUrl: "/api/overlay",
+    traceUrl: "/api/traces",
     sourceUrl: sourceRoot ? "/api/source" : null,
     hasOverlay: hasOverlay(overlay),
     overlayKind: overlayKind(overlay),
+    telemetrySources: telemetrySourceDescriptors(overlay, preselectedEnv),
+    preselectedTelemetrySourceId: preselectedTelemetrySourceId(overlay),
     envRequired: hasOverlay(overlay),
     preselectedEnv,
     defaultEnv: null,

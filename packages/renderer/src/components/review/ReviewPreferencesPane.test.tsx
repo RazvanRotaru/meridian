@@ -1,10 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { LOGIC_VIEW_MODES } from "../../derive/flowViewModel";
+import { STATIC_LOGIC_VIEW_MODES } from "../../derive/flowViewModel";
 import type { ReviewFlowSplitView } from "../../state/reviewPreferences";
 import { ReviewPreferencesPane } from "./ReviewPreferencesPane";
 
-const MODES = LOGIC_VIEW_MODES.map(({ mode }) => mode);
+const MODES = STATIC_LOGIC_VIEW_MODES.map(({ mode }) => mode);
 
 function render(flowView: ReviewFlowSplitView, openFlowSplitOnSelect = true) {
   return renderToStaticMarkup(

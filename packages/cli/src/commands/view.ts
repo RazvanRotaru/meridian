@@ -17,6 +17,7 @@ import type { GlobalOptions } from "../reporter";
 import { resolveOverlaySource } from "../server/overlay-source";
 import { createBlueprintServer } from "../server/server";
 import { serve } from "../server/serve";
+import { normalizeTelemetryEnvironment } from "../telemetry-environment";
 
 export interface ViewOptions extends GlobalOptions {
   port: number;
@@ -43,7 +44,7 @@ function requireEnvForOverlay(options: ViewOptions): string | null {
   if (options.overlay && !env) {
     throw new CliError(EXIT.usage, "--env is required with --overlay; blueprint never defaults and never prod");
   }
-  return env;
+  return env === null ? null : normalizeTelemetryEnvironment(env);
 }
 
 function loadGraph(graph: string, cwd: string): GraphArtifact {

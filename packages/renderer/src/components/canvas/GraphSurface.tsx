@@ -92,6 +92,19 @@ import {
   type PaintedScene,
   type PaintFrameRetentionState,
 } from "./paintFrameRetention";
+import {
+  deriveRequestGraphOverlay,
+  projectRequestGraphOverlay,
+} from "../../derive/requestGraphOverlay";
+import { traceGraphRefMismatches } from "../../derive/requestTimelineModel";
+import {
+  decorateRequestEdges,
+  decorateRequestNodes,
+} from "../requestGraphPaint";
+import {
+  RequestGraphNodeBadges,
+  RequestGraphOverlayPanel,
+} from "../RequestGraphOverlayChrome";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
  * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "cycle" the
@@ -217,6 +230,10 @@ export interface GraphSurfaceProps {
   flowExtras?: (view: SurfaceFlowView) => ReactNode;
   /** Floating chrome (breadcrumb, legends, panels, action strips), absolutely positioned over the canvas. */
   children?: ReactNode;
+  /** Mount the shared request controller only on the surface that owns top-right chrome. Covered
+   * source and minimal-context surfaces still receive request node/edge paint without duplicating
+   * controls underneath their own panels. */
+  requestOverlayChrome?: boolean;
   /** Retain the last committed graph underneath a blocking status overlay while its replacement is derived. */
   busy?: GraphLayoutIndicatorProps;
   /** Frozen overview mode: pan/zoom and source inspection remain, graph selection/navigation do not. */
@@ -241,6 +258,12 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const selected = props.selectionOverride ?? storeSelected;
   const reviewLit = useBlueprint((state) => state.reviewLitNodeIds);
   const index = useBlueprint((state) => state.index);
+  const artifact = useBlueprint((state) => state.artifact);
+  const requestTraces = useBlueprint((state) => state.requestTraces);
+  const selectedTraceId = useBlueprint((state) => state.selectedTraceId);
+  const traceGraphRef = useBlueprint((state) => state.traceGraphRef);
+  const serviceGroupingMode = useBlueprint((state) => state.serviceGroupingMode);
+  const serviceGroupingTargetSize = useBlueprint((state) => state.serviceGroupingTargetSize);
   const radius = useBlueprint((state) => state.moduleRadius);
   const highlightMode = useBlueprint((state) => state.highlightMode);
   const relationVisibilityOverrides = useBlueprint((state) => state.relationVisibilityOverrides);
@@ -250,6 +273,25 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const { showEdgeEvidence, closeEdgeEvidence } = useBlueprintActions();
   const emphasisMode = props.emphasisMode ?? highlightMode;
   const groupGhosts = props.groupGhosts ?? groupGhostsByParent;
+  const activeTrace = useMemo(
+    () => selectedTraceId === null
+      ? null
+      : requestTraces.find((trace) => trace.traceId === selectedTraceId) ?? null,
+    [requestTraces, selectedTraceId],
+  );
+  const requestGraphMismatches = useMemo(
+    () => activeTrace === null ? [] : traceGraphRefMismatches(traceGraphRef, artifact),
+    [activeTrace, traceGraphRef, artifact],
+  );
+  // A graph mismatch keeps the request inspectable in Logic but disables all paint here. Exact
+  // derivation stays independent of the visible lens; projection below rolls it into that lens's
+  // currently mounted semantic populations without copying evidence into store state.
+  const requestGraphOverlay = useMemo(
+    () => activeTrace !== null && requestGraphMismatches.length === 0
+      ? deriveRequestGraphOverlay(activeTrace, index)
+      : null,
+    [activeTrace, index, requestGraphMismatches],
+  );
   // Keep the semantic controller mounted through the final parent handoff too: its ancestor list can
   // already be empty while the retained root population is still fading in and resetting camera.
   const hasSemanticComposite =
@@ -365,11 +407,36 @@ export function GraphSurface(props: GraphSurfaceProps) {
     () => decorateGhostGroupToggles(retainedPaintedNodes, props.interactions.toggleGhostGroup),
     [retainedPaintedNodes, props.interactions.toggleGhostGroup],
   );
+  const projectedRequestNodes = useMemo(
+    () => requestGraphOverlay === null
+      ? null
+      : projectRequestGraphOverlay(requestGraphOverlay, displayedNodes, index, {
+          serviceGroupingMode,
+          serviceGroupingTargetSize,
+        }),
+    [requestGraphOverlay, displayedNodes, index, serviceGroupingMode, serviceGroupingTargetSize],
+  );
+  const requestPaintOverlay = useMemo(
+    () => requestGraphOverlay === null || projectedRequestNodes === null
+      ? null
+      : {
+          traceId: requestGraphOverlay.traceId,
+          nodesById: projectedRequestNodes,
+          observedEdgesById: requestGraphOverlay.edgesById,
+        },
+    [requestGraphOverlay, projectedRequestNodes],
+  );
+  const requestPaintedNodes = useMemo(
+    () => requestPaintOverlay === null
+      ? displayedNodes
+      : decorateRequestNodes(displayedNodes, requestPaintOverlay, selected),
+    [displayedNodes, requestPaintOverlay, selected],
+  );
   // The module-family layouts keep their canonical geometry in `style.width/height`, which all
   // routing and overlay passes below intentionally continue to read. React Flow's MiniMap checks
   // only top-level dimensions on the controlled user node, so expose the same numbers at the final
   // library boundary after the paint-only inspection decoration.
-  const reactFlowNodes = useMemo(() => withReactFlowDimensions(displayedNodes), [displayedNodes]);
+  const reactFlowNodes = useMemo(() => withReactFlowDimensions(requestPaintedNodes), [requestPaintedNodes]);
   const virtualizeCanvas = shouldVirtualizeCanvasNodes(reactFlowNodes.length);
   // Every semantic depth is an independent paint population. Process it through main's shared
   // presentation pipeline separately so hidden ancestors cannot affect salience/highways, while
@@ -403,6 +470,12 @@ export function GraphSurface(props: GraphSurfaceProps) {
     }
     return { semanticEdges, hierarchyEdges };
   }, [paintedEdges, retainedPaintedNodes, props.highways, props.relations, highwaySeeds, showHighways]);
+  const requestPaintedEdges = useMemo(
+    () => requestPaintOverlay === null
+      ? preparedEdges.semanticEdges
+      : decorateRequestEdges(preparedEdges.semanticEdges, requestPaintOverlay, selected),
+    [preparedEdges.semanticEdges, requestPaintOverlay, selected],
+  );
   const openWireEvidence = useCallback((pair: Edge[]) => {
     const contexts = edgeEvidenceForPair(pair, index.edgesById);
     inspectionOwnsSource.current = contexts.length > 0;
@@ -411,8 +484,8 @@ export function GraphSurface(props: GraphSurfaceProps) {
     void showEdgeEvidence(contexts);
   }, [index.edgesById, showEdgeEvidence]);
   const wire = useWireHover(
-    preparedEdges.semanticEdges,
-    retainedPaintedNodes,
+    requestPaintedEdges,
+    requestPaintedNodes,
     props.wireHover === true,
     openWireEvidence,
     closeEdgeEvidence,
@@ -510,7 +583,16 @@ export function GraphSurface(props: GraphSurfaceProps) {
           semanticFirstPreviewMax={props.semanticFirstPreviewMax}
           semanticLodEnabled={props.semanticLodEnabled}
         />
-        {props.flowExtras?.({ nodes: displayedNodes, beacons })}
+        {projectedRequestNodes === null ? null : (
+          <RequestGraphNodeBadges visibleNodes={requestPaintedNodes} evidenceByNodeId={projectedRequestNodes} />
+        )}
+        {props.requestOverlayChrome === false ? null : (
+          <RequestGraphOverlayPanel
+            graphMismatches={requestGraphMismatches}
+            observedNodeCount={requestGraphOverlay?.nodesById.size ?? 0}
+          />
+        )}
+        {props.flowExtras?.({ nodes: requestPaintedNodes, beacons })}
       </ReadonlyGraphCanvas>
       {wire.hover ? <WireTooltip hover={wire.hover} /> : null}
       {wire.inspectedPair ? (
