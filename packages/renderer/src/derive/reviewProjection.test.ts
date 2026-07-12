@@ -1,0 +1,81 @@
+import { describe, expect, it } from "vitest";
+import type { GraphArtifact, GraphEdge, GraphNode, ReviewContext } from "@meridian/core";
+import { buildGraphIndex } from "../graph/graphIndex";
+import { deriveReviewProjection } from "./reviewProjection";
+
+function node(id: string, kind: string, file: string, parentId: string | null): GraphNode {
+  return {
+    id,
+    kind,
+    qualifiedName: id,
+    displayName: id.split("#").pop() ?? id,
+    parentId,
+    location: { file, startLine: 1, endLine: 20 },
+  };
+}
+
+const PROD_FILE = "ts:src/service.ts";
+const PROD_FLOW = `${PROD_FILE}#run`;
+const TEST_FILE = "ts:src/service.test.ts";
+const TEST_FLOW = `${TEST_FILE}#coversRun`;
+
+const ARTIFACT = {
+  schemaVersion: "1.0.0",
+  generatedAt: "2026-07-12T00:00:00.000Z",
+  generator: { name: "test", version: "0" },
+  target: { name: "fixture", root: ".", language: "typescript" },
+  nodes: [
+    node(PROD_FILE, "module", "src/service.ts", null),
+    node(PROD_FLOW, "function", "src/service.ts", PROD_FILE),
+    node(TEST_FILE, "module", "src/service.test.ts", null),
+    node(TEST_FLOW, "function", "src/service.test.ts", TEST_FILE),
+  ],
+  edges: [
+    { id: "test-calls-prod", source: TEST_FLOW, target: PROD_FLOW, kind: "calls", resolution: "resolved" },
+  ] as GraphEdge[],
+  extensions: {
+    logicFlow: {
+      [PROD_FLOW]: [],
+      [TEST_FLOW]: [{ kind: "call", label: "run", target: PROD_FLOW, resolution: "resolved" }],
+    },
+  },
+} as unknown as GraphArtifact;
+
+const CONTEXT: ReviewContext = {
+  changedFiles: [
+    { path: "src/service.ts", status: "modified", hunks: [{ start: 1, end: 2 }] },
+    { path: "src/service.test.ts", status: "modified", hunks: [{ start: 1, end: 2 }] },
+    { path: "src/new.spec.ts", status: "added" },
+  ],
+  baseRef: "main",
+  baseSha: null,
+  headRef: "feature",
+  reviewKey: "repo|pr-1",
+  warnings: [],
+};
+
+describe("deriveReviewProjection", () => {
+  it("removes test files, affected nodes, and test-owned impacted flows without losing raw context", () => {
+    const index = buildGraphIndex(ARTIFACT);
+    const projection = deriveReviewProjection(CONTEXT, ARTIFACT, index, { baseIndex: null, showTests: false });
+
+    expect(projection.visibleContext.changedFiles.map((file) => file.path)).toEqual(["src/service.ts"]);
+    expect(projection.files.map((file) => file.path)).toEqual(["src/service.ts"]);
+    expect(projection.affected.map((node) => node.nodeId)).toEqual([PROD_FLOW]);
+    expect(projection.review.rows.some((row) => row.flow.flowId === TEST_FLOW)).toBe(false);
+    expect(projection.review.context).toBe(CONTEXT);
+    expect(projection.excludedTestFileCount).toBe(2);
+  });
+
+  it("restores the complete review when tests are shown", () => {
+    const projection = deriveReviewProjection(CONTEXT, ARTIFACT, buildGraphIndex(ARTIFACT), { baseIndex: null, showTests: true });
+
+    expect(projection.visibleContext).toBe(CONTEXT);
+    expect(projection.files.map((file) => file.path)).toEqual([
+      "src/service.test.ts",
+      "src/service.ts",
+      "src/new.spec.ts",
+    ]);
+    expect(projection.excludedTestFileCount).toBe(0);
+  });
+});

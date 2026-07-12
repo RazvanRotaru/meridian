@@ -8,13 +8,16 @@ import { STATIC_LOGIC_VIEW_MODES } from "../../derive/flowViewModel";
 import type { ReviewFlowSplitView } from "../../state/reviewPreferences";
 
 const HEADING_ID = "review-preferences-heading";
+const TEST_CHANGES_DESCRIPTION_ID = "review-test-changes-description";
 const PROJECTION_DESCRIPTION_ID = "review-flow-view-description";
 const NOTE_ID = "review-preferences-storage-note";
 const RADIO_NAME = "review-flow-split-view";
 
 interface ReviewPreferencesPaneProps {
+  excludeTestChanges: boolean;
   flowView: ReviewFlowSplitView;
   openFlowSplitOnSelect: boolean;
+  onExcludeTestChangesChange: (exclude: boolean) => void;
   onFlowViewChange: (view: ReviewFlowSplitView) => void;
   onOpenFlowSplitOnSelectChange: (open: boolean) => void;
   onClose: () => void;
@@ -66,6 +69,24 @@ export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
         </button>
       </div>
 
+      <fieldset style={BEHAVIOR_FIELDSET} aria-describedby={TEST_CHANGES_DESCRIPTION_ID}>
+        <legend style={LEGEND}>Review content</legend>
+        <label style={optionStyle(props.excludeTestChanges)}>
+          <input
+            type="checkbox"
+            checked={props.excludeTestChanges}
+            style={RADIO}
+            onChange={(event) => props.onExcludeTestChangesChange(event.currentTarget.checked)}
+          />
+          <span style={OPTION_COPY}>
+            <span style={OPTION_TITLE}>Exclude test changes</span>
+            <span id={TEST_CHANGES_DESCRIPTION_ID} style={OPTION_DESCRIPTION}>
+              Remove test files, affected nodes, flows, and comments from this PR review. Drafts and viewed progress return when tests are included again.
+            </span>
+          </span>
+        </label>
+      </fieldset>
+
       <fieldset style={BEHAVIOR_FIELDSET} aria-describedby={NOTE_ID}>
         <legend style={LEGEND}>Logic flow behavior</legend>
         <label style={optionStyle(props.openFlowSplitOnSelect)}>
@@ -111,7 +132,9 @@ export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
         </div>
       </fieldset>
 
-      <p id={NOTE_ID} style={NOTE}>Saved in this browser. These preferences apply only to PR review.</p>
+      <p id={NOTE_ID} style={NOTE}>
+        Flow preferences are saved in this browser. Test visibility applies to the current graph and PR review.
+      </p>
     </section>
   );
 }

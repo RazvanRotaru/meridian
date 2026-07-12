@@ -114,6 +114,17 @@ describe("CanvasActionBar Remove action", () => {
   });
 });
 
+describe("CanvasActionBar empty review sentinel", () => {
+  it("cannot reset or rearrange a seed-only review into visible members", () => {
+    const store = actionBarStore();
+    store.setState({ minimalSeedIds: ["ts:src"], minimalMemberIds: [] });
+
+    const markup = renderActionBar(store);
+    expect(actionButtonMarkup(markup, "Rearrange extracted graph")).toContain('aria-disabled="true"');
+    expect(actionButtonMarkup(markup, "Reset extracted graph")).toContain('aria-disabled="true"');
+  });
+});
+
 const ACTION_FILE = "ts:src/action.ts";
 const ACTION_METHOD = `${ACTION_FILE}#Action.run`;
 const PROMOTED_FILE = "ts:src/promoted.ts";
@@ -192,7 +203,11 @@ function renderActionBar(
 }
 
 function removeButtonMarkup(markup: string): string {
-  const button = markup.match(/<button[^>]*aria-label="Remove added nodes in selection"[^>]*>/)?.[0];
+  return actionButtonMarkup(markup, "Remove added nodes in selection");
+}
+
+function actionButtonMarkup(markup: string, label: string): string {
+  const button = markup.match(new RegExp(`<button[^>]*aria-label="${label}"[^>]*>`))?.[0];
   expect(button).toBeDefined();
   return button!;
 }

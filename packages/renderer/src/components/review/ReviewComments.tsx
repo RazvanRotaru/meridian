@@ -9,6 +9,7 @@
 import { useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { ReviewComment } from "../../state/reviewTicksPref";
+import { isReviewTestPath } from "../../derive/reviewFiles";
 import { NO_FOCUS_RING } from "./reviewPanelKit";
 import { MessageIcon } from "./MessageIcon";
 
@@ -113,7 +114,11 @@ export function CommentComposer(props: {
 
 /** Panel footer: draft count + submit-to-GitHub (web PR sessions), or a "local notes" hint. */
 export function SubmitReviewFooter() {
-  const count = useBlueprint((state) => state.reviewComments.length);
+  const count = useBlueprint((state) => {
+    return state.showTests
+      ? state.reviewComments.length
+      : state.reviewComments.filter((comment) => !isReviewTestPath(comment.path, state.index, state.prReviewBaseline?.index ?? null)).length;
+  });
   const prReviewed = useBlueprint((state) => state.prReviewed);
   const status = useBlueprint((state) => state.reviewSubmitStatus);
   const stale = useBlueprint((state) => state.prReviewStale);

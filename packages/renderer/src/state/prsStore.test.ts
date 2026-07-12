@@ -3,6 +3,7 @@ import type { GraphArtifact, GraphNode } from "@meridian/core";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PrReviewSection } from "../components/controlpanel/PrReviewSection";
+import { countTestFiles } from "../components/controlpanel/OverlaysSection";
 import { ReviewPanel } from "../components/review/ReviewPanel";
 import { applyChangedIds, buildGraphIndex } from "../graph/graphIndex";
 import { restorePrReviewBaseline, swapToPreparedArtifact } from "./prReviewSession";
@@ -41,6 +42,8 @@ const PACKAGE_ID = "ts:src";
 const FILE_ID = "ts:src/a.ts";
 const CLASS_ID = `${FILE_ID}#Svc`;
 const METHOD_ID = `${CLASS_ID}.run`;
+const TEST_FILE_ID = "ts:src/a.test.ts";
+const TEST_METHOD_ID = `${TEST_FILE_ID}#coversRun`;
 
 const ARTIFACT: GraphArtifact = {
   schemaVersion: "1.0.0",
@@ -56,10 +59,32 @@ const ARTIFACT: GraphArtifact = {
   edges: [],
 };
 
+const REVIEW_WITH_TESTS_ARTIFACT: GraphArtifact = {
+  ...ARTIFACT,
+  nodes: [
+    ...ARTIFACT.nodes,
+    node(TEST_FILE_ID, "module", "src/a.test.ts", PACKAGE_ID),
+    node(TEST_METHOD_ID, "function", "src/a.test.ts", TEST_FILE_ID, { start: 5, end: 8 }),
+  ],
+  edges: [
+    { id: "test-calls-run", source: TEST_METHOD_ID, target: METHOD_ID, kind: "calls", resolution: "resolved" },
+  ],
+  extensions: {
+    logicFlow: {
+      [METHOD_ID]: [],
+      [TEST_METHOD_ID]: [{ kind: "call", label: "run", target: METHOD_ID, resolution: "resolved" }],
+    },
+  },
+};
+
 function freshStore(extra?: Partial<StoreDependencies>) {
-  const index = buildGraphIndex(ARTIFACT);
+  return freshStoreForArtifact(ARTIFACT, extra);
+}
+
+function freshStoreForArtifact(artifact: GraphArtifact, extra?: Partial<StoreDependencies>) {
+  const index = buildGraphIndex(artifact);
   return createBlueprintStore({
-    artifact: ARTIFACT,
+    artifact,
     index,
     provider: null,
     hasOverlay: false,
@@ -98,6 +123,109 @@ afterEach(() => {
 });
 
 describe("PR store slice", () => {
+  it("counts raw PR test files only on PR/review surfaces and deduplicates graph matches", () => {
+    const addedTest = { path: "repo/src/new.test.ts", status: "added" as const, additions: 1, deletions: 0 };
+    const plainStore = freshStore();
+    plainStore.setState({ viewMode: "modules", prFiles: [addedTest] });
+    expect(countTestFiles(plainStore.getState())).toBe(0);
+    plainStore.setState({ viewMode: "prs" });
+    expect(countTestFiles(plainStore.getState())).toBe(1);
+
+    const matchedStore = freshStoreForArtifact(REVIEW_WITH_TESTS_ARTIFACT);
+    matchedStore.setState({
+      viewMode: "prs",
+      prFiles: [{ ...addedTest, path: "repo/src/a.test.ts" }],
+    });
+    expect(countTestFiles(matchedStore.getState())).toBe(1);
+
+    const taggedDeletedArtifact = {
+      ...ARTIFACT,
+      nodes: [
+        ...ARTIFACT.nodes,
+        { ...node("ts:src/checks.ts", "module", "src/checks.ts", PACKAGE_ID), tags: ["test"] },
+      ],
+    } as GraphArtifact;
+    plainStore.setState({
+      viewMode: "modules",
+      prReviewed: 7,
+      prFiles: [],
+      review: {
+        context: {
+          changedFiles: [{ path: "src/checks.ts", status: "deleted" }],
+          baseRef: "main",
+          baseSha: null,
+          headRef: "feature",
+          reviewKey: "deleted-test-review",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+      prReviewBaseline: {
+        artifact: taggedDeletedArtifact,
+        index: buildGraphIndex(taggedDeletedArtifact),
+        review: null,
+      },
+    });
+    expect(countTestFiles(plainStore.getState())).toBe(1);
+
+    plainStore.setState({
+      prReviewed: null,
+      prReviewBaseline: null,
+      prFiles: null,
+      review: {
+        context: {
+          changedFiles: [{ path: "src/added.spec.ts", status: "added" }],
+          baseRef: null,
+          baseSha: null,
+          headRef: null,
+          reviewKey: "artifact-review",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+    });
+    expect(countTestFiles(plainStore.getState())).toBe(1);
+  });
+
+  it("projects artifact-carried review paint and rows through the Tests toggle", () => {
+    const artifactReview = {
+      ...REVIEW_WITH_TESTS_ARTIFACT,
+      extensions: {
+        ...REVIEW_WITH_TESTS_ARTIFACT.extensions,
+        review: {
+          changedFiles: [
+            { path: "src/a.ts", status: "modified", hunks: [{ start: 10, end: 10 }] },
+            { path: "src/a.test.ts", status: "modified", hunks: [{ start: 5, end: 5 }] },
+            { path: "src/added.spec.ts", status: "added" },
+          ],
+          baseRef: "main",
+          baseSha: null,
+          headRef: "feature",
+          reviewKey: "artifact-review",
+          warnings: [],
+        },
+      },
+    } as GraphArtifact;
+    const store = freshStoreForArtifact(artifactReview);
+
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
+    expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID]));
+    expect(store.getState().index.changedIds).toEqual(new Set([METHOD_ID]));
+    expect(countTestFiles(store.getState())).toBe(2);
+
+    store.getState().toggleShowTests();
+
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual([
+      "src/a.test.ts",
+      "src/a.ts",
+      "src/added.spec.ts",
+    ]);
+    expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID, TEST_METHOD_ID]));
+    expect(store.getState().index.changedIds).toEqual(new Set([METHOD_ID, TEST_METHOD_ID]));
+  });
+
   it("does not call PR endpoints for a graph that is not connected to GitHub", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -185,6 +313,121 @@ describe("PR store slice", () => {
     const changedSince = (store.getState().artifact.extensions as { changedSince?: { files?: Record<string, unknown>; kinds?: Record<string, unknown> } })?.changedSince;
     expect(changedSince?.files?.["src/a.ts"]).toEqual([{ start: 1, end: 1 }]);
     expect(changedSince?.kinds?.["src/a.ts"]).toEqual([{ start: 1, end: 1, kind: "added" }]);
+  });
+
+  it("uses the existing Tests toggle to remove and losslessly restore every PR-review test surface", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStoreForArtifact(REVIEW_WITH_TESTS_ARTIFACT);
+    store.setState({
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles: [
+        { path: "src/a.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 10, end: 10 }] },
+        { path: "src/a.test.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 5, end: 5 }] },
+      ],
+    });
+
+    await store.getState().reviewPrInGraph();
+
+    expect(store.getState().showTests).toBe(false);
+    expect(store.getState().review?.context.changedFiles.map((file) => file.path)).toEqual([
+      "src/a.ts",
+      "src/a.test.ts",
+    ]);
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().minimalMemberIds).toEqual([FILE_ID]);
+    expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID]));
+    expect(store.getState().review?.rows.some((row) => row.flow.flowId === TEST_METHOD_ID)).toBe(false);
+    expect(Object.keys((store.getState().artifact.extensions as { changedSince: { files: object } }).changedSince.files)).toEqual(["src/a.ts"]);
+
+    store.getState().toggleShowTests();
+
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual([
+      "src/a.test.ts",
+      "src/a.ts",
+    ]);
+    expect(store.getState().minimalSeedIds).toEqual([TEST_FILE_ID, FILE_ID]);
+    expect(store.getState().minimalMemberIds).toEqual([TEST_FILE_ID, FILE_ID]);
+    expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID, TEST_METHOD_ID]));
+    expect(store.getState().review?.rows.some((row) => row.flow.flowId === TEST_METHOD_ID)).toBe(true);
+    expect(Object.keys((store.getState().artifact.extensions as { changedSince: { files: object } }).changedSince.files).sort()).toEqual([
+      "src/a.test.ts",
+      "src/a.ts",
+    ]);
+
+    const testFile = store.getState().reviewFiles.find((file) => file.path.endsWith("a.test.ts"))!;
+    store.getState().toggleReviewFileViewed(testFile.path);
+    store.getState().addReviewComment(testFile.path, null, "Keep this hidden test draft");
+    store.setState({
+      moduleSelected: new Set([FILE_ID]),
+      reviewSelectedId: FILE_ID,
+      reviewLitNodeIds: new Set([METHOD_ID]),
+    });
+    expect(store.getState().reviewUnitTicks[TEST_METHOD_ID]).toBeDefined();
+    expect(store.getState().reviewComments).toHaveLength(1);
+
+    store.getState().toggleShowTests();
+
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().minimalMemberIds).toEqual([FILE_ID]);
+    expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID]));
+    expect(store.getState().moduleSelected).toEqual(new Set([FILE_ID]));
+    expect(store.getState().reviewSelectedId).toBe(FILE_ID);
+    expect(store.getState().reviewLitNodeIds).toEqual(new Set([METHOD_ID]));
+    expect(Object.keys((store.getState().artifact.extensions as { changedSince: { files: object } }).changedSince.files)).toEqual(["src/a.ts"]);
+    expect(store.getState().reviewUnitTicks[TEST_METHOD_ID]).toBeDefined();
+    expect(store.getState().reviewComments).toHaveLength(1);
+
+    await store.getState().submitReviewComments();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(store.getState().reviewComments).toHaveLength(1);
+
+    store.getState().toggleShowTests();
+    expect(store.getState().reviewFiles.some((file) => file.path === testFile.path)).toBe(true);
+    expect(store.getState().reviewUnitTicks[TEST_METHOD_ID]).toBeDefined();
+    expect(store.getState().reviewComments[0]?.body).toBe("Keep this hidden test draft");
+  });
+
+  it("keeps an all-test review open as an empty workspace until Tests is turned on", async () => {
+    const store = freshStoreForArtifact(REVIEW_WITH_TESTS_ARTIFACT);
+    store.setState({
+      viewMode: "prs",
+      prSelected: 8,
+      prsList: { open: [pr(8)], closed: null },
+      prFiles: [
+        { path: "src/a.test.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 5, end: 5 }] },
+      ],
+    });
+
+    await store.getState().reviewPrInGraph();
+
+    expect(store.getState().prReviewed).toBe(8);
+    expect(store.getState().minimalSeedIds).toEqual([TEST_FILE_ID]);
+    expect(store.getState().minimalMemberIds).toEqual([]);
+    expect(store.getState().reviewFiles).toEqual([]);
+    expect(store.getState().reviewAffectedIds).toEqual(new Set());
+    store.getState().resetMinimalGraph();
+    store.getState().rearrangeMinimalGraph();
+    expect(store.getState().minimalMemberIds).toEqual([]);
+    expect(store.getState().minimalArrange).toBe(false);
+    store.getInitialState = store.getState;
+    const hiddenPanel = renderToStaticMarkup(
+      createElement(StoreProvider, { store, children: createElement(ReviewPanel) }),
+    );
+    expect(hiddenPanel).toContain("Test changes are excluded");
+    expect(hiddenPanel).toContain("Open <strong>Review preferences</strong>");
+    expect(hiddenPanel).toContain("turn off <strong>Exclude test changes</strong>");
+
+    store.getState().toggleShowTests();
+
+    expect(store.getState().minimalSeedIds).toEqual([TEST_FILE_ID]);
+    expect(store.getState().minimalMemberIds).toEqual([TEST_FILE_ID]);
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.test.ts"]);
+    expect(store.getState().reviewAffectedIds).toEqual(new Set([TEST_METHOD_ID]));
   });
 
   it("keeps added review comments local until Submit review performs the one POST", async () => {
@@ -347,6 +590,10 @@ describe("PR store slice", () => {
 
     const submit = store.getState().submitReviewComments();
     expect(store.getState().reviewSubmitStatus).toBe("submitting");
+    store.getState().toggleShowTests();
+    expect(store.getState().reviewSubmitStatus).toBe("submitting");
+    await store.getState().submitReviewComments();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     store.setState({ prReviewStale: true });
     await Promise.all([
       store.getState().refreshPrReview(),
@@ -433,6 +680,12 @@ describe("PR store slice", () => {
     await store.getState().checkPrReviewFreshness();
     expect(store.getState().prReviewStale).toBe(true);
     expect(selectedPrSummary(store.getState())?.headSha).toBe("head-2");
+    const staleRevision = store.getState().prReviewRevision;
+    store.getState().toggleShowTests();
+    expect(store.getState().prReviewStale).toBe(true);
+    expect(store.getState().prReviewRevision).toBe(staleRevision);
+    store.getState().addReviewComment(store.getState().reviewFiles[0].path, null, "Do not submit stale review contents");
+    await store.getState().submitReviewComments();
     expect(fetchMock.mock.calls.map(([input]) => input.toString())).toEqual([
       "http://meridian.local/api/prs/one?id=artifact-1&n=7",
       "http://meridian.local/api/prs/one?id=artifact-1&n=7",

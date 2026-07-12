@@ -10,6 +10,8 @@ import type { BlueprintState } from "../../state/store";
 import { moduleSurfaceSpec } from "../canvas/surfaceSpec";
 import { COVERAGE_COLORS } from "../../theme/coverageColors";
 import { accentForKind } from "../../theme/kindColors";
+import { matchAffectedFiles } from "../../derive/matchAffectedFiles";
+import { isReviewTestPath } from "../../derive/reviewFiles";
 import { Pill } from "./panelKit";
 
 const REACH_HUE = "#5B9BE3";
@@ -153,14 +155,46 @@ export function OverlaysSection() {
   );
 }
 
-function countTestFiles(state: BlueprintState): number {
-  let count = 0;
-  for (const id of state.index.testIds) {
-    if (state.index.nodesById.get(id)?.kind === "module") {
-      count += 1;
+export function countTestFiles(state: BlueprintState): number {
+  const paths = new Set<string>();
+  const addIndexTests = (index: BlueprintState["index"]) => {
+    for (const id of index.testIds) {
+      const node = index.nodesById.get(id);
+      if (node?.kind === "module") {
+        paths.add(node.location.file);
+      }
+    }
+  };
+  addIndexTests(state.index);
+  const addReviewTestPath = (path: string) => {
+    const baselineIndex = state.prReviewBaseline?.index ?? null;
+    if (!isReviewTestPath(path, state.index, baselineIndex)) {
+      return;
+    }
+    const activeMatch = matchAffectedFiles(state.index, [path]).matched[0];
+    const baselineMatch = activeMatch === undefined && baselineIndex !== null
+      ? matchAffectedFiles(baselineIndex, [path]).matched[0]
+      : undefined;
+    const matchedIndex = activeMatch === undefined ? baselineIndex : state.index;
+    const moduleId = activeMatch?.moduleId ?? baselineMatch?.moduleId;
+    const graphPath = moduleId === undefined || matchedIndex === null
+      ? null
+      : matchedIndex.nodesById.get(moduleId)?.location.file ?? null;
+    paths.add(graphPath ?? path);
+  };
+  // A PR can add its first test file, so it has no module in the base graph yet. Keep the toggle
+  // available from the PR detail/review surfaces by also classifying the raw changed-file paths.
+  if (state.viewMode === "prs" || state.prReviewed !== null) {
+    for (const file of state.prFiles ?? []) {
+      addReviewTestPath(file.path);
     }
   }
-  return count;
+  // Artifact-carried reviews have no prFiles payload. Their raw context is intentionally retained
+  // by the projection so an added/unmatched test row can still make this restore toggle available.
+  for (const file of state.review?.context.changedFiles ?? []) {
+    addReviewTestPath(file.path);
+  }
+  return paths.size;
 }
 
 function hasExternalDependencies(state: BlueprintState): boolean {

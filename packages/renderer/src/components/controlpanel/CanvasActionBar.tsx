@@ -45,11 +45,12 @@ export function CanvasActionBar({
   const selectedCount = useBlueprint((state) => state.moduleSelected.size);
   const removableCount = useBlueprint(removableModuleSelectionCount);
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
+  const minimalHasMembers = useBlueprint((state) => state.minimalMemberIds.length > 0);
   const minimalArranged = useBlueprint((state) => state.minimalArrange);
   const minimalChanged = useBlueprint(
-    (state) => !sameMembers(state.minimalMemberIds, state.minimalSeedIds)
+    (state) => state.minimalMemberIds.length > 0 && (!sameMembers(state.minimalMemberIds, state.minimalSeedIds)
       || state.minimalArrange
-      || Object.keys(state.minimalRollups).some((id) => state.moduleExpanded.has(id)),
+      || Object.keys(state.minimalRollups).some((id) => state.moduleExpanded.has(id))),
   );
   const {
     recenter,
@@ -141,12 +142,15 @@ export function CanvasActionBar({
               <CanvasActionButton
                 ariaLabel="Rearrange extracted graph"
                 title={
-                  minimalArranged
+                  !minimalHasMembers
+                    ? "No visible nodes to rearrange"
+                    : minimalArranged
                     ? "Re-run the compact layout for the current extracted graph"
                     : "Lay out the current extracted graph compactly, ignoring its map positions"
                 }
                 icon={<RearrangeIcon size={18} />}
                 onClick={rearrangeMinimalGraph}
+                disabled={!minimalHasMembers}
               />
               <CanvasActionButton
                 ariaLabel="Reset extracted graph"

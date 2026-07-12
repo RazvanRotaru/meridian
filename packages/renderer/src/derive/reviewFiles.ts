@@ -9,7 +9,7 @@
  * never leaves a silently-green row (same contract as flow ticks in reviewData.ts).
  */
 
-import { computeAffectedNodes, NON_BLOCK_KINDS, rangesOverlap } from "@meridian/core";
+import { computeAffectedNodes, isTestPath, NON_BLOCK_KINDS, rangesOverlap } from "@meridian/core";
 import type { ChangeStatus, GraphArtifact, GraphEdge, LineRange, ReviewContext } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { ReviewTick } from "../state/reviewTicksPref";
@@ -53,6 +53,9 @@ export interface ReviewFileRow {
   status: ChangeStatus;
   /** The file's module node on the active graph; a deleted file may resolve only via deletedImpact. */
   moduleId: string | null;
+  /** Canonical test-code verdict. The path fallback covers added/deleted/unmatched files while the
+   * graph tag covers explicitly tagged test modules whose filename is not heuristic-shaped. */
+  isTest: boolean;
   /** Touched code units, ordered by start line. Empty ⇒ the change mapped to no extracted block. */
   units: ReviewUnitRow[];
   /** File-level fingerprint (hunks digest) — staleness for the unit-less viewed tick. */
@@ -61,6 +64,24 @@ export interface ReviewFileRow {
   blastRadius: number;
   /** Surviving direct callers into deleted code, resolved from the deletion-source graph. */
   deletedImpact: DeletedImpact | null;
+}
+
+/** Classify a review path even when its file row is currently projected out. Path heuristics cover
+ * added/deleted files; the graph join covers explicitly tagged test modules with ordinary names. */
+export function isReviewTestPath(path: string, index: GraphIndex, fallbackIndex: GraphIndex | null = null): boolean {
+  if (isTestPath(path)) {
+    return true;
+  }
+  const activeMatch = matchAffectedFiles(index, [path]).matched[0];
+  if (activeMatch !== undefined) {
+    // HEAD/current truth wins when the same path changed classification since the baseline.
+    return index.testIds.has(activeMatch.moduleId);
+  }
+  if (fallbackIndex === null) {
+    return false;
+  }
+  const fallbackMatch = matchAffectedFiles(fallbackIndex, [path]).matched[0];
+  return fallbackMatch !== undefined && fallbackIndex.testIds.has(fallbackMatch.moduleId);
 }
 
 /** All changed files as review rows: in-graph files first (they are what the review is about; the
@@ -108,10 +129,12 @@ export function deriveReviewFiles(
   return [...context.changedFiles]
     .map((file) => {
       const units = (unitsByFile.get(file.path) ?? []).sort((a, b) => a.startLine - b.startLine);
+      const moduleId = moduleByPath.get(file.path) ?? null;
       return {
         path: file.path,
         status: file.status,
-        moduleId: moduleByPath.get(file.path) ?? null,
+        moduleId,
+        isTest: isReviewTestPath(file.path, index, options.baseIndex),
         units,
         fingerprint: hunksFingerprint(file.hunks),
         blastRadius: blastRadiusOf(units, changedPaths, index, activeInbound),

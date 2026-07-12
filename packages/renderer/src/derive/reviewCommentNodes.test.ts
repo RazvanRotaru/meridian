@@ -17,7 +17,10 @@ const CLASS = "ts:src/a.ts#Service";
 const METHOD = "ts:src/a.ts#Service.run";
 const SURVIVOR = "ts:src/a.ts#Service.next";
 const OTHER = "ts:src/a.ts#outside";
+const TEST_FILE = "ts:src/a.test.ts";
+const TEST_METHOD = "ts:src/a.test.ts#coversRun";
 const PR_PATH = "repo/src/a.ts";
+const TEST_PR_PATH = "repo/src/a.test.ts";
 
 const INDEX = buildGraphIndex({
   nodes: [
@@ -27,6 +30,8 @@ const INDEX = buildGraphIndex({
     node(METHOD, "method", CLASS, "src/a.ts", 20, 30),
     node(SURVIVOR, "method", CLASS, "src/a.ts", 31, 40),
     node(OTHER, "function", FILE, "src/a.ts", 70, 80),
+    node(TEST_FILE, "module", PACKAGE, "src/a.test.ts", 1, 40),
+    node(TEST_METHOD, "function", TEST_FILE, "src/a.test.ts", 10, 20),
   ],
   edges: [],
 } as unknown as GraphArtifact);
@@ -34,6 +39,7 @@ const INDEX = buildGraphIndex({
 const FILE_ROW: ReviewFileRow = {
   path: PR_PATH,
   status: "modified",
+  isTest: false,
   moduleId: FILE,
   units: [],
   fingerprint: "fixture",
@@ -108,6 +114,15 @@ describe("review comment node evidence", () => {
       drafts: [{ ...draft("deleted", null, null), path: "deleted.ts" }],
       existingComments: [{ ...existing("LEFT", 4), path: "deleted.ts" }],
     })).size).toBe(0);
+  });
+
+  it("does not roll a draft from a projected-out file onto a visible ancestor", () => {
+    const evidence = deriveReviewCommentNodeEvidence(input({
+      drafts: [{ ...draft("hidden-test", TEST_METHOD, null), path: TEST_PR_PATH }],
+    }));
+
+    expect(evidence.size).toBe(0);
+    expect(projectReviewCommentNodeEvidence(evidence, [rfNode(PACKAGE, 1)], INDEX).size).toBe(0);
   });
 });
 

@@ -8,12 +8,12 @@
  */
 
 import { collectChangedIds, computeCoverage } from "@meridian/core";
-import type { ChangedLineSpan, GraphArtifact, LineRange, ReviewContext } from "@meridian/core";
+import type { ChangedLineSpan, ChangeStatus, GraphArtifact, LineRange, ReviewContext } from "@meridian/core";
 import { loadArtifact } from "../boot/loadArtifact";
-import { applyChangedIds, buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
+import { applyChangedIds, applyChangedStatus, buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
 import type { FileMatch } from "../derive/matchAffectedFiles";
 import { deriveReviewData, type ReviewData } from "../derive/reviewData";
-import { deriveReviewFiles } from "../derive/reviewFiles";
+import { deriveReviewProjection } from "../derive/reviewProjection";
 import { readReviewProgress } from "./reviewTicksPref";
 import type { BlueprintState } from "./store";
 
@@ -124,21 +124,32 @@ export function restorePrReviewBaseline(
   // An artifact-sourced review (the boot artifact carried one) gets its checklist + progress back;
   // a plain session clears every review-owned field.
   const progress = baseline.review ? readReviewProgress(baseline.review.context.reviewKey) : null;
+  const projection = baseline.review
+    ? deriveReviewProjection(baseline.review.context, baseline.artifact, baseline.index, {
+        baseIndex: null,
+        showTests: get().showTests,
+      })
+    : null;
+  if (projection !== null) {
+    applyChangedIds(baseline.index, projection.affected.map((node) => node.nodeId));
+    applyChangedStatus(
+      baseline.index,
+      projection.affected.map((node) => [node.nodeId, node.status] as [string, ChangeStatus]),
+    );
+  }
   set({
     ...restoredGraph,
-    review: baseline.review,
+    review: projection?.review ?? null,
     reviewTicks: progress?.ticks ?? {},
     reviewUnitTicks: progress?.unitTicks ?? {},
     reviewFileTicks: progress?.fileTicks ?? {},
     reviewComments: progress?.comments ?? [],
-    reviewFiles: baseline.review
-      ? deriveReviewFiles(baseline.review.context, baseline.artifact, baseline.index, { baseIndex: null })
-      : [],
+    reviewFiles: projection?.files ?? [],
     reviewPanelHidden: false,
     reviewSubmitStatus: "idle",
     reviewSubmitError: null,
     reviewSubmittedUrl: null,
-    reviewAffectedIds: new Set<string>(),
+    reviewAffectedIds: new Set(projection?.affected.map((node) => node.nodeId) ?? []),
     reviewLitNodeIds: null,
     reviewSelectedId: null,
     flowSelection: null,
@@ -209,9 +220,16 @@ export function withPrLineDiff(
     ...artifact,
     extensions: {
       ...(artifact.extensions as Record<string, unknown> | undefined),
-      changedSince: { baseRef: `pr#${prNumber}`, files: changedFiles, kinds: changedKinds },
+      changedSince: { baseRef: `pr#${prNumber}`, source: "pr-review", files: changedFiles, kinds: changedKinds },
     },
   } as unknown as GraphArtifact;
+}
+
+/** Whether changedSince was synthesized client-side by withPrLineDiff. Unlike an extractor-owned
+ * stamp, this projection must be regenerated whenever the Tests toggle changes its file set. */
+export function hasPrReviewLineDiff(artifact: GraphArtifact): boolean {
+  return (artifact.extensions as { changedSince?: { source?: unknown } } | undefined)
+    ?.changedSince?.source === "pr-review";
 }
 
 function requestOrigin(): string {
