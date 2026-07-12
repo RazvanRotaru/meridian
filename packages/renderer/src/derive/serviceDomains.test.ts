@@ -2,7 +2,12 @@ import type { UnitMetrics } from "@meridian/design-metrics";
 import { describe, expect, it } from "vitest";
 import { SERVICE_GROUPING_OPTIONS } from "./serviceClusteringModes";
 import type { ServiceClustering } from "./serviceComposition";
-import { deriveServiceDomains, serviceDomainLabel, UNASSIGNED_SERVICE_DOMAIN_ID } from "./serviceDomains";
+import {
+  deriveServiceDomains,
+  serviceDomainById,
+  serviceDomainLabel,
+  UNASSIGNED_SERVICE_DOMAIN_ID,
+} from "./serviceDomains";
 
 describe("deriveServiceDomains", () => {
   it("keeps every service in exactly one artificial parent for every mode", () => {
@@ -40,12 +45,29 @@ describe("deriveServiceDomains", () => {
     expect(domains.every((domain) => /^service-domain:domain:[0-9a-f]{8}$/.test(domain.id))).toBe(true);
   });
 
-  it("caches the full-system model by clustering object, mode, and balanced target size", () => {
+  it("changes generated label detail without changing a domain's stable identity", () => {
+    const clustering = labelFixture();
+    const single = deriveServiceDomains(clustering, "dependency");
+    const pair = deriveServiceDomains(clustering, "dependency", 12, "pair");
+
+    expect(single.domains).toHaveLength(1);
+    expect(single.domains[0]?.label).toBe("Conversation");
+    expect(pair.domains[0]?.label).toBe("Conversation / Message");
+    expect(pair.domains[0]?.id).toBe(single.domains[0]?.id);
+    expect(pair.domains[0]?.leadIds).toEqual(single.domains[0]?.leadIds);
+
+    const legacyPairId = `${single.domains[0]?.id}:${encodeURIComponent(pair.domains[0]?.label ?? "")}`;
+    expect(serviceDomainById(single, legacyPairId)?.id).toBe(single.domains[0]?.id);
+  });
+
+  it("caches the full-system model by clustering object, mode, target size, and label mode", () => {
     const clustering = fixture();
     expect(deriveServiceDomains(clustering, "domain")).toBe(deriveServiceDomains(clustering, "domain"));
     expect(deriveServiceDomains(clustering, "domain")).not.toBe(deriveServiceDomains(clustering, "folder"));
     expect(deriveServiceDomains(clustering, "edge-cut", 6)).toBe(deriveServiceDomains(clustering, "edge-cut", 6));
     expect(deriveServiceDomains(clustering, "edge-cut", 6)).not.toBe(deriveServiceDomains(clustering, "edge-cut", 12));
+    expect(deriveServiceDomains(clustering, "domain", 12, "single"))
+      .not.toBe(deriveServiceDomains(clustering, "domain", 12, "pair"));
   });
 
   it("keeps unreachable folder fallbacks behind one honest Unassigned parent", () => {
@@ -90,6 +112,25 @@ function fixture(withCouplings = true): ServiceClustering {
     metrics: new Map(leads.map(([id, name, path]) => [id, metric(id, name, path)])),
     membersByUnit: new Map(leads.map(([id]) => [id, []])),
     couplings,
+  };
+}
+
+function labelFixture(): ServiceClustering {
+  const leads = [
+    ["chat-reader", "ConversationMessageReader", "src/chat/reader.ts"],
+    ["chat-writer", "ConversationMessageWriter", "src/chat/writer.ts"],
+    ["chat-store", "ConversationMessageStore", "src/chat/store.ts"],
+  ] as const;
+  return {
+    clusters: leads.map(([id]) => ({ leadId: id, memberIds: [id] })),
+    leadOf: new Map(leads.map(([id]) => [id, id])),
+    metrics: new Map(leads.map(([id, name, path]) => [id, metric(id, name, path)])),
+    membersByUnit: new Map(leads.map(([id]) => [id, []])),
+    couplings: [
+      { source: "chat-reader", target: "chat-writer", kinds: new Set(["calls"]), inheritanceOnly: false },
+      { source: "chat-writer", target: "chat-store", kinds: new Set(["calls"]), inheritanceOnly: false },
+      { source: "chat-store", target: "chat-reader", kinds: new Set(["calls"]), inheritanceOnly: false },
+    ],
   };
 }
 

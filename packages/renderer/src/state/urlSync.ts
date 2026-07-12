@@ -193,6 +193,7 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     moduleFocus: nav.moduleFocus,
     serviceGroupingMode: nav.serviceGroupingMode,
     serviceGroupingTargetSize: nav.serviceGroupingTargetSize,
+    serviceGroupingLabelMode: nav.serviceGroupingLabelMode,
     // Reset the overlay to the URL's state. A review rebuild starts empty because its current
     // artifact/files re-derive both seeds and expansion; replaying mgraph/mexp first would run a
     // redundant ELK pass with ids that may belong to the prior artifact. An ordinary restore that

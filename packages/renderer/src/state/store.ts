@@ -47,8 +47,13 @@ import { moduleChildContainerIds } from "../derive/moduleChildContainers";
 import { serviceScopeFor, widenServiceScope, type ServiceScope } from "./serviceScope";
 import { expandServiceSyntheticAnchors, leadIdOf } from "../derive/serviceClusterEdges";
 import { clusteringFor } from "../derive/serviceClusteringCache";
-import { deriveServiceDomains, isServiceDomainId } from "../derive/serviceDomains";
-import { SERVICE_GROUPING_OPTIONS, type ServiceGroupingMode } from "../derive/serviceClusteringModes";
+import { deriveServiceDomains, isServiceDomainId, serviceDomainById } from "../derive/serviceDomains";
+import {
+  DEFAULT_SERVICE_GROUPING_LABEL_MODE,
+  SERVICE_GROUPING_OPTIONS,
+  type ServiceGroupingLabelMode,
+  type ServiceGroupingMode,
+} from "../derive/serviceClusteringModes";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import type { HighlightMode } from "../components/moduleMapPaint";
 import {
@@ -320,6 +325,8 @@ export interface BlueprintState {
   serviceGroupingMode: ServiceGroupingMode;
   /** Preferred member count for balanced Service partitions. */
   serviceGroupingTargetSize: ServiceGroupingTargetSize;
+  /** How many ranked semantic concepts name each inferred Service parent. */
+  serviceGroupingLabelMode: ServiceGroupingLabelMode;
   /** The ORIGIN of the OPEN minimal-graph overlay: the raw selection ids (any kind), verbatim; empty
    * == the overlay is closed and the Module-map level canvas shows. Immutable per build — it is the
    * seed-tier baseline and the Reset target. URL-synced as `mgraph`. */
@@ -556,6 +563,8 @@ export interface BlueprintState {
   setServiceGroupingMode(mode: ServiceGroupingMode): void;
   /** Change the preferred size of balanced Service parents and relayout in place. */
   setServiceGroupingTargetSize(size: ServiceGroupingTargetSize): void;
+  /** Switch inferred Service parents between one- and two-concept labels. */
+  setServiceGroupingLabelMode(mode: ServiceGroupingLabelMode): void;
   buildMinimalGraph(): void;
   closeMinimalGraph(): void;
   demoteMinimalMember(id: string): void;
@@ -1104,6 +1113,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     serviceScope: null,
     serviceGroupingMode: "folder",
     serviceGroupingTargetSize: DEFAULT_SERVICE_GROUPING_TARGET_SIZE,
+    serviceGroupingLabelMode: DEFAULT_SERVICE_GROUPING_LABEL_MODE,
     minimalSeedIds: [],
     minimalMemberIds: [],
     minimalRollups: {},
@@ -1844,7 +1854,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const focusLead = moduleFocus === null ? null : leadIdOf(moduleFocus);
       const focusDomain = moduleFocus === null
         ? undefined
-        : deriveServiceDomains(clusteringFor(index), serviceGroupingMode, serviceGroupingTargetSize).domainById.get(moduleFocus);
+        : serviceDomainById(
+            deriveServiceDomains(clusteringFor(index), serviceGroupingMode, serviceGroupingTargetSize),
+            moduleFocus,
+          );
       const staysInFocus = (focusLead !== null && resolution.owningLeads.every((lead) => lead === focusLead))
         || (focusDomain !== undefined && resolution.owningLeads.every((lead) => focusDomain.leadIds.includes(lead)));
       const expanded = new Set([...moduleExpanded, ...resolution.reveal.moduleExpanded]);
@@ -2462,6 +2475,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().moduleRelayout({
         label: `Changing cluster target to ${size}…`,
         detail: serviceGroupingLabel(state.serviceGroupingMode),
+      });
+    },
+
+    setServiceGroupingLabelMode(mode) {
+      const state = get();
+      if (state.serviceGroupingLabelMode === mode) {
+        return;
+      }
+      set({ serviceGroupingLabelMode: mode });
+      void get().moduleRelayout({
+        label: mode === "single" ? "Showing single cluster labels…" : "Showing multi-part cluster labels…",
       });
     },
 

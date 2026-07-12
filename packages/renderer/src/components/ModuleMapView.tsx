@@ -139,6 +139,7 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
   const serviceScope = useBlueprint((state) => state.serviceScope);
   const serviceGroupingMode = useBlueprint((state) => state.serviceGroupingMode);
   const serviceGroupingTargetSize = useBlueprint((state) => state.serviceGroupingTargetSize);
+  const serviceGroupingLabelMode = useBlueprint((state) => state.serviceGroupingLabelMode);
   const { setModuleFocus, commitModuleSemanticParent, clearServiceScope, promoteGhost, folderChildrenFor } = useBlueprintActions();
   const spec = activeModuleSurfaceSpec(viewMode);
 
@@ -178,6 +179,7 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
       showCommons,
       serviceGroupingMode,
       serviceGroupingTargetSize,
+      serviceGroupingLabelMode,
     ],
     commitAdapter: {
       mode: "retained-anchor",
@@ -223,7 +225,13 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
         // only while zoomed) steps back out of the dive.
         <ServiceScopeBreadcrumb
           label={serviceScope.label}
-          crumbs={spec.navigation.crumbs(effectiveFocus, index, serviceGroupingMode, serviceGroupingTargetSize)}
+          crumbs={spec.navigation.crumbs(
+            effectiveFocus,
+            index,
+            serviceGroupingMode,
+            serviceGroupingTargetSize,
+            serviceGroupingLabelMode,
+          )}
           onClear={() => {
             clearServiceScope();
             setModuleFocus(null);
@@ -239,7 +247,13 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
               ? serviceClusterCount(clusteringFor(index))
               : semanticNavigation.currentNodes.filter((node) => !node.parentId && node.type !== "ghost").length
             : 0}
-          crumbs={spec.navigation.crumbs(effectiveFocus, index, serviceGroupingMode, serviceGroupingTargetSize)}
+          crumbs={spec.navigation.crumbs(
+            effectiveFocus,
+            index,
+            serviceGroupingMode,
+            serviceGroupingTargetSize,
+            serviceGroupingLabelMode,
+          )}
           onFocus={setModuleFocus}
           rootLabel={spec.navigation.rootLabel}
           rootNoun={spec.navigation.rootNoun}

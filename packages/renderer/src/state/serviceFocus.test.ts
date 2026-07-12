@@ -372,6 +372,29 @@ describe("Service domain container behavior", () => {
     expect(state.moduleExpanded).toEqual(new Set([leadFrame]));
     expect(state.moduleSelected).toEqual(new Set([leadFrame]));
   });
+
+  it("switches label detail without discarding synthetic domain exploration state", async () => {
+    const store = freshDomainStore();
+    const backend = domainId(store, "backend");
+    store.setState({
+      viewMode: "call",
+      moduleFocus: backend,
+      moduleEffectiveFocus: backend,
+      moduleExpanded: new Set([backend]),
+      moduleSelected: new Set([backend]),
+    });
+
+    store.getState().setServiceGroupingLabelMode("pair");
+    const state = store.getState();
+    expect(state.serviceGroupingLabelMode).toBe("pair");
+    expect(state.moduleFocus).toBe(backend);
+    expect(state.moduleEffectiveFocus).toBe(backend);
+    expect(state.moduleExpanded).toEqual(new Set([backend]));
+    expect(state.moduleSelected).toEqual(new Set([backend]));
+    expect(state.moduleLayoutStatus).toBe("laying-out");
+
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+  });
 });
 
 describe("action-scoped graph loading", () => {
