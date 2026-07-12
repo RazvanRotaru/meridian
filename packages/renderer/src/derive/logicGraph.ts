@@ -417,7 +417,9 @@ class LogicGraphBuilder {
   private exitStep(step: Extract<FlowStep, { kind: "exit" }>, parentId: string | null, id: string): { entry: string; exits: Exit[] } {
     const label = exitLabel(step);
     const data: TerminalData = { targetId: null, isContainer: false, terminal: step.variant, label };
-    this.nodes.push({ id, parentId, type: "terminal", data, width: exitCapWidth(label), height: EXIT_CAP_HEIGHT });
+    // The cap DISPLAYS only the variant word (`return`/`throw`) — like the EXIT pill — with the
+    // returned/thrown expression (`label`) revealed on hover. So it's sized to the word, not the expr.
+    this.nodes.push({ id, parentId, type: "terminal", data, width: exitCapWidth(step.variant), height: EXIT_CAP_HEIGHT });
     return { entry: id, exits: [] };
   }
 
@@ -629,11 +631,15 @@ const GREY_TITLE_CHROME = 30; // title padding (6+6) + border (2) + glyph (~8) +
 const GREY_TITLE_TAIL = 34; // room for the </> button (+ an occasional async badge)
 const GREY_MIN_WIDTH = 96;
 const GREY_MAX_WIDTH = 320;
-// A decision chip: the ◆ glyph, the `if`/`switch` keyword and its condition on one row. CHROME
-// covers the glyph, the inter-span gaps and the horizontal padding + border before the text.
-const BRANCH_CHROME = 40;
-const BRANCH_MIN_WIDTH = 120;
-const BRANCH_MAX_WIDTH = 360;
+// A decision DIAMOND sized to hold its condition: the text sits in the rhombus's central band, which
+// narrows toward the top/bottom vertices — so the box must be WIDER than the text by that band
+// fraction for the text to clear the slanted edges. CHROME is a little breathing room; the height is
+// fixed so the diamond stays a glanceable, consistent shape.
+const BRANCH_TEXT_BAND = 0.6;
+const BRANCH_CHROME = 20;
+const BRANCH_HEIGHT = 58;
+const BRANCH_MIN_WIDTH = 96;
+const BRANCH_MAX_WIDTH = 320;
 
 function sizeFor(
   label: string,
@@ -642,10 +648,10 @@ function sizeFor(
   pins: PinModel | null,
 ): { width: number; height: number } {
   if (type === "branch") {
-    // A decision CHIP sized to its condition: the ◆ glyph + `if`/`switch` keyword + the condition
-    // text on one row (clipped past the max, full on hover), so the actual decision is legible
-    // instead of a bare marker.
-    return { width: roundedClamp(BRANCH_MIN_WIDTH, BRANCH_MAX_WIDTH, BRANCH_CHROME + monoTextWidth(label, 12)), height: 40 };
+    // A decision DIAMOND sized to fit its condition in the rhombus's central band (full text on
+    // hover). The condition drops the leading if/switch keyword — the diamond shape says "decision".
+    const condWidth = monoTextWidth(branchCondition(label), 11);
+    return { width: roundedClamp(BRANCH_MIN_WIDTH, BRANCH_MAX_WIDTH, condWidth / BRANCH_TEXT_BAND + BRANCH_CHROME), height: BRANCH_HEIGHT };
   }
   if (greyed) {
     // A small chip, but sized so the priority name never clips under its tail.
@@ -695,13 +701,21 @@ export function inputPinText(pin: { name: string; type: string | null; optional:
   return pin.type ? `${head}: ${pin.type}` : head;
 }
 
+/** The condition shown ON a branch decision node — the leading `if`/`switch` keyword dropped (the
+ * diamond shape already says "decision"). Shared by the layout sizing and the render so the diamond
+ * is always wide enough for the text it draws (full text rides the hover title). */
+export function branchCondition(label: string): string {
+  return label.replace(/^(if|switch)\b\s*/, "").trim() || label;
+}
+
 function roundedClamp(min: number, max: number, value: number): number {
   return Math.round(clamp(min, max, value));
 }
 
-// Mid-flow return/throw caps are compact pills sized to their (truncated) expression.
+// Mid-flow return/throw caps are compact pills sized to the word they show (`return`/`throw`); the
+// expression itself is on hover, so it never widens the cap.
 const EXIT_CAP_HEIGHT = 34;
 
-function exitCapWidth(label: string): number {
-  return roundedClamp(96, 260, 36 + label.length * 6.6);
+function exitCapWidth(word: string): number {
+  return roundedClamp(96, 260, 36 + word.length * 6.6);
 }

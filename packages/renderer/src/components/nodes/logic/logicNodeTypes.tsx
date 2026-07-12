@@ -13,7 +13,7 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
-import { inputPinText, type LogicNodeData, type TerminalData } from "../../../derive/logicGraph";
+import { branchCondition, inputPinText, type LogicNodeData, type TerminalData } from "../../../derive/logicGraph";
 import { PIN_COLORS, PIN_ROW_H, type PinCategory, type PinModel } from "../../../derive/signaturePins";
 import { FLOW_COLORS } from "../../../derive/flowViewModel";
 import { coverageAccent, coverageVerdict, COVERAGE_COLORS, type CoverageVerdict } from "../../../theme/coverageColors";
@@ -217,29 +217,20 @@ function BranchNode({ data }: NodeProps<LogicRfNode>) {
   const logicSelected = useBlueprint((s) => s.logicSelected);
   const d = data as LogicNodeData;
   const select = selectStateFor(d.targetId, logicSelected);
-  // A decision node shows the ACTUAL condition, not a placeholder: the ◆ glyph + sky accent read
-  // "control-flow at a glance", the `if`/`switch` keyword leads, and the condition follows (clipped
-  // to one line, full text on hover). Its then/else/case pins still leave as labeled exec edges.
-  const keyword = d.logicKind === "switch" ? "switch" : "if";
-  const condition = conditionText(d.label);
+  // The classic decision DIAMOND: a sky-accent rhombus with the actual condition centred over it
+  // (clipped to the diamond's central band, the full `if <cond>` on hover). Its then/else/case pins
+  // leave as labeled exec edges; the exec pins sit at the wrapper's left/right centre — the diamond's
+  // side vertices — so the thread runs through the decision point.
   return (
-    <div style={selectStyle(BRANCH_BODY, select)} title={d.label}>
+    <div style={selectStyle(BRANCH_WRAP, select)} title={d.label}>
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-      <span style={BRANCH_GLYPH} aria-hidden>◆</span>
-      <span style={BRANCH_KEYWORD}>{keyword}</span>
-      <span style={BRANCH_COND}>{condition}</span>
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={BRANCH_SVG} aria-hidden="true">
+        <polygon points="50,2 98,50 50,98 2,50" fill={BRANCH_FILL} stroke={BRANCH_ACCENT} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+      </svg>
+      <span style={BRANCH_COND}>{branchCondition(d.label)}</span>
     </div>
   );
-}
-
-/**
- * The decision condition shown on a Branch node: the leading `if`/`switch` keyword is dropped (the
- * node renders that separately), leaving just the condition expression. The node clips it to one
- * line and carries the full text in its hover title.
- */
-function conditionText(label: string): string {
-  return label.replace(/^(if|switch)\b\s*/, "").trim() || label;
 }
 
 /** A framed container (expanded call / loop / try): a title bar sits over ELK's reserved top pad;
@@ -420,6 +411,13 @@ function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
   );
 }
 
+/** The hover text for a return/throw cap: the full `return <expr>` / `throw <expr>` so the exact
+ * value is one hover away, or a plain "(no value)" note for a bare return that carries no expression
+ * (its `label` is just the bare keyword). */
+function returnHoverText(d: TerminalData): string {
+  return d.label && d.label !== d.terminal ? d.label : `${d.terminal} (no value)`;
+}
+
 /**
  * A flow END-CAP: the ENTRY the observed callable starts at, or the synthetic EXIT every trailing
  * path converges onto. Both are compact pills, not call blocks (no provenance/disclosure/code). The
@@ -442,14 +440,15 @@ function TerminalNode({ data }: NodeProps<LogicRfNode>) {
       </div>
     );
   }
-  // A mid-flow `return`/`throw` cap: the red dead-end a terminated path stops at. Left target pin
-  // only — nothing ever leaves a return, which is exactly the point.
+  // A mid-flow `return`/`throw` cap: the red dead-end a terminated path stops at, shaped like the
+  // EXIT pill. Left target pin only — nothing ever leaves a return. It shows only the WORD; the
+  // returned/thrown expression is one hover away, so the cap stays compact and the flow uncluttered.
   if (d.terminal === "return" || d.terminal === "throw") {
     return (
-      <div style={RETURN_BODY} title={`Path ${d.terminal === "throw" ? "throws" : "returns"} here: ${d.label}`}>
+      <div style={RETURN_BODY} title={returnHoverText(d)}>
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <span style={TERMINAL_GLYPH}>{d.terminal === "throw" ? "⚡" : "⏎"}</span>
-        <span style={NAME} title={d.label}>{d.label}</span>
+        <span style={NAME}>{d.terminal}</span>
       </div>
     );
   }
@@ -572,27 +571,18 @@ const BODY: React.CSSProperties = {
 };
 const GREY_BODY: React.CSSProperties = { ...BODY, opacity: 0.6, background: "#0E1116" };
 
-// A branch is a decision CHIP: a compact rounded node in the sky branch-accent with a ◆ glyph and
-// the condition shown inline. Not a rectangular building block (no pins, one row, no provenance);
-// the shape + accent read "decision", the text says WHICH decision. Sized to its condition by the
-// layout (logicGraph sizeFor), clipped to one line here with the full text on hover.
-const BRANCH_BODY: React.CSSProperties = {
-  width: "100%",
-  height: "100%",
-  boxSizing: "border-box",
-  display: "flex",
-  alignItems: "center",
-  gap: 6,
-  padding: "0 12px",
-  border: `1px solid ${BRANCH_ACCENT}`,
-  borderRadius: 7,
-  background: "rgba(91,180,232,0.10)",
-  fontFamily: MONO,
-  overflow: "hidden",
-};
-const BRANCH_GLYPH: React.CSSProperties = { color: BRANCH_ACCENT, fontSize: 10, flexShrink: 0 };
-const BRANCH_KEYWORD: React.CSSProperties = { color: BRANCH_ACCENT, fontSize: 12, fontWeight: 700, flexShrink: 0 };
-const BRANCH_COND: React.CSSProperties = { color: "#D7E3EF", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 };
+// A branch renders as an outline DIAMOND (the classic decision shape) so it never reads as a
+// rectangular building block. The wrapper hosts the exec pins and any selection dim, and centres the
+// condition over the SVG.
+const BRANCH_WRAP: React.CSSProperties = { position: "relative", width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: MONO };
+// clip-path can't paint a border, so the diamond outline is an SVG polygon; non-scaling-stroke keeps
+// the stroke a constant width while the polygon stretches (preserveAspectRatio="none") to the box.
+const BRANCH_SVG: React.CSSProperties = { position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "visible" };
+// Near-canvas dark fill so the diamond reads outline-first, never a flood of colour.
+const BRANCH_FILL = "rgba(11,14,19,0.72)";
+// The condition sits over the diamond's widest (central) band, clipped there with ellipsis. The box
+// is sized (logicGraph) so the text clears the slanted edges; the full `if <cond>` rides the hover.
+const BRANCH_COND: React.CSSProperties = { position: "relative", maxWidth: "62%", textAlign: "center", color: "#D7E3EF", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 
 function titleStyle(accent: string): React.CSSProperties {
   return {
@@ -715,16 +705,14 @@ const TERMINAL_BASE: React.CSSProperties = {
 };
 const ENTRY_BODY: React.CSSProperties = { ...TERMINAL_BASE, border: `1px solid ${ENTRY_ACCENT}`, background: "rgba(79,180,119,0.12)", color: "#CDEAD9" };
 const EXIT_BODY: React.CSSProperties = { ...TERMINAL_BASE, justifyContent: "center", border: `1px solid ${EXIT_ACCENT}`, background: "rgba(138,147,160,0.10)", color: "#B7C0CC" };
-// A return/throw cap: a clean rounded chip in warm red so a dead-ending path is unmissable, with a
-// heavier left rail where the exec thread lands to read as a terminus. Uniform corners — distinct
-// from the pill-shaped entry/exit caps and from the call blocks, and free of the lopsided half-pill
-// it used to be.
+// A return/throw cap mirrors the EXIT pill's shape (a rounded, centred capsule) but in warm red so a
+// dead-ending path is unmissable. It shows only the word `return`/`throw`; the returned/thrown
+// expression rides the hover, so the cap stays compact like EXIT rather than sprawling to the value.
 const RETURN_BODY: React.CSSProperties = {
   ...TERMINAL_BASE,
+  justifyContent: "center",
   fontSize: 11,
   border: `1px solid ${RETURN_ACCENT}`,
-  borderLeft: `3px solid ${RETURN_ACCENT}`,
-  borderRadius: 7,
   background: "rgba(224,108,108,0.12)",
   color: "#F0C9C9",
 };
