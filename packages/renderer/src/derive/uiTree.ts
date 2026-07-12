@@ -99,6 +99,7 @@ function rendersTreeEdges(lifted: LiftedEdge[], kinds: Map<string, Skeleton["kin
     crossPackage: underlyingEdgesCrossPackage(edge.underlyingEdgeIds, index),
     outsideView: false,
     category: "dep" as const,
+    relationKind: UI_EDGE_KIND,
     depKind: UI_EDGE_KIND,
     underlyingEdgeIds: edge.underlyingEdgeIds,
   }));

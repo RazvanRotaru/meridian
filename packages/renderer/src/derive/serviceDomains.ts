@@ -1,6 +1,11 @@
 /** Artificial parent frames for the dense Service overview, assigned by the active strategy. */
 
-import type { ServiceCluster, ServiceClustering } from "./serviceComposition";
+import {
+  isUnassignedServiceCluster,
+  serviceClusterCount,
+  type ServiceCluster,
+  type ServiceClustering,
+} from "./serviceComposition";
 import {
   deriveServiceNodeGroups,
   SERVICE_GROUPING_OPTIONS,
@@ -11,15 +16,28 @@ import { groupByPathDomain } from "./pathDomains";
 import { DEFAULT_SERVICE_GROUPING_TARGET_SIZE } from "../state/serviceGroupingTargetSize";
 
 export const SERVICE_DOMAIN_PREFIX = "service-domain:";
+export const UNASSIGNED_SERVICE_DOMAIN_ID = `${SERVICE_DOMAIN_PREFIX}unassigned`;
 /** Preserve the already-good small/scoped view; grouping solves the large-overview problem. */
 export const SERVICE_DOMAIN_MIN_CLUSTERS = 12;
 export const DEFAULT_SERVICE_GROUPING_MODE: ServiceGroupingMode = "folder";
+
+/**
+ * Whether the full Service overview uses artificial domain parents. Unassigned code always needs
+ * its honest wrapper, and once one wrapper exists the real services must keep their own peer
+ * wrappers too — otherwise navigation/reveal/breadcrumb state describes a hierarchy unlike the
+ * canvas. Every consumer (tree, path carry, and breadcrumb) must read this same predicate.
+ */
+export function shouldGroupServiceDomains(clustering: ServiceClustering): boolean {
+  return serviceClusterCount(clustering) >= SERVICE_DOMAIN_MIN_CLUSTERS
+    || clustering.clusters.some(isUnassignedServiceCluster);
+}
 
 export interface ServiceDomain {
   id: string;
   key: string;
   label: string;
   leadIds: string[];
+  kind: "services" | "unassigned";
   /** Distinct architectural domains importing / imported by this one. */
   ca: number;
   ce: number;
@@ -122,7 +140,34 @@ function domainSeeds(
   clustering: ServiceClustering,
   mode: ServiceGroupingMode,
   targetSize: number,
-): Array<Pick<ServiceDomain, "id" | "key" | "label" | "leadIds">> {
+): Array<Pick<ServiceDomain, "id" | "key" | "label" | "leadIds" | "kind">> {
+  const serviceClusters = clustering.clusters.filter((cluster) => !isUnassignedServiceCluster(cluster));
+  const unassignedClusters = clustering.clusters.filter(isUnassignedServiceCluster);
+  const serviceClustering = subsetClustering(clustering, serviceClusters);
+  const grouped = groupedDomainSeeds(serviceClustering, mode, targetSize);
+  if (unassignedClusters.length === 0) {
+    return grouped;
+  }
+  return [
+    ...grouped,
+    {
+      id: UNASSIGNED_SERVICE_DOMAIN_ID,
+      key: "unassigned",
+      label: "Unassigned code",
+      leadIds: unassignedClusters.map((cluster) => cluster.leadId).sort(compareCodeUnit),
+      kind: "unassigned",
+    },
+  ];
+}
+
+function groupedDomainSeeds(
+  clustering: ServiceClustering,
+  mode: ServiceGroupingMode,
+  targetSize: number,
+): Array<Pick<ServiceDomain, "id" | "key" | "label" | "leadIds" | "kind">> {
+  if (clustering.clusters.length === 0) {
+    return [];
+  }
   if (mode === "folder") {
     return groupByPathDomain(clustering.clusters.map((cluster) => ({
       id: cluster.leadId,
@@ -132,6 +177,7 @@ function domainSeeds(
       key: domain.key,
       label: domain.label,
       leadIds: domain.ids,
+      kind: "services" as const,
     }));
   }
   return mergeSingletonGroups(deriveServiceNodeGroups(clustering, mode, targetSize), mode).map((group) => {
@@ -141,8 +187,27 @@ function domainSeeds(
       key: group.id,
       label: group.label,
       leadIds: group.leadIds,
+      kind: "services" as const,
     };
   });
+}
+
+/** Grouping algorithms see only actual/inferred service frames. Unreachable folder fallbacks stay
+ * discoverable through one explicit Unassigned parent and cannot distort service communities. */
+function subsetClustering(
+  clustering: ServiceClustering,
+  clusters: ServiceCluster[],
+): ServiceClustering {
+  const leads = new Set(clusters.map((cluster) => cluster.leadId));
+  const inSubset = (id: string): boolean => {
+    const lead = clustering.leadOf.get(id);
+    return lead !== undefined && leads.has(lead);
+  };
+  return {
+    ...clustering,
+    clusters,
+    couplings: clustering.couplings.filter((edge) => inSubset(edge.source) && inSubset(edge.target)),
+  };
 }
 
 function isStableSemanticDomainId(id: string): boolean {

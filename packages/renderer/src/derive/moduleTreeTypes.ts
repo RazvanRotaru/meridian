@@ -10,6 +10,7 @@ export type ModuleGroupData = ModulePackageData & {
   countLabel?: string;
   /** A first-class synthetic Service container (`backend`, `analytics`, ...), never an artifact id. */
   serviceDomain?: boolean;
+  serviceDomainKind?: "services" | "unassigned";
   /** A presentational frame (the minimal-graph overlay): no expand/collapse actions, no package
    * coupling counts (they aren't computed for a filtered subgraph). Absent on the real Map. */
   readOnly?: boolean;
@@ -43,8 +44,11 @@ export interface ModuleTreeEdge {
   /** True when this wire terminates at context materialized from outside the current drawn view. */
   outsideView: boolean;
   category: "import" | "dep" | "flow" | "ipc";
+  /** Canonical exact relationship kind. Flow/order edges intentionally omit it. */
+  relationKind?: string;
   /** For `dep` wires: the underlying coupling kind (calls / instantiates / extends / implements /
-   * references), so the paint layer colours per relationship type and the toggles filter by it. */
+   * references), so the paint layer colours per relationship type and the toggles filter by it.
+   * @deprecated Read `relationKind` through `relationKindOf`; retained for serialized/RF parity. */
   depKind?: string;
   /** The far endpoint is a GHOST card (an off-screen definition/caller) — drawn dashed. */
   ghost?: boolean;

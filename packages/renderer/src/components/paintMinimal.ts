@@ -13,9 +13,24 @@
  */
 
 import type { Edge, Node } from "@xyflow/react";
-import { emphasize, filterRelKinds, suppressRedundantImports, type EmphasizedLevel, type GhostPresentationOptions, type HighlightMode } from "./moduleMapPaint";
+import {
+  emphasize,
+  filterRelationsForLens,
+  filterRelKinds,
+  suppressRedundantImports,
+  type EmphasizedLevel,
+  type GhostPresentationOptions,
+  type SurfaceEmphasisMode,
+} from "./moduleMapPaint";
+import type { LensRelationPolicy } from "../graph/lensRelationPolicy";
+import type { RelationVisibilityOverrides } from "../graph/relationVisibility";
 
 const NO_HIDDEN_KINDS: ReadonlySet<string> = new Set();
+
+export interface RelationPaintOptions {
+  policy: LensRelationPolicy;
+  overrides: RelationVisibilityOverrides;
+}
 
 /**
  * Paint a laid-out level with the Map's own edge chain: suppress a pair's import wire when a typed
@@ -32,10 +47,21 @@ export function paintMinimalLevel(
   edges: Edge[],
   selected: ReadonlySet<string>,
   radius: number,
-  mode: HighlightMode,
-  hiddenRelKinds: ReadonlySet<string> = NO_HIDDEN_KINDS,
+  mode: SurfaceEmphasisMode,
+  relations: ReadonlySet<string> | RelationPaintOptions = NO_HIDDEN_KINDS,
   ghostPresentation?: GhostPresentationOptions,
+  paintSeedIds: ReadonlySet<string> = selected,
 ): EmphasizedLevel {
   // The Map's exact order (GraphSurface): suppress redundant imports → filter toggled-off kinds → emphasize.
-  return emphasize(nodes, filterRelKinds(suppressRedundantImports(edges), hiddenRelKinds), selected, radius, mode, ghostPresentation);
+  const semantic = suppressRedundantImports(edges);
+  const visible = isRelationPaintOptions(relations)
+    ? filterRelationsForLens(semantic, relations.policy, relations.overrides)
+    : filterRelKinds(semantic, relations);
+  return emphasize(nodes, visible, selected, radius, mode, ghostPresentation, paintSeedIds);
+}
+
+function isRelationPaintOptions(
+  value: ReadonlySet<string> | RelationPaintOptions,
+): value is RelationPaintOptions {
+  return "policy" in value;
 }

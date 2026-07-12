@@ -8,7 +8,7 @@
  *                   coupling fact touching the canvas is represented, never silently dropped.
  *   EXPAND/COLLAPSE the same container toggle = the same `moduleExpanded` delta, and the same
  *                   children charted, on every surface that draws the container.
- *   FOCUS           `spec.focus.dive` lands the same effectiveFocus/breadcrumb contract per
+ *   NAVIGATION      `spec.navigation.navigateInto` lands the same effectiveFocus/breadcrumb contract per
  *                   surface; clearing restores the root.
  *   SEMANTIC PARENT each registered lens resolves its enclosing graph through the same contract.
  *   MINIMAL SEEDS   the same selection seeds the overlay onto the same HOME FILES everywhere
@@ -35,6 +35,7 @@ import {
   ALPHA, ALPHA_RUN, APP_FILE, APP_FN, APP_PKG, A_FILE, BETA, BETA_PKG, BETA_RUN, B_FILE, CORE, ORDER, STORE_FILE, SVC_ALPHA,
 } from "./surfaceFixture";
 import { homeFileOf } from "../derive/serviceClusterEdges";
+import { isRelationShown } from "../graph/relationVisibility";
 
 const INDEX = freshIndex();
 const CACHES = cachesFor(INDEX);
@@ -64,6 +65,27 @@ describe("the surface registry (the parity table's row source)", () => {
     for (const mode of MODULE_SURFACE_MODES) {
       expect(spec(mode).highways).toEqual({ bundling: true, routing: true, spooling: true });
     }
+  });
+
+  it("keeps relation visibility per lens and restores Service's structural defaults", () => {
+    const store = freshStore();
+    const service = spec("call").relations;
+    const map = spec("modules").relations;
+    store.setState({ viewMode: "call" });
+    expect(isRelationShown(service, store.getState().relationVisibilityOverrides, "calls")).toBe(false);
+    store.getState().toggleRelKind("calls");
+    expect(isRelationShown(service, store.getState().relationVisibilityOverrides, "calls")).toBe(true);
+
+    store.setState({ viewMode: "modules" });
+    expect(isRelationShown(map, store.getState().relationVisibilityOverrides, "calls")).toBe(true);
+    store.getState().toggleRelKind("calls");
+    expect(isRelationShown(map, store.getState().relationVisibilityOverrides, "calls")).toBe(false);
+    expect(isRelationShown(service, store.getState().relationVisibilityOverrides, "calls")).toBe(true);
+
+    store.setState({ viewMode: "call" });
+    store.getState().resetRelationshipDefaults();
+    expect(isRelationShown(service, store.getState().relationVisibilityOverrides, "calls")).toBe(false);
+    expect(isRelationShown(map, store.getState().relationVisibilityOverrides, "calls")).toBe(false);
   });
 });
 
@@ -143,11 +165,13 @@ describe("EXPAND/COLLAPSE — the same container id toggles the same delta and c
   });
 });
 
-describe("FOCUS — spec.focus.dive lands effectiveFocus + crumbs; clearing restores the root", () => {
+describe("NAVIGATION — navigateInto lands effectiveFocus + crumbs; clearing restores the root", () => {
   const dive = perSurface<{ id: string; nodeType: string; rootLabel: string; trail: string[] }>({
     modules: { id: CORE, nodeType: "package", rootLabel: "Repository", trail: ["app", "core"] },
     ui: { id: CORE, nodeType: "package", rootLabel: "UI", trail: ["app", "core"] },
-    call: { id: SVC_ALPHA, nodeType: "package", rootLabel: "All services", trail: ["AlphaService"] },
+    // The fixture also has unassigned UI units, so the Service overview uses honest peer domain
+    // wrappers even at this small size; navigation into Alpha must retain its `core` parent crumb.
+    call: { id: SVC_ALPHA, nodeType: "package", rootLabel: "All services", trail: ["core", "AlphaService"] },
   });
 
   it.each([...MODULE_SURFACE_MODES])("%s: dive, crumb trail, and clear", async (mode) => {
@@ -155,32 +179,32 @@ describe("FOCUS — spec.focus.dive lands effectiveFocus + crumbs; clearing rest
     store.setState({ viewMode: mode });
     const surface = spec(mode);
     const target = dive(mode);
-    expect(surface.focus.rootLabel).toBe(target.rootLabel);
-    expect(surface.focus.divable(target.nodeType, target.id)).toBe(true);
-    expect(surface.focus.dive).not.toBeNull();
-    surface.focus.dive!(store.getState(), target.id);
+    expect(surface.navigation.rootLabel).toBe(target.rootLabel);
+    expect(surface.navigation.canNavigateInto(target.nodeType, target.id)).toBe(true);
+    expect(surface.navigation.navigateInto).not.toBeNull();
+    surface.navigation.navigateInto!(store.getState(), target.id);
     await store.getState().moduleRelayout();
     const effective = store.getState().moduleEffectiveFocus;
     expect(effective).toBe(target.id);
     // The WHOLE trail, not endpoints — a junk middle segment must fail, on any surface.
-    const crumbs = surface.focus.crumbs(effective, store.getState().index);
+    const crumbs = surface.navigation.crumbs(effective, store.getState().index);
     expect(crumbs.map((crumb) => crumb.label)).toEqual(target.trail);
     // Clearing the focus (the breadcrumb's root segment) restores the surface's root level.
     store.getState().setModuleFocus(null);
     await store.getState().moduleRelayout();
     expect(store.getState().moduleEffectiveFocus).toBeNull();
-    expect(surface.focus.crumbs(null, store.getState().index)).toEqual([]);
+    expect(surface.navigation.crumbs(null, store.getState().index)).toEqual([]);
   });
 
   it.each([...MODULE_SURFACE_MODES])("%s: a ghost card is never divable (it reveals through the spec instead)", (mode) => {
-    expect(spec(mode).focus.divable("ghost", BETA)).toBe(false);
+    expect(spec(mode).navigation.canNavigateInto("ghost", BETA)).toBe(false);
   });
 });
 
 describe("SEMANTIC PARENT — each lens resolves its own enclosing graph", () => {
   it.each(["modules", "ui"] as const)("%s: containment parent uses the shared focus/anchor resolver", (mode) => {
     const surface = spec(mode);
-    const parent = surface.focus.semanticParent({
+    const parent = surface.navigation.semanticParent({
       state: {
         index: INDEX,
         moduleFocus: CORE,
@@ -194,7 +218,7 @@ describe("SEMANTIC PARENT — each lens resolves its own enclosing graph", () =>
     expect(parent).toEqual({ focus: APP_PKG, anchorId: CORE, label: "core" });
   });
 
-  it("Service: a direct focused link synthesizes a localized owner + neighbour parent scope", () => {
+  it("Service: a focused service keeps its honest domain parent when Unassigned forces grouping", () => {
     const surface = spec("call");
     const state = {
       index: INDEX,
@@ -203,14 +227,14 @@ describe("SEMANTIC PARENT — each lens resolves its own enclosing graph", () =>
       serviceScope: null,
       showCommons: true,
     };
-    const parent = surface.focus.semanticParent({ state, effectiveFocus: SVC_ALPHA });
+    const parent = surface.navigation.semanticParent({ state, effectiveFocus: SVC_ALPHA });
+    const [domain] = surface.navigation.crumbs(SVC_ALPHA, INDEX);
 
-    expect(parent).toMatchObject({ focus: null, anchorId: SVC_ALPHA, label: "AlphaService" });
-    expect(parent?.context?.serviceScope?.label).toBe("AlphaService (+2)");
-    expect(new Set(parent?.context?.serviceScope?.leadIds)).toEqual(new Set([ALPHA, BETA, APP_FILE]));
+    expect(domain).toBeDefined();
+    expect(parent).toEqual({ focus: domain!.id, anchorId: SVC_ALPHA, label: "AlphaService" });
 
-    // Applying the spec-owned override derives a real outer graph containing the collapsed anchor;
-    // the generic caller does not need to know how Service localization is represented.
+    // Applying the spec-owned parent derives a real domain graph containing the collapsed anchor;
+    // the generic semantic-stack compositor does not need Service-specific hierarchy knowledge.
     const outer = surface.deriveTree(
       {
         ...state,
@@ -225,7 +249,7 @@ describe("SEMANTIC PARENT — each lens resolves its own enclosing graph", () =>
 
   it("Service: an existing localized scope is preserved by identity", () => {
     const serviceScope = { leadIds: [ALPHA], label: "Alpha only" };
-    const parent = spec("call").focus.semanticParent({
+    const parent = spec("call").navigation.semanticParent({
       state: {
         index: INDEX,
         moduleFocus: SVC_ALPHA,
@@ -240,7 +264,7 @@ describe("SEMANTIC PARENT — each lens resolves its own enclosing graph", () =>
   });
 
   it.each([...MODULE_SURFACE_MODES])("%s: a semantic root has no parent", (mode) => {
-    expect(spec(mode).focus.semanticParent({
+    expect(spec(mode).navigation.semanticParent({
       state: {
         index: INDEX,
         moduleFocus: null,

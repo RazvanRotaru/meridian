@@ -9,7 +9,8 @@ import type { GraphArtifact, GraphNode } from "@meridian/core";
 import type { Edge, Node } from "@xyflow/react";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { ghostGroupId } from "../derive/groupGhosts";
-import { emphasize, filterVisible, type HideOptions } from "./moduleMapPaint";
+import { emphasize, filterRelationsForLens, filterVisible, type HideOptions } from "./moduleMapPaint";
+import { SERVICE_RELATION_POLICY } from "../graph/lensRelationPolicy";
 
 /** Baseline options with nothing hidden; tests override the one filter they exercise. */
 const SHOW_ALL: HideOptions = {
@@ -114,6 +115,44 @@ describe("emphasize — stale selection", () => {
   });
 });
 
+describe("emphasize — whole logic-flow subgraph", () => {
+  it("highlights flow members and their internal wire without revealing unrelated incident ghosts", () => {
+    const frame = fileNode("ts:root.ts", { data: { category: "app", isExpanded: true } });
+    const root: Node = {
+      id: "ts:root.ts#run",
+      type: "block",
+      parentId: frame.id,
+      position: { x: 0, y: 0 },
+      data: { blockKind: "function" },
+    } as Node;
+    const flowTarget = ghostNode("ts:flow.ts#target");
+    const unrelatedGhost = ghostNode("ts:other.ts#helper");
+    const unrelatedReal = fileNode("ts:unrelated.ts");
+    const internal = ghostEdge(root.id, flowTarget.id);
+    const outside = ghostEdge(root.id, unrelatedGhost.id);
+
+    const painted = emphasize(
+      [frame, root, flowTarget, unrelatedGhost, unrelatedReal],
+      [internal, outside],
+      new Set([root.id, flowTarget.id]),
+      1,
+      "subgraph",
+    );
+
+    expect(painted.nodes.map((node) => node.id)).toEqual([frame.id, root.id, flowTarget.id, unrelatedReal.id]);
+    expect(painted.nodes.find((node) => node.id === frame.id)?.style?.opacity).toBeUndefined();
+    expect(painted.nodes.find((node) => node.id === unrelatedReal.id)?.style?.opacity).toBe(0.28);
+    expect(painted.edges).toHaveLength(1);
+    expect(painted.edges[0]).toMatchObject({ id: internal.id, style: expect.objectContaining({ opacity: 1 }) });
+  });
+
+  it("retains an explicitly highlighted flow ghost even when its chart edge is absent", () => {
+    const isolated = ghostNode("ts:flow.ts#isolated");
+    const painted = emphasize([isolated], [], new Set([isolated.id]), 1, "subgraph");
+    expect(painted.nodes).toContainEqual(expect.objectContaining({ id: isolated.id }));
+  });
+});
+
 describe("emphasize — complete semantic ghosts", () => {
   it("shows every related caller and dependency", () => {
     const anchor = fileNode("ts:anchor.ts");
@@ -204,5 +243,41 @@ describe("emphasize — complete semantic ghosts", () => {
     expect(expanded.edges.filter((edge) => edge.data?.ghostGroupAggregate === true)).toEqual([
       expect.objectContaining({ source: anchor.id, target: parentId }),
     ]);
+
+    // The parent is a paint-time card: selecting its real id must seed from the canonical children
+    // on the next repaint, or the selected card would immediately disappear.
+    const selectedParent = emphasize([anchor, ...ghosts], edges, new Set([parentId]), 1, "node", {
+      index,
+      groupByParent: true,
+      expandedGroupIds: new Set(),
+    });
+    expect(selectedParent.nodes.filter((node) => node.type === "ghost").map((node) => node.id)).toEqual([parentId]);
+    expect(selectedParent.edges).toEqual([
+      expect.objectContaining({ source: anchor.id, target: parentId }),
+    ]);
+  });
+});
+
+describe("lens relation filtering", () => {
+  it("starts Service on structure and can opt behavioral calls back in", () => {
+    const dep = (kind: string): Edge => ({
+      id: `${kind}:a->b`,
+      source: "a",
+      target: "b",
+      data: { category: "dep", relationKind: kind, depKind: kind },
+    } as Edge);
+    const edges = [
+      dep("registers"),
+      dep("extends"),
+      dep("calls"),
+      { id: "unknown-dep", source: "a", target: "b", data: { category: "dep" } } as Edge,
+      { id: "flow", source: "a", target: "b", data: { category: "flow" } } as Edge,
+    ];
+    const kindOf = (item: Edge) => item.data?.relationKind ?? item.data?.category;
+
+    expect(filterRelationsForLens(edges, SERVICE_RELATION_POLICY, {}).map(kindOf))
+      .toEqual(["registers", "extends", "flow"]);
+    expect(filterRelationsForLens(edges, SERVICE_RELATION_POLICY, { service: { calls: true } }))
+      .toHaveLength(4);
   });
 });

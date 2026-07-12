@@ -10,7 +10,10 @@
 import { type Edge, type Node } from "@xyflow/react";
 import type { ModuleCardData } from "../derive/moduleLevel";
 import type { ModuleCategory } from "../derive/moduleCategory";
-export { emphasize, type EmphasizedLevel, type GhostPresentationOptions, type HighlightMode } from "./moduleMapHighlight";
+import { relationKindOf } from "../graph/relationEdge";
+import { relationGhostPolicy, type LensRelationPolicy } from "../graph/lensRelationPolicy";
+import { isRelationShown, type RelationVisibilityOverrides } from "../graph/relationVisibility";
+export { emphasize, type EmphasizedLevel, type GhostPresentationOptions, type HighlightMode, type SurfaceEmphasisMode } from "./moduleMapHighlight";
 
 export interface HideOptions {
   hiddenCategories: ReadonlySet<ModuleCategory>;
@@ -37,13 +40,9 @@ export function filterVisible(nodes: Node[], edges: Edge[], options: HideOptions
   return { nodes: keptNodes, edges: keptEdges };
 }
 
-/** The relationship-toggle key an edge answers to; null = always shown (execution-order flow). */
+/** The relationship-toggle key an edge answers to; null means non-semantic flow or malformed data. */
 function relKeyOf(edge: Edge): string | null {
-  const data = edge.data as { category?: string; depKind?: string } | undefined;
-  if (data?.category === "dep") return data.depKind ?? "calls";
-  if (data?.category === "import") return "imports";
-  if (data?.category === "ipc") return "ipc";
-  return null;
+  return relationKindOf(edge.data);
 }
 
 /** Drop the wires whose relationship kind is toggled off — a pure paint filter, positions untouched. */
@@ -54,6 +53,25 @@ export function filterRelKinds(edges: Edge[], hidden: ReadonlySet<string>): Edge
   return edges.filter((edge) => {
     const key = relKeyOf(edge);
     return key === null || !hidden.has(key);
+  });
+}
+
+/** Lens-policy relation filter. Kindless execution-order edges remain structural; malformed
+ * kindless dependencies do not bypass the policy. Every semantic edge must be available in the
+ * lens and visible under its per-lens exact-kind overrides. */
+export function filterRelationsForLens(
+  edges: Edge[],
+  policy: LensRelationPolicy,
+  overrides: RelationVisibilityOverrides,
+): Edge[] {
+  return edges.filter((edge) => {
+    const kind = relKeyOf(edge);
+    if (kind === null) {
+      return (edge.data as { category?: unknown } | undefined)?.category === "flow";
+    }
+    const ghost = (edge.data as { ghost?: unknown } | undefined)?.ghost === true;
+    return isRelationShown(policy, overrides, kind)
+      && (!ghost || relationGhostPolicy(policy, kind) === "boundary");
   });
 }
 

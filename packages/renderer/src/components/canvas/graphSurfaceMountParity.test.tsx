@@ -50,20 +50,31 @@ describe("GraphSurface mount semantic-navigation parity", () => {
     const openState = store.getState();
     Object.assign(store, { getInitialState: () => openState });
 
-    renderToStaticMarkup(
+    const markup = renderToStaticMarkup(
       <StoreProvider store={store}>
         <ReactFlowProvider><ModuleMapView /></ReactFlowProvider>
       </StoreProvider>,
     );
 
     expect(graphSurfaceMounts).toHaveLength(2);
-    graphSurfaceMounts.forEach(expectSemanticNavigationDeclaration);
+    // The retained source keeps the same graph contract but yields wire ownership while the
+    // Minimal Graph is the active interaction surface, preventing a hidden evidence dock.
+    expectSemanticNavigationDeclaration(graphSurfaceMounts[0], false);
+    expectSemanticNavigationDeclaration(graphSurfaceMounts[1], true);
+    const sourceTag = markup.match(/<div[^>]*data-graph-surface="source"[^>]*>/)?.[0];
+    const minimalTag = markup.match(/<div[^>]*data-graph-surface="minimal"[^>]*>/)?.[0];
+    expect(sourceTag).toContain("inert=\"\"");
+    expect(sourceTag).toContain("aria-hidden=\"true\"");
+    expect(minimalTag).not.toContain("inert");
+    expect(minimalTag).not.toContain("aria-hidden");
   });
 });
 
 /** Every shared-canvas mount owes the complete declaration even while fitting temporarily disables
  * LOD/commit. Otherwise lifecycle state could make this test skip the very contract it protects. */
-function expectSemanticNavigationDeclaration(props: Record<string, unknown>): void {
+function expectSemanticNavigationDeclaration(props: Record<string, unknown>, wireHover = true): void {
+  // Every ACTIVE GraphSurface exposes click-to-source evidence (including the minimal/PR overlay).
+  expect(props.wireHover, "wire source evidence ownership was incorrect").toBe(wireHover);
   expect(Object.hasOwn(props, "semanticCommitEnabled"), "semanticCommitEnabled was omitted").toBe(true);
   expect(Object.hasOwn(props, "semanticLayers"), "semanticLayers was omitted").toBe(true);
   expect(Object.hasOwn(props, "semanticDepths"), "semanticDepths was omitted").toBe(true);

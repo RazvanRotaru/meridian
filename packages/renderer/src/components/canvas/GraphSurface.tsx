@@ -19,8 +19,8 @@
  *     lit ones selection-relative;
  *   - WIRES BEHIND CARDS on every surface: `zIndexMode="manual"` + the per-wire z the interaction
  *     hook assigns (cross-canvas under everything; intra-frame at its nesting depth);
- *   - wire hover naming (WireTooltip) and the click-pinned Wire INSPECTOR (evidence down to
- *     file:line), opt-in via `wireHover` — the overlay historically has neither;
+ *   - wire hover naming (WireTooltip), plus the click-pinned EdgeInspectionDock with relationship
+ *     metadata and contextual source highlighting, opt-in via `wireHover` on every active mount;
  *   - repeated semantic-zoom bands (`MapLod`, its legacy component name) — pure CSS visibility over
  *     pre-mounted, independently laid parent graphs on every SurfaceSpec that supplies them.
  *
@@ -45,14 +45,15 @@ import {
   type OnMoveStart,
   type ReactFlowInstance,
 } from "@xyflow/react";
-import { useBlueprint } from "../../state/StoreContext";
+import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
+import { edgeEvidenceForPair } from "../../graph/edgeEvidence";
 import { moduleNodeTypes } from "../nodes/modulemap/ModuleCardNode";
 import { paintMinimalLevel } from "../paintMinimal";
 import { WireTooltip } from "../WireTooltip";
-import { WireInspector } from "../WireInspector";
+import { EdgeInspectionDock } from "../EdgeInspectionDock";
 import { CanvasChrome, MINIMAP_NODE_CAP, READONLY_CANVAS_PROPS } from "./flowCanvasProps";
 import { MapLod } from "./MapLod";
-import type { ModuleNodeHandlers } from "./useModuleNodeInteractions";
+import { ghostGroupInteractionOf, type ModuleNodeHandlers } from "./useModuleNodeInteractions";
 import { useWireHover } from "./useWireHover";
 import type { HighwayFlags } from "./surfaceSpec";
 import { BUNDLE_EDGE_TYPE } from "../../layout/edgeBundling";
@@ -81,6 +82,8 @@ import {
   semanticCommitDepthForZoomChange,
   type SemanticLodLayer,
 } from "./mapLodGeometry";
+import type { SurfaceEmphasisMode } from "../moduleMapHighlight";
+import type { LensRelationPolicy } from "../../graph/lensRelationPolicy";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
  * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "cycle" the
@@ -108,12 +111,40 @@ export interface SurfaceFlowView {
   beacons: ReadonlySet<string>;
 }
 
+export interface SurfacePaintOwnership {
+  /** Literal store selection: it owns rings/extraction and must survive ghost pruning. */
+  protectedSelection: ReadonlySet<string>;
+  /** Semantic ids that own emphasis traversal for this paint. */
+  paintSeeds: ReadonlySet<string>;
+  /** The exact same traversal owners handed to highway extraction. */
+  highwaySeeds: ReadonlySet<string>;
+}
+
+/** Resolve the three deliberately distinct paint identities used by every GraphSurface mount.
+ * A PR row hover/click is a transient paint owner and therefore outranks stale ghost provenance;
+ * when review paint clears, captured ghost provenance resumes. Literal selection is always
+ * protected independently, so a transient preview cannot prune the card that still owns the ring
+ * and extraction action. */
+export function resolveSurfacePaintOwnership(
+  selected: ReadonlySet<string>,
+  reviewLit: ReadonlySet<string> | null,
+  reviewEmphasis: boolean,
+  ghostPaintOverride: ReadonlySet<string> | null,
+): SurfacePaintOwnership {
+  const paintSeeds = reviewEmphasis && reviewLit !== null
+    ? reviewLit
+    : ghostPaintOverride ?? selected;
+  return { protectedSelection: selected, paintSeeds, highwaySeeds: paintSeeds };
+}
+
 export interface GraphSurfaceProps {
   /** Laid-out (and per-surface visibility-filtered) nodes/edges — positions are never touched here. */
   nodes: Node[];
   edges: Edge[];
   /** Which Highways passes this surface's shape supports (from its SurfaceSpec). */
   highways: HighwayFlags;
+  /** Lens-owned semantic relation story consumed by shared paint, layout, and highway machinery. */
+  relations: LensRelationPolicy;
   miniMapColor: (node: Node) => string;
   /** The mount's `useModuleNodeInteractions(...)` handlers — called in the MOUNT, not here, so the
    * click-debounce lifetime tracks the lens rather than this (overlay-swappable) canvas. */
@@ -122,8 +153,7 @@ export interface GraphSurfaceProps {
   onInit?: (instance: ReactFlowInstance<Node, Edge>) => void;
   /** Override React Flow's mount-time fit when the mount manages its own detail-only viewport. */
   autoFitView?: boolean;
-  /** Wire chrome — hover naming (WireTooltip), the click-pinned Wire Inspector, direction pulses —
-   * on for the module lenses, historically off on the minimal overlay (mostly lit at rest). */
+  /** Wire chrome — hover naming, click-pinned inspector/source evidence, and direction pulses. */
   wireHover?: boolean;
   /** PR review only: show a scrollable source diff after dwelling over a directly changed node. */
   nodeDiffPreview?: boolean;
@@ -143,6 +173,14 @@ export interface GraphSurfaceProps {
   semanticCommitEnabled: boolean;
   /** Commit one parent when a user-driven outward move crosses its threshold. */
   onSemanticCommit: (layer: SemanticLodLayer) => void;
+  /** PR review overlay only: let its checklist/flow rows temporarily override graph selection. */
+  reviewEmphasis?: boolean;
+  /** Optional surface-specific emphasis semantics. PR flow review uses the selected-flow subgraph
+   * at rest, then node mode so one selected target reveals its incident on-demand ghost cards. */
+  emphasisMode?: SurfaceEmphasisMode;
+  /** Optional override for exact-detail surfaces. A selected PR-flow node disables sibling ghost
+   * grouping so every incident ghost and edge remains individually reviewable. */
+  groupGhosts?: boolean;
   /** Extras that must render INSIDE the flow (beacon arrows, the overlay's ghost "+" ring). */
   flowExtras?: (view: SurfaceFlowView) => ReactNode;
   /** Floating chrome (breadcrumb, legends, panels, action strips), absolutely positioned over the canvas. */
@@ -153,12 +191,17 @@ export interface GraphSurfaceProps {
 
 export function GraphSurface(props: GraphSurfaceProps) {
   const selected = useBlueprint((state) => state.moduleSelected);
+  const reviewLit = useBlueprint((state) => state.reviewLitNodeIds);
   const index = useBlueprint((state) => state.index);
   const radius = useBlueprint((state) => state.moduleRadius);
   const highlightMode = useBlueprint((state) => state.highlightMode);
-  const hiddenRelKinds = useBlueprint((state) => state.hiddenRelKinds);
+  const relationVisibilityOverrides = useBlueprint((state) => state.relationVisibilityOverrides);
   const showHighways = useBlueprint((state) => state.showHighways);
   const groupGhostsByParent = useBlueprint((state) => state.groupGhostsByParent);
+  const edgeEvidenceOpen = useBlueprint((state) => state.codeView?.edgeEvidence !== undefined);
+  const { showEdgeEvidence, closeEdgeEvidence } = useBlueprintActions();
+  const emphasisMode = props.emphasisMode ?? highlightMode;
+  const groupGhosts = props.groupGhosts ?? groupGhostsByParent;
   // Keep the semantic controller mounted through the final parent handoff too: its ancestor list can
   // already be empty while the retained root population is still fading in and resetting camera.
   const hasSemanticComposite =
@@ -170,6 +213,10 @@ export function GraphSurface(props: GraphSurfaceProps) {
   );
   const previousUserZoom = useRef<number | null>(null);
   const programmaticUserZoomArmed = useRef(false);
+  // Local wire state and global source state still need one owner boundary. This ref distinguishes
+  // a source-backed inspection (whose source disappearing ends the whole dock) from an intentional
+  // metadata-only wire, which remains useful without a source pane.
+  const inspectionOwnsSource = useRef(false);
   const onMoveStart = useCallback<OnMoveStart>((event, viewport) => {
     if (!semanticCommitEnabled) {
       previousUserZoom.current = null;
@@ -227,19 +274,31 @@ export function GraphSurface(props: GraphSurfaceProps) {
   // The ONE paint chain, isolated per semantic population. Main's ghost grouping can mint parent
   // cards and hierarchy spokes at paint time; stamping those outputs back onto their source depth
   // keeps them in the same cross-fade instead of leaking across hidden ancestor graphs.
-  const { nodes: paintedNodes, edges: paintedEdges, beacons } = useMemo(
-    () => paintSemanticLayers(props.nodes, props.edges, selected, radius, highlightMode, hiddenRelKinds, {
-      index,
-      groupByParent: groupGhostsByParent,
-      expandedGroupIds: props.interactions.expandedGhostGroupIds,
-    }),
-    [props.nodes, props.edges, selected, radius, highlightMode, hiddenRelKinds, index, groupGhostsByParent, props.interactions.expandedGhostGroupIds],
+  const paintOwnership = useMemo(
+    () => resolveSurfacePaintOwnership(
+      selected,
+      reviewLit,
+      props.reviewEmphasis === true,
+      props.interactions.paintSelectionOverride,
+    ),
+    [selected, reviewLit, props.reviewEmphasis, props.interactions.paintSelectionOverride],
   );
-  // Ghost inspection is deliberately downstream of the shared paint chain. It clones only the
-  // matching card's data, preserving every id, coordinate, parent and edge/layout input.
+  const { nodes: paintedNodes, edges: paintedEdges, beacons } = useMemo(
+    () => paintSemanticLayers(props.nodes, props.edges, paintOwnership.protectedSelection, radius, emphasisMode, {
+      policy: props.relations,
+      overrides: relationVisibilityOverrides,
+    }, {
+      index,
+      groupByParent: groupGhosts,
+      expandedGroupIds: props.interactions.expandedGhostGroupIds,
+    }, paintOwnership.paintSeeds),
+    [props.nodes, props.edges, paintOwnership, radius, emphasisMode, props.relations, relationVisibilityOverrides, index, groupGhosts, props.interactions.expandedGhostGroupIds],
+  );
+  // Group disclosure is deliberately downstream of the shared paint chain. It injects the
+  // mount-local explicit-chevron callback without feeding a function back into derive/layout.
   const displayedNodes = useMemo(
-    () => decorateInspectedGhost(paintedNodes, props.interactions.inspectedGhostId),
-    [paintedNodes, props.interactions.inspectedGhostId],
+    () => decorateGhostGroupToggles(paintedNodes, props.interactions.toggleGhostGroup),
+    [paintedNodes, props.interactions.toggleGhostGroup],
   );
   // The module-family layouts keep their canonical geometry in `style.width/height`, which all
   // routing and overlay passes below intentionally continue to read. React Flow's MiniMap checks
@@ -264,15 +323,42 @@ export function GraphSurface(props: GraphSurfaceProps) {
     const semanticEdges: Edge[] = [];
     const hierarchyEdges: Edge[] = [];
     for (const [depth, edges] of layers) {
-      const prepared = prepareCanvasEdges(edges, paintedNodes, selected, showHighways, props.highways);
+      const prepared = prepareCanvasEdges(
+        edges,
+        paintedNodes,
+        paintOwnership.highwaySeeds,
+        showHighways,
+        props.highways,
+        props.relations,
+      );
       semanticEdges.push(...prepared.semanticEdges.map((edge) =>
         depth === undefined ? edge : withSemanticDepth(edge, depth),
       ));
       hierarchyEdges.push(...prepared.hierarchyEdges);
     }
     return { semanticEdges, hierarchyEdges };
-  }, [paintedEdges, paintedNodes, props.highways, selected, showHighways]);
-  const wire = useWireHover(preparedEdges.semanticEdges, paintedNodes, props.wireHover === true);
+  }, [paintedEdges, paintedNodes, props.highways, props.relations, paintOwnership.highwaySeeds, showHighways]);
+  const openWireEvidence = useCallback((pair: Edge[]) => {
+    const contexts = edgeEvidenceForPair(pair, index.edgesById);
+    inspectionOwnsSource.current = contexts.length > 0;
+    // The action also clears prior source when the new wire has no attributable site, while the
+    // inspector itself remains useful as relationship metadata.
+    void showEdgeEvidence(contexts);
+  }, [index.edgesById, showEdgeEvidence]);
+  const wire = useWireHover(
+    preparedEdges.semanticEdges,
+    paintedNodes,
+    props.wireHover === true,
+    openWireEvidence,
+    closeEdgeEvidence,
+  );
+  useEffect(() => {
+    if (edgeEvidenceOpen || !inspectionOwnsSource.current) return;
+    // Another source gesture/state reset replaced a source-backed edge inspection. End its local
+    // pin too; the guarded close callback cannot disturb the replacement node/PR source view.
+    inspectionOwnsSource.current = false;
+    wire.clearInspected();
+  }, [edgeEvidenceOpen, wire.clearInspected]);
   // Append hierarchy spokes AFTER interaction dressing too: their exact objects never acquire a
   // pulse, label, hit width, tooltip, inspector subject, or semantic z-order.
   const renderedEdges = useMemo(
@@ -351,7 +437,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
       </ReactFlow>
       {wire.hover ? <WireTooltip hover={wire.hover} /> : null}
       {wire.inspectedPair ? (
-        <WireInspector pair={wire.inspectedPair} labelOf={wire.labelOf} onClose={wire.clearInspected} onDrill={wire.inspect} />
+        <EdgeInspectionDock pair={wire.inspectedPair} labelOf={wire.labelOf} onClose={wire.clearInspected} onDrill={wire.inspect} />
       ) : null}
       {nodeDiff.layer}
       {props.children}
@@ -369,8 +455,9 @@ function paintSemanticLayers(
   selected: Parameters<typeof paintMinimalLevel>[2],
   radius: Parameters<typeof paintMinimalLevel>[3],
   mode: Parameters<typeof paintMinimalLevel>[4],
-  hiddenRelKinds: Parameters<typeof paintMinimalLevel>[5],
+  relations: Parameters<typeof paintMinimalLevel>[5],
   ghostPresentation: Parameters<typeof paintMinimalLevel>[6],
+  paintSeedIds: Parameters<typeof paintMinimalLevel>[7],
 ): ReturnType<typeof paintMinimalLevel> {
   const nodesByDepth = new Map<number | undefined, Node[]>();
   const edgesByDepth = new Map<number | undefined, Edge[]>();
@@ -400,8 +487,9 @@ function paintSemanticLayers(
       selected,
       radius,
       mode,
-      hiddenRelKinds,
+      relations,
       ghostPresentation,
+      paintSeedIds,
     );
     paintedNodes.push(...(depth === undefined
       ? painted.nodes
@@ -427,19 +515,21 @@ function withSemanticDepth<T extends Node | Edge>(entry: T, depth: number): T {
   } as T;
 }
 
-/** Add the transient inspection flag without feeding it back into layout or graph selection. */
-export function decorateInspectedGhost(nodes: Node[], inspectedGhostId: string | null): Node[] {
-  if (inspectedGhostId === null) {
-    return nodes;
-  }
-  const index = nodes.findIndex((node) => node.type === "ghost" && node.id === inspectedGhostId);
-  if (index < 0) {
-    return nodes;
-  }
-  const node = nodes[index];
-  const decorated = [...nodes];
-  decorated[index] = { ...node, data: { ...node.data, inspected: true } };
-  return decorated;
+/** Attach the explicit disclosure action only to grouped ghost parents. Exact ghosts and every
+ * geometry/layout field retain object identity; only the matching parents' paint data is cloned. */
+export function decorateGhostGroupToggles(
+  nodes: Node[],
+  toggleGhostGroup: (groupId: string) => void,
+): Node[] {
+  let decorated: Node[] | null = null;
+  nodes.forEach((node, index) => {
+    if (ghostGroupInteractionOf(node) === null) {
+      return;
+    }
+    decorated ??= [...nodes];
+    decorated[index] = { ...node, data: { ...node.data, toggleGhostGroup } };
+  });
+  return decorated ?? nodes;
 }
 
 /** MiniMap and viewport virtualization switch at the same boundary: below it every canonical

@@ -7,10 +7,13 @@
  */
 
 import { useState } from "react";
-import { CALLER_WIRE, IPC_WIRE } from "../theme/edgeColors";
+import { CALLER_WIRE } from "../theme/edgeColors";
 import { accentForKind } from "../theme/kindColors";
-import { CALL_RESOLVED, CONSTRUCT, IMPORT_CROSS, IMPORT_SIBLING, REL_COLORS } from "../theme/mapPalette";
+import { CALL_RESOLVED, CONSTRUCT, IMPORT_SIBLING } from "../theme/mapPalette";
 import { CHROME_EDGE, CHROME_GAP, MINIMAP_W, LEGEND_BOTTOM } from "./canvas/flowCanvasProps";
+import { MAP_RELATION_POLICY, type LensRelationPolicy } from "../graph/lensRelationPolicy";
+import { relationshipKindsForPolicy } from "../theme/relationshipKinds";
+import { relationSpec } from "../graph/relationCatalog";
 
 const FILE_ACCENT = accentForKind("module");
 
@@ -21,10 +24,19 @@ interface MapLegendProps {
   showPackages?: boolean;
   /** The surface can carry IPC wires. The minimal overlay mints only import/dep wires, so it opts out. */
   showIpc?: boolean;
+  /** The active lens's available semantic vocabulary. */
+  relationPolicy?: LensRelationPolicy;
 }
 
-export function MapLegend({ hasSteps, showPackages = true, showIpc = true }: MapLegendProps) {
+export function MapLegend({
+  hasSteps,
+  showPackages = true,
+  showIpc = true,
+  relationPolicy = MAP_RELATION_POLICY,
+}: MapLegendProps) {
   const [open, setOpen] = useState(false);
+  const relationships = relationshipKindsForPolicy(relationPolicy)
+    .filter((kind) => showIpc || kind.family !== "messaging");
   if (!open) {
     return (
       <button type="button" style={PILL} title="What the shapes and colours mean" onClick={() => setOpen(true)}>
@@ -45,16 +57,16 @@ export function MapLegend({ hasSteps, showPackages = true, showIpc = true }: Map
         <Row swatch={<Box color={FILE_ACCENT} />} text="file — expands into its declarations; its category is on the chip (UI / Utilities / Config)" />
         <Row swatch={<ChipSwatch label="KIND" color={accentForKind("class")} />} text="class / interface / object / type — a neutral grey; the kind chip names which" />
         <Row swatch={<Glyph text="ƒ" color={accentForKind("function")} />} text="method / function — double-click opens its logic flow" />
-        <Row swatch={<Dashed />} text="ghost — related context outside this level; click inspects or expands a group, double-click reveals an exact node" />
+        <Row swatch={<Dashed />} text="ghost — related context outside this level; click selects, double-click reveals, chevron discloses a group" />
       </Section>
       <Section title="Wires — by relationship (toggle each in the toolbar)">
-        <Row swatch={<Line color={REL_COLORS.calls} />} text="calls — a behavioural call" />
-        <Row swatch={<Line color={REL_COLORS.instantiates} />} text="constructs — new X()" />
-        <Row swatch={<Line color={REL_COLORS.extends} />} text="extends — class / interface inheritance" />
-        <Row swatch={<Line color={REL_COLORS.implements} />} text="implements — a contract" />
-        <Row swatch={<Line color={REL_COLORS.references} />} text="references — a type used in a signature / type position" />
-        <Row swatch={<Line color={IMPORT_CROSS} />} text="import — gold touches a package/directory card; grey between peer files" />
-        {showIpc ? <Row swatch={<Line color={IPC_WIRE} />} text="IPC — joined over a channel (leaves the process)" /> : null}
+        {relationships.map((kind) => (
+          <Row
+            key={kind.key}
+            swatch={<Line color={kind.color} dashed={semanticDashed(kind.key)} />}
+            text={`${kind.label.toLowerCase()} — ${relationDescription(kind.key)}`}
+          />
+        ))}
         <Row swatch={<Line color={IMPORT_SIBLING} dashed />} text="dashed — an endpoint is outside this view or the dependency crosses a package boundary" />
       </Section>
       {hasSteps ? (
@@ -70,6 +82,31 @@ export function MapLegend({ hasSteps, showPackages = true, showIpc = true }: Map
       </Section>
     </div>
   );
+}
+
+function semanticDashed(kind: string): boolean {
+  const token = relationSpec(kind)?.styleToken;
+  return token === "inheritance" || token === "ipc";
+}
+
+function relationDescription(kind: string): string {
+  if (kind === "calls") return "a behavioural call";
+  if (kind === "instantiates") return "construction with new X()";
+  if (kind === "extends") return "class or interface inheritance";
+  if (kind === "implements") return "implements a contract";
+  if (kind === "references") return "a type or value dependency";
+  if (kind === "imports") return "module dependency";
+  if (kind === "renders") return "component composition";
+  if (kind === "registers") return "registers a service instance";
+  if (kind === "injects") return "retrieves an explicit service contract";
+  if (kind === "binds") return "binds an implementation";
+  if (kind === "provides") return "provides a dependency";
+  if (kind === "owns") return "owns a lifecycle or child service";
+  if (kind === "aliases") return "aliases a service key";
+  if (kind === "sends") return "sends over a process channel";
+  if (kind === "handles") return "handles a process channel";
+  if (kind === "ipc") return "cross-process communication";
+  return relationSpec(kind)?.family ?? "relationship";
 }
 
 function Section(props: { title: string; children: React.ReactNode }) {

@@ -30,7 +30,7 @@ import { finalizeServiceDomainNode, finalizeServiceNode } from "./serviceCluster
 import { serviceGhostTier } from "./serviceGhosts";
 import {
   deriveServiceDomains,
-  SERVICE_DOMAIN_MIN_CLUSTERS,
+  shouldGroupServiceDomains,
   visibleServiceDomains,
   type ServiceDomain,
   type ServiceDomainModel,
@@ -64,8 +64,9 @@ export function deriveServiceTree(
   const full = clusteringFor(index);
   const scoped = scopedTo(full, options.scopeLeadIds);
   const domainModel = deriveServiceDomains(full, options.groupingMode, options.groupingTargetSize);
+  const groupsDomains = shouldGroupServiceDomains(full);
   const focusLead = resolveFocusLead(focus, scoped);
-  const focusDomain = resolveFocusDomain(focus, scoped, domainModel);
+  const focusDomain = resolveFocusDomain(focus, scoped, domainModel, groupsDomains);
   // FOCUS zooms INSIDE whatever the scope kept: a service narrows to one cluster; a synthetic
   // domain narrows to that domain's service leads and drops its own wrapper, like a Map folder dive.
   const clustering = focusLead !== null
@@ -84,7 +85,7 @@ export function deriveServiceTree(
   const domains = focusLead === null
     && focusDomain === null
     && options.scopeLeadIds === undefined
-    && clustering.clusters.length >= SERVICE_DOMAIN_MIN_CLUSTERS
+    && groupsDomains
     && visibleDomains.length > 0
     ? visibleDomains
     : [];
@@ -156,9 +157,9 @@ function resolveFocusDomain(
   focus: string | null,
   clustering: ServiceClustering,
   model: ServiceDomainModel,
+  groupsDomains: boolean,
 ): ServiceDomain | null {
-  const fullDomainSize = model.domains.reduce((sum, domain) => sum + domain.leadIds.length, 0);
-  if (focus === null || fullDomainSize < SERVICE_DOMAIN_MIN_CLUSTERS) {
+  if (focus === null || !groupsDomains) {
     return null;
   }
   const domain = model.domainById.get(focus);
@@ -202,10 +203,11 @@ function serviceWalk(
   const clustersByLead = new Map(clustering.clusters.map((cluster) => [cluster.leadId, cluster]));
   const emitCluster = (cluster: ServiceClustering["clusters"][number], parentId: string | null, depth: number) => {
     const frameId = frameIdOf(cluster.leadId);
-    // The FOCUSED cluster is the zoom: always open — even a single-member cluster, which the full
-    // lens draws as a bare frame card — so the dive always lands on the members.
+    // Every synthetic service frame is a real container, including a one-member cluster. The
+    // collapsed frame remains the overview summary; opening it reveals the lead class as its one
+    // direct child so selection/reveal can preserve that exact artifact id across lenses.
     const isFocus = cluster.leadId === focusLead;
-    const isContainer = isFocus ? cluster.memberIds.length > 0 : cluster.memberIds.length > 1;
+    const isContainer = cluster.memberIds.length > 0;
     const isExpanded = isFocus ? isContainer : isOpen(cluster, expanded);
     walk.skeleton.push({
       id: frameId,

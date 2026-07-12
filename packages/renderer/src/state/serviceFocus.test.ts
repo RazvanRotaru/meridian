@@ -54,7 +54,8 @@ const NODES: GraphNode[] = [
 
 const EDGES: GraphEdge[] = [
   { id: "e1", source: `${ALPHA}.run`, target: `${BETA}.run`, kind: "calls", resolution: "resolved" },
-  { id: "e2", source: `${ALPHA}.run`, target: `${ORDER}.load`, kind: "calls", resolution: "resolved" },
+  // Construction, not a behavioral call, establishes Alpha's composition ownership of the store.
+  { id: "e2", source: `${ALPHA}.run`, target: ORDER, kind: "instantiates", resolution: "resolved" },
   { id: "e3", source: `${BETA}.run`, target: `${GAMMA}.run`, kind: "calls", resolution: "resolved" },
 ] as GraphEdge[];
 
@@ -201,6 +202,27 @@ describe("Service cluster focus (the containment dive)", () => {
     store.getState().setViewMode("call");
     expect(store.getState().moduleFocus).toBeNull();
     expect(store.getState().moduleSelected.has(ALPHA)).toBe(true);
+  });
+
+  it("the lens-carry opens the selected class's domain and service frame so the class is painted", async () => {
+    const store = freshDomainStore();
+    const lead = "ts:src/aria/app/backend/service0.ts#backend0Service";
+    const backend = domainId(store, "backend");
+    const frame = frameIdOf(lead);
+    store.setState({ viewMode: "modules", moduleSelected: new Set([lead]) });
+
+    store.getState().setViewMode("call");
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+
+    const state = store.getState();
+    expect(state.moduleFocus).toBeNull();
+    expect(state.moduleSelected).toEqual(new Set([lead]));
+    expect(state.moduleExpanded.has(backend)).toBe(true);
+    expect(state.moduleExpanded.has(frame)).toBe(true);
+    // With no focused semantic parent, the active detail graph is the unstamped base layer.
+    const painted = state.moduleRfNodes.find((node) => node.id === lead);
+    expect(painted).toMatchObject({ id: lead, parentId: frame });
+    expect(painted?.hidden).not.toBe(true);
   });
 
   it("leaving a FOCUSED Service lens carries the cluster's lead to the Map — never the svc: pseudo-id", () => {
@@ -548,10 +570,10 @@ describe("minimal-graph seeds from svc: frames", () => {
   });
 });
 
-describe("the Service surface's focus model (breadcrumb contract)", () => {
+describe("the Service surface's navigation model (breadcrumb contract)", () => {
   it("names its root 'All services' and crumbs a focused cluster by display name", () => {
     const index = buildGraphIndex(ARTIFACT);
-    const focus = moduleSurfaceSpec("call")!.focus;
+    const focus = moduleSurfaceSpec("call")!.navigation;
     expect(focus.rootLabel).toBe("All services");
     expect(focus.crumbs(null, index)).toEqual([]);
     expect(focus.crumbs(frameIdOf(ALPHA), index)).toEqual([{ id: frameIdOf(ALPHA), label: "AlphaService" }]);
@@ -559,20 +581,20 @@ describe("the Service surface's focus model (breadcrumb contract)", () => {
 
   it("the Map keeps its containment trail (Repository root, package/dir crumbs)", () => {
     const index = buildGraphIndex(ARTIFACT);
-    const focus = moduleSurfaceSpec("modules")!.focus;
+    const focus = moduleSurfaceSpec("modules")!.navigation;
     expect(focus.rootLabel).toBe("Repository");
     expect(focus.crumbs("ts:app", index)).toEqual([{ id: "ts:app", label: "app" }]);
   });
 
   it("only svc: frames dive on the Service lens; folders and files keep expand/select", () => {
-    const service = moduleSurfaceSpec("call")!.focus;
-    expect(service.divable("package", frameIdOf(ALPHA))).toBe(true);
-    expect(service.divable("package", "ts:app")).toBe(false);
-    expect(service.divable("file", "ts:app/a.ts")).toBe(false);
-    const map = moduleSurfaceSpec("modules")!.focus;
-    expect(map.divable("package", "ts:app")).toBe(true);
-    expect(map.divable("file", "ts:app/a.ts")).toBe(true);
-    expect(map.divable("unit", ALPHA)).toBe(false);
+    const service = moduleSurfaceSpec("call")!.navigation;
+    expect(service.canNavigateInto("package", frameIdOf(ALPHA))).toBe(true);
+    expect(service.canNavigateInto("package", "ts:app")).toBe(false);
+    expect(service.canNavigateInto("file", "ts:app/a.ts")).toBe(false);
+    const map = moduleSurfaceSpec("modules")!.navigation;
+    expect(map.canNavigateInto("package", "ts:app")).toBe(true);
+    expect(map.canNavigateInto("file", "ts:app/a.ts")).toBe(true);
+    expect(map.canNavigateInto("unit", ALPHA)).toBe(false);
   });
 
   it("domains dive and a focused service carries its domain in the breadcrumb", () => {
@@ -580,9 +602,9 @@ describe("the Service surface's focus model (breadcrumb contract)", () => {
     const index = store.getState().index;
     const backend = domainId(store, "backend");
     const service = frameIdOf("ts:src/aria/app/backend/service0.ts#backend0Service");
-    const focus = moduleSurfaceSpec("call")!.focus;
+    const focus = moduleSurfaceSpec("call")!.navigation;
 
-    expect(focus.divable("serviceDomain", backend)).toBe(true);
+    expect(focus.canNavigateInto("serviceDomain", backend)).toBe(true);
     expect(focus.crumbs(backend, index)).toEqual([{ id: backend, label: "backend" }]);
     expect(focus.crumbs(service, index)).toEqual([
       { id: backend, label: "backend" },

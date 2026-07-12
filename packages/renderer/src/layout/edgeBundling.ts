@@ -13,8 +13,9 @@
  */
 
 import type { Edge, Node } from "@xyflow/react";
-import { relColor } from "../theme/mapPalette";
 import { withBoundaryDash } from "./edgeBoundary";
+import { relationKindOf } from "../graph/relationEdge";
+import { relationColor, withRelationLineStyle } from "../theme/relationTheme";
 
 /** The data payload on a bundled "highway" edge. Index signature so it satisfies React Flow's
  * `Edge.data` constraint (`Record<string, unknown>`). */
@@ -25,6 +26,8 @@ export interface BundleEdgeData extends Record<string, unknown> {
   breakdown: Record<string, number>;
   /** The dominant kind (most edges) — drives the bundle's base colour. */
   dominantKind: string;
+  /** Canonical semantic identity of the dominant relationship for shared paint/inspection. */
+  relationKind: string;
   /** The original constituent edges (for hover expansion). */
   constituents: Edge[];
   /** Whether ANY constituent was lit (opacity 1) by the emphasis pass. */
@@ -47,6 +50,7 @@ export const BUNDLE_EDGE_TYPE = "bundle";
 
 /** Shared empty selection so the default arg is a stable reference (no per-call allocation). */
 const EMPTY_SELECTION: ReadonlySet<string> = new Set<string>();
+const UNIFORM_RELATION_WEIGHT = () => 1;
 
 /**
  * True when `ancestor` sits on the parent chain above `start` — i.e. `start` is nested inside
@@ -89,7 +93,12 @@ export function bundleWidth(count: number): number {
  * reader can trace that node's own links out of the highway they'd otherwise disappear into. The
  * rest of the highway stays merged (its count drops by the extracted edges).
  */
-export function bundleEdges(edges: Edge[], nodes: Node[], selected: ReadonlySet<string> = EMPTY_SELECTION): Edge[] {
+export function bundleEdges(
+  edges: Edge[],
+  nodes: Node[],
+  selected: ReadonlySet<string> = EMPTY_SELECTION,
+  relationWeight: (kind: string) => number = UNIFORM_RELATION_WEIGHT,
+): Edge[] {
   // Build parent lookup from the React Flow node array.
   const parentOf = new Map<string, string | undefined>();
   for (const node of nodes) {
@@ -144,25 +153,32 @@ export function bundleEdges(edges: Edge[], nodes: Node[], selected: ReadonlySet<
     } else {
       // Merge into a highway bundle connecting the two parent containers
       const [sourceParent, targetParent] = key.split("→");
-      result.push(createBundleEdge(sourceParent, targetParent, group));
+      result.push(createBundleEdge(sourceParent, targetParent, group, relationWeight));
     }
   }
   return result;
 }
 
 /** Create a single highway bundle edge connecting two parent containers. */
-function createBundleEdge(sourceParent: string, targetParent: string, edges: Edge[]): Edge {
+function createBundleEdge(
+  sourceParent: string,
+  targetParent: string,
+  edges: Edge[],
+  relationWeight: (kind: string) => number,
+): Edge {
   // Tally relationship kinds
   const breakdown: Record<string, number> = {};
   let hasLit = false;
   let crossPackage = false;
   let outsideView = false;
   let paintedStroke: string | undefined;
+  const dominance = new Map<string, number>();
 
   for (const edge of edges) {
-    const data = edge.data as { depKind?: string; category?: string; crossPackage?: boolean; outsideView?: boolean } | undefined;
-    const kind = data?.depKind ?? data?.category ?? "other";
+    const data = edge.data as { crossPackage?: boolean; outsideView?: boolean } | undefined;
+    const kind = relationKindOf(edge.data) ?? "other";
     breakdown[kind] = (breakdown[kind] ?? 0) + 1;
+    dominance.set(kind, (dominance.get(kind) ?? 0) + Math.max(0, relationWeight(kind)));
     crossPackage ||= data?.crossPackage === true;
     outsideView ||= data?.outsideView === true;
     if (paintedStroke === undefined && typeof edge.style?.stroke === "string") {
@@ -174,9 +190,9 @@ function createBundleEdge(sourceParent: string, targetParent: string, edges: Edg
   }
 
   // Find dominant kind (most frequent)
-  let dominantKind = "calls";
-  let maxCount = 0;
-  for (const [kind, count] of Object.entries(breakdown)) {
+  let dominantKind = "other";
+  let maxCount = -1;
+  for (const [kind, count] of dominance) {
     if (count > maxCount) {
       maxCount = count;
       dominantKind = kind;
@@ -188,7 +204,7 @@ function createBundleEdge(sourceParent: string, targetParent: string, edges: Edg
   // The bundle pass runs after emphasis, so an untyped aggregate (notably a Service coupling) has
   // already received its correct cross-frame gold. Preserve that established surface vocabulary
   // instead of replacing it with generic gray merely because the aggregate has no `depKind`.
-  const color = relColor(dominantKind) ?? paintedStroke ?? "#8B95A3";
+  const color = relationColor(dominantKind) ?? paintedStroke ?? "#8B95A3";
   const opacity = hasLit ? 0.85 : 0.45;
 
   const bundleData: BundleEdgeData = {
@@ -201,6 +217,7 @@ function createBundleEdge(sourceParent: string, targetParent: string, edges: Edg
     crossPackage,
     outsideView,
     category: "bundle",
+    relationKind: dominantKind,
     sourceParent,
     targetParent,
   };
@@ -211,7 +228,10 @@ function createBundleEdge(sourceParent: string, targetParent: string, edges: Edg
     target: targetParent,
     type: BUNDLE_EDGE_TYPE,
     data: bundleData,
-    style: withBoundaryDash({ stroke: color, strokeWidth: width, opacity }, bundleData),
+    style: withRelationLineStyle(
+      withBoundaryDash({ stroke: color, strokeWidth: width, opacity }, bundleData),
+      bundleData,
+    ),
     interactionWidth: Math.max(width + 10, 18), // generous hit area
   };
 }
@@ -220,6 +240,6 @@ function createBundleEdge(sourceParent: string, targetParent: string, edges: Edg
 export function bundleLabel(breakdown: Record<string, number>): string {
   return Object.entries(breakdown)
     .sort((a, b) => b[1] - a[1])
-    .map(([kind, count]) => `${count} ${kind === "dep" ? "dependencies" : kind}`)
+    .map(([kind, count]) => `${count} ${kind === "dep" || kind === "other" ? "dependencies" : kind}`)
     .join(" · ");
 }

@@ -21,6 +21,7 @@ import { weightOf, type RibbonEdgeData } from "../../layout/parallelWires";
 import { isDashedBoundary } from "../../layout/edgeBoundary";
 import { isHiddenWire, WirePulse } from "./WireEdge";
 import { WireLabel } from "./WireLabel";
+import { relationKindOf } from "../../graph/relationEdge";
 
 /** Stripe geometry: width ≥ pitch so neighbouring stripes touch — one band, not parallel lines. */
 const STRIPE_PITCH = 2.2;
@@ -131,8 +132,8 @@ export const ribbonCrossesBoundary = (members: readonly Edge[]): boolean => memb
 /** The cable's chip leads with its dominant strand and counts the rest: `references ×7 +2`. */
 function ribbonLabelText(members: RibbonEdgeData["members"], markerIndex: number): string {
   const dominant = members[markerIndex];
-  const data = dominant?.data as { depKind?: string; category?: string; weight?: number } | undefined;
-  const kind = data?.depKind ?? data?.category ?? "wire";
+  const data = dominant?.data as { weight?: number } | undefined;
+  const kind = relationKindOf(dominant?.data) ?? "wire";
   const weight = data?.weight ?? 1;
   const rest = members.length - 1;
   return `${kind}${weight > 1 ? ` ×${weight}` : ""}${rest > 0 ? ` +${rest}` : ""}`;

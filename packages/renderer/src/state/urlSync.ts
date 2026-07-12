@@ -54,9 +54,6 @@ export async function restoreFromUrl(store: BlueprintStore, search?: string): Pr
   if (store.getState().minimalSeedIds.length > 0) {
     await store.getState().minimalRelayout();
   }
-  if (nav.flowSelection) {
-    store.getState().selectFlowEntry(nav.flowSelection);
-  }
   if (nav.reviewActive && nav.reviewPr !== null) {
     await restorePrReview(store, nav.reviewPr);
   } else if (nav.prSelected !== null) {
@@ -66,6 +63,14 @@ export async function restoreFromUrl(store: BlueprintStore, search?: string): Pr
     await store.getState().ensurePrSummary(nav.prSelected);
     if (selectedPrSummary(store.getState(), nav.prSelected) !== null) {
       void store.getState().selectPr(nav.prSelected);
+    }
+  }
+  // A review flow must be replayed against the restored PR-head artifact, never the boot/base graph.
+  // `selectFlowEntry` deliberately clears stale target state, so replay the target after the pane.
+  if (nav.flowSelection) {
+    store.getState().selectFlowEntry(nav.flowSelection);
+    if (nav.logicSelected !== null) {
+      store.getState().selectFlowPaneTarget(nav.logicSelected);
     }
   }
   applyEnvironment(store, nav.environment);
@@ -181,6 +186,7 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     flowPaneRfNodes: [],
     flowPaneRfEdges: [],
     flowPaneLayoutStatus: "idle",
+    reviewFlowBaseline: null,
     logicRoot: nav.logicRoot,
     logicView: nav.logicView,
     logicStack: nav.logicStack,

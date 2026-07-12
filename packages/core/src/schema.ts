@@ -76,6 +76,8 @@ const callSiteSchema = z.object({
   file: z.string(),
   line: z.number().int().min(1),
   col: z.number().int().min(0).optional(),
+  endLine: z.number().int().min(1).optional(),
+  endCol: z.number().int().min(0).optional(),
 });
 
 export const graphEdgeSchema = z.object({

@@ -56,6 +56,25 @@ describe("validateArtifact", () => {
     expect(codes(artifact)).toContain("WEIGHT_MISMATCH");
   });
 
+  it("accepts exact call-site ranges and rejects reversed or partial ranges", () => {
+    const valid = validArtifact();
+    valid.edges[0]!.callSites = [{ file: "src/a.ts", line: 4, col: 3, endLine: 6, endCol: 11 }];
+    valid.edges[0]!.weight = 1;
+    expect(validateArtifact(valid).ok).toBe(true);
+
+    const reversedLine = validArtifact();
+    reversedLine.edges[0]!.callSites = [{ file: "src/a.ts", line: 8, endLine: 7 }];
+    expect(codes(reversedLine)).toContain("CALL_SITE_RANGE");
+
+    const reversedColumn = validArtifact();
+    reversedColumn.edges[0]!.callSites = [{ file: "src/a.ts", line: 8, col: 9, endLine: 8, endCol: 2 }];
+    expect(codes(reversedColumn)).toContain("CALL_SITE_RANGE");
+
+    const orphanEndColumn = validArtifact();
+    orphanEndColumn.edges[0]!.callSites = [{ file: "src/a.ts", line: 8, endCol: 12 }];
+    expect(codes(orphanEndColumn)).toContain("CALL_SITE_RANGE");
+  });
+
   it("rejects telemetry that permits service defaulting", () => {
     const artifact = validArtifact();
     (artifact.telemetry as { serviceDefaulting: string }).serviceDefaulting = "allowed";
@@ -68,5 +87,18 @@ describe("validateArtifact", () => {
     const result = validateArtifact(artifact);
     expect(result.ok).toBe(true);
     expect(result.warnings.map((issue) => issue.code)).toContain("UNKNOWN_NODE_KIND");
+  });
+
+  it("recognizes the service-composition edge vocabulary", () => {
+    const compositionKinds = ["registers", "binds", "provides", "injects", "owns", "aliases"] as const;
+    for (const kind of compositionKinds) {
+      const artifact = validArtifact();
+      const edge = artifact.edges[0]!;
+      edge.kind = kind;
+      edge.id = `${kind}@${edge.source}|${edge.target}`;
+      const result = validateArtifact(artifact);
+      expect(result.ok).toBe(true);
+      expect(result.warnings).toEqual([]);
+    }
   });
 });

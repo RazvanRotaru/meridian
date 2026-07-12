@@ -60,5 +60,6 @@ export function ipcTreeEdges(index: GraphIndex, visibleIds: ReadonlySet<string>)
     }),
     outsideView: false,
     category: "ipc" as const,
+    relationKind: "ipc",
   }));
 }

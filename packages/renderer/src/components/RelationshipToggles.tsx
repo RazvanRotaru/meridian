@@ -1,37 +1,75 @@
 /**
- * The Module-map RELATIONSHIP filter row: one coloured pill per wire kind (Calls / Constructs /
- * Extends / Implements / References / Imports / IPC), each carrying its colour dot. An ACTIVE
- * (filled) pill means that kind is drawn; clicking paints its wires out in place — no relayout — so
- * you can isolate "just the inheritance" or "just the calls". Heading + "All" reset live in the
- * Toolbar; this renders only the pills.
+ * Lens-aware relationship filters, grouped by semantic family. Exact kinds stay flat/stable in the
+ * artifact; the family hierarchy is presentation and policy, so a lens can tell a different story
+ * without inventing new graph machinery.
  */
 
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
-import { RELATIONSHIP_KINDS } from "../theme/relationshipKinds";
+import { relationshipKindGroupsForPolicy } from "../theme/relationshipKinds";
 import { Pill } from "./controlpanel/panelKit";
+import { activeModuleSurfaceSpec } from "./canvas/surfaceSpec";
+import { isRelationShown } from "../graph/relationVisibility";
 
 export function RelationshipToggles() {
-  const hiddenRelKinds = useBlueprint((state) => state.hiddenRelKinds);
-  const { toggleRelKind } = useBlueprintActions();
+  const viewMode = useBlueprint((state) => state.viewMode);
+  const overrides = useBlueprint((state) => state.relationVisibilityOverrides);
+  const { toggleRelKind, resetRelationshipDefaults } = useBlueprintActions();
+  const policy = activeModuleSurfaceSpec(viewMode).relations;
+  const groups = relationshipKindGroupsForPolicy(policy);
+  const hasOverrides = Object.keys(overrides[policy.id] ?? {}).length > 0;
 
   return (
-    <div style={ROW_STYLE} role="group" aria-label="Relationship kinds">
-      {RELATIONSHIP_KINDS.map(({ key, label, color }) => {
-        const shown = !hiddenRelKinds.has(key);
-        return (
-          <Pill
-            key={key}
-            active={shown}
-            accent={color}
-            title={shown ? `Hide ${label}` : `Show ${label}`}
-            onClick={() => toggleRelKind(key)}
-          >
-            {label}
-          </Pill>
-        );
-      })}
+    <div style={GROUPS_STYLE} role="group" aria-label={`${policy.id} relationship kinds`}>
+      {groups.map((group) => (
+        <div key={group.family} style={GROUP_STYLE}>
+          <div style={FAMILY_STYLE}>{group.label}</div>
+          <div style={ROW_STYLE}>
+            {group.kinds.map(({ key, label, color }) => {
+              const shown = isRelationShown(policy, overrides, key);
+              return (
+                <Pill
+                  key={key}
+                  active={shown}
+                  accent={color}
+                  title={shown ? `Hide ${label}` : `Show ${label}`}
+                  onClick={() => toggleRelKind(key)}
+                >
+                  {label}
+                </Pill>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+      <button
+        type="button"
+        style={{ ...DEFAULTS_STYLE, opacity: hasOverrides ? 1 : 0.45, cursor: hasOverrides ? "pointer" : "default" }}
+        disabled={!hasOverrides}
+        title={`Restore ${policy.id} lens relationship defaults`}
+        onClick={resetRelationshipDefaults}
+      >
+        Restore lens defaults
+      </button>
     </div>
   );
 }
 
 const ROW_STYLE: React.CSSProperties = { display: "flex", flexWrap: "wrap", gap: 7 };
+const GROUPS_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 8 };
+const GROUP_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 4 };
+const FAMILY_STYLE: React.CSSProperties = {
+  color: "#687382",
+  fontSize: 9,
+  fontWeight: 700,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+};
+const DEFAULTS_STYLE: React.CSSProperties = {
+  alignSelf: "flex-start",
+  padding: 0,
+  border: "none",
+  background: "transparent",
+  color: "#7B8695",
+  font: "inherit",
+  fontSize: 10,
+};

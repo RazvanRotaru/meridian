@@ -30,6 +30,8 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
   const [controlsCollapsed, setControlsCollapsed] = useState(false);
   const viewMode = useBlueprint((state) => state.viewMode);
   const hasOverlay = useBlueprint((state) => state.hasOverlay);
+  const flowPaneOpen = useBlueprint((state) => state.flowSelection !== null);
+  const reviewFlowOpen = useBlueprint((state) => state.flowSelection !== null && state.reviewFlowBaseline !== null);
   const { resetCategoryFilter, resetRelationshipFilter } = useBlueprintActions();
 
   const isComposition = viewMode === "call";
@@ -37,7 +39,7 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
   const onModuleSurface = viewMode === "modules" || viewMode === "ui" || isComposition;
   return (
     <Panel position="top-left">
-      <div id={CONTROL_PANEL_ID} style={PANEL_STYLE}>
+      <div id={CONTROL_PANEL_ID} style={panelStyle(flowPaneOpen, reviewFlowOpen)}>
         <ControlPanelHeader />
 
         {hasOverlay ? (
@@ -141,6 +143,19 @@ const PANEL_STYLE: React.CSSProperties = {
   background: "rgba(10,13,18,0.94)",
   backdropFilter: "blur(8px)",
 };
+
+/** Keep the global control panel inside the upper graph when a bottom flow pane is open. React
+ * Flow's outer <Panel> is viewport-positioned, so its ordinary 100vh cap would otherwise cover the
+ * split's flow entry nodes. Each pane owns the complementary share (30% in review, 40% elsewhere). */
+function panelStyle(flowPaneOpen: boolean, reviewFlowOpen: boolean): React.CSSProperties {
+  if (!flowPaneOpen) {
+    return PANEL_STYLE;
+  }
+  return {
+    ...PANEL_STYLE,
+    maxHeight: reviewFlowOpen ? "calc(70vh - 24px)" : "calc(60vh - 24px)",
+  };
+}
 const PR_CONTROLS_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column" };
 const CONTROLS_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 11 };
 const HIDDEN_CONTROLS_STYLE: React.CSSProperties = { ...CONTROLS_STYLE, display: "none" };

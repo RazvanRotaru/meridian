@@ -4,7 +4,9 @@
  * EXPANDS it in place — collapsed it is a solid box; expanded it becomes a transparent titled frame
  * whose body lets React Flow draw the nested children inside it, exactly like the call graph's
  * ContainerNode. Double-clicking the card still re-roots into it (handled by the surface); the
- * chevron is the coexisting inline gesture. A green ring marks the selection, read from the store.
+ * chevron is the coexisting inline gesture. Review rollups expose their separate one-way expansion
+ * as an explicit "files" button, leaving the rest of the card to the universal surface handlers.
+ * A green ring marks the selection, read from the store.
  */
 
 import { memo } from "react";
@@ -52,7 +54,12 @@ export function GroupContainerNodeView({ id, data }: { id: string; data: ModuleG
           <span className="lod-label" style={TITLE_LABEL} title={id}>{data.label}</span>
           <span className="lod-hide" style={CONTENTS}>
             {data.readOnly ? changedInside : <DeltaChip diff={diff} />}
-            <Meta data={data} hideCoupling={data.readOnly} rollupFileCount={rollupFileCount} />
+            <Meta
+              data={data}
+              hideCoupling={data.readOnly}
+              rollupFileCount={rollupFileCount}
+              onExpandRollup={() => expandMinimalGroup(id)}
+            />
           </span>
         </FrameTitleBar>
       </div>
@@ -65,20 +72,18 @@ export function GroupContainerNodeView({ id, data }: { id: string; data: ModuleG
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
       <div className="lod-rail" style={{ ...ACCENT_BAR, background: PACKAGE_ACCENT }} />
       <span className="lod-place">{data.label}</span>
-      <div
-        className="lod-card-body"
-        style={rollupFileCount > 0 ? { ...INNER, cursor: "pointer" } : INNER}
-        onClick={rollupFileCount > 0 ? (event) => {
-          event.stopPropagation();
-          expandMinimalGroup(id);
-        } : undefined}
-      >
+      <div className="lod-card-body" style={INNER}>
         <div style={HEADER}>
           {chevron}
           <span style={LABEL} title={id}>{data.label}</span>
           {data.readOnly ? changedInside : <DeltaChip diff={diff} />}
         </div>
-        <Meta data={data} hideCoupling={data.readOnly} rollupFileCount={rollupFileCount} />
+        <Meta
+          data={data}
+          hideCoupling={data.readOnly}
+          rollupFileCount={rollupFileCount}
+          onExpandRollup={() => expandMinimalGroup(id)}
+        />
         <CommonsChips chips={(data as { commonsChips?: string[] }).commonsChips} />
       </div>
     </div>
@@ -87,13 +92,23 @@ export function GroupContainerNodeView({ id, data }: { id: string; data: ModuleG
 
 /** File count + cross-package fan-in/out — shown compact in a title bar, block in a collapsed card.
  * `hideCoupling` drops the uses/used-by pair when the counts aren't meaningful (a filtered subgraph). */
-function Meta({ data, hideCoupling, rollupFileCount = 0 }: { data: PackageMetaData; hideCoupling?: boolean; rollupFileCount?: number }) {
+function Meta({
+  data,
+  hideCoupling,
+  rollupFileCount = 0,
+  onExpandRollup,
+}: {
+  data: PackageMetaData;
+  hideCoupling?: boolean;
+  rollupFileCount?: number;
+  onExpandRollup(): void;
+}) {
   const countLabel = data.countLabel ?? `${data.fileCount} files`;
   return (
     <div style={META}>
       <span style={FILES} title={data.countLabel ?? `${data.fileCount} source file(s)`}>{countLabel}</span>
       {rollupFileCount > 0 ? (
-        <span style={EXPAND_ROLLUP} title={`Expand ${rollupFileCount} changed file(s)`}>{rollupFileCount} files ▸</span>
+        <RollupExpandControl count={rollupFileCount} onExpand={onExpandRollup} />
       ) : hideCoupling ? null : (
         <span style={COUNTS} title={`imports ${data.ce} · imported by ${data.ca}`}>
           <span style={COUNT_MUTED}>uses</span>
@@ -104,6 +119,32 @@ function Meta({ data, hideCoupling, rollupFileCount = 0 }: { data: PackageMetaDa
       )}
     </div>
   );
+}
+
+/** The review rollup's one-way disclosure gesture. Click/double-click propagation stops here so
+ * it cannot also select or navigate the package; every other pixel of the card remains untouched. */
+export function RollupExpandControl({ count, onExpand }: { count: number; onExpand(): void }) {
+  return (
+    <button
+      type="button"
+      className="nodrag nopan"
+      style={EXPAND_ROLLUP}
+      title={`Expand ${count} changed file(s)`}
+      aria-label={`Expand ${count} changed file(s)`}
+      onClick={(event) => activateRollupExpansion(event, onExpand)}
+      onDoubleClick={(event) => event.stopPropagation()}
+    >
+      {count} files ▸
+    </button>
+  );
+}
+
+export function activateRollupExpansion(
+  event: Pick<React.MouseEvent, "stopPropagation">,
+  onExpand: () => void,
+) {
+  event.stopPropagation();
+  onExpand();
 }
 
 function ChangedInsideChip({ count }: { count: number }) {
@@ -158,7 +199,18 @@ const LABEL: React.CSSProperties = {
 };
 const META: React.CSSProperties = { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexShrink: 0 };
 const FILES: React.CSSProperties = { fontSize: 11, color: "#9AA4B2" };
-const EXPAND_ROLLUP: React.CSSProperties = { fontSize: 10.5, color: "#9AA4B2", flexShrink: 0 };
+const EXPAND_ROLLUP: React.CSSProperties = {
+  flexShrink: 0,
+  appearance: "none",
+  border: "none",
+  background: "transparent",
+  margin: 0,
+  padding: 0,
+  color: "#9AA4B2",
+  font: "inherit",
+  fontSize: 10.5,
+  cursor: "pointer",
+};
 const CHANGED_INSIDE: React.CSSProperties = { fontSize: 10, fontWeight: 700, color: TOKENS.reviewAmber, flexShrink: 0 };
 const COUNTS: React.CSSProperties = { display: "inline-flex", alignItems: "baseline", gap: 4, fontSize: 10.5 };
 const COUNT_MUTED: React.CSSProperties = { color: "#6C7683" };

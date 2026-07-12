@@ -10,6 +10,7 @@ import type { Edge, Node } from "@xyflow/react";
 import { paintMinimalLevel } from "./paintMinimal";
 import { IMPORT_CROSS, IMPORT_SIBLING, REL_COLORS } from "../theme/mapPalette";
 import { BOUNDARY_DASH_PATTERN, type EdgeBoundaryData } from "../layout/edgeBoundary";
+import { defineLensRelationPolicy } from "../graph/lensRelationPolicy";
 
 const NO_SELECTION: ReadonlySet<string> = new Set();
 // emphasize's lit stroke width (not exported); pinned so the tests catch a silent rest-state fallback.
@@ -87,6 +88,43 @@ describe("paintMinimalLevel — redundant-import suppression (the Map's rule)", 
     const { edges } = paint(TWO_FILES, [dep, imp]);
     expect(edges.map((edge) => edge.id)).toEqual([dep.id]);
     expect(edges[0].style?.stroke).toBe(REL_COLORS.calls);
+  });
+});
+
+describe("paintMinimalLevel — lens ghost policy", () => {
+  it("removes an off-scope ghost card when the visible relation forbids boundary ghosts", () => {
+    const anchor = fileNode("ts:a.ts");
+    const ghost = { ...fileNode("ts:b.ts"), type: "ghost" } as Node;
+    const baseWire = depEdge(anchor.id, ghost.id, "calls");
+    const wire = { ...baseWire, data: { ...baseWire.data, ghost: true } } as Edge;
+    const policy = defineLensRelationPolicy({
+      id: "no-ghosts",
+      rules: [{
+        match: { kind: "calls" },
+        defaultVisible: true,
+        layoutRole: "overlay",
+        highwayWeight: 1,
+        ghostPolicy: "never",
+      }],
+      fallback: {
+        defaultVisible: false,
+        layoutRole: "ignore",
+        highwayWeight: 0,
+        ghostPolicy: "never",
+      },
+    });
+
+    const painted = paintMinimalLevel(
+      [anchor, ghost],
+      [wire],
+      new Set([anchor.id]),
+      1,
+      "node",
+      { policy, overrides: {} },
+    );
+
+    expect(painted.edges).toEqual([]);
+    expect(painted.nodes.map((node) => node.id)).toEqual([anchor.id]);
   });
 });
 

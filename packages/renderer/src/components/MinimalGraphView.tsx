@@ -9,8 +9,8 @@
  * wired. Like the Map, satellites are ON-DEMAND context: selecting a member reveals only that
  * member's off-view callers/dependencies. Each satellite wears a subtle round "+" that promotes its
  * home file/folder into the members and opens the path until the original symbol is visible. A
- * crowded sibling set folds under its persistent real parent; clicking that parent keeps it in
- * place and discloses exact children as outward neighbours. The floating members panel removes a
+ * crowded sibling set folds under its persistent real parent; that parent's explicit chevron
+ * discloses exact children as outward neighbours. The floating members panel removes a
  * member (it returns as a satellite iff still coupled), while the shared bottom action bar
  * rearranges, resets, and explicitly closes the extracted graph, returning to the active lens with
  * the selection kept. Wires are painted by the Map's OWN chain and keyed by its own `MapLegend`,
@@ -25,7 +25,7 @@
  * the node exactly like the Map (the overlay just closes first, since it covers the Map, so the
  * navigation surfaces — for a satellite that's the Map's reveal-the-definition read). A plain
  * click NEVER promotes an exact ghost — promotion is the explicit "+" button, so curation is
- * deliberate; clicking a persistent parent group toggles its exact child neighbours. The only
+ * deliberate; a persistent parent group's chevron toggles its exact child neighbours. The only
  * page-specific gestures are that "+" (promote) and explicit Close.
  */
 
@@ -36,7 +36,7 @@ import { GraphSurface } from "./canvas/GraphSurface";
 import { GhostPromoteRing } from "./canvas/GhostPromoteRing";
 import { SEMANTIC_LAYER_FADE_MS } from "./canvas/MapLod";
 import { adaptMinimalGraphToSemanticSource, type MinimalSourceGraphState } from "./canvas/minimalSemanticSource";
-import { MINIMAL_OVERLAY_HIGHWAYS } from "./canvas/surfaceSpec";
+import { activeModuleSurfaceSpec, MINIMAL_OVERLAY_HIGHWAYS } from "./canvas/surfaceSpec";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { useRecenter } from "./canvas/useRecenter";
 import {
@@ -59,6 +59,7 @@ export function MinimalGraphView() {
   const layoutActivity = useBlueprint((state) => state.minimalLayoutActivity);
   const reviewSelectedId = useBlueprint((state) => state.reviewSelectedId);
   const reviewActive = useBlueprint((state) => state.review !== null);
+  const reviewFlowOpen = useBlueprint((state) => state.flowSelection !== null && state.reviewFlowBaseline !== null);
   const index = useBlueprint((state) => state.index);
   const viewMode = useBlueprint((state) => state.viewMode);
   const moduleFocus = useBlueprint((state) => state.moduleFocus);
@@ -67,6 +68,7 @@ export function MinimalGraphView() {
   const serviceGroupingMode = useBlueprint((state) => state.serviceGroupingMode);
   const serviceGroupingTargetSize = useBlueprint((state) => state.serviceGroupingTargetSize);
   const { closeMinimalGraph, promoteGhost } = useBlueprintActions();
+  const relations = activeModuleSurfaceSpec(viewMode).relations;
 
   // A review-panel click centers the viewport on the clicked node itself (recenterSeq bump); else
   // the selection is the recenter target, like every module surface.
@@ -78,12 +80,11 @@ export function MinimalGraphView() {
 
   // Interactions ARE the Module map's own (the shared hook — called HERE so the debounce dies with
   // the overlay); a double-click closes the overlay first so the Map's navigate surfaces. No
-  // `onBeforeClick`: a plain exact-ghost click inspects, a group click expands, and promotion
-  // remains the explicit "+" button, so curation is deliberate.
+  // `onBeforeClick`: every card, including exact/grouped ghosts, uses ordinary selection;
+  // disclosure and promotion remain their explicit chevron / "+" controls.
   const interactions = useModuleNodeInteractions({
     onBeforeDoubleClick: () => {
       closeMinimalGraph();
-      return false;
     },
   });
 
@@ -124,9 +125,14 @@ export function MinimalGraphView() {
         nodes={semanticScene.nodes}
         edges={semanticScene.edges}
         highways={MINIMAL_OVERLAY_HIGHWAYS}
+        relations={relations}
         miniMapColor={minimalMiniMapColor}
         interactions={interactions}
         nodeDiffPreview={reviewActive}
+        wireHover
+        reviewEmphasis={reviewActive}
+        emphasisMode={reviewFlowOpen ? (reviewSelectedId === null ? "subgraph" : "node") : undefined}
+        groupGhosts={reviewFlowOpen && reviewSelectedId !== null ? false : undefined}
         busy={layoutStatus === "laying-out" ? layoutActivity ?? undefined : undefined}
         autoFitView={false}
         semanticLayers={semanticScene.semanticLayers}
@@ -146,6 +152,7 @@ export function MinimalGraphView() {
           hasSteps={nodes.some((node) => node.type === "step")}
           showPackages={nodes.some((node) => node.type === "package")}
           showIpc={false}
+          relationPolicy={relations}
         />
         <CanvasActionBar />
         <MinimalMembersPanel />

@@ -12,8 +12,7 @@
  */
 
 import type { ExportDeclaration, ImportDeclaration, SourceFile } from "ts-morph";
-import type { CallSite } from "@meridian/core";
-import { lineColOf, type NodeDescriptor } from "./model";
+import { callSiteOf, type NodeDescriptor } from "./model";
 import type { RawEdge } from "./edge-pass";
 import type { CrossPackageResolver, TargetResolution } from "./edge-resolve";
 import type { LoadedProject } from "./project-loader";
@@ -105,9 +104,4 @@ function pendingModuleRef(declaration: ModuleDependencyDecl, resolver?: CrossPac
     threw: false,
     pending: { specifier, exportedName: null },
   };
-}
-
-function callSiteOf(declaration: ModuleDependencyDecl, relPath: string): CallSite {
-  const position = lineColOf(declaration);
-  return { file: relPath, line: position.line, col: position.column };
 }

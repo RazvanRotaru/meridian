@@ -218,10 +218,86 @@ describe("minimal-graph overlay (extract selection)", () => {
       .map((candidate) => candidate.id)
       .sort();
 
+  it("bulk expand targets the visible minimal frontier instead of the covered module tree", () => {
+    const store = freshStore();
+    const minimalRelayout = vi.fn(async () => undefined);
+    store.setState({
+      minimalSeedIds: ["ts:src/a.ts"],
+      minimalMemberIds: ["ts:src/a.ts"],
+      minimalRfNodes: [{
+        id: "ts:src/a.ts",
+        type: "file",
+        position: { x: 0, y: 0 },
+        data: { isContainer: true, isExpanded: false },
+      }],
+      moduleExpanded: new Set(),
+      moduleSelected: new Set(),
+      minimalRelayout,
+    });
+
+    store.getState().expandAll();
+
+    expect(store.getState().moduleExpanded).toEqual(new Set(["ts:src/a.ts"]));
+    expect(store.getState().moduleExpanded.has("ts:src")).toBe(false);
+    expect(minimalRelayout).toHaveBeenCalledOnce();
+  });
+
+  it("bulk collapse leaves covered-tree containers open when they are absent from the minimal frontier", () => {
+    const store = freshStore();
+    const minimalRelayout = vi.fn(async () => undefined);
+    store.setState({
+      minimalSeedIds: ["ts:src/a.ts"],
+      minimalMemberIds: ["ts:src/a.ts"],
+      minimalRfNodes: [
+        {
+          id: "ts:src/a.ts",
+          type: "file",
+          position: { x: 0, y: 0 },
+          data: { isContainer: true, isExpanded: true },
+        },
+        {
+          id: BUILD_ORDERS,
+          type: "block",
+          parentId: "ts:src/a.ts",
+          position: { x: 10, y: 10 },
+          data: { isContainer: false, isExpanded: false },
+        },
+      ],
+      moduleExpanded: new Set(["ts:src", "ts:src/a.ts"]),
+      moduleSelected: new Set(),
+      minimalRelayout,
+    });
+
+    store.getState().collapseAll();
+
+    expect(store.getState().moduleExpanded).toEqual(new Set(["ts:src"]));
+    expect(minimalRelayout).toHaveBeenCalledOnce();
+  });
+
   it("buildMinimalGraph extracts the selection verbatim as members and origin", () => {
     const store = withBuiltGraph();
     expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
     expect(store.getState().minimalMemberIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
+  });
+
+  it("lets an exact ghost or grouped ghost parent seed extraction on the Map", () => {
+    const exact = freshStore();
+    exact.getState().selectModule(ROUTES_METHOD);
+    exact.getState().buildMinimalGraph();
+    expect(exact.getState().minimalSeedIds).toEqual([ROUTES_METHOD]);
+
+    const parent = freshStore();
+    parent.getState().selectModule(ROUTES_UNIT);
+    parent.getState().buildMinimalGraph();
+    expect(parent.getState().minimalSeedIds).toEqual([ROUTES_UNIT]);
+  });
+
+  it("lets the same exact ghost seed extraction on UI through its home file", () => {
+    const store = freshStore();
+    store.setState({ viewMode: "ui" });
+    store.getState().selectModule(ROUTES_METHOD);
+    store.getState().buildMinimalGraph();
+    expect(store.getState().minimalSeedIds).toEqual([ROUTES_FILE]);
   });
 
   it("promoteGhost adds a member without touching the origin", () => {

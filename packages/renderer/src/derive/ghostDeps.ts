@@ -26,13 +26,16 @@ export type GhostData = {
   semanticMembers?: Array<{ id: string; data: GhostData }>;
   /** Stable real-parent expansion key on a paint-time parent anchor; absent on exact child ghosts. */
   ghostGroupId?: string;
+  /** Paint-only provenance: the real/synthetic selection seed whose frontier exposed this card.
+   * Clicking the ghost keeps these ids as emphasis anchors while selecting the ghost itself. */
+  ghostPaintSeedIds?: string[];
   /** Paint-time flag: this ghost IS a selected call step's definition — its border flips to the
    * selection colour (the beacon read). Never set at derive time. */
   beacon?: boolean;
 };
 
 /** A wire between a drawn code node (or step) and a ghost; endpoints are REAL artifact/step ids.
- * `kind` is the underlying coupling kind (calls / instantiates / extends / implements / references)
+ * `kind` is the underlying exact relation kind
  * so an off-level dependency wears the same per-relationship colour as an on-level one. */
 export interface GhostWire {
   source: string;

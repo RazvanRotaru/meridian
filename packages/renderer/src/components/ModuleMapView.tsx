@@ -9,6 +9,16 @@
  * centred while the camera returns to reading zoom, and the same transition can continue through
  * every available level. A Minimal Graph uses an isolated React Flow provider above the still-
  * mounted source so its outward handoff can reveal the exact source viewport in place.
+ *
+ *   1. `filterVisible` drops file cards a category/Tests toggle hides (group cards always stay) —
+ *      a pure VISIBILITY filter over the laid-out graph, so positions are untouched;
+ *   2. the LENS-lifetime hooks: the fit-once-per-LEVEL guard, the interaction hook (its pending
+ *      single-click select), and the (muted-while-covered) recenter reaction — all of which must
+ *      survive the minimal overlay replacing the canvas beneath it;
+ *   3. the containment/scope breadcrumb, extract strip, empty-level card, legend, and coverage chrome.
+ *
+ * Navigation is one gesture set: double-click a navigable card to enter it; the breadcrumb (the
+ * containment trail) navigates back out. Recenter/focus is a separate explicit canvas action.
  */
 
 import { useMemo } from "react";
@@ -36,6 +46,7 @@ import { ReviewPanel } from "./review/ReviewPanel";
 import { accentForKind } from "../theme/kindColors";
 import type { BlockData, UnitCardData } from "../derive/moduleLevel";
 import { clusteringFor } from "../derive/serviceClusteringCache";
+import { serviceClusterCount } from "../derive/serviceComposition";
 
 const PACKAGE_KIND = "package";
 const SERVICE_DOMAIN_KIND = "serviceDomain";
@@ -45,14 +56,23 @@ export function ModuleMapView() {
   return (
     <div style={SURFACE_STYLE}>
       {/* Simultaneously mounted ReactFlow instances need isolated stores; otherwise the overlay's
-          nodes and viewport overwrite the source scene it is supposed to reveal. */}
-      <GraphSurfaceProvider>
-        <ModuleSourceSurface covered={minimalOpen} />
-      </GraphSurfaceProvider>
+          nodes and viewport overwrite the source scene it is supposed to reveal. Keep the source
+          visually mounted for the fade handoff, but remove its covered controls from pointer,
+          keyboard, and accessibility navigation while Minimal Graph owns the interaction layer. */}
+      <div
+        data-graph-surface="source"
+        style={SOURCE_SURFACE_LAYER_STYLE}
+        inert={minimalOpen}
+        aria-hidden={minimalOpen || undefined}
+      >
+        <GraphSurfaceProvider>
+          <ModuleSourceSurface covered={minimalOpen} />
+        </GraphSurfaceProvider>
+      </div>
       {minimalOpen ? (
-        <div style={MINIMAL_OVERLAY_STYLE}>
+        <div data-graph-surface="minimal" style={MINIMAL_OVERLAY_STYLE}>
           <div style={REVIEW_SPLIT_STYLE}>
-            <div style={REVIEW_GRAPH_STYLE}>
+            <div style={REVIEW_GRAPH_STYLE} role="region" aria-label="PR review graph">
               <GraphSurfaceProvider>
                 <MinimalGraphView />
               </GraphSurfaceProvider>
@@ -133,6 +153,7 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
       nodes={shownNodes}
       edges={shownEdges}
       highways={spec.highways}
+      relations={spec.relations}
       miniMapColor={miniMapColor}
       interactions={interactions}
       busy={busy}
@@ -145,7 +166,7 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
       semanticCommitEnabled={semanticNavigation.semanticCommitEnabled}
       onSemanticCommit={semanticNavigation.onSemanticCommit}
       onInit={semanticNavigation.onInit}
-      wireHover
+      wireHover={!covered}
       flowExtras={(view) => (
         <>
           {renderBeacons(view)}
@@ -156,14 +177,13 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
       )}
     >
       {viewMode === "call" && serviceScope !== null ? (
+        // The scoped Service sub-view's trail: "All services › <scope> ✕ [› <cluster>]" — the
+        // cluster navigation trail composes onto the scope segment.
+        // "All services" exits everything; ✕ drops the scope filter; the scope label (a button
+        // only while zoomed) steps back out of the dive.
         <ServiceScopeBreadcrumb
           label={serviceScope.label}
-          crumbs={spec.focus.crumbs(
-            effectiveFocus,
-            index,
-            serviceGroupingMode,
-            serviceGroupingTargetSize,
-          )}
+          crumbs={spec.navigation.crumbs(effectiveFocus, index, serviceGroupingMode, serviceGroupingTargetSize)}
           onClear={() => {
             clearServiceScope();
             setModuleFocus(null);
@@ -176,23 +196,18 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
           focus={effectiveFocus}
           packageCount={effectiveFocus === null
             ? viewMode === "call"
-              ? clusteringFor(index).clusters.length
+              ? serviceClusterCount(clusteringFor(index))
               : semanticNavigation.currentNodes.filter((node) => !node.parentId && node.type !== "ghost").length
             : 0}
-          crumbs={spec.focus.crumbs(
-            effectiveFocus,
-            index,
-            serviceGroupingMode,
-            serviceGroupingTargetSize,
-          )}
+          crumbs={spec.navigation.crumbs(effectiveFocus, index, serviceGroupingMode, serviceGroupingTargetSize)}
           onFocus={setModuleFocus}
-          rootLabel={spec.focus.rootLabel}
-          rootNoun={spec.focus.rootNoun}
+          rootLabel={spec.navigation.rootLabel}
+          rootNoun={spec.navigation.rootNoun}
         />
       )}
       <CanvasActionBar />
       {isEmpty ? <EmptyModuleMapCard focus={effectiveFocus} /> : null}
-      <MapLegend hasSteps={shownNodes.some((node) => node.type === "step")} />
+      <MapLegend hasSteps={shownNodes.some((node) => node.type === "step")} relationPolicy={spec.relations} />
       <CoveragePanel />
     </GraphSurface>
   );
@@ -221,4 +236,5 @@ function miniMapColor(node: Node): string {
 
 const REVIEW_SPLIT_STYLE: React.CSSProperties = { position: "absolute", inset: 0, display: "flex" };
 const REVIEW_GRAPH_STYLE: React.CSSProperties = { position: "relative", flex: 1, minWidth: 0 };
+const SOURCE_SURFACE_LAYER_STYLE: React.CSSProperties = { position: "absolute", inset: 0 };
 const MINIMAL_OVERLAY_STYLE: React.CSSProperties = { position: "absolute", inset: 0, zIndex: 10 };

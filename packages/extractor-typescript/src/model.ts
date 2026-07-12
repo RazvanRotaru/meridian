@@ -6,7 +6,7 @@
  */
 
 import type { Node } from "ts-morph";
-import type { NodeKind, SourceLocation, TelemetryKey } from "@meridian/core";
+import type { CallSite, NodeKind, SourceLocation, TelemetryKey } from "@meridian/core";
 
 export interface NodeIdParts {
   lang: string;
@@ -40,4 +40,22 @@ export function nodeKey(node: Node): string {
 
 export function lineColOf(node: Node): { line: number; column: number } {
   return node.getSourceFile().getLineAndColumnAtPos(node.getStart());
+}
+
+/**
+ * The exact syntax range that proves an extracted relationship. ts-morph's start is inclusive and
+ * end is exclusive; line numbers identify the containing rows, so the renderer can highlight every
+ * relevant row while columns preserve the precise token span for richer viewers.
+ */
+export function callSiteOf(node: Node, file: string): CallSite {
+  const sourceFile = node.getSourceFile();
+  const start = sourceFile.getLineAndColumnAtPos(node.getStart());
+  const end = sourceFile.getLineAndColumnAtPos(node.getEnd());
+  return {
+    file,
+    line: start.line,
+    col: start.column,
+    endLine: end.line,
+    endCol: end.column,
+  };
 }

@@ -87,14 +87,16 @@ function freshStore(): BlueprintStore {
 }
 
 describe("semantic parents across module-family lenses", () => {
-  it("commits a focused Service frame into its localized parent graph without relayout", async () => {
+  it("commits a focused Service frame into its honest domain parent without relayout", async () => {
     const store = freshStore();
     const alphaFrame = frameIdOf(ALPHA);
     store.setState({ viewMode: "call", moduleFocus: alphaFrame, serviceScope: null });
     await store.getState().moduleRelayout();
 
     const focused = store.getState();
-    expect(focused.moduleSemanticLayers[0]).toMatchObject({ depth: 1, focus: null, anchorId: alphaFrame });
+    expect(focused.moduleSemanticLayers[0]).toMatchObject({ depth: 1, anchorId: alphaFrame });
+    const domainFocus = focused.moduleSemanticLayers[0]!.focus;
+    expect(domainFocus).toMatch(/^service-domain:/);
     const parentAnchor = focused.moduleRfNodes.find(
       (entry) => entry.id === alphaFrame && entry.data.semanticDepth === 1,
     );
@@ -103,7 +105,7 @@ describe("semantic parents across module-family lenses", () => {
       focused.moduleRfNodes.some(
         (entry) => entry.id === frameIdOf(GAMMA) && entry.data.semanticDepth === 1,
       ),
-    ).toBe(false);
+    ).toBe(true);
 
     const relayout = vi.fn(async () => {});
     store.setState({ moduleRelayout: relayout });
@@ -112,13 +114,12 @@ describe("semantic parents across module-family lenses", () => {
     const parent = store.getState();
     expect(relayout).not.toHaveBeenCalled();
     expect(parent.moduleLayoutStatus).toBe("ready");
-    expect(parent.moduleFocus).toBeNull();
-    expect(parent.moduleEffectiveFocus).toBeNull();
-    expect(parent.moduleSemanticLayers).toEqual([]);
+    expect(parent.moduleFocus).toBe(domainFocus);
+    expect(parent.moduleEffectiveFocus).toBe(domainFocus);
+    expect(parent.moduleSemanticLayers).toHaveLength(1);
     expect(parent.moduleRfNodes.find((entry) => entry.id === alphaFrame)).toBe(parentAnchor);
     expect(parent.moduleRfNodes.every((entry) => Number(entry.data.semanticDepth) >= 1)).toBe(true);
-    expect(new Set(parent.serviceScope?.leadIds)).toEqual(new Set([ALPHA, BETA]));
-    expect(parent.serviceScope?.label).toBe("AlphaService (+1)");
+    expect(parent.serviceScope).toBeNull();
   });
 
   it("commits a focused UI containment graph into its canonical parent", async () => {

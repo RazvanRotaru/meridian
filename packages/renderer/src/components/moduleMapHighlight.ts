@@ -10,11 +10,13 @@
 
 import { type Edge, type Node } from "@xyflow/react";
 import type { GraphIndex } from "../graph/graphIndex";
-import { arrowMarker, CALLER_WIRE, IPC_WIRE, RENDERS_WIRE } from "../theme/edgeColors";
-import { IMPORT_CROSS, IMPORT_SIBLING, relColor } from "../theme/mapPalette";
+import { arrowMarker, CALLER_WIRE } from "../theme/edgeColors";
+import { IMPORT_CROSS, IMPORT_SIBLING } from "../theme/mapPalette";
 import { groupLitGhosts } from "../derive/groupGhosts";
 import { repositionLitGhosts } from "./ghostReposition";
 import { withBoundaryDash } from "../layout/edgeBoundary";
+import { relationKindOf } from "../graph/relationEdge";
+import { relationColor, withRelationLineStyle } from "../theme/relationTheme";
 
 // Wire colour = relationship TYPE (see baseStroke), the same whether or not it is selected.
 const CROSS_FRAME_COLOR = IMPORT_CROSS;
@@ -39,6 +41,9 @@ const WIDTH_PER_LOG_WEIGHT = 0.55;
 const EMPHASIS_EXTRA = 1;
 
 export type HighlightMode = "reach" | "node";
+/** A surface-only mode used by PR logic-flow review. It is deliberately not persisted as the Map's
+ * user preference: it highlights the induced set of flow nodes until one node is inspected. */
+export type SurfaceEmphasisMode = HighlightMode | "subgraph";
 
 export interface EmphasizedLevel {
   nodes: Node[];
@@ -74,20 +79,32 @@ export function emphasize(
   edges: Edge[],
   activeIds: ReadonlySet<string>,
   radius: number,
-  mode: HighlightMode,
+  mode: SurfaceEmphasisMode,
   ghostPresentation?: GhostPresentationOptions,
+  paintSeedIds: ReadonlySet<string> = activeIds,
 ): EmphasizedLevel {
   const typeById = new Map(nodes.map((node) => [node.id, node.type]));
-  const active = [...activeIds].filter((id) => typeById.has(id));
-  const activeSet = new Set(active);
+  // Selection identity and paint traversal deliberately differ for ghosts. The store retains the
+  // literal exact/group ghost id for extraction and selection chrome, while a clicked ghost reuses
+  // the provenance seed that exposed it. Endpoint inference below is only the disconnected-data
+  // fallback; normal interaction therefore preserves the complete frontier and its placement.
+  const active = emphasisSeeds(paintSeedIds, nodes, edges, ghostPresentation);
+  // Protection must keep the reader's literal selection, not the expanded seed list. Protecting
+  // every child would prevent those children from folding back into their selected parent anchor.
+  const activeSet = new Set(activeIds);
   if (active.length === 0) {
-    return pruneUnlitDeps({ nodes, edges: edges.map((edge) => styleEdge(edge, "none")), beacons: new Set() }, activeSet, ghostPresentation);
+    return pruneUnlitDeps({ nodes, edges: edges.map((edge) => styleEdge(edge, "none")), beacons: new Set() }, activeSet, paintSeedIds, ghostPresentation);
+  }
+  if (mode === "subgraph") {
+    // Whole-flow mode intentionally carries ids that may be materialized only as incident ghosts;
+    // preserve that complete semantic seed set instead of filtering it to the current node array.
+    return pruneUnlitDeps(emphasizeInducedSubgraph(nodes, edges, new Set(paintSeedIds)), activeSet, paintSeedIds, ghostPresentation);
   }
   if (mode === "node") {
-    return pruneUnlitDeps(applyBeacons(emphasizeIncident(nodes, edges, active), active, typeById), activeSet, ghostPresentation);
+    return pruneUnlitDeps(applyBeacons(emphasizeIncident(nodes, edges, active), active, typeById), activeSet, paintSeedIds, ghostPresentation);
   }
   if (active.every((id) => CODE_TYPES.has(typeById.get(id) ?? ""))) {
-    return pruneUnlitDeps(applyBeacons(emphasizeDirected(nodes, edges, active, radius), active, typeById), activeSet, ghostPresentation);
+    return pruneUnlitDeps(applyBeacons(emphasizeDirected(nodes, edges, active, radius), active, typeById), activeSet, paintSeedIds, ghostPresentation);
   }
   // A selected container means all code currently drawn inside it. Seed reach from those descendants
   // just like node/directed mode does; otherwise an expanded file's outside-view wires (correctly
@@ -96,7 +113,122 @@ export function emphasize(
   const near = neighbourhood(edges, [...seed], radius);
   const styledEdges = edges.map((edge) => styleEdge(edge, near.has(edge.source) && near.has(edge.target) ? "near" : "none"));
   const styledNodes = nodes.map((node) => (near.has(node.id) ? node : dimNode(node)));
-  return pruneUnlitDeps(applyBeacons({ nodes: styledNodes, edges: styledEdges }, active, typeById), activeSet, ghostPresentation);
+  return pruneUnlitDeps(applyBeacons({ nodes: styledNodes, edges: styledEdges }, active, typeById), activeSet, paintSeedIds, ghostPresentation);
+}
+
+/**
+ * Resolve the ids that drive paint emphasis without changing literal selection identity.
+ *
+ * Ordinary real/synthetic nodes seed themselves. An exact ghost seeds every non-ghost endpoint of
+ * its canonical ghost wire; a collapsed paint-time parent first reconstructs its represented exact
+ * children, then resolves those children the same way. Falling back to the ghost itself keeps a
+ * malformed or temporarily disconnected satellite selectable instead of silently clearing paint.
+ */
+export function emphasisSeeds(
+  activeIds: ReadonlySet<string>,
+  nodes: readonly Node[],
+  edges: readonly Edge[],
+  ghostPresentation?: GhostPresentationOptions,
+): string[] {
+  const typeById = new Map(nodes.map((node) => [node.id, node.type]));
+  const seeds = new Set<string>();
+  let peersByGhost: ReadonlyMap<string, readonly string[]> | null = null;
+  for (const id of selectionSeeds(activeIds, nodes, ghostPresentation)) {
+    const type = typeById.get(id);
+    if (type === undefined) continue;
+    if (type !== "ghost") {
+      seeds.add(id);
+      continue;
+    }
+    // Resolve EACH ghost independently. Folding every selected ghost's endpoints into one common
+    // ancestor turns a Ctrl-selection across two classes into their shared file/package and reveals
+    // an unrelated, much broader frontier. A single ghost can still have several lifted wires into
+    // one owner; its own LCA recovers that owner without merging separate provenance families.
+    peersByGhost ??= nonGhostPeerIndex(nodes, edges);
+    const ghostPeers = peersByGhost.get(id) ?? [];
+    const common = deepestCommonDrawnAncestor(ghostPeers, nodes);
+    if (common !== null) seeds.add(common);
+    else if (ghostPeers.length > 0) ghostPeers.forEach((peerId) => seeds.add(peerId));
+    else seeds.add(id);
+  }
+  return [...seeds];
+}
+
+function nonGhostPeerIndex(
+  nodes: readonly Node[],
+  edges: readonly Edge[],
+): Map<string, string[]> {
+  const typeById = new Map(nodes.map((node) => [node.id, node.type]));
+  const peers = new Map<string, Set<string>>();
+  for (const edge of edges) {
+    if ((edge.data as { presentationOnly?: unknown } | undefined)?.presentationOnly === true) continue;
+    const sourceType = typeById.get(edge.source);
+    const targetType = typeById.get(edge.target);
+    if (sourceType === "ghost" && targetType !== undefined && targetType !== "ghost") {
+      const values = peers.get(edge.source) ?? new Set<string>();
+      values.add(edge.target);
+      peers.set(edge.source, values);
+    }
+    if (targetType === "ghost" && sourceType !== undefined && sourceType !== "ghost") {
+      const values = peers.get(edge.target) ?? new Set<string>();
+      values.add(edge.source);
+      peers.set(edge.target, values);
+    }
+  }
+  return new Map([...peers].map(([id, values]) => [id, [...values]]));
+}
+
+function deepestCommonDrawnAncestor(ids: readonly string[], nodes: readonly Node[]): string | null {
+  if (ids.length === 0) return null;
+  const parentById = new Map(nodes.map((node) => [node.id, node.parentId]));
+  const paths = ids.map((id) => drawnAncestorPath(id, parentById));
+  if (paths.some((path) => path.length === 0)) return null;
+  let common: string | null = null;
+  const sharedLength = Math.min(...paths.map((path) => path.length));
+  for (let index = 0; index < sharedLength; index += 1) {
+    const candidate = paths[0][index];
+    if (!paths.every((path) => path[index] === candidate)) break;
+    common = candidate;
+  }
+  return common;
+}
+
+function drawnAncestorPath(id: string, parentById: ReadonlyMap<string, string | undefined>): string[] {
+  if (!parentById.has(id)) return [];
+  const reverse: string[] = [];
+  const seen = new Set<string>();
+  let current: string | undefined = id;
+  while (current !== undefined && parentById.has(current) && !seen.has(current)) {
+    reverse.push(current);
+    seen.add(current);
+    current = parentById.get(current);
+  }
+  return reverse.reverse();
+}
+
+/** Expand selected paint-time ghost parents to their canonical immediate children. All other ids
+ * pass through unchanged and order is stable, so ordinary selections are bit-for-bit equivalent. */
+export function selectionSeeds(
+  activeIds: ReadonlySet<string>,
+  nodes: readonly Node[],
+  ghostPresentation?: GhostPresentationOptions,
+): string[] {
+  const seeds = new Set(activeIds);
+  if (!ghostPresentation?.groupByParent) {
+    return [...seeds];
+  }
+  const coreIds = new Set(nodes.filter((node) => node.type !== "ghost").map((node) => node.id));
+  for (const node of nodes) {
+    if (node.type === "ghost") {
+      const parentId = ghostPresentation.index.parentOf.get(node.id);
+      // A real core parent is already a canonical emphasis seed; only paint-time ghost parents
+      // need reconstruction from their represented children.
+      if (typeof parentId === "string" && !coreIds.has(parentId) && activeIds.has(parentId)) {
+        seeds.add(node.id);
+      }
+    }
+  }
+  return [...seeds];
 }
 
 /**
@@ -110,6 +242,7 @@ export function emphasize(
 function pruneUnlitDeps(
   level: EmphasizedLevel,
   activeIds: ReadonlySet<string>,
+  paintSeedIds: ReadonlySet<string>,
   ghostPresentation?: GhostPresentationOptions,
 ): EmphasizedLevel {
   // Keep a ghost wire when it is LIT, or when it beacons a selected step's definition (withheld at
@@ -120,8 +253,19 @@ function pruneUnlitDeps(
     kept.add(edge.source);
     kept.add(edge.target);
   }
-  const exactNodes = level.nodes.filter((node) => node.type !== "ghost" || kept.has(node.id) || level.beacons.has(node.id));
-  const protectedGhostIds = new Set([...activeIds, ...level.beacons]);
+  const exactNodes = level.nodes.filter(
+    (node) => node.type !== "ghost" || kept.has(node.id) || level.beacons.has(node.id) || activeIds.has(node.id),
+  );
+  // A disclosed exact child is already independently addressable inside its expanded parent. Do
+  // not remove it from that parent's grouping bucket merely because it is selected: doing so can
+  // drop a four-child family below the grouping threshold, deleting the parent and three peers on
+  // the next paint. Collapsed families still protect literal exact selections from being folded.
+  const protectedGhostIds = new Set([...activeIds, ...level.beacons].filter((id) => {
+    if (ghostPresentation === undefined) return true;
+    const parentId = ghostPresentation.index.parentOf.get(id);
+    return parentId == null || !ghostPresentation.expandedGroupIds.has(parentId);
+  }));
+  const provenanceByExactGhost = ghostPaintProvenance(exactNodes, eligibleEdges, paintSeedIds);
   const presented = ghostPresentation === undefined
     ? { nodes: exactNodes, edges: eligibleEdges }
     : groupLitGhosts(exactNodes, eligibleEdges, ghostPresentation.index, {
@@ -129,13 +273,111 @@ function pruneUnlitDeps(
         expandedGroupIds: ghostPresentation.expandedGroupIds,
         protectedGhostIds,
       });
+  const provenanceNodes = withGhostPaintProvenance(presented.nodes, provenanceByExactGhost);
   // Every surviving related ghost is placed SELECTION-RELATIVE beside the lit subgraph. Parent
   // grouping is presentation-only and runs just before this step, so its count matches the view.
-  return { ...level, nodes: repositionLitGhosts(presented.nodes, presented.edges), edges: presented.edges };
+  return { ...level, nodes: repositionLitGhosts(provenanceNodes, presented.edges), edges: presented.edges };
+}
+
+/** Assign each visible ghost only the paint owners that exposed THAT ghost. A global seed list on
+ * every satellite makes two independently Ctrl-selected families collapse into one broad owner on
+ * the next repaint. Group parents union the provenance of the exact children they represent. */
+function ghostPaintProvenance(
+  nodes: readonly Node[],
+  edges: readonly Edge[],
+  paintSeedIds: ReadonlySet<string>,
+): Map<string, string[]> {
+  const parentById = new Map(nodes.map((node) => [node.id, node.parentId]));
+  const peersByGhost = nonGhostPeerIndex(nodes, edges);
+  const provenance = new Map<string, string[]>();
+  for (const node of nodes) {
+    if (node.type !== "ghost") continue;
+    const peers = peersByGhost.get(node.id) ?? [];
+    if (peers.length === 0) continue;
+    const relevant = [...paintSeedIds].filter((seedId) =>
+      peers.some((peerId) => isDrawnAncestorOf(seedId, peerId, parentById)),
+    );
+    if (relevant.length > 0) {
+      provenance.set(node.id, relevant);
+      continue;
+    }
+    // Restored URLs and old sessions have no click-captured provenance. Infer a fallback per ghost,
+    // never across the entire multi-selection, so unrelated owners remain independent.
+    const common = deepestCommonDrawnAncestor(peers, nodes);
+    provenance.set(node.id, common === null ? peers : [common]);
+  }
+  return provenance;
+}
+
+function isDrawnAncestorOf(
+  ancestorId: string,
+  id: string,
+  parentById: ReadonlyMap<string, string | undefined>,
+): boolean {
+  const seen = new Set<string>();
+  let current: string | undefined = id;
+  while (current !== undefined && !seen.has(current)) {
+    if (current === ancestorId) return true;
+    seen.add(current);
+    current = parentById.get(current);
+  }
+  return false;
+}
+
+function withGhostPaintProvenance(
+  nodes: readonly Node[],
+  provenanceByExactGhost: ReadonlyMap<string, readonly string[]>,
+): Node[] {
+  let changed: Node[] | null = null;
+  nodes.forEach((node, index) => {
+    if (node.type !== "ghost") return;
+    const data = node.data as { groupedGhostIds?: unknown };
+    const representedIds = Array.isArray(data.groupedGhostIds)
+      ? data.groupedGhostIds.filter((id): id is string => typeof id === "string")
+      : [node.id];
+    const seeds = new Set<string>();
+    for (const id of representedIds) provenanceByExactGhost.get(id)?.forEach((seedId) => seeds.add(seedId));
+    if (seeds.size === 0) return;
+    changed ??= [...nodes];
+    changed[index] = { ...node, data: { ...node.data, ghostPaintSeedIds: [...seeds] } };
+  });
+  return changed ?? [...nodes];
 }
 
 const isGhostEdge = (edge: Edge): boolean => (edge.data as { ghost?: boolean } | undefined)?.ghost === true;
 const isLit = (edge: Edge): boolean => (edge.style as { opacity?: number } | undefined)?.opacity === 1;
+
+/** Whole-flow emphasis is an induced-subgraph read: every resolved flow node and its rendered
+ * containment ancestors remain opaque, and only relationships joining two flow nodes light up.
+ * Incident edges leaving the flow stay dim, so the ghost-pruning pass below withholds that broader
+ * neighbourhood until the reader explicitly selects one flow node. */
+function emphasizeInducedSubgraph(nodes: Node[], edges: Edge[], active: ReadonlySet<string>): EmphasizedLevel {
+  const kept = withDrawnAncestors(active, nodes);
+  return {
+    nodes: nodes.map((node) => (kept.has(node.id) ? node : dimNode(node))),
+    edges: edges.map((edge) => styleEdge(edge, active.has(edge.source) && active.has(edge.target) ? "downstream" : "none")),
+    beacons: new Set(),
+  };
+}
+
+function withDrawnAncestors(active: ReadonlySet<string>, nodes: readonly Node[]): Set<string> {
+  const parentById = new Map(nodes.map((node) => [node.id, node.parentId]));
+  const kept = new Set<string>();
+  for (const id of active) {
+    if (!parentById.has(id)) {
+      continue;
+    }
+    let current: string | undefined = id;
+    while (current !== undefined) {
+      if (kept.has(current)) {
+        break;
+      }
+      kept.add(current);
+      current = parentById.get(current);
+    }
+  }
+  return kept;
+}
 
 function emphasizeIncident(nodes: Node[], edges: Edge[], activeIds: readonly string[]): { nodes: Node[]; edges: Edge[] } {
   const seed = withDrawnDescendants(activeIds, nodes);
@@ -249,8 +491,11 @@ function styleEdge(edge: Edge, emphasis: EdgeEmphasis): Edge {
   // Dash is independent of `crossFrame`: it means the wire leaves this view or its npm package.
   const stroke = baseStroke(edge);
   const width = weightWidth(edge);
-  const style = withBoundaryDash(
-    { stroke, strokeWidth: lit ? width + EMPHASIS_EXTRA : width, opacity: lit ? 1 : dimOpacity(edge) },
+  const style = withRelationLineStyle(
+    withBoundaryDash(
+      { stroke, strokeWidth: lit ? width + EMPHASIS_EXTRA : width, opacity: lit ? 1 : dimOpacity(edge) },
+      edge.data,
+    ),
     edge.data,
   );
   return { ...edge, animated: false, style, markerEnd: arrowMarker(stroke, 14) };
@@ -266,11 +511,11 @@ function weightWidth(edge: Edge): number {
 // kind its own hue (calls / instantiates / extends / implements / references), an import touching a
 // visible group card gold, everything else a quiet grey. Package/view boundary is encoded by dash.
 function baseStroke(edge: Edge): string {
-  if (isIpc(edge)) return IPC_WIRE;
-  // The UI lens's renders wires keep their historical cyan — the lens's identity colour — rather
-  // than joining the validated 5-kind coupling palette (renders rarely shares a canvas with them).
-  if (depKindOf(edge) === "renders") return RENDERS_WIRE;
-  const rel = relColor(depKindOf(edge));
+  const kind = relationKindOf(edge.data);
+  // Imports retain their established geometry cue: gold at a visible group/frame boundary, muted
+  // gold between peer files. The catalog owns their identity; crossFrame refines that one theme.
+  if (kind === "imports") return isCrossFrame(edge) ? CROSS_FRAME_COLOR : REST_COLOR;
+  const rel = relationColor(kind);
   if (rel) return rel;
   return isCrossFrame(edge) ? CROSS_FRAME_COLOR : REST_COLOR;
 }
@@ -284,5 +529,4 @@ const isCrossFrame = (edge: Edge): boolean => (edge.data as { crossFrame?: boole
 const isDep = (edge: Edge): boolean => (edge.data as { category?: string } | undefined)?.category === "dep";
 const isFlow = (edge: Edge): boolean => (edge.data as { category?: string } | undefined)?.category === "flow";
 const isIpc = (edge: Edge): boolean => (edge.data as { category?: string } | undefined)?.category === "ipc";
-const depKindOf = (edge: Edge): string | undefined => (edge.data as { depKind?: string } | undefined)?.depKind;
 const dimNode = (node: Node): Node => ({ ...node, style: { ...node.style, opacity: DIM_NODE_OPACITY } });
