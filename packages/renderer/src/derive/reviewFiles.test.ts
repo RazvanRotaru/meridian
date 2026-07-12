@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 import type { GraphArtifact, GraphEdge, GraphNode, ReviewContext } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
-import { applyFileToggle, applyUnitTick, checkStateOf, deriveReviewFiles, fileViewState } from "./reviewFiles";
+import { applyFileToggle, applyUnitTick, checkStateOf, deriveReviewFiles, fileViewState, isReviewTestPath } from "./reviewFiles";
 
 function node(id: string, kind: string, file: string, start: number, end: number, parentId: string | null): GraphNode {
   return {
@@ -45,6 +45,42 @@ function contextOf(changedFiles: ReviewContext["changedFiles"]): ReviewContext {
 }
 
 describe("deriveReviewFiles", () => {
+  it("classifies matched, explicitly tagged, and unmatched test files", () => {
+    const taggedModule = {
+      ...node("ts:src/checks.ts", "module", "src/checks.ts", 1, 20, null),
+      tags: ["test"],
+    } as GraphNode;
+    const artifact = {
+      nodes: [...NODES, taggedModule],
+      edges: [],
+    } as unknown as GraphArtifact;
+    const files = deriveReviewFiles(
+      contextOf([
+        { path: "src/a.ts", status: "modified" },
+        { path: "src/checks.ts", status: "modified" },
+        { path: "src/new.spec.ts", status: "added" },
+      ]),
+      artifact,
+      buildGraphIndex(artifact),
+      { baseIndex: null },
+    );
+
+    expect(Object.fromEntries(files.map((file) => [file.path, file.isTest]))).toEqual({
+      "src/a.ts": false,
+      "src/checks.ts": true,
+      "src/new.spec.ts": true,
+    });
+
+    const taggedIndex = buildGraphIndex(artifact);
+    const emptyArtifact = { nodes: [], edges: [] } as unknown as GraphArtifact;
+    expect(isReviewTestPath("src/checks.ts", buildGraphIndex(emptyArtifact), taggedIndex)).toBe(true);
+    const untaggedHead = {
+      nodes: [node("ts:src/checks.ts", "module", "src/checks.ts", 1, 20, null)],
+      edges: [],
+    } as unknown as GraphArtifact;
+    expect(isReviewTestPath("src/checks.ts", buildGraphIndex(untaggedHead), taggedIndex)).toBe(false);
+  });
+
   it("groups hunk-overlapping LEAF units per file, in-graph files FIRST, ordered by start line", () => {
     const context = contextOf([
       { path: "docs/readme.md", status: "modified", hunks: [{ start: 1, end: 3 }] },

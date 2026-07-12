@@ -44,6 +44,10 @@ export function deriveReviewCommentNodeEvidence(input: ReviewCommentNodeInput): 
   const evidence = new Map<string, ReviewCommentNodeEvidence>();
 
   for (const draft of input.drafts) {
+    // Drafts persist against the complete review context while projections (for example, hiding
+    // tests) remove their file rows. Never let an exact nodeId bypass that projection and roll a
+    // hidden draft up onto a still-visible ancestor.
+    if (!targetsByPath.has(draft.path)) continue;
     const target = draft.line !== null
       ? draft.lineStale === true || !input.lineCoordinatesMatchGraph
         ? fileOwner(draft.path, targetsByPath)

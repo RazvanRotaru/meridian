@@ -88,6 +88,7 @@ function sourceModal(options: {
         path: options.reviewPathAlias,
         status,
         moduleId: NODE.id,
+        isTest: false,
         units: [],
         fingerprint: "test-file",
         blastRadius: 0,

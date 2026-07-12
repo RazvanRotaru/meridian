@@ -10,7 +10,7 @@
 
 import { memo, useEffect, useRef, useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import { countViewedFiles } from "../../derive/reviewFiles";
+import { countViewedFiles, isReviewTestPath } from "../../derive/reviewFiles";
 import type { ReviewData } from "../../derive/reviewData";
 import { PrPrepareInline } from "../prs/PrPrepareProgress";
 import { ChangeGroupStrip } from "./ChangeGroupStrip";
@@ -23,10 +23,12 @@ import { ReviewPreferencesPane } from "./ReviewPreferencesPane";
 function ReviewPanelImpl() {
   const review = useBlueprint((state) => state.review);
   const hidden = useBlueprint((state) => state.reviewPanelHidden);
+  const showTests = useBlueprint((state) => state.showTests);
+  const visibleFileCount = useBlueprint((state) => state.reviewFiles.length);
   usePrReviewFreshnessWatcher();
   const flowView = useBlueprint((state) => state.reviewFlowSplitView);
   const openFlowSplitOnSelect = useBlueprint((state) => state.reviewOpenFlowSplitOnSelect);
-  const { setReviewFlowSplitView, setReviewOpenFlowSplitOnSelect } = useBlueprintActions();
+  const { setReviewFlowSplitView, setReviewOpenFlowSplitOnSelect, toggleShowTests } = useBlueprintActions();
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const preferencesButtonRef = useRef<HTMLButtonElement | null>(null);
   const closePreferences = () => {
@@ -56,6 +58,11 @@ function ReviewPanelImpl() {
           inert={preferencesOpen}
           aria-hidden={preferencesOpen || undefined}
         >
+          {!showTests && visibleFileCount === 0 ? (
+            <div style={TESTS_HIDDEN_NOTICE} role="status">
+              Test changes are excluded. Open <strong>Review preferences</strong> and turn off <strong>Exclude test changes</strong> to include them.
+            </div>
+          ) : null}
           <ChangeGroupStrip />
           <ReviewFlowsSection />
           <div style={SCROLL}>
@@ -66,8 +73,14 @@ function ReviewPanelImpl() {
         {preferencesOpen ? (
           <div style={PREFERENCES_LAYER}>
             <ReviewPreferencesPane
+              excludeTestChanges={!showTests}
               flowView={flowView}
               openFlowSplitOnSelect={openFlowSplitOnSelect}
+              onExcludeTestChangesChange={(exclude) => {
+                if (exclude === showTests) {
+                  toggleShowTests();
+                }
+              }}
               onFlowViewChange={setReviewFlowSplitView}
               onOpenFlowSplitOnSelectChange={setReviewOpenFlowSplitOnSelect}
               onClose={closePreferences}
@@ -149,7 +162,11 @@ function Header(props: {
   const files = useBlueprint((state) => state.reviewFiles);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
-  const existingCommentCount = useBlueprint((state) => state.prDiscussion?.comments.length ?? 0);
+  const existingCommentCount = useBlueprint((state) => {
+    return state.showTests
+      ? state.prDiscussion?.comments.length ?? 0
+      : state.prDiscussion?.comments.filter((comment) => !isReviewTestPath(comment.path, state.index, state.prReviewBaseline?.index ?? null)).length ?? 0;
+  });
   const commentsVisible = useBlueprint((state) => state.reviewCommentsVisible);
   const prReviewed = useBlueprint((state) => state.prReviewed);
   const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
@@ -322,6 +339,16 @@ const PANEL: React.CSSProperties = {
   height: "100%",
   background: "#0B0E13",
   borderLeft: "1px solid #20262F",
+};
+const TESTS_HIDDEN_NOTICE: React.CSSProperties = {
+  margin: "10px 12px 4px",
+  padding: "9px 10px",
+  border: "1px solid #3B4656",
+  borderRadius: 7,
+  background: "rgba(88,196,220,0.07)",
+  color: "#9AA4B2",
+  fontSize: 11,
+  lineHeight: 1.45,
 };
 const HEADER: React.CSSProperties = { padding: "14px 16px 12px", borderBottom: "1px solid #20262F", display: "flex", flexDirection: "column", gap: 8 };
 const HEADER_TOP: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };

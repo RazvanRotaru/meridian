@@ -7,7 +7,7 @@
 
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { Edge, Node } from "@xyflow/react";
-import { changedLineKindsFromExtensions, changedRangesFromExtensions, computeAffectedNodes, computeChangeGroups, computeCoverage, type ChangeStatus } from "@meridian/core";
+import { changedLineKindsFromExtensions, changedRangesFromExtensions, computeChangeGroups, computeCoverage, type ChangeStatus } from "@meridian/core";
 import type {
   ChangedLineKind,
   ChangedLineSpan,
@@ -126,16 +126,18 @@ import { streamPrAnalysis, type PrAnalyzeStage } from "./prAnalysis";
 import { isPrReviewStale, prReviewRevisionKey, reviewRevision, type PrReviewRevision } from "./prReviewFreshness";
 import {
   fetchPreparedArtifact,
+  hasPrReviewLineDiff,
   resetChangedIdsToArtifact,
   restorePrReviewBaseline,
   swapToPreparedArtifact,
   withPrLineDiff,
   type PrReviewBaseline,
 } from "./prReviewSession";
-import { deriveReviewData, deriveReviewDataFromContext, applyTick, type ReviewData } from "../derive/reviewData";
+import { deriveReviewData, applyTick, type ReviewData } from "../derive/reviewData";
 import { readReviewProgress, writeReviewProgress, type ReviewComment, type ReviewProgress, type ReviewTick } from "./reviewTicksPref";
 import { reviewContextFromPrFiles } from "../derive/prReviewContext";
-import { applyFileToggle, applyUnitTick, deriveReviewFiles, type ReviewFileRow } from "../derive/reviewFiles";
+import { applyFileToggle, applyUnitTick, isReviewTestPath, type ReviewFileRow } from "../derive/reviewFiles";
+import { deriveReviewProjection } from "../derive/reviewProjection";
 import { buildReviewSubmission } from "../derive/reviewSubmit";
 import {
   DEFAULT_SERVICE_GROUPING_TARGET_SIZE,
@@ -1330,11 +1332,22 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // The parsed review payload from a `meridian review` artifact (null when the artifact carries no
   // valid `review` extension — e.g. a plain `web`/`view` session). Computed once (the artifact never
   // changes after boot); a GitHub PR opened via reviewPrInGraph can later populate `review` at runtime.
-  const review = deriveReviewData(dependencies.artifact, dependencies.index);
-  const bootReviewBaseline: PrReviewBaseline = { artifact: dependencies.artifact, index: dependencies.index, review };
+  const artifactReview = deriveReviewData(dependencies.artifact, dependencies.index);
+  const initialReviewProjection = artifactReview
+    ? deriveReviewProjection(artifactReview.context, dependencies.artifact, dependencies.index, { baseIndex: null, showTests: false })
+    : null;
+  const review = initialReviewProjection?.review ?? null;
+  if (initialReviewProjection !== null) {
+    applyChangedIds(dependencies.index, initialReviewProjection.affected.map((node) => node.nodeId));
+    applyChangedStatus(
+      dependencies.index,
+      initialReviewProjection.affected.map((node) => [node.nodeId, node.status] as [string, ChangeStatus]),
+    );
+  }
+  const bootReviewBaseline: PrReviewBaseline = { artifact: dependencies.artifact, index: dependencies.index, review: artifactReview };
   // The files checklist + persisted progress for an artifact-sourced review; a GitHub PR opened via
   // reviewPrInGraph re-derives both at runtime under its own reviewKey.
-  const reviewFiles = review ? deriveReviewFiles(review.context, dependencies.artifact, dependencies.index, { baseIndex: null }) : [];
+  const reviewFiles = initialReviewProjection?.files ?? [];
   const initialProgress = review ? readReviewProgress(review.context.reviewKey) : null;
   const reviewPreferences = readReviewPreferences();
   // Null when the server didn't ship source access — the code drawer is then inert.
@@ -1435,7 +1448,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     minimalLayoutStatus: "idle",
     minimalLayoutActivity: null,
     review,
-    reviewAffectedIds: new Set(reviewFiles.flatMap((file) => file.units.map((unit) => unit.nodeId))),
+    reviewAffectedIds: new Set(initialReviewProjection?.affected.map((node) => node.nodeId) ?? []),
     reviewFiles,
     reviewFilesSort: "path",
     reviewFileDelta: {},
@@ -2990,6 +3003,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // opened review rollups, and drop re-arrangement (back to the captured map-mirror).
     resetMinimalGraph() {
       const { minimalSeedIds, minimalMemberIds, minimalRollups, minimalArrange, moduleExpanded } = get();
+      // An all-test review with Tests hidden retains a seed-only sentinel so the empty review panel
+      // stays mounted. It is not a real origin/member and Reset must never promote it into view.
+      if (minimalMemberIds.length === 0) {
+        return;
+      }
       // Flow review may temporarily substitute exact changed files; restore those to their package
       // summaries. Ordinary chevron disclosure never changes either member list.
       const origin = restoreRolledSeeds(minimalSeedIds, minimalRollups);
@@ -3017,6 +3035,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Re-arrange: drop the captured map-mirror and run the canonical canvas ELK layout. It stays
     // active so later curation keeps the arranged layout; repeated clicks deliberately run it again.
     rearrangeMinimalGraph() {
+      if (get().minimalMemberIds.length === 0) {
+        return;
+      }
       if (!get().minimalArrange) {
         set({ minimalArrange: true });
       }
@@ -3484,11 +3505,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         prReviewRefreshing,
         prReviewStatus,
         prReviewRevision: submittedRevision,
+        showTests,
+        index,
       } = get();
+      const visibleComments = showTests
+        ? reviewComments
+        : reviewComments.filter((comment) => !isReviewTestPath(comment.path, index, get().prReviewBaseline?.index ?? null));
       if (
         !review
         || prNumber === null
-        || reviewComments.length === 0
+        || visibleComments.length === 0
         || reviewSubmitStatus === "submitting"
         || prReviewStale
         || prReviewRefreshing
@@ -3496,8 +3522,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       ) {
         return;
       }
-      const submission = buildReviewSubmission(reviewComments, reviewFiles, review.context, reviewCommentRangesByFile);
-      const submittedIds = new Set(reviewComments.map((comment) => comment.id));
+      // Hidden test drafts remain persisted and reappear when Tests is restored; they must not be
+      // silently converted into body notes and submitted while their rows are absent.
+      const submission = buildReviewSubmission(visibleComments, reviewFiles, review.context, reviewCommentRangesByFile);
+      const submittedIds = new Set(visibleComments.map((comment) => comment.id));
       const submittedKey = review.context.reviewKey;
       set({ reviewSubmitStatus: "submitting", reviewSubmitError: null });
       try {
@@ -3664,7 +3692,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // exist, so selection — including the composition panel's own selection/root — retreats first.
     toggleShowTests() {
       const showTests = !get().showTests;
-      const { compSelectedId, compRoot, moduleSelected, viewMode, index } = get();
+      const { compSelectedId, compRoot, moduleSelected, viewMode, index, prReviewed, minimalSeedIds } = get();
       const strandedById = (id: string | null) => !showTests && id !== null && index.testIds.has(id);
       set({
         showTests,
@@ -3672,6 +3700,34 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         compRoot: strandedById(compRoot) ? null : compRoot,
         moduleSelected: showTests ? moduleSelected : new Set([...moduleSelected].filter((id) => !index.testIds.has(id))),
       });
+      // A live PR review is auto-derived, not an explicit hand-curated minimal graph. Re-project
+      // every review surface through the same toggle (members, files, flows, groups, progress and
+      // amber paint) while retaining the raw PR context/ticks/drafts for a lossless toggle-back.
+      if (prReviewed !== null && minimalSeedIds.length > 0) {
+        applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, {
+          reprojecting: true,
+          preserveReviewSelection: true,
+        });
+        return;
+      }
+      const artifactReview = get().review;
+      if (prReviewed === null && artifactReview !== null) {
+        const state = get();
+        const projection = deriveReviewProjection(artifactReview.context, state.artifact, state.index, {
+          baseIndex: null,
+          showTests,
+        });
+        applyChangedIds(state.index, projection.affected.map((node) => node.nodeId));
+        applyChangedStatus(
+          state.index,
+          projection.affected.map((node) => [node.nodeId, node.status] as [string, ChangeStatus]),
+        );
+        set({
+          review: projection.review,
+          reviewFiles: projection.files,
+          reviewAffectedIds: new Set(projection.affected.map((node) => node.nodeId)),
+        });
+      }
       // The module surfaces (Map / Service / UI) re-derive: test code can be half a level's cards
       // (and a wall of off-level test ghosts), and paint-hiding kept a crater of empty space —
       // moduleRelayout re-derives the level with testIds excluded, so the survivors compact.
@@ -4457,10 +4513,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Re-open a review whose overlay was soft-closed (explicit Close/lens switch) — cheaply. The
     // expensive clone→checkout→extract NEVER re-runs here: a swapped review re-fetches its already-
     // prepared head artifact with one GET and re-swaps (against the SAME saved baseline); a sync
-    // review keeps the boot artifact it never left. Then repaint the kept amber and reseed the
-    // overlay from reviewAllSeedIds, rebuilding declaration-level expansion for those restored seeds.
+    // review keeps the boot artifact it never left. Then re-project the complete PR through the
+    // current Tests setting so a toggle changed while the workspace was parked is honored.
     async resumePrReview() {
-      const { prReviewed, minimalSeedIds, prPreparedGraphId, reviewAffectedIds, reviewAllSeedIds } = get();
+      const { prReviewed, minimalSeedIds, prPreparedGraphId } = get();
       if (prReviewed === null || minimalSeedIds.length > 0) {
         return;
       }
@@ -4495,25 +4551,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         clearResumeFlow();
         swapToPreparedArtifact(get, set, prepared, invalidateArtifactCaches);
       }
-      // Repaint the review's amber onto the current index — the soft close reset it to the boot
-      // marking (and a re-swap built a fresh index). Same channel applyPrReviewToMap writes.
-      applyChangedIds(get().index, [...reviewAffectedIds]);
-      const resumedMatches = matchAffectedFiles(get().index, get().reviewFiles.map((file) => file.path)).matched;
-      const resumedRollup = rollupSeeds(resumedMatches, get().index);
-      set({
-        viewMode: "modules",
-        minimalSeedIds: reviewAllSeedIds,
-        minimalMemberIds: [...reviewAllSeedIds],
-        minimalRollups: rollupsRecord(resumedRollup.rolledUp),
-        moduleExpanded: reviewExpansionForMatches(get().index, resumedMatches, resumedRollup.rolledUp),
-        reviewActiveGroupId: null,
-        reviewPanelHidden: false,
+      applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, {
+        reprojecting: true,
+        preserveReviewSelection: true,
       });
-      // The source Map remains mounted beneath the overlay. Rebuild it against the current
-      // artifact without any base-session inspection roots so closing review cannot reveal stale
-      // preview cards.
-      void get().moduleRelayout({ label: "Preparing review map…" });
-      void get().minimalRelayout();
     },
 
     // Prepare-first entry (and the fallback review's manual "Extract head graph"): stream the
@@ -4692,6 +4733,7 @@ function applyPrReviewToMap(
   set: (partial: Partial<BlueprintState>) => void,
   prFilesUrl: string,
   invalidateMinimalLayout: () => void,
+  options: { reprojecting?: boolean; preserveReviewSelection?: boolean } = {},
 ): boolean {
   const {
     prFiles,
@@ -4738,11 +4780,12 @@ function applyPrReviewToMap(
         comments: liveReviewComments,
       }
     : null;
-  // Derive the overlay's seeds before ANY lens or review mutation. An empty review remains on the
-  // PR detail page, where the reader can re-extract and retry without losing the rest of the queue.
-  const matchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
-  const { seeds, rolledUp } = rollupSeeds(matchedFiles, index);
-  if (seeds.length === 0) {
+  // Gate entry on the COMPLETE PR before applying the Tests projection. An all-test PR is still a
+  // valid review: with Tests off it opens an intentionally empty workspace whose existing toolbar
+  // toggle can restore the test changes immediately. A genuinely unmatched PR remains blocked.
+  const allMatchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
+  const allRollup = rollupSeeds(allMatchedFiles, index);
+  if (allRollup.seeds.length === 0) {
     const allOutside = (prFiles?.length ?? 0) === 0 && prFilesOutside > 0;
     const changedFileCount = prFilesTotal > 0 ? prFilesTotal : (prFiles?.length ?? 0) + prFilesOutside;
     set({
@@ -4759,19 +4802,23 @@ function applyPrReviewToMap(
   // refresh is already on this review surface; its final atomic state replaces the old overlay.
   // Skipping closeMinimalGraph here is also essential: a user close cancels refresh, while this
   // internal replacement must not cancel itself.
-  if (!get().prReviewRefreshing) {
+  if (!get().prReviewRefreshing && !options.reprojecting) {
     beginLensTransition(get, set);
   }
-  const review = deriveReviewDataFromContext(context, artifact, index);
-  // The files-first checklist: every changed file with its touched code units (the panel's primary
-  // section). Derived from the SAME context/artifact as the affected set below, so a checked unit
-  // corresponds 1:1 with an amber-ringed card.
-  const files = deriveReviewFiles(context, artifact, index, {
+  const projection = deriveReviewProjection(context, artifact, index, {
     baseIndex: swapped ? (prReviewBaseline?.index ?? null) : null,
+    showTests: get().showTests,
   });
+  const { review, files, affected, visibleContext } = projection;
+  // Test files are excluded before every graph/checklist derivation. Keep the complete PR's seeds
+  // only as an invisible workspace sentinel when ALL matched changes are tests: minimalMemberIds
+  // remains empty, so no hidden test card can leak onto the canvas, while the review panel and the
+  // toolbar toggle stay mounted.
+  const matchedFiles = matchAffectedFiles(index, visibleContext.changedFiles.map((file) => file.path)).matched;
+  const { seeds: visibleSeeds, rolledUp } = rollupSeeds(matchedFiles, index);
+  const workspaceSeeds = visibleSeeds.length > 0 ? visibleSeeds : allRollup.seeds;
   // The modified code blocks (hunks ∩ node ranges); repaint main's changed-node channel to THIS PR
   // so the Map + minimal overlay ring the edited blocks amber (reused `--changed-since` highlight).
-  const affected = computeAffectedNodes(artifact.nodes, context.changedFiles);
   applyChangedIds(index, affected.map((node) => node.nodeId));
   // Colour each touched CODE BLOCK by its file's change kind (green added / gold modified / red
   // deleted). A file/module that only contains changes stays uncoloured — it shows a +/- stat instead.
@@ -4779,7 +4826,7 @@ function applyPrReviewToMap(
   // Partition the change into disjoint groups (one per weakly-connected component of the changed
   // modules), sharing the SAME flow substrate the review rows already read. Stored so the rail can
   // offer per-group isolation; ignored (strip hidden) when the change is a single connected component.
-  const changeGroups = computeChangeGroups(artifact.nodes, artifact.edges, context.changedFiles, review.flows);
+  const changeGroups = computeChangeGroups(artifact.nodes, artifact.edges, visibleContext.changedFiles, review.flows);
   // GitHub's whole-file +N/-M churn per changed file, keyed by node.location.file, for the marker a
   // changed FILE card shows before its name (files aren't coloured; only their touched blocks are).
   const deltaByPath = new Map<string, { added: number; deleted: number; status: PrFileStatus }>(
@@ -4801,9 +4848,9 @@ function applyPrReviewToMap(
   // silently misses files whenever the server capped the PR file list), so it remains only as the
   // fallback for a boot artifact that carries no stamp (the synchronous, no-analyze-endpoint path).
   const reviewedArtifact =
-    changedRangesFromExtensions(artifact.extensions) !== null
+    changedRangesFromExtensions(artifact.extensions) !== null && !hasPrReviewLineDiff(artifact)
       ? artifact
-      : withPrLineDiff(artifact, index, context, matchedFiles, prSelected);
+      : withPrLineDiff(artifact, index, visibleContext, matchedFiles, prSelected);
   // Pre-expand the packages and file modules on the path to each changed file (packages too,
   // else deriveModuleTree never descends to the file — mirrors flowExplorer's
   // expandedModulePaths): review reads at declaration level (class/type cards), so classes stay
@@ -4868,10 +4915,25 @@ function applyPrReviewToMap(
     }
   }
   const progress = liveProgress ?? readReviewProgress(context.reviewKey);
-  const loadedRevision = summary === null ? null : reviewRevision(summary, swapped ? prPreparedHeadSha : null);
+  const currentSelection = get();
+  const loadedRevision = options.reprojecting
+    ? currentSelection.prReviewRevision
+    : summary === null ? null : reviewRevision(summary, swapped ? prPreparedHeadSha : null);
   const reviewComments = reconcileReviewLineAnchors(progress.comments, loadedRevision);
   const lineAnchorsInvalidated = reviewComments !== progress.comments;
-  const revisionMismatch = loadedRevision !== null && summary !== null && isPrReviewStale(loadedRevision, summary);
+  const revisionMismatch = options.reprojecting
+    ? currentSelection.prReviewStale
+    : loadedRevision !== null && summary !== null && isPrReviewStale(loadedRevision, summary);
+  const visibleSelectionId = (id: string | null) => id !== null && (currentSelection.showTests || !index.testIds.has(id));
+  const preservedModuleSelection = options.preserveReviewSelection
+    ? new Set([...currentSelection.moduleSelected].filter((id) => currentSelection.showTests || !index.testIds.has(id)))
+    : new Set<string>();
+  const preservedReviewLitIds = options.preserveReviewSelection && currentSelection.reviewLitNodeIds !== null
+    ? new Set([...currentSelection.reviewLitNodeIds].filter((id) => currentSelection.showTests || !index.testIds.has(id)))
+    : null;
+  const preservedReviewLit = preservedReviewLitIds !== null && preservedReviewLitIds.size > 0
+    ? preservedReviewLitIds
+    : null;
   set({
     artifact: reviewedArtifact,
     // Pin the index this review was computed on alongside its artifact: a mid-flow overlay close
@@ -4886,7 +4948,9 @@ function applyPrReviewToMap(
     // If the head moved during a long extraction, its exact analyzed SHA and the earlier summary/file
     // snapshot disagree. Surface Refresh immediately instead of pretending those mixed inputs match.
     prReviewStale: revisionMismatch,
-    reviewHeadRef: swapped ? null : summary?.headRef ?? null,
+    reviewHeadRef: options.reprojecting
+      ? currentSelection.reviewHeadRef
+      : swapped ? null : summary?.headRef ?? null,
     reviewDiffByFile,
     reviewCommentRangesByFile,
     reviewRemovedByFile,
@@ -4895,34 +4959,38 @@ function applyPrReviewToMap(
     reviewUnitTicks: progress.unitTicks,
     reviewFileTicks: progress.fileTicks,
     reviewComments,
-    reviewPanelHidden: false,
-    reviewSubmitStatus: "idle",
-    reviewSubmitError: null,
-    reviewSubmittedUrl: null,
+    reviewPanelHidden: options.reprojecting ? currentSelection.reviewPanelHidden : false,
+    // A Tests toggle can happen while a review POST is in flight. Reprojection must not disarm the
+    // duplicate-submit guard or erase its outcome banners; fresh review entry still resets them.
+    reviewSubmitStatus: options.reprojecting ? currentSelection.reviewSubmitStatus : "idle",
+    reviewSubmitError: options.reprojecting ? currentSelection.reviewSubmitError : null,
+    reviewSubmittedUrl: options.reprojecting ? currentSelection.reviewSubmittedUrl : null,
     reviewAffectedIds: new Set(affected.map((node) => node.nodeId)),
     reviewFiles: files,
     reviewFileDelta,
-    reviewLitNodeIds: null,
-    reviewSelectedId: null,
+    reviewLitNodeIds: preservedReviewLit,
+    reviewSelectedId: options.preserveReviewSelection && visibleSelectionId(currentSelection.reviewSelectedId)
+      ? currentSelection.reviewSelectedId
+      : null,
     ...requestFlowPaneReset(),
     logicSelected: null,
     reviewFlowBaseline: null,
     reviewGroups: changeGroups,
     reviewActiveGroupId: null,
-    reviewAllSeedIds: seeds,
+    reviewAllSeedIds: workspaceSeeds,
     viewMode: "modules",
     moduleFocus: null,
-    moduleSelected: new Set<string>(),
+    moduleSelected: preservedModuleSelection,
     moduleExpanded: expanded,
-    minimalSeedIds: seeds,
-    minimalMemberIds: [...seeds],
+    minimalSeedIds: workspaceSeeds,
+    minimalMemberIds: [...visibleSeeds],
     minimalRollups: rollupsRecord(rolledUp),
     minimalBasePositions: {},
     minimalArrange: false,
     minimalRfNodes: [],
     minimalRfEdges: [],
-    minimalLayoutStatus: seeds.length > 0 ? "laying-out" : "idle",
-    minimalLayoutActivity: seeds.length > 0 ? { label: "Preparing review graph…" } : null,
+    minimalLayoutStatus: visibleSeeds.length > 0 ? "laying-out" : "idle",
+    minimalLayoutActivity: visibleSeeds.length > 0 ? { label: "Preparing review graph…" } : null,
   });
   if (lineAnchorsInvalidated) {
     // The stable reviewKey intentionally carries drafts across pushes. Persist the invalidated
@@ -4931,7 +4999,7 @@ function applyPrReviewToMap(
   }
   // Lay out the underlying Map (correct if the reader closes the overlay) and, when seeded, the overlay.
   void get().moduleRelayout({ label: "Preparing review map…" });
-  if (seeds.length > 0) {
+  if (visibleSeeds.length > 0) {
     void get().minimalRelayout({ label: "Preparing review graph…" });
   }
   return true;
