@@ -610,9 +610,10 @@ export interface BlueprintState {
    * into `mapExtra`; while the minimal overlay is open it adds the home member to that overlay and
    * preserves the clicked card's position. Both destinations open the target's containment path. */
   promoteGhost(ghostId: string, at?: { x: number; y: number }): void;
-  /** Remove the selected additions from the current Map/Service/UI canvas. Persistent `mapExtra`
-   * pins and selected temporary inspection roots are reversed together; canonical graph members
-   * are never hidden. Multi-selection membership commits as one state change and one relayout. */
+  /** Remove the selected additions from the active graph. Persistent `mapExtra` pins and selected
+   * temporary inspection roots are reversed together on Map/Service/UI; promoted members are
+   * demoted in the minimal graph. Canonical/source members are never hidden. Multi-selection
+   * membership commits as one state change and one relayout. */
   removeSelectionFromView(): void;
   expandModuleChildren(containerId: string | null): void;
   collapseModuleChildren(containerId: string | null): void;
@@ -644,7 +645,6 @@ export interface BlueprintState {
   setServiceGroupingLabelMode(mode: ServiceGroupingLabelMode): void;
   buildMinimalGraph(): void;
   closeMinimalGraph(): void;
-  demoteMinimalMember(id: string): void;
   resetMinimalGraph(): void;
   /** Expand one rolled review package into every real descendant file card. The retained changed-
    * file rollup still drives review flow targeting; Reset is the only collapse-back. */
@@ -1068,7 +1068,57 @@ interface ModuleSelectionRemovalPlan {
 /** Number of selected scopes on which the action-bar Remove control can operate. Kept as a
  * primitive selector so the action bar does not rerender on unrelated store updates. */
 export function removableModuleSelectionCount(state: BlueprintState): number {
+  if (state.minimalSeedIds.length > 0) {
+    return minimalSelectionRemovalIds(state).length;
+  }
   return moduleSelectionRemovalPlan(state).selectionIds.length;
+}
+
+/** Resolve selected minimal-graph nodes to promoted member ancestors. Canonical GraphIndex
+ * ancestry covers ordinary unit/block selections; the laid parent chain also covers view-only
+ * nodes such as logic-flow steps. Walking upward from the selection is intentionally conservative:
+ * selecting a non-member ancestor must not sweep promoted members beneath it. */
+function minimalSelectionRemovalIds(state: BlueprintState): string[] {
+  if (state.moduleSelected.size === 0 || state.minimalMemberIds.length <= 1) {
+    return [];
+  }
+
+  const seeds = new Set(state.minimalSeedIds);
+  const promotedMembers = new Set(state.minimalMemberIds.filter((id) => !seeds.has(id)));
+  if (promotedMembers.size === 0) {
+    return [];
+  }
+
+  const drawnById = new Map(state.minimalRfNodes.map((node) => [node.id, node]));
+  const nearestPromotedMember = (selectedId: string): string | null => {
+    const canonicalPath = state.index.ancestorsOf(selectedId);
+    for (let index = canonicalPath.length - 1; index >= 0; index -= 1) {
+      if (promotedMembers.has(canonicalPath[index].id)) {
+        return canonicalPath[index].id;
+      }
+    }
+
+    const seen = new Set<string>();
+    let current: string | null | undefined = selectedId;
+    while (current !== null && current !== undefined && !seen.has(current)) {
+      if (promotedMembers.has(current)) {
+        return current;
+      }
+      seen.add(current);
+      current = drawnById.get(current)?.parentId;
+    }
+    return null;
+  };
+
+  const removable = new Set<string>();
+  for (const selectedId of state.moduleSelected) {
+    const memberId = nearestPromotedMember(selectedId);
+    if (memberId !== null) {
+      removable.add(memberId);
+    }
+  }
+  // Keep one anchor even under defensive/restored state where every current member is promoted.
+  return removable.size < state.minimalMemberIds.length ? [...removable].sort() : [];
 }
 
 /** Resolve selection against both canonical GraphIndex ancestry and the active canvas's drawn
@@ -2568,12 +2618,24 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().moduleRelayout(nodeLayoutActivity(state, "Adding", member));
     },
 
-    // Remove is the exact inverse of canvas admission, not an arbitrary graph hide. It can demote
-    // a selected temporary preview, unpin its committed home card, or batch both. Inspection roots
-    // outside the selection stay retained, and expansion remains untouched so re-adding a card does
-    // not forget how the reader had opened it.
+    // Remove is the exact inverse of graph admission, not an arbitrary graph hide. In a minimal
+    // graph it demotes selected promoted members in one pass and source seeds remain protected. On
+    // the source graph it can demote a selected temporary preview, unpin its committed home card, or
+    // batch both. Inspection roots outside the selection stay retained, and expansion remains
+    // untouched so re-adding a card does not forget how the reader had opened it.
     removeSelectionFromView() {
       const state = get();
+      if (state.minimalSeedIds.length > 0) {
+        const memberIds = minimalSelectionRemovalIds(state);
+        if (memberIds.length === 0) {
+          return;
+        }
+        const removed = new Set(memberIds);
+        set({ minimalMemberIds: state.minimalMemberIds.filter((id) => !removed.has(id)) });
+        void get().minimalRelayout(nodeLayoutActivity(state, "Removing", memberIds[0] ?? null));
+        return;
+      }
+
       const plan = moduleSelectionRemovalPlan(state);
       if (plan.mapExtraIds.length === 0 && plan.visitedIds.length === 0) {
         return;
@@ -2920,19 +2982,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             }
           : {}),
       });
-    },
-
-    // Remove a MEMBER (the members-panel ✕); it reappears as a satellite iff a remaining member still
-    // couples to its code. Refuses to empty the set — the last member must stay so the overlay never
-    // goes blank.
-    demoteMinimalMember(id) {
-      const state = get();
-      const { minimalMemberIds } = state;
-      if (!minimalMemberIds.includes(id) || minimalMemberIds.length <= 1) {
-        return;
-      }
-      set({ minimalMemberIds: minimalMemberIds.filter((member) => member !== id) });
-      void get().minimalRelayout(nodeLayoutActivity(state, "Removing", id));
     },
 
     // Reset the overlay to its base: restore the working set to the origin selection AND drop any

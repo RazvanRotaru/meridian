@@ -10,11 +10,10 @@
  * member's off-view callers/dependencies. Each satellite wears a subtle round "+" that promotes its
  * home file/folder into the members and opens the path until the original symbol is visible. A
  * crowded sibling set folds under its persistent real parent; that parent's explicit chevron
- * discloses exact children as outward neighbours. The floating members panel removes a
- * member (it returns as a satellite iff still coupled), while the shared bottom action bar
- * rearranges, resets, and explicitly closes the extracted graph, returning to the active lens with
- * the selection kept. Wires are painted by the Map's OWN chain and keyed by its own `MapLegend`,
- * so the overlay's colour vocabulary is the Map's by construction. Highways here means SPOOLING
+ * discloses exact children as outward neighbours. The shared bottom action bar removes selected
+ * promoted members, rearranges, resets, and explicitly closes the extracted graph, returning to the
+ * active lens with the selection kept. Wires are painted by the Map's OWN chain and keyed by its
+ * own `MapLegend`, so the overlay's colour vocabulary is the Map's by construction. Highways here means SPOOLING
  * only: fan hubs gather their many wires into shared trunks (no containers to pair-bundle in this
  * flat overlay); every overlay wire is a painted import/dep wire, so when Highways is on they ALL
  * spool.
@@ -43,7 +42,6 @@ import {
   SEMANTIC_READING_MIN_ZOOM,
   useSemanticSurfaceNavigation,
 } from "./canvas/useSemanticSurfaceNavigation";
-import { MinimalMembersPanel } from "./MinimalMembersPanel";
 import { CanvasActionBar } from "./controlpanel/CanvasActionBar";
 import { minimalMiniMapColor } from "./minimalGraphStyles";
 import { filterExternalGhosts } from "./moduleMapPaint";
@@ -170,7 +168,6 @@ export function MinimalGraphView({
           relationPolicy={relations}
         />
         <CanvasActionBar onShowCodebase={onShowCodebase} codebaseButtonRef={codebaseButtonRef} />
-        <MinimalMembersPanel />
       </GraphSurface>
     </div>
   );

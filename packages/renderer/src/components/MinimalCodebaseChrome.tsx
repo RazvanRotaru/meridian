@@ -1,7 +1,8 @@
 /** Read-only status chrome for the minimal graph's codebase-context projection. */
 
 import type { MinimalCodebaseContext } from "../derive/minimalCodebaseContext";
-import { MEMBERS_PANEL_STYLE } from "./minimalGraphStyles";
+import { CHROME_EDGE } from "./canvas/flowCanvasProps";
+import { CONTROL_PANEL_WIDTH } from "./controlpanel/panelKit";
 
 type ContextStatus = "laying-out" | "ready" | "error";
 
@@ -42,11 +43,23 @@ export function EmptyMinimalCodebaseContext() {
 }
 
 const SUMMARY_STYLE: React.CSSProperties = {
-  ...MEMBERS_PANEL_STYLE,
+  position: "absolute",
+  top: 16,
+  right: 16,
+  zIndex: 6,
+  display: "flex",
   flexDirection: "row",
   flexWrap: "wrap",
   alignItems: "center",
-  maxHeight: "none",
+  gap: 8,
+  width: "max-content",
+  maxWidth: `min(280px, max(144px, calc(100% - ${CHROME_EDGE + CONTROL_PANEL_WIDTH + 32}px)))`,
+  overflow: "hidden",
+  boxSizing: "border-box",
+  padding: "10px 12px",
+  border: "1px solid #2A2F37",
+  borderRadius: 8,
+  background: "rgba(18,23,30,0.92)",
   boxShadow: "0 6px 20px rgba(0,0,0,0.28)",
 };
 const SUMMARY_TITLE: React.CSSProperties = { color: "#E6EDF3", fontSize: 12, fontWeight: 700 };

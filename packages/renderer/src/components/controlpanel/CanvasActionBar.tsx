@@ -90,6 +90,19 @@ export function CanvasActionBar({
                 icon={<CollapseIcon size={18} />}
                 onClick={collapseAll}
               />
+              {minimalOpen ? (
+                <CanvasActionButton
+                  ariaLabel="Remove added nodes in selection"
+                  title={
+                    removableCount > 0
+                      ? "Remove added nodes associated with the current selection from this view"
+                      : "Select added nodes while keeping at least one member in the extracted graph"
+                  }
+                  icon={<RemoveSelectionIcon size={18} />}
+                  onClick={removeSelectionFromView}
+                  disabled={removableCount === 0}
+                />
+              ) : null}
             </>
           )}
         </CanvasActionGroup>

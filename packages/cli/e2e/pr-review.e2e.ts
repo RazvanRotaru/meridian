@@ -85,6 +85,8 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await reviewFiles.waitFor({ timeout: 120_000 });
     const syncProvenance = page.getByText(/^pr-head → main · head graph @[0-9a-f]{7}$/);
     await syncProvenance.waitFor({ timeout: 120_000 });
+    await page.getByRole("region", { name: "Extracted graph" }).waitFor();
+    expect(await page.getByRole("region", { name: "Extracted selection" }).count()).toBe(0);
 
     // The whole-codebase overview is an alternate read-only surface, not a review close/reopen:
     // the prepared HEAD artifact, change colours, and review rail stay live, while its chevrons
@@ -131,7 +133,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await changedFunction.waitFor();
     expect(new URL(page.url()).searchParams.get("mexp")).toBe(expansionParam);
     await page.getByRole("button", { name: "Back to extracted graph" }).click();
-    await page.getByRole("region", { name: "Extracted selection" }).waitFor();
+    await page.getByRole("region", { name: "Extracted graph" }).waitFor();
     await syncProvenance.waitFor();
 
     // 4c — the added file is immediately in the prepared HEAD graph with reviewable units.
@@ -144,7 +146,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
 
     // 4d — existing GitHub comments live on their HEAD source line in both canvas code hosts;
     // the review-panel control hides and restores that layer without disabling either host.
-    const extractedReviewSurface = page.getByRole("region", { name: "Extracted selection" }).locator("xpath=..");
+    const extractedReviewSurface = page.getByRole("region", { name: "Extracted graph" });
     const loyaltyTierNode = extractedReviewSurface.locator(`[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
     await loyaltyTierNode.waitFor();
     await loyaltyTierNode.hover();
@@ -228,7 +230,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     // The source graph stays mounted beneath Minimal Graph so outward semantic zoom can reveal its
     // exact viewport. Scope this raw CSS locator to the extracted surface rather than matching the
     // intentionally retained source copy of the same file card.
-    const extractedSurface = page.getByRole("region", { name: "Extracted selection" }).locator("xpath=..");
+    const extractedSurface = page.getByRole("region", { name: "Extracted graph" });
     const codeButton = extractedSurface.locator(
       `[data-id="${ORDER_SERVICE_MODULE_ID}"] button[aria-label="View source"]`,
     );
@@ -238,13 +240,13 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await sourceDialog.waitFor();
     await page.keyboard.press("Escape");
     await sourceDialog.waitFor({ state: "detached" });
-    expect(await page.getByLabel("Extracted selection").count()).toBe(1);
+    expect(await page.getByRole("region", { name: "Extracted graph" }).count()).toBe(1);
     expect(await syncProvenance.count()).toBe(1);
     await page.keyboard.press("Escape");
-    expect(await page.getByLabel("Extracted selection").count()).toBe(1);
+    expect(await page.getByRole("region", { name: "Extracted graph" }).count()).toBe(1);
     expect(await syncProvenance.count()).toBe(1);
     await page.getByRole("button", { name: "Close extracted graph" }).click();
-    await page.getByLabel("Extracted selection").waitFor({ state: "detached" });
+    await page.getByRole("region", { name: "Extracted graph" }).waitFor({ state: "detached" });
     const resumeText = page.getByText("Resume review #7", { exact: true });
     await resumeText.waitFor();
     expect(await resumeText.count()).toBe(1);

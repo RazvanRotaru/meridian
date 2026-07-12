@@ -14,7 +14,7 @@ export interface CanvasActionPlacement {
 }
 
 /** Keep the full bar in one row whenever it can sit beside the control panel. Narrow panes stack
- * whole groups; short panes slide the bar downward so every action and member control stays visible. */
+ * whole groups; short panes slide the bar downward so every action stays visible. */
 export function canvasActionPlacement(
   surfaceWidth: number | null,
   mode: CanvasActionMode,
@@ -39,17 +39,16 @@ export function canvasActionPlacement(
       CONTROL_CLEARANCE,
       fitsBesideControls ? Math.max(CONTROL_PANEL_END, edgeClampedLeft) : edgeClampedLeft,
     ),
-    bottom: actionBarBottom(surfaceHeight, mode, layout),
+    bottom: actionBarBottom(surfaceHeight, layout),
   };
 }
 
-function actionBarBottom(surfaceHeight: number | null, mode: CanvasActionMode, layout: CanvasActionLayout): number {
+function actionBarBottom(surfaceHeight: number | null, layout: CanvasActionLayout): number {
   const barHeight = layout === "stacked" ? STACKED_BAR_HEIGHT : ROW_BAR_HEIGHT;
-  const topClearance = mode === "minimal" ? MEMBERS_PANEL_TOP + MINIMAL_MEMBERS_MIN_HEIGHT + EDGE_GAP : EDGE_GAP;
   if (surfaceHeight === null) {
     return NORMAL_BOTTOM;
   }
-  return Math.min(NORMAL_BOTTOM, Math.max(EDGE_GAP, surfaceHeight - barHeight - topClearance));
+  return Math.min(NORMAL_BOTTOM, Math.max(EDGE_GAP, surfaceHeight - barHeight - EDGE_GAP));
 }
 
 export function useSurfaceSize(): [(element: HTMLDivElement | null) => void, { width: number; height: number } | null] {
@@ -95,14 +94,11 @@ const CONTROL_CLEARANCE = CHROME_EDGE + CONTROL_PANEL_WIDTH + EDGE_GAP;
 const NORMAL_BOTTOM = MINIMAP_H + CHROME_EDGE + EDGE_GAP;
 const ROW_BAR_HEIGHT = 54;
 const STACKED_BAR_HEIGHT = 109;
-const MEMBERS_PANEL_TOP = 16;
-export const MINIMAL_MEMBERS_MIN_HEIGHT = 96;
-export const MINIMAL_MEMBERS_MAX_HEIGHT_OFFSET = MEMBERS_PANEL_TOP + NORMAL_BOTTOM + STACKED_BAR_HEIGHT + EDGE_GAP;
 const BASE_BAR_WIDTH = 144;
 const BAR_WIDTHS: Record<CanvasActionMode, number> = {
   base: BASE_BAR_WIDTH,
   extract: 262,
-  minimal: 344,
+  minimal: 389,
   codebase: 198,
 };
 const STACKED_BAR_WIDTHS: Record<CanvasActionMode, number> = {

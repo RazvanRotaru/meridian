@@ -66,19 +66,23 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
     const extract = actionBar.getByRole("button", { name: `Extract selection (${MEMBER_FILES.length})` });
     await extract.click();
 
+    const extractedGraph = page.getByRole("region", { name: "Extracted graph" });
     const extractedActions = actionBar.getByRole("group", { name: "Extracted graph actions" });
+    const remove = actionBar.getByRole("button", { name: "Remove added nodes in selection" });
     const rearrange = extractedActions.getByRole("button", { name: "Rearrange extracted graph" });
     const reset = extractedActions.getByRole("button", { name: "Reset extracted graph" });
     const close = extractedActions.getByRole("button", { name: "Close extracted graph" });
     const highlightInCodebase = extractedActions.getByRole("button", { name: "Highlight code in codebase" });
+    await extractedGraph.waitFor();
     await extractedActions.waitFor();
     expect(await extract.count()).toBe(0);
+    expect(await remove.isVisible()).toBe(true);
+    expect(await remove.isDisabled()).toBe(true);
     expect(await rearrange.isEnabled()).toBe(true);
     expect(await reset.isDisabled()).toBe(true);
     expect(await close.isVisible()).toBe(true);
     expect(await highlightInCodebase.isVisible()).toBe(true);
-    expect(await page.getByRole("region", { name: "Extracted selection" })
-      .getByRole("button", { name: "Highlight code in codebase" }).count()).toBe(0);
+    expect(await page.getByRole("region", { name: "Extracted selection" }).count()).toBe(0);
 
     // The context action swaps only the graph pane: all curated members are placed in their
     // canonical Map ancestry. Curation/navigation stay frozen, while card chevrons disclose code
@@ -102,7 +106,7 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
       expect(memberBounds!.x + memberBounds!.width).toBeLessThanOrEqual(contextBounds!.x + contextBounds!.width);
       expect(memberBounds!.y + memberBounds!.height).toBeLessThanOrEqual(contextBounds!.y + contextBounds!.height);
     }
-    expect(await contextGraph.getByRole("region", { name: "Extracted selection" }).count()).toBe(0);
+    expect(await page.getByRole("region", { name: "Extracted selection" }).count()).toBe(0);
     const contextMember = contextGraph.locator(`[data-id="${MEMBER_FILES[0]}"]`);
     const contextNodeCount = await contextGraph.locator(".react-flow__node").count();
     const expansionParam = new URL(page.url()).searchParams.get("mexp");
@@ -128,7 +132,7 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
     expect(await centerIsHit(actionBar.getByRole("button", { name: "Back to extracted graph" }))).toBe(true);
     await page.setViewportSize({ width: 1600, height: 1000 });
     await actionBar.getByRole("button", { name: "Back to extracted graph" }).click();
-    await page.getByRole("region", { name: "Extracted selection" }).waitFor();
+    await extractedGraph.waitFor();
     await expect.poll(
       () => page.evaluate(() => document.activeElement?.getAttribute("aria-label")),
     ).toBe("Highlight code in codebase");
@@ -142,17 +146,15 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
         { timeout: 5_000 },
       ).toBe("horizontal");
       await expectNarrowGeometry(page, actionBar, extractedActions);
+      expect(await centerIsHit(remove)).toBe(true);
       expect(await centerIsHit(close)).toBe(true);
 
-      // A flow drawer can shorten the graph independently of the viewport width. The bar drops into
-      // the bottom lane there, above the member list and with every contextual action still hittable.
+      // A flow drawer can shorten the graph independently of the viewport width. Every contextual
+      // action must remain within the shortened graph pane and stay hittable.
       await page.setViewportSize({ width: 520, height: 350 });
       await expect.poll(async () => {
-        const [bar, members] = await Promise.all([
-          actionBar.boundingBox(),
-          page.getByRole("region", { name: "Extracted selection" }).boundingBox(),
-        ]);
-        return bar !== null && members !== null && bar.y >= 0 && bar.y + bar.height <= 350 && members.y + members.height <= bar.y;
+        const bar = await actionBar.boundingBox();
+        return bar !== null && bar.y >= 0 && bar.y + bar.height <= 350;
       }, { timeout: 5_000 }).toBe(true);
       await expect.poll(
         () => page.locator('[data-graph-surface="minimal"] .react-flow__minimap').isHidden(),
@@ -180,25 +182,20 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
 
 async function expectNarrowGeometry(page: Page, actionBar: Locator, extractedActions: Locator): Promise<void> {
   await expect.poll(async () => {
-    const [bar, controls, minimap, members, viewGroup, extractedGroup] = await Promise.all([
+    const [bar, controls, minimap, viewGroup, extractedGroup] = await Promise.all([
       actionBar.boundingBox(),
       page.locator("#meridian-control-panel").boundingBox(),
       page.locator('[data-graph-surface="minimal"] .react-flow__minimap').boundingBox(),
-      page.getByRole("region", { name: "Extracted selection" }).boundingBox(),
       actionBar.getByRole("group", { name: "View actions" }).boundingBox(),
       extractedActions.boundingBox(),
     ]);
-    return bar !== null && controls !== null && minimap !== null && members !== null && viewGroup !== null && extractedGroup !== null
+    return bar !== null && controls !== null && minimap !== null && viewGroup !== null && extractedGroup !== null
       && bar.x >= controls.x + controls.width
       && bar.y + bar.height <= minimap.y
-      && members.x >= controls.x + controls.width
-      && members.y + members.height <= bar.y
       && viewGroup.y + viewGroup.height <= extractedGroup.y;
   }, { timeout: 5_000 }).toBe(true);
   expect(await actionBar.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
-  expect(await page.getByRole("region", { name: "Extracted selection" }).locator("ul").evaluate(
-    (list) => list.scrollHeight > list.clientHeight,
-  )).toBe(true);
+  expect(await page.getByRole("region", { name: "Extracted selection" }).count()).toBe(0);
 }
 
 function dive(page: Page, nodeId: string): Promise<void> {

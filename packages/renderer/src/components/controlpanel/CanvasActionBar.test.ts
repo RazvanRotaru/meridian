@@ -1,4 +1,4 @@
-import { createElement } from "react";
+import { createElement, type ComponentProps, type FunctionComponent } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ReactFlowProvider } from "@xyflow/react";
 import { describe, expect, it } from "vitest";
@@ -13,20 +13,20 @@ describe("canvasActionPlacement", () => {
   it("centers each single-row footprint at its exact clearance threshold", () => {
     expect(canvasActionPlacement(798, "base")).toEqual({ position: "bottom-center", layout: "row" });
     expect(canvasActionPlacement(916, "extract")).toEqual({ position: "bottom-center", layout: "row" });
-    expect(canvasActionPlacement(998, "minimal")).toEqual({ position: "bottom-center", layout: "row" });
+    expect(canvasActionPlacement(1043, "minimal")).toEqual({ position: "bottom-center", layout: "row" });
     expect(canvasActionPlacement(852, "codebase")).toEqual({ position: "bottom-center", layout: "row" });
   });
 
   it("moves a full row beside the control panel when centering would overlap it", () => {
     expect(canvasActionPlacement(797, "base")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
     expect(canvasActionPlacement(915, "extract")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(997, "minimal")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(1042, "minimal")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
     expect(canvasActionPlacement(851, "codebase")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
   });
 
   it("keeps the minimal actions in one row down to the exact side-lane boundary", () => {
-    expect(canvasActionPlacement(687, "minimal")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(686, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(732, "minimal")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(731, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
   });
 
   it("stacks whole groups after a review panel narrows the graph pane", () => {
@@ -49,15 +49,15 @@ describe("canvasActionPlacement", () => {
     expect(canvasActionPlacement(150, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 16, bottom: 181 });
   });
 
-  it("slides toward the bottom while preserving the members-to-actions gap", () => {
-    expect(canvasActionPlacement(520, "minimal", 418)).toEqual({ position: "bottom-left", layout: "stacked", left: 311, bottom: 181 });
-    expect(canvasActionPlacement(520, "minimal", 417)).toEqual({ position: "bottom-left", layout: "stacked", left: 311, bottom: 180 });
-    expect(canvasActionPlacement(520, "minimal", 253)).toEqual({ position: "bottom-left", layout: "stacked", left: 311, bottom: 16 });
+  it("slides toward the bottom only when the graph itself becomes short", () => {
+    expect(canvasActionPlacement(520, "minimal", 306)).toEqual({ position: "bottom-left", layout: "stacked", left: 311, bottom: 181 });
+    expect(canvasActionPlacement(520, "minimal", 305)).toEqual({ position: "bottom-left", layout: "stacked", left: 311, bottom: 180 });
+    expect(canvasActionPlacement(520, "minimal", 141)).toEqual({ position: "bottom-left", layout: "stacked", left: 311, bottom: 16 });
   });
 
   it("lifts the bar above chrome when horizontal or vertical overlap is unavoidable", () => {
     expect(panelAnchorStyle(canvasActionPlacement(330, "minimal", 600))).toMatchObject({ left: 115, bottom: 181, zIndex: 7 });
-    expect(panelAnchorStyle(canvasActionPlacement(520, "minimal", 417))).toMatchObject({
+    expect(panelAnchorStyle(canvasActionPlacement(520, "minimal", 305))).toMatchObject({
       left: 311,
       bottom: 180,
       maxWidth: "calc(100% - 311px)",
@@ -84,10 +84,40 @@ describe("CanvasActionBar Remove action", () => {
       "Remove added nodes associated with the current selection from this view",
     );
   });
+
+  it("is available for a selected promoted member in the minimal graph but not its read-only codebase view", () => {
+    const store = actionBarStore();
+    store.setState({
+      minimalSeedIds: [ACTION_FILE],
+      minimalMemberIds: [ACTION_FILE, PROMOTED_FILE],
+      moduleSelected: new Set([PROMOTED_METHOD]),
+    });
+
+    const enabledMarkup = renderActionBar(store);
+    const enabledButton = removeButtonMarkup(enabledMarkup);
+    expect(enabledButton).not.toContain("aria-disabled");
+    expect(describedText(enabledMarkup, enabledButton)).toBe(
+      "Remove added nodes associated with the current selection from this view",
+    );
+
+    store.setState({ moduleSelected: new Set([ACTION_METHOD]) });
+    const disabledMarkup = renderActionBar(store);
+    const disabledButton = removeButtonMarkup(disabledMarkup);
+    expect(disabledButton).toContain('aria-disabled="true"');
+    expect(describedText(disabledMarkup, disabledButton)).toBe(
+      "Select added nodes while keeping at least one member in the extracted graph",
+    );
+
+    expect(renderActionBar(store, { minimalView: "codebase" })).not.toContain(
+      'aria-label="Remove added nodes in selection"',
+    );
+  });
 });
 
 const ACTION_FILE = "ts:src/action.ts";
 const ACTION_METHOD = `${ACTION_FILE}#Action.run`;
+const PROMOTED_FILE = "ts:src/promoted.ts";
+const PROMOTED_METHOD = `${PROMOTED_FILE}#Promoted.run`;
 
 function actionNode(id: string, kind: string, parentId?: string): GraphNode {
   return {
@@ -111,6 +141,9 @@ function actionBarStore() {
       actionNode(ACTION_FILE, "module", "ts:src"),
       actionNode(`${ACTION_FILE}#Action`, "class", ACTION_FILE),
       actionNode(ACTION_METHOD, "method", `${ACTION_FILE}#Action`),
+      actionNode(PROMOTED_FILE, "module", "ts:src"),
+      actionNode(`${PROMOTED_FILE}#Promoted`, "class", PROMOTED_FILE),
+      actionNode(PROMOTED_METHOD, "method", `${PROMOTED_FILE}#Promoted`),
     ],
     edges: [],
   };
@@ -130,7 +163,10 @@ function actionBarStore() {
   });
 }
 
-function renderActionBar(store: ReturnType<typeof actionBarStore>): string {
+function renderActionBar(
+  store: ReturnType<typeof actionBarStore>,
+  props: ComponentProps<typeof CanvasActionBar> = {},
+): string {
   // Zustand's server snapshot is normally the store's boot state. For this static component test,
   // make the explicitly prepared current state the hydration snapshot for the duration of render.
   const getInitialState = store.getInitialState;
@@ -140,7 +176,14 @@ function renderActionBar(store: ReturnType<typeof actionBarStore>): string {
       StoreProvider,
       {
         store,
-        children: createElement(ReactFlowProvider, null, createElement(CanvasActionBar)),
+        children: createElement(
+          ReactFlowProvider,
+          null,
+          createElement(
+            CanvasActionBar as FunctionComponent<ComponentProps<typeof CanvasActionBar>>,
+            { ...props, key: null },
+          ),
+        ),
       },
     ));
   } finally {
