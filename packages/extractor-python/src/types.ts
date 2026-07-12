@@ -12,26 +12,33 @@ export interface AnalyzeNode {
   parentQualname: string | null;
   startLine: number;
   endLine: number;
+  startCol: number;
   summary: string | null;
   signature: string | null;
   tags: string[];
 }
 
 export type AnalyzeTarget =
-  | { resolution: "resolved"; modulePath: string; qualname: string }
-  | { resolution: "external"; module: string; name: string }
+  | { resolution: "resolved"; modulePath: string; qualname: string | null; targetLine?: number }
+  | { resolution: "external"; module: string; name: string | null }
   | { resolution: "unresolved" };
 
 export interface AnalyzeEdge {
-  kind: "call" | "extends";
+  kind: "call" | "extends" | "imports" | "reference";
   sourceQualname: string | null;
+  sourceLine: number | null;
   line: number;
+  col: number;
+  endLine: number;
+  endCol: number;
   target: AnalyzeTarget;
 }
 
 export interface AnalyzeModule {
   modulePath: string;
   file: string;
+  isPackage: boolean;
+  endLine: number;
   nodes: AnalyzeNode[];
   edges: AnalyzeEdge[];
 }
