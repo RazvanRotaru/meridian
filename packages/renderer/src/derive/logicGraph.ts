@@ -25,6 +25,16 @@ import type { GraphIndex } from "../graph/graphIndex";
 import { baseName, callDisplay } from "./flowViewModel";
 import type { LogicOwner, OwnerLookup } from "./logicOwner";
 import { clamp, monoTextWidth } from "../layout/measure";
+import {
+  logicBranchBodyPrefix,
+  logicCallBodyPrefix,
+  logicControlBodyPrefix,
+  logicFinallyBodyPrefix,
+  logicNodeId,
+  logicServiceFrameId,
+  logicStepPath,
+  logicTopLevelBodyPrefix,
+} from "./logicFlowAddress";
 
 /** No owner/signature enrichment — the default when a caller (e.g. a unit test) supplies no lookup. */
 const NO_OWNER: OwnerLookup = () => null;
@@ -111,7 +121,22 @@ export type LogicNodeData = {
   /** Rich async event + its task-rail endpoints. Legacy awaited/detached remain above for old data. */
   asyncEvent?: LogicAsyncEvent;
   asyncPorts?: LogicAsyncPort[];
+  /** One concrete request occurrence rendered in the shared split pane. Static Logic flows never
+   * set this field; request reconstruction uses it to preserve span/event identity, timing, status,
+   * caller context, and safely captured values without pretending those observations are source
+   * `FlowStep`s. */
+  runtime?: RequestRuntimeEvidence;
 };
+
+export interface RequestRuntimeEvidence {
+  kind: "span" | "branch" | "loop" | "exception" | "async";
+  status?: "unset" | "ok" | "error";
+  durationMs?: number;
+  /** All events captured under this span, including data observations. */
+  eventCount?: number;
+  detail?: string;
+  badges?: string[];
+}
 
 /**
  * The ENTRY / EXIT end-caps of a top-level callable flow. A terminal is not a call step, so it
@@ -154,7 +179,51 @@ export interface LogicEdgeSpec {
   /** Semantic lane carried by a split edge and its final hop into a join. Catch uses this to keep
    * the exceptional route visually distinct without turning it into a different graph topology. */
   branchRole?: LogicBranchPort["role"];
+  /** Positive request evidence for this exact rendered edge. Absence means static/unknown context,
+   * never proof that the edge did not execute. Runtime occurrences carry their exact causal
+   * relation; static FlowSteps need site/path correlation before their internal edges can carry the
+   * same claim. */
+  requestTraversal?: RequestEdgeTraversalEvidence;
 }
+
+export type RequestRuntimeCausalRelation =
+  | "trace-entry"
+  | "span-local-order"
+  | "parent-child"
+  | "span-link"
+  | "async-handoff"
+  | "trace-exit";
+
+export type RequestEdgeTraversalEvidence =
+  | {
+      traceId: string;
+      basis: "runtime-causal";
+      relation: RequestRuntimeCausalRelation;
+      sourceMomentId: string;
+      targetMomentId: string;
+    }
+  | {
+      traceId: string;
+      basis: "span-body" | "child-span-order";
+      spanId: string;
+      childSpanIds?: string[];
+    }
+  | {
+      traceId: string;
+      basis: "branch-path";
+      spanId: string;
+      eventIds: string[];
+      siteId: string;
+      pathIds: string[];
+    }
+  | {
+      traceId: string;
+      basis: "loop-body";
+      spanId: string;
+      eventIds: string[];
+      siteId: string;
+      iterations: number;
+    };
 
 export interface LogicGraphSpec {
   nodes: LogicNodeSpec[];
@@ -348,7 +417,7 @@ class LogicGraphBuilder {
    * exactly like a container's inner rendering — only here they sit at the top level, not nested.
    */
   buildFromBodies(bodies: FlowPath[]): LogicGraphSpec {
-    bodies.forEach((body, i) => this.sequence(body.body, null, `p${i}/`, this.rootId));
+    bodies.forEach((body, i) => this.sequence(body.body, null, logicTopLevelBodyPrefix(i), this.rootId));
     return { nodes: this.nodes, edges: this.edges };
   }
 
@@ -370,7 +439,7 @@ class LogicGraphBuilder {
     for (const unit of this.planLevel(steps, prefix)) {
       const stepParent = unit.frame ? this.emitServiceFrame(unit.frame, unit.steps.length, parentId) : parentId;
       for (const { step, i } of unit.steps) {
-        const emit = this.step(step, stepParent, `${prefix}${i}`, unit.frame !== null, asyncScope);
+        const emit = this.step(step, stepParent, logicStepPath(prefix, i), unit.frame !== null, asyncScope);
         if (firstId === null) {
           firstId = emit.entry;
         }
@@ -400,7 +469,8 @@ class LogicGraphBuilder {
     let run: { owner: LogicOwner; steps: IndexedStep[] } | null = null;
     const flush = () => {
       if (run) {
-        units.push({ frame: { owner: run.owner, id: `${this.rootId}::svc/${prefix}${run.steps[0].i}` }, steps: run.steps });
+        const firstStepPath = logicStepPath(prefix, run.steps[0].i);
+        units.push({ frame: { owner: run.owner, id: logicServiceFrameId(this.rootId, firstStepPath) }, steps: run.steps });
         run = null;
       }
     };
@@ -408,7 +478,7 @@ class LogicGraphBuilder {
       if (this.options.hideGreyed && this.isCompactCall(step)) {
         return;
       }
-      const owner = this.framableOwner(step, `${this.rootId}::${prefix}${i}`);
+      const owner = this.framableOwner(step, logicNodeId(this.rootId, logicStepPath(prefix, i)));
       if (owner && run && run.owner.unitId === owner.unitId) {
         run.steps.push({ step, i });
       } else if (owner) {
@@ -470,7 +540,7 @@ class LogicGraphBuilder {
     framed: boolean,
     asyncScope: string,
   ): { entry: string; exits: Exit[] } {
-    const id = `${this.rootId}::${path}`;
+    const id = logicNodeId(this.rootId, path);
     if (step.kind === "call") {
       return this.callStep(step, parentId, path, id, framed, asyncScope);
     }
@@ -561,7 +631,7 @@ class LogicGraphBuilder {
     this.push(id, parentId, "block", data);
     this.wireCallAsync(correlatedAsync, asyncPorts, id, asyncScope);
     if (isExpanded && step.target) {
-      this.sequence(this.flows[step.target], id, `${path}/`, id);
+      this.sequence(this.flows[step.target], id, logicCallBodyPrefix(path), id);
     }
     return { entry: id, exits: [{ id }] };
   }
@@ -676,7 +746,7 @@ class LogicGraphBuilder {
     if (isExpanded) {
       // Each body is an independent sub-chain inside the frame. This is deliberately presentation-
       // only for the try/finally fallback; it avoids inventing an incorrect alternative-lane edge.
-      bodies.forEach((body, bi) => this.sequence(body.body, id, `${path}/p${bi}/`, asyncScope));
+      bodies.forEach((body, bi) => this.sequence(body.body, id, logicControlBodyPrefix(path, bi), asyncScope));
     }
     return { entry: id, exits: [{ id }] };
   }
@@ -727,7 +797,7 @@ class LogicGraphBuilder {
     step.paths.forEach((flowPath, pi) => {
       const port = branchPorts[pi];
       const role = pathRole(flowPath);
-      const sub = this.sequence(flowPath.body, parentId, `${path}/b${pi}/`, asyncScope);
+      const sub = this.sequence(flowPath.body, parentId, logicBranchBodyPrefix(path, pi), asyncScope);
       if (sub.firstId) {
         this.pushEdge(id, sub.firstId, "branch", flowPath.label, { sourcePort: port.id, branchRole: role });
         // A path that ends at a return/throw cap surfaces NO exits — it dead-ends there instead of
@@ -792,7 +862,7 @@ class LogicGraphBuilder {
       this.link(exit, finallyId);
     }
 
-    const cleanup = this.sequence(finallyPath.body, parentId, `${path}/finally/`, asyncScope);
+    const cleanup = this.sequence(finallyPath.body, parentId, logicFinallyBodyPrefix(path), asyncScope);
     if (cleanup.firstId === null) {
       return { entry: protectedFlow.entry, exits: [{ id: finallyId }] };
     }

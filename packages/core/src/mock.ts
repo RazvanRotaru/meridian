@@ -9,8 +9,10 @@
  */
 
 import { createHash } from "node:crypto";
+import { buildOrdersMockTraceBundle } from "./mock-traces";
 import { OVERLAY_VERSION } from "./overlay";
 import type { NodeMetrics, Overlay } from "./overlay";
+import type { TraceBundle } from "./trace";
 import type { GraphArtifact, NodeId } from "./types";
 
 const FROZEN_TIMESTAMP = "1970-01-01T00:00:00.000Z";
@@ -74,4 +76,9 @@ export function buildMockOverlay(graph: GraphArtifact, env: string, options: Moc
     },
     metricsByNodeId,
   };
+}
+
+/** Build the fixed orders-service request timelines, or an empty bundle for unrelated graphs. */
+export function buildMockTraceBundle(graph: GraphArtifact, env: string): TraceBundle {
+  return buildOrdersMockTraceBundle(graph, env);
 }

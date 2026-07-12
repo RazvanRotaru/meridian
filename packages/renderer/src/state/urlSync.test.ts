@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GraphArtifact } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
+import type { TelemetryProvider, TelemetrySourceRegistration } from "../telemetry/provider";
 import { createBlueprintStore } from "./store";
 import { restoreFromUrl } from "./urlSync";
 
@@ -24,12 +25,16 @@ const HEAD_ARTIFACT: GraphArtifact = {
   generatedAt: "2026-07-02T00:00:00.000Z",
 };
 
-function freshStore() {
+function freshStore(telemetry?: {
+  provider: TelemetryProvider;
+  sources: TelemetrySourceRegistration[];
+}) {
   return createBlueprintStore({
     artifact: BOOT_ARTIFACT,
     index: buildGraphIndex(BOOT_ARTIFACT),
-    provider: null,
-    hasOverlay: false,
+    provider: telemetry?.provider ?? null,
+    ...(telemetry === undefined ? {} : { telemetrySources: telemetry.sources }),
+    hasOverlay: telemetry !== undefined,
     sourceUrl: null,
     prsUrl: "/api/prs?id=artifact-1",
     prOneUrl: "/api/prs/one?id=artifact-1",
@@ -80,6 +85,53 @@ describe("restoreFromUrl review exit", () => {
     expect(store.getState().minimalSeedIds).toEqual([]);
     // The baseline restore ran first; the target URL's Map focus therefore wins afterward.
     expect(store.getState().moduleFocus).toBe(PACKAGE_ID);
+  });
+
+  it("clears request split identity and expansion state during structural history restore", async () => {
+    const store = freshStore();
+    store.setState({
+      flowPaneOrigin: "request",
+      requestFlowTraceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      requestFlowExpansionOverrides: new Set(["request:span:one"]),
+      flowPaneLayoutStatus: "ready",
+    });
+    stubWindow();
+
+    await restoreFromUrl(store, `mfocus=${encodeURIComponent(PACKAGE_ID)}`);
+
+    expect(store.getState().flowPaneOrigin).toBeNull();
+    expect(store.getState().requestFlowTraceId).toBeNull();
+    expect(store.getState().requestFlowExpansionOverrides).toEqual(new Set());
+    expect(store.getState().flowPaneLayoutStatus).toBe("idle");
+  });
+
+  it("restores an explicit telemetry source before an arbitrary environment", async () => {
+    const provider: TelemetryProvider = {
+      id: "demo",
+      requiresEnvironment: true,
+      listEnvironments: () => ["demo"],
+      fetchMetrics: async () => ({}),
+      fetchTraces: async () => { throw new Error("metrics-only test provider"); },
+    };
+    const source: TelemetrySourceRegistration = {
+      id: "demo",
+      kind: "mock",
+      label: "Synthetic demo",
+      provenance: "synthetic",
+      environments: ["demo"],
+      environmentMode: "arbitrary",
+      supportsMetrics: false,
+      supportsTraces: false,
+      provider,
+    };
+    const store = freshStore({ provider, sources: [source] });
+    stubWindow();
+
+    await restoreFromUrl(store, "tsrc=demo&env=qa-west");
+
+    expect(store.getState().telemetrySourceId).toBe("demo");
+    expect(store.getState().provider).toBe(provider);
+    expect(store.getState().environment).toBe("qa-west");
   });
 
   it("ends a synchronous review through the same baseline-clearing path", async () => {

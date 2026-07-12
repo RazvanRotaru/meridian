@@ -198,6 +198,10 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
     sendJson(response, 400, { error: "no telemetry overlay in web mode" });
     return;
   }
+  if (pathname === "/api/traces") {
+    sendJson(response, 400, { error: "no telemetry traces in web mode" });
+    return;
+  }
   if (pathname === "/api/source") {
     sendSource(response, ctx.sourceRoots.get(url.searchParams.get("id") ?? "") ?? null, url.searchParams);
     return;

@@ -11,6 +11,7 @@ import type { CoverageReport } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { buildCoverageRows, type CoverageRow } from "../derive/coverageRows";
 import { COVERAGE_COLORS } from "../theme/coverageColors";
+import { COVERAGE_PANEL_WIDTH } from "./canvas/panelLayout";
 
 const MAX_ROWS = 10;
 
@@ -157,13 +158,14 @@ function percentColor(percent: number): string {
 const PANEL_STYLE: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
+  boxSizing: "border-box",
   gap: 10,
   padding: 12,
   borderRadius: 10,
   border: "1px solid #2A2F37",
   background: "rgba(14,17,22,0.94)",
   backdropFilter: "blur(6px)",
-  width: 340,
+  width: COVERAGE_PANEL_WIDTH,
   maxHeight: "70vh",
   overflowY: "auto",
   color: "#E6EDF3",

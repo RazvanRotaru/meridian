@@ -27,6 +27,7 @@ function emptyNav(): NavState {
     prSelected: null,
     reviewPr: null,
     reviewActive: false,
+    telemetrySourceId: null,
     environment: null,
   };
 }
@@ -49,6 +50,7 @@ describe("urlState", () => {
   it("round-trips the logic sub-view, omitting the default and rejecting junk", () => {
     const nav: NavState = { ...emptyNav(), viewMode: "logic", logicRoot: "ts:src/a.ts#f", logicView: "metro" };
     expect(roundTrip(nav).logicView).toBe("metro");
+    expect(roundTrip({ ...nav, logicView: "request" }).logicView).toBe("request");
     expect(encodeNav(emptyNav()).has("lview")).toBe(false);
     expect(decodeNav(new URLSearchParams("lview=bogus")).logicView).toBeUndefined();
   });
@@ -193,8 +195,11 @@ describe("urlState", () => {
     expect(decodeNav(new URLSearchParams("fsel=ts%253Am%2523f@1-nope")).flowSelection).toBeUndefined();
   });
 
-  it("round-trips a selected environment", () => {
-    expect(roundTrip({ ...emptyNav(), environment: "staging" })).toEqual({ environment: "staging" });
+  it("round-trips a telemetry source with its selected environment", () => {
+    expect(roundTrip({ ...emptyNav(), telemetrySourceId: "demo", environment: "staging" })).toEqual({
+      telemetrySourceId: "demo",
+      environment: "staging",
+    });
   });
 
   it("round-trips a module-map view (focus + hidden categories)", () => {
@@ -347,11 +352,12 @@ describe("urlState", () => {
       const nav: NavState = {
         ...emptyNav(),
         viewMode: "modules",
+        telemetrySourceId: "demo",
         environment: "staging",
         flowExplorerOpen: true,
       };
       const keys = [...encodeNav(nav).keys()].sort();
-      expect(keys).toEqual(["env", "fexp"]);
+      expect(keys).toEqual(["env", "fexp", "tsrc"]);
     });
   });
 
@@ -457,6 +463,7 @@ function storeShape() {
     prsTab: "open" as const,
     prSelected: null,
     prReviewed: null,
+    telemetrySourceId: null,
     environment: null,
   };
 }

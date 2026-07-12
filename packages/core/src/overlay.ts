@@ -7,6 +7,7 @@
 
 import { z } from "zod";
 import type { NodeId } from "./types";
+import { telemetryEnvironmentSchema } from "./telemetry-source";
 
 export const OVERLAY_VERSION = "1.0.0" as const;
 
@@ -49,7 +50,7 @@ const nodeMetricsSchema = z.object({
 export const overlaySchema = z.object({
   overlayVersion: z.string().regex(/^1\.\d+\.\d+$/),
   kind: z.enum(["mock", "tempo"]),
-  env: z.string().min(1),
+  env: telemetryEnvironmentSchema,
   generatedAt: z.string(),
   deterministic: z.object({ algorithm: z.string(), seed: z.string() }).optional(),
   graphRef: z.object({

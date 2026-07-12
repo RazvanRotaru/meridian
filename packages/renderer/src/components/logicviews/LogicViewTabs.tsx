@@ -1,7 +1,7 @@
 /**
- * The Logic-flow SUB-VIEW switch: four projections of the same flow (exec graph / metro / blocks /
- * timeline), floated top-center over whichever surface is mounted. A pure presentation switch —
- * flipping it never touches the charted root, drill trail, or selection.
+ * The Logic-flow SUB-VIEW switch: four static projections of the same flow plus one observed request
+ * trace, floated top-center over whichever surface is mounted. Flipping it never touches the charted
+ * root, drill trail, or selection.
  */
 
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";

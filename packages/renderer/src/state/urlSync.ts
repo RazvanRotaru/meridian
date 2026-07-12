@@ -9,6 +9,7 @@
  * the writer.
  */
 
+import { telemetryEnvironmentSchema, telemetrySourceAllowsEnvironment } from "@meridian/core";
 import { selectedPrSummary, type BlueprintStore } from "./store";
 import { decodeNavState, isNavigationChange, mergeNavIntoSearch, navFrom, type NavState } from "./urlState";
 
@@ -38,8 +39,8 @@ export async function restoreFromUrl(store: BlueprintStore, search?: string): Pr
   }
   // Apply the COMPLETE structural state (not just the keys the URL carried) so a back/forward to a
   // sparser URL resets fields the previous state had set — otherwise a dive/selection never undoes.
-  // `environment` is deliberately excluded: nulling telemetry on every restore is undesirable, so it
-  // is apply-only via applyEnvironment below.
+  // Telemetry coordinates are deliberately excluded: nulling loaded data on every sparse history
+  // restore is undesirable, so explicit source/env values are apply-only below.
   store.setState(structuralState(nav));
   // The restored viewMode decides which layout pass runs; every module surface routes through
   // relayout() (→ moduleRelayout), "logic" needs its own ELK pass. This is the boot's first layout.
@@ -73,7 +74,7 @@ export async function restoreFromUrl(store: BlueprintStore, search?: string): Pr
       store.getState().selectFlowPaneTarget(nav.logicSelected);
     }
   }
-  applyEnvironment(store, nav.environment);
+  applyTelemetryCoordinates(store, nav.telemetrySourceId, nav.environment);
   prevNav = navFrom(store.getState());
 }
 
@@ -150,24 +151,42 @@ function writeUrl(store: BlueprintStore): void {
   prevNav = nav;
 }
 
-// Only apply an env the URL author explicitly chose AND the provider actually lists. This honours
-// the "environment is never auto-defaulted by the app" invariant: the app still picks nothing —
-// it just reproduces an explicit choice carried in a shared/bookmarked link.
-function applyEnvironment(store: BlueprintStore, environment: string | null | undefined): void {
+// Reproduce only coordinates the URL author explicitly chose. Source must be restored before env;
+// otherwise a bookmarked synthetic environment could be applied to a boot-preselected saved file.
+// An arbitrary source accepts a typed URL environment even when it is not one of its suggestions.
+function applyTelemetryCoordinates(
+  store: BlueprintStore,
+  sourceId: string | null | undefined,
+  environment: string | null | undefined,
+): void {
+  if (sourceId) {
+    if (!store.getState().telemetrySources.some((source) => source.id === sourceId)) return;
+    store.getState().setTelemetrySource(sourceId);
+  }
   if (!environment) {
     return;
   }
-  const provider = store.getState().provider;
-  if (!provider || !provider.listEnvironments().includes(environment)) {
+  const parsedEnvironment = telemetryEnvironmentSchema.safeParse(environment);
+  if (!parsedEnvironment.success) return;
+  const normalizedEnvironment = parsedEnvironment.data;
+  const state = store.getState();
+  const provider = state.provider;
+  const descriptor = state.telemetrySourceId === null
+    ? null
+    : state.telemetrySources.find((source) => source.id === state.telemetrySourceId) ?? null;
+  const allowed = descriptor === null
+    ? provider?.listEnvironments().includes(normalizedEnvironment) === true
+    : telemetrySourceAllowsEnvironment(descriptor, normalizedEnvironment);
+  if (!provider || !allowed) {
     return;
   }
-  store.getState().setEnvironment(environment);
-  void store.getState().refreshTelemetry().catch(() => {});
+  state.setEnvironment(normalizedEnvironment);
+  void state.refreshTelemetry().catch(() => {});
 }
 
 // The structural fields of a full NavState as a store partial, the Set-valued ones (`moduleExpanded`,
 // `hiddenCategories`) rebuilt as Sets. Always the complete set (not a sparse patch) so absent URL
-// keys reset to their default. Excludes `environment`, which is apply-only (see restoreFromUrl).
+// keys reset to their default. Excludes telemetry source/environment, which are apply-only.
 // Exported for the serviceScope tests, which assert a restore always resets the scope.
 export function structuralState(nav: NavState): Record<string, unknown> {
   const rebuildingReview = nav.reviewActive && nav.reviewPr !== null;
@@ -183,6 +202,9 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     logicSelected: nav.logicSelected,
     flowExplorerOpen: nav.flowExplorerOpen,
     flowSelection: null,
+    flowPaneOrigin: null,
+    requestFlowTraceId: null,
+    requestFlowExpansionOverrides: new Set<string>(),
     flowPaneRfNodes: [],
     flowPaneRfEdges: [],
     flowPaneLayoutStatus: "idle",

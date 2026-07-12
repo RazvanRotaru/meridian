@@ -11,6 +11,8 @@ export * from "./schema";
 export * from "./ids";
 export * from "./validate";
 export * from "./overlay";
+export * from "./telemetry-source";
+export * from "./trace";
 export * from "./extractor";
 export * from "./assembly";
 export * from "./boundary";

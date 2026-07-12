@@ -9,7 +9,7 @@ import { rmSync } from "node:fs";
 import type { ChildProcess } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chromium, type Browser, type Locator, type Page } from "playwright";
-import { chromiumInstalled, generateGraph, runCli, startView } from "./harness";
+import { chromiumInstalled, generateGraph, runCli, startViewWithoutOverlay } from "./harness";
 
 let graphDir: string | undefined;
 
@@ -30,7 +30,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
   beforeAll(async () => {
     const generated = generateGraph();
     graphDir = generated.dir;
-    const view = await startView(generated.graphPath);
+    const view = await startViewWithoutOverlay(generated.graphPath);
     viewUrl = view.url;
     server = view.server;
     browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
@@ -78,7 +78,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     const expand = actionBar.getByRole("button", { name: "Expand one level" });
     const collapse = actionBar.getByRole("button", { name: "Collapse all" });
     const repositorySummary = panel.getByText("Repository · 1 package · 11 files", { exact: true });
-    const environment = panel.locator("select");
+    const environment = panel.getByLabel("Request data environment");
     const unavailableBadge = panel.getByText("Unavailable", { exact: true });
     const disclosure = panel.locator('button[aria-controls="meridian-control-panel-controls"]');
     const expandedHeight = await panel.evaluate((element) => element.getBoundingClientRect().height);
@@ -212,12 +212,222 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     expect(pageErrors).toEqual([]);
   });
 
-  it("paints telemetry only after an explicit environment load", async () => {
-    expect(await statusText(page)).toContain("no telemetry");
-    await page.selectOption("select", "staging");
-    await page.click('button:has-text("Load telemetry")');
-    await page.waitForFunction(() => document.body.innerText.includes("loaded: staging"));
-    expect(await statusText(page)).toContain("loaded: staging");
+  it("maps the selected request onto graph cards and proven execution wires after an explicit load", async () => {
+    const requestData = requestDataRegion(page);
+    const source = requestData.getByLabel("Request data source");
+    const environment = requestData.getByLabel("Request data environment");
+    expect(await source.inputValue()).toBe("");
+    expect(await environment.isDisabled()).toBe(true);
+    expect(await statusText(page)).toBe("Not loaded");
+
+    await selectAndLoadDemo(page, "Request data");
+    expect(await statusText(page)).toBe("Loaded · demo");
+
+    const requestOverlay = page.getByRole("region", { name: "Selected request graph overlay" });
+    await requestOverlay.waitFor({ timeout: 30_000 });
+    const requestSelector = requestOverlay.getByLabel("Request shown on map");
+    expect(await requestSelector.locator("option").count()).toBeGreaterThanOrEqual(10);
+    await requestSelector.selectOption("11111111111111111111111111111111");
+    expect(await requestOverlay.getByText("POST /orders — WELCOME10", { exact: true }).count()).toBe(1);
+    // Explicit adjacent controls make a capture set browsable without reopening the dropdown.
+    // They wrap at both ends, so oldest → next → previous lands on the same canonical request.
+    await requestOverlay.getByRole("button", { name: "Next request" }).click();
+    await expect.poll(() => requestSelector.inputValue()).not.toBe("11111111111111111111111111111111");
+    await requestOverlay.getByRole("button", { name: "Previous request" }).click();
+    await expect.poll(() => requestSelector.inputValue()).toBe("11111111111111111111111111111111");
+    await expect.poll(() => page.locator('[data-request-observed="true"]:visible').count(), { timeout: 20_000 }).toBeGreaterThan(0);
+
+    // The split belongs to the selected request, not a graph click. It reconstructs the concrete
+    // success path (including the success-only notification) from span/event occurrences.
+    await requestOverlay.getByRole("button", { name: "Show selected request logic flow" }).click();
+    const requestFlow = page.getByRole("complementary", { name: "Selected request logic flow" });
+    await requestFlow.waitFor({ timeout: 30_000 });
+    await requestFlow.getByText("sendOrderConfirmation", { exact: true }).waitFor();
+    expect(await requestFlow.getByText("RepositoryTimeout", { exact: false }).count()).toBe(0);
+    const observedRequestEdges = requestFlow.locator(
+      '.request-flow-edge--observed[data-request-flow-evidence="observed"]',
+    );
+    const staticContextEdges = requestFlow.locator(
+      '.request-flow-edge--context[data-request-flow-evidence="context"]',
+    );
+    await expect.poll(() => observedRequestEdges.count()).toBeGreaterThan(0);
+    const collapsedObservedEdgeCount = await observedRequestEdges.count();
+    expect(await staticContextEdges.count()).toBe(0);
+    // Every flow-backed occurrence starts collapsed. Opening this exact occurrence grafts the same
+    // static structure as Exec graph: two decision diamonds plus its default-expanded loop.
+    const validateOccurrenceId = "request:11111111111111111111111111111111:span:1000000000000003";
+    const validateOccurrence = requestFlow.locator(`.react-flow__node[data-id="${validateOccurrenceId}"]`);
+    expect(await validateOccurrence.count()).toBe(1);
+    expect(await requestFlow.locator(`.react-flow__node[data-id^="${validateOccurrenceId}:exec::"]`).count()).toBe(0);
+    await validateOccurrence.getByRole("button", { name: "expand in place" }).click();
+    for (const suffix of [":exec::p0/0", ":exec::p0/1", ":exec::p0/2", ":exec::p0/2/p0/0"]) {
+      await requestFlow.locator(`.react-flow__node[data-id="${validateOccurrenceId}${suffix}"]`).waitFor();
+    }
+    await expect.poll(() => staticContextEdges.count()).toBeGreaterThan(0);
+    expect(await observedRequestEdges.count()).toBeGreaterThan(collapsedObservedEdgeCount);
+    expect(await requestFlow.locator(
+      '.request-flow-edge--observed[data-request-flow-basis="branch-path"][data-request-flow-site-id="validate:customer"][data-request-flow-path-ids="else"]',
+    ).count()).toBe(1);
+    expect(await requestFlow.locator(
+      '.request-flow-edge--observed[data-request-flow-basis="branch-path"][data-request-flow-site-id="validate:lines"][data-request-flow-path-ids="else"]',
+    ).count()).toBe(1);
+    await requestFlow.getByText("assertLineIsSane", { exact: true }).waitFor();
+    for (const absorbedEventId of ["s-customer", "s-lines", "s-lines-loop"]) {
+      expect(await requestFlow.locator(`.react-flow__node[data-id="request:11111111111111111111111111111111:event:1000000000000003:${absorbedEventId}"]`).count()).toBe(0);
+    }
+    await validateOccurrence.getByRole("button", { name: "collapse" }).click();
+    await expect.poll(() => requestFlow.locator(`.react-flow__node[data-id^="${validateOccurrenceId}:exec::"]`).count()).toBe(0);
+    await expect.poll(() => staticContextEdges.count()).toBe(0);
+    await expect.poll(() => observedRequestEdges.count()).toBe(collapsedObservedEdgeCount);
+
+    // A second, non-control example proves expansion is capability-driven rather than tailored to
+    // validateOrderRequest. Pricing has a normal call sequence and receives the same affordance.
+    const priceOccurrenceId = "request:11111111111111111111111111111111:span:1000000000000004";
+    const priceOccurrence = requestFlow.locator(`.react-flow__node[data-id="${priceOccurrenceId}"]`);
+    expect(await priceOccurrence.count()).toBe(1);
+    await priceOccurrence.getByRole("button", { name: "expand in place" }).click();
+    await requestFlow.locator(`.react-flow__node[data-id="${priceOccurrenceId}:exec::p0/0"]`).waitFor();
+    await expect.poll(() => observedRequestEdges.count()).toBeGreaterThan(collapsedObservedEdgeCount);
+    expect(await requestFlow.locator(
+      '.request-flow-edge--observed[data-request-flow-basis="span-body"][data-request-flow-span-id="1000000000000004"]',
+    ).count()).toBe(3);
+    expect(await staticContextEdges.count()).toBe(0);
+    await priceOccurrence.getByRole("button", { name: "collapse" }).click();
+    const rootNodeId = "ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder";
+    const rootRuntimeOccurrence = requestFlow.locator(
+      `[data-request-runtime-kind="span"][data-request-runtime-target="${rootNodeId}"]`,
+    );
+    expect(await rootRuntimeOccurrence.count()).toBe(1);
+    await rootRuntimeOccurrence.click();
+    await page.waitForSelector(`.react-flow__node[data-id="${rootNodeId}"]`, { timeout: 30_000 });
+    await requestOverlay.getByText("SELECTED OBSERVED · OrderRoutes.handleCreateOrder", { exact: true }).waitFor();
+
+    // The explicit reveal reuses the codebase LCA projection: it opens only the ancestor paths
+    // needed to draw every exact observed callable, then fits the Map to that set.
+    const exactObservedIds = [
+      rootNodeId,
+      "ts:src/services/orderService.ts#OrderService.placeOrder",
+      "ts:src/validation/orderValidator.ts#validateOrderRequest",
+      "ts:src/pricing/pricingService.ts#PricingService.price",
+      "ts:src/services/orderService.ts#OrderService.assemble",
+      "ts:src/repository/orderRepository.ts#OrderRepository.save",
+      "ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation",
+    ];
+    await requestOverlay.getByRole("button", { name: "Reveal observed nodes (7)" }).click();
+    for (const id of exactObservedIds) {
+      await page.waitForSelector(`.react-flow__node[data-id="${id}"]`, { timeout: 30_000 });
+      expect(await page.locator(`.react-flow__node[data-id="${id}"]`).getAttribute("data-request-observed")).toBe("true");
+    }
+    await expect.poll(() => page.locator(".request-graph-edge--observed:visible").count(), { timeout: 20_000 }).toBeGreaterThan(0);
+    await page.locator('.react-flow__node[data-id="ts:src/services/orderService.ts#OrderService.placeOrder"]').click();
+    await page.waitForTimeout(350);
+    expect(await requestFlow.isVisible()).toBe(true);
+    expect(await requestFlow.getByText("sendOrderConfirmation", { exact: true }).count()).toBe(1);
+
+    // Nested expansion uses the same source/path contract. This request reaches two implicit
+    // fallthroughs inside assertLineIsSane before taking the negative-price throw arm.
+    const negativePriceTraceId = "0000000000000000000000000000000c";
+    const negativePriceValidateSpanId = "000c000000000003";
+    const negativePriceValidateOccurrenceId = `request:${negativePriceTraceId}:span:${negativePriceValidateSpanId}`;
+    await requestSelector.selectOption(negativePriceTraceId);
+    await requestFlow.getByLabel("Selected request context")
+      .getByText("POST /orders — negative price", { exact: true })
+      .waitFor();
+    const negativePriceValidate = requestFlow.locator(
+      `.react-flow__node[data-id="${negativePriceValidateOccurrenceId}"]`,
+    );
+    await negativePriceValidate.getByRole("button", { name: "expand in place" }).click();
+    const assertLineOccurrenceId = `${negativePriceValidateOccurrenceId}:exec::p0/2/p0/0`;
+    const assertLineOccurrence = requestFlow.locator(
+      `.react-flow__node[data-id="${assertLineOccurrenceId}"]`,
+    );
+    await assertLineOccurrence.waitFor();
+    await assertLineOccurrence.getByRole("button", { name: "expand in place" }).click();
+    await requestFlow.locator(`.react-flow__node[data-id="${assertLineOccurrenceId}/0"]`).waitFor();
+    expect(await requestFlow.locator(
+      '.request-flow-edge--observed[data-request-flow-basis="branch-path"][data-request-flow-site-id="validate:sku"][data-request-flow-path-ids="else"]',
+    ).count()).toBe(1);
+    expect(await requestFlow.locator(
+      '.request-flow-edge--observed[data-request-flow-basis="branch-path"][data-request-flow-site-id="validate:quantity"][data-request-flow-path-ids="else"]',
+    ).count()).toBe(1);
+    expect(await requestFlow.locator(
+      '.request-flow-edge--observed[data-request-flow-basis="branch-path"][data-request-flow-site-id="validate:price"][data-request-flow-path-ids="then"]',
+    ).count()).toBe(2);
+
+    // The rejected request removes the success-only branches from the graph while leaving the
+    // request panel and ordinary graph selection independent. The already-open split switches in
+    // place to the newly selected request rather than keeping or reopening a clicked-node flow.
+    await requestSelector.selectOption("22222222222222222222222222222222");
+    await requestOverlay.getByText("POST /orders — missing customer", { exact: true }).waitFor();
+    await requestFlow.getByLabel("Selected request context")
+      .getByText("POST /orders — missing customer", { exact: true })
+      .waitFor();
+    await expect.poll(() => requestFlow.getByText("sendOrderConfirmation", { exact: true }).count()).toBe(0);
+    await expect.poll(() => requestFlow.getByText("price", { exact: true }).count()).toBe(0);
+    expect(await requestFlow.getByText("toErrorResponse", { exact: true }).count()).toBe(1);
+    for (const id of [
+      "ts:src/pricing/pricingService.ts#PricingService.price",
+      "ts:src/repository/orderRepository.ts#OrderRepository.save",
+      "ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation",
+    ]) {
+      await expect.poll(() => page.locator(`.react-flow__node[data-id="${id}"]`).getAttribute("data-request-observed"), { timeout: 20_000 }).toBe("false");
+    }
+    expect(await page.locator('.react-flow__node[data-id="ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder"]').getAttribute("data-request-observed")).toBe("true");
+    const unobservedPrice = page.locator('.react-flow__node[data-id="ts:src/pricing/pricingService.ts#PricingService.price"]');
+    await unobservedPrice.click();
+    await expect.poll(() => unobservedPrice.getAttribute("data-request-manual-context"), { timeout: 20_000 }).toBe("true");
+    expect(await unobservedPrice.getAttribute("data-request-observed")).toBe("false");
+  });
+
+  it("renders and switches a synthetic request timeline with inspectable branch evidence", async () => {
+    const root = "ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder";
+    const requestUrl = new URL(viewUrl);
+    requestUrl.searchParams.set("view", "logic");
+    requestUrl.searchParams.set("lroot", root);
+    requestUrl.searchParams.set("lstack", root);
+    requestUrl.searchParams.set("lview", "request");
+    await page.goto(requestUrl.toString(), { waitUntil: "networkidle" });
+
+    // Regression: the alternate-Logic canvas reserves left toolbar headroom. Its former fixed
+    // 1060px empty state centered this picker completely beyond a narrow in-app browser pane.
+    await page.setViewportSize({ width: 585, height: 900 });
+    try {
+      const requestData = requestDataRegion(page);
+      await requestData.waitFor();
+      const setupBox = await requestData.boundingBox();
+      expect(setupBox).not.toBeNull();
+      expect(setupBox!.x).toBeGreaterThanOrEqual(0);
+      expect(setupBox!.x + setupBox!.width).toBeLessThanOrEqual(585);
+      await selectAndLoadDemo(page, "Request data");
+    } finally {
+      await page.setViewportSize({ width: 1400, height: 900 });
+    }
+
+    const timeline = page.getByRole("region", { name: "Request trace timeline" });
+    await timeline.waitFor({ timeout: 30_000 });
+    const requestSelector = timeline.getByLabel("Request trace selection", { exact: true });
+    expect(await requestSelector.count()).toBe(1);
+    await requestSelector.selectOption("11111111111111111111111111111111");
+    await timeline.getByText("POST /orders — WELCOME10", { exact: true }).waitFor();
+    expect(await timeline.getByText("SYNTHETIC DEMO", { exact: false }).count()).toBeGreaterThan(0);
+    expect(await timeline.getByText("PricingService.price", { exact: true }).count()).toBe(1);
+
+    await timeline.getByRole("button", { name: /!code \|\| !isKnownCode\(code\).*false/ }).click();
+    await timeline.getByText("GENERATED PROBE PREVIEW", { exact: true }).waitFor();
+    expect(await timeline.getByText("request.discountCode", { exact: true }).count()).toBe(1);
+    expect(await timeline.getByText("src/pricing/pricingService.ts:28", { exact: true }).count()).toBe(1);
+
+    await requestSelector.selectOption("22222222222222222222222222222222");
+    await timeline.getByText("POST /orders — missing customer", { exact: true }).waitFor();
+    expect(await timeline.getByText("OrderRoutes.toErrorResponse", { exact: true }).count()).toBe(1);
+    expect(await timeline.getByText("PricingService.price", { exact: true }).count()).toBe(0);
+    expect(consoleErrors).toEqual([]);
+    expect(pageErrors).toEqual([]);
+
+    // This suite shares one page across tests. Return to the default Map so the deep-linked Logic
+    // root/sub-view cannot leak into the older lens/coverage scenarios below.
+    await page.goto(viewUrl, { waitUntil: "networkidle" });
+    await page.waitForSelector(".react-flow__node");
   });
 
   it("hides tests by default on the Map, and the badged Tests pill reveals then re-hides them", async () => {
@@ -262,8 +472,24 @@ describe("never-prod gate", () => {
   });
 });
 
-function statusText(page: Page): Promise<string> {
-  return page.locator("text=/no telemetry|loaded:/").first().innerText();
+function statusText(page: Page, regionName = "Request data"): Promise<string> {
+  return requestDataRegion(page, regionName).getByRole("status").innerText();
+}
+
+function requestDataRegion(page: Page, name = "Request data"): Locator {
+  return page.getByRole("region", { name });
+}
+
+async function selectAndLoadDemo(page: Page, setupRegionName: string): Promise<void> {
+  const requestData = requestDataRegion(page, setupRegionName);
+  const source = requestData.getByLabel("Request data source");
+  const environment = requestData.getByLabel("Request data environment");
+  await source.selectOption("demo");
+  expect(await source.locator("option:checked").innerText()).toBe("Synthetic demo");
+  await expect.poll(() => environment.inputValue()).toBe("demo");
+  expect(await statusText(page, setupRegionName)).toBe("Not loaded");
+  await requestData.getByRole("button", { name: "Load", exact: true }).click();
+  await expect.poll(() => statusText(page), { timeout: 30_000 }).toBe("Loaded · demo");
 }
 
 /** A lens segment button inside the Lens segmented control (ViewModeToggle). */

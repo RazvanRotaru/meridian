@@ -12,7 +12,11 @@ export function sendJson(
   body: unknown,
   extraHeaders: OutgoingHttpHeaders = {},
 ): void {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8", ...extraHeaders });
+  response.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+    ...extraHeaders,
+  });
   response.end(JSON.stringify(body));
 }
 

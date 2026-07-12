@@ -70,16 +70,17 @@ export interface NavState {
   /** The reviewed PR carried by a modules-lens URL; distinct from the PR-browser selection. */
   reviewPr: number | null;
   reviewActive: boolean;
+  telemetrySourceId: string | null;
   environment: string | null;
 }
 
 /** Every param key we own — listed once so `mergeNavIntoSearch` can clear them before rewriting. */
-const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "fexp", "fsel", "lroot", "lview", "lstack", "expand", "mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide", "sgroup", "sgsize", "sglabels", "prstate", "prn", "rev", "env"] as const; // focus/sel/expand/flow/depth are LEGACY (pre-unification ui + flow isolation): still cleared on rewrite so stale links tidy up, never written.
+const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "fexp", "fsel", "lroot", "lview", "lstack", "expand", "mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide", "sgroup", "sgsize", "sglabels", "prstate", "prn", "rev", "tsrc", "env"] as const; // focus/sel/expand/flow/depth are LEGACY (pre-unification ui + flow isolation): still cleared on rewrite so stale links tidy up, never written.
 
 /** Keys that ride along in EVERY lens: the lens itself, the telemetry env, and the cross-cutting
  * flow explorer (its panel is mounted regardless of the active lens, and reveals across the module
  * surfaces). These never get scoped out. */
-const SHARED_KEYS = new Set<string>(["view", "env", "fexp", "fsel"]);
+const SHARED_KEYS = new Set<string>(["view", "tsrc", "env", "fexp", "fsel"]);
 
 /** The keys each lens OWNS. `encodeNav` emits a lens's own keys plus the shared ones and drops the
  * rest, so a Map URL never carries a stale Logic trail (and vice-versa). Typed over ViewMode so a
@@ -124,6 +125,7 @@ export const DEFAULT_NAV: NavState = {
   prSelected: null,
   reviewPr: null,
   reviewActive: false,
+  telemetrySourceId: null,
   environment: null,
 };
 
@@ -135,6 +137,7 @@ interface NavSource {
   logicSelected: string | null;
   flowExplorerOpen: boolean;
   flowSelection: FlowSelectionRef | null;
+  flowPaneOrigin?: "explorer" | "request" | null;
   logicRoot: string | null;
   logicView: LogicViewMode;
   logicStack: readonly string[];
@@ -151,6 +154,7 @@ interface NavSource {
   prsTab: PrsTab;
   prSelected: number | null;
   prReviewed: number | null;
+  telemetrySourceId: string | null;
   environment: string | null;
 }
 
@@ -162,7 +166,7 @@ export function navFrom(state: NavSource): NavState {
     compSelectedId: state.compSelectedId,
     logicSelected: state.logicSelected,
     flowExplorerOpen: state.flowExplorerOpen,
-    flowSelection: cloneFlowSelection(state.flowSelection),
+    flowSelection: state.flowPaneOrigin === "request" ? null : cloneFlowSelection(state.flowSelection),
     logicRoot: state.logicRoot,
     logicView: state.logicView,
     logicStack: [...state.logicStack],
@@ -180,6 +184,7 @@ export function navFrom(state: NavSource): NavState {
     prSelected: state.prSelected,
     reviewPr: state.prReviewed,
     reviewActive: state.prReviewed !== null,
+    telemetrySourceId: state.telemetrySourceId,
     environment: state.environment,
   };
 }
@@ -223,6 +228,7 @@ export function encodeNav(nav: NavState): Map<string, string> {
     out.set("prn", String(nav.reviewPr));
     out.set("rev", "1");
   }
+  setId(out, "tsrc", nav.telemetrySourceId);
   setId(out, "env", nav.environment);
   return scopeToView(out, nav.viewMode, activeReview);
 }
@@ -296,6 +302,7 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
       out.prSelected = Number(prNumber);
     }
   }
+  assignId(params, "tsrc", out, "telemetrySourceId");
   assignId(params, "env", out, "environment");
   return out;
 }

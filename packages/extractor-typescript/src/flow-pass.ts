@@ -21,6 +21,7 @@ import { createCallAnnotator, directAwaitOperandCall, standaloneAwaitStep } from
 import { inlineCallbackSteps, iterationCall, iterationSteps, jsxHandlerSteps } from "./callback-steps";
 import { controlStep } from "./control-steps";
 import { calleeName, truncate } from "./flow-labels";
+import { flowSource } from "./flow-source";
 import { bodyOf, type FlowWalker } from "./flow-walker";
 import { resolveTarget } from "./edge-resolve";
 import type { NodeDescriptor } from "./model";
@@ -152,6 +153,7 @@ function exitSteps(node: ReturnStatement | ThrowStatement, walker: FlowWalker, d
     kind: "exit",
     variant: Node.isReturnStatement(node) ? "return" : "throw",
     label: expression ? truncate(expression.getText()) : null,
+    source: flowSource(node),
   });
   return steps;
 }
@@ -175,7 +177,7 @@ function callSteps(node: CallExpression | NewExpression, walker: FlowWalker, dep
   const label = calleeName(callee);
   if (label) {
     const resolution = resolveTarget(callee, walker.index);
-    steps.push({ kind: "call", label, target: resolution.resolvedTarget, resolution: resolution.resolution, ...walker.annotate(node) });
+    steps.push({ kind: "call", label, target: resolution.resolvedTarget, resolution: resolution.resolution, ...walker.annotate(node), source: flowSource(node) });
   }
   steps.push(...inlineCallbackSteps(node, label, walker, depth));
   return steps;

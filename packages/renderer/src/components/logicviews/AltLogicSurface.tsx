@@ -14,6 +14,7 @@ import { FLOW_COLORS } from "../../derive/flowViewModel";
 import { MetroView } from "./MetroView";
 import { BlocksView } from "./BlocksView";
 import { TimelineView } from "./TimelineView";
+import { RequestTraceView } from "./RequestTraceView";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
@@ -43,7 +44,7 @@ export function AltLogicSurface(props: { rootId: NodeId; mode: Exclude<LogicView
   return (
     <div style={SURFACE}>
       <div style={SCROLL} onClick={() => selectLogicTarget(null)}>
-        {steps.length === 0 ? (
+        {steps.length === 0 && props.mode !== "request" ? (
           <div style={EMPTY}>this callable has no calls or control flow of its own</div>
         ) : (
           // The floating Toolbar panel owns the top-left corner; the canvas-like projections start
@@ -77,6 +78,9 @@ function focusedSteps(rootSteps: FlowStep[], focus: Array<{ label: string; bodie
 }
 
 function View({ mode, viewProps }: { mode: Exclude<LogicViewMode, "graph">; viewProps: FlowViewProps }) {
+  if (mode === "request") {
+    return <RequestTraceView {...viewProps} />;
+  }
   if (mode === "metro") {
     return <MetroView {...viewProps} />;
   }

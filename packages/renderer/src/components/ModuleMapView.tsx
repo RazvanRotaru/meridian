@@ -137,6 +137,7 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
   const showExternalGhosts = useBlueprint((state) => state.showExternalGhosts);
   const showCommons = useBlueprint((state) => state.showCommons);
   const viewMode = useBlueprint((state) => state.viewMode);
+  const requestFlowOpen = useBlueprint((state) => state.flowPaneOrigin === "request");
   const serviceScope = useBlueprint((state) => state.serviceScope);
   const serviceGroupingMode = useBlueprint((state) => state.serviceGroupingMode);
   const serviceGroupingTargetSize = useBlueprint((state) => state.serviceGroupingTargetSize);
@@ -147,7 +148,12 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
   // The source remains mounted while covered. Its recenter subscription is muted so a toolbar
   // signal cannot disturb the viewport which Minimal Graph will reveal on outward navigation.
   const interactions = useModuleNodeInteractions({ enableGhostInspection: true });
-  useRecenter(useMemo(() => [...selected], [selected]), { enabled: !covered });
+  // Runtime-card clicks often target one small method. Cap that fit below 1:1 so the highlighted
+  // node stays prominent without losing its owning file/unit and immediate execution context.
+  useRecenter(useMemo(() => [...selected], [selected]), {
+    enabled: !covered,
+    maxZoom: requestFlowOpen ? 0.9 : undefined,
+  });
 
   // Category/test/external hiding is a pure visibility filter over already-laid geometry. External
   // ghosts are removed before GraphSurface groups crowds, so the synthetic External card vanishes too.
@@ -218,6 +224,7 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
       onSemanticCommit={semanticNavigation.onSemanticCommit}
       onInit={semanticNavigation.onInit}
       wireHover={!covered}
+      requestOverlayChrome={!covered}
       flowExtras={(view) => (
         <>
           {renderBeacons(view)}
