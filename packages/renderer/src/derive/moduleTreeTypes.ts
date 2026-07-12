@@ -16,6 +16,32 @@ export type ModuleGroupData = ModulePackageData & {
   readOnly?: boolean;
 };
 
+/** Paint/interaction metadata for the reversible ghost-neighbour inspection trail. These flags
+ * decorate the ordinary module-card data rather than minting a parallel node kind: a visited ghost
+ * is temporarily materialized as its exact file/unit/block card, while its one-hop call frontier
+ * remains the shared ghost vocabulary. */
+// `type` (not interface) preserves the implicit string index compatibility required by React
+// Flow's `Node<Record<string, unknown>>` boundary when intersected with the existing data aliases.
+export type GhostInspectionNodeData = {
+  /** This card belongs to the retained inspection trail or its current one-hop call frontier. */
+  ghostInspectionPath?: true;
+  /** This exact artifact was explicitly visited by clicking through the ghost trail. */
+  ghostInspectionVisited?: true;
+  /** This card is one call hop from a visited artifact and may extend the trail. */
+  ghostInspectionFrontier?: true;
+  /** The visited card is reversible context, not yet covered by a committed `mapExtra` root. */
+  ghostInspectionPreview?: true;
+};
+
+export type ModuleTreeNodeData = (
+  | ModuleGroupData
+  | ModuleCardData
+  | UnitCardData
+  | BlockData
+  | StepData
+  | GhostData
+) & GhostInspectionNodeData;
+
 /** One node in the drawn containment tree, in DFS preorder (parents BEFORE children — React Flow
  * requires a parent to appear first). `parentId` is the drawn parent (null at the frontier root). */
 export interface VisibleModuleNode {
@@ -26,7 +52,7 @@ export interface VisibleModuleNode {
   isExpanded: boolean;
   depth: number;
   childCount: number;
-  data: ModuleGroupData | ModuleCardData | UnitCardData | BlockData | StepData | GhostData;
+  data: ModuleTreeNodeData;
 }
 
 /** A wire between two visible nodes. `category` "import" is the file/package import graph;
@@ -57,6 +83,8 @@ export interface ModuleTreeEdge {
   underlyingEdgeIds?: string[];
   /** The target is a demoted COMMONS hub (see commonsDemotion): hidden at rest, lit like any wire. */
   commons?: boolean;
+  /** A direct incoming/outgoing call hop from an explicitly visited ghost-inspection node. */
+  ghostInspectionPath?: true;
 }
 
 export interface ModuleTree {

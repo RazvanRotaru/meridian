@@ -216,6 +216,131 @@ describe("module-map selection set", () => {
   });
 });
 
+describe("module ghost inspection", () => {
+  async function inspectionStore(): Promise<BlueprintStore> {
+    const store = freshStore(ITERATIVE_GHOST_ARTIFACT);
+    store.setState({ moduleFocus: "ts:src/a.ts" });
+    await store.getState().moduleRelayout();
+    return store;
+  }
+
+  const nodeWithId = (store: BlueprintStore, id: string) =>
+    store.getState().moduleRfNodes.find((candidate) => candidate.id === id);
+
+  it("temporarily materializes the first ghost and reveals its next call neighbour without pinning", async () => {
+    const store = await inspectionStore();
+    expect(nodeWithId(store, ROUTES_METHOD)).toEqual(expect.objectContaining({ type: "ghost" }));
+
+    store.getState().inspectModuleGhost([ROUTES_METHOD], [BUILD_ORDERS], false);
+    await store.getState().moduleRelayout();
+
+    const state = store.getState();
+    expect(state.moduleGhostInspection).toEqual({
+      anchorIds: new Set([BUILD_ORDERS]),
+      visitedIds: new Set([ROUTES_METHOD]),
+    });
+    expect(state.mapExtra).toEqual(new Set());
+    expect(nodeWithId(store, ROUTES_METHOD)).toEqual(expect.objectContaining({
+      type: "block",
+      data: expect.objectContaining({
+        ghostInspectionPath: true,
+        ghostInspectionVisited: true,
+        ghostInspectionPreview: true,
+      }),
+    }));
+    expect(nodeWithId(store, DOWNSTREAM_METHOD)).toEqual(expect.objectContaining({
+      type: "ghost",
+      data: expect.objectContaining({
+        ghostInspectionPath: true,
+        ghostInspectionFrontier: true,
+      }),
+    }));
+    expect(nodeWithId(store, TERMINAL_METHOD)).toBeUndefined();
+  });
+
+  it("extends the retained path one click at a time", async () => {
+    const store = await inspectionStore();
+    store.getState().inspectModuleGhost([ROUTES_METHOD], [BUILD_ORDERS], false);
+    await store.getState().moduleRelayout();
+
+    store.getState().inspectModuleGhost([DOWNSTREAM_METHOD], [ROUTES_METHOD], true);
+    await store.getState().moduleRelayout();
+
+    const state = store.getState();
+    expect(state.moduleGhostInspection).toEqual({
+      anchorIds: new Set([BUILD_ORDERS]),
+      visitedIds: new Set([ROUTES_METHOD, DOWNSTREAM_METHOD]),
+    });
+    expect(state.mapExtra).toEqual(new Set());
+    expect(nodeWithId(store, ROUTES_METHOD)).toEqual(expect.objectContaining({ type: "block" }));
+    expect(nodeWithId(store, DOWNSTREAM_METHOD)).toEqual(expect.objectContaining({
+      type: "block",
+      data: expect.objectContaining({
+        ghostInspectionVisited: true,
+        ghostInspectionPreview: true,
+      }),
+    }));
+    expect(nodeWithId(store, TERMINAL_METHOD)).toEqual(expect.objectContaining({
+      type: "ghost",
+      data: expect.objectContaining({ ghostInspectionFrontier: true }),
+    }));
+  });
+
+  it("clears every temporary root and restores the original ghost frontier", async () => {
+    const store = await inspectionStore();
+    store.getState().inspectModuleGhost([ROUTES_METHOD], [BUILD_ORDERS], false);
+    await store.getState().moduleRelayout();
+    store.getState().inspectModuleGhost([DOWNSTREAM_METHOD], [ROUTES_METHOD], true);
+    await store.getState().moduleRelayout();
+
+    store.getState().clearModuleGhostInspection();
+    await store.getState().moduleRelayout();
+
+    const state = store.getState();
+    expect(state.moduleGhostInspection).toBeNull();
+    expect(state.mapExtra).toEqual(new Set());
+    expect(nodeWithId(store, ROUTES_METHOD)).toEqual(expect.objectContaining({ type: "ghost" }));
+    expect(nodeWithId(store, DOWNSTREAM_METHOD)).toBeUndefined();
+    expect(nodeWithId(store, TERMINAL_METHOD)).toBeUndefined();
+  });
+
+  it("commits a preview through the existing pin path without ending inspection", async () => {
+    const store = await inspectionStore();
+    store.getState().inspectModuleGhost([ROUTES_METHOD], [BUILD_ORDERS], false);
+    await store.getState().moduleRelayout();
+    expect((nodeWithId(store, ROUTES_METHOD)?.data as { ghostInspectionPreview?: boolean }).ghostInspectionPreview).toBe(true);
+
+    store.getState().promoteGhost(ROUTES_METHOD);
+    await store.getState().moduleRelayout();
+
+    const state = store.getState();
+    expect(state.moduleGhostInspection).toEqual({
+      anchorIds: new Set([BUILD_ORDERS]),
+      visitedIds: new Set([ROUTES_METHOD]),
+    });
+    expect(state.mapExtra).toEqual(new Set([ROUTES_FILE]));
+    expect(nodeWithId(store, ROUTES_METHOD)).toEqual(expect.objectContaining({
+      type: "block",
+      data: expect.objectContaining({
+        ghostInspectionPath: true,
+        ghostInspectionVisited: true,
+      }),
+    }));
+    expect((nodeWithId(store, ROUTES_METHOD)?.data as { ghostInspectionPreview?: boolean }).ghostInspectionPreview).toBeUndefined();
+  });
+
+  it("clears inspection when navigating to another module level", async () => {
+    const store = await inspectionStore();
+    store.getState().inspectModuleGhost([ROUTES_METHOD], [BUILD_ORDERS], false);
+    await store.getState().moduleRelayout();
+    expect(store.getState().moduleGhostInspection).not.toBeNull();
+
+    store.getState().setModuleFocus("ts:src");
+
+    expect(store.getState().moduleGhostInspection).toBeNull();
+  });
+});
+
 describe("minimal-graph overlay (extract selection)", () => {
   function withBuiltGraph(): BlueprintStore {
     const store = freshStore();
@@ -239,6 +364,31 @@ describe("minimal-graph overlay (extract selection)", () => {
       .minimalRfNodes.filter((candidate) => candidate.type === "ghost")
       .map((candidate) => candidate.id)
       .sort();
+
+  it("clears source inspection and relays out the still-mounted source when extracting", () => {
+    const store = freshStore(ITERATIVE_GHOST_ARTIFACT);
+    const inspectionAtRelayout: unknown[] = [];
+    const moduleRelayout = vi.fn(async () => {
+      inspectionAtRelayout.push(store.getState().moduleGhostInspection);
+    });
+    const minimalRelayout = vi.fn(async () => {});
+    store.setState({
+      moduleSelected: new Set(["ts:src/a.ts"]),
+      moduleGhostInspection: {
+        anchorIds: new Set([BUILD_ORDERS]),
+        visitedIds: new Set([ROUTES_METHOD]),
+      },
+      moduleRelayout,
+      minimalRelayout,
+    });
+
+    store.getState().buildMinimalGraph();
+
+    expect(store.getState().moduleGhostInspection).toBeNull();
+    expect(moduleRelayout).toHaveBeenCalledOnce();
+    expect(inspectionAtRelayout).toEqual([null]);
+    expect(minimalRelayout).toHaveBeenCalledOnce();
+  });
 
   it("bulk expand targets the visible minimal frontier instead of the covered module tree", () => {
     const store = freshStore();

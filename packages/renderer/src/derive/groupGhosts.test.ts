@@ -154,6 +154,27 @@ describe("groupLitGhosts — persistent real-parent anchors", () => {
     });
   });
 
+  it("carries a retained inspection path through the grouped parent and aggregate edge", () => {
+    const children = exactMembers();
+    children[2] = {
+      ...children[2],
+      data: { ...children[2].data, ghostInspectionPath: true },
+    };
+    const edges = children.map((node, index) => {
+      const edge = wire(`e${index + 1}`, CORE, node.id);
+      return index === 2
+        ? { ...edge, data: { ...edge.data, ghostInspectionPath: true } }
+        : edge;
+    });
+
+    const result = groupLitGhosts([coreNode(), ...children], edges, fixtureIndex(), options());
+    expect(result.nodes.find((node) => node.id === PARENT)?.data).toMatchObject({
+      ghostInspectionPath: true,
+    });
+    expect(result.edges).toHaveLength(1);
+    expect(result.edges[0].data).toMatchObject({ ghostInspectionPath: true });
+  });
+
   it("keeps the parent and exact children expanded, with parent→child presentation spokes", () => {
     const children = exactMembers();
     const edges = children.map((node, index) => wire(`e${index + 1}`, CORE, node.id));

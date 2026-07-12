@@ -207,6 +207,9 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     minimalRfEdges: [],
     minimalLayoutStatus: "idle",
     moduleExpanded: new Set(rebuildingReview ? [] : nav.moduleExpanded),
+    // Ghost-path exploration is deliberately session/projection-local. History restores rebuild
+    // only committed navigation and must never resurrect temporary preview roots.
+    moduleGhostInspection: null,
     moduleRadius: nav.moduleRadius,
     highlightMode: nav.highlightMode,
     hiddenCategories: new Set(nav.hiddenCategories),

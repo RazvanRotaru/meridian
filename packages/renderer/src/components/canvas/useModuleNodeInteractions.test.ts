@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { Node } from "@xyflow/react";
+import type { Edge, Node } from "@xyflow/react";
 import { moduleSurfaceSpec } from "./surfaceSpec";
 import {
   artifactOwnerOfStep,
+  ghostInspectionRequestFor,
+  ghostInspectionSelectionsToDrop,
   ghostPaintSeedOverride,
   ghostGroupInteractionOf,
   navigationForNode,
@@ -16,6 +18,92 @@ const node = (id: string, type: string, data: Record<string, unknown> = {}): Nod
   type,
   data,
   position: { x: 0, y: 0 },
+});
+
+const edge = (id: string, source: string, target: string, data: Record<string, unknown> = {}): Edge => ({
+  id,
+  source,
+  target,
+  data,
+});
+
+describe("ghost inspection request", () => {
+  it("resolves an exact ghost's real anchor through the canonical ghost edge", () => {
+    const anchor = node("ts:app.ts#placeOrder", "block");
+    const ghost = node("ts:email.ts#EmailService.send", "ghost");
+
+    expect(ghostInspectionRequestFor(
+      ghost,
+      [anchor, ghost],
+      [edge("gdep:calls:placeOrder->send", anchor.id, ghost.id, { ghost: true })],
+    )).toEqual({
+      visitedIds: [ghost.id],
+      anchorIds: [anchor.id],
+    });
+  });
+
+  it("leaves grouped and folder ghosts to explicit child disclosure instead of materializing an unbounded family", () => {
+    const anchorB = node("ts:app.ts#b", "block");
+    const anchorA = node("ts:app.ts#a", "block");
+    const exactA = node("ts:dep.ts#Worker.a", "ghost");
+    const exactB = node("ts:dep.ts#Worker.b", "ghost");
+    const unrelatedGhost = node("ts:dep.ts#Other.run", "ghost");
+    const group = node("ts:dep.ts#Worker", "ghost", {
+      groupedGhostIds: [exactA.id, exactB.id, exactA.id],
+      // Presentation/highway-like aggregates can retain further real member ids. They are visited,
+      // while raw-edge adjacency still resolves through the exact represented ghost endpoints.
+      members: ["ts:dep.ts#Worker.helper"],
+    });
+
+    expect(ghostInspectionRequestFor(
+      group,
+      [anchorB, anchorA, exactA, exactB, unrelatedGhost],
+      [
+        edge("gdep:calls:a->worker-a", anchorA.id, exactA.id, { ghost: true }),
+        edge("gdep:calls:worker-b->b", exactB.id, anchorB.id, { ghost: true }),
+        edge("gdep:calls:worker-a->worker-b", exactA.id, exactB.id, { ghost: true }),
+        edge("gdep:calls:worker-a->other", exactA.id, unrelatedGhost.id, { ghost: true }),
+        edge("ordinary", exactA.id, "ts:app.ts#ignored", { ghost: false }),
+      ],
+    )).toBeNull();
+    expect(ghostInspectionRequestFor(
+      node("ts:dep", "ghost", { members: ["ts:dep/a.ts", "ts:dep/b.ts"] }),
+      [anchorA],
+      [],
+    )).toBeNull();
+  });
+
+  it("falls back to captured paint provenance when no canonical ghost edge survives", () => {
+    const anchorB = node("ts:app.ts#b", "block");
+    const anchorA = node("ts:app.ts#a", "block");
+    const filteredAnchorId = "ts:app.ts#filteredAnchor";
+    const ghostSeed = node("ts:dep.ts#Other.run", "ghost");
+    const ghost = node("ts:dep.ts#Worker.run", "ghost", {
+      // A restored paint context may retain a real provenance id whose card is no longer present
+      // in this filtered raw presentation; it remains a valid anchor for the next derive.
+      ghostPaintSeedIds: [anchorB.id, filteredAnchorId, ghostSeed.id, anchorA.id, anchorB.id],
+    });
+
+    expect(ghostInspectionRequestFor(ghost, [anchorB, anchorA, ghostSeed], [])).toEqual({
+      visitedIds: [ghost.id],
+      anchorIds: [anchorA.id, anchorB.id, filteredAnchorId],
+    });
+  });
+
+  it("does not start ghost inspection from a non-ghost card", () => {
+    const preview = node("ts:dep.ts#Worker.run", "block", { ghostInspectionPreview: true });
+    expect(ghostInspectionRequestFor(preview, [preview], [])).toBeNull();
+  });
+
+  it("drops only selected temporary previews when an outside modifier-click ends inspection", () => {
+    const preview = node("preview", "block", { ghostInspectionPreview: true });
+    const pinned = node("pinned", "block", { ghostInspectionPath: true });
+    const ordinary = node("ordinary", "block");
+    expect(ghostInspectionSelectionsToDrop(
+      new Set([preview.id, pinned.id, ordinary.id]),
+      [preview, pinned, ordinary],
+    )).toEqual([preview.id]);
+  });
 });
 
 describe("universal module-node selection", () => {

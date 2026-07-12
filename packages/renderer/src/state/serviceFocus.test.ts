@@ -502,6 +502,28 @@ describe("revealServiceGhost (ghost double-click on the Service lens)", () => {
     expect(state.moduleExpanded).toEqual(new Set(["keep-me"]));
     expect(state.moduleFocus).toBeNull();
   });
+
+  it("an unclustered ghost clears inspection before relaying out the source graph", () => {
+    const store = freshStore();
+    const inspectionAtRelayout: unknown[] = [];
+    const moduleRelayout = vi.fn(async () => {
+      inspectionAtRelayout.push(store.getState().moduleGhostInspection);
+    });
+    store.setState({
+      viewMode: "call",
+      moduleGhostInspection: {
+        anchorIds: new Set([`${ALPHA}.run`]),
+        visitedIds: new Set(["ts:lib"]),
+      },
+      moduleRelayout,
+    });
+
+    store.getState().revealServiceGhost("ts:lib");
+
+    expect(store.getState().moduleGhostInspection).toBeNull();
+    expect(moduleRelayout).toHaveBeenCalledOnce();
+    expect(inspectionAtRelayout).toEqual([null]);
+  });
 });
 
 describe("minimal-graph seeds from svc: frames", () => {

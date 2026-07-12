@@ -119,4 +119,25 @@ describe("flow explorer store slice", () => {
     store.getState().selectFlowEntry(null);
     expect(store.getState().logicSelected).toBe("ts:pkg/src/b.ts#leaf");
   });
+
+  it("clears ghost inspection before relaying out a non-review flow reveal", () => {
+    const store = freshStore();
+    const inspectionAtRelayout: unknown[] = [];
+    const moduleRelayout = vi.fn(async () => {
+      inspectionAtRelayout.push(store.getState().moduleGhostInspection);
+    });
+    store.setState({
+      moduleGhostInspection: {
+        anchorIds: new Set(["ts:pkg/src/a.ts#run"]),
+        visitedIds: new Set(["ts:pkg/src/b.ts#leaf"]),
+      },
+      moduleRelayout,
+    });
+
+    store.getState().selectFlowEntry({ rootId: "ts:pkg/src/a.ts#run", blockPath: [] });
+
+    expect(store.getState().moduleGhostInspection).toBeNull();
+    expect(moduleRelayout).toHaveBeenCalledOnce();
+    expect(inspectionAtRelayout).toEqual([null]);
+  });
 });
