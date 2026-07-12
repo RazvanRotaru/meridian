@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
+import type { GraphNode } from "@meridian/core";
 import type { PrGitHubComment } from "../../state/prTypes";
 import { codeReviewComments, isHeadSideReviewComment } from "./useCodeReviewComments";
-import { placeNodeDiffPreview, previewFileAllowsLineComments, visiblePreviewCommentLines, type PreviewRect } from "./useNodeDiffPreview";
+import {
+  codePreviewNode,
+  placeNodeDiffPreview,
+  previewFileAllowsLineComments,
+  visiblePreviewCommentLines,
+  type PreviewRect,
+} from "./useNodeDiffPreview";
 
 function existingComment(
   body: string,
@@ -72,6 +79,23 @@ describe("placeNodeDiffPreview", () => {
     expect(placement.left).toBeGreaterThanOrEqual(112);
     expect(placement.left + placement.width).toBeLessThanOrEqual(588);
     expect(placement.top).toBe(62);
+  });
+});
+
+describe("codePreviewNode", () => {
+  it("allows every source-located node regardless of PR change membership", () => {
+    const unchanged: GraphNode = {
+      id: "unchanged",
+      kind: "method",
+      qualifiedName: "unchanged",
+      displayName: "unchanged",
+      parentId: null,
+      location: { file: "src/unchanged.ts", startLine: 4, endLine: 8 },
+    };
+    const nodes = new Map([[unchanged.id, unchanged]]);
+
+    expect(codePreviewNode(nodes, unchanged.id)).toBe(unchanged);
+    expect(codePreviewNode(nodes, "synthetic-hover-card")).toBeNull();
   });
 });
 

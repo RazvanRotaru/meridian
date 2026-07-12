@@ -181,7 +181,7 @@ export interface GraphSurfaceProps {
   autoFitView?: boolean;
   /** Wire chrome — hover naming, click-pinned inspector/source evidence, and direction pulses. */
   wireHover?: boolean;
-  /** PR review only: show a scrollable source diff after dwelling over a directly changed node. */
+  /** PR review only: show a scrollable code preview after dwelling over a source-located node. */
   nodeDiffPreview?: boolean;
   /** Every shared-canvas mount declares its semantic scene explicitly. Empty means this particular
    * scene is already at its root; omission is forbidden so a new mount cannot silently lose zoom
