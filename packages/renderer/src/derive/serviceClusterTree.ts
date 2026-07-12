@@ -22,7 +22,7 @@ import { createCodeWalk, depWireEdges, flowChainEdges, stepCallEdges, visitCode,
 import type { ModuleGraph } from "./moduleGraph";
 import type { BlockDeps } from "./blockDeps";
 import type { ServiceClustering } from "./serviceComposition";
-import type { ServiceGroupingMode } from "./serviceClusteringModes";
+import type { ServiceGroupingLabelMode, ServiceGroupingMode } from "./serviceClusteringModes";
 import { clusteringFor } from "./serviceClusteringCache";
 import type { ModuleTree } from "./moduleTree";
 import { clusterCouplingEdges, clusterDegrees, frameIdOf, isOpen, leadIdOf } from "./serviceClusterEdges";
@@ -30,6 +30,7 @@ import { finalizeServiceDomainNode, finalizeServiceNode } from "./serviceCluster
 import { serviceGhostTier } from "./serviceGhosts";
 import {
   deriveServiceDomains,
+  serviceDomainById,
   shouldGroupServiceDomains,
   visibleServiceDomains,
   type ServiceDomain,
@@ -48,6 +49,8 @@ export interface ServiceTreeOptions {
   groupingMode?: ServiceGroupingMode;
   /** Preferred member count for balanced parent-assignment strategies. */
   groupingTargetSize?: number;
+  /** Whether inferred parent names show one semantic term or the top pair. */
+  groupingLabelMode?: ServiceGroupingLabelMode;
 }
 
 export function deriveServiceTree(
@@ -63,7 +66,12 @@ export function deriveServiceTree(
   // sub-view's lead resolution read, so a relayout never re-clusters and scope leads always match.
   const full = clusteringFor(index);
   const scoped = scopedTo(full, options.scopeLeadIds);
-  const domainModel = deriveServiceDomains(full, options.groupingMode, options.groupingTargetSize);
+  const domainModel = deriveServiceDomains(
+    full,
+    options.groupingMode,
+    options.groupingTargetSize,
+    options.groupingLabelMode,
+  );
   const groupsDomains = shouldGroupServiceDomains(full);
   const focusLead = resolveFocusLead(focus, scoped);
   const focusDomain = resolveFocusDomain(focus, scoped, domainModel, groupsDomains);
@@ -162,7 +170,7 @@ function resolveFocusDomain(
   if (focus === null || !groupsDomains) {
     return null;
   }
-  const domain = model.domainById.get(focus);
+  const domain = serviceDomainById(model, focus);
   if (!domain) {
     return null;
   }

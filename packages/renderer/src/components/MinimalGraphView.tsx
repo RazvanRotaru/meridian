@@ -74,6 +74,7 @@ export function MinimalGraphView({
   const serviceScope = useBlueprint((state) => state.serviceScope);
   const serviceGroupingMode = useBlueprint((state) => state.serviceGroupingMode);
   const serviceGroupingTargetSize = useBlueprint((state) => state.serviceGroupingTargetSize);
+  const serviceGroupingLabelMode = useBlueprint((state) => state.serviceGroupingLabelMode);
   const showExternalGhosts = useBlueprint((state) => state.showExternalGhosts);
   const { closeMinimalGraph, promoteGhost } = useBlueprintActions();
   const relations = activeModuleSurfaceSpec(viewMode).relations;
@@ -107,6 +108,7 @@ export function MinimalGraphView({
     serviceScope,
     serviceGroupingMode,
     serviceGroupingTargetSize,
+    serviceGroupingLabelMode,
   };
   const visibleGraph = useMemo(
     () => filterExternalGhosts(nodes, edges, showExternalGhosts),

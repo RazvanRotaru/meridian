@@ -5,6 +5,7 @@ import { SERVICE_GROUPING_TARGET_SIZES } from "../state/serviceGroupingTargetSiz
 import {
   SERVICE_GROUPING_INFO,
   ServiceGroupingInfoPanel,
+  ServiceGroupingLabelModeControl,
   ServiceGroupingTargetSizeControl,
   serviceGroupingUsesTargetSize,
 } from "./ServiceGroupingSelect";
@@ -136,5 +137,57 @@ describe("Service grouping target size", () => {
     );
 
     expect(markup).toMatch(/<select[^>]*disabled=""/);
+  });
+});
+
+describe("Service grouping label detail", () => {
+  it("renders an accessible pressed toggle for multi-part semantic labels", () => {
+    const single = renderToStaticMarkup(
+      <ServiceGroupingLabelModeControl
+        mode="vocabulary"
+        labelMode="single"
+        disabled={false}
+        onChange={() => undefined}
+      />,
+    );
+    const pair = renderToStaticMarkup(
+      <ServiceGroupingLabelModeControl
+        mode="vocabulary"
+        labelMode="pair"
+        disabled={false}
+        onChange={() => undefined}
+      />,
+    );
+
+    expect(single).toContain('role="group"');
+    expect(single).toContain('aria-label="Cluster label detail"');
+    expect(single).toContain('aria-pressed="false"');
+    expect(single).toContain("Multi-part labels");
+    expect(single).toContain("only the strongest shared concept");
+    expect(pair).toContain('aria-pressed="true"');
+    expect(pair).toContain("multiple distinct concepts");
+  });
+
+  it("disables the toggle for Folder and while whole-system grouping is unavailable", () => {
+    const folder = renderToStaticMarkup(
+      <ServiceGroupingLabelModeControl
+        mode="folder"
+        labelMode="single"
+        disabled={false}
+        onChange={() => undefined}
+      />,
+    );
+    const unavailable = renderToStaticMarkup(
+      <ServiceGroupingLabelModeControl
+        mode="dependency"
+        labelMode="single"
+        disabled={true}
+        onChange={() => undefined}
+      />,
+    );
+
+    expect(folder).toMatch(/<button[^>]*disabled=""/);
+    expect(folder).toContain("Folder names come directly from repository paths.");
+    expect(unavailable).toMatch(/<button[^>]*disabled=""/);
   });
 });

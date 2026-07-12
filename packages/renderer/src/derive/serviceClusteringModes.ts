@@ -29,6 +29,10 @@ export const SERVICE_GROUPING_OPTIONS = [
 
 export type ServiceGroupingMode = (typeof SERVICE_GROUPING_OPTIONS)[number]["id"];
 
+export type ServiceGroupingLabelMode = "single" | "pair";
+
+export const DEFAULT_SERVICE_GROUPING_LABEL_MODE: ServiceGroupingLabelMode = "single";
+
 export interface ServiceNodeGroup {
   /** Stable for the same mode + exact member set; independent of input iteration order and label. */
   id: string;
@@ -58,6 +62,7 @@ export function deriveServiceNodeGroups(
   clustering: ServiceClustering,
   mode: ServiceGroupingMode,
   targetSize: number = DEFAULT_SERVICE_GROUPING_TARGET_SIZE,
+  labelMode: ServiceGroupingLabelMode = DEFAULT_SERVICE_GROUPING_LABEL_MODE,
 ): ServiceNodeGroup[] {
   const leads = sortedLeads(clustering.clusters);
   if (leads.length === 0) {
@@ -75,13 +80,13 @@ export function deriveServiceNodeGroups(
       ? { cutWeight: 1, quotientEdgeCount: 0.2 }
       : { cutWeight: 1, cutEdgeCount: 0.1, quotientEdgeCount: 0.2 };
     const partition = partitionServiceGraph(leads, edges, targetSize, { objective }).groups;
-    return materializeGroups(mode, partition, clustering, labelVocabulary);
+    return materializeGroups(mode, partition, clustering, labelVocabulary, labelMode);
   }
   if (mode === "leiden") {
     const partition = leidenCpmPartition(leads, dependencyEdges, {
       resolution: leidenCpmResolution(dependencyEdges, targetSize),
     });
-    return materializeGroups(mode, partition, clustering, labelVocabulary);
+    return materializeGroups(mode, partition, clustering, labelVocabulary, labelMode);
   }
   if (mode === "bunch") {
     const partition = targetSizedBunchPartition(
@@ -89,7 +94,7 @@ export function deriveServiceNodeGroups(
       directedDependencyAffinities(clustering),
       targetSize,
     );
-    return materializeGroups(mode, partition, clustering, labelVocabulary);
+    return materializeGroups(mode, partition, clustering, labelVocabulary, labelMode);
   }
 
   const vocabulary = vocabularyVectors(clustering);
@@ -110,7 +115,7 @@ export function deriveServiceNodeGroups(
     implementationEdges,
   );
   const partition = deterministicModularityPartition(leads, edges, resolution);
-  return materializeGroups(mode, partition, clustering, labelVocabulary);
+  return materializeGroups(mode, partition, clustering, labelVocabulary, labelMode);
 }
 
 /** Bunch discovers cohesive fine modules. The visual parent size is a separate product constraint:
@@ -901,10 +906,15 @@ function materializeGroups(
   memberSets: readonly string[][],
   clustering: ServiceClustering,
   vocabulary: ReadonlyMap<string, FeatureVector>,
+  labelMode: ServiceGroupingLabelMode,
 ): ServiceNodeGroup[] {
   const documentFrequency = vocabularyDocumentFrequency(vocabulary);
   return memberSets
-    .map((members) => group(mode, labelFor(members, clustering, vocabulary, documentFrequency), members))
+    .map((members) => group(
+      mode,
+      labelFor(members, clustering, vocabulary, documentFrequency, labelMode),
+      members,
+    ))
     .sort((a, b) => compareCodeUnit(a.label, b.label) || compareMemberSets(a.leadIds, b.leadIds));
 }
 
@@ -913,6 +923,7 @@ function labelFor(
   clustering: ServiceClustering,
   vocabulary: ReadonlyMap<string, FeatureVector>,
   documentFrequency: ReadonlyMap<string, number>,
+  labelMode: ServiceGroupingLabelMode,
 ): string {
   if (members.length === 1) {
     return clustering.metrics.get(members[0])?.displayName ?? members[0];
@@ -927,8 +938,8 @@ function labelFor(
     }
   }
   // A rare word from one class is a poor cluster name. Require a concept to appear across a
-  // meaningful slice of the group, then reward coverage explicitly; this keeps labels semantic
-  // (`Conversation / Message`) instead of promoting one member's incidental identifier.
+  // meaningful slice of the group, then reward coverage explicitly; this keeps generated labels
+  // semantic instead of promoting one member's incidental identifier.
   const minimumCoverage = Math.max(2, Math.ceil(members.length * 0.2));
   const rankedTerms = [...scores]
     .filter(([term]) => (coverage.get(term) ?? 0) >= minimumCoverage)
@@ -939,6 +950,7 @@ function labelFor(
     });
   const terms: string[] = [];
   const stems = new Set<string>();
+  const maximumTerms = labelMode === "pair" ? 2 : 1;
   for (const [term] of rankedTerms) {
     const stem = labelStem(term);
     if (stems.has(stem)) {
@@ -946,7 +958,7 @@ function labelFor(
     }
     stems.add(stem);
     terms.push(titleCase(term));
-    if (terms.length === 2) {
+    if (terms.length === maximumTerms) {
       break;
     }
   }

@@ -17,6 +17,7 @@ function emptyNav(): NavState {
     moduleFocus: null,
     serviceGroupingMode: "folder",
     serviceGroupingTargetSize: 12,
+    serviceGroupingLabelMode: "single",
     minimalSeedIds: [],
     moduleExpanded: [],
     moduleRadius: 1,
@@ -99,6 +100,17 @@ describe("urlState", () => {
     for (const invalid of ["", "7", "13", "12.5", "-6", "NaN"]) {
       expect(decodeNav(new URLSearchParams(`view=call&sgsize=${invalid}`)).serviceGroupingTargetSize).toBeUndefined();
     }
+  });
+
+  it("round-trips paired Service labels, omits single labels, and rejects junk", () => {
+    const paired: NavState = {
+      ...emptyNav(),
+      viewMode: "call",
+      serviceGroupingLabelMode: "pair",
+    };
+    expect(roundTrip(paired)).toEqual({ viewMode: "call", serviceGroupingLabelMode: "pair" });
+    expect(encodeNav({ ...emptyNav(), viewMode: "call" }).has("sglabels")).toBe(false);
+    expect(decodeNav(new URLSearchParams("view=call&sglabels=bogus")).serviceGroupingLabelMode).toBeUndefined();
   });
 
   it("round-trips a logic view (root, drill stack, selection)", () => {
@@ -409,6 +421,10 @@ describe("urlState", () => {
     it("is false for a Service target-size presentation change", () => {
       expect(isNavigationChange(base, { ...base, serviceGroupingTargetSize: 24 })).toBe(false);
     });
+
+    it("is false for a Service label-detail presentation change", () => {
+      expect(isNavigationChange(base, { ...base, serviceGroupingLabelMode: "pair" })).toBe(false);
+    });
   });
 
   it("sorts expanded ids so the URL is deterministic regardless of Set order", () => {
@@ -432,6 +448,7 @@ function storeShape() {
     moduleFocus: null,
     serviceGroupingMode: "folder" as const,
     serviceGroupingTargetSize: 12 as const,
+    serviceGroupingLabelMode: "single" as const,
     minimalSeedIds: [] as string[],
     moduleExpanded: new Set<string>(),
     moduleRadius: 1,

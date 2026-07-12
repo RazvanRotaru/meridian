@@ -31,8 +31,13 @@ import { deriveServiceTree } from "../../derive/serviceClusterTree";
 import { deriveUiTree } from "../../derive/uiTree";
 import { clusterMemberSeeds, homeFileOf, leadIdOf } from "../../derive/serviceClusterEdges";
 import { clusteringFor } from "../../derive/serviceClusteringCache";
-import { deriveServiceDomains, isServiceDomainId, shouldGroupServiceDomains } from "../../derive/serviceDomains";
-import type { ServiceGroupingMode } from "../../derive/serviceClusteringModes";
+import {
+  deriveServiceDomains,
+  isServiceDomainId,
+  serviceDomainById,
+  shouldGroupServiceDomains,
+} from "../../derive/serviceDomains";
+import type { ServiceGroupingLabelMode, ServiceGroupingMode } from "../../derive/serviceClusteringModes";
 import { semanticOuterLevel } from "../../derive/moduleSemanticComposite";
 import { resolveServiceAnchors } from "../../state/lensPath";
 import { scopeSetOf, serviceScopeFor, type ServiceScope } from "../../state/serviceScope";
@@ -61,6 +66,7 @@ export interface SurfaceTreeState {
   serviceScope: ServiceScope | null;
   serviceGroupingMode?: ServiceGroupingMode;
   serviceGroupingTargetSize?: number;
+  serviceGroupingLabelMode?: ServiceGroupingLabelMode;
   /** The Commons toggle: utility hubs demote into the dock tray (the Map's hub treatment — the
    * toggle is Map-gated in the control panel, and only the Map's derive reads it). */
   showCommons: boolean;
@@ -134,6 +140,7 @@ export interface SurfaceNavigationModel {
     index: GraphIndex,
     groupingMode?: ServiceGroupingMode,
     groupingTargetSize?: number,
+    groupingLabelMode?: ServiceGroupingLabelMode,
   ): Crumb[];
   /** Resolve the real graph which contains this level as one node. The caller derives that tree by
    * changing `moduleFocus` to the returned focus, clearing level-local expansion, and applying the
@@ -202,13 +209,14 @@ function serviceCrumbs(
   index: GraphIndex,
   groupingMode?: ServiceGroupingMode,
   groupingTargetSize?: number,
+  groupingLabelMode?: ServiceGroupingLabelMode,
 ): Crumb[] {
   if (effectiveFocus === null) {
     return [];
   }
   const clustering = clusteringFor(index);
-  const model = deriveServiceDomains(clustering, groupingMode, groupingTargetSize);
-  const focusedDomain = model.domainById.get(effectiveFocus);
+  const model = deriveServiceDomains(clustering, groupingMode, groupingTargetSize, groupingLabelMode);
+  const focusedDomain = serviceDomainById(model, effectiveFocus);
   if (focusedDomain) {
     return [{ id: focusedDomain.id, label: focusedDomain.label }];
   }
@@ -236,8 +244,9 @@ function serviceSemanticParent({ state, effectiveFocus }: SurfaceSemanticParentC
     clustering,
     state.serviceGroupingMode,
     state.serviceGroupingTargetSize,
+    state.serviceGroupingLabelMode,
   );
-  const focusedDomain = model.domainById.get(effectiveFocus);
+  const focusedDomain = serviceDomainById(model, effectiveFocus);
   if (focusedDomain !== undefined) {
     // Scoped overviews intentionally draw no domain cards, so such a stale/deep-linked focus has
     // no canonical parent anchor in that projection.
@@ -309,6 +318,7 @@ const SERVICE_SURFACE: SurfaceSpec = {
       hiddenIds: extras.hiddenIds,
       groupingMode: state.serviceGroupingMode,
       groupingTargetSize: state.serviceGroupingTargetSize,
+      groupingLabelMode: state.serviceGroupingLabelMode,
     }),
   navigation: {
     navigateInto: (actions, id) => actions.setModuleFocus(id),

@@ -10,7 +10,7 @@
 
 import type { Edge, Node } from "@xyflow/react";
 import type { ViewMode } from "../../derive/edgeSelection";
-import type { ServiceGroupingMode } from "../../derive/serviceClusteringModes";
+import type { ServiceGroupingLabelMode, ServiceGroupingMode } from "../../derive/serviceClusteringModes";
 import {
   SEMANTIC_CONTEXT_CLASS,
   SEMANTIC_CONTEXT_EDGE_CLASS,
@@ -37,6 +37,7 @@ export interface MinimalSourceGraphState {
   serviceScope: ServiceScope | null;
   serviceGroupingMode?: ServiceGroupingMode;
   serviceGroupingTargetSize?: number;
+  serviceGroupingLabelMode?: ServiceGroupingLabelMode;
 }
 
 export interface FlatMinimalGraph {
@@ -96,6 +97,7 @@ export function minimalSourceGraphLabel(source: MinimalSourceGraphState): string
       source.index,
       source.serviceGroupingMode,
       source.serviceGroupingTargetSize,
+      source.serviceGroupingLabelMode,
     );
     for (let index = crumbs.length - 1; index >= 0; index -= 1) {
       const label = nonBlank(crumbs[index]?.label);

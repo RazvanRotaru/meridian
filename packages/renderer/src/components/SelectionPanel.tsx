@@ -14,9 +14,14 @@ import { scopeTarget } from "../state/selectionReveal";
 import { selectedAnchorIds } from "../state/lensPath";
 import { baseName } from "../derive/flowViewModel";
 import type { GraphIndex } from "../graph/graphIndex";
-import { deriveServiceDomains, isServiceDomainId, serviceDomainLabel } from "../derive/serviceDomains";
+import {
+  deriveServiceDomains,
+  isServiceDomainId,
+  serviceDomainById,
+  serviceDomainLabel,
+} from "../derive/serviceDomains";
 import { clusteringFor } from "../derive/serviceClusteringCache";
-import type { ServiceGroupingMode } from "../derive/serviceClusteringModes";
+import type { ServiceGroupingLabelMode, ServiceGroupingMode } from "../derive/serviceClusteringModes";
 import { CountBadge, Divider, Pill, SectionLabel, TOKENS } from "./controlpanel/panelKit";
 
 export function SelectionPanel() {
@@ -25,6 +30,7 @@ export function SelectionPanel() {
   const serviceScope = useBlueprint((state) => state.serviceScope);
   const serviceGroupingMode = useBlueprint((state) => state.serviceGroupingMode);
   const serviceGroupingTargetSize = useBlueprint((state) => state.serviceGroupingTargetSize);
+  const serviceGroupingLabelMode = useBlueprint((state) => state.serviceGroupingLabelMode);
   const index = useBlueprint((state) => state.index);
   const { openServiceScope } = useBlueprintActions();
 
@@ -51,7 +57,13 @@ export function SelectionPanel() {
       <section style={SECTION_STYLE}>
         <SectionLabel>Selection</SectionLabel>
         <div style={HEADER_STYLE}>
-          <span style={NAME_STYLE}>{shortName(anchors[0], index, serviceGroupingMode, serviceGroupingTargetSize)}</span>
+          <span style={NAME_STYLE}>{shortName(
+            anchors[0],
+            index,
+            serviceGroupingMode,
+            serviceGroupingTargetSize,
+            serviceGroupingLabelMode,
+          )}</span>
           {anchors.length > 1 ? <CountBadge>+{anchors.length - 1}</CountBadge> : null}
         </div>
         {showScope ? (
@@ -74,9 +86,21 @@ export function SelectionPanel() {
 
 /** The node's display name; falls back to the id's qualname (or its module's basename) for ids the
  * graph no longer holds — parsed through core's id grammar, which also strips `~n` ordinals. */
-function shortName(nodeId: string, index: GraphIndex, groupingMode: ServiceGroupingMode, groupingTargetSize: number): string {
+function shortName(
+  nodeId: string,
+  index: GraphIndex,
+  groupingMode: ServiceGroupingMode,
+  groupingTargetSize: number,
+  groupingLabelMode: ServiceGroupingLabelMode,
+): string {
   if (isServiceDomainId(nodeId)) {
-    const liveDomain = deriveServiceDomains(clusteringFor(index), groupingMode, groupingTargetSize).domainById.get(nodeId);
+    const model = deriveServiceDomains(
+      clusteringFor(index),
+      groupingMode,
+      groupingTargetSize,
+      groupingLabelMode,
+    );
+    const liveDomain = serviceDomainById(model, nodeId);
     if (liveDomain) {
       return liveDomain.label;
     }

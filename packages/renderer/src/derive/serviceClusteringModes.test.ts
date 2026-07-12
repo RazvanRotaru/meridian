@@ -70,6 +70,50 @@ describe("deriveServiceNodeGroups", () => {
     ]);
   });
 
+  it("defaults to one semantic concept and opts into a stable two-part label", () => {
+    const clustering = fixture(
+      [
+        lead("chat-reader", "ConversationMessageReader", "src/chat/reader.ts"),
+        lead("chat-writer", "ConversationMessageWriter", "src/chat/writer.ts"),
+        lead("chat-store", "ConversationMessageStore", "src/chat/store.ts"),
+      ],
+      [
+        coupling("chat-reader", "chat-writer"),
+        coupling("chat-writer", "chat-store"),
+        coupling("chat-store", "chat-reader"),
+      ],
+    );
+
+    const single = deriveServiceNodeGroups(clustering, "dependency");
+    const pair = deriveServiceNodeGroups(clustering, "dependency", 12, "pair");
+
+    expect(single).toHaveLength(1);
+    expect(single[0]?.label).toBe("Conversation");
+    expect(pair[0]?.label).toBe("Conversation / Message");
+    expect(pair[0]?.id).toBe(single[0]?.id);
+    expect(pair[0]?.leadIds).toEqual(single[0]?.leadIds);
+  });
+
+  it("does not spend both paired-label slots on singular and plural forms", () => {
+    const clustering = fixture(
+      [
+        lead("skill-reader", "SkillSkillSkillsSkillsCatalogReader", "src/skills/reader.ts"),
+        lead("skill-writer", "SkillSkillSkillsSkillsCatalogWriter", "src/skills/writer.ts"),
+        lead("skill-store", "SkillSkillSkillsSkillsCatalogStore", "src/skills/store.ts"),
+      ],
+      [
+        coupling("skill-reader", "skill-writer"),
+        coupling("skill-writer", "skill-store"),
+        coupling("skill-store", "skill-reader"),
+      ],
+    );
+
+    const groups = deriveServiceNodeGroups(clustering, "dependency", 12, "pair");
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.label).toBe("Skill / Catalog");
+  });
+
   it("uses the requested size for both balanced cut modes", () => {
     const leads = Array.from({ length: 12 }, (_, index) =>
       lead(`svc-${index}`, `Service${index}`, `src/services/${index}.ts`));

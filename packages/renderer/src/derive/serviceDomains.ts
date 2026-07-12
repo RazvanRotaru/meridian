@@ -7,8 +7,10 @@ import {
   type ServiceClustering,
 } from "./serviceComposition";
 import {
+  DEFAULT_SERVICE_GROUPING_LABEL_MODE,
   deriveServiceNodeGroups,
   SERVICE_GROUPING_OPTIONS,
+  type ServiceGroupingLabelMode,
   type ServiceGroupingMode,
   type ServiceNodeGroup,
 } from "./serviceClusteringModes";
@@ -56,13 +58,14 @@ export function deriveServiceDomains(
   clustering: ServiceClustering,
   mode: ServiceGroupingMode = DEFAULT_SERVICE_GROUPING_MODE,
   targetSize: number = DEFAULT_SERVICE_GROUPING_TARGET_SIZE,
+  labelMode: ServiceGroupingLabelMode = DEFAULT_SERVICE_GROUPING_LABEL_MODE,
 ): ServiceDomainModel {
-  const cacheKey = `${mode}:${targetSize}`;
+  const cacheKey = `${mode}:${targetSize}:${labelMode}`;
   const cached = modelCache.get(clustering)?.get(cacheKey);
   if (cached) {
     return cached;
   }
-  const domains = domainSeeds(clustering, mode, targetSize).map((domain) => ({
+  const domains = domainSeeds(clustering, mode, targetSize, labelMode).map((domain) => ({
     ...domain,
     ca: 0,
     ce: 0,
@@ -115,6 +118,13 @@ export function isServiceDomainId(id: string): boolean {
   return id.startsWith(SERVICE_DOMAIN_PREFIX);
 }
 
+/** Resolve current stable ids and the first prototype's label-bearing semantic ids. The label
+ * suffix was never identity, so strip it by mode + member hash instead of requiring its wording to
+ * match the active one-/two-concept presentation. */
+export function serviceDomainById(model: ServiceDomainModel, id: string): ServiceDomain | undefined {
+  return model.domainById.get(canonicalServiceDomainId(id));
+}
+
 /** Human label for a stable synthetic id, usable even where only selection state is available. */
 export function serviceDomainLabel(id: string): string | null {
   if (!isServiceDomainId(id)) {
@@ -140,11 +150,12 @@ function domainSeeds(
   clustering: ServiceClustering,
   mode: ServiceGroupingMode,
   targetSize: number,
+  labelMode: ServiceGroupingLabelMode,
 ): Array<Pick<ServiceDomain, "id" | "key" | "label" | "leadIds" | "kind">> {
   const serviceClusters = clustering.clusters.filter((cluster) => !isUnassignedServiceCluster(cluster));
   const unassignedClusters = clustering.clusters.filter(isUnassignedServiceCluster);
   const serviceClustering = subsetClustering(clustering, serviceClusters);
-  const grouped = groupedDomainSeeds(serviceClustering, mode, targetSize);
+  const grouped = groupedDomainSeeds(serviceClustering, mode, targetSize, labelMode);
   if (unassignedClusters.length === 0) {
     return grouped;
   }
@@ -164,6 +175,7 @@ function groupedDomainSeeds(
   clustering: ServiceClustering,
   mode: ServiceGroupingMode,
   targetSize: number,
+  labelMode: ServiceGroupingLabelMode,
 ): Array<Pick<ServiceDomain, "id" | "key" | "label" | "leadIds" | "kind">> {
   if (clustering.clusters.length === 0) {
     return [];
@@ -180,7 +192,10 @@ function groupedDomainSeeds(
       kind: "services" as const,
     }));
   }
-  return mergeSingletonGroups(deriveServiceNodeGroups(clustering, mode, targetSize), mode).map((group) => {
+  return mergeSingletonGroups(
+    deriveServiceNodeGroups(clustering, mode, targetSize, labelMode),
+    mode,
+  ).map((group) => {
     const hash = group.id.split(":").at(-1) ?? group.id;
     return {
       id: `${SERVICE_DOMAIN_PREFIX}${mode}:${hash}`,
@@ -218,13 +233,30 @@ function isStableSemanticDomainId(id: string): boolean {
   return parts !== null && parts.legacyLabel === null;
 }
 
-function semanticDomainParts(raw: string): { mode: ServiceGroupingMode; legacyLabel: string | null } | null {
+function canonicalServiceDomainId(id: string): string {
+  if (!isServiceDomainId(id)) {
+    return id;
+  }
+  const parts = semanticDomainParts(id.slice(SERVICE_DOMAIN_PREFIX.length));
+  return parts?.legacyLabel === null
+    ? id
+    : parts
+      ? `${SERVICE_DOMAIN_PREFIX}${parts.mode}:${parts.hash}`
+      : id;
+}
+
+function semanticDomainParts(raw: string): {
+  mode: ServiceGroupingMode;
+  hash: string;
+  legacyLabel: string | null;
+} | null {
   const match = raw.match(/^([^:]+):([0-9a-f]+)(?::(.*))?$/);
   if (!match || match[1] === "folder" || !SERVICE_GROUPING_OPTIONS.some((option) => option.id === match[1])) {
     return null;
   }
   return {
     mode: match[1] as ServiceGroupingMode,
+    hash: match[2],
     legacyLabel: match[3] ?? null,
   };
 }
