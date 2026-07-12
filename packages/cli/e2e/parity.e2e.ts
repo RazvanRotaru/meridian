@@ -80,6 +80,81 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
     expect(pageErrors).toEqual([]);
   });
 
+  it("Map: semantic zoom mutates stage attributes only at real band transitions", async () => {
+    const focusedMap = mainCanvasFor(page, FILE);
+    await expect.poll(() => focusedMap.getAttribute("data-map-semantic-stage")).toBe("reading");
+    // The focused scene enables semantic LOD after its 400ms fitted reading camera settles.
+    await page.waitForTimeout(500);
+    const viewport = focusedMap.locator(".react-flow__viewport");
+    const canvasBox = await focusedMap.boundingBox();
+    expect(canvasBox).not.toBeNull();
+    await page.mouse.move(canvasBox!.x + canvasBox!.width / 2, canvasBox!.y + canvasBox!.height / 2);
+
+    await focusedMap.evaluate((canvas) => {
+      type SemanticMutationProbe = Window & {
+        __semanticMutationObserver?: MutationObserver;
+        __semanticMutations?: Array<{ name: string; oldValue: string | null; newValue: string | null }>;
+      };
+      const probe = window as SemanticMutationProbe;
+      probe.__semanticMutationObserver?.disconnect();
+      probe.__semanticMutations = [];
+      probe.__semanticMutationObserver = new MutationObserver((records) => {
+        for (const record of records) {
+          if (record.type !== "attributes" || record.attributeName === null) continue;
+          probe.__semanticMutations!.push({
+            name: record.attributeName,
+            oldValue: record.oldValue,
+            newValue: canvas.getAttribute(record.attributeName),
+          });
+        }
+      });
+      probe.__semanticMutationObserver.observe(canvas, {
+        attributes: true,
+        attributeOldValue: true,
+        attributeFilter: [
+          "data-map-semantic-depth",
+          "data-map-semantic-stage",
+          "data-map-preview-depth",
+        ],
+      });
+    });
+
+    // One wheel step animates several camera frames but stays in the current reading band.
+    // None of those frames should re-publish identical semantic attributes.
+    const transformBeforeZoom = await viewport.getAttribute("style");
+    await page.mouse.wheel(0, 80);
+    await page.waitForTimeout(120);
+    expect(await viewport.getAttribute("style")).not.toBe(transformBeforeZoom);
+    expect(await focusedMap.getAttribute("data-map-semantic-stage")).toBe("reading");
+    expect(await semanticMutationRecords(page)).toEqual([]);
+
+    // Continue outward until the already-mounted parent commits. Attribute writes are allowed only
+    // when their value actually changes; the old per-frame layout effect emitted old===new records.
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      await page.mouse.wheel(0, 600);
+      await page.waitForTimeout(180);
+      if (new URL(page.url()).searchParams.get("mfocus") !== SERVICES) break;
+    }
+    const focusAfterZoom = new URL(page.url()).searchParams.get("mfocus");
+    if (focusAfterZoom === SERVICES) {
+      throw new Error(`semantic zoom did not commit: ${JSON.stringify({
+        depth: await focusedMap.getAttribute("data-map-semantic-depth"),
+        stage: await focusedMap.getAttribute("data-map-semantic-stage"),
+        transform: await viewport.getAttribute("style"),
+      })}`);
+    }
+
+    const mutations = await semanticMutationRecords(page);
+    expect(mutations.length).toBeGreaterThan(0);
+    expect(mutations.filter(({ oldValue, newValue }) => oldValue === newValue)).toEqual([]);
+    expect(pageErrors).toEqual([]);
+
+    // Restore the focused fixture level for the remaining parity scenarios.
+    await page.waitForSelector(`[data-id="${SERVICES}"]`);
+    await dive(page, SERVICES);
+    await page.waitForSelector(`[data-id="${FILE}"]`);
+  });
+
   it("Map: select the class, expand via its chevron — selection ring + nested member blocks", async () => {
     // Open the file frame via ITS chevron (never a navigation) so the class card is drawn…
     await chevronOf(page, FILE).dispatchEvent("click");
@@ -391,6 +466,19 @@ function selectedNodeIds(surface: Locator): Promise<string[]> {
       .sort(),
     SELECTION_RING_RGB,
   );
+}
+
+function semanticMutationRecords(page: Page): Promise<Array<{
+  name: string;
+  oldValue: string | null;
+  newValue: string | null;
+}>> {
+  return page.evaluate(() => {
+    const probe = window as Window & {
+      __semanticMutations?: Array<{ name: string; oldValue: string | null; newValue: string | null }>;
+    };
+    return [...(probe.__semanticMutations ?? [])];
+  });
 }
 
 type NodeTransform = { id: string; transform: string };

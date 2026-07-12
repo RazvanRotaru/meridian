@@ -1,6 +1,13 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { Node } from "@xyflow/react";
-import { ghostPromotionTarget, promotableGhostNodes, visiblePromotableGhostNodes } from "./GhostPromoteRing";
+import {
+  GhostPromoteRing,
+  ghostPromotionTarget,
+  promotableGhostNodes,
+  visiblePromotableGhostNodes,
+} from "./GhostPromoteRing";
 
 const node = (id: string, type: string, data: Record<string, unknown> = {}): Node => ({
   id,
@@ -10,6 +17,21 @@ const node = (id: string, type: string, data: Record<string, unknown> = {}): Nod
 });
 
 describe("ghost promotion", () => {
+  it("does not subscribe to React Flow when the scene has no promotion affordances", () => {
+    const markup = renderToStaticMarkup(createElement(GhostPromoteRing, {
+      nodes: [
+        node("ts:app.ts", "file"),
+        node("ghost-group:outgoing:ts:dep.ts#Worker", "ghost", {
+          ghostGroupId: "ghost-group:outgoing:ts:dep.ts#Worker",
+        }),
+      ],
+      title: "Pin to canvas",
+      onPromote: () => undefined,
+    }));
+
+    expect(markup).toBe("");
+  });
+
   it("keeps exact ghosts, real persistent parents and temporary inspection previews, but excludes ordinary nodes and synthetic groups", () => {
     const exact = node("ts:dep.ts#Worker.run", "ghost", { label: "Worker.run" });
     const parent = node("ts:dep.ts#Worker", "ghost", {

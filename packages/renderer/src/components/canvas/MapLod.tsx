@@ -1,8 +1,8 @@
 /**
  * Reversible semantic zoom across any number of independently laid graph levels. Every node and
  * edge carries `data.semanticDepth` plus `semantic-layer-${depth}`. This controller reads the
- * camera once, publishes the current depth/stage on `.react-flow`, and lets CSS cross-fade whole
- * graph populations. A preview remains reversible; its owner can atomically discard the inner
+ * camera once, publishes the current depth/stage on `.react-flow`, and lets CSS switch whole graph
+ * populations. A preview remains reversible; its owner can atomically discard the inner
  * layers when user-driven outward movement commits the parent boundary.
  *
  * Each pair of levels gets two zoom intervals: a normal reading interval, then a preview where the
@@ -21,10 +21,11 @@ import {
   semanticZoomBandForZoom,
   structuralGraphBounds,
   type GraphRect,
+  type MapSemanticStage,
   type SemanticLodLayer,
 } from "./mapLodGeometry";
 
-/** Parent population/frame fade. ModuleMapView starts its readable camera reset after this settles. */
+/** Preview-frame and exit-surface fade. Retained parents switch atomically and reset concurrently. */
 export const SEMANTIC_LAYER_FADE_MS = 180;
 
 export const MAP_LOD_CSS = `
@@ -35,15 +36,12 @@ export const MAP_LOD_CSS = `
 }
 
 /* Every semantic population starts hidden. Per-depth rules generated from the layer metadata reveal
-   exactly one complete graph, so adding another level needs no new component or CSS role. Filter
-   opacity is deliberately separate from each node/edge's inline selection opacity: using the
-   opacity property here would force the active layer to 1 and erase adjacency emphasis. */
+   exactly one complete graph, so adding another level needs no new component or CSS role. Switching
+   visibility atomically avoids allocating a filter/compositor layer for every node and edge while
+   preserving each element's inline selection opacity. */
 .react-flow.semantic-composite .semantic-layer {
-  filter: opacity(0) !important;
   visibility: hidden !important;
   pointer-events: none !important;
-  transition: filter ${SEMANTIC_LAYER_FADE_MS}ms ease-out, visibility 0s linear ${SEMANTIC_LAYER_FADE_MS}ms;
-  will-change: filter;
 }
 
 /* Preview preserves the active graph's topology and full cards, changing only its text visibility.
@@ -64,8 +62,7 @@ export const MAP_LOD_CSS = `
   visibility: visible;
 }
 @media (prefers-reduced-motion: reduce) {
-  .map-parent-node,
-  .react-flow.semantic-composite .semantic-layer {
+  .map-parent-node {
     transition: none !important;
   }
 }
@@ -78,10 +75,8 @@ export function semanticLayerVisibilityCss(layerDepths: readonly number[]): stri
     .map(
       (depth) => `
 .react-flow.semantic-composite[data-map-semantic-depth="${depth}"] .semantic-layer-${depth} {
-  filter: opacity(1) !important;
   visibility: visible !important;
   pointer-events: auto !important;
-  transition: filter ${SEMANTIC_LAYER_FADE_MS}ms ease-out, visibility 0s linear 0s;
 }`,
     )
     .join("");
@@ -128,19 +123,30 @@ export function MapLod({
     : depths[0] === undefined
       ? null
       : { depth: depths[0], stage: "reading" as const };
+  const depth = band?.depth;
+  const stage = band?.stage;
+  const previewDepth = band?.previewDepth;
   const currentNodes = useMemo(
-    () => (band === null ? [] : nodes.filter((node) => semanticDepthOf(node) === band.depth)),
-    [band?.depth, nodes],
+    () => (depth === undefined ? [] : nodes.filter((node) => semanticDepthOf(node) === depth)),
+    [depth, nodes],
   );
   const bounds = useMemo(
-    () => (band === null ? null : structuralGraphBounds(nodes, currentNodes)),
-    [band, currentNodes, nodes],
+    () => (depth === undefined ? null : structuralGraphBounds(nodes, currentNodes)),
+    [currentNodes, depth, nodes],
   );
-  const nextDepth = band?.previewDepth ?? depths[depths.findIndex((depth) => depth === band?.depth) + 1];
-  const nextLayer = layers.find((layer) => layer.depth === nextDepth);
-  const nextAnchor = nextLayer === undefined
-    ? undefined
-    : nodes.find((node) => node.id === nextLayer.anchorId && semanticDepthOf(node) === nextLayer.depth);
+  const { nextAnchor, nextLayer } = useMemo(() => {
+    if (depth === undefined) {
+      return { nextAnchor: undefined, nextLayer: undefined };
+    }
+    const resolvedNextDepth = previewDepth ?? depths[depths.indexOf(depth) + 1];
+    const resolvedNextLayer = layers.find((layer) => layer.depth === resolvedNextDepth);
+    const resolvedNextAnchor = resolvedNextLayer === undefined
+      ? undefined
+      : nodes.find(
+        (node) => node.id === resolvedNextLayer.anchorId && semanticDepthOf(node) === resolvedNextLayer.depth,
+      );
+    return { nextAnchor: resolvedNextAnchor, nextLayer: resolvedNextLayer };
+  }, [depth, depths, layers, nodes, previewDepth]);
   const parentLabel = nextLayer?.label ?? nodeLabelOf(nextAnchor) ?? nextLayer?.anchorId;
   const layerCss = useMemo(() => semanticLayerVisibilityCss(depths), [depths]);
 
@@ -149,24 +155,8 @@ export function MapLod({
     if (!canvas) {
       return;
     }
-    if (band === null) {
-      delete canvas.dataset.mapSemanticDepth;
-      delete canvas.dataset.mapSemanticStage;
-      delete canvas.dataset.mapPreviewDepth;
-    } else {
-      canvas.dataset.mapSemanticDepth = String(band.depth);
-      canvas.dataset.mapSemanticStage = band.stage;
-      if (band.previewDepth === undefined) {
-        delete canvas.dataset.mapPreviewDepth;
-      } else {
-        canvas.dataset.mapPreviewDepth = String(band.previewDepth);
-      }
-    }
-    // These attributes belonged to the retired name-only orientation tier. Removing them here also
-    // cleans canvases preserved across a hot reload of this controller.
-    delete canvas.dataset.mapTier;
-    delete canvas.dataset.mapLabelMode;
-  }, [band]);
+    syncMapLodDataset(canvas.dataset, depth, stage, previewDepth);
+  }, [depth, previewDepth, stage]);
   return (
     <>
       <style>{MAP_LOD_CSS}{layerCss}</style>
@@ -185,6 +175,32 @@ export function MapLod({
       ) : null}
     </>
   );
+}
+
+/** Publish semantic state without needlessly invalidating styles on every viewport sample. */
+export function syncMapLodDataset(
+  dataset: DOMStringMap,
+  depth: number | undefined,
+  stage: MapSemanticStage | undefined,
+  previewDepth: number | undefined,
+): void {
+  syncDatasetValue(dataset, "mapSemanticDepth", depth === undefined ? undefined : String(depth));
+  syncDatasetValue(dataset, "mapSemanticStage", stage);
+  syncDatasetValue(dataset, "mapPreviewDepth", previewDepth === undefined ? undefined : String(previewDepth));
+  // These attributes belonged to the retired name-only orientation tier. Removing them here also
+  // cleans canvases preserved across a hot reload of this controller.
+  syncDatasetValue(dataset, "mapTier", undefined);
+  syncDatasetValue(dataset, "mapLabelMode", undefined);
+}
+
+function syncDatasetValue(dataset: DOMStringMap, key: string, value: string | undefined): void {
+  if (value === undefined) {
+    if (dataset[key] !== undefined) {
+      delete dataset[key];
+    }
+  } else if (dataset[key] !== value) {
+    dataset[key] = value;
+  }
 }
 
 function normalizedSemanticLayers(layers: readonly SemanticLodLayer[]): SemanticLodLayer[] {
