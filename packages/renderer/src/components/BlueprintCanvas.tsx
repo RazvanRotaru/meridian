@@ -27,7 +27,7 @@ import { PrsView } from "./prs/PrsView";
 export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
   const viewMode = useBlueprint((state) => state.viewMode);
   const flowPaneOpen = useBlueprint((state) => state.flowPaneOrigin === "request"
-    ? state.requestFlowTraceId !== null
+    ? state.telemetryMode && state.requestFlowTraceId !== null
     : state.flowSelection !== null
       && flowPaneShouldRender(state.reviewFlowBaseline !== null, state.reviewOpenFlowSplitOnSelect));
   const reviewFlowOpen = useBlueprint((state) => state.flowPaneOrigin !== "request"

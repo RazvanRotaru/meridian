@@ -50,6 +50,8 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     // The default "modules" lens is the Map: the whole-repo package overview (group cards).
     expect(await page.locator(".react-flow__node").count()).toBeGreaterThan(0);
     expect(await page.locator('button:has-text("Map")').count()).toBe(1);
+    expect(await page.getByRole("region", { name: "Request data" }).count()).toBe(0);
+    expect(await page.locator(".request-graph-overlay-panel").count()).toBe(0);
     expect(consoleErrors).toEqual([]);
     expect(pageErrors).toEqual([]);
   });
@@ -78,7 +80,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     const expand = actionBar.getByRole("button", { name: "Expand one level" });
     const collapse = actionBar.getByRole("button", { name: "Collapse all" });
     const repositorySummary = panel.getByText("Repository · 1 package · 11 files", { exact: true });
-    const environment = panel.getByLabel("Request data environment");
+    const requestData = panel.getByRole("region", { name: "Request data" });
     const unavailableBadge = panel.getByText("Unavailable", { exact: true });
     const disclosure = panel.locator('button[aria-controls="meridian-control-panel-controls"]');
     const expandedHeight = await panel.evaluate((element) => element.getBoundingClientRect().height);
@@ -92,6 +94,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     expect(await recenter.isVisible()).toBe(true);
     expect(await expand.isVisible()).toBe(true);
     expect(await collapse.isVisible()).toBe(true);
+    expect(await requestData.count()).toBe(0);
     expect(await panel.getByRole("button", { name: "Recenter view" }).count()).toBe(0);
     await disclosure.click();
     expect(await panel.isVisible()).toBe(true);
@@ -100,7 +103,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     expect(await actionBar.isVisible()).toBe(true);
     expect(await recenter.isVisible()).toBe(true);
     expect(await repositorySummary.isVisible()).toBe(true);
-    expect(await environment.isVisible()).toBe(true);
+    expect(await requestData.count()).toBe(0);
     expect(await disclosure.getAttribute("aria-label")).toBe("Show detailed controls");
     expect(await disclosure.getAttribute("aria-expanded")).toBe("false");
     expect(await disclosure.evaluate((element) => document.activeElement === element)).toBe(true);
@@ -213,7 +216,15 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
   });
 
   it("maps the selected request onto graph cards and proven execution wires after an explicit load", async () => {
+    const telemetryMode = page
+      .getByRole("group", { name: "Overlays" })
+      .getByRole("button", { name: "Telemetry", exact: true });
+    expect(await telemetryMode.getAttribute("aria-pressed")).toBe("false");
+    await telemetryMode.click();
+    expect(await telemetryMode.getAttribute("aria-pressed")).toBe("true");
+
     const requestData = requestDataRegion(page);
+    await requestData.waitFor();
     const source = requestData.getByLabel("Request data source");
     const environment = requestData.getByLabel("Request data environment");
     expect(await source.inputValue()).toBe("");
@@ -377,6 +388,21 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     await unobservedPrice.click();
     await expect.poll(() => unobservedPrice.getAttribute("data-request-manual-context"), { timeout: 20_000 }).toBe("true");
     expect(await unobservedPrice.getAttribute("data-request-observed")).toBe("false");
+
+    // Leaving telemetry mode removes every request-only widget and all runtime paint, but keeps the
+    // loaded bundle resident. Re-entering restores the same selected request without another load.
+    await telemetryMode.click();
+    await expect.poll(() => telemetryMode.getAttribute("aria-pressed")).toBe("false");
+    await expect.poll(() => requestDataRegion(page).count()).toBe(0);
+    await expect.poll(() => requestOverlay.count()).toBe(0);
+    await expect.poll(() => page.locator('[data-request-observed]').count()).toBe(0);
+    await expect.poll(() => requestFlow.count()).toBe(0);
+
+    await telemetryMode.click();
+    await expect.poll(() => telemetryMode.getAttribute("aria-pressed")).toBe("true");
+    await requestDataRegion(page).waitFor();
+    expect(await statusText(page)).toBe("Loaded · demo");
+    await page.getByRole("region", { name: "Selected request graph overlay" }).waitFor();
   });
 
   it("renders and switches a synthetic request timeline with inspectable branch evidence", async () => {
@@ -387,6 +413,11 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     requestUrl.searchParams.set("lstack", root);
     requestUrl.searchParams.set("lview", "request");
     await page.goto(requestUrl.toString(), { waitUntil: "networkidle" });
+    const telemetryMode = page
+      .getByRole("group", { name: "Overlays" })
+      .getByRole("button", { name: "Telemetry", exact: true });
+    await telemetryMode.waitFor();
+    expect(await telemetryMode.getAttribute("aria-pressed")).toBe("true");
 
     // Regression: the alternate-Logic canvas reserves left toolbar headroom. Its former fixed
     // 1060px empty state centered this picker completely beyond a narrow in-app browser pane.

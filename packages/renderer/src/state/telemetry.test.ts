@@ -102,6 +102,12 @@ function storeWith(
 }
 
 describe("request telemetry state", () => {
+  it("starts outside explicit telemetry mode", () => {
+    const store = storeWith(provider());
+
+    expect(store.getState().telemetryMode).toBe(false);
+  });
+
   it("exposes a source catalog without activating it until explicitly selected", () => {
     const demoProvider = provider({ id: "demo" });
     const demo = registration("demo", demoProvider);
@@ -318,5 +324,49 @@ describe("request telemetry state", () => {
     store.getState().setEnvironment("staging");
     await store.getState().refreshTelemetry();
     expect(store.getState().selectedTraceId).toBe(newTrace.traceId);
+  });
+
+  it("toggles telemetry presentation without unloading data and closes request-only UI on exit", async () => {
+    const demoProvider = provider({ id: "demo" });
+    const store = storeWith(demoProvider, {
+      telemetrySources: [registration("demo", demoProvider)],
+      telemetrySourceId: "demo",
+    });
+    store.getState().setEnvironment("staging");
+    await store.getState().refreshTelemetry();
+
+    const loaded = store.getState();
+    const preservedTelemetry = {
+      telemetrySourceId: loaded.telemetrySourceId,
+      provider: loaded.provider,
+      environment: loaded.environment,
+      telemetry: loaded.telemetry,
+      requestTraces: loaded.requestTraces,
+      selectedTraceId: loaded.selectedTraceId,
+      traceGraphRef: loaded.traceGraphRef,
+      traceSource: loaded.traceSource,
+    };
+
+    store.getState().toggleTelemetryMode();
+    expect(store.getState()).toMatchObject({ telemetryMode: true, ...preservedTelemetry });
+
+    store.setState({
+      logicView: "request",
+      flowPaneOrigin: "request",
+      requestFlowTraceId: loaded.selectedTraceId,
+      requestFlowExpansionOverrides: new Set(["request:span:one"]),
+      flowPaneLayoutStatus: "ready",
+    });
+    store.getState().toggleTelemetryMode();
+
+    expect(store.getState()).toMatchObject({
+      telemetryMode: false,
+      ...preservedTelemetry,
+      logicView: "graph",
+      flowPaneOrigin: null,
+      requestFlowTraceId: null,
+      flowPaneLayoutStatus: "idle",
+    });
+    expect(store.getState().requestFlowExpansionOverrides).toEqual(new Set());
   });
 });

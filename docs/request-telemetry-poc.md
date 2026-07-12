@@ -36,6 +36,9 @@ Request traces are therefore a separate contract and endpoint. Aggregate metrics
 
 ### Request selection
 
+- Request telemetry is an explicit presentation mode. Outside **Telemetry** mode the source picker,
+  request controls, runtime card badges, and request paint stay hidden; leaving the mode preserves
+  the loaded bundle so returning does not require another fetch.
 - Local `meridian view` advertises an in-app source catalog even when it was launched without
   `--overlay`. The POC catalog always includes **Synthetic demo**; a configured saved overlay is an
   additional opaque choice. Browser input never contains or selects a server filesystem path.
@@ -349,7 +352,8 @@ predicate (`customer.present=false`) that selected the error path.
 
 ## Acceptance criteria
 
-- A viewer launched without `--overlay` exposes **Off** plus **Synthetic demo** in Request data.
+- In **Telemetry** mode, a viewer launched without `--overlay` exposes **Off** plus **Synthetic demo**
+  in Request data; outside that mode the telemetry widgets and runtime paint are absent.
   Selecting the source alone leaves telemetry unloaded; explicitly loading `demo` returns aggregate
   metrics and at least twelve request recordings.
 - The Request trace sub-view uses observed milliseconds and renders the correct nested span order.
@@ -377,7 +381,8 @@ node packages/cli/dist/bin.js view /tmp/orders-service.meridian.json \
 
 In the browser:
 
-1. In **Request data**, choose **Synthetic demo**. Its only environment, **demo**, is visibly
+1. Turn on **Telemetry** under **Overlays**, then in **Request data** choose **Synthetic demo**. Its
+   only environment, **demo**, is visibly
    prefilled but remains unloaded until you click **Load**. From an empty Request trace or graph map,
    **Load synthetic demo** performs the same explicit action in one step.
 2. On Map, switch between the `WELCOME10` and missing-customer requests in the request overlay.

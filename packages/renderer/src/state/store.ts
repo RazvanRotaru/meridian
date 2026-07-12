@@ -226,6 +226,9 @@ export interface BlueprintState {
   coverageMode: boolean;
   /** Computed once, on first entering coverage mode (the artifact never changes after boot). */
   coverage: CoverageReport | null;
+  /** Whether request telemetry controls, runtime paint, and request-only surfaces are visible.
+   * Loaded data stays resident when this presentation mode is off so re-entry is instant. */
+  telemetryMode: boolean;
   /** The callable whose intra-procedural logic flow the Logic-flow view charts; null == none picked yet. */
   logicRoot: NodeId | null;
   /** Which PROJECTION of the charted flow is on screen (exec graph / metro / blocks / timeline).
@@ -671,6 +674,7 @@ export interface BlueprintState {
   togglePrsView(): void;
   toggleShowTests(): void;
   toggleCoverageMode(): void;
+  toggleTelemetryMode(): void;
   /** Show every exact graph node observed by the selected request in the cheapest canonical Map
    * scope. Reuses Minimal Graph's LCA/ancestor-expansion path and preserves request split context. */
   revealSelectedTraceInCodebase(): void;
@@ -1367,6 +1371,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     showTests: false,
     coverageMode: false,
     coverage: null,
+    telemetryMode: false,
     logicRoot: null,
     logicView: "graph",
     logicStack: [],
@@ -1741,6 +1746,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       requestTargetRevealSeq += 1;
       set({
+        telemetryMode: true,
         flowSelection: null,
         flowPaneOrigin: "request",
         requestFlowTraceId: trace.traceId,
@@ -2042,7 +2048,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // trail, and selection all stay put, and the exec graph's ELK layout is untouched (it re-mounts
     // from the already-derived logicRfNodes when switched back).
     setLogicView(mode) {
-      set({ logicView: mode });
+      set({
+        logicView: mode,
+        ...(mode === "request" ? { telemetryMode: true } : {}),
+      });
     },
 
     // Set how many hops of indirect callers the "related flows" ghosts reach back. Clamped to
@@ -3684,6 +3693,27 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({
         coverageMode,
         coverage: coverageMode && !coverage ? computeCoverage(artifact.nodes, artifact.edges) : coverage,
+      });
+    },
+
+    // Telemetry is a presentation mode, not a data lifecycle. Leaving it removes request-only
+    // surfaces while preserving the selected source, loaded bundle, and selected request for fast
+    // re-entry. A request split cannot remain on screen after its owning mode is hidden.
+    toggleTelemetryMode() {
+      const state = get();
+      const telemetryMode = !state.telemetryMode;
+      if (telemetryMode) {
+        set({ telemetryMode: true });
+        return;
+      }
+      if (state.flowPaneOrigin === "request") {
+        flowPaneLayoutSeq += 1;
+        requestTargetRevealSeq += 1;
+      }
+      set({
+        telemetryMode: false,
+        logicView: state.logicView === "request" ? "graph" : state.logicView,
+        ...requestFlowPaneReset(state),
       });
     },
 

@@ -259,6 +259,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const reviewLit = useBlueprint((state) => state.reviewLitNodeIds);
   const index = useBlueprint((state) => state.index);
   const artifact = useBlueprint((state) => state.artifact);
+  const telemetryMode = useBlueprint((state) => state.telemetryMode);
   const requestTraces = useBlueprint((state) => state.requestTraces);
   const selectedTraceId = useBlueprint((state) => state.selectedTraceId);
   const traceGraphRef = useBlueprint((state) => state.traceGraphRef);
@@ -274,10 +275,10 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const emphasisMode = props.emphasisMode ?? highlightMode;
   const groupGhosts = props.groupGhosts ?? groupGhostsByParent;
   const activeTrace = useMemo(
-    () => selectedTraceId === null
+    () => !telemetryMode || selectedTraceId === null
       ? null
       : requestTraces.find((trace) => trace.traceId === selectedTraceId) ?? null,
-    [requestTraces, selectedTraceId],
+    [telemetryMode, requestTraces, selectedTraceId],
   );
   const requestGraphMismatches = useMemo(
     () => activeTrace === null ? [] : traceGraphRefMismatches(traceGraphRef, artifact),
@@ -586,7 +587,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
         {projectedRequestNodes === null ? null : (
           <RequestGraphNodeBadges visibleNodes={requestPaintedNodes} evidenceByNodeId={projectedRequestNodes} />
         )}
-        {props.requestOverlayChrome === false ? null : (
+        {!telemetryMode || props.requestOverlayChrome === false ? null : (
           <RequestGraphOverlayPanel
             graphMismatches={requestGraphMismatches}
             observedNodeCount={requestGraphOverlay?.nodesById.size ?? 0}

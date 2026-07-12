@@ -1,18 +1,20 @@
 /**
- * The Logic-flow SUB-VIEW switch: four static projections of the same flow plus one observed request
- * trace, floated top-center over whichever surface is mounted. Flipping it never touches the charted
- * root, drill trail, or selection.
+ * The Logic-flow SUB-VIEW switch: four static projections of the same flow plus, while Telemetry
+ * mode is active, one observed request trace. It floats top-center over whichever surface is
+ * mounted. Flipping it never touches the charted root, drill trail, or selection.
  */
 
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import { LOGIC_VIEW_MODES } from "../../derive/flowViewModel";
+import { LOGIC_VIEW_MODES, STATIC_LOGIC_VIEW_MODES } from "../../derive/flowViewModel";
 
 export function LogicViewTabs() {
   const logicView = useBlueprint((state) => state.logicView);
+  const telemetryMode = useBlueprint((state) => state.telemetryMode);
   const setLogicView = useBlueprintActions().setLogicView;
+  const modes = telemetryMode ? LOGIC_VIEW_MODES : STATIC_LOGIC_VIEW_MODES;
   return (
     <div style={BAR} role="group" aria-label="Logic flow view">
-      {LOGIC_VIEW_MODES.map((entry) => (
+      {modes.map((entry) => (
         <button
           key={entry.mode}
           type="button"

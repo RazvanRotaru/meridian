@@ -211,6 +211,9 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     reviewFlowBaseline: null,
     logicRoot: nav.logicRoot,
     logicView: nav.logicView,
+    // Request trace is itself a telemetry-backed destination. Old/shared links do not carry a
+    // separate presentation-mode bit, so landing directly on that surface opts in explicitly.
+    ...(nav.logicView === "request" ? { telemetryMode: true } : {}),
     logicStack: nav.logicStack,
     moduleFocus: nav.moduleFocus,
     serviceGroupingMode: nav.serviceGroupingMode,
