@@ -10,6 +10,8 @@
     POST /api/auth/logout  -> { signedIn:false }
     GET  /api/repos/search?q= -> { repos: [{ fullName, isPrivate, defaultBranch, description, ownerAvatarUrl }] }
     GET  /api/repos/mine   -> { repos: [same shape] }              (the signed-in user's repos)
+    GET  /api/repos/branches?repo= -> { branches: [string] }       (public without auth; private when signed in)
+    GET  /api/repos/pulls?repo=&state=&page= -> { prs: [summary], hasMore }
     POST /api/generate     -> { id } | { error }
   On generate success we redirect to /view?id=<id>. Every GitHub-sourced string is written via
   textContent and every URL is https-validated before use — repo names/descriptions are untrusted.
@@ -287,6 +289,33 @@
         color: var(--text);
       }
 
+      .intent-toggle {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+        padding: 4px;
+        background: rgba(0, 0, 0, 0.22);
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        border-radius: 10px;
+      }
+      .intent-toggle button {
+        min-width: 0;
+        padding: 8px 7px;
+        border: 1px solid transparent;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--muted-2);
+        font-family: var(--font-sans);
+        font-size: 12.5px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .intent-toggle button.active {
+        color: var(--text);
+        background: rgba(88, 166, 255, 0.1);
+        border-color: rgba(88, 166, 255, 0.28);
+      }
+
       form {
         display: flex;
         flex-direction: column;
@@ -312,7 +341,8 @@
       .fieldset > .hint {
         margin: 0;
       }
-      input {
+      input,
+      .menu-trigger {
         width: 100%;
         padding: 11px 13px;
         font-family: var(--font-sans);
@@ -324,7 +354,39 @@
         outline: none;
         transition: border-color 0.15s, box-shadow 0.15s;
       }
-      input:focus {
+      .menu-trigger {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        text-align: left;
+        cursor: pointer;
+      }
+      .menu-trigger-label {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .menu-chevron {
+        width: 7px;
+        height: 7px;
+        flex: 0 0 auto;
+        border-right: 1.5px solid var(--muted-2);
+        border-bottom: 1.5px solid var(--muted-2);
+        transform: rotate(45deg) translateY(-2px);
+        transition: transform 0.15s;
+      }
+      .menu-trigger[aria-expanded="true"] .menu-chevron {
+        transform: rotate(225deg) translate(-1px, -1px);
+      }
+      .menu-trigger:disabled {
+        cursor: progress;
+        opacity: 0.65;
+      }
+      input:focus,
+      .menu-trigger:focus-visible,
+      .menu-trigger[aria-expanded="true"] {
         border-color: var(--blue);
         box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
       }
@@ -335,10 +397,129 @@
         -webkit-text-fill-color: var(--text);
         -webkit-box-shadow: 0 0 0 40px #12161d inset;
       }
-      .row {
+      .field-note {
+        min-height: 16px;
+        color: var(--muted-3);
+        font-size: 11.5px;
+      }
+      .filter-row {
+        display: grid;
+        grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+        gap: 10px;
+      }
+      .state-toggle {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 12px;
+        gap: 3px;
+        padding: 3px;
+        min-height: 43px;
+        background: rgba(0, 0, 0, 0.28);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 10px;
+      }
+      .state-toggle button {
+        min-width: 0;
+        padding: 7px 6px;
+        border: 1px solid transparent;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--muted-2);
+        font-family: var(--font-sans);
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .state-toggle button.active {
+        color: var(--text);
+        background: rgba(88, 166, 255, 0.12);
+        border-color: rgba(88, 166, 255, 0.3);
+      }
+      .state-toggle button:focus-visible {
+        outline: none;
+        border-color: var(--blue);
+        box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.15);
+      }
+      .menu-select {
+        position: relative;
+      }
+      .menu-options {
+        z-index: 35;
+      }
+      .menu-options .result[aria-selected="true"] {
+        background: rgba(88, 166, 255, 0.12);
+        color: #dbeafe;
+      }
+      .dropdown.pr-dropdown {
+        top: auto;
+        bottom: calc(100% + 6px);
+        z-index: 40;
+        max-height: min(320px, calc(100vh - 180px));
+      }
+      .pr-result-top {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+      }
+      .pr-result-number {
+        flex: 0 0 auto;
+        color: var(--blue);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 650;
+      }
+      .pr-result-title {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 600;
+      }
+      .pr-preview {
+        padding: 10px 12px;
+        border: 1px solid rgba(88, 166, 255, 0.2);
+        border-radius: 9px;
+        background: rgba(88, 166, 255, 0.06);
+      }
+      .pr-preview-top,
+      .pr-preview-meta {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+      }
+      .pr-preview-number {
+        color: var(--blue);
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        font-weight: 600;
+      }
+      .pr-preview-title {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--text);
+        font-size: 12.5px;
+        font-weight: 600;
+      }
+      .pr-preview-meta {
+        margin-top: 5px;
+        color: var(--muted-2);
+        font-size: 11px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .pr-state-dot {
+        width: 7px;
+        height: 7px;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        background: var(--green);
+      }
+      .pr-state-dot.closed {
+        background: var(--muted-3);
       }
 
       /* Local-path field: the input shares its row with a "Browse…" button that asks the server
@@ -415,8 +596,11 @@
       .result:last-child {
         border-bottom: 0;
       }
-      .result:hover {
+      .result:hover,
+      .result:focus-visible,
+      .result.active {
         background: rgba(255, 255, 255, 0.05);
+        outline: none;
       }
       .result-top {
         display: flex;
@@ -769,6 +953,12 @@
           max-height: none;
         }
       }
+      @media (max-width: 420px) {
+        .intent-toggle,
+        .filter-row {
+          grid-template-columns: 1fr;
+        }
+      }
       @media (prefers-reduced-motion: reduce) {
         .hero,
         .card-wrap,
@@ -812,28 +1002,106 @@
 
           <div class="toggle" id="toggle" role="tablist">
             <span class="toggle-thumb" aria-hidden="true"></span>
-            <button type="button" role="tab" id="tab-github" class="active" aria-selected="true">GitHub repo</button>
+            <button type="button" role="tab" id="tab-github" class="active" aria-selected="true">GitHub</button>
             <button type="button" role="tab" id="tab-path" aria-selected="false">Local</button>
           </div>
 
           <form id="form" autocomplete="off">
             <div class="fieldset" id="github-fields">
+              <div class="intent-toggle" role="group" aria-label="GitHub action">
+                <button type="button" id="intent-explore" class="active" aria-pressed="true">Explore repository</button>
+                <button type="button" id="intent-review" aria-pressed="false">Review pull request</button>
+              </div>
+
               <div class="field">
                 <label for="repo" id="repo-label">Public GitHub repository</label>
-                <div class="search-wrap">
+                <div class="search-wrap" id="repo-search-wrap">
                   <input id="repo" name="repo" placeholder="owner/repo  or  https://github.com/owner/repo" />
                   <ul class="results dropdown" id="results" hidden></ul>
                 </div>
               </div>
 
-              <div class="row">
+              <div class="fieldset" id="explore-fields">
                 <div class="field">
-                  <label for="ref">Branch (optional)</label>
-                  <input id="ref" name="ref" placeholder="main" />
+                  <label for="ref-trigger">Branch</label>
+                  <input type="hidden" id="ref" name="ref" value="" />
+                  <div class="menu-select" id="ref-menu">
+                    <button
+                      type="button"
+                      class="menu-trigger"
+                      id="ref-trigger"
+                      aria-haspopup="listbox"
+                      aria-expanded="false"
+                      aria-controls="ref-options"
+                      aria-describedby="ref-status"
+                    >
+                      <span class="menu-trigger-label" id="ref-trigger-label">Default branch</span>
+                      <span class="menu-chevron" aria-hidden="true"></span>
+                    </button>
+                    <ul class="results dropdown menu-options" id="ref-options" role="listbox" hidden></ul>
+                  </div>
+                  <label class="sr-only" for="custom-ref">Other branch</label>
+                  <input id="custom-ref" name="custom-ref" placeholder="Enter a branch name" hidden />
+                  <span class="field-note" id="ref-status" role="status" aria-live="polite">Choose a repository to load its branches.</span>
+                </div>
+              </div>
+
+              <div class="fieldset" id="review-fields" hidden>
+                <div class="filter-row">
+                  <div class="field">
+                    <label id="pr-state-label">State</label>
+                    <input type="hidden" id="pr-state" name="pr-state" value="open" />
+                    <div class="state-toggle" role="group" aria-labelledby="pr-state-label">
+                      <button type="button" id="pr-state-open" class="active" aria-pressed="true">Open</button>
+                      <button type="button" id="pr-state-closed" aria-pressed="false">Closed</button>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <label for="pr-author-trigger">Author</label>
+                    <input type="hidden" id="pr-author" name="pr-author" value="" />
+                    <div class="menu-select" id="pr-author-menu">
+                      <button
+                        type="button"
+                        class="menu-trigger"
+                        id="pr-author-trigger"
+                        aria-haspopup="listbox"
+                        aria-expanded="false"
+                        aria-controls="pr-author-options"
+                        disabled
+                      >
+                        <span class="menu-trigger-label" id="pr-author-trigger-label">All authors</span>
+                        <span class="menu-chevron" aria-hidden="true"></span>
+                      </button>
+                      <ul class="results dropdown menu-options" id="pr-author-options" role="listbox" hidden></ul>
+                    </div>
+                  </div>
                 </div>
                 <div class="field">
-                  <label for="subdir">Source subfolder (optional)</label>
-                  <input id="subdir" name="subdir" placeholder="e.g. src" />
+                  <label for="pr-query">Pull request</label>
+                  <div class="search-wrap" id="pr-search-wrap">
+                    <input
+                      id="pr-query"
+                      name="pr-query"
+                      placeholder="Search by title or #"
+                      role="combobox"
+                      aria-autocomplete="list"
+                      aria-expanded="false"
+                      aria-controls="pr-results"
+                      aria-describedby="pr-status"
+                      disabled
+                    />
+                    <ul class="results dropdown pr-dropdown" id="pr-results" role="listbox" hidden></ul>
+                  </div>
+                  <span class="field-note" id="pr-status" role="status" aria-live="polite">Choose a repository to load its pull requests.</span>
+                </div>
+                <div class="pr-preview" id="pr-preview" hidden>
+                  <div class="pr-preview-top">
+                    <span class="pr-state-dot" id="pr-preview-state" aria-hidden="true"></span>
+                    <span class="pr-preview-number" id="pr-preview-number"></span>
+                    <span class="pr-preview-title" id="pr-preview-title"></span>
+                    <span class="badge" id="pr-preview-draft" hidden>draft</span>
+                  </div>
+                  <div class="pr-preview-meta" id="pr-preview-meta"></div>
                 </div>
               </div>
 
@@ -869,7 +1137,7 @@
                 </li>
                 <li class="prepare-step" data-stage="open" data-state="pending">
                   <span class="prepare-dot" aria-hidden="true"></span>
-                  <span>Open blueprint</span>
+                  <span id="prepare-open-label">Open blueprint</span>
                 </li>
               </ol>
             </section>
@@ -960,12 +1228,45 @@
         });
       }
 
-      // --- source mode (the design's segmented toggle): "github" | "path" ---
-      const MODES = {
-        github: { title: "Map your first repo", subtitle: "Point Meridian at a GitHub repository." },
+      // --- source mode + the nested GitHub intent: explore a repo, or select a PR to review ---
+      const MODE_COPY = {
         path: { title: "Map a local repo", subtitle: "Graph a folder that's already on this machine." },
       };
+      const GITHUB_INTENT_COPY = {
+        explore: { title: "Map your first repo", subtitle: "Point Meridian at a GitHub repository.", submit: "Generate blueprint" },
+        review: { title: "Review a pull request", subtitle: "Choose from the same GitHub review queue available in the app.", submit: "Start PR review" },
+      };
       let mode = "github";
+      let githubIntent = "explore";
+      let branchTimer = null;
+      let branchRequest = 0;
+      let prTimer = null;
+      let prRequest = 0;
+
+      function setHeaderCopy(copy) {
+        $("card-title").textContent = copy.title;
+        $("card-subtitle").textContent = copy.subtitle;
+      }
+
+      function setGithubIntent(next) {
+        if (githubIntent === next) return;
+        githubIntent = next;
+        const review = next === "review";
+        animateCardSwap(() => {
+          $("explore-fields").hidden = review;
+          $("review-fields").hidden = !review;
+          $("intent-explore").classList.toggle("active", !review);
+          $("intent-review").classList.toggle("active", review);
+          $("intent-explore").setAttribute("aria-pressed", String(!review));
+          $("intent-review").setAttribute("aria-pressed", String(review));
+          setHeaderCopy(GITHUB_INTENT_COPY[next]);
+          $("submit").textContent = GITHUB_INTENT_COPY[next].submit;
+          setStatus("", "");
+        });
+        reveal(review ? $("review-fields") : $("explore-fields"));
+        hideAllPickerPopovers();
+        refreshGithubDataForAuth();
+      }
 
       function setMode(next) {
         if (mode === next) return;
@@ -975,8 +1276,8 @@
           $("github-fields").hidden = !github;
           $("path-fields").hidden = github;
           $("github-auth").hidden = !github;
-          $("card-title").textContent = MODES[next].title;
-          $("card-subtitle").textContent = MODES[next].subtitle;
+          setHeaderCopy(github ? GITHUB_INTENT_COPY[githubIntent] : MODE_COPY.path);
+          $("submit").textContent = github ? GITHUB_INTENT_COPY[githubIntent].submit : "Generate blueprint";
           setStatus("", "");
         });
         reveal(github ? $("github-fields") : $("path-fields"));
@@ -985,11 +1286,22 @@
         $("tab-path").classList.toggle("active", !github);
         $("tab-github").setAttribute("aria-selected", String(github));
         $("tab-path").setAttribute("aria-selected", String(!github));
-        hideResults();
+        hideAllPickerPopovers();
+        if (github) refreshGithubDataForAuth();
+        else cancelGithubDiscovery();
+      }
+
+      function cancelGithubDiscovery() {
+        clearTimeout(branchTimer);
+        clearTimeout(prTimer);
+        branchRequest++;
+        prRequest++;
       }
 
       $("tab-github").addEventListener("click", () => setMode("github"));
       $("tab-path").addEventListener("click", () => setMode("path"));
+      $("intent-explore").addEventListener("click", () => setGithubIntent("explore"));
+      $("intent-review").addEventListener("click", () => setGithubIntent("review"));
 
       // A CLI positional (`meridian web <source>`) is injected as a prefill string.
       const prefill = window.__MERIDIAN_PREFILL__;
@@ -1063,8 +1375,9 @@
         $("signin").hidden = false;
         $("auth-divider").hidden = false;
         labelRepoField(false);
-        hideResults();
+        hideAllPickerPopovers();
         myRepos = [];
+        refreshGithubDataForAuth();
       }
 
       function showSignedIn(user) {
@@ -1090,6 +1403,7 @@
         });
         setAuthMsg("");
         loadMyRepos();
+        refreshGithubDataForAuth();
       }
 
       async function initAuth() {
@@ -1225,6 +1539,578 @@
       // "All GitHub" (the debounced server-side search) ---
       let myRepos = [];
       let activeQuery = null;
+      const CUSTOM_BRANCH_VALUE = ":custom";
+      let pullRequests = [];
+      let selectedPrNumber = null;
+      let prSearchQuery = "";
+
+      // Branch discovery is intentionally GitHub-only even though the clone endpoint accepts a
+      // broader set of git URLs. An unrecognised source still generates with its remote default.
+      function githubRepoSlug(value) {
+        const raw = typeof value === "string" ? value.trim() : "";
+        const slug = raw.match(/^([\w.-]+)\/([\w.-]+)$/);
+        if (slug) return slug[1] + "/" + slug[2].replace(/\.git$/i, "");
+        try {
+          const url = new URL(raw);
+          if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "github.com") return null;
+          const parts = url.pathname.split("/").filter(Boolean);
+          if (parts.length !== 2 || !parts.every((part) => /^[\w.-]+$/.test(part))) return null;
+          return parts[0] + "/" + parts[1].replace(/\.git$/i, "");
+        } catch {
+          return null;
+        }
+      }
+
+      function menuButtons(id) {
+        return [...$(id + "-options").querySelectorAll("button.result")];
+      }
+
+      function closeMenu(id, restoreFocus) {
+        const trigger = $(id + "-trigger");
+        const list = $(id + "-options");
+        list.hidden = true;
+        trigger.setAttribute("aria-expanded", "false");
+        if (restoreFocus) trigger.focus();
+      }
+
+      function closeAllMenus(exceptId) {
+        for (const id of ["ref", "pr-author"]) {
+          if (id !== exceptId) closeMenu(id, false);
+        }
+      }
+
+      function openMenu(id, focusOption) {
+        const trigger = $(id + "-trigger");
+        if (trigger.disabled) return;
+        closeAllMenus(id);
+        hideResults();
+        hidePullRequestResults();
+        const list = $(id + "-options");
+        list.hidden = false;
+        trigger.setAttribute("aria-expanded", "true");
+        if (focusOption) {
+          const buttons = menuButtons(id);
+          const selected = buttons.find((button) => button.getAttribute("aria-selected") === "true");
+          requestAnimationFrame(() => (selected || buttons[0])?.focus());
+        }
+      }
+
+      function moveMenuFocus(id, current, delta) {
+        const buttons = menuButtons(id);
+        const index = Math.max(0, buttons.indexOf(current));
+        const next = buttons[(index + delta + buttons.length) % buttons.length];
+        for (const button of buttons) button.tabIndex = button === next ? 0 : -1;
+        next?.focus();
+      }
+
+      // Native select popovers ignore most page styling on macOS. These bounded listboxes keep the
+      // same dark surface as repository autocomplete while retaining a hidden form value.
+      function renderMenu(id, options, onSelect, disabled) {
+        const value = $(id);
+        const trigger = $(id + "-trigger");
+        const label = $(id + "-trigger-label");
+        const list = $(id + "-options");
+        const selected = options.find((option) => option.value === value.value) || options[0] || null;
+        value.value = selected ? selected.value : "";
+        label.textContent = selected ? selected.label : "Unavailable";
+        trigger.disabled = disabled || options.length === 0;
+        list.replaceChildren();
+
+        options.forEach((option, index) => {
+          const item = document.createElement("li");
+          item.setAttribute("role", "presentation");
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "result";
+          button.id = id + "-option-" + index;
+          button.setAttribute("role", "option");
+          button.setAttribute("aria-selected", String(option.value === value.value));
+          button.tabIndex = option.value === value.value ? 0 : -1;
+          button.textContent = option.label;
+          button.addEventListener("click", (event) => {
+            event.stopPropagation();
+            value.value = option.value;
+            label.textContent = option.label;
+            for (const candidate of menuButtons(id)) {
+              candidate.setAttribute("aria-selected", String(candidate === button));
+              candidate.tabIndex = candidate === button ? 0 : -1;
+            }
+            closeMenu(id, true);
+            onSelect(option.value);
+          });
+          button.addEventListener("keydown", (event) => {
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              moveMenuFocus(id, button, event.key === "ArrowDown" ? 1 : -1);
+            } else if (event.key === "Home" || event.key === "End") {
+              event.preventDefault();
+              const buttons = menuButtons(id);
+              buttons[event.key === "Home" ? 0 : buttons.length - 1]?.focus();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              closeMenu(id, true);
+            }
+          });
+          item.appendChild(button);
+          list.appendChild(item);
+        });
+
+        if (trigger.dataset.menuBound !== "true") {
+          trigger.dataset.menuBound = "true";
+          trigger.addEventListener("click", (event) => {
+            event.stopPropagation();
+            if (trigger.getAttribute("aria-expanded") === "true") closeMenu(id, false);
+            else openMenu(id, false);
+          });
+          trigger.addEventListener("keydown", (event) => {
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              openMenu(id, true);
+            } else if (event.key === "Escape") {
+              closeMenu(id, false);
+            }
+          });
+          const root = $(id + "-menu");
+          root.addEventListener("focusout", () => {
+            setTimeout(() => {
+              if (!root.contains(document.activeElement)) closeMenu(id, false);
+            }, 0);
+          });
+        }
+        closeMenu(id, false);
+      }
+
+      function syncCustomBranchInput(focus) {
+        const custom = $("ref").value === CUSTOM_BRANCH_VALUE;
+        $("custom-ref").hidden = !custom;
+        if (!custom) $("custom-ref").value = "";
+        if (custom && focus) $("custom-ref").focus();
+      }
+
+      function resetBranches(message) {
+        branchRequest++;
+        $("ref").value = "";
+        renderMenu(
+          "ref",
+          [{ value: "", label: "Default branch" }, { value: CUSTOM_BRANCH_VALUE, label: "Other branch…" }],
+          () => syncCustomBranchInput(true),
+          false,
+        );
+        syncCustomBranchInput(false);
+        $("ref-status").textContent = message || "Choose a repository to load its branches.";
+      }
+
+      function renderBranches(branches, defaultBranch, message) {
+        $("ref").value = "";
+        renderMenu(
+          "ref",
+          [
+            { value: "", label: defaultBranch ? "Default (" + defaultBranch + ")" : "Default branch" },
+            ...branches.map((branch) => ({ value: branch, label: branch })),
+            { value: CUSTOM_BRANCH_VALUE, label: "Other branch…" },
+          ],
+          () => syncCustomBranchInput(true),
+          false,
+        );
+        syncCustomBranchInput(false);
+        $("ref-status").textContent = message || (branches.length
+          ? branches.length + (branches.length === 1 ? " branch available." : " branches available.") + " Choose Other branch… if needed."
+          : "No branches were returned; use the repository default or choose Other branch…");
+      }
+
+      async function loadRepoBranches(value, defaultBranch) {
+        const repo = githubRepoSlug(value);
+        if (!repo) return resetBranches("Enter an exact GitHub repository to load its branches.");
+        const request = ++branchRequest;
+        $("ref").value = "";
+        renderMenu("ref", [{ value: "", label: "Loading branches…" }], () => {}, true);
+        $("ref-status").textContent = "Loading branches…";
+        try {
+          const response = await apiGet("/api/repos/branches?repo=" + encodeURIComponent(repo));
+          const data = await response.json().catch(() => null);
+          if (request !== branchRequest) return;
+          if (!response.ok) {
+            const detail = data && typeof data.error === "string" ? ": " + data.error : ".";
+            renderBranches(
+              [],
+              typeof defaultBranch === "string" ? defaultBranch : "",
+              "Could not load branches" + detail + " Sign in for private repositories, use the default, or choose Other branch…",
+            );
+            return;
+          }
+          const branches = data && Array.isArray(data.branches)
+            ? data.branches.filter((branch) => typeof branch === "string" && branch.length > 0)
+            : [];
+          renderBranches(branches, typeof defaultBranch === "string" ? defaultBranch : "");
+        } catch {
+          if (request === branchRequest) {
+            renderBranches(
+              [],
+              typeof defaultBranch === "string" ? defaultBranch : "",
+              "Could not reach GitHub for branches. Use the default or choose Other branch…",
+            );
+          }
+        }
+      }
+
+      function normalizePullRequest(value) {
+        if (!value || typeof value !== "object") return null;
+        const number = Number(value.number);
+        if (!Number.isSafeInteger(number) || number < 1) return null;
+        return {
+          number,
+          title: typeof value.title === "string" ? value.title : "PR #" + number,
+          author: typeof value.author === "string" ? value.author : "unknown",
+          headRef: typeof value.headRef === "string" ? value.headRef : "",
+          baseRef: typeof value.baseRef === "string" ? value.baseRef : "",
+          updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : "",
+          draft: value.draft === true,
+          state: value.state === "closed" ? "closed" : "open",
+        };
+      }
+
+      function relativeUpdatedAt(value) {
+        const time = Date.parse(value);
+        if (Number.isNaN(time)) return "updated recently";
+        const seconds = Math.max(1, Math.round((Date.now() - time) / 1000));
+        if (seconds < 60) return "updated now";
+        const minutes = Math.round(seconds / 60);
+        if (minutes < 60) return "updated " + minutes + "m ago";
+        const hours = Math.round(minutes / 60);
+        if (hours < 48) return "updated " + hours + "h ago";
+        return "updated " + Math.round(hours / 24) + "d ago";
+      }
+
+      function selectedPullRequest() {
+        return Number.isSafeInteger(selectedPrNumber)
+          ? pullRequests.find((pr) => pr.number === selectedPrNumber) || null
+          : null;
+      }
+
+      function renderPullRequestPreview() {
+        const pr = selectedPullRequest();
+        $("pr-preview").hidden = pr === null;
+        if (!pr) return;
+        $("pr-preview-state").classList.toggle("closed", pr.state === "closed");
+        $("pr-preview-number").textContent = "#" + pr.number;
+        $("pr-preview-title").textContent = pr.title;
+        $("pr-preview-draft").hidden = !pr.draft;
+        const branches = pr.headRef && pr.baseRef ? " · " + pr.headRef + " → " + pr.baseRef : "";
+        $("pr-preview-meta").textContent = pr.author
+          + branches
+          + " · " + relativeUpdatedAt(pr.updatedAt);
+      }
+
+      function clearPullRequestSelection(clearQuery) {
+        selectedPrNumber = null;
+        if (clearQuery) prSearchQuery = "";
+        $("pr-query").value = prSearchQuery;
+        $("pr-preview").hidden = true;
+      }
+
+      function hidePullRequestResults() {
+        const list = $("pr-results");
+        list.hidden = true;
+        $("pr-query").setAttribute("aria-expanded", "false");
+        $("pr-query").removeAttribute("aria-activedescendant");
+      }
+
+      function resetPullRequests(message, clearFilters) {
+        prRequest++;
+        pullRequests = [];
+        if (clearFilters) {
+          $("pr-author").value = "";
+          prSearchQuery = "";
+        }
+        clearPullRequestSelection(false);
+        renderMenu("pr-author", [{ value: "", label: "All authors" }], () => {}, true);
+        $("pr-query").disabled = true;
+        hidePullRequestResults();
+        $("pr-status").textContent = message || "Choose a repository to load its pull requests.";
+      }
+
+      function renderPullRequestAuthors() {
+        const previous = $("pr-author").value;
+        const authors = [...new Set(pullRequests.map((pr) => pr.author))].sort((a, b) => a.localeCompare(b));
+        $("pr-author").value = authors.includes(previous) ? previous : "";
+        renderMenu(
+          "pr-author",
+          [{ value: "", label: "All authors" }, ...authors.map((author) => ({ value: author, label: author }))],
+          () => {
+            clearPullRequestSelection(false);
+            renderPullRequestResults(document.activeElement === $("pr-query"));
+          },
+          pullRequests.length === 0,
+        );
+      }
+
+      function matchesPullRequest(pr, query, author) {
+        const needle = query.trim().toLowerCase().replace(/^#/, "");
+        const queryMatch = !needle
+          || pr.title.toLowerCase().includes(needle)
+          || String(pr.number).includes(needle);
+        return queryMatch && (!author || pr.author === author);
+      }
+
+      function pullRequestSearchLabel(pr) {
+        const draft = pr.draft ? "[Draft] " : "";
+        return "#" + pr.number + " " + draft + pr.title;
+      }
+
+      function matchingPullRequests() {
+        return pullRequests.filter((pr) => matchesPullRequest(pr, prSearchQuery, $("pr-author").value));
+      }
+
+      function prResultItems() {
+        return [...$("pr-results").querySelectorAll('[role="option"]')];
+      }
+
+      function setActivePullRequestResult(index) {
+        const items = prResultItems();
+        if (items.length === 0) return;
+        const bounded = (index + items.length) % items.length;
+        items.forEach((item, itemIndex) => item.classList.toggle("active", itemIndex === bounded));
+        $("pr-query").setAttribute("aria-activedescendant", items[bounded].id);
+        items[bounded].scrollIntoView({ block: "nearest" });
+      }
+
+      function pickPullRequest(pr) {
+        selectedPrNumber = pr.number;
+        prSearchQuery = "";
+        $("pr-query").value = pullRequestSearchLabel(pr);
+        hidePullRequestResults();
+        renderPullRequestPreview();
+        renderPullRequestStatus(matchingPullRequests());
+        // Do not refocus the combobox here. On macOS a pointer click moves focus to the result;
+        // focusing the input again synchronously fires its open-on-focus handler and makes the
+        // dropdown appear to require a second selection click.
+      }
+
+      function pullRequestResultItem(pr) {
+        const item = document.createElement("li");
+        item.className = "result";
+        item.id = "pr-result-" + pr.number;
+        item.tabIndex = -1;
+        item.setAttribute("role", "option");
+        item.setAttribute("aria-selected", String(pr.number === selectedPrNumber));
+        item.dataset.prNumber = String(pr.number);
+        const top = document.createElement("div");
+        top.className = "pr-result-top";
+        appendText(top, "pr-result-number", "#" + pr.number);
+        appendText(top, "pr-result-title", (pr.draft ? "[Draft] " : "") + pr.title);
+        item.appendChild(top);
+        const branches = pr.headRef && pr.baseRef ? " · " + pr.headRef + " → " + pr.baseRef : "";
+        appendText(item, "result-desc", pr.author + branches + " · " + relativeUpdatedAt(pr.updatedAt));
+        item.addEventListener("pointermove", () => {
+          const index = prResultItems().indexOf(item);
+          if (index >= 0) setActivePullRequestResult(index);
+        });
+        item.addEventListener("click", () => pickPullRequest(pr));
+        return item;
+      }
+
+      function renderPullRequestStatus(filtered) {
+        const state = $("pr-state").value;
+        if (pullRequests.length === 0) {
+          $("pr-status").textContent = "No " + state + " pull requests.";
+        } else if (filtered.length === 0) {
+          const query = prSearchQuery.trim();
+          $("pr-status").textContent = query ? "No PRs match “" + query + "”." : "No PRs match the current filters.";
+        } else {
+          const loaded = pullRequests.length + " " + state + (pullRequests.length === 1 ? " pull request" : " pull requests") + " loaded";
+          $("pr-status").textContent = loaded
+            + (filtered.length === pullRequests.length ? "" : " · " + filtered.length + " shown");
+        }
+      }
+
+      function renderPullRequestResults(show) {
+        const filtered = matchingPullRequests();
+        if (selectedPullRequest() && !filtered.some((pr) => pr.number === selectedPrNumber)) {
+          clearPullRequestSelection(false);
+        }
+        const list = $("pr-results");
+        list.replaceChildren();
+        if (filtered.length === 0) {
+          appendPlainItem(list, "group-note", "No pull requests match the current filters.");
+        } else {
+          for (const pr of filtered) list.appendChild(pullRequestResultItem(pr));
+        }
+        renderPullRequestPreview();
+        renderPullRequestStatus(filtered);
+        list.hidden = !show;
+        $("pr-query").setAttribute("aria-expanded", String(show));
+        $("pr-query").removeAttribute("aria-activedescendant");
+      }
+
+      function showPullRequestError(message) {
+        resetPullRequests(message, false);
+      }
+
+      async function loadRepoPullRequests(value, options) {
+        const repo = githubRepoSlug(value);
+        if (!repo) return resetPullRequests("Enter an exact GitHub repository to load its pull requests.", true);
+        const request = ++prRequest;
+        const state = $("pr-state").value;
+        pullRequests = [];
+        if (options && options.clearFilters) {
+          $("pr-author").value = "";
+          prSearchQuery = "";
+        }
+        clearPullRequestSelection(false);
+        $("pr-author-trigger").disabled = true;
+        closeMenu("pr-author", false);
+        $("pr-query").disabled = true;
+        hidePullRequestResults();
+        $("pr-status").textContent = "Loading " + state + " pull requests…";
+        const byNumber = new Map();
+        let hasMore = true;
+        let page = 1;
+        try {
+          // Review mode promises one picker over the whole state-specific queue, so keep following
+          // GitHub's pages until it is exhausted. A repo/intent/auth change increments `prRequest`;
+          // the stale guard after every page then abandons this loop before it can repaint the UI.
+          while (hasMore) {
+            const response = await apiGet(
+              "/api/repos/pulls?repo=" + encodeURIComponent(repo)
+              + "&state=" + encodeURIComponent(state)
+              + "&page=" + page,
+            );
+            const data = await response.json().catch(() => null);
+            if (request !== prRequest) return;
+            if (!response.ok) {
+              const detail = data && typeof data.error === "string" ? ": " + data.error : ".";
+              showPullRequestError("Could not load pull requests" + detail + " Sign in for private repositories.");
+              return;
+            }
+            const pagePrs = data && Array.isArray(data.prs) ? data.prs : [];
+            for (const value of pagePrs) {
+              const pr = normalizePullRequest(value);
+              if (pr) byNumber.set(pr.number, pr);
+            }
+            hasMore = data && data.hasMore === true;
+            page++;
+          }
+        } catch {
+          if (request === prRequest) showPullRequestError("Could not reach GitHub for pull requests.");
+          return;
+        }
+        if (request !== prRequest) return;
+        pullRequests = [...byNumber.values()];
+        renderPullRequestAuthors();
+        $("pr-query").disabled = pullRequests.length === 0;
+        renderPullRequestResults(false);
+      }
+
+      function scheduleRepoPullRequests() {
+        clearTimeout(prTimer);
+        const repo = githubRepoSlug($("repo").value);
+        if (!repo) return resetPullRequests("Choose a repository to load its pull requests.", true);
+        resetPullRequests("Waiting to load pull requests…", true);
+        prTimer = setTimeout(() => void loadRepoPullRequests(repo, { clearFilters: true }), 350);
+      }
+
+      function refreshGithubDataForAuth() {
+        if (mode !== "github") {
+          cancelGithubDiscovery();
+          return;
+        }
+        clearTimeout(branchTimer);
+        clearTimeout(prTimer);
+        const repo = githubRepoSlug($("repo").value);
+        if (githubIntent === "review") {
+          resetBranches();
+          if (repo) void loadRepoPullRequests(repo, { clearFilters: false });
+          else resetPullRequests(undefined, true);
+        } else {
+          resetPullRequests(undefined, true);
+          if (repo) void loadRepoBranches(repo);
+          else resetBranches();
+        }
+      }
+
+      function scheduleRepoBranches() {
+        clearTimeout(branchTimer);
+        const repo = githubRepoSlug($("repo").value);
+        if (!repo) return resetBranches();
+        resetBranches("Waiting to load branches…");
+        branchTimer = setTimeout(() => void loadRepoBranches(repo), 350);
+      }
+
+      function scheduleGithubRepositoryData() {
+        if (githubIntent === "review") scheduleRepoPullRequests();
+        else scheduleRepoBranches();
+      }
+
+      function loadGithubRepositoryData(value, defaultBranch) {
+        clearTimeout(branchTimer);
+        clearTimeout(prTimer);
+        if (githubIntent === "review") void loadRepoPullRequests(value, { clearFilters: true });
+        else void loadRepoBranches(value, defaultBranch);
+      }
+
+      // Repository discovery stays on input. A change handler would run when this field blurs on
+      // result pointer-down and could remove the result before its click selects the repository.
+      $("repo").addEventListener("input", scheduleGithubRepositoryData);
+
+      function setPullRequestState(next) {
+        if ($("pr-state").value === next) return;
+        $("pr-state").value = next;
+        for (const state of ["open", "closed"]) {
+          const button = $("pr-state-" + state);
+          const active = state === next;
+          button.classList.toggle("active", active);
+          button.setAttribute("aria-pressed", String(active));
+        }
+        closeAllMenus();
+        hidePullRequestResults();
+        void loadRepoPullRequests($("repo").value, { clearFilters: true });
+      }
+
+      $("pr-state-open").addEventListener("click", () => setPullRequestState("open"));
+      $("pr-state-closed").addEventListener("click", () => setPullRequestState("closed"));
+
+      $("pr-query").addEventListener("input", () => {
+        selectedPrNumber = null;
+        prSearchQuery = $("pr-query").value;
+        $("pr-preview").hidden = true;
+        renderPullRequestResults(true);
+      });
+      $("pr-query").addEventListener("focus", () => {
+        if (!$("pr-query").disabled) {
+          closeAllMenus();
+          hideResults();
+          renderPullRequestResults(true);
+        }
+      });
+      $("pr-query").addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          hidePullRequestResults();
+          return;
+        }
+        if (event.key === "Tab") {
+          hidePullRequestResults();
+          return;
+        }
+        if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Enter") return;
+        if ($("pr-results").hidden) renderPullRequestResults(true);
+        const items = prResultItems();
+        if (items.length === 0) return;
+        const activeId = $("pr-query").getAttribute("aria-activedescendant");
+        const activeIndex = items.findIndex((item) => item.id === activeId);
+        if (event.key === "Enter") {
+          if (activeIndex < 0) return;
+          event.preventDefault();
+          const number = Number(items[activeIndex].dataset.prNumber);
+          const pr = pullRequests.find((candidate) => candidate.number === number);
+          if (pr) pickPullRequest(pr);
+          return;
+        }
+        event.preventDefault();
+        const nextIndex = activeIndex < 0
+          ? event.key === "ArrowDown" ? 0 : items.length - 1
+          : activeIndex + (event.key === "ArrowDown" ? 1 : -1);
+        setActivePullRequestResult(nextIndex);
+      });
 
       $("repo").addEventListener("input", () => {
         if (!signedIn) return;
@@ -1342,8 +2228,8 @@
         clearTimeout(searchTimer);
         activeQuery = null;
         $("repo").value = typeof repo.fullName === "string" ? repo.fullName : "";
-        if (typeof repo.defaultBranch === "string") $("ref").placeholder = repo.defaultBranch;
-        hideResults();
+        loadGithubRepositoryData($("repo").value, repo.defaultBranch);
+        hideAllPickerPopovers();
       }
 
       function hideResults() {
@@ -1352,12 +2238,22 @@
         list.hidden = true;
       }
 
+      function hideAllPickerPopovers() {
+        hideResults();
+        hidePullRequestResults();
+        closeAllMenus();
+      }
+
       // The dropdown dismisses like any autocomplete: click away or press Escape.
       document.addEventListener("click", (event) => {
-        if (!event.target.closest(".search-wrap")) hideResults();
+        const target = event.target instanceof Element ? event.target : null;
+        if (!target?.closest("#repo-search-wrap")) hideResults();
+        if (!target?.closest("#pr-search-wrap")) hidePullRequestResults();
+        if (!target?.closest(".menu-select")) closeAllMenus();
       });
       $("repo").addEventListener("keydown", (event) => {
-        if (event.key === "Escape") hideResults();
+        if (event.key === "Escape") hideAllPickerPopovers();
+        if (event.key === "Tab") hideResults();
       });
 
       // Fetched once per sign-in (the server pages GitHub for the complete owner+collaborator+org
@@ -1383,7 +2279,10 @@
       const generateStages = ["source", "extract", "open"];
 
       function showPrepareProgress(sourceKind) {
+        const review = sourceKind === "github" && githubIntent === "review";
+        document.querySelector(".prepare-title").textContent = review ? "Preparing PR review" : "Preparing blueprint";
         $("prepare-source-label").textContent = sourceKind === "path" ? "Read repository" : "Fetch repository";
+        $("prepare-open-label").textContent = review ? "Open PR review" : "Open blueprint";
         $("prepare-progress").hidden = false;
         setPrepareStage("source");
         reveal($("prepare-progress"));
@@ -1403,7 +2302,7 @@
           else step.removeAttribute("aria-current");
         });
         const activeStep = document.querySelector('.prepare-step[data-state="active"]');
-        $("prepare-announcement").textContent = "Preparing blueprint: " + activeStep.textContent.trim();
+        $("prepare-announcement").textContent = (mode === "github" && githubIntent === "review" ? "Preparing PR review: " : "Preparing blueprint: ") + activeStep.textContent.trim();
       }
 
       async function generateBlueprint(request) {
@@ -1489,22 +2388,49 @@
         if (!repo) {
           return null;
         }
-        const body = { kind: "github", value: repo };
-        const ref = $("ref").value.trim();
-        const subdir = $("subdir").value.trim();
+        const body = { kind: "github", value: githubRepoSlug(repo) || repo };
+        if (githubIntent === "review") {
+          const pr = selectedPullRequest();
+          if (!pr) return null;
+          if (pr.baseRef) body.ref = pr.baseRef;
+          return body;
+        }
+        const selectedRef = $("ref").value;
+        const ref = selectedRef === CUSTOM_BRANCH_VALUE ? $("custom-ref").value.trim() : selectedRef.trim();
+        if (selectedRef === CUSTOM_BRANCH_VALUE && !ref) return null;
         if (ref) body.ref = ref;
-        if (subdir) body.subdir = subdir;
         return body;
       }
 
       $("form").addEventListener("submit", async (event) => {
         event.preventDefault();
+        const customBranchMissing = mode === "github"
+          && githubIntent === "explore"
+          && $("repo").value.trim()
+          && $("ref").value === CUSTOM_BRANCH_VALUE
+          && !$("custom-ref").value.trim();
+        const pullRequestMissing = mode === "github"
+          && githubIntent === "review"
+          && $("repo").value.trim()
+          && selectedPullRequest() === null;
+        const reviewPrNumber = mode === "github" && githubIntent === "review"
+          ? selectedPullRequest()?.number ?? null
+          : null;
         const request = buildRequest();
         if (!request) {
-          setStatus(mode === "path" ? "Enter a path to a local repo." : "Enter a GitHub repository.", "error");
+          setStatus(
+            customBranchMissing
+              ? "Enter a branch name."
+              : pullRequestMissing
+                ? "Choose a pull request."
+              : mode === "path" ? "Enter a path to a local repo." : "Enter a GitHub repository.",
+            "error",
+          );
+          if (customBranchMissing) $("custom-ref").focus();
+          if (pullRequestMissing) $("pr-query").focus();
           return;
         }
-        hideResults();
+        hideAllPickerPopovers();
         setStatus("", null);
         $("submit").disabled = true;
         showPrepareProgress(request.kind);
@@ -1513,7 +2439,11 @@
           const data = await generateBlueprint(request);
           navigating = true;
           await allowFinalStagePaint();
-          window.location = "/view?id=" + encodeURIComponent(data.id);
+          window.location = reviewPrNumber === null
+            ? "/view?id=" + encodeURIComponent(data.id)
+            : "/view?id=" + encodeURIComponent(data.id)
+              + "&view=modules&prn=" + encodeURIComponent(reviewPrNumber)
+              + "&rev=1";
         } catch (error) {
           const message = error && error.expected ? error.message : "Could not reach the server.";
           setStatus(message, "error");

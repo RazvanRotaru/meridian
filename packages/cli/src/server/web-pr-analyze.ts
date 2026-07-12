@@ -101,7 +101,11 @@ async function cloneFullHistory(url: string, dir: string, token?: string): Promi
  * detach onto FETCH_HEAD — so a fork's head resolves without depending on a local branch name.
  */
 async function checkoutPrHead(cwd: string, baseRef: string, prNumber: number, token?: string): Promise<void> {
-  await runGit(["fetch", "origin", baseRef], { cwd, token, timeoutMs: ANALYZE_GIT_TIMEOUT_MS });
+  // Spell out both sides of the refspec. Besides ensuring `origin/<base>` is refreshed for the
+  // merge-base diff (including after a force-push), this keeps a valid leading `+` in the branch
+  // name inside the fully-qualified source instead of interpreting it as refspec syntax.
+  const baseRefspec = `+refs/heads/${baseRef}:refs/remotes/origin/${baseRef}`;
+  await runGit(["fetch", "origin", baseRefspec], { cwd, token, timeoutMs: ANALYZE_GIT_TIMEOUT_MS });
   await runGit(["fetch", "origin", `pull/${prNumber}/head`], { cwd, token, timeoutMs: ANALYZE_GIT_TIMEOUT_MS });
   await runGit(["checkout", "--detach", "FETCH_HEAD"], { cwd, token, timeoutMs: ANALYZE_GIT_TIMEOUT_MS });
 }

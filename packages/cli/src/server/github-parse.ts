@@ -6,9 +6,11 @@
 
 import type { ChangedLineSpan, LineRange } from "@meridian/core";
 import { asObject, numberOr, optionalString, requireNumber, requireString } from "./json-fields";
+import { isAllowedCloneRef } from "./git-ref";
 
 const OWNER_REPO = /^[\w.-]+\/[\w.-]+$/;
 const SEARCH_RESULT_LIMIT = 20;
+const BRANCH_RESULT_LIMIT = 100;
 /** One full page of `GET /user/repos` — the pagination loop in github.ts caps the total. */
 const LIST_RESULT_LIMIT = 100;
 const PR_LIST_RESULT_LIMIT = 30;
@@ -112,13 +114,23 @@ export type RepoQuery =
   | { kind: "exact"; owner: string; repo: string }
   | { kind: "search"; term: string };
 
+export interface RepoSlug {
+  owner: string;
+  repo: string;
+}
+
+/** Strictly normalize an owner/repo slug or github.com repository URL. */
+export function parseRepoSlug(raw: string): RepoSlug | null {
+  return repoSlug(raw.trim());
+}
+
 /** An `owner/repo` (or github URL) becomes a direct lookup; anything else is a fuzzy search. */
 export function classifyQuery(raw: string): RepoQuery | null {
   const term = raw.trim();
   if (term.length === 0) {
     return null;
   }
-  const slug = repoSlug(term);
+  const slug = parseRepoSlug(term);
   if (slug) {
     return { kind: "exact", owner: slug.owner, repo: slug.repo };
   }
@@ -143,6 +155,21 @@ export function parseRepoList(json: unknown): RepoSummary[] {
     return [];
   }
   return json.slice(0, LIST_RESULT_LIMIT).map((item) => toRepoSummary(asObject(item)));
+}
+
+/** A single GitHub branches page, restricted to refs accepted by the clone path. */
+export function parseBranchList(json: unknown): string[] {
+  if (!Array.isArray(json)) {
+    return [];
+  }
+  const branches: string[] = [];
+  for (const item of json.slice(0, BRANCH_RESULT_LIMIT)) {
+    const name = optionalString(asObject(item), "name");
+    if (name && isAllowedCloneRef(name)) {
+      branches.push(name);
+    }
+  }
+  return branches;
 }
 
 export function parsePullRequestList(json: unknown): PrSummary[] {
@@ -257,8 +284,8 @@ export function parseReviewSubmitted(json: unknown): { url: string | null } {
 function repoSlug(term: string): { owner: string; repo: string } | null {
   const stripped = term
     .replace(/^https?:\/\/github\.com\//i, "")
-    .replace(/\.git$/, "")
-    .replace(/\/$/, "");
+    .replace(/\/$/, "")
+    .replace(/\.git$/, "");
   if (!OWNER_REPO.test(stripped)) {
     return null;
   }

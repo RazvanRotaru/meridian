@@ -5,6 +5,7 @@
 
 import {
   classifyQuery,
+  parseBranchList,
   parseCheckRuns,
   parsePullRequestComments,
   parsePullRequestFiles,
@@ -47,6 +48,8 @@ export function resolveGitHubClientId(...overrides: readonly (string | undefined
 const SEARCH_PER_PAGE = 20;
 const LIST_PER_PAGE = 100;
 const LIST_MAX_PAGES = 4;
+const BRANCH_PER_PAGE = 100;
+const BRANCH_MAX_PAGES = 4;
 const PR_PER_PAGE = 30;
 const PR_FILE_PER_PAGE = 100;
 const PR_FILE_CAP = 3_000;
@@ -59,6 +62,7 @@ export interface GitHubClient {
   getUser(token: string): Promise<GitHubUser>;
   searchRepos(token: string, query: string): Promise<RepoSummary[]>;
   listOwnRepos(token: string): Promise<RepoSummary[]>;
+  listBranches(request: BranchesRequest): Promise<string[]>;
   listPullRequests(request: PullRequestsRequest): Promise<PullRequestsResult>;
   fetchPullRequestFiles(request: PullRequestFilesRequest): Promise<PullRequestFilesResult>;
   submitPullRequestReview(request: SubmitReviewRequest): Promise<SubmitReviewResult>;
@@ -74,6 +78,12 @@ export interface PullRequestsRequest {
   repo: string;
   state: "open" | "closed";
   page: number;
+  token?: string;
+}
+
+export interface BranchesRequest {
+  owner: string;
+  repo: string;
   token?: string;
 }
 
@@ -123,6 +133,7 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
     getUser: (token) => getUser(fetchImpl, token),
     searchRepos: (token, query) => searchRepos(fetchImpl, token, query),
     listOwnRepos: (token) => listOwnRepos(fetchImpl, token),
+    listBranches: (request) => listBranches(fetchImpl, request),
     listPullRequests: (request) => listPullRequestsWithFetch(fetchImpl, request),
     fetchPullRequestFiles: (request) => fetchPullRequestFilesWithFetch(fetchImpl, request),
     submitPullRequestReview: (request) => submitPullRequestReviewWithFetch(fetchImpl, request),
@@ -265,6 +276,28 @@ async function listOwnRepos(fetchImpl: typeof fetch, token: string): Promise<Rep
     }
   }
   return repos;
+}
+
+/**
+ * Branches visible to the optional token. Public repositories work without authentication; a
+ * session/env/gh token lets the same call reach private repositories. Pagination is bounded so a
+ * repository with an extreme branch count cannot make one picker request unbounded.
+ */
+async function listBranches(fetchImpl: typeof fetch, request: BranchesRequest): Promise<string[]> {
+  const branches: string[] = [];
+  for (let page = 1; page <= BRANCH_MAX_PAGES; page++) {
+    const params = new URLSearchParams({ per_page: String(BRANCH_PER_PAGE), page: String(page) });
+    const result = await getApiPage(
+      fetchImpl,
+      repoApi(request.owner, request.repo, `/branches?${params}`),
+      request.token,
+    );
+    branches.push(...parseBranchList(result.json));
+    if (!result.hasNext) {
+      break;
+    }
+  }
+  return branches;
 }
 
 async function listPullRequestsWithFetch(fetchImpl: typeof fetch, request: PullRequestsRequest): Promise<PullRequestsResult> {

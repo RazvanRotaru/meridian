@@ -74,6 +74,71 @@ describe("listOwnRepos", () => {
   });
 });
 
+describe("listBranches", () => {
+  it("lists clone-compatible branches for a public repo without authentication", async () => {
+    const seen: Array<{ url: string; authorization: string | null }> = [];
+    const client = createGitHubClient({
+      clientId: "Iv1.test",
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        seen.push({ url: String(url), authorization: new Headers(init?.headers).get("authorization") });
+        return new Response(JSON.stringify([
+          { name: "main" },
+          { name: "feature/branch-picker" },
+          { name: "unsupported branch" },
+        ]), { status: 200 });
+      }) as typeof fetch,
+    });
+
+    await expect(client.listBranches({ owner: "open-source", repo: "project" })).resolves.toEqual([
+      "main",
+      "feature/branch-picker",
+    ]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0].url).toContain("/repos/open-source/project/branches?");
+    expect(seen[0].url).toContain("per_page=100");
+    expect(seen[0].url).toContain("page=1");
+    expect(seen[0].authorization).toBeNull();
+  });
+
+  it("uses the optional token and follows GitHub branch pagination", async () => {
+    const seen: Array<{ url: string; authorization: string | null }> = [];
+    const pages = [[{ name: "main" }], [{ name: "release/next" }]];
+    const client = createGitHubClient({
+      clientId: "Iv1.test",
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        const index = seen.length;
+        seen.push({ url: String(url), authorization: new Headers(init?.headers).get("authorization") });
+        const headers = index === 0 ? { link: '<https://api.github.com/next>; rel="next"' } : undefined;
+        return new Response(JSON.stringify(pages[index]), { status: 200, headers });
+      }) as typeof fetch,
+    });
+
+    await expect(client.listBranches({ owner: "private-org", repo: "project", token: "secret" })).resolves.toEqual([
+      "main",
+      "release/next",
+    ]);
+    expect(seen.map((entry) => entry.authorization)).toEqual(["Bearer secret", "Bearer secret"]);
+    expect(seen[1].url).toContain("page=2");
+  });
+
+  it("bounds branch pagination", async () => {
+    let calls = 0;
+    const client = createGitHubClient({
+      clientId: "Iv1.test",
+      fetchImpl: (async () => {
+        calls++;
+        return new Response(JSON.stringify([{ name: `branch-${calls}` }]), {
+          status: 200,
+          headers: { link: '<https://api.github.com/next>; rel="next"' },
+        });
+      }) as typeof fetch,
+    });
+
+    await expect(client.listBranches({ owner: "org", repo: "project" })).resolves.toHaveLength(4);
+    expect(calls).toBe(4);
+  });
+});
+
 describe("listPullRequests", () => {
   it("returns hasMore when GitHub gives a full PR page", async () => {
     const seenUrls: string[] = [];
