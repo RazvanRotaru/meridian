@@ -142,13 +142,14 @@ export interface LayoutActivity {
 type SurfaceSemanticContext = NonNullable<SurfaceSemanticParent["context"]>;
 
 /** The source view's state: which node, its fetched code, and the in-flight/error status.
- * `mode` decides where it renders — a compact panel inline on the node, or a centered modal. */
+ * `mode` decides where it renders — compact inline, or in the large source host (the centered node
+ * modal or, when `edgeEvidence` is present, the graph-local inspection dock). */
 export interface CodeView {
   node: GraphNode;
   code: string | null;
   loading: boolean;
   error: string | null;
-  /** Where the code shows: a compact panel hanging off the node, or a blown-up centered modal. */
+  /** Where the code shows: a compact panel hanging off the node, or a large source surface. */
   mode: "inline" | "modal";
   /** The server capped the snippet; the panel shows a note when set. */
   truncated?: boolean;
@@ -164,7 +165,8 @@ export interface CodeView {
   changedLines?: ReadonlySet<number>;
   /** Edge-click mode: the concrete syntax occurrences behind the aggregate wire and the currently
    * loaded one. Its focus range is in the coordinates of the code being shown (HEAD during a
-   * synchronous PR review, otherwise artifact/source coordinates). */
+   * synchronous PR review, otherwise artifact/source coordinates). Presence moves the large source
+   * surface into the graph-local edge inspection dock. */
   edgeEvidence?: {
     contexts: readonly EdgeEvidenceContext[];
     activeIndex: number;
@@ -561,10 +563,12 @@ export interface BlueprintState {
   /** Load one node's review diff for the hover preview without taking over the global code modal. */
   loadCodePreview(node: GraphNode): Promise<CodeView | null>;
   showCode(node: GraphNode, opts?: { wholeFile?: boolean }): Promise<void>;
-  /** Open the shared source modal on one real syntax occurrence behind a painted wire. */
+  /** Open contextual source beside the clicked wire's inspector. */
   showEdgeEvidence(contexts: readonly EdgeEvidenceContext[], activeIndex?: number): Promise<void>;
-  /** Move the open edge-source modal to another occurrence, loading its file/context on demand. */
+  /** Move the open edge-source pane to another occurrence, loading its file/context on demand. */
   selectEdgeEvidence(index: number): Promise<void>;
+  /** Close edge source only; a stale graph surface must never dismiss ordinary node/PR source. */
+  closeEdgeEvidence(): void;
   expandCode(): void;
   closeCode(): void;
   setPrsTab(tab: PrsTab): void;
@@ -2809,6 +2813,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     async showEdgeEvidence(contexts, activeIndex = 0) {
       if (contexts.length === 0) {
+        get().closeEdgeEvidence();
         return;
       }
       const selectedIndex = Math.min(Math.max(Math.trunc(activeIndex), 0), contexts.length - 1);
@@ -2816,6 +2821,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const node = edgeEvidenceNode(context, selectedIndex, get());
       const request = codeLoadRequest(node, undefined, get(), sourceUrl, prFileUrl);
       if (!request) {
+        get().closeEdgeEvidence();
         return; // The pinned inspector remains visible and truthfully reports attribution only.
       }
       const span = displayedEvidenceSpan(context, get(), prFileUrl);
@@ -2860,6 +2866,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       await get().showEdgeEvidence(contexts, index);
     },
 
+    closeEdgeEvidence() {
+      if (get().codeView?.edgeEvidence === undefined) {
+        return;
+      }
+      edgeEvidenceSeq += 1;
+      set({ codeView: null });
+    },
+
     // Blow the current inline panel up into the centered modal. A no-op when nothing is shown.
     expandCode() {
       const { codeView } = get();
@@ -2870,6 +2884,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     closeCode() {
+      if (get().codeView?.edgeEvidence !== undefined) {
+        edgeEvidenceSeq += 1;
+      }
       set({ codeView: null });
     },
 

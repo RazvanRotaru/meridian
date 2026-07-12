@@ -68,7 +68,7 @@ afterEach(() => {
 });
 
 describe("edge source evidence store", () => {
-  it("opens directly in the shared modal with generous context and exact focused rows", async () => {
+  it("opens contextual source with generous context and exact focused rows", async () => {
     const fetchMock = vi.fn().mockResolvedValue(Response.json({
       code: Array.from({ length: 163 }, (_, index) => `line ${index + 20}`).join("\n"),
       startLine: 20,
@@ -148,5 +148,49 @@ describe("edge source evidence store", () => {
     await store.getState().showEdgeEvidence([context()]);
     expect(store.getState().codeView).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("closes edge evidence without dismissing an unrelated source panel", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ code: "one", truncated: false })));
+    const store = freshStore();
+    await store.getState().showEdgeEvidence([context()]);
+
+    store.getState().closeEdgeEvidence();
+    expect(store.getState().codeView).toBeNull();
+
+    const ordinary = {
+      node: ARTIFACT.nodes[0]!,
+      code: "ordinary",
+      loading: false,
+      error: null,
+      mode: "modal" as const,
+    };
+    store.setState({ codeView: ordinary });
+    store.getState().closeEdgeEvidence();
+    expect(store.getState().codeView).toBe(ordinary);
+  });
+
+  it("cannot resurrect contextual source after the dock closes during a request", async () => {
+    let resolve!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise<Response>((done) => { resolve = done; })));
+    const store = freshStore();
+
+    const pending = store.getState().showEdgeEvidence([context()]);
+    expect(store.getState().codeView?.loading).toBe(true);
+    store.getState().closeEdgeEvidence();
+    resolve(Response.json({ code: "late", truncated: false }));
+    await pending;
+
+    expect(store.getState().codeView).toBeNull();
+  });
+
+  it("clears prior contextual source when the newly inspected wire has no source sites", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ code: "one", truncated: false })));
+    const store = freshStore();
+    await store.getState().showEdgeEvidence([context()]);
+
+    await store.getState().showEdgeEvidence([]);
+
+    expect(store.getState().codeView).toBeNull();
   });
 });

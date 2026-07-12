@@ -1,15 +1,15 @@
 /**
- * The source-code modal: a centered overlay that blows up the code shown inline on a node (its
- * ⤢ expand button flips `codeView.mode` to "modal"). Its whole state lives on the store's
- * `codeView`; this component renders only when the mode is "modal" and offers three ways out —
- * the close button, Escape, and a backdrop click. The code is syntax-highlighted by CodeBlock,
- * which escapes it as plain text children (never dangerouslySetInnerHTML).
+ * Shared source rendering with two hosts. `CodePanel` is the centered overlay that expands an
+ * ordinary node/PR source view; `EdgeSourcePane` is the backdrop-free left half of the graph-local
+ * edge inspection dock. The latter deliberately owns no close gesture—the dock closes source and
+ * wire evidence together. CodeBlock escapes source as plain text children.
  */
 
 import { useEffect, useMemo, useState } from "react";
 import { anchorableHunks } from "../derive/reviewSubmit";
 import { formatCallSite } from "../graph/edgeEvidence";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
+import type { CodeView } from "../state/store";
 import { relationColor } from "../theme/relationTheme";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { CodeBlock } from "./CodeBlock";
@@ -17,21 +17,56 @@ import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeK
 
 export function CodePanel() {
   const codeView = useBlueprint((state) => state.codeView);
+  const { closeCode } = useBlueprintActions();
+  const open = codeView?.mode === "modal" && codeView.edgeEvidence === undefined;
+
+  // Edge evidence has a graph-local host beside its wire inspector. Keeping the global panel
+  // deliberately empty prevents the old second modal (and its independent close lifecycle).
+  useClearOnEscape(closeCode, open);
+  if (!codeView || !open) {
+    return null;
+  }
+  return (
+    <div style={BACKDROP_STYLE} onClick={closeCode}>
+      <SourcePanel codeView={codeView} presentation="modal" onClose={closeCode} />
+    </div>
+  );
+}
+
+/** Contextual source hosted inside the graph-local edge inspection dock. It has no backdrop,
+ * close control, or Escape layer: the dock owns that one lifecycle for both of its panes. */
+export function EdgeSourcePane() {
+  const codeView = useBlueprint((state) => state.codeView);
+  if (!codeView || codeView.mode !== "modal" || codeView.edgeEvidence === undefined) {
+    return null;
+  }
+  return <SourcePanel codeView={codeView} presentation="edge" />;
+}
+
+function SourcePanel({
+  codeView,
+  presentation,
+  onClose,
+}: {
+  codeView: CodeView;
+  presentation: "modal" | "edge";
+  onClose?: () => void;
+}) {
   const review = useBlueprint((state) => state.review);
   const index = useBlueprint((state) => state.index);
-  const removed = useBlueprint((state) => codeView ? state.reviewRemovedByFile[codeView.node.location?.file ?? ""] ?? EMPTY_REMOVED : EMPTY_REMOVED);
-  const removedTruncated = useBlueprint((state) => codeView ? state.reviewRemovedTruncatedByFile[codeView.node.location?.file ?? ""] === true : false);
-  const { closeCode, addReviewComment, selectEdgeEvidence } = useBlueprintActions();
-  const wholeFile = codeView?.wholeFile ?? false;
+  const removed = useBlueprint((state) => state.reviewRemovedByFile[codeView.node.location?.file ?? ""] ?? EMPTY_REMOVED);
+  const removedTruncated = useBlueprint((state) => state.reviewRemovedTruncatedByFile[codeView.node.location?.file ?? ""] === true);
+  const { addReviewComment, selectEdgeEvidence } = useBlueprintActions();
+  const wholeFile = codeView.wholeFile ?? false;
   // A PR-review panel carries its own head-relative diff; otherwise the artifact's `changedSince`
   // drives the paint. The hooks run unconditionally (rules of hooks) and are overridden when carried.
-  const hookChangedLines = useChangedLines(codeView?.node, wholeFile);
-  const hookChangedLineKinds = useLineChangeKinds(codeView?.node, wholeFile);
-  const hookSummary = useChangeSummary(codeView?.node, wholeFile);
-  const changedLines = codeView?.changedLines ?? hookChangedLines;
-  const changedLineKinds = codeView?.changedLineKinds ?? hookChangedLineKinds;
-  const summary = codeView?.changedLineKinds ? summarizeChangeKinds(codeView.changedLineKinds) : hookSummary;
-  const edgeEvidence = codeView?.edgeEvidence;
+  const hookChangedLines = useChangedLines(codeView.node, wholeFile);
+  const hookChangedLineKinds = useLineChangeKinds(codeView.node, wholeFile);
+  const hookSummary = useChangeSummary(codeView.node, wholeFile);
+  const changedLines = codeView.changedLines ?? hookChangedLines;
+  const changedLineKinds = codeView.changedLineKinds ?? hookChangedLineKinds;
+  const summary = codeView.changedLineKinds ? summarizeChangeKinds(codeView.changedLineKinds) : hookSummary;
+  const edgeEvidence = codeView.edgeEvidence;
   const activeEvidence = edgeEvidence?.contexts[edgeEvidence.activeIndex];
   const evidenceLines = useMemo(() => {
     if (!edgeEvidence) return EMPTY_EVIDENCE_LINES;
@@ -41,10 +76,9 @@ export function CodePanel() {
     }
     return lines;
   }, [edgeEvidence]);
-  const open = codeView?.mode === "modal";
-  const reviewFile = codeView?.node.location?.file ?? null;
-  const reviewBaseLine = codeView?.baseLine ?? codeView?.node.location?.startLine ?? 1;
-  const visibleLineCount = codeView?.code === null || codeView?.code === undefined ? 0 : codeView.code.split("\n").length;
+  const reviewFile = codeView.node.location?.file ?? null;
+  const reviewBaseLine = codeView.baseLine ?? codeView.node.location?.startLine ?? 1;
+  const visibleLineCount = codeView.code === null ? 0 : codeView.code.split("\n").length;
   const visibleEnd = reviewBaseLine + Math.max(visibleLineCount - 1, 0);
   const commentableLines = useMemo(() => {
     if (reviewFile === null || review === null || anchorableHunks(reviewFile, review.context).length === 0) {
@@ -66,15 +100,8 @@ export function CodePanel() {
     return rows;
   }, [removed, reviewBaseLine, visibleEnd]);
   const [activeCommentLine, setActiveCommentLine] = useState<number | null>(null);
-  useEffect(() => setActiveCommentLine(null), [codeView?.node.id, reviewBaseLine]);
+  useEffect(() => setActiveCommentLine(null), [codeView.node.id, reviewBaseLine]);
 
-  // Escape closes the modal while it's open — but as the TOP layer, so a modal opened over the
-  // PR-review overlay closes just itself and the next Escape reaches the overlay beneath it.
-  useClearOnEscape(closeCode, open);
-
-  if (!codeView || codeView.mode !== "modal") {
-    return null;
-  }
   const { node, code, loading, error, truncated } = codeView;
   const { file, startLine, endLine } = node.location;
   const baseLine = codeView.baseLine ?? startLine;
@@ -86,7 +113,9 @@ export function CodePanel() {
   const evidenceTitle = activeEvidence
     ? `${index.nodesById.get(activeEvidence.source)?.displayName ?? activeEvidence.source} → ${index.nodesById.get(activeEvidence.target)?.displayName ?? activeEvidence.target}`
     : null;
-  const title = evidenceTitle ?? (wholeFile ? (file.split("/").pop() ?? file) : node.displayName);
+  const title = presentation === "edge" && activeEvidence
+    ? `Source · ${file.split("/").pop() ?? file}`
+    : evidenceTitle ?? (wholeFile ? (file.split("/").pop() ?? file) : node.displayName);
   const range = shownEnd !== baseLine ? `${baseLine}-${shownEnd}` : String(baseLine);
   const location = activeEvidence && edgeEvidence
     ? displayedEvidenceLocation(activeEvidence.site, edgeEvidence.focusStartLine, edgeEvidence.focusEndLine)
@@ -94,16 +123,14 @@ export function CodePanel() {
       ? file
       : `${file}:${range}`;
 
-  // A backdrop click closes; clicks inside the panel are swallowed so they don't reach it.
   return (
-    <div style={BACKDROP_STYLE} onClick={closeCode}>
-      <div
-        style={PANEL_STYLE}
-        role="dialog"
-        aria-modal
-        aria-label={activeEvidence ? "Edge source evidence" : "Source code"}
-        onClick={(event) => event.stopPropagation()}
-      >
+    <div
+      style={presentation === "edge" ? EDGE_PANEL_STYLE : PANEL_STYLE}
+      role={presentation === "edge" ? "region" : "dialog"}
+      aria-modal={presentation === "modal" ? true : undefined}
+      aria-label={presentation === "edge" ? "Highlighted edge source" : "Source code"}
+      onClick={(event) => event.stopPropagation()}
+    >
         <header style={HEADER_STYLE}>
           <div style={HEADER_TEXT_STYLE}>
             <div style={TITLE_STYLE} title={node.qualifiedName}>{title}</div>
@@ -146,9 +173,11 @@ export function CodePanel() {
               </div>
             ) : null}
           </div>
-          <button type="button" style={CLOSE_STYLE} onClick={closeCode} aria-label="Close source">
-            ×
-          </button>
+          {onClose ? (
+            <button type="button" style={CLOSE_STYLE} onClick={onClose} aria-label="Close source">
+              ×
+            </button>
+          ) : null}
         </header>
         <div style={BODY_STYLE}>
           {loading ? <div style={STATUS_STYLE}>Loading source…</div> : null}
@@ -156,7 +185,7 @@ export function CodePanel() {
           {code !== null ? (
             <CodeBlock
               code={code}
-              maxHeight="70vh"
+              maxHeight={presentation === "edge" ? "62vh" : "70vh"}
               startLine={baseLine}
               showGutter
               changedLines={changedLines}
@@ -175,7 +204,6 @@ export function CodePanel() {
           ) : null}
           {truncated ? <div style={TRUNCATED_STYLE}>Snippet truncated by the server.</div> : null}
         </div>
-      </div>
     </div>
   );
 }
@@ -215,6 +243,16 @@ const PANEL_STYLE: React.CSSProperties = {
   borderRadius: 12,
   overflow: "hidden",
   boxShadow: "0 24px 64px rgba(0,0,0,0.55)",
+};
+const EDGE_PANEL_STYLE: React.CSSProperties = {
+  width: "min(58vw, 820px)",
+  minWidth: 0,
+  height: "min(72vh, 700px)",
+  display: "flex",
+  flexDirection: "column",
+  background: "#0E1116",
+  borderRight: "1px solid #30363d",
+  overflow: "hidden",
 };
 const HEADER_STYLE: React.CSSProperties = {
   display: "flex",

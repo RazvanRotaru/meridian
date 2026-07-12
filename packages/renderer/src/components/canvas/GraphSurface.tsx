@@ -19,8 +19,8 @@
  *     lit ones selection-relative;
  *   - WIRES BEHIND CARDS on every surface: `zIndexMode="manual"` + the per-wire z the interaction
  *     hook assigns (cross-canvas under everything; intra-frame at its nesting depth);
- *   - wire hover naming (WireTooltip), the click-pinned Wire INSPECTOR, and contextual source
- *     evidence (exact syntax ranges in CodePanel), opt-in via `wireHover` on every graph mount;
+ *   - wire hover naming (WireTooltip), plus the click-pinned EdgeInspectionDock with relationship
+ *     metadata and contextual source highlighting, opt-in via `wireHover` on every active mount;
  *   - repeated semantic-zoom bands (`MapLod`, its legacy component name) — pure CSS visibility over
  *     pre-mounted, independently laid parent graphs on every SurfaceSpec that supplies them.
  *
@@ -50,7 +50,7 @@ import { edgeEvidenceForPair } from "../../graph/edgeEvidence";
 import { moduleNodeTypes } from "../nodes/modulemap/ModuleCardNode";
 import { paintMinimalLevel } from "../paintMinimal";
 import { WireTooltip } from "../WireTooltip";
-import { WireInspector } from "../WireInspector";
+import { EdgeInspectionDock } from "../EdgeInspectionDock";
 import { CanvasChrome, MINIMAP_NODE_CAP, READONLY_CANVAS_PROPS } from "./flowCanvasProps";
 import { MapLod } from "./MapLod";
 import { ghostGroupInteractionOf, type ModuleNodeHandlers } from "./useModuleNodeInteractions";
@@ -198,7 +198,8 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const relationVisibilityOverrides = useBlueprint((state) => state.relationVisibilityOverrides);
   const showHighways = useBlueprint((state) => state.showHighways);
   const groupGhostsByParent = useBlueprint((state) => state.groupGhostsByParent);
-  const { showEdgeEvidence } = useBlueprintActions();
+  const edgeEvidenceOpen = useBlueprint((state) => state.codeView?.edgeEvidence !== undefined);
+  const { showEdgeEvidence, closeEdgeEvidence } = useBlueprintActions();
   const emphasisMode = props.emphasisMode ?? highlightMode;
   const groupGhosts = props.groupGhosts ?? groupGhostsByParent;
   // Keep the semantic controller mounted through the final parent handoff too: its ancestor list can
@@ -212,6 +213,10 @@ export function GraphSurface(props: GraphSurfaceProps) {
   );
   const previousUserZoom = useRef<number | null>(null);
   const programmaticUserZoomArmed = useRef(false);
+  // Local wire state and global source state still need one owner boundary. This ref distinguishes
+  // a source-backed inspection (whose source disappearing ends the whole dock) from an intentional
+  // metadata-only wire, which remains useful without a source pane.
+  const inspectionOwnsSource = useRef(false);
   const onMoveStart = useCallback<OnMoveStart>((event, viewport) => {
     if (!semanticCommitEnabled) {
       previousUserZoom.current = null;
@@ -335,16 +340,25 @@ export function GraphSurface(props: GraphSurfaceProps) {
   }, [paintedEdges, paintedNodes, props.highways, props.relations, paintOwnership.highwaySeeds, showHighways]);
   const openWireEvidence = useCallback((pair: Edge[]) => {
     const contexts = edgeEvidenceForPair(pair, index.edgesById);
-    if (contexts.length > 0) {
-      void showEdgeEvidence(contexts);
-    }
+    inspectionOwnsSource.current = contexts.length > 0;
+    // The action also clears prior source when the new wire has no attributable site, while the
+    // inspector itself remains useful as relationship metadata.
+    void showEdgeEvidence(contexts);
   }, [index.edgesById, showEdgeEvidence]);
   const wire = useWireHover(
     preparedEdges.semanticEdges,
     paintedNodes,
     props.wireHover === true,
     openWireEvidence,
+    closeEdgeEvidence,
   );
+  useEffect(() => {
+    if (edgeEvidenceOpen || !inspectionOwnsSource.current) return;
+    // Another source gesture/state reset replaced a source-backed edge inspection. End its local
+    // pin too; the guarded close callback cannot disturb the replacement node/PR source view.
+    inspectionOwnsSource.current = false;
+    wire.clearInspected();
+  }, [edgeEvidenceOpen, wire.clearInspected]);
   // Append hierarchy spokes AFTER interaction dressing too: their exact objects never acquire a
   // pulse, label, hit width, tooltip, inspector subject, or semantic z-order.
   const renderedEdges = useMemo(
@@ -423,7 +437,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
       </ReactFlow>
       {wire.hover ? <WireTooltip hover={wire.hover} /> : null}
       {wire.inspectedPair ? (
-        <WireInspector pair={wire.inspectedPair} labelOf={wire.labelOf} onClose={wire.clearInspected} onDrill={wire.inspect} />
+        <EdgeInspectionDock pair={wire.inspectedPair} labelOf={wire.labelOf} onClose={wire.clearInspected} onDrill={wire.inspect} />
       ) : null}
       {nodeDiff.layer}
       {props.children}

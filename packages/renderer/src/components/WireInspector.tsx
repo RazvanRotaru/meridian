@@ -19,7 +19,6 @@ import { unitLabel } from "../derive/blockDeps";
 import { relationColor } from "../theme/relationTheme";
 import { BUNDLE_EDGE_TYPE, bundleLabel, type BundleEdgeData } from "../layout/edgeBundling";
 import { activeModuleSurfaceSpec } from "./canvas/surfaceSpec";
-import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { MONO } from "./nodes/modulemap/frameChrome";
 import { relationKindOf } from "../graph/relationEdge";
 import {
@@ -42,7 +41,6 @@ const ROW_CAP = 12;
 const SITE_CAP = 6;
 
 export function WireInspector({ pair, labelOf, onClose, onDrill }: WireInspectorProps) {
-  useClearOnEscape(onClose, true);
   return (
     <div style={PANEL}>
       {pair[0].type === BUNDLE_EDGE_TYPE ? (
@@ -221,7 +219,7 @@ function Header({ kind, weight, onClose }: { kind: string; weight: number; onClo
 
 function CloseButton({ onClose }: { onClose: () => void }) {
   return (
-    <button type="button" style={CLOSE} title="Close (Esc)" onClick={onClose}>
+    <button type="button" style={CLOSE} title="Close (Esc)" aria-label="Close edge inspection" onClick={onClose}>
       ✕
     </button>
   );
@@ -244,16 +242,11 @@ function CappedRows({ count, render }: { count: number; render: (shown: number) 
 }
 
 const PANEL: React.CSSProperties = {
-  position: "absolute",
-  top: 12,
-  right: 12,
-  zIndex: 20,
-  width: 360,
-  maxHeight: "62%",
+  width: "min(360px, 36vw)",
+  minWidth: 260,
+  maxHeight: "min(72vh, 700px)",
   overflowY: "auto",
   background: "rgba(22, 27, 34, 0.97)",
-  border: "1px solid #30363d",
-  borderRadius: 8,
   padding: "8px 10px",
   fontFamily: MONO,
 };
