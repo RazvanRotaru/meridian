@@ -135,11 +135,20 @@ async function cloneGitHub(request: SourceRequest, token?: string): Promise<Reso
     if (!isDirectory(dir)) {
       throw new WebError(400, "source subfolder was not found in the repository");
     }
-    return { dir, target: request.value.trim(), cleanup: removeTmp };
+    return { dir, target: sourceLabel(request.value, request.subdir), cleanup: removeTmp };
   } catch (error) {
     removeTmp();
     throw error;
   }
+}
+
+/** The human label for the artifact: the repo the reader entered, plus the analyzed subfolder when
+ * one was chosen (e.g. "UiPath/Autopilot/src/packages"). A pure display string — never credentials
+ * (the value is the user-entered owner/repo or git URL, the subdir the relative path they picked). */
+function sourceLabel(value: string, subdir?: string): string {
+  const repo = value.trim();
+  const sub = subdir?.trim().replace(/^[/\\]+|[/\\]+$/g, "");
+  return sub ? `${repo}/${sub}` : repo;
 }
 
 function isDirectory(path: string): boolean {

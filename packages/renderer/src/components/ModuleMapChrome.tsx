@@ -1,52 +1,11 @@
 /**
- * The Map lens's floating chrome, kept out of the surface component: the containment breadcrumb
- * (the zoom trail) and the empty-level card. Both are pure presentational controls. Selection
- * extraction and hierarchy actions now live in the canvas-wide bottom action bar.
+ * The Map lens's floating chrome, kept out of the surface component: the Service-scope breadcrumb and
+ * the empty-level card. (The containment zoom trail — LevelBreadcrumb — lives in its own file now
+ * that it carries the per-segment "go into" dropdown.) Selection extraction and hierarchy actions
+ * live in the canvas-wide bottom action bar.
  */
 
 import type { Crumb } from "./canvas/surfaceSpec";
-
-/**
- * The zoom trail: the surface's root ("Repository" / "All services") then each container you
- * descended into (folders on the Map, the dived cluster on the Service lens). Every segment but
- * the last is a button that zooms back to that level; the last is the current level.
- * Expand/collapse-all now lives in the top-left toolbar (scoped to the selection or root), so this
- * is purely the containment trail. Mirrors the call lens's Breadcrumb control language.
- */
-export function LevelBreadcrumb(props: {
-  focus: string | null;
-  packageCount: number;
-  crumbs: Crumb[];
-  onFocus: (id: string | null) => void;
-  rootLabel?: string;
-  rootNoun?: string;
-}) {
-  const atRoot = props.focus === null;
-  const rootLabel = props.rootLabel ?? "Repository";
-  const rootNoun = props.rootNoun ?? "packages";
-  return (
-    <nav style={BREADCRUMB_STYLE} aria-label="Containment level">
-      {atRoot ? (
-        <span style={CRUMB_CURRENT_STYLE} aria-current="page">{rootLabel} — {props.packageCount} {rootNoun}</span>
-      ) : (
-        <button type="button" style={CRUMB_STYLE} onClick={() => props.onFocus(null)}>{rootLabel}</button>
-      )}
-      {props.crumbs.map((crumb, i) => {
-        const isLast = i === props.crumbs.length - 1;
-        return (
-          <span key={crumb.id} style={SEG_WRAP}>
-            <span style={CRUMB_SEP_STYLE} aria-hidden>›</span>
-            {isLast ? (
-              <span style={CRUMB_CURRENT_STYLE} aria-current="page" title={crumb.id}>{crumb.label}</span>
-            ) : (
-              <button type="button" style={CRUMB_STYLE} title={crumb.id} onClick={() => props.onFocus(crumb.id)}>{crumb.label}</button>
-            )}
-          </span>
-        );
-      })}
-    </nav>
-  );
-}
 
 /**
  * The Service lens's trail while SCOPED to a cluster neighbourhood: `All services › <label> ✕`,

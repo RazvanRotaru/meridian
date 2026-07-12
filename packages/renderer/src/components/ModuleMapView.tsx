@@ -24,7 +24,8 @@
 import { useMemo } from "react";
 import type { Node } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
-import { EmptyModuleMapCard, LevelBreadcrumb, ServiceScopeBreadcrumb } from "./ModuleMapChrome";
+import { EmptyModuleMapCard, ServiceScopeBreadcrumb } from "./ModuleMapChrome";
+import { LevelBreadcrumb } from "./LevelBreadcrumb";
 import { filterExternalGhosts, filterVisible } from "./moduleMapPaint";
 import { CoveragePanel } from "./CoveragePanel";
 import { BeaconArrows } from "./BeaconArrows";
@@ -104,7 +105,7 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
   const serviceScope = useBlueprint((state) => state.serviceScope);
   const serviceGroupingMode = useBlueprint((state) => state.serviceGroupingMode);
   const serviceGroupingTargetSize = useBlueprint((state) => state.serviceGroupingTargetSize);
-  const { setModuleFocus, commitModuleSemanticParent, clearServiceScope, promoteGhost } = useBlueprintActions();
+  const { setModuleFocus, commitModuleSemanticParent, clearServiceScope, promoteGhost, folderChildrenFor } = useBlueprintActions();
   const spec = activeModuleSurfaceSpec(viewMode);
 
   // The source remains mounted while covered. Its recenter subscription is muted so a toolbar
@@ -208,6 +209,7 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
           onFocus={setModuleFocus}
           rootLabel={spec.navigation.rootLabel}
           rootNoun={spec.navigation.rootNoun}
+          childrenOf={spec.id === "map" ? folderChildrenFor : undefined}
         />
       )}
       <CanvasActionBar />

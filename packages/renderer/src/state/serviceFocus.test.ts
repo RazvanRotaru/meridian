@@ -583,7 +583,7 @@ describe("the Service surface's navigation model (breadcrumb contract)", () => {
     const index = buildGraphIndex(ARTIFACT);
     const focus = moduleSurfaceSpec("modules")!.navigation;
     expect(focus.rootLabel).toBe("Repository");
-    expect(focus.crumbs("ts:app", index)).toEqual([{ id: "ts:app", label: "app" }]);
+    expect(focus.crumbs("ts:app", index)).toEqual([{ id: "ts:app", label: "app", kind: "package" }]);
   });
 
   it("only svc: frames dive on the Service lens; folders and files keep expand/select", () => {
