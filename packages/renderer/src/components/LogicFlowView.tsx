@@ -13,7 +13,6 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ReactFlow,
   type Edge,
   type EdgeMarker,
   type Node,
@@ -25,16 +24,18 @@ import { isSourceBackedNode } from "../derive/sourceBackedNode";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { GHOST_DEPTH_ALL } from "../state/store";
 import { logicNodeTypes, SELECT_ACCENT, type JumpFlowNodeData } from "./nodes/logic/logicNodeTypes";
-import { CanvasChrome, READONLY_CANVAS_PROPS } from "./canvas/flowCanvasProps";
+import { ReadonlyGraphCanvas } from "./canvas/ReadonlyGraphCanvas";
 import { arrowMarker } from "../theme/edgeColors";
 import { COVERAGE_COLORS } from "../theme/coverageColors";
 import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import type { LogicNodeData, TerminalData } from "../derive/logicGraph";
 import type { GraphIndex } from "../graph/graphIndex";
 import { buildFlowContainmentIndex, transitiveCallers } from "../derive/flowInspect";
+import { FLOW_COLORS } from "../derive/flowViewModel";
 import { AltLogicSurface } from "./logicviews/AltLogicSurface";
 import { LogicViewTabs } from "./logicviews/LogicViewTabs";
 import { GraphLayoutIndicator } from "./canvas/GraphLayoutIndicator";
+import { logicEdgeTypes } from "./edges/AsyncRailEdge";
 
 export function LogicFlowView() {
   const logicRoot = useBlueprint((state) => state.logicRoot);
@@ -82,9 +83,9 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
     useBlueprintActions();
 
   // The two gestures the node components don't own, mutually exclusive by node kind: a control
-  // container (loop/try, no targetId) DIVES into its bodies as a focused sub-view; an expandable
-  // call (no bodies) drills into its callee's own flow. Inline expand/collapse stays a title-click
-  // inside the node. Fires for every node, so a jump satellite (owns its own click) is skipped.
+  // container (loop/callback, plus the conservative try/finally fallback) DIVES into its bodies as a
+  // focused sub-view; an expandable call drills into its callee's own flow. Ordinary try/catch is an
+  // explicit branch and needs no dive. Fires for every node, so a jump satellite is skipped.
   const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
     const data = logicDataOf(node);
     if (!data) {
@@ -102,7 +103,7 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
       diveLogicContainer(node.id, data.label, data.bodies);
       return;
     }
-    if (data.expandable && data.targetId !== null) {
+    if ((data.navigable ?? data.expandable) && data.targetId !== null) {
       drillLogicFlow(data.targetId);
     }
   };
@@ -153,7 +154,7 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
 
   // A handle on the React Flow surface: the `fitView` prop only fits on mount, so navigation needs
   // this to recentre the viewport imperatively.
-  const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
+  const [rfInstance, setRfInstance] = useState<ReactFlowInstance<Node, Edge> | null>(null);
 
   // The navigation identity: the callable drill trail plus the container-dive focus stack. It changes
   // on EVERY navigation — open/drill/dive/jump/pick, and breadcrumb-BACK too (the trail then differs
@@ -168,30 +169,36 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
   // navKey — fits exactly once per navigation and skips same-flow relayouts.
   const lastFitKey = useRef<string | null>(null);
   useEffect(() => {
-    if (!rfRef.current || nodes.length === 0) return;
+    if (!rfInstance || nodes.length === 0) return;
     if (lastFitKey.current === navKey) return;
     lastFitKey.current = navKey;
-    requestAnimationFrame(() => rfRef.current?.fitView({ padding: 0.2, duration: 400, minZoom: 0.01 }));
-  }, [nodes]); // eslint-disable-line react-hooks/exhaustive-deps
+    // A long left-to-right execution flow becomes unreadable if its entire width is squeezed into
+    // one viewport. Land at reading zoom on the entry + first structural beat; the minimap/pan keeps
+    // the rest discoverable, while the explicit Fit control still offers a whole-flow overview.
+    const target = logicEntryReadingTarget(nodes);
+    requestAnimationFrame(() => {
+      if (target) void rfInstance.setCenter(target.x, target.y, { zoom: ENTRY_READING_ZOOM, duration: 400 });
+    });
+  }, [nodes, rfInstance]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isEmpty = nodes.length === 0 && layoutStatus === "ready";
 
   return (
     <div style={SURFACE_STYLE}>
-      <ReactFlow<Node, Edge>
+      <ReadonlyGraphCanvas<Node, Edge>
         nodes={[...nodes, ...jumpNodes, ...testNodes]}
         edges={[...styledEdges, ...jumpEdges, ...testEdges]}
         nodeTypes={logicNodeTypes}
+        edgeTypes={logicEdgeTypes}
         onInit={(instance) => {
-          rfRef.current = instance;
+          setRfInstance(instance);
         }}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={() => selectLogicTarget(null)}
-        {...READONLY_CANVAS_PROPS}
+        miniMapColor={miniMapColor}
       >
-        <CanvasChrome nodeColor={miniMapColor} />
-      </ReactFlow>
+      </ReadonlyGraphCanvas>
       <LogicOverlayHeader
         stack={logicStack}
         focus={logicFocus}
@@ -215,6 +222,37 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
       {isEmpty ? <EmptyFlowCard rootId={props.rootId} /> : null}
     </div>
   );
+}
+
+const ENTRY_READING_SPAN = 1500;
+// Land at a true reading scale. The graph is intentionally horizontal and pannable; squeezing even
+// its first few beats into an overview made the redesigned nodes look like the old minimap.
+const ENTRY_READING_ZOOM = 0.85;
+// The persistent control panel owns ~300px on the left. Bias the camera toward the flow's entry so
+// its first card lands just to the right of that panel instead of underneath it.
+const ENTRY_CAMERA_LEFT_BIAS = 190;
+
+/** Top-level nodes in the first horizontal reading window. Nested children travel with their parent;
+ * caller/test satellites are context above the flow and must not shrink the initial execution view. */
+function logicEntryReadingWindow(nodes: LogicRfNode[]): Array<{ id: string }> {
+  const flowNodes = nodes.filter((node) => node.parentId === undefined);
+  if (flowNodes.length === 0) return [];
+  const entry = flowNodes.find((node) => node.type === "terminal" && (node.data as TerminalData).terminal === "entry")
+    ?? flowNodes.reduce((left, node) => node.position.x < left.position.x ? node : left);
+  const limit = entry.position.x + ENTRY_READING_SPAN;
+  const window = flowNodes.filter((node) => node.position.x <= limit);
+  return (window.length > 0 ? window : [entry]).map((node) => ({ id: node.id }));
+}
+
+function logicEntryReadingTarget(nodes: LogicRfNode[]): { x: number; y: number } | null {
+  const ids = new Set(logicEntryReadingWindow(nodes).map((node) => node.id));
+  const window = nodes.filter((node) => ids.has(node.id));
+  if (window.length === 0) return null;
+  const left = Math.min(...window.map((node) => node.position.x));
+  const right = Math.max(...window.map((node) => node.position.x + (node.width ?? 0)));
+  const top = Math.min(...window.map((node) => node.position.y));
+  const bottom = Math.max(...window.map((node) => node.position.y + (node.height ?? 0)));
+  return { x: (left + right) / 2 - ENTRY_CAMERA_LEFT_BIAS, y: (top + bottom) / 2 };
 }
 
 // SELECT_ACCENT (the green shared with the selected node ring) is imported from logicNodeTypes so the
@@ -679,14 +717,18 @@ function miniMapColor(node: Node): string {
   const data = node.data as LogicNodeData;
   if (data.logicKind === "loop") return "#E6B84D";
   if (data.logicKind === "try") return "#D98A5B";
+  if (data.logicKind === "finally") return "#D98A5B";
   if (data.logicKind === "callback") return "#5FA8A0";
-  if (data.logicKind === "if" || data.logicKind === "switch") return "#61DAFB";
-  return data.greyed ? "#3A414C" : "#3B7AC0";
+  if (data.logicKind === "if" || data.logicKind === "switch" || data.logicKind === "join" || data.logicKind === "await") return "#5FC1CE";
+  if ((data.nestedDetachedCount ?? 0) > 0) return FLOW_COLORS.detached;
+  if (data.callScope === "external") return "#92A1B4";
+  if (data.callScope === "unresolved") return "#E06C6C";
+  return data.callKind === "method" ? "#5E74C6" : "#3B7AC0";
 }
 
 /**
  * The floating overlay header, offset to clear the Toolbar's top-left column: the drill breadcrumb
- * on the left, and on the right the "related flows" depth dial beside the "hide leaf blocks" toggle.
+ * on the left, and on the right the related-flow depth dial beside compact-call density controls.
  * Its own container ignores pointer events so the gap between them still pans the canvas; each
  * control re-enables them for itself.
  */
@@ -752,7 +794,7 @@ function LogicOverlayHeader(props: {
           aria-pressed={props.hideGreyed}
           onClick={props.onToggleHide}
         >
-          {props.hideGreyed ? "Show leaf blocks" : "Hide leaf blocks"}
+          {props.hideGreyed ? "Show compact calls" : "Hide compact calls"}
         </button>
       </div>
     </div>

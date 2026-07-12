@@ -15,7 +15,7 @@ import type { StepData } from "../../../derive/flowSteps";
 import { cardSelectedStyle, ExpandChevron, MONO, PIN } from "./frameChrome";
 import { CALL_RESOLVED, CALL_UNRESOLVED, CONSTRUCT } from "../../../theme/mapPalette";
 
-const STEP_GLYPH: Record<StepData["stepKind"], string> = { call: "→", loop: "↻", branch: "⑂", callback: "λ", exit: "⏎" };
+const STEP_GLYPH: Record<StepData["stepKind"], string> = { call: "→", await: "⏸", loop: "↻", branch: "⑂", callback: "λ", exit: "⏎" };
 
 type StepRfNode = Node<StepData, "step">;
 

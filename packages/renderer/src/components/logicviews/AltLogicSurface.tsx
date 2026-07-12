@@ -37,11 +37,7 @@ export function AltLogicSurface(props: { rootId: NodeId; mode: Exclude<LogicView
     index,
     selected: logicSelected,
     onSelect: (target) => selectLogicTarget(target === logicSelected ? null : target),
-    onDrill: (target) => {
-      if ((flows[target]?.length ?? 0) > 0) {
-        drillLogicFlow(target);
-      }
-    },
+    onDrill: (target) => drillLogicFlow(target),
   };
 
   return (

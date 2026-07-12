@@ -1,15 +1,26 @@
 /**
  * Derive a callable's logic flow into a pre-layout graph spec — the Unreal-Blueprints-style exec
  * graph the Logic tab renders. Calls become "building block" nodes (Blueprint function nodes);
- * `for`/`while`/`try` become expandable containers; `if`/`switch` become Branch nodes whose paths
- * leave as labeled edges (Unreal's True/False exec pins). "seq" edges are the white exec thread,
- * emitted left→right in execution order; a branch's paths reconverge onto the following step.
+ * `for`/`while` become expandable containers; `if`/`switch` and ordinary `try`/`catch` become
+ * explicit split/lane/join structures whose paths leave stable labeled exec pins. "seq" edges are
+ * the white exec thread, emitted left→right in execution order; live paths reconverge onto the
+ * following step. A non-terminating `finally` becomes one mandatory phase after that merge; only
+ * protected arms with deferred return/throw outcomes retain the conservative container fallback.
  *
  * Pure: (rootId, flows, index, expanded set, options) → {nodes, edges}. No React, no ELK.
  */
 
-import type { EdgeResolution, FlowPath, FlowStep, GraphNode, LogicFlows } from "@meridian/core";
-import { branchKindOf, exitLabel, parseNodeId, syntheticFallThroughLabel } from "@meridian/core";
+import type {
+  EdgeResolution,
+  FlowAsyncInput,
+  FlowCallAsync,
+  FlowPath,
+  FlowPathRole,
+  FlowStep,
+  GraphNode,
+  LogicFlows,
+} from "@meridian/core";
+import { branchKindOf, exitLabel, parseNodeId, pathRole, syntheticFallThroughLabel, tryArms } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import { baseName, callDisplay } from "./flowViewModel";
 import type { LogicOwner, OwnerLookup } from "./logicOwner";
@@ -18,25 +29,58 @@ import { clamp, monoTextWidth } from "../layout/measure";
 /** No owner/signature enrichment — the default when a caller (e.g. a unit test) supplies no lookup. */
 const NO_OWNER: OwnerLookup = () => null;
 
-export type LogicNodeType = "block" | "control" | "branch" | "servicegroup" | "terminal";
+export type LogicNodeType = "block" | "control" | "branch" | "exception" | "finally" | "join" | "async" | "servicegroup" | "terminal";
+
+/** A call's ownership boundary, kept separate from whether its card is a compact leaf. */
+export type LogicCallScope = "internal" | "external" | "unresolved";
+
+/** One stable exec pin on a decision. `synthetic` is the implicit else/no-match path the source did
+ * not spell out; it still needs a real lane so the graph never hides that fall-through. */
+export interface LogicBranchPort {
+  id: string;
+  label: string;
+  role: FlowPathRole | "fallthrough";
+  order: number;
+  synthetic?: boolean;
+}
+
+export type LogicAsyncEvent = FlowCallAsync | { kind: "await"; mode: "single"; inputs: FlowAsyncInput[] };
+
+/** A task rail's physical endpoint. Launches expose a source; later await/barrier nodes expose one
+ * target per input, including readable unresolved inputs that have no correlation edge. */
+export interface LogicAsyncPort {
+  id: string;
+  direction: "source" | "target";
+  label: string;
+  taskId?: string;
+  order: number;
+}
 
 export type LogicNodeData = {
-  logicKind: "call" | "loop" | "try" | "callback" | "if" | "switch" | "service";
+  logicKind: "call" | "loop" | "try" | "finally" | "callback" | "if" | "switch" | "join" | "await" | "service";
   label: string;
   targetId: string | null;
   resolution: EdgeResolution | null;
+  /** A resolved local target can be opened as its own flow even when that flow contains no steps. */
+  navigable?: boolean;
   expandable: boolean;
   isExpanded: boolean;
   isContainer: boolean;
+  /** A small leaf card. This is a density/layout fact, not a resolution or externality signal. */
+  compact: boolean;
+  /** Where a call resolves. Null on control/service/join nodes that are not call sites. */
+  callScope: LogicCallScope | null;
+  /** @deprecated Compatibility alias for old renderers. New code must use `compact` for size and
+   * `callScope`/`resolution` for boundary styling. It is true only when resolution is unknown. */
   greyed: boolean;
   provenance: { pkg: string; module: string } | null;
   childCount: number;
   /** A callable DEFINED in the open module (not a step in its load-flow): rendered as a distinct
    * disconnected "defined here" node so the view can style it apart from ordinary call blocks. */
   definition?: boolean;
-  /** The sub-chains a control container holds (a loop's single body, or a try's try/catch/finally
-   * arms). Set ONLY on `control` nodes so a double-click can DIVE into them without re-parsing the
-   * flow; undefined on calls/branches. */
+  /** The sub-chains a control container holds (a loop/callback body, or the conservative
+   * try/finally fallback). Set ONLY on `control` nodes so a double-click can DIVE into them without
+   * re-parsing the flow; undefined on ordinary try/catch branch nodes. */
   bodies?: FlowPath[];
   /** Whether a `logicKind:"call"` block is a free function or a method (called through a receiver).
    * HEURISTIC: without type info we can't reliably separate an instance method from a static one, so
@@ -58,6 +102,15 @@ export type LogicNodeData = {
   /** The call's result is deliberately dropped (`void`-ed / un-awaited Promise): fire-and-forget
    * work that outlives this flow (rendered as a detached ⤳ badge). */
   detached?: boolean;
+  /** Detached calls directly contained anywhere in this callee's own flow tree. This lets the
+   * parent call warn before expansion without pretending the parent invocation itself is detached. */
+  nestedDetachedCount?: number;
+  /** Ordered source handles for an if/switch decision. Stable ids let ELK and React Flow route the
+   * same arm from the same physical pin without changing node/drill identity. */
+  branchPorts?: LogicBranchPort[];
+  /** Rich async event + its task-rail endpoints. Legacy awaited/detached remain above for old data. */
+  asyncEvent?: LogicAsyncEvent;
+  asyncPorts?: LogicAsyncPort[];
 };
 
 /**
@@ -91,8 +144,16 @@ export interface LogicEdgeSpec {
   id: string;
   source: string;
   target: string;
-  kind: "seq" | "branch";
+  kind: "seq" | "branch" | "async";
   label?: string;
+  /** Stable endpoint ids shared by ELK ports and React Flow handles. */
+  sourcePort?: string;
+  targetPort?: string;
+  /** Opaque extractor task id on async correlation rails. */
+  taskId?: string;
+  /** Semantic lane carried by a split edge and its final hop into a join. Catch uses this to keep
+   * the exceptional route visually distinct without turning it into a different graph topology. */
+  branchRole?: LogicBranchPort["role"];
 }
 
 export interface LogicGraphSpec {
@@ -104,6 +165,8 @@ export interface LogicGraphSpec {
 interface Exit {
   id: string;
   edgeLabel?: string;
+  sourcePort?: string;
+  branchRole?: LogicBranchPort["role"];
 }
 
 /** A flow step paired with its ORIGINAL index in the level, so a framed run keeps stable node ids. */
@@ -196,9 +259,14 @@ export function definitionNodeData(
     label: node?.displayName ?? baseName(parseNodeId(callableId).modulePath),
     targetId: callableId,
     resolution: "resolved",
+    navigable: true,
     expandable,
     isExpanded: false,
     isContainer: false,
+    // Definition cells use their own fixed grid geometry; a missing child flow must not turn a
+    // declaration into the compact call-site vocabulary.
+    compact: false,
+    callScope: "internal",
     greyed: false,
     provenance: definitionProvenance(callableId, node, index),
     childCount: expandable ? flows[callableId].length : 0,
@@ -225,6 +293,9 @@ function definitionProvenance(
 class LogicGraphBuilder {
   private readonly nodes: LogicNodeSpec[] = [];
   private readonly edges: LogicEdgeSpec[] = [];
+  /** task ids are only unique inside one source flow; namespace them by the rendered flow INSTANCE
+   * so two expanded call sites of the same callee can never cross-wire their async rails. */
+  private readonly asyncLaunches = new Map<string, { nodeId: string; sourcePort: string }>();
   private edgeSeq = 0;
 
   constructor(
@@ -237,7 +308,7 @@ class LogicGraphBuilder {
   ) {}
 
   build(steps: FlowStep[]): LogicGraphSpec {
-    const { firstId, lastExits } = this.sequence(steps, null, "");
+    const { firstId, lastExits } = this.sequence(steps, null, "", this.rootId);
     // Frame the whole flow with entry/exit end-caps when asked (top-level callable flows only). Guarded
     // on a real first step: an all-greyed-and-hidden flow leaves `firstId` null, so it gets no terminals.
     if (this.options.withTerminals && firstId !== null) {
@@ -277,7 +348,7 @@ class LogicGraphBuilder {
    * exactly like a container's inner rendering — only here they sit at the top level, not nested.
    */
   buildFromBodies(bodies: FlowPath[]): LogicGraphSpec {
-    bodies.forEach((body, i) => this.sequence(body.body, null, `p${i}/`));
+    bodies.forEach((body, i) => this.sequence(body.body, null, `p${i}/`, this.rootId));
     return { nodes: this.nodes, edges: this.edges };
   }
 
@@ -288,13 +359,18 @@ class LogicGraphBuilder {
    * block→block in execution order across frame boundaries (ELK's root INCLUDE_CHILDREN routes them),
    * so `firstId`/`lastExits` still stitch branches and loops exactly as before.
    */
-  private sequence(steps: FlowStep[], parentId: string | null, prefix: string): { firstId: string | null; lastExits: Exit[] } {
+  private sequence(
+    steps: FlowStep[],
+    parentId: string | null,
+    prefix: string,
+    asyncScope: string,
+  ): { firstId: string | null; lastExits: Exit[] } {
     let firstId: string | null = null;
     let prevExits: Exit[] = [];
     for (const unit of this.planLevel(steps, prefix)) {
       const stepParent = unit.frame ? this.emitServiceFrame(unit.frame, unit.steps.length, parentId) : parentId;
       for (const { step, i } of unit.steps) {
-        const emit = this.step(step, stepParent, `${prefix}${i}`, unit.frame !== null);
+        const emit = this.step(step, stepParent, `${prefix}${i}`, unit.frame !== null, asyncScope);
         if (firstId === null) {
           firstId = emit.entry;
         }
@@ -315,8 +391,9 @@ class LogicGraphBuilder {
 
   /**
    * Partition a level into emit units: maximal runs of consecutive framable calls sharing one owner
-   * (each a `frame` unit), with every other step a lone flat unit. hideGreyed leaves are dropped here
-   * (they never join a run), matching the old skip. Original indices ride along so ids stay stable.
+   * (each a `frame` unit), with every other step a lone flat unit. `hideGreyed` is the persisted name
+   * of the old preference, but its UX is "hide leaf blocks", so it now reads compactness directly —
+   * never the compatibility `greyed` bit. Original indices ride along so ids stay stable.
    */
   private planLevel(steps: FlowStep[], prefix: string): RunUnit[] {
     const units: RunUnit[] = [];
@@ -328,7 +405,7 @@ class LogicGraphBuilder {
       }
     };
     steps.forEach((step, i) => {
-      if (this.options.hideGreyed && this.isGreyedLeaf(step)) {
+      if (this.options.hideGreyed && this.isCompactCall(step)) {
         return;
       }
       const owner = this.framableOwner(step, `${this.rootId}::${prefix}${i}`);
@@ -375,32 +452,50 @@ class LogicGraphBuilder {
       expandable: false,
       isExpanded: true,
       isContainer: true,
+      compact: false,
+      callScope: null,
       greyed: false,
       provenance: null,
       childCount,
       owner: frame.owner,
     };
-    this.push(frame.id, parentId, "servicegroup", data, false);
+    this.push(frame.id, parentId, "servicegroup", data);
     return frame.id;
   }
 
-  private step(step: FlowStep, parentId: string | null, path: string, framed: boolean): { entry: string; exits: Exit[] } {
+  private step(
+    step: FlowStep,
+    parentId: string | null,
+    path: string,
+    framed: boolean,
+    asyncScope: string,
+  ): { entry: string; exits: Exit[] } {
     const id = `${this.rootId}::${path}`;
     if (step.kind === "call") {
-      return this.callStep(step, parentId, path, id, framed);
+      return this.callStep(step, parentId, path, id, framed, asyncScope);
+    }
+    if (step.kind === "await") {
+      return this.awaitStep(step, parentId, id, asyncScope);
     }
     if (step.kind === "exit") {
       return this.exitStep(step, parentId, id);
     }
     if (step.kind === "loop" || step.kind === "callback") {
       const bodies: FlowPath[] = [{ label: step.label, body: step.body }];
-      return this.container(parentId, path, id, step.kind, step.label, bodies, step.body.length);
+      return this.container(parentId, path, id, step.kind, step.label, bodies, step.body.length, asyncScope);
     }
-    if (branchKindOf(step) === "try") {
+    // `finally` is not a third alternative arm. When both protected arms fall through, chart it as
+    // one mandatory phase after their merge. Explicit returns/throws inside those arms must be
+    // deferred through cleanup; until the model carries that pending outcome, keep the conservative
+    // container rather than drawing a terminal before FINALLY and lying that cleanup can be skipped.
+    if (branchKindOf(step) === "try" && step.paths.some((flowPath) => pathRole(flowPath) === "finally")) {
+      if (canChartFinallyAsSharedPhase(step)) {
+        return this.tryFinallyStep(step, parentId, path, id, asyncScope);
+      }
       const count = step.paths.reduce((sum, p) => sum + p.body.length, 0);
-      return this.container(parentId, path, id, "try", "try / catch", step.paths, count);
+      return this.container(parentId, path, id, "try", "try / catch", step.paths, count, asyncScope);
     }
-    return this.branchStep(step, parentId, path, id);
+    return this.branchStep(step, parentId, path, id, asyncScope);
   }
 
   /**
@@ -421,19 +516,36 @@ class LogicGraphBuilder {
     path: string,
     id: string,
     framed: boolean,
+    asyncScope: string,
   ): { entry: string; exits: Exit[] } {
     const display = callDisplay(step, this.flows, this.index);
+    const navigable = display.navigable;
     const expandable = display.expandable;
-    const greyed = !expandable;
+    // A barrier is execution structure, not a disposable leaf chip: give it full node geometry even
+    // when Promise.all itself has no expandable repository flow.
+    const compact = !expandable && step.async?.kind !== "barrier";
+    const callScope = callScopeOf(step.resolution);
+    // Kept only for old consumers during the renderer transition. Compactness and call boundary
+    // are independent: a resolved internal leaf is compact but never "unknown"/greyed.
+    const greyed = callScope === "unresolved";
     const isExpanded = expandable && this.expandedState(id, false);
+    const nestedDetachedCount = step.target ? countDetached(this.flows[step.target] ?? []) : 0;
+    // A detached Promise has no consumer by definition. Giving it a launch socket creates a cyan
+    // endpoint with no rail, which reads like a mysterious standalone node. Its violet tail is the
+    // complete lifecycle signal; correlation ports are reserved for work that can later be joined.
+    const correlatedAsync = step.detached ? undefined : step.async;
+    const asyncPorts = correlatedAsync ? asyncPortsForCall(id, step.label, correlatedAsync) : [];
     const data: LogicNodeData = {
       logicKind: "call",
       label: step.label,
       targetId: step.target,
       resolution: step.resolution,
+      navigable,
       expandable,
       isExpanded,
       isContainer: isExpanded,
+      compact,
+      callScope,
       greyed,
       provenance: provenanceOf(step.target, step.resolution, this.index),
       childCount: expandable && step.target ? this.flows[step.target].length : 0,
@@ -443,15 +555,96 @@ class LogicGraphBuilder {
       framed,
       awaited: step.awaited,
       detached: step.detached,
+      ...(nestedDetachedCount > 0 ? { nestedDetachedCount } : {}),
+      ...(step.async ? { asyncEvent: step.async, asyncPorts } : {}),
     };
-    this.push(id, parentId, "block", data, greyed);
+    this.push(id, parentId, "block", data);
+    this.wireCallAsync(correlatedAsync, asyncPorts, id, asyncScope);
     if (isExpanded && step.target) {
-      this.sequence(this.flows[step.target], id, `${path}/`);
+      this.sequence(this.flows[step.target], id, `${path}/`, id);
     }
     return { entry: id, exits: [{ id }] };
   }
 
-  /** Loop, try/catch and callback share the same container shape: default-expanded, children nested. */
+  /** A wait with no call block to carry it becomes one small structural node on the normal exec
+   * thread. A stored task adds a non-exec correlation rail from its earlier launch; an unnameable
+   * direct operand remains a self-contained gate with no invented launch edge. */
+  private awaitStep(
+    step: Extract<FlowStep, { kind: "await" }>,
+    parentId: string | null,
+    id: string,
+    asyncScope: string,
+  ): { entry: string; exits: Exit[] } {
+    const asyncPorts = asyncTargetPorts(id, step.inputs);
+    const data: LogicNodeData = {
+      logicKind: "await",
+      label: step.label,
+      targetId: null,
+      resolution: null,
+      expandable: false,
+      isExpanded: false,
+      isContainer: false,
+      compact: false,
+      callScope: null,
+      greyed: false,
+      provenance: null,
+      childCount: step.inputs.length,
+      awaited: true,
+      asyncEvent: { kind: "await", mode: step.mode, inputs: step.inputs },
+      asyncPorts,
+    };
+    this.push(id, parentId, "async", data);
+    this.wireAsyncInputs(step.inputs, asyncPorts, id, asyncScope);
+    return { entry: id, exits: [{ id }] };
+  }
+
+  private wireCallAsync(
+    event: FlowCallAsync | undefined,
+    ports: LogicAsyncPort[],
+    nodeId: string,
+    asyncScope: string,
+  ): void {
+    if (!event) {
+      return;
+    }
+    if (event.kind === "launch") {
+      const sourcePort = ports.find((port) => port.direction === "source");
+      if (sourcePort) {
+        this.asyncLaunches.set(asyncTaskKey(asyncScope, event.taskId), { nodeId, sourcePort: sourcePort.id });
+      }
+      return;
+    }
+    if (event.kind === "barrier") {
+      this.wireAsyncInputs(event.inputs, ports, nodeId, asyncScope);
+    }
+    // direct-await launches and waits on this one call node; its source+target ports form a local
+    // visual loop in the renderer and intentionally add no graph edge or second node.
+  }
+
+  private wireAsyncInputs(
+    inputs: FlowAsyncInput[],
+    ports: LogicAsyncPort[],
+    targetId: string,
+    asyncScope: string,
+  ): void {
+    inputs.forEach((input, index) => {
+      if (!input.taskId) {
+        return;
+      }
+      const launch = this.asyncLaunches.get(asyncTaskKey(asyncScope, input.taskId));
+      const targetPort = ports[index];
+      if (!launch || !targetPort) {
+        return;
+      }
+      this.pushEdge(launch.nodeId, targetId, "async", input.label, {
+        sourcePort: launch.sourcePort,
+        targetPort: targetPort.id,
+        taskId: input.taskId,
+      });
+    });
+  }
+
+  /** Loops, callbacks and the conservative try/finally fallback share the same container shape. */
   private container(
     parentId: string | null,
     path: string,
@@ -460,6 +653,7 @@ class LogicGraphBuilder {
     label: string,
     bodies: FlowPath[],
     childCount: number,
+    asyncScope: string,
   ): { entry: string; exits: Exit[] } {
     const isExpanded = this.expandedState(id, true);
     const data: LogicNodeData = {
@@ -470,17 +664,19 @@ class LogicGraphBuilder {
       expandable: true,
       isExpanded,
       isContainer: isExpanded,
+      compact: false,
+      callScope: null,
       greyed: false,
       provenance: null,
       childCount,
       // Carried so a double-click can DIVE into these sub-chains without re-parsing the flow.
       bodies,
     };
-    this.push(id, parentId, "control", data, false);
+    this.push(id, parentId, "control", data);
     if (isExpanded) {
-      // Each body is an independent sub-chain inside the frame (a try's catch/finally do not run
-      // sequentially after its try block), so they are not exec-linked to each other.
-      bodies.forEach((body, bi) => this.sequence(body.body, id, `${path}/p${bi}/`));
+      // Each body is an independent sub-chain inside the frame. This is deliberately presentation-
+      // only for the try/finally fallback; it avoids inventing an incorrect alternative-lane edge.
+      bodies.forEach((body, bi) => this.sequence(body.body, id, `${path}/p${bi}/`, asyncScope));
     }
     return { entry: id, exits: [{ id }] };
   }
@@ -490,46 +686,154 @@ class LogicGraphBuilder {
     parentId: string | null,
     path: string,
     id: string,
+    asyncScope: string,
   ): { entry: string; exits: Exit[] } {
+    const kind = branchKindOf(step);
+    const synthetic = syntheticFallThroughLabel(step);
+    const branchPorts: LogicBranchPort[] = step.paths.map((flowPath, order) => ({
+      id: branchPortId(id, order),
+      label: flowPath.label,
+      role: pathRole(flowPath),
+      order,
+    }));
+    if (synthetic) {
+      branchPorts.push({
+        id: branchPortId(id, branchPorts.length),
+        label: synthetic,
+        role: "fallthrough",
+        order: branchPorts.length,
+        synthetic: true,
+      });
+    }
     const data: LogicNodeData = {
-      logicKind: branchKindOf(step) === "switch" ? "switch" : "if",
+      logicKind: kind,
       label: step.label,
       targetId: null,
       resolution: null,
       expandable: false,
       isExpanded: false,
       isContainer: false,
+      compact: false,
+      callScope: null,
       greyed: false,
       provenance: null,
-      childCount: step.paths.length,
+      childCount: branchPorts.length,
+      branchPorts,
     };
-    this.push(id, parentId, "branch", data, false);
+    // IF/SWITCH own the decision diamond. TRY/CATCH is an exception gate with a straight normal
+    // route and a lower catch outlet; keeping a separate node type prevents it reading as a choice.
+    this.push(id, parentId, kind === "try" ? "exception" : "branch", data);
     const exits: Exit[] = [];
     step.paths.forEach((flowPath, pi) => {
-      const sub = this.sequence(flowPath.body, parentId, `${path}/b${pi}/`);
+      const port = branchPorts[pi];
+      const role = pathRole(flowPath);
+      const sub = this.sequence(flowPath.body, parentId, `${path}/b${pi}/`, asyncScope);
       if (sub.firstId) {
-        this.pushEdge(id, sub.firstId, "branch", flowPath.label);
+        this.pushEdge(id, sub.firstId, "branch", flowPath.label, { sourcePort: port.id, branchRole: role });
         // A path that ends at a return/throw cap surfaces NO exits — it dead-ends there instead of
         // being folded back into the merge, so only genuine fall-through reconverges.
-        exits.push(...sub.lastExits);
+        exits.push(...sub.lastExits.map((exit) => ({ ...exit, branchRole: role })));
       } else {
         // An empty path (e.g. an `if` with no `else` body): the branch pin wires straight to the
         // merge point, carrying its label.
-        exits.push({ id, edgeLabel: flowPath.label });
+        exits.push({ id, edgeLabel: flowPath.label, sourcePort: port.id, branchRole: role });
       }
     });
     // The path the source never wrote: an `if` with no `else` (or a switch with no `default`) falls
     // through, so the branch gets an explicit labeled pin onto the continuation — the "implicit
     // else" made visible instead of the flow pretending nothing happened.
-    const synthetic = syntheticFallThroughLabel(step);
     if (synthetic) {
-      exits.push({ id, edgeLabel: synthetic });
+      const port = branchPorts[branchPorts.length - 1];
+      exits.push({ id, edgeLabel: synthetic, sourcePort: port.id, branchRole: "fallthrough" });
     }
-    return { entry: id, exits };
+    return { entry: id, exits: this.mergeBranchExits(id, parentId, exits) };
   }
 
-  private isGreyedLeaf(step: FlowStep): boolean {
+  /** TRY and CATCH remain alternative lanes; FINALLY is the single mandatory phase they both feed.
+   * It is deliberately outside the branch's path list, so no edge can make cleanup look optional. */
+  private tryFinallyStep(
+    step: Extract<FlowStep, { kind: "branch" }>,
+    parentId: string | null,
+    path: string,
+    id: string,
+    asyncScope: string,
+  ): { entry: string; exits: Exit[] } {
+    const { tryPath, catchPath, finallyPath } = tryArms(step);
+    // Guarded by canChartFinallyAsSharedPhase; keep the defensive fallback structurally valid.
+    if (!tryPath || !catchPath || !finallyPath) {
+      const count = step.paths.reduce((sum, candidate) => sum + candidate.body.length, 0);
+      return this.container(parentId, path, id, "try", "try / catch", step.paths, count, asyncScope);
+    }
+
+    const protectedFlow = this.branchStep(
+      { ...step, paths: [tryPath, catchPath] },
+      parentId,
+      path,
+      id,
+      asyncScope,
+    );
+    const finallyId = `${id}::finally`;
+    const finallyData: LogicNodeData = {
+      logicKind: "finally",
+      label: "finally · always",
+      targetId: null,
+      resolution: null,
+      expandable: false,
+      isExpanded: false,
+      isContainer: false,
+      compact: false,
+      callScope: null,
+      greyed: false,
+      provenance: null,
+      childCount: finallyPath.body.length,
+    };
+    this.push(finallyId, parentId, "finally", finallyData);
+    for (const exit of protectedFlow.exits) {
+      this.link(exit, finallyId);
+    }
+
+    const cleanup = this.sequence(finallyPath.body, parentId, `${path}/finally/`, asyncScope);
+    if (cleanup.firstId === null) {
+      return { entry: protectedFlow.entry, exits: [{ id: finallyId }] };
+    }
+    this.pushEdge(finallyId, cleanup.firstId, "seq");
+    return { entry: protectedFlow.entry, exits: cleanup.lastExits };
+  }
+
+  /** A symmetric split -> lanes -> join whenever multiple arms genuinely continue. Paths that end
+   * at return/throw expose no exit and are deliberately absent from the merge. A lone surviving arm
+   * needs no visual join and keeps its original direct continuation. */
+  private mergeBranchExits(branchId: string, parentId: string | null, exits: Exit[]): Exit[] {
+    if (exits.length < 2) {
+      return exits;
+    }
+    const id = `${branchId}::join`;
+    const data: LogicNodeData = {
+      logicKind: "join",
+      label: "merge",
+      targetId: null,
+      resolution: null,
+      expandable: false,
+      isExpanded: false,
+      isContainer: false,
+      compact: false,
+      callScope: null,
+      greyed: false,
+      provenance: null,
+      childCount: exits.length,
+    };
+    this.push(id, parentId, "join", data);
+    exits.forEach((exit) => this.link(exit, id));
+    return [{ id }];
+  }
+
+  private isCompactCall(step: FlowStep): boolean {
     if (step.kind !== "call") {
+      return false;
+    }
+    // Async launch/barrier/direct-await calls carry control semantics even when their call card is
+    // physically compact. Hiding one would strand a wait socket or erase the only launch marker.
+    if (step.async) {
       return false;
     }
     return !(step.resolution === "resolved" && step.target !== null && (this.flows[step.target]?.length ?? 0) > 0);
@@ -541,22 +845,82 @@ class LogicGraphBuilder {
   }
 
   private link(from: Exit, toId: string): void {
-    this.pushEdge(from.id, toId, from.edgeLabel ? "branch" : "seq", from.edgeLabel);
+    this.pushEdge(
+      from.id,
+      toId,
+      from.edgeLabel ? "branch" : "seq",
+      from.edgeLabel,
+      from.sourcePort || from.branchRole
+        ? { ...(from.sourcePort ? { sourcePort: from.sourcePort } : {}), ...(from.branchRole ? { branchRole: from.branchRole } : {}) }
+        : undefined,
+    );
   }
 
-  private pushEdge(source: string, target: string, kind: "seq" | "branch", label?: string): void {
-    this.edges.push({ id: `e${this.edgeSeq++}`, source, target, kind, label });
+  private pushEdge(
+    source: string,
+    target: string,
+    kind: LogicEdgeSpec["kind"],
+    label?: string,
+    endpoints?: Pick<LogicEdgeSpec, "sourcePort" | "targetPort" | "taskId" | "branchRole">,
+  ): void {
+    this.edges.push({ id: `e${this.edgeSeq++}`, source, target, kind, label, ...endpoints });
   }
 
-  private push(id: string, parentId: string | null, type: LogicNodeType, data: LogicNodeData, greyed: boolean): void {
+  private push(id: string, parentId: string | null, type: LogicNodeType, data: LogicNodeData): void {
     const spec: LogicNodeSpec = { id, parentId, type, data };
     if (!data.isContainer) {
-      const { width, height } = sizeFor(data.label, greyed, type, Boolean(data.signature));
+      const { width, height } = sizeFor(
+        data.label,
+        data.compact,
+        type,
+        Boolean(data.signature),
+        Boolean(data.provenance),
+        data.detached === true,
+        (data.nestedDetachedCount ?? 0) > 0,
+      );
       spec.width = width;
       spec.height = height;
     }
     this.nodes.push(spec);
   }
+}
+
+/** A shared FINALLY phase is exact while TRY/CATCH complete normally. An explicit return/throw in
+ * either protected arm carries a pending completion that must resume only after cleanup; because
+ * FlowStep does not yet encode that pending value, keep those shapes on the honest fallback. */
+function canChartFinallyAsSharedPhase(step: Extract<FlowStep, { kind: "branch" }>): boolean {
+  const { tryPath, catchPath, finallyPath } = tryArms(step);
+  return Boolean(
+    tryPath
+    && catchPath
+    && finallyPath
+    && !containsExit(tryPath.body)
+    && !containsExit(catchPath.body)
+    && !containsExit(finallyPath.body),
+  );
+}
+
+/** Conservative recursive scan. False positives merely retain the fallback; false negatives could
+ * place a terminal before mandatory cleanup, so every nested synchronous body is included. */
+function containsExit(steps: FlowStep[]): boolean {
+  return steps.some((step) => {
+    if (step.kind === "exit") return true;
+    if (step.kind === "branch") return step.paths.some((path) => containsExit(path.body));
+    if (step.kind === "loop" || step.kind === "callback") return containsExit(step.body);
+    return false;
+  });
+}
+
+/** Count only work structurally inside this callable's extracted flow. Recurse through synchronous
+ * control/callback bodies, but never chase call targets: a parent badge describes what expansion
+ * will reveal directly, not an unbounded transitive call-graph warning. */
+function countDetached(steps: FlowStep[]): number {
+  return steps.reduce((count, step) => {
+    if (step.kind === "call") return count + (step.detached ? 1 : 0);
+    if (step.kind === "branch") return count + step.paths.reduce((sum, path) => sum + countDetached(path.body), 0);
+    if (step.kind === "loop" || step.kind === "callback") return count + countDetached(step.body);
+    return count;
+  }, 0);
 }
 
 /** Package + module the building block comes from, so a block is never a bare name. */
@@ -586,6 +950,57 @@ function firstSegment(path: string): string {
   return path.split("/")[0] ?? path;
 }
 
+function callScopeOf(resolution: EdgeResolution): LogicCallScope {
+  if (resolution === "resolved") {
+    return "internal";
+  }
+  return resolution;
+}
+
+/** Stable across relayout, hiding compact calls, and branch-arm contents changing. */
+function branchPortId(branchId: string, order: number): string {
+  return `${branchId}::port/${order}`;
+}
+
+function asyncPortsForCall(nodeId: string, label: string, event: FlowCallAsync): LogicAsyncPort[] {
+  if (event.kind === "launch") {
+    return [{
+      id: asyncPortId(nodeId, "source", 0),
+      direction: "source",
+      label: event.binding ?? label,
+      taskId: event.taskId,
+      order: 0,
+    }];
+  }
+  if (event.kind === "barrier") {
+    return asyncTargetPorts(nodeId, event.inputs);
+  }
+  // Direct await is both ends of a task lifetime on one call node. No correlation edge is emitted;
+  // the two ports give the renderer stable anchors for the local launch->wait loop.
+  return [
+    { id: asyncPortId(nodeId, "source", 0), direction: "source", label, taskId: event.taskId, order: 0 },
+    { id: asyncPortId(nodeId, "target", 0), direction: "target", label, taskId: event.taskId, order: 0 },
+  ];
+}
+
+function asyncTargetPorts(nodeId: string, inputs: FlowAsyncInput[]): LogicAsyncPort[] {
+  return inputs.map((input, order) => ({
+    id: asyncPortId(nodeId, "target", order),
+    direction: "target",
+    label: input.label,
+    ...(input.taskId ? { taskId: input.taskId } : {}),
+    order,
+  }));
+}
+
+function asyncPortId(nodeId: string, direction: LogicAsyncPort["direction"], order: number): string {
+  return `${nodeId}::async/${direction}/${order}`;
+}
+
+function asyncTaskKey(scope: string, taskId: string): string {
+  return `${scope}\u0000${taskId}`;
+}
+
 // The signature line's vertical band a non-greyed block grows by. Named so the render height (in
 // logicNodeTypes) and the laid-out box stay in lockstep. The owner is now the enclosing service
 // frame, not a per-block row, so a block only grows for its signature.
@@ -612,19 +1027,24 @@ const BLOCK_TITLE_CHROME = 40; // title padding (8+8) + border (2) + glyph (~10)
 const BLOCK_TITLE_TAIL = 58; // room for the expand + </> buttons (async / coverage badges ride here too)
 const BLOCK_MIN_WIDTH = 190;
 const BLOCK_MAX_WIDTH = 460;
-// A greyed leaf stays a compact chip — its 30px height already reads as "leaf, no flow" — but its name
-// is priority and must never clip, so its width still tracks the name plus its smaller tail.
-const GREY_TITLE_FONT = 10;
-const GREY_TITLE_CHROME = 30; // title padding (6+6) + border (2) + glyph (~8) + two 4px gaps
-const GREY_TITLE_TAIL = 34; // room for the </> button (+ an occasional async badge)
-const GREY_MIN_WIDTH = 96;
-const GREY_MAX_WIDTH = 320;
+// A compact leaf stays a small chip — its 30px height says "no child flow" without implying anything
+// about whether the call is internal/external/unresolved. Its name remains priority and never clips.
+const COMPACT_TITLE_FONT = 10;
+const COMPACT_TITLE_CHROME = 30; // title padding (6+6) + border (2) + glyph (~8) + two 4px gaps
+const COMPACT_TITLE_TAIL = 58; // room for the </> button plus an async/detached badge
+const COMPACT_MIN_WIDTH = 96;
+const COMPACT_MAX_WIDTH = 440;
+const DETACHED_BADGE_WIDTH = 72;
+const NESTED_DETACHED_BADGE_WIDTH = 104;
 
 function sizeFor(
   label: string,
-  greyed: boolean,
+  compact: boolean,
   type: LogicNodeType,
   hasSignature: boolean,
+  hasProvenance: boolean,
+  detached: boolean,
+  nestedDetached: boolean,
 ): { width: number; height: number } {
   if (type === "branch") {
     // A FIXED, glanceable decision diamond. Its content is always a single "X" (the condition is
@@ -632,12 +1052,31 @@ function sizeFor(
     // small, constant marker, never a sprawling box.
     return { width: 72, height: 56 };
   }
-  if (greyed) {
-    // A small chip, but sized so the priority name never clips under its tail.
-    return { width: roundedClamp(GREY_MIN_WIDTH, GREY_MAX_WIDTH, GREY_TITLE_CHROME + monoTextWidth(label, GREY_TITLE_FONT) + GREY_TITLE_TAIL), height: 30 };
+  if (type === "exception") {
+    // A compact vertical exception gate: enough width for explicit TRY/CATCH vocabulary and enough
+    // height to separate the straight-through normal pin from the lower catch outlet.
+    return { width: 112, height: 68 };
+  }
+  if (type === "finally") {
+    return { width: 118, height: 38 };
+  }
+  if (type === "join") {
+    // A one-way funnel, deliberately wider than a line but nowhere near a decision diamond.
+    return { width: 42, height: 72 };
+  }
+  if (type === "async") {
+    return { width: roundedClamp(118, 300, 54 + monoTextWidth(label, 11)), height: 42 };
+  }
+  if (compact) {
+    // External leaves stay one row. Resolved/unresolved leaves with provenance reserve a real
+    // second row; the former 30px blanket height clipped that row behind BODY overflow.
+    return {
+      width: roundedClamp(COMPACT_MIN_WIDTH, COMPACT_MAX_WIDTH, COMPACT_TITLE_CHROME + monoTextWidth(label, COMPACT_TITLE_FONT) + COMPACT_TITLE_TAIL + (detached ? DETACHED_BADGE_WIDTH : 0) + (nestedDetached ? NESTED_DETACHED_BADGE_WIDTH : 0)),
+      height: hasProvenance ? 42 : 30,
+    };
   }
   // Fit glyph + name + the title tail; the signature row adds its band below so it never clips either.
-  return { width: roundedClamp(BLOCK_MIN_WIDTH, BLOCK_MAX_WIDTH, BLOCK_TITLE_CHROME + monoTextWidth(label, BLOCK_TITLE_FONT) + BLOCK_TITLE_TAIL), height: 66 + (hasSignature ? SIGNATURE_ROW_H : 0) };
+  return { width: roundedClamp(BLOCK_MIN_WIDTH, BLOCK_MAX_WIDTH, BLOCK_TITLE_CHROME + monoTextWidth(label, BLOCK_TITLE_FONT) + BLOCK_TITLE_TAIL + (detached ? DETACHED_BADGE_WIDTH : 0) + (nestedDetached ? NESTED_DETACHED_BADGE_WIDTH : 0)), height: 66 + (hasSignature ? SIGNATURE_ROW_H : 0) };
 }
 
 function roundedClamp(min: number, max: number, value: number): number {

@@ -1,6 +1,6 @@
 {
-  "schemaVersion": "1.0.0",
-  "generatedAt": "2026-07-06T15:05:07.828Z",
+  "schemaVersion": "1.1.0",
+  "generatedAt": "2026-07-12T18:19:43.984Z",
   "generator": {
     "name": "meridian",
     "version": "meridian@0.1.0 (ts-morph@28)"
@@ -119,6 +119,19 @@
       "parentId": "ts:src",
       "location": {
         "file": "src/services",
+        "startLine": 1,
+        "endLine": 1
+      }
+    },
+    {
+      "id": "ts:src/showcase",
+      "kind": "package",
+      "qualifiedName": "src/showcase",
+      "displayName": "showcase",
+      "summary": null,
+      "parentId": "ts:src",
+      "location": {
+        "file": "src/showcase",
         "startLine": 1,
         "endLine": 1
       }
@@ -1198,6 +1211,1362 @@
       }
     },
     {
+      "id": "ts:src/showcase/executionGraphGallery.ts",
+      "kind": "module",
+      "qualifiedName": "src/showcase/executionGraphGallery.ts",
+      "displayName": "executionGraphGallery.ts",
+      "summary": null,
+      "parentId": "ts:src/showcase",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 1,
+        "endLine": 300
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "kind": "class",
+      "qualifiedName": "ExecutionGraphGallery",
+      "displayName": "ExecutionGraphGallery",
+      "summary": "A navigable catalogue of the execution-graph vocabulary.",
+      "parentId": "ts:src/showcase/executionGraphGallery.ts",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 27,
+        "endLine": 299
+      },
+      "tags": [
+        "export"
+      ]
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.guidedTour",
+      "displayName": "guidedTour",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 28,
+        "endLine": 43
+      },
+      "signature": "guidedTour(order: GalleryOrder): Promise<GalleryTourResult>",
+      "tags": [
+        "async",
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "guidedTour",
+        "spanNameHints": [
+          "ExecutionGraphGallery.guidedTour",
+          "guidedTour"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.directAwait",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.directAwait",
+      "displayName": "directAwait",
+      "summary": "A promise created and consumed at the same source location.",
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 46,
+        "endLine": 50
+      },
+      "signature": "directAwait(orderId: string): Promise<string>",
+      "tags": [
+        "async",
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "directAwait",
+        "spanNameHints": [
+          "ExecutionGraphGallery.directAwait",
+          "directAwait"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.launchThenAwait",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.launchThenAwait",
+      "displayName": "launchThenAwait",
+      "summary": "A promise launched now, with useful work between its launch and later join.",
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 53,
+        "endLine": 62
+      },
+      "signature": "launchThenAwait(orderId: string): Promise<string>",
+      "tags": [
+        "async",
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "launchThenAwait",
+        "spanNameHints": [
+          "ExecutionGraphGallery.launchThenAwait",
+          "launchThenAwait"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.awaitAllBarrier",
+      "displayName": "awaitAllBarrier",
+      "summary": "Named promise lifetimes converging at a fail-fast barrier.",
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 65,
+        "endLine": 72
+      },
+      "signature": "awaitAllBarrier(orderId: string): Promise<void>",
+      "tags": [
+        "async",
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "awaitAllBarrier",
+        "spanNameHints": [
+          "ExecutionGraphGallery.awaitAllBarrier",
+          "awaitAllBarrier"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.awaitAllSettledBarrier",
+      "displayName": "awaitAllSettledBarrier",
+      "summary": "Inline promise lifetimes converging at an all-results barrier.",
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 75,
+        "endLine": 82
+      },
+      "signature": "awaitAllSettledBarrier(orderId: string): Promise<void>",
+      "tags": [
+        "async",
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "awaitAllSettledBarrier",
+        "spanNameHints": [
+          "ExecutionGraphGallery.awaitAllSettledBarrier",
+          "awaitAllSettledBarrier"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.nestedDecisions",
+      "displayName": "nestedDecisions",
+      "summary": "Guards, nested if/else paths, switch cases, early return, and early throw in one exhibit.",
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 85,
+        "endLine": 122
+      },
+      "signature": "nestedDecisions(order: GalleryOrder): string",
+      "tags": [
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "nestedDecisions",
+        "spanNameHints": [
+          "ExecutionGraphGallery.nestedDecisions",
+          "nestedDecisions"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loopShapes",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.loopShapes",
+      "displayName": "loopShapes",
+      "summary": "Classic for, for-of, while, and do/while loops in source order.",
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 125,
+        "endLine": 145
+      },
+      "signature": "loopShapes(orderIds: string[]): void",
+      "tags": [
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "loopShapes",
+        "spanNameHints": [
+          "ExecutionGraphGallery.loopShapes",
+          "loopShapes"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchOnly",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.tryCatchOnly",
+      "displayName": "tryCatchOnly",
+      "summary": "The dedicated normal/error rails of ordinary protected async work.",
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 148,
+        "endLine": 155
+      },
+      "signature": "tryCatchOnly(orderId: string): Promise<string>",
+      "tags": [
+        "async",
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "tryCatchOnly",
+        "spanNameHints": [
+          "ExecutionGraphGallery.tryCatchOnly",
+          "tryCatchOnly"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.tryCatchFinally",
+      "displayName": "tryCatchFinally",
+      "summary": "The same exception lanes, reconverging through one guaranteed cleanup phase.",
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 158,
+        "endLine": 172
+      },
+      "signature": "tryCatchFinally(orderId: string): Promise<string>",
+      "tags": [
+        "async",
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "tryCatchFinally",
+        "spanNameHints": [
+          "ExecutionGraphGallery.tryCatchFinally",
+          "tryCatchFinally"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.callbackHandOffs",
+      "displayName": "callbackHandOffs",
+      "summary": "Deferred callbacks stay nested under the API that receives the hand-off.",
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 175,
+        "endLine": 189
+      },
+      "signature": "callbackHandOffs(orderId: string): void",
+      "tags": [
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "callbackHandOffs",
+        "spanNameHints": [
+          "ExecutionGraphGallery.callbackHandOffs",
+          "callbackHandOffs"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.externalAndDetached",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.externalAndDetached",
+      "displayName": "externalAndDetached",
+      "summary": "Platform calls and fire-and-forget work have deliberately different endpoints.",
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 192,
+        "endLine": 198
+      },
+      "signature": "externalAndDetached(orderId: string): void",
+      "tags": [
+        "public"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "externalAndDetached",
+        "spanNameHints": [
+          "ExecutionGraphGallery.externalAndDetached",
+          "externalAndDetached"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.fetchOrder",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.fetchOrder",
+      "displayName": "fetchOrder",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 200,
+        "endLine": 202
+      },
+      "signature": "fetchOrder(orderId: string): Promise<string>",
+      "tags": [
+        "async",
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "fetchOrder",
+        "spanNameHints": [
+          "ExecutionGraphGallery.fetchOrder",
+          "fetchOrder"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.fetchInventory",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.fetchInventory",
+      "displayName": "fetchInventory",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 204,
+        "endLine": 206
+      },
+      "signature": "fetchInventory(orderId: string): Promise<string>",
+      "tags": [
+        "async",
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "fetchInventory",
+        "spanNameHints": [
+          "ExecutionGraphGallery.fetchInventory",
+          "fetchInventory"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reserveInventory",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.reserveInventory",
+      "displayName": "reserveInventory",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 208,
+        "endLine": 208
+      },
+      "signature": "reserveInventory(_orderId: string): Promise<void>",
+      "tags": [
+        "async",
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "reserveInventory",
+        "spanNameHints": [
+          "ExecutionGraphGallery.reserveInventory",
+          "reserveInventory"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.authorizePayment",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.authorizePayment",
+      "displayName": "authorizePayment",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 210,
+        "endLine": 210
+      },
+      "signature": "authorizePayment(_orderId: string): Promise<void>",
+      "tags": [
+        "async",
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "authorizePayment",
+        "spanNameHints": [
+          "ExecutionGraphGallery.authorizePayment",
+          "authorizePayment"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.prepareNotification",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.prepareNotification",
+      "displayName": "prepareNotification",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 212,
+        "endLine": 212
+      },
+      "signature": "prepareNotification(_orderId: string): Promise<void>",
+      "tags": [
+        "async",
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "prepareNotification",
+        "spanNameHints": [
+          "ExecutionGraphGallery.prepareNotification",
+          "prepareNotification"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.sendReceipt",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.sendReceipt",
+      "displayName": "sendReceipt",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 214,
+        "endLine": 214
+      },
+      "signature": "sendReceipt(_orderId: string): Promise<void>",
+      "tags": [
+        "async",
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "sendReceipt",
+        "spanNameHints": [
+          "ExecutionGraphGallery.sendReceipt",
+          "sendReceipt"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.updateSearchIndex",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.updateSearchIndex",
+      "displayName": "updateSearchIndex",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 216,
+        "endLine": 216
+      },
+      "signature": "updateSearchIndex(_orderId: string): Promise<void>",
+      "tags": [
+        "async",
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "updateSearchIndex",
+        "spanNameHints": [
+          "ExecutionGraphGallery.updateSearchIndex",
+          "updateSearchIndex"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.archiveAuditTrail",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.archiveAuditTrail",
+      "displayName": "archiveAuditTrail",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 218,
+        "endLine": 218
+      },
+      "signature": "archiveAuditTrail(_orderId: string): Promise<void>",
+      "tags": [
+        "async",
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "archiveAuditTrail",
+        "spanNameHints": [
+          "ExecutionGraphGallery.archiveAuditTrail",
+          "archiveAuditTrail"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.performProtectedWork",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.performProtectedWork",
+      "displayName": "performProtectedWork",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 220,
+        "endLine": 222
+      },
+      "signature": "performProtectedWork(orderId: string): Promise<string>",
+      "tags": [
+        "async",
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "performProtectedWork",
+        "spanNameHints": [
+          "ExecutionGraphGallery.performProtectedWork",
+          "performProtectedWork"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.publishTelemetry",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.publishTelemetry",
+      "displayName": "publishTelemetry",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 224,
+        "endLine": 227
+      },
+      "signature": "publishTelemetry(orderId: string): Promise<void>",
+      "tags": [
+        "async",
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "publishTelemetry",
+        "spanNameHints": [
+          "ExecutionGraphGallery.publishTelemetry",
+          "publishTelemetry"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.refreshReadModel",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.refreshReadModel",
+      "displayName": "refreshReadModel",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 229,
+        "endLine": 232
+      },
+      "signature": "refreshReadModel(orderId: string): Promise<void>",
+      "tags": [
+        "async",
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "refreshReadModel",
+        "spanNameHints": [
+          "ExecutionGraphGallery.refreshReadModel",
+          "refreshReadModel"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.shipTelemetryEnvelope",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.shipTelemetryEnvelope",
+      "displayName": "shipTelemetryEnvelope",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 234,
+        "endLine": 234
+      },
+      "signature": "shipTelemetryEnvelope(_orderId: string): Promise<void>",
+      "tags": [
+        "async",
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "shipTelemetryEnvelope",
+        "spanNameHints": [
+          "ExecutionGraphGallery.shipTelemetryEnvelope",
+          "shipTelemetryEnvelope"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loadReadModelProjection",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.loadReadModelProjection",
+      "displayName": "loadReadModelProjection",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 236,
+        "endLine": 238
+      },
+      "signature": "loadReadModelProjection(orderId: string): Promise<string>",
+      "tags": [
+        "async",
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "loadReadModelProjection",
+        "spanNameHints": [
+          "ExecutionGraphGallery.loadReadModelProjection",
+          "loadReadModelProjection"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.storeReadModelProjection",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.storeReadModelProjection",
+      "displayName": "storeReadModelProjection",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 240,
+        "endLine": 240
+      },
+      "signature": "storeReadModelProjection(_projection: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "storeReadModelProjection",
+        "spanNameHints": [
+          "ExecutionGraphGallery.storeReadModelProjection",
+          "storeReadModelProjection"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.recordCheckpoint",
+      "displayName": "recordCheckpoint",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 242,
+        "endLine": 242
+      },
+      "signature": "recordCheckpoint(_label: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "recordCheckpoint",
+        "spanNameHints": [
+          "ExecutionGraphGallery.recordCheckpoint",
+          "recordCheckpoint"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.preparePackingSlip",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.preparePackingSlip",
+      "displayName": "preparePackingSlip",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 244,
+        "endLine": 244
+      },
+      "signature": "preparePackingSlip(_orderId: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "preparePackingSlip",
+        "spanNameHints": [
+          "ExecutionGraphGallery.preparePackingSlip",
+          "preparePackingSlip"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.attachInventory",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.attachInventory",
+      "displayName": "attachInventory",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 246,
+        "endLine": 246
+      },
+      "signature": "attachInventory(_orderId: string, _inventory: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "attachInventory",
+        "spanNameHints": [
+          "ExecutionGraphGallery.attachInventory",
+          "attachInventory"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.rejectEmptyOrder",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.rejectEmptyOrder",
+      "displayName": "rejectEmptyOrder",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 248,
+        "endLine": 248
+      },
+      "signature": "rejectEmptyOrder(_orderId: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "rejectEmptyOrder",
+        "spanNameHints": [
+          "ExecutionGraphGallery.rejectEmptyOrder",
+          "rejectEmptyOrder"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.flagForFraudReview",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.flagForFraudReview",
+      "displayName": "flagForFraudReview",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 250,
+        "endLine": 250
+      },
+      "signature": "flagForFraudReview(_orderId: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "flagForFraudReview",
+        "spanNameHints": [
+          "ExecutionGraphGallery.flagForFraudReview",
+          "flagForFraudReview"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.routePriority",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.routePriority",
+      "displayName": "routePriority",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 252,
+        "endLine": 252
+      },
+      "signature": "routePriority(_orderId: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "routePriority",
+        "spanNameHints": [
+          "ExecutionGraphGallery.routePriority",
+          "routePriority"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.routeManualReview",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.routeManualReview",
+      "displayName": "routeManualReview",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 254,
+        "endLine": 254
+      },
+      "signature": "routeManualReview(_orderId: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "routeManualReview",
+        "spanNameHints": [
+          "ExecutionGraphGallery.routeManualReview",
+          "routeManualReview"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.routeStandard",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.routeStandard",
+      "displayName": "routeStandard",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 256,
+        "endLine": 256
+      },
+      "signature": "routeStandard(_orderId: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "routeStandard",
+        "spanNameHints": [
+          "ExecutionGraphGallery.routeStandard",
+          "routeStandard"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.acceptNewOrder",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.acceptNewOrder",
+      "displayName": "acceptNewOrder",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 258,
+        "endLine": 258
+      },
+      "signature": "acceptNewOrder(_orderId: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "acceptNewOrder",
+        "spanNameHints": [
+          "ExecutionGraphGallery.acceptNewOrder",
+          "acceptNewOrder"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.keepOrderOnHold",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.keepOrderOnHold",
+      "displayName": "keepOrderOnHold",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 260,
+        "endLine": 260
+      },
+      "signature": "keepOrderOnHold(_orderId: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "keepOrderOnHold",
+        "spanNameHints": [
+          "ExecutionGraphGallery.keepOrderOnHold",
+          "keepOrderOnHold"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.releaseOrder",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.releaseOrder",
+      "displayName": "releaseOrder",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 262,
+        "endLine": 262
+      },
+      "signature": "releaseOrder(_orderId: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "releaseOrder",
+        "spanNameHints": [
+          "ExecutionGraphGallery.releaseOrder",
+          "releaseOrder"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reportUnknownState",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.reportUnknownState",
+      "displayName": "reportUnknownState",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 264,
+        "endLine": 264
+      },
+      "signature": "reportUnknownState(_orderId: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "reportUnknownState",
+        "spanNameHints": [
+          "ExecutionGraphGallery.reportUnknownState",
+          "reportUnknownState"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.highRiskError",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.highRiskError",
+      "displayName": "highRiskError",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 266,
+        "endLine": 268
+      },
+      "signature": "highRiskError(orderId: string): Error",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "highRiskError",
+        "spanNameHints": [
+          "ExecutionGraphGallery.highRiskError",
+          "highRiskError"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.unknownStateError",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.unknownStateError",
+      "displayName": "unknownStateError",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 270,
+        "endLine": 272
+      },
+      "signature": "unknownStateError(orderId: string): Error",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "unknownStateError",
+        "spanNameHints": [
+          "ExecutionGraphGallery.unknownStateError",
+          "unknownStateError"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordAttempt",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.recordAttempt",
+      "displayName": "recordAttempt",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 274,
+        "endLine": 274
+      },
+      "signature": "recordAttempt(_attempt: number): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "recordAttempt",
+        "spanNameHints": [
+          "ExecutionGraphGallery.recordAttempt",
+          "recordAttempt"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.visitOrder",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.visitOrder",
+      "displayName": "visitOrder",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 276,
+        "endLine": 276
+      },
+      "signature": "visitOrder(_orderId: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "visitOrder",
+        "spanNameHints": [
+          "ExecutionGraphGallery.visitOrder",
+          "visitOrder"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.pollOrder",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.pollOrder",
+      "displayName": "pollOrder",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 278,
+        "endLine": 278
+      },
+      "signature": "pollOrder(_orderId: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "pollOrder",
+        "spanNameHints": [
+          "ExecutionGraphGallery.pollOrder",
+          "pollOrder"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.flushSweep",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.flushSweep",
+      "displayName": "flushSweep",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 280,
+        "endLine": 280
+      },
+      "signature": "flushSweep(_sweep: number): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "flushSweep",
+        "spanNameHints": [
+          "ExecutionGraphGallery.flushSweep",
+          "flushSweep"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reportProtectedFailure",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.reportProtectedFailure",
+      "displayName": "reportProtectedFailure",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 282,
+        "endLine": 282
+      },
+      "signature": "reportProtectedFailure(_orderId: string, _error: unknown): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "reportProtectedFailure",
+        "spanNameHints": [
+          "ExecutionGraphGallery.reportProtectedFailure",
+          "reportProtectedFailure"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.buildFallback",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.buildFallback",
+      "displayName": "buildFallback",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 284,
+        "endLine": 286
+      },
+      "signature": "buildFallback(orderId: string): string",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "buildFallback",
+        "spanNameHints": [
+          "ExecutionGraphGallery.buildFallback",
+          "buildFallback"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.releaseTemporaryLock",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.releaseTemporaryLock",
+      "displayName": "releaseTemporaryLock",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 288,
+        "endLine": 288
+      },
+      "signature": "releaseTemporaryLock(_orderId: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "releaseTemporaryLock",
+        "spanNameHints": [
+          "ExecutionGraphGallery.releaseTemporaryLock",
+          "releaseTemporaryLock"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.retryLater",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.retryLater",
+      "displayName": "retryLater",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 290,
+        "endLine": 290
+      },
+      "signature": "retryLater(_orderId: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "retryLater",
+        "spanNameHints": [
+          "ExecutionGraphGallery.retryLater",
+          "retryLater"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.registerHandOff",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.registerHandOff",
+      "displayName": "registerHandOff",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 292,
+        "endLine": 292
+      },
+      "signature": "registerHandOff(_orderId: string, _callback: () => void): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "registerHandOff",
+        "spanNameHints": [
+          "ExecutionGraphGallery.registerHandOff",
+          "registerHandOff"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.notifyOperator",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.notifyOperator",
+      "displayName": "notifyOperator",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 294,
+        "endLine": 294
+      },
+      "signature": "notifyOperator(_orderId: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "notifyOperator",
+        "spanNameHints": [
+          "ExecutionGraphGallery.notifyOperator",
+          "notifyOperator"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.writeHandOffAudit",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.writeHandOffAudit",
+      "displayName": "writeHandOffAudit",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 296,
+        "endLine": 296
+      },
+      "signature": "writeHandOffAudit(_orderId: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "writeHandOffAudit",
+        "spanNameHints": [
+          "ExecutionGraphGallery.writeHandOffAudit",
+          "writeHandOffAudit"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.inspectCandidate",
+      "kind": "method",
+      "qualifiedName": "ExecutionGraphGallery.inspectCandidate",
+      "displayName": "inspectCandidate",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 298,
+        "endLine": 298
+      },
+      "signature": "inspectCandidate(_orderId: string): void",
+      "tags": [
+        "private"
+      ],
+      "telemetry": {
+        "codeNamespace": "ExecutionGraphGallery",
+        "codeFunction": "inspectCandidate",
+        "spanNameHints": [
+          "ExecutionGraphGallery.inspectCandidate",
+          "inspectCandidate"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#GalleryOrder",
+      "kind": "interface",
+      "qualifiedName": "GalleryOrder",
+      "displayName": "GalleryOrder",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 11,
+        "endLine": 17
+      },
+      "tags": [
+        "export"
+      ]
+    },
+    {
+      "id": "ts:src/showcase/executionGraphGallery.ts#GalleryTourResult",
+      "kind": "interface",
+      "qualifiedName": "GalleryTourResult",
+      "displayName": "GalleryTourResult",
+      "summary": null,
+      "parentId": "ts:src/showcase/executionGraphGallery.ts",
+      "location": {
+        "file": "src/showcase/executionGraphGallery.ts",
+        "startLine": 19,
+        "endLine": 24
+      },
+      "tags": [
+        "export"
+      ]
+    },
+    {
       "id": "ts:src/validation/orderValidator.ts",
       "kind": "module",
       "qualifiedName": "src/validation/orderValidator.ts",
@@ -1284,7 +2653,9 @@
         {
           "file": "src/index.ts",
           "line": 9,
-          "col": 19
+          "col": 19,
+          "endLine": 9,
+          "endCol": 39
         }
       ]
     },
@@ -1299,7 +2670,9 @@
         {
           "file": "src/index.ts",
           "line": 10,
-          "col": 22
+          "col": 22,
+          "endLine": 10,
+          "endCol": 43
         }
       ]
     },
@@ -1314,7 +2687,9 @@
         {
           "file": "src/index.ts",
           "line": 11,
-          "col": 17
+          "col": 17,
+          "endLine": 11,
+          "endCol": 35
         }
       ]
     },
@@ -1329,7 +2704,9 @@
         {
           "file": "src/index.ts",
           "line": 12,
-          "col": 18
+          "col": 18,
+          "endLine": 12,
+          "endCol": 62
         }
       ]
     },
@@ -1344,7 +2721,26 @@
         {
           "file": "src/index.ts",
           "line": 13,
-          "col": 10
+          "col": 10,
+          "endLine": 13,
+          "endCol": 33
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/index.ts#buildOrdersApp|ts:src/api/orderRoutes.ts#OrderRoutes",
+      "source": "ts:src/index.ts#buildOrdersApp",
+      "target": "ts:src/api/orderRoutes.ts#OrderRoutes",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/index.ts",
+          "line": 8,
+          "col": 35,
+          "endLine": 8,
+          "endCol": 46
         }
       ]
     },
@@ -1359,7 +2755,9 @@
         {
           "file": "src/__tests__/orderService.test.ts",
           "line": 36,
-          "col": 19
+          "col": 19,
+          "endLine": 36,
+          "endCol": 33
         }
       ]
     },
@@ -1374,7 +2772,9 @@
         {
           "file": "src/__tests__/orderService.test.ts",
           "line": 37,
-          "col": 17
+          "col": 17,
+          "endLine": 37,
+          "endCol": 52
         }
       ]
     },
@@ -1389,7 +2789,9 @@
         {
           "file": "src/__tests__/orderService.test.ts",
           "line": 37,
-          "col": 36
+          "col": 36,
+          "endLine": 37,
+          "endCol": 51
         }
       ]
     },
@@ -1404,12 +2806,16 @@
         {
           "file": "src/__tests__/orderService.test.ts",
           "line": 38,
-          "col": 3
+          "col": 3,
+          "endLine": 38,
+          "endCol": 53
         },
         {
           "file": "src/__tests__/orderService.test.ts",
           "line": 39,
-          "col": 3
+          "col": 3,
+          "endLine": 39,
+          "endCol": 60
         }
       ]
     },
@@ -1424,7 +2830,9 @@
         {
           "file": "src/__tests__/orderService.test.ts",
           "line": 43,
-          "col": 19
+          "col": 19,
+          "endLine": 43,
+          "endCol": 33
         }
       ]
     },
@@ -1439,7 +2847,9 @@
         {
           "file": "src/__tests__/orderService.test.ts",
           "line": 44,
-          "col": 18
+          "col": 18,
+          "endLine": 44,
+          "endCol": 53
         }
       ]
     },
@@ -1454,7 +2864,9 @@
         {
           "file": "src/__tests__/orderService.test.ts",
           "line": 44,
-          "col": 37
+          "col": 37,
+          "endLine": 44,
+          "endCol": 52
         }
       ]
     },
@@ -1469,7 +2881,9 @@
         {
           "file": "src/__tests__/orderService.test.ts",
           "line": 45,
-          "col": 3
+          "col": 3,
+          "endLine": 45,
+          "endCol": 75
         }
       ]
     },
@@ -1484,7 +2898,9 @@
         {
           "file": "src/__tests__/orderService.test.ts",
           "line": 45,
-          "col": 15
+          "col": 15,
+          "endLine": 45,
+          "endCol": 42
         }
       ]
     },
@@ -1499,7 +2915,9 @@
         {
           "file": "src/__tests__/orderService.test.ts",
           "line": 32,
-          "col": 10
+          "col": 10,
+          "endLine": 32,
+          "endCol": 91
         }
       ]
     },
@@ -1514,7 +2932,9 @@
         {
           "file": "src/__tests__/orderService.test.ts",
           "line": 32,
-          "col": 27
+          "col": 27,
+          "endLine": 32,
+          "endCol": 47
         }
       ]
     },
@@ -1529,7 +2949,9 @@
         {
           "file": "src/__tests__/orderService.test.ts",
           "line": 32,
-          "col": 49
+          "col": 49,
+          "endLine": 32,
+          "endCol": 70
         }
       ]
     },
@@ -1544,7 +2966,43 @@
         {
           "file": "src/__tests__/orderService.test.ts",
           "line": 32,
-          "col": 72
+          "col": 72,
+          "endLine": 32,
+          "endCol": 90
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/__tests__/orderService.test.ts#sampleRequest|ts:src/domain/order.ts#OrderRequest",
+      "source": "ts:src/__tests__/orderService.test.ts#sampleRequest",
+      "target": "ts:src/domain/order.ts#OrderRequest",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 21,
+          "col": 27,
+          "endLine": 21,
+          "endCol": 39
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/__tests__/orderService.test.ts#buildService|ts:src/services/orderService.ts#OrderService",
+      "source": "ts:src/__tests__/orderService.test.ts#buildService",
+      "target": "ts:src/services/orderService.ts#OrderService",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 31,
+          "col": 26,
+          "endLine": 31,
+          "endCol": 38
         }
       ]
     },
@@ -1559,7 +3017,9 @@
         {
           "file": "src/__tests__/pricingService.test.ts",
           "line": 25,
-          "col": 17
+          "col": 17,
+          "endLine": 25,
+          "endCol": 58
         }
       ]
     },
@@ -1574,7 +3034,9 @@
         {
           "file": "src/__tests__/pricingService.test.ts",
           "line": 25,
-          "col": 44
+          "col": 44,
+          "endLine": 25,
+          "endCol": 57
         }
       ]
     },
@@ -1589,12 +3051,16 @@
         {
           "file": "src/__tests__/pricingService.test.ts",
           "line": 26,
-          "col": 3
+          "col": 3,
+          "endLine": 26,
+          "endCol": 53
         },
         {
           "file": "src/__tests__/pricingService.test.ts",
           "line": 27,
-          "col": 3
+          "col": 3,
+          "endLine": 27,
+          "endCol": 61
         }
       ]
     },
@@ -1609,7 +3075,9 @@
         {
           "file": "src/__tests__/pricingService.test.ts",
           "line": 31,
-          "col": 17
+          "col": 17,
+          "endLine": 31,
+          "endCol": 69
         }
       ]
     },
@@ -1624,7 +3092,9 @@
         {
           "file": "src/__tests__/pricingService.test.ts",
           "line": 31,
-          "col": 44
+          "col": 44,
+          "endLine": 31,
+          "endCol": 68
         }
       ]
     },
@@ -1639,12 +3109,16 @@
         {
           "file": "src/__tests__/pricingService.test.ts",
           "line": 32,
-          "col": 3
+          "col": 3,
+          "endLine": 32,
+          "endCol": 57
         },
         {
           "file": "src/__tests__/pricingService.test.ts",
           "line": 33,
-          "col": 3
+          "col": 3,
+          "endLine": 33,
+          "endCol": 64
         }
       ]
     },
@@ -1659,7 +3133,9 @@
         {
           "file": "src/__tests__/pricingService.test.ts",
           "line": 25,
-          "col": 17
+          "col": 17,
+          "endLine": 25,
+          "endCol": 37
         }
       ]
     },
@@ -1674,7 +3150,26 @@
         {
           "file": "src/__tests__/pricingService.test.ts",
           "line": 31,
-          "col": 17
+          "col": 17,
+          "endLine": 31,
+          "endCol": 37
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/__tests__/pricingService.test.ts#requestWith|ts:src/domain/order.ts#OrderRequest",
+      "source": "ts:src/__tests__/pricingService.test.ts#requestWith",
+      "target": "ts:src/domain/order.ts#OrderRequest",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/pricingService.test.ts",
+          "line": 16,
+          "col": 46,
+          "endLine": 16,
+          "endCol": 58
         }
       ]
     },
@@ -1689,7 +3184,9 @@
         {
           "file": "src/api/orderRoutes.ts",
           "line": 18,
-          "col": 21
+          "col": 21,
+          "endLine": 18,
+          "endCol": 52
         }
       ]
     },
@@ -1704,7 +3201,9 @@
         {
           "file": "src/api/orderRoutes.ts",
           "line": 19,
-          "col": 14
+          "col": 14,
+          "endLine": 19,
+          "endCol": 33
         }
       ]
     },
@@ -1719,7 +3218,9 @@
         {
           "file": "src/api/orderRoutes.ts",
           "line": 21,
-          "col": 14
+          "col": 14,
+          "endLine": 21,
+          "endCol": 41
         }
       ]
     },
@@ -1734,7 +3235,162 @@
         {
           "file": "src/api/orderRoutes.ts",
           "line": 27,
-          "col": 19
+          "col": 19,
+          "endLine": 27,
+          "endCol": 43
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/api/orderRoutes.ts#OrderRoutes.constructor|ts:src/services/orderService.ts#OrderService",
+      "source": "ts:src/api/orderRoutes.ts#OrderRoutes.constructor",
+      "target": "ts:src/services/orderService.ts#OrderService",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/api/orderRoutes.ts",
+          "line": 13,
+          "col": 40,
+          "endLine": 13,
+          "endCol": 52
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder|ts:src/domain/order.ts#OrderRequest",
+      "source": "ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder",
+      "target": "ts:src/domain/order.ts#OrderRequest",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/api/orderRoutes.ts",
+          "line": 16,
+          "col": 30,
+          "endLine": 16,
+          "endCol": 42
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder|ts:src/api/orderRoutes.ts#ApiResponse",
+      "source": "ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder",
+      "target": "ts:src/api/orderRoutes.ts#ApiResponse",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/api/orderRoutes.ts",
+          "line": 16,
+          "col": 45,
+          "endLine": 16,
+          "endCol": 56
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/api/orderRoutes.ts#OrderRoutes.handleGetOrder|ts:src/api/orderRoutes.ts#ApiResponse",
+      "source": "ts:src/api/orderRoutes.ts#OrderRoutes.handleGetOrder",
+      "target": "ts:src/api/orderRoutes.ts#ApiResponse",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/api/orderRoutes.ts",
+          "line": 26,
+          "col": 31,
+          "endLine": 26,
+          "endCol": 42
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/api/orderRoutes.ts#OrderRoutes.created|ts:src/domain/order.ts#Order",
+      "source": "ts:src/api/orderRoutes.ts#OrderRoutes.created",
+      "target": "ts:src/domain/order.ts#Order",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/api/orderRoutes.ts",
+          "line": 35,
+          "col": 26,
+          "endLine": 35,
+          "endCol": 31
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/api/orderRoutes.ts#OrderRoutes.created|ts:src/api/orderRoutes.ts#ApiResponse",
+      "source": "ts:src/api/orderRoutes.ts#OrderRoutes.created",
+      "target": "ts:src/api/orderRoutes.ts#ApiResponse",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/api/orderRoutes.ts",
+          "line": 35,
+          "col": 34,
+          "endLine": 35,
+          "endCol": 45
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/api/orderRoutes.ts#OrderRoutes.toErrorResponse|ts:src/api/orderRoutes.ts#ApiResponse",
+      "source": "ts:src/api/orderRoutes.ts#OrderRoutes.toErrorResponse",
+      "target": "ts:src/api/orderRoutes.ts#ApiResponse",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/api/orderRoutes.ts",
+          "line": 40,
+          "col": 44,
+          "endLine": 40,
+          "endCol": 55
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/domain/order.ts#OrderRequest|ts:src/domain/order.ts#OrderLine",
+      "source": "ts:src/domain/order.ts#OrderRequest",
+      "target": "ts:src/domain/order.ts#OrderLine",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/domain/order.ts",
+          "line": 15,
+          "col": 10,
+          "endLine": 15,
+          "endCol": 19
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/domain/order.ts#Order|ts:src/domain/order.ts#OrderLine",
+      "source": "ts:src/domain/order.ts#Order",
+      "target": "ts:src/domain/order.ts#OrderLine",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/domain/order.ts",
+          "line": 23,
+          "col": 10,
+          "endLine": 23,
+          "endCol": 19
         }
       ]
     },
@@ -1749,7 +3405,9 @@
         {
           "file": "src/notifications/emailService.ts",
           "line": 7,
-          "col": 18
+          "col": 18,
+          "endLine": 7,
+          "endCol": 48
         }
       ]
     },
@@ -1764,7 +3422,43 @@
         {
           "file": "src/notifications/emailService.ts",
           "line": 8,
-          "col": 5
+          "col": 5,
+          "endLine": 8,
+          "endCol": 68
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation|ts:src/domain/order.ts#Order",
+      "source": "ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation",
+      "target": "ts:src/domain/order.ts#Order",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/notifications/emailService.ts",
+          "line": 6,
+          "col": 32,
+          "endLine": 6,
+          "endCol": 37
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/notifications/emailService.ts#EmailService.renderConfirmation|ts:src/domain/order.ts#Order",
+      "source": "ts:src/notifications/emailService.ts#EmailService.renderConfirmation",
+      "target": "ts:src/domain/order.ts#Order",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/notifications/emailService.ts",
+          "line": 12,
+          "col": 37,
+          "endLine": 12,
+          "endCol": 42
         }
       ]
     },
@@ -1779,7 +3473,9 @@
         {
           "file": "src/pricing/pricingService.ts",
           "line": 9,
-          "col": 27
+          "col": 27,
+          "endLine": 9,
+          "endCol": 55
         }
       ]
     },
@@ -1794,7 +3490,9 @@
         {
           "file": "src/pricing/pricingService.ts",
           "line": 10,
-          "col": 27
+          "col": 27,
+          "endLine": 10,
+          "endCol": 80
         }
       ]
     },
@@ -1809,7 +3507,9 @@
         {
           "file": "src/pricing/pricingService.ts",
           "line": 12,
-          "col": 22
+          "col": 22,
+          "endLine": 12,
+          "endCol": 41
         }
       ]
     },
@@ -1824,7 +3524,111 @@
         {
           "file": "src/pricing/pricingService.ts",
           "line": 28,
-          "col": 19
+          "col": 19,
+          "endLine": 28,
+          "endCol": 41
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/pricing/pricingService.ts#PricingService.price|ts:src/domain/order.ts#OrderRequest",
+      "source": "ts:src/pricing/pricingService.ts#PricingService.price",
+      "target": "ts:src/domain/order.ts#OrderRequest",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/pricing/pricingService.ts",
+          "line": 8,
+          "col": 18,
+          "endLine": 8,
+          "endCol": 30
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/pricing/pricingService.ts#PricingService.price|ts:src/domain/order.ts#Order",
+      "source": "ts:src/pricing/pricingService.ts#PricingService.price",
+      "target": "ts:src/domain/order.ts#Order",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/pricing/pricingService.ts",
+          "line": 8,
+          "col": 38,
+          "endLine": 8,
+          "endCol": 43
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/pricing/pricingService.ts#PricingService.subtotal|ts:src/domain/order.ts#OrderLine",
+      "source": "ts:src/pricing/pricingService.ts#PricingService.subtotal",
+      "target": "ts:src/domain/order.ts#OrderLine",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/pricing/pricingService.ts",
+          "line": 22,
+          "col": 27,
+          "endLine": 22,
+          "endCol": 36
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/repository/orderRepository.ts#OrderRepository|ts:src/domain/order.ts#Order",
+      "source": "ts:src/repository/orderRepository.ts#OrderRepository",
+      "target": "ts:src/domain/order.ts#Order",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/repository/orderRepository.ts",
+          "line": 5,
+          "col": 43,
+          "endLine": 5,
+          "endCol": 48
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/repository/orderRepository.ts#OrderRepository.save|ts:src/domain/order.ts#Order",
+      "source": "ts:src/repository/orderRepository.ts#OrderRepository.save",
+      "target": "ts:src/domain/order.ts#Order",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/repository/orderRepository.ts",
+          "line": 8,
+          "col": 15,
+          "endLine": 8,
+          "endCol": 20
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/repository/orderRepository.ts#OrderRepository.findById|ts:src/domain/order.ts#Order",
+      "source": "ts:src/repository/orderRepository.ts#OrderRepository.findById",
+      "target": "ts:src/domain/order.ts#Order",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/repository/orderRepository.ts",
+          "line": 13,
+          "col": 25,
+          "endLine": 13,
+          "endCol": 30
         }
       ]
     },
@@ -1839,7 +3643,9 @@
         {
           "file": "src/services/orderService.ts",
           "line": 19,
-          "col": 5
+          "col": 5,
+          "endLine": 19,
+          "endCol": 34
         }
       ]
     },
@@ -1854,7 +3660,9 @@
         {
           "file": "src/services/orderService.ts",
           "line": 20,
-          "col": 19
+          "col": 19,
+          "endLine": 20,
+          "endCol": 46
         }
       ]
     },
@@ -1869,7 +3677,9 @@
         {
           "file": "src/services/orderService.ts",
           "line": 21,
-          "col": 19
+          "col": 19,
+          "endLine": 21,
+          "endCol": 48
         }
       ]
     },
@@ -1884,7 +3694,9 @@
         {
           "file": "src/services/orderService.ts",
           "line": 22,
-          "col": 5
+          "col": 5,
+          "endLine": 22,
+          "endCol": 32
         }
       ]
     },
@@ -1899,7 +3711,9 @@
         {
           "file": "src/services/orderService.ts",
           "line": 23,
-          "col": 5
+          "col": 5,
+          "endLine": 23,
+          "endCol": 44
         }
       ]
     },
@@ -1914,7 +3728,9 @@
         {
           "file": "src/services/orderService.ts",
           "line": 29,
-          "col": 12
+          "col": 12,
+          "endLine": 29,
+          "endCol": 40
         }
       ]
     },
@@ -1929,7 +3745,9 @@
         {
           "file": "src/services/orderService.ts",
           "line": 38,
-          "col": 11
+          "col": 11,
+          "endLine": 38,
+          "endCol": 24
         }
       ]
     },
@@ -1944,7 +3762,1206 @@
         {
           "file": "src/services/orderService.ts",
           "line": 42,
-          "col": 18
+          "col": 18,
+          "endLine": 42,
+          "endCol": 34
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/services/orderService.ts#OrderService.constructor|ts:src/pricing/pricingService.ts#PricingService",
+      "source": "ts:src/services/orderService.ts#OrderService.constructor",
+      "target": "ts:src/pricing/pricingService.ts#PricingService",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 12,
+          "col": 31,
+          "endLine": 12,
+          "endCol": 45
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/services/orderService.ts#OrderService.constructor|ts:src/repository/orderRepository.ts#OrderRepository",
+      "source": "ts:src/services/orderService.ts#OrderService.constructor",
+      "target": "ts:src/repository/orderRepository.ts#OrderRepository",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 13,
+          "col": 34,
+          "endLine": 13,
+          "endCol": 49
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/services/orderService.ts#OrderService.constructor|ts:src/notifications/emailService.ts#EmailService",
+      "source": "ts:src/services/orderService.ts#OrderService.constructor",
+      "target": "ts:src/notifications/emailService.ts#EmailService",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 14,
+          "col": 29,
+          "endLine": 14,
+          "endCol": 41
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/services/orderService.ts#OrderService.placeOrder|ts:src/domain/order.ts#OrderRequest",
+      "source": "ts:src/services/orderService.ts#OrderService.placeOrder",
+      "target": "ts:src/domain/order.ts#OrderRequest",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 18,
+          "col": 23,
+          "endLine": 18,
+          "endCol": 35
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/services/orderService.ts#OrderService.placeOrder|ts:src/domain/order.ts#Order",
+      "source": "ts:src/services/orderService.ts#OrderService.placeOrder",
+      "target": "ts:src/domain/order.ts#Order",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 18,
+          "col": 38,
+          "endLine": 18,
+          "endCol": 43
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/services/orderService.ts#OrderService.getOrder|ts:src/domain/order.ts#Order",
+      "source": "ts:src/services/orderService.ts#OrderService.getOrder",
+      "target": "ts:src/domain/order.ts#Order",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 28,
+          "col": 25,
+          "endLine": 28,
+          "endCol": 30
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/services/orderService.ts#OrderService.assemble|ts:src/domain/order.ts#OrderRequest",
+      "source": "ts:src/services/orderService.ts#OrderService.assemble",
+      "target": "ts:src/domain/order.ts#OrderRequest",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 34,
+          "col": 14,
+          "endLine": 34,
+          "endCol": 26
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/services/orderService.ts#OrderService.assemble|ts:src/domain/order.ts#Order",
+      "source": "ts:src/services/orderService.ts#OrderService.assemble",
+      "target": "ts:src/domain/order.ts#Order",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 2,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 35,
+          "col": 17,
+          "endLine": 35,
+          "endCol": 22
+        },
+        {
+          "file": "src/services/orderService.ts",
+          "line": 36,
+          "col": 6,
+          "endLine": 36,
+          "endCol": 11
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.directAwait",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.directAwait",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 29,
+          "col": 32,
+          "endLine": 29,
+          "endCol": 58
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.launchThenAwait",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.launchThenAwait",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 30,
+          "col": 32,
+          "endLine": 30,
+          "endCol": 62
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 32,
+          "col": 11,
+          "endLine": 32,
+          "endCol": 41
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 33,
+          "col": 11,
+          "endLine": 33,
+          "endCol": 48
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 35,
+          "col": 22,
+          "endLine": 35,
+          "endCol": 49
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loopShapes",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loopShapes",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 36,
+          "col": 5,
+          "endLine": 36,
+          "endCol": 35
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchOnly",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchOnly",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 37,
+          "col": 35,
+          "endLine": 37,
+          "endCol": 62
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 38,
+          "col": 11,
+          "endLine": 38,
+          "endCol": 41
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 39,
+          "col": 5,
+          "endLine": 39,
+          "endCol": 36
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.externalAndDetached",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.externalAndDetached",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 40,
+          "col": 5,
+          "endLine": 40,
+          "endCol": 39
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.directAwait|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.fetchOrder",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.directAwait",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.fetchOrder",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 47,
+          "col": 25,
+          "endLine": 47,
+          "endCol": 49
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.directAwait|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.directAwait",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 48,
+          "col": 5,
+          "endLine": 48,
+          "endCol": 51
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.launchThenAwait|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.fetchInventory",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.launchThenAwait",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.fetchInventory",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 54,
+          "col": 27,
+          "endLine": 54,
+          "endCol": 55
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.launchThenAwait|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.preparePackingSlip",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.launchThenAwait",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.preparePackingSlip",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 56,
+          "col": 5,
+          "endLine": 56,
+          "endCol": 37
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.launchThenAwait|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.launchThenAwait",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 57,
+          "col": 5,
+          "endLine": 57,
+          "endCol": 55
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.launchThenAwait|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.attachInventory",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.launchThenAwait",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.attachInventory",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 60,
+          "col": 5,
+          "endLine": 60,
+          "endCol": 45
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reserveInventory",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reserveInventory",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 66,
+          "col": 25,
+          "endLine": 66,
+          "endCol": 55
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.authorizePayment",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.authorizePayment",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 67,
+          "col": 25,
+          "endLine": 67,
+          "endCol": 55
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.prepareNotification",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.prepareNotification",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 68,
+          "col": 30,
+          "endLine": 68,
+          "endCol": 63
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 71,
+          "col": 5,
+          "endLine": 71,
+          "endCol": 48
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.sendReceipt",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.sendReceipt",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 77,
+          "col": 7,
+          "endLine": 77,
+          "endCol": 32
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.updateSearchIndex",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.updateSearchIndex",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 78,
+          "col": 7,
+          "endLine": 78,
+          "endCol": 38
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.archiveAuditTrail",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.archiveAuditTrail",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 79,
+          "col": 7,
+          "endLine": 79,
+          "endCol": 38
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 81,
+          "col": 5,
+          "endLine": 81,
+          "endCol": 52
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.rejectEmptyOrder",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.rejectEmptyOrder",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 87,
+          "col": 7,
+          "endLine": 87,
+          "endCol": 38
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.flagForFraudReview",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.flagForFraudReview",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 93,
+          "col": 9,
+          "endLine": 93,
+          "endCol": 42
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.highRiskError",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.highRiskError",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 94,
+          "col": 15,
+          "endLine": 94,
+          "endCol": 43
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.routePriority",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.routePriority",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 96,
+          "col": 9,
+          "endLine": 96,
+          "endCol": 37
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.routeManualReview",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.routeManualReview",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 100,
+          "col": 9,
+          "endLine": 100,
+          "endCol": 41
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.routeStandard",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.routeStandard",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 102,
+          "col": 9,
+          "endLine": 102,
+          "endCol": 37
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.acceptNewOrder",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.acceptNewOrder",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 108,
+          "col": 9,
+          "endLine": 108,
+          "endCol": 38
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.keepOrderOnHold",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.keepOrderOnHold",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 111,
+          "col": 9,
+          "endLine": 111,
+          "endCol": 39
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.releaseOrder",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.releaseOrder",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 114,
+          "col": 9,
+          "endLine": 114,
+          "endCol": 36
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reportUnknownState",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reportUnknownState",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 117,
+          "col": 9,
+          "endLine": 117,
+          "endCol": 42
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.unknownStateError",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.unknownStateError",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 118,
+          "col": 15,
+          "endLine": 118,
+          "endCol": 47
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loopShapes|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordAttempt",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loopShapes",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordAttempt",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 127,
+          "col": 7,
+          "endLine": 127,
+          "endCol": 34
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loopShapes|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.visitOrder",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loopShapes",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.visitOrder",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 131,
+          "col": 7,
+          "endLine": 131,
+          "endCol": 31
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loopShapes|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.pollOrder",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loopShapes",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.pollOrder",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 136,
+          "col": 7,
+          "endLine": 136,
+          "endCol": 39
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loopShapes|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.flushSweep",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loopShapes",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.flushSweep",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 142,
+          "col": 7,
+          "endLine": 142,
+          "endCol": 29
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchOnly|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.performProtectedWork",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchOnly",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.performProtectedWork",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 150,
+          "col": 20,
+          "endLine": 150,
+          "endCol": 54
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchOnly|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reportProtectedFailure",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchOnly",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reportProtectedFailure",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 152,
+          "col": 7,
+          "endLine": 152,
+          "endCol": 50
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchOnly|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.buildFallback",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchOnly",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.buildFallback",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 153,
+          "col": 14,
+          "endLine": 153,
+          "endCol": 41
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.performProtectedWork",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.performProtectedWork",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 162,
+          "col": 22,
+          "endLine": 162,
+          "endCol": 56
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 163,
+          "col": 7,
+          "endLine": 163,
+          "endCol": 55
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reportProtectedFailure",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reportProtectedFailure",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 165,
+          "col": 7,
+          "endLine": 165,
+          "endCol": 50
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.buildFallback",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.buildFallback",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 166,
+          "col": 16,
+          "endLine": 166,
+          "endCol": 43
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.releaseTemporaryLock",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.releaseTemporaryLock",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 168,
+          "col": 7,
+          "endLine": 168,
+          "endCol": 41
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.retryLater",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.retryLater",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 177,
+          "col": 7,
+          "endLine": 177,
+          "endCol": 31
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 178,
+          "col": 7,
+          "endLine": 178,
+          "endCol": 46
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.registerHandOff",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.registerHandOff",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 181,
+          "col": 5,
+          "endLine": 184,
+          "endCol": 7
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.notifyOperator",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.notifyOperator",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 182,
+          "col": 7,
+          "endLine": 182,
+          "endCol": 35
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.writeHandOffAudit",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.writeHandOffAudit",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 183,
+          "col": 7,
+          "endLine": 183,
+          "endCol": 38
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.inspectCandidate",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.inspectCandidate",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 187,
+          "col": 7,
+          "endLine": 187,
+          "endCol": 41
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.externalAndDetached|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.publishTelemetry",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.externalAndDetached",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.publishTelemetry",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 196,
+          "col": 10,
+          "endLine": 196,
+          "endCol": 40
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.externalAndDetached|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.refreshReadModel",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.externalAndDetached",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.refreshReadModel",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 197,
+          "col": 10,
+          "endLine": 197,
+          "endCol": 40
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.publishTelemetry|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.shipTelemetryEnvelope",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.publishTelemetry",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.shipTelemetryEnvelope",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 225,
+          "col": 11,
+          "endLine": 225,
+          "endCol": 46
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.publishTelemetry|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.publishTelemetry",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 226,
+          "col": 5,
+          "endLine": 226,
+          "endCol": 50
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.refreshReadModel|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loadReadModelProjection",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.refreshReadModel",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loadReadModelProjection",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 230,
+          "col": 30,
+          "endLine": 230,
+          "endCol": 67
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.refreshReadModel|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.storeReadModelProjection",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.refreshReadModel",
+      "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.storeReadModelProjection",
+      "kind": "calls",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 231,
+          "col": 5,
+          "endLine": 231,
+          "endCol": 46
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour|ts:src/showcase/executionGraphGallery.ts#GalleryOrder",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour",
+      "target": "ts:src/showcase/executionGraphGallery.ts#GalleryOrder",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 28,
+          "col": 27,
+          "endLine": 28,
+          "endCol": 39
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour|ts:src/showcase/executionGraphGallery.ts#GalleryTourResult",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour",
+      "target": "ts:src/showcase/executionGraphGallery.ts#GalleryTourResult",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 28,
+          "col": 50,
+          "endLine": 28,
+          "endCol": 67
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions|ts:src/showcase/executionGraphGallery.ts#GalleryOrder",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
+      "target": "ts:src/showcase/executionGraphGallery.ts#GalleryOrder",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 85,
+          "col": 26,
+          "endLine": 85,
+          "endCol": 38
         }
       ]
     },
@@ -1959,7 +4976,9 @@
         {
           "file": "src/validation/orderValidator.ts",
           "line": 15,
-          "col": 5
+          "col": 5,
+          "endLine": 15,
+          "endCol": 67
         }
       ]
     },
@@ -1974,12 +4993,16 @@
         {
           "file": "src/validation/orderValidator.ts",
           "line": 9,
-          "col": 11
+          "col": 11,
+          "endLine": 9,
+          "endCol": 61
         },
         {
           "file": "src/validation/orderValidator.ts",
           "line": 12,
-          "col": 11
+          "col": 11,
+          "endLine": 12,
+          "endCol": 52
         }
       ]
     },
@@ -1994,17 +5017,448 @@
         {
           "file": "src/validation/orderValidator.ts",
           "line": 22,
-          "col": 11
+          "col": 11,
+          "endLine": 22,
+          "endCol": 65
         },
         {
           "file": "src/validation/orderValidator.ts",
           "line": 25,
-          "col": 11
+          "col": 11,
+          "endLine": 25,
+          "endCol": 83
         },
         {
           "file": "src/validation/orderValidator.ts",
           "line": 28,
-          "col": 11
+          "col": 11,
+          "endLine": 28,
+          "endCol": 76
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/validation/orderValidator.ts#validateOrderRequest|ts:src/domain/order.ts#OrderRequest",
+      "source": "ts:src/validation/orderValidator.ts#validateOrderRequest",
+      "target": "ts:src/domain/order.ts#OrderRequest",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/validation/orderValidator.ts",
+          "line": 7,
+          "col": 47,
+          "endLine": 7,
+          "endCol": 59
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/index.ts|ts:src/api/orderRoutes.ts",
+      "source": "ts:src/index.ts",
+      "target": "ts:src/api/orderRoutes.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/index.ts",
+          "line": 1,
+          "col": 1,
+          "endLine": 1,
+          "endCol": 52
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/index.ts|ts:src/services/orderService.ts",
+      "source": "ts:src/index.ts",
+      "target": "ts:src/services/orderService.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/index.ts",
+          "line": 2,
+          "col": 1,
+          "endLine": 2,
+          "endCol": 59
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/index.ts|ts:src/pricing/pricingService.ts",
+      "source": "ts:src/index.ts",
+      "target": "ts:src/pricing/pricingService.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/index.ts",
+          "line": 3,
+          "col": 1,
+          "endLine": 3,
+          "endCol": 62
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/index.ts|ts:src/repository/orderRepository.ts",
+      "source": "ts:src/index.ts",
+      "target": "ts:src/repository/orderRepository.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/index.ts",
+          "line": 4,
+          "col": 1,
+          "endLine": 4,
+          "endCol": 67
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/index.ts|ts:src/notifications/emailService.ts",
+      "source": "ts:src/index.ts",
+      "target": "ts:src/notifications/emailService.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/index.ts",
+          "line": 5,
+          "col": 1,
+          "endLine": 5,
+          "endCol": 64
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/__tests__/orderService.test.ts|ts:src/services/orderService.ts",
+      "source": "ts:src/__tests__/orderService.test.ts",
+      "target": "ts:src/services/orderService.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 7,
+          "col": 1,
+          "endLine": 7,
+          "endCol": 60
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/__tests__/orderService.test.ts|ts:src/pricing/pricingService.ts",
+      "source": "ts:src/__tests__/orderService.test.ts",
+      "target": "ts:src/pricing/pricingService.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 8,
+          "col": 1,
+          "endLine": 8,
+          "endCol": 63
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/__tests__/orderService.test.ts|ts:src/repository/orderRepository.ts",
+      "source": "ts:src/__tests__/orderService.test.ts",
+      "target": "ts:src/repository/orderRepository.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 9,
+          "col": 1,
+          "endLine": 9,
+          "endCol": 68
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/__tests__/orderService.test.ts|ts:src/notifications/emailService.ts",
+      "source": "ts:src/__tests__/orderService.test.ts",
+      "target": "ts:src/notifications/emailService.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 10,
+          "col": 1,
+          "endLine": 10,
+          "endCol": 65
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/__tests__/orderService.test.ts|ts:src/domain/order.ts",
+      "source": "ts:src/__tests__/orderService.test.ts",
+      "target": "ts:src/domain/order.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 11,
+          "col": 1,
+          "endLine": 11,
+          "endCol": 56
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/__tests__/pricingService.test.ts|ts:src/pricing/pricingService.ts",
+      "source": "ts:src/__tests__/pricingService.test.ts",
+      "target": "ts:src/pricing/pricingService.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/pricingService.test.ts",
+          "line": 7,
+          "col": 1,
+          "endLine": 7,
+          "endCol": 63
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/__tests__/pricingService.test.ts|ts:src/domain/order.ts",
+      "source": "ts:src/__tests__/pricingService.test.ts",
+      "target": "ts:src/domain/order.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/pricingService.test.ts",
+          "line": 8,
+          "col": 1,
+          "endLine": 8,
+          "endCol": 56
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/api/orderRoutes.ts|ts:src/domain/order.ts",
+      "source": "ts:src/api/orderRoutes.ts",
+      "target": "ts:src/domain/order.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/api/orderRoutes.ts",
+          "line": 1,
+          "col": 1,
+          "endLine": 1,
+          "endCol": 63
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/api/orderRoutes.ts|ts:src/services/orderService.ts",
+      "source": "ts:src/api/orderRoutes.ts",
+      "target": "ts:src/services/orderService.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/api/orderRoutes.ts",
+          "line": 2,
+          "col": 1,
+          "endLine": 2,
+          "endCol": 60
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/api/orderRoutes.ts|ts:src/validation/orderValidator.ts",
+      "source": "ts:src/api/orderRoutes.ts",
+      "target": "ts:src/validation/orderValidator.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/api/orderRoutes.ts",
+          "line": 3,
+          "col": 1,
+          "endLine": 3,
+          "endCol": 67
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/notifications/emailService.ts|ts:src/domain/order.ts",
+      "source": "ts:src/notifications/emailService.ts",
+      "target": "ts:src/domain/order.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/notifications/emailService.ts",
+          "line": 1,
+          "col": 1,
+          "endLine": 1,
+          "endCol": 49
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/pricing/pricingService.ts|ts:src/domain/order.ts",
+      "source": "ts:src/pricing/pricingService.ts",
+      "target": "ts:src/domain/order.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/pricing/pricingService.ts",
+          "line": 1,
+          "col": 1,
+          "endLine": 1,
+          "endCol": 74
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/repository/orderRepository.ts|ts:src/domain/order.ts",
+      "source": "ts:src/repository/orderRepository.ts",
+      "target": "ts:src/domain/order.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/repository/orderRepository.ts",
+          "line": 1,
+          "col": 1,
+          "endLine": 1,
+          "endCol": 49
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/services/orderService.ts|ts:src/domain/order.ts",
+      "source": "ts:src/services/orderService.ts",
+      "target": "ts:src/domain/order.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 1,
+          "col": 1,
+          "endLine": 1,
+          "endCol": 63
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/services/orderService.ts|ts:src/validation/orderValidator.ts",
+      "source": "ts:src/services/orderService.ts",
+      "target": "ts:src/validation/orderValidator.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 2,
+          "col": 1,
+          "endLine": 2,
+          "endCol": 72
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/services/orderService.ts|ts:src/pricing/pricingService.ts",
+      "source": "ts:src/services/orderService.ts",
+      "target": "ts:src/pricing/pricingService.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 3,
+          "col": 1,
+          "endLine": 3,
+          "endCol": 63
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/services/orderService.ts|ts:src/repository/orderRepository.ts",
+      "source": "ts:src/services/orderService.ts",
+      "target": "ts:src/repository/orderRepository.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 4,
+          "col": 1,
+          "endLine": 4,
+          "endCol": 68
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/services/orderService.ts|ts:src/notifications/emailService.ts",
+      "source": "ts:src/services/orderService.ts",
+      "target": "ts:src/notifications/emailService.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 5,
+          "col": 1,
+          "endLine": 5,
+          "endCol": 65
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:src/validation/orderValidator.ts|ts:src/domain/order.ts",
+      "source": "ts:src/validation/orderValidator.ts",
+      "target": "ts:src/domain/order.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/validation/orderValidator.ts",
+          "line": 1,
+          "col": 1,
+          "endLine": 1,
+          "endCol": 56
         }
       ]
     }
@@ -2041,15 +5495,22 @@
           "label": "OrderRoutes",
           "target": "ts:src/api/orderRoutes.ts#OrderRoutes",
           "resolution": "resolved"
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "new OrderRoutes(orders)"
         }
       ],
       "ts:src/__tests__/orderService.test.ts#expectEqual": [
         {
           "kind": "branch",
+          "branchKind": "if",
           "label": "if actual !== expected",
           "paths": [
             {
               "label": "then",
+              "role": "then",
               "body": [
                 {
                   "kind": "call",
@@ -2068,6 +5529,11 @@
                   "label": "Error",
                   "target": null,
                   "resolution": "external"
+                },
+                {
+                  "kind": "exit",
+                  "variant": "throw",
+                  "label": "new Error(`${label}: expected ${String(…"
                 }
               ]
             }
@@ -2098,6 +5564,11 @@
           "label": "OrderService",
           "target": "ts:src/services/orderService.ts#OrderService",
           "resolution": "resolved"
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "new OrderService(new PricingService(), …"
         }
       ],
       "ts:src/__tests__/orderService.test.ts#testPlaceOrderStoresAndPrices": [
@@ -2167,10 +5638,12 @@
       "ts:src/__tests__/pricingService.test.ts#expectEqual": [
         {
           "kind": "branch",
+          "branchKind": "if",
           "label": "if actual !== expected",
           "paths": [
             {
               "label": "then",
+              "role": "then",
               "body": [
                 {
                   "kind": "call",
@@ -2189,6 +5662,11 @@
                   "label": "Error",
                   "target": null,
                   "resolution": "external"
+                },
+                {
+                  "kind": "exit",
+                  "variant": "throw",
+                  "label": "new Error(`${label}: expected ${String(…"
                 }
               ]
             }
@@ -2262,10 +5740,12 @@
       "ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder": [
         {
           "kind": "branch",
+          "branchKind": "try",
           "label": "try/catch",
           "paths": [
             {
               "label": "try",
+              "role": "try",
               "body": [
                 {
                   "kind": "call",
@@ -2278,17 +5758,28 @@
                   "label": "this.created",
                   "target": "ts:src/api/orderRoutes.ts#OrderRoutes.created",
                   "resolution": "resolved"
+                },
+                {
+                  "kind": "exit",
+                  "variant": "return",
+                  "label": "this.created(order)"
                 }
               ]
             },
             {
               "label": "catch error",
+              "role": "catch",
               "body": [
                 {
                   "kind": "call",
                   "label": "this.toErrorResponse",
                   "target": "ts:src/api/orderRoutes.ts#OrderRoutes.toErrorResponse",
                   "resolution": "resolved"
+                },
+                {
+                  "kind": "exit",
+                  "variant": "return",
+                  "label": "this.toErrorResponse(error)"
                 }
               ]
             }
@@ -2304,25 +5795,51 @@
         },
         {
           "kind": "branch",
+          "branchKind": "if",
           "label": "if !order",
           "paths": [
             {
               "label": "then",
-              "body": []
+              "role": "then",
+              "body": [
+                {
+                  "kind": "exit",
+                  "variant": "return",
+                  "label": "{ status: 404, body: { error: \"order no…"
+                }
+              ]
             }
           ]
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "{ status: 200, body: order }"
         }
       ],
       "ts:src/api/orderRoutes.ts#OrderRoutes.toErrorResponse": [
         {
           "kind": "branch",
+          "branchKind": "if",
           "label": "if error instanceof ValidationError",
           "paths": [
             {
               "label": "then",
-              "body": []
+              "role": "then",
+              "body": [
+                {
+                  "kind": "exit",
+                  "variant": "return",
+                  "label": "{ status: 400, body: { error: error.mes…"
+                }
+              ]
             }
           ]
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "{ status: 500, body: { error: \"internal…"
         }
       ],
       "ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation": [
@@ -2345,6 +5862,11 @@
           "label": "toFixed",
           "target": null,
           "resolution": "external"
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "`Thanks! Order ${order.id} totalling $$…"
         }
       ],
       "ts:src/pricing/pricingService.ts#PricingService.price": [
@@ -2365,6 +5887,11 @@
           "label": "this.tax",
           "target": "ts:src/pricing/pricingService.ts#PricingService.tax",
           "resolution": "resolved"
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "{ subtotalCents, discountCents, taxCent…"
         }
       ],
       "ts:src/pricing/pricingService.ts#PricingService.subtotal": [
@@ -2372,16 +5899,29 @@
           "kind": "loop",
           "label": "reduce sum",
           "body": []
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "lines.reduce((sum, line) => sum + line.…"
         }
       ],
       "ts:src/pricing/pricingService.ts#PricingService.discountFor": [
         {
           "kind": "branch",
+          "branchKind": "if",
           "label": "if !code || !this.isKnownCode(code)",
           "paths": [
             {
               "label": "then",
-              "body": []
+              "role": "then",
+              "body": [
+                {
+                  "kind": "exit",
+                  "variant": "return",
+                  "label": "0"
+                }
+              ]
             }
           ]
         },
@@ -2390,6 +5930,11 @@
           "label": "Math.round",
           "target": null,
           "resolution": "external"
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "Math.round(subtotalCents * 0.1)"
         }
       ],
       "ts:src/pricing/pricingService.ts#PricingService.tax": [
@@ -2398,6 +5943,11 @@
           "label": "Math.round",
           "target": null,
           "resolution": "external"
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "Math.round(baseCents * TAX_RATE)"
         }
       ],
       "ts:src/repository/orderRepository.ts#OrderRepository.save": [
@@ -2414,6 +5964,11 @@
           "label": "get",
           "target": null,
           "resolution": "external"
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "this.byId.get(id)"
         }
       ],
       "ts:src/services/orderService.ts#OrderService.placeOrder": [
@@ -2446,6 +6001,11 @@
           "label": "sendOrderConfirmation",
           "target": "ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation",
           "resolution": "resolved"
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "order"
         }
       ],
       "ts:src/services/orderService.ts#OrderService.getOrder": [
@@ -2454,6 +6014,11 @@
           "label": "findById",
           "target": "ts:src/repository/orderRepository.ts#OrderRepository.findById",
           "resolution": "resolved"
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "this.repository.findById(id)"
         }
       ],
       "ts:src/services/orderService.ts#OrderService.assemble": [
@@ -2468,21 +6033,330 @@
           "label": "this.timestamp",
           "target": "ts:src/services/orderService.ts#OrderService.timestamp",
           "resolution": "resolved"
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "{ id: this.nextId(), customerId: reques…"
         }
       ],
-      "ts:src/validation/orderValidator.ts#validateOrderRequest": [
+      "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour": [
+        {
+          "kind": "call",
+          "label": "this.directAwait",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.directAwait",
+          "resolution": "resolved",
+          "awaited": true,
+          "async": {
+            "kind": "direct-await",
+            "taskId": "task:868"
+          }
+        },
+        {
+          "kind": "call",
+          "label": "this.launchThenAwait",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.launchThenAwait",
+          "resolution": "resolved",
+          "awaited": true,
+          "async": {
+            "kind": "direct-await",
+            "taskId": "task:927"
+          }
+        },
+        {
+          "kind": "call",
+          "label": "this.awaitAllBarrier",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier",
+          "resolution": "resolved",
+          "awaited": true,
+          "async": {
+            "kind": "direct-await",
+            "taskId": "task:970"
+          }
+        },
+        {
+          "kind": "call",
+          "label": "this.awaitAllSettledBarrier",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier",
+          "resolution": "resolved",
+          "awaited": true,
+          "async": {
+            "kind": "direct-await",
+            "taskId": "task:1012"
+          }
+        },
+        {
+          "kind": "call",
+          "label": "this.nestedDecisions",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "this.loopShapes",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loopShapes",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "this.tryCatchOnly",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchOnly",
+          "resolution": "resolved",
+          "awaited": true,
+          "async": {
+            "kind": "direct-await",
+            "taskId": "task:1172"
+          }
+        },
+        {
+          "kind": "call",
+          "label": "this.tryCatchFinally",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally",
+          "resolution": "resolved",
+          "awaited": true,
+          "async": {
+            "kind": "direct-await",
+            "taskId": "task:1211"
+          }
+        },
+        {
+          "kind": "call",
+          "label": "this.callbackHandOffs",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "this.externalAndDetached",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.externalAndDetached",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "{ directResult, joinedResult, decision,…"
+        }
+      ],
+      "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.directAwait": [
+        {
+          "kind": "call",
+          "label": "this.fetchOrder",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.fetchOrder",
+          "resolution": "resolved",
+          "awaited": true,
+          "async": {
+            "kind": "direct-await",
+            "taskId": "task:1545"
+          }
+        },
+        {
+          "kind": "call",
+          "label": "this.recordCheckpoint",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "order"
+        }
+      ],
+      "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.launchThenAwait": [
+        {
+          "kind": "call",
+          "label": "this.fetchInventory",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.fetchInventory",
+          "resolution": "resolved",
+          "async": {
+            "kind": "launch",
+            "taskId": "task:1817",
+            "binding": "inventoryTask"
+          }
+        },
+        {
+          "kind": "call",
+          "label": "this.preparePackingSlip",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.preparePackingSlip",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "call",
+          "label": "this.recordCheckpoint",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "await",
+          "label": "await inventoryTask",
+          "mode": "single",
+          "inputs": [
+            {
+              "label": "inventoryTask",
+              "taskId": "task:1817"
+            }
+          ]
+        },
+        {
+          "kind": "call",
+          "label": "this.attachInventory",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.attachInventory",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "inventory"
+        }
+      ],
+      "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier": [
+        {
+          "kind": "call",
+          "label": "this.reserveInventory",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reserveInventory",
+          "resolution": "resolved",
+          "async": {
+            "kind": "launch",
+            "taskId": "task:2209",
+            "binding": "reserveTask"
+          }
+        },
+        {
+          "kind": "call",
+          "label": "this.authorizePayment",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.authorizePayment",
+          "resolution": "resolved",
+          "async": {
+            "kind": "launch",
+            "taskId": "task:2265",
+            "binding": "paymentTask"
+          }
+        },
+        {
+          "kind": "call",
+          "label": "this.prepareNotification",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.prepareNotification",
+          "resolution": "resolved",
+          "async": {
+            "kind": "launch",
+            "taskId": "task:2326",
+            "binding": "notificationTask"
+          }
+        },
+        {
+          "kind": "call",
+          "label": "Promise.all",
+          "target": null,
+          "resolution": "external",
+          "awaited": true,
+          "async": {
+            "kind": "barrier",
+            "mode": "all",
+            "inputs": [
+              {
+                "label": "reserveTask",
+                "taskId": "task:2209"
+              },
+              {
+                "label": "paymentTask",
+                "taskId": "task:2265"
+              },
+              {
+                "label": "notificationTask",
+                "taskId": "task:2326"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "call",
+          "label": "this.recordCheckpoint",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+          "resolution": "resolved"
+        }
+      ],
+      "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier": [
+        {
+          "kind": "call",
+          "label": "this.sendReceipt",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.sendReceipt",
+          "resolution": "resolved",
+          "async": {
+            "kind": "launch",
+            "taskId": "task:2659"
+          }
+        },
+        {
+          "kind": "call",
+          "label": "this.updateSearchIndex",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.updateSearchIndex",
+          "resolution": "resolved",
+          "async": {
+            "kind": "launch",
+            "taskId": "task:2692"
+          }
+        },
+        {
+          "kind": "call",
+          "label": "this.archiveAuditTrail",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.archiveAuditTrail",
+          "resolution": "resolved",
+          "async": {
+            "kind": "launch",
+            "taskId": "task:2731"
+          }
+        },
+        {
+          "kind": "call",
+          "label": "Promise.allSettled",
+          "target": null,
+          "resolution": "external",
+          "awaited": true,
+          "async": {
+            "kind": "barrier",
+            "mode": "allSettled",
+            "inputs": [
+              {
+                "label": "this.sendReceipt",
+                "taskId": "task:2659"
+              },
+              {
+                "label": "this.updateSearchIndex",
+                "taskId": "task:2692"
+              },
+              {
+                "label": "this.archiveAuditTrail",
+                "taskId": "task:2731"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "call",
+          "label": "this.recordCheckpoint",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+          "resolution": "resolved"
+        }
+      ],
+      "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions": [
         {
           "kind": "branch",
-          "label": "if !request.customerId",
+          "branchKind": "if",
+          "label": "if order.itemIds.length === 0",
           "paths": [
             {
               "label": "then",
+              "role": "then",
               "body": [
                 {
                   "kind": "call",
-                  "label": "ValidationError",
-                  "target": "ts:src/validation/orderValidator.ts#ValidationError",
+                  "label": "this.rejectEmptyOrder",
+                  "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.rejectEmptyOrder",
                   "resolution": "resolved"
+                },
+                {
+                  "kind": "exit",
+                  "variant": "return",
+                  "label": "\"empty\""
                 }
               ]
             }
@@ -2490,16 +6364,550 @@
         },
         {
           "kind": "branch",
-          "label": "if request.lines.length === 0",
+          "branchKind": "if",
+          "label": "if order.expedited",
           "paths": [
             {
               "label": "then",
+              "role": "then",
+              "body": [
+                {
+                  "kind": "branch",
+                  "branchKind": "if",
+                  "label": "if order.riskScore > 80",
+                  "paths": [
+                    {
+                      "label": "then",
+                      "role": "then",
+                      "body": [
+                        {
+                          "kind": "call",
+                          "label": "this.flagForFraudReview",
+                          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.flagForFraudReview",
+                          "resolution": "resolved"
+                        },
+                        {
+                          "kind": "call",
+                          "label": "this.highRiskError",
+                          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.highRiskError",
+                          "resolution": "resolved"
+                        },
+                        {
+                          "kind": "exit",
+                          "variant": "throw",
+                          "label": "this.highRiskError(order.id)"
+                        }
+                      ]
+                    },
+                    {
+                      "label": "else",
+                      "role": "else",
+                      "body": [
+                        {
+                          "kind": "call",
+                          "label": "this.routePriority",
+                          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.routePriority",
+                          "resolution": "resolved"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "label": "else",
+              "role": "else",
+              "body": [
+                {
+                  "kind": "branch",
+                  "branchKind": "if",
+                  "label": "if order.riskScore > 50",
+                  "paths": [
+                    {
+                      "label": "then",
+                      "role": "then",
+                      "body": [
+                        {
+                          "kind": "call",
+                          "label": "this.routeManualReview",
+                          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.routeManualReview",
+                          "resolution": "resolved"
+                        }
+                      ]
+                    },
+                    {
+                      "label": "else",
+                      "role": "else",
+                      "body": [
+                        {
+                          "kind": "call",
+                          "label": "this.routeStandard",
+                          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.routeStandard",
+                          "resolution": "resolved"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "branch",
+          "branchKind": "switch",
+          "label": "switch order.state",
+          "paths": [
+            {
+              "label": "\"new\"",
+              "role": "case",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "this.acceptNewOrder",
+                  "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.acceptNewOrder",
+                  "resolution": "resolved"
+                }
+              ]
+            },
+            {
+              "label": "\"held\"",
+              "role": "case",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "this.keepOrderOnHold",
+                  "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.keepOrderOnHold",
+                  "resolution": "resolved"
+                },
+                {
+                  "kind": "exit",
+                  "variant": "return",
+                  "label": "\"held\""
+                }
+              ]
+            },
+            {
+              "label": "\"released\"",
+              "role": "case",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "this.releaseOrder",
+                  "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.releaseOrder",
+                  "resolution": "resolved"
+                }
+              ]
+            },
+            {
+              "label": "default",
+              "role": "default",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "this.reportUnknownState",
+                  "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reportUnknownState",
+                  "resolution": "resolved"
+                },
+                {
+                  "kind": "call",
+                  "label": "this.unknownStateError",
+                  "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.unknownStateError",
+                  "resolution": "resolved"
+                },
+                {
+                  "kind": "exit",
+                  "variant": "throw",
+                  "label": "this.unknownStateError(order.id)"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "\"accepted\""
+        }
+      ],
+      "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loopShapes": [
+        {
+          "kind": "loop",
+          "label": "for let attempt = 0",
+          "body": [
+            {
+              "kind": "call",
+              "label": "this.recordAttempt",
+              "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordAttempt",
+              "resolution": "resolved"
+            }
+          ]
+        },
+        {
+          "kind": "loop",
+          "label": "for each orderId",
+          "body": [
+            {
+              "kind": "call",
+              "label": "this.visitOrder",
+              "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.visitOrder",
+              "resolution": "resolved"
+            }
+          ]
+        },
+        {
+          "kind": "loop",
+          "label": "while cursor < orderIds.length",
+          "body": [
+            {
+              "kind": "call",
+              "label": "this.pollOrder",
+              "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.pollOrder",
+              "resolution": "resolved"
+            }
+          ]
+        },
+        {
+          "kind": "loop",
+          "label": "while sweep < 2",
+          "body": [
+            {
+              "kind": "call",
+              "label": "this.flushSweep",
+              "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.flushSweep",
+              "resolution": "resolved"
+            }
+          ]
+        }
+      ],
+      "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchOnly": [
+        {
+          "kind": "branch",
+          "branchKind": "try",
+          "label": "try/catch",
+          "paths": [
+            {
+              "label": "try",
+              "role": "try",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "this.performProtectedWork",
+                  "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.performProtectedWork",
+                  "resolution": "resolved",
+                  "awaited": true,
+                  "async": {
+                    "kind": "direct-await",
+                    "taskId": "task:4528"
+                  }
+                },
+                {
+                  "kind": "exit",
+                  "variant": "return",
+                  "label": "await this.performProtectedWork(orderId)"
+                }
+              ]
+            },
+            {
+              "label": "catch error",
+              "role": "catch",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "this.reportProtectedFailure",
+                  "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reportProtectedFailure",
+                  "resolution": "resolved"
+                },
+                {
+                  "kind": "call",
+                  "label": "this.buildFallback",
+                  "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.buildFallback",
+                  "resolution": "resolved"
+                },
+                {
+                  "kind": "exit",
+                  "variant": "return",
+                  "label": "this.buildFallback(orderId)"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally": [
+        {
+          "kind": "branch",
+          "branchKind": "try",
+          "label": "try/catch",
+          "paths": [
+            {
+              "label": "try",
+              "role": "try",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "this.performProtectedWork",
+                  "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.performProtectedWork",
+                  "resolution": "resolved",
+                  "awaited": true,
+                  "async": {
+                    "kind": "direct-await",
+                    "taskId": "task:4897"
+                  }
+                },
+                {
+                  "kind": "call",
+                  "label": "this.recordCheckpoint",
+                  "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+                  "resolution": "resolved"
+                }
+              ]
+            },
+            {
+              "label": "catch error",
+              "role": "catch",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "this.reportProtectedFailure",
+                  "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reportProtectedFailure",
+                  "resolution": "resolved"
+                },
+                {
+                  "kind": "call",
+                  "label": "this.buildFallback",
+                  "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.buildFallback",
+                  "resolution": "resolved"
+                }
+              ]
+            },
+            {
+              "label": "finally",
+              "role": "finally",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "this.releaseTemporaryLock",
+                  "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.releaseTemporaryLock",
+                  "resolution": "resolved"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "result"
+        }
+      ],
+      "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs": [
+        {
+          "kind": "call",
+          "label": "setTimeout",
+          "target": null,
+          "resolution": "external"
+        },
+        {
+          "kind": "callback",
+          "label": "callback → setTimeout",
+          "body": [
+            {
+              "kind": "call",
+              "label": "this.retryLater",
+              "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.retryLater",
+              "resolution": "resolved"
+            },
+            {
+              "kind": "call",
+              "label": "this.recordCheckpoint",
+              "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+              "resolution": "resolved"
+            }
+          ]
+        },
+        {
+          "kind": "call",
+          "label": "this.registerHandOff",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.registerHandOff",
+          "resolution": "resolved"
+        },
+        {
+          "kind": "callback",
+          "label": "callback → this.registerHandOff",
+          "body": [
+            {
+              "kind": "call",
+              "label": "this.notifyOperator",
+              "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.notifyOperator",
+              "resolution": "resolved"
+            },
+            {
+              "kind": "call",
+              "label": "this.writeHandOffAudit",
+              "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.writeHandOffAudit",
+              "resolution": "resolved"
+            }
+          ]
+        },
+        {
+          "kind": "loop",
+          "label": "for each candidateId",
+          "body": [
+            {
+              "kind": "call",
+              "label": "this.inspectCandidate",
+              "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.inspectCandidate",
+              "resolution": "resolved"
+            }
+          ]
+        }
+      ],
+      "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.externalAndDetached": [
+        {
+          "kind": "call",
+          "label": "console.info",
+          "target": null,
+          "resolution": "external"
+        },
+        {
+          "kind": "call",
+          "label": "console.timeStamp",
+          "target": null,
+          "resolution": "external"
+        },
+        {
+          "kind": "call",
+          "label": "this.publishTelemetry",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.publishTelemetry",
+          "resolution": "resolved",
+          "detached": true,
+          "async": {
+            "kind": "launch",
+            "taskId": "task:5913"
+          }
+        },
+        {
+          "kind": "call",
+          "label": "this.refreshReadModel",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.refreshReadModel",
+          "resolution": "resolved",
+          "detached": true,
+          "async": {
+            "kind": "launch",
+            "taskId": "task:5954"
+          }
+        }
+      ],
+      "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.publishTelemetry": [
+        {
+          "kind": "call",
+          "label": "this.shipTelemetryEnvelope",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.shipTelemetryEnvelope",
+          "resolution": "resolved",
+          "awaited": true,
+          "async": {
+            "kind": "direct-await",
+            "taskId": "task:6807"
+          }
+        },
+        {
+          "kind": "call",
+          "label": "this.recordCheckpoint",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
+          "resolution": "resolved"
+        }
+      ],
+      "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.refreshReadModel": [
+        {
+          "kind": "call",
+          "label": "this.loadReadModelProjection",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loadReadModelProjection",
+          "resolution": "resolved",
+          "awaited": true,
+          "async": {
+            "kind": "direct-await",
+            "taskId": "task:6996"
+          }
+        },
+        {
+          "kind": "call",
+          "label": "this.storeReadModelProjection",
+          "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.storeReadModelProjection",
+          "resolution": "resolved"
+        }
+      ],
+      "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.highRiskError": [
+        {
+          "kind": "call",
+          "label": "Error",
+          "target": null,
+          "resolution": "external"
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "new Error(`Order ${orderId} needs fraud…"
+        }
+      ],
+      "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.unknownStateError": [
+        {
+          "kind": "call",
+          "label": "Error",
+          "target": null,
+          "resolution": "external"
+        },
+        {
+          "kind": "exit",
+          "variant": "return",
+          "label": "new Error(`Order ${orderId} has an unkn…"
+        }
+      ],
+      "ts:src/validation/orderValidator.ts#validateOrderRequest": [
+        {
+          "kind": "branch",
+          "branchKind": "if",
+          "label": "if !request.customerId",
+          "paths": [
+            {
+              "label": "then",
+              "role": "then",
               "body": [
                 {
                   "kind": "call",
                   "label": "ValidationError",
                   "target": "ts:src/validation/orderValidator.ts#ValidationError",
                   "resolution": "resolved"
+                },
+                {
+                  "kind": "exit",
+                  "variant": "throw",
+                  "label": "new ValidationError(\"order is missing a…"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "branch",
+          "branchKind": "if",
+          "label": "if request.lines.length === 0",
+          "paths": [
+            {
+              "label": "then",
+              "role": "then",
+              "body": [
+                {
+                  "kind": "call",
+                  "label": "ValidationError",
+                  "target": "ts:src/validation/orderValidator.ts#ValidationError",
+                  "resolution": "resolved"
+                },
+                {
+                  "kind": "exit",
+                  "variant": "throw",
+                  "label": "new ValidationError(\"order has no items…"
                 }
               ]
             }
@@ -2521,16 +6929,23 @@
       "ts:src/validation/orderValidator.ts#assertLineIsSane": [
         {
           "kind": "branch",
+          "branchKind": "if",
           "label": "if !sku",
           "paths": [
             {
               "label": "then",
+              "role": "then",
               "body": [
                 {
                   "kind": "call",
                   "label": "ValidationError",
                   "target": "ts:src/validation/orderValidator.ts#ValidationError",
                   "resolution": "resolved"
+                },
+                {
+                  "kind": "exit",
+                  "variant": "throw",
+                  "label": "new ValidationError(\"order line is miss…"
                 }
               ]
             }
@@ -2538,16 +6953,23 @@
         },
         {
           "kind": "branch",
+          "branchKind": "if",
           "label": "if quantity <= 0",
           "paths": [
             {
               "label": "then",
+              "role": "then",
               "body": [
                 {
                   "kind": "call",
                   "label": "ValidationError",
                   "target": "ts:src/validation/orderValidator.ts#ValidationError",
                   "resolution": "resolved"
+                },
+                {
+                  "kind": "exit",
+                  "variant": "throw",
+                  "label": "new ValidationError(`order line for ${s…"
                 }
               ]
             }
@@ -2555,16 +6977,23 @@
         },
         {
           "kind": "branch",
+          "branchKind": "if",
           "label": "if unitPriceCents < 0",
           "paths": [
             {
               "label": "then",
+              "role": "then",
               "body": [
                 {
                   "kind": "call",
                   "label": "ValidationError",
                   "target": "ts:src/validation/orderValidator.ts#ValidationError",
                   "resolution": "resolved"
+                },
+                {
+                  "kind": "exit",
+                  "variant": "throw",
+                  "label": "new ValidationError(`order line for ${s…"
                 }
               ]
             }

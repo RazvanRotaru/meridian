@@ -16,7 +16,7 @@ import type { FlowStep, LogicFlows, NodeId } from "@meridian/core";
  * expansion state (a container step opens into a frame of deeper steps). */
 export type StepData = {
   label: string;
-  stepKind: "call" | "loop" | "branch" | "callback" | "exit";
+  stepKind: "call" | "await" | "loop" | "branch" | "callback" | "exit";
   resolved: boolean;
   isContainer: boolean;
   isExpanded: boolean;
@@ -98,7 +98,7 @@ function emitInside(id: string, step: FlowStep, depth: number, blockId: NodeId, 
     emitRun(id, target ? ctx.flows[target] ?? [] : [], depth, 0, target ?? blockId, out, ctx);
     return;
   }
-  if (step.kind === "exit") {
+  if (step.kind === "exit" || step.kind === "await") {
     return; // never a container — nothing charts inside a return/throw.
   }
   emitRun(id, step.body, depth, 0, blockId, out, ctx);
@@ -113,7 +113,7 @@ function hasInside(step: FlowStep, ctx: EmitContext): boolean {
   if (step.kind === "branch") {
     return step.paths.some((path) => path.body.length > 0);
   }
-  if (step.kind === "exit") {
+  if (step.kind === "exit" || step.kind === "await") {
     return false;
   }
   return step.body.length > 0;
@@ -122,6 +122,9 @@ function hasInside(step: FlowStep, ctx: EmitContext): boolean {
 function stepData(step: FlowStep, isContainer: boolean, isExpanded: boolean): StepData {
   if (step.kind === "exit") {
     return { label: step.label ? `${step.variant} ${step.label}` : step.variant, stepKind: "exit", resolved: false, isContainer, isExpanded };
+  }
+  if (step.kind === "await") {
+    return { label: step.label, stepKind: "await", resolved: false, isContainer: false, isExpanded: false };
   }
   return {
     label: step.label,

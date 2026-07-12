@@ -44,6 +44,10 @@ export function layoutMetro(steps: FlowStep[], flows: LogicFlows, index: GraphIn
         call(step, lane, x, alt++);
         endX = x;
         c.cursor = x + (step.awaited ? SLOT + INTERCHANGE_PAD : SLOT);
+      } else if (step.kind === "await") {
+        c.mark({ x, y: lane.y, kind: "interchange", color: FLOW_COLORS.awaited, labelSide: -1, name: step.label, sub: "wait for earlier task" });
+        endX = x;
+        c.cursor = x + SLOT + INTERCHANGE_PAD;
       } else if (step.kind === "loop") {
         endX = Math.max(endX, loop(step, lane, x));
       } else if (step.kind === "callback") {
@@ -63,7 +67,7 @@ export function layoutMetro(steps: FlowStep[], flows: LogicFlows, index: GraphIn
   function call(step: CallStep, lane: Lane, x: number, alt: number): void {
     const disp = callDisplay(step, flows, index);
     const side: 1 | -1 = alt % 2 === 0 ? -1 : 1;
-    const shared = { x, target: step.target, expandable: disp.expandable };
+    const shared = { x, target: step.target, expandable: disp.navigable };
     if (step.awaited) {
       c.mark({ ...shared, y: lane.y, kind: "interchange", color: FLOW_COLORS.awaited, labelSide: -1, name: step.label, sub: disp.provenance ?? "awaited · the line holds here" });
     } else if (step.detached) {

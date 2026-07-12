@@ -1,9 +1,9 @@
 /**
  * The logic-flow pass: for each callable descriptor, walk its body AST into an ordered
  * `FlowStep[]`; for each MODULE, walk its top-level statements the same way (the code that
- * auto-runs on load). Only method calls and control structures survive; everything else
- * collapses to nothing (but is still descended into, to find the calls buried in it). Calls
- * are emitted in EXECUTION order — arguments before the call — so `f(g(x))` yields `g` then
+ * auto-runs on load). Only method calls, async wait points, and control structures survive;
+ * everything else collapses to nothing (but is still descended into, to find calls buried in it).
+ * Calls are emitted in EXECUTION order — arguments before the call — so `f(g(x))` yields `g` then
  * `f`. Nested function/class DECLARATIONS are not descended: they are their own callables. But
  * inline callbacks chart here, in the flow that contains them: an Array-iteration callback
  * (`items.forEach(x => …)`) lifts into a `loop` step (it genuinely runs, in order, as part of
@@ -15,9 +15,9 @@
  */
 
 import { Node } from "ts-morph";
-import type { CallExpression, NewExpression, ReturnStatement, SourceFile, ThrowStatement } from "ts-morph";
+import type { AwaitExpression, CallExpression, NewExpression, ReturnStatement, SourceFile, ThrowStatement } from "ts-morph";
 import type { FlowStep, LogicFlows } from "@meridian/core";
-import { createCallAnnotator } from "./call-annotations";
+import { createCallAnnotator, directAwaitOperandCall, standaloneAwaitStep } from "./call-annotations";
 import { inlineCallbackSteps, iterationCall, iterationSteps, jsxHandlerSteps } from "./callback-steps";
 import { controlStep } from "./control-steps";
 import { calleeName, truncate } from "./flow-labels";
@@ -113,6 +113,9 @@ function walk(node: Node, walker: FlowWalker, depth: number): FlowStep[] {
   if (control) {
     return [control];
   }
+  if (Node.isAwaitExpression(node)) {
+    return awaitSteps(node, walker, depth);
+  }
   if (Node.isCallExpression(node) || Node.isNewExpression(node)) {
     return callSteps(node, walker, depth);
   }
@@ -120,6 +123,23 @@ function walk(node: Node, walker: FlowWalker, depth: number): FlowStep[] {
     return exitSteps(node, walker, depth);
   }
   return descend(node, walker, depth);
+}
+
+// Calls nested directly under await carry the wait on their existing call step. A value operand
+// (`await pending`) has no call of its own, so append an explicit join after evaluating the operand.
+function awaitSteps(node: AwaitExpression, walker: FlowWalker, depth: number): FlowStep[] {
+  const steps = descend(node, walker, depth);
+  // A chartable DIRECT call/barrier already owns the wait badge. Pin this to the operand itself:
+  // an awaited call nested in an argument must not suppress an unnameable outer call's wait gate.
+  const directCall = directAwaitOperandCall(node);
+  const waitAlreadyCharted = directCall !== null
+    && calleeName(directCall.getExpression()) !== null
+    && !(Node.isCallExpression(directCall) && iterationCall(directCall) !== null);
+  const awaitStep = standaloneAwaitStep(node, waitAlreadyCharted);
+  if (awaitStep) {
+    steps.push(awaitStep);
+  }
+  return steps;
 }
 
 // The returned/thrown expression runs FIRST (its calls chart in order), then the path ends: an

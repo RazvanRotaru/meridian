@@ -154,7 +154,7 @@ export class ExecutionGraphGallery {
     }
   }
 
-  /** The conservative framed form used when guaranteed cleanup adds a third execution concern. */
+  /** The same exception lanes, reconverging through one guaranteed cleanup phase. */
   async tryCatchFinally(orderId: string): Promise<string> {
     let result = "fallback";
 
