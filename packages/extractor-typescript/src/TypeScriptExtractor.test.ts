@@ -14,6 +14,11 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".."
 const FIXTURE_ROOT = join(REPO_ROOT, "examples", "orders-service");
 const FIXTURE_PROJECT = join(FIXTURE_ROOT, "tsconfig.json");
 const SHOPFRONT_ROOT = join(REPO_ROOT, "examples", "shopfront");
+const GALLERY_PREFIX = "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.";
+
+function galleryId(method: string): string {
+  return `${GALLERY_PREFIX}${method}`;
+}
 
 async function extractFixture(overrides = {}): Promise<ExtractionResult> {
   const extractor = createTypeScriptExtractor();
@@ -55,6 +60,62 @@ function artifactFrom(result: ExtractionResult): GraphArtifact {
 }
 
 describe("TypeScriptExtractor over orders-service", () => {
+  it("extracts the focused execution-graph gallery exhibits", async () => {
+    const result = await extractFixture({ includeExternal: true });
+    const exhibits = [
+      "guidedTour",
+      "directAwait",
+      "launchThenAwait",
+      "awaitAllBarrier",
+      "awaitAllSettledBarrier",
+      "nestedDecisions",
+      "loopShapes",
+      "tryCatchOnly",
+      "tryCatchFinally",
+      "callbackHandOffs",
+      "externalAndDetached",
+    ];
+
+    for (const method of exhibits) {
+      expect(result.nodes.find((node) => node.id === galleryId(method))?.qualifiedName).toBe(
+        `ExecutionGraphGallery.${method}`,
+      );
+      expect(result.flows?.[galleryId(method)]).toBeDefined();
+    }
+
+    const barriers = [
+      ...(result.flows?.[galleryId("awaitAllBarrier")] ?? []),
+      ...(result.flows?.[galleryId("awaitAllSettledBarrier")] ?? []),
+    ].filter((step) => step.kind === "call" && step.label.startsWith("Promise."));
+    expect(barriers.map((step) => step.kind === "call" ? step.label : "")).toEqual([
+      "Promise.all",
+      "Promise.allSettled",
+    ]);
+    expect(barriers.every((step) => step.kind === "call" && step.awaited)).toBe(true);
+
+    const decisions = result.flows?.[galleryId("nestedDecisions")] ?? [];
+    expect(decisions.filter((step) => step.kind === "branch").length).toBeGreaterThanOrEqual(3);
+
+    const loops = result.flows?.[galleryId("loopShapes")] ?? [];
+    expect(loops.filter((step) => step.kind === "loop").map((step) => step.label)).toEqual([
+      "for let attempt = 0",
+      "for each orderId",
+      "while cursor < orderIds.length",
+      "while sweep < 2",
+    ]);
+
+    const protectedFlow = result.flows?.[galleryId("tryCatchFinally")] ?? [];
+    expect(protectedFlow[0]).toMatchObject({ kind: "branch", label: "try/catch" });
+
+    const handOffs = result.flows?.[galleryId("callbackHandOffs")] ?? [];
+    expect(handOffs.some((step) => step.kind === "callback")).toBe(true);
+    expect(handOffs.some((step) => step.kind === "loop")).toBe(true);
+
+    const boundary = result.flows?.[galleryId("externalAndDetached")] ?? [];
+    expect(boundary.some((step) => step.kind === "call" && step.resolution === "external")).toBe(true);
+    expect(boundary.filter((step) => step.kind === "call" && step.detached)).toHaveLength(2);
+  });
+
   it("resolves the OrderRoutes call edges", async () => {
     const result = await extractFixture();
     expect(hasEdge(result, "calls", "OrderRoutes.handleCreateOrder", "OrderService.placeOrder")).toBe(true);
