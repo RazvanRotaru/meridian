@@ -206,6 +206,7 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
       miniMapColor={miniMapColor}
       interactions={interactions}
       positionRetentionKey={inspectionPositionKey}
+      positionAdmissionReady={layoutStatus === "ready"}
       busy={busy}
       autoFitView={false}
       semanticLayers={semanticLayers}

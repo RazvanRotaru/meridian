@@ -87,10 +87,11 @@ import type { SurfaceEmphasisMode } from "../moduleMapHighlight";
 import type { LensRelationPolicy } from "../../graph/lensRelationPolicy";
 import { SurfaceInteractionScope } from "./SurfaceInteractionContext";
 import {
-  applyAdditiveNodePositions,
-  captureAdditiveNodePositions,
-  type AdditiveNodePositionLedger,
-} from "./additiveNodePositions";
+  createPaintFrameRetentionState,
+  resolvePaintFrameRetention,
+  type PaintedScene,
+  type PaintFrameRetentionState,
+} from "./paintFrameRetention";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
  * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "cycle" the
@@ -222,6 +223,9 @@ export interface GraphSurfaceProps {
   /** Non-null while an additive exploration path owns the scene. Existing painted positions are
    * retained for one key; changing/clearing the key starts or ends that presentation session. */
   positionRetentionKey?: string | null;
+  /** True only after the source layout has published a settled graph. A laying-out or failed
+   * candidate must stay behind the admission barrier instead of contaminating position history. */
+  positionAdmissionReady?: boolean;
 }
 
 export function GraphSurface(props: GraphSurfaceProps) {
@@ -320,24 +324,32 @@ export function GraphSurface(props: GraphSurfaceProps) {
     ),
     [selected, reviewLit, props.reviewEmphasis, props.interactions.paintSelectionOverride, props.paintSelectionOverride],
   );
-  const { nodes: paintedNodes, edges: paintedEdges, beacons } = useMemo(
-    () => paintSemanticLayers(props.nodes, props.edges, paintOwnership.protectedSelection, radius, emphasisMode, {
-      policy: props.relations,
-      overrides: relationVisibilityOverrides,
-    }, {
-      index,
-      groupByParent: groupGhosts,
-      expandedGroupIds: props.interactions.expandedGhostGroupIds,
-    }, paintOwnership.paintSeeds, paintOwnership.focusSeeds),
+  const candidatePaintedScene = useMemo<PaintedScene>(
+    () => {
+      const painted = paintSemanticLayers(props.nodes, props.edges, paintOwnership.protectedSelection, radius, emphasisMode, {
+        policy: props.relations,
+        overrides: relationVisibilityOverrides,
+      }, {
+        index,
+        groupByParent: groupGhosts,
+        expandedGroupIds: props.interactions.expandedGhostGroupIds,
+      }, paintOwnership.paintSeeds, paintOwnership.focusSeeds);
+      return { ...painted, highwaySeeds: paintOwnership.highwaySeeds };
+    },
     [props.nodes, props.edges, paintOwnership, radius, emphasisMode, props.relations, relationVisibilityOverrides, index, groupGhosts, props.interactions.expandedGhostGroupIds],
   );
-  // Inspection is an append-only read of the graph. ELK, semantic composition and selection-
-  // relative ghost banding may all propose a fresh scene after each hop; retain the absolute
-  // geometry the reader has already seen and admit only newly discovered cards at new positions.
-  const retainedPaintedNodes = useRetainedPaintedNodePositions(
-    paintedNodes,
-    paintedEdges,
+  // Inspection is an append-only read of the graph. Its intentional pre-layout busy paint still
+  // carries the old raw graph with the new selection; keep that provisional population out of both
+  // React Flow and the position ledger, then admit the final nodes/wires/paint metadata atomically.
+  const {
+    nodes: retainedPaintedNodes,
+    edges: paintedEdges,
+    beacons,
+    highwaySeeds,
+  } = useRetainedPaintedScene(
+    candidatePaintedScene,
     props.positionRetentionKey ?? null,
+    props.positionAdmissionReady ?? (props.busy === undefined),
   );
   // Group disclosure is deliberately downstream of the shared paint chain. It injects the
   // mount-local explicit-chevron callback without feeding a function back into derive/layout.
@@ -371,7 +383,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
       const prepared = prepareCanvasEdges(
         edges,
         retainedPaintedNodes,
-        paintOwnership.highwaySeeds,
+        highwaySeeds,
         showHighways,
         props.highways,
         props.relations,
@@ -382,7 +394,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
       hierarchyEdges.push(...prepared.hierarchyEdges);
     }
     return { semanticEdges, hierarchyEdges };
-  }, [paintedEdges, retainedPaintedNodes, props.highways, props.relations, paintOwnership.highwaySeeds, showHighways]);
+  }, [paintedEdges, retainedPaintedNodes, props.highways, props.relations, highwaySeeds, showHighways]);
   const openWireEvidence = useCallback((pair: Edge[]) => {
     const contexts = edgeEvidenceForPair(pair, index.edgesById);
     inspectionOwnsSource.current = contexts.length > 0;
@@ -501,39 +513,26 @@ export function GraphSurface(props: GraphSurfaceProps) {
   );
 }
 
-interface RetainedPaintSession {
-  key: string;
-  ledger: AdditiveNodePositionLedger;
-}
-
 /** Commit presentation geometry only after React commits it. This keeps render pure while still
  * letting the first inspection render seed from the exact scene visible immediately before click. */
-function useRetainedPaintedNodePositions(
-  nodes: Node[],
-  edges: Edge[],
+function useRetainedPaintedScene(
+  candidate: PaintedScene,
   sessionKey: string | null,
-): Node[] {
-  const lastCommittedNodes = useRef<Node[]>(nodes);
-  const session = useRef<RetainedPaintSession | null>(null);
-  const retained = useMemo(() => {
-    if (sessionKey === null) {
-      return { nodes, ledger: null };
-    }
-    const prior = session.current?.key === sessionKey
-      ? session.current.ledger
-      : captureAdditiveNodePositions(lastCommittedNodes.current);
-    const ledger = captureAdditiveNodePositions(nodes, prior, edges);
-    return { nodes: applyAdditiveNodePositions(nodes, ledger), ledger };
-  }, [nodes, edges, sessionKey]);
+  ready: boolean,
+): PaintedScene {
+  const state = useRef<PaintFrameRetentionState>(
+    createPaintFrameRetentionState(ready ? candidate : null),
+  );
+  const retained = useMemo(
+    () => resolvePaintFrameRetention(candidate, state.current, sessionKey, !ready),
+    [candidate, sessionKey, ready],
+  );
 
   useLayoutEffect(() => {
-    lastCommittedNodes.current = retained.nodes;
-    session.current = sessionKey === null || retained.ledger === null
-      ? null
-      : { key: sessionKey, ledger: retained.ledger };
-  }, [retained, sessionKey]);
+    state.current = retained.state;
+  }, [retained.state]);
 
-  return retained.nodes;
+  return retained.scene;
 }
 
 /** Run paint-time transforms independently for each mounted graph. Besides preventing selection
