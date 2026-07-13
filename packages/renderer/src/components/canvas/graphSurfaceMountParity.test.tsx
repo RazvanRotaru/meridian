@@ -38,7 +38,7 @@ describe("GraphSurface mount semantic-navigation parity", () => {
     expectSemanticNavigationDeclaration(graphSurfaceMounts[0]);
   });
 
-  it("keeps both the covered source and Minimal Graph on the same explicit semantic contract", () => {
+  it("keeps both the covered source and an ordinary Minimal Graph on the same explicit semantic contract", () => {
     const store = freshStore();
     store.setState({
       minimalSeedIds: ["ts:packages/app/src/a.ts"],
@@ -67,6 +67,40 @@ describe("GraphSurface mount semantic-navigation parity", () => {
     expect(sourceTag).toContain("aria-hidden=\"true\"");
     expect(minimalTag).not.toContain("inert");
     expect(minimalTag).not.toContain("aria-hidden");
+  });
+
+  it("unmounts the covered source while a PR review owns the navigation boundary", () => {
+    const store = freshStore();
+    store.setState({
+      minimalSeedIds: ["ts:packages/app/src/a.ts"],
+      minimalMemberIds: ["ts:packages/app/src/a.ts"],
+      minimalLayoutStatus: "ready",
+      review: {
+        context: {
+          changedFiles: [{ path: "packages/app/src/a.ts", status: "modified" }],
+          baseRef: "main",
+          baseSha: "base",
+          headRef: "feature",
+          reviewKey: "large-pr-review",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+    });
+    const reviewState = store.getState();
+    Object.assign(store, { getInitialState: () => reviewState });
+
+    const markup = renderToStaticMarkup(
+      <StoreProvider store={store}>
+        <ReactFlowProvider><ModuleMapView /></ReactFlowProvider>
+      </StoreProvider>,
+    );
+
+    expect(graphSurfaceMounts).toHaveLength(1);
+    expectSemanticNavigationDeclaration(graphSurfaceMounts[0], true);
+    expect(markup).not.toContain('data-graph-surface="source"');
+    expect(markup).toContain('data-graph-surface="minimal"');
   });
 });
 

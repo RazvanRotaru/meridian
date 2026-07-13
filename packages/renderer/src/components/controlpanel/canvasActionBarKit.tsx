@@ -43,10 +43,19 @@ export function CanvasActionButton(props: {
   primary?: boolean;
   badge?: number;
   disabled?: boolean;
+  pressed?: boolean;
+  active?: boolean;
+  expanded?: boolean;
+  controls?: string;
+  hasPopup?: React.AriaAttributes["aria-haspopup"];
   ariaKeyShortcuts?: string;
   buttonRef?: React.Ref<HTMLButtonElement>;
 }) {
-  const baseStyle = props.primary ? PRIMARY_ACTION_STYLE : ACTION_STYLE;
+  const baseStyle = props.primary
+    ? PRIMARY_ACTION_STYLE
+    : props.pressed || props.active
+      ? { ...ACTION_STYLE, ...PRESSED_ACTION_STYLE }
+      : ACTION_STYLE;
   const descriptionId = useId();
   const [focusTooltip, setFocusTooltip] = useState<{ left: number; top: number } | null>(null);
   return (
@@ -58,6 +67,10 @@ export function CanvasActionButton(props: {
         aria-label={props.ariaLabel}
         aria-describedby={descriptionId}
         aria-disabled={props.disabled || undefined}
+        aria-pressed={props.pressed}
+        aria-expanded={props.expanded}
+        aria-controls={props.controls}
+        aria-haspopup={props.hasPopup}
         aria-keyshortcuts={props.ariaKeyShortcuts}
         onFocus={(event) => {
           if (!event.currentTarget.matches(":focus-visible")) {
@@ -162,6 +175,11 @@ const PRIMARY_ACTION_STYLE: React.CSSProperties = {
   color: "#6BE38A",
 };
 const DISABLED_ACTION_STYLE: React.CSSProperties = { opacity: 0.38, cursor: "default" };
+const PRESSED_ACTION_STYLE: React.CSSProperties = {
+  borderColor: "#2F5C3B",
+  background: "rgba(86,194,113,0.13)",
+  color: "#6BE38A",
+};
 const ICON_STYLE: React.CSSProperties = { display: "inline-flex", flexShrink: 0 };
 const BADGE_STYLE: React.CSSProperties = {
   width: 18,

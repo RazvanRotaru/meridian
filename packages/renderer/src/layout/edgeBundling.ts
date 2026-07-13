@@ -162,7 +162,10 @@ export function bundleEdges(
   return result;
 }
 
-function selectionTouches(edge: Edge, selected: ReadonlySet<string>): boolean {
+/** Whether a literal selection is represented by this wire, including paint-time ghost/cycle
+ * aggregates. Shared by every highway pass so bundle extraction and fan-spool extraction cannot
+ * disagree about which strand belongs to the selected card. */
+export function selectionTouches(edge: Edge, selected: ReadonlySet<string>): boolean {
   if (selected.has(edge.source) || selected.has(edge.target)) return true;
   const data = edge.data as { ghostGroupAggregate?: unknown; groupedGhostIds?: unknown; members?: unknown } | undefined;
   const groupedMatch = data?.ghostGroupAggregate === true

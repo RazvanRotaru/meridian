@@ -20,6 +20,23 @@ describe("spoolFanEdges", () => {
     expect(result.every((e) => e.type === undefined)).toBe(true);
   });
 
+  it("keeps selected strands direct while an independently large remainder still spools", () => {
+    const result = spoolFanEdges(fanIn("hub", 7), new Set(["s0"]));
+    const selected = result.find((edge) => edge.id === "e0");
+    const remainder = result.filter((edge) => edge.id !== "e0");
+
+    expect(selected?.type).toBeUndefined();
+    expect(remainder).toHaveLength(6);
+    expect(remainder.every((edge) => edge.type === SPOOL_EDGE_TYPE)).toBe(true);
+    expect(remainder.every((edge) => (edge.data as SpoolEdgeData).spoolEnd === "target")).toBe(true);
+  });
+
+  it("keeps every incident strand direct when the fan hub itself is selected", () => {
+    const result = spoolFanEdges(fanIn("hub", 7), new Set(["hub"]));
+
+    expect(result.every((edge) => edge.type === undefined)).toBe(true);
+  });
+
   it("tags an edge between two hubs as gathering at both ends", () => {
     const edges = [
       ...fanIn("hubA", 6),

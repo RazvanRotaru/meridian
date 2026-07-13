@@ -232,11 +232,11 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await syncProvenance.waitFor();
     expect(await storedUnitTicks(page)).toEqual(storedTick);
 
-    // 4h — Escape closes the source modal only; repeated Escape leaves the overlay in place, and
-    // explicit Close parks the review for the text-only Resume chip.
-    // The source graph stays mounted beneath Minimal Graph so outward semantic zoom can reveal its
-    // exact viewport. Scope this raw CSS locator to the extracted surface rather than matching the
-    // intentionally retained source copy of the same file card.
+    // 4h — Escape closes the source modal only; repeated Escape and outward zoom leave the review
+    // overlay in place, while explicit Close parks it for the text-only Resume chip. The source
+    // graph stays mounted beneath Minimal Graph, but an active PR review is its own navigation root.
+    // Scope this raw CSS locator to the extracted surface rather than matching the intentionally
+    // retained source copy of the same file card.
     const extractedSurface = page.getByRole("region", { name: "Extracted graph" });
     const codeButton = extractedSurface.locator(
       `.react-flow__node[data-id="${ORDER_SERVICE_MODULE_ID}"] button[aria-label="View source"]`,
@@ -252,9 +252,24 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await page.keyboard.press("Escape");
     expect(await page.getByRole("region", { name: "Extracted graph" }).count()).toBe(1);
     expect(await syncProvenance.count()).toBe(1);
+
+    // Cross the old semantic-parent threshold through the real user-facing zoom control. Review
+    // owns this canvas boundary: neither its graph nor its HEAD provenance may yield to the covered
+    // source surface, and Resume remains unavailable until the explicit Close below.
+    const zoomOut = extractedSurface.locator(".react-flow__controls-zoomout");
+    await zoomOut.waitFor();
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      await zoomOut.click();
+    }
+    await waitForGraphViewportToSettle(extractedSurface);
+    expect(await page.getByRole("region", { name: "Extracted graph" }).count()).toBe(1);
+    expect(await page.getByText("Files changed", { exact: true }).count()).toBe(1);
+    expect(await syncProvenance.count()).toBe(1);
+    expect(await page.getByText("Resume PR review #7", { exact: true }).count()).toBe(0);
+
     await page.getByRole("button", { name: "Close extracted graph" }).click();
     await page.getByRole("region", { name: "Extracted graph" }).waitFor({ state: "detached" });
-    const resumeText = page.getByText("Resume review #7", { exact: true });
+    const resumeText = page.getByText("Resume PR review #7", { exact: true });
     await resumeText.waitFor();
     expect(await resumeText.count()).toBe(1);
     await resumeText.click();

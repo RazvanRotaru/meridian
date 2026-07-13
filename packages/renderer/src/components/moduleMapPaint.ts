@@ -63,6 +63,31 @@ export function filterExternalGhosts(
 
 const isExternalId = (id: string): boolean => id.startsWith("ext:");
 
+/**
+ * Hide every ghost card and every ghost-only/incident wire without disturbing laid-out positions.
+ * This is intentionally broader than `filterExternalGhosts`: the extracted-graph action is a
+ * temporary declutter control for workspace, unresolved, and external boundary context alike.
+ */
+export function filterGhostNodes(
+  nodes: Node[],
+  edges: Edge[],
+  showGhostNodes: boolean,
+): { nodes: Node[]; edges: Edge[] } {
+  if (showGhostNodes) {
+    return { nodes, edges };
+  }
+  const ghostIds = new Set(nodes.filter((node) => node.type === "ghost").map((node) => node.id));
+  const keptNodes = ghostIds.size === 0 ? nodes : nodes.filter((node) => !ghostIds.has(node.id));
+  const keptEdges = edges.filter((edge) => {
+    const ghostWire = (edge.data as { ghost?: unknown } | undefined)?.ghost === true;
+    return !ghostWire && !ghostIds.has(edge.source) && !ghostIds.has(edge.target);
+  });
+  if (keptNodes === nodes && keptEdges.length === edges.length) {
+    return { nodes, edges };
+  }
+  return { nodes: keptNodes, edges: keptEdges };
+}
+
 /** The relationship-toggle key an edge answers to; null means non-semantic flow or malformed data. */
 function relKeyOf(edge: Edge): string | null {
   return relationKindOf(edge.data);

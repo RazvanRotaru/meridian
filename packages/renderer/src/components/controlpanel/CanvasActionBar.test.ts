@@ -13,26 +13,30 @@ describe("canvasActionPlacement", () => {
   it("centers each single-row footprint at its exact clearance threshold", () => {
     expect(canvasActionPlacement(798, "base")).toEqual({ position: "bottom-center", layout: "row" });
     expect(canvasActionPlacement(916, "extract")).toEqual({ position: "bottom-center", layout: "row" });
-    expect(canvasActionPlacement(1043, "minimal")).toEqual({ position: "bottom-center", layout: "row" });
+    expect(canvasActionPlacement(1178, "minimal")).toEqual({ position: "bottom-center", layout: "row" });
+    expect(canvasActionPlacement(1220, "review-focus")).toEqual({ position: "bottom-center", layout: "row" });
     expect(canvasActionPlacement(852, "codebase")).toEqual({ position: "bottom-center", layout: "row" });
   });
 
   it("moves a full row beside the control panel when centering would overlap it", () => {
     expect(canvasActionPlacement(797, "base")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
     expect(canvasActionPlacement(915, "extract")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(1042, "minimal")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(1177, "minimal")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(1219, "review-focus")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
     expect(canvasActionPlacement(851, "codebase")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
   });
 
   it("keeps the minimal actions in one row down to the exact side-lane boundary", () => {
-    expect(canvasActionPlacement(732, "minimal")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(731, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(867, "minimal")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(866, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(909, "review-focus")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(908, "review-focus")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
   });
 
   it("stacks whole groups after a review panel narrows the graph pane", () => {
-    expect(canvasActionPlacement(542, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(541, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 326, bottom: 181 });
-    expect(canvasActionPlacement(520, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 311, bottom: 181 });
+    expect(canvasActionPlacement(542, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 192, bottom: 181 });
+    expect(canvasActionPlacement(541, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 191, bottom: 181 });
+    expect(canvasActionPlacement(520, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 170, bottom: 181 });
     expect(canvasActionPlacement(540, "codebase")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
     expect(canvasActionPlacement(541, "codebase")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
     expect(canvasActionPlacement(605, "extract")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
@@ -40,9 +44,9 @@ describe("canvasActionPlacement", () => {
   });
 
   it("keeps the short stacked layout when the side lane disappears", () => {
-    expect(canvasActionPlacement(497, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 282, bottom: 181 });
-    expect(canvasActionPlacement(496, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 281, bottom: 181 });
-    expect(canvasActionPlacement(400, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 185, bottom: 181 });
+    expect(canvasActionPlacement(497, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 147, bottom: 181 });
+    expect(canvasActionPlacement(496, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 146, bottom: 181 });
+    expect(canvasActionPlacement(400, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 50, bottom: 181 });
   });
 
   it("clamps a stacked bar to the canvas edge at a truly tiny width", () => {
@@ -50,17 +54,17 @@ describe("canvasActionPlacement", () => {
   });
 
   it("slides toward the bottom only when the graph itself becomes short", () => {
-    expect(canvasActionPlacement(520, "minimal", 306)).toEqual({ position: "bottom-left", layout: "stacked", left: 311, bottom: 181 });
-    expect(canvasActionPlacement(520, "minimal", 305)).toEqual({ position: "bottom-left", layout: "stacked", left: 311, bottom: 180 });
-    expect(canvasActionPlacement(520, "minimal", 141)).toEqual({ position: "bottom-left", layout: "stacked", left: 311, bottom: 16 });
+    expect(canvasActionPlacement(520, "minimal", 306)).toEqual({ position: "bottom-left", layout: "stacked", left: 170, bottom: 181 });
+    expect(canvasActionPlacement(520, "minimal", 305)).toEqual({ position: "bottom-left", layout: "stacked", left: 170, bottom: 180 });
+    expect(canvasActionPlacement(520, "minimal", 141)).toEqual({ position: "bottom-left", layout: "stacked", left: 170, bottom: 16 });
   });
 
   it("lifts the bar above chrome when horizontal or vertical overlap is unavoidable", () => {
-    expect(panelAnchorStyle(canvasActionPlacement(330, "minimal", 600))).toMatchObject({ left: 115, bottom: 181, zIndex: 7 });
+    expect(panelAnchorStyle(canvasActionPlacement(330, "minimal", 600))).toMatchObject({ left: 16, bottom: 181, zIndex: 7 });
     expect(panelAnchorStyle(canvasActionPlacement(520, "minimal", 305))).toMatchObject({
-      left: 311,
+      left: 170,
       bottom: 180,
-      maxWidth: "calc(100% - 311px)",
+      maxWidth: "calc(100% - 170px)",
       zIndex: 7,
     });
   });
@@ -122,6 +126,85 @@ describe("CanvasActionBar empty review sentinel", () => {
     const markup = renderActionBar(store);
     expect(actionButtonMarkup(markup, "Rearrange extracted graph")).toContain('aria-disabled="true"');
     expect(actionButtonMarkup(markup, "Reset extracted graph")).toContain('aria-disabled="true"');
+  });
+});
+
+describe("CanvasActionBar ghost visibility", () => {
+  it("exposes the extracted graph's paint-only ghost toggle as a pressed control", () => {
+    const store = actionBarStore();
+    store.setState({ minimalSeedIds: [ACTION_FILE], minimalMemberIds: [ACTION_FILE] });
+
+    const shownMarkup = renderActionBar(store, {
+      ghostNodesVisible: true,
+      hasGhostNodes: true,
+      onToggleGhostNodes: () => undefined,
+    });
+    const shownButton = actionButtonMarkup(shownMarkup, "Show ghost nodes");
+    expect(shownButton).toContain('aria-pressed="true"');
+    expect(describedText(shownMarkup, shownButton)).toBe("Hide ghost nodes and their connections");
+
+    const hiddenMarkup = renderActionBar(store, {
+      ghostNodesVisible: false,
+      hasGhostNodes: true,
+      onToggleGhostNodes: () => undefined,
+    });
+    const hiddenButton = actionButtonMarkup(hiddenMarkup, "Show ghost nodes");
+    expect(hiddenButton).toContain('aria-pressed="false"');
+    expect(describedText(hiddenMarkup, hiddenButton)).toBe("Show ghost nodes and their connections");
+  });
+});
+
+describe("CanvasActionBar highway visibility", () => {
+  it("exposes the extracted graph's highway toggle as a pressed control", () => {
+    const store = actionBarStore();
+    store.setState({ minimalSeedIds: [ACTION_FILE], minimalMemberIds: [ACTION_FILE] });
+
+    const shownMarkup = renderActionBar(store);
+    const shownButton = actionButtonMarkup(shownMarkup, "Highways");
+    expect(shownButton).toContain('aria-pressed="true"');
+    expect(describedText(shownMarkup, shownButton)).toBe("Disable highways and draw node links individually");
+
+    store.setState({ showHighways: false });
+    const hiddenMarkup = renderActionBar(store);
+    const hiddenButton = actionButtonMarkup(hiddenMarkup, "Highways");
+    expect(hiddenButton).toContain('aria-pressed="false"');
+    expect(describedText(hiddenMarkup, hiddenButton)).toBe("Enable highways for dense edge traffic");
+  });
+
+  it("stays out of base, extraction-entry, and codebase-context action modes", () => {
+    const store = actionBarStore();
+    expect(renderActionBar(store)).not.toContain('aria-label="Highways"');
+
+    store.setState({ moduleSelected: new Set([ACTION_METHOD]) });
+    expect(renderActionBar(store)).not.toContain('aria-label="Highways"');
+
+    store.setState({ minimalSeedIds: [ACTION_FILE], minimalMemberIds: [ACTION_FILE] });
+    expect(renderActionBar(store, { minimalView: "codebase" })).not.toContain('aria-label="Highways"');
+  });
+});
+
+describe("CanvasActionBar edge filters", () => {
+  it("exposes the extracted graph's canonical edge filters as a dialog disclosure", () => {
+    const store = actionBarStore();
+    store.setState({ minimalSeedIds: [ACTION_FILE], minimalMemberIds: [ACTION_FILE] });
+
+    const markup = renderActionBar(store, { relationKinds: ["calls", "imports"] });
+    const button = actionButtonMarkup(markup, "Filter edge types");
+    expect(button).toContain('aria-expanded="false"');
+    expect(button).toContain('aria-haspopup="dialog"');
+    expect(button).toMatch(/aria-controls="[^"]+"/);
+    expect(button).not.toContain("aria-disabled");
+    expect(describedText(markup, button)).toBe("Choose which edge types are shown");
+  });
+
+  it("explains when the extracted graph has no filterable edge kinds", () => {
+    const store = actionBarStore();
+    store.setState({ minimalSeedIds: [ACTION_FILE], minimalMemberIds: [ACTION_FILE] });
+
+    const markup = renderActionBar(store, { relationKinds: [] });
+    const button = actionButtonMarkup(markup, "Filter edge types");
+    expect(button).toContain('aria-disabled="true"');
+    expect(describedText(markup, button)).toBe("No filterable edge types in this extracted graph");
   });
 });
 

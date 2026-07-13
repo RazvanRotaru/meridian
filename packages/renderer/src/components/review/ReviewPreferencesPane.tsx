@@ -9,15 +9,18 @@ import type { ReviewFlowSplitView } from "../../state/reviewPreferences";
 
 const HEADING_ID = "review-preferences-heading";
 const TEST_CHANGES_DESCRIPTION_ID = "review-test-changes-description";
+const DIFF_ONLY_DESCRIPTION_ID = "review-diff-only-description";
 const PROJECTION_DESCRIPTION_ID = "review-flow-view-description";
 const NOTE_ID = "review-preferences-storage-note";
 const RADIO_NAME = "review-flow-split-view";
 
 interface ReviewPreferencesPaneProps {
   excludeTestChanges: boolean;
+  hideNodesNotInDiff: boolean;
   flowView: ReviewFlowSplitView;
   openFlowSplitOnSelect: boolean;
   onExcludeTestChangesChange: (exclude: boolean) => void;
+  onHideNodesNotInDiffChange: (hide: boolean) => void;
   onFlowViewChange: (view: ReviewFlowSplitView) => void;
   onOpenFlowSplitOnSelectChange: (open: boolean) => void;
   onClose: () => void;
@@ -87,6 +90,25 @@ export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
         </label>
       </fieldset>
 
+      <fieldset style={BEHAVIOR_FIELDSET} aria-describedby={DIFF_ONLY_DESCRIPTION_ID}>
+        <legend style={LEGEND}>Graph display</legend>
+        <label style={optionStyle(props.hideNodesNotInDiff)}>
+          <input
+            type="checkbox"
+            checked={props.hideNodesNotInDiff}
+            style={RADIO}
+            aria-describedby={DIFF_ONLY_DESCRIPTION_ID}
+            onChange={(event) => props.onHideNodesNotInDiffChange(event.currentTarget.checked)}
+          />
+          <span style={OPTION_COPY}>
+            <span style={OPTION_TITLE}>Hide nodes not in diff</span>
+            <span id={DIFF_ONLY_DESCRIPTION_ID} style={OPTION_DESCRIPTION}>
+              Keep changed code and the file or package containers needed to place it. Hide unchanged context nodes and their incident edges.
+            </span>
+          </span>
+        </label>
+      </fieldset>
+
       <fieldset style={BEHAVIOR_FIELDSET} aria-describedby={NOTE_ID}>
         <legend style={LEGEND}>Logic flow behavior</legend>
         <label style={optionStyle(props.openFlowSplitOnSelect)}>
@@ -133,7 +155,7 @@ export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
       </fieldset>
 
       <p id={NOTE_ID} style={NOTE}>
-        Flow preferences are saved in this browser. Test visibility applies to the current graph and PR review.
+        Flow preferences are saved in this browser. Graph display and test visibility apply to the current PR review.
       </p>
     </section>
   );

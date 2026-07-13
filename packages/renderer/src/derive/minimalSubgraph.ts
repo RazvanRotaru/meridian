@@ -87,6 +87,9 @@ export interface CodeContext {
   /** Exact visible callables under PR flow-node inspection. Their incident dependencies bypass the
    * ordinary member-file fold so wires remain attached to the selected block. */
   inspectionIds?: ReadonlySet<string>;
+  /** Project every dependency over the full visible code frontier. Used by an extracted graph with
+   * highways disabled so expanded declarations connect directly while collapsed files still fold. */
+  directDependencies?: boolean;
 }
 
 const NO_CODE: CodeContext = { expanded: new Set(), blockDeps: { edges: [] }, flows: {} };
@@ -181,25 +184,28 @@ function minimalVisibility(memberIds: ReadonlySet<string>, walks: Map<string, Fi
   return { calls, expandedBlocks, visibleIds, codeIds };
 }
 
-/** Preserve exact edges touching a selected flow callable. Normal minimal-graph dependencies fold
- * through member files; inspection instead projects only the selected callable's raw edges over the
- * full expanded frontier. Off-view endpoints remain the ghost projection's job. Raw edges already
- * drawn inside a file expansion are withheld here to avoid duplicate React Flow edge ids. */
+/** Preserve exact edges touching a selected callable, or every visible exact edge in direct mode.
+ * Normal minimal-graph dependencies fold through member files; this projection uses the full
+ * expanded frontier. Off-view endpoints remain the ghost projection's job. Raw edges already drawn
+ * inside a file expansion are withheld here to avoid duplicate React Flow edge ids. */
 function inspectionDepEdges(
   index: GraphIndex,
   memberIds: ReadonlySet<string>,
   walks: Map<string, FileCodeWalk>,
   code: CodeContext,
 ): { edges: MinimalSubgraphEdge[]; incidentEdgeIds: Set<string> } {
-  if (!code.inspectionIds || code.inspectionIds.size === 0) {
+  const direct = code.directDependencies === true;
+  if (!direct && (!code.inspectionIds || code.inspectionIds.size === 0)) {
     return { edges: [], incidentEdgeIds: new Set() };
   }
   const visibility = minimalVisibility(memberIds, walks);
-  const active = new Set([...code.inspectionIds].filter((id) => visibility.visibleIds.has(id)));
-  if (active.size === 0) {
+  const active = new Set([...(code.inspectionIds ?? [])].filter((id) => visibility.visibleIds.has(id)));
+  if (!direct && active.size === 0) {
     return { edges: [], incidentEdgeIds: new Set() };
   }
-  const incident = code.blockDeps.edges.filter((edge) => active.has(edge.source) || active.has(edge.target));
+  const incident = direct
+    ? code.blockDeps.edges
+    : code.blockDeps.edges.filter((edge) => active.has(edge.source) || active.has(edge.target));
   const incidentEdgeIds = new Set(incident.map((edge) => edge.id));
   const representedInsideExpansion = new Set(
     [...walks.values()].flatMap((walk) =>

@@ -24,7 +24,7 @@
  *     back). They return only when the emphasis pass lights them.
  *
  * A surface may still pass `enabled: false` to receive only z-order dressing, without hover,
- * inspection, evidence, pulse, or retyping.
+ * inspection, evidence, labels, or retyping.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -152,9 +152,9 @@ export function useWireHover(
         ...edge,
         zIndex,
         // Untyped edges retype to the canvas's own plain curve AFTER the highway passes have
-        // claimed theirs — same geometry as the default edge, plus the lit direction pulse.
-        // `pulse` is this surface's opt-in: shared edge components draw streaks/chips ONLY where
-        // the surface asked for them (the module lenses; never the mostly-lit minimal overlay).
+        // claimed theirs — same geometry as the default edge, plus the lit wire's static label.
+        // `pulse` remains the surface opt-in for that label; the name is retained to keep the
+        // shared edge-data contract stable.
         type: edge.type ?? WIRE_EDGE_TYPE,
         interactionWidth: invisible ? 0 : 14,
         data: { ...edge.data, pulse: true, hidden: invisible },

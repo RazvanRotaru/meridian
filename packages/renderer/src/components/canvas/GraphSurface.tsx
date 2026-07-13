@@ -49,6 +49,7 @@ import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { edgeEvidenceForPair } from "../../graph/edgeEvidence";
 import { moduleNodeTypes } from "../nodes/modulemap/ModuleCardNode";
 import { paintMinimalLevel } from "../paintMinimal";
+import { filterGhostNodes } from "../moduleMapPaint";
 import { WireTooltip } from "../WireTooltip";
 import { EdgeInspectionDock } from "../EdgeInspectionDock";
 import { MINIMAP_NODE_CAP } from "./flowCanvasProps";
@@ -110,8 +111,8 @@ import { ReviewCommentNodeIndicators } from "../review/ReviewCommentNodeIndicato
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
  * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "cycle" the
  * double-headed mutual-coupling wire; "spool" gathers the remaining open-canvas fan-hub wires;
- * "wire" is the plain curve every remaining edge retypes to on hover-enabled surfaces (it carries
- * the lit direction pulse). One shared map — a surface whose flags never mint a type simply has no
+ * "wire" is the plain curve every remaining edge retypes to on hover-enabled surfaces. One shared
+ * map — a surface whose flags never mint a type simply has no
  * edges wearing it. */
 const moduleEdgeTypes: EdgeTypes = {
   [BUNDLE_EDGE_TYPE]: BundledEdge,
@@ -149,6 +150,21 @@ export interface SurfacePaintOwnership {
   highwaySeeds: ReadonlySet<string>;
 }
 
+/** Highway extraction follows every literal selection even while another surface owner paints the
+ * graph (notably a PR checklist hover). Reuse the paint set when it already covers selection so the
+ * common path retains stable references and avoids an otherwise needless presentation rebuild. */
+function mergeHighwaySeeds(
+  selected: ReadonlySet<string>,
+  paintSeeds: ReadonlySet<string>,
+): ReadonlySet<string> {
+  if (selected.size === 0 || selected === paintSeeds) {
+    return paintSeeds;
+  }
+  const merged = new Set(paintSeeds);
+  selected.forEach((id) => merged.add(id));
+  return merged.size === paintSeeds.size ? paintSeeds : merged;
+}
+
 /** Resolve the deliberately distinct paint identities used by every GraphSurface mount.
  * A surface-owned override (the frozen codebase context) is authoritative. Otherwise a PR row
  * hover/click outranks stale ghost provenance, which resumes when review paint clears. Literal
@@ -166,7 +182,7 @@ export function resolveSurfacePaintOwnership(
       protectedSelection: selected,
       paintSeeds: surfacePaintOverride,
       focusSeeds: null,
-      highwaySeeds: surfacePaintOverride,
+      highwaySeeds: mergeHighwaySeeds(selected, surfacePaintOverride),
     };
   }
   const reviewOwnsPaint = reviewEmphasis && reviewLit !== null;
@@ -176,9 +192,11 @@ export function resolveSurfacePaintOwnership(
   const focusSeeds = !reviewOwnsPaint && ghostPaintOverride !== null
     ? selected
     : null;
+  // Ghost provenance must not unbundle every owner strand, while PR paint must keep both the
+  // hovered/clicked review subject and the literal canvas selection directly traceable.
   const highwaySeeds = !reviewOwnsPaint && ghostPaintOverride !== null
     ? selected
-    : paintSeeds;
+    : mergeHighwaySeeds(selected, paintSeeds);
   return { protectedSelection: selected, paintSeeds, focusSeeds, highwaySeeds };
 }
 
@@ -199,7 +217,7 @@ export interface GraphSurfaceProps {
   onInit?: (instance: ReactFlowInstance<Node, Edge>) => void;
   /** Override React Flow's mount-time fit when the mount manages its own detail-only viewport. */
   autoFitView?: boolean;
-  /** Wire chrome — hover naming, click-pinned inspector/source evidence, and direction pulses. */
+  /** Wire chrome — hover naming, click-pinned inspector/source evidence, and static labels. */
   wireHover?: boolean;
   /** PR review only: show a scrollable code preview after dwelling over a source-located node. */
   nodeDiffPreview?: boolean;
@@ -227,6 +245,8 @@ export interface GraphSurfaceProps {
   /** Optional override for exact-detail surfaces. A selected PR-flow node disables sibling ghost
    * grouping so every incident ghost and edge remains individually reviewable. */
   groupGhosts?: boolean;
+  /** Paint-only ghost visibility for a mount-local declutter control. Layout geometry is retained. */
+  showGhostNodes?: boolean;
   /** Extras that must render INSIDE the flow (beacon arrows, the overlay's ghost "+" ring). */
   flowExtras?: (view: SurfaceFlowView) => ReactNode;
   /** Floating chrome (breadcrumb, legends, panels, action strips), absolutely positioned over the canvas. */
@@ -378,7 +398,10 @@ export function GraphSurface(props: GraphSurfaceProps) {
   );
   const candidatePaintedScene = useMemo<PaintedScene>(
     () => {
-      const painted = paintSemanticLayers(props.nodes, props.edges, paintOwnership.protectedSelection, radius, emphasisMode, {
+      // Filter before emphasis/grouping so hidden exact ghosts cannot be reminted as synthetic parent
+      // anchors, and semantic ancestor populations obey the same mount-local visibility choice.
+      const ghostFiltered = filterGhostNodes(props.nodes, props.edges, props.showGhostNodes ?? true);
+      const painted = paintSemanticLayers(ghostFiltered.nodes, ghostFiltered.edges, paintOwnership.protectedSelection, radius, emphasisMode, {
         policy: props.relations,
         overrides: relationVisibilityOverrides,
       }, {
@@ -388,7 +411,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
       }, paintOwnership.paintSeeds, paintOwnership.focusSeeds);
       return { ...painted, highwaySeeds: paintOwnership.highwaySeeds };
     },
-    [props.nodes, props.edges, paintOwnership, radius, emphasisMode, props.relations, relationVisibilityOverrides, index, groupGhosts, props.interactions.expandedGhostGroupIds],
+    [props.nodes, props.edges, props.showGhostNodes, paintOwnership, radius, emphasisMode, props.relations, relationVisibilityOverrides, index, groupGhosts, props.interactions.expandedGhostGroupIds],
   );
   // Inspection is an append-only read of the graph. Its intentional pre-layout busy paint still
   // carries the old raw graph with the new selection; keep that provisional population out of both

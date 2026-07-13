@@ -1,8 +1,10 @@
 /**
  * The minimal-graph OVERLAY — a THIN MOUNT of the shared GraphSurface with spool-only highways
  * (`MINIMAL_OVERLAY_HIGHWAYS`): the Module-map's "Extract selection" result as its own read-only React Flow
- * surface, covering the still-mounted source canvas while open. It EXTRACTS the selection verbatim (any kind — a
- * selected package stays ONE card) as MEMBERS — SEED cards (the origin selection, keeping their
+ * surface. Ordinary extracts cover a retained source canvas for their outward handoff; a PR review
+ * is a navigation boundary and unmounts that covered source to keep large reviews within the
+ * renderer budget. It EXTRACTS the selection verbatim (any kind — a selected package stays ONE
+ * card) as MEMBERS — SEED cards (the origin selection, keeping their
  * green ring) and PERSISTENT cards (ghosts the reader promoted) — ringed by the Map's OWN ghost
  * SATELLITES: every code coupling that leaves the member set charts its off-overlay symbol as a
  * dashed `GhostNode` card banded outside the core (callers left, dependencies right), per-kind
@@ -28,13 +30,16 @@
  * page-specific gestures are that "+" (promote) and explicit Close.
  */
 
-import { useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { MapLegend } from "./MapLegend";
 import { GraphSurface } from "./canvas/GraphSurface";
 import { GhostPromoteRing } from "./canvas/GhostPromoteRing";
 import { SEMANTIC_LAYER_FADE_MS } from "./canvas/MapLod";
-import { adaptMinimalGraphToSemanticSource, type MinimalSourceGraphState } from "./canvas/minimalSemanticSource";
+import {
+  adaptMinimalGraphToSemanticSource,
+  type MinimalSourceGraphState,
+} from "./canvas/minimalSemanticSource";
 import { activeModuleSurfaceSpec, MINIMAL_OVERLAY_HIGHWAYS } from "./canvas/surfaceSpec";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { useRecenter } from "./canvas/useRecenter";
@@ -44,7 +49,8 @@ import {
 } from "./canvas/useSemanticSurfaceNavigation";
 import { CanvasActionBar } from "./controlpanel/CanvasActionBar";
 import { minimalMiniMapColor } from "./minimalGraphStyles";
-import { filterExternalGhosts } from "./moduleMapPaint";
+import { filterExternalGhosts, filterGhostNodes } from "./moduleMapPaint";
+import { relationKindOf } from "../graph/relationEdge";
 
 // A review-panel click centers on a single (possibly tiny) method card, so cap how far the fit zooms in.
 const RECENTER_OPTIONS = { maxZoom: 1 } as const;
@@ -74,8 +80,29 @@ export function MinimalGraphView({
   const serviceGroupingTargetSize = useBlueprint((state) => state.serviceGroupingTargetSize);
   const serviceGroupingLabelMode = useBlueprint((state) => state.serviceGroupingLabelMode);
   const showExternalGhosts = useBlueprint((state) => state.showExternalGhosts);
-  const { closeMinimalGraph, promoteGhost } = useBlueprintActions();
+  const { closeMinimalGraph, promoteGhost, openReviewSubgraph, minimalRelayout, selectModule } = useBlueprintActions();
   const relations = activeModuleSurfaceSpec(viewMode).relations;
+  const [showGhostNodes, setShowGhostNodes] = useState(true);
+  const ghostIds = useMemo(
+    () => new Set(nodes.filter((node) => node.type === "ghost").map((node) => node.id)),
+    [nodes],
+  );
+  const relationKinds = useMemo(() => {
+    const kinds = new Set<string>();
+    edges.forEach((edge) => {
+      const kind = relationKindOf(edge.data);
+      if (kind !== null) kinds.add(kind);
+    });
+    return [...kinds];
+  }, [edges]);
+  const toggleGhostNodes = useCallback(() => {
+    const next = !showGhostNodes;
+    if (!next && [...selected].some((id) => ghostIds.has(id))) {
+      // A hidden selection must not leave the surviving graph dimmed around an absent paint seed.
+      selectModule(null);
+    }
+    setShowGhostNodes(next);
+  }, [ghostIds, selectModule, selected, showGhostNodes]);
 
   // A review-panel click centers the viewport on the clicked node itself (recenterSeq bump); else
   // the selection is the recenter target, like every module surface.
@@ -86,13 +113,20 @@ export function MinimalGraphView({
   useRecenter(recenterIds, RECENTER_OPTIONS);
 
   // Interactions ARE the Module map's own (the shared hook — called HERE so the debounce dies with
-  // the overlay); a double-click closes the overlay first so the Map's navigate surfaces. No
-  // `onBeforeClick`: every card, including exact/grouped ghosts, uses ordinary selection;
-  // disclosure and promotion remain their explicit chevron / "+" controls.
+  // the overlay). During PR review, package double-click opens an exact-file child graph and every
+  // other double-click stays inside the review boundary; outside review, double-click retains the
+  // ordinary close-then-navigate handoff to the source Map. Disclosure and promotion remain their
+  // explicit chevron / "+" controls.
   const interactions = useModuleNodeInteractions({
-    onBeforeDoubleClick: () => {
-      closeMinimalGraph();
-    },
+    onDoubleClick: reviewActive
+      ? (_event, node) => {
+          if (node.type === "package") {
+            openReviewSubgraph(node.id);
+          }
+          return true;
+        }
+      : undefined,
+    onBeforeDoubleClick: reviewActive ? undefined : closeMinimalGraph,
   });
 
   // Capture the source graph ONCE for this overlay lifetime. Curation can change the minimal graph,
@@ -108,22 +142,30 @@ export function MinimalGraphView({
     serviceGroupingTargetSize,
     serviceGroupingLabelMode,
   };
-  const visibleGraph = useMemo(
-    () => filterExternalGhosts(nodes, edges, showExternalGhosts),
-    [edges, nodes, showExternalGhosts],
-  );
+  const visibleGraph = useMemo(() => {
+    const externalFiltered = filterExternalGhosts(nodes, edges, showExternalGhosts);
+    return filterGhostNodes(externalFiltered.nodes, externalFiltered.edges, showGhostNodes);
+  }, [edges, nodes, showExternalGhosts, showGhostNodes]);
   const semanticScene = useMemo(
-    () => adaptMinimalGraphToSemanticSource(visibleGraph, sourceRef.current!),
-    [visibleGraph],
+    () => reviewActive
+      ? { ...visibleGraph, semanticLayers: [] as const }
+      : adaptMinimalGraphToSemanticSource(visibleGraph, sourceRef.current!),
+    [reviewActive, visibleGraph],
   );
+  // A PR overlay is a navigation boundary. It also bypasses the semantic adapter entirely: there is
+  // no parent preview/commit to stamp, so cloning every review node and edge would be pure overhead.
+  const semanticLayers = semanticScene.semanticLayers;
   const semanticNavigation = useSemanticSurfaceNavigation({
     nodes: semanticScene.nodes,
     layoutStatus,
-    semanticLayers: semanticScene.semanticLayers,
+    semanticLayers,
     resetKeys: [nodes],
     commitAdapter: {
       mode: "exit",
       commit: () => {
+        if (reviewActive) {
+          return false;
+        }
         closeMinimalGraph();
         return true;
       },
@@ -146,9 +188,10 @@ export function MinimalGraphView({
         reviewEmphasis={reviewActive}
         emphasisMode={reviewFlowOpen ? (reviewSelectedId === null ? "subgraph" : "node") : undefined}
         groupGhosts={reviewFlowOpen && reviewSelectedId !== null ? false : undefined}
+        showGhostNodes={showGhostNodes}
         busy={layoutStatus === "laying-out" ? layoutActivity ?? undefined : undefined}
         autoFitView={false}
-        semanticLayers={semanticScene.semanticLayers}
+        semanticLayers={semanticLayers}
         semanticDepths={semanticNavigation.semanticDepths}
         semanticBandOriginDepth={semanticNavigation.semanticBandOriginDepth}
         semanticFirstPreviewMax={semanticNavigation.semanticFirstPreviewMax}
@@ -167,8 +210,31 @@ export function MinimalGraphView({
           showIpc={false}
           relationPolicy={relations}
         />
-        <CanvasActionBar onShowCodebase={onShowCodebase} codebaseButtonRef={codebaseButtonRef} />
+        <CanvasActionBar
+          onShowCodebase={onShowCodebase}
+          codebaseButtonRef={codebaseButtonRef}
+          ghostNodesVisible={showGhostNodes}
+          hasGhostNodes={ghostIds.size > 0}
+          onToggleGhostNodes={toggleGhostNodes}
+          relationKinds={relationKinds}
+        />
       </GraphSurface>
+      {layoutStatus === "error" && (
+        <div role="alert" style={LAYOUT_ERROR}>
+          <strong style={LAYOUT_ERROR_TITLE}>Couldn’t arrange this review graph</strong>
+          <span style={LAYOUT_ERROR_COPY}>
+            Narrow the Review scope or choose a change group, then retry. Your PR review state is still intact.
+          </span>
+          <div style={LAYOUT_ERROR_ACTIONS}>
+            <button type="button" style={LAYOUT_ERROR_BUTTON} onClick={() => void minimalRelayout({ label: "Retrying review graph…" })}>
+              Retry
+            </button>
+            <button type="button" style={LAYOUT_ERROR_BUTTON} onClick={closeMinimalGraph}>
+              Return to map
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -177,4 +243,33 @@ const MINIMAL_SEMANTIC_SURFACE_STYLE: React.CSSProperties = {
   position: "absolute",
   inset: 0,
   transition: `opacity ${SEMANTIC_LAYER_FADE_MS}ms ease-out`,
+};
+const LAYOUT_ERROR: React.CSSProperties = {
+  position: "absolute",
+  left: "50%",
+  top: "50%",
+  zIndex: 20,
+  width: 360,
+  maxWidth: "calc(100% - 48px)",
+  transform: "translate(-50%, -50%)",
+  display: "flex",
+  flexDirection: "column",
+  gap: 10,
+  padding: 18,
+  border: "1px solid #4B5563",
+  borderRadius: 12,
+  background: "rgba(13, 17, 23, 0.96)",
+  boxShadow: "0 18px 60px rgba(0, 0, 0, 0.45)",
+  color: "#E6EDF3",
+};
+const LAYOUT_ERROR_TITLE: React.CSSProperties = { fontSize: 14 };
+const LAYOUT_ERROR_COPY: React.CSSProperties = { color: "#9AA4B2", fontSize: 12, lineHeight: 1.45 };
+const LAYOUT_ERROR_ACTIONS: React.CSSProperties = { display: "flex", gap: 8 };
+const LAYOUT_ERROR_BUTTON: React.CSSProperties = {
+  border: "1px solid #394451",
+  borderRadius: 7,
+  background: "#161B22",
+  color: "#E6EDF3",
+  padding: "6px 10px",
+  cursor: "pointer",
 };

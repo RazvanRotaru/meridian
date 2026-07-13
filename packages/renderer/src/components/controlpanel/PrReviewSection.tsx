@@ -27,7 +27,12 @@ export function PrReviewSection() {
   const current = useBlueprint(selectedPrSummary);
   const prReviewed = useBlueprint((state) => state.prReviewed);
   const reviewOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
-  const hasReviewSeeds = useBlueprint((state) => state.reviewAllSeedIds.length > 0);
+  const reviewCanResume = useBlueprint((state) =>
+    state.prReviewed !== null
+    && state.prSelected === state.prReviewed
+    && state.prFiles !== null
+    && state.review !== null,
+  );
   const reviewFiles = useBlueprint((state) => state.reviewFiles);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
@@ -51,9 +56,10 @@ export function PrReviewSection() {
   // stays collapsed so a stale reviewed PR never lingers in the card.
   const expanded = prReviewed !== null && reviewOpen && viewMode !== "prs";
   // A live review whose overlay was closed (explicit Close/lens switch) is still fully in the store —
-  // show a one-click Resume chip beneath the queue toggle. Mutually exclusive with `expanded`
-  // (that needs the overlay open; this needs it closed), and impossible without saved seeds.
-  const resumable = prReviewed !== null && !reviewOpen && hasReviewSeeds && viewMode !== "prs";
+  // show a one-click Resume chip beneath the queue toggle. The PR inputs can reconstruct its graph,
+  // so do not hide this recovery path merely because another navigation cleared a cached seed list.
+  // Mutually exclusive with `expanded` (that needs the overlay open; this needs it closed).
+  const resumable = reviewCanResume && prReviewed !== null && !reviewOpen && viewMode !== "prs";
   const viewed = countViewedFiles(reviewFiles, unitTicks, fileTicks);
 
   const unavailable = error === PRS_UNAVAILABLE_ERROR && open === null;
@@ -114,7 +120,7 @@ export function PrReviewSection() {
             <span style={{ display: "inline-flex", color: ACTIVE_HUE }}>
               <PullRequestIcon size={15} />
             </span>
-            <span style={LABEL_STYLE}>Resume review #{prReviewed}</span>
+            <span style={LABEL_STYLE}>Resume PR review #{prReviewed}</span>
             <span style={{ flex: 1 }} />
             <CountBadge style={badgeToneStyle(true)}>{viewed}/{reviewFiles.length} viewed</CountBadge>
           </button>

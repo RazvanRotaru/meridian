@@ -10,12 +10,18 @@ import { Pill } from "./controlpanel/panelKit";
 import { activeModuleSurfaceSpec } from "./canvas/surfaceSpec";
 import { isRelationShown } from "../graph/relationVisibility";
 
-export function RelationshipToggles() {
+export function RelationshipToggles({ kinds }: { kinds?: readonly string[] } = {}) {
   const viewMode = useBlueprint((state) => state.viewMode);
   const overrides = useBlueprint((state) => state.relationVisibilityOverrides);
   const { toggleRelKind, resetRelationshipDefaults } = useBlueprintActions();
   const policy = activeModuleSurfaceSpec(viewMode).relations;
-  const groups = relationshipKindGroupsForPolicy(policy);
+  const allowedKinds = kinds === undefined ? null : new Set(kinds);
+  const groups = relationshipKindGroupsForPolicy(policy).flatMap((group) => {
+    const visibleKinds = allowedKinds === null
+      ? group.kinds
+      : group.kinds.filter((kind) => allowedKinds.has(kind.key));
+    return visibleKinds.length > 0 ? [{ ...group, kinds: visibleKinds }] : [];
+  });
   const hasOverrides = Object.keys(overrides[policy.id] ?? {}).length > 0;
 
   return (

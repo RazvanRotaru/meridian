@@ -7,6 +7,7 @@ import { buildGraphIndex } from "../../graph/graphIndex";
 import {
   adaptMinimalGraphToSemanticSource,
   MINIMAL_SOURCE_GRAPH_ANCHOR_ID,
+  minimalSemanticLayersAtReviewBoundary,
   minimalSourceGraphLabel,
   minimalSourceSemanticLayer,
   stampMinimalGraphAsSemanticDetail,
@@ -186,5 +187,12 @@ describe("minimal source scene metadata", () => {
     expect(adapted.nodes.map((node) => node.id)).toEqual(["first", "second"]);
     expect(adapted.nodes.every((node) => node.data.semanticDepth === 0)).toBe(true);
     expect(adapted.nodes.some((node) => node.id === MINIMAL_SOURCE_GRAPH_ANCHOR_ID)).toBe(false);
+  });
+
+  it("removes the outward semantic parent only at the PR review boundary", () => {
+    const layers = [minimalSourceSemanticLayer(source())];
+
+    expect(minimalSemanticLayersAtReviewBoundary(layers, true)).toEqual([]);
+    expect(minimalSemanticLayersAtReviewBoundary(layers, false)).toBe(layers);
   });
 });
