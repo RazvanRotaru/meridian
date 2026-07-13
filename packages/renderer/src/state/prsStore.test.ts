@@ -42,6 +42,7 @@ const PACKAGE_ID = "ts:src";
 const FILE_ID = "ts:src/a.ts";
 const CLASS_ID = `${FILE_ID}#Svc`;
 const METHOD_ID = `${CLASS_ID}.run`;
+const UNCHANGED_METHOD_ID = `${CLASS_ID}.idle`;
 const TEST_FILE_ID = "ts:src/a.test.ts";
 const TEST_METHOD_ID = `${TEST_FILE_ID}#coversRun`;
 
@@ -75,6 +76,14 @@ const REVIEW_WITH_TESTS_ARTIFACT: GraphArtifact = {
       [TEST_METHOD_ID]: [{ kind: "call", label: "run", target: METHOD_ID, resolution: "resolved" }],
     },
   },
+};
+
+const REVIEW_WITH_CONTEXT_ARTIFACT: GraphArtifact = {
+  ...ARTIFACT,
+  nodes: [
+    ...ARTIFACT.nodes,
+    node(UNCHANGED_METHOD_ID, "method", "src/a.ts", CLASS_ID, { start: 14, end: 16 }),
+  ],
 };
 
 function freshStore(extra?: Partial<StoreDependencies>) {
@@ -296,23 +305,71 @@ describe("PR store slice", () => {
     expect(selectedPrSummary(store.getState())).toEqual(listed);
   });
 
-  it("reviews a PR: lands on the Map, seeds the changed files, and joins their line diff", () => {
+  it("reviews a PR with only the visible graph layout, then restores the Map on close", async () => {
     const store = freshStore();
+    const moduleRelayout = vi.fn(async () => {});
+    const minimalRelayout = vi.fn(async () => {});
     store.setState({
       viewMode: "prs",
       prSelected: 7,
       prsList: { open: [pr(7)], closed: null },
       prFiles: [{ path: "repo/src/a.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 1, end: 1 }] }],
+      moduleRelayout,
+      minimalRelayout,
     });
-    store.getState().reviewPrInGraph();
+    await store.getState().reviewPrInGraph();
     expect(store.getState().viewMode).toBe("modules");
     expect(store.getState().prReviewed).toBe(7);
     expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts"]);
+    expect(minimalRelayout).toHaveBeenCalledOnce();
+    expect(moduleRelayout).not.toHaveBeenCalled();
     // The PR's line diff is joined into changedSince so the code panel's </> highlights the added
     // lines (green) over the block-level review.
     const changedSince = (store.getState().artifact.extensions as { changedSince?: { files?: Record<string, unknown>; kinds?: Record<string, unknown> } })?.changedSince;
     expect(changedSince?.files?.["src/a.ts"]).toEqual([{ start: 1, end: 1 }]);
     expect(changedSince?.kinds?.["src/a.ts"]).toEqual([{ start: 1, end: 1, kind: "added" }]);
+
+    store.getState().closeMinimalGraph();
+    await vi.waitFor(() => expect(moduleRelayout).toHaveBeenCalledOnce());
+    expect(store.getState().minimalSeedIds).toEqual([]);
+  });
+
+  it("toggles a session-only diff-node graph projection and clears selections it hides", async () => {
+    const store = freshStoreForArtifact(REVIEW_WITH_CONTEXT_ARTIFACT);
+    const minimalRelayout = vi.fn(async () => {});
+    store.setState({
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 10, end: 10 }] }],
+      minimalRelayout,
+    });
+    await store.getState().reviewPrInGraph();
+    minimalRelayout.mockClear();
+    store.setState({
+      moduleSelected: new Set([METHOD_ID, UNCHANGED_METHOD_ID]),
+      reviewSelectedId: UNCHANGED_METHOD_ID,
+      reviewLitNodeIds: new Set([METHOD_ID, UNCHANGED_METHOD_ID]),
+      logicSelected: UNCHANGED_METHOD_ID,
+    });
+
+    store.getState().toggleReviewDiffOnly();
+
+    expect(store.getState().reviewDiffOnly).toBe(true);
+    expect(store.getState().moduleSelected).toEqual(new Set([METHOD_ID]));
+    expect(store.getState().reviewSelectedId).toBeNull();
+    expect(store.getState().reviewLitNodeIds).toEqual(new Set([METHOD_ID]));
+    expect(store.getState().logicSelected).toBeNull();
+    expect(minimalRelayout).toHaveBeenCalledOnce();
+    expect(minimalRelayout).toHaveBeenLastCalledWith({ label: "Hiding unchanged graph context…" });
+
+    store.getState().toggleShowTests();
+    expect(store.getState().reviewDiffOnly).toBe(true);
+
+    minimalRelayout.mockClear();
+    store.getState().toggleReviewDiffOnly();
+    expect(store.getState().reviewDiffOnly).toBe(false);
+    expect(minimalRelayout).toHaveBeenCalledWith({ label: "Restoring graph context…" });
   });
 
   it("uses the existing Tests toggle to remove and losslessly restore every PR-review test surface", async () => {
@@ -767,6 +824,59 @@ describe("PR store slice", () => {
     expect(store.getState().prReviewRefreshing).toBe(false);
   });
 
+  it("keeps the prior file inputs resumable when a refreshed PR no longer matches the graph", async () => {
+    const loaded = { ...pr(7), headSha: "head-1" };
+    const latest = { ...loaded, headSha: "head-2", updatedAt: "2026-07-12T11:00:00.000Z" };
+    const unmatchedFiles = {
+      files: [{ path: "repo/src/removed-from-graph.ts", status: "modified" as const, additions: 2, deletions: 1 }],
+      truncated: true,
+      totalFiles: 4,
+      outsideCount: 3,
+      suggestedSubdir: "repo/src",
+    };
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/api/prs/one")) return Promise.resolve(Response.json({ pr: latest }));
+      if (url.includes("/api/prs/files")) return Promise.resolve(Response.json(unmatchedFiles));
+      if (url.includes("/api/prs/comments")) {
+        return Promise.resolve(Response.json({ comments: [], reviews: { approved: [], changesRequested: [], commented: 0 }, hasMore: false }));
+      }
+      if (url.includes("/api/prs/checks")) {
+        return Promise.resolve(Response.json({ total: 0, passed: 0, failed: 0, pending: 0, url: null }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }));
+    const store = freshStore();
+    store.setState({
+      ...selectedPrState(7),
+      prsList: { open: [loaded], closed: null },
+      prFilesTruncated: false,
+      prFilesTotal: 1,
+      prFilesOutside: 0,
+      prFilesSuggestedSubdir: "",
+    });
+    await store.getState().reviewPrInGraph();
+    const priorFiles = store.getState().prFiles;
+    const priorReview = store.getState().review;
+    store.setState({ prReviewStale: true });
+
+    await store.getState().refreshPrReview();
+
+    expect(store.getState().review).toBe(priorReview);
+    expect(store.getState().prFiles).toBe(priorFiles);
+    expect(store.getState().prFilesTruncated).toBe(false);
+    expect(store.getState().prFilesTotal).toBe(1);
+    expect(store.getState().prFilesOutside).toBe(0);
+    expect(store.getState().prFilesSuggestedSubdir).toBe("");
+    expect(store.getState().prPrepareError).toBe("The refreshed pull request no longer matches this graph.");
+
+    store.getState().closeMinimalGraph();
+    store.getState().resumePrReview();
+
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().review).not.toBeNull();
+  });
+
   it("a close cancels a deferred synchronous refresh without repopulating its overlay or revision", async () => {
     let resolveFiles!: (response: Response) => void;
     const filesResponse = new Promise<Response>((resolve) => {
@@ -903,7 +1013,33 @@ describe("PR store slice", () => {
     });
   });
 
-  it("renders the Resume chip only for saved non-empty review seeds and never replaces the queue row", () => {
+  it("keeps Resume PR review available from retained PR inputs even when cached seeds were cleared", async () => {
+    const store = freshStore();
+    store.setState({
+      viewMode: "prs",
+      prsList: { open: [pr(7)], closed: null },
+      prSelected: 7,
+      prFiles: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0 }],
+    });
+    await store.getState().reviewPrOnBaseGraph();
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    store.getState().closeMinimalGraph();
+    store.setState({ reviewAllSeedIds: [] });
+    store.getInitialState = store.getState;
+    const renderSection = () => renderToStaticMarkup(
+      createElement(StoreProvider, { store, children: createElement(PrReviewSection) }),
+    );
+
+    const parked = renderSection();
+    expect(parked).toContain("PR review");
+    expect(parked).toContain("1 open");
+    expect(parked).toContain("Resume PR review #7");
+
+    await store.getState().resumePrReview();
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+  });
+
+  it("does not offer Resume PR review when the retained PR inputs cannot reconstruct it", () => {
     const store = freshStore();
     store.setState({
       viewMode: "modules",
@@ -913,20 +1049,13 @@ describe("PR store slice", () => {
       reviewAllSeedIds: [],
     });
     store.getInitialState = store.getState;
-    const renderSection = () => renderToStaticMarkup(
+
+    const markup = renderToStaticMarkup(
       createElement(StoreProvider, { store, children: createElement(PrReviewSection) }),
     );
 
-    const withoutSeeds = renderSection();
-    expect(withoutSeeds).toContain("PR review");
-    expect(withoutSeeds).toContain("1 open");
-    expect(withoutSeeds).not.toContain("Resume review #7");
-
-    store.setState({ reviewAllSeedIds: [FILE_ID] });
-    const withSeeds = renderSection();
-    expect(withSeeds).toContain("PR review");
-    expect(withSeeds).toContain("1 open");
-    expect(withSeeds).toContain("Resume review #7");
+    expect(markup).toContain("PR review");
+    expect(markup).not.toContain("Resume PR review #7");
   });
 
   it("togglePrsView opens the PR page, then a second toggle returns to the Map", () => {
@@ -1671,6 +1800,68 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().viewMode).toBe("modules");
     expect(store.getState().prReviewed).toBe(7);
     expect(fetchMock.mock.calls.some(([input]) => input.toString().includes("/api/graph"))).toBe(false);
+  });
+
+  it("rolls back a zero-match prepared refresh payload so the prior review can resume", async () => {
+    const { store } = await swappedReviewStore();
+    const before = store.getState();
+    const priorSummary = selectedPrSummary(before);
+    const noMatchGraphId = "pr-head-no-match";
+    const noMatchFiles = {
+      files: [{ path: "src/no-longer-in-graph.ts", status: "modified" as const, additions: 3, deletions: 1 }],
+      truncated: true,
+      totalFiles: 5,
+      outsideCount: 4,
+      suggestedSubdir: "src",
+    };
+    store.setState({ prReviewStale: true });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/api/prs/one")) return Promise.resolve(Response.json({ pr: REFRESHED_SUMMARY }));
+      if (url.includes("/api/prs/files")) return Promise.resolve(Response.json(noMatchFiles));
+      if (url.includes("/api/prs/comments")) {
+        return Promise.resolve(Response.json({ comments: [], reviews: { approved: [], changesRequested: [], commented: 0 }, hasMore: false }));
+      }
+      if (url.includes("/api/prs/checks")) {
+        return Promise.resolve(Response.json({ total: 1, passed: 1, failed: 0, pending: 0, url: null }));
+      }
+      if (url.includes("/api/pr/analyze")) {
+        return Promise.resolve(ndjsonResponse([
+          { stage: "clone" },
+          { stage: "checkout" },
+          { stage: "extract" },
+          { stage: "done", graphId: noMatchGraphId, headSha: REFRESHED_HEAD_SHA },
+        ]));
+      }
+      if (url.includes(`/api/graph?id=${noMatchGraphId}`)) {
+        return Promise.resolve(Response.json(REFRESHED_HEAD_ARTIFACT));
+      }
+      if (url.includes(`/api/graph?id=${before.prPreparedGraphId}`)) {
+        return Promise.resolve(Response.json(HEAD_ARTIFACT));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await store.getState().refreshPrReview();
+
+    expect(store.getState().artifact).toBe(before.artifact);
+    expect(store.getState().index).toBe(before.index);
+    expect(store.getState().review).toBe(before.review);
+    expect(store.getState().prReviewRevision).toBe(before.prReviewRevision);
+    expect(store.getState().prFiles).toBe(before.prFiles);
+    expect(store.getState().prFilesTotal).toBe(before.prFilesTotal);
+    expect(store.getState().prFilesOutside).toBe(before.prFilesOutside);
+    expect(selectedPrSummary(store.getState())).not.toBe(priorSummary);
+    expect(selectedPrSummary(store.getState())?.headSha).toBe(REFRESHED_HEAD_SHA);
+    expect(store.getState().prPrepareError).toBe("The refreshed pull request no longer matches this graph.");
+
+    store.getState().closeMinimalGraph();
+    await store.getState().resumePrReview();
+
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(true);
   });
 
   it("closing during prepared refresh cancels the analyze waiter promptly and rejects its late graph", async () => {

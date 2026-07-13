@@ -651,17 +651,94 @@ describe("minimal-graph overlay (extract selection)", () => {
       .map((candidate) => candidate.id)
       .sort();
 
-  it("pre-arms changed files but starts a review rollup at its collapsed package", () => {
+  it("re-derives selected incident links only for an open extracted graph with highways on", () => {
+    const store = freshStore();
+    const minimalRelayout = vi.fn(async (_activity?: { label: string; detail?: string }) => undefined);
+    store.setState({
+      minimalSeedIds: ["ts:src/a.ts"],
+      minimalMemberIds: ["ts:src/a.ts"],
+      showHighways: true,
+      minimalRelayout,
+    });
+
+    store.getState().selectModule(BUILD_ORDERS);
+    store.getState().toggleModuleSelect(ROUTES_UNIT);
+    store.getState().selectModule(null);
+
+    expect(minimalRelayout).toHaveBeenCalledTimes(3);
+    expect(minimalRelayout.mock.calls.map(([activity]) => activity?.label)).toEqual([
+      "Showing selected links…",
+      "Updating selected links…",
+      "Restoring grouped links…",
+    ]);
+
+    store.setState({ showHighways: false });
+    minimalRelayout.mockClear();
+    store.getState().selectModule(BUILD_ORDERS);
+    store.getState().toggleModuleSelect(ROUTES_UNIT);
+    expect(minimalRelayout).not.toHaveBeenCalled();
+  });
+
+  it("re-derives direct endpoints when highways change only while an extracted graph is open", () => {
+    const store = freshStore();
+    const minimalRelayout = vi.fn(async (_activity?: { label: string; detail?: string }) => undefined);
+    store.setState({ minimalRelayout, showHighways: true });
+
+    store.getState().toggleHighways();
+    expect(store.getState().showHighways).toBe(false);
+    expect(minimalRelayout).not.toHaveBeenCalled();
+
+    store.setState({
+      minimalSeedIds: ["ts:src/a.ts"],
+      minimalMemberIds: ["ts:src/a.ts"],
+    });
+    store.getState().toggleHighways();
+    store.getState().toggleHighways();
+
+    expect(minimalRelayout).toHaveBeenCalledTimes(2);
+    expect(minimalRelayout.mock.calls.map(([activity]) => activity?.label)).toEqual([
+      "Grouping links into highways…",
+      "Showing direct links…",
+    ]);
+  });
+
+  it("re-derives panel-selected and cleared review-node links before recentering", async () => {
+    const store = freshStore();
+    const minimalRelayout = vi.fn(async (_activity?: { label: string; detail?: string }) => undefined);
+    store.setState({
+      minimalSeedIds: ["ts:src/a.ts"],
+      minimalMemberIds: ["ts:src/a.ts"],
+      showHighways: true,
+      minimalRelayout,
+    });
+
+    store.getState().selectReviewNode(BUILD_ORDERS);
+    await Promise.resolve();
+    expect(store.getState().moduleSelected).toEqual(new Set([BUILD_ORDERS]));
+    expect(store.getState().recenterSeq).toBe(1);
+
+    store.getState().selectReviewNode(null);
+    await Promise.resolve();
+    expect(store.getState().moduleSelected).toEqual(new Set());
+    expect(minimalRelayout.mock.calls.map(([activity]) => activity?.label)).toEqual([
+      "Showing selected links…",
+      "Restoring grouped links…",
+    ]);
+  });
+
+  it("keeps every pre-armed expansion inside a review rollup collapsed", () => {
     const index = buildGraphIndex(NESTED_ROLLUP_ARTIFACT);
     const expanded = reviewExpansionForMatches(
       index,
-      [{ moduleId: "ts:src/a.ts" }, { moduleId: "ts:src/b.ts" }],
+      [{ moduleId: "ts:src/a.ts" }, { moduleId: "ts:src/b.ts" }, { moduleId: OUTSIDE_FILE }],
       new Map([["ts:src", ["ts:src/a.ts", "ts:src/b.ts"]]]),
     );
 
     expect(expanded.has("ts:src")).toBe(false);
-    expect(expanded.has("ts:src/a.ts")).toBe(true);
-    expect(expanded.has("ts:src/b.ts")).toBe(true);
+    expect(expanded.has("ts:src/a.ts")).toBe(false);
+    expect(expanded.has("ts:src/b.ts")).toBe(false);
+    expect(expanded.has(OUTSIDE_PACKAGE)).toBe(true);
+    expect(expanded.has(OUTSIDE_FILE)).toBe(true);
   });
 
   it("clears source inspection and relays out the still-mounted source when extracting", () => {

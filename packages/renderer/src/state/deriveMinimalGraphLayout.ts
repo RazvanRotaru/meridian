@@ -11,7 +11,7 @@ import type { Edge, Node } from "@xyflow/react";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { ModuleGraph } from "../derive/moduleGraph";
 import type { BlockDeps } from "../derive/blockDeps";
-import { buildMinimalSubgraph } from "../derive/minimalSubgraph";
+import { buildMinimalSubgraph, type MinimalSubgraphSpec } from "../derive/minimalSubgraph";
 import { layoutMinimalSubgraph } from "../layout/minimalSubgraphLayout";
 import type { PlacedRect } from "../layout/minimalPlacement";
 import { MAP_RELATION_POLICY, type LensRelationPolicy } from "../graph/lensRelationPolicy";
@@ -35,6 +35,13 @@ export interface MinimalCodeInputs {
   /** PR flow review: exact drawn callables whose incident dependencies must stay attached to the
    * callable instead of folding to their member files. */
   inspectionIds?: ReadonlySet<string>;
+  /** Project every dependency over the visible expanded frontier instead of folding eagerly to the
+   * member set. Collapsed files still remain the nearest visible endpoints. */
+  directDependencies?: boolean;
+  /** Optional PR-review projection: only these artifact nodes and their relationships are laid out.
+   * The caller supplies an ancestor-closed set so retained declarations keep their file/package
+   * frames while unrelated siblings, ghosts, and their incident edges disappear before ELK. */
+  visibleIds?: ReadonlySet<string>;
 }
 
 export async function deriveMinimalGraphLayout(
@@ -48,10 +55,12 @@ export async function deriveMinimalGraphLayout(
   hiddenIds: ReadonlySet<string> = new Set<string>(),
   relationPolicy: LensRelationPolicy = MAP_RELATION_POLICY,
 ): Promise<MinimalGraphLayout> {
-  const rollupExpansions = code.rollupExpansions ?? [];
+  const rollupExpansions = code.visibleIds === undefined
+    ? (code.rollupExpansions ?? [])
+    : filterMinimalRollupExpansions(code.rollupExpansions ?? [], code.visibleIds);
   const effectiveMembers = replaceExpandedRollups(memberIds, rollupExpansions, index);
   const effectiveOrigins = replaceExpandedRollups(originIds, rollupExpansions, index);
-  const spec = buildMinimalSubgraph(
+  const builtSpec = buildMinimalSubgraph(
     index,
     moduleGraph,
     effectiveMembers,
@@ -62,9 +71,13 @@ export async function deriveMinimalGraphLayout(
       flows: code.flows,
       expandableGroupIds: code.expandableGroupIds,
       inspectionIds: code.inspectionIds,
+      directDependencies: code.directDependencies,
     },
     hiddenIds,
   );
+  const spec = code.visibleIds === undefined
+    ? builtSpec
+    : filterMinimalSubgraph(builtSpec, code.visibleIds);
   const groupExpansions = rollupExpansions.map((expansion) => ({
     ...expansion,
     tier: [...originIds].some((id) => index.isWithinFocus(expansion.rootId, id))
@@ -72,6 +85,74 @@ export async function deriveMinimalGraphLayout(
       : "persistent" as const,
   }));
   return layoutMinimalSubgraph(spec, basePositions, arrange, relationPolicy, groupExpansions);
+}
+
+/** Canonical review visibility: exact hunk-matched nodes plus their root-to-node containment chain.
+ * Keeping this predicate beside the layout filter prevents UI wording or graph curation tiers from
+ * becoming an accidental second definition of "in the diff". */
+export function reviewDiffVisibleIds(index: GraphIndex, affectedIds: ReadonlySet<string>): Set<string> {
+  const visible = new Set<string>();
+  for (const id of affectedIds) {
+    const ancestors = index.ancestorsOf(id);
+    if (ancestors.length === 0) {
+      // Defensive fallback for a transient affected id while a prepared graph is being swapped.
+      // The later spec filter still ignores it unless the id is actually present in the scene.
+      visible.add(id);
+      continue;
+    }
+    ancestors.forEach((node) => visible.add(node.id));
+  }
+  return visible;
+}
+
+/** Remove non-diff context before layout so hiding it also compacts expanded file frames. */
+export function filterMinimalSubgraph(
+  spec: MinimalSubgraphSpec,
+  visibleIds: ReadonlySet<string>,
+): MinimalSubgraphSpec {
+  const expansions = spec.expansions.flatMap((expansion) => {
+    if (!visibleIds.has(expansion.fileId)) {
+      return [];
+    }
+    const nodes = expansion.nodes.filter((node) => visibleIds.has(node.id));
+    const retained = new Set(nodes.map((node) => node.id));
+    return [{
+      ...expansion,
+      nodes,
+      edges: expansion.edges.filter((edge) => retained.has(edge.source) && retained.has(edge.target)),
+    }];
+  });
+  return {
+    nodes: spec.nodes.filter((node) => visibleIds.has(node.id)),
+    edges: spec.edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)),
+    expansions,
+  };
+}
+
+/** Apply the same projection to opened rollup packages before they replace their logical member. */
+export function filterMinimalRollupExpansions(
+  expansions: readonly MinimalRollupExpansion[],
+  visibleIds: ReadonlySet<string>,
+): MinimalRollupExpansion[] {
+  return expansions.flatMap((expansion) => {
+    if (!visibleIds.has(expansion.rootId)) {
+      return [];
+    }
+    const nodes = expansion.nodes.filter((node) => visibleIds.has(node.id));
+    const retained = new Set(nodes.map((node) => node.id));
+    const frontierIds = expansion.frontierIds.filter((id) => retained.has(id));
+    // With no visible frontier, leave the logical rollup as its compact summary card instead of
+    // replacing it with an empty expanded frame.
+    if (frontierIds.length === 0) {
+      return [];
+    }
+    return [{
+      ...expansion,
+      frontierIds,
+      nodes,
+      edges: expansion.edges.filter((edge) => retained.has(edge.source) && retained.has(edge.target)),
+    }];
+  });
 }
 
 /** Replace a logical rollup member only for derivation. Store membership remains anchored to the

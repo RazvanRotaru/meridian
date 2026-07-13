@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Edge, Node } from "@xyflow/react";
 import { RIBBON_EDGE_TYPE, type RibbonEdgeData } from "../../layout/parallelWires";
+import { BUNDLE_EDGE_TYPE } from "../../layout/edgeBundling";
+import { SPOOL_EDGE_TYPE } from "../../layout/edgeSpooling";
 import { GHOST_HIERARCHY_EDGE_TYPE } from "../edges/GhostHierarchyEdge";
 import { prepareCanvasEdges } from "./presentationEdgePipeline";
 
@@ -57,5 +59,58 @@ describe("presentation-safe canvas edge preparation", () => {
     expect(result.semanticEdges.every((edge) => edge.type === undefined)).toBe(true);
     expect(result.hierarchyEdges).toEqual([spoke]);
     expect(result.hierarchyEdges[0]).toBe(spoke);
+  });
+
+  it("keeps a selected fan strand direct while the unselected remainder still uses its highway", () => {
+    const fan = Array.from({ length: 7 }, (_, index) => semantic(`e${index}`, `source-${index}`, "hub"));
+    const result = prepareCanvasEdges(
+      fan,
+      [...fan.map((edge) => node(edge.source)), node("hub")],
+      new Set(["source-0"]),
+      true,
+      { bundling: false, routing: false, spooling: true },
+    );
+
+    expect(result.semanticEdges.find((edge) => edge.id === "e0")?.type).toBeUndefined();
+    expect(result.semanticEdges.filter((edge) => edge.id !== "e0")
+      .every((edge) => edge.type === SPOOL_EDGE_TYPE)).toBe(true);
+  });
+
+  it("restores exact node-to-node strands when highways are disabled", () => {
+    const frame = (id: string): Node => ({ id, position: { x: 0, y: 0 }, data: {} });
+    const child = (id: string, parentId: string): Node => ({
+      id,
+      parentId,
+      position: { x: 0, y: 0 },
+      data: {},
+    });
+    const nodes = [
+      frame("left"),
+      frame("right"),
+      ...Array.from({ length: 4 }, (_, index) => child(`a${index}`, "left")),
+      ...Array.from({ length: 4 }, (_, index) => child(`b${index}`, "right")),
+    ];
+    const exact = Array.from({ length: 4 }, (_, index) => semantic(`e${index}`, `a${index}`, `b${index}`));
+
+    const highways = prepareCanvasEdges(
+      exact,
+      nodes,
+      new Set(),
+      true,
+      { bundling: true, routing: false, spooling: false },
+    ).semanticEdges;
+    const direct = prepareCanvasEdges(
+      exact,
+      nodes,
+      new Set(),
+      false,
+      { bundling: true, routing: true, spooling: true },
+    ).semanticEdges;
+
+    expect(highways).toHaveLength(1);
+    expect(highways[0].type).toBe(BUNDLE_EDGE_TYPE);
+    expect(direct.map(({ id, source, target, type }) => ({ id, source, target, type }))).toEqual(
+      exact.map(({ id, source, target }) => ({ id, source, target, type: undefined })),
+    );
   });
 });

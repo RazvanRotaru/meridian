@@ -22,6 +22,9 @@ import type { BlockData } from "../../derive/moduleLevel";
 const SELECT_CLICK_DELAY_MS = 250;
 
 export interface NodeInteractionOverrides {
+  /** A mount may fully own a double-click. Returning true suppresses the surface's default
+   * navigation; PR review uses this to open package subgraphs without leaving the review. */
+  onDoubleClick?: (event: React.MouseEvent, node: Node) => boolean;
   /** A pre-navigation side effect; navigation always continues afterward. */
   onBeforeDoubleClick?: (event: React.MouseEvent, node: Node) => void;
   /** Source module surfaces can traverse ghosts without pinning them. The minimal overlay keeps its
@@ -360,6 +363,9 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
     // selection before running the navigation path.
     clearPendingSelect();
     setGhostPaintContexts(new Map());
+    if (overrides.onDoubleClick?.(event, node) === true) {
+      return;
+    }
     overrides.onBeforeDoubleClick?.(event, node);
     const surfaceActions = { setModuleFocus, revealModule, revealServiceGhost };
     const navigation = navigationForNode(node, spec);

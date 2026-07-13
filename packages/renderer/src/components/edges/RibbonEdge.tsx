@@ -5,8 +5,8 @@
  * just that stripe), packed edge-to-edge so the stack reads as one striped band — never as
  * separate overlapping wires. Stripes offset PERPENDICULAR to the cable so the band keeps its
  * width on diagonal runs. The heaviest strand rides mid-cable (parallelWires seats it there) and
- * carries the single arrowhead; a transparent spine centred on the cable carries the hit area and
- * the direction pulse. Stripe width is uniform — inside a cable, weight speaks through the
+ * carries the single arrowhead; a transparent spine centred on the cable carries the hit area.
+ * Stripe width is uniform — inside a cable, weight speaks through the
  * tooltip's/inspector's ×N, not width (varying widths would break the band's packing).
  *
  * Boundary cables (outside-view or cross-package) keep the dash vocabulary, but per-stripe dashes
@@ -19,7 +19,7 @@
 import { BaseEdge, getBezierPath, type Edge, type EdgeProps } from "@xyflow/react";
 import { weightOf, type RibbonEdgeData } from "../../layout/parallelWires";
 import { isDashedBoundary } from "../../layout/edgeBoundary";
-import { isHiddenWire, WirePulse } from "./WireEdge";
+import { isHiddenWire } from "./WireEdge";
 import { WireLabel } from "./WireLabel";
 import { relationKindOf } from "../../graph/relationEdge";
 
@@ -116,9 +116,8 @@ export function RibbonEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosit
       ) : (
         stripes
       )}
-      {/* The invisible spine: one hit area for the whole cable, and the direction pulse's track. */}
+      {/* The invisible spine supplies one hit area for the whole cable. */}
       <BaseEdge id={id} path={spine} style={SPINE} interactionWidth={interactionWidth ?? 16} />
-      <WirePulse path={spine} style={{ opacity: anyLit ? 1 : 0, strokeWidth: bandWidth }} data={{ pulse: ribbon.pulse }} />
       {routedPath ? null : (
         <WireLabel x={labelX} y={labelY} text={ribbonLabelText(members, markerIndex)} style={{ opacity: anyLit ? 1 : 0 }} data={{ pulse: ribbon.pulse }} color={dominantStrokeOf(members, markerIndex)} />
       )}

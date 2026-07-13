@@ -18,7 +18,7 @@ describe("GraphSurface paint ownership", () => {
     expect(ownership.highwaySeeds).toBe(selected);
   });
 
-  it("gives transient PR review paint and highway precedence over retained ghost provenance", () => {
+  it("gives transient PR review paint precedence while retaining literal selection for highway extraction", () => {
     const selected = new Set(["ghost"]);
     const reviewLit = new Set(["review-target"]);
     const provenance = new Set(["old-owner"]);
@@ -28,7 +28,7 @@ describe("GraphSurface paint ownership", () => {
     expect(ownership.protectedSelection).toBe(selected);
     expect(ownership.paintSeeds).toBe(reviewLit);
     expect(ownership.focusSeeds).toBeNull();
-    expect(ownership.highwaySeeds).toBe(ownership.paintSeeds);
+    expect(ownership.highwaySeeds).toEqual(new Set(["ghost", "review-target"]));
   });
 
   it("ignores review state outside review mounts and resumes ghost provenance after review paint clears", () => {
@@ -61,6 +61,22 @@ describe("GraphSurface paint ownership", () => {
     expect(ownership.paintSeeds).toBe(contextTargets);
     expect(ownership.focusSeeds).toBeNull();
     expect(ownership.highwaySeeds).toBe(contextTargets);
+  });
+
+  it("keeps literal selection directly traceable under a frozen surface paint owner", () => {
+    const selected = new Set(["selected"]);
+    const contextTargets = new Set(["changed"]);
+
+    const ownership = resolveSurfacePaintOwnership(
+      selected,
+      null,
+      false,
+      null,
+      contextTargets,
+    );
+
+    expect(ownership.paintSeeds).toBe(contextTargets);
+    expect(ownership.highwaySeeds).toEqual(new Set(["changed", "selected"]));
   });
 
   it("extracts only strands represented by the literal selection while retaining its paint owner's highway strand", () => {

@@ -19,9 +19,14 @@ import { ExistingCommentLinks, ExistingCommentList } from "./ExistingReviewComme
 import { CommentButton, CommentComposer, CommentList } from "./ReviewComments";
 import { UnitRow } from "./ReviewUnitRow";
 import { isHeadSideReviewComment } from "./useCodeReviewComments";
+import { isReviewPathInScope } from "../../derive/reviewPathScope";
 import { basename, CARET, MONO, NO_FOCUS_RING, SECTION_COUNT, SECTION_HEAD, SECTION_TITLE, TICK_BTN, TICK_COLOR, TICK_GLYPH, type CommentTarget } from "./reviewPanelKit";
 
 const STATUS_COLOR: Record<string, string> = { added: "#3FB950", modified: "#D29922", deleted: "#F85149", renamed: "#7DD3FC" };
+// Large PRs keep every file row visible, but mounting every unit/comment body at once multiplies the
+// initial DOM and global hover/repaint work. Scoped and focused reviews normally fall below this
+// threshold and retain the convenient expanded-by-default checklist.
+const AUTO_EXPAND_FILE_LIMIT = 40;
 
 /** Drafts grouped by row in one pass (vs a per-row scan on every render). */
 type DraftsByRow = ReadonlyMap<string, ReviewComment[]>;
@@ -45,6 +50,8 @@ function ReviewFilesSectionImpl() {
   const comments = useBlueprint((state) => state.reviewComments);
   const discussion = useBlueprint((state) => state.prDiscussion);
   const commentsVisible = useBlueprint((state) => state.reviewCommentsVisible);
+  const pathScope = useBlueprint((state) => state.reviewPathScope);
+  const focusedSubgraphPaths = useBlueprint((state) => state.reviewFocusedSubgraph?.filePaths ?? null);
   const { setReviewFilesSort } = useBlueprintActions();
   const activeGroup = useActiveChangeGroup();
   const [open, setOpen] = useState(true);
@@ -56,8 +63,15 @@ function ReviewFilesSectionImpl() {
       const member = new Set(activeGroup.files);
       scoped = allFiles.filter((file) => member.has(file.path));
     }
+    if (pathScope !== null) {
+      scoped = scoped.filter((file) => isReviewPathInScope(file.path, pathScope));
+    }
+    if (focusedSubgraphPaths !== null) {
+      const member = new Set(focusedSubgraphPaths);
+      scoped = scoped.filter((file) => member.has(file.path));
+    }
     return [...scoped].sort(sort === "risk" ? byRisk : byGraphThenPath);
-  }, [allFiles, activeGroup, sort]);
+  }, [allFiles, activeGroup, focusedSubgraphPaths, pathScope, sort]);
   const draftIndex = useMemo(() => {
     const byRow = new Map<string, ReviewComment[]>();
     const countsByFile = new Map<string, DraftCounts>();
@@ -89,7 +103,7 @@ function ReviewFilesSectionImpl() {
     return null;
   }
   const viewed = files.filter((file) => fileViewState(file, unitTicks, fileTicks) === "done").length;
-  const unmatchedCount = allFiles.filter((file) => file.moduleId === null).length;
+  const unmatchedCount = files.filter((file) => file.moduleId === null).length;
   return (
     <section>
       <div style={{ ...SECTION_HEAD, boxSizing: "border-box", cursor: "default" }}>
@@ -97,7 +111,7 @@ function ReviewFilesSectionImpl() {
           <span style={CARET}>{open ? "▾" : "▸"}</span>
           <span style={SECTION_TITLE}>Files changed</span>
           <span style={SECTION_COUNT} title={unmatchedCount > 0 ? "the graph shows the base branch, added files join it after Extract head graph." : undefined}>
-            {unmatchedCount > 0 ? `${allFiles.length} files · ${unmatchedCount} not in this graph` : `${viewed}/${files.length} viewed`}
+            {unmatchedCount > 0 ? `${files.length} files · ${unmatchedCount} not in this graph` : `${viewed}/${files.length} viewed`}
           </span>
         </button>
         <div style={SORT_TOGGLE} role="group" aria-label="Sort changed files">
@@ -123,6 +137,7 @@ function ReviewFilesSectionImpl() {
             commentsVisible={commentsVisible}
             composer={composer}
             onComposer={setComposer}
+            defaultExpanded={files.length <= AUTO_EXPAND_FILE_LIMIT}
           />
         ))}
     </section>
@@ -139,8 +154,9 @@ function FileRow(props: {
   commentsVisible: boolean;
   composer: CommentTarget | null;
   onComposer: (target: CommentTarget | null) => void;
+  defaultExpanded: boolean;
 }) {
-  const { file, unitTicks, fileTicks, drafts, draftCounts, githubComments, commentsVisible, composer, onComposer } = props;
+  const { file, unitTicks, fileTicks, drafts, draftCounts, githubComments, commentsVisible, composer, onComposer, defaultExpanded } = props;
   const currentNodes = useBlueprint((state) => state.index.nodesById);
   const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
   const { toggleReviewFileViewed, addReviewComment, setReviewLit, focusReviewFile, selectReviewNode } = useBlueprintActions();
@@ -153,7 +169,7 @@ function FileRow(props: {
   useEffect(() => {
     setOpenOverride(null);
   }, [view]);
-  const expanded = openOverride ?? (view !== "done");
+  const expanded = openOverride ?? (defaultExpanded && view !== "done");
   const fileDrafts = drafts.get(rowKey(file.path, null)) ?? [];
   const counts = draftCounts.get(file.path) ?? { file: 0, unit: 0, line: 0 };
   const aggregateDraftCount = counts.file + counts.unit + counts.line;

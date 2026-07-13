@@ -7,8 +7,10 @@
  * Double-click and breadcrumbs dive explicitly. Wheel/pinch previews an already-mounted parent,
  * then commits it as outward navigation after crossing the threshold. The retained anchor stays
  * centred while the camera returns to reading zoom, and the same transition can continue through
- * every available level. A Minimal Graph uses an isolated React Flow provider above the still-
- * mounted source so its outward handoff can reveal the exact source viewport in place.
+ * every available level. An ordinary Minimal Graph uses an isolated React Flow provider above the
+ * still-mounted source so its outward handoff can reveal the exact source viewport in place. A PR
+ * review is an explicit navigation boundary, so its covered source surface is unmounted instead of
+ * paying for two complete React Flow scenes while a large review is open.
  *
  *   1. `filterVisible` drops file cards a category/Tests toggle hides (group cards always stay) —
  *      a pure VISIBILITY filter over the laid-out graph, so positions are untouched;
@@ -55,6 +57,8 @@ const SERVICE_DOMAIN_KIND = "serviceDomain";
 
 export function ModuleMapView() {
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
+  const reviewActive = useBlueprint((state) => state.review !== null);
+  const sourceMounted = !minimalOpen || !reviewActive;
   const [minimalView, setMinimalView] = useState<"graph" | "codebase">("graph");
   const codebaseButtonRef = useRef<HTMLButtonElement>(null);
   const backButtonRef = useRef<HTMLButtonElement>(null);
@@ -82,20 +86,21 @@ export function ModuleMapView() {
   };
   return (
     <div style={SURFACE_STYLE}>
-      {/* Simultaneously mounted ReactFlow instances need isolated stores; otherwise the overlay's
-          nodes and viewport overwrite the source scene it is supposed to reveal. Keep the source
-          visually mounted for the fade handoff, but remove its covered controls from pointer,
-          keyboard, and accessibility navigation while Minimal Graph owns the interaction layer. */}
-      <div
-        data-graph-surface="source"
-        style={SOURCE_SURFACE_LAYER_STYLE}
-        inert={minimalOpen}
-        aria-hidden={minimalOpen || undefined}
-      >
-        <GraphSurfaceProvider>
-          <ModuleSourceSurface covered={minimalOpen} />
-        </GraphSurfaceProvider>
-      </div>
+      {/* Ordinary Minimal Graphs retain the source for their fade/zoom handoff. PR review disables
+          that handoff, so keeping the repo-scale React Flow mounted underneath only doubles the
+          DOM/paint workload and can exhaust the renderer on large changes. */}
+      {sourceMounted ? (
+        <div
+          data-graph-surface="source"
+          style={SOURCE_SURFACE_LAYER_STYLE}
+          inert={minimalOpen}
+          aria-hidden={minimalOpen || undefined}
+        >
+          <GraphSurfaceProvider>
+            <ModuleSourceSurface covered={minimalOpen} />
+          </GraphSurfaceProvider>
+        </div>
+      ) : null}
       {minimalOpen ? (
         <div data-graph-surface="minimal" style={MINIMAL_OVERLAY_STYLE}>
           <div style={REVIEW_SPLIT_STYLE}>

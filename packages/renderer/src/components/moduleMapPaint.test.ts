@@ -9,7 +9,7 @@ import type { GraphArtifact, GraphNode } from "@meridian/core";
 import type { Edge, Node } from "@xyflow/react";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { ghostGroupId } from "../derive/groupGhosts";
-import { emphasize, filterExternalGhosts, filterRelationsForLens, filterVisible, type HideOptions } from "./moduleMapPaint";
+import { emphasize, filterExternalGhosts, filterGhostNodes, filterRelationsForLens, filterVisible, type HideOptions } from "./moduleMapPaint";
 import { SERVICE_RELATION_POLICY } from "../graph/lensRelationPolicy";
 
 /** Baseline options with nothing hidden; tests override the one filter they exercise. */
@@ -104,6 +104,37 @@ describe("filterExternalGhosts", () => {
     const nodes = [fileNode("ts:src/app.ts"), ghostNode("ext:rxjs#BehaviorSubject", "external")];
     const edges = [ghostEdge(nodes[0].id, nodes[1].id)];
     const shown = filterExternalGhosts(nodes, edges, true);
+    expect(shown.nodes).toBe(nodes);
+    expect(shown.edges).toBe(edges);
+  });
+});
+
+describe("filterGhostNodes", () => {
+  it("hides all ghost kinds and every ghost-marked or incident wire without moving real cards", () => {
+    const source = fileNode("ts:src/app.ts", { position: { x: 12, y: 34 } });
+    const peer = fileNode("ts:src/peer.ts", { position: { x: 420, y: 80 } });
+    const workspace = ghostNode("ts:src/service.ts#Service");
+    const external = ghostNode("ext:rxjs#BehaviorSubject", "external");
+    const realWire = edge(source.id, peer.id);
+    const workspaceWire = ghostEdge(source.id, workspace.id);
+    const externalWire = ghostEdge(external.id, peer.id);
+    const danglingGhostWire = ghostEdge(source.id, "unresolved:dynamic-call");
+
+    const shown = filterGhostNodes(
+      [source, workspace, peer, external],
+      [realWire, workspaceWire, externalWire, danglingGhostWire],
+      false,
+    );
+
+    expect(shown.nodes.map((node) => node.id)).toEqual([source.id, peer.id]);
+    expect(shown.edges.map((wire) => wire.id)).toEqual([realWire.id]);
+    expect(shown.nodes.map((node) => node.position)).toEqual([{ x: 12, y: 34 }, { x: 420, y: 80 }]);
+  });
+
+  it("returns the laid-out arrays unchanged while ghosts are shown", () => {
+    const nodes = [fileNode("ts:src/app.ts"), ghostNode("ts:src/service.ts#Service")];
+    const edges = [ghostEdge(nodes[0].id, nodes[1].id)];
+    const shown = filterGhostNodes(nodes, edges, true);
     expect(shown.nodes).toBe(nodes);
     expect(shown.edges).toBe(edges);
   });

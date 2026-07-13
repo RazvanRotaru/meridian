@@ -3,7 +3,7 @@ import type { PanelPosition } from "@xyflow/react";
 import { CHROME_EDGE, MINIMAP_H } from "../canvas/flowCanvasProps";
 import { CONTROL_PANEL_WIDTH } from "./panelKit";
 
-export type CanvasActionMode = "base" | "extract" | "minimal" | "codebase";
+export type CanvasActionMode = "base" | "extract" | "minimal" | "review-focus" | "codebase";
 export type CanvasActionLayout = "row" | "stacked";
 
 export interface CanvasActionPlacement {
@@ -98,13 +98,15 @@ const BASE_BAR_WIDTH = 144;
 const BAR_WIDTHS: Record<CanvasActionMode, number> = {
   base: BASE_BAR_WIDTH,
   extract: 262,
-  minimal: 389,
+  minimal: 524,
+  "review-focus": 566,
   codebase: 198,
 };
 const STACKED_BAR_WIDTHS: Record<CanvasActionMode, number> = {
   base: BASE_BAR_WIDTH,
   extract: BASE_BAR_WIDTH,
-  minimal: 199,
+  minimal: 334,
+  "review-focus": 376,
   codebase: 154,
 };
 const CENTERED_ANCHOR_STYLE: React.CSSProperties = {

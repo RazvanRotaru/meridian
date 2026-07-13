@@ -6,7 +6,7 @@
 
 import { BaseEdge, type EdgeProps } from "@xyflow/react";
 import type { RoutedEdgeData } from "../../layout/edgeRouting";
-import { isHiddenWire, WirePulse } from "./WireEdge";
+import { isHiddenWire } from "./WireEdge";
 
 export function RoutedEdge({ id, style, markerEnd, data, interactionWidth }: EdgeProps) {
   if (isHiddenWire(data)) {
@@ -14,9 +14,6 @@ export function RoutedEdge({ id, style, markerEnd, data, interactionWidth }: Edg
   }
   const path = (data as RoutedEdgeData).routedPath;
   return (
-    <>
-      <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} interactionWidth={interactionWidth} />
-      <WirePulse path={path} style={style} data={data} />
-    </>
+    <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} interactionWidth={interactionWidth} />
   );
 }

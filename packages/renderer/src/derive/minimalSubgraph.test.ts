@@ -257,12 +257,18 @@ const DEP_NODES = [
 ];
 const DEP_IMPORTS = [importEdge("m:a", "m:b"), importEdge("m:b", "m:c")];
 
-function buildWithCoupling(coupling: GraphEdge[], members: string[] = ["m:a", "m:b"]) {
+function buildWithCoupling(
+  coupling: GraphEdge[],
+  members: string[] = ["m:a", "m:b"],
+  options: { expanded?: string[]; inspectionIds?: string[]; directDependencies?: boolean } = {},
+) {
   const index = buildGraphIndex({ nodes: DEP_NODES, edges: [...DEP_IMPORTS, ...coupling] } as unknown as GraphArtifact);
   return buildMinimalSubgraph(index, buildModuleGraph(index), new Set(members), new Set(members), {
-    expanded: new Set(),
+    expanded: new Set(options.expanded ?? []),
     blockDeps: { edges: coupling },
     flows: {},
+    inspectionIds: options.inspectionIds === undefined ? undefined : new Set(options.inspectionIds),
+    directDependencies: options.directDependencies,
   });
 }
 
@@ -307,6 +313,63 @@ describe("buildMinimalSubgraph — per-kind dep wires between member files", () 
     expect(projected).toHaveLength(1);
     expect(projected[0]).toMatchObject({ weight: 2 });
     expect(new Set(projected[0].underlyingEdgeIds)).toEqual(new Set(coupling.map((edge) => edge.id)));
+  });
+
+  it("keeps unselected dependencies folded while attaching a selected callable directly", () => {
+    const coupling = [callsEdge("fn:foo", "fn:baz"), callsEdge("fn:bar", "fn:baz")];
+    const { edges } = buildWithCoupling(coupling, ["m:a", "m:b"], {
+      expanded: ["m:a", "m:b"],
+      inspectionIds: ["fn:foo"],
+    });
+    const deps = edges.filter((edge) => edge.kind === "dep" && edge.ghost !== true);
+
+    expect(deps).toContainEqual(expect.objectContaining({
+      id: "dep:calls:fn:foo->fn:baz",
+      source: "fn:foo",
+      target: "fn:baz",
+      weight: 1,
+      underlyingEdgeIds: [coupling[0].id],
+    }));
+    expect(deps).toContainEqual(expect.objectContaining({
+      id: "dep:calls:m:a->m:b",
+      source: "m:a",
+      target: "m:b",
+      weight: 1,
+      underlyingEdgeIds: [coupling[1].id],
+    }));
+    expect(deps).toHaveLength(2);
+  });
+
+  it("projects every dependency onto exact expanded endpoints when direct links are requested", () => {
+    const coupling = [callsEdge("fn:foo", "fn:baz"), callsEdge("fn:bar", "fn:baz")];
+    const { edges } = buildWithCoupling(coupling, ["m:a", "m:b"], {
+      expanded: ["m:a", "m:b"],
+      directDependencies: true,
+    });
+    const deps = edges.filter((edge) => edge.kind === "dep" && edge.ghost !== true);
+
+    expect(deps.map((edge) => edge.id).sort()).toEqual([
+      "dep:calls:fn:bar->fn:baz",
+      "dep:calls:fn:foo->fn:baz",
+    ]);
+    expect(new Set(deps.flatMap((edge) => edge.underlyingEdgeIds ?? []))).toEqual(
+      new Set(coupling.map((edge) => edge.id)),
+    );
+    expect(deps.every((edge) => edge.weight === 1)).toBe(true);
+  });
+
+  it("retains a collapsed file aggregate in direct mode when no exact declaration is visible", () => {
+    const coupling = [callsEdge("fn:foo", "fn:baz"), callsEdge("fn:bar", "fn:baz")];
+    const { edges } = buildWithCoupling(coupling, ["m:a", "m:b"], { directDependencies: true });
+
+    expect(edges.filter((edge) => edge.kind === "dep" && edge.ghost !== true)).toEqual([
+      expect.objectContaining({
+        id: "dep:calls:m:a->m:b",
+        source: "m:a",
+        target: "m:b",
+        weight: 2,
+      }),
+    ]);
   });
 });
 

@@ -7,7 +7,7 @@
 
 import { BaseEdge, getBezierPath, Position, type EdgeProps } from "@xyflow/react";
 import type { SpoolEdgeData } from "../../layout/edgeSpooling";
-import { isHiddenWire, WirePulse } from "./WireEdge";
+import { isHiddenWire } from "./WireEdge";
 import { WireLabel, wireLabelText } from "./WireLabel";
 
 /** Length of the straight shared-trunk segment at a hub's handle. Fixed and hub-derived on purpose:
@@ -70,7 +70,6 @@ export function SpoolEdge({
     return (
       <>
         <BaseEdge id={id} path={plain} style={style} markerEnd={markerEnd} interactionWidth={interactionWidth} />
-        <WirePulse path={plain} style={style} data={data} />
         <WireLabel x={plainLabelX} y={plainLabelY} text={wireLabelText(data)} style={style} data={data} />
       </>
     );
@@ -98,7 +97,6 @@ export function SpoolEdge({
   return (
     <>
       <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} interactionWidth={interactionWidth} />
-      <WirePulse path={path} style={style} data={data} />
       <WireLabel x={labelX} y={labelY} text={wireLabelText(data)} style={style} data={data} />
     </>
   );
