@@ -106,6 +106,45 @@ describe("CodeBlock edge evidence", () => {
 });
 
 describe("CodeBlock review comments", () => {
+  it("folds large unchanged gaps while keeping changed rows and context visible", () => {
+    const code = Array.from({ length: 40 }, (_value, index) => `line ${index + 1}`).join("\n");
+    const html = renderToStaticMarkup(createElement(CodeBlock, {
+      code,
+      startLine: 1,
+      showGutter: true,
+      changedLineKinds: new Map([[20, "modified" as const]]),
+      foldUnchanged: true,
+    }));
+
+    expect(html).toContain('aria-label="Expand 16 unchanged lines"');
+    expect(html).toContain('aria-label="Expand 17 unchanged lines"');
+    expect(html).toContain('data-source-line="20"');
+    expect(html).toContain('data-source-line="17"');
+    expect(html).toContain('data-source-line="23"');
+    expect(html).not.toContain('data-source-line="16"');
+    expect(html).not.toContain('data-source-line="24"');
+  });
+
+  it("never folds an unchanged row that owns existing or pending review comments", () => {
+    const code = Array.from({ length: 60 }, (_value, index) => `line ${index + 1}`).join("\n");
+    const html = renderWithStore(createElement(CodeBlock, {
+      code,
+      startLine: 1,
+      showGutter: true,
+      changedLineKinds: new Map([[40, "modified" as const]]),
+      existingComments: [existingComment("Keep this context", 8)],
+      pendingComments: [pendingComment("Pending context", 20)],
+      foldUnchanged: true,
+    }));
+
+    expect(html).toContain('data-source-line="8"');
+    expect(html).toContain('data-existing-review-comments-line="8"');
+    expect(html).toContain('data-source-line="20"');
+    expect(html).toContain('data-pending-review-comments-line="20"');
+    expect(html).toContain("Keep this context");
+    expect(html).toContain("Pending context");
+  });
+
   it("marks only commentable source rows and gives each one an accessible line action", () => {
     const html = renderToStaticMarkup(createElement(CodeBlock, {
       code: "first\nsecond\nthird",

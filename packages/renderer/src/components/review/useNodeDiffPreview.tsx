@@ -335,6 +335,7 @@ function NodeDiffPreviewCard(props: {
             }}
             existingComments={existingComments}
             pendingComments={pendingComments}
+            foldUnchanged
           />
         ) : null}
         {preview.view?.truncated ? <div style={TRUNCATED_STYLE}>Snippet truncated by the server.</div> : null}

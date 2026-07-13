@@ -124,6 +124,7 @@ function sourceModal(options: {
     reviewFileDelta: {
       [FILE]: { added: 1, deleted: status === "deleted" ? 4 : 1, status: status === "deleted" ? "removed" : "modified" },
     },
+    minimalSeedIds: [NODE.id],
     codeView: {
       node: NODE,
       code: "before\nstill before\nchanged\nafter",
@@ -141,6 +142,13 @@ function sourceModal(options: {
 }
 
 describe("CodePanel review comments", () => {
+  it("keeps code-button source in the shared centered popup during an active graph review", () => {
+    const markup = sourceModal({ live: true });
+
+    expect(markup).toContain('style="width:70vw;max-width:900px;height:75vh');
+    expect(markup).not.toContain('style="width:100%;max-width:none;height:100%');
+  });
+
   it("offers line drafts only on the visible GitHub diff/context rows", () => {
     const markup = sourceModal({ live: true });
 
