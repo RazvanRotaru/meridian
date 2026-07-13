@@ -65,6 +65,7 @@ export function Divider() {
 
 const BADGE_STYLE: React.CSSProperties = {
   display: "inline-flex",
+  flexShrink: 0,
   alignItems: "center",
   justifyContent: "center",
   minWidth: 16,
@@ -77,6 +78,7 @@ const BADGE_STYLE: React.CSSProperties = {
   fontSize: 10.5,
   fontWeight: 600,
   lineHeight: 1,
+  whiteSpace: "nowrap",
 };
 
 export function CountBadge(props: { children: ReactNode; style?: React.CSSProperties }) {
