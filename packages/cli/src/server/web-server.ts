@@ -26,6 +26,7 @@ import {
 import { handleGenerate, sendGraph, sendMeta, sendView } from "./web-graph";
 import {
   handlePullRequestChecks,
+  handlePullRequestCommentMutation,
   handlePullRequestComments,
   handlePullRequestFileContent,
   handlePullRequestFiles,
@@ -175,6 +176,10 @@ async function handleApiPost(ctx: Context, request: IncomingMessage, response: S
   }
   if (pathname === "/api/prs/review") {
     await handleSubmitReview(ctx, request, response, url.searchParams);
+    return;
+  }
+  if (pathname === "/api/prs/comments") {
+    await handlePullRequestCommentMutation(ctx, request, response, url.searchParams);
     return;
   }
   if (pathname === "/api/prs/related") {

@@ -167,7 +167,7 @@ function draft(id: string, nodeId: string | null, line: number | null): ReviewCo
 }
 
 function existing(side: PrGitHubComment["side"], line: number | null): PrGitHubComment {
-  return { path: PR_PATH, side, line, body: "existing", author: "octo", updatedAt: "2026-07-12T00:00:00Z", url: "" };
+  return { id: 401, inReplyToId: null, viewerCanEdit: false, path: PR_PATH, side, line, body: "existing", author: "octo", updatedAt: "2026-07-12T00:00:00Z", url: "" };
 }
 
 function rfNode(id: string, semanticDepth: number): Node {

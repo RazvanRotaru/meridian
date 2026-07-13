@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { GraphNode } from "@meridian/core";
 import type { PrGitHubComment } from "../../state/prTypes";
-import { codeReviewComments, isHeadSideReviewComment } from "./useCodeReviewComments";
+import type { ReviewComment } from "../../state/reviewTicksPref";
+import { codeReviewComments, codeReviewDrafts, commentableReviewLines, isHeadSideReviewComment } from "./useCodeReviewComments";
 import {
   codePreviewNode,
   placeNodeDiffPreview,
-  previewFileAllowsLineComments,
-  visiblePreviewCommentLines,
   type PreviewRect,
 } from "./useNodeDiffPreview";
 
@@ -16,6 +15,9 @@ function existingComment(
   overrides: Partial<PrGitHubComment> = {},
 ): PrGitHubComment {
   return {
+    id: 301,
+    inReplyToId: null,
+    viewerCanEdit: false,
     path: "src/live.ts",
     line,
     side: "RIGHT",
@@ -23,6 +25,24 @@ function existingComment(
     author: "octo",
     updatedAt: "2026-07-12T00:00:00.000Z",
     url: "https://github.com/o/r/pull/7#discussion_r1",
+    ...overrides,
+  };
+}
+
+function pendingComment(
+  body: string,
+  line: number | null,
+  overrides: Partial<ReviewComment> = {},
+): ReviewComment {
+  return {
+    id: `draft-${body}`,
+    path: "src/live.ts",
+    nodeId: null,
+    line,
+    lineRevision: "head-a",
+    anchorLabel: line === null ? "live.ts" : `L${line}`,
+    body,
+    at: "2026-07-12T00:00:00.000Z",
     ...overrides,
   };
 }
@@ -113,27 +133,15 @@ describe("codePreviewNode", () => {
   });
 });
 
-describe("visiblePreviewCommentLines", () => {
-  it("offers every visible HEAD-side row in an active PR review", () => {
-    expect([...visiblePreviewCommentLines(19, "one\ntwo\nthree", true)]).toEqual([19, 20, 21]);
+describe("commentableReviewLines", () => {
+  it("offers only visible rows inside GitHub's diff/context ranges", () => {
+    expect([...commentableReviewLines([{ start: 18, end: 20 }, { start: 30, end: 40 }], 19, "one\ntwo\nthree", true)]).toEqual([19, 20]);
   });
 
   it("offers no line targets outside an active PR review or before source loads", () => {
-    expect(visiblePreviewCommentLines(19, "one\ntwo", false).size).toBe(0);
-    expect(visiblePreviewCommentLines(19, null, true).size).toBe(0);
-  });
-});
-
-describe("previewFileAllowsLineComments", () => {
-  it("requires an active PR and a surviving changed HEAD file", () => {
-    const files = [
-      { path: "src/live.ts", status: "modified" as const },
-      { path: "src/gone.ts", status: "deleted" as const },
-    ];
-    expect(previewFileAllowsLineComments("src/live.ts", 77, files)).toBe(true);
-    expect(previewFileAllowsLineComments("src/gone.ts", 77, files)).toBe(false);
-    expect(previewFileAllowsLineComments("src/other.ts", 77, files)).toBe(false);
-    expect(previewFileAllowsLineComments("src/live.ts", null, files)).toBe(false);
+    expect(commentableReviewLines([{ start: 19, end: 20 }], 19, "one\ntwo", false).size).toBe(0);
+    expect(commentableReviewLines([{ start: 19, end: 20 }], 19, null, true).size).toBe(0);
+    expect(commentableReviewLines([], 19, "one\ntwo", true).size).toBe(0);
   });
 });
 
@@ -174,6 +182,37 @@ describe("codeReviewComments", () => {
     expect(codeReviewComments(comments, ["src/live.ts", "repo/src/live.ts"], 19, "one", true).map((comment) => comment.body)).toEqual([
       "prefixed PR path",
     ]);
+  });
+});
+
+describe("codeReviewDrafts", () => {
+  it("keeps fresh explicit drafts for aliased paths inside the visible source slice", () => {
+    const drafts = [
+      pendingComment("first visible line", 19),
+      pendingComment("first reply", 20),
+      pendingComment("aliased path", 20, { path: "repo/src/live.ts" }),
+      pendingComment("last visible line", 21),
+      pendingComment("file note", null),
+      pendingComment("previous revision", 20, { lineStale: true }),
+      pendingComment("before range", 18),
+      pendingComment("after range", 22),
+      pendingComment("other file", 20, { path: "src/other.ts" }),
+    ];
+
+    expect(codeReviewDrafts(drafts, ["src/live.ts", "repo/src/live.ts"], 19, "one\ntwo\nthree", true).map((draft) => draft.body)).toEqual([
+      "first visible line",
+      "first reply",
+      "aliased path",
+      "last visible line",
+    ]);
+  });
+
+  it("returns no drafts without an active review or a visible source slice", () => {
+    const drafts = [pendingComment("pending", 19)];
+
+    expect(codeReviewDrafts(drafts, "src/live.ts", 19, "one", false)).toEqual([]);
+    expect(codeReviewDrafts(drafts, null, 19, "one", true)).toEqual([]);
+    expect(codeReviewDrafts(drafts, "src/live.ts", 19, null, true)).toEqual([]);
   });
 });
 

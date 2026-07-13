@@ -8,6 +8,7 @@ import type { ChangedLineSpan, LineRange } from "@meridian/core";
 import { classifyChangedLineRun } from "../changed-line-kinds";
 import { asObject, numberOr, optionalString, requireNumber, requireString } from "./json-fields";
 import { isAllowedCloneRef } from "./git-ref";
+import { WebError } from "./web-error";
 
 const OWNER_REPO = /^[\w.-]+\/[\w.-]+$/;
 const SEARCH_RESULT_LIMIT = 20;
@@ -51,6 +52,8 @@ export interface PrSummary {
 }
 
 export interface PrGitHubComment {
+  id: number;
+  inReplyToId: number | null;
   path: string;
   line: number | null;
   side: "LEFT" | "RIGHT" | null;
@@ -195,7 +198,10 @@ export function parsePullRequestComments(json: unknown): PrGitHubComment[] {
     const comment = asObject(item);
     const line = comment.line;
     const side = comment.side;
+    const inReplyToId = comment.in_reply_to_id;
     return {
+      id: positiveIntegerOrThrow(comment.id, "id"),
+      inReplyToId: positiveIntegerOrNull(inReplyToId),
       path: requireString(comment, "path"),
       line: typeof line === "number" && Number.isSafeInteger(line) && line > 0 ? line : null,
       side: side === "LEFT" || side === "RIGHT" ? side : null,
@@ -205,6 +211,17 @@ export function parsePullRequestComments(json: unknown): PrGitHubComment[] {
       url: httpsOrNull(optionalString(comment, "html_url")) ?? "",
     };
   });
+}
+
+function positiveIntegerOrThrow(value: unknown, key: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new WebError(502, `GitHub response missing positive integer '${key}'`);
+  }
+  return value;
+}
+
+function positiveIntegerOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
 /** Latest submitted state per author. A dismissal removes that author's prior state from the rollup. */

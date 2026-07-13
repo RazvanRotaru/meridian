@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import {
   handlePullRequestChecks,
+  handlePullRequestCommentMutation,
   handlePullRequestComments,
   handlePullRequestFiles,
   handlePullRequests,
@@ -277,6 +278,7 @@ describe("PR routes", () => {
         return new Response(
           JSON.stringify([
             {
+              id: 101,
               path: "packages/cli/src/a.ts",
               line: 12,
               side: "RIGHT",
@@ -287,6 +289,8 @@ describe("PR routes", () => {
               raw_secret: "not forwarded",
             },
             {
+              id: 102,
+              in_reply_to_id: 101,
               path: "packages/core/src/outside.ts",
               line: 2,
               side: "LEFT",
@@ -322,6 +326,8 @@ describe("PR routes", () => {
     expect(JSON.parse(captured.body())).toEqual({
       comments: [
         {
+          id: 101,
+          inReplyToId: null,
           path: "src/a.ts",
           line: 12,
           side: "RIGHT",
@@ -329,6 +335,7 @@ describe("PR routes", () => {
           author: "mina",
           updatedAt: "2026-07-10T09:30:00Z",
           url: "https://github.com/org/repo/pull/7#discussion_r1",
+          viewerCanEdit: false,
         },
       ],
       reviews: { approved: ["zoe"], changesRequested: ["alice"], commented: 1 },
@@ -402,13 +409,158 @@ describe("PR routes", () => {
   });
 });
 
+describe("handlePullRequestCommentMutation", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("edits with the session token, then returns a refreshed, whitelisted discussion", async () => {
+    const { cookie, sessions } = signedInSession();
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      calls.push({ url: target, init });
+      if (init?.method === "PATCH") {
+        return new Response(JSON.stringify({ id: 101, raw_secret: "not forwarded" }), { status: 200 });
+      }
+      if (target.includes("/comments?")) {
+        return new Response(JSON.stringify([
+          {
+            id: 101,
+            path: "packages/cli/src/a.ts",
+            line: 12,
+            side: "RIGHT",
+            body: "Edited wording",
+            user: { login: "DARIA", avatar_url: "not forwarded" },
+            updated_at: "2026-07-13T10:00:00Z",
+            html_url: "https://github.com/org/repo/pull/7#discussion_r101",
+          },
+          {
+            id: 999,
+            path: "packages/core/outside.ts",
+            line: 1,
+            side: "RIGHT",
+            body: "Outside extraction root",
+            user: { login: "daria" },
+            updated_at: "2026-07-13T10:00:00Z",
+          },
+        ]), { status: 200 });
+      }
+      return new Response(JSON.stringify([]), { status: 200 });
+    }) as typeof fetch);
+
+    const captured = await invokeCommentMutation(
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo", subdir: "packages/cli" }, sessions),
+      bodyRequest({ number: 7, action: "edit", commentId: 101, body: "  Edited wording  " }, cookie),
+    );
+
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body())).toEqual({
+      comments: [{
+        id: 101,
+        inReplyToId: null,
+        path: "src/a.ts",
+        line: 12,
+        side: "RIGHT",
+        body: "Edited wording",
+        author: "DARIA",
+        updatedAt: "2026-07-13T10:00:00Z",
+        url: "https://github.com/org/repo/pull/7#discussion_r101",
+        viewerCanEdit: true,
+      }],
+      reviews: { approved: [], changesRequested: [], commented: 0 },
+      hasMore: false,
+    });
+    expect(calls.map(({ url }) => url)).toEqual([
+      "https://api.github.com/repos/org/repo/pulls/comments/101",
+      "https://api.github.com/repos/org/repo/pulls/7/comments?per_page=100",
+      "https://api.github.com/repos/org/repo/pulls/7/reviews?per_page=100",
+    ]);
+    expect(calls[0].init?.method).toBe("PATCH");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ body: "Edited wording" });
+    expect(calls.every(({ init }) => (init?.headers as Record<string, string>).authorization === "Bearer gho_secret")).toBe(true);
+  });
+
+  it("replies to a top-level comment with the fallback token and marks fallback-authored comments editable", async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      calls.push({ url: target, init });
+      if (init?.method === "POST") {
+        return new Response(JSON.stringify({ id: 202 }), { status: 201 });
+      }
+      if (target.includes("/comments?")) {
+        return new Response(JSON.stringify([{
+          id: 202,
+          in_reply_to_id: 101,
+          path: "src/a.ts",
+          line: 12,
+          side: "RIGHT",
+          body: "A reply",
+          user: { login: "fallback-user" },
+          updated_at: "2026-07-13T10:01:00Z",
+        }]), { status: 200 });
+      }
+      return new Response(JSON.stringify([]), { status: 200 });
+    }) as typeof fetch);
+    const ctx = ctxWithSource({ kind: "github", owner: "org", repo: "repo" });
+    ctx.fallbackToken = "gh_fallback";
+    ctx.fallbackUser = { login: "fallback-user", avatarUrl: null };
+
+    const captured = await invokeCommentMutation(
+      ctx,
+      bodyRequest({ number: 7, action: "reply", commentId: 101, body: "A reply" }),
+    );
+
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body()).comments[0]).toMatchObject({
+      id: 202,
+      inReplyToId: 101,
+      body: "A reply",
+      viewerCanEdit: true,
+    });
+    expect(calls[0].url).toBe("https://api.github.com/repos/org/repo/pulls/7/comments/101/replies");
+    expect(calls[0].init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ body: "A reply" });
+    expect((calls[0].init?.headers as Record<string, string>).authorization).toBe("Bearer gh_fallback");
+  });
+
+  it("validates action, positive ids, body, and token before calling GitHub", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "");
+    vi.stubEnv("GH_TOKEN", "");
+    vi.stubGlobal("fetch", vi.fn());
+    const ctx = ctxWithSource({ kind: "github", owner: "org", repo: "repo" });
+    const inputs = [
+      { number: 0, action: "edit", commentId: 1, body: "x" },
+      { number: 7, action: "edit", commentId: 0, body: "x" },
+      { number: 7, action: "delete", commentId: 1, body: "x" },
+      { number: 7, action: "reply", commentId: 1, body: "   " },
+    ];
+    const malformed = await Promise.all(inputs.map((input) => invokeCommentMutation(ctx, bodyRequest(input))));
+    const unsigned = await invokeCommentMutation(
+      ctx,
+      bodyRequest({ number: 7, action: "edit", commentId: 1, body: "valid" }),
+    );
+    expect(malformed.map((response) => response.status())).toEqual([400, 400, 400, 400]);
+    expect(unsigned.status()).toBe(401);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe("handleSubmitReview", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
   });
 
-  const VALID_BODY = { number: 7, comments: [{ path: "src/a.ts", line: 25, body: "check" }] };
+  const VALID_BODY = {
+    number: 7,
+    comments: [
+      { path: "src/a.ts", line: 25, body: "check" },
+      { path: "src/b.ts", line: 41, body: "check this too" },
+    ],
+  };
 
   it("404s for a non-GitHub artifact source", async () => {
     const captured = await invokePost(ctxWithSource({ kind: "other" }), bodyRequest(VALID_BODY));
@@ -424,7 +576,7 @@ describe("handleSubmitReview", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("posts ONE COMMENT review, restoring the extraction subdir on comment AND note paths", async () => {
+  it("posts one COMMENT review with separate inline comments, restored paths, and no review body", async () => {
     vi.stubEnv("GITHUB_TOKEN", "env_secret");
     const calls: { url: string; init: RequestInit | undefined }[] = [];
     vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
@@ -434,13 +586,7 @@ describe("handleSubmitReview", () => {
     const ctx = ctxWithSource({ kind: "github", owner: "org", repo: "repo", subdir: "packages/cli" });
     const captured = await invokePost(
       ctx,
-      bodyRequest({
-        ...VALID_BODY,
-        notes: [
-          { path: "src/gone.ts", label: "OldUnit", body: "why delete?" },
-          { path: "src/x.ts", body: "general" },
-        ],
-      }),
+      bodyRequest(VALID_BODY),
     );
     expect(captured.status()).toBe(200);
     expect(JSON.parse(captured.body())).toEqual({ url: "https://github.com/org/repo/pull/7#pullrequestreview-1" });
@@ -448,13 +594,14 @@ describe("handleSubmitReview", () => {
     expect(calls[0].init?.method).toBe("POST");
     expect(JSON.parse(String(calls[0].init?.body))).toEqual({
       event: "COMMENT",
-      // Notes fold into the body SERVER-side so their display paths are repo-root-relative too.
-      body: "**packages/cli/src/gone.ts** · OldUnit: why delete?\n\n**packages/cli/src/x.ts**: general",
-      comments: [{ path: "packages/cli/src/a.ts", line: 25, side: "RIGHT", body: "check" }],
+      comments: [
+        { path: "packages/cli/src/a.ts", line: 25, side: "RIGHT", body: "check" },
+        { path: "packages/cli/src/b.ts", line: 41, side: "RIGHT", body: "check this too" },
+      ],
     });
   });
 
-  it("omits an empty review body from the GitHub payload", async () => {
+  it("never adds a review-level body to the GitHub payload", async () => {
     vi.stubEnv("GITHUB_TOKEN", "env_secret");
     let posted: unknown;
     vi.stubGlobal("fetch", (async (_url: string | URL | Request, init?: RequestInit) => {
@@ -462,18 +609,30 @@ describe("handleSubmitReview", () => {
       return new Response(JSON.stringify({}), { status: 200 });
     }) as typeof fetch);
     await invokePost(ctxWithSource({ kind: "github", owner: "org", repo: "repo" }), bodyRequest(VALID_BODY));
-    expect(posted).toEqual({ event: "COMMENT", comments: [{ path: "src/a.ts", line: 25, side: "RIGHT", body: "check" }] });
+    expect(posted).toEqual({
+      event: "COMMENT",
+      comments: [
+        { path: "src/a.ts", line: 25, side: "RIGHT", body: "check" },
+        { path: "src/b.ts", line: 41, side: "RIGHT", body: "check this too" },
+      ],
+    });
   });
 
-  it("400s on malformed comments and on an empty submission, before any GitHub call", async () => {
+  it("400s on malformed comments, legacy notes, and an empty submission before any GitHub call", async () => {
     vi.stubEnv("GITHUB_TOKEN", "env_secret");
     vi.stubGlobal("fetch", vi.fn());
     const ctx = ctxWithSource({ kind: "github", owner: "org", repo: "repo" });
     const noLine = await invokePost(ctx, bodyRequest({ number: 7, comments: [{ path: "a.ts", body: "x" }] }));
     const zeroLine = await invokePost(ctx, bodyRequest({ number: 7, comments: [{ path: "a.ts", line: 0, body: "x" }] }));
-    const empty = await invokePost(ctx, bodyRequest({ number: 7, comments: [], notes: [] }));
+    const legacyNotes = await invokePost(ctx, bodyRequest({
+      number: 7,
+      comments: [{ path: "a.ts", line: 2, body: "inline" }],
+      notes: [{ path: "a.ts", label: "L1", body: "legacy summary" }],
+    }));
+    const empty = await invokePost(ctx, bodyRequest({ number: 7, comments: [] }));
     const badNumber = await invokePost(ctx, bodyRequest({ ...VALID_BODY, number: 0 }));
-    expect([noLine.status(), zeroLine.status(), empty.status(), badNumber.status()]).toEqual([400, 400, 400, 400]);
+    expect([noLine.status(), zeroLine.status(), legacyNotes.status(), empty.status(), badNumber.status()]).toEqual([400, 400, 400, 400, 400]);
+    expect(JSON.parse(legacyNotes.body()).error).toMatch(/inline path and line/);
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -487,10 +646,23 @@ describe("handleSubmitReview", () => {
 });
 
 /** A minimal IncomingMessage whose stream yields one JSON body (what readJsonBody consumes). */
-function bodyRequest(payload: unknown): IncomingMessage {
+function bodyRequest(payload: unknown, cookie?: string): IncomingMessage {
   const request = Readable.from([Buffer.from(JSON.stringify(payload))]) as unknown as IncomingMessage;
-  (request as { headers: Record<string, string> }).headers = {};
+  (request as { headers: Record<string, string> }).headers = cookie ? { cookie } : {};
   return request;
+}
+
+async function invokeCommentMutation(ctx: Context, request: IncomingMessage) {
+  const captured = capturedResponse();
+  try {
+    await handlePullRequestCommentMutation(ctx, request, captured.response, new URLSearchParams({ id: "artifact" }));
+  } catch (error) {
+    if (!(error instanceof WebError)) {
+      throw error;
+    }
+    sendJson(captured.response, error.status, { error: error.message });
+  }
+  return captured;
 }
 
 async function invokePost(ctx: Context, request: IncomingMessage) {

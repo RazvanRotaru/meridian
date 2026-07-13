@@ -53,13 +53,28 @@ export async function getApiOrNull(fetchImpl: typeof fetch, url: string, token?:
   return response.json();
 }
 
-/** JSON POST to the GitHub API (the write path — reviews). Same headers/timeout as reads. */
+/** JSON POST to the GitHub API for review creation. Same headers/timeout as reads. */
 export async function postApi(fetchImpl: typeof fetch, url: string, body: unknown, token?: string): Promise<unknown> {
   const response = await apiRequest(fetchImpl, url, token, { method: "POST", body: JSON.stringify(body) });
   if (!response.ok) {
     throw response.status === 422
       ? new WebError(422, "GitHub rejected the review (a comment may anchor outside the diff)")
       : apiError(response.status);
+  }
+  return response.json();
+}
+
+/** JSON mutation for GitHub resources other than review creation. */
+export async function mutateApi(
+  fetchImpl: typeof fetch,
+  method: "POST" | "PATCH",
+  url: string,
+  body: unknown,
+  token: string,
+): Promise<unknown> {
+  const response = await apiRequest(fetchImpl, url, token, { method, body: JSON.stringify(body) });
+  if (!response.ok) {
+    throw response.status === 422 ? new WebError(422, "GitHub rejected the comment") : apiError(response.status);
   }
   return response.json();
 }
@@ -72,7 +87,7 @@ function apiRequest(
   fetchImpl: typeof fetch,
   url: string,
   token?: string,
-  init?: { method: "POST"; body: string },
+  init?: { method: "POST" | "PATCH"; body: string },
 ): Promise<Response> {
   const headers: Record<string, string> = {
     accept: "application/vnd.github+json",

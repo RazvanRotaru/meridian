@@ -20,7 +20,7 @@ import {
 import type { GitHubUser, PrChecks, PrDiscussionResult, PrFile, PrSummary, RepoSummary } from "./github-parse";
 import { interpretTokenResponse, parseDeviceCodeResponse, tokenRedeemBody } from "./github-auth";
 import type { DeviceCode, TokenPoll } from "./github-auth";
-import { API_ROOT, getApi, getApiOrNull, getApiPage, postForm, repoApi } from "./github-http";
+import { API_ROOT, getApi, getApiOrNull, getApiPage, mutateApi, postForm, repoApi } from "./github-http";
 import { asObject } from "./json-fields";
 import { submitPullRequestReviewWithFetch } from "./github-review";
 import type { SubmitReviewRequest, SubmitReviewResult } from "./github-review";
@@ -118,6 +118,15 @@ export interface PullRequestDiscussionRequest {
   token?: string;
 }
 
+export interface PullRequestCommentMutationRequest {
+  owner: string;
+  repo: string;
+  prNumber: number;
+  commentId: number;
+  body: string;
+  token: string;
+}
+
 export interface CommitChecksRequest {
   owner: string;
   repo: string;
@@ -173,6 +182,26 @@ export async function fetchPullRequestDiscussion(request: PullRequestDiscussionR
     reviews: parsePullRequestReviews(reviewPage.json),
     hasMore: commentPage.hasNext || reviewPage.hasNext,
   };
+}
+
+export async function editPullRequestComment(request: PullRequestCommentMutationRequest): Promise<void> {
+  await mutateApi(
+    globalThis.fetch,
+    "PATCH",
+    repoApi(request.owner, request.repo, `/pulls/comments/${request.commentId}`),
+    { body: request.body },
+    request.token,
+  );
+}
+
+export async function replyToPullRequestComment(request: PullRequestCommentMutationRequest): Promise<void> {
+  await mutateApi(
+    globalThis.fetch,
+    "POST",
+    repoApi(request.owner, request.repo, `/pulls/${request.prNumber}/comments/${request.commentId}/replies`),
+    { body: request.body },
+    request.token,
+  );
 }
 
 export async function fetchCommitChecks(request: CommitChecksRequest): Promise<PrChecks> {
