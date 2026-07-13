@@ -7,14 +7,15 @@
  * store (erased at build), so there is no runtime cycle.
  */
 
-import { collectChangedIds, computeCoverage } from "@meridian/core";
-import type { ChangedLineSpan, ChangeStatus, GraphArtifact, LineRange, ReviewContext } from "@meridian/core";
+import { changedLineKindsFromExtensions, collectChangedIds, computeCoverage } from "@meridian/core";
+import type { ChangedLineSpan, GraphArtifact, LineRange, ReviewContext } from "@meridian/core";
 import { loadArtifact } from "../boot/loadArtifact";
 import { applyChangedIds, applyChangedStatus, buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
 import type { FileMatch } from "../derive/matchAffectedFiles";
 import { deriveReviewData, type ReviewData } from "../derive/reviewData";
 import { deriveReviewProjection } from "../derive/reviewProjection";
 import { readReviewProgress } from "./reviewTicksPref";
+import { reviewNodeStatusEntries, reviewNodeStatusSourcesFromKinds } from "./reviewNodeStatus";
 import type { BlueprintState } from "./store";
 
 /** The boot artifact/index (+ its artifact-carried review, if any), saved once when the first swap
@@ -134,7 +135,11 @@ export function restorePrReviewBaseline(
     applyChangedIds(baseline.index, projection.affected.map((node) => node.nodeId));
     applyChangedStatus(
       baseline.index,
-      projection.affected.map((node) => [node.nodeId, node.status] as [string, ChangeStatus]),
+      reviewNodeStatusEntries(
+        baseline.index,
+        projection.affected,
+        reviewNodeStatusSourcesFromKinds(changedLineKindsFromExtensions(baseline.artifact.extensions)),
+      ),
     );
   }
   set({

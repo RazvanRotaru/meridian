@@ -27,6 +27,11 @@ describe("MapLod", () => {
     );
   });
 
+  it("keeps semantic preview free of screen-fixed button exceptions", () => {
+    expect(MAP_LOD_CSS).not.toContain("review-file-viewed-button");
+    expect(MAP_LOD_CSS).not.toContain("button:not(");
+  });
+
   it("atomically switches one shared node-and-edge population for every mounted depth", () => {
     const css = semanticLayerVisibilityCss([3, 1, 1, -1, 0]);
 

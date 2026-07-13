@@ -13,6 +13,7 @@
 
 import { spawn } from "node:child_process";
 import type { ChangedLineKinds, ChangedLineSpan, ChangedLineStats, ChangedRanges, LineRange } from "@meridian/core";
+import { classifyChangedLineRun } from "./changed-line-kinds";
 import { CliError, EXIT } from "./errors";
 
 const DIFF_TIMEOUT_MS = 15_000;
@@ -64,25 +65,87 @@ export function parseUnifiedDiffWithStats(diff: string): { ranges: ChangedRanges
   const stats: ChangedLineStats = {};
   const kinds: ChangedLineKinds = {};
   let currentFile: string | null = null;
+  let activeHunk: ParsedHunk | null = null;
+  let newLine = 0;
+  let oldSeen = 0;
+  let newSeen = 0;
+  let addedLines: number[] = [];
+  let deletedCount = 0;
+  let bodyKinds: ChangedLineSpan[] = [];
+
+  const flushEditRun = () => {
+    if (addedLines.length === 0 && deletedCount === 0) {
+      return;
+    }
+    bodyKinds.push(...classifyChangedLineRun(addedLines, deletedCount, newLine));
+    addedLines = [];
+    deletedCount = 0;
+  };
+
+  const flushHunk = () => {
+    if (activeHunk === null || currentFile === null) {
+      activeHunk = null;
+      return;
+    }
+    flushEditRun();
+    const completeBody = oldSeen === activeHunk.deleted && newSeen === activeHunk.added;
+    const spans = completeBody ? bodyKinds : activeHunk.kindSpan === null ? [] : [activeHunk.kindSpan];
+    if (spans.length > 0) {
+      (kinds[currentFile] ??= []).push(...spans);
+    }
+    activeHunk = null;
+  };
+
   for (const line of diff.split("\n")) {
-    if (line.startsWith("+++ ")) {
+    if (line.startsWith("diff --git ")) {
+      flushHunk();
+      currentFile = null;
+      continue;
+    }
+    if (activeHunk === null && line.startsWith("+++ ")) {
       currentFile = newSidePath(line);
       continue;
     }
-    if (currentFile === null || !line.startsWith("@@")) {
-      continue;
-    }
-    const hunk = parseHunk(line);
-    if (hunk) {
+    if (line.startsWith("@@")) {
+      flushHunk();
+      if (currentFile === null) {
+        continue;
+      }
+      const hunk = parseHunk(line);
+      if (hunk === null) {
+        continue;
+      }
       (changed[currentFile] ??= []).push(hunk.range);
       const file = (stats[currentFile] ??= { added: 0, deleted: 0 });
       file.added += hunk.added;
       file.deleted += hunk.deleted;
-      if (hunk.kindSpan) {
-        (kinds[currentFile] ??= []).push(hunk.kindSpan);
-      }
+      activeHunk = hunk;
+      newLine = hunk.newStart;
+      oldSeen = 0;
+      newSeen = 0;
+      addedLines = [];
+      deletedCount = 0;
+      bodyKinds = [];
+      continue;
+    }
+    if (activeHunk === null || line.startsWith("\\")) {
+      continue;
+    }
+    if (line.startsWith("+")) {
+      addedLines.push(newLine);
+      newLine += 1;
+      newSeen += 1;
+    } else if (line.startsWith("-")) {
+      deletedCount += 1;
+      oldSeen += 1;
+    } else if (line.startsWith(" ")) {
+      flushEditRun();
+      newLine += 1;
+      oldSeen += 1;
+      newSeen += 1;
     }
   }
+  flushHunk();
   return { ranges: changed, stats, kinds };
 }
 
@@ -96,7 +159,15 @@ function newSidePath(line: string): string | null {
 }
 
 /** `@@ -a,b +c,d @@` → the new-side span; `d` omitted means 1; `d = 0` marks the deletion seam. */
-function parseHunk(line: string): { range: LineRange; added: number; deleted: number; kindSpan: ChangedLineSpan | null } | null {
+interface ParsedHunk {
+  range: LineRange;
+  added: number;
+  deleted: number;
+  newStart: number;
+  kindSpan: ChangedLineSpan | null;
+}
+
+function parseHunk(line: string): ParsedHunk | null {
   const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
   if (!match) {
     return null;
@@ -110,6 +181,7 @@ function parseHunk(line: string): { range: LineRange; added: number; deleted: nu
       range: { start: seam, end: seam + 1 },
       added,
       deleted,
+      newStart: start,
       kindSpan: { start: seam, end: seam + 1, kind: "deleted" },
     };
   }
@@ -119,6 +191,7 @@ function parseHunk(line: string): { range: LineRange; added: number; deleted: nu
     range: { start: from, end: to },
     added,
     deleted,
+    newStart: start,
     kindSpan: { start: from, end: to, kind: deleted > 0 ? "modified" : "added" },
   };
 }

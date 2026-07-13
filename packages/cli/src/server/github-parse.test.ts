@@ -274,11 +274,13 @@ describe("parsePatchDetail", () => {
 
   it("paints only the changed body lines, not the context-padded hunk header", () => {
     const detail = parsePatchDetail(patch);
-    // The modification's two new lines (13-14) are `modified`; the lone insertion (34) is `added`;
-    // the pure deletion contributes NO head line to paint.
+    // One replacement line is `modified`, the unpaired new line is `added`, and the pure deletion
+    // paints the seam it occupied. This matches the local `git diff` classifier exactly.
     expect(detail.kinds).toEqual([
-      { start: 13, end: 14, kind: "modified" },
+      { start: 13, end: 13, kind: "modified" },
+      { start: 14, end: 14, kind: "added" },
       { start: 34, end: 34, kind: "added" },
+      { start: 58, end: 59, kind: "deleted" },
     ]);
     expect(detail.removed).toEqual([
       { afterNewLine: 12, lines: ["  const old = 1;"] },

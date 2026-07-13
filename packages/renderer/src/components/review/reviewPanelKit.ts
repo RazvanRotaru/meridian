@@ -8,7 +8,14 @@
 import type { CheckState } from "../../derive/reviewFiles";
 
 export const TICK_GLYPH: Record<CheckState, string> = { todo: "○", done: "✓", stale: "◐" };
-export const TICK_COLOR: Record<CheckState, string> = { todo: "#7D8695", done: "#3FB950", stale: "#D29922" };
+/** Review progress deliberately avoids Git-diff green/gold/red so viewed never reads as a change kind. */
+export const REVIEW_VIEWED_ACCENT = "#A78BFA";
+export const REVIEW_VIEWED_STALE = "#D8B4FE";
+export const TICK_COLOR: Record<CheckState, string> = {
+  todo: "#7D8695",
+  done: REVIEW_VIEWED_ACCENT,
+  stale: REVIEW_VIEWED_STALE,
+};
 
 /** The comment composer's target row: a file (nodeId null) or one touched unit inside it. */
 export interface CommentTarget {

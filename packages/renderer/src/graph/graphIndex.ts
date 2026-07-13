@@ -93,11 +93,11 @@ export function applyChangedIds(index: GraphIndex, changedIds: Iterable<string>)
 }
 
 /**
- * Overwrite the per-node change STATUS in place. A PR review knows each touched node's kind
- * (added/modified/deleted, from its file's status) and the file/module nodes it touched — richer than
- * the boolean changedIds. Kept separate from changedIds/changedDescendants so the "contains changes"
- * bubbling (which counts only real code blocks) is unaffected; this map drives colour only. The next
- * store `set()` re-runs the cards' `changedStatus.get(id)` selectors and repaints green/gold/red.
+ * Overwrite the per-node change STATUS in place. A PR review derives each touched node's kind from
+ * the exact line edits inside its span (falling back to file status when that detail is unavailable),
+ * which is richer than the boolean changedIds. Kept separate from changedIds/changedDescendants so
+ * the "contains changes" bubbling is unaffected; this map drives colour only. The next store `set()`
+ * re-runs the cards' `changedStatus.get(id)` selectors and repaints green/gold/red.
  */
 export function applyChangedStatus(index: GraphIndex, entries: Iterable<readonly [string, ChangeStatus]>): void {
   index.changedStatus.clear();

@@ -17,7 +17,7 @@ import { ChangeGroupStrip } from "./ChangeGroupStrip";
 import { ReviewFilesSection } from "./ReviewFilesSection";
 import { ReviewFlowsSection } from "./ReviewFlowsSection";
 import { SubmitReviewFooter } from "./ReviewComments";
-import { NO_FOCUS_RING } from "./reviewPanelKit";
+import { NO_FOCUS_RING, REVIEW_VIEWED_ACCENT } from "./reviewPanelKit";
 import { ReviewPreferencesPane } from "./ReviewPreferencesPane";
 import { selectedPrSummary } from "../../state/store";
 
@@ -421,7 +421,7 @@ const REF_BASE: React.CSSProperties = { color: "#9AA4B2" };
 const ADDED_FILES_NOTE: React.CSSProperties = { fontSize: 11, color: "#7D8695" };
 const PROGRESS_ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
 const PROGRESS_TRACK: React.CSSProperties = { flex: 1, height: 5, background: "#1B212A", borderRadius: 3, overflow: "hidden" };
-const PROGRESS_FILL: React.CSSProperties = { height: "100%", background: "#3FB950", transition: "width 160ms ease" };
+const PROGRESS_FILL: React.CSSProperties = { height: "100%", background: REVIEW_VIEWED_ACCENT, transition: "width 160ms ease" };
 const PROGRESS_LABEL: React.CSSProperties = { fontSize: 11, color: "#9AA4B2", whiteSpace: "nowrap" };
 const WARNING: React.CSSProperties = { fontSize: 11, color: "#D29922", background: "rgba(210,153,34,0.1)", borderRadius: 5, padding: "4px 8px" };
 const EXTRACT_WARNING: React.CSSProperties = { ...WARNING, display: "flex", alignItems: "flex-start", gap: 6 };

@@ -13,6 +13,7 @@ import { accentForKind, kindLetter } from "../../../theme/kindColors";
 import type { UnitCardData } from "../../../derive/moduleLevel";
 import { cardSelectedStyle, CodeButton, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, useNodeDiff } from "./changed";
+import { ReviewNodeViewedChrome } from "../../review/ReviewFileNodeViewedControls";
 
 type UnitRfNode = Node<UnitCardData, "unit">;
 
@@ -35,44 +36,50 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
 
   if (data.isFrame) {
     return (
-      <div style={borderFor(frameStyle(accent), frameSelectedStyle(accent), selected, diff)}>
-        <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-        <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-        <FrameTitleBar chevron={chevron}>{identity}</FrameTitleBar>
-      </div>
+      <ReviewNodeViewedChrome nodeId={id} scope="unit" borderRadius={8}>
+        <div style={borderFor(frameStyle(accent), frameSelectedStyle(accent), selected, diff)}>
+          <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+          <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+          <FrameTitleBar chevron={chevron}>{identity}</FrameTitleBar>
+        </div>
+      </ReviewNodeViewedChrome>
     );
   }
 
   if (data.isContainer) {
     return (
-      <div style={borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff)}>
-        <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-        <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-        <div style={{ ...ACCENT_BAR, background: accent }} />
-        <div style={INNER_STACK}>
-          <div style={HEADER}>
-            {chevron}
-            <span style={{ ...GLYPH, color: accent }}>{kindLetter(data.unitKind)}</span>
-            <span style={LABEL} title={id}>{data.label}</span>
-            <CodeButton id={id} />
-          </div>
-          <div style={META}>
-            <span style={MEMBERS} title={`${data.memberCount} member declaration(s)`}>{data.memberCount} members</span>
+      <ReviewNodeViewedChrome nodeId={id} scope="unit" borderRadius={8}>
+        <div style={borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff)}>
+          <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+          <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+          <div style={{ ...ACCENT_BAR, background: accent }} />
+          <div style={INNER_STACK}>
+            <div style={HEADER}>
+              {chevron}
+              <span style={{ ...GLYPH, color: accent }}>{kindLetter(data.unitKind)}</span>
+              <span style={LABEL} title={id}>{data.label}</span>
+              <CodeButton id={id} />
+            </div>
+            <div style={META}>
+              <span style={MEMBERS} title={`${data.memberCount} member declaration(s)`}>{data.memberCount} members</span>
+            </div>
           </div>
         </div>
-      </div>
+      </ReviewNodeViewedChrome>
     );
   }
 
   return (
-    <div style={borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff)}>
-      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-      <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-      <div style={{ ...ACCENT_BAR, background: accent }} />
-      <div style={INNER}>
-        {identity}
+    <ReviewNodeViewedChrome nodeId={id} scope="unit" borderRadius={8}>
+      <div style={borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff)}>
+        <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+        <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+        <div style={{ ...ACCENT_BAR, background: accent }} />
+        <div style={INNER}>
+          {identity}
+        </div>
       </div>
-    </div>
+    </ReviewNodeViewedChrome>
   );
 }
 

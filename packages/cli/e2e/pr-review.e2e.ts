@@ -101,7 +101,11 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     const changedFunction = codebaseContext.locator(`.react-flow__node[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
     await changedFunction.waitFor();
     await expect.poll(
-      () => changedFunction.evaluate((element) => getComputedStyle(element.firstElementChild as Element).backgroundImage),
+      () => changedFunction.evaluate((element) => {
+        const root = element.firstElementChild;
+        const surface = root?.classList.contains("review-node-viewed-shell") ? root.firstElementChild : root;
+        return surface === null ? "none" : getComputedStyle(surface).backgroundImage;
+      }),
     ).not.toBe("none");
     await waitForGraphViewportToSettle(codebaseContext);
     await page.mouse.move(0, 0);
@@ -265,11 +269,11 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await page.getByRole("region", { name: "Extracted graph" }).count()).toBe(1);
     expect(await page.getByText("Files changed", { exact: true }).count()).toBe(1);
     expect(await syncProvenance.count()).toBe(1);
-    expect(await page.getByText("Resume PR review #7", { exact: true }).count()).toBe(0);
+    expect(await page.getByText("Resume review #7", { exact: true }).count()).toBe(0);
 
     await page.getByRole("button", { name: "Close extracted graph" }).click();
     await page.getByRole("region", { name: "Extracted graph" }).waitFor({ state: "detached" });
-    const resumeText = page.getByText("Resume PR review #7", { exact: true });
+    const resumeText = page.getByText("Resume review #7", { exact: true });
     await resumeText.waitFor();
     expect(await resumeText.count()).toBe(1);
     await resumeText.click();

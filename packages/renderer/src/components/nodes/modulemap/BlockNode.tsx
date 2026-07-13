@@ -14,6 +14,7 @@ import { accentForKind, kindLetter } from "../../../theme/kindColors";
 import type { BlockData } from "../../../derive/moduleLevel";
 import { cardSelectedStyle, CodeButton, ExpandChevron, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, useNodeDiff } from "./changed";
+import { ReviewNodeViewedChrome } from "../../review/ReviewFileNodeViewedControls";
 
 type BlockRfNode = Node<BlockData, "block">;
 
@@ -26,28 +27,32 @@ function BlockNodeImpl({ id, data }: NodeProps<BlockRfNode>) {
 
   if (data.isExpanded) {
     return (
-      <div style={borderFor(frameStyle(accent), frameSelectedStyle(accent), selected, diff)}>
-        <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-        <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-        <div style={TITLE_BAR} title={title}>
-          {chevron}
-          <span style={{ ...GLYPH, color: accent }}>{kindLetter(data.blockKind)}</span>
-          <span style={FRAME_LABEL}>{data.label}</span>
-          <CodeButton id={id} />
+      <ReviewNodeViewedChrome nodeId={id} scope="unit" borderRadius={8}>
+        <div style={borderFor(frameStyle(accent), frameSelectedStyle(accent), selected, diff)}>
+          <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+          <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+          <div style={TITLE_BAR} title={title}>
+            {chevron}
+            <span style={{ ...GLYPH, color: accent }}>{kindLetter(data.blockKind)}</span>
+            <span style={FRAME_LABEL}>{data.label}</span>
+            <CodeButton id={id} />
+          </div>
         </div>
-      </div>
+      </ReviewNodeViewedChrome>
     );
   }
 
   return (
-    <div style={borderFor(BLOCK, cardSelectedStyle(BLOCK, accent), selected, diff)} title={title}>
-      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-      <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-      {chevron}
-      <span style={{ ...GLYPH, color: accent }}>{kindLetter(data.blockKind)}</span>
-      <span style={LABEL}>{data.label}</span>
-      <CodeButton id={id} />
-    </div>
+    <ReviewNodeViewedChrome nodeId={id} scope="unit" borderRadius={6}>
+      <div style={borderFor(BLOCK, cardSelectedStyle(BLOCK, accent), selected, diff)} title={title}>
+        <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+        <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+        {chevron}
+        <span style={{ ...GLYPH, color: accent }}>{kindLetter(data.blockKind)}</span>
+        <span style={LABEL}>{data.label}</span>
+        <CodeButton id={id} />
+      </div>
+    </ReviewNodeViewedChrome>
   );
 }
 

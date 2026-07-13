@@ -23,6 +23,7 @@ import { borderFor, useNodeDiff } from "./changed";
 import { CHANGED_COLORS } from "../../../theme/changedColors";
 import { CommonsChips } from "./CommonsChips";
 import { CommonsDockNode } from "./CommonsDockNode";
+import { ReviewNodeViewedChrome } from "../../review/ReviewFileNodeViewedControls";
 
 // The file family's frame accent (the module cyan), used when an expanded card turns into a frame.
 const FILE_FRAME_ACCENT = "#3FB7C4";
@@ -46,50 +47,54 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
 
   if (data.isExpanded) {
     return (
-      <div style={borderFor(frameStyle(FILE_FRAME_ACCENT), frameSelectedStyle(FILE_FRAME_ACCENT), selected, diff)}>
-        <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-        <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-        <FrameTitleBar chevron={chevron}>
-          <DiffStat delta={delta} />
-          <span className="lod-label" style={LABEL} title={data.fullPath}>{data.label}</span>
-          <span className="lod-hide" style={CONTENTS}>
-            {entryBadge}
-            <CodeButton id={id} />
-            <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
-          </span>
-        </FrameTitleBar>
-      </div>
+      <ReviewNodeViewedChrome nodeId={id} scope="file" borderRadius={8}>
+        <div style={borderFor(frameStyle(FILE_FRAME_ACCENT), frameSelectedStyle(FILE_FRAME_ACCENT), selected, diff)}>
+          <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+          <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+          <FrameTitleBar chevron={chevron}>
+            <DiffStat delta={delta} />
+            <span className="lod-label" style={LABEL} title={data.fullPath}>{data.label}</span>
+            <span className="lod-hide" style={CONTENTS}>
+              {entryBadge}
+              <CodeButton id={id} />
+              <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
+            </span>
+          </FrameTitleBar>
+        </div>
+      </ReviewNodeViewedChrome>
     );
   }
 
   return (
-    <div className="lod-tint" style={{ ...borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff), "--lod-accent": accent } as React.CSSProperties}>
-      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-      <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-      <div className="lod-rail" style={{ ...ACCENT_BAR, background: accent }} />
-      <span className="lod-place">{data.label}</span>
-      <div className="lod-card-body" style={INNER}>
-        <div style={HEADER}>
-          <DiffStat delta={delta} />
-          <span style={LABEL} title={data.fullPath}>{data.label}</span>
-          <span className="lod-hide" style={CONTENTS}>
-            {entryBadge}
-            <CodeButton id={id} />
-          </span>
-          {chevron}
-        </div>
-        <div style={META}>
-          <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
-          <span style={COUNTS} title={`${data.inCount} importer(s) · ${data.outCount} import(s)`}>
-            <span style={COUNT_MUTED}>in</span>
-            <span style={COUNT_VALUE}>{data.inCount}</span>
-            <span style={COUNT_MUTED}>out</span>
-            <span style={COUNT_VALUE}>{data.outCount}</span>
-          </span>
-          <CommonsChips chips={data.commonsChips} />
+    <ReviewNodeViewedChrome nodeId={id} scope="file" borderRadius={8}>
+      <div className="lod-tint" style={{ ...borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff), "--lod-accent": accent } as React.CSSProperties}>
+        <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+        <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+        <div className="lod-rail" style={{ ...ACCENT_BAR, background: accent }} />
+        <span className="lod-place">{data.label}</span>
+        <div className="lod-card-body" style={INNER}>
+          <div style={HEADER}>
+            <DiffStat delta={delta} />
+            <span style={LABEL} title={data.fullPath}>{data.label}</span>
+            <span className="lod-hide" style={CONTENTS}>
+              {entryBadge}
+              <CodeButton id={id} />
+            </span>
+            {chevron}
+          </div>
+          <div style={META}>
+            <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
+            <span style={COUNTS} title={`${data.inCount} importer(s) · ${data.outCount} import(s)`}>
+              <span style={COUNT_MUTED}>in</span>
+              <span style={COUNT_VALUE}>{data.inCount}</span>
+              <span style={COUNT_MUTED}>out</span>
+              <span style={COUNT_VALUE}>{data.outCount}</span>
+            </span>
+            <CommonsChips chips={data.commonsChips} />
+          </div>
         </div>
       </div>
-    </div>
+    </ReviewNodeViewedChrome>
   );
 }
 
