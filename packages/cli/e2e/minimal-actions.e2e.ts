@@ -182,15 +182,16 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
 
 async function expectNarrowGeometry(page: Page, actionBar: Locator, extractedActions: Locator): Promise<void> {
   await expect.poll(async () => {
-    const [bar, controls, minimap, viewGroup, extractedGroup] = await Promise.all([
+    const [bar, surface, minimap, viewGroup, extractedGroup] = await Promise.all([
       actionBar.boundingBox(),
-      page.locator("#meridian-control-panel").boundingBox(),
+      page.locator('[data-graph-surface="minimal"]').boundingBox(),
       page.locator('[data-graph-surface="minimal"] .react-flow__minimap').boundingBox(),
       actionBar.getByRole("group", { name: "View actions" }).boundingBox(),
       extractedActions.boundingBox(),
     ]);
-    return bar !== null && controls !== null && minimap !== null && viewGroup !== null && extractedGroup !== null
-      && bar.x >= controls.x + controls.width
+    return bar !== null && surface !== null && minimap !== null && viewGroup !== null && extractedGroup !== null
+      && bar.x >= surface.x
+      && bar.x + bar.width <= surface.x + surface.width
       && bar.y + bar.height <= minimap.y
       && viewGroup.y + viewGroup.height <= extractedGroup.y;
   }, { timeout: 5_000 }).toBe(true);
