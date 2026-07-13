@@ -103,6 +103,20 @@ export function sanitizeSubdir(cloneDir: string, subdir?: string): string {
   return candidate;
 }
 
+/** Resolve an existing extraction root and reject a symlink or junction that leaves the clone. */
+export function resolveExtractionSubdir(cloneDir: string, subdir?: string): string {
+  const candidate = sanitizeSubdir(cloneDir, subdir);
+  if (!isDirectory(candidate)) {
+    throw new WebError(400, "source subfolder was not found in the repository");
+  }
+  const root = realpathSync.native(resolve(cloneDir));
+  const canonical = realpathSync.native(candidate);
+  if (canonical !== root && !canonical.startsWith(root + sep)) {
+    throw new WebError(400, "source subfolder escapes the repository through a symbolic link");
+  }
+  return candidate;
+}
+
 export async function resolveSource(request: SourceRequest, cwd: string, token?: string): Promise<ResolvedSource> {
   if (request.kind === "path") {
     return resolveLocalPath(request.value, cwd);
@@ -131,10 +145,7 @@ async function cloneGitHub(request: SourceRequest, token?: string): Promise<Reso
   // clone; only a successful resolve hands the cleanup responsibility back to the caller.
   try {
     await runGitClone(buildCloneArgs(url, tmpRoot, { ref: request.ref, token }), token);
-    const dir = sanitizeSubdir(tmpRoot, request.subdir);
-    if (!isDirectory(dir)) {
-      throw new WebError(400, "source subfolder was not found in the repository");
-    }
+    const dir = resolveExtractionSubdir(tmpRoot, request.subdir);
     return { dir, target: sourceLabel(request.value, request.subdir), cleanup: removeTmp };
   } catch (error) {
     removeTmp();
@@ -145,7 +156,7 @@ async function cloneGitHub(request: SourceRequest, token?: string): Promise<Reso
 /** The human label for the artifact: the repo the reader entered, plus the analyzed subfolder when
  * one was chosen (e.g. "UiPath/Autopilot/src/packages"). A pure display string — never credentials
  * (the value is the user-entered owner/repo or git URL, the subdir the relative path they picked). */
-function sourceLabel(value: string, subdir?: string): string {
+export function sourceLabel(value: string, subdir?: string): string {
   const repo = value.trim();
   const sub = subdir?.trim().replace(/^[/\\]+|[/\\]+$/g, "");
   return sub ? `${repo}/${sub}` : repo;

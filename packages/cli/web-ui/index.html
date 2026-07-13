@@ -1060,6 +1060,7 @@
                   <label class="sr-only" for="custom-ref">Other branch</label>
                   <input id="custom-ref" name="custom-ref" placeholder="Enter a branch name" hidden />
                   <span class="field-note" id="ref-status" role="status" aria-live="polite">Choose a repository to load its branches.</span>
+                  <span class="field-note" id="cache-status" role="status" aria-live="polite" hidden></span>
                 </div>
               </div>
 
@@ -1144,13 +1145,17 @@
               <span class="sr-only" id="prepare-announcement" role="status" aria-live="polite" aria-atomic="true"></span>
               <div class="prepare-title">Preparing blueprint</div>
               <ol class="prepare-steps">
-                <li class="prepare-step" data-stage="source" data-state="pending">
+                <li class="prepare-step" id="prepare-cache-step" data-stage="cache" data-state="pending" hidden>
+                  <span class="prepare-dot" aria-hidden="true"></span>
+                  <span>Check cache</span>
+                </li>
+                <li class="prepare-step" id="prepare-source-step" data-stage="source" data-state="pending">
                   <span class="prepare-dot" aria-hidden="true"></span>
                   <span id="prepare-source-label">Fetch repository</span>
                 </li>
                 <li class="prepare-step" data-stage="extract" data-state="pending">
                   <span class="prepare-dot" aria-hidden="true"></span>
-                  <span>Generate code graph</span>
+                  <span id="prepare-extract-label">Generate code graph</span>
                 </li>
                 <li class="prepare-step" data-stage="open" data-state="pending">
                   <span class="prepare-dot" aria-hidden="true"></span>
@@ -1257,6 +1262,12 @@
       let githubIntent = "explore";
       let branchTimer = null;
       let branchRequest = 0;
+      let cacheProbeTimer = null;
+      let cacheProbeRequest = 0;
+      let pendingCacheKey = null;
+      let checkedCacheKey = null;
+      let checkedCacheStatus = null;
+      let generateProgressSuppressed = false;
       let prTimer = null;
       let prRequest = 0;
 
@@ -1310,9 +1321,12 @@
 
       function cancelGithubDiscovery() {
         clearTimeout(branchTimer);
+        clearTimeout(cacheProbeTimer);
         clearTimeout(prTimer);
         branchRequest++;
+        cacheProbeRequest++;
         prRequest++;
+        resetCacheProbe();
       }
 
       $("tab-github").addEventListener("click", () => setMode("github"));
@@ -1704,13 +1718,64 @@
         if (custom && focus) $("custom-ref").focus();
       }
 
+      function resetCacheProbe() {
+        clearTimeout(cacheProbeTimer);
+        cacheProbeRequest++;
+        pendingCacheKey = null;
+        checkedCacheKey = null;
+        checkedCacheStatus = null;
+        $("cache-status").hidden = true;
+        $("cache-status").textContent = "";
+      }
+
+      function cacheKey(request) {
+        return JSON.stringify([request.value, request.ref || "", request.subdir || "", request.lang || ""]);
+      }
+
+      function scheduleCacheProbe() {
+        const request = buildRequest();
+        const key = request && githubRepoSlug(request.value) ? cacheKey(request) : null;
+        if (mode === "github" && githubIntent === "explore" && key
+          && (checkedCacheKey === key || pendingCacheKey === key)) return;
+        resetCacheProbe();
+        if (mode !== "github" || githubIntent !== "explore" || !request || !key) return;
+        const serial = ++cacheProbeRequest;
+        pendingCacheKey = key;
+        $("cache-status").hidden = false;
+        $("cache-status").textContent = "Checking for a cached blueprintâ€¦";
+        cacheProbeTimer = setTimeout(() => void loadCacheStatus(request, key, serial), 250);
+      }
+
+      async function loadCacheStatus(request, key, serial) {
+        const query = new URLSearchParams({ repo: request.value });
+        if (request.ref) query.set("ref", request.ref);
+        try {
+          const response = await apiGet("/api/cache/status?" + query);
+          const data = await response.json().catch(() => null);
+          if (serial !== cacheProbeRequest) return;
+          pendingCacheKey = null;
+          if (response.ok && data && (data.status === "hit" || data.status === "miss")) {
+            checkedCacheKey = key;
+            checkedCacheStatus = data.status;
+            $("cache-status").textContent = data.status === "hit"
+              ? "Cached blueprint ready."
+              : "No current cached blueprint for this branch.";
+            return;
+          }
+        } catch {
+          // Cache discovery is an optimization; generation remains the source of truth.
+        }
+        if (serial === cacheProbeRequest) resetCacheProbe();
+      }
+
       function resetBranches(message) {
         branchRequest++;
+        resetCacheProbe();
         $("ref").value = "";
         renderMenu(
           "ref",
           [{ value: "", label: "Default branch" }, { value: CUSTOM_BRANCH_VALUE, label: "Other branch…" }],
-          () => syncCustomBranchInput(true),
+          () => { syncCustomBranchInput(true); scheduleCacheProbe(); },
           false,
         );
         syncCustomBranchInput(false);
@@ -1726,13 +1791,14 @@
             ...branches.map((branch) => ({ value: branch, label: branch })),
             { value: CUSTOM_BRANCH_VALUE, label: "Other branch…" },
           ],
-          () => syncCustomBranchInput(true),
+          () => { syncCustomBranchInput(true); scheduleCacheProbe(); },
           false,
         );
         syncCustomBranchInput(false);
         $("ref-status").textContent = message || (branches.length
           ? branches.length + (branches.length === 1 ? " branch available." : " branches available.") + " Choose Other branch… if needed."
           : "No branches were returned; use the repository default or choose Other branch…");
+        scheduleCacheProbe();
       }
 
       async function loadRepoBranches(value, defaultBranch) {
@@ -2047,6 +2113,7 @@
 
       function scheduleRepoBranches() {
         clearTimeout(branchTimer);
+        resetCacheProbe();
         const repo = githubRepoSlug($("repo").value);
         if (!repo) return resetBranches();
         resetBranches("Waiting to load branches…");
@@ -2068,6 +2135,7 @@
       // Repository discovery stays on input. A change handler would run when this field blurs on
       // result pointer-down and could remove the result before its click selects the repository.
       $("repo").addEventListener("input", scheduleGithubRepositoryData);
+      $("custom-ref").addEventListener("input", scheduleCacheProbe);
 
       function setPullRequestState(next) {
         if ($("pr-state").value === next) return;
@@ -2293,15 +2361,15 @@
         status.textContent = text;
       }
 
-      const generateStages = ["source", "extract", "open"];
-
-      function showPrepareProgress(sourceKind) {
+      function showPrepareProgress(sourceKind, cacheAlreadyChecked = false) {
         const review = sourceKind === "github" && githubIntent === "review";
         document.querySelector(".prepare-title").textContent = review ? "Preparing PR review" : "Preparing blueprint";
+        $("prepare-cache-step").hidden = sourceKind !== "github" || cacheAlreadyChecked;
         $("prepare-source-label").textContent = sourceKind === "path" ? "Read repository" : "Fetch repository";
+        $("prepare-extract-label").textContent = "Generate code graph";
         $("prepare-open-label").textContent = review ? "Open PR review" : "Open blueprint";
         $("prepare-progress").hidden = false;
-        setPrepareStage("source");
+        setPrepareStage(sourceKind === "github" && !cacheAlreadyChecked ? "cache" : "source");
         reveal($("prepare-progress"));
       }
 
@@ -2311,8 +2379,9 @@
       }
 
       function setPrepareStage(activeStage) {
-        const activeIndex = Math.max(0, generateStages.indexOf(activeStage));
-        document.querySelectorAll(".prepare-step").forEach((step, index) => {
+        const steps = Array.from(document.querySelectorAll(".prepare-step")).filter((step) => !step.hidden);
+        const activeIndex = Math.max(0, steps.findIndex((step) => step.dataset.stage === activeStage));
+        steps.forEach((step, index) => {
           const state = index < activeIndex ? "done" : index === activeIndex ? "active" : "pending";
           step.dataset.state = state;
           if (state === "active") step.setAttribute("aria-current", "step");
@@ -2360,9 +2429,19 @@
         } catch {
           return null;
         }
-        if (data.stage === "source" || data.stage === "extract") {
+        if (generateProgressSuppressed && (data.stage === "source" || data.stage === "extract")) {
+          generateProgressSuppressed = false;
+          showPrepareProgress("github", true);
+        }
+        if (!generateProgressSuppressed && (data.stage === "cache" || data.stage === "source" || data.stage === "extract")) {
+          if (data.stage === "extract" && $("prepare-source-step").dataset.state === "pending") {
+            $("prepare-source-label").textContent = "Reuse cached repository";
+          }
           setPrepareStage(data.stage);
         } else if (data.stage === "done") {
+          if (generateProgressSuppressed) return data;
+          if (data.checkoutCache === "hit") $("prepare-source-label").textContent = "Reuse cached repository";
+          if (data.cache === "hit") $("prepare-extract-label").textContent = "Reuse cached analysis";
           setPrepareStage("open");
           return data;
         } else if (data.stage === "error") {
@@ -2450,7 +2529,14 @@
         hideAllPickerPopovers();
         setStatus("", null);
         $("submit").disabled = true;
-        showPrepareProgress(request.kind);
+        const selectedCacheKey = request.kind === "github" && githubIntent === "explore" ? cacheKey(request) : null;
+        const cacheAlreadyChecked = selectedCacheKey !== null && checkedCacheKey === selectedCacheKey;
+        generateProgressSuppressed = request.kind === "github"
+          && githubIntent === "explore"
+          && cacheAlreadyChecked
+          && checkedCacheStatus === "hit";
+        if (generateProgressSuppressed) hidePrepareProgress();
+        else showPrepareProgress(request.kind, cacheAlreadyChecked);
         let navigating = false;
         try {
           const data = await generateBlueprint(request);
@@ -2469,6 +2555,7 @@
             hidePrepareProgress();
             $("submit").disabled = false;
           }
+          generateProgressSuppressed = false;
         }
       });
 

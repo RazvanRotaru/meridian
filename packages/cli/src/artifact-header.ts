@@ -42,6 +42,8 @@ export interface HeaderInputs {
   extraction: ExtractionResult;
   /** Display name for the artifact; defaults to the root's basename (web passes the repo label). */
   name?: string;
+  /** Optional source revision resolved by the caller that owns the Git checkout. */
+  vcs?: GraphArtifact["target"]["vcs"];
   /** The `--changed-since` base ref + per-file line ranges/+− totals/line kinds for renderer diff UI. */
   changedSince?: { baseRef: string; files: ChangedRanges; stats: ChangedLineStats; kinds: ChangedLineKinds };
 }
@@ -55,6 +57,7 @@ export function buildArtifact(inputs: HeaderInputs): GraphArtifact {
       name: inputs.name ?? basename(inputs.absoluteRoot),
       root: inputs.rootRelativeToCwd,
       language: inputs.language,
+      ...(inputs.vcs ? { vcs: inputs.vcs } : {}),
     },
     telemetry: TELEMETRY_CONTRACT,
     nodes: inputs.extraction.nodes,

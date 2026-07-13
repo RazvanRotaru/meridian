@@ -49,6 +49,8 @@ export interface PipelineRequest {
   changedSinceGitExecutor?: GitDiffExecutor;
   /** Display name for the artifact; the web flow passes the repo label so the title isn't a temp dir. */
   targetName?: string;
+  /** Source revision supplied by a caller that resolved the Git checkout. */
+  vcs?: GraphArtifact["target"]["vcs"];
 }
 
 export interface PipelineResult {
@@ -74,6 +76,7 @@ export async function extractToArtifact(request: PipelineRequest): Promise<Pipel
     language: extraction.language,
     extraction,
     name: request.targetName,
+    vcs: request.vcs,
     changedSince:
       request.changedSince && changedSince
         ? { baseRef: request.changedSince, files: changedSince.ranges, stats: changedSince.stats, kinds: changedSince.kinds }

@@ -40,6 +40,9 @@ import { handlePickFolder } from "./web-pick-folder";
 import { handleRepoPullRequests } from "./web-repo-pulls";
 import type { ArtifactSource } from "./web-source";
 import { sendSource } from "./source-serve";
+import type { CachedGraph } from "./web-cache";
+import { resolveWebCacheRoot } from "./web-cache-storage";
+import { handleCacheStatus } from "./web-cache-status";
 
 export interface WebServerConfig {
   rendererRoot: string;
@@ -55,6 +58,10 @@ export interface WebServerConfig {
   fallbackToken?: string;
   /** Identity behind `fallbackToken`, so the signed-in UI can name the gh-logged-in user. */
   fallbackUser?: GitHubUser;
+  /** Persistent remote graph cache root; primarily overridden by tests. */
+  cacheRoot?: string;
+  /** Re-extract artifacts for this server run while retaining immutable checkouts. */
+  refreshCache?: boolean;
 }
 
 export interface Context {
@@ -67,6 +74,10 @@ export interface Context {
   prFilesCache: Map<string, { updatedAt: string; headSha: string | null; paths: string[] }>;
   /** Temp-clone removers, held until process exit so retained sources are cleaned on shutdown. */
   tempCleanups: Set<() => void>;
+  /** Duplicate remote generations share one clone/extract job within this server process. */
+  cacheJobs: Map<string, Promise<CachedGraph>>;
+  cacheRoot: string;
+  refreshCache: boolean;
   rendererIndex: string;
   landingHtml: string;
   staticAssets: StaticAssets;
@@ -93,12 +104,16 @@ function buildContext(config: WebServerConfig): Context {
   }
   const github = createGitHubClient({ clientId: resolveGitHubClientId(config.githubClientId) });
   const landing = injectPrefill(readFileSync(config.webUiPath, "utf8"), config.source);
+  const cacheRoot = resolveWebCacheRoot(config.cacheRoot);
   const ctx: Context = {
     graphs: new Map(),
     sourceRoots: new Map(),
     sources: new Map(),
     prFilesCache: new Map(),
     tempCleanups: new Set(),
+    cacheJobs: new Map(),
+    cacheRoot,
+    refreshCache: config.refreshCache === true,
     rendererIndex: readFileSync(indexPath, "utf8"),
     landingHtml: landing,
     // Stray routes fall back to the front door rather than the renderer shell.
@@ -245,6 +260,10 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
   }
   if (pathname === "/api/repos/branches") {
     await handleRepoBranches(ctx, request, response, url.searchParams.get("repo") ?? "");
+    return;
+  }
+  if (pathname === "/api/cache/status") {
+    await handleCacheStatus(ctx, request, response, url.searchParams);
     return;
   }
   if (pathname === "/api/repos/pulls") {
