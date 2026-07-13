@@ -107,7 +107,19 @@ describe("deriveLogicGraph", () => {
   });
 
   it("renders an if as a branch node with then/else edges that merge into the following step", () => {
-    const branch: FlowStep = { kind: "branch", label: "if cond", paths: [{ label: "then", body: [call("t", "ext:l#t", "external")] }, { label: "else", body: [] }] };
+    const branchSource = { file: "src/a.ts", line: 4, col: 2, endLine: 8, endCol: 3 };
+    const thenSource = { file: "src/a.ts", line: 4, col: 12, endLine: 6, endCol: 3 };
+    const elseSource = { file: "src/a.ts", line: 6, col: 8, endLine: 8, endCol: 3 };
+    const branch: FlowStep = {
+      kind: "branch",
+      branchKind: "if",
+      label: "if cond",
+      source: branchSource,
+      paths: [
+        { label: "then", role: "then", pathId: "then", source: thenSource, body: [call("t", "ext:l#t", "external")] },
+        { label: "else", role: "else", pathId: "else", source: elseSource, body: [] },
+      ],
+    };
     const flows: LogicFlows = { r: [branch, call("after", "ext:l#a", "external")] };
     const { nodes, edges } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false });
     const ifNode = nodes.find((n) => n.id === "r::0")!;
@@ -115,10 +127,12 @@ describe("deriveLogicGraph", () => {
       type: "branch",
       data: {
         logicKind: "if",
+        branchKind: "if",
+        branchSource,
         isContainer: false,
         branchPorts: [
-          { id: "r::0::port/0", label: "then", role: "then", order: 0 },
-          { id: "r::0::port/1", label: "else", role: "else", order: 1 },
+          { id: "r::0::port/0", label: "then", role: "then", order: 0, pathId: "then", source: thenSource },
+          { id: "r::0::port/1", label: "else", role: "else", order: 1, pathId: "else", source: elseSource },
         ],
       },
     });

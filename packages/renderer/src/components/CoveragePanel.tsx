@@ -1,8 +1,7 @@
 /**
- * The coverage side panel (top-right, coverage mode only): the overall verdict, a legend,
- * and the worst-covered classes/modules with each uncovered member and WHY it is uncovered.
- * Clicking a member expands the path to it and selects it on the canvas — the panel is a
- * navigator, not just a report.
+ * The coverage side panel (top-right, coverage mode only). Runtime artifacts show their measured
+ * repository totals. Artifacts without counters retain the static graph heuristic as an explicitly
+ * labelled reachability estimate and navigator.
  */
 
 import { useMemo } from "react";
@@ -10,55 +9,99 @@ import { Panel } from "@xyflow/react";
 import type { CoverageReport } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { buildCoverageRows, type CoverageRow } from "../derive/coverageRows";
+import {
+  runtimeCoverageSummary,
+  type RuntimeCoverageMetric,
+  type RuntimeCoverageSummary,
+} from "../derive/runtimeCoverageSummary";
 import { COVERAGE_COLORS } from "../theme/coverageColors";
 import { COVERAGE_PANEL_WIDTH } from "./canvas/panelLayout";
 
 const MAX_ROWS = 10;
 
 export function CoveragePanel() {
+  const coverageMode = useBlueprint((state) => state.coverageMode);
   const report = useBlueprint((state) => (state.coverageMode ? state.coverage : null));
+  const runtimeCoverage = useBlueprint((state) => runtimeCoverageSummary(state.artifact));
   const index = useBlueprint((state) => state.index);
-  const rows = useMemo(() => (report ? buildCoverageRows(report, index) : []), [report, index]);
-  if (!report) {
+  const rows = useMemo(
+    () => (report && runtimeCoverage === null ? buildCoverageRows(report, index) : []),
+    [report, runtimeCoverage, index],
+  );
+  if (!coverageMode || (runtimeCoverage === null && report === null)) {
     return null;
   }
   return (
     <Panel position="top-right">
       <div style={PANEL_STYLE}>
-        <Summary report={report} />
-        <Legend />
-        {report.summary.testNodes === 0 ? <NoTests /> : <Rows rows={rows} />}
+        {runtimeCoverage ? (
+          <RuntimeSummary summary={runtimeCoverage} />
+        ) : report ? (
+          <>
+            <ReachabilitySummary report={report} />
+            <ReachabilityLegend />
+            {report.summary.testNodes === 0 ? <NoTests /> : <Rows rows={rows} />}
+          </>
+        ) : null}
       </div>
     </Panel>
   );
 }
 
-function Summary(props: { report: CoverageReport }) {
+function RuntimeSummary(props: { summary: RuntimeCoverageSummary }) {
+  return (
+    <div>
+      <div style={TITLE_STYLE}>Runtime coverage</div>
+      <div style={METRICS_STYLE}>
+        <RuntimeMetric label="Functions" metric={props.summary.functions} />
+        <RuntimeMetric label="Branch paths" metric={props.summary.branchPaths} />
+      </div>
+      <div style={MUTED_STYLE}>Aggregate counters from the test run attached to this graph.</div>
+    </div>
+  );
+}
+
+function RuntimeMetric(props: { label: string; metric: RuntimeCoverageMetric }) {
+  const percent = props.metric.percent;
+  return (
+    <div style={METRIC_STYLE}>
+      <span>{props.label}</span>
+      <span style={METRIC_VALUE_STYLE}>
+        <span style={{ color: percent === null ? COVERAGE_COLORS.none : percentColor(percent), fontSize: 16 }}>
+          {percent === null ? "—" : `${percent}%`}
+        </span>
+        <span style={MUTED_STYLE}>{props.metric.hit}/{props.metric.total} hit</span>
+      </span>
+    </div>
+  );
+}
+
+function ReachabilitySummary(props: { report: CoverageReport }) {
   const { summary } = props.report;
   return (
     <div>
       <div style={TITLE_STYLE}>
-        Static coverage <span style={{ color: percentColor(summary.percent), fontSize: 16 }}>{summary.percent}%</span>
+        Estimated test reachability <span style={{ color: percentColor(summary.percent), fontSize: 16 }}>{summary.percent}%</span>
       </div>
       <div style={MUTED_STYLE}>
-        {summary.covered} tested + {summary.indirect} reached of {summary.callables} callables ·{" "}
-        {summary.uncovered} untested
+        {summary.covered} direct + {summary.indirect} indirect of {summary.callables} callables ·{" "}
+        {summary.uncovered} not reached
       </div>
       {summary.unresolvedFromTests > 0 ? (
         <div style={CAVEAT_STYLE}>
-          ⚠ {summary.unresolvedFromTests} unresolved call(s) leave test code — real coverage may be higher.
+          ⚠ {summary.unresolvedFromTests} unresolved call(s) leave test code — actual reachability may be higher.
         </div>
       ) : null}
     </div>
   );
 }
 
-function Legend() {
+function ReachabilityLegend() {
   return (
     <div style={LEGEND_STYLE}>
-      <LegendItem color={COVERAGE_COLORS.covered} label="tested directly" />
-      <LegendItem color={COVERAGE_COLORS.indirect} label="reached via others" />
-      <LegendItem color={COVERAGE_COLORS.uncovered} label="untested" />
+      <LegendItem color={COVERAGE_COLORS.covered} label="directly reachable" />
+      <LegendItem color={COVERAGE_COLORS.indirect} label="indirectly reachable" />
+      <LegendItem color={COVERAGE_COLORS.uncovered} label="not reached" />
       <LegendItem color={COVERAGE_COLORS.test} label="test code" />
     </div>
   );
@@ -171,6 +214,9 @@ const PANEL_STYLE: React.CSSProperties = {
   color: "#E6EDF3",
 };
 const TITLE_STYLE: React.CSSProperties = { fontSize: 14, fontWeight: 600, display: "flex", gap: 8, alignItems: "baseline" };
+const METRICS_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 4, margin: "8px 0 6px" };
+const METRIC_STYLE: React.CSSProperties = { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, fontSize: 12 };
+const METRIC_VALUE_STYLE: React.CSSProperties = { display: "inline-flex", alignItems: "baseline", gap: 7, fontVariantNumeric: "tabular-nums" };
 const MUTED_STYLE: React.CSSProperties = { fontSize: 11, color: "#9AA4B2" };
 const CAVEAT_STYLE: React.CSSProperties = { fontSize: 11, color: COVERAGE_COLORS.indirect, marginTop: 4 };
 const LEGEND_STYLE: React.CSSProperties = { display: "flex", flexWrap: "wrap", gap: "4px 12px" };

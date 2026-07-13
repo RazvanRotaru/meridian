@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.1.0",
-  "generatedAt": "2026-07-12T18:19:43.984Z",
+  "generatedAt": "2026-07-13T15:43:24.872Z",
   "generator": {
     "name": "meridian",
     "version": "meridian@0.1.0 (ts-morph@28)"
@@ -215,16 +215,16 @@
         "endLine": 18
       },
       "signature": "expectEqual(actual: unknown, expected: unknown, label: string): void",
+      "tags": [
+        "test"
+      ],
       "telemetry": {
         "codeNamespace": null,
         "codeFunction": "expectEqual",
         "spanNameHints": [
           "expectEqual"
         ]
-      },
-      "tags": [
-        "test"
-      ]
+      }
     },
     {
       "id": "ts:src/__tests__/orderService.test.ts#sampleRequest",
@@ -239,16 +239,16 @@
         "endLine": 29
       },
       "signature": "sampleRequest(): OrderRequest",
+      "tags": [
+        "test"
+      ],
       "telemetry": {
         "codeNamespace": null,
         "codeFunction": "sampleRequest",
         "spanNameHints": [
           "sampleRequest"
         ]
-      },
-      "tags": [
-        "test"
-      ]
+      }
     },
     {
       "id": "ts:src/__tests__/orderService.test.ts#buildService",
@@ -263,16 +263,16 @@
         "endLine": 33
       },
       "signature": "buildService(): OrderService",
+      "tags": [
+        "test"
+      ],
       "telemetry": {
         "codeNamespace": null,
         "codeFunction": "buildService",
         "spanNameHints": [
           "buildService"
         ]
-      },
-      "tags": [
-        "test"
-      ]
+      }
     },
     {
       "id": "ts:src/__tests__/orderService.test.ts#testPlaceOrderStoresAndPrices",
@@ -353,16 +353,16 @@
         "endLine": 14
       },
       "signature": "expectEqual(actual: unknown, expected: unknown, label: string): void",
+      "tags": [
+        "test"
+      ],
       "telemetry": {
         "codeNamespace": null,
         "codeFunction": "expectEqual",
         "spanNameHints": [
           "expectEqual"
         ]
-      },
-      "tags": [
-        "test"
-      ]
+      }
     },
     {
       "id": "ts:src/__tests__/pricingService.test.ts#requestWith",
@@ -377,16 +377,16 @@
         "endLine": 22
       },
       "signature": "requestWith(discountCode: string): OrderRequest",
+      "tags": [
+        "test"
+      ],
       "telemetry": {
         "codeNamespace": null,
         "codeFunction": "requestWith",
         "spanNameHints": [
           "requestWith"
         ]
-      },
-      "tags": [
-        "test"
-      ]
+      }
     },
     {
       "id": "ts:src/__tests__/pricingService.test.ts#testPriceWithoutDiscount",
@@ -5470,36 +5470,78 @@
           "kind": "call",
           "label": "PricingService",
           "target": "ts:src/pricing/pricingService.ts#PricingService",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/index.ts",
+            "line": 9,
+            "col": 18,
+            "endLine": 9,
+            "endCol": 38
+          }
         },
         {
           "kind": "call",
           "label": "OrderRepository",
           "target": "ts:src/repository/orderRepository.ts#OrderRepository",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/index.ts",
+            "line": 10,
+            "col": 21,
+            "endLine": 10,
+            "endCol": 42
+          }
         },
         {
           "kind": "call",
           "label": "EmailService",
           "target": "ts:src/notifications/emailService.ts#EmailService",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/index.ts",
+            "line": 11,
+            "col": 16,
+            "endLine": 11,
+            "endCol": 34
+          }
         },
         {
           "kind": "call",
           "label": "OrderService",
           "target": "ts:src/services/orderService.ts#OrderService",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/index.ts",
+            "line": 12,
+            "col": 17,
+            "endLine": 12,
+            "endCol": 61
+          }
         },
         {
           "kind": "call",
           "label": "OrderRoutes",
           "target": "ts:src/api/orderRoutes.ts#OrderRoutes",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/index.ts",
+            "line": 13,
+            "col": 9,
+            "endLine": 13,
+            "endCol": 32
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "new OrderRoutes(orders)"
+          "label": "new OrderRoutes(orders)",
+          "source": {
+            "file": "src/index.ts",
+            "line": 13,
+            "col": 2,
+            "endLine": 13,
+            "endCol": 33
+          }
         }
       ],
       "ts:src/__tests__/orderService.test.ts#expectEqual": [
@@ -5511,33 +5553,76 @@
             {
               "label": "then",
               "role": "then",
+              "pathId": "then",
+              "source": {
+                "file": "src/__tests__/orderService.test.ts",
+                "line": 15,
+                "col": 27,
+                "endLine": 17,
+                "endCol": 3
+              },
               "body": [
                 {
                   "kind": "call",
                   "label": "String",
                   "target": null,
-                  "resolution": "external"
+                  "resolution": "external",
+                  "source": {
+                    "file": "src/__tests__/orderService.test.ts",
+                    "line": 16,
+                    "col": 42,
+                    "endLine": 16,
+                    "endCol": 58
+                  }
                 },
                 {
                   "kind": "call",
                   "label": "String",
                   "target": null,
-                  "resolution": "external"
+                  "resolution": "external",
+                  "source": {
+                    "file": "src/__tests__/orderService.test.ts",
+                    "line": 16,
+                    "col": 67,
+                    "endLine": 16,
+                    "endCol": 81
+                  }
                 },
                 {
                   "kind": "call",
                   "label": "Error",
                   "target": null,
-                  "resolution": "external"
+                  "resolution": "external",
+                  "source": {
+                    "file": "src/__tests__/orderService.test.ts",
+                    "line": 16,
+                    "col": 10,
+                    "endLine": 16,
+                    "endCol": 84
+                  }
                 },
                 {
                   "kind": "exit",
                   "variant": "throw",
-                  "label": "new Error(`${label}: expected ${String(…"
+                  "label": "new Error(`${label}: expected ${String(…",
+                  "source": {
+                    "file": "src/__tests__/orderService.test.ts",
+                    "line": 16,
+                    "col": 4,
+                    "endLine": 16,
+                    "endCol": 85
+                  }
                 }
               ]
             }
-          ]
+          ],
+          "source": {
+            "file": "src/__tests__/orderService.test.ts",
+            "line": 15,
+            "col": 2,
+            "endLine": 17,
+            "endCol": 3
+          }
         }
       ],
       "ts:src/__tests__/orderService.test.ts#buildService": [
@@ -5545,30 +5630,65 @@
           "kind": "call",
           "label": "PricingService",
           "target": "ts:src/pricing/pricingService.ts#PricingService",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/orderService.test.ts",
+            "line": 32,
+            "col": 26,
+            "endLine": 32,
+            "endCol": 46
+          }
         },
         {
           "kind": "call",
           "label": "OrderRepository",
           "target": "ts:src/repository/orderRepository.ts#OrderRepository",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/orderService.test.ts",
+            "line": 32,
+            "col": 48,
+            "endLine": 32,
+            "endCol": 69
+          }
         },
         {
           "kind": "call",
           "label": "EmailService",
           "target": "ts:src/notifications/emailService.ts#EmailService",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/orderService.test.ts",
+            "line": 32,
+            "col": 71,
+            "endLine": 32,
+            "endCol": 89
+          }
         },
         {
           "kind": "call",
           "label": "OrderService",
           "target": "ts:src/services/orderService.ts#OrderService",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/orderService.test.ts",
+            "line": 32,
+            "col": 9,
+            "endLine": 32,
+            "endCol": 90
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "new OrderService(new PricingService(), …"
+          "label": "new OrderService(new PricingService(), …",
+          "source": {
+            "file": "src/__tests__/orderService.test.ts",
+            "line": 32,
+            "col": 2,
+            "endLine": 32,
+            "endCol": 91
+          }
         }
       ],
       "ts:src/__tests__/orderService.test.ts#testPlaceOrderStoresAndPrices": [
@@ -5576,31 +5696,66 @@
           "kind": "call",
           "label": "buildService",
           "target": "ts:src/__tests__/orderService.test.ts#buildService",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/orderService.test.ts",
+            "line": 36,
+            "col": 18,
+            "endLine": 36,
+            "endCol": 32
+          }
         },
         {
           "kind": "call",
           "label": "sampleRequest",
           "target": "ts:src/__tests__/orderService.test.ts#sampleRequest",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/orderService.test.ts",
+            "line": 37,
+            "col": 35,
+            "endLine": 37,
+            "endCol": 50
+          }
         },
         {
           "kind": "call",
           "label": "service.placeOrder",
           "target": "ts:src/services/orderService.ts#OrderService.placeOrder",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/orderService.test.ts",
+            "line": 37,
+            "col": 16,
+            "endLine": 37,
+            "endCol": 51
+          }
         },
         {
           "kind": "call",
           "label": "expectEqual",
           "target": "ts:src/__tests__/orderService.test.ts#expectEqual",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/orderService.test.ts",
+            "line": 38,
+            "col": 2,
+            "endLine": 38,
+            "endCol": 52
+          }
         },
         {
           "kind": "call",
           "label": "expectEqual",
           "target": "ts:src/__tests__/orderService.test.ts#expectEqual",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/orderService.test.ts",
+            "line": 39,
+            "col": 2,
+            "endLine": 39,
+            "endCol": 59
+          }
         }
       ],
       "ts:src/__tests__/orderService.test.ts#testGetOrderFindsWhatWasPlaced": [
@@ -5608,31 +5763,66 @@
           "kind": "call",
           "label": "buildService",
           "target": "ts:src/__tests__/orderService.test.ts#buildService",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/orderService.test.ts",
+            "line": 43,
+            "col": 18,
+            "endLine": 43,
+            "endCol": 32
+          }
         },
         {
           "kind": "call",
           "label": "sampleRequest",
           "target": "ts:src/__tests__/orderService.test.ts#sampleRequest",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/orderService.test.ts",
+            "line": 44,
+            "col": 36,
+            "endLine": 44,
+            "endCol": 51
+          }
         },
         {
           "kind": "call",
           "label": "service.placeOrder",
           "target": "ts:src/services/orderService.ts#OrderService.placeOrder",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/orderService.test.ts",
+            "line": 44,
+            "col": 17,
+            "endLine": 44,
+            "endCol": 52
+          }
         },
         {
           "kind": "call",
           "label": "service.getOrder",
           "target": "ts:src/services/orderService.ts#OrderService.getOrder",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/orderService.test.ts",
+            "line": 45,
+            "col": 14,
+            "endLine": 45,
+            "endCol": 41
+          }
         },
         {
           "kind": "call",
           "label": "expectEqual",
           "target": "ts:src/__tests__/orderService.test.ts#expectEqual",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/orderService.test.ts",
+            "line": 45,
+            "col": 2,
+            "endLine": 45,
+            "endCol": 74
+          }
         }
       ],
       "ts:src/__tests__/pricingService.test.ts#expectEqual": [
@@ -5644,33 +5834,76 @@
             {
               "label": "then",
               "role": "then",
+              "pathId": "then",
+              "source": {
+                "file": "src/__tests__/pricingService.test.ts",
+                "line": 11,
+                "col": 27,
+                "endLine": 13,
+                "endCol": 3
+              },
               "body": [
                 {
                   "kind": "call",
                   "label": "String",
                   "target": null,
-                  "resolution": "external"
+                  "resolution": "external",
+                  "source": {
+                    "file": "src/__tests__/pricingService.test.ts",
+                    "line": 12,
+                    "col": 42,
+                    "endLine": 12,
+                    "endCol": 58
+                  }
                 },
                 {
                   "kind": "call",
                   "label": "String",
                   "target": null,
-                  "resolution": "external"
+                  "resolution": "external",
+                  "source": {
+                    "file": "src/__tests__/pricingService.test.ts",
+                    "line": 12,
+                    "col": 67,
+                    "endLine": 12,
+                    "endCol": 81
+                  }
                 },
                 {
                   "kind": "call",
                   "label": "Error",
                   "target": null,
-                  "resolution": "external"
+                  "resolution": "external",
+                  "source": {
+                    "file": "src/__tests__/pricingService.test.ts",
+                    "line": 12,
+                    "col": 10,
+                    "endLine": 12,
+                    "endCol": 84
+                  }
                 },
                 {
                   "kind": "exit",
                   "variant": "throw",
-                  "label": "new Error(`${label}: expected ${String(…"
+                  "label": "new Error(`${label}: expected ${String(…",
+                  "source": {
+                    "file": "src/__tests__/pricingService.test.ts",
+                    "line": 12,
+                    "col": 4,
+                    "endLine": 12,
+                    "endCol": 85
+                  }
                 }
               ]
             }
-          ]
+          ],
+          "source": {
+            "file": "src/__tests__/pricingService.test.ts",
+            "line": 11,
+            "col": 2,
+            "endLine": 13,
+            "endCol": 3
+          }
         }
       ],
       "ts:src/__tests__/pricingService.test.ts#testPriceWithoutDiscount": [
@@ -5678,31 +5911,66 @@
           "kind": "call",
           "label": "PricingService",
           "target": "ts:src/pricing/pricingService.ts#PricingService",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/pricingService.test.ts",
+            "line": 25,
+            "col": 16,
+            "endLine": 25,
+            "endCol": 36
+          }
         },
         {
           "kind": "call",
           "label": "requestWith",
           "target": "ts:src/__tests__/pricingService.test.ts#requestWith",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/pricingService.test.ts",
+            "line": 25,
+            "col": 43,
+            "endLine": 25,
+            "endCol": 56
+          }
         },
         {
           "kind": "call",
           "label": "price",
           "target": "ts:src/pricing/pricingService.ts#PricingService.price",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/pricingService.test.ts",
+            "line": 25,
+            "col": 16,
+            "endLine": 25,
+            "endCol": 57
+          }
         },
         {
           "kind": "call",
           "label": "expectEqual",
           "target": "ts:src/__tests__/pricingService.test.ts#expectEqual",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/pricingService.test.ts",
+            "line": 26,
+            "col": 2,
+            "endLine": 26,
+            "endCol": 52
+          }
         },
         {
           "kind": "call",
           "label": "expectEqual",
           "target": "ts:src/__tests__/pricingService.test.ts#expectEqual",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/pricingService.test.ts",
+            "line": 27,
+            "col": 2,
+            "endLine": 27,
+            "endCol": 60
+          }
         }
       ],
       "ts:src/__tests__/pricingService.test.ts#testPriceHonorsKnownDiscountCode": [
@@ -5710,31 +5978,66 @@
           "kind": "call",
           "label": "PricingService",
           "target": "ts:src/pricing/pricingService.ts#PricingService",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/pricingService.test.ts",
+            "line": 31,
+            "col": 16,
+            "endLine": 31,
+            "endCol": 36
+          }
         },
         {
           "kind": "call",
           "label": "requestWith",
           "target": "ts:src/__tests__/pricingService.test.ts#requestWith",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/pricingService.test.ts",
+            "line": 31,
+            "col": 43,
+            "endLine": 31,
+            "endCol": 67
+          }
         },
         {
           "kind": "call",
           "label": "price",
           "target": "ts:src/pricing/pricingService.ts#PricingService.price",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/pricingService.test.ts",
+            "line": 31,
+            "col": 16,
+            "endLine": 31,
+            "endCol": 68
+          }
         },
         {
           "kind": "call",
           "label": "expectEqual",
           "target": "ts:src/__tests__/pricingService.test.ts#expectEqual",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/pricingService.test.ts",
+            "line": 32,
+            "col": 2,
+            "endLine": 32,
+            "endCol": 56
+          }
         },
         {
           "kind": "call",
           "label": "expectEqual",
           "target": "ts:src/__tests__/pricingService.test.ts#expectEqual",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/__tests__/pricingService.test.ts",
+            "line": 33,
+            "col": 2,
+            "endLine": 33,
+            "endCol": 63
+          }
         }
       ],
       "ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder": [
@@ -5746,44 +6049,102 @@
             {
               "label": "try",
               "role": "try",
+              "pathId": "try",
+              "source": {
+                "file": "src/api/orderRoutes.ts",
+                "line": 17,
+                "col": 8,
+                "endLine": 20,
+                "endCol": 5
+              },
               "body": [
                 {
                   "kind": "call",
                   "label": "placeOrder",
                   "target": "ts:src/services/orderService.ts#OrderService.placeOrder",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/api/orderRoutes.ts",
+                    "line": 18,
+                    "col": 20,
+                    "endLine": 18,
+                    "endCol": 51
+                  }
                 },
                 {
                   "kind": "call",
                   "label": "this.created",
                   "target": "ts:src/api/orderRoutes.ts#OrderRoutes.created",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/api/orderRoutes.ts",
+                    "line": 19,
+                    "col": 13,
+                    "endLine": 19,
+                    "endCol": 32
+                  }
                 },
                 {
                   "kind": "exit",
                   "variant": "return",
-                  "label": "this.created(order)"
+                  "label": "this.created(order)",
+                  "source": {
+                    "file": "src/api/orderRoutes.ts",
+                    "line": 19,
+                    "col": 6,
+                    "endLine": 19,
+                    "endCol": 33
+                  }
                 }
               ]
             },
             {
               "label": "catch error",
               "role": "catch",
+              "pathId": "catch",
+              "source": {
+                "file": "src/api/orderRoutes.ts",
+                "line": 20,
+                "col": 6,
+                "endLine": 22,
+                "endCol": 5
+              },
               "body": [
                 {
                   "kind": "call",
                   "label": "this.toErrorResponse",
                   "target": "ts:src/api/orderRoutes.ts#OrderRoutes.toErrorResponse",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/api/orderRoutes.ts",
+                    "line": 21,
+                    "col": 13,
+                    "endLine": 21,
+                    "endCol": 40
+                  }
                 },
                 {
                   "kind": "exit",
                   "variant": "return",
-                  "label": "this.toErrorResponse(error)"
+                  "label": "this.toErrorResponse(error)",
+                  "source": {
+                    "file": "src/api/orderRoutes.ts",
+                    "line": 21,
+                    "col": 6,
+                    "endLine": 21,
+                    "endCol": 41
+                  }
                 }
               ]
             }
-          ]
+          ],
+          "source": {
+            "file": "src/api/orderRoutes.ts",
+            "line": 17,
+            "col": 4,
+            "endLine": 22,
+            "endCol": 5
+          }
         }
       ],
       "ts:src/api/orderRoutes.ts#OrderRoutes.handleGetOrder": [
@@ -5791,7 +6152,14 @@
           "kind": "call",
           "label": "getOrder",
           "target": "ts:src/services/orderService.ts#OrderService.getOrder",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/api/orderRoutes.ts",
+            "line": 27,
+            "col": 18,
+            "endLine": 27,
+            "endCol": 42
+          }
         },
         {
           "kind": "branch",
@@ -5801,20 +6169,49 @@
             {
               "label": "then",
               "role": "then",
+              "pathId": "then",
+              "source": {
+                "file": "src/api/orderRoutes.ts",
+                "line": 28,
+                "col": 16,
+                "endLine": 30,
+                "endCol": 5
+              },
               "body": [
                 {
                   "kind": "exit",
                   "variant": "return",
-                  "label": "{ status: 404, body: { error: \"order no…"
+                  "label": "{ status: 404, body: { error: \"order no…",
+                  "source": {
+                    "file": "src/api/orderRoutes.ts",
+                    "line": 29,
+                    "col": 6,
+                    "endLine": 29,
+                    "endCol": 65
+                  }
                 }
               ]
             }
-          ]
+          ],
+          "source": {
+            "file": "src/api/orderRoutes.ts",
+            "line": 28,
+            "col": 4,
+            "endLine": 30,
+            "endCol": 5
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "{ status: 200, body: order }"
+          "label": "{ status: 200, body: order }",
+          "source": {
+            "file": "src/api/orderRoutes.ts",
+            "line": 31,
+            "col": 4,
+            "endLine": 31,
+            "endCol": 40
+          }
         }
       ],
       "ts:src/api/orderRoutes.ts#OrderRoutes.toErrorResponse": [
@@ -5826,20 +6223,49 @@
             {
               "label": "then",
               "role": "then",
+              "pathId": "then",
+              "source": {
+                "file": "src/api/orderRoutes.ts",
+                "line": 41,
+                "col": 42,
+                "endLine": 43,
+                "endCol": 5
+              },
               "body": [
                 {
                   "kind": "exit",
                   "variant": "return",
-                  "label": "{ status: 400, body: { error: error.mes…"
+                  "label": "{ status: 400, body: { error: error.mes…",
+                  "source": {
+                    "file": "src/api/orderRoutes.ts",
+                    "line": 42,
+                    "col": 6,
+                    "endLine": 42,
+                    "endCol": 61
+                  }
                 }
               ]
             }
-          ]
+          ],
+          "source": {
+            "file": "src/api/orderRoutes.ts",
+            "line": 41,
+            "col": 4,
+            "endLine": 43,
+            "endCol": 5
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "{ status: 500, body: { error: \"internal…"
+          "label": "{ status: 500, body: { error: \"internal…",
+          "source": {
+            "file": "src/api/orderRoutes.ts",
+            "line": 44,
+            "col": 4,
+            "endLine": 44,
+            "endCol": 62
+          }
         }
       ],
       "ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation": [
@@ -5847,13 +6273,27 @@
           "kind": "call",
           "label": "this.renderConfirmation",
           "target": "ts:src/notifications/emailService.ts#EmailService.renderConfirmation",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/notifications/emailService.ts",
+            "line": 7,
+            "col": 17,
+            "endLine": 7,
+            "endCol": 47
+          }
         },
         {
           "kind": "call",
           "label": "this.deliver",
           "target": "ts:src/notifications/emailService.ts#EmailService.deliver",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/notifications/emailService.ts",
+            "line": 8,
+            "col": 4,
+            "endLine": 8,
+            "endCol": 67
+          }
         }
       ],
       "ts:src/notifications/emailService.ts#EmailService.renderConfirmation": [
@@ -5861,12 +6301,26 @@
           "kind": "call",
           "label": "toFixed",
           "target": null,
-          "resolution": "external"
+          "resolution": "external",
+          "source": {
+            "file": "src/notifications/emailService.ts",
+            "line": 13,
+            "col": 18,
+            "endLine": 13,
+            "endCol": 53
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "`Thanks! Order ${order.id} totalling $$…"
+          "label": "`Thanks! Order ${order.id} totalling $$…",
+          "source": {
+            "file": "src/notifications/emailService.ts",
+            "line": 14,
+            "col": 4,
+            "endLine": 14,
+            "endCol": 73
+          }
         }
       ],
       "ts:src/pricing/pricingService.ts#PricingService.price": [
@@ -5874,36 +6328,78 @@
           "kind": "call",
           "label": "this.subtotal",
           "target": "ts:src/pricing/pricingService.ts#PricingService.subtotal",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/pricing/pricingService.ts",
+            "line": 9,
+            "col": 26,
+            "endLine": 9,
+            "endCol": 54
+          }
         },
         {
           "kind": "call",
           "label": "this.discountFor",
           "target": "ts:src/pricing/pricingService.ts#PricingService.discountFor",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/pricing/pricingService.ts",
+            "line": 10,
+            "col": 26,
+            "endLine": 10,
+            "endCol": 79
+          }
         },
         {
           "kind": "call",
           "label": "this.tax",
           "target": "ts:src/pricing/pricingService.ts#PricingService.tax",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/pricing/pricingService.ts",
+            "line": 12,
+            "col": 21,
+            "endLine": 12,
+            "endCol": 40
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "{ subtotalCents, discountCents, taxCent…"
+          "label": "{ subtotalCents, discountCents, taxCent…",
+          "source": {
+            "file": "src/pricing/pricingService.ts",
+            "line": 13,
+            "col": 4,
+            "endLine": 18,
+            "endCol": 6
+          }
         }
       ],
       "ts:src/pricing/pricingService.ts#PricingService.subtotal": [
         {
           "kind": "loop",
           "label": "reduce sum",
-          "body": []
+          "body": [],
+          "source": {
+            "file": "src/pricing/pricingService.ts",
+            "line": 23,
+            "col": 11,
+            "endLine": 23,
+            "endCol": 84
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "lines.reduce((sum, line) => sum + line.…"
+          "label": "lines.reduce((sum, line) => sum + line.…",
+          "source": {
+            "file": "src/pricing/pricingService.ts",
+            "line": 23,
+            "col": 4,
+            "endLine": 23,
+            "endCol": 85
+          }
         }
       ],
       "ts:src/pricing/pricingService.ts#PricingService.discountFor": [
@@ -5915,26 +6411,62 @@
             {
               "label": "then",
               "role": "then",
+              "pathId": "then",
+              "source": {
+                "file": "src/pricing/pricingService.ts",
+                "line": 28,
+                "col": 42,
+                "endLine": 30,
+                "endCol": 5
+              },
               "body": [
                 {
                   "kind": "exit",
                   "variant": "return",
-                  "label": "0"
+                  "label": "0",
+                  "source": {
+                    "file": "src/pricing/pricingService.ts",
+                    "line": 29,
+                    "col": 6,
+                    "endLine": 29,
+                    "endCol": 15
+                  }
                 }
               ]
             }
-          ]
+          ],
+          "source": {
+            "file": "src/pricing/pricingService.ts",
+            "line": 28,
+            "col": 4,
+            "endLine": 30,
+            "endCol": 5
+          }
         },
         {
           "kind": "call",
           "label": "Math.round",
           "target": null,
-          "resolution": "external"
+          "resolution": "external",
+          "source": {
+            "file": "src/pricing/pricingService.ts",
+            "line": 31,
+            "col": 11,
+            "endLine": 31,
+            "endCol": 42
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "Math.round(subtotalCents * 0.1)"
+          "label": "Math.round(subtotalCents * 0.1)",
+          "source": {
+            "file": "src/pricing/pricingService.ts",
+            "line": 31,
+            "col": 4,
+            "endLine": 31,
+            "endCol": 43
+          }
         }
       ],
       "ts:src/pricing/pricingService.ts#PricingService.tax": [
@@ -5942,12 +6474,26 @@
           "kind": "call",
           "label": "Math.round",
           "target": null,
-          "resolution": "external"
+          "resolution": "external",
+          "source": {
+            "file": "src/pricing/pricingService.ts",
+            "line": 41,
+            "col": 11,
+            "endLine": 41,
+            "endCol": 43
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "Math.round(baseCents * TAX_RATE)"
+          "label": "Math.round(baseCents * TAX_RATE)",
+          "source": {
+            "file": "src/pricing/pricingService.ts",
+            "line": 41,
+            "col": 4,
+            "endLine": 41,
+            "endCol": 44
+          }
         }
       ],
       "ts:src/repository/orderRepository.ts#OrderRepository.save": [
@@ -5955,7 +6501,14 @@
           "kind": "call",
           "label": "set",
           "target": null,
-          "resolution": "external"
+          "resolution": "external",
+          "source": {
+            "file": "src/repository/orderRepository.ts",
+            "line": 9,
+            "col": 4,
+            "endLine": 9,
+            "endCol": 34
+          }
         }
       ],
       "ts:src/repository/orderRepository.ts#OrderRepository.findById": [
@@ -5963,12 +6516,26 @@
           "kind": "call",
           "label": "get",
           "target": null,
-          "resolution": "external"
+          "resolution": "external",
+          "source": {
+            "file": "src/repository/orderRepository.ts",
+            "line": 14,
+            "col": 11,
+            "endLine": 14,
+            "endCol": 28
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "this.byId.get(id)"
+          "label": "this.byId.get(id)",
+          "source": {
+            "file": "src/repository/orderRepository.ts",
+            "line": 14,
+            "col": 4,
+            "endLine": 14,
+            "endCol": 29
+          }
         }
       ],
       "ts:src/services/orderService.ts#OrderService.placeOrder": [
@@ -5976,36 +6543,78 @@
           "kind": "call",
           "label": "validateOrderRequest",
           "target": "ts:src/validation/orderValidator.ts#validateOrderRequest",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/services/orderService.ts",
+            "line": 19,
+            "col": 4,
+            "endLine": 19,
+            "endCol": 33
+          }
         },
         {
           "kind": "call",
           "label": "price",
           "target": "ts:src/pricing/pricingService.ts#PricingService.price",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/services/orderService.ts",
+            "line": 20,
+            "col": 18,
+            "endLine": 20,
+            "endCol": 45
+          }
         },
         {
           "kind": "call",
           "label": "this.assemble",
           "target": "ts:src/services/orderService.ts#OrderService.assemble",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/services/orderService.ts",
+            "line": 21,
+            "col": 18,
+            "endLine": 21,
+            "endCol": 47
+          }
         },
         {
           "kind": "call",
           "label": "save",
           "target": "ts:src/repository/orderRepository.ts#OrderRepository.save",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/services/orderService.ts",
+            "line": 22,
+            "col": 4,
+            "endLine": 22,
+            "endCol": 31
+          }
         },
         {
           "kind": "call",
           "label": "sendOrderConfirmation",
           "target": "ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/services/orderService.ts",
+            "line": 23,
+            "col": 4,
+            "endLine": 23,
+            "endCol": 43
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "order"
+          "label": "order",
+          "source": {
+            "file": "src/services/orderService.ts",
+            "line": 24,
+            "col": 4,
+            "endLine": 24,
+            "endCol": 17
+          }
         }
       ],
       "ts:src/services/orderService.ts#OrderService.getOrder": [
@@ -6013,12 +6622,26 @@
           "kind": "call",
           "label": "findById",
           "target": "ts:src/repository/orderRepository.ts#OrderRepository.findById",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/services/orderService.ts",
+            "line": 29,
+            "col": 11,
+            "endLine": 29,
+            "endCol": 39
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "this.repository.findById(id)"
+          "label": "this.repository.findById(id)",
+          "source": {
+            "file": "src/services/orderService.ts",
+            "line": 29,
+            "col": 4,
+            "endLine": 29,
+            "endCol": 40
+          }
         }
       ],
       "ts:src/services/orderService.ts#OrderService.assemble": [
@@ -6026,18 +6649,39 @@
           "kind": "call",
           "label": "this.nextId",
           "target": "ts:src/services/orderService.ts#OrderService.nextId",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/services/orderService.ts",
+            "line": 38,
+            "col": 10,
+            "endLine": 38,
+            "endCol": 23
+          }
         },
         {
           "kind": "call",
           "label": "this.timestamp",
           "target": "ts:src/services/orderService.ts#OrderService.timestamp",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/services/orderService.ts",
+            "line": 42,
+            "col": 17,
+            "endLine": 42,
+            "endCol": 33
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "{ id: this.nextId(), customerId: reques…"
+          "label": "{ id: this.nextId(), customerId: reques…",
+          "source": {
+            "file": "src/services/orderService.ts",
+            "line": 37,
+            "col": 4,
+            "endLine": 43,
+            "endCol": 6
+          }
         }
       ],
       "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour": [
@@ -6050,6 +6694,13 @@
           "async": {
             "kind": "direct-await",
             "taskId": "task:868"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 29,
+            "col": 31,
+            "endLine": 29,
+            "endCol": 57
           }
         },
         {
@@ -6061,6 +6712,13 @@
           "async": {
             "kind": "direct-await",
             "taskId": "task:927"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 30,
+            "col": 31,
+            "endLine": 30,
+            "endCol": 61
           }
         },
         {
@@ -6072,6 +6730,13 @@
           "async": {
             "kind": "direct-await",
             "taskId": "task:970"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 32,
+            "col": 10,
+            "endLine": 32,
+            "endCol": 40
           }
         },
         {
@@ -6083,19 +6748,40 @@
           "async": {
             "kind": "direct-await",
             "taskId": "task:1012"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 33,
+            "col": 10,
+            "endLine": 33,
+            "endCol": 47
           }
         },
         {
           "kind": "call",
           "label": "this.nestedDecisions",
           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 35,
+            "col": 21,
+            "endLine": 35,
+            "endCol": 48
+          }
         },
         {
           "kind": "call",
           "label": "this.loopShapes",
           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loopShapes",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 36,
+            "col": 4,
+            "endLine": 36,
+            "endCol": 34
+          }
         },
         {
           "kind": "call",
@@ -6106,6 +6792,13 @@
           "async": {
             "kind": "direct-await",
             "taskId": "task:1172"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 37,
+            "col": 34,
+            "endLine": 37,
+            "endCol": 61
           }
         },
         {
@@ -6117,24 +6810,52 @@
           "async": {
             "kind": "direct-await",
             "taskId": "task:1211"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 38,
+            "col": 10,
+            "endLine": 38,
+            "endCol": 40
           }
         },
         {
           "kind": "call",
           "label": "this.callbackHandOffs",
           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 39,
+            "col": 4,
+            "endLine": 39,
+            "endCol": 35
+          }
         },
         {
           "kind": "call",
           "label": "this.externalAndDetached",
           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.externalAndDetached",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 40,
+            "col": 4,
+            "endLine": 40,
+            "endCol": 38
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "{ directResult, joinedResult, decision,…"
+          "label": "{ directResult, joinedResult, decision,…",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 42,
+            "col": 4,
+            "endLine": 42,
+            "endCol": 69
+          }
         }
       ],
       "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.directAwait": [
@@ -6147,18 +6868,39 @@
           "async": {
             "kind": "direct-await",
             "taskId": "task:1545"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 47,
+            "col": 24,
+            "endLine": 47,
+            "endCol": 48
           }
         },
         {
           "kind": "call",
           "label": "this.recordCheckpoint",
           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 48,
+            "col": 4,
+            "endLine": 48,
+            "endCol": 50
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "order"
+          "label": "order",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 49,
+            "col": 4,
+            "endLine": 49,
+            "endCol": 17
+          }
         }
       ],
       "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.launchThenAwait": [
@@ -6171,19 +6913,40 @@
             "kind": "launch",
             "taskId": "task:1817",
             "binding": "inventoryTask"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 54,
+            "col": 26,
+            "endLine": 54,
+            "endCol": 54
           }
         },
         {
           "kind": "call",
           "label": "this.preparePackingSlip",
           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.preparePackingSlip",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 56,
+            "col": 4,
+            "endLine": 56,
+            "endCol": 36
+          }
         },
         {
           "kind": "call",
           "label": "this.recordCheckpoint",
           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 57,
+            "col": 4,
+            "endLine": 57,
+            "endCol": 54
+          }
         },
         {
           "kind": "await",
@@ -6194,18 +6957,39 @@
               "label": "inventoryTask",
               "taskId": "task:1817"
             }
-          ]
+          ],
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 59,
+            "col": 22,
+            "endLine": 59,
+            "endCol": 41
+          }
         },
         {
           "kind": "call",
           "label": "this.attachInventory",
           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.attachInventory",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 60,
+            "col": 4,
+            "endLine": 60,
+            "endCol": 44
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "inventory"
+          "label": "inventory",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 61,
+            "col": 4,
+            "endLine": 61,
+            "endCol": 21
+          }
         }
       ],
       "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier": [
@@ -6218,6 +7002,13 @@
             "kind": "launch",
             "taskId": "task:2209",
             "binding": "reserveTask"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 66,
+            "col": 24,
+            "endLine": 66,
+            "endCol": 54
           }
         },
         {
@@ -6229,6 +7020,13 @@
             "kind": "launch",
             "taskId": "task:2265",
             "binding": "paymentTask"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 67,
+            "col": 24,
+            "endLine": 67,
+            "endCol": 54
           }
         },
         {
@@ -6240,6 +7038,13 @@
             "kind": "launch",
             "taskId": "task:2326",
             "binding": "notificationTask"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 68,
+            "col": 29,
+            "endLine": 68,
+            "endCol": 62
           }
         },
         {
@@ -6265,13 +7070,27 @@
                 "taskId": "task:2326"
               }
             ]
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 70,
+            "col": 10,
+            "endLine": 70,
+            "endCol": 67
           }
         },
         {
           "kind": "call",
           "label": "this.recordCheckpoint",
           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 71,
+            "col": 4,
+            "endLine": 71,
+            "endCol": 47
+          }
         }
       ],
       "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier": [
@@ -6283,6 +7102,13 @@
           "async": {
             "kind": "launch",
             "taskId": "task:2659"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 77,
+            "col": 6,
+            "endLine": 77,
+            "endCol": 31
           }
         },
         {
@@ -6293,6 +7119,13 @@
           "async": {
             "kind": "launch",
             "taskId": "task:2692"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 78,
+            "col": 6,
+            "endLine": 78,
+            "endCol": 37
           }
         },
         {
@@ -6303,6 +7136,13 @@
           "async": {
             "kind": "launch",
             "taskId": "task:2731"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 79,
+            "col": 6,
+            "endLine": 79,
+            "endCol": 37
           }
         },
         {
@@ -6328,13 +7168,27 @@
                 "taskId": "task:2731"
               }
             ]
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 76,
+            "col": 10,
+            "endLine": 80,
+            "endCol": 6
           }
         },
         {
           "kind": "call",
           "label": "this.recordCheckpoint",
           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 81,
+            "col": 4,
+            "endLine": 81,
+            "endCol": 51
+          }
         }
       ],
       "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions": [
@@ -6346,21 +7200,50 @@
             {
               "label": "then",
               "role": "then",
+              "pathId": "then",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 86,
+                "col": 36,
+                "endLine": 89,
+                "endCol": 5
+              },
               "body": [
                 {
                   "kind": "call",
                   "label": "this.rejectEmptyOrder",
                   "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.rejectEmptyOrder",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 87,
+                    "col": 6,
+                    "endLine": 87,
+                    "endCol": 37
+                  }
                 },
                 {
                   "kind": "exit",
                   "variant": "return",
-                  "label": "\"empty\""
+                  "label": "\"empty\"",
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 88,
+                    "col": 6,
+                    "endLine": 88,
+                    "endCol": 21
+                  }
                 }
               ]
             }
-          ]
+          ],
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 86,
+            "col": 4,
+            "endLine": 89,
+            "endCol": 5
+          }
         },
         {
           "kind": "branch",
@@ -6370,6 +7253,14 @@
             {
               "label": "then",
               "role": "then",
+              "pathId": "then",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 91,
+                "col": 25,
+                "endLine": 98,
+                "endCol": 5
+              },
               "body": [
                 {
                   "kind": "branch",
@@ -6379,45 +7270,104 @@
                     {
                       "label": "then",
                       "role": "then",
+                      "pathId": "then",
+                      "source": {
+                        "file": "src/showcase/executionGraphGallery.ts",
+                        "line": 92,
+                        "col": 32,
+                        "endLine": 95,
+                        "endCol": 7
+                      },
                       "body": [
                         {
                           "kind": "call",
                           "label": "this.flagForFraudReview",
                           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.flagForFraudReview",
-                          "resolution": "resolved"
+                          "resolution": "resolved",
+                          "source": {
+                            "file": "src/showcase/executionGraphGallery.ts",
+                            "line": 93,
+                            "col": 8,
+                            "endLine": 93,
+                            "endCol": 41
+                          }
                         },
                         {
                           "kind": "call",
                           "label": "this.highRiskError",
                           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.highRiskError",
-                          "resolution": "resolved"
+                          "resolution": "resolved",
+                          "source": {
+                            "file": "src/showcase/executionGraphGallery.ts",
+                            "line": 94,
+                            "col": 14,
+                            "endLine": 94,
+                            "endCol": 42
+                          }
                         },
                         {
                           "kind": "exit",
                           "variant": "throw",
-                          "label": "this.highRiskError(order.id)"
+                          "label": "this.highRiskError(order.id)",
+                          "source": {
+                            "file": "src/showcase/executionGraphGallery.ts",
+                            "line": 94,
+                            "col": 8,
+                            "endLine": 94,
+                            "endCol": 43
+                          }
                         }
                       ]
                     },
                     {
                       "label": "else",
                       "role": "else",
+                      "pathId": "else",
+                      "source": {
+                        "file": "src/showcase/executionGraphGallery.ts",
+                        "line": 95,
+                        "col": 13,
+                        "endLine": 97,
+                        "endCol": 7
+                      },
                       "body": [
                         {
                           "kind": "call",
                           "label": "this.routePriority",
                           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.routePriority",
-                          "resolution": "resolved"
+                          "resolution": "resolved",
+                          "source": {
+                            "file": "src/showcase/executionGraphGallery.ts",
+                            "line": 96,
+                            "col": 8,
+                            "endLine": 96,
+                            "endCol": 36
+                          }
                         }
                       ]
                     }
-                  ]
+                  ],
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 92,
+                    "col": 6,
+                    "endLine": 97,
+                    "endCol": 7
+                  }
                 }
               ]
             },
             {
               "label": "else",
               "role": "else",
+              "pathId": "else",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 98,
+                "col": 11,
+                "endLine": 104,
+                "endCol": 5
+              },
               "body": [
                 {
                   "kind": "branch",
@@ -6427,32 +7377,76 @@
                     {
                       "label": "then",
                       "role": "then",
+                      "pathId": "then",
+                      "source": {
+                        "file": "src/showcase/executionGraphGallery.ts",
+                        "line": 99,
+                        "col": 32,
+                        "endLine": 101,
+                        "endCol": 7
+                      },
                       "body": [
                         {
                           "kind": "call",
                           "label": "this.routeManualReview",
                           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.routeManualReview",
-                          "resolution": "resolved"
+                          "resolution": "resolved",
+                          "source": {
+                            "file": "src/showcase/executionGraphGallery.ts",
+                            "line": 100,
+                            "col": 8,
+                            "endLine": 100,
+                            "endCol": 40
+                          }
                         }
                       ]
                     },
                     {
                       "label": "else",
                       "role": "else",
+                      "pathId": "else",
+                      "source": {
+                        "file": "src/showcase/executionGraphGallery.ts",
+                        "line": 101,
+                        "col": 13,
+                        "endLine": 103,
+                        "endCol": 7
+                      },
                       "body": [
                         {
                           "kind": "call",
                           "label": "this.routeStandard",
                           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.routeStandard",
-                          "resolution": "resolved"
+                          "resolution": "resolved",
+                          "source": {
+                            "file": "src/showcase/executionGraphGallery.ts",
+                            "line": 102,
+                            "col": 8,
+                            "endLine": 102,
+                            "endCol": 36
+                          }
                         }
                       ]
                     }
-                  ]
+                  ],
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 99,
+                    "col": 6,
+                    "endLine": 103,
+                    "endCol": 7
+                  }
                 }
               ]
             }
-          ]
+          ],
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 91,
+            "col": 4,
+            "endLine": 104,
+            "endCol": 5
+          }
         },
         {
           "kind": "branch",
@@ -6462,73 +7456,168 @@
             {
               "label": "\"new\"",
               "role": "case",
+              "pathId": "\"new\"",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 107,
+                "col": 6,
+                "endLine": 109,
+                "endCol": 14
+              },
               "body": [
                 {
                   "kind": "call",
                   "label": "this.acceptNewOrder",
                   "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.acceptNewOrder",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 108,
+                    "col": 8,
+                    "endLine": 108,
+                    "endCol": 37
+                  }
                 }
               ]
             },
             {
               "label": "\"held\"",
               "role": "case",
+              "pathId": "\"held\"",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 110,
+                "col": 6,
+                "endLine": 112,
+                "endCol": 22
+              },
               "body": [
                 {
                   "kind": "call",
                   "label": "this.keepOrderOnHold",
                   "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.keepOrderOnHold",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 111,
+                    "col": 8,
+                    "endLine": 111,
+                    "endCol": 38
+                  }
                 },
                 {
                   "kind": "exit",
                   "variant": "return",
-                  "label": "\"held\""
+                  "label": "\"held\"",
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 112,
+                    "col": 8,
+                    "endLine": 112,
+                    "endCol": 22
+                  }
                 }
               ]
             },
             {
               "label": "\"released\"",
               "role": "case",
+              "pathId": "\"released\"",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 113,
+                "col": 6,
+                "endLine": 115,
+                "endCol": 14
+              },
               "body": [
                 {
                   "kind": "call",
                   "label": "this.releaseOrder",
                   "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.releaseOrder",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 114,
+                    "col": 8,
+                    "endLine": 114,
+                    "endCol": 35
+                  }
                 }
               ]
             },
             {
               "label": "default",
               "role": "default",
+              "pathId": "default",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 116,
+                "col": 6,
+                "endLine": 118,
+                "endCol": 47
+              },
               "body": [
                 {
                   "kind": "call",
                   "label": "this.reportUnknownState",
                   "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reportUnknownState",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 117,
+                    "col": 8,
+                    "endLine": 117,
+                    "endCol": 41
+                  }
                 },
                 {
                   "kind": "call",
                   "label": "this.unknownStateError",
                   "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.unknownStateError",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 118,
+                    "col": 14,
+                    "endLine": 118,
+                    "endCol": 46
+                  }
                 },
                 {
                   "kind": "exit",
                   "variant": "throw",
-                  "label": "this.unknownStateError(order.id)"
+                  "label": "this.unknownStateError(order.id)",
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 118,
+                    "col": 8,
+                    "endLine": 118,
+                    "endCol": 47
+                  }
                 }
               ]
             }
-          ]
+          ],
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 106,
+            "col": 4,
+            "endLine": 119,
+            "endCol": 5
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "\"accepted\""
+          "label": "\"accepted\"",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 121,
+            "col": 4,
+            "endLine": 121,
+            "endCol": 22
+          }
         }
       ],
       "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loopShapes": [
@@ -6540,9 +7629,23 @@
               "kind": "call",
               "label": "this.recordAttempt",
               "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordAttempt",
-              "resolution": "resolved"
+              "resolution": "resolved",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 127,
+                "col": 6,
+                "endLine": 127,
+                "endCol": 33
+              }
             }
-          ]
+          ],
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 126,
+            "col": 4,
+            "endLine": 128,
+            "endCol": 5
+          }
         },
         {
           "kind": "loop",
@@ -6552,9 +7655,23 @@
               "kind": "call",
               "label": "this.visitOrder",
               "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.visitOrder",
-              "resolution": "resolved"
+              "resolution": "resolved",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 131,
+                "col": 6,
+                "endLine": 131,
+                "endCol": 30
+              }
             }
-          ]
+          ],
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 130,
+            "col": 4,
+            "endLine": 132,
+            "endCol": 5
+          }
         },
         {
           "kind": "loop",
@@ -6564,9 +7681,23 @@
               "kind": "call",
               "label": "this.pollOrder",
               "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.pollOrder",
-              "resolution": "resolved"
+              "resolution": "resolved",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 136,
+                "col": 6,
+                "endLine": 136,
+                "endCol": 38
+              }
             }
-          ]
+          ],
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 135,
+            "col": 4,
+            "endLine": 138,
+            "endCol": 5
+          }
         },
         {
           "kind": "loop",
@@ -6576,9 +7707,23 @@
               "kind": "call",
               "label": "this.flushSweep",
               "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.flushSweep",
-              "resolution": "resolved"
+              "resolution": "resolved",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 142,
+                "col": 6,
+                "endLine": 142,
+                "endCol": 28
+              }
             }
-          ]
+          ],
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 141,
+            "col": 4,
+            "endLine": 144,
+            "endCol": 24
+          }
         }
       ],
       "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchOnly": [
@@ -6590,6 +7735,14 @@
             {
               "label": "try",
               "role": "try",
+              "pathId": "try",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 149,
+                "col": 8,
+                "endLine": 151,
+                "endCol": 5
+              },
               "body": [
                 {
                   "kind": "call",
@@ -6600,39 +7753,89 @@
                   "async": {
                     "kind": "direct-await",
                     "taskId": "task:4528"
+                  },
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 150,
+                    "col": 19,
+                    "endLine": 150,
+                    "endCol": 53
                   }
                 },
                 {
                   "kind": "exit",
                   "variant": "return",
-                  "label": "await this.performProtectedWork(orderId)"
+                  "label": "await this.performProtectedWork(orderId)",
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 150,
+                    "col": 6,
+                    "endLine": 150,
+                    "endCol": 54
+                  }
                 }
               ]
             },
             {
               "label": "catch error",
               "role": "catch",
+              "pathId": "catch",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 151,
+                "col": 6,
+                "endLine": 154,
+                "endCol": 5
+              },
               "body": [
                 {
                   "kind": "call",
                   "label": "this.reportProtectedFailure",
                   "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reportProtectedFailure",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 152,
+                    "col": 6,
+                    "endLine": 152,
+                    "endCol": 49
+                  }
                 },
                 {
                   "kind": "call",
                   "label": "this.buildFallback",
                   "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.buildFallback",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 153,
+                    "col": 13,
+                    "endLine": 153,
+                    "endCol": 40
+                  }
                 },
                 {
                   "kind": "exit",
                   "variant": "return",
-                  "label": "this.buildFallback(orderId)"
+                  "label": "this.buildFallback(orderId)",
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 153,
+                    "col": 6,
+                    "endLine": 153,
+                    "endCol": 41
+                  }
                 }
               ]
             }
-          ]
+          ],
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 149,
+            "col": 4,
+            "endLine": 154,
+            "endCol": 5
+          }
         }
       ],
       "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally": [
@@ -6644,6 +7847,14 @@
             {
               "label": "try",
               "role": "try",
+              "pathId": "try",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 161,
+                "col": 8,
+                "endLine": 164,
+                "endCol": 5
+              },
               "body": [
                 {
                   "kind": "call",
@@ -6654,52 +7865,117 @@
                   "async": {
                     "kind": "direct-await",
                     "taskId": "task:4897"
+                  },
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 162,
+                    "col": 21,
+                    "endLine": 162,
+                    "endCol": 55
                   }
                 },
                 {
                   "kind": "call",
                   "label": "this.recordCheckpoint",
                   "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 163,
+                    "col": 6,
+                    "endLine": 163,
+                    "endCol": 54
+                  }
                 }
               ]
             },
             {
               "label": "catch error",
               "role": "catch",
+              "pathId": "catch",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 164,
+                "col": 6,
+                "endLine": 167,
+                "endCol": 5
+              },
               "body": [
                 {
                   "kind": "call",
                   "label": "this.reportProtectedFailure",
                   "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reportProtectedFailure",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 165,
+                    "col": 6,
+                    "endLine": 165,
+                    "endCol": 49
+                  }
                 },
                 {
                   "kind": "call",
                   "label": "this.buildFallback",
                   "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.buildFallback",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 166,
+                    "col": 15,
+                    "endLine": 166,
+                    "endCol": 42
+                  }
                 }
               ]
             },
             {
               "label": "finally",
               "role": "finally",
+              "pathId": "finally",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 167,
+                "col": 14,
+                "endLine": 169,
+                "endCol": 5
+              },
               "body": [
                 {
                   "kind": "call",
                   "label": "this.releaseTemporaryLock",
                   "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.releaseTemporaryLock",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/showcase/executionGraphGallery.ts",
+                    "line": 168,
+                    "col": 6,
+                    "endLine": 168,
+                    "endCol": 40
+                  }
                 }
               ]
             }
-          ]
+          ],
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 161,
+            "col": 4,
+            "endLine": 169,
+            "endCol": 5
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "result"
+          "label": "result",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 171,
+            "col": 4,
+            "endLine": 171,
+            "endCol": 18
+          }
         }
       ],
       "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs": [
@@ -6707,7 +7983,14 @@
           "kind": "call",
           "label": "setTimeout",
           "target": null,
-          "resolution": "external"
+          "resolution": "external",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 176,
+            "col": 4,
+            "endLine": 179,
+            "endCol": 10
+          }
         },
         {
           "kind": "callback",
@@ -6717,21 +8000,49 @@
               "kind": "call",
               "label": "this.retryLater",
               "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.retryLater",
-              "resolution": "resolved"
+              "resolution": "resolved",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 177,
+                "col": 6,
+                "endLine": 177,
+                "endCol": 30
+              }
             },
             {
               "kind": "call",
               "label": "this.recordCheckpoint",
               "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
-              "resolution": "resolved"
+              "resolution": "resolved",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 178,
+                "col": 6,
+                "endLine": 178,
+                "endCol": 45
+              }
             }
-          ]
+          ],
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 176,
+            "col": 15,
+            "endLine": 179,
+            "endCol": 5
+          }
         },
         {
           "kind": "call",
           "label": "this.registerHandOff",
           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.registerHandOff",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 181,
+            "col": 4,
+            "endLine": 184,
+            "endCol": 6
+          }
         },
         {
           "kind": "callback",
@@ -6741,15 +8052,36 @@
               "kind": "call",
               "label": "this.notifyOperator",
               "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.notifyOperator",
-              "resolution": "resolved"
+              "resolution": "resolved",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 182,
+                "col": 6,
+                "endLine": 182,
+                "endCol": 34
+              }
             },
             {
               "kind": "call",
               "label": "this.writeHandOffAudit",
               "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.writeHandOffAudit",
-              "resolution": "resolved"
+              "resolution": "resolved",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 183,
+                "col": 6,
+                "endLine": 183,
+                "endCol": 37
+              }
             }
-          ]
+          ],
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 181,
+            "col": 34,
+            "endLine": 184,
+            "endCol": 5
+          }
         },
         {
           "kind": "loop",
@@ -6759,9 +8091,23 @@
               "kind": "call",
               "label": "this.inspectCandidate",
               "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.inspectCandidate",
-              "resolution": "resolved"
+              "resolution": "resolved",
+              "source": {
+                "file": "src/showcase/executionGraphGallery.ts",
+                "line": 187,
+                "col": 6,
+                "endLine": 187,
+                "endCol": 40
+              }
             }
-          ]
+          ],
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 186,
+            "col": 4,
+            "endLine": 188,
+            "endCol": 6
+          }
         }
       ],
       "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.externalAndDetached": [
@@ -6769,13 +8115,27 @@
           "kind": "call",
           "label": "console.info",
           "target": null,
-          "resolution": "external"
+          "resolution": "external",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 193,
+            "col": 4,
+            "endLine": 193,
+            "endCol": 42
+          }
         },
         {
           "kind": "call",
           "label": "console.timeStamp",
           "target": null,
-          "resolution": "external"
+          "resolution": "external",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 194,
+            "col": 4,
+            "endLine": 194,
+            "endCol": 43
+          }
         },
         {
           "kind": "call",
@@ -6786,6 +8146,13 @@
           "async": {
             "kind": "launch",
             "taskId": "task:5913"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 196,
+            "col": 9,
+            "endLine": 196,
+            "endCol": 39
           }
         },
         {
@@ -6797,6 +8164,13 @@
           "async": {
             "kind": "launch",
             "taskId": "task:5954"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 197,
+            "col": 9,
+            "endLine": 197,
+            "endCol": 39
           }
         }
       ],
@@ -6810,13 +8184,27 @@
           "async": {
             "kind": "direct-await",
             "taskId": "task:6807"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 225,
+            "col": 10,
+            "endLine": 225,
+            "endCol": 45
           }
         },
         {
           "kind": "call",
           "label": "this.recordCheckpoint",
           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 226,
+            "col": 4,
+            "endLine": 226,
+            "endCol": 49
+          }
         }
       ],
       "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.refreshReadModel": [
@@ -6829,13 +8217,27 @@
           "async": {
             "kind": "direct-await",
             "taskId": "task:6996"
+          },
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 230,
+            "col": 29,
+            "endLine": 230,
+            "endCol": 66
           }
         },
         {
           "kind": "call",
           "label": "this.storeReadModelProjection",
           "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.storeReadModelProjection",
-          "resolution": "resolved"
+          "resolution": "resolved",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 231,
+            "col": 4,
+            "endLine": 231,
+            "endCol": 45
+          }
         }
       ],
       "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.highRiskError": [
@@ -6843,12 +8245,26 @@
           "kind": "call",
           "label": "Error",
           "target": null,
-          "resolution": "external"
+          "resolution": "external",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 267,
+            "col": 11,
+            "endLine": 267,
+            "endCol": 59
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "new Error(`Order ${orderId} needs fraud…"
+          "label": "new Error(`Order ${orderId} needs fraud…",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 267,
+            "col": 4,
+            "endLine": 267,
+            "endCol": 60
+          }
         }
       ],
       "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.unknownStateError": [
@@ -6856,12 +8272,26 @@
           "kind": "call",
           "label": "Error",
           "target": null,
-          "resolution": "external"
+          "resolution": "external",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 271,
+            "col": 11,
+            "endLine": 271,
+            "endCol": 61
+          }
         },
         {
           "kind": "exit",
           "variant": "return",
-          "label": "new Error(`Order ${orderId} has an unkn…"
+          "label": "new Error(`Order ${orderId} has an unkn…",
+          "source": {
+            "file": "src/showcase/executionGraphGallery.ts",
+            "line": 271,
+            "col": 4,
+            "endLine": 271,
+            "endCol": 62
+          }
         }
       ],
       "ts:src/validation/orderValidator.ts#validateOrderRequest": [
@@ -6873,21 +8303,50 @@
             {
               "label": "then",
               "role": "then",
+              "pathId": "then",
+              "source": {
+                "file": "src/validation/orderValidator.ts",
+                "line": 8,
+                "col": 27,
+                "endLine": 10,
+                "endCol": 3
+              },
               "body": [
                 {
                   "kind": "call",
                   "label": "ValidationError",
                   "target": "ts:src/validation/orderValidator.ts#ValidationError",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/validation/orderValidator.ts",
+                    "line": 9,
+                    "col": 10,
+                    "endLine": 9,
+                    "endCol": 60
+                  }
                 },
                 {
                   "kind": "exit",
                   "variant": "throw",
-                  "label": "new ValidationError(\"order is missing a…"
+                  "label": "new ValidationError(\"order is missing a…",
+                  "source": {
+                    "file": "src/validation/orderValidator.ts",
+                    "line": 9,
+                    "col": 4,
+                    "endLine": 9,
+                    "endCol": 61
+                  }
                 }
               ]
             }
-          ]
+          ],
+          "source": {
+            "file": "src/validation/orderValidator.ts",
+            "line": 8,
+            "col": 2,
+            "endLine": 10,
+            "endCol": 3
+          }
         },
         {
           "kind": "branch",
@@ -6897,21 +8356,50 @@
             {
               "label": "then",
               "role": "then",
+              "pathId": "then",
+              "source": {
+                "file": "src/validation/orderValidator.ts",
+                "line": 11,
+                "col": 34,
+                "endLine": 13,
+                "endCol": 3
+              },
               "body": [
                 {
                   "kind": "call",
                   "label": "ValidationError",
                   "target": "ts:src/validation/orderValidator.ts#ValidationError",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/validation/orderValidator.ts",
+                    "line": 12,
+                    "col": 10,
+                    "endLine": 12,
+                    "endCol": 51
+                  }
                 },
                 {
                   "kind": "exit",
                   "variant": "throw",
-                  "label": "new ValidationError(\"order has no items…"
+                  "label": "new ValidationError(\"order has no items…",
+                  "source": {
+                    "file": "src/validation/orderValidator.ts",
+                    "line": 12,
+                    "col": 4,
+                    "endLine": 12,
+                    "endCol": 52
+                  }
                 }
               ]
             }
-          ]
+          ],
+          "source": {
+            "file": "src/validation/orderValidator.ts",
+            "line": 11,
+            "col": 2,
+            "endLine": 13,
+            "endCol": 3
+          }
         },
         {
           "kind": "loop",
@@ -6921,9 +8409,23 @@
               "kind": "call",
               "label": "assertLineIsSane",
               "target": "ts:src/validation/orderValidator.ts#assertLineIsSane",
-              "resolution": "resolved"
+              "resolution": "resolved",
+              "source": {
+                "file": "src/validation/orderValidator.ts",
+                "line": 15,
+                "col": 4,
+                "endLine": 15,
+                "endCol": 66
+              }
             }
-          ]
+          ],
+          "source": {
+            "file": "src/validation/orderValidator.ts",
+            "line": 14,
+            "col": 2,
+            "endLine": 16,
+            "endCol": 3
+          }
         }
       ],
       "ts:src/validation/orderValidator.ts#assertLineIsSane": [
@@ -6935,21 +8437,50 @@
             {
               "label": "then",
               "role": "then",
+              "pathId": "then",
+              "source": {
+                "file": "src/validation/orderValidator.ts",
+                "line": 21,
+                "col": 12,
+                "endLine": 23,
+                "endCol": 3
+              },
               "body": [
                 {
                   "kind": "call",
                   "label": "ValidationError",
                   "target": "ts:src/validation/orderValidator.ts#ValidationError",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/validation/orderValidator.ts",
+                    "line": 22,
+                    "col": 10,
+                    "endLine": 22,
+                    "endCol": 64
+                  }
                 },
                 {
                   "kind": "exit",
                   "variant": "throw",
-                  "label": "new ValidationError(\"order line is miss…"
+                  "label": "new ValidationError(\"order line is miss…",
+                  "source": {
+                    "file": "src/validation/orderValidator.ts",
+                    "line": 22,
+                    "col": 4,
+                    "endLine": 22,
+                    "endCol": 65
+                  }
                 }
               ]
             }
-          ]
+          ],
+          "source": {
+            "file": "src/validation/orderValidator.ts",
+            "line": 21,
+            "col": 2,
+            "endLine": 23,
+            "endCol": 3
+          }
         },
         {
           "kind": "branch",
@@ -6959,21 +8490,50 @@
             {
               "label": "then",
               "role": "then",
+              "pathId": "then",
+              "source": {
+                "file": "src/validation/orderValidator.ts",
+                "line": 24,
+                "col": 21,
+                "endLine": 26,
+                "endCol": 3
+              },
               "body": [
                 {
                   "kind": "call",
                   "label": "ValidationError",
                   "target": "ts:src/validation/orderValidator.ts#ValidationError",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/validation/orderValidator.ts",
+                    "line": 25,
+                    "col": 10,
+                    "endLine": 25,
+                    "endCol": 82
+                  }
                 },
                 {
                   "kind": "exit",
                   "variant": "throw",
-                  "label": "new ValidationError(`order line for ${s…"
+                  "label": "new ValidationError(`order line for ${s…",
+                  "source": {
+                    "file": "src/validation/orderValidator.ts",
+                    "line": 25,
+                    "col": 4,
+                    "endLine": 25,
+                    "endCol": 83
+                  }
                 }
               ]
             }
-          ]
+          ],
+          "source": {
+            "file": "src/validation/orderValidator.ts",
+            "line": 24,
+            "col": 2,
+            "endLine": 26,
+            "endCol": 3
+          }
         },
         {
           "kind": "branch",
@@ -6983,26 +8543,2504 @@
             {
               "label": "then",
               "role": "then",
+              "pathId": "then",
+              "source": {
+                "file": "src/validation/orderValidator.ts",
+                "line": 27,
+                "col": 26,
+                "endLine": 29,
+                "endCol": 3
+              },
               "body": [
                 {
                   "kind": "call",
                   "label": "ValidationError",
                   "target": "ts:src/validation/orderValidator.ts#ValidationError",
-                  "resolution": "resolved"
+                  "resolution": "resolved",
+                  "source": {
+                    "file": "src/validation/orderValidator.ts",
+                    "line": 28,
+                    "col": 10,
+                    "endLine": 28,
+                    "endCol": 75
+                  }
                 },
                 {
                   "kind": "exit",
                   "variant": "throw",
-                  "label": "new ValidationError(`order line for ${s…"
+                  "label": "new ValidationError(`order line for ${s…",
+                  "source": {
+                    "file": "src/validation/orderValidator.ts",
+                    "line": 28,
+                    "col": 4,
+                    "endLine": 28,
+                    "endCol": 76
+                  }
                 }
               ]
             }
-          ]
+          ],
+          "source": {
+            "file": "src/validation/orderValidator.ts",
+            "line": 27,
+            "col": 2,
+            "endLine": 29,
+            "endCol": 3
+          }
         }
       ]
     },
     "entryModules": [
       "ts:src/index.ts"
-    ]
+    ],
+    "testExecutionCoverage": {
+      "version": "1.0.0",
+      "aggregate": true,
+      "producer": {
+        "inputFormat": "istanbul-coverage-map"
+      },
+      "files": {
+        "src/api/orderRoutes.ts": {
+          "functions": [
+            {
+              "name": "constructor",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 13,
+                  "column": 2
+                },
+                "end": {
+                  "line": 13,
+                  "column": 14
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 13,
+                  "column": 53
+                },
+                "end": {
+                  "line": 13
+                }
+              }
+            },
+            {
+              "name": "handleCreateOrder",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 16,
+                  "column": 2
+                },
+                "end": {
+                  "line": 16,
+                  "column": 20
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 16,
+                  "column": 56
+                },
+                "end": {
+                  "line": 23
+                }
+              }
+            },
+            {
+              "name": "handleGetOrder",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 26,
+                  "column": 2
+                },
+                "end": {
+                  "line": 26,
+                  "column": 17
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 26,
+                  "column": 42
+                },
+                "end": {
+                  "line": 32
+                }
+              }
+            },
+            {
+              "name": "created",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 35,
+                  "column": 2
+                },
+                "end": {
+                  "line": 35,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 35,
+                  "column": 45
+                },
+                "end": {
+                  "line": 37
+                }
+              }
+            },
+            {
+              "name": "toErrorResponse",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 40,
+                  "column": 2
+                },
+                "end": {
+                  "line": 40,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 40,
+                  "column": 55
+                },
+                "end": {
+                  "line": 45
+                }
+              }
+            }
+          ],
+          "branches": [
+            {
+              "type": "if",
+              "location": {
+                "start": {
+                  "line": 28,
+                  "column": 4
+                },
+                "end": {
+                  "line": 30
+                }
+              },
+              "paths": [
+                {
+                  "index": 0,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 28,
+                      "column": 4
+                    },
+                    "end": {
+                      "line": 30
+                    }
+                  }
+                },
+                {
+                  "index": 1,
+                  "hits": 0
+                }
+              ]
+            },
+            {
+              "type": "if",
+              "location": {
+                "start": {
+                  "line": 41,
+                  "column": 4
+                },
+                "end": {
+                  "line": 43
+                }
+              },
+              "paths": [
+                {
+                  "index": 0,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 41,
+                      "column": 4
+                    },
+                    "end": {
+                      "line": 43
+                    }
+                  }
+                },
+                {
+                  "index": 1,
+                  "hits": 0
+                }
+              ]
+            }
+          ]
+        },
+        "src/domain/order.ts": {
+          "functions": [],
+          "branches": []
+        },
+        "src/index.ts": {
+          "functions": [
+            {
+              "name": "buildOrdersApp",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 8,
+                  "column": 16
+                },
+                "end": {
+                  "line": 8,
+                  "column": 46
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 8,
+                  "column": 46
+                },
+                "end": {
+                  "line": 14
+                }
+              }
+            }
+          ],
+          "branches": []
+        },
+        "src/notifications/emailService.ts": {
+          "functions": [
+            {
+              "name": "sendOrderConfirmation",
+              "hits": 2,
+              "decl": {
+                "start": {
+                  "line": 6,
+                  "column": 2
+                },
+                "end": {
+                  "line": 6,
+                  "column": 24
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 6,
+                  "column": 44
+                },
+                "end": {
+                  "line": 9
+                }
+              }
+            },
+            {
+              "name": "renderConfirmation",
+              "hits": 2,
+              "decl": {
+                "start": {
+                  "line": 12,
+                  "column": 2
+                },
+                "end": {
+                  "line": 12,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 12,
+                  "column": 51
+                },
+                "end": {
+                  "line": 15
+                }
+              }
+            },
+            {
+              "name": "deliver",
+              "hits": 2,
+              "decl": {
+                "start": {
+                  "line": 18,
+                  "column": 2
+                },
+                "end": {
+                  "line": 18,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 18,
+                  "column": 67
+                },
+                "end": {
+                  "line": 23
+                }
+              }
+            }
+          ],
+          "branches": []
+        },
+        "src/pricing/pricingService.ts": {
+          "functions": [
+            {
+              "name": "price",
+              "hits": 4,
+              "decl": {
+                "start": {
+                  "line": 8,
+                  "column": 2
+                },
+                "end": {
+                  "line": 8,
+                  "column": 8
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 8,
+                  "column": 107
+                },
+                "end": {
+                  "line": 19
+                }
+              }
+            },
+            {
+              "name": "subtotal",
+              "hits": 4,
+              "decl": {
+                "start": {
+                  "line": 22,
+                  "column": 2
+                },
+                "end": {
+                  "line": 22,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 22,
+                  "column": 47
+                },
+                "end": {
+                  "line": 24
+                }
+              }
+            },
+            {
+              "name": "(anonymous_2)",
+              "hits": 6,
+              "decl": {
+                "start": {
+                  "line": 23,
+                  "column": 17
+                },
+                "end": {
+                  "line": 23,
+                  "column": 25
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 23,
+                  "column": 39
+                },
+                "end": {
+                  "line": 23,
+                  "column": 82
+                }
+              }
+            },
+            {
+              "name": "discountFor",
+              "hits": 4,
+              "decl": {
+                "start": {
+                  "line": 27,
+                  "column": 2
+                },
+                "end": {
+                  "line": 27,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 27,
+                  "column": 79
+                },
+                "end": {
+                  "line": 32
+                }
+              }
+            },
+            {
+              "name": "isKnownCode",
+              "hits": 1,
+              "decl": {
+                "start": {
+                  "line": 35,
+                  "column": 2
+                },
+                "end": {
+                  "line": 35,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 35,
+                  "column": 45
+                },
+                "end": {
+                  "line": 37
+                }
+              }
+            },
+            {
+              "name": "tax",
+              "hits": 4,
+              "decl": {
+                "start": {
+                  "line": 40,
+                  "column": 2
+                },
+                "end": {
+                  "line": 40,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 40,
+                  "column": 41
+                },
+                "end": {
+                  "line": 42
+                }
+              }
+            }
+          ],
+          "branches": [
+            {
+              "type": "if",
+              "location": {
+                "start": {
+                  "line": 28,
+                  "column": 4
+                },
+                "end": {
+                  "line": 30
+                }
+              },
+              "paths": [
+                {
+                  "index": 0,
+                  "hits": 3,
+                  "location": {
+                    "start": {
+                      "line": 28,
+                      "column": 4
+                    },
+                    "end": {
+                      "line": 30
+                    }
+                  }
+                },
+                {
+                  "index": 1,
+                  "hits": 1
+                }
+              ]
+            },
+            {
+              "type": "binary-expr",
+              "location": {
+                "start": {
+                  "line": 28,
+                  "column": 8
+                },
+                "end": {
+                  "line": 28,
+                  "column": 42
+                }
+              },
+              "paths": [
+                {
+                  "index": 0,
+                  "hits": 4,
+                  "location": {
+                    "start": {
+                      "line": 28,
+                      "column": 8
+                    },
+                    "end": {
+                      "line": 28,
+                      "column": 17
+                    }
+                  }
+                },
+                {
+                  "index": 1,
+                  "hits": 1,
+                  "location": {
+                    "start": {
+                      "line": 28,
+                      "column": 17
+                    },
+                    "end": {
+                      "line": 28,
+                      "column": 42
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "type": "binary-expr",
+              "location": {
+                "start": {
+                  "line": 36,
+                  "column": 11
+                },
+                "end": {
+                  "line": 36
+                }
+              },
+              "paths": [
+                {
+                  "index": 0,
+                  "hits": 1,
+                  "location": {
+                    "start": {
+                      "line": 36,
+                      "column": 11
+                    },
+                    "end": {
+                      "line": 36,
+                      "column": 35
+                    }
+                  }
+                },
+                {
+                  "index": 1,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 36,
+                      "column": 35
+                    },
+                    "end": {
+                      "line": 36
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "src/repository/orderRepository.ts": {
+          "functions": [
+            {
+              "name": "save",
+              "hits": 2,
+              "decl": {
+                "start": {
+                  "line": 8,
+                  "column": 2
+                },
+                "end": {
+                  "line": 8,
+                  "column": 7
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 8,
+                  "column": 27
+                },
+                "end": {
+                  "line": 10
+                }
+              }
+            },
+            {
+              "name": "findById",
+              "hits": 1,
+              "decl": {
+                "start": {
+                  "line": 13,
+                  "column": 2
+                },
+                "end": {
+                  "line": 13,
+                  "column": 11
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 13,
+                  "column": 42
+                },
+                "end": {
+                  "line": 15
+                }
+              }
+            },
+            {
+              "name": "count",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 18,
+                  "column": 2
+                },
+                "end": {
+                  "line": 18,
+                  "column": 18
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 18,
+                  "column": 18
+                },
+                "end": {
+                  "line": 20
+                }
+              }
+            }
+          ],
+          "branches": []
+        },
+        "src/services/orderService.ts": {
+          "functions": [
+            {
+              "name": "constructor",
+              "hits": 2,
+              "decl": {
+                "start": {
+                  "line": 11,
+                  "column": 2
+                },
+                "end": {
+                  "line": 11
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 15,
+                  "column": 4
+                },
+                "end": {
+                  "line": 15
+                }
+              }
+            },
+            {
+              "name": "placeOrder",
+              "hits": 2,
+              "decl": {
+                "start": {
+                  "line": 18,
+                  "column": 2
+                },
+                "end": {
+                  "line": 18,
+                  "column": 13
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 18,
+                  "column": 43
+                },
+                "end": {
+                  "line": 25
+                }
+              }
+            },
+            {
+              "name": "getOrder",
+              "hits": 1,
+              "decl": {
+                "start": {
+                  "line": 28,
+                  "column": 2
+                },
+                "end": {
+                  "line": 28,
+                  "column": 11
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 28,
+                  "column": 42
+                },
+                "end": {
+                  "line": 30
+                }
+              }
+            },
+            {
+              "name": "assemble",
+              "hits": 2,
+              "decl": {
+                "start": {
+                  "line": 33,
+                  "column": 2
+                },
+                "end": {
+                  "line": 33,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 36,
+                  "column": 11
+                },
+                "end": {
+                  "line": 44
+                }
+              }
+            },
+            {
+              "name": "nextId",
+              "hits": 2,
+              "decl": {
+                "start": {
+                  "line": 47,
+                  "column": 2
+                },
+                "end": {
+                  "line": 47,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 47,
+                  "column": 27
+                },
+                "end": {
+                  "line": 50
+                }
+              }
+            },
+            {
+              "name": "timestamp",
+              "hits": 2,
+              "decl": {
+                "start": {
+                  "line": 53,
+                  "column": 2
+                },
+                "end": {
+                  "line": 53,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 53,
+                  "column": 30
+                },
+                "end": {
+                  "line": 55
+                }
+              }
+            }
+          ],
+          "branches": []
+        },
+        "src/showcase/executionGraphGallery.ts": {
+          "functions": [
+            {
+              "name": "guidedTour",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 28,
+                  "column": 8
+                },
+                "end": {
+                  "line": 28,
+                  "column": 19
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 28,
+                  "column": 68
+                },
+                "end": {
+                  "line": 43
+                }
+              }
+            },
+            {
+              "name": "directAwait",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 46,
+                  "column": 8
+                },
+                "end": {
+                  "line": 46,
+                  "column": 20
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 46,
+                  "column": 54
+                },
+                "end": {
+                  "line": 50
+                }
+              }
+            },
+            {
+              "name": "launchThenAwait",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 53,
+                  "column": 8
+                },
+                "end": {
+                  "line": 53,
+                  "column": 24
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 53,
+                  "column": 58
+                },
+                "end": {
+                  "line": 62
+                }
+              }
+            },
+            {
+              "name": "awaitAllBarrier",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 65,
+                  "column": 8
+                },
+                "end": {
+                  "line": 65,
+                  "column": 24
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 65,
+                  "column": 56
+                },
+                "end": {
+                  "line": 72
+                }
+              }
+            },
+            {
+              "name": "awaitAllSettledBarrier",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 75,
+                  "column": 8
+                },
+                "end": {
+                  "line": 75,
+                  "column": 31
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 75,
+                  "column": 63
+                },
+                "end": {
+                  "line": 82
+                }
+              }
+            },
+            {
+              "name": "nestedDecisions",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 85,
+                  "column": 2
+                },
+                "end": {
+                  "line": 85,
+                  "column": 18
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 85,
+                  "column": 47
+                },
+                "end": {
+                  "line": 122
+                }
+              }
+            },
+            {
+              "name": "loopShapes",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 125,
+                  "column": 2
+                },
+                "end": {
+                  "line": 125,
+                  "column": 13
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 125,
+                  "column": 39
+                },
+                "end": {
+                  "line": 145
+                }
+              }
+            },
+            {
+              "name": "tryCatchOnly",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 148,
+                  "column": 8
+                },
+                "end": {
+                  "line": 148,
+                  "column": 21
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 148,
+                  "column": 55
+                },
+                "end": {
+                  "line": 155
+                }
+              }
+            },
+            {
+              "name": "tryCatchFinally",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 158,
+                  "column": 8
+                },
+                "end": {
+                  "line": 158,
+                  "column": 24
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 158,
+                  "column": 58
+                },
+                "end": {
+                  "line": 172
+                }
+              }
+            },
+            {
+              "name": "callbackHandOffs",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 175,
+                  "column": 2
+                },
+                "end": {
+                  "line": 175,
+                  "column": 19
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 175,
+                  "column": 42
+                },
+                "end": {
+                  "line": 189
+                }
+              }
+            },
+            {
+              "name": "(anonymous_10)",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 176,
+                  "column": 4
+                },
+                "end": {
+                  "line": 176,
+                  "column": 21
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 176,
+                  "column": 21
+                },
+                "end": {
+                  "line": 179,
+                  "column": 7
+                }
+              }
+            },
+            {
+              "name": "(anonymous_11)",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 181,
+                  "column": 25
+                },
+                "end": {
+                  "line": 181,
+                  "column": 40
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 181,
+                  "column": 40
+                },
+                "end": {
+                  "line": 184,
+                  "column": 5
+                }
+              }
+            },
+            {
+              "name": "(anonymous_12)",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 186,
+                  "column": 35
+                },
+                "end": {
+                  "line": 186,
+                  "column": 44
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 186,
+                  "column": 60
+                },
+                "end": {
+                  "line": 188,
+                  "column": 5
+                }
+              }
+            },
+            {
+              "name": "externalAndDetached",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 192,
+                  "column": 2
+                },
+                "end": {
+                  "line": 192,
+                  "column": 22
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 192,
+                  "column": 45
+                },
+                "end": {
+                  "line": 198
+                }
+              }
+            },
+            {
+              "name": "fetchOrder",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 200,
+                  "column": 16
+                },
+                "end": {
+                  "line": 200,
+                  "column": 27
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 200,
+                  "column": 61
+                },
+                "end": {
+                  "line": 202
+                }
+              }
+            },
+            {
+              "name": "fetchInventory",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 204,
+                  "column": 16
+                },
+                "end": {
+                  "line": 204,
+                  "column": 31
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 204,
+                  "column": 65
+                },
+                "end": {
+                  "line": 206
+                }
+              }
+            },
+            {
+              "name": "reserveInventory",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 208,
+                  "column": 16
+                },
+                "end": {
+                  "line": 208,
+                  "column": 33
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 208,
+                  "column": 66
+                },
+                "end": {
+                  "line": 208
+                }
+              }
+            },
+            {
+              "name": "authorizePayment",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 210,
+                  "column": 16
+                },
+                "end": {
+                  "line": 210,
+                  "column": 33
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 210,
+                  "column": 66
+                },
+                "end": {
+                  "line": 210
+                }
+              }
+            },
+            {
+              "name": "prepareNotification",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 212,
+                  "column": 16
+                },
+                "end": {
+                  "line": 212,
+                  "column": 36
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 212,
+                  "column": 69
+                },
+                "end": {
+                  "line": 212
+                }
+              }
+            },
+            {
+              "name": "sendReceipt",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 214,
+                  "column": 16
+                },
+                "end": {
+                  "line": 214,
+                  "column": 28
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 214,
+                  "column": 61
+                },
+                "end": {
+                  "line": 214
+                }
+              }
+            },
+            {
+              "name": "updateSearchIndex",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 216,
+                  "column": 16
+                },
+                "end": {
+                  "line": 216,
+                  "column": 34
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 216,
+                  "column": 67
+                },
+                "end": {
+                  "line": 216
+                }
+              }
+            },
+            {
+              "name": "archiveAuditTrail",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 218,
+                  "column": 16
+                },
+                "end": {
+                  "line": 218,
+                  "column": 34
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 218,
+                  "column": 67
+                },
+                "end": {
+                  "line": 218
+                }
+              }
+            },
+            {
+              "name": "performProtectedWork",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 220,
+                  "column": 16
+                },
+                "end": {
+                  "line": 220,
+                  "column": 37
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 220,
+                  "column": 71
+                },
+                "end": {
+                  "line": 222
+                }
+              }
+            },
+            {
+              "name": "publishTelemetry",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 224,
+                  "column": 16
+                },
+                "end": {
+                  "line": 224,
+                  "column": 33
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 224,
+                  "column": 65
+                },
+                "end": {
+                  "line": 227
+                }
+              }
+            },
+            {
+              "name": "refreshReadModel",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 229,
+                  "column": 16
+                },
+                "end": {
+                  "line": 229,
+                  "column": 33
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 229,
+                  "column": 65
+                },
+                "end": {
+                  "line": 232
+                }
+              }
+            },
+            {
+              "name": "shipTelemetryEnvelope",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 234,
+                  "column": 16
+                },
+                "end": {
+                  "line": 234,
+                  "column": 38
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 234,
+                  "column": 71
+                },
+                "end": {
+                  "line": 234
+                }
+              }
+            },
+            {
+              "name": "loadReadModelProjection",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 236,
+                  "column": 16
+                },
+                "end": {
+                  "line": 236,
+                  "column": 40
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 236,
+                  "column": 74
+                },
+                "end": {
+                  "line": 238
+                }
+              }
+            },
+            {
+              "name": "storeReadModelProjection",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 240,
+                  "column": 2
+                },
+                "end": {
+                  "line": 240,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 240,
+                  "column": 62
+                },
+                "end": {
+                  "line": 240
+                }
+              }
+            },
+            {
+              "name": "recordCheckpoint",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 242,
+                  "column": 2
+                },
+                "end": {
+                  "line": 242,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 242,
+                  "column": 49
+                },
+                "end": {
+                  "line": 242
+                }
+              }
+            },
+            {
+              "name": "preparePackingSlip",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 244,
+                  "column": 2
+                },
+                "end": {
+                  "line": 244,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 244,
+                  "column": 53
+                },
+                "end": {
+                  "line": 244
+                }
+              }
+            },
+            {
+              "name": "attachInventory",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 246,
+                  "column": 2
+                },
+                "end": {
+                  "line": 246,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 246,
+                  "column": 70
+                },
+                "end": {
+                  "line": 246
+                }
+              }
+            },
+            {
+              "name": "rejectEmptyOrder",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 248,
+                  "column": 2
+                },
+                "end": {
+                  "line": 248,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 248,
+                  "column": 51
+                },
+                "end": {
+                  "line": 248
+                }
+              }
+            },
+            {
+              "name": "flagForFraudReview",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 250,
+                  "column": 2
+                },
+                "end": {
+                  "line": 250,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 250,
+                  "column": 53
+                },
+                "end": {
+                  "line": 250
+                }
+              }
+            },
+            {
+              "name": "routePriority",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 252,
+                  "column": 2
+                },
+                "end": {
+                  "line": 252,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 252,
+                  "column": 48
+                },
+                "end": {
+                  "line": 252
+                }
+              }
+            },
+            {
+              "name": "routeManualReview",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 254,
+                  "column": 2
+                },
+                "end": {
+                  "line": 254,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 254,
+                  "column": 52
+                },
+                "end": {
+                  "line": 254
+                }
+              }
+            },
+            {
+              "name": "routeStandard",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 256,
+                  "column": 2
+                },
+                "end": {
+                  "line": 256,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 256,
+                  "column": 48
+                },
+                "end": {
+                  "line": 256
+                }
+              }
+            },
+            {
+              "name": "acceptNewOrder",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 258,
+                  "column": 2
+                },
+                "end": {
+                  "line": 258,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 258,
+                  "column": 49
+                },
+                "end": {
+                  "line": 258
+                }
+              }
+            },
+            {
+              "name": "keepOrderOnHold",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 260,
+                  "column": 2
+                },
+                "end": {
+                  "line": 260,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 260,
+                  "column": 50
+                },
+                "end": {
+                  "line": 260
+                }
+              }
+            },
+            {
+              "name": "releaseOrder",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 262,
+                  "column": 2
+                },
+                "end": {
+                  "line": 262,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 262,
+                  "column": 47
+                },
+                "end": {
+                  "line": 262
+                }
+              }
+            },
+            {
+              "name": "reportUnknownState",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 264,
+                  "column": 2
+                },
+                "end": {
+                  "line": 264,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 264,
+                  "column": 53
+                },
+                "end": {
+                  "line": 264
+                }
+              }
+            },
+            {
+              "name": "highRiskError",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 266,
+                  "column": 2
+                },
+                "end": {
+                  "line": 266,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 266,
+                  "column": 48
+                },
+                "end": {
+                  "line": 268
+                }
+              }
+            },
+            {
+              "name": "unknownStateError",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 270,
+                  "column": 2
+                },
+                "end": {
+                  "line": 270,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 270,
+                  "column": 52
+                },
+                "end": {
+                  "line": 272
+                }
+              }
+            },
+            {
+              "name": "recordAttempt",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 274,
+                  "column": 2
+                },
+                "end": {
+                  "line": 274,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 274,
+                  "column": 48
+                },
+                "end": {
+                  "line": 274
+                }
+              }
+            },
+            {
+              "name": "visitOrder",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 276,
+                  "column": 2
+                },
+                "end": {
+                  "line": 276,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 276,
+                  "column": 45
+                },
+                "end": {
+                  "line": 276
+                }
+              }
+            },
+            {
+              "name": "pollOrder",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 278,
+                  "column": 2
+                },
+                "end": {
+                  "line": 278,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 278,
+                  "column": 44
+                },
+                "end": {
+                  "line": 278
+                }
+              }
+            },
+            {
+              "name": "flushSweep",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 280,
+                  "column": 2
+                },
+                "end": {
+                  "line": 280,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 280,
+                  "column": 43
+                },
+                "end": {
+                  "line": 280
+                }
+              }
+            },
+            {
+              "name": "reportProtectedFailure",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 282,
+                  "column": 2
+                },
+                "end": {
+                  "line": 282,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 282,
+                  "column": 74
+                },
+                "end": {
+                  "line": 282
+                }
+              }
+            },
+            {
+              "name": "buildFallback",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 284,
+                  "column": 2
+                },
+                "end": {
+                  "line": 284,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 284,
+                  "column": 49
+                },
+                "end": {
+                  "line": 286
+                }
+              }
+            },
+            {
+              "name": "releaseTemporaryLock",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 288,
+                  "column": 2
+                },
+                "end": {
+                  "line": 288,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 288,
+                  "column": 55
+                },
+                "end": {
+                  "line": 288
+                }
+              }
+            },
+            {
+              "name": "retryLater",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 290,
+                  "column": 2
+                },
+                "end": {
+                  "line": 290,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 290,
+                  "column": 45
+                },
+                "end": {
+                  "line": 290
+                }
+              }
+            },
+            {
+              "name": "registerHandOff",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 292,
+                  "column": 2
+                },
+                "end": {
+                  "line": 292,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 292,
+                  "column": 73
+                },
+                "end": {
+                  "line": 292
+                }
+              }
+            },
+            {
+              "name": "notifyOperator",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 294,
+                  "column": 2
+                },
+                "end": {
+                  "line": 294,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 294,
+                  "column": 49
+                },
+                "end": {
+                  "line": 294
+                }
+              }
+            },
+            {
+              "name": "writeHandOffAudit",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 296,
+                  "column": 2
+                },
+                "end": {
+                  "line": 296,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 296,
+                  "column": 52
+                },
+                "end": {
+                  "line": 296
+                }
+              }
+            },
+            {
+              "name": "inspectCandidate",
+              "hits": 0,
+              "decl": {
+                "start": {
+                  "line": 298,
+                  "column": 2
+                },
+                "end": {
+                  "line": 298,
+                  "column": 10
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 298,
+                  "column": 51
+                },
+                "end": {
+                  "line": 298
+                }
+              }
+            }
+          ],
+          "branches": [
+            {
+              "type": "if",
+              "location": {
+                "start": {
+                  "line": 86,
+                  "column": 4
+                },
+                "end": {
+                  "line": 89
+                }
+              },
+              "paths": [
+                {
+                  "index": 0,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 86,
+                      "column": 4
+                    },
+                    "end": {
+                      "line": 89
+                    }
+                  }
+                },
+                {
+                  "index": 1,
+                  "hits": 0
+                }
+              ]
+            },
+            {
+              "type": "if",
+              "location": {
+                "start": {
+                  "line": 91,
+                  "column": 4
+                },
+                "end": {
+                  "line": 104
+                }
+              },
+              "paths": [
+                {
+                  "index": 0,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 91,
+                      "column": 4
+                    },
+                    "end": {
+                      "line": 104
+                    }
+                  }
+                },
+                {
+                  "index": 1,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 98,
+                      "column": 11
+                    },
+                    "end": {
+                      "line": 104
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "type": "if",
+              "location": {
+                "start": {
+                  "line": 92,
+                  "column": 6
+                },
+                "end": {
+                  "line": 97
+                }
+              },
+              "paths": [
+                {
+                  "index": 0,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 92,
+                      "column": 6
+                    },
+                    "end": {
+                      "line": 97
+                    }
+                  }
+                },
+                {
+                  "index": 1,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 95,
+                      "column": 13
+                    },
+                    "end": {
+                      "line": 97
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "type": "if",
+              "location": {
+                "start": {
+                  "line": 99,
+                  "column": 6
+                },
+                "end": {
+                  "line": 103
+                }
+              },
+              "paths": [
+                {
+                  "index": 0,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 99,
+                      "column": 6
+                    },
+                    "end": {
+                      "line": 103
+                    }
+                  }
+                },
+                {
+                  "index": 1,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 101,
+                      "column": 13
+                    },
+                    "end": {
+                      "line": 103
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "type": "switch",
+              "location": {
+                "start": {
+                  "line": 106,
+                  "column": 4
+                },
+                "end": {
+                  "line": 119
+                }
+              },
+              "paths": [
+                {
+                  "index": 0,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 107,
+                      "column": 6
+                    },
+                    "end": {
+                      "line": 109
+                    }
+                  }
+                },
+                {
+                  "index": 1,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 110,
+                      "column": 6
+                    },
+                    "end": {
+                      "line": 112
+                    }
+                  }
+                },
+                {
+                  "index": 2,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 113,
+                      "column": 6
+                    },
+                    "end": {
+                      "line": 115
+                    }
+                  }
+                },
+                {
+                  "index": 3,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 116,
+                      "column": 6
+                    },
+                    "end": {
+                      "line": 118
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "src/validation/orderValidator.ts": {
+          "functions": [
+            {
+              "name": "validateOrderRequest",
+              "hits": 2,
+              "decl": {
+                "start": {
+                  "line": 7,
+                  "column": 16
+                },
+                "end": {
+                  "line": 7,
+                  "column": 37
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 7,
+                  "column": 66
+                },
+                "end": {
+                  "line": 17
+                }
+              }
+            },
+            {
+              "name": "assertLineIsSane",
+              "hits": 4,
+              "decl": {
+                "start": {
+                  "line": 20,
+                  "column": 9
+                },
+                "end": {
+                  "line": 20,
+                  "column": 26
+                }
+              },
+              "location": {
+                "start": {
+                  "line": 20,
+                  "column": 87
+                },
+                "end": {
+                  "line": 30
+                }
+              }
+            }
+          ],
+          "branches": [
+            {
+              "type": "if",
+              "location": {
+                "start": {
+                  "line": 8,
+                  "column": 2
+                },
+                "end": {
+                  "line": 10
+                }
+              },
+              "paths": [
+                {
+                  "index": 0,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 8,
+                      "column": 2
+                    },
+                    "end": {
+                      "line": 10
+                    }
+                  }
+                },
+                {
+                  "index": 1,
+                  "hits": 2
+                }
+              ]
+            },
+            {
+              "type": "if",
+              "location": {
+                "start": {
+                  "line": 11,
+                  "column": 2
+                },
+                "end": {
+                  "line": 13
+                }
+              },
+              "paths": [
+                {
+                  "index": 0,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 11,
+                      "column": 2
+                    },
+                    "end": {
+                      "line": 13
+                    }
+                  }
+                },
+                {
+                  "index": 1,
+                  "hits": 2
+                }
+              ]
+            },
+            {
+              "type": "if",
+              "location": {
+                "start": {
+                  "line": 21,
+                  "column": 2
+                },
+                "end": {
+                  "line": 23
+                }
+              },
+              "paths": [
+                {
+                  "index": 0,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 21,
+                      "column": 2
+                    },
+                    "end": {
+                      "line": 23
+                    }
+                  }
+                },
+                {
+                  "index": 1,
+                  "hits": 4
+                }
+              ]
+            },
+            {
+              "type": "if",
+              "location": {
+                "start": {
+                  "line": 24,
+                  "column": 2
+                },
+                "end": {
+                  "line": 26
+                }
+              },
+              "paths": [
+                {
+                  "index": 0,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 24,
+                      "column": 2
+                    },
+                    "end": {
+                      "line": 26
+                    }
+                  }
+                },
+                {
+                  "index": 1,
+                  "hits": 4
+                }
+              ]
+            },
+            {
+              "type": "if",
+              "location": {
+                "start": {
+                  "line": 27,
+                  "column": 2
+                },
+                "end": {
+                  "line": 29
+                }
+              },
+              "paths": [
+                {
+                  "index": 0,
+                  "hits": 0,
+                  "location": {
+                    "start": {
+                      "line": 27,
+                      "column": 2
+                    },
+                    "end": {
+                      "line": 29
+                    }
+                  }
+                },
+                {
+                  "index": 1,
+                  "hits": 4
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
   }
 }

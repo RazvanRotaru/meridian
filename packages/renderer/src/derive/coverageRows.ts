@@ -93,7 +93,7 @@ function reasonText(
     return "never called in the graph — likely an entry point or dead code";
   }
   const names = reason.callers.map((id) => nameOf(id, index)).join(", ");
-  return `only called by uncovered code: ${names}`;
+  return `only called by code not reachable from tests: ${names}`;
 }
 
 function nameOf(id: NodeId, index: GraphIndex): string {

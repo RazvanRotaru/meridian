@@ -6,7 +6,7 @@
 
 import { Node } from "ts-morph";
 import type { CallExpression, NewExpression } from "ts-morph";
-import type { FlowStep } from "@meridian/core";
+import type { FlowSourceAnchor, FlowStep } from "@meridian/core";
 import type { CallAnnotations } from "./call-annotations";
 import type { ResolutionIndex } from "./resolution-index";
 
@@ -16,6 +16,8 @@ export interface FlowWalker {
   walk(node: Node, depth: number): FlowStep[];
   /** Walk a callable/control BODY: a block statement-by-statement, or a single expression. */
   walkBody(body: Node, depth: number): FlowStep[];
+  /** Project-relative source range for a node in this callable/module's file. */
+  source(node: Node): FlowSourceAnchor;
   /** Legacy awaited/detached flags plus rich async launch/join metadata (memoized per walker). */
   annotate(node: CallExpression | NewExpression): CallAnnotations;
 }

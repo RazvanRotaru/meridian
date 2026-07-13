@@ -18,6 +18,7 @@ import { resolveOverlaySource } from "../server/overlay-source";
 import { createBlueprintServer } from "../server/server";
 import { serve } from "../server/serve";
 import { normalizeTelemetryEnvironment } from "../telemetry-environment";
+import { attachIstanbulCoverage } from "../istanbul-coverage";
 
 export interface ViewOptions extends GlobalOptions {
   port: number;
@@ -26,15 +27,27 @@ export interface ViewOptions extends GlobalOptions {
   overlay?: string;
   env?: string;
   sourceRoot?: string;
+  testCoverage?: string;
 }
 
 export async function runView(graph: string, options: ViewOptions): Promise<void> {
   const reporter = new Reporter(options);
   const cwd = resolveCwd(options.cwd);
   const env = requireEnvForOverlay(options);
-  const artifact = loadGraph(graph, cwd);
+  const loadedArtifact = loadGraph(graph, cwd);
   const overlay = resolveOverlaySource(options.overlay, cwd);
   const sourceRoot = options.sourceRoot ? resolveAgainst(cwd, options.sourceRoot) : undefined;
+  const coverageRoot = sourceRoot ?? resolveAgainst(cwd, loadedArtifact.target.root);
+  const artifact = options.testCoverage
+    ? validateOrThrow(
+        attachIstanbulCoverage(
+          loadedArtifact,
+          readJsonFile(resolveAgainst(cwd, options.testCoverage)),
+          coverageRoot,
+        ),
+        "graph with test coverage",
+      ).artifact
+    : loadedArtifact;
   const server = createBlueprintServer({ artifact, overlay, preselectedEnv: env, rendererRoot: rendererRoot(), sourceRoot });
   await serve(server, { host: options.host, startPort: options.port, openBrowser: options.open }, reporter);
 }

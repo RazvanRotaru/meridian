@@ -104,6 +104,10 @@ describe("TypeScriptExtractor over orders-service", () => {
         label: "await inventoryTask",
         mode: "single",
         inputs: [{ label: "inventoryTask", taskId: inventoryLaunch.async.taskId }],
+        source: expect.objectContaining({
+          file: "src/showcase/executionGraphGallery.ts",
+          line: expect.any(Number),
+        }),
       });
     }
 

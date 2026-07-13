@@ -649,7 +649,7 @@ function followedByMatchingThrow(
   return nextStep?.kind === "exit"
     && nextStep.variant === "throw"
     && nextStep.source !== undefined
-    && sourceMatches(step.source, nextStep.source);
+    && sourceRangeContains(nextStep.source, step.source);
 }
 
 function childOrderEvidence(
@@ -712,6 +712,33 @@ function sourceMatches(left: FlowSourceAnchor | undefined, right: { file: string
   if (left === undefined || left.line !== right.line) return false;
   if (left.col !== undefined && right.col !== undefined && left.col !== right.col) return false;
   return baseName(left.file) === baseName(right.file);
+}
+
+/** A call extracted from `throw buildError()` has its own inner range while the following exit
+ * step owns the enclosing throw-statement range. Keep strict column matching for telemetry joins,
+ * but recognize this one structural relationship by containment. Line-only legacy artifacts retain
+ * the previous same-line behavior. */
+function sourceRangeContains(
+  outer: FlowSourceAnchor,
+  inner: FlowSourceAnchor | undefined,
+): boolean {
+  if (inner === undefined || baseName(outer.file) !== baseName(inner.file)) return false;
+  if (
+    outer.col === undefined
+    || outer.endLine === undefined
+    || outer.endCol === undefined
+    || inner.col === undefined
+    || inner.endLine === undefined
+    || inner.endCol === undefined
+  ) {
+    return outer.line === inner.line;
+  }
+  return positionAtOrBefore(outer.line, outer.col, inner.line, inner.col)
+    && positionAtOrBefore(inner.endLine, inner.endCol, outer.endLine, outer.endCol);
+}
+
+function positionAtOrBefore(leftLine: number, leftCol: number, rightLine: number, rightCol: number): boolean {
+  return leftLine < rightLine || (leftLine === rightLine && leftCol <= rightCol);
 }
 
 function baseName(file: string): string {

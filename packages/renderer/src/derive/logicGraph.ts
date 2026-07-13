@@ -11,6 +11,7 @@
  */
 
 import type {
+  BranchKind,
   ChangeStatus,
   EdgeResolution,
   FlowAsyncInput,
@@ -53,6 +54,10 @@ export interface LogicBranchPort {
   label: string;
   role: FlowPathRole | "fallthrough";
   order: number;
+  /** Extractor-stable semantic arm id (`then`, `else`, case text, …). */
+  pathId?: string;
+  /** Exact source range for matching this arm to runtime branch counters. */
+  source?: FlowSourceAnchor;
   synthetic?: boolean;
 }
 
@@ -120,6 +125,10 @@ export type LogicNodeData = {
   /** Ordered source handles for an if/switch decision. Stable ids let ELK and React Flow route the
    * same arm from the same physical pin without changing node/drill identity. */
   branchPorts?: LogicBranchPort[];
+  /** Exact source identity for a branch decision. Present only on if/switch/try nodes emitted by
+   * current extractors; older artifacts remain readable and simply cannot join runtime counters. */
+  branchSource?: FlowSourceAnchor;
+  branchKind?: BranchKind;
   /** Rich async event + its task-rail endpoints. Legacy awaited/detached remain above for old data. */
   asyncEvent?: LogicAsyncEvent;
   asyncPorts?: LogicAsyncPort[];
@@ -794,6 +803,8 @@ class LogicGraphBuilder {
       label: flowPath.label,
       role: pathRole(flowPath),
       order,
+      ...(flowPath.pathId ? { pathId: flowPath.pathId } : {}),
+      ...(flowPath.source ? { source: flowPath.source } : {}),
     }));
     if (synthetic) {
       branchPorts.push({
@@ -819,6 +830,8 @@ class LogicGraphBuilder {
       childCount: branchPorts.length,
       changedStatus: this.changedStatus(step.source),
       branchPorts,
+      branchKind: kind,
+      ...(step.source ? { branchSource: step.source } : {}),
     };
     // IF/SWITCH own the decision diamond. TRY/CATCH is an exception gate with a straight normal
     // route and a lower catch outlet; keeping a separate node type prevents it reading as a choice.

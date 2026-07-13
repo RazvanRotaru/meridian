@@ -480,12 +480,12 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     await expect.poll(() => page.locator('[data-id="ts:src/__tests__"]').count(), { timeout: 20_000 }).toBe(0);
   });
 
-  it("coverage mode opens the panel with verdicts, reasons, and the summary percentage", async () => {
-    await page.click('button:has-text("Coverage")');
-    await page.waitForSelector("text=Static coverage");
-    const panel = await page.locator("text=Static coverage").locator("xpath=ancestor::div[1]").innerText();
+  it("reachability mode opens the estimated panel with verdicts, reasons, and the summary percentage", async () => {
+    await page.click('button:has-text("Reachability")');
+    await page.waitForSelector("text=Estimated test reachability");
+    const panel = await page.locator("text=Estimated test reachability").locator("xpath=ancestor::div[1]").innerText();
     expect(panel).toMatch(/\d+%/);
-    await page.waitForSelector("text=untested");
+    await page.waitForSelector("text=not reached");
     await page.waitForSelector("text=OrderRoutes");
     await page.waitForSelector("text=/never called in the graph/");
     expect(consoleErrors).toEqual([]);

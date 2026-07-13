@@ -16,6 +16,7 @@ export const COVERAGE_COLORS = {
 } as const;
 
 export type CoverageVerdict = keyof typeof COVERAGE_COLORS;
+export type CallTargetCoverageVerdict = CoverageVerdict;
 
 /** The verdict a node renders under coverage mode; containers borrow their roll-up status. */
 export function coverageVerdict(nodeId: string, report: CoverageReport): CoverageVerdict {
@@ -50,4 +51,23 @@ export function coverageBadgeText(nodeId: string, report: CoverageReport): strin
     return null;
   }
   return leaf.status === "covered" ? "✓ tested" : leaf.status === "indirect" ? "◑ reached" : "✗ untested";
+}
+
+/**
+ * Coverage shown on a resolved Logic call target. Callable leaves retain their precise verdict;
+ * class/module targets use their member roll-up, which is amber when any member is test-reached
+ * because the aggregate cannot prove that the constructor/container itself was called directly.
+ */
+export function callTargetCoverageVerdict(
+  targetId: string | null,
+  resolution: "resolved" | "external" | "unresolved" | null | undefined,
+  report: CoverageReport,
+): CallTargetCoverageVerdict | null {
+  if (resolution !== "resolved" || targetId === null) return null;
+  if (report.testIds.has(targetId)) return "test";
+  const leaf = report.leaves[targetId];
+  if (leaf) return leaf.status;
+  const container = report.containers[targetId];
+  if (!container || container.status === "no-callables") return "none";
+  return container.status === "uncovered" ? "uncovered" : "indirect";
 }

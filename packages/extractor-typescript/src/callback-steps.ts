@@ -12,7 +12,6 @@ import { Node } from "ts-morph";
 import type { ArrowFunction, CallExpression, FunctionExpression, NewExpression, PropertyAccessExpression } from "ts-morph";
 import type { FlowStep } from "@meridian/core";
 import { iterationLabel } from "./flow-labels";
-import { flowSource } from "./flow-source";
 import { bodyOf, type FlowWalker } from "./flow-walker";
 import { ITERATION_METHODS, isInlineCallback } from "./inline-callables";
 import { nodeKey } from "./model";
@@ -84,7 +83,7 @@ function callbackStep(callback: Node, receiver: string | null, walker: FlowWalke
   if (steps.length === 0) {
     return null;
   }
-  return { kind: "callback", label: receiver ? `callback → ${receiver}` : "callback", body: steps, source: flowSource(callback) };
+  return { kind: "callback", label: receiver ? `callback → ${receiver}` : "callback", body: steps, source: walker.source(callback) };
 }
 
 export interface IterationCall {
@@ -115,7 +114,7 @@ export function iterationSteps(node: CallExpression, call: IterationCall, walker
     kind: "loop",
     label: iterationLabel(call.callee.getName(), call.callback),
     body: body ? walker.walkBody(body, depth + 1) : [],
-    source: flowSource(node),
+    source: walker.source(node),
   });
   return steps;
 }

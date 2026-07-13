@@ -33,13 +33,15 @@ export type FlowCallAsync =
    * extraction can resolve them; value-only/unresolved operands still retain a readable label. */
   | { kind: "barrier"; mode: FlowBarrierMode; inputs: FlowAsyncInput[] };
 
-/** Portable source anchor emitted with a static flow step. The POC combines it with the owning
- * callable to correlate runtime events without serializing machine-specific absolute paths;
- * production instrumentation should additionally use a generated site id. */
+/** Portable source anchor emitted with a static flow step. Files are extraction-root-relative
+ * POSIX paths. Lines are 1-based; columns are 0-based, and the end position is exclusive. The
+ * optional coordinates keep artifacts written before precise ranges were introduced readable. */
 export interface FlowSourceAnchor {
   file: string;
   line: number;
   col?: number;
+  endLine?: number;
+  endCol?: number;
 }
 
 interface LocatedFlowStep {

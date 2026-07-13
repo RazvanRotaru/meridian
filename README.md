@@ -32,6 +32,9 @@ node packages/cli/dist/bin.js web sindresorhus/ky        # any GitHub owner/repo
 # The CLI way — generate an artifact, then view it
 node packages/cli/dist/bin.js generate ./my-service -o graph.json    # auto-detects TypeScript or Python
 node packages/cli/dist/bin.js view graph.json --overlay mock --env staging
+
+# Optional real JS/TS execution coverage (an existing Istanbul coverage-final.json)
+node packages/cli/dist/bin.js generate ./my-service --test-coverage coverage/coverage-final.json -o graph.json
 ```
 
 Private repos: click **Sign in with GitHub** on the landing page (device flow — no password, no
@@ -106,13 +109,22 @@ node id **and** the telemetry join key, so structure and runtime data never desy
    merges separately generated artifacts into one system graph, unifying concrete HTTP paths onto
    route templates and keeping one-sided channels visibly dangling. Fully static — no runtime, no
    telemetry, no manual marking (see ADR 0002).
-5. **Tests & static coverage.** Test files enter the graph tagged `"test"` (path heuristics:
+5. **Tests & estimated reachability.** Test files enter the graph tagged `"test"` (path heuristics:
    `*.test.*` / `*.spec.*` / `__tests__` / `test_*.py` / …) — one toolbar click hides or shows them.
-   **Coverage mode** recolors the whole graph from pure call reachability: green = a test calls it
-   directly, amber = reached only through other code, red = nothing reaches it — and the coverage
-   panel names each untested class/method **with the reason** ("never called — entry point or dead
-   code" vs "only called by uncovered code: …"). Only `resolved` edges count; unresolved calls
+   When no execution report is attached, the coverage control falls back to explicitly labeled
+   **estimated test reachability**: green = a test calls a callable directly, amber = it is reachable
+   only through other code, and red = no resolved test path reaches it. This is navigation evidence,
+   not proof that a function or branch executed. Only `resolved` edges count; unresolved calls
    leaving test code are surfaced as an explicit caveat, never silently counted.
+6. **Test execution coverage.** `generate --test-coverage coverage-final.json` imports the standard
+   Istanbul coverage-map JSON already emitted by Vitest (V8 or Istanbul provider), Jest, nyc, or c8;
+   Meridian does not instrument code or run tests. The Logic view uses explicit function and branch
+   counters: positive hits are green, an explicit zero is red, and missing/ambiguous/unsupported
+   evidence stays gray. Istanbul covers JavaScript `if`/`switch`/ternary/logical branches, but not
+   `try/catch` or loops, so those Logic lanes remain honestly unknown without custom trace probes.
+   The report is aggregate coverage and does not identify which individual test took an arm. When
+   present, this runtime evidence replaces estimated reachability in the coverage UI; repository
+   function and branch-path totals stay separate from the selected Logic function's metrics.
 
 The contract is specified in
 [`knowledge/adr/0001-graph-artifact-schema.md`](knowledge/adr/0001-graph-artifact-schema.md) and
@@ -123,11 +135,11 @@ published as JSON Schema at
 
 | Command | What it does |
 | --- | --- |
-| `meridian generate [path]` | Extract a codebase into a graph artifact. `--lang` (auto: `typescript` \| `python`), `-o`, `--depth package\|module\|class\|function`, `--include-external`, `--include`, `--exclude`, `--tsconfig`, `--exclude-tests` (default: tests included, tagged `test`). |
-| `meridian view [graph]` | Serve the renderer on a graph + open the browser. `--port`, `--host`, `--no-open`, `--overlay <file\|mock>`, `--env`. |
+| `meridian generate [path]` | Extract a codebase into a graph artifact. `--lang` (auto: `typescript` \| `python`), `-o`, `--depth package\|module\|class\|function`, `--include-external`, `--include`, `--exclude`, `--tsconfig`, `--exclude-tests` (default: tests included, tagged `test`), `--test-coverage <coverage-final.json>` (attach aggregate Istanbul execution coverage). |
+| `meridian view [graph]` | Serve the renderer on a graph + open the browser. `--port`, `--host`, `--no-open`, `--overlay <file\|mock>`, `--env`, `--test-coverage <coverage-final.json>` (in-memory only). |
 | `meridian web [source]` | Local web UI: paste a **GitHub repo** (`owner/repo` or URL) / local path — clones (`--depth 1`) + extracts + renders, including materialized external dependencies. **Sign in with GitHub** (device flow, enabled by default) lists your repositories to pick from; private repos also work via `GITHUB_TOKEN`/`GH_TOKEN` or a local-only token field. `--port`, `--host`, `--no-open`, `--github-client-id`. |
 | `meridian mock-telemetry [graph]` | Mint a deterministic mock overlay. **`--env` is required** (no default, never prod); `-o`, `--seed`. |
-| `meridian coverage [graph]` | Terminal report of the same static coverage the renderer overlays: per-class percentages, every uncovered member with its reason. `--fail-under <pct>` makes it a CI gate (exit 3 below threshold). |
+| `meridian coverage [graph]` | Terminal report of estimated static test reachability: per-class percentages, every unreachable member with its reason. `--fail-under <pct>` makes it a CI gate (exit 3 below threshold). |
 | `meridian link <graphs...>` | Join two or more artifacts into one **system graph** via their IPC channel keys — HTTP paths unify onto route templates, electron/queue channels match exactly; dangling channels (nobody answers) stay visible. `-o`, `--name`. |
 
 ## Packages
@@ -154,6 +166,9 @@ pnpm install
 pnpm build                # build every package (tsup libs + the Vite renderer)
 pnpm test                 # unit + golden suites (~100 tests)
 pnpm typecheck
+
+# Refresh the checked-in renderer sample from real V8 execution counters (emitted as Istanbul JSON)
+pnpm sample:refresh       # sample:coverage, then sample:graph
 
 # End-to-end (generate → view → headless Chromium). Install the browser once:
 npx playwright install chromium
