@@ -223,7 +223,6 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
       semanticLayers={semanticLayers}
       semanticDepths={semanticNavigation.semanticDepths}
       semanticBandOriginDepth={semanticNavigation.semanticBandOriginDepth}
-      semanticFirstPreviewMax={semanticNavigation.semanticFirstPreviewMax}
       semanticLodEnabled={semanticNavigation.semanticLodEnabled}
       semanticCommitEnabled={semanticNavigation.semanticCommitEnabled}
       onSemanticCommit={semanticNavigation.onSemanticCommit}

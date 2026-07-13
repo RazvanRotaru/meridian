@@ -210,7 +210,6 @@ export function MinimalCodebaseView({
       semanticLayers={[]}
       semanticDepths={navigation.semanticDepths}
       semanticBandOriginDepth={navigation.semanticBandOriginDepth}
-      semanticFirstPreviewMax={navigation.semanticFirstPreviewMax}
       semanticLodEnabled={navigation.semanticLodEnabled}
       semanticCommitEnabled={navigation.semanticCommitEnabled}
       onSemanticCommit={navigation.onSemanticCommit}

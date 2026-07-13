@@ -9,8 +9,13 @@ export interface GraphRect {
   height: number;
 }
 
-/** The first detail graph starts previewing its enclosing node below this zoom. */
+/** Safe fallback while graph or viewport geometry is not measured yet. */
 export const SEMANTIC_FIRST_PREVIEW_MAX = 0.45;
+
+/** Semantic navigation starts once the graph's constraining screen dimension occupies less than
+ * 40% of the canvas. A linear ratio is intentional: area would make a wide, shallow graph look
+ * "small" while it still spans most of the viewport. */
+export const SEMANTIC_FIRST_PREVIEW_VIEWPORT_FILL = 0.4;
 
 /**
  * Every threshold is this fraction of the previous threshold. Alternating reading and preview
@@ -24,6 +29,11 @@ export const SEMANTIC_FIRST_PREVIEW_MAX = 0.45;
  *   grandparent reading ...
  */
 export const SEMANTIC_ZOOM_BAND_RATIO = 2 / 3;
+
+/** Keep the first commit just above React Flow's zoom floor when a graph is too large to ever fit
+ * inside the preferred viewport footprint. */
+const SEMANTIC_MIN_FIRST_PREVIEW_MAX =
+  (CANVAS_MIN_ZOOM / SEMANTIC_ZOOM_BAND_RATIO) * 1.1;
 
 /**
  * Preserve the roomy 2/3 bands for ordinary paths, but compress them just enough when a hierarchy
@@ -42,14 +52,134 @@ export function semanticZoomBandRatio(
   return Math.max(SEMANTIC_ZOOM_BAND_RATIO, required);
 }
 
-/** Give a fitted graph a real reading interval even when its whole-graph fit is below the ordinary
- * .45 threshold. The first outward preview starts one ratio below that fitted reading zoom; normal
- * sized graphs keep the established .45 ceiling. */
-export function semanticFirstPreviewMaxForReadingZoom(readingZoom: number): number {
-  const safeReadingZoom = Number.isFinite(readingZoom) && readingZoom > 0
-    ? readingZoom
+/** Convert the desired viewport footprint into the raw zoom where preview should begin. The
+ * constraining axis reaches exactly 40% at the returned zoom, so wide and tall graphs behave the
+ * same and panning cannot change the boundary. */
+export function semanticFirstPreviewMaxForViewport(
+  bounds: GraphRect | null,
+  viewportWidth: number,
+  viewportHeight: number,
+): number {
+  const width = validPositive(viewportWidth);
+  const height = validPositive(viewportHeight);
+  const graphWidth = validNonNegative(bounds?.width);
+  const graphHeight = validNonNegative(bounds?.height);
+  const unitZoomFill = width === null || height === null || graphWidth === null || graphHeight === null
+    ? null
+    : Math.max(graphWidth / width, graphHeight / height);
+  const occupancyThreshold = unitZoomFill !== null && unitZoomFill > 0
+    ? SEMANTIC_FIRST_PREVIEW_VIEWPORT_FILL / unitZoomFill
     : SEMANTIC_FIRST_PREVIEW_MAX;
-  return Math.min(SEMANTIC_FIRST_PREVIEW_MAX, safeReadingZoom * SEMANTIC_ZOOM_BAND_RATIO);
+  return occupancyThreshold;
+}
+
+/** Pick the graph which is actually painted at the active semantic depth. Exit surfaces can carry
+ * parent metadata while their current nodes are still undecorated, so fall back to that undecorated
+ * population instead of reverting to a fixed zoom threshold. */
+export function renderedNodesAtSemanticDepth(
+  nodes: readonly Node[],
+  currentDepth: number | undefined,
+): Node[] {
+  if (currentDepth === undefined) {
+    return [...nodes];
+  }
+  const depthOf = (node: Node): number | undefined => {
+    const depth = (node.data as { semanticDepth?: unknown }).semanticDepth;
+    return typeof depth === "number" && Number.isInteger(depth) && depth >= 0 ? depth : undefined;
+  };
+  const exact = nodes.filter((node) => depthOf(node) === currentDepth);
+  return exact.length > 0
+    ? exact
+    : nodes.filter((node) => depthOf(node) === undefined);
+}
+
+/** Apply lifecycle safety to an occupancy-derived threshold. Extremely large graphs may never
+ * reach 40% before React Flow's zoom floor; keep one commit reachable as an explicit fallback.
+ * `readingZoom` additionally keeps a tiny graph's initial fit/handoff camera in its reading band,
+ * so navigation still begins with an outward user gesture rather than during programmatic fit. */
+export function reachableSemanticFirstPreviewMax(
+  firstPreviewMax: number,
+  readingZoom?: number,
+): number {
+  const reachableThreshold = Math.max(
+    SEMANTIC_MIN_FIRST_PREVIEW_MAX,
+    validFirstPreviewMax(firstPreviewMax),
+  );
+  const ceiling = validPositive(readingZoom);
+  return ceiling === null
+    ? reachableThreshold
+    : Math.min(reachableThreshold, ceiling);
+}
+
+/** Rebase a settled surface after its rendered population or pane size changes. Honor the new
+ * occupancy boundary unless it would reverse an active preview or switch to a parent without an
+ * outward gesture. A reading graph which would otherwise switch parent moves its boundary to the
+ * current camera, so the next outward sample starts preview immediately. */
+export function rebaseSemanticFirstPreviewMax(
+  currentFirstPreviewMax: number,
+  occupancyFirstPreviewMax: number,
+  zoom: number,
+  layerDepths: readonly number[],
+  originDepth?: number,
+): number {
+  const nextFirstPreviewMax = reachableSemanticFirstPreviewMax(occupancyFirstPreviewMax);
+  const depths = normalizedSemanticDepths(layerDepths);
+  const currentDepth = depths[0];
+  if (currentDepth === undefined || !Number.isFinite(zoom) || zoom < 0) {
+    return nextFirstPreviewMax;
+  }
+  const nextBand = semanticZoomBandForZoom(
+    zoom,
+    depths,
+    originDepth,
+    nextFirstPreviewMax,
+  );
+  const currentBand = semanticZoomBandForZoom(
+    zoom,
+    depths,
+    originDepth,
+    currentFirstPreviewMax,
+  );
+  if (
+    currentBand?.depth === currentDepth &&
+    currentBand.stage === "preview" &&
+    (nextBand?.depth !== currentDepth || nextBand.stage !== "preview")
+  ) {
+    return validFirstPreviewMax(currentFirstPreviewMax);
+  }
+  if (nextBand === null || nextBand.depth === currentDepth) {
+    return nextFirstPreviewMax;
+  }
+  return currentBand?.depth === currentDepth && currentBand.stage === "preview"
+    ? validFirstPreviewMax(currentFirstPreviewMax)
+    : reachableSemanticFirstPreviewMax(occupancyFirstPreviewMax, zoom);
+}
+
+/** Move a temporary reading boundary inward without making its preview irreversible. A tiny graph
+ * can have a raw 40% boundary above the canvas maximum: after the user moves outward from its
+ * lifecycle clamp, reversing inward must keep that clamp until the camera reaches it, then follow
+ * the camera toward the raw occupancy boundary. */
+export function advanceSemanticFirstPreviewMaxInward(
+  currentFirstPreviewMax: number,
+  occupancyFirstPreviewMax: number,
+  zoom: number,
+  layerDepths: readonly number[],
+  originDepth?: number,
+): number {
+  const current = validFirstPreviewMax(currentFirstPreviewMax);
+  const rawReachable = reachableSemanticFirstPreviewMax(occupancyFirstPreviewMax);
+  if (current < rawReachable) {
+    return zoom < current
+      ? current
+      : reachableSemanticFirstPreviewMax(occupancyFirstPreviewMax, zoom);
+  }
+  return rebaseSemanticFirstPreviewMax(
+    current,
+    occupancyFirstPreviewMax,
+    zoom,
+    layerDepths,
+    originDepth,
+  );
 }
 
 /**
@@ -194,28 +324,40 @@ function validFirstPreviewMax(value: number): number {
   return Number.isFinite(value) && value > 0 ? value : SEMANTIC_FIRST_PREVIEW_MAX;
 }
 
+function validPositive(value: number | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function validNonNegative(value: number | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
 /** Screen-space chrome reserved around the structural graph when it becomes one parent node. */
 export const PARENT_FRAME_HEADER_PX = 34;
 const PARENT_FRAME_SIDE_PX = 18;
 const PARENT_FRAME_BODY_TOP_PX = 16;
 const PARENT_FRAME_BOTTOM_PX = 18;
 
-/** Bounds of the structural graph in absolute flow coordinates. Nested nodes are parent-relative,
- * so their ancestor positions must be accumulated before taking the bounds. Off-level ghost cards
- * do not move the parent frame; if a surface somehow consists only of ghosts, they are the safe
- * fallback rather than returning no enclosure. */
-export function structuralGraphBounds(nodes: readonly Node[], candidates: readonly Node[] = nodes): GraphRect | null {
-  const structural = candidates.filter((node) => node.type !== "ghost");
-  const bounded = structural.length > 0 ? structural : candidates;
-  if (bounded.length === 0) {
+/** Bounds of a visible graph population in absolute flow coordinates. Nested nodes are
+ * parent-relative, so positions resolve through the complete node set even when `candidates`
+ * contains only the active semantic depth. */
+export function graphBounds(nodes: readonly Node[], candidates: readonly Node[] = nodes): GraphRect | null {
+  if (candidates.length === 0) {
     return null;
   }
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  const box = boundingBoxOf(bounded.map((node) => absoluteRectOf(node, byId)));
+  const box = boundingBoxOf(candidates.map((node) => absoluteRectOf(node, byId)));
   if (![box.x, box.y, box.width, box.height].every(Number.isFinite)) {
     return null;
   }
   return box;
+}
+
+/** Bounds of only the structural graph. Off-level ghost cards are visible graph occupants, but do
+ * not enlarge the enclosing parent preview frame; a ghost-only surface remains the safe fallback. */
+export function structuralGraphBounds(nodes: readonly Node[], candidates: readonly Node[] = nodes): GraphRect | null {
+  const structural = candidates.filter((node) => node.type !== "ghost");
+  return graphBounds(nodes, structural.length > 0 ? structural : candidates);
 }
 
 /** A parent-node rect that encloses `bounds` while keeping its header and gutters a stable size on

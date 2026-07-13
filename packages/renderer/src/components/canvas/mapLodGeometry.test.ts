@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { Node } from "@xyflow/react";
 import {
+  advanceSemanticFirstPreviewMaxInward,
   enclosingParentFrame,
+  graphBounds,
   normalizedSemanticDepths,
+  rebaseSemanticFirstPreviewMax,
+  renderedNodesAtSemanticDepth,
+  reachableSemanticFirstPreviewMax,
   semanticCommitDepthForZoomChange,
   semanticCommitZoomForDepth,
-  semanticFirstPreviewMaxForReadingZoom,
+  semanticFirstPreviewMaxForViewport,
   semanticZoomBandRatio,
   semanticZoomBandForZoom,
   structuralGraphBounds,
@@ -27,9 +32,12 @@ describe("structuralGraphBounds", () => {
     expect(structuralGraphBounds(nodes)).toEqual({ x: 100, y: 40, width: 200, height: 120 });
   });
 
-  it("does not let a selection-relative ghost enlarge the parent node", () => {
+  it("counts a visible ghost for occupancy without letting it enlarge the parent frame", () => {
     const nodes = [node("left", 0, 0, 100, 50), node("right", 300, 100, 100, 50), node("ghost", 2000, 900, 180, 50, undefined, "ghost")];
+    const visibleBounds = graphBounds(nodes);
 
+    expect(visibleBounds).toEqual({ x: 0, y: 0, width: 2180, height: 950 });
+    expect(semanticFirstPreviewMaxForViewport(visibleBounds, 1_000, 1_000)).toBeCloseTo(0.4 / 2.18);
     expect(structuralGraphBounds(nodes)).toEqual({ x: 0, y: 0, width: 400, height: 150 });
   });
 
@@ -58,6 +66,164 @@ describe("enclosingParentFrame", () => {
       y: -100,
       width: 472,
       height: 286,
+    });
+  });
+});
+
+describe("semanticFirstPreviewMaxForViewport", () => {
+  it("measures only the post-paint population at the active depth", () => {
+    const current = { ...node("current", 0, 0, 100, 50), data: { semanticDepth: 1 } };
+    const ancestor = { ...node("ancestor", 2_000, 0, 100, 50), data: { semanticDepth: 2 } };
+
+    expect(renderedNodesAtSemanticDepth([current, ancestor], 1)).toEqual([current]);
+  });
+
+  it("uses undecorated current nodes when only the parent is described by semantic metadata", () => {
+    const current = node("current", 0, 0, 100, 50);
+    const describedParent = {
+      ...node("parent", 2_000, 0, 100, 50),
+      data: { semanticDepth: 1 },
+    };
+
+    expect(renderedNodesAtSemanticDepth([current, describedParent], 0)).toEqual([current]);
+  });
+
+  it("starts preview only after the graph's constraining dimension falls below 40%", () => {
+    const previewMax = semanticFirstPreviewMaxForViewport(
+      { x: 0, y: 0, width: 1_000, height: 400 },
+      1_000,
+      1_000,
+    );
+
+    expect(previewMax).toBe(0.4);
+    expect(semanticZoomBandForZoom(0.4, [0, 1], undefined, previewMax)).toEqual({
+      depth: 0,
+      stage: "reading",
+    });
+    expect(semanticZoomBandForZoom(0.399, [0, 1], undefined, previewMax)).toEqual({
+      depth: 0,
+      stage: "preview",
+      previewDepth: 1,
+    });
+  });
+
+  it("uses the dominant dimension instead of area and is symmetric for tall graphs", () => {
+    const wide = semanticFirstPreviewMaxForViewport(
+      { x: 0, y: 0, width: 800, height: 80 },
+      1_000,
+      1_000,
+    );
+    const tall = semanticFirstPreviewMaxForViewport(
+      { x: 0, y: 0, width: 80, height: 800 },
+      1_000,
+      1_000,
+    );
+    const scaledAndPanned = semanticFirstPreviewMaxForViewport(
+      { x: -12_000, y: 8_000, width: 1_600, height: 160 },
+      2_000,
+      2_000,
+    );
+
+    expect(wide).toBe(0.5);
+    expect(tall).toBe(wide);
+    expect(scaledAndPanned).toBe(wide);
+  });
+
+  it("keeps an initially tiny graph readable until the next outward gesture", () => {
+    const occupancyThreshold = semanticFirstPreviewMaxForViewport(
+      { x: 0, y: 0, width: 80, height: 80 },
+      1_000,
+      1_000,
+    );
+
+    expect(occupancyThreshold).toBe(5);
+    expect(reachableSemanticFirstPreviewMax(occupancyThreshold, 2)).toBe(2);
+    const rearmedAtZoomIn = reachableSemanticFirstPreviewMax(occupancyThreshold, 4);
+    expect(rearmedAtZoomIn).toBe(4);
+    expect(semanticZoomBandForZoom(4, [0, 1], undefined, rearmedAtZoomIn)).toEqual({
+      depth: 0,
+      stage: "reading",
+    });
+    expect(semanticZoomBandForZoom(3.99, [0, 1], undefined, rearmedAtZoomIn)).toEqual({
+      depth: 0,
+      stage: "preview",
+      previewDepth: 1,
+    });
+    const reversedBeforeClamp = advanceSemanticFirstPreviewMaxInward(
+      rearmedAtZoomIn,
+      occupancyThreshold,
+      3.95,
+      [0, 1],
+    );
+    expect(reversedBeforeClamp).toBe(4);
+    expect(semanticZoomBandForZoom(3.95, [0, 1], undefined, reversedBeforeClamp)).toMatchObject({
+      depth: 0,
+      stage: "preview",
+    });
+    expect(semanticZoomBandForZoom(4, [0, 1], undefined, reversedBeforeClamp)).toEqual({
+      depth: 0,
+      stage: "reading",
+    });
+  });
+
+  it("separates the exact occupancy threshold from the minimum-zoom reachability fallback", () => {
+    expect(semanticFirstPreviewMaxForViewport(null, 0, 1_000)).toBe(0.45);
+
+    const occupancyThreshold = semanticFirstPreviewMaxForViewport(
+      { x: 0, y: 0, width: 100_000, height: 100_000 },
+      1_000,
+      1_000,
+    );
+    const previewMax = reachableSemanticFirstPreviewMax(occupancyThreshold);
+
+    expect(occupancyThreshold).toBe(0.004);
+    expect(semanticCommitZoomForDepth(0, [0, 1], undefined, previewMax)).toBeGreaterThan(0.01);
+  });
+
+  it("keeps a programmatic camera at the canvas floor on the current graph", () => {
+    const occupancyThreshold = semanticFirstPreviewMaxForViewport(
+      { x: 0, y: 0, width: 100_000, height: 100_000 },
+      1_000,
+      1_000,
+    );
+    const readingThreshold = reachableSemanticFirstPreviewMax(occupancyThreshold, 0.01);
+
+    expect(readingThreshold).toBe(0.01);
+    expect(semanticZoomBandForZoom(0.01, [0, 1], undefined, readingThreshold)).toEqual({
+      depth: 0,
+      stage: "reading",
+    });
+    const nearFloorThreshold = reachableSemanticFirstPreviewMax(occupancyThreshold, 0.012);
+    expect(semanticCommitZoomForDepth(0, [0, 1], undefined, nearFloorThreshold)).toBeGreaterThan(0.01);
+  });
+
+  it("rebases a resized reading graph without letting resize navigate to its parent", () => {
+    expect(rebaseSemanticFirstPreviewMax(0.5, 1, 0.6, [0, 1])).toBe(0.6);
+    expect(semanticZoomBandForZoom(
+      0.6,
+      [0, 1],
+      undefined,
+      rebaseSemanticFirstPreviewMax(0.5, 1, 0.6, [0, 1]),
+    )).toEqual({ depth: 0, stage: "reading" });
+  });
+
+  it("preserves preview when a resize-derived threshold would navigate without a gesture", () => {
+    expect(semanticZoomBandForZoom(0.4, [0, 1], undefined, 0.5)).toEqual({
+      depth: 0,
+      stage: "preview",
+      previewDepth: 1,
+    });
+    expect(rebaseSemanticFirstPreviewMax(0.5, 0.625, 0.4, [0, 1])).toBe(0.5);
+  });
+
+  it("does not cancel an active preview when resize makes the graph occupy more of the pane", () => {
+    const previewMax = rebaseSemanticFirstPreviewMax(0.5, 0.25, 0.4, [0, 1]);
+
+    expect(previewMax).toBe(0.5);
+    expect(semanticZoomBandForZoom(0.4, [0, 1], undefined, previewMax)).toEqual({
+      depth: 0,
+      stage: "preview",
+      previewDepth: 1,
     });
   });
 });
@@ -159,13 +325,20 @@ describe("semanticZoomBandForZoom", () => {
     });
   });
 
-  it("uses one fitted threshold for both rendered bands and outward commit detection", () => {
+  it("uses one viewport-occupancy threshold for both rendered bands and outward commit detection", () => {
     const depths = [0, 1];
     const fittedZoom = 0.12;
-    const previewMax = semanticFirstPreviewMaxForReadingZoom(fittedZoom);
+    const previewMax = reachableSemanticFirstPreviewMax(
+      semanticFirstPreviewMaxForViewport(
+        { x: 0, y: 0, width: 6_250, height: 2_000 },
+        1_000,
+        1_000,
+      ),
+      fittedZoom,
+    );
     const commitMax = previewMax * (2 / 3);
 
-    expect(previewMax).toBeCloseTo(0.08);
+    expect(previewMax).toBeCloseTo(0.064);
     expect(semanticZoomBandForZoom(fittedZoom, depths, undefined, previewMax)).toEqual({
       depth: 0,
       stage: "reading",

@@ -34,9 +34,11 @@
  * the ghost "+" ring) in `flowExtras`, which receives the PAINTED view.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ReactFlowProvider,
+  useStore,
+  useStoreApi,
   type Edge,
   type EdgeTypes,
   type Node,
@@ -80,7 +82,14 @@ import {
   SEMANTIC_LAYER_CLASS,
 } from "../../derive/moduleSemanticComposite";
 import {
+  advanceSemanticFirstPreviewMaxInward,
+  graphBounds,
   normalizedSemanticDepths,
+  rebaseSemanticFirstPreviewMax,
+  renderedNodesAtSemanticDepth,
+  reachableSemanticFirstPreviewMax,
+  SEMANTIC_FIRST_PREVIEW_MAX,
+  semanticFirstPreviewMaxForViewport,
   semanticCommitDepthForZoomChange,
   type SemanticLodLayer,
 } from "./mapLodGeometry";
@@ -230,8 +239,6 @@ export interface GraphSurfaceProps {
   semanticDepths: readonly number[];
   /** Previous root depth held until the post-commit camera reset reaches normal reading zoom. */
   semanticBandOriginDepth: number | undefined;
-  /** First preview threshold; both paint and commit detection must read this exact value. */
-  semanticFirstPreviewMax: number;
   /** False while the mount establishes a programmatic reading viewport. */
   semanticLodEnabled: boolean;
   /** False while the semantic parent handoff owns the camera animation. */
@@ -326,64 +333,12 @@ export function GraphSurface(props: GraphSurfaceProps) {
     [props.semanticDepths],
   );
   const previousUserZoom = useRef<number | null>(null);
+  const previousCameraZoom = useRef<number | null>(null);
   const programmaticUserZoomArmed = useRef(false);
   // Local wire state and global source state still need one owner boundary. This ref distinguishes
   // a source-backed inspection (whose source disappearing ends the whole dock) from an intentional
   // metadata-only wire, which remains useful without a source pane.
   const inspectionOwnsSource = useRef(false);
-  const onMoveStart = useCallback<OnMoveStart>((event, viewport) => {
-    if (!semanticCommitEnabled) {
-      previousUserZoom.current = null;
-      return;
-    }
-    // React Flow passes null for fitView/setCenter. Those camera moves must never become semantic
-    // navigation. Explicit zoom controls are the exception, armed by capture on their user event.
-    if (event != null || programmaticUserZoomArmed.current) {
-      previousUserZoom.current = viewport.zoom;
-    }
-  }, [semanticCommitEnabled]);
-  const onMove = useCallback<OnMove>((event, viewport) => {
-    if (!semanticCommitEnabled) {
-      previousUserZoom.current = null;
-      return;
-    }
-    if (event == null && !programmaticUserZoomArmed.current) {
-      // A semantic handoff's setCenter can run inside an active wheel gesture. Ignore its null-event
-      // camera callbacks without erasing the user's preceding sample, so outward movement can keep
-      // crossing farther levels continuously.
-      return;
-    }
-    const previousZoom = previousUserZoom.current;
-    // Advance the sample before the synchronous owner callback filters the mounted graph. If that
-    // causes an immediate rerender, another move sample starts from the camera position just seen.
-    previousUserZoom.current = viewport.zoom;
-    if (previousZoom === null) {
-      return;
-    }
-    const targetDepth = semanticCommitDepthForZoomChange(
-      previousZoom,
-      viewport.zoom,
-      semanticDepths,
-      props.semanticBandOriginDepth,
-      props.semanticFirstPreviewMax,
-    );
-    const target = props.semanticLayers.find((layer) => layer.depth === targetDepth);
-    if (target !== undefined) {
-      props.onSemanticCommit(target);
-    }
-  }, [props.onSemanticCommit, props.semanticLayers, props.semanticBandOriginDepth, props.semanticFirstPreviewMax, semanticCommitEnabled, semanticDepths]);
-  const onMoveEnd = useCallback<OnMoveEnd>((event) => {
-    if (event != null || programmaticUserZoomArmed.current) {
-      previousUserZoom.current = null;
-      programmaticUserZoomArmed.current = false;
-    }
-  }, []);
-  useEffect(() => {
-    if (!semanticCommitEnabled) {
-      previousUserZoom.current = null;
-      programmaticUserZoomArmed.current = false;
-    }
-  }, [semanticCommitEnabled]);
 
   // The ONE paint chain, isolated per semantic population. Main's ghost grouping can mint parent
   // cards and hierarchy spokes at paint time; stamping those outputs back onto their source depth
@@ -464,6 +419,159 @@ export function GraphSurface(props: GraphSurfaceProps) {
   // only top-level dimensions on the controlled user node, so expose the same numbers at the final
   // library boundary after the paint-only inspection decoration.
   const reactFlowNodes = useMemo(() => withReactFlowDimensions(requestPaintedNodes), [requestPaintedNodes]);
+  const viewportWidth = useStore((state) => state.width);
+  const viewportHeight = useStore((state) => state.height);
+  const flowStore = useStoreApi<Node, Edge>();
+  const occupancyNodes = useMemo(() => {
+    const currentDepth = semanticDepths[0];
+    return renderedNodesAtSemanticDepth(reactFlowNodes, currentDepth);
+  }, [reactFlowNodes, semanticDepths]);
+  const occupancyBounds = useMemo(
+    () => graphBounds(reactFlowNodes, occupancyNodes),
+    [occupancyNodes, reactFlowNodes],
+  );
+  const occupancyFirstPreviewMax = useMemo(
+    () => semanticFirstPreviewMaxForViewport(occupancyBounds, viewportWidth, viewportHeight),
+    [occupancyBounds, viewportHeight, viewportWidth],
+  );
+  const occupancyFirstPreviewMaxRef = useRef(occupancyFirstPreviewMax);
+  occupancyFirstPreviewMaxRef.current = occupancyFirstPreviewMax;
+  const semanticFirstPreviewMaxRef = useRef(SEMANTIC_FIRST_PREVIEW_MAX);
+  const [semanticFirstPreviewMax, setSemanticFirstPreviewMax] = useState(SEMANTIC_FIRST_PREVIEW_MAX);
+  const publishSemanticFirstPreviewMax = useCallback((next: number) => {
+    semanticFirstPreviewMaxRef.current = next;
+    setSemanticFirstPreviewMax((current) => current === next ? current : next);
+  }, []);
+  const previousSemanticLifecycle = useRef({
+    commitEnabled: false,
+    lodEnabled: false,
+    originDepth: undefined as number | undefined,
+  });
+  useLayoutEffect(() => {
+    const previous = previousSemanticLifecycle.current;
+    const enteredReadingLifecycle = props.semanticLodEnabled && (
+      !previous.lodEnabled ||
+      (!previous.commitEnabled && semanticCommitEnabled) ||
+      (previous.originDepth !== undefined && props.semanticBandOriginDepth === undefined)
+    );
+    previousSemanticLifecycle.current = {
+      commitEnabled: semanticCommitEnabled,
+      lodEnabled: props.semanticLodEnabled,
+      originDepth: props.semanticBandOriginDepth,
+    };
+    if (
+      !props.semanticLodEnabled ||
+      !semanticCommitEnabled ||
+      props.semanticBandOriginDepth !== undefined
+    ) {
+      return;
+    }
+    const zoom = flowStore.getState().transform[2];
+    const next = enteredReadingLifecycle
+      ? reachableSemanticFirstPreviewMax(occupancyFirstPreviewMax, zoom)
+      : rebaseSemanticFirstPreviewMax(
+          semanticFirstPreviewMaxRef.current,
+          occupancyFirstPreviewMax,
+          zoom,
+          semanticDepths,
+        );
+    publishSemanticFirstPreviewMax(next);
+  }, [
+    flowStore,
+    occupancyFirstPreviewMax,
+    props.semanticBandOriginDepth,
+    props.semanticLodEnabled,
+    publishSemanticFirstPreviewMax,
+    semanticCommitEnabled,
+    semanticDepths,
+  ]);
+
+  const onMoveStart = useCallback<OnMoveStart>((event, viewport) => {
+    previousCameraZoom.current = viewport.zoom;
+    if (!semanticCommitEnabled) {
+      previousUserZoom.current = null;
+      return;
+    }
+    // React Flow passes null for fitView/setCenter. Those camera moves must never become semantic
+    // navigation. Explicit zoom controls are the exception, armed by capture on their user event.
+    if (event != null || programmaticUserZoomArmed.current) {
+      previousUserZoom.current = viewport.zoom;
+    }
+  }, [semanticCommitEnabled]);
+  const onMove = useCallback<OnMove>((event, viewport) => {
+    const previousCamera = previousCameraZoom.current;
+    previousCameraZoom.current = viewport.zoom;
+    if (!semanticCommitEnabled) {
+      previousUserZoom.current = null;
+      return;
+    }
+    if (event == null && !programmaticUserZoomArmed.current) {
+      // Recenter/fitView camera changes are not navigation, but they must not leave a tiny graph's
+      // reading clamp stranded at an older zoom or move an already-previewing camera into a parent
+      // band. Re-establish reading at the new zoom while preserving the user's preceding wheel
+      // sample; a handoff's same-zoom setCenter therefore remains inert.
+      if (previousCamera !== null && viewport.zoom !== previousCamera) {
+        publishSemanticFirstPreviewMax(
+          reachableSemanticFirstPreviewMax(occupancyFirstPreviewMaxRef.current, viewport.zoom),
+        );
+      }
+      return;
+    }
+    const previousZoom = previousUserZoom.current;
+    // Advance the sample before the synchronous owner callback filters the mounted graph. If that
+    // causes an immediate rerender, another move sample starts from the camera position just seen.
+    previousUserZoom.current = viewport.zoom;
+    if (previousZoom === null) {
+      return;
+    }
+    if (viewport.zoom === previousZoom) {
+      return;
+    }
+    if (viewport.zoom > previousZoom) {
+      const next = advanceSemanticFirstPreviewMaxInward(
+        semanticFirstPreviewMaxRef.current,
+        occupancyFirstPreviewMaxRef.current,
+        viewport.zoom,
+        semanticDepths,
+        props.semanticBandOriginDepth,
+      );
+      publishSemanticFirstPreviewMax(next);
+      return;
+    }
+    const targetDepth = semanticCommitDepthForZoomChange(
+      previousZoom,
+      viewport.zoom,
+      semanticDepths,
+      props.semanticBandOriginDepth,
+      semanticFirstPreviewMaxRef.current,
+    );
+    const target = props.semanticLayers.find((layer) => layer.depth === targetDepth);
+    if (target !== undefined) {
+      props.onSemanticCommit(target);
+    }
+  }, [
+    props.onSemanticCommit,
+    props.semanticLayers,
+    props.semanticBandOriginDepth,
+    publishSemanticFirstPreviewMax,
+    semanticCommitEnabled,
+    semanticDepths,
+  ]);
+  const onMoveEnd = useCallback<OnMoveEnd>((event) => {
+    previousCameraZoom.current = null;
+    if (event != null || programmaticUserZoomArmed.current) {
+      previousUserZoom.current = null;
+      programmaticUserZoomArmed.current = false;
+    }
+  }, []);
+  useEffect(() => {
+    if (!semanticCommitEnabled) {
+      previousUserZoom.current = null;
+      previousCameraZoom.current = null;
+      programmaticUserZoomArmed.current = false;
+    }
+  }, [semanticCommitEnabled]);
+
   const virtualizeCanvas = shouldVirtualizeCanvasNodes(reactFlowNodes.length);
   // Every semantic depth is an independent paint population. Process it through main's shared
   // presentation pipeline separately so hidden ancestors cannot affect salience/highways, while
@@ -548,9 +656,12 @@ export function GraphSurface(props: GraphSurfaceProps) {
       aria-busy={props.busy ? "true" : undefined}
       onClickCapture={(event) => {
         const target = event.target;
-        if (target instanceof Element && target.closest(".react-flow__controls-zoomout") !== null) {
+        if (
+          target instanceof Element &&
+          target.closest(".react-flow__controls-zoomin, .react-flow__controls-zoomout") !== null
+        ) {
           // Controls uses the viewport API, whose move event is null just like fitView. Arm it before
-          // the button's target handler runs so this explicit user zoom follows semantic navigation.
+          // the button's target handler runs so explicit user zoom follows semantic navigation.
           programmaticUserZoomArmed.current = true;
         }
       }}
@@ -618,7 +729,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
           semanticLayers={props.semanticLayers}
           semanticDepths={semanticDepths}
           semanticBandOriginDepth={props.semanticBandOriginDepth}
-          semanticFirstPreviewMax={props.semanticFirstPreviewMax}
+          semanticFirstPreviewMax={semanticFirstPreviewMax}
           semanticLodEnabled={props.semanticLodEnabled}
         />
         {nodeDiffEnabled ? <ReviewCommentNodeIndicators visibleNodes={requestPaintedNodes} /> : null}
