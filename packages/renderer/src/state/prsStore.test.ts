@@ -3,6 +3,7 @@ import type { GraphArtifact, GraphNode } from "@meridian/core";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PrReviewSection } from "../components/controlpanel/PrReviewSection";
+import { PrReviewNavigation } from "../components/controlpanel/PrReviewNavigation";
 import { countTestFiles } from "../components/controlpanel/OverlaysSection";
 import { ReviewPanel } from "../components/review/ReviewPanel";
 import { applyChangedIds, buildGraphIndex } from "../graph/graphIndex";
@@ -1095,6 +1096,22 @@ describe("PR store slice", () => {
     expect(failedResume).toContain("graph expired");
   });
 
+  it("keeps active-review navigation compact and leaves PR details to the right panel", () => {
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    store.getInitialState = store.getState;
+
+    const compact = renderToStaticMarkup(
+      createElement(StoreProvider, { store, children: createElement(PrReviewNavigation) }),
+    );
+
+    expect(compact).toContain("fixture");
+    expect(compact).toContain("Choose another PR");
+    expect(compact).not.toContain("PR 7");
+    expect(compact).not.toContain("feature");
+    expect(compact).not.toContain("files changed");
+  });
+
   it("togglePrsView opens the PR page, then a second toggle returns to the Map", () => {
     const store = freshStore();
     // A non-empty module layout means the return skips a re-layout (nothing async to await here).
@@ -1161,6 +1178,39 @@ describe("PR store slice", () => {
 
     expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/prs/file?id=artifact-1&path=src%2Fa.ts&ref=feature");
     expect(preview?.code).toBe("line10\nline11\nline12");
+  });
+
+  it("opens the full PR-head source for a changed file that has no graph node", async () => {
+    vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: "export const added = true;", truncated: false }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ prFileUrl: "/api/prs/file?id=artifact-1" });
+    const path = "repo/src/added.ts";
+    store.setState({
+      prReviewed: 7,
+      reviewHeadRef: "feature",
+      reviewFileDelta: { [path]: { added: 1, deleted: 0, status: "added" } },
+      reviewFiles: [{
+        path,
+        status: "added",
+        moduleId: null,
+        isTest: false,
+        units: [],
+        fingerprint: "whole-file",
+        blastRadius: 0,
+        deletedImpact: null,
+      }],
+    });
+
+    await store.getState().showReviewFile(path);
+
+    expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/prs/file?id=artifact-1&path=repo%2Fsrc%2Fadded.ts&ref=feature");
+    expect(store.getState().codeView).toMatchObject({
+      code: "export const added = true;",
+      mode: "modal",
+      baseLine: 1,
+      wholeFile: true,
+    });
   });
 
   it("reads a removed file from base source because it no longer exists at PR head", async () => {

@@ -7,7 +7,7 @@
 
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { Edge, Node } from "@xyflow/react";
-import { changedLineKindsFromExtensions, changedRangesFromExtensions, computeChangeGroups, computeCoverage, type ChangeStatus } from "@meridian/core";
+import { buildNodeId, changedLineKindsFromExtensions, changedRangesFromExtensions, computeChangeGroups, computeCoverage, type ChangeStatus } from "@meridian/core";
 import type {
   ChangedLineKind,
   ChangedLineSpan,
@@ -739,6 +739,8 @@ export interface BlueprintState {
   /** Load one node's review diff for the hover preview without taking over the global code modal. */
   loadCodePreview(node: GraphNode): Promise<CodeView | null>;
   showCode(node: GraphNode, opts?: { wholeFile?: boolean }): Promise<void>;
+  /** Open a changed file's full source even when the extractor produced no graph node for it. */
+  showReviewFile(path: string): Promise<void>;
   /** Open contextual source beside the clicked wire's inspector. */
   showEdgeEvidence(contexts: readonly EdgeEvidenceContext[], activeIndex?: number): Promise<void>;
   /** Move the open edge-source pane to another occurrence, loading its file/context on demand. */
@@ -946,13 +948,13 @@ function codeLoadRequest(
   if (!readsPrHead && !resolvedSourceUrl) {
     return null;
   }
-  const wholeFile = readsPrHead ? false : opts?.wholeFile ?? false;
-  const headSpan = readsPrHead
+  const wholeFile = opts?.wholeFile ?? false;
+  const headSpan = readsPrHead && !wholeFile
     ? reviewDiff === null
       ? { start: node.location.startLine, end: node.location.endLine ?? node.location.startLine }
       : headSpanFor(node.location.startLine, node.location.endLine ?? node.location.startLine, reviewDiff.edits)
     : null;
-  const baseLine = headSpan ? headSpan.start : wholeFile ? 1 : node.location.startLine;
+  const baseLine = wholeFile ? 1 : headSpan ? headSpan.start : node.location.startLine;
   // A prepared head artifact's local diff is keyed to the CURRENT node coordinates and is more
   // accurate than GitHub's possibly-truncated patch detail. The synchronous path still needs the
   // latter because its artifact/node coordinates are on the base side.
@@ -4333,6 +4335,32 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       // The reader may expand the loading inline panel before the response lands.
       set({ codeView: { ...view, mode: get().codeView?.mode ?? "inline" } });
+    },
+
+    async showReviewFile(path) {
+      const state = get();
+      const file = state.reviewFiles.find((candidate) => candidate.path === path);
+      if (!file) {
+        return;
+      }
+      const matchedNode = file.moduleId === null ? null : state.index.nodesById.get(file.moduleId) ?? null;
+      // This request descriptor never enters the graph/index. buildNodeId keeps even this ephemeral
+      // source target inside the canonical id grammar instead of inventing a second id format.
+      const sourceNode: GraphNode = matchedNode ?? {
+        id: buildNodeId({ lang: "review", modulePath: path }),
+        kind: "module",
+        qualifiedName: path,
+        displayName: path.split("/").pop() ?? path,
+        parentId: null,
+        location: { file: path, startLine: 1 },
+      };
+      const loading = get().showCode(sourceNode, { wholeFile: true });
+      // Synthetic files have no card-mounted inline host. Promote the loading state immediately so
+      // a slow GitHub source response still gives visible feedback in the shared modal.
+      if (get().codeView?.node.id === sourceNode.id) {
+        get().expandCode();
+      }
+      await loading;
     },
 
     async showEdgeEvidence(contexts, activeIndex = 0) {
