@@ -1,15 +1,16 @@
 /**
  * POST /api/pr/analyze behaviour with git and the extract pipeline mocked — no network, no real
- * git. Pins the NDJSON contract (clone → checkout → extract → done, or exactly one error line),
- * the blobless full-history clone argv (no --depth/--single-branch), token-only-in-extraHeader, and the
- * generate-mirroring temp lifecycle: retained + registered for exit cleanup on success, removed
- * immediately on failure.
+ * git. Pins the miss stream, revision-addressed restart hit, force-push/base invalidation, blobless
+ * full-history clone argv, token-only-in-extraHeader, and failed-stage cleanup.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { SCHEMA_VERSION } from "@meridian/core";
 import type { GraphArtifact } from "@meridian/core";
 import { extractToArtifact } from "../extract-pipeline";
 import { base64Auth, runGit, runGitClone } from "./git-exec";
@@ -28,29 +29,40 @@ vi.mock("./git-exec", async (importOriginal) => {
 });
 
 const ARTIFACT = {
-  nodes: [{ id: "ts:src/a#f" }],
+  schemaVersion: SCHEMA_VERSION,
+  generatedAt: "2026-07-13T00:00:00.000Z",
+  generator: { name: "meridian", version: "test" },
+  target: { name: "org/repo", root: ".", language: "typescript" },
+  nodes: [],
   edges: [],
   extensions: { changedSince: { baseRef: "origin/main", files: { "src/a.ts": [[1, 3]] } } },
 } as unknown as GraphArtifact;
 
 const BODY = { id: "artifact", prNumber: 41, baseRef: "main", headRef: "feat/x" };
+const HEAD_SHA = "abc1234def5678900000aaaabbbbccccddddeeee";
+const BASE_SHA = "def1234def5678900000aaaabbbbccccddddeeee";
+let cacheRoot: string;
 
 describe("handlePrAnalyze", () => {
   beforeEach(() => {
+    cacheRoot = mkdtempSync(join(tmpdir(), "meridian-pr-cache-test-"));
     vi.stubEnv("GITHUB_TOKEN", "");
     vi.stubEnv("GH_TOKEN", "");
-    vi.mocked(runGitClone).mockResolvedValue(undefined);
+    vi.mocked(runGitClone).mockImplementation(async (args) => {
+      mkdirSync(args.at(-1)!, { recursive: true });
+    });
     // rev-parse yields the analyzed head commit (with git's trailing newline); every other call "".
-    vi.mocked(runGit).mockImplementation((args) => Promise.resolve(args[0] === "rev-parse" ? "abc1234def5678900000aaaabbbbccccddddeeee\n" : ""));
+    mockGitRevisions();
     vi.mocked(extractToArtifact).mockResolvedValue({ artifact: ARTIFACT, warnings: ["w1"] } as never);
   });
 
   afterEach(() => {
+    rmSync(cacheRoot, { recursive: true, force: true });
     vi.unstubAllEnvs();
     vi.clearAllMocks();
   });
 
-  it("streams clone -> checkout -> extract -> done and retains the clone under a pr- graph id", async () => {
+  it("streams clone -> checkout -> extract -> done and registers the persistent checkout", async () => {
     const ctx = githubCtx();
     const captured = await invoke(ctx, BODY);
     expect(captured.status()).toBe(200);
@@ -62,24 +74,22 @@ describe("handlePrAnalyze", () => {
     expect(done.graphId).toMatch(/^pr-[0-9a-f]{12}-[0-9a-f]{40}$/);
     expect(done.headSha).toBe("abc1234def5678900000aaaabbbbccccddddeeee");
     expect(String(done.graphId).endsWith(`-${done.headSha}`)).toBe(true);
-    expect(done.counts).toEqual({ nodes: 1, edges: 0 });
+    expect(done.counts).toEqual({ nodes: 0, edges: 0 });
     expect(done.changedFiles).toEqual([{ path: "src/a.ts", status: "modified" }]);
     expect(done.warnings).toEqual(["w1"]);
 
-    const tmpDir = clonedDir();
-    expect(ctx.graphs.get(done.graphId as string)).toBe(ARTIFACT);
-    expect(ctx.sourceRoots.get(done.graphId as string)).toBe(tmpDir);
+    const sourceDir = ctx.sourceRoots.get(done.graphId as string)!;
+    expect(ctx.graphs.get(done.graphId as string)).toStrictEqual(ARTIFACT);
+    expect(sourceDir).toContain(cacheRoot);
     expect(ctx.sources.get(done.graphId as string)).toMatchObject({ kind: "github", owner: "org", repo: "repo" });
-    expect(ctx.tempCleanups.size).toBe(1);
-    expect(existsSync(tmpDir)).toBe(true);
-    for (const cleanup of ctx.tempCleanups) cleanup();
-    expect(existsSync(tmpDir)).toBe(false);
+    expect(ctx.tempCleanups.size).toBe(0);
+    expect(existsSync(sourceDir)).toBe(true);
   });
 
   it("stores force-pushed heads under different commit-pinned graph ids", async () => {
     const ctx = githubCtx();
     const first = (await invoke(ctx, BODY)).lines().at(-1)!;
-    vi.mocked(runGit).mockImplementation((args) => Promise.resolve(args[0] === "rev-parse" ? "fff1234def5678900000aaaabbbbccccddddeeee\n" : ""));
+    mockGitRevisions("fff1234def5678900000aaaabbbbccccddddeeee");
     const second = (await invoke(ctx, BODY)).lines().at(-1)!;
 
     expect(first.headSha).not.toBe(second.headSha);
@@ -87,6 +97,33 @@ describe("handlePrAnalyze", () => {
     expect(ctx.graphs.has(first.graphId as string)).toBe(true);
     expect(ctx.graphs.has(second.graphId as string)).toBe(true);
     for (const cleanup of ctx.tempCleanups) cleanup();
+  });
+
+  it("reuses an unchanged PR artifact and checkout after a server restart", async () => {
+    const first = (await invoke(githubCtx(), BODY)).lines();
+    const restarted = githubCtx();
+    const second = (await invoke(restarted, BODY)).lines();
+
+    expect(first.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
+    expect(first.at(-1)?.cache).toBe("miss");
+    expect(second.map((line) => line.stage)).toEqual(["done"]);
+    expect(second.at(-1)?.cache).toBe("hit");
+    expect(second.at(-1)?.graphId).toBe(first.at(-1)?.graphId);
+    expect(runGitClone).toHaveBeenCalledTimes(1);
+    expect(extractToArtifact).toHaveBeenCalledTimes(1);
+    expect(existsSync(restarted.sourceRoots.get(second.at(-1)?.graphId as string)!)).toBe(true);
+  });
+
+  it("re-analyzes when the base branch moves even if the PR head is unchanged", async () => {
+    const ctx = githubCtx();
+    const first = (await invoke(ctx, BODY)).lines().at(-1)!;
+    mockGitRevisions(HEAD_SHA, "main", "eee1234def5678900000aaaabbbbccccddddeeee");
+    const second = (await invoke(ctx, BODY)).lines().at(-1)!;
+
+    expect(second.headSha).toBe(first.headSha);
+    expect(second.graphId).not.toBe(first.graphId);
+    expect(runGitClone).toHaveBeenCalledTimes(2);
+    expect(extractToArtifact).toHaveBeenCalledTimes(2);
   });
 
   it("clones full history and drives git in fetch-base, fetch-pr-head, detach order", async () => {
@@ -99,12 +136,16 @@ describe("handlePrAnalyze", () => {
     expect(cloneArgs).not.toContain("--single-branch");
     const tmpDir = clonedDir();
     expect(vi.mocked(runGitClone).mock.calls[0][2]).toEqual({ timeoutMs: 600_000 });
-    expect(vi.mocked(runGit).mock.calls).toEqual([
-      [["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"], { cwd: tmpDir, token: "", timeoutMs: 300_000 }],
-      [["fetch", "origin", "pull/41/head"], { cwd: tmpDir, token: "", timeoutMs: 300_000 }],
-      [["checkout", "--detach", "FETCH_HEAD"], { cwd: tmpDir, token: "", timeoutMs: 300_000 }],
-      [["rev-parse", "HEAD"], { cwd: tmpDir, timeoutMs: 300_000 }],
-    ]);
+    expect(runGit).toHaveBeenCalledWith(
+      ["ls-remote", "--exit-code", "https://github.com/org/repo.git", "refs/heads/main", "refs/pull/41/head"],
+      { cwd: "", token: "", timeoutMs: 300_000 },
+    );
+    expect(runGit).toHaveBeenCalledWith(
+      ["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+      { cwd: tmpDir, token: "", timeoutMs: 300_000 },
+    );
+    expect(runGit).toHaveBeenCalledWith(["fetch", "origin", "pull/41/head"], { cwd: tmpDir, token: "", timeoutMs: 300_000 });
+    expect(runGit).toHaveBeenCalledWith(["checkout", "--detach", "FETCH_HEAD"], { cwd: tmpDir, token: "", timeoutMs: 300_000 });
     expect(vi.mocked(extractToArtifact)).toHaveBeenCalledWith(
       expect.objectContaining({
         includeExternal: true,
@@ -138,7 +179,10 @@ describe("handlePrAnalyze", () => {
 
   it("emits exactly one error line mid-pipeline and removes the temp dir", async () => {
     const ctx = githubCtx();
-    vi.mocked(runGit).mockRejectedValueOnce(new WebError(422, "git failed: boom"));
+    vi.mocked(runGit).mockImplementation(async (args) => {
+      if (args[0] === "fetch") throw new WebError(422, "git failed: boom");
+      return gitOutput(args, HEAD_SHA, "main");
+    });
     const captured = await invoke(ctx, BODY);
     const lines = captured.lines();
     expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "error"]);
@@ -173,6 +217,7 @@ describe("handlePrAnalyze", () => {
 
   it("accepts the same valid Git branch names as repository generation", async () => {
     const body = { ...BODY, baseRef: "release+candidate@team", headRef: "unicode/ramură" };
+    mockGitRevisions(HEAD_SHA, body.baseRef);
     const captured = await invoke(githubCtx(), body);
 
     expect(captured.status()).toBe(200);
@@ -193,6 +238,20 @@ describe("handlePrAnalyze", () => {
 function clonedDir(): string {
   const args = vi.mocked(runGitClone).mock.calls[0][0];
   return args[args.length - 1];
+}
+
+function mockGitRevisions(headSha = HEAD_SHA, baseRef = "main", baseSha = BASE_SHA): void {
+  vi.mocked(runGit).mockImplementation(async (args) => gitOutput(args, headSha, baseRef, baseSha));
+}
+
+function gitOutput(args: string[], headSha: string, baseRef: string, baseSha = BASE_SHA): string {
+  if (args[0] === "ls-remote") {
+    return `${baseSha}\trefs/heads/${baseRef}\n${headSha}\trefs/pull/41/head\n`;
+  }
+  if (args[0] === "rev-parse") {
+    return `${args[1] === "HEAD" ? headSha : baseSha}\n`;
+  }
+  return "";
 }
 
 async function invoke(ctx: Context, body: unknown) {
@@ -221,6 +280,7 @@ function githubCtx(source: ArtifactSource = { kind: "github", owner: "org", repo
     cwd: "",
     sessions: new SessionStore(),
     github: createGitHubClient({ clientId: "Iv1.test" }),
+    cacheRoot,
   } as Context;
 }
 

@@ -89,6 +89,7 @@ export function touchMetadata(path: string): void {
 export function pruneExpiredCache(root: string, now = Date.now()): void {
   pruneLeaves(join(root, "repositories"), 2, now);
   pruneLeaves(join(root, "artifacts"), 3, now);
+  pruneLeaves(join(root, "pr-artifacts"), 4, now);
 }
 
 function pruneLeaves(base: string, depth: number, now: number): void {

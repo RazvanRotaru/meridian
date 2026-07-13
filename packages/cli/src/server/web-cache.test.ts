@@ -27,9 +27,12 @@ let advertisedCommit: string;
 beforeEach(() => {
   cacheRoot = mkdtempSync(join(tmpdir(), "meridian-cache-test-"));
   advertisedCommit = FIRST_COMMIT;
-  vi.mocked(runGit).mockImplementation(async (args) =>
-    args[0] === "ls-remote" ? `${advertisedCommit}\tHEAD\n` : `${advertisedCommit}\n`,
-  );
+  vi.mocked(runGit).mockImplementation(async (args) => {
+    const branchRef = args.find((arg) => arg.startsWith("refs/heads/"));
+    return args[0] === "ls-remote"
+      ? `${advertisedCommit}\t${branchRef ?? "HEAD"}\n`
+      : `${advertisedCommit}\n`;
+  });
   vi.mocked(runGitClone).mockImplementation(async (args) => {
     const repoDir = args.at(-1)!;
     mkdirSync(join(repoDir, "apps", "one"), { recursive: true });
@@ -100,6 +103,17 @@ describe("persistent web graph cache", () => {
     expect(first.analysisKey).not.toBe(second.analysisKey);
     expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(extractToArtifact)).toHaveBeenCalledTimes(2);
+  });
+
+  it("shares one commit checkout and graph across refs without losing branch provenance", async () => {
+    const fromHead = await generate(REQUEST);
+    const fromMain = await generate({ ...REQUEST, ref: "main" });
+
+    expect(fromHead.checkout.repositoryKey).toBe(fromMain.checkout.repositoryKey);
+    expect(fromHead.artifact.target.vcs?.branch).toBeUndefined();
+    expect(fromMain.artifact.target.vcs?.branch).toBe("main");
+    expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(extractToArtifact)).toHaveBeenCalledTimes(1);
   });
 
   it("treats a corrupt cached artifact as a miss", async () => {

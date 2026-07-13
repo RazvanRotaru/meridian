@@ -20,7 +20,7 @@ import {
   writePrivateJson,
 } from "./web-cache-storage";
 
-export const CACHE_FORMAT_VERSION = 1;
+export const CACHE_FORMAT_VERSION = 2;
 export const ANALYSIS_VERSION = 1;
 const preparedRoots = new Set<string>();
 
@@ -180,7 +180,7 @@ function resultFor(
   request: GenerateRequest,
 ): CachedGraph {
   return {
-    artifact,
+    artifact: artifactForCheckout(artifact, checkout),
     warnings,
     cache,
     checkout,
@@ -188,4 +188,12 @@ function resultFor(
     analysisKey,
     target: sourceLabel(request.value, request.subdir),
   };
+}
+
+/** Branch is request provenance, not graph identity; restamp it when commits are shared by refs. */
+function artifactForCheckout(artifact: GraphArtifact, checkout: CachedCheckout): GraphArtifact {
+  if (!artifact.target.vcs) return artifact;
+  const { branch: _cachedBranch, ...vcs } = artifact.target.vcs;
+  const stampedVcs = checkout.branch ? { ...vcs, branch: checkout.branch } : vcs;
+  return { ...artifact, target: { ...artifact.target, vcs: stampedVcs } };
 }

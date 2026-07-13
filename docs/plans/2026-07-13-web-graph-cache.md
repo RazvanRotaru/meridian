@@ -65,10 +65,15 @@ Use separate identities for the expensive checkout and for each analysis. This p
   artifacts/<repository-key>/<commit-sha>/<analysis-key>/
     artifact.json
     metadata.json
+  pr-artifacts/<repository-key>/<head-sha>/<base-sha>/<analysis-key>/
+    repo/
+    artifact.json
+    metadata.json
 ```
 
-- Derive `repository-key` from the normalized clone URL and selected ref. Equivalent inputs such as `owner/repo` and its canonical GitHub HTTPS URL must share the same key.
+- Derive `repository-key` only from the normalized clone URL. Branches are movable commit lookups, so refs that resolve to the same commit share one checkout and graph.
 - Derive `analysis-key` from subdirectory, requested language, every output-affecting extraction option, schema version, generator version, and an explicit cache analysis version.
+- Key PR analysis by both head and base SHA because either revision changes the merge-base diff and changed-node overlay.
 - Never include or persist a token. The cached `.git/config` must contain only the credential-free normalized remote URL.
 - Derive the browser graph id from repository identity, actual commit SHA, and analysis key. An old tab must remain pinned to the graph and source tree it opened.
 
@@ -219,7 +224,10 @@ Build the CLI bundle with `pnpm --dir packages/cli exec tsup`, set `MERIDIAN_CAC
 | Load the cached graph page in Chromium | Page loads with no browser errors | [x] pass | No console or page errors; source HTTP 200 |
 | Type an unchanged repo/ref on the landing page | After branches load, the probe reports `Cached blueprint ready`; submit skips progress entirely | [x] pass | `sindresorhus/ky`; graph opened with no browser errors |
 | Type an uncached repo/ref | After branches load, the probe reports a miss; preparation starts at repository fetch with no cache step | [x] pass | `sindresorhus/p-limit`; graph opened with no browser errors |
-| Run CLI tests | All CLI tests pass | [x] pass | 28 files, 233 tests |
+| Reopen an unchanged PR after recreating server context | PR checkout and artifact are reused without clone or extraction | [x] pass | Same commit-pinned graph id and persistent source root |
+| Move only the PR base branch | PR analysis is invalidated despite an unchanged head | [x] pass | New graph id, checkout, and extraction |
+| Restart the real web server and reopen PR #83 for `sindresorhus/p-map` | Base and PR graphs both survive restart | [x] pass | Base and checkout hit; PR stream emitted only `done` with `cache: hit` |
+| Run CLI tests | All CLI tests pass | [x] pass | 28 files, 236 tests |
 | Run repository typechecking | All packages typecheck | [x] pass | 6 package typechecks passed |
 | Run all repository tests | Feature tests pass; note unrelated failures | [ ] fail | Two existing extractor TypeScript tests hard-code POSIX separators on Windows |
 

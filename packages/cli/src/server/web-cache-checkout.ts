@@ -14,7 +14,7 @@ import {
   writePrivateJson,
 } from "./web-cache-storage";
 
-const CACHE_FORMAT_VERSION = 1;
+const CACHE_FORMAT_VERSION = 2;
 const COMMIT = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 
 export interface CachedCheckout {
@@ -31,8 +31,6 @@ interface CheckoutMetadata {
   repositoryKey: string;
   commit: string;
   remoteUrl: string;
-  ref: string | null;
-  branch: string | null;
 }
 
 export async function checkoutFor(
@@ -44,7 +42,7 @@ export async function checkoutFor(
 ): Promise<CachedCheckout> {
   const { advertised, parent, remoteUrl, repositoryKey } = await checkoutIdentity(cacheRoot, request, cwd, token);
   const advertisedEntry = join(parent, advertised.commit);
-  if (await validCheckout(advertisedEntry, repositoryKey, advertised.commit, remoteUrl, request.ref)) {
+  if (await validCheckout(advertisedEntry, repositoryKey, advertised.commit, remoteUrl)) {
     touchMetadata(join(advertisedEntry, "metadata.json"));
     return { ...advertised, cache: "hit", repoDir: join(advertisedEntry, "repo"), repositoryKey, remoteUrl };
   }
@@ -61,7 +59,7 @@ export async function probeCheckout(
 ): Promise<CachedCheckout | null> {
   const { advertised, parent, remoteUrl, repositoryKey } = await checkoutIdentity(cacheRoot, request, cwd, token);
   const entry = join(parent, advertised.commit);
-  if (!(await validCheckout(entry, repositoryKey, advertised.commit, remoteUrl, request.ref))) {
+  if (!(await validCheckout(entry, repositoryKey, advertised.commit, remoteUrl))) {
     return null;
   }
   touchMetadata(join(entry, "metadata.json"));
@@ -75,7 +73,7 @@ async function checkoutIdentity(
   token?: string,
 ): Promise<{ advertised: { branch?: string; commit: string }; parent: string; remoteUrl: string; repositoryKey: string }> {
   const remoteUrl = parseGitHubSource(request.value);
-  const repositoryKey = hash([CACHE_FORMAT_VERSION, remoteUrl, request.ref ?? "HEAD"]);
+  const repositoryKey = repositoryCacheKey(remoteUrl);
   return {
     advertised: await remoteCommit(remoteUrl, request.ref, cwd, token),
     parent: join(cacheRoot, "repositories", repositoryKey),
@@ -102,13 +100,11 @@ async function cloneCheckout(
       repositoryKey,
       commit,
       remoteUrl,
-      ref: ref ?? null,
-      branch: branch ?? null,
     };
     writePrivateJson(join(stage, "metadata.json"), metadata);
     const destination = join(parent, commit);
     publishImmutable(stage, destination);
-    if (!(await validCheckout(destination, repositoryKey, commit, remoteUrl, ref))) {
+    if (!(await validCheckout(destination, repositoryKey, commit, remoteUrl))) {
       throw new WebError(422, "cached checkout failed verification");
     }
     return { branch, cache: "miss", commit, repoDir: join(destination, "repo"), repositoryKey, remoteUrl };
@@ -123,7 +119,6 @@ async function validCheckout(
   repositoryKey: string,
   commit: string,
   remoteUrl: string,
-  ref: string | undefined,
 ): Promise<boolean> {
   const repoDir = join(entry, "repo");
   if (!isDirectory(repoDir)) {
@@ -136,7 +131,6 @@ async function validCheckout(
       || metadata.repositoryKey !== repositoryKey
       || metadata.commit !== commit
       || metadata.remoteUrl !== remoteUrl
-      || metadata.ref !== (ref ?? null)
     ) {
       return false;
     }
@@ -176,4 +170,8 @@ function requireCommit(value: string): string {
 
 function hash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 24);
+}
+
+export function repositoryCacheKey(remoteUrl: string): string {
+  return hash([CACHE_FORMAT_VERSION, remoteUrl]);
 }
