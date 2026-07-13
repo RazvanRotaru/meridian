@@ -5,13 +5,15 @@
  *
  * The controller starts before URL restoration so a bookmarked/reloaded `rev=1` review is guarded
  * during its initial fetch + preparation, then follows the store for fresh entry/close transitions.
- * It never touches popstate, so toolbar/keyboard Back and Forward keep their normal URL semantics.
+ * Browser Back needs a confirm because it is same-document URL navigation (so `beforeunload` never
+ * fires); reload/tab close use the browser's native `beforeunload` confirmation instead.
  */
 
 import type { BlueprintState, BlueprintStore } from "../state/store";
 
 const ROOT_LOCK_CLASS = "mrd-pr-review-navigation-lock";
 const WHEEL_OPTIONS: AddEventListenerOptions = { capture: true, passive: false };
+export const PR_REVIEW_LEAVE_MESSAGE = "Are you sure you want to leave this page? All review progress will be lost.";
 
 type GuardState = Pick<BlueprintState, "minimalSeedIds" | "prReviewed" | "prReviewStatus" | "viewMode">;
 
@@ -23,10 +25,9 @@ export interface PrReviewNavigationGuard {
   dispose(): void;
 }
 
-/** True while preparation is cancelable or the visible review overlay owns the canvas. */
+/** True while preparation is cancelable or a live (possibly parked/resumable) review exists. */
 export function prReviewNeedsNavigationLock(state: GuardState): boolean {
-  return state.prReviewStatus === "preparing"
-    || (state.viewMode === "modules" && state.prReviewed !== null && state.minimalSeedIds.length > 0);
+  return state.prReviewStatus === "preparing" || state.prReviewed !== null;
 }
 
 /** Trackpad history swipes are horizontal wheel sequences; ctrl+wheel is pinch zoom, not Back. */
@@ -47,6 +48,30 @@ export function startPrReviewNavigationGuard(): PrReviewNavigationGuard {
   let disposed = false;
   let store: BlueprintStore | null = null;
   let unsubscribe: (() => void) | null = null;
+  let restoringCanceledHistory = false;
+
+  const onBeforeUnload = (event: BeforeUnloadEvent) => {
+    event.preventDefault();
+    // Modern browsers intentionally replace custom copy with their own native warning, but setting
+    // returnValue is still required by older engines to request the dialog.
+    event.returnValue = PR_REVIEW_LEAVE_MESSAGE;
+  };
+
+  const onPopState = (event: PopStateEvent) => {
+    if (restoringCanceledHistory) {
+      restoringCanceledHistory = false;
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (window.confirm(PR_REVIEW_LEAVE_MESSAGE)) {
+      return;
+    }
+    // popstate cannot be canceled. Stop the URL-sync listener before it tears down the review, then
+    // return to the history entry the reader just left. The follow-up popstate is swallowed above.
+    event.stopImmediatePropagation();
+    restoringCanceledHistory = true;
+    window.history.forward();
+  };
 
   const onWheel = (event: WheelEvent) => {
     if (
@@ -73,8 +98,13 @@ export function startPrReviewNavigationGuard(): PrReviewNavigationGuard {
     document.documentElement.classList.toggle(ROOT_LOCK_CLASS, active);
     if (active) {
       window.addEventListener("wheel", onWheel, WHEEL_OPTIONS);
+      window.addEventListener("beforeunload", onBeforeUnload);
+      window.addEventListener("popstate", onPopState);
     } else {
       window.removeEventListener("wheel", onWheel, WHEEL_OPTIONS);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      window.removeEventListener("popstate", onPopState);
+      restoringCanceledHistory = false;
     }
   };
 
@@ -110,6 +140,8 @@ export function startPrReviewNavigationGuard(): PrReviewNavigationGuard {
       if (active) {
         active = false;
         window.removeEventListener("wheel", onWheel, WHEEL_OPTIONS);
+        window.removeEventListener("beforeunload", onBeforeUnload);
+        window.removeEventListener("popstate", onPopState);
       }
       document.documentElement.classList.remove(ROOT_LOCK_CLASS);
     },

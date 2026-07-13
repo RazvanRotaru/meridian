@@ -1,10 +1,10 @@
 /**
  * The PR-review artifact session: swap the loaded graph for the freshly-prepared PR-head artifact
  * (so the review computes in HEAD coordinates — the diff hunks' own line numbers), and restore the
- * boot pair when the review session ends. The store's `prepareHeadGraph` drives the swap behind its
- * stale-seq guard; every session exit (back to the PRs lens, switching PRs) drives the restore, so
- * the coverage lives in the store actions, not in any one component. Only TYPES are imported from
- * the store (erased at build), so there is no runtime cycle.
+ * boot pair while the review is parked. The store's `prepareHeadGraph` drives the swap behind its
+ * stale-seq guard; starting another review or explicitly leaving review history ends the session.
+ * The coverage lives in store actions, not in any one component. Only TYPES are imported from the
+ * store (erased at build), so there is no runtime cycle.
  */
 
 import { collectChangedIds, computeCoverage } from "@meridian/core";
@@ -87,7 +87,7 @@ export function resetChangedIdsToArtifact(artifact: GraphArtifact, index: GraphI
 /**
  * Put the boot artifact/index back. Two modes:
  *  - `endSession` (default true): the review session is over — clear every review-owned field and
- *    the pre-expanded/seeded Map (leaving to the PRs lens, switching PRs).
+ *    the pre-expanded/seeded Map (starting another review or leaving it through browser history).
  *  - `endSession:false`: a SOFT close (the overlay closed mid-review) — restore the boot graph but
  *    keep review/ticks/seeds/baseline/prepared-id so `resumePrReview` can re-open from them.
  * Returns false (a no-op) outside a swapped session, so callers can hook this unconditionally.
@@ -165,6 +165,7 @@ export function restorePrReviewBaseline(
     reviewFocusedSubgraph: null,
     reviewAllSeedIds: [],
     prReviewed: null,
+    prReviewSource: null,
     prReviewRevision: null,
     prReviewStale: false,
     prReviewRefreshing: false,

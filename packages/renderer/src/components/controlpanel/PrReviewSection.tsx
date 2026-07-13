@@ -26,13 +26,11 @@ export function PrReviewSection() {
   const error = useBlueprint((state) => state.prsError);
   const current = useBlueprint(selectedPrSummary);
   const prReviewed = useBlueprint((state) => state.prReviewed);
+  const prReviewStatus = useBlueprint((state) => state.prReviewStatus);
+  const prPrepareError = useBlueprint((state) => state.prPrepareError);
   const reviewOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
-  const reviewCanResume = useBlueprint((state) =>
-    state.prReviewed !== null
-    && state.prSelected === state.prReviewed
-    && state.prFiles !== null
-    && state.review !== null,
-  );
+  const hasReviewPayload = useBlueprint((state) => state.review !== null
+    && state.prReviewSource?.number === state.prReviewed);
   const reviewFiles = useBlueprint((state) => state.reviewFiles);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
@@ -56,10 +54,12 @@ export function PrReviewSection() {
   // stays collapsed so a stale reviewed PR never lingers in the card.
   const expanded = prReviewed !== null && reviewOpen && viewMode !== "prs";
   // A live review whose overlay was closed (explicit Close/lens switch) is still fully in the store —
-  // show a one-click Resume chip beneath the queue toggle. The PR inputs can reconstruct its graph,
-  // so do not hide this recovery path merely because another navigation cleared a cached seed list.
-  // Mutually exclusive with `expanded` (that needs the overlay open; this needs it closed).
-  const resumable = reviewCanResume && prReviewed !== null && !reviewOpen && viewMode !== "prs";
+  // show a one-click Resume chip beneath the queue toggle. Mutually exclusive with `expanded`
+  // (that needs the overlay open; this needs it closed). The immutable source snapshot is the
+  // resume authority because queue navigation may replace the currently selected PR and its files.
+  const resumable = prReviewed !== null && !reviewOpen && hasReviewPayload;
+  const resuming = resumable && prReviewStatus === "preparing";
+  const resumeFailed = resumable && prReviewStatus === "error";
   const viewed = countViewedFiles(reviewFiles, unitTicks, fileTicks);
 
   const unavailable = error === PRS_UNAVAILABLE_ERROR && open === null;
@@ -116,11 +116,19 @@ export function PrReviewSection() {
           ) : null}
         </button>
         {resumable ? (
-          <button type="button" style={RESUME_STYLE} title="Reopen the PR review overlay" onClick={() => void resumePrReview()}>
+          <button
+            type="button"
+            style={RESUME_STYLE}
+            title={resumeFailed ? (prPrepareError ?? "Could not resume the review. Try again.") : "Reopen the PR review overlay"}
+            disabled={resuming}
+            onClick={() => void resumePrReview()}
+          >
             <span style={{ display: "inline-flex", color: ACTIVE_HUE }}>
               <PullRequestIcon size={15} />
             </span>
-            <span style={LABEL_STYLE}>Resume PR review #{prReviewed}</span>
+            <span style={LABEL_STYLE}>
+              {resuming ? `Resuming review #${prReviewed}…` : resumeFailed ? `Retry review #${prReviewed}` : `Resume review #${prReviewed}`}
+            </span>
             <span style={{ flex: 1 }} />
             <CountBadge style={badgeToneStyle(true)}>{viewed}/{reviewFiles.length} viewed</CountBadge>
           </button>
