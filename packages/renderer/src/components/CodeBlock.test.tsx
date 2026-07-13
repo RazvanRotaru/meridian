@@ -33,8 +33,10 @@ describe("CodeBlock edge evidence", () => {
 
     expect(html.match(/data-edge-evidence-line="true"/g)).toHaveLength(1);
     expect(html).toContain("linear-gradient");
-    expect(html).toContain("rgba(230,184,77,0.18)");
-    expect(html).toContain("~ 11");
+    // A modified head line paints green (added), never the old yellow — GitHub red/green only.
+    expect(html).toContain("rgba(86,194,113,0.20)");
+    expect(html).not.toContain("rgba(230,184,77,0.18)");
+    expect(html).toContain("+ 11");
   });
 
   it("uses a dedicated evidence marker when the row is not a diff", () => {
