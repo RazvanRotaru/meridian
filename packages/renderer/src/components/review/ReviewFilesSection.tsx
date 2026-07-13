@@ -159,7 +159,7 @@ function FileRow(props: {
   const { file, unitTicks, fileTicks, drafts, draftCounts, githubComments, commentsVisible, composer, onComposer, defaultExpanded } = props;
   const currentNodes = useBlueprint((state) => state.index.nodesById);
   const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
-  const { toggleReviewFileViewed, addReviewComment, setReviewLit, focusReviewFile, selectReviewNode } = useBlueprintActions();
+  const { toggleReviewFileViewed, addReviewComment, setReviewLit, focusReviewFile, selectReviewNode, showReviewFile } = useBlueprintActions();
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
   const [hovered, setHovered] = useState(false);
   const view = fileViewState(file, unitTicks, fileTicks);
@@ -205,14 +205,14 @@ function FileRow(props: {
         <button
           type="button"
           style={FILE_MAIN}
-          title={file.moduleId !== null ? `${file.path} — click to reveal on the graph` : file.path}
+          title={file.moduleId !== null ? `${file.path} — click to reveal on the graph` : `${file.path} — click to view the changed source`}
           onClick={() => {
             // In-graph file: the click REVEALS it (select + light + center); the caret alone folds.
             if (file.moduleId !== null) {
               focusReviewFile(file.path);
               setOpenOverride(true);
             } else {
-              setOpenOverride(!expanded);
+              void showReviewFile(file.path);
             }
           }}
         >
@@ -232,19 +232,21 @@ function FileRow(props: {
             </span>
           )}
           {file.moduleId === null && file.deletedImpact === null && (
-            file.status === "added" && !preparedArtifactCurrent ? (
-              <span style={NOT_IN_GRAPH} title="This file is new in the PR. Extract head graph to include it.">added — extract head to view</span>
-            ) : (
-              <span style={NOT_IN_GRAPH} title="this change mapped to no extracted code block">not in graph</span>
-            )
+            <span
+              style={NOT_IN_GRAPH}
+              title={file.status === "added" && !preparedArtifactCurrent
+                ? "This file is new in the PR, so the base graph cannot contain it. Click to view its source."
+                : "The extractor produced no graph node for this file. Click to view its source."}
+            >
+              {file.status === "added" && !preparedArtifactCurrent ? "new file · view source" : "not extracted · view source"}
+            </span>
           )}
         </button>
         <CommentButton
           count={aggregateDraftCount}
           active={composerHere}
           visible={hovered}
-          title={`${counts.file} file · ${counts.unit} unit · ${counts.line} line drafts${existingComments.length > 0 ? ` (${existingComments.length} on GitHub)` : ""}`}
-          suffix={existingComments.length > 0 ? `(${existingComments.length} on GitHub)` : undefined}
+          title={`${counts.file} file · ${counts.unit} unit · ${counts.line} line drafts`}
           onClick={() => {
             // The composer renders in the file body — opening it on a folded (viewed) file unfolds it.
             if (!composerHere) {
@@ -253,6 +255,7 @@ function FileRow(props: {
             onComposer(composerHere ? null : { path: file.path, nodeId: null });
           }}
         />
+        {commentsVisible ? <GitHubCommentLink comments={existingComments} /> : null}
         <button
           type="button"
           style={{ ...TICK_BTN, color: TICK_COLOR[view] }}
@@ -290,6 +293,26 @@ function FileRow(props: {
       )}
     </div>
   );
+}
+
+function GitHubCommentLink({ comments }: { comments: readonly PrGitHubComment[] }) {
+  if (comments.length === 0) {
+    return null;
+  }
+  const href = comments.find((comment) => comment.url.length > 0)?.url;
+  const label = `${comments.length} GitHub ${comments.length === 1 ? "comment" : "comments"} ↗`;
+  return href ? (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      style={GITHUB_COMMENT_LINK}
+      title="Open the review comment on GitHub"
+      onClick={(event) => event.stopPropagation()}
+    >
+      {label}
+    </a>
+  ) : <span style={GITHUB_COMMENT_LINK}>{label}</span>;
 }
 
 function DeletedImpact(props: {
@@ -401,6 +424,7 @@ const PATH_BASE: React.CSSProperties = { color: "#E6EDF3", fontWeight: 600 };
 const BLAST_BADGE: React.CSSProperties = { fontSize: 9.5, fontWeight: 600, color: "#7D8695", background: "#151B23", border: "1px solid #252D38", borderRadius: 9, padding: "0 5px", flexShrink: 0 };
 const CALLERS_BADGE: React.CSSProperties = { fontSize: 9.5, fontWeight: 700, color: "#E3B341", background: "#2B2110", border: "1px solid #5C4718", borderRadius: 9, padding: "0 6px", flexShrink: 0 };
 const NOT_IN_GRAPH: React.CSSProperties = { fontSize: 9.5, fontStyle: "italic", color: "#5A6472", flexShrink: 0 };
+const GITHUB_COMMENT_LINK: React.CSSProperties = { color: "#7DD3FC", fontSize: 9.5, textDecoration: "none", whiteSpace: "nowrap", flexShrink: 0 };
 const IMPACT_BLOCK: React.CSSProperties = { margin: "4px 8px 5px 24px", padding: "7px 8px", borderLeft: "2px solid #5C4718", background: "#121417", borderRadius: "0 5px 5px 0" };
 const CALLER_ROW: React.CSSProperties = { width: "100%", minWidth: 0, display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, border: "none", background: "transparent", font: "inherit", padding: "3px 0", textAlign: "left", ...NO_FOCUS_RING };
 const CALLER_NAME: React.CSSProperties = { minWidth: 0, color: "#E6EDF3", fontSize: 11.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };

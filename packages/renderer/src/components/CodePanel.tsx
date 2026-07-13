@@ -18,6 +18,8 @@ import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeK
 
 export function CodePanel() {
   const codeView = useBlueprint((state) => state.codeView);
+  const reviewSurfaceOpen = useBlueprint((state) => state.review !== null && state.minimalSeedIds.length > 0);
+  const reviewPanelHidden = useBlueprint((state) => state.reviewPanelHidden);
   const { closeCode } = useBlueprintActions();
   const open = codeView?.mode === "modal" && codeView.edgeEvidence === undefined;
 
@@ -27,9 +29,13 @@ export function CodePanel() {
   if (!codeView || !open) {
     return null;
   }
+  const reviewPanelWidth = reviewPanelHidden ? 30 : 380;
   return (
-    <div style={BACKDROP_STYLE} onClick={closeCode}>
-      <SourcePanel codeView={codeView} presentation="modal" onClose={closeCode} />
+    <div
+      style={reviewSurfaceOpen ? { ...BACKDROP_STYLE, right: reviewPanelWidth, alignItems: "stretch", justifyContent: "stretch" } : BACKDROP_STYLE}
+      onClick={closeCode}
+    >
+      <SourcePanel codeView={codeView} presentation="modal" fillAvailable={reviewSurfaceOpen} onClose={closeCode} />
     </div>
   );
 }
@@ -47,10 +53,12 @@ export function EdgeSourcePane() {
 function SourcePanel({
   codeView,
   presentation,
+  fillAvailable = false,
   onClose,
 }: {
   codeView: CodeView;
   presentation: "modal" | "edge";
+  fillAvailable?: boolean;
   onClose?: () => void;
 }) {
   const review = useBlueprint((state) => state.review);
@@ -142,7 +150,7 @@ function SourcePanel({
 
   return (
     <div
-      style={presentation === "edge" ? EDGE_PANEL_STYLE : PANEL_STYLE}
+      style={presentation === "edge" ? EDGE_PANEL_STYLE : fillAvailable ? REVIEW_PANEL_STYLE : PANEL_STYLE}
       role={presentation === "edge" ? "region" : "dialog"}
       aria-modal={presentation === "modal" ? true : undefined}
       aria-label={presentation === "edge" ? "Highlighted edge source" : "Source code"}
@@ -261,6 +269,15 @@ const PANEL_STYLE: React.CSSProperties = {
   borderRadius: 12,
   overflow: "hidden",
   boxShadow: "0 24px 64px rgba(0,0,0,0.55)",
+};
+const REVIEW_PANEL_STYLE: React.CSSProperties = {
+  ...PANEL_STYLE,
+  width: "100%",
+  maxWidth: "none",
+  height: "100%",
+  border: "none",
+  borderRight: "1px solid #2A2F37",
+  borderRadius: 0,
 };
 const EDGE_PANEL_STYLE: React.CSSProperties = {
   width: "min(58vw, 820px)",

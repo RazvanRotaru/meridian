@@ -15,8 +15,8 @@ import { MessageIcon } from "./MessageIcon";
 
 /** Shown only while its row is hovered (or already carries drafts / an open composer) — a panel
  * full of identical always-on icons reads as noise. Hidden, not unmounted, so columns never shift. */
-export function CommentButton(props: { count: number; active: boolean; visible: boolean; title?: string; suffix?: string; onClick: () => void }) {
-  const shown = props.visible || props.active || props.count > 0 || props.suffix !== undefined;
+export function CommentButton(props: { count: number; active: boolean; visible: boolean; title?: string; onClick: () => void }) {
+  const shown = props.visible || props.active || props.count > 0;
   const defaultTitle = props.count > 0
     ? `${props.count} draft ${props.count === 1 ? "comment" : "comments"}`
     : "Add a comment";
@@ -32,7 +32,6 @@ export function CommentButton(props: { count: number; active: boolean; visible: 
     >
       <MessageIcon />
       {props.count > 0 && <span style={COMMENT_COUNT}>{props.count}</span>}
-      {props.suffix !== undefined && <span style={COMMENT_SUFFIX}>{props.suffix}</span>}
     </button>
   );
 }
@@ -177,7 +176,6 @@ export function SubmitReviewFooter() {
 const COMMENT_BTN: React.CSSProperties = { font: "inherit", display: "inline-flex", alignItems: "center", gap: 3, border: "none", background: "transparent", cursor: "pointer", color: "#5A6472", padding: "2px 4px", borderRadius: 5, flexShrink: 0, ...NO_FOCUS_RING };
 const COMMENT_BTN_ON: React.CSSProperties = { color: "#7DD3FC" , ...NO_FOCUS_RING };
 const COMMENT_COUNT: React.CSSProperties = { fontSize: 10, fontWeight: 700 };
-const COMMENT_SUFFIX: React.CSSProperties = { color: "#5A6472", fontSize: 9.5, fontWeight: 500 };
 const LIST: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 4, padding: "2px 6px 4px 26px" };
 const DRAFT: React.CSSProperties = { display: "flex", alignItems: "flex-start", gap: 6, border: "1px solid #253041", background: "rgba(56,139,253,0.07)", borderRadius: 7, padding: "6px 8px" };
 const LINE_CHIP: React.CSSProperties = { flexShrink: 0, border: "1px solid rgba(125,211,252,0.35)", borderRadius: 4, padding: "0 4px", color: "#7DD3FC", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 9.5, fontWeight: 700, lineHeight: "14px" };

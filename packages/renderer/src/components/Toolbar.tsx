@@ -19,6 +19,7 @@ import { ModuleCategoryToggles } from "./ModuleCategoryToggles";
 import { RelationshipToggles } from "./RelationshipToggles";
 import { ControlPanelHeader } from "./controlpanel/ControlPanelHeader";
 import { PrReviewSection } from "./controlpanel/PrReviewSection";
+import { PrReviewNavigation } from "./controlpanel/PrReviewNavigation";
 import { OverlaysSection } from "./controlpanel/OverlaysSection";
 import { CONTROL_PANEL_WIDTH, Divider, SectionLabel, TOKENS } from "./controlpanel/panelKit";
 import { ChevronDownIcon } from "./controlpanel/icons";
@@ -33,11 +34,19 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
   const hasOverlay = useBlueprint((state) => state.hasOverlay);
   const provider = useBlueprint((state) => state.provider);
   const telemetrySources = useBlueprint((state) => state.telemetrySources);
+  const reviewActive = useBlueprint((state) => state.review !== null && state.prReviewed !== null && state.minimalSeedIds.length > 0 && state.viewMode !== "prs");
   const { resetCategoryFilter, resetRelationshipFilter } = useBlueprintActions();
 
   const isComposition = viewMode === "call";
   // Every module-family lens (Map / Service / UI — unified in phase C) wears the same dials.
   const onModuleSurface = viewMode === "modules" || viewMode === "ui" || isComposition;
+  if (reviewActive) {
+    return (
+      <Panel position="top-left" style={REVIEW_NAV_HOST_STYLE}>
+        <PrReviewNavigation />
+      </Panel>
+    );
+  }
   return (
     <Panel position="top-left" style={PANEL_HOST_STYLE}>
       <div id={CONTROL_PANEL_ID} style={PANEL_STYLE}>
@@ -150,6 +159,7 @@ const PANEL_HOST_STYLE: React.CSSProperties = {
   overflowX: "hidden",
   borderRadius: 14,
 };
+const REVIEW_NAV_HOST_STYLE: React.CSSProperties = { zIndex: 20 };
 const PR_CONTROLS_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column" };
 const CONTROLS_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 11 };
 const HIDDEN_CONTROLS_STYLE: React.CSSProperties = { ...CONTROLS_STYLE, display: "none" };

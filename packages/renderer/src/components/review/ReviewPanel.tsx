@@ -19,6 +19,7 @@ import { ReviewFlowsSection } from "./ReviewFlowsSection";
 import { SubmitReviewFooter } from "./ReviewComments";
 import { NO_FOCUS_RING } from "./reviewPanelKit";
 import { ReviewPreferencesPane } from "./ReviewPreferencesPane";
+import { selectedPrSummary } from "../../state/store";
 
 function ReviewPanelImpl() {
   const review = useBlueprint((state) => state.review);
@@ -176,6 +177,7 @@ function Header(props: {
   });
   const commentsVisible = useBlueprint((state) => state.reviewCommentsVisible);
   const prReviewed = useBlueprint((state) => state.prReviewed);
+  const currentPr = useBlueprint((state) => selectedPrSummary(state, state.prReviewed));
   const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
   const preparing = useBlueprint((state) => state.prReviewStatus === "preparing");
   const stale = useBlueprint((state) => state.prReviewStale);
@@ -246,6 +248,7 @@ function Header(props: {
           »
         </button>
       </div>
+      <div style={PROVENANCE_ROW}>
       {prReviewed !== null ? <PrProvenance ctx={ctx} /> : (
         <div style={HEADER_REF}>
           <span style={REF_BRANCH}>{ctx.headRef ?? "working tree"}</span>
@@ -253,6 +256,13 @@ function Header(props: {
           <span style={REF_BASE}>{ctx.baseRef ?? "explicit files"}</span>
         </div>
       )}
+      <span style={{ flex: 1 }} />
+      {currentPr?.url ? (
+        <a href={currentPr.url} target="_blank" rel="noreferrer" style={GITHUB_PR_LINK} title="Open this pull request on GitHub">
+          Open PR on GitHub ↗
+        </a>
+      ) : null}
+      </div>
       {existingCommentCount > 0 ? (
         <div style={COMMENT_CONTROLS}>
           <span style={COMMENT_COUNT_LABEL}>
@@ -365,6 +375,7 @@ const HEADER_BTN: React.CSSProperties = { font: "inherit", border: "1px solid #2
 const RESET_BTN: React.CSSProperties = { ...HEADER_BTN };
 const HIDE_BTN: React.CSSProperties = { ...HEADER_BTN };
 const EXTRACT_BTN: React.CSSProperties = { ...HEADER_BTN };
+const GITHUB_PR_LINK: React.CSSProperties = { color: "#7DD3FC", fontSize: 10.5, textDecoration: "none", whiteSpace: "nowrap" };
 const STALE_BTN: React.CSSProperties = { ...HEADER_BTN, borderColor: "#9A7B2D", background: "rgba(210,153,34,0.12)", color: "#D29922" };
 const STALE_BTN_DISABLED: React.CSSProperties = { cursor: "wait", opacity: 0.75 };
 const COMMENT_CONTROLS: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 };
@@ -401,8 +412,9 @@ const RAIL_COUNT: React.CSSProperties = { fontSize: 9, fontWeight: 600, color: "
 const RAIL_STALE: React.CSSProperties = { borderLeftColor: "#9A7B2D" };
 const RAIL_STALE_DOT: React.CSSProperties = { width: 7, height: 7, borderRadius: 999, background: "#D29922", boxShadow: "0 0 0 3px rgba(210,153,34,0.12)" };
 const HEADER_REF: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6, fontFamily: MONO, fontSize: 11 };
+const PROVENANCE_ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, minWidth: 0 };
 // The PR provenance line flows inline (its spaces are text, not gaps) — see PrProvenance.
-const PROVENANCE: React.CSSProperties = { fontFamily: MONO, fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
+const PROVENANCE: React.CSSProperties = { minWidth: 0, fontFamily: MONO, fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
 const REF_BRANCH: React.CSSProperties = { color: "#6BE38A" };
 const REF_ARROW: React.CSSProperties = { color: "#5A6472" };
 const REF_BASE: React.CSSProperties = { color: "#9AA4B2" };

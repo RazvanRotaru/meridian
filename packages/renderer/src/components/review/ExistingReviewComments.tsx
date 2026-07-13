@@ -1,4 +1,5 @@
 import type { PrGitHubComment } from "../../state/prTypes";
+import { GitHubMarkdown } from "./GitHubMarkdown";
 
 /** Existing GitHub comments, shared by inline source rows and the small side-panel fallback for
  * comments that cannot be placed safely on current HEAD code. */
@@ -26,7 +27,7 @@ export function ExistingCommentList(props: {
             )}
             <span style={TIME} title={comment.updatedAt}>{relativeTime(comment.updatedAt)}</span>
           </div>
-          <div style={BODY}>{comment.body}</div>
+          <div style={BODY}><GitHubMarkdown source={comment.body} /></div>
         </div>
       ))}
     </div>
