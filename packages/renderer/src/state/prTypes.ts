@@ -100,11 +100,17 @@ export interface RelatedPrsState {
 }
 
 export interface PrGitHubComment {
+  /** Stable GitHub pull-request review comment id; mutation actions address this value. */
+  id: number;
+  /** The top-level review comment this replies to; null identifies a thread root. */
+  inReplyToId: number | null;
   path: string;
   line: number | null;
   side: "LEFT" | "RIGHT" | null;
   body: string;
   author: string;
+  /** GitHub's viewer-specific permission for editing this exact comment. */
+  viewerCanEdit: boolean;
   updatedAt: string;
   url: string;
 }

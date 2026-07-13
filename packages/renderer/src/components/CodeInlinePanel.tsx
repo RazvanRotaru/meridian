@@ -17,7 +17,7 @@ import { anchorableHunks } from "../derive/reviewSubmit";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import type { CodeView } from "../state/store";
 import { CodeBlock } from "./CodeBlock";
-import { useCodeReviewComments } from "./review/useCodeReviewComments";
+import { useCodeReviewComments, useGitHubCommentableReviewLines, usePendingCodeReviewComments } from "./review/useCodeReviewComments";
 import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeKinds } from "./useChangedLines";
 
 export function CodeInlinePanel({
@@ -33,6 +33,7 @@ export function CodeInlinePanel({
 }) {
   const { node, code, loading, error, truncated } = codeView;
   const review = useBlueprint((state) => state.review);
+  const prReviewed = useBlueprint((state) => state.prReviewed);
   const removed = useBlueprint((state) => state.reviewRemovedByFile[node.location?.file ?? ""] ?? EMPTY_REMOVED);
   const removedTruncated = useBlueprint((state) => state.reviewRemovedTruncatedByFile[node.location?.file ?? ""] === true);
   const { addReviewComment } = useBlueprintActions();
@@ -48,10 +49,18 @@ export function CodeInlinePanel({
   const { file, startLine, endLine } = node.location;
   const baseLine = codeView.baseLine ?? startLine;
   const existingComments = useCodeReviewComments(file, baseLine, code);
+  const pendingComments = usePendingCodeReviewComments(file, baseLine, code);
+  const githubCommentableLines = useGitHubCommentableReviewLines(file, baseLine, code);
   const visibleLineCount = code === null ? 0 : code.split("\n").length;
   const visibleEnd = baseLine + Math.max(visibleLineCount - 1, 0);
   const commentableLines = useMemo(() => {
-    if (review === null || anchorableHunks(file, review.context).length === 0) {
+    if (review === null) {
+      return EMPTY_COMMENTABLE_LINES;
+    }
+    if (prReviewed !== null) {
+      return githubCommentableLines;
+    }
+    if (anchorableHunks(file, review.context).length === 0) {
       return EMPTY_COMMENTABLE_LINES;
     }
     // Review code is HEAD-side in both modes: sync fetches the head file, while swapped graph
@@ -59,7 +68,7 @@ export function CodeInlinePanel({
     return changedLineKinds.size > 0
       ? new Set([...changedLineKinds].filter(([, kind]) => kind === "added" || kind === "modified").map(([line]) => line))
       : new Set(changedLines);
-  }, [changedLineKinds, changedLines, file, review]);
+  }, [changedLineKinds, changedLines, file, githubCommentableLines, prReviewed, review]);
   const visibleRemovedRows = useMemo(() => {
     const rows = new Map<number, string[]>();
     for (const entry of removed) {
@@ -128,6 +137,7 @@ export function CodeInlinePanel({
               onCancel: () => setActiveCommentLine(null),
             }}
             existingComments={existingComments}
+            pendingComments={pendingComments}
             removedRows={visibleRemovedRows}
             removedTruncated={removedTruncated}
           />

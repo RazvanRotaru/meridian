@@ -13,7 +13,7 @@ import type { CodeView } from "../state/store";
 import { relationColor } from "../theme/relationTheme";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { CodeBlock } from "./CodeBlock";
-import { useCodeReviewComments } from "./review/useCodeReviewComments";
+import { useCodeReviewComments, useGitHubCommentableReviewLines, usePendingCodeReviewComments } from "./review/useCodeReviewComments";
 import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeKinds } from "./useChangedLines";
 
 export function CodePanel() {
@@ -66,7 +66,6 @@ function SourcePanel({
   const index = useBlueprint((state) => state.index);
   const removed = useBlueprint((state) => state.reviewRemovedByFile[codeView.node.location?.file ?? ""] ?? EMPTY_REMOVED);
   const removedTruncated = useBlueprint((state) => state.reviewRemovedTruncatedByFile[codeView.node.location?.file ?? ""] === true);
-  const removedAtHead = useBlueprint((state) => state.reviewFileDelta[codeView.node.location?.file ?? ""]?.status === "removed");
   const { addReviewComment, selectEdgeEvidence } = useBlueprintActions();
   const wholeFile = codeView.wholeFile ?? false;
   // A PR-review panel carries its own head-relative diff; otherwise the artifact's `changedSince`
@@ -92,19 +91,16 @@ function SourcePanel({
   const visibleLineCount = codeView.code === null ? 0 : codeView.code.split("\n").length;
   const visibleEnd = reviewBaseLine + Math.max(visibleLineCount - 1, 0);
   const existingComments = useCodeReviewComments(reviewFile, reviewBaseLine, codeView.code);
+  const pendingComments = usePendingCodeReviewComments(reviewFile, reviewBaseLine, codeView.code);
+  const githubCommentableLines = useGitHubCommentableReviewLines(reviewFile, reviewBaseLine, codeView.code);
   const commentableLines = useMemo(() => {
     if (reviewFile === null || review === null) {
       return EMPTY_COMMENTABLE_LINES;
     }
-    // A live PR source panel renders the file's HEAD-side text. Match GitHub's full-file review
-    // affordance by allowing a draft on every row the reader can see, not just the rows painted as
-    // added/modified. Unchanged files and removed files are not HEAD-side review targets.
+    // GitHub accepts inline threads only on rows present in the PR diff (changed + context). The
+    // shared hook carries exactly that server-parsed range and intersects it with this source slice.
     if (prReviewed !== null) {
-      const changedFile = review.context.changedFiles.find((candidate) => candidate.path === reviewFile);
-      if (changedFile === undefined || changedFile.status === "deleted" || removedAtHead) {
-        return EMPTY_COMMENTABLE_LINES;
-      }
-      return new Set(Array.from({ length: visibleLineCount }, (_, index) => reviewBaseLine + index));
+      return githubCommentableLines;
     }
     if (anchorableHunks(reviewFile, review.context).length === 0) {
       return EMPTY_COMMENTABLE_LINES;
@@ -114,7 +110,7 @@ function SourcePanel({
     return changedLineKinds.size > 0
       ? new Set([...changedLineKinds].filter(([, kind]) => kind === "added" || kind === "modified").map(([line]) => line))
       : new Set(changedLines);
-  }, [changedLineKinds, changedLines, prReviewed, removedAtHead, review, reviewBaseLine, reviewFile, visibleLineCount]);
+  }, [changedLineKinds, changedLines, githubCommentableLines, prReviewed, review, reviewFile]);
   const visibleRemovedRows = useMemo(() => {
     const rows = new Map<number, string[]>();
     for (const entry of removed) {
@@ -224,6 +220,7 @@ function SourcePanel({
                 onCancel: () => setActiveCommentLine(null),
               }}
               existingComments={existingComments}
+              pendingComments={pendingComments}
               removedRows={visibleRemovedRows}
               removedTruncated={removedTruncated}
             />

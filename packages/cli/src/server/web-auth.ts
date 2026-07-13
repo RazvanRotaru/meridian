@@ -57,14 +57,19 @@ export function handleLogout(ctx: AuthContext, request: IncomingMessage, respons
 }
 
 export function handleAuthSession(ctx: AuthContext, request: IncomingMessage, response: ServerResponse): void {
-  const session = ctx.sessions.get(readSessionId(requestHeader(request, "cookie")), Date.now());
   // Signed-in from the UI's view means "there's a usable token" — an interactive session OR an
   // ambient env/gh token — so a `gh`-logged-in user gets the signed-in UI (search, own repos)
   // without the device flow. `user` stays null for the ambient case (no identity is fetched).
   sendJson(response, 200, {
     signedIn: Boolean(githubTokenFor(ctx, request)),
-    user: session?.user ?? ctx.fallbackUser ?? null,
+    user: githubUserFor(ctx, request),
   });
+}
+
+/** Known identity behind the active interactive session, or the boot-time `gh` fallback token. */
+export function githubUserFor(ctx: AuthContext, request: IncomingMessage): GitHubUser | null {
+  const session = ctx.sessions.get(readSessionId(requestHeader(request, "cookie")), Date.now());
+  return session?.user ?? ctx.fallbackUser ?? null;
 }
 
 export async function handleRepoSearch(

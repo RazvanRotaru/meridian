@@ -2,8 +2,8 @@
  * Draft comments → the one GitHub review submission: unit comments anchor to the first changed
  * line INSIDE the unit, file comments to the file's first changed line, and anything without a
  * real new-side API anchor to stand on — no hunks, a whole-file-deletion hunk (start 0), a vanished
- * or drifted unit, or a visible line outside the public API's diff context — becomes a NOTE for the
- * server to fold into the review body. Never dropped, never anchored by guesswork.
+ * or drifted unit, or a visible line outside the public API's diff context — blocks the submission.
+ * Never dropped, never aggregated into review-body prose, never anchored by guesswork.
  */
 
 import { describe, expect, it } from "vitest";
@@ -54,7 +54,7 @@ describe("buildReviewSubmission", () => {
     const submission = buildReviewSubmission([draft("src/a.ts", "ts:src/a.ts#Repo", "check this")], FILES, CONTEXT);
     // The unit starts at 10 but the hunk starts at 25 — the anchor must be a line the diff shows.
     expect(submission.comments).toEqual([{ path: "src/a.ts", line: 25, body: "check this" }]);
-    expect(submission.notes).toEqual([]);
+    expect(submission.blocked).toEqual([]);
   });
 
   it("clamps to the unit start when the hunk begins above it", () => {
@@ -81,10 +81,36 @@ describe("buildReviewSubmission", () => {
       { "src/a.ts": [{ start: 77, end: 88 }] },
     );
     expect(submission.comments).toEqual([{ path: "src/a.ts", line: 78, body: "right here too" }]);
-    expect(submission.notes).toEqual([]);
+    expect(submission.blocked).toEqual([]);
   });
 
-  it("folds a previous-revision line draft even when the same number remains API-anchorable", () => {
+  it("resolves a graph-relative draft path to the canonical PR path before anchoring and submitting", () => {
+    const aliasedContext: ReviewContext = {
+      ...CONTEXT,
+      changedFiles: CONTEXT.changedFiles.map((file) => file.path === "src/a.ts"
+        ? { ...file, path: "packages/renderer/src/a.ts" }
+        : file),
+    };
+    const aliasedFiles = FILES.map((file) => file.path === "src/a.ts"
+      ? { ...file, path: "packages/renderer/src/a.ts" }
+      : file);
+    const submission = buildReviewSubmission(
+      [draft("src/a.ts", "ts:src/a.ts#helper", "canonical path", "helper", 78)],
+      aliasedFiles,
+      aliasedContext,
+      // Runtime patch-header ranges are keyed by the graph's location.file path.
+      { "src/a.ts": [{ start: 77, end: 88 }] },
+    );
+
+    expect(submission.comments).toEqual([{
+      path: "packages/renderer/src/a.ts",
+      line: 78,
+      body: "canonical path",
+    }]);
+    expect(submission.blocked).toEqual([]);
+  });
+
+  it("blocks a previous-revision line draft even when the same number remains API-anchorable", () => {
     const previousRevision = { ...draft("src/a.ts", null, "old L78", null, 78), lineStale: true };
     const submission = buildReviewSubmission(
       [previousRevision],
@@ -93,48 +119,53 @@ describe("buildReviewSubmission", () => {
       { "src/a.ts": [{ start: 77, end: 88 }] },
     );
     expect(submission.comments).toEqual([]);
-    expect(submission.notes).toEqual([{ path: "src/a.ts", label: "L78", body: "old L78" }]);
+    expect(submission.blocked).toEqual([previousRevision]);
   });
 
-  it("folds a visible line outside public API diff context into a labeled review note", () => {
+  it("blocks a visible line outside public API diff context", () => {
+    const outsideContext = draft("src/a.ts", "ts:src/a.ts#helper", "still applies", "helper", 70);
     const submission = buildReviewSubmission(
-      [draft("src/a.ts", "ts:src/a.ts#helper", "still applies", "helper", 70)],
+      [outsideContext],
       FILES,
       CONTEXT,
       { "src/a.ts": [{ start: 77, end: 88 }] },
     );
     expect(submission.comments).toEqual([]);
-    expect(submission.notes).toEqual([{ path: "src/a.ts", label: "L70", body: "still applies" }]);
+    expect(submission.blocked).toEqual([outsideContext]);
   });
 
   it("rejects a non-positive explicit line instead of sending an invalid GitHub anchor", () => {
-    const submission = buildReviewSubmission([draft("src/a.ts", null, "invalid", null, 0)], FILES, CONTEXT);
+    const invalid = draft("src/a.ts", null, "invalid", null, 0);
+    const submission = buildReviewSubmission([invalid], FILES, CONTEXT);
     expect(submission.comments).toEqual([]);
-    expect(submission.notes).toEqual([{ path: "src/a.ts", label: "L0", body: "invalid" }]);
+    expect(submission.blocked).toEqual([invalid]);
   });
 
-  it("turns a comment on a hunk-less file into a note, keeping its anchor label", () => {
-    const submission = buildReviewSubmission([draft("docs/readme.md", null, "why delete?", "OldUnit")], FILES, CONTEXT);
+  it("blocks a comment on a hunk-less file", () => {
+    const hunkless = draft("docs/readme.md", null, "why delete?", "OldUnit");
+    const submission = buildReviewSubmission([hunkless], FILES, CONTEXT);
     expect(submission.comments).toEqual([]);
-    expect(submission.notes).toEqual([{ path: "docs/readme.md", label: "OldUnit", body: "why delete?" }]);
+    expect(submission.blocked).toEqual([hunkless]);
   });
 
-  it("never anchors to a start-0 deletion hunk — a deleted file's comment folds", () => {
-    const submission = buildReviewSubmission([draft("src/gone.ts", null, "farewell")], FILES, CONTEXT);
+  it("never anchors to a start-0 deletion hunk — a deleted file's comment blocks", () => {
+    const deleted = draft("src/gone.ts", null, "farewell");
+    const submission = buildReviewSubmission([deleted], FILES, CONTEXT);
     expect(submission.comments).toEqual([]);
-    expect(submission.notes).toEqual([{ path: "src/gone.ts", label: null, body: "farewell" }]);
+    expect(submission.blocked).toEqual([deleted]);
   });
 
-  it("folds a vanished unit's comment instead of guessing the file anchor", () => {
-    const submission = buildReviewSubmission([draft("src/a.ts", "ts:src/a.ts#gone", "stale target", "gone")], FILES, CONTEXT);
+  it("blocks a vanished unit's comment instead of guessing the file anchor", () => {
+    const vanished = draft("src/a.ts", "ts:src/a.ts#gone", "stale target", "gone");
+    const submission = buildReviewSubmission([vanished], FILES, CONTEXT);
     expect(submission.comments).toEqual([]);
-    expect(submission.notes).toEqual([{ path: "src/a.ts", label: "gone", body: "stale target" }]);
+    expect(submission.blocked).toEqual([vanished]);
   });
 
-  it("folds a unit that no longer overlaps any hunk", () => {
+  it("blocks a unit that no longer overlaps any hunk", () => {
     const submission = buildReviewSubmission([draft("src/a.ts", "ts:src/a.ts#drifted", "moved on")], FILES, CONTEXT);
     expect(submission.comments).toEqual([]);
-    expect(submission.notes[0].body).toBe("moved on");
+    expect(submission.blocked[0].body).toBe("moved on");
   });
 
   it("keeps draft order within each list", () => {
@@ -144,6 +175,6 @@ describe("buildReviewSubmission", () => {
       CONTEXT,
     );
     expect(submission.comments.map((comment) => comment.body)).toEqual(["one", "three"]);
-    expect(submission.notes.map((note) => note.body)).toEqual(["two"]);
+    expect(submission.blocked.map((comment) => comment.body)).toEqual(["two"]);
   });
 });

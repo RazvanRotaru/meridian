@@ -39,6 +39,22 @@ function pr(number: number, title = `PR ${number}`): PrSummary {
   };
 }
 
+function githubComment(overrides: Partial<PrGitHubComment> = {}): PrGitHubComment {
+  return {
+    id: 101,
+    inReplyToId: null,
+    path: "repo/src/a.ts",
+    line: 1,
+    side: "RIGHT",
+    body: "Existing review comment",
+    author: "octo",
+    viewerCanEdit: true,
+    updatedAt: "2026-07-12T00:00:00.000Z",
+    url: "https://github.com/o/r/pull/7#discussion_r101",
+    ...overrides,
+  };
+}
+
 const PACKAGE_ID = "ts:src";
 const FILE_ID = "ts:src/a.ts";
 const CLASS_ID = `${FILE_ID}#Svc`;
@@ -497,15 +513,10 @@ describe("PR store slice", () => {
       }
       if (url.includes("/api/prs/comments")) {
         return Promise.resolve(Response.json({
-          comments: [{
+          comments: [githubComment({
             path: submittedPath,
-            line: 1,
-            side: "RIGHT",
             body: "Keep this in the review draft",
-            author: "octo",
-            updatedAt: "2026-07-12T00:00:00.000Z",
-            url: "https://github.com/o/r/pull/7#discussion_r1",
-          }],
+          })],
           reviews: { approved: [], changesRequested: [], commented: 1 },
           hasMore: false,
         }));
@@ -532,11 +543,218 @@ describe("PR store slice", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
       number: 7,
       comments: [{ path, line: 1, body: "Keep this in the review draft" }],
-      notes: [],
     });
     expect(fetchMock.mock.calls[1][0].toString()).toBe("http://meridian.local/api/prs/comments?id=artifact-1&n=7");
     expect(store.getState().reviewComments).toEqual([]);
     expect(store.getState().prDiscussion?.comments[0]?.body).toBe("Keep this in the review draft");
+  });
+
+  it("blocks the whole submission instead of aggregating an unanchorable draft into the review body", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    const path = store.getState().reviewFiles[0].path;
+    store.getState().addReviewComment(path, null, "Valid inline draft");
+    store.getState().addReviewComment(path, null, "Outside diff context", 11);
+    const drafts = store.getState().reviewComments;
+
+    await store.getState().submitReviewComments();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(store.getState().reviewComments).toBe(drafts);
+    expect(store.getState().reviewSubmitStatus).toBe("idle");
+    expect(store.getState().reviewSubmittedUrl).toBeNull();
+    expect(store.getState().reviewSubmitError).toBe(
+      "1 draft cannot be posted as an inline GitHub comment. Delete it or add a replacement on lines shown in the current pull request diff. Nothing was submitted.",
+    );
+  });
+
+  it("edits a persisted local draft without changing its anchor or provenance", async () => {
+    const storage = stubReviewStorage();
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    const path = store.getState().reviewFiles[0].path;
+    store.getState().addReviewComment(path, METHOD_ID, "Original draft", 1);
+    const original = store.getState().reviewComments[0];
+    store.setState({ reviewSubmittedUrl: "https://github.com/o/r/review", reviewSubmitError: "old failure" });
+
+    store.getState().updateReviewComment(original.id, "  Revised draft  ");
+
+    expect(store.getState().reviewComments).toEqual([{ ...original, body: "Revised draft" }]);
+    expect(store.getState().reviewSubmittedUrl).toBeNull();
+    expect(store.getState().reviewSubmitError).toBeNull();
+    const persisted = JSON.parse(Object.values(storage)[0]) as { comments: unknown[] };
+    expect(persisted.comments).toEqual([{ ...original, body: "Revised draft" }]);
+
+    const revised = store.getState().reviewComments;
+    store.getState().updateReviewComment(original.id, "   ");
+    store.getState().updateReviewComment("missing", "Cannot attach this");
+    expect(store.getState().reviewComments).toBe(revised);
+    store.setState({ review: null });
+    store.getState().updateReviewComment(original.id, "No active review");
+    expect(store.getState().reviewComments).toBe(revised);
+  });
+
+  it("edits an existing GitHub comment and replies to its top-level thread", async () => {
+    let resolveEdit!: (response: Response) => void;
+    const editResponse = new Promise<Response>((resolve) => {
+      resolveEdit = resolve;
+    });
+    const root = githubComment({ id: 201, body: "Before edit" });
+    const edited = { ...root, body: "After edit" };
+    const reply = githubComment({
+      id: 202,
+      inReplyToId: root.id,
+      body: "Thread reply",
+      viewerCanEdit: true,
+      url: "https://github.com/o/r/pull/7#discussion_r202",
+    });
+    const reviews = { approved: [], changesRequested: [], commented: 1 };
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => (
+      fetchMock.mock.calls.length === 1
+        ? editResponse
+        : Promise.resolve(Response.json({ comments: [edited, reply], reviews, hasMore: false }))
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    store.setState({ prDiscussion: { comments: [root], reviews }, prCommentMutationError: "older failure" });
+
+    const editing = store.getState().editPrReviewComment(root.id, "  After edit  ");
+    expect(store.getState().prCommentMutationStatus).toBe("submitting");
+    expect(store.getState().prCommentMutationId).toBe(root.id);
+    expect(store.getState().prCommentMutationError).toBeNull();
+    expect(await store.getState().replyToPrReviewComment(root.id, "Too soon")).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    resolveEdit(Response.json({ comments: [edited], reviews, hasMore: false }));
+
+    expect(await editing).toBe(true);
+    expect(store.getState().prDiscussion?.comments).toEqual([edited]);
+    expect(store.getState().prCommentMutationStatus).toBe("idle");
+    expect(store.getState().prCommentMutationId).toBeNull();
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      number: 7,
+      action: "edit",
+      commentId: root.id,
+      body: "After edit",
+    });
+
+    expect(await store.getState().replyToPrReviewComment(root.id, "  Thread reply  ")).toBe(true);
+    expect(store.getState().prDiscussion?.comments).toEqual([edited, reply]);
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({
+      number: 7,
+      action: "reply",
+      commentId: root.id,
+      body: "Thread reply",
+    });
+    expect(fetchMock.mock.calls.map(([input]) => input)).toEqual([
+      "/api/prs/comments?id=artifact-1",
+      "/api/prs/comments?id=artifact-1",
+    ]);
+  });
+
+  it("rejects unsafe existing-comment mutations before making a request", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    const root = githubComment({ id: 301 });
+    const locked = githubComment({ id: 302, viewerCanEdit: false });
+    const child = githubComment({ id: 303, inReplyToId: root.id });
+    store.setState({
+      prDiscussion: {
+        comments: [root, locked, child],
+        reviews: { approved: [], changesRequested: [], commented: 1 },
+      },
+    });
+
+    expect(await store.getState().editPrReviewComment(root.id, "   ")).toBe(false);
+    expect(await store.getState().editPrReviewComment(999, "Missing")).toBe(false);
+    expect(await store.getState().editPrReviewComment(locked.id, "Not mine")).toBe(false);
+    expect(await store.getState().replyToPrReviewComment(child.id, "Nested reply")).toBe(false);
+    store.setState({ prReviewStale: true });
+    expect(await store.getState().editPrReviewComment(root.id, "Stale edit")).toBe(false);
+    store.setState({ prReviewStale: false, prReviewRefreshing: true });
+    expect(await store.getState().replyToPrReviewComment(root.id, "Refreshing reply")).toBe(false);
+    store.setState({ prReviewRefreshing: false, prReviewStatus: "preparing" });
+    expect(await store.getState().editPrReviewComment(root.id, "Preparing edit")).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(store.getState().prCommentMutationStatus).toBe("idle");
+
+    const noReview = freshStore();
+    noReview.setState({
+      prDiscussion: {
+        comments: [root],
+        reviews: { approved: [], changesRequested: [], commented: 1 },
+      },
+    });
+    expect(await noReview.getState().editPrReviewComment(root.id, "No review")).toBe(false);
+    expect(await noReview.getState().replyToPrReviewComment(root.id, "No review")).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the discussion on mutation failures and clears the prior error on retry", async () => {
+    const root = githubComment({ id: 401 });
+    const discussion = {
+      comments: [root],
+      reviews: { approved: [], changesRequested: [], commented: 1 },
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ error: "GitHub denied the edit" }, { status: 403 }))
+      .mockRejectedValueOnce(new Error("offline"));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    store.setState({ prDiscussion: discussion });
+
+    expect(await store.getState().editPrReviewComment(root.id, "First attempt")).toBe(false);
+    expect(store.getState().prDiscussion).toBe(discussion);
+    expect(store.getState().prCommentMutationError).toBe("GitHub denied the edit");
+    expect(store.getState().prCommentMutationStatus).toBe("idle");
+    expect(store.getState().prCommentMutationId).toBeNull();
+
+    const retry = store.getState().editPrReviewComment(root.id, "Retry");
+    expect(store.getState().prCommentMutationError).toBeNull();
+    expect(store.getState().prCommentMutationStatus).toBe("submitting");
+    expect(await retry).toBe(false);
+    expect(store.getState().prCommentMutationError).toBe("could not reach the server");
+    expect(store.getState().prDiscussion).toBe(discussion);
+  });
+
+  it("does not apply a late comment mutation response after its review ended", async () => {
+    let resolveMutation!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => {
+      resolveMutation = resolve;
+    })));
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    const root = githubComment({ id: 501 });
+    const discussion = {
+      comments: [root],
+      reviews: { approved: [], changesRequested: [], commented: 1 },
+    };
+    store.setState({ prDiscussion: discussion });
+
+    const editing = store.getState().editPrReviewComment(root.id, "Late edit");
+    store.setState({ review: null, prReviewed: null });
+    resolveMutation(Response.json({
+      comments: [{ ...root, body: "Late edit" }],
+      reviews: discussion.reviews,
+      hasMore: false,
+    }));
+
+    expect(await editing).toBe(false);
+    expect(store.getState().prDiscussion).toBe(discussion);
+    expect(store.getState().prCommentMutationStatus).toBe("idle");
+    expect(store.getState().prCommentMutationId).toBeNull();
   });
 
   it("toggles existing canvas comments while keeping rail links and unsafe full-body fallbacks", async () => {
@@ -545,16 +763,13 @@ describe("PR store slice", () => {
     await store.getState().reviewPrInGraph();
     const path = store.getState().reviewFiles[0].path;
     const comments: PrGitHubComment[] = [
-      {
+      githubComment({
         path,
-        line: 1,
-        side: "RIGHT",
         body: "Moved into the canvas code row",
-        author: "octo",
-        updatedAt: "2026-07-12T00:00:00.000Z",
         url: "https://github.com/o/r/pull/7#discussion_r1",
-      },
-      {
+      }),
+      githubComment({
+        id: 102,
         path,
         line: 1,
         side: "LEFT",
@@ -562,16 +777,16 @@ describe("PR store slice", () => {
         author: "mina",
         updatedAt: "2026-07-12T00:01:00.000Z",
         url: "https://github.com/o/r/pull/7#discussion_r2",
-      },
-      {
+      }),
+      githubComment({
+        id: 103,
         path,
         line: 999,
-        side: "RIGHT",
         body: "Truncated-source comment body stays out of the rail",
         author: "zoe",
         updatedAt: "2026-07-12T00:02:00.000Z",
         url: "https://github.com/o/r/pull/7#discussion_r3",
-      },
+      }),
     ];
     const discussion = {
       comments,
@@ -676,15 +891,10 @@ describe("PR store slice", () => {
     });
     let discussionReads = 0;
     const discussionResponse = (body: string) => Response.json({
-      comments: [{
-        path: "repo/src/a.ts",
-        line: 1,
-        side: "RIGHT",
+      comments: [githubComment({
         body,
-        author: "octo",
-        updatedAt: "2026-07-12T00:00:00.000Z",
         url: `https://github.com/o/r/pull/7#${body}`,
-      }],
+      })],
       reviews: { approved: [], changesRequested: [], commented: 1 },
       hasMore: false,
     });
@@ -784,7 +994,7 @@ describe("PR store slice", () => {
       suggestedSubdir: "",
     };
     const discussion = {
-      comments: [{ path: "repo/src/a.ts", line: 10, side: "RIGHT" as const, body: "Already on GitHub", author: "octo", updatedAt: latest.updatedAt, url: latest.url }],
+      comments: [githubComment({ path: "repo/src/a.ts", line: 10, body: "Already on GitHub", updatedAt: latest.updatedAt, url: latest.url })],
       reviews: { approved: ["reviewer"], changesRequested: [], commented: 1 },
       hasMore: false,
     };

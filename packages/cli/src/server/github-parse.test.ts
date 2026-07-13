@@ -184,6 +184,7 @@ describe("parsePullRequestComments", () => {
   it("projects LEFT/RIGHT sides strictly and strips every non-whitelisted field", () => {
     expect(parsePullRequestComments([
       {
+        id: 101,
         path: "src/right.ts",
         line: 12,
         side: "RIGHT",
@@ -194,6 +195,8 @@ describe("parsePullRequestComments", () => {
         raw_secret: "not forwarded",
       },
       {
+        id: 102,
+        in_reply_to_id: 101,
         path: "src/left.ts",
         line: 4,
         side: "LEFT",
@@ -202,6 +205,7 @@ describe("parsePullRequestComments", () => {
         updated_at: "2026-07-10T09:31:00Z",
       },
       {
+        id: 103,
         path: "src/unknown.ts",
         line: 0,
         side: "right",
@@ -211,6 +215,8 @@ describe("parsePullRequestComments", () => {
       },
     ])).toEqual([
       {
+        id: 101,
+        inReplyToId: null,
         path: "src/right.ts",
         line: 12,
         side: "RIGHT",
@@ -220,6 +226,8 @@ describe("parsePullRequestComments", () => {
         url: "https://github.com/org/repo/pull/7#discussion_r1",
       },
       {
+        id: 102,
+        inReplyToId: 101,
         path: "src/left.ts",
         line: 4,
         side: "LEFT",
@@ -229,6 +237,8 @@ describe("parsePullRequestComments", () => {
         url: "",
       },
       {
+        id: 103,
+        inReplyToId: null,
         path: "src/unknown.ts",
         line: null,
         side: null,

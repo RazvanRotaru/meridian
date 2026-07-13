@@ -1,8 +1,22 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import type { GraphArtifact } from "@meridian/core";
+import { buildGraphIndex } from "../graph/graphIndex";
 import type { PrGitHubComment } from "../state/prTypes";
+import type { ReviewComment } from "../state/reviewTicksPref";
+import { createBlueprintStore } from "../state/store";
+import { StoreProvider } from "../state/StoreContext";
 import { CodeBlock } from "./CodeBlock";
+
+const ARTIFACT: GraphArtifact = {
+  schemaVersion: "1.1.0",
+  generatedAt: "2026-07-13T00:00:00.000Z",
+  generator: { name: "test", version: "0" },
+  target: { name: "fixture", root: ".", language: "typescript" },
+  nodes: [],
+  edges: [],
+};
 
 function existingComment(
   body: string,
@@ -10,6 +24,9 @@ function existingComment(
   overrides: Partial<PrGitHubComment> = {},
 ): PrGitHubComment {
   return {
+    id: 101,
+    inReplyToId: null,
+    viewerCanEdit: false,
     path: "src/order.ts",
     line,
     side: "RIGHT",
@@ -19,6 +36,43 @@ function existingComment(
     url: "https://github.com/o/r/pull/7#discussion_r1",
     ...overrides,
   };
+}
+
+function pendingComment(
+  body: string,
+  line: number,
+  overrides: Partial<ReviewComment> = {},
+): ReviewComment {
+  return {
+    id: `draft-${body}`,
+    path: "src/order.ts",
+    nodeId: null,
+    line,
+    anchorLabel: `L${line}`,
+    body,
+    at: "2026-07-13T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function renderWithStore(element: React.ReactElement): string {
+  const store = createBlueprintStore({
+    artifact: ARTIFACT,
+    index: buildGraphIndex(ARTIFACT),
+    provider: null,
+    hasOverlay: false,
+    sourceUrl: null,
+    prsUrl: "",
+    prOneUrl: "",
+    prFilesUrl: "",
+    prRelatedUrl: "",
+    prCommentsUrl: "",
+    prChecksUrl: "",
+    prReviewUrl: "",
+  });
+  const state = store.getState();
+  Object.assign(store, { getInitialState: () => state });
+  return renderToStaticMarkup(createElement(StoreProvider, { store, children: element }));
 }
 
 describe("CodeBlock edge evidence", () => {
@@ -69,13 +123,13 @@ describe("CodeBlock review comments", () => {
   });
 
   it("places every existing comment directly after its exact source line", () => {
-    const html = renderToStaticMarkup(createElement(CodeBlock, {
+    const html = renderWithStore(createElement(CodeBlock, {
       code: "first\nsecond\nthird",
       startLine: 40,
       showGutter: true,
       existingComments: [
-        existingComment("First reply", 41),
-        existingComment("Second reply", 41, { author: "mina", url: "" }),
+        existingComment("First reply", 41, { viewerCanEdit: true }),
+        existingComment("Second reply", 41, { id: 102, inReplyToId: 101, author: "mina", url: "" }),
         existingComment("Outside this slice", 99),
       ],
     }));
@@ -92,5 +146,35 @@ describe("CodeBlock review comments", () => {
     expect(html).toContain('href="https://github.com/o/r/pull/7#discussion_r1"');
     expect(html).toContain("octo");
     expect(html).toContain("mina");
+    expect(html).toContain('data-review-comment-reply="true"');
+    expect(html.match(/title="Reply to comment"/g)).toHaveLength(2);
+    expect(html.match(/title="Edit comment"/g)).toHaveLength(1);
+  });
+
+  it("keeps local pending comments visible at their exact source line beside existing comments", () => {
+    const html = renderWithStore(createElement(CodeBlock, {
+      code: "first\nsecond\nthird",
+      startLine: 40,
+      showGutter: true,
+      pendingComments: [
+        pendingComment("First pending draft", 41),
+        pendingComment("Second pending draft", 41),
+        pendingComment("Outside this slice", 99),
+      ],
+      existingComments: [existingComment("Already on GitHub", 41)],
+    }));
+
+    expect(html.match(/data-pending-review-comments-line=/g)).toHaveLength(1);
+    expect(html).toContain('data-pending-review-comments-line="41"');
+    expect(html).not.toContain('data-pending-review-comments-line="40"');
+    expect(html).not.toContain('data-pending-review-comments-line="42"');
+    expect(html).not.toContain("Outside this slice");
+    expect(html.indexOf('data-source-line="41"')).toBeLessThan(html.indexOf('data-pending-review-comments-line="41"'));
+    expect(html.indexOf('data-pending-review-comments-line="41"')).toBeLessThan(html.indexOf('data-source-line="42"'));
+    expect(html.indexOf("First pending draft")).toBeLessThan(html.indexOf("Second pending draft"));
+    expect(html).toContain("Pending");
+    expect(html.match(/title="Edit draft"/g)).toHaveLength(2);
+    expect(html).toContain('data-existing-review-comments-line="41"');
+    expect(html).toContain("Already on GitHub");
   });
 });

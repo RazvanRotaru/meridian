@@ -25,7 +25,11 @@ import {
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const WEB_UI = fileURLToPath(new URL("../web-ui/index.html", import.meta.url));
 const DRAFT_TEXT = "Please keep this tier boundary explicit.";
+const EDITED_DRAFT_TEXT = "Please keep this tier boundary explicit and documented.";
+const SECOND_DRAFT_TEXT = "Please cover the standard-tier fallback with a focused test.";
 const EXISTING_COMMENT_TEXT = "Should this threshold stay aligned with the billing tier?";
+const EDITED_EXISTING_COMMENT_TEXT = "Keep this threshold aligned with the billing tier.";
+const THREAD_REPLY_TEXT = "Agreed — I will keep the two thresholds together.";
 const EXISTING_COMMENT_LINE = 2;
 const ORDER_SERVICE_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/services/orderService.ts" });
 const PRICING_PACKAGE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing" });
@@ -190,6 +194,38 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     const loyaltySourceDialog = page.getByRole("dialog", { name: "Source code" });
     await loyaltySourceDialog.waitFor();
     await loyaltySourceDialog.getByText(EXISTING_COMMENT_TEXT, { exact: true }).waitFor();
+
+    // Submitted comments use GitHub's real edit/reply endpoints and refresh the thread in place.
+    const existingComment = loyaltySourceDialog.locator('[data-existing-review-comment-id="7001"]');
+    await existingComment.getByRole("button", { name: "Edit", exact: true }).click();
+    await existingComment.getByPlaceholder("Edit comment…").fill(EDITED_EXISTING_COMMENT_TEXT);
+    await existingComment.getByRole("button", { name: "Save changes", exact: true }).click();
+    await existingComment.getByText(EDITED_EXISTING_COMMENT_TEXT, { exact: true }).waitFor();
+    await existingComment.getByRole("button", { name: "Reply", exact: true }).click();
+    await existingComment.getByPlaceholder("Reply to e2e-reviewer…").fill(THREAD_REPLY_TEXT);
+    await existingComment.getByRole("button", { name: "Add reply", exact: true }).click();
+    await loyaltySourceDialog.getByText(THREAD_REPLY_TEXT, { exact: true }).waitFor();
+    await loyaltySourceDialog.locator('[data-review-comment-reply="true"]').waitFor();
+    expect(await loyaltySourceDialog.locator('[data-review-comment-reply="true"]').count()).toBe(1);
+
+    // Add two distinct line drafts through the source gutter. Deriving both anchors from the
+    // patch-header span proves the UI only offers GitHub-valid RIGHT-side rows, and exercising two
+    // rows guards against collapsing all local drafts into one top-level review summary.
+    const inlineRange = fixture!.files[0].headerHunks[0];
+    const firstInlineLine = inlineRange.start;
+    const secondInlineLine = inlineRange.end;
+    expect(secondInlineLine).toBeGreaterThan(firstInlineLine);
+    await addInlineDraft(loyaltySourceDialog, firstInlineLine, DRAFT_TEXT);
+    await addInlineDraft(loyaltySourceDialog, secondInlineLine, SECOND_DRAFT_TEXT);
+    const lineDrafts = loyaltySourceDialog.locator("[data-pending-review-comment-id]");
+    expect(await lineDrafts.count()).toBe(2);
+
+    // A pending line draft remains independently editable before the review is submitted.
+    const firstPendingDraft = loyaltySourceDialog.locator(`[data-pending-review-comments-line="${firstInlineLine}"]`);
+    await firstPendingDraft.getByRole("button", { name: "Edit", exact: true }).click();
+    await firstPendingDraft.getByPlaceholder("Edit comment…").fill(EDITED_DRAFT_TEXT);
+    await firstPendingDraft.getByRole("button", { name: "Save changes", exact: true }).click();
+    await firstPendingDraft.getByText(EDITED_DRAFT_TEXT, { exact: true }).waitFor();
     await page.keyboard.press("Escape");
     await loyaltySourceDialog.waitFor({ state: "detached" });
 
@@ -198,18 +234,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await addedBlock.getByTitle("Mark as reviewed").first().click();
     await page.getByText("1/2 files viewed", { exact: true }).waitFor();
 
-    // 4f — comment on that unit and submit exactly one GitHub review payload.
-    addedFile = reviewFileButton(page, "src/pricing/loyaltyTiers.ts");
-    addedBlock = addedFile.locator("xpath=../..");
-    await addedBlock.getByTitle("Expand").click();
-    const unitTick = addedBlock.getByTitle("Mark as reviewed").first();
-    await unitTick.waitFor();
-    const unitRow = unitTick.locator("xpath=..");
-    await unitRow.hover();
-    await unitRow.getByTitle("Add a comment").click();
-    await addedBlock.locator("textarea").fill(DRAFT_TEXT);
-    await addedBlock.getByRole("button", { name: "Add comment" }).click();
-    await page.getByText("1 comment", { exact: true }).waitFor();
+    // 4f — submit one GitHub review whose two drafts stay as two ordered inline comments.
     await page.getByRole("button", { name: "Submit review" }).click();
     await page.getByText("Review submitted", { exact: true }).waitFor();
     expect(submittedReviews).toEqual([
@@ -218,13 +243,20 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
         comments: [
           {
             path: "src/pricing/loyaltyTiers.ts",
-            line: fixture!.files[0].detail.hunks[0].start,
+            line: firstInlineLine,
             side: "RIGHT",
-            body: DRAFT_TEXT,
+            body: EDITED_DRAFT_TEXT,
+          },
+          {
+            path: "src/pricing/loyaltyTiers.ts",
+            line: secondInlineLine,
+            side: "RIGHT",
+            body: SECOND_DRAFT_TEXT,
           },
         ],
       },
     ]);
+    expect(submittedReviews[0]).not.toHaveProperty("body");
 
     // 4g — URL-backed reload restores the review; the checked unit remains in localStorage.
     const storedTick = await storedUnitTicks(page);
@@ -296,6 +328,7 @@ async function setup(): Promise<void> {
     cwd: REPO_ROOT,
     githubClientId: "Iv1.meridian-e2e",
     fallbackToken: "meridian-e2e-token",
+    fallbackUser: { login: "e2e-reviewer", avatarUrl: null },
   });
   const baseUrl = await listenServer(webServer);
   const generated = await generateSession(baseUrl);
@@ -318,6 +351,19 @@ async function teardown(): Promise<void> {
 
 function reviewFileButton(page: Page, path: string): Locator {
   return page.locator(`button[title^="${path}"]`);
+}
+
+async function addInlineDraft(sourceDialog: Locator, line: number, body: string): Promise<void> {
+  const sourceRow = sourceDialog.locator(`tr[data-source-line="${line}"]`);
+  await sourceRow.scrollIntoViewIfNeeded();
+  await sourceRow.hover();
+  await sourceRow.getByRole("button", { name: `Comment on line ${line}`, exact: true }).click();
+  await sourceDialog.getByPlaceholder(`Comment on line ${line}…`).fill(body);
+  await sourceDialog.getByRole("button", { name: "Add comment", exact: true }).click();
+  await sourceDialog
+    .locator(`[data-pending-review-comments-line="${line}"]`)
+    .getByText(body, { exact: true })
+    .waitFor();
 }
 
 async function waitForGraphViewportToSettle(surface: Locator): Promise<void> {
@@ -348,6 +394,8 @@ async function generateSession(baseUrl: string): Promise<{ id: string }> {
 }
 
 function fakeGitHub(source: PrReviewFixture, captured: SubmittedReview[]): typeof fetch {
+  let existingCommentBody = EXISTING_COMMENT_TEXT;
+  const threadReplies: Array<Record<string, unknown>> = [];
   const summary = {
     number: 7,
     title: "Add loyalty tiers",
@@ -382,15 +430,41 @@ function fakeGitHub(source: PrReviewFixture, captured: SubmittedReview[]): typeo
           line: EXISTING_COMMENT_LINE,
           original_line: EXISTING_COMMENT_LINE,
           side: "RIGHT",
-          body: EXISTING_COMMENT_TEXT,
-          user: { login: "existing-reviewer" },
+          body: existingCommentBody,
+          user: { login: "e2e-reviewer" },
           created_at: "2026-07-11T09:30:00Z",
           updated_at: "2026-07-11T09:30:00Z",
           html_url: "https://github.com/e2e/shop/pull/7#discussion_r7001",
         },
+        ...threadReplies,
       ]);
     }
     if (request.method === "GET" && path.endsWith("/pulls/7/reviews")) return json([]);
+    if (request.method === "PATCH" && path === "/repos/e2e/shop/pulls/comments/7001") {
+      const payload = (await request.json()) as { body: string };
+      existingCommentBody = payload.body;
+      return json({ id: 7001 });
+    }
+    if (request.method === "POST" && path === "/repos/e2e/shop/pulls/7/comments/7001/replies") {
+      const payload = (await request.json()) as { body: string };
+      threadReplies.push({
+        id: 7002,
+        in_reply_to_id: 7001,
+        pull_request_review_id: 77,
+        path: "src/pricing/loyaltyTiers.ts",
+        commit_id: source.headSha,
+        original_commit_id: source.headSha,
+        line: EXISTING_COMMENT_LINE,
+        original_line: EXISTING_COMMENT_LINE,
+        side: "RIGHT",
+        body: payload.body,
+        user: { login: "e2e-reviewer" },
+        created_at: "2026-07-11T09:35:00Z",
+        updated_at: "2026-07-11T09:35:00Z",
+        html_url: "https://github.com/e2e/shop/pull/7#discussion_r7002",
+      });
+      return json({ id: 7002 });
+    }
     if (request.method === "POST" && path === "/repos/e2e/shop/pulls/7/reviews") {
       captured.push((await request.json()) as SubmittedReview);
       return json({ html_url: "http://stub/review" });

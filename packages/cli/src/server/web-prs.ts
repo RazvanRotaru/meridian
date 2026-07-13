@@ -1,15 +1,17 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  editPullRequestComment,
   fetchCommitChecks,
   fetchFileAtRef,
   fetchPullRequest,
   fetchPullRequestDiscussion,
   fetchPullRequestFiles,
   listPullRequests,
+  replyToPullRequestComment,
 } from "./github";
 import { submitPullRequestReview, type ReviewCommentInput } from "./github-review";
 import { sendJson } from "./http-response";
-import { githubTokenFor } from "./web-auth";
+import { githubTokenFor, githubUserFor } from "./web-auth";
 import { WebError } from "./web-error";
 import { readJsonBody } from "./web-request";
 import type { Context } from "./web-server";
@@ -250,14 +252,60 @@ export async function handlePullRequestComments(
   }
   // This validation must precede fetchPullRequestDiscussion, where the number enters URL paths.
   const prNumber = parsePositiveInt(query.get("n"), "n");
+  sendJson(response, 200, await pullRequestDiscussion(ctx, request, source, prNumber));
+}
+
+/** Edit an authored review comment or reply to a top-level review thread, then refresh the rail. */
+export async function handlePullRequestCommentMutation(
+  ctx: Context,
+  request: IncomingMessage,
+  response: ServerResponse,
+  query: URLSearchParams,
+): Promise<void> {
+  const source = githubSource(ctx, query.get("id"));
+  if (!source) {
+    sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
+    return;
+  }
+  const body = parseCommentMutationBody(await readJsonBody(request));
+  const token = githubTokenFor(ctx, request);
+  if (!token) {
+    throw new WebError(401, "editing or replying to a comment requires a GitHub sign-in");
+  }
+  const mutation = {
+    owner: source.owner,
+    repo: source.repo,
+    prNumber: body.number,
+    commentId: body.commentId,
+    body: body.body,
+    token,
+  };
+  if (body.action === "edit") {
+    await editPullRequestComment(mutation);
+  } else {
+    await replyToPullRequestComment(mutation);
+  }
+  sendJson(response, 200, await pullRequestDiscussion(ctx, request, source, body.number));
+}
+
+async function pullRequestDiscussion(
+  ctx: Context,
+  request: IncomingMessage,
+  source: Extract<ArtifactSource, { kind: "github" }>,
+  prNumber: number,
+): Promise<Record<string, unknown>> {
   const result = await fetchPullRequestDiscussion({
     owner: source.owner,
     repo: source.repo,
     prNumber,
     token: githubTokenFor(ctx, request),
   });
-  const comments = partitionExtractionSubdir(result.comments, source.subdir).inside;
-  sendJson(response, 200, { ...result, comments });
+  const viewer = githubUserFor(ctx, request)?.login.toLowerCase() ?? null;
+  const comments = partitionExtractionSubdir(result.comments, source.subdir).inside.map((comment) => ({
+    ...comment,
+    viewerCanEdit: viewer !== null && comment.author.toLowerCase() === viewer,
+  }));
+  return { ...result, comments };
 }
 
 export async function handlePullRequestChecks(
@@ -305,12 +353,37 @@ export async function handlePullRequestFileContent(
   sendJson(response, 200, { file, code: result.code, truncated: result.truncated });
 }
 
+interface CommentMutationBody {
+  number: number;
+  action: "edit" | "reply";
+  commentId: number;
+  body: string;
+}
+
+function parseCommentMutationBody(raw: unknown): CommentMutationBody {
+  const record = asRecord(raw);
+  const number = positiveBodyInteger(record.number, "number");
+  const commentId = positiveBodyInteger(record.commentId, "commentId");
+  if (record.action !== "edit" && record.action !== "reply") {
+    throw new WebError(400, "action must be 'edit' or 'reply'");
+  }
+  if (!isFilledString(record.body)) {
+    throw new WebError(400, "body must be a non-empty string");
+  }
+  return { number, action: record.action, commentId, body: record.body.trim() };
+}
+
+function positiveBodyInteger(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new WebError(400, `${name} must be a positive integer`);
+  }
+  return value;
+}
+
 /**
- * POST /api/prs/review — submit a COMMENT review to the PR. The one GitHub WRITE in the server:
- * it requires a resolved token (401 otherwise, never an anonymous call). Anchored `comments`
- * become inline diff comments; anchorless `notes` fold into the review body. Both carry paths the
- * browser knows subdir-STRIPPED, so the repo-root prefix is restored here — for notes too, which
- * is exactly why the body is assembled server-side rather than shipped as prose.
+ * POST /api/prs/review — submit a COMMENT review to the PR. This GitHub write:
+ * it requires a resolved token (401 otherwise, never an anonymous call). Every entry becomes an
+ * individual inline diff comment; review-level body notes are deliberately unsupported.
  */
 export async function handleSubmitReview(
   ctx: Context,
@@ -329,24 +402,13 @@ export async function handleSubmitReview(
     throw new WebError(401, "submitting a review requires a GitHub sign-in");
   }
   const comments = body.comments.map((comment) => ({ ...comment, path: restoreExtractionSubdir(comment.path, source.subdir) }));
-  const reviewBody = body.notes
-    .map((note) => `**${restoreExtractionSubdir(note.path, source.subdir)}**${note.label ? ` · ${note.label}` : ""}: ${note.body}`)
-    .join("\n\n");
-  const result = await submitPullRequestReview({ owner: source.owner, repo: source.repo, prNumber: body.number, body: reviewBody, comments, token });
+  const result = await submitPullRequestReview({ owner: source.owner, repo: source.repo, prNumber: body.number, comments, token });
   sendJson(response, 200, result);
-}
-
-/** A review note without a diff line to stand on; folds into the review body, path restored. */
-interface ReviewNoteInput {
-  path: string;
-  label: string | null;
-  body: string;
 }
 
 interface SubmitReviewBody {
   number: number;
   comments: ReviewCommentInput[];
-  notes: ReviewNoteInput[];
 }
 
 function parseSubmitReviewBody(raw: unknown): SubmitReviewBody {
@@ -357,12 +419,14 @@ function parseSubmitReviewBody(raw: unknown): SubmitReviewBody {
   if (typeof record.number !== "number" || !Number.isSafeInteger(record.number) || record.number <= 0) {
     throw new WebError(400, "number must be a positive integer");
   }
+  if (record.notes !== undefined) {
+    throw new WebError(400, "review notes are not supported; each comment needs an inline path and line");
+  }
   const comments = boundedArray(record.comments, "comments").map(parseComment);
-  const notes = boundedArray(record.notes, "notes").map(parseNote);
-  if (comments.length === 0 && notes.length === 0) {
+  if (comments.length === 0) {
     throw new WebError(400, "a review needs at least one comment");
   }
-  return { number: record.number, comments, notes };
+  return { number: record.number, comments };
 }
 
 function boundedArray(raw: unknown, name: string): unknown[] {
@@ -383,15 +447,6 @@ function parseComment(entry: unknown): ReviewCommentInput {
     throw new WebError(400, "each comment needs a path, a positive line, and a non-empty body");
   }
   return { path, line: line as number, body };
-}
-
-function parseNote(entry: unknown): ReviewNoteInput {
-  const note = asRecord(entry);
-  const { path, label, body } = note;
-  if (!isFilledString(path) || !isFilledString(body)) {
-    throw new WebError(400, "each note needs a path and a non-empty body");
-  }
-  return { path, label: isFilledString(label) ? label : null, body };
 }
 
 function asRecord(entry: unknown): Record<string, unknown> {

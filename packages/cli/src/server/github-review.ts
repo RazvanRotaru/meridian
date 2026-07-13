@@ -1,8 +1,8 @@
 /**
- * The one GitHub WRITE: submit a pull-request review. Split from github.ts (the read client) so
- * each stays a small single-purpose module. Anchors are new-side lines (`side: "RIGHT"`) derived
- * from the same parsed hunks the renderer shows, so they land inside the diff; an empty review
- * body is omitted — GitHub accepts a comment-only review but rejects an empty `body` string.
+ * Submit a pull-request review. Split from github.ts so the review payload remains a small,
+ * single-purpose unit. Anchors are new-side lines (`side: "RIGHT"`) derived
+ * from the same parsed hunks the renderer shows, so they land inside the diff. Reviews created here
+ * are comment-only: every user draft must remain an individual inline GitHub comment.
  */
 
 import { parseReviewSubmitted } from "./github-parse";
@@ -19,8 +19,6 @@ export interface SubmitReviewRequest {
   owner: string;
   repo: string;
   prNumber: number;
-  /** Review-level body (unanchorable notes fold in here); omitted from the POST when empty. */
-  body: string;
   comments: ReviewCommentInput[];
   /** Required: reviews are a write — the caller must have resolved a token before getting here. */
   token: string;
@@ -38,13 +36,10 @@ export async function submitPullRequestReviewWithFetch(
   fetchImpl: typeof fetch,
   request: SubmitReviewRequest,
 ): Promise<SubmitReviewResult> {
-  const payload: Record<string, unknown> = {
+  const payload = {
     event: "COMMENT",
     comments: request.comments.map((comment) => ({ path: comment.path, line: comment.line, side: "RIGHT", body: comment.body })),
   };
-  if (request.body.trim().length > 0) {
-    payload.body = request.body;
-  }
   const url = repoApi(request.owner, request.repo, `/pulls/${request.prNumber}/reviews`);
   return parseReviewSubmitted(await postApi(fetchImpl, url, payload, request.token));
 }

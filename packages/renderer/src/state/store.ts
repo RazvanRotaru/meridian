@@ -461,6 +461,10 @@ export interface BlueprintState {
   reviewCommentsVisible: boolean;
   reviewSubmitStatus: "idle" | "submitting";
   reviewSubmitError: string | null;
+  /** One existing GitHub comment edit/reply at a time; separate from draft-review submission. */
+  prCommentMutationStatus: "idle" | "submitting";
+  prCommentMutationId: number | null;
+  prCommentMutationError: string | null;
   /** html_url of the last submitted review; shows a "view on GitHub" confirmation. */
   reviewSubmittedUrl: string | null;
   /** The graph node ids lit by a panel hover; null == nothing hovered (all blocks full strength). */
@@ -715,6 +719,7 @@ export interface BlueprintState {
   toggleReviewUnitTick(nodeId: string): void;
   toggleReviewFileViewed(path: string): void;
   addReviewComment(path: string, nodeId: string | null, body: string, line?: number | null): void;
+  updateReviewComment(id: string, body: string): void;
   deleteReviewComment(id: string): void;
   setReviewFlowSplitView(view: ReviewFlowSplitView): void;
   setReviewOpenFlowSplitOnSelect(open: boolean): void;
@@ -722,6 +727,8 @@ export interface BlueprintState {
   toggleReviewPanel(): void;
   toggleReviewCommentsVisible(): void;
   submitReviewComments(): Promise<void>;
+  editPrReviewComment(id: number, body: string): Promise<boolean>;
+  replyToPrReviewComment(topLevelId: number, body: string): Promise<boolean>;
   setViewMode(mode: ViewMode): void;
   /** Toggle the full PR-review page: open it, or (when already open) resume the lens you came from. */
   togglePrsView(): void;
@@ -1480,6 +1487,89 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       return get().minimalRelayout(activity);
     };
 
+    const mutatePrReviewComment = async (mutation: {
+      number: number;
+      action: "edit" | "reply";
+      commentId: number;
+      body: string;
+      reviewKey: string;
+    }): Promise<boolean> => {
+      // A mutation response is a fresh discussion snapshot. Invalidate an older selection/refresh
+      // read now, then invalidate any read started during the POST when the response is committed.
+      prDiscussionSeq += 1;
+      set({
+        prCommentMutationStatus: "submitting",
+        prCommentMutationId: mutation.commentId,
+        prCommentMutationError: null,
+      });
+      const ownsLane = () => {
+        const current = get();
+        return current.prCommentMutationStatus === "submitting"
+          && current.prCommentMutationId === mutation.commentId;
+      };
+      const sameReview = () => {
+        const current = get();
+        return current.prReviewed === mutation.number
+          && current.prSelected === mutation.number
+          && current.review?.context.reviewKey === mutation.reviewKey;
+      };
+      try {
+        const response = await fetch(prCommentsUrl, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            number: mutation.number,
+            action: mutation.action,
+            commentId: mutation.commentId,
+            body: mutation.body,
+          }),
+        });
+        if (!ownsLane()) {
+          return false;
+        }
+        if (!sameReview()) {
+          set({ prCommentMutationStatus: "idle", prCommentMutationId: null, prCommentMutationError: null });
+          return false;
+        }
+        if (!response.ok) {
+          const error = await prCommentErrorMessage(response);
+          if (ownsLane()) {
+            set({
+              prCommentMutationStatus: "idle",
+              prCommentMutationId: null,
+              prCommentMutationError: sameReview() ? error : null,
+            });
+          }
+          return false;
+        }
+        const discussion = (await response.json()) as PrDiscussionResult;
+        if (!ownsLane() || !sameReview()) {
+          if (ownsLane()) {
+            set({ prCommentMutationStatus: "idle", prCommentMutationId: null, prCommentMutationError: null });
+          }
+          return false;
+        }
+        prDiscussionSeq += 1;
+        set({
+          prDiscussion: { comments: discussion.comments, reviews: discussion.reviews },
+          prCommentMutationStatus: "idle",
+          prCommentMutationId: null,
+          prCommentMutationError: null,
+        });
+        return true;
+      } catch {
+        if (ownsLane()) {
+          set({
+            prCommentMutationStatus: "idle",
+            prCommentMutationId: null,
+            prCommentMutationError: sameReview() ? "could not reach the server" : null,
+          });
+        }
+        return false;
+      }
+    };
+
     return {
     artifact: dependencies.artifact,
     index: dependencies.index,
@@ -1570,6 +1660,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewCommentsVisible: true,
     reviewSubmitStatus: "idle",
     reviewSubmitError: null,
+    prCommentMutationStatus: "idle",
+    prCommentMutationId: null,
+    prCommentMutationError: null,
     reviewSubmittedUrl: null,
     reviewLitNodeIds: null,
     reviewSelectedId: null,
@@ -3798,6 +3891,22 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       persistReviewProgress(get());
     },
 
+    updateReviewComment(id, body) {
+      const state = get();
+      const trimmed = body.trim();
+      if (!state.review || trimmed.length === 0 || !state.reviewComments.some((comment) => comment.id === id)) {
+        return;
+      }
+      // Replace only the prose. The captured anchor, revision provenance, id, and timestamp remain
+      // immutable so editing a draft cannot silently retarget it or make an old line look fresh.
+      set({
+        reviewComments: state.reviewComments.map((comment) => comment.id === id ? { ...comment, body: trimmed } : comment),
+        reviewSubmittedUrl: null,
+        reviewSubmitError: null,
+      });
+      persistReviewProgress(get());
+    },
+
     deleteReviewComment(id) {
       if (!get().review) {
         return;
@@ -3895,10 +4004,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ reviewCommentsVisible: !get().reviewCommentsVisible });
     },
 
-    // Submit every draft as ONE GitHub review (event COMMENT): unit/file drafts become inline
-    // comments anchored to new-side diff lines, the rest ride as notes the server folds into the
-    // review body (reviewSubmit.ts). Only the drafts SNAPSHOTTED here are cleared on success — a
-    // comment added while the POST is in flight stays a draft; a failed submit keeps everything.
+    // Submit every draft as ONE GitHub review (event COMMENT), with each draft preserved as an
+    // individual comment anchored to a new-side diff line. If any draft cannot be anchored, reject
+    // the whole submission instead of silently aggregating it into the review body. Only the drafts
+    // SNAPSHOTTED here are cleared on success — a comment added while the POST is in flight stays a
+    // draft; a failed or blocked submit keeps everything.
     async submitReviewComments() {
       const {
         review,
@@ -3928,9 +4038,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       ) {
         return;
       }
-      // Hidden test drafts remain persisted and reappear when Tests is restored; they must not be
-      // silently converted into body notes and submitted while their rows are absent.
+      // Hidden test drafts remain persisted and reappear when Tests is restored; they must neither
+      // submit invisibly nor block the visible draft set while their rows are absent.
       const submission = buildReviewSubmission(visibleComments, reviewFiles, review.context, reviewCommentRangesByFile);
+      if (submission.blocked.length > 0) {
+        const count = submission.blocked.length;
+        const blockedLabel = count === 1
+          ? "1 draft cannot be posted as an inline GitHub comment"
+          : `${count} drafts cannot be posted as inline GitHub comments`;
+        set({
+          reviewSubmitStatus: "idle",
+          reviewSubmitError: `${blockedLabel}. Delete ${count === 1 ? "it" : "them"} or add ${count === 1 ? "a replacement" : "replacements"} on lines shown in the current pull request diff. Nothing was submitted.`,
+        });
+        return;
+      }
       const submittedIds = new Set(visibleComments.map((comment) => comment.id));
       const submittedKey = review.context.reviewKey;
       set({ reviewSubmitStatus: "submitting", reviewSubmitError: null });
@@ -3939,7 +4060,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           method: "POST",
           credentials: "same-origin",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ number: prNumber, comments: submission.comments, notes: submission.notes }),
+          body: JSON.stringify({ number: prNumber, comments: submission.comments }),
         });
         if (!response.ok) {
           set({ reviewSubmitStatus: "idle", reviewSubmitError: await submitErrorMessage(response) });
@@ -3980,6 +4101,59 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       } catch {
         set({ reviewSubmitStatus: "idle", reviewSubmitError: "could not reach the server" });
       }
+    },
+
+    async editPrReviewComment(id, body) {
+      const state = get();
+      const trimmed = body.trim();
+      const target = state.prDiscussion?.comments.find((comment) => comment.id === id);
+      if (
+        !state.review
+        || state.prReviewed === null
+        || state.prSelected !== state.prReviewed
+        || trimmed.length === 0
+        || state.prCommentMutationStatus === "submitting"
+        || state.prReviewStale
+        || state.prReviewRefreshing
+        || state.prReviewStatus === "preparing"
+        || !target?.viewerCanEdit
+      ) {
+        return false;
+      }
+      return mutatePrReviewComment({
+        number: state.prReviewed,
+        action: "edit",
+        commentId: id,
+        body: trimmed,
+        reviewKey: state.review.context.reviewKey,
+      });
+    },
+
+    async replyToPrReviewComment(topLevelId, body) {
+      const state = get();
+      const trimmed = body.trim();
+      const target = state.prDiscussion?.comments.find((comment) => comment.id === topLevelId);
+      if (
+        !state.review
+        || state.prReviewed === null
+        || state.prSelected !== state.prReviewed
+        || trimmed.length === 0
+        || state.prCommentMutationStatus === "submitting"
+        || state.prReviewStale
+        || state.prReviewRefreshing
+        || state.prReviewStatus === "preparing"
+        || !target
+        || target.inReplyToId !== null
+      ) {
+        return false;
+      }
+      return mutatePrReviewComment({
+        number: state.prReviewed,
+        action: "reply",
+        commentId: topLevelId,
+        body: trimmed,
+        reviewKey: state.review.context.reviewKey,
+      });
     },
 
     // Switching mode re-derives + relayouts like a dive, but CARRIES the current code path: the nodes
@@ -5581,8 +5755,8 @@ function applyPrReviewToMap(
 
 /** A line number belongs to one immutable HEAD revision. On refresh OR a later restored session,
  * preserve draft text/labels but permanently disarm anchors without matching provenance. Legacy
- * drafts have no provenance and are therefore conservative notes. File/unit drafts use semantic
- * heuristics at submit time and can continue to re-anchor safely. */
+ * drafts have no provenance and are therefore blocked from submission until replaced. File/unit
+ * drafts use semantic heuristics at submit time and can continue to re-anchor safely. */
 function reconcileReviewLineAnchors(comments: ReviewComment[], revision: PrReviewRevision | null): ReviewComment[] {
   const currentRevision = prReviewRevisionKey(revision);
   if (currentRevision === null) {
@@ -6260,6 +6434,18 @@ async function submitErrorMessage(response: Response): Promise<string> {
     // No JSON body — fall through to the status-based message.
   }
   return response.status === 404 ? "submitting needs a web GitHub session" : "could not submit the review";
+}
+
+async function prCommentErrorMessage(response: Response): Promise<string> {
+  try {
+    const data = (await response.json()) as { error?: unknown };
+    if (typeof data.error === "string" && data.error.length > 0) {
+      return data.error;
+    }
+  } catch {
+    // No JSON body — fall through to the fixed user-facing message.
+  }
+  return response.status === 404 ? "comment updates need a web GitHub session" : "could not update the comment";
 }
 
 /** Persist the review progress WHOLE under its reviewKey — every mutating action funnels here. */
