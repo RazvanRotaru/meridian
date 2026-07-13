@@ -15,7 +15,7 @@ export function log(message: string, level: LogLevel = "info"): void {
 
 /** Emit at warn level; a thin convenience over log(). */
 export function warn(message: string): void {
-  log(`[cart] ${message}`, "warn");
+  log(message, "warn");
 }
 
 /** A namespaced logger so a subsystem can prefix its lines without repeating itself. */
