@@ -11,7 +11,7 @@ export class EmailService {
   /** Build the human-readable confirmation text. */
   private renderConfirmation(order: Order): string {
     const total = (order.totalCents / 100).toFixed(2);
-    return `Thanks! Order ${order.id} totalling $${total} is confirmed.`;
+    return `Thanks! Order ${order.id} totaling $${total} is confirmed.`;
   }
 
   /** Hand the message off to the mail transport. */

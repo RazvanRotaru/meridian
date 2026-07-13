@@ -1,6 +1,6 @@
 import type { Order } from "../domain/order.js";
 import { UserService } from "./userService.js";
-import { formatMoney } from "../utils/legacy.js";
+import { formatMoney } from "../domain/money.js";
 import { Logger } from "../utils/logger.js";
 
 /** Sends transactional messages. Depends on UserService to resolve who to email. */

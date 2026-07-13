@@ -1,6 +1,6 @@
 import type { LoyaltyTier, RegisterRequest, User, UserId } from "../domain/user.js";
 import { UserRepository } from "../repository/userRepository.js";
-import { uuid } from "../utils/legacy.js";
+import { mintId } from "../utils/ids.js";
 import { log } from "../utils/logger.js";
 
 /** Owns the user lifecycle and identity lookups other services lean on. */
@@ -10,7 +10,7 @@ export class UserService {
   /** Register a brand-new shopper. */
   register(request: RegisterRequest): User {
     const user: User = {
-      id: uuid("user"),
+      id: mintId("user"),
       email: request.email,
       displayName: request.displayName,
       loyaltyTier: "none",
