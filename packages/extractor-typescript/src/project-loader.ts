@@ -36,7 +36,7 @@ export function loadProject(options: ExtractOptions): LoadedProject {
   // Member dirs come from manifest paths (relative to the tsconfig / package.json); canonicalize
   // them the same way as `root` (realpath) so globbed file paths and `relativeToRoot` line up even
   // when the caller passed an un-realpathed root (e.g. a `/var` → `/private/var` symlink on macOS).
-  const rawMembers = options.include ? null : manifestMemberDirs(root, options.project);
+  const rawMembers = options.include ? null : manifestMemberDirs(root, options.project, options.supplementalFiles);
   const memberDirs = rawMembers ? rawMembers.map(absoluteRoot) : null;
   if (memberDirs) {
     const globs = memberDirs.flatMap((dir) => [`${dir}/**/*.ts`, `${dir}/**/*.tsx`]);

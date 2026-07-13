@@ -62,4 +62,23 @@ describe("manifestScopeGlobs", () => {
     });
     expect(manifestScopeGlobs(root, join(root, "tsconfig.json"))).toBeNull();
   });
+
+  it("adds the bounded project of a changed file outside solution references", () => {
+    const root = scaffold({
+      "tsconfig.json": SOLUTION_TSCONFIG,
+      "pkgs/package.json": JSON.stringify({ workspaces: ["a"] }),
+      "pkgs/a/package.json": JSON.stringify({ name: "a" }),
+      "app/package.json": JSON.stringify({ name: "app" }),
+      "plugins/e2e-tests/package.json": JSON.stringify({ name: "e2e-tests" }),
+      "plugins/e2e-tests/tsconfig.json": JSON.stringify({ include: ["specs/**/*"] }),
+      "plugins/e2e-tests/specs/approve-flow.spec.ts": "test('approve', () => {});",
+    });
+
+    const globs = manifestScopeGlobs(root, join(root, "tsconfig.json"), [
+      "plugins/e2e-tests/specs/approve-flow.spec.ts",
+    ]);
+
+    expect(globs).toContain(`${root}/plugins/e2e-tests/**/*.ts`);
+    expect(globs).toContain(`${root}/plugins/e2e-tests/**/*.tsx`);
+  });
 });
