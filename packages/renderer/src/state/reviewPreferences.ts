@@ -13,20 +13,23 @@ const STORAGE_KEY = "meridian.prReviewPreferences";
  * preference vocabulary narrower prevents a telemetry source from becoming a persisted review
  * layout choice. */
 export type ReviewFlowSplitView = StaticLogicViewMode;
+export type ReviewCodePreviewTrigger = "hover" | "click";
 
 export interface ReviewPreferences {
-  version: 2;
+  version: 3;
   flowSplitView: ReviewFlowSplitView;
   openFlowSplitOnSelect: boolean;
+  codePreviewTrigger: ReviewCodePreviewTrigger;
 }
 
 export const DEFAULT_REVIEW_PREFERENCES: Readonly<ReviewPreferences> = {
-  version: 2,
+  version: 3,
   flowSplitView: "timeline",
   openFlowSplitOnSelect: true,
+  codePreviewTrigger: "hover",
 };
 
-/** Load the current reader's preferences, migrating v1 and defaulting malformed v2 fields
+/** Load the current reader's preferences, migrating v1/v2 and defaulting malformed v3 fields
  * independently so one damaged choice does not erase the other valid one. */
 export function readReviewPreferences(): ReviewPreferences {
   try {
@@ -58,9 +61,14 @@ function coerce(value: unknown): ReviewPreferences {
     if (typeof record.flowSplitView !== "string" || !isReviewFlowSplitView(record.flowSplitView)) {
       return defaults();
     }
-    return { version: 2, flowSplitView: record.flowSplitView, openFlowSplitOnSelect: true };
+    return {
+      version: 3,
+      flowSplitView: record.flowSplitView,
+      openFlowSplitOnSelect: true,
+      codePreviewTrigger: "hover",
+    };
   }
-  if (record.version !== 2) {
+  if (record.version !== 2 && record.version !== 3) {
     return defaults();
   }
   const flowSplitView = typeof record.flowSplitView === "string" && isReviewFlowSplitView(record.flowSplitView)
@@ -69,7 +77,12 @@ function coerce(value: unknown): ReviewPreferences {
   const openFlowSplitOnSelect = typeof record.openFlowSplitOnSelect === "boolean"
     ? record.openFlowSplitOnSelect
     : DEFAULT_REVIEW_PREFERENCES.openFlowSplitOnSelect;
-  return { version: 2, flowSplitView, openFlowSplitOnSelect };
+  const codePreviewTrigger = record.version === 3
+    && typeof record.codePreviewTrigger === "string"
+    && isReviewCodePreviewTrigger(record.codePreviewTrigger)
+    ? record.codePreviewTrigger
+    : DEFAULT_REVIEW_PREFERENCES.codePreviewTrigger;
+  return { version: 3, flowSplitView, openFlowSplitOnSelect, codePreviewTrigger };
 }
 
 function defaults(): ReviewPreferences {
@@ -78,4 +91,8 @@ function defaults(): ReviewPreferences {
 
 function isReviewFlowSplitView(value: string): value is ReviewFlowSplitView {
   return STATIC_LOGIC_VIEW_MODES.some((entry) => entry.mode === value);
+}
+
+function isReviewCodePreviewTrigger(value: string): value is ReviewCodePreviewTrigger {
+  return value === "hover" || value === "click";
 }

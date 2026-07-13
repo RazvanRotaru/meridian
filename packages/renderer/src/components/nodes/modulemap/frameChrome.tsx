@@ -4,8 +4,10 @@
  * the file card can't drift apart on the expand affordance or the frame treatment.
  */
 
+import type { ChangeStatus } from "@meridian/core";
 import { isSourceBackedNode } from "../../../derive/sourceBackedNode";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
+import { changedColor } from "../../../theme/changedColors";
 import { useSurfaceReadOnly, useSurfaceToggleExpand } from "../../canvas/SurfaceInteractionContext";
 
 export const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -17,16 +19,33 @@ export const SELECT_ACCENT = "#6BE38A";
 export function FrameTitleBar({
   chevron,
   children,
+  status,
 }: {
   chevron?: React.ReactNode;
   children: React.ReactNode;
+  status?: ChangeStatus;
 }) {
   return (
-    <div style={TITLE_BAR}>
+    <div style={frameTitleBarStyle(status)}>
       {children}
       {chevron}
     </div>
   );
+}
+
+/** A changed expanded container keeps its status on the compact title strip, where the signal
+ * remains readable without depending on the size of the frame or the amount of nested content. */
+export function frameTitleBarStyle(status: ChangeStatus | undefined): React.CSSProperties {
+  if (status === undefined) {
+    return TITLE_BAR;
+  }
+  const color = changedColor(status);
+  return {
+    ...TITLE_BAR,
+    borderBottomColor: color,
+    // Stronger than the frame's subtle body wash: the title is the container's compact status band.
+    backgroundImage: `linear-gradient(0deg, ${color}66, ${color}66)`,
+  };
 }
 
 /**

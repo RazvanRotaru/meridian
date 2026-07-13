@@ -1,9 +1,10 @@
 /**
- * Hover-to-preview for every source-backed node on the PR review graph. React Flow owns the node
- * elements (and scales/clips them with the canvas), so this hook listens at the shared surface and
- * portals one fixed, interactive card to document.body. A short dwell avoids fetching source while
- * the pointer merely crosses the graph; a leave grace lets the pointer bridge the gap into the card
- * and scroll it. Loaded and in-flight views are cached per mounted review graph/node.
+ * Hover/click-to-preview for every source-backed node on the PR review graph. React Flow owns the
+ * node elements (and scales/clips them with the canvas), so this hook listens at the shared surface
+ * and portals one fixed, interactive card to document.body. Hover uses a short dwell to avoid
+ * fetching source while the pointer merely crosses the graph, plus a leave grace that lets the
+ * pointer bridge the gap into the card and scroll it. Click previews stay pinned until another node
+ * or the canvas is clicked. Loaded and in-flight views are cached per mounted review graph/node.
  */
 
 import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type SyntheticEvent } from "react";
@@ -12,6 +13,7 @@ import type { Node as FlowNode } from "@xyflow/react";
 import type { GraphNode } from "@meridian/core";
 import { isSourceBackedNode } from "../../derive/sourceBackedNode";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
+import type { ReviewCodePreviewTrigger } from "../../state/reviewPreferences";
 import type { CodeView } from "../../state/store";
 import { CodeBlock } from "../CodeBlock";
 import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeKinds } from "../useChangedLines";
@@ -108,14 +110,19 @@ interface PreviewState {
 }
 
 export interface NodeDiffPreviewControls {
+  onNodeClick(event: ReactMouseEvent, node: FlowNode): void;
   onNodeMouseEnter(event: ReactMouseEvent, node: FlowNode): void;
   onNodeMouseMove(event: ReactMouseEvent, node: FlowNode): void;
   onNodeMouseLeave(): void;
+  onPaneClick(): void;
   onPaneMouseMove(): void;
   layer: ReactNode;
 }
 
-export function useNodeDiffPreview(enabled: boolean): NodeDiffPreviewControls {
+export function useNodeDiffPreview(
+  enabled: boolean,
+  trigger: ReviewCodePreviewTrigger,
+): NodeDiffPreviewControls {
   const index = useBlueprint((state) => state.index);
   const reviewKey = useBlueprint((state) => state.review?.context.reviewKey ?? null);
   const codeModalOpen = useBlueprint((state) => state.codeView?.mode === "modal");
@@ -172,6 +179,7 @@ export function useNodeDiffPreview(enabled: boolean): NodeDiffPreviewControls {
       hideNow();
     }
   }, [codeModalOpen, enabled, hideNow]);
+  useEffect(() => hideNow(), [hideNow, trigger]);
   useEffect(() => () => {
     // Unmount invalidates late requests and timers; no state write is needed once the layer is gone.
     clearOpenTimer();
@@ -180,7 +188,11 @@ export function useNodeDiffPreview(enabled: boolean): NodeDiffPreviewControls {
     activeId.current = null;
   }, [clearCloseTimer, clearOpenTimer]);
 
-  const onNodeMouseEnter = useCallback((event: ReactMouseEvent, flowNode: FlowNode) => {
+  const activatePreview = useCallback((
+    event: ReactMouseEvent,
+    flowNode: FlowNode,
+    dwell: boolean,
+  ) => {
     clearCloseTimer();
     if (!enabled || codeModalOpen) {
       hideNow();
@@ -209,8 +221,7 @@ export function useNodeDiffPreview(enabled: boolean): NodeDiffPreviewControls {
     const bounds = pane
       ? boundsOf(pane)
       : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
-    pendingId.current = graphNode.id;
-    openTimer.current = setTimeout(() => {
+    const open = () => {
       openTimer.current = null;
       pendingId.current = null;
       const token = ++requestToken.current;
@@ -236,25 +247,49 @@ export function useNodeDiffPreview(enabled: boolean): NodeDiffPreviewControls {
           return { ...current, loading: false, view, unavailable: view === null };
         });
       });
-    }, OPEN_DWELL_MS);
+    };
+    if (dwell) {
+      pendingId.current = graphNode.id;
+      openTimer.current = setTimeout(open, OPEN_DWELL_MS);
+    } else {
+      open();
+    }
   }, [clearCloseTimer, clearOpenTimer, codeModalOpen, enabled, hideNow, index, loadCodePreview, reviewKey, scheduleHide]);
+
+  const onNodeMouseEnter = useCallback((event: ReactMouseEvent, flowNode: FlowNode) => {
+    if (trigger === "hover") {
+      activatePreview(event, flowNode, true);
+    }
+  }, [activatePreview, trigger]);
+  const onNodeClick = useCallback((event: ReactMouseEvent, flowNode: FlowNode) => {
+    if (trigger === "click") {
+      activatePreview(event, flowNode, false);
+    }
+  }, [activatePreview, trigger]);
+  const onPointerLeave = useCallback(() => {
+    if (trigger === "hover") {
+      scheduleHide();
+    }
+  }, [scheduleHide, trigger]);
 
   const layer = preview && !codeModalOpen && typeof document !== "undefined"
     ? createPortal(
         <NodeDiffPreviewCard
           preview={preview}
           onMouseEnter={holdPreview}
-          onMouseLeave={scheduleHide}
+          onMouseLeave={onPointerLeave}
         />,
         document.body,
       )
     : null;
 
   return {
+    onNodeClick,
     onNodeMouseEnter,
     onNodeMouseMove: onNodeMouseEnter,
-    onNodeMouseLeave: scheduleHide,
-    onPaneMouseMove: scheduleHide,
+    onNodeMouseLeave: onPointerLeave,
+    onPaneClick: hideNow,
+    onPaneMouseMove: onPointerLeave,
     layer,
   };
 }

@@ -220,7 +220,7 @@ export interface GraphSurfaceProps {
   autoFitView?: boolean;
   /** Wire chrome — hover naming, click-pinned inspector/source evidence, and static labels. */
   wireHover?: boolean;
-  /** PR review only: show a scrollable code preview after dwelling over a source-located node. */
+  /** PR review only: show a scrollable code preview from the reader's chosen node gesture. */
   nodeDiffPreview?: boolean;
   /** Every shared-canvas mount declares its semantic scene explicitly. Empty means this particular
    * scene is already at its root; omission is forbidden so a new mount cannot silently lose zoom
@@ -279,6 +279,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const storeSelected = useBlueprint((state) => state.moduleSelected);
   const selected = props.selectionOverride ?? storeSelected;
   const reviewLit = useBlueprint((state) => state.reviewLitNodeIds);
+  const reviewCodePreviewTrigger = useBlueprint((state) => state.reviewCodePreviewTrigger);
   const index = useBlueprint((state) => state.index);
   const artifact = useBlueprint((state) => state.artifact);
   const telemetryMode = useBlueprint((state) => state.telemetryMode);
@@ -530,7 +531,10 @@ export function GraphSurface(props: GraphSurfaceProps) {
     [wire.edges, preparedEdges.hierarchyEdges],
   );
   const nodeDiffEnabled = props.nodeDiffPreview === true;
-  const nodeDiff = useNodeDiffPreview(nodeDiffEnabled);
+  const nodeDiff = useNodeDiffPreview(nodeDiffEnabled, reviewCodePreviewTrigger);
+  const surfaceNodeClick = props.readOnly
+    ? (props.onToggleExpand === undefined ? undefined : LOCAL_DISCLOSURE_NODE_CLICK)
+    : props.interactions.onNodeClick;
 
   return (
     <SurfaceInteractionScope
@@ -568,15 +572,21 @@ export function GraphSurface(props: GraphSurfaceProps) {
         nodeTypes={moduleNodeTypes}
         edgeTypes={moduleEdgeTypes}
         onInit={props.onInit}
-        onNodeClick={props.readOnly
-          ? (props.onToggleExpand === undefined ? undefined : LOCAL_DISCLOSURE_NODE_CLICK)
-          : props.interactions.onNodeClick}
+        onNodeClick={nodeDiffEnabled
+          ? (event, node) => {
+              nodeDiff.onNodeClick(event, node);
+              surfaceNodeClick?.(event, node);
+            }
+          : surfaceNodeClick}
         onNodeDoubleClick={props.readOnly ? undefined : props.interactions.onNodeDoubleClick}
         onNodeMouseEnter={nodeDiffEnabled ? nodeDiff.onNodeMouseEnter : undefined}
         onNodeMouseMove={nodeDiffEnabled ? nodeDiff.onNodeMouseMove : undefined}
         onNodeMouseLeave={nodeDiffEnabled ? nodeDiff.onNodeMouseLeave : undefined}
         onPaneMouseMove={nodeDiffEnabled ? nodeDiff.onPaneMouseMove : undefined}
         onPaneClick={() => {
+          if (nodeDiffEnabled) {
+            nodeDiff.onPaneClick();
+          }
           // A pane click always unpins the inspector. Frozen context views keep their fixed target set.
           wire.clearInspected();
           if (!props.readOnly) {
