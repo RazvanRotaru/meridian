@@ -23,6 +23,9 @@ export interface ExtractOptions {
   root: string;
   project?: string;
   include?: string[];
+  /** Exact root-relative files that must be admitted in addition to manifest-derived scope.
+   * `--changed-since` uses this for changed files outside a solution tsconfig's references. */
+  supplementalFiles?: string[];
   exclude?: string[];
   depth?: ExtractionDepth;
   /** Keep library/builtin/package dependency edges as `ext:` boundary targets. */

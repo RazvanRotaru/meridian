@@ -22,6 +22,10 @@ beforeAll(() => {
   mkdirSync(join(root, "sub"));
   writeFileSync(join(root, "sub", "tsconfig.json"), JSON.stringify({ include: ["*.ts"] }));
   writeFileSync(join(root, "sub", "thing.ts"), "export function thing(): number { return 1; }\n");
+  mkdirSync(join(root, "plugins", "e2e-tests", "specs"), { recursive: true });
+  writeFileSync(join(root, "plugins", "e2e-tests", "package.json"), JSON.stringify({ name: "e2e-tests" }));
+  writeFileSync(join(root, "plugins", "e2e-tests", "tsconfig.json"), JSON.stringify({ include: ["specs/**/*"] }));
+  writeFileSync(join(root, "plugins", "e2e-tests", "specs", "approve.spec.ts"), "test('approve', () => {});\n");
 });
 
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -35,5 +39,17 @@ describe("loadProject", () => {
   it("keeps tsconfig-selected sources when the config actually lists files", () => {
     const loaded = loadProject({ root: join(root, "sub"), project: join(root, "sub", "tsconfig.json") });
     expect(loaded.sourceFiles).toHaveLength(1);
+  });
+
+  it("loads a supplemental changed-file project outside the solution references", () => {
+    const loaded = loadProject({
+      root,
+      project: join(root, "tsconfig.json"),
+      supplementalFiles: ["plugins/e2e-tests/specs/approve.spec.ts"],
+    });
+
+    expect(loaded.sourceFiles.map((file) => loaded.relativePathOf(file))).toContain(
+      "plugins/e2e-tests/specs/approve.spec.ts",
+    );
   });
 });

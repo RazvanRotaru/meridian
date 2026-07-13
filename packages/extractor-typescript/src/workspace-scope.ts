@@ -15,7 +15,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { ts } from "ts-morph";
 
 const SKIP_DIRS = new Set(["node_modules", "dist", "build", "out", "coverage", ".git"]);
@@ -27,8 +27,12 @@ const SKIP_DIRS = new Set(["node_modules", "dist", "build", "out", "coverage", "
  * member (e.g. a scaffolding `generator/` under an app) is NOT its own boundary; its files roll up to
  * the declared member that contains it.
  */
-export function manifestMemberDirs(root: string, projectPath: string | undefined): string[] | null {
-  const roots = discoverMemberRoots(root, projectPath);
+export function manifestMemberDirs(
+  root: string,
+  projectPath: string | undefined,
+  supplementalFiles: string[] | undefined = undefined,
+): string[] | null {
+  const roots = discoverMemberRoots(root, projectPath, supplementalFiles);
   return roots === null ? null : [...roots].sort();
 }
 
@@ -36,13 +40,21 @@ export function manifestMemberDirs(root: string, projectPath: string | undefined
  * Absolute `**​/*.ts(x)` globs for every declared member, or `null` for a plain single package — the
  * caller then keeps its ordinary behaviour (explicit tsconfig, or a whole-tree glob).
  */
-export function manifestScopeGlobs(root: string, projectPath: string | undefined): string[] | null {
-  const dirs = manifestMemberDirs(root, projectPath);
+export function manifestScopeGlobs(
+  root: string,
+  projectPath: string | undefined,
+  supplementalFiles: string[] | undefined = undefined,
+): string[] | null {
+  const dirs = manifestMemberDirs(root, projectPath, supplementalFiles);
   return dirs === null ? null : dirs.flatMap((dir) => [`${dir}/**/*.ts`, `${dir}/**/*.tsx`]);
 }
 
 /** The member directories to extract, or `null` when no manifest declares a multi-project scope. */
-function discoverMemberRoots(root: string, projectPath: string | undefined): Set<string> | null {
+function discoverMemberRoots(
+  root: string,
+  projectPath: string | undefined,
+  supplementalFiles: string[] | undefined,
+): Set<string> | null {
   const seeds = solutionReferenceDirs(projectPath ?? defaultTsConfig(root));
   const hasWorkspaces = workspacesOf(root).length > 0;
   if (seeds === null && !hasWorkspaces) {
@@ -52,7 +64,48 @@ function discoverMemberRoots(root: string, projectPath: string | undefined): Set
   for (const seed of seeds ?? [root]) {
     expandMember(seed, members, new Set());
   }
+  addSupplementalRoots(root, members, supplementalFiles ?? []);
   return members;
+}
+
+/**
+ * A changed-since/PR file is part of the review even when a solution tsconfig forgot to reference
+ * its project. Admit the nearest nested package/tsconfig root as one extra bounded unit; files
+ * already covered by a declared member change nothing. This keeps ordinary extraction strict while
+ * preventing "not in graph" for the very code a review was opened to inspect.
+ */
+function addSupplementalRoots(root: string, members: Set<string>, files: string[]): void {
+  for (const file of files) {
+    if (!/\.tsx?$/.test(file)) {
+      continue;
+    }
+    const absolute = resolve(root, file);
+    if (!isWithin(absolute, root) || !existsSync(absolute) || [...members].some((member) => isWithin(absolute, member))) {
+      continue;
+    }
+    members.add(nearestNestedProjectRoot(root, absolute));
+  }
+}
+
+/** Prefer the file's own package/tsconfig, never an unrelated repository-root manifest. */
+function nearestNestedProjectRoot(root: string, file: string): string {
+  const fallback = dirname(file);
+  let current = fallback;
+  while (current !== root && isWithin(current, root)) {
+    if (existsSync(join(current, "package.json")) || existsSync(join(current, "tsconfig.json"))) {
+      return current;
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+  return fallback;
+}
+
+function isWithin(path: string, directory: string): boolean {
+  return path === directory || path.startsWith(directory + sep);
 }
 
 /** A seed dir contributes either its workspace members (recursively) or itself as a leaf project. */

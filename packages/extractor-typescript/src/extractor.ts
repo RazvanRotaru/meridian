@@ -116,7 +116,7 @@ function multiPackageWorkspace(options: ExtractOptions): Workspace | null {
     return null; // an explicit program definition wins; the caller asked for exactly that scope
   }
   const root = absoluteRoot(options.root);
-  const memberDirs = manifestMemberDirs(root, undefined);
+  const memberDirs = manifestMemberDirs(root, undefined, options.supplementalFiles);
   if (memberDirs && memberDirs.length >= 2) {
     return workspaceFromMemberDirs(root, memberDirs);
   }

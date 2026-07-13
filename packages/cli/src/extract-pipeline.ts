@@ -60,8 +60,8 @@ export interface PipelineResult {
 
 export async function extractToArtifact(request: PipelineRequest): Promise<PipelineResult> {
   const extractor = await selectExtractor(request.absoluteRoot, request.language);
-  const raw = await runExtract(extractor, request);
   const changedSince = await changedRangesFor(request);
+  const raw = await runExtract(extractor, request, changedSince ? Object.keys(changedSince.ranges) : undefined);
   const classified = channelize(
     classifyChanges(classifyTests(raw, request.excludeTests ?? false), changedSince?.ranges ?? null),
   );
@@ -158,12 +158,19 @@ function classifyChanges(extraction: ExtractionResult, ranges: ChangedRanges | n
   return { ...extraction, nodes: tagChangedNodes(extraction.nodes, ranges) };
 }
 
-async function runExtract(extractor: LanguageExtractor, request: PipelineRequest): Promise<ExtractionResult> {
+async function runExtract(
+  extractor: LanguageExtractor,
+  request: PipelineRequest,
+  changedFiles: string[] | undefined,
+): Promise<ExtractionResult> {
   try {
     return await extractor.extract({
       root: request.absoluteRoot,
       project: request.project,
       include: request.include,
+      // An explicit include is an intentional hard boundary. Otherwise changed-since/PR files must
+      // remain reviewable even when a solution tsconfig forgot to reference their project.
+      supplementalFiles: request.include ? undefined : changedFiles,
       exclude: request.exclude,
       depth: request.depth,
       includeExternal: request.includeExternal,

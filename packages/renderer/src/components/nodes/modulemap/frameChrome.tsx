@@ -32,11 +32,12 @@ export function FrameTitleBar({
 /**
  * The `</>` code button every located Map node (file, class/interface, function/method) carries:
  * opens the code modal on JUST THAT NODE'S span — the clicked function/class/interface (a file node
- * spans the whole file), with its changed lines marked in the gutter + rows (+ added / − deleted /
- * ~ modified). Scoped to the unit on purpose: a changed function should show the function, not the
- * whole file it sits in. Shown for changed AND unchanged nodes. Needs a source location AND the
- * server serving source (`sourceUrl`), so it never dangles. Structural and boundary nodes carry
- * pseudo-locations for graph semantics, but those locations do not name readable source files.
+ * spans the whole file), with its changed lines marked in the gutter + rows (+ head-side additions
+ * and replacements / − removed lines). Scoped to the unit on purpose: a changed function should
+ * show the function, not the whole file it sits in. Shown for changed AND unchanged nodes. Needs a
+ * source location AND the server serving source (`sourceUrl`), so it never dangles. Structural and
+ * boundary nodes carry pseudo-locations for graph semantics, but those locations do not name
+ * readable source files.
  */
 export function CodeButton({ id }: { id: string }) {
   const node = useBlueprint((state) => state.index.nodesById.get(id));
@@ -49,7 +50,7 @@ export function CodeButton({ id }: { id: string }) {
     <button
       type="button"
       style={CODE_BTN}
-      title="View source — changed lines marked + / − / ~"
+      title="View source — changed lines marked + / −"
       aria-label="View source"
       onClick={(event) => {
         event.stopPropagation();
