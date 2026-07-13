@@ -69,6 +69,44 @@ export function RemoveSelectionIcon({ size = 15 }: IconProps) {
   );
 }
 
+/** Friendly ghost / ghost-off — paint-only visibility for the extracted graph's ghost context. */
+export function GhostVisibilityIcon({ size = 15, visible = true }: IconProps & { visible?: boolean }) {
+  return (
+    <svg {...svgProps(size)}>
+      <path d="M5 20.5V11a7 7 0 0 1 14 0v9.5l-2.3-2-2.4 2-2.3-2-2.3 2-2.4-2-2.3 2Z" />
+      <path d="M9 11h.01M15 11h.01" />
+      {visible ? null : <path d="M4 4l16 16" />}
+    </svg>
+  );
+}
+
+/** Several node links sharing a central trunk — paint-only Visual Highways bundling. */
+export function HighwaysIcon({ size = 15 }: IconProps) {
+  return (
+    <svg {...svgProps(size)}>
+      <circle cx="4" cy="6" r="1.5" />
+      <circle cx="4" cy="18" r="1.5" />
+      <circle cx="20" cy="6" r="1.5" />
+      <circle cx="20" cy="18" r="1.5" />
+      <path d="M5.5 6c3.5 0 3.5 4 6.5 4h0c3 0 3-4 6.5-4" />
+      <path d="M5.5 18c3.5 0 3.5-4 6.5-4h0c3 0 3 4 6.5 4" />
+      <path d="M12 10v4" />
+    </svg>
+  );
+}
+
+/** Three adjustable wires — choose which semantic edge types are painted. */
+export function EdgeFilterIcon({ size = 15 }: IconProps) {
+  return (
+    <svg {...svgProps(size)}>
+      <path d="M4 6h5M15 6h5M4 12h8M18 12h2M4 18h3M13 18h7" />
+      <circle cx="12" cy="6" r="2" />
+      <circle cx="15" cy="12" r="2" />
+      <circle cx="10" cy="18" r="2" />
+    </svg>
+  );
+}
+
 /** Repository frame with lit cards — place the extracted code back in whole-codebase context. */
 export function CodebaseHighlightIcon({ size = 15 }: IconProps) {
   return (

@@ -16,24 +16,35 @@ import type { ReviewTick } from "../../state/reviewTicksPref";
 import type { GraphIndex } from "../../graph/graphIndex";
 import { relatedNodeIds } from "../../derive/flowBlocks";
 import { REVIEW_FLOW_SPLIT_ID } from "../flowexplorer/flowSelection";
+import { isReviewPathInScope } from "../../derive/reviewPathScope";
 
 function ReviewFlowsSectionImpl() {
   const review = useBlueprint((state) => state.review);
   const ticks = useBlueprint((state) => state.reviewTicks);
   const index = useBlueprint((state) => state.index);
   const reviewGroups = useBlueprint((state) => state.reviewGroups);
+  const pathScope = useBlueprint((state) => state.reviewPathScope);
+  const focusedSubgraphPaths = useBlueprint((state) => state.reviewFocusedSubgraph?.filePaths ?? null);
   const activeGroup = useActiveChangeGroup();
   const [open, setOpen] = useState(true);
   const allImpacted = useMemo(() => review?.rows.filter((row) => row.group === "impacted") ?? [], [review]);
   // An isolated change group scopes the impacted list to its own flows; a flow crossing groups
   // appears in every group it touches, marked with the "spans groups" chip.
   const rows = useMemo(() => {
-    if (activeGroup === null) {
-      return allImpacted;
+    let scoped = allImpacted;
+    if (activeGroup !== null) {
+      const member = new Set(activeGroup.flowIds);
+      scoped = scoped.filter((row) => member.has(row.flow.flowId));
     }
-    const member = new Set(activeGroup.flowIds);
-    return allImpacted.filter((row) => member.has(row.flow.flowId));
-  }, [allImpacted, activeGroup]);
+    if (pathScope !== null) {
+      scoped = scoped.filter((row) => row.flow.changedFilesHit.some((file) => isReviewPathInScope(file, pathScope)));
+    }
+    if (focusedSubgraphPaths !== null) {
+      const member = new Set(focusedSubgraphPaths);
+      scoped = scoped.filter((row) => row.flow.changedFilesHit.some((file) => member.has(file)));
+    }
+    return scoped;
+  }, [allImpacted, activeGroup, focusedSubgraphPaths, pathScope]);
   const crossGroup = useMemo(() => new Set(reviewGroups?.crossGroupFlowIds ?? []), [reviewGroups]);
   if (!review || allImpacted.length === 0) {
     return null;
@@ -50,7 +61,7 @@ function ReviewFlowsSectionImpl() {
       {open && (
         <div style={FLOW_LIST} role="region" aria-label="Impacted logic flows list">
           {rows.length === 0
-            ? <div style={EMPTY_NOTE}>No impacted flows in this group.</div>
+            ? <div style={EMPTY_NOTE}>No impacted flows in this review scope.</div>
             : rows.map((row) => (
               <FlowRow key={row.flow.flowId} row={row} review={review} index={index} ticks={ticks} spansGroups={crossGroup.has(row.flow.flowId)} />
             ))}

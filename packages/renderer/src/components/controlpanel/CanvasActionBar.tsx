@@ -7,6 +7,7 @@
 import { Panel } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { removableModuleSelectionCount } from "../../state/store";
+import { isReviewPathInScope } from "../../derive/reviewPathScope";
 import {
   CanvasActionBarFrame,
   CanvasActionButton,
@@ -14,6 +15,7 @@ import {
   CanvasActionSeparator,
 } from "./canvasActionBarKit";
 import { canvasActionPlacement, panelAnchorStyle, useSurfaceSize, type CanvasActionMode } from "./canvasActionBarLayout";
+import { CanvasRelationFilter } from "./CanvasRelationFilter";
 import {
   BackToGraphIcon,
   CloseIcon,
@@ -21,6 +23,8 @@ import {
   CollapseIcon,
   ExpandIcon,
   ExtractSelectionIcon,
+  GhostVisibilityIcon,
+  HighwaysIcon,
   RemoveSelectionIcon,
   RearrangeIcon,
   RecenterIcon,
@@ -33,6 +37,10 @@ export interface CanvasActionBarProps {
   codebaseButtonRef?: React.Ref<HTMLButtonElement>;
   onBackToGraph?: () => void;
   backButtonRef?: React.Ref<HTMLButtonElement>;
+  ghostNodesVisible?: boolean;
+  hasGhostNodes?: boolean;
+  onToggleGhostNodes?: () => void;
+  relationKinds?: readonly string[];
 }
 
 export function CanvasActionBar({
@@ -41,12 +49,49 @@ export function CanvasActionBar({
   codebaseButtonRef,
   onBackToGraph,
   backButtonRef,
+  ghostNodesVisible = true,
+  hasGhostNodes = false,
+  onToggleGhostNodes,
+  relationKinds,
 }: CanvasActionBarProps = {}) {
   const selectedCount = useBlueprint((state) => state.moduleSelected.size);
   const removableCount = useBlueprint(removableModuleSelectionCount);
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const minimalHasMembers = useBlueprint((state) => state.minimalMemberIds.length > 0);
   const minimalArranged = useBlueprint((state) => state.minimalArrange);
+  const showHighways = useBlueprint((state) => state.showHighways);
+  const reviewActive = useBlueprint((state) => state.review !== null);
+  const focusedReview = useBlueprint((state) => state.reviewFocusedSubgraph);
+  const selectedReviewContainerId = useBlueprint((state) => {
+    if (
+      state.review === null
+      || state.minimalLayoutStatus !== "ready"
+      || state.moduleSelected.size !== 1
+      || state.flowSelection !== null
+    ) {
+      return null;
+    }
+    const id = state.moduleSelected.values().next().value as string | undefined;
+    const node = id === undefined ? undefined : state.index.nodesById.get(id);
+    if (
+      node === undefined
+      || (node.kind !== "package" && node.kind !== "directory")
+      || !state.index.isContainer(node.id)
+    ) {
+      return null;
+    }
+    const activeGroup = state.reviewActiveGroupId === null
+      ? null
+      : state.reviewGroups?.groups.find((group) => group.id === state.reviewActiveGroupId) ?? null;
+    const groupFiles = activeGroup === null ? null : new Set(activeGroup.files);
+    const hasChangedFile = state.reviewFiles.some((file) =>
+      file.moduleId !== null
+      && (groupFiles === null || groupFiles.has(file.path))
+      && isReviewPathInScope(file.path, state.reviewPathScope)
+      && state.index.isWithinFocus(node.id, file.moduleId),
+    );
+    return hasChangedFile ? node.id : null;
+  });
   const minimalChanged = useBlueprint(
     (state) => state.minimalMemberIds.length > 0 && (!sameMembers(state.minimalMemberIds, state.minimalSeedIds)
       || state.minimalArrange
@@ -61,12 +106,20 @@ export function CanvasActionBar({
     rearrangeMinimalGraph,
     resetMinimalGraph,
     closeMinimalGraph,
+    openReviewSubgraph,
+    closeReviewSubgraph,
+    toggleHighways,
   } = useBlueprintActions();
   const [anchorRef, surfaceSize] = useSurfaceSize();
 
   const canExtract = selectedCount > 0 && !minimalOpen;
   const codebaseView = minimalOpen && minimalView === "codebase";
-  const mode: CanvasActionMode = codebaseView ? "codebase" : minimalOpen ? "minimal" : canExtract ? "extract" : "base";
+  const reviewNavigationAction = focusedReview !== null || (reviewActive && selectedReviewContainerId !== null);
+  const mode: CanvasActionMode = codebaseView
+    ? "codebase"
+    : minimalOpen
+      ? reviewNavigationAction ? "review-focus" : "minimal"
+      : canExtract ? "extract" : "base";
   const placement = canvasActionPlacement(surfaceSize?.width ?? null, mode, surfaceSize?.height ?? null);
   const boundaryOrientation = placement.layout === "row" ? "vertical" : "horizontal";
   return (
@@ -139,6 +192,50 @@ export function CanvasActionBar({
           <>
             <CanvasActionSeparator orientation={boundaryOrientation} />
             <CanvasActionGroup label="Extracted graph actions">
+              {focusedReview === null ? null : (
+                <CanvasActionButton
+                  primary
+                  ariaLabel="Back to PR graph"
+                  title={`Return from ${focusedReview.label} to the previous PR graph`}
+                  icon={<BackToGraphIcon size={18} />}
+                  onClick={closeReviewSubgraph}
+                />
+              )}
+              {!reviewActive || focusedReview !== null || selectedReviewContainerId === null ? null : (
+                <CanvasActionButton
+                  primary
+                  ariaLabel="Open selected container as review subgraph"
+                  title="Open the selected container's changed files in a separate review graph"
+                  icon={<ExtractSelectionIcon size={18} />}
+                  onClick={() => openReviewSubgraph(selectedReviewContainerId)}
+                />
+              )}
+              {onToggleGhostNodes === undefined ? null : (
+                <CanvasActionButton
+                  ariaLabel="Show ghost nodes"
+                  title={
+                    !hasGhostNodes
+                      ? "No ghost nodes in this extracted graph"
+                      : ghostNodesVisible
+                        ? "Hide ghost nodes and their connections"
+                        : "Show ghost nodes and their connections"
+                  }
+                  icon={<GhostVisibilityIcon size={18} visible={ghostNodesVisible} />}
+                  onClick={onToggleGhostNodes}
+                  disabled={!hasGhostNodes}
+                  pressed={ghostNodesVisible}
+                />
+              )}
+              <CanvasActionButton
+                ariaLabel="Highways"
+                title={showHighways
+                  ? "Disable highways and draw node links individually"
+                  : "Enable highways for dense edge traffic"}
+                icon={<HighwaysIcon size={18} />}
+                onClick={toggleHighways}
+                pressed={showHighways}
+              />
+              {relationKinds === undefined ? null : <CanvasRelationFilter kinds={relationKinds} />}
               <CanvasActionButton
                 ariaLabel="Rearrange extracted graph"
                 title={

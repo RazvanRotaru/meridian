@@ -24,11 +24,12 @@ function ReviewPanelImpl() {
   const review = useBlueprint((state) => state.review);
   const hidden = useBlueprint((state) => state.reviewPanelHidden);
   const showTests = useBlueprint((state) => state.showTests);
+  const reviewDiffOnly = useBlueprint((state) => state.reviewDiffOnly);
   const visibleFileCount = useBlueprint((state) => state.reviewFiles.length);
   usePrReviewFreshnessWatcher();
   const flowView = useBlueprint((state) => state.reviewFlowSplitView);
   const openFlowSplitOnSelect = useBlueprint((state) => state.reviewOpenFlowSplitOnSelect);
-  const { setReviewFlowSplitView, setReviewOpenFlowSplitOnSelect, toggleShowTests } = useBlueprintActions();
+  const { setReviewFlowSplitView, setReviewOpenFlowSplitOnSelect, toggleReviewDiffOnly, toggleShowTests } = useBlueprintActions();
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const preferencesButtonRef = useRef<HTMLButtonElement | null>(null);
   const closePreferences = () => {
@@ -74,11 +75,17 @@ function ReviewPanelImpl() {
           <div style={PREFERENCES_LAYER}>
             <ReviewPreferencesPane
               excludeTestChanges={!showTests}
+              hideNodesNotInDiff={reviewDiffOnly}
               flowView={flowView}
               openFlowSplitOnSelect={openFlowSplitOnSelect}
               onExcludeTestChangesChange={(exclude) => {
                 if (exclude === showTests) {
                   toggleShowTests();
+                }
+              }}
+              onHideNodesNotInDiffChange={(hide) => {
+                if (hide !== reviewDiffOnly) {
+                  toggleReviewDiffOnly();
                 }
               }}
               onFlowViewChange={setReviewFlowSplitView}

@@ -1,7 +1,9 @@
 /**
- * Lay out a MinimalSubgraphSpec by MIRRORING the Module map: instead of a fresh whole-graph ELK pass,
- * every member box the map had on screen keeps its exact captured map position (`basePositions`), and
- * later promotions are placed relative to a connected placed node (see `minimalPlacement`). Member
+ * Lay out a MinimalSubgraphSpec by MIRRORING the Module map when captured geometry exists: every
+ * member box the map had on screen keeps its exact captured map position (`basePositions`), and later
+ * promotions are placed relative to a connected placed node (see `minimalPlacement`). Review graphs
+ * and other extracts without a real map anchor instead use the canonical canvas ELK pass immediately,
+ * so an empty mirror cannot degrade into a single vertical column. Member
  * cards reuse the Map's OWN `file` / `package` components. The overlay is FLAT: containment frames
  * aren't drawn (their file cards sit at absolute positions). GHOST satellites are kept OUT of both
  * placement paths — exactly like the Map (`moduleLevelLayout`), they band outside the member core via
@@ -28,6 +30,12 @@ import type { GhostData } from "../derive/ghostDeps";
 import type { ModuleGroupData, ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
 import { MAP_RELATION_POLICY, type LensRelationPolicy } from "../graph/lensRelationPolicy";
 import { relationParticipatesInLayout } from "../graph/lensRelationPolicy";
+import { mapWithConcurrency } from "./mapWithConcurrency";
+
+// ELK runs on the renderer's main thread and owns a full graph copy per pending layout. A PR may
+// expand dozens of changed files at once, so keep only two per-file layouts in flight instead of
+// allocating every expansion up front. The ordered mapper preserves the old Promise.all ordering.
+const EXPANSION_LAYOUT_CONCURRENCY = 2;
 
 /** One expanded Map subtree laid out by the Map's own nested-ELK pass. Its root sits first, ready to
  * be anchored among the minimal graph's other top-level cards. */
@@ -79,10 +87,15 @@ export async function layoutMinimalSubgraph(
     .filter((edge) => edge.ghost !== true && minimalEdgeParticipatesInLayout(edge, relationPolicy))
     .map((edge) => projectPlacementEdge(edge, expansionOwner))
     .filter((edge): edge is { source: string; target: string } => edge !== null);
+  // Mirror only when at least one current top-level card has real captured geometry. Review/path/group
+  // extracts deliberately start from an empty position map; feeding that into the mirror placer gives
+  // it no anchor and stacks every card at one x-coordinate. In that case use the same canonical ELK
+  // path as Rearrange. A later promotion can still grow a genuine map mirror from any retained anchor.
+  const hasMirrorAnchor = cards.some((card) => basePositions[card.id] !== undefined);
   // Mirror path overrides only expanded frames and group summary cards: captured FILE cards keep their
   // exact map footprint, while a package member must always use its own 300×60 summary-card footprint.
   // Arrange path needs every card's real size so ELK reserves the right footprint.
-  const placement = arrange
+  const placement = arrange || !hasMirrorAnchor
     ? await arrangeMinimalCards(cards.map((card) => card.id), cardSizes(cards, laidByRoot), arrangeEdges)
     : await mirrorPlacement(cards, importEdges, basePositions, mirrorSizeOverrides(cards, laidByRoot), laidByRoot.size > 0);
   const { nodes, edges } = emitCards(cards, placement, laidByRoot);
@@ -257,8 +270,10 @@ async function layoutExpansions(
       edges: expansion.edges,
     })),
   ];
-  const laid = await Promise.all(
-    expansions.map(async (exp) => {
+  const laid = await mapWithConcurrency(
+    expansions,
+    EXPANSION_LAYOUT_CONCURRENCY,
+    async (exp) => {
       const { nodes, edges } = await layoutModuleTree(exp.nodes, exp.edges, relationPolicy);
       return {
         rootId: exp.rootId,
@@ -266,7 +281,7 @@ async function layoutExpansions(
         edges,
         nodeIds: new Set(exp.nodes.map((node) => node.id)),
       } satisfies LaidExpansion;
-    }),
+    },
   );
   return new Map(laid.map((entry) => [entry.rootId, entry]));
 }

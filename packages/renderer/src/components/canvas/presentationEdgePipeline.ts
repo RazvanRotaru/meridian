@@ -41,7 +41,7 @@ export function prepareCanvasEdges(
     }
     prepared = foldPairRibbons(prepared);
     if (flags.routing) prepared = routeFrameEdges(prepared, nodes);
-    if (flags.spooling) prepared = spoolFanEdges(prepared);
+    if (flags.spooling) prepared = spoolFanEdges(prepared, selected);
   } else {
     prepared = foldPairRibbons(prepared);
   }

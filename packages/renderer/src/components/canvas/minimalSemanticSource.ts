@@ -25,6 +25,15 @@ import type { ServiceScope } from "../../state/serviceScope";
 import { moduleSurfaceSpec } from "./surfaceSpec";
 import type { SemanticLodLayer } from "./mapLodGeometry";
 
+/** A PR review is the navigation root of its overlay. Removing the metadata-only source parent
+ * disables both its preview band and its outward commit without changing ordinary extractions. */
+export function minimalSemanticLayersAtReviewBoundary<T extends readonly SemanticLodLayer[]>(
+  layers: T,
+  reviewActive: boolean,
+): T | readonly [] {
+  return reviewActive ? [] : layers;
+}
+
 export const MINIMAL_SOURCE_GRAPH_ANCHOR_ID = "semantic:minimal:source-graph";
 
 export interface MinimalSourceGraphState {

@@ -328,41 +328,33 @@ function renderHighlightedLines(
   ));
 }
 
+// GitHub's diff has no third "modified" colour: a replaced line shows GREEN on the head side, with
+// its old text as a RED removed row. So a modified head line paints exactly like an added one — the
+// removed counterpart is already rendered as a red ghost row (see removedRows).
 function lineMarker(kind: ChangedLineKind | undefined, changed: boolean, evidence: boolean): string {
-  return kind === "added"
+  return kind === "added" || kind === "modified"
     ? "+ "
     : kind === "deleted"
       ? "- "
-      : kind === "modified"
-        ? "~ "
-        : evidence
-          ? "› "
-          : changed
-            ? "● "
-            : "";
+      : evidence
+        ? "› "
+        : changed
+          ? "● "
+          : "";
 }
 
 function lineRowStyle(kind: ChangedLineKind | undefined): React.CSSProperties | undefined {
   if (!kind) {
     return undefined;
   }
-  if (kind === "added") {
-    return ADDED_ROW_STYLE;
-  }
   if (kind === "deleted") {
     return DELETED_ROW_STYLE;
   }
-  return MODIFIED_ROW_STYLE;
+  return ADDED_ROW_STYLE; // added and modified are both head-side green
 }
 
 function kindGutterStyle(kind: ChangedLineKind): React.CSSProperties {
-  if (kind === "added") {
-    return ADDED_GUTTER_STYLE;
-  }
-  if (kind === "deleted") {
-    return DELETED_GUTTER_STYLE;
-  }
-  return MODIFIED_GUTTER_STYLE;
+  return kind === "deleted" ? DELETED_GUTTER_STYLE : ADDED_GUTTER_STYLE;
 }
 
 // Shared by the styles below and the scroll-to-diff math — keep the three in sync.
@@ -426,15 +418,10 @@ const CHANGED_LINE_STYLE: React.CSSProperties = { color: "#E2A33C", fontWeight: 
 const EVIDENCE_GUTTER_STYLE: React.CSSProperties = { color: "#7DD3FC", fontWeight: 800 };
 const CODE_LINE_STYLE: React.CSSProperties = { display: "block", width: "100%" };
 const ADDED_GUTTER_STYLE: React.CSSProperties = { color: "#56C271", fontWeight: 700 };
-const MODIFIED_GUTTER_STYLE: React.CSSProperties = { color: "#E6B84D", fontWeight: 700 };
 const DELETED_GUTTER_STYLE: React.CSSProperties = { color: "#F0787C", fontWeight: 700 };
 const ADDED_ROW_STYLE: React.CSSProperties = {
   background: "rgba(86,194,113,0.20)",
   boxShadow: "inset 3px 0 0 #56C271",
-};
-const MODIFIED_ROW_STYLE: React.CSSProperties = {
-  background: "rgba(230,184,77,0.18)",
-  boxShadow: "inset 3px 0 0 #E6B84D",
 };
 const DELETED_ROW_STYLE: React.CSSProperties = {
   background: "rgba(240,120,124,0.20)",

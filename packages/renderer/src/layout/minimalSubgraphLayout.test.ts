@@ -201,6 +201,16 @@ describe("layoutMinimalSubgraph", () => {
     expect(rectOf(nodes.find((node) => node.id === "m:b")!)).toEqual(base["m:b"]);
   });
 
+  it("uses the canonical canvas layout when there is no captured geometry to mirror", async () => {
+    const { nodes } = await layoutMinimalSubgraph(depOnlyCouplingSpec(), {});
+    const a = nodes.find((node) => node.id === "m:a")!;
+    const b = nodes.find((node) => node.id === "m:b")!;
+
+    // The dependency points b → a. Canonical ELK therefore gives the pair distinct horizontal
+    // layers; the empty mirror fallback put both at the same x and stacked them vertically.
+    expect(b.position.x).toBeLessThan(a.position.x);
+  });
+
   it("renders a rolled directory with the ordinary expandable Map package contract", async () => {
     const { nodes } = await layoutMinimalSubgraph(rolledGroupSpec(), {});
     const group = nodes.find((node) => node.id === "p:src");

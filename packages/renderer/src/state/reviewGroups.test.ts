@@ -5,7 +5,7 @@
  * connected change, c.ts an unrelated one; all three files arrive in a single PR.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { GraphArtifact, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { createBlueprintStore, type StoreDependencies } from "./store";
@@ -39,6 +39,7 @@ function pr(number: number): PrSummary {
 }
 
 const PACKAGE_ID = "ts:src";
+const FS_ID = "ts:src/fs";
 const FILE_A = "ts:src/a.ts";
 const FILE_B = "ts:src/b.ts";
 const FILE_C = "ts:src/c.ts";
@@ -53,12 +54,13 @@ const ARTIFACT: GraphArtifact = {
   target: { name: "fixture", root: ".", language: "typescript" },
   nodes: [
     node(PACKAGE_ID, "package", "src"),
-    node(FILE_A, "module", "src/a.ts", PACKAGE_ID),
-    node(FILE_B, "module", "src/b.ts", PACKAGE_ID),
-    node(FILE_C, "module", "src/c.ts", PACKAGE_ID),
+    node(FS_ID, "package", "src/fs", PACKAGE_ID),
+    node(FILE_A, "module", "src/a.ts", FS_ID),
+    node(FILE_B, "module", "src/b.ts", FS_ID),
+    node(FILE_C, "module", "packages/c.ts", PACKAGE_ID),
     node(FN_A, "function", "src/a.ts", FILE_A),
     node(FN_B, "function", "src/b.ts", FILE_B),
-    node(FN_C, "function", "src/c.ts", FILE_C),
+    node(FN_C, "function", "packages/c.ts", FILE_C),
   ],
   edges: [
     { id: `imports@${FILE_A}|${FILE_B}`, source: FILE_A, target: FILE_B, kind: "imports", resolution: "resolved", weight: 1 },
@@ -97,7 +99,7 @@ function reviewedStore(files: Array<{ path: string }>, extra?: Partial<StoreDepe
   return store;
 }
 
-const MIXED_PR = [{ path: "src/a.ts" }, { path: "src/b.ts" }, { path: "src/c.ts" }];
+const MIXED_PR = [{ path: "src/a.ts" }, { path: "src/b.ts" }, { path: "packages/c.ts" }];
 
 describe("change groups in PR review", () => {
   it("partitions the reviewed PR into disjoint groups and starts on All", () => {
@@ -105,7 +107,7 @@ describe("change groups in PR review", () => {
     const groups = store.getState().reviewGroups;
     expect(groups?.groups.map((group) => group.files)).toEqual([
       ["src/a.ts", "src/b.ts"],
-      ["src/c.ts"],
+      ["packages/c.ts"],
     ]);
     expect(store.getState().reviewActiveGroupId).toBeNull();
     expect(store.getState().reviewAllSeedIds).toEqual([FILE_A, FILE_B, FILE_C]);
@@ -142,6 +144,143 @@ describe("change groups in PR review", () => {
     expect(store.getState().minimalSeedIds).toEqual([FILE_A, FILE_B, FILE_C]);
   });
 
+  it("narrows the active review to a segment-safe path prefix and clears it losslessly", () => {
+    const store = reviewedStore(MIXED_PR);
+
+    store.getState().selectReviewPathScope("./src/");
+    expect(store.getState().reviewPathScope).toBe("src");
+    expect(store.getState().minimalSeedIds).toEqual([FILE_A, FILE_B]);
+    expect(store.getState().minimalMemberIds).toEqual([FILE_A, FILE_B]);
+
+    store.getState().selectReviewPathScope(null);
+    expect(store.getState().reviewPathScope).toBeNull();
+    expect(store.getState().minimalSeedIds).toEqual([FILE_A, FILE_B, FILE_C]);
+  });
+
+  it("resumes the same change group and path scope instead of rebuilding the full PR graph", async () => {
+    const store = reviewedStore(MIXED_PR);
+    const connected = store.getState().reviewGroups!.groups[0];
+    store.getState().selectReviewGroup(connected.id);
+    store.getState().selectReviewPathScope("src");
+
+    store.getState().closeMinimalGraph();
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().reviewActiveGroupId).toBe(connected.id);
+    expect(store.getState().reviewPathScope).toBe("src");
+
+    await store.getState().resumePrReview();
+
+    expect(store.getState().reviewActiveGroupId).toBe(connected.id);
+    expect(store.getState().reviewPathScope).toBe("src");
+    expect(store.getState().minimalSeedIds).toEqual([FILE_A, FILE_B]);
+    expect(store.getState().minimalMemberIds).toEqual([FILE_A, FILE_B]);
+  });
+
+  it("opens a container as an exact-file child graph and restores the outer PR graph verbatim", () => {
+    const store = reviewedStore(MIXED_PR);
+    const outerNodes = [{ id: "outer", position: { x: 12, y: 34 }, data: {} }];
+    const outerEdges = [{ id: "outer-edge", source: FILE_A, target: FILE_B }];
+    const outerExpanded = new Set([PACKAGE_ID, FS_ID]);
+    store.setState({
+      minimalLayoutStatus: "ready",
+      minimalRfNodes: outerNodes,
+      minimalRfEdges: outerEdges,
+      minimalArrange: true,
+      moduleSelected: new Set([FS_ID]),
+      moduleExpanded: outerExpanded,
+      reviewSelectedId: FN_A,
+      reviewLitNodeIds: new Set([FN_A, FN_B]),
+    });
+
+    store.getState().openReviewSubgraph(FS_ID);
+
+    expect(store.getState().reviewFocusedSubgraph).toMatchObject({
+      rootId: FS_ID,
+      filePaths: ["src/a.ts", "src/b.ts"],
+      moduleIds: [FILE_A, FILE_B],
+    });
+    expect(store.getState().minimalSeedIds).toEqual([FILE_A, FILE_B]);
+    expect(store.getState().minimalMemberIds).toEqual([FILE_A, FILE_B]);
+    expect(store.getState().minimalRollups).toEqual({});
+    expect(store.getState().moduleExpanded).toEqual(new Set([PACKAGE_ID]));
+    expect(store.getState().moduleSelected).toEqual(new Set());
+
+    store.getState().selectFlowEntry({ rootId: FN_A, blockPath: [] });
+    expect(store.getState().flowSelection?.rootId).toBe(FN_A);
+    expect(store.getState().reviewFlowBaseline).not.toBeNull();
+
+    store.getState().closeReviewSubgraph();
+
+    expect(store.getState().reviewFocusedSubgraph).toBeNull();
+    expect(store.getState().flowSelection).toBeNull();
+    expect(store.getState().reviewFlowBaseline).toBeNull();
+    expect(store.getState().flowPaneRfNodes).toEqual([]);
+    expect(store.getState().flowPaneRfEdges).toEqual([]);
+    expect(store.getState().minimalRfNodes).toBe(outerNodes);
+    expect(store.getState().minimalRfEdges).toBe(outerEdges);
+    expect(store.getState().minimalArrange).toBe(true);
+    expect(store.getState().moduleSelected).toEqual(new Set([FS_ID]));
+    expect(store.getState().moduleExpanded).toEqual(outerExpanded);
+    expect(store.getState().reviewSelectedId).toBe(FN_A);
+    expect(store.getState().reviewLitNodeIds).toEqual(new Set([FN_A, FN_B]));
+  });
+
+  it("lays out an exact-file child graph across columns on its first open", async () => {
+    const store = reviewedStore(MIXED_PR);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    store.getState().openReviewSubgraph(FS_ID);
+    await vi.waitFor(() => {
+      expect(store.getState().reviewFocusedSubgraph?.rootId).toBe(FS_ID);
+      expect(store.getState().minimalLayoutStatus).toBe("ready");
+    });
+
+    const nodes = store.getState().minimalRfNodes;
+    const a = nodes.find((node) => node.id === FILE_A)!;
+    const b = nodes.find((node) => node.id === FILE_B)!;
+    const widthA = Number((a.style as { width?: number } | undefined)?.width ?? 0);
+    const widthB = Number((b.style as { width?: number } | undefined)?.width ?? 0);
+
+    expect(a).toBeDefined();
+    expect(b).toBeDefined();
+    expect(a.position.x + widthA <= b.position.x || b.position.x + widthB <= a.position.x).toBe(true);
+    // Automatic canonical layout is a baseline, not a user-triggered Rearrange mutation.
+    expect(store.getState().minimalArrange).toBe(false);
+  });
+
+  it("does not focus a container outside the active change group", () => {
+    const store = reviewedStore(MIXED_PR);
+    const isolated = store.getState().reviewGroups!.groups.find((group) => group.files.includes("packages/c.ts"))!;
+    store.getState().selectReviewGroup(isolated.id);
+    store.setState({ minimalLayoutStatus: "ready" });
+
+    store.getState().openReviewSubgraph(FS_ID);
+
+    expect(store.getState().reviewFocusedSubgraph).toBeNull();
+    expect(store.getState().minimalSeedIds).toEqual([FILE_C]);
+  });
+
+  it("does not let an unmatched path close and strand the review overlay", () => {
+    const store = reviewedStore(MIXED_PR);
+    const seeds = store.getState().minimalSeedIds;
+
+    store.getState().selectReviewPathScope("src/aria/application");
+
+    expect(store.getState().reviewPathScope).toBeNull();
+    expect(store.getState().minimalSeedIds).toEqual(seeds);
+  });
+
+  it("selecting a change group replaces an active path filter", () => {
+    const store = reviewedStore(MIXED_PR);
+    const isolated = store.getState().reviewGroups!.groups[1];
+    store.getState().selectReviewPathScope("src");
+
+    store.getState().selectReviewGroup(isolated.id);
+
+    expect(store.getState().reviewPathScope).toBeNull();
+    expect(store.getState().minimalSeedIds).toEqual([FILE_C]);
+  });
+
   it("an unknown group id falls back to All rather than stranding the reader", () => {
     const store = reviewedStore(MIXED_PR);
     store.getState().selectReviewGroup(store.getState().reviewGroups!.groups[0].id);
@@ -150,7 +289,7 @@ describe("change groups in PR review", () => {
     expect(store.getState().minimalSeedIds).toEqual([FILE_A, FILE_B, FILE_C]);
   });
 
-  it("a coherent single-component PR yields one group — the strip-hidden precondition", () => {
+  it("a coherent single-component PR still yields one connectivity group", () => {
     const store = reviewedStore([{ path: "src/a.ts" }, { path: "src/b.ts" }]);
     expect(store.getState().reviewGroups?.groups).toHaveLength(1);
   });
@@ -161,6 +300,7 @@ describe("change groups in PR review", () => {
     store.getState().buildMinimalGraph();
     expect(store.getState().reviewGroups).toBeNull();
     expect(store.getState().reviewActiveGroupId).toBeNull();
+    expect(store.getState().reviewPathScope).toBeNull();
     expect(store.getState().reviewAllSeedIds).toEqual([]);
   });
 });

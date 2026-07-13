@@ -11,6 +11,7 @@
  */
 
 import type { Edge } from "@xyflow/react";
+import { selectionTouches } from "./edgeBundling";
 
 export const SPOOL_EDGE_TYPE = "spool";
 
@@ -22,19 +23,26 @@ export interface SpoolEdgeData extends Record<string, unknown> {
   spoolEnd: "source" | "target" | "both";
 }
 
-/** Retype each edge that touches a fan hub; everything else passes through untouched. */
-export function spoolFanEdges(edges: Edge[]): Edge[] {
+const EMPTY_SELECTION: ReadonlySet<string> = new Set<string>();
+
+/** Retype each edge that touches a fan hub; everything else passes through untouched. A selected
+ * card's strands leave the fan before counts are calculated, matching bundle extraction: its links
+ * stay direct while an independently large remainder can still gather. */
+export function spoolFanEdges(
+  edges: Edge[],
+  selected: ReadonlySet<string> = EMPTY_SELECTION,
+): Edge[] {
   const inCount = new Map<string, number>();
   const outCount = new Map<string, number>();
   for (const edge of edges) {
-    if (edge.type !== undefined) {
+    if (edge.type !== undefined || selectionTouches(edge, selected)) {
       continue; // container highways (bundle) and gutter-bus wires (routed) are already structured
     }
     outCount.set(edge.source, (outCount.get(edge.source) ?? 0) + 1);
     inCount.set(edge.target, (inCount.get(edge.target) ?? 0) + 1);
   }
   return edges.map((edge) => {
-    if (edge.type !== undefined) {
+    if (edge.type !== undefined || selectionTouches(edge, selected)) {
       return edge;
     }
     const gathersIn = (inCount.get(edge.target) ?? 0) >= SPOOL_THRESHOLD;
