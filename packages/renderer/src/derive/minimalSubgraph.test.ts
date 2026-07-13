@@ -340,6 +340,23 @@ describe("buildMinimalSubgraph — per-kind dep wires between member files", () 
     expect(deps).toHaveLength(2);
   });
 
+  it("attaches raw child links directly when their expanded file container is selected", () => {
+    const coupling = [callsEdge("fn:foo", "fn:baz"), callsEdge("fn:bar", "fn:baz")];
+    const { edges } = buildWithCoupling(coupling, ["m:a", "m:b"], {
+      expanded: ["m:a", "m:b"],
+      inspectionIds: ["m:a"],
+    });
+    const deps = edges.filter((edge) => edge.kind === "dep" && edge.ghost !== true);
+
+    expect(deps.map((edge) => edge.id).sort()).toEqual([
+      "dep:calls:fn:bar->fn:baz",
+      "dep:calls:fn:foo->fn:baz",
+    ]);
+    expect(new Set(deps.flatMap((edge) => edge.underlyingEdgeIds ?? []))).toEqual(
+      new Set(coupling.map((edge) => edge.id)),
+    );
+  });
+
   it("projects every dependency onto exact expanded endpoints when direct links are requested", () => {
     const coupling = [callsEdge("fn:foo", "fn:baz"), callsEdge("fn:bar", "fn:baz")];
     const { edges } = buildWithCoupling(coupling, ["m:a", "m:b"], {
