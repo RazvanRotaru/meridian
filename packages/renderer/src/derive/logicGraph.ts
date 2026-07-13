@@ -11,11 +11,13 @@
  */
 
 import type {
+  ChangeStatus,
   EdgeResolution,
   FlowAsyncInput,
   FlowCallAsync,
   FlowPath,
   FlowPathRole,
+  FlowSourceAnchor,
   FlowStep,
   GraphNode,
   LogicFlows,
@@ -126,6 +128,9 @@ export type LogicNodeData = {
    * caller context, and safely captured values without pretending those observations are source
    * `FlowStep`s. */
   runtime?: RequestRuntimeEvidence;
+  /** Exact PR status at this rendered step's own source anchor. This is intentionally separate from
+   * `targetId`: a call site can be new while its callee is unchanged, and vice versa. */
+  changedStatus?: ChangeStatus;
 };
 
 export interface RequestRuntimeEvidence {
@@ -151,9 +156,8 @@ export type TerminalData = {
   /** `entry`/`exit` frame the whole flow; `return`/`throw` are MID-FLOW caps a path dead-ends at. */
   terminal: "entry" | "exit" | "return" | "throw";
   label: string;
-  /** The charted callable is itself in the PR's diff — set on the ENTRY cap so a drilled-into changed
-   * function announces the diff even when none of its own calls target changed code. */
-  changed?: boolean;
+  /** Exact PR status of the charted callable (ENTRY) or this terminal step's source anchor. */
+  changedStatus?: ChangeStatus;
 };
 
 export interface LogicNodeSpec {
@@ -251,6 +255,14 @@ interface RunUnit {
   steps: IndexedStep[];
 }
 
+export interface LogicGraphOptions {
+  hideGreyed: boolean;
+  nestByService?: boolean;
+  withTerminals?: boolean;
+  /** Resolve change status from a flow step's own source line, never from its call target. */
+  changedStatusForSource?: (source: FlowSourceAnchor | undefined) => ChangeStatus | undefined;
+}
+
 export function deriveLogicGraph(
   rootId: string,
   flows: LogicFlows,
@@ -259,7 +271,7 @@ export function deriveLogicGraph(
   // `withTerminals` frames a TOP-LEVEL callable flow with entry/exit end-caps (see build()); the
   // container-dive path leaves it off. `nestByService` groups consecutive same-owner calls under
   // service frames. Both optional so existing callers/tests default them off.
-  options: { hideGreyed: boolean; nestByService?: boolean; withTerminals?: boolean },
+  options: LogicGraphOptions,
   ownerLookup: OwnerLookup = NO_OWNER,
 ): LogicGraphSpec {
   const steps = flows[rootId];
@@ -280,7 +292,7 @@ export function deriveLogicGraphFromBodies(
   flows: LogicFlows,
   index: GraphIndex,
   expandedLogic: ReadonlySet<string>,
-  options: { hideGreyed: boolean; nestByService?: boolean },
+  options: LogicGraphOptions,
   ownerLookup: OwnerLookup = NO_OWNER,
 ): LogicGraphSpec {
   return new LogicGraphBuilder(prefix, flows, index, expandedLogic, options, ownerLookup).buildFromBodies(bodies);
@@ -372,7 +384,7 @@ class LogicGraphBuilder {
     private readonly flows: LogicFlows,
     private readonly index: GraphIndex,
     private readonly expanded: ReadonlySet<string>,
-    private readonly options: { hideGreyed: boolean; nestByService?: boolean; withTerminals?: boolean },
+    private readonly options: LogicGraphOptions,
     private readonly ownerLookup: OwnerLookup,
   ) {}
 
@@ -395,7 +407,14 @@ class LogicGraphBuilder {
   private addTerminals(firstId: string, lastExits: Exit[]): void {
     const entry = this.index.nodesById.get(this.rootId);
     const entryId = `${this.rootId}::entry`;
-    const entryData: TerminalData = { targetId: null, isContainer: false, terminal: "entry", label: entry?.displayName ?? baseName(parseNodeId(this.rootId).modulePath), changed: this.index.changedIds.has(this.rootId) };
+    const entryData: TerminalData = {
+      targetId: null,
+      isContainer: false,
+      terminal: "entry",
+      label: entry?.displayName ?? baseName(parseNodeId(this.rootId).modulePath),
+      changedStatus: this.index.changedStatus.get(this.rootId)
+        ?? (this.index.changedIds.has(this.rootId) ? "modified" : undefined),
+    };
     this.nodes.push({ id: entryId, parentId: null, type: "terminal", data: entryData, width: entryTerminalWidth(entryData.label), height: TERMINAL_HEIGHT });
     this.pushEdge(entryId, firstId, "seq");
     // No trailing exec pins means every path already dead-ended at its own return/throw cap — a
@@ -552,7 +571,7 @@ class LogicGraphBuilder {
     }
     if (step.kind === "loop" || step.kind === "callback") {
       const bodies: FlowPath[] = [{ label: step.label, body: step.body }];
-      return this.container(parentId, path, id, step.kind, step.label, bodies, step.body.length, asyncScope);
+      return this.container(parentId, path, id, step.kind, step.label, bodies, step.body.length, asyncScope, step.source);
     }
     // `finally` is not a third alternative arm. When both protected arms fall through, chart it as
     // one mandatory phase after their merge. Explicit returns/throws inside those arms must be
@@ -563,7 +582,7 @@ class LogicGraphBuilder {
         return this.tryFinallyStep(step, parentId, path, id, asyncScope);
       }
       const count = step.paths.reduce((sum, p) => sum + p.body.length, 0);
-      return this.container(parentId, path, id, "try", "try / catch", step.paths, count, asyncScope);
+      return this.container(parentId, path, id, "try", "try / catch", step.paths, count, asyncScope, step.source);
     }
     return this.branchStep(step, parentId, path, id, asyncScope);
   }
@@ -575,7 +594,13 @@ class LogicGraphBuilder {
    */
   private exitStep(step: Extract<FlowStep, { kind: "exit" }>, parentId: string | null, id: string): { entry: string; exits: Exit[] } {
     const label = exitLabel(step);
-    const data: TerminalData = { targetId: null, isContainer: false, terminal: step.variant, label };
+    const data: TerminalData = {
+      targetId: null,
+      isContainer: false,
+      terminal: step.variant,
+      label,
+      changedStatus: this.changedStatus(step.source),
+    };
     this.nodes.push({ id, parentId, type: "terminal", data, width: exitCapWidth(label), height: EXIT_CAP_HEIGHT });
     return { entry: id, exits: [] };
   }
@@ -619,6 +644,7 @@ class LogicGraphBuilder {
       greyed,
       provenance: provenanceOf(step.target, step.resolution, this.index),
       childCount: expandable && step.target ? this.flows[step.target].length : 0,
+      changedStatus: this.changedStatus(step.source),
       callKind: display.method ? "method" : "function",
       signature: step.target ? this.index.nodesById.get(step.target)?.signature : undefined,
       owner: this.ownerLookup(step.target),
@@ -659,6 +685,7 @@ class LogicGraphBuilder {
       greyed: false,
       provenance: null,
       childCount: step.inputs.length,
+      changedStatus: this.changedStatus(step.source),
       awaited: true,
       asyncEvent: { kind: "await", mode: step.mode, inputs: step.inputs },
       asyncPorts,
@@ -724,6 +751,7 @@ class LogicGraphBuilder {
     bodies: FlowPath[],
     childCount: number,
     asyncScope: string,
+    source: FlowSourceAnchor | undefined,
   ): { entry: string; exits: Exit[] } {
     const isExpanded = this.expandedState(id, true);
     const data: LogicNodeData = {
@@ -739,6 +767,7 @@ class LogicGraphBuilder {
       greyed: false,
       provenance: null,
       childCount,
+      changedStatus: this.changedStatus(source),
       // Carried so a double-click can DIVE into these sub-chains without re-parsing the flow.
       bodies,
     };
@@ -788,6 +817,7 @@ class LogicGraphBuilder {
       greyed: false,
       provenance: null,
       childCount: branchPorts.length,
+      changedStatus: this.changedStatus(step.source),
       branchPorts,
     };
     // IF/SWITCH own the decision diamond. TRY/CATCH is an exception gate with a straight normal
@@ -832,7 +862,7 @@ class LogicGraphBuilder {
     // Guarded by canChartFinallyAsSharedPhase; keep the defensive fallback structurally valid.
     if (!tryPath || !catchPath || !finallyPath) {
       const count = step.paths.reduce((sum, candidate) => sum + candidate.body.length, 0);
-      return this.container(parentId, path, id, "try", "try / catch", step.paths, count, asyncScope);
+      return this.container(parentId, path, id, "try", "try / catch", step.paths, count, asyncScope, step.source);
     }
 
     const protectedFlow = this.branchStep(
@@ -856,6 +886,7 @@ class LogicGraphBuilder {
       greyed: false,
       provenance: null,
       childCount: finallyPath.body.length,
+      changedStatus: this.changedStatus(finallyPath.source),
     };
     this.push(finallyId, parentId, "finally", finallyData);
     for (const exit of protectedFlow.exits) {
@@ -912,6 +943,10 @@ class LogicGraphBuilder {
   /** default XOR toggle: calls default collapsed, loop/try default expanded. */
   private expandedState(id: string, defaultExpanded: boolean): boolean {
     return defaultExpanded !== this.expanded.has(id);
+  }
+
+  private changedStatus(source: FlowSourceAnchor | undefined): ChangeStatus | undefined {
+    return this.options.changedStatusForSource?.(source);
   }
 
   private link(from: Exit, toId: string): void {

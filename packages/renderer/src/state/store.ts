@@ -7,7 +7,7 @@
 
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { Edge, Node } from "@xyflow/react";
-import { buildNodeId, changedLineKindsFromExtensions, changedRangesFromExtensions, computeChangeGroups, computeCoverage, type ChangeStatus } from "@meridian/core";
+import { buildNodeId, changedLineKindsFromExtensions, changedRangesFromExtensions, computeChangeGroups, computeCoverage } from "@meridian/core";
 import type {
   ChangedLineKind,
   ChangedLineSpan,
@@ -123,6 +123,7 @@ import {
   type RelatedPrsState,
 } from "./prTypes";
 import { headKindsWithin, headSpanFor } from "./headSpan";
+import { reviewNodeStatusEntries, reviewNodeStatusSourcesFromKinds, reviewSourceChangeStatus } from "./reviewNodeStatus";
 import { streamPrAnalysis, type PrAnalyzeStage } from "./prAnalysis";
 import { isPrReviewStale, prReviewRevisionKey, reviewRevision, type PrReviewRevision } from "./prReviewFreshness";
 import {
@@ -1398,7 +1399,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     applyChangedIds(dependencies.index, initialReviewProjection.affected.map((node) => node.nodeId));
     applyChangedStatus(
       dependencies.index,
-      initialReviewProjection.affected.map((node) => [node.nodeId, node.status] as [string, ChangeStatus]),
+      reviewNodeStatusEntries(
+        dependencies.index,
+        initialReviewProjection.affected,
+        reviewNodeStatusSourcesFromKinds(changedLineKindsFromExtensions(dependencies.artifact.extensions)),
+      ),
     );
   }
   const bootReviewBaseline: PrReviewBaseline = { artifact: dependencies.artifact, index: dependencies.index, review: artifactReview };
@@ -2230,7 +2235,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Re-derive the Logic graph for the current root through ELK, behind a stale-seq guard (a newer
     // open/drill/toggle discards an older in-flight layout). A null root clears the graph.
     async logicRelayout(activity) {
-      const { logicRoot, index, artifact, expandedLogic, hideGreyed, nestByService, logicFocus } = get();
+      const {
+        logicRoot,
+        index,
+        artifact,
+        expandedLogic,
+        hideGreyed,
+        nestByService,
+        logicFocus,
+        prPreparedArtifactCurrent,
+        prReviewed,
+        reviewDiffByFile,
+      } = get();
       if (logicRoot === null) {
         set({ logicRfNodes: [], logicRfEdges: [], logicLayoutStatus: "idle", logicLayoutActivity: null });
         return;
@@ -2249,7 +2265,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // A container dive charts only the TOP focus entry's bodies; else the whole callable flow.
         const top = logicFocus[logicFocus.length - 1];
         const focus = top ? { id: top.id, bodies: top.bodies } : undefined;
-        const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, { hideGreyed, nestByService }, focus);
+        // Flow nodes represent source sites, not their callees. Resolve their PR status from each
+        // FlowStep source anchor using the same aligned line-kind source as node colouring.
+        const stepStatusSources = prReviewed !== null && !prPreparedArtifactCurrent
+          ? reviewDiffByFile
+          : reviewNodeStatusSourcesFromKinds(changedLineKindsFromExtensions(artifact.extensions));
+        const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, {
+          hideGreyed,
+          nestByService,
+          changedStatusForSource: (source) => reviewSourceChangeStatus(source, stepStatusSources),
+        }, focus);
         if (logicLayoutSeq !== sequence) {
           return; // a newer layout superseded this one.
         }
@@ -4100,7 +4125,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         applyChangedIds(state.index, projection.affected.map((node) => node.nodeId));
         applyChangedStatus(
           state.index,
-          projection.affected.map((node) => [node.nodeId, node.status] as [string, ChangeStatus]),
+          reviewNodeStatusEntries(
+            state.index,
+            projection.affected,
+            reviewNodeStatusSourcesFromKinds(changedLineKindsFromExtensions(state.artifact.extensions)),
+          ),
         );
         set({
           review: projection.review,
@@ -5340,12 +5369,28 @@ function applyPrReviewToMap(
   const matchedFiles = matchAffectedFiles(index, visibleContext.changedFiles.map((file) => file.path)).matched;
   const { seeds: visibleSeeds, rolledUp } = rollupSeeds(matchedFiles, index);
   const workspaceSeeds = visibleSeeds.length > 0 ? visibleSeeds : allRollup.seeds;
-  // The modified code blocks (hunks ∩ node ranges); repaint main's changed-node channel to THIS PR
-  // so the Map + minimal overlay ring the edited blocks amber (reused `--changed-since` highlight).
+  const prFileByPath = new Map((prFiles ?? []).map((file) => [file.path, file]));
+  // The synchronous review's graph is base-relative while patch kinds are head-relative. Preserve
+  // each file's edit map beside its exact kinds so node spans can be translated before colouring.
+  // A prepared graph instead reads its own authoritative, already-aligned changedSince stamp.
+  const reviewDiffByFile: Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }> = {};
+  if (!swapped) {
+    for (const match of matchedFiles) {
+      const locFile = index.nodesById.get(match.moduleId)?.location?.file;
+      const file = prFileByPath.get(match.path);
+      if (locFile && file?.edits && file.edits.length > 0) {
+        reviewDiffByFile[locFile] = { edits: file.edits, kinds: file.kinds ?? [] };
+      }
+    }
+  }
+  const nodeStatusSources = swapped
+    ? reviewNodeStatusSourcesFromKinds(changedLineKindsFromExtensions(artifact.extensions))
+    : reviewDiffByFile;
+  // The changed code blocks (hunks ∩ node ranges); repaint main's changed-node channel to THIS PR.
   applyChangedIds(index, affected.map((node) => node.nodeId));
-  // Colour each touched CODE BLOCK by its file's change kind (green added / gold modified / red
-  // deleted). A file/module that only contains changes stays uncoloured — it shows a +/- stat instead.
-  applyChangedStatus(index, affected.map((node) => [node.nodeId, node.status] as [string, ChangeStatus]));
+  // Colour each touched CODE BLOCK by its own exact edits: additions-only green, deletions-only red,
+  // replacements/mixed edits gold. Fall back to the file status when exact kinds are unavailable.
+  applyChangedStatus(index, reviewNodeStatusEntries(index, affected, nodeStatusSources));
   // Partition the change into disjoint groups (one per weakly-connected component of the changed
   // modules), sharing the SAME flow substrate the review rows already read. Stored so the rail can
   // offer per-group isolation; ignored (strip hidden) when the change is a single connected component.
@@ -5392,9 +5437,7 @@ function applyPrReviewToMap(
   // path prefix. This is what makes the fast (synchronous) review show head code without re-extract.
   // SWAPPED mode carries neither field: node.location is already head-relative, so showCode's
   // headSpanFor remap must never run — it reads the local head checkout via activeSourceUrl instead.
-  const reviewDiffByFile: Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }> = {};
   const reviewCommentRangesByFile: Record<string, LineRange[]> = {};
-  const prFileByPath = new Map((prFiles ?? []).map((file) => [file.path, file]));
   for (const match of matchedFiles) {
     const locFile = index.nodesById.get(match.moduleId)?.location?.file;
     const edits = prFileByPath.get(match.path)?.edits;
@@ -5406,21 +5449,6 @@ function applyPrReviewToMap(
       .map((edit) => ({ start: edit.newStart, end: edit.newStart + edit.newLines - 1 }));
     if (ranges.length > 0) {
       reviewCommentRangesByFile[locFile] = ranges;
-    }
-  }
-  if (!swapped) {
-    const diffByPath = new Map<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>();
-    for (const file of prFiles ?? []) {
-      if (file.edits && file.edits.length > 0) {
-        diffByPath.set(file.path, { edits: file.edits, kinds: file.kinds ?? [] });
-      }
-    }
-    for (const match of matchedFiles) {
-      const locFile = index.nodesById.get(match.moduleId)?.location?.file;
-      const diff = diffByPath.get(match.path);
-      if (locFile && diff) {
-        reviewDiffByFile[locFile] = diff;
-      }
     }
   }
   // Removed text is parsed from GitHub's patch in HEAD coordinates, so unlike the base→head edit

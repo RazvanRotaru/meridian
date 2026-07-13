@@ -18,25 +18,75 @@ import { FLOW_COLORS } from "../../../derive/flowViewModel";
 import { isSourceBackedNode } from "../../../derive/sourceBackedNode";
 import { coverageAccent, coverageVerdict, COVERAGE_COLORS, type CoverageVerdict } from "../../../theme/coverageColors";
 import { CodeInlinePanel } from "../../CodeInlinePanel";
-import { CHANGED_ACCENT, changedColor } from "../../ChangedBadge";
+import { changedColor, changedFill } from "../../ChangedBadge";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
-/** The "Δ" tag was removed — the status ring (via withChanged) carries the "touched" signal on its
- * own. No-op stub so the call sites (which pass a colour) need no edit and it's easy to reinstate. */
-function ChangedTag(_props: { color: string }): null {
-  return null;
+/** A solid PR-change beacon. Unlike a one-pixel ring, its filled footprint survives the flow pane's
+ * fit-to-overview zoom; the body wash below carries the same signal across the whole card. */
+export function ChangedTag({ color }: { color: string }) {
+  return (
+    <span
+      role="img"
+      aria-label="Changed in this PR"
+      title="Changed in this PR"
+      data-pr-change-marker="true"
+      style={{ ...CHANGED_TAG, color, borderColor: color, background: `${color}33` }}
+    >
+      Δ
+    </span>
+  );
 }
 
-// Layer a status-coloured diff ring over a node's base style, unless selection already owns the ring.
-function withChanged(base: React.CSSProperties, ring: string | null, select: SelectState): React.CSSProperties {
-  if (!ring || select === "selected") {
-    return base;
+// Layer status paint over the node's whole footprint. Selection may own the outer ring, but it never
+// erases the PR wash/beacon; dimmed changed nodes stay bright enough to remain review landmarks.
+export function withChanged(base: React.CSSProperties, ring: string | null, select: SelectState): React.CSSProperties {
+  const normalized = normalizedBackground(base);
+  if (!ring) {
+    return normalized;
   }
-  // Keep status and selection as OUTER rings. Mutating `borderColor` here mixes a longhand with the
-  // base node's `border` shorthand; React warns (and can briefly drop the border) when a node moves
-  // between selected and unselected states.
-  return { ...base, boxShadow: `0 0 0 1px ${ring}66` };
+  const existingImage = typeof normalized.backgroundImage === "string" ? normalized.backgroundImage : null;
+  const wash = `linear-gradient(${changedFill(ring)}, ${changedFill(ring)})`;
+  const statusShadow = `0 0 0 2px ${ring}DD, 0 0 16px ${ring}99`;
+  const existingShadow = typeof normalized.boxShadow === "string" ? normalized.boxShadow : null;
+  return {
+    ...normalized,
+    opacity: select === "dimmed" ? 0.82 : normalized.opacity,
+    backgroundImage: existingImage ? `${wash}, ${existingImage}` : wash,
+    outline: select === "selected" ? normalized.outline : `2px solid ${ring}`,
+    outlineOffset: select === "selected" ? normalized.outlineOffset : -1,
+    boxShadow: select === "selected"
+      ? normalized.boxShadow
+      : existingShadow
+        ? `${existingShadow}, ${statusShadow}`
+        : statusShadow,
+  };
+}
+
+/** Every logic card supplies a solid-colour `background` shorthand. Normalize it on both changed
+ * and unchanged renders so React never reconciles that shorthand against the PR wash longhand. */
+function normalizedBackground(base: React.CSSProperties): React.CSSProperties {
+  const { background, backgroundColor, backgroundImage, ...rest } = base;
+  const shorthand = typeof background === "string" ? background : undefined;
+  const shorthandIsImage = shorthand?.includes("gradient(") === true;
+  const solidColor = typeof backgroundColor === "string"
+    ? backgroundColor
+    : shorthand !== undefined && !shorthandIsImage
+      ? shorthand
+      : undefined;
+  return {
+    ...rest,
+    backgroundColor: solidColor,
+    backgroundImage: typeof backgroundImage === "string"
+      ? backgroundImage
+      : shorthandIsImage
+        ? shorthand
+        : undefined,
+  };
+}
+
+function StructuralChangedMarker({ color }: { color: string }) {
+  return <span style={STRUCTURAL_CHANGED_MARKER}><ChangedTag color={color} /></span>;
 }
 
 function ExecPins() {
@@ -63,7 +113,8 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   const coverage = useBlueprint((s) => (s.coverageMode ? s.coverage : null));
   const d = data as LogicNodeData;
   const select = selectStateFor(d.targetId, d.runtime ? requestSelected : logicSelected);
-  const changedStatus = d.targetId ? index.changedStatus.get(d.targetId) : undefined;
+  const changedStatus = d.changedStatus
+    ?? (d.definition && d.targetId ? index.changedStatus.get(d.targetId) : undefined);
   const changed = changedStatus !== undefined;
   const changedRing = changedColor(changedStatus);
   if (d.runtime) {
@@ -315,18 +366,20 @@ function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
   const toggleExpand = requestOpen ? toggleRequestFlowExpand : toggleLogicExpand;
   const accent = CONTROL_ACCENT[d.logicKind] ?? LOOP_ACCENT;
   const glyph = CONTROL_GLYPH[d.logicKind] ?? "↻";
+  const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
   if (d.isContainer) {
-    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleExpand(id)} provenance={null} select={select} />;
+    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleExpand(id)} provenance={null} select={select} changedRing={changedRing} />;
   }
   // No whole-node onClick: a single click on a container would fight both node selection and the
   // double-click-to-dive gesture. Collapse/expand is the explicit title button only (collapsed → ▸).
   return (
-    <div style={selectStyle(BODY, select)}>
+    <div style={withChanged(selectStyle(BODY, select), changedRing, select)}>
       <ExecPins />
       <div style={titleStyle(accent)}>
         <span style={GLYPH}>{glyph}</span>
         <span style={NAME} title={d.label}>{d.label}</span>
         <span style={COUNT}>{d.childCount}</span>
+        {changedRing === null ? null : <ChangedTag color={changedRing} />}
         <ExpandButton expanded={false} onToggle={() => toggleExpand(id)} />
       </div>
     </div>
@@ -337,12 +390,13 @@ function BranchNode({ data }: NodeProps<LogicRfNode>) {
   const logicSelected = useBlueprint((s) => s.logicSelected);
   const d = data as LogicNodeData;
   const select = selectStateFor(d.targetId, logicSelected);
+  const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
   // The diamond is a fixed marker: its content is always a single "X", so the flow stays glanceable
   // and every decision reads the same until asked. The condition is revealed on demand.
   const [open, setOpen] = useState(false);
   const toggle = () => setOpen((v) => !v);
   return (
-    <div style={selectStyle(BRANCH_WRAP, select)}>
+    <div style={withChanged(selectStyle(BRANCH_WRAP, select), changedRing, select)}>
       {/* Every arm owns a stable source pin. Separate physical pins let the layout hold branch lanes
           apart instead of collapsing every outcome through one ambiguous right handle. */}
       <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
@@ -368,6 +422,7 @@ function BranchNode({ data }: NodeProps<LogicRfNode>) {
         <ExpandButton expanded={open} onToggle={toggle} />
         {open ? <div style={BRANCH_CONDITION}>{conditionText(d.label)}</div> : null}
       </div>
+      {changedRing === null ? null : <StructuralChangedMarker color={changedRing} />}
     </div>
   );
 }
@@ -377,8 +432,9 @@ function BranchNode({ data }: NodeProps<LogicRfNode>) {
  * Its edge is dashed by `logicElk`, so the visual grammar reads "peels off on throw". */
 function ExceptionNode({ data }: NodeProps<LogicRfNode>) {
   const d = data as LogicNodeData;
+  const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
   return (
-    <div style={EXCEPTION_GATE} title="try / catch">
+    <div style={withChanged(EXCEPTION_GATE, changedRing, "none")} title="try / catch">
       <Handle type="target" position={Position.Left} style={{ ...PIN, top: "50%" }} isConnectable={false} />
       {(d.branchPorts ?? []).map((port, index, ports) => (
         <Handle
@@ -396,6 +452,7 @@ function ExceptionNode({ data }: NodeProps<LogicRfNode>) {
       <span style={EXCEPTION_TRY}>TRY</span>
       <span style={EXCEPTION_CATCH}>CATCH</span>
       <span style={EXCEPTION_ALERT} aria-hidden="true">!</span>
+      {changedRing === null ? null : <StructuralChangedMarker color={changedRing} />}
     </div>
   );
 }
@@ -403,14 +460,17 @@ function ExceptionNode({ data }: NodeProps<LogicRfNode>) {
 /** Mandatory cleanup checkpoint after TRY/CATCH lanes reconverge. It sits on the single exec trunk,
  * so topology says "always" before the tag does; the paired amber bars read as a phase boundary,
  * never as another optional branch or ordinary call. */
-function FinallyNode() {
+function FinallyNode({ data }: NodeProps<LogicRfNode>) {
+  const d = data as LogicNodeData;
+  const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
   return (
-    <div style={FINALLY_GATE} title="Finally — always runs after try or catch" role="img" aria-label="Finally phase; always runs after try or catch">
+    <div style={withChanged(FINALLY_GATE, changedRing, "none")} title="Finally — always runs after try or catch" role="img" aria-label="Finally phase; always runs after try or catch">
       <ExecPins />
       <span style={FINALLY_BAR_LEFT} aria-hidden="true" />
       <span style={FINALLY_TEXT}>FINALLY</span>
       <span style={FINALLY_ALWAYS}>ALWAYS</span>
       <span style={FINALLY_BAR_RIGHT} aria-hidden="true" />
+      {changedRing === null ? null : <StructuralChangedMarker color={changedRing} />}
     </div>
   );
 }
@@ -445,13 +505,15 @@ function JoinNode() {
  * while the cyan lifetime rail lands on one of the sockets below. */
 function AsyncNode({ data }: NodeProps<LogicRfNode>) {
   const d = data as LogicNodeData;
+  const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
   return (
-    <div style={ASYNC_GATE_BODY} title={d.label}>
+    <div style={withChanged(ASYNC_GATE_BODY, changedRing, "none")} title={d.label}>
       <ExecPins />
       <div style={ASYNC_GATE_HATCH} />
       <span style={ASYNC_GATE_GLYPH}>⌟</span>
       <span style={ASYNC_GATE_LABEL}>{d.label}</span>
       <AsyncPortHandles ports={d.asyncPorts} />
+      {changedRing === null ? null : <StructuralChangedMarker color={changedRing} />}
     </div>
   );
 }
@@ -721,13 +783,14 @@ function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
 function TerminalNode({ data }: NodeProps<LogicRfNode>) {
   const d = data as TerminalData;
   if (d.terminal === "entry") {
+    const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
     return (
-      <div style={withChanged(ENTRY_BODY, d.changed === true ? CHANGED_ACCENT : null, "none")} title={`Flow entry: ${d.label}`}>
+      <div style={withChanged(ENTRY_BODY, changedRing, "none")} title={`Flow entry: ${d.label}`}>
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
         <span style={TERMINAL_GLYPH}>▶</span>
         <span style={NAME} title={d.label}>{d.label}</span>
-        {d.changed === true ? <ChangedTag color={CHANGED_ACCENT} /> : null}
+        {changedRing === null ? null : <ChangedTag color={changedRing} />}
         <span style={ENTRY_TAG}>ENTRY</span>
       </div>
     );
@@ -735,11 +798,13 @@ function TerminalNode({ data }: NodeProps<LogicRfNode>) {
   // A mid-flow `return`/`throw` cap: the red dead-end a terminated path stops at. Left target pin
   // only — nothing ever leaves a return, which is exactly the point.
   if (d.terminal === "return" || d.terminal === "throw") {
+    const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
     return (
-      <div style={RETURN_BODY} title={`Path ${d.terminal === "throw" ? "throws" : "returns"} here: ${d.label}`}>
+      <div style={withChanged(RETURN_BODY, changedRing, "none")} title={`Path ${d.terminal === "throw" ? "throws" : "returns"} here: ${d.label}`}>
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <span style={TERMINAL_GLYPH}>{d.terminal === "throw" ? "⚡" : "⏎"}</span>
         <span style={NAME} title={d.label}>{d.label}</span>
+        {changedRing === null ? null : <ChangedTag color={changedRing} />}
       </div>
     );
   }
@@ -780,7 +845,7 @@ export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: 
 // Selection is BY TARGET (a target can be called many times): a matched call site rings green so
 // every call of the same target lights up together; while some target is selected, unrelated nodes
 // dim so the matches pop. Structural nodes (loops/branches) carry no target, so they only ever dim.
-type SelectState = "selected" | "dimmed" | "none";
+export type SelectState = "selected" | "dimmed" | "none";
 // The accent green shared with the emphasized logic edges (imported by LogicFlowView) so the node
 // ring and the edge glow can't drift. Sourced from the flow palette — the alternate projections
 // (metro/blocks/timeline) highlight with the very same token.
@@ -848,6 +913,29 @@ const AWAIT_ACCENT = FLOW_COLORS.awaited;
 const DETACH_ACCENT = FLOW_COLORS.detached;
 
 const PIN: React.CSSProperties = { width: 7, height: 7, background: "#C8D3E0", border: "none", minWidth: 0, minHeight: 0 };
+
+const CHANGED_TAG: React.CSSProperties = {
+  flexShrink: 0,
+  width: 15,
+  height: 15,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  boxSizing: "border-box",
+  border: "1px solid",
+  borderRadius: 4,
+  fontSize: 9,
+  fontWeight: 900,
+  lineHeight: 1,
+  boxShadow: "0 0 8px currentColor",
+};
+const STRUCTURAL_CHANGED_MARKER: React.CSSProperties = {
+  position: "absolute",
+  top: -6,
+  right: -6,
+  zIndex: 12,
+  pointerEvents: "none",
+};
 
 // The block's outer shell: fills the node box and is NOT clipped, so the inline code box (an
 // absolute child at top:100%) can hang below the body's overflow:hidden without being cut off.

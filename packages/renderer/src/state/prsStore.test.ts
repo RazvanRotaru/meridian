@@ -1498,6 +1498,28 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts"]);
   });
 
+  it("colours an additions-only node green inside a modified file on the prepared head graph", async () => {
+    const additionsOnlyHead: GraphArtifact = {
+      ...HEAD_ARTIFACT,
+      extensions: {
+        changedSince: {
+          baseRef: "origin/main",
+          files: { "src/a.ts": [{ start: 20, end: 21 }] },
+          kinds: { "src/a.ts": [{ start: 20, end: 21, kind: "added" }] },
+        },
+      } as GraphArtifact["extensions"],
+    };
+    const fetchMock = routedFetch({ graph: () => Promise.resolve(Response.json(additionsOnlyHead)) });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore(ANALYZE_DEPS);
+    store.setState(headSelectedPrState(7));
+
+    await store.getState().reviewPrInGraph();
+
+    expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID]));
+    expect(store.getState().index.changedStatus.get(METHOD_ID)).toBe("added");
+  });
+
   it("evaluates the zero-match guard against the prepared graph", async () => {
     const unmatchedHead: GraphArtifact = {
       ...HEAD_ARTIFACT,

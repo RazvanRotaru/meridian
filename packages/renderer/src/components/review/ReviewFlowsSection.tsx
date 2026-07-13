@@ -9,19 +9,16 @@
 
 import { memo, useMemo, useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import { tickStateOf, type AffectedFlowRow, type ReviewData } from "../../derive/reviewData";
+import { tickStateOf, type AffectedFlowRow } from "../../derive/reviewData";
 import { useActiveChangeGroup } from "./ChangeGroupStrip";
 import { basename, CARET, EMPTY_NOTE, MONO, NO_FOCUS_RING, SECTION_COUNT, SECTION_HEAD, SECTION_TITLE, TEST_CHIP, TICK_BTN, TICK_COLOR, TICK_GLYPH } from "./reviewPanelKit";
 import type { ReviewTick } from "../../state/reviewTicksPref";
-import type { GraphIndex } from "../../graph/graphIndex";
-import { relatedNodeIds } from "../../derive/flowBlocks";
 import { REVIEW_FLOW_SPLIT_ID } from "../flowexplorer/flowSelection";
 import { isReviewPathInScope } from "../../derive/reviewPathScope";
 
 function ReviewFlowsSectionImpl() {
   const review = useBlueprint((state) => state.review);
   const ticks = useBlueprint((state) => state.reviewTicks);
-  const index = useBlueprint((state) => state.index);
   const reviewGroups = useBlueprint((state) => state.reviewGroups);
   const pathScope = useBlueprint((state) => state.reviewPathScope);
   const focusedSubgraphPaths = useBlueprint((state) => state.reviewFocusedSubgraph?.filePaths ?? null);
@@ -63,7 +60,7 @@ function ReviewFlowsSectionImpl() {
           {rows.length === 0
             ? <div style={EMPTY_NOTE}>No impacted flows in this review scope.</div>
             : rows.map((row) => (
-              <FlowRow key={row.flow.flowId} row={row} review={review} index={index} ticks={ticks} spansGroups={crossGroup.has(row.flow.flowId)} />
+              <FlowRow key={row.flow.flowId} row={row} ticks={ticks} spansGroups={crossGroup.has(row.flow.flowId)} />
             ))}
         </div>
       )}
@@ -73,12 +70,10 @@ function ReviewFlowsSectionImpl() {
 
 function FlowRow(props: {
   row: AffectedFlowRow;
-  review: ReviewData;
-  index: GraphIndex;
   ticks: Record<string, ReviewTick>;
   spansGroups: boolean;
 }) {
-  const { row, review, index, ticks, spansGroups } = props;
+  const { row, ticks, spansGroups } = props;
   const flowSelection = useBlueprint((state) => state.flowSelection);
   const openFlowSplitOnSelect = useBlueprint((state) => state.reviewOpenFlowSplitOnSelect);
   const { toggleReviewTick, setReviewLit, selectFlowEntry } = useBlueprintActions();
@@ -92,15 +87,8 @@ function FlowRow(props: {
     ? splitOpen ? "Close logic flow review" : "Clear logic flow highlight"
     : openFlowSplitOnSelect ? "Review this logic flow below the graph" : "Highlight this logic flow in the graph";
   const disclosureGlyph = openFlowSplitOnSelect ? selected ? "▾" : "▸" : selected ? "•" : "";
-  // Preview the same complete set a click persists: root + every recursively resolved call target,
-  // not just changed targets. The shared graph paint consumes this transient hover channel.
-  const litSet = useMemo(() => relatedNodeIds(index, review.flows, ref), [index, review.flows, ref]);
   return (
-    <div
-      style={selected ? ROW_SELECTED : ROW}
-      onMouseEnter={() => setReviewLit(litSet)}
-      onMouseLeave={() => setReviewLit(null)}
-    >
+    <div style={selected ? ROW_SELECTED : ROW}>
       <div style={ROW_HEAD}>
         <button type="button" style={{ ...TICK_BTN, color: TICK_COLOR[tick] }} title={tick} onClick={(e) => { e.stopPropagation(); toggleReviewTick(row.flow.flowId); }}>
           {TICK_GLYPH[tick]}

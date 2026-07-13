@@ -107,6 +107,7 @@ import {
   RequestGraphOverlayPanel,
 } from "../RequestGraphOverlayChrome";
 import { ReviewCommentNodeIndicators } from "../review/ReviewCommentNodeIndicators";
+import { REVIEW_NODE_VIEWED_CSS } from "../review/ReviewFileNodeViewedControls";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
  * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "cycle" the
@@ -535,6 +536,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
     <SurfaceInteractionScope
       readOnly={props.readOnly === true}
       selectionOverride={props.selectionOverride ?? null}
+      reviewProgressEnabled={nodeDiffEnabled}
       onToggleExpand={props.onToggleExpand ?? null}
     >
     <div
@@ -600,6 +602,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
         miniMapColor={props.miniMapColor}
         minimap={!virtualizeCanvas}
       >
+        <style>{REVIEW_NODE_VIEWED_CSS}</style>
         <MapLod
           nodes={reactFlowNodes}
           semanticLayers={props.semanticLayers}

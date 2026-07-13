@@ -5,6 +5,7 @@
  */
 
 import type { ChangedLineSpan, LineRange } from "@meridian/core";
+import { classifyChangedLineRun } from "../changed-line-kinds";
 import { asObject, numberOr, optionalString, requireNumber, requireString } from "./json-fields";
 import { isAllowedCloneRef } from "./git-ref";
 
@@ -399,7 +400,7 @@ export interface PatchDetail {
  * A GitHub PR `patch` carries CONTEXT lines (the default `-U3`), so the hunk HEADER range covers
  * more than the edit — marking nodes off it spills into the next declaration. This walks the hunk
  * BODY instead, tracking BOTH the new- and old-side line counters, and emits, per contiguous run of
- * additions/deletions, TIGHT changed-line spans: `kinds` (new-side, tagged modified/added, code
+ * additions/deletions, TIGHT changed-line spans: `kinds` (new-side, tagged modified/added/deleted, code
  * panel), `hunks` (new-side, comments + head-graph marking) and `oldHunks` (base-side, base-graph
  * marking — see the interface). `edits` records each hunk's old/new spans for base→head mapping.
  * 1-based, inclusive.
@@ -420,13 +421,13 @@ export function parsePatchDetail(patch: string): PatchDetail {
   let capturedRemovedLines = 0;
   let removedTruncated = false;
   const flush = () => {
+    kinds.push(...classifyChangedLineRun(addRun, delRun.length, newLine));
     if (addRun.length > 0) {
       const span = { start: addRun[0], end: addRun[addRun.length - 1] };
-      kinds.push({ ...span, kind: delRun.length > 0 ? "modified" : "added" });
       hunks.push(span);
     } else if (delRun.length > 0 && newLine > 0) {
-      // Pure deletion: no head line to paint, but the node it sat in changed — new-side seam at the
-      // line the removed block now precedes. A whole-file deletion has no new-side seam to anchor.
+      // Pure deletion: the node it sat in changed — new-side seam at the line the removed block now
+      // precedes. A whole-file deletion has no new-side seam to anchor.
       hunks.push({ start: newLine, end: newLine });
     }
     // Base-side marking range: deleted/modified base lines, or a seam at the base insertion point.

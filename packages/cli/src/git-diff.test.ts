@@ -72,6 +72,25 @@ describe("parseUnifiedDiffWithStats", () => {
     ]);
   });
 
+  it("keeps unpaired additions green after a replacement in the same hunk", () => {
+    const mixedHunk = [
+      "diff --git a/src/settings.ts b/src/settings.ts",
+      "--- a/src/settings.ts",
+      "+++ b/src/settings.ts",
+      "@@ -10 +10,4 @@",
+      "-const previous = true;",
+      "+const current = true;",
+      "+function logPatchFailure() {",
+      "+  reportFailure();",
+      "+}",
+    ].join("\n");
+
+    expect(parseUnifiedDiffWithStats(mixedHunk).kinds["src/settings.ts"]).toEqual([
+      { start: 10, end: 10, kind: "modified" },
+      { start: 11, end: 13, kind: "added" },
+    ]);
+  });
+
   it("skips deleted files because they have no new-side path in the artifact", () => {
     const parsed = parseUnifiedDiffWithStats(DIFF);
     expect(parsed.stats["src/removed.ts"]).toBeUndefined();

@@ -11,6 +11,7 @@ import {
   definitionNodeData,
   deriveLogicGraph,
   deriveLogicGraphFromBodies,
+  type LogicGraphOptions,
   type LogicNodeSpec,
 } from "../derive/logicGraph";
 import { buildOwnerLookup, type OwnerLookup } from "../derive/logicOwner";
@@ -22,7 +23,7 @@ export async function deriveLogicLayout(
   flows: LogicFlows,
   index: GraphIndex,
   expandedLogic: ReadonlySet<string>,
-  options: { hideGreyed: boolean; nestByService: boolean },
+  options: LogicGraphOptions & { nestByService: boolean },
   // When set, chart ONLY this container's bodies as a focused sub-view (the DIVE gesture) instead
   // of the whole callable flow rooted at `rootId`.
   focus?: { id: string; bodies: FlowPath[] },
@@ -48,7 +49,7 @@ async function layoutFlow(
   flows: LogicFlows,
   index: GraphIndex,
   expandedLogic: ReadonlySet<string>,
-  options: { hideGreyed: boolean; nestByService: boolean },
+  options: LogicGraphOptions & { nestByService: boolean },
   ownerLookup: OwnerLookup,
   focus?: { id: string; bodies: FlowPath[] },
 ): Promise<LogicReactFlowGraph> {

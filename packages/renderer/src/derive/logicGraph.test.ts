@@ -4,7 +4,7 @@ import type { GraphNode } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import { collectModuleDefinitions, definitionNodeData, deriveLogicGraph, deriveLogicGraphFromBodies, type LogicNodeData } from "./logicGraph";
 
-/** A GraphIndex stub: deriveLogicGraph reads nodesById + ancestorsOf + changedIds (entry-cap diff). */
+/** A GraphIndex stub: deriveLogicGraph reads nodesById + ancestorsOf + changed status (entry cap). */
 function makeIndex(entries: Array<{ id: string; name: string; kind: string; parentId: string | null }>): GraphIndex {
   const nodesById = new Map<string, GraphNode>(
     entries.map((e) => [
@@ -32,7 +32,13 @@ function makeIndex(entries: Array<{ id: string; name: string; kind: string; pare
     return path.reverse();
   };
   const childrenOf = (id: string): GraphNode[] => childrenByParent.get(id) ?? [];
-  return { nodesById, ancestorsOf, childrenOf, changedIds: new Set<string>() } as unknown as GraphIndex;
+  return {
+    nodesById,
+    ancestorsOf,
+    childrenOf,
+    changedIds: new Set<string>(),
+    changedStatus: new Map(),
+  } as unknown as GraphIndex;
 }
 
 const call = (label: string, target: string | null, resolution: EdgeResolution): FlowStep => ({ kind: "call", label, target, resolution });
@@ -272,6 +278,46 @@ describe("deriveLogicGraph", () => {
     // entry wires INTO the first step; the last step wires INTO exit.
     expect(edges).toContainEqual(expect.objectContaining({ source: "r::entry", target: "r::0", kind: "seq" }));
     expect(edges).toContainEqual(expect.objectContaining({ source: "r::1", target: "r::exit", kind: "seq" }));
+  });
+
+  it("carries the root's exact PR status on the entry terminal", () => {
+    const index = makeIndex([{ id: "r", name: "handler", kind: "function", parentId: null }]);
+    index.changedIds.add("r");
+    index.changedStatus.set("r", "added");
+
+    const { nodes } = deriveLogicGraph("r", { r: [call("work", "ext:lib#work", "external")] }, index, NONE, {
+      hideGreyed: false,
+      withTerminals: true,
+    });
+
+    expect(nodes.find((node) => node.id === "r::entry")?.data).toMatchObject({ changedStatus: "added" });
+  });
+
+  it("carries source-site status on call and structural steps without inheriting callee status", () => {
+    const target = "ts:src/service.ts#save";
+    const index = makeIndex([{ id: target, name: "save", kind: "function", parentId: null }]);
+    index.changedStatus.set(target, "modified");
+    const flows: LogicFlows = {
+      r: [
+        { ...call("save", target, "resolved"), source: { file: "src/app.ts", line: 10 } },
+        { ...call("save", target, "resolved"), source: { file: "src/app.ts", line: 11 } },
+        {
+          kind: "branch",
+          label: "if ready",
+          source: { file: "src/app.ts", line: 12 },
+          paths: [{ label: "then", body: [] }],
+        },
+      ],
+    };
+
+    const { nodes } = deriveLogicGraph("r", flows, index, NONE, {
+      hideGreyed: false,
+      changedStatusForSource: (source) => source?.line === 10 ? "added" : source?.line === 12 ? "deleted" : undefined,
+    });
+
+    expect(nodes.find((node) => node.id === "r::0")?.data).toMatchObject({ changedStatus: "added" });
+    expect((nodes.find((node) => node.id === "r::1")?.data as LogicNodeData).changedStatus).toBeUndefined();
+    expect(nodes.find((node) => node.id === "r::2")?.data).toMatchObject({ changedStatus: "deleted" });
   });
 
   it("converges a trailing branch's pins onto the exit terminal, labels intact", () => {
