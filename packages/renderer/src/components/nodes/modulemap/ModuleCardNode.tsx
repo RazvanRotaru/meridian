@@ -51,7 +51,7 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
         <div style={borderFor(frameStyle(FILE_FRAME_ACCENT), frameSelectedStyle(FILE_FRAME_ACCENT), selected, diff)}>
           <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
           <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-          <FrameTitleBar chevron={chevron}>
+          <FrameTitleBar chevron={chevron} status={diff.status}>
             <DiffStat delta={delta} />
             <span className="lod-label" style={LABEL} title={data.fullPath}>{data.label}</span>
             <span className="lod-hide" style={CONTENTS}>

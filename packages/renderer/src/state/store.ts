@@ -91,6 +91,7 @@ import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref"
 import {
   readReviewPreferences,
   writeReviewPreferences,
+  type ReviewCodePreviewTrigger,
   type ReviewFlowSplitView,
 } from "./reviewPreferences";
 import { moduleRevealStateFor, nearestModuleIds } from "./flowExplorer";
@@ -455,6 +456,9 @@ export interface BlueprintState {
   /** Whether selecting an impacted PR flow also opens its bottom split. The flow remains selected
    * and highlighted in the main graph when this browser-local preference is off. */
   reviewOpenFlowSplitOnSelect: boolean;
+  /** Pointer gesture which opens the graph node's transient code preview. Browser-local so a
+   * reader's preference follows them between repositories and reviews. */
+  reviewCodePreviewTrigger: ReviewCodePreviewTrigger;
   /** Hides the review side panel so the graph takes the full width; session-only. */
   reviewPanelHidden: boolean;
   /** Shows existing GitHub review comments in canvas source widgets. Session-only; draft comment
@@ -724,6 +728,7 @@ export interface BlueprintState {
   deleteReviewComment(id: string): void;
   setReviewFlowSplitView(view: ReviewFlowSplitView): void;
   setReviewOpenFlowSplitOnSelect(open: boolean): void;
+  setReviewCodePreviewTrigger(trigger: ReviewCodePreviewTrigger): void;
   toggleReviewDiffOnly(): void;
   toggleReviewPanel(): void;
   toggleReviewCommentsVisible(): void;
@@ -1658,6 +1663,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewComments: initialProgress?.comments ?? [],
     reviewFlowSplitView: reviewPreferences.flowSplitView,
     reviewOpenFlowSplitOnSelect: reviewPreferences.openFlowSplitOnSelect,
+    reviewCodePreviewTrigger: reviewPreferences.codePreviewTrigger,
     reviewPanelHidden: false,
     reviewCommentsVisible: true,
     reviewSubmitStatus: "idle",
@@ -3920,9 +3926,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     setReviewFlowSplitView(view) {
       const state = get();
       writeReviewPreferences({
-        version: 2,
+        version: 3,
         flowSplitView: view,
         openFlowSplitOnSelect: state.reviewOpenFlowSplitOnSelect,
+        codePreviewTrigger: state.reviewCodePreviewTrigger,
       });
       const reviewFlowOpen = state.review !== null
         && state.minimalSeedIds.length > 0
@@ -3946,9 +3953,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       writeReviewPreferences({
-        version: 2,
+        version: 3,
         flowSplitView: state.reviewFlowSplitView,
         openFlowSplitOnSelect: open,
+        codePreviewTrigger: state.reviewCodePreviewTrigger,
       });
       const reviewFlowSelected = state.review !== null
         && state.minimalSeedIds.length > 0
@@ -3967,6 +3975,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       void get().flowPaneRelayout();
+    },
+
+    setReviewCodePreviewTrigger(trigger) {
+      const state = get();
+      if (state.reviewCodePreviewTrigger === trigger) {
+        return;
+      }
+      writeReviewPreferences({
+        version: 3,
+        flowSplitView: state.reviewFlowSplitView,
+        openFlowSplitOnSelect: state.reviewOpenFlowSplitOnSelect,
+        codePreviewTrigger: trigger,
+      });
+      set({ reviewCodePreviewTrigger: trigger });
     },
 
     toggleReviewDiffOnly() {

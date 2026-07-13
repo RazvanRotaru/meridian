@@ -48,7 +48,7 @@ export function GroupContainerNodeView({ id, data }: { id: string; data: ModuleG
       <div style={borderFor(frameStyle(PACKAGE_ACCENT), frameSelectedStyle(PACKAGE_ACCENT), selected, diff)}>
         <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
         <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-        <FrameTitleBar chevron={chevron}>
+        <FrameTitleBar chevron={chevron} status={diff.status}>
           <span className="lod-label" style={TITLE_LABEL} title={id}>{data.label}</span>
           <span className="lod-hide" style={CONTENTS}>
             {data.readOnly ? changedInside : <DeltaChip diff={diff} />}

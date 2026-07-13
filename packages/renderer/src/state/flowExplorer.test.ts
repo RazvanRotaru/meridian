@@ -53,7 +53,7 @@ function freshStore() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("flow explorer store slice", () => {
-  it("persists projection and split-opening preferences without clobbering either choice", () => {
+  it("persists projection, split-opening, and code-preview preferences without clobbering another choice", () => {
     const persisted = new Map<string, string>();
     vi.stubGlobal("window", {
       localStorage: {
@@ -65,28 +65,42 @@ describe("flow explorer store slice", () => {
 
     expect(store.getState().reviewFlowSplitView).toBe("timeline");
     expect(store.getState().reviewOpenFlowSplitOnSelect).toBe(true);
+    expect(store.getState().reviewCodePreviewTrigger).toBe("hover");
     store.getState().setReviewOpenFlowSplitOnSelect(false);
     expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
-      version: 2,
+      version: 3,
       flowSplitView: "timeline",
       openFlowSplitOnSelect: false,
+      codePreviewTrigger: "hover",
     });
     for (const { mode } of STATIC_LOGIC_VIEW_MODES) {
       store.getState().setReviewFlowSplitView(mode);
       expect(store.getState().reviewFlowSplitView).toBe(mode);
       expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
-        version: 2,
+        version: 3,
         flowSplitView: mode,
         openFlowSplitOnSelect: false,
+        codePreviewTrigger: "hover",
       });
       expect(freshStore().getState().reviewFlowSplitView).toBe(mode);
       expect(freshStore().getState().reviewOpenFlowSplitOnSelect).toBe(false);
+      expect(freshStore().getState().reviewCodePreviewTrigger).toBe("hover");
     }
+    store.getState().setReviewCodePreviewTrigger("click");
+    expect(store.getState().reviewCodePreviewTrigger).toBe("click");
+    expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
+      version: 3,
+      flowSplitView: "timeline",
+      openFlowSplitOnSelect: false,
+      codePreviewTrigger: "click",
+    });
+    expect(freshStore().getState().reviewCodePreviewTrigger).toBe("click");
     store.getState().setReviewOpenFlowSplitOnSelect(true);
     expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
-      version: 2,
+      version: 3,
       flowSplitView: "timeline",
       openFlowSplitOnSelect: true,
+      codePreviewTrigger: "click",
     });
   });
 

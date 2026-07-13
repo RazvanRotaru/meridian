@@ -189,6 +189,30 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await loyaltyTierNode.hover();
     await loyaltyPreview.waitFor();
     await loyaltyPreview.getByText(EXISTING_COMMENT_TEXT, { exact: true }).waitFor();
+
+    // Readers can switch previews from the default hover dwell to click-to-pin. Hover becomes inert,
+    // a node click opens immediately, pointer movement does not dismiss the pinned card, and a bare
+    // canvas click closes it. Restore hover afterwards because the rest of this journey exercises the
+    // default interaction contract.
+    const preferencesButton = page.getByRole("button", { name: "Review preferences" });
+    await preferencesButton.click();
+    const preferencesPane = page.getByRole("region", { name: "Review preferences" });
+    await preferencesPane.getByRole("radio", { name: /^On click/ }).check();
+    await preferencesPane.getByRole("button", { name: "Close review preferences" }).click();
+    await loyaltyTierNode.hover();
+    await page.waitForTimeout(350);
+    expect(await loyaltyPreview.count()).toBe(0);
+    await loyaltyTierNode.click();
+    await loyaltyPreview.waitFor();
+    await page.mouse.move(0, 0);
+    await page.waitForTimeout(250);
+    expect(await loyaltyPreview.isVisible()).toBe(true);
+    await extractedReviewSurface.locator(".react-flow__pane").click({ position: { x: 8, y: 8 }, force: true });
+    await loyaltyPreview.waitFor({ state: "detached" });
+    await preferencesButton.click();
+    await preferencesPane.getByRole("radio", { name: /^On hover/ }).check();
+    await preferencesPane.getByRole("button", { name: "Close review preferences" }).click();
+
     const loyaltyCodeButton = loyaltyTierNode.getByRole("button", { name: "View source" });
     await loyaltyCodeButton.click();
     const loyaltySourceDialog = page.getByRole("dialog", { name: "Source code" });

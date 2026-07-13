@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { STATIC_LOGIC_VIEW_MODES } from "../../derive/flowViewModel";
-import type { ReviewFlowSplitView } from "../../state/reviewPreferences";
+import type { ReviewCodePreviewTrigger, ReviewFlowSplitView } from "../../state/reviewPreferences";
 import { ReviewPreferencesPane } from "./ReviewPreferencesPane";
 
 const MODES = STATIC_LOGIC_VIEW_MODES.map(({ mode }) => mode);
@@ -11,6 +11,7 @@ function render(
   openFlowSplitOnSelect = true,
   excludeTestChanges = true,
   hideNodesNotInDiff = false,
+  codePreviewTrigger: ReviewCodePreviewTrigger = "hover",
 ) {
   return renderToStaticMarkup(
     <ReviewPreferencesPane
@@ -18,10 +19,12 @@ function render(
       hideNodesNotInDiff={hideNodesNotInDiff}
       flowView={flowView}
       openFlowSplitOnSelect={openFlowSplitOnSelect}
+      codePreviewTrigger={codePreviewTrigger}
       onExcludeTestChangesChange={() => undefined}
       onHideNodesNotInDiffChange={() => undefined}
       onFlowViewChange={() => undefined}
       onOpenFlowSplitOnSelectChange={() => undefined}
+      onCodePreviewTriggerChange={() => undefined}
       onClose={() => undefined}
     />,
   );
@@ -47,8 +50,12 @@ describe("ReviewPreferencesPane", () => {
     expect(markup).toContain("stays highlighted in the review graph");
     expect(markup.match(/type="checkbox"/g)).toHaveLength(3);
     expect(markup.match(/<input(?=[^>]*type="checkbox")(?=[^>]*checked="")[^>]*>/g)).toHaveLength(2);
+    expect(markup).toContain("Code preview behavior");
+    expect(markup).toContain("On hover");
+    expect(markup).toContain("On click");
+    expect(markup.match(/name="review-code-preview-trigger"/g)).toHaveLength(2);
     expect(markup).toContain("Split view presentation");
-    expect(markup.match(/type="radio"/g)).toHaveLength(MODES.length);
+    expect(markup.match(/type="radio"/g)).toHaveLength(MODES.length + 2);
     expect(markup.match(/name="review-flow-split-view"/g)).toHaveLength(MODES.length);
     expect(MODES.every((mode) => markup.includes(`value="${mode}"`))).toBe(true);
     expect(markup).toContain("Timeline");
@@ -56,7 +63,7 @@ describe("ReviewPreferencesPane", () => {
     expect(markup).toContain("Execution graph");
     expect(markup).toContain("Metro");
     expect(markup).toContain("Blocks");
-    expect(markup).toContain("Flow preferences are saved in this browser");
+    expect(markup).toContain("Flow and code preview preferences are saved in this browser");
     expect(markup).toContain("Graph display and test visibility apply to the current PR review");
     expect(markup).toContain('aria-label="Close review preferences"');
   });
@@ -65,8 +72,16 @@ describe("ReviewPreferencesPane", () => {
     const markup = render("blocks", false, false);
 
     expect(markup).not.toMatch(/<input(?=[^>]*type="checkbox")(?=[^>]*checked="")[^>]*>/);
-    expect(markup.match(/type="radio"/g)).toHaveLength(MODES.length);
+    expect(markup.match(/type="radio"/g)).toHaveLength(MODES.length + 2);
     expect(markup).toMatch(/<input(?=[^>]*value="blocks")(?=[^>]*checked="")[^>]*>/);
+  });
+
+  it("selects click-to-preview independently from the flow presentation", () => {
+    const markup = render("timeline", true, true, false, "click");
+
+    expect(markup).toMatch(/<input(?=[^>]*name="review-code-preview-trigger")(?=[^>]*value="click")(?=[^>]*checked="")[^>]*>/);
+    expect(markup).not.toMatch(/<input(?=[^>]*name="review-code-preview-trigger")(?=[^>]*value="hover")(?=[^>]*checked="")[^>]*>/);
+    expect(markup).toMatch(/<input(?=[^>]*name="review-flow-split-view")(?=[^>]*value="timeline")(?=[^>]*checked="")[^>]*>/);
   });
 
   it("checks the diff-only graph control independently from the other review preferences", () => {
