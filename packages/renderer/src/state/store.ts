@@ -508,6 +508,16 @@ export interface BlueprintState {
   prReviewBlocked: { number: number; reason: string } | null;
   /** The PR whose changed files are currently highlighted in the graph (via "review in graph"). */
   prReviewed: number | null;
+  /** Immutable input snapshot for the parked review. The PR queue may browse another selection,
+   * but Resume must re-project the reviewed PR rather than whichever detail card is now open. */
+  prReviewSource: {
+    number: number;
+    files: PrChangedFile[];
+    truncated: boolean;
+    total: number;
+    outside: number;
+    suggestedSubdir: string;
+  } | null;
   /** Exact GitHub content revision currently rendered by the review. It remains immutable while a
    * freshness check updates the summary cache, so a newly pushed head can be compared honestly. */
   prReviewRevision: PrReviewRevision | null;
@@ -542,8 +552,8 @@ export interface BlueprintState {
    * this disarms on a soft baseline restore and re-arms when resumePrReview swaps the graph back. */
   prPreparedArtifactCurrent: boolean;
   /** The boot artifact/index pair, saved ONCE when a streamed review swaps in the prepared PR-head
-   * artifact and restored when the session ends (back to the PRs lens, switching PRs). Null outside
-   * a swapped review — the synchronous fallback path never swaps, so it never sets this. */
+   * artifact and restored while the review is parked. It is cleared only when another review starts
+   * or history explicitly leaves review state. Null outside a swapped review. */
   prReviewBaseline: PrReviewBaseline | null;
   /** The artifact endpoint this session loaded from; the wave-2 swap fetches the prepared PR
    * graph from it by exchanging the `id` query param. Empty when booted without a server. */
@@ -702,7 +712,7 @@ export interface BlueprintState {
   exploreRelatedPrs(): Promise<void>;
   clearRelatedPrs(): void;
   ensurePrSummary(number: number): Promise<void>;
-  selectPr(number: number | null): Promise<void>;
+  selectPr(number: number | null, options?: { endReviewSession?: boolean }): Promise<void>;
   /** Quietly compare the live GitHub head with the revision currently rendered. */
   checkPrReviewFreshness(): Promise<void>;
   /** Replace a stale review's files, discussion, checks, and graph without a page reload. */
@@ -1310,6 +1320,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let telemetryFetchSeq = 0;
   let prAnalyzeCancellation: { sequence: number; resolve: () => void } | null = null;
   let prReviewEntryRequest: { number: number; promise: Promise<void> } | null = null;
+  let prReviewResumeRequest: { number: number; promise: Promise<void> } | null = null;
   // Edge-evidence context switches are asynchronous source reads; only the latest click may win.
   let edgeEvidenceSeq = 0;
   const prsNextPage: Record<PrsTab, number> = { open: 1, closed: 1 };
@@ -1509,6 +1520,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prFilesSuggestedSubdir: "",
     prReviewBlocked: null,
     prReviewed: null,
+    prReviewSource: null,
     prReviewRevision: null,
     prReviewStale: false,
     prReviewRefreshing: false,
@@ -2928,6 +2940,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalArrange: false,
         moduleGhostInspection: null,
         prReviewed: null,
+        prReviewSource: null,
         ...requestFlowPaneReset(get()),
         ...clearArtifactReviewFlow,
         ...clearPrReview,
@@ -3621,10 +3634,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       if (mode === "prs") {
         moduleLayoutSeq += 1;
-        // Returning to the PRs lens ends the review session: the boot artifact comes back so the
-        // list is browsed against the graph the session booted with. No relayout here — the PRs
-        // page has no canvas, and re-entering a graph lens always lays out afresh.
-        restorePrReviewBaseline(get, set, invalidateArtifactCaches);
+        // beginLensTransition softly parked any open review and restored the boot graph. Keep its
+        // payload and prepared id alive while the queue is browsed; starting another review is the
+        // commit point that replaces it. No relayout here because the PR page has no canvas.
         // Remember the lens we're leaving so `togglePrsView` can resume it (previous !== "prs" here).
         lensBeforePrs = previous;
         set({ viewMode: mode });
@@ -4190,7 +4202,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    async selectPr(number) {
+    async selectPr(number, options = {}) {
       if (number !== null && !get().githubSource) {
         return;
       }
@@ -4199,9 +4211,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // Switching PRs abandons any review preparation in flight: bump its seq so a landing stream
       // is dropped, and clear the indicator so the panel never shows a stale progress/error card.
       get().cancelPrReviewPreparation();
-      // Leaving the reviewed PR (a different number, or Back/Escape's null) ends the review
-      // session: put the boot artifact back and re-lay the visible surface. A no-op outside one.
-      if (restoreSelectedPrReview(get, set, invalidateArtifactCaches, bootReviewBaseline)) {
+      // Browsing another card must not discard a parked review. Only an explicit navigation restore
+      // away from review state requests teardown; starting another review owns replacement below.
+      if (options.endReviewSession && restoreSelectedPrReview(get, set, invalidateArtifactCaches, bootReviewBaseline)) {
         void get().relayout();
       }
       const prepareReset = { prReviewStatus: "idle" as const, prPrepareStage: null, prPrepareError: null };
@@ -4467,6 +4479,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           return;
         }
       }
+      if (get().prReviewed === selected) {
+        await get().resumePrReview();
+        return;
+      }
+      // Selection is only browsing; pressing Review in graph is the commit point that replaces an
+      // older parked session. Restore the immutable boot pair before preparing the new PR.
+      if (get().prReviewed !== null) {
+        restoreSelectedPrReview(get, set, invalidateArtifactCaches, bootReviewBaseline);
+      }
       if (analyzeUrl === null || analyzeGraphId === null) {
         await get().reviewPrOnBaseGraph();
         return;
@@ -4516,8 +4537,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // review keeps the boot artifact it never left. Then re-project the complete PR through the
     // current Tests setting so a toggle changed while the workspace was parked is honored.
     async resumePrReview() {
-      const { prReviewed, minimalSeedIds, prPreparedGraphId } = get();
+      const { prReviewed, prReviewSource, minimalSeedIds, prPreparedGraphId } = get();
       if (prReviewed === null || minimalSeedIds.length > 0) {
+        return;
+      }
+      if (prReviewResumeRequest?.number === prReviewed) {
+        await prReviewResumeRequest.promise;
         return;
       }
       // A normal Code Flow may have been opened on the base Map after the review overlay soft-
@@ -4540,21 +4565,52 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             : {}),
         });
       };
-      clearResumeFlow();
-      if (prPreparedGraphId !== null) {
-        const prepared = await fetchPreparedArtifact(get().graphUrl, prPreparedGraphId);
-        if (get().prReviewed !== prReviewed || get().minimalSeedIds.length > 0) {
-          return; // the review moved on (or resumed elsewhere) while the artifact was in flight.
+      const promise = (async () => {
+        if (prReviewSource !== null && prReviewSource.number === prReviewed) {
+          set({
+            prSelected: prReviewSource.number,
+            prFiles: prReviewSource.files,
+            prFilesTruncated: prReviewSource.truncated,
+            prFilesTotal: prReviewSource.total,
+            prFilesOutside: prReviewSource.outside,
+            prFilesSuggestedSubdir: prReviewSource.suggestedSubdir,
+          });
         }
-        // The base Map stayed interactive during the fetch. Clear once more so a Code Flow opened
-        // in that window cannot ride the stale base-artifact ref across the head-graph swap.
         clearResumeFlow();
-        swapToPreparedArtifact(get, set, prepared, invalidateArtifactCaches);
+        set({ prReviewStatus: "preparing", prPrepareStage: null, prPrepareError: null });
+        try {
+          if (prPreparedGraphId !== null) {
+            const prepared = await fetchPreparedArtifact(get().graphUrl, prPreparedGraphId);
+            if (get().prReviewed !== prReviewed || get().minimalSeedIds.length > 0) {
+              return; // the review moved on (or resumed elsewhere) while the artifact was in flight.
+            }
+            // The base Map stayed interactive during the fetch. Clear once more so a Code Flow opened
+            // in that window cannot ride the stale base-artifact ref across the head-graph swap.
+            clearResumeFlow();
+            swapToPreparedArtifact(get, set, prepared, invalidateArtifactCaches);
+          }
+          applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, {
+            reprojecting: true,
+            preserveReviewSelection: true,
+          });
+          if (get().prReviewed === prReviewed) {
+            set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null });
+          }
+        } catch (error) {
+          if (get().prReviewed === prReviewed && get().minimalSeedIds.length === 0) {
+            set({ prReviewStatus: "error", prPrepareStage: null, prPrepareError: resumeErrorMessage(error) });
+          }
+        }
+      })();
+      const request = { number: prReviewed, promise };
+      prReviewResumeRequest = request;
+      try {
+        await promise;
+      } finally {
+        if (prReviewResumeRequest === request) {
+          prReviewResumeRequest = null;
+        }
       }
-      applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, {
-        reprojecting: true,
-        preserveReviewSelection: true,
-      });
     },
 
     // Prepare-first entry (and the fallback review's manual "Extract head graph"): stream the
@@ -4944,6 +5000,14 @@ function applyPrReviewToMap(
     review,
     prReviewBlocked: null,
     prReviewed: prSelected,
+    prReviewSource: {
+      number: prSelected,
+      files: prFiles ?? [],
+      truncated: get().prFilesTruncated,
+      total: prFilesTotal,
+      outside: prFilesOutside,
+      suggestedSubdir: get().prFilesSuggestedSubdir,
+    },
     prReviewRevision: loadedRevision,
     // If the head moved during a long extraction, its exact analyzed SHA and the earlier summary/file
     // snapshot disagree. Surface Refresh immediately instead of pretending those mixed inputs match.
@@ -5576,6 +5640,11 @@ function sameReviewRefresh(state: BlueprintState, number: number, revision: PrRe
 
 function refreshErrorMessage(error: unknown): string {
   return error instanceof Error && error.message.length > 0 ? error.message : "Could not refresh pull request contents.";
+}
+
+function resumeErrorMessage(error: unknown): string {
+  const detail = error instanceof Error && error.message.length > 0 ? ` ${error.message}` : "";
+  return `Could not resume the pull request review.${detail}`;
 }
 
 async function fetchPrDiscussion(baseUrl: string, number: number): Promise<PrDiscussionResult> {

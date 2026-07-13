@@ -903,7 +903,7 @@ describe("PR store slice", () => {
     });
   });
 
-  it("renders the Resume chip only for saved non-empty review seeds and never replaces the queue row", () => {
+  it("renders the Resume chip only for a saved review payload and never replaces the queue row", () => {
     const store = freshStore();
     store.setState({
       viewMode: "modules",
@@ -922,11 +922,41 @@ describe("PR store slice", () => {
     expect(withoutSeeds).toContain("1 open");
     expect(withoutSeeds).not.toContain("Resume review #7");
 
-    store.setState({ reviewAllSeedIds: [FILE_ID] });
+    const files = [{ path: "src/a.ts", status: "modified" as const, additions: 1, deletions: 0 }];
+    store.setState({
+      viewMode: "prs",
+      review: {
+        context: {
+          changedFiles: files,
+          baseRef: "main",
+          baseSha: null,
+          headRef: "feature",
+          reviewKey: "pr#7",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+      prReviewSource: {
+        number: 7,
+        files,
+        truncated: false,
+        total: 1,
+        outside: 0,
+        suggestedSubdir: "",
+      },
+    });
     const withSeeds = renderSection();
     expect(withSeeds).toContain("PR review");
     expect(withSeeds).toContain("1 open");
     expect(withSeeds).toContain("Resume review #7");
+
+    store.setState({ prReviewStatus: "preparing" });
+    expect(renderSection()).toContain("Resuming review #7");
+    store.setState({ prReviewStatus: "error", prPrepareError: "graph expired" });
+    const failedResume = renderSection();
+    expect(failedResume).toContain("Retry review #7");
+    expect(failedResume).toContain("graph expired");
   });
 
   it("togglePrsView opens the PR page, then a second toggle returns to the Map", () => {
@@ -1762,7 +1792,7 @@ describe("PR review artifact swap and restore", () => {
     expect([...preview!.changedLineKinds!.entries()]).toEqual([[20, "modified"], [21, "modified"]]);
   });
 
-  it("returning to the PRs lens restores the boot pair and clears the review session", async () => {
+  it("returning to the PRs lens parks the review and keeps Resume review visible", async () => {
     const { store, bootIndex } = await swappedReviewStore();
     // Pile in-place amber onto the boot index so the restore's clean-reapply is exercised.
     applyChangedIds(bootIndex, [METHOD_ID]);
@@ -1773,31 +1803,58 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().index.nodesById.get(METHOD_ID)?.location.startLine).toBe(10);
     expect(bootIndex.changedIds.size).toBe(0);
     expect(bootIndex.changedDescendants.size).toBe(0);
-    expect(store.getState().prReviewBaseline).toBe(null);
-    expect(store.getState().prPreparedGraphId).toBe(null);
-    expect(store.getState().prPreparedHeadSha).toBe(null);
+    expect(store.getState().prReviewBaseline?.index).toBe(bootIndex);
+    expect(store.getState().prPreparedGraphId).toBe("pr-head-1");
+    expect(store.getState().prPreparedHeadSha).toBe("abc1234def5678900000");
     expect(store.getState().prPreparedArtifactCurrent).toBe(false);
-    expect(store.getState().prReviewed).toBe(null);
-    expect(store.getState().review).toBe(null);
-    expect(store.getState().reviewAffectedIds.size).toBe(0);
+    expect(store.getState().prReviewed).toBe(7);
+    expect(store.getState().review).not.toBe(null);
+    expect(store.getState().reviewAffectedIds.size).toBeGreaterThan(0);
     expect(store.getState().minimalSeedIds).toEqual([]);
-    expect(store.getState().moduleExpanded.size).toBe(0);
+    expect(store.getState().moduleExpanded.size).toBeGreaterThan(0);
+    store.getInitialState = store.getState;
+    const markup = renderToStaticMarkup(
+      createElement(StoreProvider, { store, children: createElement(PrReviewSection) }),
+    );
+    expect(markup).toContain("Resume review #7");
   });
 
-  it("selecting a different PR restores the boot pair", async () => {
+  it("browsing a different PR keeps the parked review and resumes its snapshotted PR", async () => {
     const { store, bootIndex } = await swappedReviewStore();
+    store.getState().setViewMode("prs");
     await store.getState().selectPr(9);
     expect(store.getState().artifact.generatedAt).toBe(ARTIFACT.generatedAt);
     expect(store.getState().index).toBe(bootIndex);
-    expect(store.getState().prReviewBaseline).toBe(null);
-    expect(store.getState().prReviewed).toBe(null);
-    expect(store.getState().review).toBe(null);
+    expect(store.getState().prReviewBaseline?.index).toBe(bootIndex);
+    expect(store.getState().prReviewed).toBe(7);
+    expect(store.getState().review).not.toBe(null);
     expect(store.getState().prSelected).toBe(9);
+
+    await store.getState().resumePrReview();
+
+    expect(store.getState().viewMode).toBe("modules");
+    expect(store.getState().prSelected).toBe(7);
+    expect(store.getState().prReviewed).toBe(7);
+    expect(store.getState().prFiles?.[0]?.hunks).toEqual([{ start: 21, end: 21 }]);
+    expect(store.getState().minimalSeedIds).toContain(FILE_ID);
   });
 
-  it("backing out of the PR (select null) restores the boot pair", async () => {
+  it("replaces the parked review only when another PR starts reviewing", async () => {
+    const { store } = await swappedReviewStore();
+    store.getState().setViewMode("prs");
+    store.setState(headSelectedPrState(9));
+
+    await store.getState().reviewPrInGraph();
+
+    expect(store.getState().viewMode).toBe("modules");
+    expect(store.getState().prReviewed).toBe(9);
+    expect(store.getState().prReviewSource?.number).toBe(9);
+    expect(store.getState().minimalSeedIds).toContain(FILE_ID);
+  });
+
+  it("an explicit history exit restores the boot pair and ends the review", async () => {
     const { store, bootIndex } = await swappedReviewStore();
-    await store.getState().selectPr(null);
+    await store.getState().selectPr(null, { endReviewSession: true });
     expect(store.getState().artifact.generatedAt).toBe(ARTIFACT.generatedAt);
     expect(store.getState().index).toBe(bootIndex);
     expect(store.getState().prReviewBaseline).toBe(null);
@@ -1837,5 +1894,52 @@ describe("PR review artifact swap and restore", () => {
     await store.getState().showCode(store.getState().index.nodesById.get(METHOD_ID)!);
     const headSourceCall = fetchMock.mock.calls.filter((call) => call[0].toString().includes("/api/source")).at(-1)!;
     expect(new URL(headSourceCall[0].toString()).searchParams.get("id")).toBe("pr-head-1");
+  });
+
+  it("keeps a failed resume retryable and succeeds on the next attempt", async () => {
+    const { store } = await swappedReviewStore();
+    store.getState().closeMinimalGraph();
+    vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response("expired", { status: 404 }))));
+
+    await store.getState().resumePrReview();
+
+    expect(store.getState().prReviewed).toBe(7);
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(false);
+    expect(store.getState().prReviewStatus).toBe("error");
+    expect(store.getState().prPrepareError).toContain("Could not resume the pull request review");
+
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(Response.json(HEAD_ARTIFACT))));
+    await store.getState().resumePrReview();
+
+    expect(store.getState().prReviewStatus).toBe("idle");
+    expect(store.getState().prPrepareError).toBeNull();
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(true);
+  });
+
+  it("shares concurrent resume clicks instead of swapping the prepared graph twice", async () => {
+    const { store } = await swappedReviewStore();
+    store.getState().closeMinimalGraph();
+    vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
+    let releaseGraph!: (response: Response) => void;
+    const graph = new Promise<Response>((resolve) => {
+      releaseGraph = resolve;
+    });
+    const fetchMock = vi.fn(() => graph);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = store.getState().resumePrReview();
+    const second = store.getState().resumePrReview();
+    await vi.waitFor(() => expect(store.getState().prReviewStatus).toBe("preparing"));
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    releaseGraph(Response.json(HEAD_ARTIFACT));
+    await Promise.all([first, second]);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().prReviewStatus).toBe("idle");
   });
 });
