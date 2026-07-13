@@ -21,6 +21,7 @@ export interface WebOptions extends GlobalOptions {
   host: string;
   open: boolean;
   githubClientId?: string;
+  refreshCache?: boolean;
 }
 
 export async function runWeb(source: string | undefined, options: WebOptions): Promise<void> {
@@ -36,6 +37,7 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
     githubClientId,
     fallbackToken: fallback.token,
     fallbackUser: fallback.user,
+    refreshCache: options.refreshCache,
   });
   await serve(
     server,

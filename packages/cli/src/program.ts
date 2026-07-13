@@ -96,6 +96,7 @@ function registerWeb(program: Command): void {
     .option("--port <number>", "preferred port (walks forward if busy)", parsePort, 4180)
     .option("--host <host>", "host to bind", "127.0.0.1")
     .option("--no-open", "do not open a browser")
+    .option("--refresh-cache", "re-extract remote graphs while reusing cached checkouts")
     .option("--github-client-id <id>", "GitHub OAuth app client id for sign-in (default: the project's app; also read from MERIDIAN_GITHUB_CLIENT_ID)")
     .action((source, _options, command) => runWeb(source, command.optsWithGlobals() as WebOptions));
 }

@@ -16,6 +16,7 @@ const MAX_BODY_BYTES = 64_000;
 export interface GenerateRequest extends SourceRequest {
   lang?: string;
   token?: string;
+  refresh?: boolean;
 }
 
 export function readJsonBody(request: IncomingMessage): Promise<unknown> {
@@ -60,6 +61,7 @@ export function parseGenerateRequest(body: unknown): GenerateRequest {
     subdir: optionalString(raw.subdir),
     lang: optionalString(raw.lang),
     token: optionalString(raw.token),
+    refresh: raw.refresh === true,
   };
 }
 
@@ -68,7 +70,12 @@ function optionalString(value: unknown): string | undefined {
 }
 
 /** Deterministic short id from the source identity — token deliberately excluded. */
-export function artifactId(request: GenerateRequest): string {
-  const key = [request.kind, request.value, request.ref ?? "", request.subdir ?? ""].join(" ");
+export function artifactId(request: GenerateRequest, commit = "", analysisKey = ""): string {
+  const key = [request.kind, request.value, request.ref ?? "", request.subdir ?? "", commit, analysisKey].join(" ");
   return createHash("sha1").update(key).digest("hex").slice(0, 12);
+}
+
+/** Remote graph ids use canonical cache identity so equivalent repository spellings converge. */
+export function remoteArtifactId(repositoryKey: string, commit: string, analysisKey: string): string {
+  return createHash("sha1").update([repositoryKey, commit, analysisKey].join(" ")).digest("hex").slice(0, 12);
 }

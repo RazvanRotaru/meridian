@@ -5,7 +5,10 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { base64Auth, buildCloneArgs, parseGitHubSource, sanitizeSubdir } from "./clone";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { base64Auth, buildCloneArgs, parseGitHubSource, resolveExtractionSubdir, sanitizeSubdir } from "./clone";
 import { WebError } from "./web-error";
 
 describe("parseGitHubSource", () => {
@@ -72,13 +75,28 @@ describe("base64Auth", () => {
 
 describe("sanitizeSubdir", () => {
   it("joins a normal subfolder within the clone", () => {
-    expect(sanitizeSubdir("/repo", "src")).toBe("/repo/src");
-    expect(sanitizeSubdir("/repo", "  ")).toBe("/repo");
-    expect(sanitizeSubdir("/repo", undefined)).toBe("/repo");
+    const root = resolve("repo");
+    expect(sanitizeSubdir(root, "src")).toBe(resolve(root, "src"));
+    expect(sanitizeSubdir(root, "  ")).toBe(root);
+    expect(sanitizeSubdir(root, undefined)).toBe(root);
   });
 
   it("rejects a `..` escape out of the clone", () => {
     expect(() => sanitizeSubdir("/repo", "../etc")).toThrow(WebError);
     expect(() => sanitizeSubdir("/repo", "../../..")).toThrow(WebError);
+  });
+
+  it("rejects an extraction root linked outside the clone", () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-clone-root-"));
+    const outside = mkdtempSync(join(tmpdir(), "meridian-clone-outside-"));
+    const linked = join(root, "linked");
+    try {
+      mkdirSync(join(outside, "src"));
+      symlinkSync(outside, linked, process.platform === "win32" ? "junction" : "dir");
+      expect(() => resolveExtractionSubdir(root, "linked")).toThrow("escapes the repository");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });
