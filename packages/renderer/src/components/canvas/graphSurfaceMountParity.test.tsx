@@ -112,10 +112,8 @@ function expectSemanticNavigationDeclaration(props: Record<string, unknown>, wir
   expect(Object.hasOwn(props, "semanticCommitEnabled"), "semanticCommitEnabled was omitted").toBe(true);
   expect(Object.hasOwn(props, "semanticLayers"), "semanticLayers was omitted").toBe(true);
   expect(Object.hasOwn(props, "semanticDepths"), "semanticDepths was omitted").toBe(true);
-  expect(Object.hasOwn(props, "semanticFirstPreviewMax"), "semanticFirstPreviewMax was omitted").toBe(true);
   expect(Object.hasOwn(props, "semanticLodEnabled"), "semanticLodEnabled was omitted").toBe(true);
   expect(typeof props.semanticCommitEnabled).toBe("boolean");
   expect(typeof props.semanticLodEnabled).toBe("boolean");
-  expect(typeof props.semanticFirstPreviewMax).toBe("number");
   expect(typeof props.onSemanticCommit, "onSemanticCommit was omitted").toBe("function");
 }

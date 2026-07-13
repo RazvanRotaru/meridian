@@ -8,8 +8,9 @@ import {
   semanticSurfaceDepths,
 } from "./useSemanticSurfaceNavigation";
 import {
+  reachableSemanticFirstPreviewMax,
   semanticCommitZoomForDepth,
-  semanticFirstPreviewMaxForReadingZoom,
+  semanticFirstPreviewMaxForViewport,
 } from "./mapLodGeometry";
 import { CANVAS_MIN_ZOOM } from "./flowCanvasProps";
 
@@ -58,7 +59,14 @@ describe("nodesAtCurrentSemanticDepth", () => {
 
 describe("exit navigation lifecycle", () => {
   it("keeps the commit boundary reachable above canvas minimum after a minimum fitted zoom", () => {
-    const previewMax = semanticFirstPreviewMaxForReadingZoom(SEMANTIC_READING_MIN_ZOOM);
+    const previewMax = reachableSemanticFirstPreviewMax(
+      semanticFirstPreviewMaxForViewport(
+        { x: 0, y: 0, width: 100_000, height: 100_000 },
+        1_000,
+        1_000,
+      ),
+      SEMANTIC_READING_MIN_ZOOM,
+    );
     const commitMax = semanticCommitZoomForDepth(0, [0, 1], undefined, previewMax);
 
     expect(SEMANTIC_READING_MIN_ZOOM).toBeGreaterThan(CANVAS_MIN_ZOOM);

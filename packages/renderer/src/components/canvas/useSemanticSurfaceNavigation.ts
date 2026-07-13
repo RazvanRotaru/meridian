@@ -20,9 +20,7 @@ import { CANVAS_MIN_ZOOM } from "./flowCanvasProps";
 import { SEMANTIC_LAYER_FADE_MS } from "./MapLod";
 import {
   normalizedSemanticDepths,
-  SEMANTIC_FIRST_PREVIEW_MAX,
   SEMANTIC_ZOOM_BAND_RATIO,
-  semanticFirstPreviewMaxForReadingZoom,
   type SemanticLodLayer,
 } from "./mapLodGeometry";
 
@@ -80,8 +78,6 @@ export interface SemanticSurfaceNavigationController {
   onSemanticCommit(layer: SemanticLodLayer): void;
   /** Pass through to GraphSurface while a retained parent camera handoff is active. */
   semanticBandOriginDepth: number | undefined;
-  /** Explicit shared paint/commit threshold calibrated from this surface's fitted viewport. */
-  semanticFirstPreviewMax: number;
   /** False while layout or a programmatic fit establishes this surface's reading viewport. */
   semanticLodEnabled: boolean;
   /** Pass through to GraphSurface to prevent a second commit during either handoff mode. */
@@ -195,7 +191,6 @@ export function useSemanticSurfaceNavigation({
   commitAdapterRef.current = commitAdapter;
   const [instanceReady, setInstanceReady] = useState(false);
   const [semanticBandOriginDepth, setSemanticBandOriginDepth] = useState<number>();
-  const [semanticFirstPreviewMax, setSemanticFirstPreviewMax] = useState(SEMANTIC_FIRST_PREVIEW_MAX);
   const [semanticLodEnabled, setSemanticLodEnabled] = useState(fit === false);
   const [exitPending, setExitPending] = useState(false);
 
@@ -278,7 +273,6 @@ export function useSemanticSurfaceNavigation({
     fitGenerationRef.current += 1;
     if (fit !== false) {
       setSemanticLodEnabled(false);
-      setSemanticFirstPreviewMax(SEMANTIC_FIRST_PREVIEW_MAX);
     }
   }, [clearHandoffTimers, fit, stableResetKeys]);
 
@@ -348,9 +342,6 @@ export function useSemanticSurfaceNavigation({
       pendingRetainedRef.current = null;
       handoffTimersRef.current = [];
       setSemanticBandOriginDepth(undefined);
-      // The retained parent is deliberately handed off at zoom 1, so its next boundary receives
-      // the ordinary reading window instead of inheriting a small child graph's fitted threshold.
-      setSemanticFirstPreviewMax(SEMANTIC_FIRST_PREVIEW_MAX);
       setSemanticLodEnabled(true);
     }, releaseDelay);
     handoffTimersRef.current = [releaseTimer];
@@ -366,7 +357,6 @@ export function useSemanticSurfaceNavigation({
     }
     if (fitNodes.length === 0) {
       fittedRef.current = true;
-      setSemanticFirstPreviewMax(SEMANTIC_FIRST_PREVIEW_MAX);
       setSemanticLodEnabled(true);
       return;
     }
@@ -382,9 +372,6 @@ export function useSemanticSurfaceNavigation({
         if (fitGenerationRef.current !== generation) {
           return;
         }
-        setSemanticFirstPreviewMax(
-          semanticFirstPreviewMaxForReadingZoom(instance.getViewport().zoom),
-        );
         setSemanticLodEnabled(true);
       });
     });
@@ -407,7 +394,6 @@ export function useSemanticSurfaceNavigation({
     onInit,
     onSemanticCommit,
     semanticBandOriginDepth,
-    semanticFirstPreviewMax,
     semanticLodEnabled: effectiveSemanticLodEnabled,
     semanticCommitEnabled:
       effectiveSemanticLodEnabled && semanticBandOriginDepth === undefined && !exitPending,
