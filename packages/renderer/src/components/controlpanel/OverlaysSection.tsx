@@ -4,7 +4,7 @@
  * the module surface, Tests never in the Logic view), and carries its count where one exists.
  */
 
-import { EXTERNAL_CONTAINER_ID } from "@meridian/core";
+import { EXTERNAL_CONTAINER_ID, type CoverageSummary } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { BlueprintState } from "../../state/store";
 import { moduleSurfaceSpec } from "../canvas/surfaceSpec";
@@ -12,6 +12,7 @@ import { COVERAGE_COLORS } from "../../theme/coverageColors";
 import { accentForKind } from "../../theme/kindColors";
 import { matchAffectedFiles } from "../../derive/matchAffectedFiles";
 import { isReviewTestPath } from "../../derive/reviewFiles";
+import { runtimeCoverageSummary, type RuntimeCoverageMetric } from "../../derive/runtimeCoverageSummary";
 import { Pill } from "./panelKit";
 
 const REACH_HUE = "#5B9BE3";
@@ -29,7 +30,8 @@ export function OverlaysSection() {
   const showPrivate = useBlueprint((state) => state.showPrivate);
   const privateCount = useBlueprint((state) => state.index.privateIds.size);
   const coverageMode = useBlueprint((state) => state.coverageMode);
-  const coveragePercent = useBlueprint((state) => state.coverage?.summary.percent ?? null);
+  const reachability = useBlueprint((state) => state.coverage?.summary ?? null);
+  const runtimeCoverage = useBlueprint((state) => runtimeCoverageSummary(state.artifact));
   const telemetryMode = useBlueprint((state) => state.telemetryMode);
   const telemetryAvailable = useBlueprint((state) => (
     state.hasOverlay || state.provider !== null || state.telemetrySources.length > 0
@@ -145,14 +147,49 @@ export function OverlaysSection() {
         active={coverageMode}
         accent={COVERAGE_COLORS.covered}
         indicator="square"
-        badge={coverageMode && coveragePercent !== null ? `${coveragePercent}%` : undefined}
-        title={coverageMode ? "Leave coverage mode" : "Color the graph by static test coverage"}
+        badge={coverageMode ? coverageBadge(runtimeCoverage, reachability?.percent ?? null) : undefined}
+        title={coverageTitle(coverageMode, runtimeCoverage, reachability)}
         onClick={toggleCoverageMode}
       >
-        Coverage
+        {runtimeCoverage ? "Coverage" : "Reachability"}
       </Pill>
     </div>
   );
+}
+
+function coverageBadge(
+  runtime: ReturnType<typeof runtimeCoverageSummary>,
+  reachabilityPercent: number | null,
+): string | undefined {
+  if (runtime) {
+    return `F ${metricPercent(runtime.functions)} · B ${metricPercent(runtime.branchPaths)}`;
+  }
+  return reachabilityPercent === null ? undefined : `${reachabilityPercent}%`;
+}
+
+function coverageTitle(
+  active: boolean,
+  runtime: ReturnType<typeof runtimeCoverageSummary>,
+  reachability: CoverageSummary | null,
+): string {
+  const action = active ? "Leave" : "Show";
+  if (runtime) {
+    return `${action} runtime coverage · Functions: ${metricDescription(runtime.functions)} · Branch paths: ${metricDescription(runtime.branchPaths)}`;
+  }
+  if (reachability) {
+    const reached = reachability.covered + reachability.indirect;
+    return `${action} estimated test reachability · ${reached}/${reachability.callables} callables reachable (${reachability.percent}%)`;
+  }
+  return `${action} estimated test reachability from the static call graph`;
+}
+
+function metricPercent(metric: RuntimeCoverageMetric): string {
+  return metric.percent === null ? "—" : `${metric.percent}%`;
+}
+
+function metricDescription(metric: RuntimeCoverageMetric): string {
+  const percent = metric.percent === null ? "no items" : `${metric.percent}%`;
+  return `${metric.hit}/${metric.total} hit (${percent})`;
 }
 
 export function countTestFiles(state: BlueprintState): number {

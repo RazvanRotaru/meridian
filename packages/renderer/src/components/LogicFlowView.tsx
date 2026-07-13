@@ -32,6 +32,19 @@ import type { LogicNodeData, TerminalData } from "../derive/logicGraph";
 import type { GraphIndex } from "../graph/graphIndex";
 import { buildFlowContainmentIndex, transitiveCallers } from "../derive/flowInspect";
 import { FLOW_COLORS } from "../derive/flowViewModel";
+import { visibleCallReachabilityTone, withInferredLaneReachability } from "../derive/logicLaneCoverage";
+import {
+  executionCoverageIndex,
+  executionEvidenceForCallTarget,
+  executionEvidenceForNode,
+  inferExecutionLaneCoverage,
+  paintExecutionLaneCoverage,
+  tallySelectedExecutionBranchCoverage,
+  tallyVisibleExecutionCoverage,
+  type ExecutionBranchPathTally,
+  type ExecutionFlowTally,
+  type IndexedExecutionCoverage,
+} from "../derive/logicExecutionCoverage";
 import { AltLogicSurface } from "./logicviews/AltLogicSurface";
 import { LogicViewTabs } from "./logicviews/LogicViewTabs";
 import { GraphLayoutIndicator } from "./canvas/GraphLayoutIndicator";
@@ -77,7 +90,12 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
   const ghostDepth = useBlueprint((state) => state.ghostDepth);
   const index = useBlueprint((state) => state.index);
   const artifact = useBlueprint((state) => state.artifact);
+  const coverageMode = useBlueprint((state) => state.coverageMode);
   const coverage = useBlueprint((state) => (state.coverageMode ? state.coverage : null));
+  const execution = useMemo(
+    () => (coverageMode ? executionCoverageIndex(artifact) : null),
+    [artifact, coverageMode],
+  );
   const showLogicTests = useBlueprint((state) => state.showLogicTests);
   const { drillLogicFlow, logicFlowTo, diveLogicContainer, logicFocusTo, toggleHideGreyed, toggleNestByService, setGhostDepth, selectLogicTarget, openComposition, toggleLogicTests } =
     useBlueprintActions();
@@ -120,10 +138,25 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
 
   // Emphasize the exec wires touching the selected target's call sites; dim the rest. Recomputed
   // only when the layout edges/nodes or the selection change — never mutating the store arrays.
-  const styledEdges = useMemo(
-    () => emphasizeSelectedEdges(edges, nodes, logicSelected),
-    [edges, logicSelected, nodes],
+  // Coverage is the base presentation layer; selection is the temporary interaction layer above it.
+  // This preserves green/amber/red lane context when selection clears, while selected wires still
+  // get the established bright focus accent and unrelated wires dim in place.
+  const executionLaneModel = useMemo(
+    () => execution ? inferExecutionLaneCoverage(nodes, edges, execution) : null,
+    [edges, execution, nodes],
   );
+  const coverageEdges = useMemo(
+    () => executionLaneModel
+      ? paintExecutionLaneCoverage(edges, executionLaneModel)
+      : withInferredLaneReachability(edges, nodes, coverage),
+    [coverage, edges, executionLaneModel, nodes],
+  );
+  const styledEdges = useMemo(
+    () => emphasizeSelectedEdges(coverageEdges, nodes, logicSelected),
+    [coverageEdges, logicSelected, nodes],
+  );
+  const hasStaticLaneSignals = coverageEdges.some((edge) => edge.data?.staticLane !== undefined);
+  const hasExecutionLaneSignals = coverageEdges.some((edge) => edge.data?.executionLane !== undefined);
 
   // Reverse index (call target → the flow-roots that call it), rebuilt only when the artifact does:
   // it walks every flow once, so it must not run per selection/render.
@@ -144,13 +177,29 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
   // Coverage lens (repaint-only, like selection): the charted method's own verdict, a tally of how
   // much of its VISIBLE call flow tests reach, and — when Show tests is on — ghost nodes for the
   // tests that directly exercise it, wired into the entry.
-  const flowCoverage = useMemo(() => (coverage ? tallyFlowCoverage(nodes, coverage) : null), [nodes, coverage]);
-  const rootCoverage = useMemo(() => (coverage ? rootVerdict(logicRoot, coverage) : null), [coverage, logicRoot]);
-  const { testNodes, testEdges } = useMemo(
-    () => (coverage && showLogicTests ? buildTestGhosts(nodes, logicRoot, coverage, index) : EMPTY_GHOSTS),
-    [coverage, showLogicTests, nodes, logicRoot, index],
+  const flowCoverage = useMemo(
+    () => (coverage && !execution ? tallyFlowCoverage(nodes, coverage) : null),
+    [coverage, execution, nodes],
   );
-  const directTestCount = coverage?.leaves[logicRoot]?.directTestCallers.length ?? 0;
+  const executionFlowCoverage = useMemo(
+    () => (execution ? tallyVisibleExecutionCoverage(nodes, index, execution) : null),
+    [execution, index, nodes],
+  );
+  const executionBranchCoverage = useMemo(
+    () => executionLaneModel ? tallySelectedExecutionBranchCoverage(nodes, executionLaneModel) : null,
+    [executionLaneModel, nodes],
+  );
+  const rootCoverage = useMemo(
+    () => execution
+      ? executionRootVerdict(logicRoot, index, execution)
+      : coverage ? rootVerdict(logicRoot, coverage) : null,
+    [coverage, execution, index, logicRoot],
+  );
+  const { testNodes, testEdges } = useMemo(
+    () => (coverage && !execution && showLogicTests ? buildTestGhosts(nodes, logicRoot, coverage, index) : EMPTY_GHOSTS),
+    [coverage, execution, showLogicTests, nodes, logicRoot, index],
+  );
+  const directTestCount = execution ? 0 : coverage?.leaves[logicRoot]?.directTestCallers.length ?? 0;
 
   // A handle on the React Flow surface: the `fitView` prop only fits on mount, so navigation needs
   // this to recentre the viewport imperatively.
@@ -196,7 +245,7 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={() => selectLogicTarget(null)}
-        miniMapColor={miniMapColor}
+        miniMapColor={(node) => miniMapColor(node, coverage, logicRoot, execution, index)}
       >
       </ReadonlyGraphCanvas>
       <LogicOverlayHeader
@@ -212,9 +261,14 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
         ghostDepth={ghostDepth}
         onSetGhostDepth={setGhostDepth}
         moreCount={moreCount}
-        coverageActive={coverage !== null}
+        coverageActive={coverageMode}
         rootCoverage={rootCoverage}
         flowCoverage={flowCoverage}
+        executionFlowCoverage={executionFlowCoverage}
+        executionBranchCoverage={executionBranchCoverage}
+        executionCoverageActive={execution !== null}
+        hasStaticLaneSignals={hasStaticLaneSignals}
+        hasExecutionLaneSignals={hasExecutionLaneSignals}
         showTests={showLogicTests}
         directTestCount={directTestCount}
         onToggleTests={toggleLogicTests}
@@ -294,6 +348,7 @@ function emphasizeEdge(edge: LogicRfEdge): LogicRfEdge {
   return {
     ...edge,
     style: { ...edge.style, stroke: SELECT_ACCENT, strokeWidth: EMPHASIS_WIDTH, opacity: 1 },
+    labelStyle: { ...edge.labelStyle, fill: SELECT_ACCENT },
     markerEnd: tintMarker(edge.markerEnd, SELECT_ACCENT),
   };
 }
@@ -611,26 +666,47 @@ export interface RootCoverage {
 const EMPTY_GHOSTS: { testNodes: Node[]; testEdges: Edge[] } = { testNodes: [], testEdges: [] };
 const MAX_TEST_GHOSTS = 12;
 
-/** The charted method's OWN verdict, for the headline: is a test exercising this callable, and how. */
+/** Static fallback for the charted method: whether a resolved graph path leads to it from test code. */
 function rootVerdict(rootId: NodeId, coverage: CoverageReport): RootCoverage | null {
   const leaf = coverage.leaves[rootId];
   if (leaf) {
     if (leaf.status === "covered") {
       const n = leaf.directTestCallers.length;
-      return { status: "covered", label: "Tested directly", sub: `${n} test${n === 1 ? "" : "s"} call${n === 1 ? "s" : ""} it` };
+      return { status: "covered", label: "Linked directly from tests", sub: `${n} static test call${n === 1 ? "" : "s"}` };
     }
     if (leaf.status === "indirect") {
-      return { status: "indirect", label: "Reached via calls", sub: leaf.distance ? `${leaf.distance} hops from a test` : "reached transitively" };
+      return { status: "indirect", label: "Reachable from tests", sub: leaf.distance ? `${leaf.distance} static call hops` : "static path found" };
     }
-    const why = leaf.reason?.kind === "only-uncovered-callers" ? "only reached by untested code" : "never called by a test";
-    return { status: "uncovered", label: "Untested", sub: why };
+    const why = leaf.reason?.kind === "only-uncovered-callers" ? "only callers lack a test path" : "no resolved production caller";
+    return { status: "uncovered", label: "No resolved test path", sub: why };
   }
   // A module/class root (the def-grid case): fall back to its members' roll-up percentage.
   const container = coverage.containers[rootId];
   if (container && container.status !== "no-callables") {
-    return { status: container.status === "partial" ? "indirect" : container.status, label: `${container.percent}% of members tested`, sub: `${container.covered}/${container.total} callables` };
+    return { status: container.status === "partial" ? "indirect" : container.status, label: `${container.percent}% of members reachable`, sub: `${container.covered}/${container.total} callables` };
   }
   return null;
+}
+
+/** Runtime execution verdict for the charted callable; aggregate hits never imply test identity. */
+function executionRootVerdict(
+  rootId: NodeId,
+  index: GraphIndex,
+  execution: IndexedExecutionCoverage,
+): RootCoverage | null {
+  const evidence = executionEvidenceForNode(index.nodesById.get(rootId), execution);
+  if (!evidence) return null;
+  return evidence.hits > 0
+    ? {
+        status: "covered",
+        label: "Executed",
+        sub: `${evidence.hits} aggregate hit${evidence.hits === 1 ? "" : "s"}`,
+      }
+    : {
+        status: "uncovered",
+        label: "Not executed",
+        sub: "instrumented with 0 hits",
+      };
 }
 
 /** Bucket the VISIBLE call chips by their callee's verdict — the "how much of this flow is covered"
@@ -643,16 +719,14 @@ function tallyFlowCoverage(nodes: LogicRfNode[], coverage: CoverageReport): Flow
   let untested = 0;
   for (const node of nodes) {
     const d = node.data as LogicNodeData;
-    if (d?.logicKind !== "call" || !d.targetId || d.definition || seen.has(d.targetId)) {
+    if (d?.logicKind !== "call" || d.resolution !== "resolved" || !d.targetId || d.definition || seen.has(d.targetId)) {
       continue;
     }
-    const leaf = coverage.leaves[d.targetId];
-    if (!leaf) {
-      continue; // an external/unresolved target — not a callable we measure.
-    }
+    const tone = visibleCallReachabilityTone(node, coverage);
+    if (!tone || tone === "none" || tone === "test") continue; // not a production callable/container represented in the static coverage report.
     seen.add(d.targetId);
-    if (leaf.status === "covered") direct += 1;
-    else if (leaf.status === "indirect") reached += 1;
+    if (tone === "covered") direct += 1;
+    else if (tone === "indirect") reached += 1;
     else untested += 1;
   }
   return { direct, reached, untested, total: direct + reached + untested };
@@ -707,7 +781,30 @@ function buildTestGhosts(
 }
 
 // The MiniMap gets untyped `Node`s; narrow to our logic data and mirror each node type's accent.
-function miniMapColor(node: Node): string {
+function miniMapColor(
+  node: Node,
+  coverage: CoverageReport | null,
+  rootId: NodeId,
+  execution: IndexedExecutionCoverage | null,
+  index: GraphIndex,
+): string {
+  if (execution) {
+    const data = node.data as Partial<LogicNodeData>;
+    const evidence = data.logicKind === "call"
+      ? executionEvidenceForCallTarget(data.targetId ?? null, data.resolution, index, execution)
+      : node.type === "terminal" && (node.data as TerminalData).terminal === "entry"
+        ? executionEvidenceForNode(index.nodesById.get(rootId), execution)
+        : null;
+    if (evidence) return COVERAGE_COLORS[evidence.verdict];
+  } else if (coverage) {
+    if (node.type === "jumpflow" && (node.data as JumpFlowNodeData).test) return COVERAGE_COLORS.test;
+    const tone = visibleCallReachabilityTone(node as LogicRfNode, coverage);
+    if (tone) return COVERAGE_COLORS[tone];
+    if (node.type === "terminal" && (node.data as TerminalData).terminal === "entry") {
+      const root = rootVerdict(rootId, coverage);
+      if (root) return VERDICT_COLOR[root.status];
+    }
+  }
   if (node.type === "terminal") {
     const terminal = (node.data as TerminalData).terminal;
     if (terminal === "entry") return "#4FB477";
@@ -748,6 +845,11 @@ function LogicOverlayHeader(props: {
   coverageActive: boolean;
   rootCoverage: RootCoverage | null;
   flowCoverage: FlowCoverageTally | null;
+  executionFlowCoverage: ExecutionFlowTally | null;
+  executionBranchCoverage: ExecutionBranchPathTally | null;
+  executionCoverageActive: boolean;
+  hasStaticLaneSignals: boolean;
+  hasExecutionLaneSignals: boolean;
   showTests: boolean;
   directTestCount: number;
   onToggleTests: () => void;
@@ -762,21 +864,28 @@ function LogicOverlayHeader(props: {
           onJump={props.onJump}
           onFocusJump={props.onFocusJump}
         />
-        {props.coverageActive && props.rootCoverage ? (
-          <CoverageHeadline root={props.rootCoverage} flow={props.flowCoverage} />
+        {props.coverageActive && props.executionCoverageActive ? (
+          <ExecutionCoverageHeadline
+            root={props.rootCoverage}
+            flow={props.executionFlowCoverage}
+            branches={props.executionBranchCoverage}
+            hasLaneSignals={props.hasExecutionLaneSignals}
+          />
+        ) : props.coverageActive && (props.rootCoverage || props.flowCoverage?.total || props.hasStaticLaneSignals) ? (
+          <CoverageHeadline root={props.rootCoverage} flow={props.flowCoverage} hasStaticLaneSignals={props.hasStaticLaneSignals} />
         ) : null}
       </div>
       <div style={HEADER_CONTROLS_STYLE}>
-        {props.coverageActive ? (
+        {props.coverageActive && !props.executionCoverageActive ? (
           <button
             type="button"
             style={testsToggleStyle(props.showTests, props.directTestCount === 0)}
             aria-pressed={props.showTests}
             disabled={props.directTestCount === 0}
-            title={props.directTestCount === 0 ? "No test calls this method directly" : props.showTests ? "Hide the tests exercising this method" : "Show the tests exercising this method"}
+            title={props.directTestCount === 0 ? "No resolved direct call from detected test code" : props.showTests ? "Hide tests with direct static calls" : "Show tests with direct static calls"}
             onClick={props.onToggleTests}
           >
-            🧪 Covering tests{props.directTestCount > 0 ? ` (${props.directTestCount})` : ""}
+            🧪 Tests with direct calls{props.directTestCount > 0 ? ` (${props.directTestCount})` : ""}
           </button>
         ) : null}
         <GhostDepthDial depth={props.ghostDepth} moreCount={props.moreCount} onSet={props.onSetGhostDepth} />
@@ -802,24 +911,26 @@ function LogicOverlayHeader(props: {
 }
 
 /** The method's coverage headline + a meter of how much of its visible call flow tests reach. */
-function CoverageHeadline(props: { root: RootCoverage; flow: FlowCoverageTally | null }) {
-  const color = VERDICT_COLOR[props.root.status];
+function CoverageHeadline(props: { root: RootCoverage | null; flow: FlowCoverageTally | null; hasStaticLaneSignals: boolean }) {
   const flow = props.flow;
   const covered = flow ? flow.direct + flow.reached : 0;
   const percent = flow && flow.total ? Math.round((100 * covered) / flow.total) : 0;
   const bandColor = percent >= 75 ? COVERAGE_COLORS.covered : percent >= 40 ? COVERAGE_COLORS.indirect : COVERAGE_COLORS.uncovered;
   const width = (n: number) => (flow && flow.total ? `${(100 * n) / flow.total}%` : "0%");
   return (
-    <div style={HEADLINE_STYLE}>
-      <div style={HEADLINE_ROW}>
-        <span style={{ ...HEADLINE_DOT, background: color }} />
-        <span style={{ ...HEADLINE_TXT, color }}>{props.root.label}</span>
-        <span style={HEADLINE_SUB}>{props.root.sub}</span>
-      </div>
+    <div style={HEADLINE_STYLE} data-coverage-source="estimated-static-reachability">
+      <span style={EVIDENCE_LABEL}>Estimated test reachability · no execution report</span>
+      {props.root ? (
+        <div style={HEADLINE_ROW}>
+          <span style={{ ...HEADLINE_DOT, background: VERDICT_COLOR[props.root.status] }} />
+          <span style={{ ...HEADLINE_TXT, color: VERDICT_COLOR[props.root.status] }}>{props.root.label}</span>
+          <span style={HEADLINE_SUB}>{props.root.sub}</span>
+        </div>
+      ) : null}
       {flow && flow.total > 0 ? (
         <div style={METER_WRAP}>
           <div style={METER_ROW}>
-            <span style={METER_LAB}>Flow coverage</span>
+            <span style={METER_LAB}>Visible call reachability</span>
             <span style={METER_VAL}>
               <span style={{ color: bandColor, fontSize: 14 }}>{percent}%</span>
               <span style={METER_FRAC}> · {covered}/{flow.total} calls</span>
@@ -832,6 +943,131 @@ function CoverageHeadline(props: { root: RootCoverage; flow: FlowCoverageTally |
           </div>
         </div>
       ) : null}
+      {props.hasStaticLaneSignals ? <StaticLaneLegend /> : null}
+    </div>
+  );
+}
+
+/** Imported, aggregate runtime evidence. Green/red are explicit counters; gray means no safe join. */
+export function ExecutionCoverageHeadline(props: {
+  root: RootCoverage | null;
+  flow: ExecutionFlowTally | null;
+  branches: ExecutionBranchPathTally | null;
+  hasLaneSignals: boolean;
+}) {
+  const flow = props.flow;
+  const percent = flow && flow.total ? Math.round((100 * flow.covered) / flow.total) : 0;
+  const bandColor = percent >= 75 ? COVERAGE_COLORS.covered : percent >= 40 ? COVERAGE_COLORS.indirect : COVERAGE_COLORS.uncovered;
+  const width = (n: number) => (flow && flow.total ? `${(100 * n) / flow.total}%` : "0%");
+  const branchColor = props.branches
+    ? props.branches.percent >= 75
+      ? COVERAGE_COLORS.covered
+      : props.branches.percent >= 40
+        ? COVERAGE_COLORS.indirect
+        : COVERAGE_COLORS.uncovered
+    : COVERAGE_COLORS.none;
+  const branchWidth = (n: number) => props.branches && props.branches.total
+    ? `${(100 * n) / props.branches.total}%`
+    : "0%";
+  return (
+    <div style={HEADLINE_STYLE} data-coverage-source="istanbul">
+      {props.root ? (
+        <div style={HEADLINE_ROW}>
+          <span style={{ ...HEADLINE_DOT, background: VERDICT_COLOR[props.root.status] }} />
+          <span style={{ ...HEADLINE_TXT, color: VERDICT_COLOR[props.root.status] }}>{props.root.label}</span>
+          <span style={HEADLINE_SUB}>{props.root.sub}</span>
+        </div>
+      ) : null}
+      {flow && flow.total > 0 ? (
+        <div style={METER_WRAP}>
+          <div style={METER_ROW}>
+            <span style={METER_LAB}>Visible callees executed</span>
+            <span style={METER_VAL}>
+              <span style={{ color: bandColor, fontSize: 14 }}>{percent}%</span>
+              <span style={METER_FRAC}> · {flow.covered}/{flow.total} functions</span>
+            </span>
+          </div>
+          <div style={METER_BAR}>
+            <span style={{ background: COVERAGE_COLORS.covered, width: width(flow.covered) }} />
+            <span style={{ background: COVERAGE_COLORS.uncovered, width: width(flow.uncovered) }} />
+          </div>
+        </div>
+      ) : null}
+      {props.branches ? (
+        <div
+          style={METER_WRAP}
+          title="Measured Istanbul branch paths owned by this Logic flow; unknown and ignored paths are excluded."
+        >
+          <div style={METER_ROW}>
+            <span style={METER_LAB}>Selected branch paths</span>
+            <span
+              style={METER_VAL}
+              aria-label={`Selected Logic branch coverage: ${props.branches.percent}%, ${props.branches.hit} of ${props.branches.total} measured paths hit`}
+            >
+              <span style={{ color: branchColor, fontSize: 14 }}>{props.branches.percent}%</span>
+              <span style={METER_FRAC}> · {props.branches.hit}/{props.branches.total} paths</span>
+            </span>
+          </div>
+          <div style={METER_BAR}>
+            <span style={{ background: COVERAGE_COLORS.covered, width: branchWidth(props.branches.hit) }} />
+            <span style={{ background: COVERAGE_COLORS.uncovered, width: branchWidth(props.branches.total - props.branches.hit) }} />
+          </div>
+        </div>
+      ) : null}
+      {props.hasLaneSignals ? <ExecutionLaneLegend /> : null}
+    </div>
+  );
+}
+
+function ExecutionLaneLegend() {
+  const items: Array<[string, "covered" | "uncovered" | "none"]> = [
+    ["hit", "covered"],
+    ["0 hits", "uncovered"],
+    ["unknown", "none"],
+  ];
+  return (
+    <div
+      style={LANE_LEGEND}
+      aria-label="Logic lane colors show aggregate Istanbul branch-path execution"
+      title="Aggregate Istanbul counters; gray means unsupported, ignored, missing, or not safely matched."
+    >
+      <span style={LANE_LEGEND_LABEL}>Branch paths</span>
+      {items.map(([label, tone]) => (
+        <span key={tone} style={LANE_LEGEND_ITEM}>
+          <span style={{ ...LANE_LEGEND_SWATCH, background: COVERAGE_COLORS[tone] }} />
+          {label}
+        </span>
+      ))}
+      <span style={LANE_LEGEND_CAVEAT}>Istanbul aggregate · not per-test attribution</span>
+    </div>
+  );
+}
+
+/**
+ * The lane palette is intentionally explicit about its evidence. These colors summarize the
+ * callables visible inside each arm; they do not claim that an instrumented test took that path.
+ */
+function StaticLaneLegend() {
+  const items: Array<[string, keyof typeof COVERAGE_COLORS]> = [
+    ["direct", "covered"],
+    ["indirect / mixed", "indirect"],
+    ["not test-reached", "uncovered"],
+    ["unmeasured", "none"],
+  ];
+  return (
+    <div
+      style={LANE_LEGEND}
+      aria-label="Logic lane colors show static callee reachability, not branch execution data"
+      title="Inferred from visible call targets; these colors do not show which branch a test executed."
+    >
+      <span style={LANE_LEGEND_LABEL}>Lane callees</span>
+      {items.map(([label, tone]) => (
+        <span key={tone} style={LANE_LEGEND_ITEM}>
+          <span style={{ ...LANE_LEGEND_SWATCH, background: COVERAGE_COLORS[tone] }} />
+          {label}
+        </span>
+      ))}
+      <span style={LANE_LEGEND_CAVEAT}>not branch execution</span>
     </div>
   );
 }
@@ -1151,6 +1387,9 @@ const OVERLAY_HEADER_STYLE: React.CSSProperties = {
 };
 const HEADER_PANEL_STYLE: React.CSSProperties = {
   pointerEvents: "auto",
+  // The projection tabs own the top-center band; drop the left panel below them when their
+  // horizontal spans meet at laptop widths (the coverage legend makes that overlap conspicuous).
+  marginTop: 36,
   minWidth: 0,
   maxWidth: 340,
   display: "flex",
@@ -1171,6 +1410,7 @@ const VERDICT_COLOR: Record<RootCoverage["status"], string> = {
   none: COVERAGE_COLORS.none,
 };
 const HEADLINE_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6, borderTop: "1px solid #232935", paddingTop: 7 };
+const EVIDENCE_LABEL: React.CSSProperties = { fontSize: 9.5, color: "#7B8695", textTransform: "uppercase", letterSpacing: 0.35 };
 const HEADLINE_ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 7 };
 const HEADLINE_DOT: React.CSSProperties = { width: 9, height: 9, borderRadius: "50%", flex: "0 0 auto" };
 const HEADLINE_TXT: React.CSSProperties = { fontSize: 12.5, fontWeight: 700 };
@@ -1181,6 +1421,11 @@ const METER_LAB: React.CSSProperties = { fontSize: 10.5, color: "#9AA4B2" };
 const METER_VAL: React.CSSProperties = { fontSize: 11.5, color: "#E6EDF3", fontWeight: 700, fontVariantNumeric: "tabular-nums" };
 const METER_FRAC: React.CSSProperties = { color: "#7B8695", fontWeight: 400 };
 const METER_BAR: React.CSSProperties = { display: "flex", height: 6, borderRadius: 4, overflow: "hidden", background: "#0B0E13", border: "1px solid #232935" };
+const LANE_LEGEND: React.CSSProperties = { display: "flex", alignItems: "center", flexWrap: "wrap", gap: "3px 8px", borderTop: "1px solid #232935", paddingTop: 6, fontSize: 10.5, color: "#8994A3" };
+const LANE_LEGEND_LABEL: React.CSSProperties = { color: "#AAB4C1", fontWeight: 600 };
+const LANE_LEGEND_ITEM: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" };
+const LANE_LEGEND_SWATCH: React.CSSProperties = { width: 8, height: 8, borderRadius: 2, display: "inline-block" };
+const LANE_LEGEND_CAVEAT: React.CSSProperties = { width: "100%", color: "#7B8695", fontStyle: "italic" };
 
 function testsToggleStyle(active: boolean, disabled: boolean): React.CSSProperties {
   return {

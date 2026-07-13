@@ -9,14 +9,15 @@
  * peels into a dashed error lane. Every lane owns a stable source pin.
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
 import type { LogicBranchPort, LogicNodeData, TerminalData } from "../../../derive/logicGraph";
 import { FLOW_COLORS } from "../../../derive/flowViewModel";
 import { isSourceBackedNode } from "../../../derive/sourceBackedNode";
-import { coverageAccent, coverageVerdict, COVERAGE_COLORS, type CoverageVerdict } from "../../../theme/coverageColors";
+import { executionCoverageIndex, executionEvidenceForCallTarget } from "../../../derive/logicExecutionCoverage";
+import { callTargetCoverageVerdict, COVERAGE_COLORS, type CoverageVerdict } from "../../../theme/coverageColors";
 import { CodeInlinePanel } from "../../CodeInlinePanel";
 import { changedColor, changedFill } from "../../ChangedBadge";
 
@@ -110,7 +111,13 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
       : null
   ));
   const codeView = useBlueprint((s) => s.codeView);
+  const artifact = useBlueprint((s) => s.artifact);
+  const coverageMode = useBlueprint((s) => s.coverageMode);
   const coverage = useBlueprint((s) => (s.coverageMode ? s.coverage : null));
+  const execution = useMemo(
+    () => (coverageMode ? executionCoverageIndex(artifact) : null),
+    [artifact, coverageMode],
+  );
   const d = data as LogicNodeData;
   const select = selectStateFor(d.targetId, d.runtime ? requestSelected : logicSelected);
   const changedStatus = d.changedStatus
@@ -128,17 +135,29 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   const glyph = d.callKind === "method" ? METHOD_GLYPH : "ƒ";
   // In coverage mode the title bar recolors by the CALLEE's coverage verdict (green/amber/red), so the
   // exec flow doubles as a coverage map; otherwise it keeps the call/method/def accent.
-  const covAccent = coverage && d.targetId ? coverageAccent(d.targetId, coverage) : null;
+  const executionEvidence = executionEvidenceForCallTarget(d.targetId, d.resolution, index, execution);
+  const covVerdict = execution
+    ? executionEvidence?.verdict ?? null
+    : coverage ? callTargetCoverageVerdict(d.targetId, d.resolution, coverage) : null;
+  const covAccent = covVerdict ? COVERAGE_COLORS[covVerdict] : null;
   const accent = covAccent ?? (d.asyncEvent?.kind === "barrier" ? AWAIT_ACCENT : d.definition ? DEF_ACCENT : d.callKind === "method" ? METHOD_ACCENT : BLOCK_ACCENT);
   // The explicit per-node coverage signal: a dark-tracked "battery" that reads on ANY title colour
   // (a coverage-tinted title would swallow a coverage-tinted badge). Only for measured callees.
-  const covVerdict = coverage && d.targetId ? coverageVerdict(d.targetId, coverage) : null;
   const battery = covVerdict === "covered" || covVerdict === "indirect" || covVerdict === "uncovered"
-    ? <CoverageBattery verdict={covVerdict} />
+    ? <CoverageBattery
+        verdict={covVerdict}
+        title={execution
+          ? executionEvidence
+            ? executionEvidence.hits > 0
+              ? `Executed · ${executionEvidence.hits} aggregate hit${executionEvidence.hits === 1 ? "" : "s"}`
+              : "Not executed · instrumented with 0 hits"
+            : "Execution coverage unknown"
+          : undefined}
+      />
     : null;
   if (d.isContainer) {
     return (
-      <div style={WRAP}>
+      <div style={WRAP} data-coverage-verdict={covVerdict ?? undefined}>
         <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleExpand(id)} provenance={d.provenance} select={select} badge={battery} changedRing={changed ? changedRing : null} nestedDetachedCount={d.nestedDetachedCount} />
         <AsyncDecoration d={d} />
       </div>
@@ -168,7 +187,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   if (d.compact) {
     const compactAccent = callScopeAccent(d.callScope, accent);
     return (
-      <div style={WRAP}>
+      <div style={WRAP} data-coverage-verdict={covVerdict ?? undefined}>
         <div
           style={withChanged(selectStyle(compactBodyStyle(d.callScope, compactAccent), select), changed ? changedRing : null, select)}
           title={d.navigable ? "Double-click to open this callable's logic" : d.callScope === "external" ? "External call boundary" : undefined}
@@ -198,7 +217,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   // a single body click selects and a double-click dives, so the old click-to-expand was ambiguous.
   // The relative WRAP (not clipped) hosts the clipped body PLUS the inline box hanging below it.
   return (
-    <div style={WRAP}>
+    <div style={WRAP} data-coverage-verdict={covVerdict ?? undefined}>
       <div style={withChanged(selectStyle(BODY, select), changed ? changedRing : null, select)}>
         <ExecPins />
         <div style={titleStyle(accent)}>
@@ -573,10 +592,10 @@ const BATTERY_TITLE: Record<CoverageVerdict, string> = {
   test: "Test code",
   none: "Not measured",
 };
-function CoverageBattery({ verdict }: { verdict: CoverageVerdict }) {
+function CoverageBattery({ verdict, title = BATTERY_TITLE[verdict] }: { verdict: CoverageVerdict; title?: string }) {
   const color = COVERAGE_COLORS[verdict];
   return (
-    <span style={BATTERY_WRAP} title={BATTERY_TITLE[verdict]} aria-label={`Coverage: ${BATTERY_TITLE[verdict]}`}>
+    <span style={BATTERY_WRAP} title={title} aria-label={`Coverage: ${title}`}>
       <span style={BATTERY_TRACK}>
         <span style={{ ...BATTERY_FILL, width: `${BATTERY_FILL_FRACTION[verdict] * 100}%`, background: color }} />
       </span>

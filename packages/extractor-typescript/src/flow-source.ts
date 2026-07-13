@@ -1,12 +1,17 @@
 import type { FlowSourceAnchor } from "@meridian/core";
 import type { Node } from "ts-morph";
 
-/** A portable POC source anchor for static FlowSteps. The owning flow supplies the module identity;
- * a production probe manifest should replace this basename/line fallback with a generated site id,
- * project-relative path, and column. */
-export function flowSource(node: Node): FlowSourceAnchor {
+/** Exact portable range for a static flow site. ts-morph exposes 1-based columns; Meridian's
+ * source contracts use 0-based columns, matching Istanbul's coverage locations. */
+export function flowSource(node: Node, relativeFile: string): FlowSourceAnchor {
+  const sourceFile = node.getSourceFile();
+  const start = sourceFile.getLineAndColumnAtPos(node.getStart());
+  const end = sourceFile.getLineAndColumnAtPos(node.getEnd());
   return {
-    file: node.getSourceFile().getBaseName(),
-    line: node.getStartLineNumber(),
+    file: relativeFile.replace(/\\/g, "/"),
+    line: start.line,
+    col: start.column - 1,
+    endLine: end.line,
+    endCol: end.column - 1,
   };
 }

@@ -252,7 +252,7 @@ export interface BlueprintState {
   viewMode: ViewMode;
   /** Whether test code (nodes tagged/heuristically detected as tests) is drawn at all. */
   showTests: boolean;
-  /** Coverage mode recolors the graph by static test coverage and opens the coverage panel. */
+  /** Coverage lens: imported runtime counters when present, otherwise estimated static reachability. */
   coverageMode: boolean;
   /** Computed once, on first entering coverage mode (the artifact never changes after boot). */
   coverage: CoverageReport | null;
@@ -274,8 +274,8 @@ export interface BlueprintState {
   /** How many levels of resolved calls the Logic-flow view inlines in place; 0 == calls are leaf
    * chips (today's behavior). Sticky across open/drill so the reader keeps their chosen depth. */
   logicInlineDepth: number;
-  /** Coverage mode only: whether the tests that directly exercise the charted callable are drawn as
-   * ghost nodes above the flow. A repaint-only flag (the view derives the ghosts), like `logicSelected`. */
+  /** Static-reachability fallback only: whether tests with direct resolved calls are drawn as ghost
+   * nodes above the flow. Runtime aggregate reports deliberately provide no test identity. */
   showLogicTests: boolean;
   /** The selected call TARGET in the Logic-flow view; null == nothing picked. Selection is by
    * target id (not call site), so every same-target call site — the "direct links" — highlights
@@ -2273,9 +2273,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ logicInlineDepth: Math.max(0, Math.min(2, Math.trunc(depth))) });
     },
 
-    // Coverage mode: reveal/hide the tests that directly exercise the charted callable as ghost
-    // nodes above the flow. Repaint only — the view derives the ghosts from this flag + the coverage
-    // report, mirroring how the related-flows ghosts ride selection — so it never relayouts.
+    // Reachability fallback: reveal/hide tests with direct resolved calls as ghosts above the flow.
+    // Runtime aggregate reports deliberately do not use this static test identity. Repaint only —
+    // the view derives the ghosts from this flag + report, so it never relayouts.
     toggleLogicTests() {
       set({ showLogicTests: !get().showLogicTests });
     },

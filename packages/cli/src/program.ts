@@ -58,6 +58,7 @@ function registerGenerate(program: Command): void {
     .option("--exclude-tests", "drop test files from the graph (default: include them, tagged 'test')")
     .option("--value-refs", "emit 'references' edges for imported symbols used as values (surfaces why bare imports exist)")
     .option("--changed-since <ref>", "tag nodes changed since the merge-base with <ref> (a PR's diff) 'changed'")
+    .option("--test-coverage <coverage-final.json>", "attach aggregate Istanbul coverage-map JSON (Meridian does not run tests)")
     .action((path, _options, command) => runGenerate(path ?? ".", command.optsWithGlobals() as GenerateOptions));
 }
 
@@ -84,6 +85,7 @@ function registerView(program: Command): void {
     .option("--overlay <source>", "overlay source: a file path or 'mock'")
     .option("--env <env>", "environment (also read from BLUEPRINT_ENV)")
     .option("--source-root <dir>", "serve source for code view from this directory")
+    .option("--test-coverage <coverage-final.json>", "overlay aggregate Istanbul coverage-map JSON in memory")
     .action((graph, _options, command) =>
       runView(graph ?? "meridian.graph.json", command.optsWithGlobals() as ViewOptions),
     );

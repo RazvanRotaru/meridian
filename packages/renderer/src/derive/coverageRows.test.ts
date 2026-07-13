@@ -56,7 +56,7 @@ describe("buildCoverageRows", () => {
     const email = rows[0];
     expect(email.uncoveredMembers).toHaveLength(1);
     expect(email.uncoveredMembers[0].name).toBe("send");
-    expect(email.uncoveredMembers[0].reason).toContain("only called by uncovered code");
+    expect(email.uncoveredMembers[0].reason).toContain("only called by code not reachable from tests");
     expect(email.uncoveredMembers[0].reason).toContain("Svc.cancel");
 
     const svc = rows[1];

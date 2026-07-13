@@ -44,12 +44,14 @@ export function buildLogicFlows(
   moduleSourcesById: ReadonlyMap<string, SourceFile>,
 ): LogicFlows {
   const flows: LogicFlows = {};
-  const walker = createWalker(index);
+  // Promise-return analysis is memoized across every callable; only the file-aware walking
+  // context varies per descriptor.
+  const annotate = createCallAnnotator();
   for (const descriptor of descriptors) {
     if (!keepIds.has(descriptor.finalId)) {
       continue;
     }
-    const steps = stepsOf(descriptor, moduleSourcesById, walker);
+    const steps = stepsOf(descriptor, moduleSourcesById, createWalker(index, descriptor.location.file, annotate));
     // Exit steps alone don't make a flow worth charting — `function f() { return 0; }` stays
     // omitted, exactly as it was before returns were charted at all.
     if (steps.some((step) => step.kind !== "exit")) {
@@ -85,12 +87,13 @@ function moduleFlow(sourceFile: SourceFile, walker: FlowWalker): FlowStep[] {
 }
 
 /** The step builders recurse through this object, so the modules stay import-acyclic. */
-function createWalker(index: ResolutionIndex): FlowWalker {
+function createWalker(index: ResolutionIndex, relativeFile: string, annotate: FlowWalker["annotate"]): FlowWalker {
   const walker: FlowWalker = {
     index,
     walk: (node, depth) => walk(node, walker, depth),
     walkBody: (body, depth) => walkBody(body, walker, depth),
-    annotate: createCallAnnotator(),
+    source: (node) => flowSource(node, relativeFile),
+    annotate,
   };
   return walker;
 }
@@ -138,7 +141,7 @@ function awaitSteps(node: AwaitExpression, walker: FlowWalker, depth: number): F
     && !(Node.isCallExpression(directCall) && iterationCall(directCall) !== null);
   const awaitStep = standaloneAwaitStep(node, waitAlreadyCharted);
   if (awaitStep) {
-    steps.push(awaitStep);
+    steps.push({ ...awaitStep, source: walker.source(node) });
   }
   return steps;
 }
@@ -153,7 +156,7 @@ function exitSteps(node: ReturnStatement | ThrowStatement, walker: FlowWalker, d
     kind: "exit",
     variant: Node.isReturnStatement(node) ? "return" : "throw",
     label: expression ? truncate(expression.getText()) : null,
-    source: flowSource(node),
+    source: walker.source(node),
   });
   return steps;
 }
@@ -177,7 +180,7 @@ function callSteps(node: CallExpression | NewExpression, walker: FlowWalker, dep
   const label = calleeName(callee);
   if (label) {
     const resolution = resolveTarget(callee, walker.index);
-    steps.push({ kind: "call", label, target: resolution.resolvedTarget, resolution: resolution.resolution, ...walker.annotate(node), source: flowSource(node) });
+    steps.push({ kind: "call", label, target: resolution.resolvedTarget, resolution: resolution.resolution, ...walker.annotate(node), source: walker.source(node) });
   }
   steps.push(...inlineCallbackSteps(node, label, walker, depth));
   return steps;

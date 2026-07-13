@@ -13,10 +13,14 @@
     "test": "pnpm -r --filter \"./packages/*\" test",
     "typecheck": "pnpm -r --filter \"./packages/*\" typecheck",
     "schema:emit": "pnpm --filter @meridian/core schema:emit",
-    "e2e": "pnpm build && pnpm --filter @meridian/cli copy-renderer && pnpm --filter @meridian/cli e2e"
+    "e2e": "pnpm build && pnpm --filter @meridian/cli copy-renderer && pnpm --filter @meridian/cli e2e",
+    "sample:coverage": "pnpm --dir examples/orders-service coverage",
+    "sample:graph": "pnpm --filter @meridian/cli build && SOURCE_DATE_EPOCH=1783880383.984 node packages/cli/dist/bin.js generate examples/orders-service --test-coverage examples/orders-service/coverage/coverage-final.json -o packages/renderer/public/sample-graph.json",
+    "sample:refresh": "pnpm sample:coverage && pnpm sample:graph"
   },
   "devDependencies": {
     "@types/node": "^26.0.1",
+    "@vitest/coverage-v8": "4.1.9",
     "tsup": "^8.5.1",
     "tsx": "^4.0.0",
     "typescript": "6.0.3",

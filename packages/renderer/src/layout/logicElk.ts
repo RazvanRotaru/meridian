@@ -41,6 +41,36 @@ export type DefGroupData = {
 };
 
 export type LogicRfNode = Node<LogicNodeData | DefGroupData | TerminalData, LogicNodeType>;
+/**
+ * A renderer-only summary of the measurable call targets visible in one branch lane. This is
+ * deliberately named "static lane" rather than branch coverage: the core report proves graph
+ * reachability of callees, not that a test actually executed this source path.
+ */
+export type StaticLaneTone = "covered" | "indirect" | "uncovered" | "none";
+export interface StaticLaneSignal {
+  basis: "visible-callee-reachability";
+  laneId: string;
+  branchNodeId: string;
+  armIndex: number;
+  label: string;
+  role: NonNullable<LogicEdgeSpec["branchRole"]>;
+  tone: StaticLaneTone;
+  counts: { direct: number; indirect: number; uncovered: number; unmeasured: number };
+}
+export type ExecutionLaneTone = "covered" | "uncovered" | "unknown";
+export interface ExecutionLaneSignal {
+  basis: "istanbul-branch-path";
+  laneId: string;
+  branchNodeId: string;
+  armIndex: number;
+  label: string;
+  role: NonNullable<LogicEdgeSpec["branchRole"]>;
+  tone: ExecutionLaneTone;
+  /** Aggregate path-entry count. Null means the report could not prove a match. */
+  hits: number | null;
+  pathIndex?: number;
+  reason?: "unsupported-branch-kind" | "missing-source" | "no-file-evidence" | "no-branch-match" | "no-path-match";
+}
 export type LogicRfEdgeData = {
   kind: "seq" | "branch" | "async";
   sourcePort?: string;
@@ -50,6 +80,10 @@ export type LogicRfEdgeData = {
   requestFlowDisposition?: "observed" | "context";
   requestFlowEvidence?: RequestEdgeTraversalEvidence | null;
   requestTraceId?: string;
+  /** Static callee-reachability context for a branch lane; never runtime branch-hit evidence. */
+  staticLane?: StaticLaneSignal;
+  /** Imported runtime branch-path evidence. When present it always supersedes `staticLane`. */
+  executionLane?: ExecutionLaneSignal;
 };
 export type LogicRfEdge = Edge<LogicRfEdgeData>;
 export const LOGIC_ASYNC_EDGE_TYPE = "logicAsync";
