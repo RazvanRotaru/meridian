@@ -4,20 +4,20 @@
  * safely attach them to a code node; the live synchronous base fallback keeps them at file level.
  * Exact owners stay separate from visible representatives so collapsed containers can carry them.
  */
-
 import type { GraphNode } from "@meridian/core";
 import type { Node } from "@xyflow/react";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { PrGitHubComment } from "../state/prTypes";
 import type { ReviewComment } from "../state/reviewTicksPref";
 import type { ReviewFileRow } from "./reviewFiles";
+import type { ReviewCommentNodePreview } from "./reviewCommentPreview";
 import { isSourceBackedNode } from "./sourceBackedNode";
 
 export interface ReviewCommentNodeEvidence {
   draftCount: number;
   existingCount: number;
+  comments: ReviewCommentNodePreview[];
 }
-
 export interface ReviewCommentNodeInput {
   drafts: readonly ReviewComment[];
   existingComments: readonly PrGitHubComment[];
@@ -27,12 +27,10 @@ export interface ReviewCommentNodeInput {
   /** True for prepared PR graphs and artifact-sourced reviews whose nodes already use comment lines. */
   lineCoordinatesMatchGraph: boolean;
 }
-
 interface FileTarget {
   moduleId: string;
   graphPath: string;
 }
-
 /** Resolve each comment to exactly one canonical graph node. */
 export function deriveReviewCommentNodeEvidence(input: ReviewCommentNodeInput): Map<string, ReviewCommentNodeEvidence> {
   const targetsByPath = fileTargets(input.files, input.index);
@@ -55,17 +53,33 @@ export function deriveReviewCommentNodeEvidence(input: ReviewCommentNodeInput): 
       : draft.nodeId !== null && input.index.nodesById.has(draft.nodeId)
         ? draft.nodeId
         : fileOwner(draft.path, targetsByPath);
-    addEvidence(evidence, target, "draftCount");
+    addEvidence(evidence, target, "draftCount", {
+      key: `draft:${draft.id}`,
+      kind: "draft",
+      body: draft.body,
+      author: "Draft comment",
+      line: draft.line,
+      lineStale: draft.lineStale === true,
+      url: null,
+    });
   }
 
   if (input.existingCommentsVisible) {
-    for (const comment of input.existingComments) {
+    for (const [index, comment] of input.existingComments.entries()) {
       // Only RIGHT-side lines describe the HEAD graph. Old-side or anchorless discussion still
       // belongs to the file, but must never point at unrelated current code.
       const target = input.lineCoordinatesMatchGraph && comment.side === "RIGHT" && comment.line !== null
         ? headLineOwner(comment.path, comment.line)
         : fileOwner(comment.path, targetsByPath);
-      addEvidence(evidence, target, "existingCount");
+      addEvidence(evidence, target, "existingCount", {
+        key: `existing:${comment.url}:${comment.updatedAt}:${index}`,
+        kind: "existing",
+        body: comment.body,
+        author: comment.author,
+        line: comment.line,
+        lineStale: comment.side !== "RIGHT",
+        url: comment.url || null,
+      });
     }
   }
   return evidence;
@@ -86,10 +100,11 @@ export function projectReviewCommentNodeEvidence(
       const target = visibleRepresentative(sourceId, visibleIds, index);
       if (target === null || projectedTargets.has(target)) continue;
       projectedTargets.add(target);
-      const current = projected.get(target) ?? { draftCount: 0, existingCount: 0 };
+      const current = projected.get(target) ?? emptyEvidence();
       projected.set(target, {
         draftCount: current.draftCount + counts.draftCount,
         existingCount: current.existingCount + counts.existingCount,
+        comments: [...current.comments, ...counts.comments],
       });
     }
   }
@@ -148,11 +163,16 @@ function fileOwner(path: string, targetsByPath: ReadonlyMap<string, FileTarget>)
 function addEvidence(
   evidence: Map<string, ReviewCommentNodeEvidence>,
   nodeId: string | null,
-  kind: keyof ReviewCommentNodeEvidence,
+  kind: "draftCount" | "existingCount",
+  comment: ReviewCommentNodePreview,
 ): void {
   if (nodeId === null) return;
-  const current = evidence.get(nodeId) ?? { draftCount: 0, existingCount: 0 };
-  evidence.set(nodeId, { ...current, [kind]: current[kind] + 1 });
+  const current = evidence.get(nodeId) ?? emptyEvidence();
+  evidence.set(nodeId, { ...current, [kind]: current[kind] + 1, comments: [...current.comments, comment] });
+}
+
+function emptyEvidence(): ReviewCommentNodeEvidence {
+  return { draftCount: 0, existingCount: 0, comments: [] };
 }
 
 function visibleNodePopulations(nodes: readonly Node[]): Map<string, Set<string>> {

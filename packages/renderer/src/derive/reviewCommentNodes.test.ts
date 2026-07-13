@@ -64,7 +64,7 @@ describe("review comment node evidence", () => {
       ],
     }));
 
-    expect(Object.fromEntries(result)).toEqual({
+    expect(countsOf(result)).toEqual({
       [METHOD]: { draftCount: 2, existingCount: 2 },
       [FILE]: { draftCount: 1, existingCount: 2 },
       [CLASS]: { draftCount: 1, existingCount: 0 },
@@ -77,10 +77,10 @@ describe("review comment node evidence", () => {
       lineCoordinatesMatchGraph: false,
     });
 
-    expect(Object.fromEntries(deriveReviewCommentNodeEvidence(lineDraft))).toEqual({
+    expect(countsOf(deriveReviewCommentNodeEvidence(lineDraft))).toEqual({
       [FILE]: { draftCount: 1, existingCount: 0 },
     });
-    expect(Object.fromEntries(deriveReviewCommentNodeEvidence({ ...lineDraft, lineCoordinatesMatchGraph: true }))).toEqual({
+    expect(countsOf(deriveReviewCommentNodeEvidence({ ...lineDraft, lineCoordinatesMatchGraph: true }))).toEqual({
       [SURVIVOR]: { draftCount: 1, existingCount: 0 },
     });
   });
@@ -91,7 +91,7 @@ describe("review comment node evidence", () => {
       lineCoordinatesMatchGraph: false,
     }));
 
-    expect(Object.fromEntries(result)).toEqual({
+    expect(countsOf(result)).toEqual({
       [FILE]: { draftCount: 0, existingCount: 1 },
     });
   });
@@ -106,7 +106,7 @@ describe("review comment node evidence", () => {
       existingCommentsVisible: false,
     }));
 
-    expect(Object.fromEntries(result)).toEqual({
+    expect(countsOf(result)).toEqual({
       [FILE]: { draftCount: 2, existingCount: 0 },
     });
     expect(deriveReviewCommentNodeEvidence(input({
@@ -129,8 +129,8 @@ describe("review comment node evidence", () => {
 describe("review comment visible-node projection", () => {
   it("aggregates onto the nearest ancestor in every semantic population", () => {
     const evidence = new Map([
-      [METHOD, { draftCount: 1, existingCount: 2 }],
-      [OTHER, { draftCount: 0, existingCount: 1 }],
+      [METHOD, { draftCount: 1, existingCount: 2, comments: [preview("method")] }],
+      [OTHER, { draftCount: 0, existingCount: 1, comments: [preview("other")] }],
     ]);
     const visible: Node[] = [
       rfNode(CLASS, 0),
@@ -138,7 +138,7 @@ describe("review comment visible-node projection", () => {
       rfNode(PACKAGE, 1),
     ];
 
-    expect(Object.fromEntries(projectReviewCommentNodeEvidence(evidence, visible, INDEX))).toEqual({
+    expect(countsOf(projectReviewCommentNodeEvidence(evidence, visible, INDEX))).toEqual({
       [CLASS]: { draftCount: 1, existingCount: 2 },
       [FILE]: { draftCount: 0, existingCount: 1 },
       [PACKAGE]: { draftCount: 1, existingCount: 3 },
@@ -156,6 +156,17 @@ function input(overrides: Partial<ReviewCommentNodeInput> = {}): ReviewCommentNo
     lineCoordinatesMatchGraph: true,
     ...overrides,
   };
+}
+
+function countsOf(evidence: ReadonlyMap<string, { draftCount: number; existingCount: number }>) {
+  return Object.fromEntries([...evidence].map(([id, counts]) => [id, {
+    draftCount: counts.draftCount,
+    existingCount: counts.existingCount,
+  }]));
+}
+
+function preview(key: string) {
+  return { key, kind: "existing" as const, body: key, author: "octo", line: 1, lineStale: false, url: null };
 }
 
 function node(id: string, kind: string, parentId: string | null, file: string, startLine: number, endLine: number): GraphNode {

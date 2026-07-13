@@ -1,4 +1,4 @@
-/** Passive message indicators attached to the visible representatives of commented review nodes. */
+/** Comment previews attached inside the visible representatives of commented review nodes. */
 
 import { useMemo } from "react";
 import { NodeToolbar, Position, useViewport, type Node } from "@xyflow/react";
@@ -9,7 +9,7 @@ import {
   type ReviewCommentNodeEvidence,
 } from "../../derive/reviewCommentNodes";
 import { useBlueprint } from "../../state/StoreContext";
-import { MessageIcon } from "./MessageIcon";
+import { ReviewCommentIndicator } from "./ReviewCommentHoverCard";
 
 const NO_EXISTING_COMMENTS = [] as const;
 
@@ -77,16 +77,14 @@ function VisibleReviewCommentNodeIndicators({
             isVisible
             position={Position.Bottom}
             align="end"
-            offset={2 * zoom}
+            offset={-30 * zoom}
             className={toolbarClass(depth)}
-            style={TOOLBAR}
+            style={toolbarStyle(zoom)}
             data-review-comment-node-id={node.id}
             data-review-draft-count={counts.draftCount}
             data-review-existing-count={counts.existingCount}
           >
-            <span role="img" aria-label={label} title={label} style={{ ...INDICATOR, transform: `scale(${zoom})` }}>
-              <MessageIcon />
-            </span>
+            <ReviewCommentIndicator label={label} count={count} comments={counts.comments} zoom={zoom} />
           </NodeToolbar>
         );
       })}
@@ -105,21 +103,6 @@ function toolbarClass(depth: number | undefined): string {
     : `review-comment-node-toolbar ${SEMANTIC_LAYER_CLASS} ${semanticLayerClass(depth)}`;
 }
 
-const TOOLBAR: React.CSSProperties = { pointerEvents: "none" };
-const INDICATOR: React.CSSProperties = {
-  // Bottom-end stays outside the cards' horizontal wire axis and leaves the top lane to request
-  // evidence and ghost controls. Scaling from this corner keeps marker + offset at 18 flow units,
-  // matching nested-frame padding at every viewport zoom.
-  transformOrigin: "top right",
-  width: 16,
-  height: 16,
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  boxSizing: "border-box",
-  border: "1px solid rgba(125,211,252,0.55)",
-  borderRadius: 999,
-  background: "#111923",
-  color: "#7DD3FC",
-  boxShadow: "0 2px 8px rgba(0,0,0,0.42)",
-};
+function toolbarStyle(zoom: number): React.CSSProperties {
+  return { pointerEvents: "all", width: 26 * zoom, height: 26 * zoom };
+}
