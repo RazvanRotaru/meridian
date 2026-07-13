@@ -75,7 +75,7 @@ describe("static request traversal correlation", () => {
       .toBeUndefined();
   });
 
-  it("switches the highlight to the throwing arm and stops before downstream validation", () => {
+  it("keeps a precise constructor range inside the throwing arm and stops before downstream validation", () => {
     const graph = deriveRequestExecutionFlow(
       trace([
         branch("customer", 8, "validate:customer", "then"),
@@ -392,8 +392,8 @@ const FLOWS: LogicFlows = {
         role: "then",
         pathId: "then",
         body: [
-          { kind: "call", label: "ValidationError", target: BETA_RUN, resolution: "resolved", source: { file: "order.ts", line: 9 } },
-          { kind: "exit", variant: "throw", label: "new ValidationError()", source: { file: "order.ts", line: 9 } },
+          { kind: "call", label: "ValidationError", target: BETA_RUN, resolution: "resolved", source: { file: "order.ts", line: 9, col: 10, endLine: 9, endCol: 31 } },
+          { kind: "exit", variant: "throw", label: "new ValidationError()", source: { file: "order.ts", line: 9, col: 4, endLine: 9, endCol: 32 } },
         ],
       }],
     },
