@@ -13,6 +13,8 @@ import type { PrGitHubComment } from "../state/prTypes";
 import type { ReviewComment } from "../state/reviewTicksPref";
 import { ExistingCommentList } from "./review/ExistingReviewComments";
 import { CommentComposer, CommentList } from "./review/ReviewComments";
+import { unchangedCodeFoldKey, unchangedCodeFolds } from "./codeFolding";
+import { UnchangedCodeFoldRow } from "./UnchangedCodeFoldRow";
 
 const COLOR = {
   plain: "#C9D3E0",
@@ -80,6 +82,7 @@ export function CodeBlock({
   pendingComments = EMPTY_PENDING_COMMENTS,
   removedRows,
   removedTruncated = false,
+  foldUnchanged = false,
 }: {
   code: string;
   maxHeight?: number | string;
@@ -108,6 +111,8 @@ export function CodeBlock({
   removedRows?: ReadonlyMap<number, string[]>;
   /** The patch parser hit its per-file removed-line cap. */
   removedTruncated?: boolean;
+  /** Collapse large unchanged gaps around review changes, preserving three context rows. */
+  foldUnchanged?: boolean;
 }) {
   // Reset the shared regex's lastIndex per run (it is stateful with the `g` flag) and never let a
   // tokenizing surprise blank the panel — fall back to the raw, still-escaped source.
@@ -138,6 +143,43 @@ export function CodeBlock({
     }
     return byLine;
   }, [pendingComments]);
+  const unchangedFolds = useMemo(() => foldUnchanged && startLine !== undefined
+    ? unchangedCodeFolds({
+        startLine,
+        lineCount: highlightedLines.length,
+        focusLines: foldFocusLines({
+          changedLines,
+          changedLineKinds,
+          evidenceLines,
+          commentableLines,
+          existingCommentsByLine,
+          pendingCommentsByLine,
+          composerLine: lineComposer?.line,
+          removedRows,
+        }),
+      })
+    : [], [
+      changedLines,
+      changedLineKinds,
+      commentableLines,
+      evidenceLines,
+      existingCommentsByLine,
+      foldUnchanged,
+      highlightedLines.length,
+      lineComposer?.line,
+      pendingCommentsByLine,
+      removedRows,
+      startLine,
+    ]);
+  const foldSignature = unchangedFolds.map(unchangedCodeFoldKey).join(",");
+  const [expandedFolds, setExpandedFolds] = useState<Set<string>>(new Set());
+  useEffect(() => setExpandedFolds(new Set()), [code, foldSignature]);
+  const foldsByStart = new Map(unchangedFolds.map((fold) => [fold.startLine, fold]));
+  const collapsedLines = new Set<number>();
+  for (const fold of unchangedFolds) {
+    if (expandedFolds.has(unchangedCodeFoldKey(fold))) continue;
+    for (let line = fold.startLine; line <= fold.endLine; line += 1) collapsedLines.add(line);
+  }
   const listingRef = useRef<HTMLDivElement>(null);
   // Edge evidence is the reader's explicit target, so it wins the initial scroll position. A
   // regular source panel still lands on its first diff as before.
@@ -177,6 +219,20 @@ export function CodeBlock({
           ))}
           {highlightedLines.map((line, index) => {
             const lineNo = startLine + index;
+            const fold = foldsByStart.get(lineNo);
+            const foldKey = fold === undefined ? null : unchangedCodeFoldKey(fold);
+            const foldExpanded = foldKey !== null && expandedFolds.has(foldKey);
+            if (collapsedLines.has(lineNo)) {
+              return fold === undefined ? null : (
+                <UnchangedCodeFoldRow
+                  key={`fold-${unchangedCodeFoldKey(fold)}`}
+                  fold={fold}
+                  expanded={false}
+                  gutterVisible={gutterVisible}
+                  onToggle={() => setExpandedFolds((current) => new Set(current).add(unchangedCodeFoldKey(fold)))}
+                />
+              );
+            }
             const kind = changedLineKinds?.get(lineNo);
             const changed = changedLines?.has(lineNo) ?? false;
             const evidence = evidenceLines?.has(lineNo) ?? false;
@@ -186,6 +242,18 @@ export function CodeBlock({
             const lineDrafts = pendingCommentsByLine.get(lineNo) ?? EMPTY_PENDING_COMMENTS;
             return (
               <Fragment key={`line-${lineNo}`}>
+                {fold && foldExpanded ? (
+                  <UnchangedCodeFoldRow
+                    fold={fold}
+                    expanded
+                    gutterVisible={gutterVisible}
+                    onToggle={() => setExpandedFolds((current) => {
+                      const next = new Set(current);
+                      next.delete(unchangedCodeFoldKey(fold));
+                      return next;
+                    })}
+                  />
+                ) : null}
                 <tr
                   data-source-line={lineNo}
                   data-edge-evidence-line={evidence ? "true" : undefined}
@@ -271,6 +339,28 @@ export function CodeBlock({
       </table>
     </div>
   );
+}
+
+function foldFocusLines(options: {
+  changedLines?: ReadonlySet<number>;
+  changedLineKinds?: ReadonlyMap<number, ChangedLineKind>;
+  evidenceLines?: ReadonlySet<number>;
+  commentableLines?: ReadonlySet<number>;
+  existingCommentsByLine: ReadonlyMap<number, readonly PrGitHubComment[]>;
+  pendingCommentsByLine: ReadonlyMap<number, readonly ReviewComment[]>;
+  composerLine?: number;
+  removedRows?: ReadonlyMap<number, string[]>;
+}): Set<number> {
+  const lines = new Set<number>();
+  options.changedLines?.forEach((line) => lines.add(line));
+  options.changedLineKinds?.forEach((_kind, line) => lines.add(line));
+  options.evidenceLines?.forEach((line) => lines.add(line));
+  options.commentableLines?.forEach((line) => lines.add(line));
+  options.existingCommentsByLine.forEach((_comments, line) => lines.add(line));
+  options.pendingCommentsByLine.forEach((_comments, line) => lines.add(line));
+  if (options.composerLine !== undefined) lines.add(options.composerLine);
+  options.removedRows?.forEach((_rows, line) => lines.add(line));
+  return lines;
 }
 
 function GhostRow(props: { text: string; showGutter: boolean; marker?: boolean }) {
