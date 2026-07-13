@@ -110,10 +110,12 @@ export function iterationSteps(node: CallExpression, call: IterationCall, walker
   const preludeNodes = [call.callee.getExpression(), ...node.getArguments().filter((arg) => arg !== call.callback)];
   const steps = preludeNodes.flatMap((child) => walker.walk(child, depth + 1));
   const body = call.callback.getBody();
-  steps.push({
-    kind: "loop",
-    label: iterationLabel(call.callee.getName(), call.callback),
-    body: body ? walker.walkBody(body, depth + 1) : [],
-  });
+  const charted = body ? walker.walkBody(body, depth + 1) : [];
+  // An iteration whose callback charts no calls (`items.map(x => x.id)`, `.reduce((a, b) => a + b)`)
+  // is pure data flow, not call flow — skip the loop so it never renders as an empty, zero-size
+  // container. The prelude calls (e.g. `getItems()` in `getItems().forEach(...)`) still stand alone.
+  if (charted.length > 0) {
+    steps.push({ kind: "loop", label: iterationLabel(call.callee.getName(), call.callback), body: charted });
+  }
   return steps;
 }

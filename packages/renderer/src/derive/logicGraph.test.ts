@@ -115,6 +115,39 @@ describe("deriveLogicGraph", () => {
     expect(execData(controls[1]).fullLabel).toBeUndefined();
   });
 
+  it("prunes empty loop/callback containers (cascading) so they never render as zero-size ghosts", () => {
+    const flows: LogicFlows = {
+      r: [
+        { kind: "loop", label: "map x", body: [] }, // an empty iteration -> dropped
+        // a callback wrapping only an empty loop: the loop prunes away, emptying (and dropping) the callback
+        { kind: "callback", label: "callback → useMemo", body: [{ kind: "loop", label: "filter y", body: [] }] },
+        { kind: "loop", label: "for each z", body: [call("keep", "ext:l#k", "external")] }, // real content -> kept
+      ],
+    };
+    const { nodes } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false });
+    const controls = nodes.filter((n) => n.type === "control");
+    expect(controls.map((n) => execData(n).label)).toEqual(["for each z"]);
+  });
+
+  it("under hideGreyed, prunes a container left empty once its greyed leaves are hidden", () => {
+    const flows: LogicFlows = {
+      // onToggle holds only a greyed (external) leaf -> "Hide leaf blocks" empties it -> dropped;
+      // for-each also holds a RESOLVED, flow-bearing call -> that survives, so the loop stays.
+      r: [
+        { kind: "callback", label: "callback → onToggle", body: [call("setOpen", "ext:l#s", "external")] },
+        { kind: "loop", label: "for each x", body: [call("run", "ts:m#run", "resolved"), call("log", "ext:l#log", "external")] },
+      ],
+      "ts:m#run": [call("inner", "ext:l#i", "external")], // gives `run` a flow, so it is expandable (not greyed)
+    };
+    const index = makeIndex([
+      { id: "ts:m#run", name: "run", kind: "function", parentId: "ts:m" },
+      { id: "ts:m", name: "m.ts", kind: "module", parentId: null },
+    ]);
+    const { nodes } = deriveLogicGraph("r", flows, index, NONE, { hideGreyed: true });
+    expect(nodes.filter((n) => n.type === "control").map((n) => execData(n).label)).toEqual(["for each x"]);
+    expect(nodes.filter((n) => n.type === "block").map((n) => execData(n).label)).toEqual(["run"]);
+  });
+
   it("renders try/catch as a container, not a branch node", () => {
     const tryStep: FlowStep = { kind: "branch", label: "try/catch", paths: [{ label: "try", body: [call("t", "ext:l#t", "external")] }, { label: "catch e", body: [call("c", "ext:l#c", "external")] }] };
     const { nodes } = deriveLogicGraph("r", { r: [tryStep] }, makeIndex([]), NONE, { hideGreyed: false });

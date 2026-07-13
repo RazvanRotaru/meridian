@@ -32,10 +32,16 @@ export function controlStep(node: Node, walker: FlowWalker, depth: number): Flow
   return null;
 }
 
-function loopStep(node: IterationStatement, walker: FlowWalker, depth: number): FlowStep {
+function loopStep(node: IterationStatement, walker: FlowWalker, depth: number): FlowStep | null {
+  const body = walker.walkBody(node.getStatement(), depth + 1);
+  // A loop with nothing to chart inside is noise (and renders as a zero-size ghost container), so
+  // drop it — mirrors the empty-callback guard in callback-steps. Nested empties are already gone by
+  // the time we get here (walkBody built the body bottom-up), so this cascades naturally.
+  if (body.length === 0) {
+    return null;
+  }
   const label = loopLabel(node);
   const full = loopLabelFull(node);
-  const body = walker.walkBody(node.getStatement(), depth + 1);
   // Carry the untruncated header only when the label was actually clipped (short loops stay
   // byte-for-byte identical to older artifacts), mirroring the branch steps.
   return { kind: "loop", label, body, ...(full !== label ? { fullLabel: full } : {}) };

@@ -129,6 +129,57 @@ interface RunUnit {
   steps: IndexedStep[];
 }
 
+/**
+ * Drop control containers with nothing to chart. An array-iteration or loop/callback whose body has
+ * no calls or branches — `items.map(x => x.id)`, a trivial `useCallback`, a `.reduce` that only sums
+ * — charts as an EMPTY container, and an empty container gets no size from ELK, so it renders as a
+ * zero-size "ghost" node littering the canvas. Pruning is bottom-up: an iteration that prunes to
+ * nothing empties (and so drops) its wrapping callback. Branches are kept — a decision reads as a
+ * sized diamond, not a ghost — but their arms are pruned so a branch full of empty transforms cleans
+ * up too. Applied on the FlowStep tree before layout, so no exec edges need rewiring.
+ *
+ * `isHidden` marks steps the view will drop anyway — under "Hide leaf blocks", the greyed call leaves.
+ * A container counts as empty when it has no VISIBLE content, so a frame holding only hidden leaves
+ * prunes too (instead of surviving as a childless, zero-size frame once the leaves are hidden at
+ * render time). The hidden leaves themselves are NOT stripped from the list — leaving them in place
+ * keeps `planLevel`'s index-stable node ids intact; it just skips them when it emits.
+ */
+export function pruneEmptyContainers(steps: FlowStep[], isHidden?: (step: FlowStep) => boolean): FlowStep[] {
+  const kept: FlowStep[] = [];
+  for (const step of steps) {
+    if (step.kind === "loop" || step.kind === "callback") {
+      if (!hasVisibleContent(step.body, isHidden)) {
+        continue;
+      }
+      kept.push({ ...step, body: pruneEmptyContainers(step.body, isHidden) });
+    } else if (step.kind === "branch") {
+      kept.push({ ...step, paths: step.paths.map((path) => ({ ...path, body: pruneEmptyContainers(path.body, isHidden) })) });
+    } else {
+      kept.push(step);
+    }
+  }
+  return kept;
+}
+
+/** Does this step list have anything that would actually draw — a visible call/exit, a branch
+ * diamond, or a container that itself has visible content? Hidden leaves and empty containers don't
+ * count. Used to decide whether a wrapping container is worth keeping. */
+function hasVisibleContent(steps: FlowStep[], isHidden?: (step: FlowStep) => boolean): boolean {
+  for (const step of steps) {
+    if (isHidden?.(step)) {
+      continue;
+    }
+    if (step.kind === "loop" || step.kind === "callback") {
+      if (hasVisibleContent(step.body, isHidden)) {
+        return true;
+      }
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
 export function deriveLogicGraph(
   rootId: string,
   flows: LogicFlows,
@@ -301,7 +352,12 @@ class LogicGraphBuilder {
   private sequence(steps: FlowStep[], parentId: string | null, prefix: string): { firstId: string | null; lastExits: Exit[] } {
     let firstId: string | null = null;
     let prevExits: Exit[] = [];
-    for (const unit of this.planLevel(steps, prefix)) {
+    // Drop empty control containers before they reach the layout — they'd otherwise render as
+    // zero-size ghost nodes (see pruneEmptyContainers). When "Hide leaf blocks" is on, greyed leaves
+    // are hidden too, so feed that in: a container left with only hidden leaves prunes as well.
+    // Idempotent, so re-running per level is safe.
+    const hidden = this.options.hideGreyed ? (step: FlowStep) => this.isGreyedLeaf(step) : undefined;
+    for (const unit of this.planLevel(pruneEmptyContainers(steps, hidden), prefix)) {
       const stepParent = unit.frame ? this.emitServiceFrame(unit.frame, unit.steps.length, parentId) : parentId;
       for (const { step, i } of unit.steps) {
         const emit = this.step(step, stepParent, `${prefix}${i}`, unit.frame !== null);

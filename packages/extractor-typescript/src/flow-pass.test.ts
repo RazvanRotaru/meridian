@@ -139,6 +139,14 @@ export function longLoop(items: number[]) {
   }
 }
 function drain() {}
+
+export function withEmptyIterations(items: { id: string }[]) {
+  doReal();
+  const ids = items.map((x) => x.id);
+  const evens = items.filter((x) => x.id.length > 0);
+  return ids.length + evens.length;
+}
+function doReal() {}
 `;
 
 // A module whose top-level runs at load: a call, a branch, a loop — plus declarations that do
@@ -242,6 +250,15 @@ describe("logic-flow pass", () => {
     const l = loop as Extract<FlowStep, { kind: "loop" }>;
     expect(l.label).toBe("for each id");
     expect(l.fullLabel).toBeUndefined();
+  });
+
+  it("drops array iterations whose callback charts no calls (withEmptyIterations)", () => {
+    const steps = stepsFor("withEmptyIterations");
+    expect(steps).toBeDefined();
+    // The empty `.map`/`.filter` transforms would otherwise chart as childless loop containers
+    // (zero-size ghost nodes); only the real call survives.
+    expect(steps!.filter((step) => step.kind === "loop")).toEqual([]);
+    expect(callLabels(steps!)).toContain("doReal");
   });
 
   it("emits linear calls in source order with resolved targets (checkout)", () => {
