@@ -199,13 +199,50 @@ function inspectionDepEdges(
     return { edges: [], incidentEdgeIds: new Set() };
   }
   const visibility = minimalVisibility(memberIds, walks);
-  const active = new Set([...(code.inspectionIds ?? [])].filter((id) => visibility.visibleIds.has(id)));
-  if (!direct && active.size === 0) {
-    return { edges: [], incidentEdgeIds: new Set() };
+  let incident = code.blockDeps.edges;
+  if (!direct) {
+    // Include visible ancestor frames without putting them on the dependency projection frontier.
+    // One closure pass avoids an inspectionIds × visibleIds containment scan for large flows.
+    const visibleContainmentIds = new Set<string>();
+    for (const visibleId of visibility.visibleIds) {
+      const seen = new Set<string>();
+      let current: string | null | undefined = visibleId;
+      while (current && !seen.has(current)) {
+        seen.add(current);
+        visibleContainmentIds.add(current);
+        current = index.parentOf.get(current) ?? null;
+      }
+    }
+    const active = new Set(
+      [...(code.inspectionIds ?? [])].filter((id) => visibleContainmentIds.has(id)),
+    );
+    if (active.size === 0) {
+      return { edges: [], incidentEdgeIds: new Set() };
+    }
+    // A selected visible container owns the raw endpoints below it (file functions, class methods,
+    // nested flow blocks). Memoize one parent walk per endpoint because a busy callable commonly
+    // appears on many raw edges; projection still chooses the exact currently-visible declaration.
+    const endpointInspection = new Map<string, boolean>();
+    const isInspectedEndpoint = (endpointId: string): boolean => {
+      const cached = endpointInspection.get(endpointId);
+      if (cached !== undefined) {
+        return cached;
+      }
+      const seen = new Set<string>();
+      let current: string | null | undefined = endpointId;
+      while (current && !seen.has(current)) {
+        if (active.has(current)) {
+          endpointInspection.set(endpointId, true);
+          return true;
+        }
+        seen.add(current);
+        current = index.parentOf.get(current) ?? null;
+      }
+      endpointInspection.set(endpointId, false);
+      return false;
+    };
+    incident = incident.filter((edge) => isInspectedEndpoint(edge.source) || isInspectedEndpoint(edge.target));
   }
-  const incident = direct
-    ? code.blockDeps.edges
-    : code.blockDeps.edges.filter((edge) => active.has(edge.source) || active.has(edge.target));
   const incidentEdgeIds = new Set(incident.map((edge) => edge.id));
   const representedInsideExpansion = new Set(
     [...walks.values()].flatMap((walk) =>

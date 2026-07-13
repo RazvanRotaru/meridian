@@ -71,6 +71,12 @@ const UNROLLED_FILE = "ts:src/small/only.ts";
 const OUTSIDE_PACKAGE = "ts:tools";
 const OUTSIDE_FILE = "ts:tools/tool.ts";
 
+const PRIVATE_ARTIFACT: GraphArtifact = {
+  ...ARTIFACT,
+  nodes: ARTIFACT.nodes.map((candidate) =>
+    candidate.id === ROUTES_METHOD ? { ...candidate, tags: ["private"] } : candidate),
+};
+
 // Two rollup packages can be nested when both a directory and its child directory own enough
 // directly changed files. Opening the outer summary must retain one outer frame and own the nested
 // rollup exactly once, while an unrelated ordinary seed remains unchanged.
@@ -651,7 +657,7 @@ describe("minimal-graph overlay (extract selection)", () => {
       .map((candidate) => candidate.id)
       .sort();
 
-  it("re-derives selected incident links only for an open extracted graph with highways on", () => {
+  it("re-derives selected incident links once per actual change only for an open graph with highways on", async () => {
     const store = freshStore();
     const minimalRelayout = vi.fn(async (_activity?: { label: string; detail?: string }) => undefined);
     store.setState({
@@ -662,8 +668,11 @@ describe("minimal-graph overlay (extract selection)", () => {
     });
 
     store.getState().selectModule(BUILD_ORDERS);
+    store.getState().selectModule(BUILD_ORDERS);
     store.getState().toggleModuleSelect(ROUTES_UNIT);
     store.getState().selectModule(null);
+    store.getState().selectModule(null);
+    await Promise.resolve();
 
     expect(minimalRelayout).toHaveBeenCalledTimes(3);
     expect(minimalRelayout.mock.calls.map(([activity]) => activity?.label)).toEqual([
@@ -676,6 +685,36 @@ describe("minimal-graph overlay (extract selection)", () => {
     minimalRelayout.mockClear();
     store.getState().selectModule(BUILD_ORDERS);
     store.getState().toggleModuleSelect(ROUTES_UNIT);
+    await Promise.resolve();
+    expect(minimalRelayout).not.toHaveBeenCalled();
+  });
+
+  it("re-derives once when hiding private members prunes an open graph selection", async () => {
+    const store = freshStore(PRIVATE_ARTIFACT);
+    const minimalRelayout = vi.fn(async (_activity?: { label: string; detail?: string }) => undefined);
+    store.setState({
+      minimalSeedIds: ["ts:src/a.ts"],
+      minimalMemberIds: ["ts:src/a.ts"],
+      moduleSelected: new Set([BUILD_ORDERS, ROUTES_METHOD]),
+      showHighways: true,
+      minimalRelayout,
+    });
+
+    store.getState().togglePrivateMembers();
+    await Promise.resolve();
+
+    expect(store.getState().showPrivate).toBe(false);
+    expect(store.getState().moduleSelected).toEqual(new Set([BUILD_ORDERS]));
+    expect(minimalRelayout).toHaveBeenCalledOnce();
+    expect(minimalRelayout).toHaveBeenCalledWith({ label: "Updating selected links…" });
+
+    minimalRelayout.mockClear();
+    store.getState().togglePrivateMembers();
+    store.getState().togglePrivateMembers();
+    await Promise.resolve();
+
+    expect(store.getState().showPrivate).toBe(false);
+    expect(store.getState().moduleSelected).toEqual(new Set([BUILD_ORDERS]));
     expect(minimalRelayout).not.toHaveBeenCalled();
   });
 

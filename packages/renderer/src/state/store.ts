@@ -1428,7 +1428,52 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // auto-root a meaningful entry is an open design question (see docs/service-composition-design.md §8).
   const defaultCompRoot = null;
 
-  return createStore<BlueprintState>((set, get) => ({
+  return createStore<BlueprintState>((storeSet, get) => {
+    // Exact minimal-graph wires are derived from moduleSelected while highways are enabled. Keep a
+    // single revision lane around every in-store selection write so less-obvious mutations (filter
+    // toggles, flow-pane clears, async visibility pruning) cannot leave those wires stale. Explicit
+    // relayout actions mark the revision they cover; the microtask fallback therefore coalesces a
+    // burst and never duplicates work already requested by the owning action.
+    let moduleSelectionRevision = 0;
+    let minimalSelectionLayoutRevision = 0;
+    let minimalSelectionSyncQueued = false;
+
+    const queueMinimalSelectionSync = () => {
+      if (minimalSelectionSyncQueued) return;
+      minimalSelectionSyncQueued = true;
+      queueMicrotask(() => {
+        minimalSelectionSyncQueued = false;
+        const state = get();
+        if (
+          minimalSelectionLayoutRevision >= moduleSelectionRevision
+          || state.minimalMemberIds.length === 0
+          || !state.showHighways
+        ) {
+          return;
+        }
+        minimalSelectionLayoutRevision = moduleSelectionRevision;
+        void state.minimalRelayout({
+          label: state.moduleSelected.size === 0 ? "Restoring grouped links…" : "Updating selected links…",
+        });
+      });
+    };
+
+    const set = (partial: Partial<BlueprintState>): void => {
+      const previousSelection = get().moduleSelected;
+      storeSet(partial);
+      const nextSelection = get().moduleSelected;
+      if (!sameStringSet(previousSelection, nextSelection)) {
+        moduleSelectionRevision += 1;
+        queueMinimalSelectionSync();
+      }
+    };
+
+    const requestMinimalRelayout = (activity?: LayoutActivity): Promise<void> => {
+      minimalSelectionLayoutRevision = moduleSelectionRevision;
+      return get().minimalRelayout(activity);
+    };
+
+    return {
     artifact: dependencies.artifact,
     index: dependencies.index,
     // A `meridian review` artifact opens straight on the review surface; everything else (plain
@@ -1643,7 +1688,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             : {}),
         });
         if (reviewFlowOpen && baseline !== null) {
-          void get().minimalRelayout({ label: "Closing logic flow review…" });
+          void requestMinimalRelayout({ label: "Closing logic flow review…" });
         }
         return;
       }
@@ -1681,6 +1726,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         );
         const needsRelayout = !sameFlowSelection(state.flowSelection, ref)
           || state.logicSelected !== null
+          || !sameStringSet(related, state.moduleSelected)
           || !sameStringSet(moduleExpanded, state.moduleExpanded)
           || !sameMembers(minimalSeedIds, state.minimalSeedIds)
           || !sameMembers(minimalMemberIds, state.minimalMemberIds);
@@ -1714,7 +1760,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           }
         };
         if (needsRelayout) {
-          void get().minimalRelayout({ label: "Revealing logic flow in review…" }).then(recenterIfCurrent);
+          void requestMinimalRelayout({ label: "Revealing logic flow in review…" }).then(recenterIfCurrent);
         } else {
           recenterIfCurrent();
         }
@@ -1955,7 +2001,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // Re-derive on every target change. When the selected node is currently an off-member ghost,
       // the layout pass temporarily treats its home file as a member so its full incident edge set
       // can fan out to ghost neighbours; clearing the target removes that temporary context again.
-      const needsRelayout = moduleExpanded.size !== state.moduleExpanded.size || state.logicSelected !== nodeId;
+      const needsRelayout = moduleExpanded.size !== state.moduleExpanded.size
+        || state.logicSelected !== nodeId
+        || !sameStringSet(emphasized, state.moduleSelected);
       set({
         logicSelected: nodeId,
         moduleSelected: emphasized,
@@ -1969,7 +2017,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
       };
       if (needsRelayout) {
-        void get().minimalRelayout({ label: nodeId === null ? "Restoring logic flow context…" : "Revealing logic flow node…" }).then(recenterIfCurrent);
+        void requestMinimalRelayout({ label: nodeId === null ? "Restoring logic flow context…" : "Revealing logic flow node…" }).then(recenterIfCurrent);
       } else {
         recenterIfCurrent();
       }
@@ -2671,7 +2719,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             ? state.minimalBasePositions
             : { ...state.minimalBasePositions, [member]: promotedMemberRect(at, state.index.nodesById.get(member)?.kind !== "module") };
         set({ minimalMemberIds: [...state.minimalMemberIds, member], minimalBasePositions, moduleExpanded });
-        void get().minimalRelayout(nodeLayoutActivity(state, "Adding", member));
+        void requestMinimalRelayout(nodeLayoutActivity(state, "Adding", member));
         return;
       }
 
@@ -2716,7 +2764,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
         const removed = new Set(memberIds);
         set({ minimalMemberIds: state.minimalMemberIds.filter((id) => !removed.has(id)) });
-        void get().minimalRelayout(nodeLayoutActivity(state, "Removing", memberIds[0] ?? null));
+        void requestMinimalRelayout(nodeLayoutActivity(state, "Removing", memberIds[0] ?? null));
         return;
       }
 
@@ -2818,7 +2866,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const showHighways = !state.showHighways;
       set({ showHighways });
       if (state.minimalMemberIds.length > 0) {
-        void get().minimalRelayout({
+        void requestMinimalRelayout({
           label: showHighways ? "Grouping links into highways…" : "Showing direct links…",
         });
       }
@@ -2921,9 +2969,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({ moduleSelected: new Set([id]), reviewSelectedId: null, reviewLitNodeIds: null });
         return;
       }
-      set({ moduleSelected: id === null ? new Set<string>() : new Set([id]) });
-      if (state.minimalMemberIds.length > 0 && state.showHighways) {
-        void get().minimalRelayout({ label: id === null ? "Restoring grouped links…" : "Showing selected links…" });
+      const moduleSelected = id === null ? new Set<string>() : new Set([id]);
+      const selectionChanged = !sameStringSet(state.moduleSelected, moduleSelected);
+      set({ moduleSelected });
+      if (selectionChanged && state.minimalMemberIds.length > 0 && state.showHighways) {
+        void requestMinimalRelayout({ label: id === null ? "Restoring grouped links…" : "Showing selected links…" });
       }
     },
 
@@ -3018,7 +3068,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // reversible preview roots so closing the overlay cannot resurrect the exploration path.
         void get().moduleRelayout({ label: "Restoring source graph…" });
       }
-      void get().minimalRelayout({ label: "Extracting selection…" });
+      void requestMinimalRelayout({ label: "Extracting selection…" });
     },
 
     // Close the overlay back to the Module-map level canvas. The selection is kept, so the reader
@@ -3142,7 +3192,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleExpanded: collapsed,
         minimalArrange: false,
       });
-      void get().minimalRelayout({ label: "Resetting extracted graph…" });
+      void requestMinimalRelayout({ label: "Resetting extracted graph…" });
     },
 
     // Re-arrange: drop the captured map-mirror and run the canonical canvas ELK layout. It stays
@@ -3154,13 +3204,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (!get().minimalArrange) {
         set({ minimalArrange: true });
       }
-      void get().minimalRelayout({ label: "Re-arranging extracted graph…" });
+      void requestMinimalRelayout({ label: "Re-arranging extracted graph…" });
     },
 
     // Lay out the overlay's curated subgraph (members + their ghost-satellite ring) through the
     // shared minimal-graph pass, behind its own stale-seq guard. `minimalArrange` picks the fresh
     // ELK layout over the map-mirror; hidden tests drop out of the ring like on the Map beneath.
     async minimalRelayout(activity) {
+      minimalSelectionLayoutRevision = moduleSelectionRevision;
       if (get().minimalMemberIds.length === 0) {
         set({ minimalLayoutStatus: "idle", minimalLayoutActivity: null });
         return;
@@ -3245,7 +3296,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       set({ moduleSelected: withToggled(get().moduleSelected, id) });
       if (state.minimalMemberIds.length > 0 && state.showHighways) {
-        void get().minimalRelayout({ label: "Updating selected links…" });
+        void requestMinimalRelayout({ label: "Updating selected links…" });
       }
     },
 
@@ -3369,12 +3420,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Select a review block (from the panel); also lights it and CENTERS the graph on it — a panel
     // click must always end with the target visible, not selected somewhere off-screen.
     selectReviewNode(id) {
-      const flowBaseline = get().reviewFlowBaseline;
+      const before = get();
+      const flowBaseline = before.reviewFlowBaseline;
+      const moduleSelected = id === null ? new Set<string>() : new Set([id]);
+      const selectionChanged = !sameStringSet(before.moduleSelected, moduleSelected);
       set({
         ...(flowBaseline ?? {}),
         reviewSelectedId: id,
         reviewLitNodeIds: id === null ? null : new Set([id]),
-        moduleSelected: id === null ? new Set<string>() : new Set([id]),
+        moduleSelected,
         // A file/unit click switches back to graph review; the bottom split belongs to a selected
         // logic flow and must not linger with a now-unrelated pane selection.
         flowSelection: null,
@@ -3390,9 +3444,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
       };
       if (flowBaseline !== null) {
-        void get().minimalRelayout({ label: "Returning to changed node review…" }).then(recenter);
-      } else if (get().minimalMemberIds.length > 0 && get().showHighways) {
-        void get().minimalRelayout({ label: id === null ? "Restoring grouped links…" : "Showing selected links…" }).then(recenter);
+        void requestMinimalRelayout({ label: "Returning to changed node review…" }).then(recenter);
+      } else if (selectionChanged && get().minimalMemberIds.length > 0 && get().showHighways) {
+        void requestMinimalRelayout({ label: id === null ? "Restoring grouped links…" : "Showing selected links…" }).then(recenter);
       } else {
         recenter();
       }
@@ -3409,9 +3463,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       const flowBaseline = state.reviewFlowBaseline;
       const lit = file.units.length > 0 ? file.units.map((unit) => unit.nodeId) : [file.moduleId];
+      const moduleSelected = new Set([file.moduleId]);
+      const selectionChanged = !sameStringSet(state.moduleSelected, moduleSelected);
       set({
         ...(flowBaseline ?? {}),
-        moduleSelected: new Set([file.moduleId]),
+        moduleSelected,
         reviewSelectedId: file.moduleId,
         reviewLitNodeIds: new Set(lit),
         flowSelection: null,
@@ -3427,9 +3483,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
       };
       if (flowBaseline !== null) {
-        void get().minimalRelayout({ label: "Returning to changed file review…" }).then(recenter);
-      } else if (get().minimalMemberIds.length > 0 && get().showHighways) {
-        void get().minimalRelayout({ label: "Updating selected links…" }).then(recenter);
+        void requestMinimalRelayout({ label: "Returning to changed file review…" }).then(recenter);
+      } else if (selectionChanged && get().minimalMemberIds.length > 0 && get().showHighways) {
+        void requestMinimalRelayout({ label: "Updating selected links…" }).then(recenter);
       } else {
         recenter();
       }
@@ -3478,7 +3534,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalLayoutStatus: projection.seeds.length > 0 ? "laying-out" : "idle",
         minimalLayoutActivity: projection.seeds.length > 0 ? { label: "Opening review group…" } : null,
       });
-      void get().minimalRelayout({ label: group ? `Opening ${group.label}…` : "Opening all review groups…" });
+      void requestMinimalRelayout({ label: group ? `Opening ${group.label}…` : "Opening all review groups…" });
     },
 
     // A path scope is an additional, segment-safe filter over the active connectivity group. It
@@ -4059,7 +4115,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // An open minimal overlay derives its ghost-satellite ring with the same hidden set, so the
         // toggle refreshes it too (else stale test satellites linger over the recomputed Map).
         if (get().minimalSeedIds.length > 0) {
-          void get().minimalRelayout({ label: showTests ? "Showing tests…" : "Hiding tests…" });
+          void requestMinimalRelayout({ label: showTests ? "Showing tests…" : "Hiding tests…" });
         }
       }
     },
@@ -5149,7 +5205,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         await get().moduleRelayout();
       }
     },
-  }));
+    };
+  });
 }
 
 /**
