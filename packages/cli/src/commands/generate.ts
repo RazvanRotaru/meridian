@@ -3,12 +3,10 @@
  *
  * The pipeline (select-extractor -> extract -> stamp header -> validate) lives in
  * `extract-pipeline` so `web` can share it; this command adds only the on-disk concerns:
- * resolving the tsconfig, writing atomically, and reporting. It fails closed — a validation
+ * resolving an explicit tsconfig, writing atomically, and reporting. It fails closed — a validation
  * error throws before the write, so a downstream `view` never loads a half-formed graph.
  */
 
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import type { ExtractOptions } from "@meridian/core";
 import { resolveAgainst, resolveCwd } from "../paths";
 import { extractToArtifact } from "../extract-pipeline";
@@ -43,7 +41,10 @@ export async function runGenerate(path: string, options: GenerateOptions): Promi
     absoluteRoot,
     cwd,
     language: options.lang,
-    project: resolveTsConfig(absoluteRoot, options.tsconfig, cwd),
+    // Default generation must share web's manifest/per-package discovery. Supplying the root
+    // tsconfig implicitly turns that bounded workspace path off; only an explicit --tsconfig is
+    // allowed to opt into one whole-program definition.
+    project: options.tsconfig ? resolveAgainst(cwd, options.tsconfig) : undefined,
     include: options.include,
     exclude: options.exclude,
     depth: options.depth,
@@ -73,12 +74,4 @@ export async function runGenerate(path: string, options: GenerateOptions): Promi
     warnings: options.testCoverage ? validated.warnings : result.warnings,
     outPath,
   });
-}
-
-function resolveTsConfig(absoluteRoot: string, tsconfig: string | undefined, cwd: string): string | undefined {
-  if (tsconfig) {
-    return resolveAgainst(cwd, tsconfig);
-  }
-  const candidate = join(absoluteRoot, "tsconfig.json");
-  return existsSync(candidate) ? candidate : undefined;
 }

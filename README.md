@@ -135,12 +135,15 @@ published as JSON Schema at
 
 | Command | What it does |
 | --- | --- |
-| `meridian generate [path]` | Extract a codebase into a graph artifact. `--lang` (auto: `typescript` \| `python`), `-o`, `--depth package\|module\|class\|function`, `--include-external`, `--include`, `--exclude`, `--tsconfig`, `--exclude-tests` (default: tests included, tagged `test`), `--test-coverage <coverage-final.json>` (attach aggregate Istanbul execution coverage). |
+| `meridian generate [path]` | Extract a codebase into a graph artifact. `--lang` (auto: `typescript` \| `python`), `-o`, `--depth package\|module\|class\|function`, `--include-external`, `--include`, `--exclude`, `--tsconfig <file>` (explicit TypeScript program; default: workspace discovery), `--exclude-tests` (default: tests included, tagged `test`), `--test-coverage <coverage-final.json>` (attach aggregate Istanbul execution coverage). |
 | `meridian view [graph]` | Serve the renderer on a graph + open the browser. `--port`, `--host`, `--no-open`, `--overlay <file\|mock>`, `--env`, `--test-coverage <coverage-final.json>` (in-memory only). |
 | `meridian web [source]` | Local web UI: paste a **GitHub repo** (`owner/repo` or URL) / local path — clones (`--depth 1`) + extracts + renders, including materialized external dependencies. **Sign in with GitHub** (device flow, enabled by default) lists your repositories to pick from; private repos also work via `GITHUB_TOKEN`/`GH_TOKEN` or a local-only token field. `--port`, `--host`, `--no-open`, `--github-client-id`. |
 | `meridian mock-telemetry [graph]` | Mint a deterministic mock overlay. **`--env` is required** (no default, never prod); `-o`, `--seed`. |
 | `meridian coverage [graph]` | Terminal report of estimated static test reachability: per-class percentages, every unreachable member with its reason. `--fail-under <pct>` makes it a CI gate (exit 3 below threshold). |
 | `meridian link <graphs...>` | Join two or more artifacts into one **system graph** via their IPC channel keys — HTTP paths unify onto route templates, electron/queue channels match exactly; dangling channels (nobody answers) stay visible. `-o`, `--name`. |
+
+TypeScript generation does not automatically load `<path>/tsconfig.json`. Pass `--tsconfig <file>`
+when its file selection, compiler options, or path aliases are required.
 
 ## Packages
 

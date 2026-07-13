@@ -52,7 +52,7 @@ function registerGenerate(program: Command): void {
     .addOption(new Option("--depth <level>", "deepest kind to keep").choices(DEPTH_CHOICES).default("function"))
     .option("--include <globs...>", "source globs to include")
     .option("--exclude <globs...>", "source globs to exclude")
-    .option("--tsconfig <file>", "tsconfig path (auto <path>/tsconfig.json if present)")
+    .option("--tsconfig <file>", "use an explicit tsconfig instead of workspace discovery")
     .option("--include-external", "keep external library/builtin/package/alias dependencies as boundary nodes")
     .option("--include-unresolved", "keep dynamic/unresolved call targets as boundary nodes")
     .option("--exclude-tests", "drop test files from the graph (default: include them, tagged 'test')")
