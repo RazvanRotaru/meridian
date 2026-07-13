@@ -1,15 +1,12 @@
 /**
  * The comment surfaces of the review panel. A row (file or unit) gets a CommentButton that opens
  * one shared inline composer; drafts render under their row and persist (localStorage, per
- * reviewKey) until deleted or submitted. The footer turns the drafts into ONE GitHub review
- * (store.submitReviewComments → POST /api/prs/review); with no PR session the drafts simply stay
- * local notes, and the footer says so instead of offering a submit that cannot work.
+ * reviewKey) until deleted or submitted. With no PR session the drafts simply stay local notes.
  */
 
 import { useMemo, useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { ReviewComment } from "../../state/reviewTicksPref";
-import { isReviewTestPath } from "../../derive/reviewFiles";
 import { buildReviewSubmission } from "../../derive/reviewSubmit";
 import { NO_FOCUS_RING } from "./reviewPanelKit";
 import { MessageIcon } from "./MessageIcon";
@@ -175,68 +172,6 @@ export function CommentComposer(props: {
   );
 }
 
-/** Panel footer: draft count + submit-to-GitHub (web PR sessions), or a "local notes" hint. */
-export function SubmitReviewFooter() {
-  const count = useBlueprint((state) => {
-    return state.showTests
-      ? state.reviewComments.length
-      : state.reviewComments.filter((comment) => !isReviewTestPath(comment.path, state.index, state.prReviewBaseline?.index ?? null)).length;
-  });
-  const prReviewed = useBlueprint((state) => state.prReviewed);
-  const status = useBlueprint((state) => state.reviewSubmitStatus);
-  const stale = useBlueprint((state) => state.prReviewStale);
-  const refreshing = useBlueprint((state) => state.prReviewRefreshing);
-  const preparing = useBlueprint((state) => state.prReviewStatus === "preparing");
-  const error = useBlueprint((state) => state.reviewSubmitError);
-  const submittedUrl = useBlueprint((state) => state.reviewSubmittedUrl);
-  const { submitReviewComments } = useBlueprintActions();
-  if (count === 0 && !error && submittedUrl === null) {
-    return null;
-  }
-  const submitDisabled = status === "submitting" || stale || refreshing || preparing;
-  return (
-    <div style={FOOTER}>
-      {count > 0 && (
-        <div style={FOOTER_ROW}>
-          <span style={FOOTER_COUNT}>
-            {count} {count === 1 ? "comment" : "comments"}
-            {prReviewed === null ? " (local notes)" : ""}
-          </span>
-          {prReviewed !== null && (
-            <button
-              type="button"
-              style={{ ...SUBMIT_BTN, ...(submitDisabled ? SUBMIT_BTN_DISABLED : {}) }}
-              disabled={submitDisabled}
-              title={stale || refreshing ? "Refresh new pull request changes before submitting" : preparing ? "Wait for head preparation to finish" : undefined}
-              onClick={() => void submitReviewComments()}
-            >
-              {status === "submitting" ? "Submitting…" : "Submit review"}
-            </button>
-          )}
-        </div>
-      )}
-      {count > 0 && prReviewed !== null && stale && !refreshing && (
-        <div style={FOOTER_STALE}>Refresh new changes before submitting this review.</div>
-      )}
-      {error && <div style={FOOTER_ERROR}>{error}</div>}
-      {/* "" means submitted but GitHub returned no usable link — still confirm, just without one. */}
-      {count === 0 && submittedUrl !== null && (
-        <div style={FOOTER_DONE}>
-          Review submitted
-          {submittedUrl !== "" && (
-            <>
-              {" · "}
-              <a style={FOOTER_LINK} href={submittedUrl} target="_blank" rel="noreferrer">
-                view on GitHub
-              </a>
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 const COMMENT_BTN: React.CSSProperties = { font: "inherit", display: "inline-flex", alignItems: "center", gap: 3, border: "none", background: "transparent", cursor: "pointer", color: "#5A6472", padding: "2px 4px", borderRadius: 5, flexShrink: 0, ...NO_FOCUS_RING };
 const COMMENT_BTN_ON: React.CSSProperties = { color: "#7DD3FC" , ...NO_FOCUS_RING };
 const COMMENT_COUNT: React.CSSProperties = { fontSize: 10, fontWeight: 700 };
@@ -259,13 +194,4 @@ const COMPOSER_ERROR: React.CSSProperties = { color: "#F85149", fontSize: 10.5, 
 const COMPOSER_ROW: React.CSSProperties = { display: "flex", gap: 6 };
 const ADD_BTN: React.CSSProperties = { font: "inherit", border: "1px solid #2F5C3B", background: "rgba(86,194,113,0.16)", color: "#6BE38A", borderRadius: 6, padding: "3px 10px", fontSize: 11.5, fontWeight: 600, cursor: "pointer", ...NO_FOCUS_RING };
 const CANCEL_BTN: React.CSSProperties = { font: "inherit", border: "1px solid #2A2F37", background: "transparent", color: "#9AA4B2", borderRadius: 6, padding: "3px 10px", fontSize: 11.5, cursor: "pointer", ...NO_FOCUS_RING };
-const FOOTER: React.CSSProperties = { borderTop: "1px solid #20262F", padding: "10px 14px", display: "flex", flexDirection: "column", gap: 6, background: "#0B0E13" };
-const FOOTER_ROW: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 };
-const FOOTER_COUNT: React.CSSProperties = { fontSize: 12, color: "#9AA4B2" };
-const SUBMIT_BTN: React.CSSProperties = { font: "inherit", border: "1px solid #2F5C3B", background: "rgba(86,194,113,0.16)", color: "#6BE38A", borderRadius: 7, padding: "5px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", ...NO_FOCUS_RING };
-const SUBMIT_BTN_DISABLED: React.CSSProperties = { cursor: "not-allowed", opacity: 0.6 };
-const FOOTER_STALE: React.CSSProperties = { fontSize: 11, color: "#D29922" };
-const FOOTER_ERROR: React.CSSProperties = { fontSize: 11, color: "#F85149", background: "rgba(248,81,73,0.08)", borderRadius: 5, padding: "4px 8px" };
-const FOOTER_DONE: React.CSSProperties = { fontSize: 12, color: "#6BE38A" };
-const FOOTER_LINK: React.CSSProperties = { color: "#7DD3FC" };
 const EMPTY_BLOCKED_IDS: ReadonlySet<string> = new Set<string>();

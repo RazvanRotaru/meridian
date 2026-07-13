@@ -1,8 +1,8 @@
 /**
  * The PR-review side panel. Files first: every changed file with its touched code units and a
  * per-file "viewed" check (ReviewFilesSection — the panel's primary content). Change groups and
- * impacted logic flows stay pinned above that file scroller, and a footer submits the draft
- * comments as one GitHub review. The header tracks viewed-files progress, states the review's provenance (which graph,
+ * impacted logic flows stay pinned above that file scroller, and a footer submits review decisions
+ * together with any draft comments. The header tracks viewed-files progress, states the review's provenance (which graph,
  * which code), offers the fallback review's opt-in "Extract head graph", and Reset (ticks only —
  * never drafts) and Hide; a hidden panel folds into a narrow reopen rail. Self-hides when there
  * is no review.
@@ -16,7 +16,7 @@ import { PrPrepareInline } from "../prs/PrPrepareProgress";
 import { ChangeGroupStrip } from "./ChangeGroupStrip";
 import { ReviewFilesSection } from "./ReviewFilesSection";
 import { ReviewFlowsSection } from "./ReviewFlowsSection";
-import { SubmitReviewFooter } from "./ReviewComments";
+import { ReviewSubmissionFooter } from "./ReviewSubmissionFooter";
 import { NO_FOCUS_RING, REVIEW_VIEWED_ACCENT } from "./reviewPanelKit";
 import { ReviewPreferencesPane } from "./ReviewPreferencesPane";
 import { selectedPrSummary } from "../../state/store";
@@ -70,7 +70,7 @@ function ReviewPanelImpl() {
           <div style={SCROLL}>
             <ReviewFilesSection />
           </div>
-          <SubmitReviewFooter />
+          <ReviewSubmissionFooter />
         </div>
         {preferencesOpen ? (
           <div style={PREFERENCES_LAYER}>

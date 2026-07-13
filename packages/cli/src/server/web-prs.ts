@@ -9,7 +9,7 @@ import {
   listPullRequests,
   replyToPullRequestComment,
 } from "./github";
-import { submitPullRequestReview, type ReviewCommentInput } from "./github-review";
+import { submitPullRequestReview, type PullRequestReviewEvent, type ReviewCommentInput } from "./github-review";
 import { sendJson } from "./http-response";
 import { githubTokenFor, githubUserFor } from "./web-auth";
 import { WebError } from "./web-error";
@@ -22,6 +22,7 @@ import type { PrSummary } from "./github-parse";
 const GITHUB_SOURCE_ERROR = "pull requests need a GitHub-sourced session";
 /** Sanity bound; the 64KB body cap constrains the real payload long before this. */
 const MAX_REVIEW_COMMENTS = 100;
+const MAX_REVIEW_BODY_LENGTH = 10_000;
 const MAX_RELATED_PATHS = 100;
 const RELATED_PR_PAGES = 3;
 const RELATED_PR_CONCURRENCY = 4;
@@ -381,9 +382,9 @@ function positiveBodyInteger(value: unknown, name: string): number {
 }
 
 /**
- * POST /api/prs/review — submit a COMMENT review to the PR. This GitHub write:
+ * POST /api/prs/review — submit a comment, approval, or changes-requested review. This GitHub write:
  * it requires a resolved token (401 otherwise, never an anonymous call). Every entry becomes an
- * individual inline diff comment; review-level body notes are deliberately unsupported.
+ * individual inline diff comment; requesting changes also requires a review-level summary.
  */
 export async function handleSubmitReview(
   ctx: Context,
@@ -402,13 +403,23 @@ export async function handleSubmitReview(
     throw new WebError(401, "submitting a review requires a GitHub sign-in");
   }
   const comments = body.comments.map((comment) => ({ ...comment, path: restoreExtractionSubdir(comment.path, source.subdir) }));
-  const result = await submitPullRequestReview({ owner: source.owner, repo: source.repo, prNumber: body.number, comments, token });
+  const result = await submitPullRequestReview({
+    owner: source.owner,
+    repo: source.repo,
+    prNumber: body.number,
+    comments,
+    event: body.event,
+    body: body.body,
+    token,
+  });
   sendJson(response, 200, result);
 }
 
 interface SubmitReviewBody {
   number: number;
   comments: ReviewCommentInput[];
+  event: PullRequestReviewEvent;
+  body?: string;
 }
 
 function parseSubmitReviewBody(raw: unknown): SubmitReviewBody {
@@ -422,11 +433,33 @@ function parseSubmitReviewBody(raw: unknown): SubmitReviewBody {
   if (record.notes !== undefined) {
     throw new WebError(400, "review notes are not supported; each comment needs an inline path and line");
   }
+  const event = parseReviewEvent(record.event);
+  const body = optionalReviewBody(record.body);
   const comments = boundedArray(record.comments, "comments").map(parseComment);
-  if (comments.length === 0) {
-    throw new WebError(400, "a review needs at least one comment");
+  if (event === "COMMENT" && comments.length === 0) {
+    throw new WebError(400, "a comment review needs at least one inline comment");
   }
-  return { number: record.number, comments };
+  if (event === "COMMENT" && body !== undefined) {
+    throw new WebError(400, "comment reviews do not accept a review summary");
+  }
+  if (event === "REQUEST_CHANGES" && body === undefined) {
+    throw new WebError(400, "requesting changes requires a review summary");
+  }
+  return { number: record.number, comments, event, body };
+}
+
+function parseReviewEvent(value: unknown): PullRequestReviewEvent {
+  if (value === undefined || value === "COMMENT") return "COMMENT";
+  if (value === "APPROVE" || value === "REQUEST_CHANGES") return value;
+  throw new WebError(400, "event must be COMMENT, APPROVE, or REQUEST_CHANGES");
+}
+
+function optionalReviewBody(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > MAX_REVIEW_BODY_LENGTH) {
+    throw new WebError(400, `body must be a non-empty string of at most ${MAX_REVIEW_BODY_LENGTH} characters`);
+  }
+  return value.trim();
 }
 
 function boundedArray(raw: unknown, name: string): unknown[] {
