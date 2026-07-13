@@ -542,11 +542,49 @@ describe("PR store slice", () => {
     expect(fetchMock.mock.calls[0][1]?.method).toBe("POST");
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
       number: 7,
+      event: "COMMENT",
       comments: [{ path, line: 1, body: "Keep this in the review draft" }],
     });
     expect(fetchMock.mock.calls[1][0].toString()).toBe("http://meridian.local/api/prs/comments?id=artifact-1&n=7");
     expect(store.getState().reviewComments).toEqual([]);
     expect(store.getState().prDiscussion?.comments[0]?.body).toBe("Keep this in the review draft");
+  });
+
+  it("submits approval without drafts and request changes with a required summary", async () => {
+    const submissions: unknown[] = [];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      if (url.includes("/api/prs/review")) {
+        submissions.push(JSON.parse(String(init?.body)));
+        return Promise.resolve(Response.json({ url: "https://github.com/o/r/pull/7#review" }));
+      }
+      if (url.includes("/api/prs/comments")) {
+        return Promise.resolve(Response.json({
+          comments: [],
+          reviews: { approved: ["octo"], changesRequested: [], commented: 0 },
+          hasMore: false,
+        }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+
+    expect(await store.getState().submitReview("REQUEST_CHANGES", "   ")).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await store.getState().submitReview("APPROVE")).toBe(true);
+    const path = store.getState().reviewFiles[0].path;
+    store.getState().addReviewComment(path, null, "Inline note");
+    expect(await store.getState().submitReview("COMMENT", "Do not send this summary")).toBe(true);
+    expect(await store.getState().submitReview("REQUEST_CHANGES", "  Please fix the blocker.  ")).toBe(true);
+
+    expect(submissions).toEqual([
+      { number: 7, event: "APPROVE", comments: [] },
+      { number: 7, event: "COMMENT", comments: [{ path, line: 1, body: "Inline note" }] },
+      { number: 7, event: "REQUEST_CHANGES", comments: [], body: "Please fix the blocker." },
+    ]);
   });
 
   it("blocks the whole submission instead of aggregating an unanchorable draft into the review body", async () => {

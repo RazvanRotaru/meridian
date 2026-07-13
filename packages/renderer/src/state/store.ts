@@ -116,6 +116,7 @@ import {
   type PrFileStatus,
   type PrListResponse,
   type PrOneResponse,
+  type PrReviewSubmissionEvent,
   type PrSessionSource,
   type PrSummary,
   type PrsTab,
@@ -727,6 +728,7 @@ export interface BlueprintState {
   toggleReviewPanel(): void;
   toggleReviewCommentsVisible(): void;
   submitReviewComments(): Promise<void>;
+  submitReview(event: PrReviewSubmissionEvent, body?: string): Promise<boolean>;
   editPrReviewComment(id: number, body: string): Promise<boolean>;
   replyToPrReviewComment(topLevelId: number, body: string): Promise<boolean>;
   setViewMode(mode: ViewMode): void;
@@ -4004,12 +4006,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ reviewCommentsVisible: !get().reviewCommentsVisible });
     },
 
-    // Submit every draft as ONE GitHub review (event COMMENT), with each draft preserved as an
-    // individual comment anchored to a new-side diff line. If any draft cannot be anchored, reject
-    // the whole submission instead of silently aggregating it into the review body. Only the drafts
-    // SNAPSHOTTED here are cleared on success — a comment added while the POST is in flight stays a
-    // draft; a failed or blocked submit keeps everything.
     async submitReviewComments() {
+      await get().submitReview("COMMENT");
+    },
+
+    // Submit a GitHub review decision together with every visible draft as an inline comment. If
+    // any draft cannot be anchored, reject the whole review instead of silently dropping context.
+    // Only the drafts snapshotted here are cleared; comments added while the POST is in flight stay.
+    async submitReview(event, body = "") {
       const {
         review,
         reviewComments,
@@ -4027,16 +4031,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const visibleComments = showTests
         ? reviewComments
         : reviewComments.filter((comment) => !isReviewTestPath(comment.path, index, get().prReviewBaseline?.index ?? null));
+      const reviewBody = body.trim();
       if (
         !review
         || prNumber === null
-        || visibleComments.length === 0
+        || (event === "COMMENT" && visibleComments.length === 0)
+        || (event === "REQUEST_CHANGES" && reviewBody.length === 0)
         || reviewSubmitStatus === "submitting"
         || prReviewStale
         || prReviewRefreshing
         || prReviewStatus === "preparing"
       ) {
-        return;
+        return false;
       }
       // Hidden test drafts remain persisted and reappear when Tests is restored; they must neither
       // submit invisibly nor block the visible draft set while their rows are absent.
@@ -4050,7 +4056,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           reviewSubmitStatus: "idle",
           reviewSubmitError: `${blockedLabel}. Delete ${count === 1 ? "it" : "them"} or add ${count === 1 ? "a replacement" : "replacements"} on lines shown in the current pull request diff. Nothing was submitted.`,
         });
-        return;
+        return false;
       }
       const submittedIds = new Set(visibleComments.map((comment) => comment.id));
       const submittedKey = review.context.reviewKey;
@@ -4060,11 +4066,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           method: "POST",
           credentials: "same-origin",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ number: prNumber, comments: submission.comments }),
+          body: JSON.stringify({
+            number: prNumber,
+            event,
+            comments: submission.comments,
+            ...(event !== "COMMENT" && reviewBody ? { body: reviewBody } : {}),
+          }),
         });
         if (!response.ok) {
           set({ reviewSubmitStatus: "idle", reviewSubmitError: await submitErrorMessage(response) });
-          return;
+          return false;
         }
         const data = (await response.json()) as { url?: string | null };
         // The review may have moved to another PR while awaiting; drop the SUBMITTED drafts from
@@ -4098,8 +4109,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         } else {
           set({ reviewSubmitStatus: "idle" });
         }
+        return true;
       } catch {
         set({ reviewSubmitStatus: "idle", reviewSubmitError: "could not reach the server" });
+        return false;
       }
     },
 

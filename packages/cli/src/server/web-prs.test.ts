@@ -618,6 +618,34 @@ describe("handleSubmitReview", () => {
     });
   });
 
+  it("posts approval and request-changes decisions with optional inline comments", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const posted: unknown[] = [];
+    vi.stubGlobal("fetch", (async (_url: string | URL | Request, init?: RequestInit) => {
+      posted.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ html_url: "https://github.com/org/repo/pull/7#review" }), { status: 200 });
+    }) as typeof fetch);
+    const ctx = ctxWithSource({ kind: "github", owner: "org", repo: "repo" });
+
+    const approve = await invokePost(ctx, bodyRequest({ number: 7, event: "APPROVE", comments: [] }));
+    const requestChanges = await invokePost(ctx, bodyRequest({
+      number: 7,
+      event: "REQUEST_CHANGES",
+      body: "Please address the blocking issue.",
+      comments: [{ path: "src/a.ts", line: 25, body: "This is the blocker." }],
+    }));
+
+    expect([approve.status(), requestChanges.status()]).toEqual([200, 200]);
+    expect(posted).toEqual([
+      { event: "APPROVE", comments: [] },
+      {
+        event: "REQUEST_CHANGES",
+        body: "Please address the blocking issue.",
+        comments: [{ path: "src/a.ts", line: 25, side: "RIGHT", body: "This is the blocker." }],
+      },
+    ]);
+  });
+
   it("400s on malformed comments, legacy notes, and an empty submission before any GitHub call", async () => {
     vi.stubEnv("GITHUB_TOKEN", "env_secret");
     vi.stubGlobal("fetch", vi.fn());
@@ -630,8 +658,18 @@ describe("handleSubmitReview", () => {
       notes: [{ path: "a.ts", label: "L1", body: "legacy summary" }],
     }));
     const empty = await invokePost(ctx, bodyRequest({ number: 7, comments: [] }));
+    const badEvent = await invokePost(ctx, bodyRequest({ number: 7, event: "MERGE", comments: [] }));
+    const changesWithoutSummary = await invokePost(ctx, bodyRequest({ number: 7, event: "REQUEST_CHANGES", comments: [] }));
     const badNumber = await invokePost(ctx, bodyRequest({ ...VALID_BODY, number: 0 }));
-    expect([noLine.status(), zeroLine.status(), legacyNotes.status(), empty.status(), badNumber.status()]).toEqual([400, 400, 400, 400, 400]);
+    expect([
+      noLine.status(),
+      zeroLine.status(),
+      legacyNotes.status(),
+      empty.status(),
+      badEvent.status(),
+      changesWithoutSummary.status(),
+      badNumber.status(),
+    ]).toEqual([400, 400, 400, 400, 400, 400, 400]);
     expect(JSON.parse(legacyNotes.body()).error).toMatch(/inline path and line/);
     expect(fetch).not.toHaveBeenCalled();
   });

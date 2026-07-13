@@ -2,7 +2,8 @@
  * Submit a pull-request review. Split from github.ts so the review payload remains a small,
  * single-purpose unit. Anchors are new-side lines (`side: "RIGHT"`) derived
  * from the same parsed hunks the renderer shows, so they land inside the diff. Reviews created here
- * are comment-only: every user draft must remain an individual inline GitHub comment.
+ * keep every user draft as an individual inline GitHub comment while the review event carries the
+ * final decision (comment, approve, or request changes).
  */
 
 import { parseReviewSubmitted } from "./github-parse";
@@ -15,11 +16,15 @@ export interface ReviewCommentInput {
   body: string;
 }
 
+export type PullRequestReviewEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
+
 export interface SubmitReviewRequest {
   owner: string;
   repo: string;
   prNumber: number;
   comments: ReviewCommentInput[];
+  event: PullRequestReviewEvent;
+  body?: string;
   /** Required: reviews are a write — the caller must have resolved a token before getting here. */
   token: string;
 }
@@ -37,8 +42,9 @@ export async function submitPullRequestReviewWithFetch(
   request: SubmitReviewRequest,
 ): Promise<SubmitReviewResult> {
   const payload = {
-    event: "COMMENT",
+    event: request.event,
     comments: request.comments.map((comment) => ({ path: comment.path, line: comment.line, side: "RIGHT", body: comment.body })),
+    ...(request.body ? { body: request.body } : {}),
   };
   const url = repoApi(request.owner, request.repo, `/pulls/${request.prNumber}/reviews`);
   return parseReviewSubmitted(await postApi(fetchImpl, url, payload, request.token));

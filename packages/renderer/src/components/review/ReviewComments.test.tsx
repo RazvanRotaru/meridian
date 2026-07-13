@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { PrGitHubComment } from "../../state/prTypes";
 import { reviewCommentThreadOrder } from "./ExistingReviewComments";
 import { CommentComposer } from "./ReviewComments";
+import { reviewActionDisabled, reviewSuccessLabel } from "./ReviewSubmissionFooter";
 
 describe("CommentComposer", () => {
   it("prefills an edit and names its save action", () => {
@@ -48,6 +49,22 @@ describe("reviewCommentThreadOrder", () => {
     const orphan = githubComment(4, 999);
 
     expect(reviewCommentThreadOrder([rootA, rootB, replyA, orphan]).map((comment) => comment.id)).toEqual([1, 3, 2, 4]);
+  });
+});
+
+describe("review submission decisions", () => {
+  it("requires drafts for comment and a summary for request changes, but not for approval", () => {
+    expect(reviewActionDisabled("COMMENT", 0, "")).toBe(true);
+    expect(reviewActionDisabled("COMMENT", 1, "")).toBe(false);
+    expect(reviewActionDisabled("APPROVE", 0, "")).toBe(false);
+    expect(reviewActionDisabled("REQUEST_CHANGES", 2, "  ")).toBe(true);
+    expect(reviewActionDisabled("REQUEST_CHANGES", 0, "Blocking issue")).toBe(false);
+  });
+
+  it("names the submitted decision", () => {
+    expect(reviewSuccessLabel("COMMENT")).toBe("Comments submitted");
+    expect(reviewSuccessLabel("APPROVE")).toBe("Pull request approved");
+    expect(reviewSuccessLabel("REQUEST_CHANGES")).toBe("Changes requested");
   });
 });
 

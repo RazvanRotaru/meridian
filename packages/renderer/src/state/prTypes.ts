@@ -1,6 +1,7 @@
 import type { ChangedLineSpan, LineRange } from "@meridian/core";
 
 export type PrsTab = "open" | "closed";
+export type PrReviewSubmissionEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
 
 /** One unified-diff hunk's old/new line spans — maps a node's base line to its PR-head line. */
 export interface LineEdit {
