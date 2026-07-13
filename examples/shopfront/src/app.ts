@@ -10,6 +10,7 @@ import { CartRepository } from "./repository/cartRepository.js";
 import { OrderRepository } from "./repository/orderRepository.js";
 import { UserRepository } from "./repository/userRepository.js";
 import { InventoryRepository } from "./repository/inventoryRepository.js";
+import { SavedListRepository } from "./repository/savedListRepository.js";
 import { AuditService } from "./services/auditService.js";
 import { UserService } from "./services/userService.js";
 import { NotificationService } from "./services/notificationService.js";
@@ -21,6 +22,7 @@ import { CatalogService } from "./services/catalogService.js";
 import { RecommendationService } from "./services/recommendationService.js";
 import { CartService } from "./services/cartService.js";
 import { CheckoutService } from "./services/checkoutService.js";
+import { SavedListService } from "./services/savedListService.js";
 import { CatalogRoutes } from "./api/catalogRoutes.js";
 import { CartRoutes } from "./api/cartRoutes.js";
 import { CheckoutRoutes } from "./api/checkoutRoutes.js";
@@ -34,6 +36,7 @@ export interface ShopfrontServices {
   checkout: CheckoutService;
   user: UserService;
   recommendation: RecommendationService;
+  savedList: SavedListService;
 }
 
 /** The HTTP surface, one route class per resource. */
@@ -52,6 +55,7 @@ export function buildServices(): ShopfrontServices {
   const orderRepo = new OrderRepository();
   const userRepo = new UserRepository();
   const inventoryRepo = new InventoryRepository();
+  const savedListRepo = new SavedListRepository();
 
   const audit = new AuditService();
   const user = new UserService(userRepo);
@@ -63,6 +67,7 @@ export function buildServices(): ShopfrontServices {
   pricing.setPromotion(promotion);
   const catalog = new CatalogService(productRepo, inventory);
   const recommendation = new RecommendationService(productRepo, catalog);
+  const savedList = new SavedListService(savedListRepo, catalog);
   const cart = new CartService(cartRepo, catalog, inventory, pricing);
   const checkout = new CheckoutService(
     cart,
@@ -77,7 +82,7 @@ export function buildServices(): ShopfrontServices {
   );
 
   log("shopfront services wired");
-  return { catalog, cart, checkout, user, recommendation };
+  return { catalog, cart, checkout, user, recommendation, savedList };
 }
 
 /** Build the HTTP app: wire the routes on top of the services. */
