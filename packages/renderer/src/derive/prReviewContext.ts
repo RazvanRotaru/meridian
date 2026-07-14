@@ -19,13 +19,16 @@ function toChangedFile(file: PrChangedFile, baseSide: boolean): ChangedFile {
   if (file.previousPath) {
     changed.previousPath = file.previousPath;
   }
-  if (file.hunks && file.hunks.length > 0) {
+  // GitHub may truncate `patch` while still reporting whole-file +/- totals. A partial body is
+  // useful for diagnostics but must never masquerade as the complete affected range; omitting its
+  // hunks deliberately selects the existing conservative whole-file fallback.
+  if (file.diffComplete !== false && file.hunks && file.hunks.length > 0) {
     changed.hunks = file.hunks;
   }
   // Base-side hunks let computeAffectedNodes mark BASE-relative node ranges (a review overlaid on
   // the boot artifact). On a head-accurate graph they'd mis-mark head coordinates, so the caller
   // opts out and the new-side `hunks` above (head coordinates) carry the marking instead.
-  if (baseSide && file.oldHunks && file.oldHunks.length > 0) {
+  if (file.diffComplete !== false && baseSide && file.oldHunks && file.oldHunks.length > 0) {
     changed.oldHunks = file.oldHunks;
   }
   return changed;

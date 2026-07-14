@@ -7,6 +7,7 @@
 
 import type {
   AffectedNode,
+  ChangedDiffLines,
   ChangedLineKind,
   ChangedLineKinds,
   ChangedLineSpan,
@@ -33,6 +34,28 @@ export function reviewNodeStatusSourcesFromKinds(kinds: ChangedLineKinds | null)
     return {};
   }
   return Object.fromEntries(Object.entries(kinds).map(([file, spans]) => [normalizePath(file), { kinds: spans }]));
+}
+
+/** Adapt display-accurate diff rows into graph-only status seams. Deleted rows have no HEAD line,
+ * so their `beforeNewLine` cursor is used only here for node/flow colour attribution; source
+ * rendering consumes the old-side row itself and never paints that surviving HEAD row red. */
+export function reviewNodeStatusSourcesFromDiff(
+  kinds: ChangedLineKinds | null,
+  diffLines: ChangedDiffLines | null,
+  editsByFile: Readonly<Record<string, readonly LineEdit[]>> = {},
+): ReviewNodeStatusSources {
+  const files = new Set([...Object.keys(kinds ?? {}), ...Object.keys(diffLines ?? {})]);
+  return Object.fromEntries([...files].map((file) => {
+    const spans = [...(kinds?.[file] ?? [])];
+    for (const row of diffLines?.[file] ?? []) {
+      if (row.kind === "deleted") {
+        spans.push({ start: row.beforeNewLine, end: row.beforeNewLine, kind: "deleted" });
+      } else if (!(kinds?.[file] ?? []).some((span) => span.start <= row.newLine! && span.end >= row.newLine!)) {
+        spans.push({ start: row.newLine!, end: row.newLine!, kind: "added" });
+      }
+    }
+    return [normalizePath(file), { kinds: spans, ...(editsByFile[file] ? { edits: editsByFile[file] } : {}) }];
+  }));
 }
 
 /** Resolve the exact PR status at one flow-step source anchor. */

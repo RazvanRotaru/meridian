@@ -8,14 +8,20 @@ interface UnchangedCodeFoldOptions {
   startLine: number;
   lineCount: number;
   focusLines: ReadonlySet<number>;
+  /** HEAD-side gaps immediately before this line. A deletion gap gets three rows before and three
+   * after, so its source window is asymmetric: [gap - context, gap + context - 1]. */
+  focusGaps?: ReadonlySet<number>;
   contextLines?: number;
   minimumFoldLines?: number;
   minimumSourceLines?: number;
 }
 
 const DEFAULT_CONTEXT_LINES = 3;
-const DEFAULT_MINIMUM_FOLD_LINES = 8;
-const DEFAULT_MINIMUM_SOURCE_LINES = 24;
+// GitHub's hunk contract is exact: anything outside the three context rows is collapsed, even a
+// one-line gap between hunks or a short leading/trailing gap. Callers may still opt into a coarser
+// threshold, but review source uses these lossless defaults.
+const DEFAULT_MINIMUM_FOLD_LINES = 1;
+const DEFAULT_MINIMUM_SOURCE_LINES = 1;
 
 /** Fold large untouched gaps while preserving GitHub-style context around every important row. */
 export function unchangedCodeFolds(options: UnchangedCodeFoldOptions): UnchangedCodeFold[] {
@@ -23,14 +29,15 @@ export function unchangedCodeFolds(options: UnchangedCodeFoldOptions): Unchanged
     startLine,
     lineCount,
     focusLines,
+    focusGaps = EMPTY_FOCUS_GAPS,
     contextLines = DEFAULT_CONTEXT_LINES,
     minimumFoldLines = DEFAULT_MINIMUM_FOLD_LINES,
     minimumSourceLines = DEFAULT_MINIMUM_SOURCE_LINES,
   } = options;
-  if (lineCount < minimumSourceLines || focusLines.size === 0) return [];
+  if (lineCount < minimumSourceLines || (focusLines.size === 0 && focusGaps.size === 0)) return [];
 
   const endLine = startLine + lineCount - 1;
-  const visibleRanges = mergedVisibleRanges(focusLines, startLine, endLine, contextLines);
+  const visibleRanges = mergedVisibleRanges(focusLines, focusGaps, startLine, endLine, contextLines);
   if (visibleRanges.length === 0) return [];
 
   const folds: UnchangedCodeFold[] = [];
@@ -45,17 +52,25 @@ export function unchangedCodeFolds(options: UnchangedCodeFoldOptions): Unchanged
 
 function mergedVisibleRanges(
   focusLines: ReadonlySet<number>,
+  focusGaps: ReadonlySet<number>,
   startLine: number,
   endLine: number,
   contextLines: number,
 ): Array<{ start: number; end: number }> {
-  const ranges = [...focusLines]
-    .filter((line) => line >= startLine && line <= endLine)
-    .sort((a, b) => a - b)
-    .map((line) => ({
-      start: Math.max(startLine, line - contextLines),
-      end: Math.min(endLine, line + contextLines),
-    }));
+  const ranges = [
+    ...[...focusLines]
+      .filter((line) => line >= startLine && line <= endLine)
+      .map((line) => ({
+        start: Math.max(startLine, line - contextLines),
+        end: Math.min(endLine, line + contextLines),
+      })),
+    ...[...focusGaps]
+      .filter((gap) => gap >= startLine && gap <= endLine + 1)
+      .map((gap) => ({
+        start: Math.max(startLine, gap - contextLines),
+        end: Math.min(endLine, gap + contextLines - 1),
+      })),
+  ].sort((left, right) => left.start - right.start || left.end - right.end);
   const merged: Array<{ start: number; end: number }> = [];
   for (const range of ranges) {
     const previous = merged.at(-1);
@@ -67,6 +82,8 @@ function mergedVisibleRanges(
   }
   return merged;
 }
+
+const EMPTY_FOCUS_GAPS: ReadonlySet<number> = new Set<number>();
 
 function addFold(
   folds: UnchangedCodeFold[],

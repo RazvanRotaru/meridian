@@ -87,6 +87,26 @@ describe("extractToArtifact diagnostics", () => {
       message: "detected extractors found no source files under /repo",
     });
   });
+
+  it("allows an explicitly empty side while preserving every hinted language", async () => {
+    Object.assign(fake.typescript, { detects: false, files: 0 });
+    Object.assign(fake.python, { detects: false, files: 0 });
+
+    const result = await extractToArtifact({
+      ...request(),
+      hintedFiles: ["frontend/app.ts", "backend/app.py"],
+      allowEmpty: true,
+    });
+
+    expect(result.extractors.map((extractor) => extractor.language)).toEqual(["typescript", "python"]);
+    expect(result.extraction).toMatchObject({
+      language: "mixed",
+      nodes: [],
+      edges: [],
+      stats: { files: 0 },
+    });
+    expect(result.artifact.target.language).toBe("mixed");
+  });
 });
 
 describe("extractor hints", () => {

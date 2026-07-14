@@ -46,6 +46,8 @@ const FILE_C = "ts:src/c.ts";
 const FN_A = `${FILE_A}#fnA`;
 const FN_B = `${FILE_B}#fnB`;
 const FN_C = `${FILE_C}#fnC`;
+const DELETED_CLASS_C = `${FILE_C}#LegacyService`;
+const DELETED_METHOD_C = `${DELETED_CLASS_C}.removed`;
 
 const ARTIFACT: GraphArtifact = {
   schemaVersion: "1.0.0",
@@ -99,6 +101,40 @@ function reviewedStore(files: Array<{ path: string }>, extra?: Partial<StoreDepe
   return store;
 }
 
+function attachDeletedNestedUnit(store: ReturnType<typeof reviewedStore>, sourceSide: "base" | undefined = "base") {
+  const state = store.getState();
+  const artifact: GraphArtifact = {
+    ...state.artifact,
+    nodes: [
+      ...state.artifact.nodes,
+      node(DELETED_CLASS_C, "class", "packages/c.ts", FILE_C),
+      node(DELETED_METHOD_C, "method", "packages/c.ts", DELETED_CLASS_C),
+    ],
+  };
+  store.setState({
+    artifact,
+    index: buildGraphIndex(artifact),
+    reviewFiles: state.reviewFiles.map((file) => file.path === "packages/c.ts"
+      ? {
+          ...file,
+          units: [{
+            nodeId: DELETED_METHOD_C,
+            displayName: "removed",
+            kind: "method",
+            startLine: 8,
+            endLine: 12,
+            sourceSide,
+            depth: 1,
+            isTest: false,
+            fingerprint: "8:12|base:8-12",
+          }],
+        }
+      : file),
+    reviewBaseNodeIds: new Set([DELETED_CLASS_C, DELETED_METHOD_C]),
+    reviewDeletedNodeIds: new Set([DELETED_METHOD_C]),
+  });
+}
+
 const MIXED_PR = [{ path: "src/a.ts" }, { path: "src/b.ts" }, { path: "packages/c.ts" }];
 
 describe("change groups in PR review", () => {
@@ -136,6 +172,18 @@ describe("change groups in PR review", () => {
     expect(store.getState().reviewSelectedId).toBeNull();
   });
 
+  it("keeps a nested deleted unit visible when selecting its change group", () => {
+    const store = reviewedStore(MIXED_PR);
+    attachDeletedNestedUnit(store);
+    const isolated = store.getState().reviewGroups!.groups[1];
+    store.setState({ moduleExpanded: new Set() });
+
+    store.getState().selectReviewGroup(isolated.id);
+
+    expect(store.getState().minimalSeedIds).toEqual([FILE_C]);
+    expect(store.getState().moduleExpanded).toEqual(new Set([PACKAGE_ID, FILE_C, DELETED_CLASS_C]));
+  });
+
   it("selecting All restores the full review seed set", () => {
     const store = reviewedStore(MIXED_PR);
     store.getState().selectReviewGroup(store.getState().reviewGroups!.groups[1].id);
@@ -155,6 +203,18 @@ describe("change groups in PR review", () => {
     store.getState().selectReviewPathScope(null);
     expect(store.getState().reviewPathScope).toBeNull();
     expect(store.getState().minimalSeedIds).toEqual([FILE_A, FILE_B, FILE_C]);
+  });
+
+  it("keeps legacy base-id units visible when narrowing to their path", () => {
+    const store = reviewedStore(MIXED_PR);
+    // Older in-memory rows may omit sourceSide; comparison/deleted membership remains authoritative.
+    attachDeletedNestedUnit(store, undefined);
+    store.setState({ moduleExpanded: new Set() });
+
+    store.getState().selectReviewPathScope("packages");
+
+    expect(store.getState().minimalSeedIds).toEqual([FILE_C]);
+    expect(store.getState().moduleExpanded).toEqual(new Set([PACKAGE_ID, FILE_C, DELETED_CLASS_C]));
   });
 
   it("resumes the same change group and path scope instead of rebuilding the full PR graph", async () => {
@@ -294,13 +354,19 @@ describe("change groups in PR review", () => {
     expect(store.getState().reviewGroups?.groups).toHaveLength(1);
   });
 
-  it("a manual Map extraction supersedes the review and drops its groups", () => {
+  it("does not let a manual Map extraction replace an active PR review", () => {
     const store = reviewedStore(MIXED_PR);
+    const review = store.getState().review;
+    const groups = store.getState().reviewGroups;
+    const seeds = store.getState().minimalSeedIds;
     store.setState({ moduleSelected: new Set([FILE_A]) });
     store.getState().buildMinimalGraph();
-    expect(store.getState().reviewGroups).toBeNull();
+
+    expect(store.getState().prReviewed).toBe(5);
+    expect(store.getState().review).toBe(review);
+    expect(store.getState().reviewGroups).toBe(groups);
     expect(store.getState().reviewActiveGroupId).toBeNull();
     expect(store.getState().reviewPathScope).toBeNull();
-    expect(store.getState().reviewAllSeedIds).toEqual([]);
+    expect(store.getState().minimalSeedIds).toEqual(seeds);
   });
 });

@@ -136,6 +136,7 @@ describe("codePreviewNode", () => {
 describe("commentableReviewLines", () => {
   it("offers only visible rows inside GitHub's diff/context ranges", () => {
     expect([...commentableReviewLines([{ start: 18, end: 20 }, { start: 30, end: 40 }], 19, "one\ntwo\nthree", true)]).toEqual([19, 20]);
+    expect(commentableReviewLines([{ start: 19, end: 20 }], 19, "", true, 0).size).toBe(0);
   });
 
   it("offers no line targets outside an active PR review or before source loads", () => {
@@ -174,6 +175,7 @@ describe("codeReviewComments", () => {
     expect(codeReviewComments(comments, "src/live.ts", 19, "one", false)).toEqual([]);
     expect(codeReviewComments(comments, null, 19, "one", true)).toEqual([]);
     expect(codeReviewComments(comments, "src/live.ts", 19, null, true)).toEqual([]);
+    expect(codeReviewComments(comments, "src/live.ts", 19, "", true, 0)).toEqual([]);
   });
 
   it("accepts the PR path aliases that resolve to one canvas file", () => {
@@ -213,6 +215,7 @@ describe("codeReviewDrafts", () => {
     expect(codeReviewDrafts(drafts, "src/live.ts", 19, "one", false)).toEqual([]);
     expect(codeReviewDrafts(drafts, null, 19, "one", true)).toEqual([]);
     expect(codeReviewDrafts(drafts, "src/live.ts", 19, null, true)).toEqual([]);
+    expect(codeReviewDrafts(drafts, "src/live.ts", 19, "", true, 0)).toEqual([]);
   });
 });
 

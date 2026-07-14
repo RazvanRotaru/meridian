@@ -26,6 +26,9 @@ export interface ReviewUnitRow {
   kind: string;
   startLine: number;
   endLine: number;
+  /** Revision that owns this declaration's source span. Omitted rows are treated as HEAD for
+   * backward-compatible persisted/test data; newly derived rows always set this explicitly. */
+  sourceSide?: "head" | "base";
   /** Nesting depth below the file container (0 = top-level unit) — pure indentation. */
   depth: number;
   isTest: boolean;
@@ -361,6 +364,7 @@ function toUnitRow(
     kind: node.kind,
     startLine: start,
     endLine: end,
+    sourceSide: "head",
     depth: unitDepth(nodeId, index),
     isTest: index.testIds.has(nodeId),
     fingerprint: `${start}:${end}|${hunksFingerprint(overlapping(hunks, start, end))}`,

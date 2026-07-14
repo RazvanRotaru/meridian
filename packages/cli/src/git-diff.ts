@@ -12,9 +12,16 @@
  */
 
 import { spawn } from "node:child_process";
-import type { ChangedLineKinds, ChangedLineSpan, ChangedLineStats, ChangedRanges, LineRange } from "@meridian/core";
-import { classifyChangedLineRun } from "./changed-line-kinds";
+import { StringDecoder } from "node:string_decoder";
+import type {
+  ChangedDiffLines,
+  ChangedFileManifestEntry,
+  ChangedLineKinds,
+  ChangedLineStats,
+  ChangedRanges,
+} from "@meridian/core";
 import { CliError, EXIT } from "./errors";
+import { parseUnifiedDiffBody } from "./unified-diff";
 
 const DIFF_TIMEOUT_MS = 15_000;
 const MAX_BUFFER_BYTES = 32 * 1024 * 1024;
@@ -34,10 +41,54 @@ export async function changedSinceMetadata(
   baseRef: string,
   timeoutMs = DIFF_TIMEOUT_MS,
   executeGitDiff: GitDiffExecutor = runGitDiff,
-): Promise<{ ranges: ChangedRanges; stats: ChangedLineStats; kinds: ChangedLineKinds }> {
-  const args = ["diff", "--merge-base", validatedRef(baseRef), "--relative", "--unified=0", "--no-color"];
-  const stdout = await executeGitDiff(absoluteRoot, args, timeoutMs);
-  return parseUnifiedDiffWithStats(stdout);
+): Promise<{
+  ranges: ChangedRanges;
+  stats: ChangedLineStats;
+  kinds: ChangedLineKinds;
+  diffLines: ChangedDiffLines;
+  manifest: ChangedFileManifestEntry[];
+}> {
+  const ref = validatedRef(baseRef);
+  const patchArgs = [
+    "diff",
+    "--merge-base",
+    ref,
+    "--relative",
+    "--unified=0",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--find-renames=50%",
+  ];
+  const patch = await executeGitDiff(absoluteRoot, patchArgs, timeoutMs);
+  const parsed = parseFullUnifiedDiff(patch);
+  if (!parsed.complete) {
+    throw new CliError(EXIT.io, "git diff output contained an incomplete hunk; refusing to persist a partial diff");
+  }
+  const manifestArgs = [
+    "diff",
+    "--merge-base",
+    ref,
+    "--relative",
+    "--name-status",
+    "-z",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--find-renames=50%",
+  ];
+  // Keep both views all-or-nothing. Line details are never published if the exact file inventory
+  // is malformed/truncated, and the manifest is never published beside a partial patch body.
+  const manifest = parseNameStatusManifest(await executeGitDiff(absoluteRoot, manifestArgs, timeoutMs));
+  // `git diff` reads the index and working tree independently on every invocation. If either
+  // changes between the patch and name-status reads, their otherwise-valid outputs can describe
+  // different revisions. Re-read the patch after the manifest and publish nothing unless the
+  // exact UTF-8 bytes still match the first read.
+  const verifiedPatch = await executeGitDiff(absoluteRoot, patchArgs, timeoutMs);
+  if (!Buffer.from(patch, "utf8").equals(Buffer.from(verifiedPatch, "utf8"))) {
+    throw new CliError(EXIT.io, "working tree changed while reading git diff metadata; retry the analysis");
+  }
+  return { ranges: parsed.ranges, stats: parsed.stats, kinds: parsed.kinds, diffLines: parsed.diffLines, manifest };
 }
 
 export function validatedRef(baseRef: string): string {
@@ -49,157 +100,257 @@ export function validatedRef(baseRef: string): string {
 }
 
 /**
+ * Parse `git diff --name-status -z` without applying Git's C-style path unquoting.
+ *
+ * With `-z`, status and path fields are NUL-delimited and paths are literal, so tabs, quotes, and
+ * newlines in a file name cannot corrupt field boundaries. Unknown statuses and unsafe paths fail
+ * the whole transaction closed instead of silently losing a changed file.
+ */
+export function parseNameStatusManifest(output: string): ChangedFileManifestEntry[] {
+  if (output.length === 0) {
+    return [];
+  }
+  if (!output.endsWith("\0")) {
+    throw malformedManifest("missing final NUL delimiter");
+  }
+  const fields = output.slice(0, -1).split("\0");
+  const manifest: ChangedFileManifestEntry[] = [];
+  const seenPaths = new Set<string>();
+  let cursor = 0;
+
+  const take = (label: string): string => {
+    const value = fields[cursor];
+    cursor += 1;
+    if (value === undefined || value.length === 0) {
+      throw malformedManifest(`missing ${label}`);
+    }
+    return value;
+  };
+
+  const append = (entry: ChangedFileManifestEntry): void => {
+    if (!isSafeManifestPath(entry.path) || (entry.previousPath !== undefined && !isSafeManifestPath(entry.previousPath))) {
+      throw malformedManifest("path is not extraction-root-relative POSIX");
+    }
+    if (seenPaths.has(entry.path)) {
+      throw malformedManifest(`duplicate path '${entry.path}'`);
+    }
+    seenPaths.add(entry.path);
+    manifest.push(entry);
+  };
+
+  while (cursor < fields.length) {
+    const status = take("status");
+    if (status === "A") {
+      append({ path: take("added path"), status: "added" });
+    } else if (status === "D") {
+      append({ path: take("deleted path"), status: "deleted" });
+    } else if (status === "M" || status === "T") {
+      append({ path: take("modified path"), status: "modified" });
+    } else if (renameScore(status) !== null) {
+      const previousPath = take("rename old path");
+      const path = take("rename new path");
+      if (path === previousPath) {
+        throw malformedManifest("rename paths are identical");
+      }
+      append({ path, status: "renamed", previousPath });
+    } else {
+      throw malformedManifest(`unsupported status '${status}'`);
+    }
+  }
+  return manifest;
+}
+
+function renameScore(status: string): number | null {
+  const match = /^R([0-9]{1,3})$/.exec(status);
+  if (!match) {
+    return null;
+  }
+  const score = Number(match[1]);
+  return score <= 100 ? score : null;
+}
+
+function isSafeManifestPath(path: string): boolean {
+  if (path.startsWith("/") || path.includes("\\") || /^[A-Za-z]:/.test(path)) {
+    return false;
+  }
+  return path.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+}
+
+function malformedManifest(reason: string): CliError {
+  return new CliError(EXIT.io, `git diff --name-status output was malformed (${reason}); refusing a partial file manifest`);
+}
+
+/**
  * Parse `git diff -U0` output into inclusive 1-based ranges per NEW-side file path.
  *
  * Only the `+++ b/<path>` side matters — those are the paths (and line numbers) that exist in the
- * extracted tree. Deleted files (`+++ /dev/null`) have no nodes to tag and are skipped. A pure
- * deletion hunk (`+c,0`) removed lines BETWEEN c and c+1, so it marks that seam — the declaration
- * that used to hold the deleted lines spans it.
+ * extracted tree. Deleted files (`+++ /dev/null`) have no nodes to tag and are skipped.
  */
 export function parseUnifiedDiff(diff: string): ChangedRanges {
   return parseUnifiedDiffWithStats(diff).ranges;
 }
 
-export function parseUnifiedDiffWithStats(diff: string): { ranges: ChangedRanges; stats: ChangedLineStats; kinds: ChangedLineKinds } {
+export function parseUnifiedDiffWithStats(diff: string): {
+  ranges: ChangedRanges;
+  stats: ChangedLineStats;
+  kinds: ChangedLineKinds;
+  diffLines: ChangedDiffLines;
+} {
+  const parsed = parseFullUnifiedDiff(diff);
+  return { ranges: parsed.ranges, stats: parsed.stats, kinds: parsed.kinds, diffLines: parsed.diffLines };
+}
+
+interface ParsedFullUnifiedDiff {
+  ranges: ChangedRanges;
+  stats: ChangedLineStats;
+  kinds: ChangedLineKinds;
+  diffLines: ChangedDiffLines;
+  complete: boolean;
+}
+
+function parseFullUnifiedDiff(diff: string): ParsedFullUnifiedDiff {
   const changed: ChangedRanges = {};
   const stats: ChangedLineStats = {};
   const kinds: ChangedLineKinds = {};
-  let currentFile: string | null = null;
-  let activeHunk: ParsedHunk | null = null;
-  let newLine = 0;
-  let oldSeen = 0;
-  let newSeen = 0;
-  let addedLines: number[] = [];
-  let deletedCount = 0;
-  let bodyKinds: ChangedLineSpan[] = [];
+  const diffLines: ChangedDiffLines = {};
+  let complete = true;
 
-  const flushEditRun = () => {
-    if (addedLines.length === 0 && deletedCount === 0) {
-      return;
+  for (const section of splitFileSections(diff)) {
+    const firstHunk = section.search(/^@@/m);
+    if (firstHunk < 0) {
+      continue;
     }
-    bodyKinds.push(...classifyChangedLineRun(addedLines, deletedCount, newLine));
-    addedLines = [];
-    deletedCount = 0;
-  };
+    // Validate every body, including `+++ /dev/null`. An incomplete deleted-file hunk still proves
+    // the Git output was cut and must fail the all-or-nothing metadata transaction.
+    const detail = parseUnifiedDiffBody(section.slice(firstHunk));
+    complete &&= detail.complete;
+    const sectionLines = section.split("\n");
+    const newPathLine = sectionLines.find((line) => line.startsWith("+++ "));
+    const oldPathLine = sectionLines.find((line) => line.startsWith("--- "));
+    const headPath = newPathLine ? newSidePath(newPathLine) : null;
+    const metadataPath = headPath ?? (oldPathLine ? oldSidePath(oldPathLine) : null);
 
-  const flushHunk = () => {
-    if (activeHunk === null || currentFile === null) {
-      activeHunk = null;
-      return;
+    // Ranges and kinds address rows in HEAD, so a fully removed file must never manufacture them
+    // from base-side coordinates. Stats and exact diff rows are side-aware and remain useful for
+    // deleted source, so retain those under the old/base path instead.
+    if (headPath !== null && detail.ranges.length > 0) {
+      (changed[headPath] ??= []).push(...detail.ranges);
     }
-    flushEditRun();
-    const completeBody = oldSeen === activeHunk.deleted && newSeen === activeHunk.added;
-    const spans = completeBody ? bodyKinds : activeHunk.kindSpan === null ? [] : [activeHunk.kindSpan];
-    if (spans.length > 0) {
-      (kinds[currentFile] ??= []).push(...spans);
+    if (metadataPath !== null && (detail.added > 0 || detail.deleted > 0)) {
+      const file = (stats[metadataPath] ??= { added: 0, deleted: 0 });
+      file.added += detail.added;
+      file.deleted += detail.deleted;
     }
-    activeHunk = null;
-  };
-
-  for (const line of diff.split("\n")) {
-    if (line.startsWith("diff --git ")) {
-      flushHunk();
-      currentFile = null;
-      continue;
+    if (headPath !== null && detail.kinds.length > 0) {
+      (kinds[headPath] ??= []).push(...detail.kinds);
     }
-    if (activeHunk === null && line.startsWith("+++ ")) {
-      currentFile = newSidePath(line);
-      continue;
-    }
-    if (line.startsWith("@@")) {
-      flushHunk();
-      if (currentFile === null) {
-        continue;
-      }
-      const hunk = parseHunk(line);
-      if (hunk === null) {
-        continue;
-      }
-      (changed[currentFile] ??= []).push(hunk.range);
-      const file = (stats[currentFile] ??= { added: 0, deleted: 0 });
-      file.added += hunk.added;
-      file.deleted += hunk.deleted;
-      activeHunk = hunk;
-      newLine = hunk.newStart;
-      oldSeen = 0;
-      newSeen = 0;
-      addedLines = [];
-      deletedCount = 0;
-      bodyKinds = [];
-      continue;
-    }
-    if (activeHunk === null || line.startsWith("\\")) {
-      continue;
-    }
-    if (line.startsWith("+")) {
-      addedLines.push(newLine);
-      newLine += 1;
-      newSeen += 1;
-    } else if (line.startsWith("-")) {
-      deletedCount += 1;
-      oldSeen += 1;
-    } else if (line.startsWith(" ")) {
-      flushEditRun();
-      newLine += 1;
-      oldSeen += 1;
-      newSeen += 1;
+    if (metadataPath !== null && detail.diffLines.length > 0) {
+      (diffLines[metadataPath] ??= []).push(...detail.diffLines);
     }
   }
-  flushHunk();
-  return { ranges: changed, stats, kinds };
+  return { ranges: changed, stats, kinds, diffLines, complete };
 }
 
-/** `+++ b/src/x.ts` → `src/x.ts`; `+++ /dev/null` (deleted file) → null. Tab-suffixed names too. */
+function splitFileSections(diff: string): string[] {
+  const sections: string[] = [];
+  let current: string[] = [];
+  for (const line of diff.split(/\r?\n/)) {
+    if (line.startsWith("diff --git ") && current.length > 0) {
+      sections.push(current.join("\n"));
+      current = [];
+    }
+    current.push(line);
+  }
+  if (current.length > 0) {
+    sections.push(current.join("\n"));
+  }
+  return sections;
+}
+
+/** `+++ b/src/x.ts` → `src/x.ts`; `+++ /dev/null` (deleted file) → null. */
 function newSidePath(line: string): string | null {
-  const raw = line.slice(4).split("\t")[0].trim();
+  return diffSidePath(line, "b/");
+}
+
+/** `--- a/src/x.ts` → `src/x.ts`; `--- /dev/null` (new file) → null. */
+function oldSidePath(line: string): string | null {
+  return diffSidePath(line, "a/");
+}
+
+function diffSidePath(line: string, prefix: "a/" | "b/"): string | null {
+  const raw = decodeGitPath(pathToken(line.slice(4).trim()));
   if (raw === "/dev/null") {
     return null;
   }
-  return raw.startsWith("b/") ? raw.slice(2) : raw;
+  return raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
 }
 
-/** `@@ -a,b +c,d @@` → the new-side span; `d` omitted means 1; `d = 0` marks the deletion seam. */
-interface ParsedHunk {
-  range: LineRange;
-  added: number;
-  deleted: number;
-  newStart: number;
-  kindSpan: ChangedLineSpan | null;
-}
-
-function parseHunk(line: string): ParsedHunk | null {
-  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
-  if (!match) {
-    return null;
+function pathToken(raw: string): string {
+  if (!raw.startsWith("\"")) {
+    return raw.split("\t", 1)[0];
   }
-  const deleted = match[2] === undefined ? 1 : Number(match[2]);
-  const start = Number(match[3]);
-  const added = match[4] === undefined ? 1 : Number(match[4]);
-  if (added === 0) {
-    const seam = Math.max(1, start);
-    return {
-      range: { start: seam, end: seam + 1 },
-      added,
-      deleted,
-      newStart: start,
-      kindSpan: { start: seam, end: seam + 1, kind: "deleted" },
+  let escaped = false;
+  for (let index = 1; index < raw.length; index += 1) {
+    const char = raw[index];
+    if (!escaped && char === "\"") {
+      return raw.slice(0, index + 1);
+    }
+    if (!escaped && char === "\\") {
+      escaped = true;
+    } else {
+      escaped = false;
+    }
+  }
+  return raw;
+}
+
+/** Decode Git's `core.quotePath` C-style path quoting, including octal UTF-8 bytes. */
+function decodeGitPath(raw: string): string {
+  if (!(raw.startsWith("\"") && raw.endsWith("\""))) {
+    return raw;
+  }
+  const bytes: number[] = [];
+  const inner = raw.slice(1, -1);
+  for (let index = 0; index < inner.length; index += 1) {
+    const char = inner[index];
+    if (char !== "\\") {
+      bytes.push(...Buffer.from(char, "utf8"));
+      continue;
+    }
+    const escaped = inner[index + 1];
+    if (escaped === undefined) {
+      bytes.push(0x5c);
+      continue;
+    }
+    const octal = /^[0-7]{1,3}/.exec(inner.slice(index + 1));
+    if (octal) {
+      bytes.push(Number.parseInt(octal[0], 8));
+      index += octal[0].length;
+      continue;
+    }
+    const escapes: Record<string, number> = {
+      a: 0x07,
+      b: 0x08,
+      t: 0x09,
+      n: 0x0a,
+      v: 0x0b,
+      f: 0x0c,
+      r: 0x0d,
+      "\\": 0x5c,
+      "\"": 0x22,
     };
+    bytes.push(escapes[escaped] ?? escaped.charCodeAt(0));
+    index += 1;
   }
-  const from = Math.max(1, start);
-  const to = from + added - 1;
-  return {
-    range: { start: from, end: to },
-    added,
-    deleted,
-    newStart: start,
-    kindSpan: { start: from, end: to, kind: deleted > 0 ? "modified" : "added" },
-  };
+  return Buffer.from(bytes).toString("utf8");
 }
 
 function runGitDiff(absoluteRoot: string, args: string[], timeoutMs: number): Promise<string> {
   return new Promise((resolveDiff, rejectDiff) => {
     const child = spawn("git", ["-C", absoluteRoot, ...args], { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
+    const stdoutDecoder = new StringDecoder("utf8");
+    let stdoutBytes = 0;
     let stderr = "";
     let overflowed = false;
     const timer = setTimeout(() => {
@@ -207,11 +358,12 @@ function runGitDiff(absoluteRoot: string, args: string[], timeoutMs: number): Pr
       rejectDiff(new CliError(EXIT.io, `git diff timed out after ${timeoutMs / 1000}s`));
     }, timeoutMs);
     child.stdout?.on("data", (chunk: Buffer) => {
-      if (stdout.length < MAX_BUFFER_BYTES) {
-        stdout += chunk.toString("utf8");
-      } else {
+      stdoutBytes += chunk.byteLength;
+      if (stdoutBytes > MAX_BUFFER_BYTES) {
         overflowed = true;
+        return;
       }
+      stdout += stdoutDecoder.write(chunk);
     });
     child.stderr?.on("data", (chunk: Buffer) => {
       stderr = (stderr + chunk.toString("utf8")).slice(-4_000);
@@ -230,7 +382,7 @@ function runGitDiff(absoluteRoot: string, args: string[], timeoutMs: number): Pr
         rejectDiff(new CliError(EXIT.io, "git diff output exceeded 32MB; narrow the base ref"));
         return;
       }
-      resolveDiff(stdout);
+      resolveDiff(stdout + stdoutDecoder.end());
     });
   });
 }

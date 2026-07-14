@@ -25,7 +25,8 @@ export function UnitRow(props: {
   const { toggleReviewUnitTick, addReviewComment, setReviewLit, selectReviewNode } = useBlueprintActions();
   const [hovered, setHovered] = useState(false);
   const state = checkStateOf(unit.fingerprint, tick);
-  const composerHere = composer !== null && composer.nodeId === unit.nodeId;
+  const isBaseOnly = unit.sourceSide === "base";
+  const composerHere = !isBaseOnly && composer !== null && composer.nodeId === unit.nodeId;
   const chip = kindChipText(unit.kind);
   const accent = accentForKind(unit.kind);
   return (
@@ -41,13 +42,23 @@ export function UnitRow(props: {
           setReviewLit(null);
         }}
       >
-        <button type="button" style={MAIN} title={`${unit.displayName} · ${unit.kind} — click to reveal on the graph`} onClick={() => selectReviewNode(unit.nodeId)}>
+        <button
+          type="button"
+          style={MAIN}
+          title={isBaseOnly
+            ? `${unit.displayName} · ${unit.kind} · deleted in this pull request — click to reveal on the graph`
+            : `${unit.displayName} · ${unit.kind} — click to reveal on the graph`}
+          onClick={() => selectReviewNode(unit.nodeId)}
+        >
           <span style={NAME}>{unit.displayName}</span>
           {chip !== null && <span style={{ ...KIND_CHIP, color: accent, borderColor: accent }}>{chip}</span>}
           {unit.isTest && <span style={TEST_CHIP}>test</span>}
+          {isBaseOnly && <span style={DELETED_CHIP} aria-label="Deleted in this pull request">deleted</span>}
           <span style={LOC}>:{unit.startLine}</span>
         </button>
-        <CommentButton count={drafts.length} active={composerHere} visible={hovered} onClick={() => onComposer(composerHere ? null : { path, nodeId: unit.nodeId })} />
+        {!isBaseOnly && (
+          <CommentButton count={drafts.length} active={composerHere} visible={hovered} onClick={() => onComposer(composerHere ? null : { path, nodeId: unit.nodeId })} />
+        )}
         <button
           type="button"
           style={{ ...TICK_BTN, color: TICK_COLOR[state] }}
@@ -69,3 +80,4 @@ const ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4
 const MAIN: React.CSSProperties = { flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 5, border: "none", background: "transparent", cursor: "pointer", font: "inherit", padding: "3px 0", textAlign: "left", ...NO_FOCUS_RING };
 const NAME: React.CSSProperties = { minWidth: 0, fontSize: 12, color: "#C9D1D9", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
 const LOC: React.CSSProperties = { fontFamily: MONO, fontSize: 10, color: "#5A6472", flexShrink: 0 };
+const DELETED_CHIP: React.CSSProperties = { flexShrink: 0, fontSize: 9, fontWeight: 700, color: "#F85149", border: "1px solid #6E3030", borderRadius: 4, padding: "0 4px" };

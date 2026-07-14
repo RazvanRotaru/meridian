@@ -36,6 +36,10 @@ export interface RepositoryAnalysisRequest {
   changedSince?: string;
   changedSinceTimeoutMs?: number;
   changedSinceGitExecutor?: GitDiffExecutor;
+  /** Internal extractor-selection hints for an intentionally empty immutable PR side. */
+  hintedFiles?: readonly string[];
+  /** Allow a deliberately empty immutable PR side to produce a valid zero-node artifact. */
+  allowEmpty?: boolean;
 }
 
 /** Analyze a repository with the fixed product profile and workspace auto-discovery. */
@@ -52,6 +56,8 @@ export function analyzeRepository(request: RepositoryAnalysisRequest): Promise<P
     changedSince: request.changedSince,
     changedSinceTimeoutMs: request.changedSinceTimeoutMs,
     changedSinceGitExecutor: request.changedSinceGitExecutor,
+    hintedFiles: request.hintedFiles,
+    allowEmpty: request.allowEmpty,
     targetName: request.targetName,
     vcs: request.vcs,
   });

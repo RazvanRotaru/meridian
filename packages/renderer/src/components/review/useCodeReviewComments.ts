@@ -17,11 +17,12 @@ export function commentableReviewLines(
   baseLine: number,
   code: string | null,
   enabled: boolean,
+  lineCount?: number,
 ): ReadonlySet<number> {
   if (!enabled || code === null || ranges.length === 0) {
     return NO_LINES;
   }
-  const endLine = baseLine + Math.max(code.split("\n").length - 1, 0);
+  const endLine = sourceEndLine(baseLine, code, lineCount);
   const lines = new Set<number>();
   for (const range of ranges) {
     const start = Math.max(baseLine, range.start);
@@ -38,12 +39,13 @@ export function useGitHubCommentableReviewLines(
   path: string | null,
   baseLine: number,
   code: string | null,
+  lineCount?: number,
 ): ReadonlySet<number> {
   const ranges = useBlueprint((state) => path === null ? NO_RANGES : (state.reviewCommentRangesByFile[path] ?? NO_RANGES));
   const enabled = useBlueprint((state) => state.prReviewed !== null && state.review !== null);
   return useMemo(
-    () => commentableReviewLines(ranges, baseLine, code, enabled),
-    [baseLine, code, enabled, ranges],
+    () => commentableReviewLines(ranges, baseLine, code, enabled, lineCount),
+    [baseLine, code, enabled, lineCount, ranges],
   );
 }
 
@@ -65,11 +67,12 @@ export function codeReviewComments(
   baseLine: number,
   code: string | null,
   visible: boolean,
+  lineCount?: number,
 ): readonly PrGitHubComment[] {
   if (!visible || paths === null || code === null) {
     return NO_COMMENTS;
   }
-  const endLine = baseLine + Math.max(code.split("\n").length - 1, 0);
+  const endLine = sourceEndLine(baseLine, code, lineCount);
   const matchesPath = typeof paths === "string"
     ? (comment: PrGitHubComment) => comment.path === paths
     : (comment: PrGitHubComment) => paths.includes(comment.path);
@@ -91,11 +94,12 @@ export function codeReviewDrafts(
   baseLine: number,
   code: string | null,
   active: boolean,
+  lineCount?: number,
 ): readonly ReviewComment[] {
   if (!active || paths === null || code === null) {
     return NO_DRAFTS;
   }
-  const endLine = baseLine + Math.max(code.split("\n").length - 1, 0);
+  const endLine = sourceEndLine(baseLine, code, lineCount);
   const matchesPath = typeof paths === "string"
     ? (draft: ReviewComment) => draft.path === paths
     : (draft: ReviewComment) => paths.includes(draft.path);
@@ -128,14 +132,15 @@ export function useCodeReviewComments(
   path: string | null,
   baseLine: number,
   code: string | null,
+  lineCount?: number,
 ): readonly PrGitHubComment[] {
   const discussion = useBlueprint((state) => state.prDiscussion);
   const visible = useBlueprint((state) => state.reviewCommentsVisible);
   const livePrReview = useBlueprint((state) => state.prReviewed !== null && state.review !== null);
   const paths = useReviewCommentPaths(path);
   return useMemo(
-    () => codeReviewComments(discussion?.comments ?? NO_COMMENTS, paths, baseLine, code, visible && livePrReview),
-    [baseLine, code, discussion, livePrReview, paths, visible],
+    () => codeReviewComments(discussion?.comments ?? NO_COMMENTS, paths, baseLine, code, visible && livePrReview, lineCount),
+    [baseLine, code, discussion, lineCount, livePrReview, paths, visible],
   );
 }
 
@@ -145,12 +150,17 @@ export function usePendingCodeReviewComments(
   path: string | null,
   baseLine: number,
   code: string | null,
+  lineCount?: number,
 ): readonly ReviewComment[] {
   const drafts = useBlueprint((state) => state.reviewComments);
   const reviewActive = useBlueprint((state) => state.review !== null);
   const paths = useReviewCommentPaths(path);
   return useMemo(
-    () => codeReviewDrafts(drafts, paths, baseLine, code, reviewActive),
-    [baseLine, code, drafts, paths, reviewActive],
+    () => codeReviewDrafts(drafts, paths, baseLine, code, reviewActive, lineCount),
+    [baseLine, code, drafts, lineCount, paths, reviewActive],
   );
+}
+
+function sourceEndLine(baseLine: number, code: string, lineCount: number | undefined): number {
+  return baseLine + (lineCount ?? code.split("\n").length) - 1;
 }

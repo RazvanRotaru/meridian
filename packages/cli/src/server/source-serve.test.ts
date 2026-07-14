@@ -5,7 +5,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ServerResponse } from "node:http";
@@ -17,6 +17,15 @@ let root: string;
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), "meridian-source-"));
   writeFileSync(join(root, "sample.ts"), "one\ntwo\nthree\nfour\nfive");
+  writeFileSync(join(root, "terminated.ts"), "one\ntwo\n");
+  writeFileSync(join(root, "crlf-terminated.ts"), "one\r\ntwo\r\n");
+  writeFileSync(join(root, "blank-tail.ts"), "one\ntwo\n\n");
+  writeFileSync(join(root, "empty.ts"), "");
+  writeFileSync(join(root, "one-blank-line.ts"), "\n");
+  writeFileSync(join(root, " spaced.ts "), "whitespace path");
+  writeFileSync(join(root, "oversized.ts"), "x");
+  truncateSync(join(root, "oversized.ts"), 32 * 1024 * 1024 + 1);
+  writeFileSync(join(root, "capped-boundary.ts"), `${"x".repeat(1_999_999)}\nrest`);
   writeFileSync(join(root, "big.ts"), Array.from({ length: 2500 }, (_, index) => `line ${index + 1}`).join("\n"));
 });
 
@@ -28,6 +37,7 @@ describe("readSourceSlice", () => {
       file: "sample.ts",
       startLine: 2,
       endLine: 4,
+      lineCount: 3,
       code: "two\nthree\nfour",
       truncated: false,
     });
@@ -39,11 +49,75 @@ describe("readSourceSlice", () => {
     expect(readSourceSlice(root, "sample.ts", "not-a-number", null)).toMatchObject({ startLine: 1 });
   });
 
-  it("caps the returned slice and flags it truncated", () => {
+  it("does not expose a phantom row for LF- or CRLF-terminated files", () => {
+    expect(readSourceSlice(root, "terminated.ts", null, null)).toMatchObject({
+      startLine: 1,
+      endLine: 2,
+      code: "one\ntwo",
+    });
+    expect(readSourceSlice(root, "crlf-terminated.ts", null, null)).toMatchObject({
+      startLine: 1,
+      endLine: 2,
+      code: "one\ntwo",
+    });
+  });
+
+  it("preserves an intentional blank final line", () => {
+    expect(readSourceSlice(root, "blank-tail.ts", null, null)).toMatchObject({
+      startLine: 1,
+      endLine: 3,
+      code: "one\ntwo\n",
+    });
+  });
+
+  it("distinguishes an empty file from a file containing one blank line", () => {
+    expect(readSourceSlice(root, "empty.ts", null, null)).toEqual({
+      file: "empty.ts",
+      startLine: 1,
+      endLine: 0,
+      lineCount: 0,
+      code: "",
+      truncated: false,
+    });
+    expect(readSourceSlice(root, "one-blank-line.ts", null, null)).toEqual({
+      file: "one-blank-line.ts",
+      startLine: 1,
+      endLine: 1,
+      lineCount: 1,
+      code: "",
+      truncated: false,
+    });
+  });
+
+  it("serves a later-line slice beyond the response byte budget boundary", () => {
+    expect(readSourceSlice(root, "capped-boundary.ts", "2", "2")).toMatchObject({
+      startLine: 2,
+      endLine: 2,
+      code: "rest",
+      truncated: false,
+    });
+  });
+
+  it("returns a normal file with more than 2,000 lines completely", () => {
     const slice = readSourceSlice(root, "big.ts", "1", "2500");
-    expect(slice.truncated).toBe(true);
-    expect(slice.endLine).toBe(2000);
-    expect(slice.code.split("\n")).toHaveLength(2000);
+    expect(slice.truncated).toBe(false);
+    expect(slice.endLine).toBe(2500);
+    expect(slice.code.split("\n")).toHaveLength(2500);
+    expect(slice.code).toContain("line 2500");
+  });
+
+  it("does not erase a later diff zone behind an arbitrary response-byte cap", () => {
+    const slice = readSourceSlice(root, "capped-boundary.ts", null, null);
+    expect(slice.truncated).toBe(false);
+    expect(slice.endLine).toBe(2);
+    expect(Buffer.byteLength(slice.code, "utf8")).toBeGreaterThan(2_000_000);
+    expect(slice.code.endsWith("\nrest")).toBe(true);
+  });
+
+  it("rejects an oversized untrusted file before reading it", () => {
+    expect(() => readSourceSlice(root, "oversized.ts", "1", "1")).toThrow(
+      expect.objectContaining({ status: 413 }),
+    );
   });
 
   it("rejects a `..` escape and an absolute path out of the root", () => {
@@ -110,6 +184,13 @@ describe("sendSource", () => {
     sendSource(response, root, new URLSearchParams({ file: "sample.ts", start: "2", end: "3" }));
     expect(captured.status).toBe(200);
     expect(JSON.parse(captured.body)).toMatchObject({ startLine: 2, endLine: 3, code: "two\nthree" });
+  });
+
+  it("preserves leading and trailing whitespace in a valid Git filename", () => {
+    const { response, captured } = fakeResponse();
+    sendSource(response, root, new URLSearchParams({ file: " spaced.ts " }));
+    expect(captured.status).toBe(200);
+    expect(JSON.parse(captured.body)).toMatchObject({ file: " spaced.ts ", code: "whitespace path" });
   });
 
   it("400s a missing file param and an escaping path, 404s a missing file", () => {

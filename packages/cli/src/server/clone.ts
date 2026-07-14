@@ -112,7 +112,7 @@ export function sanitizeSubdir(cloneDir: string, subdir?: string): string {
     throw new WebError(400, "source subfolder was not found in the repository");
   }
   if (!isPathWithin(root, candidate)) {
-    throw new WebError(400, "source subfolder escapes the repository");
+    throw new WebError(400, "source subfolder escapes the repository through a symbolic link");
   }
   return candidate;
 }

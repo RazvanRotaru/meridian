@@ -15,11 +15,13 @@ export interface PrAnalyzeRequest {
   headRef: string;
 }
 
-/** The "done" line's payload: the prepared graph id and the analyzed head commit (provenance —
- * a branch name can drift under a force-push, this SHA cannot; null from an older server). */
+/** The "done" payload: immutable graph ids and commit provenance for HEAD and its exact merge base.
+ * New comparison fields remain nullable while a browser can still be paired with an older server. */
 export interface PrAnalysisResult {
   graphId: string;
+  comparisonGraphId: string | null;
   headSha: string | null;
+  mergeBaseSha: string | null;
 }
 
 /** POST the analyze request and drain its NDJSON stream, returning the "done" line's payload. */
@@ -95,7 +97,12 @@ function applyLine(line: string, onStage: (stage: PrAnalyzeStage) => void): PrAn
   }
   if (parsed.stage === "done") {
     return typeof parsed.graphId === "string"
-      ? { graphId: parsed.graphId, headSha: typeof parsed.headSha === "string" && parsed.headSha.length > 0 ? parsed.headSha : null }
+      ? {
+          graphId: parsed.graphId,
+          comparisonGraphId: nonEmptyString(parsed.comparisonGraphId),
+          headSha: nonEmptyString(parsed.headSha),
+          mergeBaseSha: nonEmptyString(parsed.mergeBaseSha),
+        }
       : null;
   }
   if (parsed.stage === "error") {
@@ -109,7 +116,13 @@ interface AnalyzeLine {
   stage: PrAnalyzeStage | "done" | "error";
   message?: string;
   graphId?: string;
+  comparisonGraphId?: string;
   headSha?: string;
+  mergeBaseSha?: string;
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function parseLine(line: string): AnalyzeLine | null {

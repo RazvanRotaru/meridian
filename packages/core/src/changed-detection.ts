@@ -37,6 +37,44 @@ export interface ChangedLineSpan extends LineRange {
 export type ChangedLineKinds = Record<string, ChangedLineSpan[]>;
 
 /**
+ * One exact changed row from a unified diff, in patch order.
+ *
+ * Unlike `ChangedLineSpan`, this is lossless enough to render: additions carry their HEAD line,
+ * deletions carry their base line and the HEAD insertion cursor they appear immediately before.
+ * `beforeNewLine` is always 1-based; deletions at the top use 1 and deletions at EOF use
+ * `newFileLength + 1`.
+ */
+export interface ChangedDiffLine {
+  kind: "added" | "deleted";
+  oldLine: number | null;
+  newLine: number | null;
+  beforeNewLine: number;
+  text: string;
+  /** Git's marker immediately followed this changed row. */
+  noNewline?: boolean;
+}
+
+/** Exact ordered diff rows per file, keyed by the same root-relative path as node locations. */
+export type ChangedDiffLines = Record<string, ChangedDiffLine[]>;
+
+/** The normalized file-level vocabulary persisted from `git diff --name-status`. */
+export type ChangedFileManifestStatus = "added" | "modified" | "deleted" | "renamed";
+
+/**
+ * One entry in the exact changed-file manifest persisted by `--changed-since` analysis.
+ *
+ * This deliberately does not derive from line hunks: binary files, mode-only edits, pure renames,
+ * and fully deleted files can all have no new-side hunk while still being part of the change.
+ */
+export interface ChangedFileManifestEntry {
+  /** POSIX path relative to the extraction root; for a rename this is the new/HEAD path. */
+  path: string;
+  status: ChangedFileManifestStatus;
+  /** Renames only: the old/base path relative to the same extraction root. */
+  previousPath?: string;
+}
+
+/**
  * Return nodes with changed code tagged `"changed"`; untouched nodes pass through by reference.
  *
  * Two passes keep the tag MEANINGFUL rather than merely correct: declarations (functions, methods,
@@ -128,6 +166,52 @@ export function changedLineKindsFromExtensions(extensions: unknown): ChangedLine
   return kinds;
 }
 
+/**
+ * Read the lossless changed rows from `extensions.changedSince.diffLines` defensively.
+ * Malformed rows are skipped; malformed/missing top-level payloads yield null.
+ */
+export function changedDiffLinesFromExtensions(extensions: unknown): ChangedDiffLines | null {
+  const raw = (extensions as { changedSince?: { diffLines?: unknown } } | undefined)?.changedSince?.diffLines;
+  if (raw === null || raw === undefined || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const diffLines: ChangedDiffLines = {};
+  for (const [file, value] of Object.entries(raw)) {
+    if (!Array.isArray(value)) {
+      continue;
+    }
+    const rows = value.filter(isChangedDiffLine);
+    if (rows.length > 0) {
+      diffLines[normalizePath(file)] = rows;
+    }
+  }
+  return diffLines;
+}
+
+/**
+ * Read `extensions.changedSince.manifest` as one all-or-nothing, exact changed-file transaction.
+ *
+ * A partial manifest would be worse than no manifest for review completeness, so unlike the
+ * best-effort line-marking readers above, any malformed/duplicate entry invalidates the full list.
+ */
+export function changedFileManifestFromExtensions(extensions: unknown): ChangedFileManifestEntry[] | null {
+  const raw = (extensions as { changedSince?: { manifest?: unknown } } | undefined)?.changedSince?.manifest;
+  if (!Array.isArray(raw)) {
+    return null;
+  }
+  const manifest: ChangedFileManifestEntry[] = [];
+  const seenPaths = new Set<string>();
+  for (const value of raw) {
+    const entry = changedFileManifestEntry(value);
+    if (entry === null || seenPaths.has(entry.path)) {
+      return null;
+    }
+    seenPaths.add(entry.path);
+    manifest.push(entry);
+  }
+  return manifest;
+}
+
 /** The line delta for one node's file, normalized against windows/posix separators. */
 export function changedLineDeltaForNode(
   stats: ChangedLineStats,
@@ -210,6 +294,69 @@ function isChangedLineSpan(value: unknown): value is ChangedLineSpan {
     candidate.start <= candidate.end &&
     isChangedLineKind(candidate.kind)
   );
+}
+
+function isChangedDiffLine(value: unknown): value is ChangedDiffLine {
+  const candidate = value as {
+    kind?: unknown;
+    oldLine?: unknown;
+    newLine?: unknown;
+    beforeNewLine?: unknown;
+    text?: unknown;
+    noNewline?: unknown;
+  } | null;
+  if (
+    (candidate?.kind !== "added" && candidate?.kind !== "deleted")
+    || !isPositiveLine(candidate.beforeNewLine)
+    || typeof candidate.text !== "string"
+    || (candidate.noNewline !== undefined && typeof candidate.noNewline !== "boolean")
+  ) {
+    return false;
+  }
+  return candidate.kind === "added"
+    ? candidate.oldLine === null
+      && isPositiveLine(candidate.newLine)
+      && candidate.beforeNewLine === candidate.newLine
+    : isPositiveLine(candidate.oldLine) && candidate.newLine === null;
+}
+
+function changedFileManifestEntry(value: unknown): ChangedFileManifestEntry | null {
+  const candidate = value as { path?: unknown; status?: unknown; previousPath?: unknown } | null;
+  if (!isManifestPath(candidate?.path) || !isChangedFileManifestStatus(candidate.status)) {
+    return null;
+  }
+  if (candidate.status === "renamed") {
+    if (!isManifestPath(candidate.previousPath) || candidate.previousPath === candidate.path) {
+      return null;
+    }
+    return { path: candidate.path, status: candidate.status, previousPath: candidate.previousPath };
+  }
+  if (candidate.previousPath !== undefined) {
+    return null;
+  }
+  return { path: candidate.path, status: candidate.status };
+}
+
+function isChangedFileManifestStatus(value: unknown): value is ChangedFileManifestStatus {
+  return value === "added" || value === "modified" || value === "deleted" || value === "renamed";
+}
+
+function isManifestPath(value: unknown): value is string {
+  if (
+    typeof value !== "string"
+    || value.length === 0
+    || value.startsWith("/")
+    || value.includes("\\")
+    || value.includes("\0")
+    || /^[A-Za-z]:/.test(value)
+  ) {
+    return false;
+  }
+  return value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+}
+
+function isPositiveLine(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
 }
 
 function overlapsChange(node: GraphNode, changed: ChangedRanges): boolean {

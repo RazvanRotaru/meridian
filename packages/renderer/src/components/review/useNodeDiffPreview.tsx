@@ -4,7 +4,8 @@
  * and portals one fixed, interactive card to document.body. Hover uses a short dwell to avoid
  * fetching source while the pointer merely crosses the graph, plus a leave grace that lets the
  * pointer bridge the gap into the card and scroll it. Click previews stay pinned until another node
- * or the canvas is clicked. Loaded and in-flight views are cached per mounted review graph/node.
+ * or the canvas is clicked. Source payload reuse belongs to the store's immutable request cache, so
+ * hover and click cannot diverge through a second node-local cache that outlives a review revision.
  */
 
 import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type SyntheticEvent } from "react";
@@ -15,9 +16,7 @@ import { isSourceBackedNode } from "../../derive/sourceBackedNode";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { ReviewCodePreviewTrigger } from "../../state/reviewPreferences";
 import type { CodeView } from "../../state/store";
-import { CodeBlock } from "../CodeBlock";
-import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeKinds } from "../useChangedLines";
-import { useCodeReviewComments, useGitHubCommentableReviewLines, usePendingCodeReviewComments } from "./useCodeReviewComments";
+import { SourceDiffBody, useSourceDiffModel } from "../SourceDiffBody";
 
 const OPEN_DWELL_MS = 220;
 const CLOSE_GRACE_MS = 180;
@@ -124,7 +123,7 @@ export function useNodeDiffPreview(
   trigger: ReviewCodePreviewTrigger,
 ): NodeDiffPreviewControls {
   const index = useBlueprint((state) => state.index);
-  const reviewKey = useBlueprint((state) => state.review?.context.reviewKey ?? null);
+  const reviewRevision = useBlueprint((state) => state.prReviewRevision);
   const codeModalOpen = useBlueprint((state) => state.codeView?.mode === "modal");
   const { loadCodePreview } = useBlueprintActions();
   const [preview, setPreview] = useState<PreviewState | null>(null);
@@ -133,7 +132,6 @@ export function useNodeDiffPreview(
   const requestToken = useRef(0);
   const activeId = useRef<string | null>(null);
   const pendingId = useRef<string | null>(null);
-  const cache = useRef(new Map<string, Promise<CodeView | null>>());
 
   const clearOpenTimer = useCallback(() => {
     if (openTimer.current !== null) {
@@ -171,9 +169,8 @@ export function useNodeDiffPreview(
   }, [clearCloseTimer, clearOpenTimer]);
 
   useEffect(() => {
-    cache.current.clear();
     hideNow();
-  }, [reviewKey, hideNow]);
+  }, [reviewRevision, hideNow]);
   useEffect(() => {
     if (!enabled || codeModalOpen) {
       hideNow();
@@ -227,16 +224,11 @@ export function useNodeDiffPreview(
       const token = ++requestToken.current;
       activeId.current = graphNode.id;
       setPreview({ node: graphNode, anchor, bounds, loading: true, view: null, unavailable: false });
-      const key = `${reviewKey ?? "review"}|${graphNode.id}|${graphNode.location.startLine}:${graphNode.location.endLine ?? graphNode.location.startLine}`;
-      let pending = cache.current.get(key);
-      if (!pending) {
-        pending = loadCodePreview(graphNode).catch(() => null);
-        cache.current.set(key, pending);
-      }
+      // Do not retain a second component-local payload cache. The store already deduplicates source
+      // requests by immutable URL, while a mounted hook cache could survive a revision refresh and
+      // replay a stale CodeView for a node id that exists in both revisions.
+      const pending = loadCodePreview(graphNode).catch(() => null);
       void pending.then((view) => {
-        if (view?.error) {
-          cache.current.delete(key); // a transient source failure should be retryable on re-hover
-        }
         if (requestToken.current !== token || activeId.current !== graphNode.id) {
           return;
         }
@@ -254,7 +246,7 @@ export function useNodeDiffPreview(
     } else {
       open();
     }
-  }, [clearCloseTimer, clearOpenTimer, codeModalOpen, enabled, hideNow, index, loadCodePreview, reviewKey, scheduleHide]);
+  }, [clearCloseTimer, clearOpenTimer, codeModalOpen, enabled, hideNow, index, loadCodePreview, scheduleHide]);
 
   const onNodeMouseEnter = useCallback((event: ReactMouseEvent, flowNode: FlowNode) => {
     if (trigger === "hover") {
@@ -300,28 +292,23 @@ function NodeDiffPreviewCard(props: {
   onMouseLeave(): void;
 }) {
   const { preview } = props;
-  const { addReviewComment } = useBlueprintActions();
-  const hookChangedLines = useChangedLines(preview.node);
-  const hookChangedLineKinds = useLineChangeKinds(preview.node);
-  const hookSummary = useChangeSummary(preview.node);
-  const changedLines = preview.view?.changedLines ?? hookChangedLines;
-  const changedLineKinds = preview.view?.changedLineKinds ?? hookChangedLineKinds;
-  const summary = preview.view?.changedLineKinds
-    ? summarizeChangeKinds(preview.view.changedLineKinds)
-    : hookSummary;
+  const codeView: CodeView = preview.view ?? {
+    node: preview.node,
+    code: null,
+    loading: preview.loading,
+    error: preview.unavailable ? "Source preview is unavailable." : null,
+    mode: "inline",
+    baseLine: preview.node.location.startLine,
+    wholeFile: false,
+  };
+  const model = useSourceDiffModel(codeView);
   const placement = placeNodeDiffPreview(preview.anchor, preview.bounds);
-  const baseLine = preview.view?.baseLine ?? preview.node.location.startLine;
-  const code = preview.view?.code ?? null;
-  const reviewFile = preview.node.location.file;
-  const existingComments = useCodeReviewComments(reviewFile, baseLine, code);
-  const pendingComments = usePendingCodeReviewComments(reviewFile, baseLine, code);
-  const commentableLines = useGitHubCommentableReviewLines(reviewFile, baseLine, code);
-  const [activeCommentLine, setActiveCommentLine] = useState<number | null>(null);
-  useEffect(() => setActiveCommentLine(null), [preview.node.id, baseLine]);
-  const shownEnd = code === null
-    ? preview.node.location.endLine ?? baseLine
-    : baseLine + Math.max(code.split("\n").length - 1, 0);
-  const range = shownEnd === baseLine ? String(baseLine) : `${baseLine}-${shownEnd}`;
+  const shownEnd = codeView.code === null
+    ? preview.node.location.endLine ?? model.baseLine
+    : model.shownEnd;
+  const range = codeView.code !== null && model.sourceLineCount === 0
+    ? "empty"
+    : shownEnd === model.baseLine ? String(model.baseLine) : `${model.baseLine}-${shownEnd}`;
   const stop = (event: SyntheticEvent) => event.stopPropagation();
 
   return (
@@ -342,38 +329,15 @@ function NodeDiffPreviewCard(props: {
           <div style={PATH_STYLE} title={preview.node.location.file}>{preview.node.location.file}</div>
           <div style={NODE_STYLE} title={preview.node.qualifiedName}>{preview.node.displayName} · {range}</div>
         </div>
-        {summary ? (
-          <span style={SUMMARY_STYLE} aria-label={`${summary.added} added or modified lines, ${summary.deleted} deleted lines`}>
-            <span style={ADDED_STYLE}>+{summary.added}</span>
-            <span style={DELETED_STYLE}>−{summary.deleted}</span>
+        {model.summary ? (
+          <span style={SUMMARY_STYLE} aria-label={`${model.summary.added} added lines, ${model.summary.deleted} deleted lines`}>
+            <span style={ADDED_STYLE}>+{model.summary.added}</span>
+            <span style={DELETED_STYLE}>−{model.summary.deleted}</span>
           </span>
         ) : null}
       </header>
       <div style={BODY_STYLE}>
-        {preview.loading ? <div style={STATUS_STYLE}>Loading code…</div> : null}
-        {preview.unavailable ? <div style={STATUS_STYLE}>Source preview is unavailable.</div> : null}
-        {preview.view?.error ? <div style={ERROR_STYLE}>{preview.view.error}</div> : null}
-        {code !== null ? (
-          <CodeBlock
-            code={code}
-            maxHeight={Math.max(90, placement.maxHeight - 74)}
-            startLine={baseLine}
-            showGutter
-            changedLines={changedLines}
-            changedLineKinds={changedLineKinds}
-            commentableLines={commentableLines}
-            onLineClick={commentableLines.size > 0 ? setActiveCommentLine : undefined}
-            lineComposer={activeCommentLine === null || !commentableLines.has(activeCommentLine) ? null : {
-              line: activeCommentLine,
-              onAdd: (body) => addReviewComment(reviewFile, null, body, activeCommentLine),
-              onCancel: () => setActiveCommentLine(null),
-            }}
-            existingComments={existingComments}
-            pendingComments={pendingComments}
-            foldUnchanged
-          />
-        ) : null}
-        {preview.view?.truncated ? <div style={TRUNCATED_STYLE}>Snippet truncated by the server.</div> : null}
+        <SourceDiffBody model={model} maxHeight={Math.max(90, placement.maxHeight - 74)} showGutter />
       </div>
     </div>
   );
@@ -447,6 +411,3 @@ const SUMMARY_STYLE: React.CSSProperties = {
 const ADDED_STYLE: React.CSSProperties = { color: "#56C271" };
 const DELETED_STYLE: React.CSSProperties = { color: "#F0787C" };
 const BODY_STYLE: React.CSSProperties = { minHeight: 0, padding: 9, overflow: "hidden", background: "#10151B" };
-const STATUS_STYLE: React.CSSProperties = { padding: "12px 4px", color: "#7B8695", fontSize: 11.5 };
-const ERROR_STYLE: React.CSSProperties = { padding: "12px 4px", color: "#F0787C", fontSize: 11.5 };
-const TRUNCATED_STYLE: React.CSSProperties = { marginTop: 6, color: "#7B8695", fontSize: 10 };

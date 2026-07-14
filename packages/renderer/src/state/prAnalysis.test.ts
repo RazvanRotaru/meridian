@@ -41,13 +41,20 @@ describe("streamPrAnalysis", () => {
     expect(stages).toEqual(["clone", "checkout", "extract"]);
     expect(result.graphId).toBe("pr-abc");
     // An older server's done line has no headSha — the provenance is honestly unknown, not "".
-    expect(result.headSha).toBe(null);
+    expect(result).toEqual({ graphId: "pr-abc", comparisonGraphId: null, headSha: null, mergeBaseSha: null });
   });
 
-  it("carries the done line's headSha (the commit the server analyzed)", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ndjsonResponse(['{"stage":"done","graphId":"pr-abc","headSha":"abc1234def56789"}\n'])));
+  it("carries the done line's exact head and merge-base comparison provenance", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ndjsonResponse([
+      '{"stage":"done","graphId":"pr-abc","comparisonGraphId":"pr-base-def","headSha":"abc1234def56789","mergeBaseSha":"def5678abc12345"}\n',
+    ])));
     const result = await streamPrAnalysis("/api/pr/analyze", REQUEST, () => {});
-    expect(result).toEqual({ graphId: "pr-abc", headSha: "abc1234def56789" });
+    expect(result).toEqual({
+      graphId: "pr-abc",
+      comparisonGraphId: "pr-base-def",
+      headSha: "abc1234def56789",
+      mergeBaseSha: "def5678abc12345",
+    });
   });
 
   it("reassembles lines split across arbitrary chunk boundaries (final line unterminated)", async () => {

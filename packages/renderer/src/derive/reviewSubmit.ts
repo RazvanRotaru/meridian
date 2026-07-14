@@ -60,6 +60,13 @@ function reviewAnchor(
   if (hunks.length === 0) {
     return null;
   }
+  const unit = draft.nodeId === null ? undefined : unitOf(draft.nodeId, files, path);
+  // Base-only rows deliberately show declarations that no longer exist at HEAD. GitHub's review
+  // endpoint accepts only RIGHT/new-side anchors here, so even a coincidentally matching line
+  // number must not turn a deleted declaration comment into a comment on unrelated HEAD code.
+  if (unit?.sourceSide === "base") {
+    return null;
+  }
   const explicitLine = draft.line;
   if (explicitLine !== null) {
     if (draft.lineStale === true) {
@@ -76,7 +83,6 @@ function reviewAnchor(
   if (draft.nodeId === null) {
     return { path, line: hunks[0].start };
   }
-  const unit = unitOf(draft.nodeId, files, path);
   const overlap = unit && hunks.find((hunk) => rangesOverlap(unit.startLine, unit.endLine, hunk));
   // A vanished unit — or one that drifted off every hunk after a push — blocks; never guess a line.
   return overlap ? { path, line: Math.max(overlap.start, unit.startLine) } : null;

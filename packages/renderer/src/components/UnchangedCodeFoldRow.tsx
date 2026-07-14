@@ -7,7 +7,8 @@ export function UnchangedCodeFoldRow(props: {
   onToggle(): void;
 }) {
   const action = props.expanded ? "Collapse" : "Expand";
-  const label = `${action} ${props.fold.lineCount} unchanged lines`;
+  const unit = props.fold.lineCount === 1 ? "line" : "lines";
+  const label = `${action} ${props.fold.lineCount} unchanged ${unit}`;
   return (
     <tr data-unchanged-lines={`${props.fold.startLine}-${props.fold.endLine}`}>
       <td colSpan={props.gutterVisible ? 2 : 1} style={CELL_STYLE}>
@@ -23,7 +24,7 @@ export function UnchangedCodeFoldRow(props: {
           }}
         >
           <span aria-hidden="true">{props.expanded ? "▴" : "⋯"}</span>
-          <span>{props.fold.lineCount} unchanged lines</span>
+          <span>{props.fold.lineCount} unchanged {unit}</span>
           <span aria-hidden="true">{props.expanded ? "▴" : "⋯"}</span>
         </button>
       </td>

@@ -5,9 +5,9 @@
  * and any `..` (or absolute-path) escape is rejected before a single byte is read — the same
  * check `clone.ts` uses on a subdir. Because `web` clones arbitrary repos, containment is checked
  * on the *canonical* (symlink-resolved) paths — a symlink inside the clone that points outside it
- * cannot smuggle an external file out. The slice is line-based and doubly capped (file bytes and
- * returned lines) so a huge file can never blow up a response. `readSourceSlice` is pure so the
- * containment and slicing rules unit-test without a socket.
+ * cannot smuggle an external file out. The slice is line-based and exact: review callers fold the
+ * unchanged rows client-side, so a response cap here would silently erase a later diff zone.
+ * `readSourceSlice` is pure so the containment and slicing rules unit-test without a socket.
  */
 
 import { readFileSync, realpathSync, statSync } from "node:fs";
@@ -16,13 +16,13 @@ import type { ServerResponse } from "node:http";
 import { sendJson } from "./http-response";
 import { WebError } from "./web-error";
 
-const MAX_FILE_BYTES = 2_000_000;
-const MAX_SLICE_LINES = 2000;
+const SOURCE_FILE_MAX_BYTES = 32 * 1024 * 1024;
 
 export interface SourceSlice {
   file: string;
   startLine: number;
   endLine: number;
+  lineCount: number;
   code: string;
   truncated: boolean;
 }
@@ -49,11 +49,12 @@ function sendSourceError(response: ServerResponse, error: unknown): void {
 }
 
 function requireFile(file: string | null): string {
-  const trimmed = file?.trim();
-  if (!trimmed) {
+  // Git permits leading/trailing whitespace (and even an all-space basename). Presence, not a
+  // normalized spelling, is the API boundary; containment below handles hostile path syntax.
+  if (file === null || file.length === 0) {
     throw new WebError(400, "file query parameter is required");
   }
-  return trimmed;
+  return file;
 }
 
 /** Read `file` (resolved under `sourceRoot`) and return the inclusive `start..end` line range. */
@@ -63,17 +64,19 @@ export function readSourceSlice(
   start: string | null,
   end: string | null,
 ): SourceSlice {
-  const lines = readCappedLines(resolveWithinRoot(sourceRoot, file));
+  const lines = readSourceLines(resolveWithinRoot(sourceRoot, file));
+  if (lines.length === 0) {
+    return { file, startLine: 1, endLine: 0, lineCount: 0, code: "", truncated: false };
+  }
   const range = clampRange(start, end, lines.length);
   const requested = lines.slice(range.startLine - 1, range.endLine);
-  const truncated = requested.length > MAX_SLICE_LINES;
-  const slice = truncated ? requested.slice(0, MAX_SLICE_LINES) : requested;
   return {
     file,
     startLine: range.startLine,
-    endLine: range.startLine - 1 + slice.length,
-    code: slice.join("\n"),
-    truncated,
+    endLine: range.startLine - 1 + requested.length,
+    lineCount: requested.length,
+    code: requested.join("\n"),
+    truncated: false,
   };
 }
 
@@ -93,8 +96,15 @@ function resolveWithinRoot(sourceRoot: string, file: string): string {
     throw new WebError(404, "source file not found");
   }
   assertWithinRoot(real, root); // canonical gate: a symlink cannot smuggle a file out of the root
-  if (!statSync(real).isFile()) {
+  const stat = statSync(real);
+  if (!stat.isFile()) {
     throw new WebError(404, "source file not found");
+  }
+  // Never synchronously allocate/split an attacker-sized clone blob. Unlike the historical prefix
+  // truncation, this fails explicitly before reading and therefore cannot hide a later diff zone
+  // behind a plausible partial document. Ordinary multi-megabyte source remains supported.
+  if (stat.size > SOURCE_FILE_MAX_BYTES) {
+    throw new WebError(413, "source file exceeds the 32MB display limit");
   }
   return real;
 }
@@ -115,11 +125,19 @@ function assertWithinRoot(path: string, root: string): void {
   }
 }
 
-// Cap the bytes read so a pathologically large file cannot be pulled whole into a response.
-function readCappedLines(path: string): string[] {
-  const bytes = readFileSync(path);
-  const capped = bytes.length > MAX_FILE_BYTES ? bytes.subarray(0, MAX_FILE_BYTES) : bytes;
-  return capped.toString("utf8").split("\n");
+// Read the complete file before applying the response cap to the requested range. Capping the file
+// prefix would make a valid node near the end of a large file look empty (or, worse, like another
+// line), while the endpoint contract is specifically a line-addressed slice.
+function readSourceLines(path: string): string[] {
+  const source = readFileSync(path, "utf8");
+  if (source.length === 0) return [];
+  const lines = source.split(/\r?\n/);
+  // Splitting a complete newline-terminated file leaves an empty sentinel that is not a source
+  // row. Remove exactly that sentinel, so a second terminal newline still represents a blank line.
+  if (lines.length > 1 && lines.at(-1) === "") {
+    lines.pop();
+  }
+  return lines;
 }
 
 // Missing/NaN bounds default to the whole file; the range is then confined to 1..totalLines with

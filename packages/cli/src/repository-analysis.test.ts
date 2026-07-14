@@ -19,6 +19,8 @@ describe("canonical repository analysis", () => {
       cwd: "/repo",
       targetName: "repo",
       changedSince: "origin/main",
+      hintedFiles: ["src/app.ts", "workers/job.py"],
+      allowEmpty: true,
     });
 
     expect(Object.isFrozen(REPOSITORY_ANALYSIS_POLICY)).toBe(true);
@@ -35,6 +37,8 @@ describe("canonical repository analysis", () => {
       changedSince: "origin/main",
       changedSinceTimeoutMs: undefined,
       changedSinceGitExecutor: undefined,
+      hintedFiles: ["src/app.ts", "workers/job.py"],
+      allowEmpty: true,
       targetName: "repo",
       vcs: undefined,
     });

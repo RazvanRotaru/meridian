@@ -4,8 +4,10 @@
  * count is bounded so a pathological account can never turn one sign-in into an unbounded crawl.
  */
 
-import { describe, expect, it } from "vitest";
-import { createGitHubClient, DEFAULT_GITHUB_CLIENT_ID, resolveGitHubClientId } from "./github";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createGitHubClient, DEFAULT_GITHUB_CLIENT_ID, fetchFileAtRef, resolveGitHubClientId } from "./github";
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("resolveGitHubClientId", () => {
   it("always resolves a usable id and preserves override precedence", () => {
@@ -14,6 +16,66 @@ describe("resolveGitHubClientId", () => {
     expect(resolveGitHubClientId("Iv1.cli", "Iv1.environment")).toBe("Iv1.cli");
   });
 });
+
+describe("fetchFileAtRef", () => {
+  it("removes only the terminal line ending from complete GitHub file content", async () => {
+    stubContents("one\ntwo\n");
+    await expect(fileAtRef()).resolves.toEqual({ code: "one\ntwo", truncated: false, lineCount: 2 });
+
+    stubContents("one\r\ntwo\r\n");
+    await expect(fileAtRef()).resolves.toEqual({ code: "one\r\ntwo", truncated: false, lineCount: 2 });
+
+    stubContents("one\ntwo\n\n");
+    await expect(fileAtRef()).resolves.toEqual({ code: "one\ntwo\n", truncated: false, lineCount: 3 });
+  });
+
+  it("distinguishes an empty file from a file containing one blank line", async () => {
+    stubContents("");
+    await expect(fileAtRef()).resolves.toEqual({ code: "", truncated: false, lineCount: 0 });
+
+    stubContents("\n");
+    await expect(fileAtRef()).resolves.toEqual({ code: "", truncated: false, lineCount: 1 });
+
+    stubContents("\r\n");
+    await expect(fileAtRef()).resolves.toEqual({ code: "", truncated: false, lineCount: 1 });
+  });
+
+  it("reports zero visible rows when GitHub omits inline content", async () => {
+    vi.stubGlobal("fetch", (async () => new Response(JSON.stringify({ encoding: "none" }), { status: 200 })) as typeof fetch);
+
+    await expect(fileAtRef()).resolves.toEqual({ code: "", truncated: true, lineCount: 0 });
+  });
+
+  it("does not strip a newline that lands exactly at the byte cap", async () => {
+    stubContents(`${"x".repeat(1_999_999)}\nrest`);
+    const result = await fileAtRef();
+    expect(result.truncated).toBe(true);
+    expect(result.code).toHaveLength(2_000_000);
+    expect(result.code.endsWith("\n")).toBe(true);
+    expect(result.lineCount).toBe(2);
+  });
+
+  it("does not fabricate a replacement character when the byte cap bisects UTF-8", async () => {
+    const prefix = "x".repeat(1_999_999);
+    stubContents(`${prefix}😀tail`);
+    const result = await fileAtRef();
+    expect(result.truncated).toBe(true);
+    expect(result.code).toBe(prefix);
+    expect(result.code).not.toContain("�");
+    expect(result.lineCount).toBe(1);
+  });
+});
+
+function stubContents(content: string): void {
+  vi.stubGlobal("fetch", (async () => new Response(JSON.stringify({
+    encoding: "base64",
+    content: Buffer.from(content).toString("base64"),
+  }), { status: 200 })) as typeof fetch);
+}
+
+function fileAtRef() {
+  return fetchFileAtRef({ owner: "org", repo: "repo", ref: "head-sha", path: "src/file.ts" });
+}
 
 function repoPage(count: number, offset: number): unknown[] {
   return Array.from({ length: count }, (_unused, index) => ({ full_name: `org/repo-${offset + index}` }));

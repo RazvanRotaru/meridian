@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  changedDiffLinesFromExtensions,
+  changedFileManifestFromExtensions,
   changedLineDeltaForNode,
   changedLineKindsFromExtensions,
   changedLineKindsWithin,
@@ -63,6 +65,47 @@ describe("tagChangedNodes", () => {
   it("returns everything unchanged for an empty diff", () => {
     const nodes = [MODULE, ALPHA];
     expect(tagChangedNodes(nodes, {})).toEqual(nodes);
+  });
+});
+
+describe("changedFileManifestFromExtensions", () => {
+  it("round-trips the complete file manifest, including a rename's base path", () => {
+    const manifest = [
+      { path: "src/new.ts", status: "renamed", previousPath: "src/old.ts" },
+      { path: "assets/logo.png", status: "modified" },
+      { path: "src/gone.ts", status: "deleted" },
+      { path: "src/new-file.ts", status: "added" },
+    ];
+
+    expect(changedFileManifestFromExtensions({ changedSince: { manifest } })).toEqual(manifest);
+    expect(changedFileManifestFromExtensions({ changedSince: { manifest: [] } })).toEqual([]);
+  });
+
+  it("fails the whole manifest closed on malformed, duplicate, or inconsistent entries", () => {
+    expect(changedFileManifestFromExtensions(undefined)).toBeNull();
+    expect(changedFileManifestFromExtensions({ changedSince: { manifest: {} } })).toBeNull();
+    expect(changedFileManifestFromExtensions({
+      changedSince: { manifest: [{ path: "src/a.ts", status: "renamed" }] },
+    })).toBeNull();
+    expect(changedFileManifestFromExtensions({
+      changedSince: { manifest: [{ path: "src/a.ts", status: "modified", previousPath: "src/old.ts" }] },
+    })).toBeNull();
+    expect(changedFileManifestFromExtensions({
+      changedSince: {
+        manifest: [
+          { path: "src/a.ts", status: "modified" },
+          { path: "src/a.ts", status: "deleted" },
+        ],
+      },
+    })).toBeNull();
+    expect(changedFileManifestFromExtensions({
+      changedSince: { manifest: [{ path: "bad\0path.ts", status: "added" }] },
+    })).toBeNull();
+    for (const path of ["/absolute.ts", "C:/absolute.ts", "../escape.ts", "src/../escape.ts", "src\\win.ts", "src//a.ts", "./src/a.ts"]) {
+      expect(changedFileManifestFromExtensions({
+        changedSince: { manifest: [{ path, status: "modified" }] },
+      })).toBeNull();
+    }
   });
 });
 
@@ -137,6 +180,49 @@ describe("changedLineKindsFromExtensions", () => {
     };
     expect(changedLineKindsFromExtensions(mixed)).toEqual({
       "src/a.ts": [{ start: 1, end: 1, kind: "added" }],
+    });
+  });
+});
+
+describe("changedDiffLinesFromExtensions", () => {
+  it("round-trips exact ordered add/delete rows and normalizes file separators", () => {
+    const extensions = {
+      changedSince: {
+        diffLines: {
+          "src\\a.ts": [
+            { kind: "deleted", oldLine: 4, newLine: null, beforeNewLine: 4, text: "old", noNewline: true },
+            { kind: "added", oldLine: null, newLine: 4, beforeNewLine: 4, text: "new" },
+          ],
+        },
+      },
+    };
+    expect(changedDiffLinesFromExtensions(extensions)).toEqual({
+      "src/a.ts": [
+        { kind: "deleted", oldLine: 4, newLine: null, beforeNewLine: 4, text: "old", noNewline: true },
+        { kind: "added", oldLine: null, newLine: 4, beforeNewLine: 4, text: "new" },
+      ],
+    });
+  });
+
+  it("yields null without diffLines and skips malformed rows and entries", () => {
+    expect(changedDiffLinesFromExtensions(undefined)).toBeNull();
+    expect(changedDiffLinesFromExtensions({ changedSince: { files: {} } })).toBeNull();
+    const mixed = {
+      changedSince: {
+        diffLines: {
+          "src/a.ts": [
+            { kind: "added", oldLine: null, newLine: 1, beforeNewLine: 1, text: "ok" },
+            { kind: "deleted", oldLine: null, newLine: null, beforeNewLine: 1, text: "bad" },
+            { kind: "added", oldLine: null, newLine: 0, beforeNewLine: 0, text: "bad" },
+            { kind: "added", oldLine: null, newLine: 2, beforeNewLine: 3, text: "bad" },
+            { kind: "added", oldLine: null, newLine: 3, beforeNewLine: 3, text: "bad", noNewline: "yes" },
+          ],
+          "src/b.ts": "junk",
+        },
+      },
+    };
+    expect(changedDiffLinesFromExtensions(mixed)).toEqual({
+      "src/a.ts": [{ kind: "added", oldLine: null, newLine: 1, beforeNewLine: 1, text: "ok" }],
     });
   });
 });

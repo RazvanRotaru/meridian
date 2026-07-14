@@ -1,9 +1,9 @@
-import type { ChangedLineSpan, LineRange } from "@meridian/core";
+import type { ChangedDiffLine, ChangedLineSpan, LineRange } from "@meridian/core";
 
 export type PrsTab = "open" | "closed";
 export type PrReviewSubmissionEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
 
-/** One unified-diff hunk's old/new line spans — maps a node's base line to its PR-head line. */
+/** One exact edit run's old/new spans; an empty side starts at its 1-based next-row cursor. */
 export interface LineEdit {
   oldStart: number;
   oldLines: number;
@@ -37,10 +37,16 @@ export interface PrChangedFile {
   hunks?: LineRange[];
   /** Base-side (old) tight changed ranges — base-graph node marking (avoids spill onto the next unit). */
   oldHunks?: LineRange[];
-  /** Per-hunk old/new spans, for mapping a node's base span to its position in the PR head file. */
+  /** Per-edit-run old/new spans, for mapping a node's base span to its position in the PR head file. */
   edits?: LineEdit[];
+  /** GitHub's context-padded U3 header ranges, retained only for review-comment validation. */
+  contextHunks?: LineRange[];
   /** Head-relative added/modified line spans (from the patch body) — the code panel's exact green/gold. */
   kinds?: ChangedLineSpan[];
+  /** Exact ordered +/- rows from the canonical local/GitHub unified-diff parser. */
+  diffLines?: ChangedDiffLine[];
+  /** Whether the patch body is complete and agrees with GitHub's file-level +/- totals. */
+  diffComplete?: boolean;
   /** Text removed by the patch, grouped by consecutive deletion run and anchored after a HEAD line. */
   removed?: Array<{ afterNewLine: number; lines: string[] }>;
   /** The patch carried more than the per-file cap of removed-line text. */
