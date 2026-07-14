@@ -138,7 +138,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     const codePreview = page.getByRole("dialog", { name: /^Code preview for / });
     await codePreview.getByText("src/pricing/pricingService.ts", { exact: true }).waitFor();
     await codePreview.getByText("export class PricingService {", { exact: true }).waitFor();
-    await page.mouse.move(0, 0);
+    await page.getByText("Files changed", { exact: true }).hover();
     await codePreview.waitFor({ state: "detached" });
 
     const expansionParam = new URL(page.url()).searchParams.get("mexp");
