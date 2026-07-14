@@ -169,12 +169,12 @@ function leafSize(node: VisibleModuleNode): { width: number; height: number } {
   if (node.kind === "file") {
     return fileSize(node.data as ModuleCardData);
   }
-  return groupSize(node.data as ModuleGroupData, node.kind);
+  return groupCardSize(node.data as ModuleGroupData, node.kind);
 }
 
 /** A package/directory group card: chevron + name in the header, `N files` + `uses N used by N` on
  * the meta row below — the box fits whichever of the two lines is wider. */
-function groupSize(data: ModuleGroupData, kind: string): { width: number; height: number } {
+export function groupCardSize(data: ModuleGroupData, kind: string): { width: number; height: number } {
   const header = (data.isContainer ? CHEVRON_WIDTH + HEADER_GAP : 0) + kindChipWidth(kind) + HEADER_GAP + monoTextWidth(data.label, 13);
   const meta = groupMetaWidth(data);
   const chips = commonsChipsWidth((data as { commonsChips?: string[] }).commonsChips);

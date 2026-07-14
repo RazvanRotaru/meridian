@@ -20,7 +20,7 @@ import type { Edge, Node } from "@xyflow/react";
 import { placeMinimalNodes, FILE_WIDTH, FILE_HEIGHT, type PlacedRect } from "./minimalPlacement";
 import { reflowMinimalFiles } from "./minimalReflow";
 import { arrangeMinimalCards } from "./minimalArrange";
-import { layoutModuleTree } from "./moduleLevelLayout";
+import { groupCardSize, layoutModuleTree } from "./moduleLevelLayout";
 import { placeGhostBands } from "./ghostBandPlacement";
 import type { MinimalSubgraphEdge, MinimalSubgraphNode, MinimalSubgraphSpec, MinimalTier } from "../derive/minimalSubgraph";
 import type { MinimalExpansion } from "../derive/minimalExpansion";
@@ -58,6 +58,7 @@ export async function layoutMinimalSubgraph(
   arrange = false,
   relationPolicy: LensRelationPolicy = MAP_RELATION_POLICY,
   groupExpansions: readonly MinimalRollupLayoutExpansion[] = [],
+  sourceGroupNodes: readonly Node[] = [],
 ): Promise<{ nodes: Node[]; edges: Edge[] }> {
   if (spec.nodes.length === 0) {
     return { nodes: [], edges: [] };
@@ -74,6 +75,11 @@ export async function layoutMinimalSubgraph(
     ...spec.nodes.filter((node) => node.tier !== null && !groupNodeIds.has(node.id)),
     ...groupRootCards(groupExpansions),
   ];
+  const sourceGroups = new Map(
+    sourceGroupNodes
+      .filter((node) => node.type === "package" || node.type === "serviceDomain")
+      .map((node) => [node.id, node]),
+  );
   const expansionOwner = expansionOwnerByNode(laidByRoot);
   // The map-mirror still grows along imports, matching the Map's own placement substrate. Re-arrange
   // uses every INTERNAL visible relation: valid artifacts (including the bundled sample) may carry
@@ -92,13 +98,14 @@ export async function layoutMinimalSubgraph(
   // it no anchor and stacks every card at one x-coordinate. In that case use the same canonical ELK
   // path as Rearrange. A later promotion can still grow a genuine map mirror from any retained anchor.
   const hasMirrorAnchor = cards.some((card) => basePositions[card.id] !== undefined);
-  // Mirror path overrides only expanded frames and group summary cards: captured FILE cards keep their
-  // exact map footprint, while a package member must always use its own 300×60 summary-card footprint.
-  // Arrange path needs every card's real size so ELK reserves the right footprint.
+  // Mirror path overrides expanded frames and group cards: captured FILE cards keep their exact map
+  // footprint, while source-backed packages reuse the Map's canonical content-sized footprint.
+  // Source-less review rollups retain their compact summary-card fallback. Arrange likewise needs each
+  // card's real size so ELK reserves the right footprint.
   const placement = arrange || !hasMirrorAnchor
-    ? await arrangeMinimalCards(cards.map((card) => card.id), cardSizes(cards, laidByRoot), arrangeEdges)
-    : await mirrorPlacement(cards, importEdges, basePositions, mirrorSizeOverrides(cards, laidByRoot), laidByRoot.size > 0);
-  const { nodes, edges } = emitCards(cards, placement, laidByRoot);
+    ? await arrangeMinimalCards(cards.map((card) => card.id), cardSizes(cards, laidByRoot, sourceGroups), arrangeEdges)
+    : await mirrorPlacement(cards, importEdges, basePositions, mirrorSizeOverrides(cards, laidByRoot, sourceGroups), laidByRoot.size > 0);
+  const { nodes, edges } = emitCards(cards, placement, laidByRoot, sourceGroups);
   const banded = ghostSatellites(spec, nodes);
   const placedIds = new Set([...nodes, ...banded].map((node) => node.id));
   const wires = spec.edges
@@ -213,30 +220,45 @@ function ghostSatellites(spec: MinimalSubgraphSpec, coreNodes: Node[]): Node[] {
   return placeGhostBands(ghosts, wires, coreNodes);
 }
 
-// A group (package) leaf card renders wider/taller than a file card; size it so both placement paths
-// reserve its real footprint (else neighbours crowd it).
+// Source-less review summaries retain their compact historical footprint. Ordinary extracted groups
+// use the source Map's canonical content measurement below.
 const GROUP_WIDTH = 300;
 const GROUP_HEIGHT = 60;
 
 /** The rendered size of every leaf card: an expanded file's ELK frame size, else a group card's wider
  * package box, else the file-card default. Feeds both placement paths so spacing matches the render. */
-function cardSizes(cards: MinimalSubgraphNode[], laidByRoot: Map<string, LaidExpansion>): Record<string, { width: number; height: number }> {
+function cardSizes(
+  cards: MinimalSubgraphNode[],
+  laidByRoot: Map<string, LaidExpansion>,
+  sourceGroups: ReadonlyMap<string, Node>,
+): Record<string, { width: number; height: number }> {
   const frames = frameSizes(laidByRoot);
   const sizes: Record<string, { width: number; height: number }> = {};
   for (const card of cards) {
-    sizes[card.id] = frames[card.id] ?? (card.kind === "group" ? { width: GROUP_WIDTH, height: GROUP_HEIGHT } : { width: FILE_WIDTH, height: FILE_HEIGHT });
+    const sourceGroup = card.kind === "group" ? sourceGroups.get(card.id) : undefined;
+    sizes[card.id] = frames[card.id]
+      ?? (sourceGroup === undefined
+        ? (card.kind === "group" ? { width: GROUP_WIDTH, height: GROUP_HEIGHT } : { width: FILE_WIDTH, height: FILE_HEIGHT })
+        : groupCardSize(sourceGroup.data as ModuleGroupData, sourceGroup.type ?? "package"));
   }
   return sizes;
 }
 
-/** The map-mirror keeps captured FILE geometry byte-for-byte, but an overlay group is always the
- * package summary card (not whatever footprint its source map happened to use). Expanded files
- * retain their ELK frame override. */
-function mirrorSizeOverrides(cards: MinimalSubgraphNode[], laidByRoot: Map<string, LaidExpansion>): Record<string, { width: number; height: number }> {
+/** The map-mirror keeps captured FILE geometry byte-for-byte and reuses the Map's canonical group
+ * footprint when a source contract exists. Source-less review summaries keep their compact fallback;
+ * expanded files/groups retain their ELK frame override. */
+function mirrorSizeOverrides(
+  cards: MinimalSubgraphNode[],
+  laidByRoot: Map<string, LaidExpansion>,
+  sourceGroups: ReadonlyMap<string, Node>,
+): Record<string, { width: number; height: number }> {
   const sizes = frameSizes(laidByRoot);
   for (const card of cards) {
     if (card.kind === "group" && sizes[card.id] === undefined) {
-      sizes[card.id] = { width: GROUP_WIDTH, height: GROUP_HEIGHT };
+      const sourceGroup = sourceGroups.get(card.id);
+      sizes[card.id] = sourceGroup === undefined
+        ? { width: GROUP_WIDTH, height: GROUP_HEIGHT }
+        : groupCardSize(sourceGroup.data as ModuleGroupData, sourceGroup.type ?? "package");
     }
   }
   return sizes;
@@ -309,6 +331,7 @@ function emitCards(
   cards: MinimalSubgraphNode[],
   placement: Record<string, PlacedRect>,
   laidByRoot: Map<string, LaidExpansion>,
+  sourceGroups: ReadonlyMap<string, Node>,
 ): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
@@ -322,7 +345,7 @@ function emitCards(
       nodes.push(...anchorExpansion(laid.nodes, card.id, card.tier, rect));
       edges.push(...laid.edges);
     } else if (card.kind === "group") {
-      nodes.push(toGroupCardNode(card, rect));
+      nodes.push(toGroupCardNode(card, rect, sourceGroups.get(card.id)));
     } else if (card.kind === "file") {
       nodes.push(toFileNode(card, rect));
     } else {
@@ -367,16 +390,21 @@ function toExactCodeNode(node: MinimalSubgraphNode, rect: PlacedRect): Node {
   };
 }
 
-// A group member is the Map's own `package` card at an absolute position — ONE card, never a frame
-// of files. `readOnly` hides the (unmeaningful in a subgraph) coupling counts. Expandability is
-// already carried by the ordinary ModuleGroupData contract; the shared chevron owns disclosure.
-function toGroupCardNode(node: MinimalSubgraphNode, rect: PlacedRect): Node {
+// A source-backed group keeps the Map's exact node type/data contract at its minimal-graph position;
+// only the overlay tier is added. Source-less review rollups retain the compact read-only summary.
+// Expanded groups bypass this leaf emission and use their canonical detached Map subtree above.
+function toGroupCardNode(node: MinimalSubgraphNode, rect: PlacedRect, sourceNode: Node | undefined): Node {
+  const sourceGroup = sourceNode?.type === "package" || sourceNode?.type === "serviceDomain"
+    ? sourceNode
+    : undefined;
   return {
     id: node.id,
-    type: "package",
+    type: sourceGroup?.type ?? "package",
     position: { x: rect.x, y: rect.y },
     style: { width: rect.width, height: rect.height },
-    data: { ...(node.data as ModuleGroupData), readOnly: true, tier: node.tier },
+    data: sourceGroup === undefined
+      ? { ...(node.data as ModuleGroupData), readOnly: true, tier: node.tier }
+      : { ...sourceGroup.data, isExpanded: false, tier: node.tier },
   };
 }
 
