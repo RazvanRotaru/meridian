@@ -140,7 +140,7 @@ import {
 import { deriveReviewData, applyTick, type ReviewData } from "../derive/reviewData";
 import { readReviewProgress, writeReviewProgress, type ReviewComment, type ReviewProgress, type ReviewTick } from "./reviewTicksPref";
 import { reviewContextFromPrFiles } from "../derive/prReviewContext";
-import { applyFileToggle, applyUnitTick, isReviewTestPath, type ReviewFileRow } from "../derive/reviewFiles";
+import { applyFilesToggle, applyFileToggle, applyUnitTick, isReviewTestPath, type ReviewFileRow } from "../derive/reviewFiles";
 import { deriveReviewProjection } from "../derive/reviewProjection";
 import { buildReviewSubmission } from "../derive/reviewSubmit";
 import {
@@ -728,6 +728,7 @@ export interface BlueprintState {
   focusReviewFile(path: string): void;
   toggleReviewUnitTick(nodeId: string): void;
   toggleReviewFileViewed(path: string): void;
+  toggleReviewFilesViewed(paths: readonly string[]): void;
   addReviewComment(path: string, nodeId: string | null, body: string, line?: number | null): void;
   updateReviewComment(id: string, body: string): void;
   deleteReviewComment(id: string): void;
@@ -3918,6 +3919,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       const next = applyFileToggle(file, reviewUnitTicks, reviewFileTicks, new Date().toISOString());
+      set({ reviewUnitTicks: next.unitTicks, reviewFileTicks: next.fileTicks });
+      persistReviewProgress(get());
+    },
+
+    // Folder markers bulk-toggle exactly the changed descendant files represented by that folder.
+    // Persist once so the graph marker and review rail advance as one atomic progress update.
+    toggleReviewFilesViewed(paths) {
+      const { reviewFiles, reviewUnitTicks, reviewFileTicks } = get();
+      const selectedPaths = new Set(paths);
+      const files = reviewFiles.filter((candidate) => selectedPaths.has(candidate.path));
+      if (files.length === 0) {
+        return;
+      }
+      const next = applyFilesToggle(files, reviewUnitTicks, reviewFileTicks, new Date().toISOString());
       set({ reviewUnitTicks: next.unitTicks, reviewFileTicks: next.fileTicks });
       persistReviewProgress(get());
     },
