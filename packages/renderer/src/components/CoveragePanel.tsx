@@ -119,8 +119,8 @@ function LegendItem(props: { color: string; label: string }) {
 function NoTests() {
   return (
     <div style={MUTED_STYLE}>
-      No test code in this graph. If the project has tests, regenerate the artifact without{" "}
-      <code>--exclude-tests</code>.
+      No test code was discovered in this graph. Check that the project&apos;s tests are inside its
+      workspace packages.
     </div>
   );
 }

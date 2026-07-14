@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { GraphArtifact } from "@meridian/core";
-import { extractToArtifact } from "../extract-pipeline";
+import { analyzeRepository } from "../repository-analysis";
 import { resolveSource } from "./clone";
 import { cachedRemoteGraph, webAnalysisKey } from "./web-cache";
 import { artifactId, remoteArtifactId } from "./web-request";
@@ -79,14 +79,10 @@ async function generateLocal(ctx: Context, request: GenerateRequest, onStage: St
   let retained = false;
   try {
     await onStage("extract");
-    const { artifact, warnings } = await extractToArtifact({
+    const { artifact, warnings } = await analyzeRepository({
       absoluteRoot: source.dir,
       cwd: source.dir,
       language: request.lang,
-      depth: "function",
-      includeExternal: true,
-      materializeBoundary: true,
-      valueRefs: process.env.MERIDIAN_VALUE_REFS === "1",
       targetName: source.target,
     });
     const id = artifactId(request);
@@ -117,5 +113,5 @@ function registerGraph(
 ): void {
   ctx.graphs.set(id, artifact);
   ctx.sourceRoots.set(id, sourceDir);
-  ctx.sources.set(id, artifactSourceFor(request));
+  ctx.sources.set(id, artifactSourceFor(request, artifact.target.language));
 }

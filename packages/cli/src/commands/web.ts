@@ -1,13 +1,14 @@
 /**
- * `web`: serve a local UI that clones/extracts/renders any repo's call graph in the browser.
+ * `web`: the single app launcher for repository analysis and existing graph artifacts.
  *
- * Extraction always runs here in Node (ts-morph never touches a browser); the page only POSTs a
- * source and then loads the UNCHANGED renderer bundle against the resulting in-memory graph. The
- * pure server factory lives in `server/web-server`; this command only binds it and takes it live.
+ * Repository extraction always runs in Node (ts-morph never touches a browser); the page only
+ * POSTs a source and loads the renderer against the resulting in-memory graph. A file source uses
+ * the existing-artifact server through the same public command.
  */
 
+import { statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { resolveCwd } from "../paths";
+import { resolveAgainst, resolveCwd } from "../paths";
 import { Reporter } from "../reporter";
 import type { GlobalOptions } from "../reporter";
 import { createWebServer } from "../server/web-server";
@@ -15,6 +16,7 @@ import { createGitHubClient, resolveGitHubClientId } from "../server/github";
 import type { GitHubUser } from "../server/github-parse";
 import { resolveGhCliToken } from "../server/gh-cli-token";
 import { serve } from "../server/serve";
+import { runView } from "./view";
 
 export interface WebOptions extends GlobalOptions {
   port: number;
@@ -22,11 +24,18 @@ export interface WebOptions extends GlobalOptions {
   open: boolean;
   githubClientId?: string;
   refreshCache?: boolean;
+  overlay?: string;
+  env?: string;
+  sourceRoot?: string;
+  testCoverage?: string;
 }
 
 export async function runWeb(source: string | undefined, options: WebOptions): Promise<void> {
-  const reporter = new Reporter(options);
   const cwd = resolveCwd(options.cwd);
+  if (source && isFile(resolveAgainst(cwd, source))) {
+    return runView(source, options);
+  }
+  const reporter = new Reporter(options);
   const githubClientId = resolveGitHubClientId(options.githubClientId, process.env.MERIDIAN_GITHUB_CLIENT_ID);
   const fallback = await resolveFallbackAuth(githubClientId, reporter);
   const server = createWebServer({
@@ -44,6 +53,14 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
     { host: options.host, startPort: options.port, openBrowser: options.open, label: "Blueprint web UI" },
     reporter,
   );
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /**

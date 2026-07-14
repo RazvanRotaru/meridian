@@ -93,6 +93,9 @@ a depth-1 re-root couldn't show real nesting. The final model (`d43ac44`) collap
 
 ## Autopilot extraction recipe (the reusable, hard-won part)
 
+> **Superseded:** these commands record the original spike. Current product generation always uses
+> canonical workspace discovery; do not pass a root or combined tsconfig.
+
 Autopilot (`UiPath/Autopilot`) is a multi-language monorepo of ~10 loosely-federated npm roots.
 Getting a correct TS import graph out of it:
 

@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { SCHEMA_VERSION } from "@meridian/core";
 import type { GraphArtifact } from "@meridian/core";
-import { extractToArtifact } from "../extract-pipeline";
+import {
+  analyzeRepository,
+  REPOSITORY_ANALYSIS_POLICY,
+  REPOSITORY_ANALYSIS_VERSION,
+} from "../repository-analysis";
 import { validateOrThrow } from "../validation";
 import { generatorVersion } from "../version";
 import { resolveExtractionSubdir, sourceLabel } from "./clone";
@@ -21,7 +25,7 @@ import {
 } from "./web-cache-storage";
 
 export const CACHE_FORMAT_VERSION = 2;
-export const ANALYSIS_VERSION = 1;
+export const ANALYSIS_VERSION = REPOSITORY_ANALYSIS_VERSION;
 const preparedRoots = new Set<string>();
 
 export interface CachedGraph {
@@ -68,14 +72,10 @@ export async function cachedRemoteGraph(inputs: {
 
   await inputs.onExtract();
   const target = sourceLabel(inputs.request.value, inputs.request.subdir);
-  const { artifact, warnings } = await extractToArtifact({
+  const { artifact, warnings } = await analyzeRepository({
     absoluteRoot: sourceDir,
     cwd: sourceDir,
     language: inputs.request.lang,
-    depth: "function",
-    includeExternal: true,
-    materializeBoundary: true,
-    valueRefs: process.env.MERIDIAN_VALUE_REFS === "1",
     targetName: target,
     vcs: { repository: checkout.remoteUrl, commit: checkout.commit, branch: checkout.branch },
   });
@@ -100,10 +100,7 @@ export function webAnalysisKey(request: GenerateRequest): string {
     generatorVersion: generatorVersion(),
     subdir: request.subdir ?? "",
     language: request.lang ?? "auto",
-    depth: "function",
-    includeExternal: true,
-    materializeBoundary: true,
-    valueRefs: process.env.MERIDIAN_VALUE_REFS === "1",
+    policy: REPOSITORY_ANALYSIS_POLICY,
   };
   return createHash("sha256").update(JSON.stringify(settings)).digest("hex").slice(0, 24);
 }

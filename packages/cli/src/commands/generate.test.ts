@@ -1,7 +1,7 @@
 /**
- * `generate` must use the same workspace/per-package discovery as `web` unless the caller
- * explicitly opts into a tsconfig program. An implicit root tsconfig used to disable the bounded
- * workspace extractor and could silently drop most cross-package relationships in monorepos.
+ * `generate` is a headless export adapter over the app's canonical workspace analysis. A root
+ * tsconfig must never select a second whole-program path that silently drops cross-package
+ * relationships in monorepos.
  */
 
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -9,14 +9,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GraphArtifact } from "@meridian/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { buildProgram } from "../program";
+import { generateGraph } from "../server/web-generation";
+import type { Context } from "../server/web-server";
 import { runGenerate, type GenerateOptions } from "./generate";
 
-describe("generate TypeScript project selection", () => {
+describe("generate canonical repository analysis", () => {
   let root: string;
 
   beforeEach(() => {
-    // Canonicalize macOS's /var -> /private/var temp path so an explicit tsconfig and its source
-    // files stay under the same real root during project selection.
+    // Canonicalize macOS's /var -> /private/var temp path so workspace roots and ts-morph source
+    // files stay under the same real path during discovery.
     root = realpathSync(mkdtempSync(join(tmpdir(), "meridian-generate-workspace-")));
     write("tsconfig.json", JSON.stringify({ files: [], references: [{ path: "./workspace" }] }));
     write("workspace/package.json", JSON.stringify({ private: true, workspaces: ["packages/*"] }));
@@ -48,25 +51,45 @@ describe("generate TypeScript project selection", () => {
     expect(importPairs(discoveredOut)).toContain(
       "ts:workspace/packages/alpha/src/index.ts->ts:workspace/packages/beta/src/index.ts",
     );
+
+    const graphs = new Map<string, GraphArtifact>();
+    const context = {
+      cwd: root,
+      graphs,
+      sourceRoots: new Map(),
+      sources: new Map(),
+      tempCleanups: new Set(),
+    } as unknown as Context;
+    const generated = await generateGraph(
+      context,
+      { kind: "path", value: root, lang: "typescript" },
+      undefined,
+    );
+    const webArtifact = graphs.get(generated.id);
+    const cliArtifact = readArtifact(discoveredOut);
+    expect(webArtifact?.nodes).toEqual(cliArtifact.nodes);
+    expect(webArtifact?.edges).toEqual(cliArtifact.edges);
   });
 
-  it("honors an explicit --tsconfig relative to --cwd", async () => {
-    const explicitRoot = join(root, "explicit-project");
-    write("explicit-project/package.json", JSON.stringify({ name: "explicit-project" }));
-    write("explicit-project/src/included.ts", "export const included = true;\n");
-    write("explicit-project/src/excluded.ts", "export const excluded = true;\n");
-    write("explicit-project/tsconfig.json", JSON.stringify({
-      include: ["src/included.ts"],
-      exclude: ["src/excluded.ts"],
-    }));
+  it("does not expose alternate graph-shaping paths", () => {
+    const generate = buildProgram().commands.find((command) => command.name() === "generate");
+    const optionNames = generate?.options.map((option) => option.long) ?? [];
+    expect(optionNames).not.toEqual(expect.arrayContaining([
+      "--tsconfig",
+      "--include",
+      "--exclude",
+      "--depth",
+      "--include-external",
+      "--include-unresolved",
+      "--exclude-tests",
+      "--value-refs",
+    ]));
+  });
 
-    const explicitOut = join(explicitRoot, "explicit.graph.json");
-    await runGenerate(explicitRoot, {
-      ...generateOptions(explicitOut),
-      cwd: explicitRoot,
-      tsconfig: "tsconfig.json",
-    });
-    expect(moduleFiles(explicitOut)).toEqual(["src/included.ts"]);
+  it("advertises web as the only app launcher", () => {
+    const commandNames = buildProgram().commands.map((command) => command.name());
+    expect(commandNames).toContain("web");
+    expect(commandNames).not.toContain("view");
   });
 
   function write(relativePath: string, contents: string): void {
@@ -80,7 +103,6 @@ describe("generate TypeScript project selection", () => {
       cwd: root,
       out,
       lang: "typescript",
-      depth: "function",
       quiet: true,
     };
   }

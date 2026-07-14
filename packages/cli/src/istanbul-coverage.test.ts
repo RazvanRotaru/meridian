@@ -179,13 +179,13 @@ describe("importIstanbulCoverage", () => {
 });
 
 describe("test coverage command wiring", () => {
-  it("offers --test-coverage on generate and view only", () => {
+  it("offers --test-coverage on generate and the single web launcher only", () => {
     const program = buildProgram();
     const generate = program.commands.find((command) => command.name() === "generate");
-    const view = program.commands.find((command) => command.name() === "view");
+    const web = program.commands.find((command) => command.name() === "web");
     const coverage = program.commands.find((command) => command.name() === "coverage");
     expect(generate?.options.some((option) => option.long === "--test-coverage")).toBe(true);
-    expect(view?.options.some((option) => option.long === "--test-coverage")).toBe(true);
+    expect(web?.options.some((option) => option.long === "--test-coverage")).toBe(true);
     expect(coverage?.options.some((option) => option.long === "--test-coverage")).toBe(false);
   });
 });

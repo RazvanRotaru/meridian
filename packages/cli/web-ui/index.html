@@ -1749,6 +1749,8 @@
       async function loadCacheStatus(request, key, serial) {
         const query = new URLSearchParams({ repo: request.value });
         if (request.ref) query.set("ref", request.ref);
+        if (request.subdir) query.set("subdir", request.subdir);
+        if (request.lang) query.set("lang", request.lang);
         try {
           const response = await apiGet("/api/cache/status?" + query);
           const data = await response.json().catch(() => null);

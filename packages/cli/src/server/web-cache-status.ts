@@ -18,9 +18,11 @@ export async function handleCacheStatus(
 ): Promise<void> {
   const repository = query.get("repo")?.trim() ?? "";
   const ref = query.get("ref")?.trim() || undefined;
+  const subdir = query.get("subdir")?.trim() || undefined;
+  const lang = query.get("lang")?.trim() || undefined;
   const result = await probeRemoteGraph({
     cacheRoot: ctx.cacheRoot,
-    request: { kind: "github", value: repository, ref, refresh: ctx.refreshCache },
+    request: { kind: "github", value: repository, ref, subdir, lang, refresh: ctx.refreshCache },
     cwd: ctx.cwd,
     token: githubTokenFor(ctx, request),
   });

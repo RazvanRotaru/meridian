@@ -71,7 +71,15 @@ function optionalString(value: unknown): string | undefined {
 
 /** Deterministic short id from the source identity — token deliberately excluded. */
 export function artifactId(request: GenerateRequest, commit = "", analysisKey = ""): string {
-  const key = [request.kind, request.value, request.ref ?? "", request.subdir ?? "", commit, analysisKey].join(" ");
+  const key = [
+    request.kind,
+    request.value,
+    request.ref ?? "",
+    request.subdir ?? "",
+    request.lang ?? "auto",
+    commit,
+    analysisKey,
+  ].join(" ");
   return createHash("sha1").update(key).digest("hex").slice(0, 12);
 }
 

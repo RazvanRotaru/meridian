@@ -1,5 +1,5 @@
 /**
- * Value-reference pass (opt-in via `--value-refs`). The behavioural pass only edges call / new /
+ * Optional value-reference pass. The behavioural pass only edges call / new /
  * JSX / type / heritage occurrences, so importing a symbol and using it as a plain VALUE — passing
  * a function as a callback, reading a const, a namespace receiver `Ns.member` — produces NO usage
  * edge. All that survives is a featureless module→module `imports` wire that doesn't say WHY the

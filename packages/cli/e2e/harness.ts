@@ -1,6 +1,6 @@
 /**
  * Shared plumbing for the end-to-end suite: locating the built CLI, generating a graph from
- * the fixture, and starting a real `blueprint view` server we can point a browser at.
+ * the fixture, and starting the real `meridian web` server against that artifact.
  */
 
 import { execFile, execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -83,7 +83,7 @@ export function startView(graphPath: string, port = 4399): Promise<{ server: Chi
   return startViewProcess(graphPath, ["--overlay", "mock", "--env", "staging"], port);
 }
 
-/** Launch the ordinary local-view path with no startup telemetry source selected. The server still
+/** Launch the ordinary existing-graph path with no startup telemetry source selected. The server still
  * advertises its explicit built-in demo catalog; browser coverage owns choosing and loading it. */
 export function startViewWithoutOverlay(graphPath: string, port = 4399): Promise<{ server: ChildProcess; url: string }> {
   return startViewProcess(graphPath, [], port);
@@ -92,7 +92,7 @@ export function startViewWithoutOverlay(graphPath: string, port = 4399): Promise
 function startViewProcess(graphPath: string, telemetryArgs: string[], port: number): Promise<{ server: ChildProcess; url: string }> {
   const server = spawn(
     process.execPath,
-    [CLI, "view", graphPath, ...telemetryArgs, "--no-open", "--port", String(port)],
+    [CLI, "web", graphPath, ...telemetryArgs, "--no-open", "--port", String(port)],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   return new Promise((resolve, reject) => {
@@ -106,7 +106,7 @@ function startViewProcess(graphPath: string, telemetryArgs: string[], port: numb
     };
     server.stdout?.on("data", onData);
     server.stderr?.on("data", onData);
-    setTimeout(() => reject(new Error(`view did not announce a URL in time:\n${buffer}`)), 30_000);
+    setTimeout(() => reject(new Error(`web did not announce a URL in time:\n${buffer}`)), 30_000);
   });
 }
 

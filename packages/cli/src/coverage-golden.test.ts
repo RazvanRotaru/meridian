@@ -1,7 +1,7 @@
 /**
  * Golden: the full test-visibility + coverage story over the real orders-service fixture.
  * The pipeline must tag `src/__tests__/*` nodes, coverage must tell direct hits from
- * transitive reach from genuine gaps (with reasons), and `--exclude-tests` must restore a
+ * transitive reach from genuine gaps (with reasons), and excluding tests must restore a
  * production-only graph.
  */
 
@@ -46,7 +46,7 @@ describe("test tagging over orders-service", () => {
     expect(prodFiles).toEqual([]);
   });
 
-  it("--exclude-tests drops test nodes and every edge touching them", async () => {
+  it("dropping tests removes test nodes and every edge touching them", async () => {
     const lean = await extractFixture(true);
     expect(lean.nodes.some((node) => node.tags?.includes(TEST_TAG))).toBe(false);
     const ids = new Set(lean.nodes.map((node) => node.id));

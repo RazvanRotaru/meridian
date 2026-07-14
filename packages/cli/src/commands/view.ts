@@ -1,5 +1,5 @@
 /**
- * `view`: validate a graph and serve the bundled renderer against it.
+ * Internal existing-graph path used by the public `web` launcher.
  *
  * The never-default-prod rule is enforced before anything else: `--overlay` without an
  * environment is a usage error, mirrored again server-side on `/api/overlay`. The renderer

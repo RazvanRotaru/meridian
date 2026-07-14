@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { SCHEMA_VERSION } from "@meridian/core";
 import type { GraphArtifact } from "@meridian/core";
-import { extractToArtifact } from "../extract-pipeline";
+import {
+  analyzeRepository,
+  REPOSITORY_ANALYSIS_POLICY,
+  REPOSITORY_ANALYSIS_VERSION,
+} from "../repository-analysis";
 import { validateOrThrow } from "../validation";
 import { generatorVersion } from "../version";
 import { parseGitHubSource, sanitizeSubdir } from "./clone";
@@ -25,13 +29,14 @@ import type { ArtifactSource } from "./web-source";
 type GitHubSource = Extract<ArtifactSource, { kind: "github" }>;
 type PrStage = "clone" | "checkout" | "extract";
 
-const FORMAT_VERSION = 1;
+const FORMAT_VERSION = 2;
 const COMMIT = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const CLONE_TIMEOUT_MS = 600_000;
 const GIT_TIMEOUT_MS = 300_000;
 
 interface PrMetadata {
   formatVersion: number;
+  analysisVersion: number;
   repositoryKey: string;
   headSha: string;
   baseSha: string;
@@ -91,7 +96,12 @@ async function createCachedGraph(
     const { artifact, warnings } = await extractPr(repoDir, inputs.source, inputs.body, remoteUrl, revisions, inputs.token);
     writePrivateJson(join(stage, "artifact.json"), artifact);
     writePrivateJson(join(stage, "metadata.json"), {
-      formatVersion: FORMAT_VERSION, repositoryKey, ...revisions, analysisKey, warnings,
+      formatVersion: FORMAT_VERSION,
+      analysisVersion: REPOSITORY_ANALYSIS_VERSION,
+      repositoryKey,
+      ...revisions,
+      analysisKey,
+      warnings,
     } satisfies PrMetadata);
     publishImmutable(stage, entry);
     const published = await readCached(entry, repositoryKey, revisions, analysisKey, inputs.source);
@@ -135,6 +145,7 @@ function validMetadata(
   analysisKey: string,
 ): value is PrMetadata {
   return value.formatVersion === FORMAT_VERSION && value.repositoryKey === repositoryKey
+    && value.analysisVersion === REPOSITORY_ANALYSIS_VERSION
     && value.headSha === revisions.headSha && value.baseSha === revisions.baseSha
     && value.analysisKey === analysisKey && Array.isArray(value.warnings)
     && value.warnings.every((warning) => typeof warning === "string");
@@ -173,9 +184,13 @@ async function verifyRevisions(cwd: string, baseRef: string, expected: { headSha
 
 async function extractPr(cwd: string, source: GitHubSource, body: PrAnalyzeRequest, remoteUrl: string, revisions: { headSha: string; baseSha: string }, token?: string) {
   const root = sanitizeSubdir(cwd, source.subdir);
-  return extractToArtifact({
-    absoluteRoot: root, cwd: root, depth: "function", includeExternal: true, materializeBoundary: true,
-    targetName: `${source.owner}/${source.repo}`, changedSince: `origin/${body.baseRef}`, changedSinceTimeoutMs: GIT_TIMEOUT_MS,
+  return analyzeRepository({
+    absoluteRoot: root,
+    cwd: root,
+    language: source.language,
+    targetName: `${source.owner}/${source.repo}`,
+    changedSince: `origin/${body.baseRef}`,
+    changedSinceTimeoutMs: GIT_TIMEOUT_MS,
     changedSinceGitExecutor: (absoluteRoot, args, timeoutMs) => runGit(args, { cwd: absoluteRoot, token, timeoutMs }),
     vcs: { repository: remoteUrl, commit: revisions.headSha, branch: body.headRef },
   });
@@ -183,8 +198,14 @@ async function extractPr(cwd: string, source: GitHubSource, body: PrAnalyzeReque
 
 function prAnalysisKey(source: GitHubSource, body: PrAnalyzeRequest): string {
   return createHash("sha256").update(JSON.stringify({
-    formatVersion: FORMAT_VERSION, schemaVersion: SCHEMA_VERSION, generatorVersion: generatorVersion(),
-    subdir: source.subdir ?? "", headRef: body.headRef, depth: "function", includeExternal: true, materializeBoundary: true,
+    formatVersion: FORMAT_VERSION,
+    analysisVersion: REPOSITORY_ANALYSIS_VERSION,
+    schemaVersion: SCHEMA_VERSION,
+    generatorVersion: generatorVersion(),
+    subdir: source.subdir ?? "",
+    language: source.language ?? "auto",
+    headRef: body.headRef,
+    policy: REPOSITORY_ANALYSIS_POLICY,
   })).digest("hex").slice(0, 24);
 }
 

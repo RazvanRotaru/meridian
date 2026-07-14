@@ -1,5 +1,5 @@
 /**
- * End-to-end: `blueprint generate` the fixture, `blueprint view` it, and drive a real
+ * End-to-end: generate the fixture, open it through `meridian web`, and drive a real
  * headless Chromium to prove the blueprint renders, drills down, gates telemetry behind an
  * explicit environment, and refuses to default to prod. Skips cleanly when the Playwright
  * browser is not installed (`npx playwright install chromium`).
@@ -497,7 +497,7 @@ describe("never-prod gate", () => {
   it("refuses --overlay without --env (exit code 2)", () => {
     const { graphPath, dir } = generateGraph();
     graphDir = dir;
-    const result = runCli(["view", graphPath, "--overlay", "mock", "--no-open"]);
+    const result = runCli(["web", graphPath, "--overlay", "mock", "--no-open"]);
     expect(result.code).toBe(2);
     expect(result.stderr).toMatch(/never defaults/i);
   });
