@@ -12,6 +12,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { countViewedFiles, isReviewTestPath } from "../../derive/reviewFiles";
 import type { ReviewData } from "../../derive/reviewData";
+import type { PrSummary } from "../../state/prTypes";
 import { PrPrepareInline } from "../prs/PrPrepareProgress";
 import { ChangeGroupStrip } from "./ChangeGroupStrip";
 import { ReviewFilesSection } from "./ReviewFilesSection";
@@ -204,6 +205,7 @@ function Header(props: {
     <div style={HEADER}>
       <div style={HEADER_TOP}>
         <span style={HEADER_TITLE}>PR review</span>
+        {currentPr ? <span style={PR_NUMBER}>#{currentPr.number}</span> : null}
         <span style={{ flex: 1 }} />
         {(stale || refreshing) && (
           <button
@@ -257,6 +259,7 @@ function Header(props: {
           »
         </button>
       </div>
+      {currentPr ? <PullRequestContext key={`${currentPr.number}:${currentPr.updatedAt}`} pr={currentPr} /> : null}
       <div style={PROVENANCE_ROW}>
       {prReviewed !== null ? <PrProvenance ctx={ctx} /> : (
         <div style={HEADER_REF}>
@@ -309,6 +312,66 @@ function Header(props: {
       ))}
     </div>
   );
+}
+
+/** The review's identity belongs beside the checklist it scopes. Keep the title prominent and
+ * available in full, then clamp the potentially 10k-character body so context never crowds work. */
+function PullRequestContext({ pr }: { pr: PrSummary }) {
+  const [expanded, setExpanded] = useState(false);
+  const description = pr.body?.trim() ?? "";
+  const preview = prDescriptionPreview(description);
+  const descriptionId = `review-pr-${pr.number}-description`;
+
+  return (
+    <section style={PR_CONTEXT} aria-label={`Pull request #${pr.number}`}>
+      <h2 style={PR_TITLE} title={pr.title}>{pr.title}</h2>
+      {description === "" ? (
+        <div style={PR_DESCRIPTION_EMPTY}>No description provided.</div>
+      ) : (
+        <>
+          <div
+            id={descriptionId}
+            className={expanded ? "mrd-scroll" : undefined}
+            role={expanded ? "region" : undefined}
+            aria-label={expanded ? `Pull request #${pr.number} description` : undefined}
+            tabIndex={expanded ? 0 : undefined}
+            style={expanded
+              ? { ...PR_DESCRIPTION, ...PR_DESCRIPTION_EXPANDED }
+              : { ...PR_DESCRIPTION, ...PR_DESCRIPTION_CLAMP }}
+          >
+            {expanded ? description : preview.text}
+          </div>
+          {preview.truncated ? (
+            <button
+              type="button"
+              style={PR_DESCRIPTION_TOGGLE}
+              aria-expanded={expanded}
+              aria-controls={descriptionId}
+              onClick={() => setExpanded((value) => !value)}
+            >
+              {expanded ? "Show less" : "Show more"}
+            </button>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
+}
+
+/** A real collapsed value keeps the disclosure honest for assistive technology too: hidden body
+ * text is not mounted until the reader asks for it. Three source lines or ~180 characters fit the
+ * panel's compact context slot; word-boundary clipping avoids a ragged partial word. */
+function prDescriptionPreview(description: string): { text: string; truncated: boolean } {
+  const firstThreeLines = description.split("\n").slice(0, 3).join("\n");
+  let text = firstThreeLines;
+  if (text.length > 180) {
+    const clipped = text.slice(0, 180);
+    const wordBoundary = clipped.lastIndexOf(" ");
+    text = clipped.slice(0, wordBoundary >= 120 ? wordBoundary : clipped.length);
+  }
+  text = text.trimEnd();
+  const truncated = text !== description;
+  return { text: truncated ? `${text}…` : text, truncated };
 }
 
 /** The GitHub-PR provenance line: which graph the review computes on, and which code it shows —
@@ -378,7 +441,15 @@ const TESTS_HIDDEN_NOTICE: React.CSSProperties = {
 };
 const HEADER: React.CSSProperties = { padding: "14px 16px 12px", borderBottom: "1px solid #20262F", display: "flex", flexDirection: "column", gap: 8 };
 const HEADER_TOP: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
-const HEADER_TITLE: React.CSSProperties = { fontSize: 14, fontWeight: 700, color: "#E6EDF3" };
+const HEADER_TITLE: React.CSSProperties = { fontSize: 10.5, fontWeight: 750, letterSpacing: 0.5, textTransform: "uppercase", color: "#9AA4B2" };
+const PR_NUMBER: React.CSSProperties = { color: "#7DD3FC", fontSize: 10.5, fontWeight: 700, lineHeight: "18px" };
+const PR_CONTEXT: React.CSSProperties = { display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 4, minWidth: 0, padding: "2px 0 1px" };
+const PR_TITLE: React.CSSProperties = { display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: 2, maxHeight: 38, overflow: "hidden", margin: 0, color: "#F0F6FC", fontSize: 14, fontWeight: 700, lineHeight: "19px", overflowWrap: "anywhere" };
+const PR_DESCRIPTION: React.CSSProperties = { width: "100%", color: "#AAB3C0", fontSize: 11.5, lineHeight: "16px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", boxSizing: "border-box" };
+const PR_DESCRIPTION_CLAMP: React.CSSProperties = { maxHeight: 48, overflow: "hidden" };
+const PR_DESCRIPTION_EXPANDED: React.CSSProperties = { maxHeight: 144, overflowY: "auto", paddingRight: 6 };
+const PR_DESCRIPTION_EMPTY: React.CSSProperties = { color: "#8B96A5", fontSize: 11.5, lineHeight: "16px", fontStyle: "italic" };
+const PR_DESCRIPTION_TOGGLE: React.CSSProperties = { border: "none", background: "transparent", color: "#7DD3FC", cursor: "pointer", font: "inherit", fontSize: 10.5, fontWeight: 600, lineHeight: "14px", padding: "1px 0" };
 // One shared chip metric for BOTH header buttons — mismatched size/weight reads as a glitch.
 const HEADER_BTN: React.CSSProperties = { font: "inherit", border: "1px solid #2A2F37", background: "transparent", color: "#9AA4B2", borderRadius: 6, padding: "3px 9px", fontSize: 11.5, fontWeight: 600, lineHeight: "15px", cursor: "pointer", ...NO_FOCUS_RING };
 const RESET_BTN: React.CSSProperties = { ...HEADER_BTN };

@@ -504,6 +504,77 @@ describe("PR store slice", () => {
     expect(store.getState().reviewAffectedIds).toEqual(new Set([TEST_METHOD_ID]));
   });
 
+  it("shows the reviewed pull request title and description in the review panel", async () => {
+    const store = freshStore();
+    const summary = {
+      ...pr(7, "Keep checkout state consistent"),
+      body: "Explains why the checkout state must remain consistent across the review.",
+    };
+    store.setState({
+      ...selectedPrState(7),
+      prsList: { open: [summary], closed: null },
+    });
+    await store.getState().reviewPrInGraph();
+    const renderPanel = () => {
+      store.getInitialState = store.getState;
+      return renderToStaticMarkup(
+        createElement(StoreProvider, { store, children: createElement(ReviewPanel) }),
+      );
+    };
+    const panel = renderPanel();
+
+    expect(panel).toContain('aria-label="Pull request #7"');
+    expect(panel).toContain("Keep checkout state consistent");
+    expect(panel).toContain("Explains why the checkout state must remain consistent across the review.");
+    expect(panel.indexOf("Keep checkout state consistent")).toBeLessThan(panel.indexOf("Open PR on GitHub"));
+
+    store.setState({
+      prsList: { open: null, closed: null },
+      prExtraSummaries: { 7: summary },
+    });
+    const restoredPanel = renderPanel();
+    expect(restoredPanel).toContain("Keep checkout state consistent");
+    expect(restoredPanel).toContain("Explains why the checkout state must remain consistent across the review.");
+  });
+
+  it("states when the reviewed pull request has no description", async () => {
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    store.getInitialState = store.getState;
+
+    const panel = renderToStaticMarkup(
+      createElement(StoreProvider, { store, children: createElement(ReviewPanel) }),
+    );
+
+    expect(panel).toContain("PR 7");
+    expect(panel).toContain("No description provided.");
+  });
+
+  it("keeps a long pull request description behind an honest disclosure", async () => {
+    const store = freshStore();
+    const hiddenTail = "This tail should only mount after expansion.";
+    const summary = {
+      ...pr(7, "Document the review context"),
+      body: `${"Review context and implementation detail. ".repeat(8)}${hiddenTail}`,
+    };
+    store.setState({
+      ...selectedPrState(7),
+      prsList: { open: [summary], closed: null },
+    });
+    await store.getState().reviewPrInGraph();
+    store.getInitialState = store.getState;
+
+    const panel = renderToStaticMarkup(
+      createElement(StoreProvider, { store, children: createElement(ReviewPanel) }),
+    );
+
+    expect(panel).toContain("Review context and implementation detail.");
+    expect(panel).toContain("…");
+    expect(panel).not.toContain(hiddenTail);
+    expect(panel).toMatch(/<button(?=[^>]*aria-expanded="false")(?=[^>]*aria-controls="review-pr-7-description")[^>]*>Show more<\/button>/);
+  });
+
   it("keeps added review comments local until Submit review performs the one POST", async () => {
     let submittedPath = "";
     const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
