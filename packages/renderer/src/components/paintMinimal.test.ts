@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { Edge, Node } from "@xyflow/react";
-import { extractedGraphPaintSelectionOverride, paintMinimalLevel } from "./paintMinimal";
+import { paintMinimalLevel } from "./paintMinimal";
 import { IMPORT_CROSS, IMPORT_SIBLING, REL_COLORS } from "../theme/mapPalette";
 import { BOUNDARY_DASH_PATTERN, type EdgeBoundaryData } from "../layout/edgeBoundary";
 import { defineLensRelationPolicy } from "../graph/lensRelationPolicy";
@@ -49,24 +49,6 @@ function paint(nodes: Node[], edges: Edge[]): { nodes: Node[]; edges: Edge[] } {
 }
 
 const TWO_FILES = [fileNode("ts:a.ts"), fileNode("ts:b.ts")];
-
-describe("extractedGraphPaintSelectionOverride", () => {
-  const packages = [
-    { id: "ts:src/notifications", type: "package", position: { x: 0, y: 0 }, data: {} },
-    { id: "ts:src/pricing", type: "package", position: { x: 0, y: 0 }, data: {} },
-  ] as Node[];
-  const seeds = packages.map((node) => node.id);
-
-  it("restores literal package seeds when URL restore has no transient selection", () => {
-    expect(extractedGraphPaintSelectionOverride(packages, new Set(), seeds, true))
-      .toEqual(new Set(seeds));
-  });
-
-  it("leaves drawable live selections and review graphs under their normal paint owners", () => {
-    expect(extractedGraphPaintSelectionOverride(packages, new Set(seeds), seeds, true)).toBeUndefined();
-    expect(extractedGraphPaintSelectionOverride(packages, new Set(), seeds, false)).toBeUndefined();
-  });
-});
 
 describe("paintMinimalLevel — relationship colours match the Map", () => {
   it("strokes a dep wire by its depKind, for every relationship in the shared palette", () => {

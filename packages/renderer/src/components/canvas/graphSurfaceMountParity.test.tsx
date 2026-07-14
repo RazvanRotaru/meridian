@@ -69,6 +69,31 @@ describe("GraphSurface mount semantic-navigation parity", () => {
     expect(minimalTag).not.toContain("aria-hidden");
   });
 
+  it("keeps a restored Minimal Graph's ghost paint owned by live selection, not origin seeds", () => {
+    const origin = "ts:packages/app/src/a.ts";
+    const store = freshStore();
+    store.setState({
+      minimalSeedIds: [origin],
+      minimalMemberIds: [origin],
+      minimalLayoutStatus: "ready",
+      moduleSelected: new Set(),
+    });
+    const restoredState = store.getState();
+    Object.assign(store, { getInitialState: () => restoredState });
+
+    renderToStaticMarkup(
+      <StoreProvider store={store}>
+        <ReactFlowProvider><MinimalGraphView onShowCodebase={() => undefined} /></ReactFlowProvider>
+      </StoreProvider>,
+    );
+
+    expect(graphSurfaceMounts).toHaveLength(1);
+    const mount = graphSurfaceMounts[0];
+    const interactions = mount.interactions as { paintSelectionOverride: unknown };
+    expect(mount.paintSelectionOverride).toBeUndefined();
+    expect(interactions.paintSelectionOverride).toBeNull();
+  });
+
   it("unmounts the covered source while a PR review owns the navigation boundary", () => {
     const store = freshStore();
     store.setState({
