@@ -99,6 +99,12 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
     for (const member of MEMBER_FILES) {
       await extractedGraph.locator(`[data-id="${member}"]`).waitFor();
     }
+    // The restored graph may also contain structural connector cards. Capture its exact real-card
+    // population rather than assuming the selected files are the whole minimal graph.
+    const extractedRealNodeCount = await extractedGraph
+      .locator(".react-flow__node:not(.react-flow__node-ghost)")
+      .count();
+    expect(extractedRealNodeCount).toBeGreaterThanOrEqual(MEMBER_FILES.length);
 
     // The context action swaps only the graph pane: all curated members are placed in their
     // canonical Map ancestry. Curation/navigation stay frozen, while card chevrons disclose code
@@ -109,7 +115,7 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
     await expect.poll(
       () => page.evaluate(() => document.activeElement?.getAttribute("aria-label")),
     ).toBe("Back to extracted graph");
-    await contextGraph.getByText(`${MEMBER_FILES.length} graph nodes highlighted`, { exact: true }).waitFor();
+    await contextGraph.getByText(`${extractedRealNodeCount} graph nodes highlighted`, { exact: true }).waitFor();
     for (const member of MEMBER_FILES) {
       await contextGraph.locator(`[data-id="${member}"]`).waitFor();
     }
