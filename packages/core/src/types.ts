@@ -44,6 +44,7 @@ export type EdgeKind =
   | "imports"
   | "extends"
   | "implements"
+  | "implementedBy"
   | "instantiates"
   | (string & {});
 

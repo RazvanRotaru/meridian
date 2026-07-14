@@ -27,17 +27,19 @@ import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type 
 export type LogicNodeType = ExecNodeType | "defgroup";
 
 /**
- * A def-group frame's data: presentation only (the owner label/kind and the count of methods it
- * frames). `targetId: null` is shared with `LogicNodeData` on purpose — it keeps `LogicRfNode` a
- * SINGLE `Node` type (data is the union below, and every member carries `targetId`), so the view's
- * `node.data.targetId` accessors keep typechecking with no discriminated-union narrowing. A frame is
- * never a call site, so the null target also makes clicking one a harmless no-op.
+ * A def-group frame's data. It participates in the same expandable-node contract as executable
+ * nodes, while remaining a structural occurrence rather than a call site (`targetId: null`). The
+ * shared fields keep Logic's surface controls and BaseNode adapter generic: the frame can fold its
+ * definition children without teaching either one about a special node type.
  */
 export type DefGroupData = {
   targetId: null;
   label: string;
   kind: string;
   childCount: number;
+  expandable: boolean;
+  isExpanded: boolean;
+  isContainer: boolean;
 };
 
 export type LogicRfNode = Node<LogicNodeData | DefGroupData | TerminalData, LogicNodeType>;

@@ -27,7 +27,7 @@ const ARTIFACT: GraphArtifact = {
   extensions: {
     logicFlow: {
       "ts:pkg/src/a.ts#run": [call("ts:pkg/src/b.ts#leaf")],
-      "ts:pkg/src/b.ts#leaf": [],
+      "ts:pkg/src/b.ts#leaf": [{ kind: "call", label: "console.log", target: null, resolution: "unresolved" }],
     },
   } as unknown as GraphArtifact["extensions"],
 };
@@ -132,6 +132,43 @@ describe("flow explorer store slice", () => {
 
     store.getState().selectFlowEntry(null);
     expect(store.getState().logicSelected).toBe("ts:pkg/src/b.ts#leaf");
+  });
+
+  it("expands a static pane occurrence in pane-owned state and resets it with the selection", async () => {
+    const store = freshStore();
+    const firstSelection = { rootId: "ts:pkg/src/a.ts#run", blockPath: [] };
+    const occurrenceId = `${firstSelection.rootId}::0`;
+    store.getState().selectFlowEntry(firstSelection);
+    await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
+    expect(store.getState().flowPaneRfNodes.find((node) => node.id === occurrenceId)?.data)
+      .toMatchObject({ expandable: true, isExpanded: false, isContainer: false });
+
+    store.setState({
+      expandedLogic: new Set(["main-logic-occurrence"]),
+      requestFlowExpansionOverrides: new Set(["request-occurrence"]),
+    });
+    store.getState().toggleFlowPaneExpand(occurrenceId);
+    await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
+
+    expect(store.getState().flowPaneExpansionOverrides).toEqual(new Set([occurrenceId]));
+    expect(store.getState().expandedLogic).toEqual(new Set(["main-logic-occurrence"]));
+    expect(store.getState().requestFlowExpansionOverrides).toEqual(new Set(["request-occurrence"]));
+    expect(store.getState().flowPaneRfNodes.find((node) => node.id === occurrenceId)?.data)
+      .toMatchObject({ isExpanded: true, isContainer: true });
+    expect(store.getState().flowPaneRfNodes.some((node) => node.parentId === occurrenceId)).toBe(true);
+
+    store.getState().selectFlowEntry({ rootId: "ts:pkg/src/b.ts#leaf", blockPath: [] });
+    expect(store.getState().flowPaneExpansionOverrides).toEqual(new Set());
+    await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
+    const emptyLeafId = "ts:pkg/src/b.ts#leaf::0";
+    expect(store.getState().flowPaneRfNodes.find((node) => node.id === emptyLeafId)?.data)
+      .toMatchObject({ expandable: false, childCount: 0 });
+    store.getState().toggleFlowPaneExpand(emptyLeafId);
+    expect(store.getState().flowPaneExpansionOverrides).toEqual(new Set());
+    expect(store.getState().flowPaneLayoutStatus).toBe("ready");
+
+    store.getState().selectFlowEntry(null);
+    expect(store.getState().flowPaneExpansionOverrides).toEqual(new Set());
   });
 
   it("clears ghost inspection before relaying out a non-review flow reveal", () => {

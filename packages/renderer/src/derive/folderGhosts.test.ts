@@ -57,6 +57,33 @@ function packageGhostIds(tree: ModuleTree): string[] {
 }
 
 describe("folder ghosts — Map package-only frontier", () => {
+  it("does not project a hidden contract method's implementedBy edge onto folder ghosts", () => {
+    const nodes = [
+      node("ts:app", "package", null),
+      node("ts:app/contracts", "package", "ts:app"),
+      node("ts:app/contracts/store.ts", "module", "ts:app/contracts"),
+      node("ts:app/contracts/store.ts#Store", "interface", "ts:app/contracts/store.ts"),
+      node("ts:app/contracts/store.ts#Store.save", "method", "ts:app/contracts/store.ts#Store"),
+      node("ts:app/unused", "package", "ts:app"),
+      node("ts:app/unused/u.ts", "module", "ts:app/unused"),
+      node("ts:lib", "package", null),
+      node("ts:lib/repository", "package", "ts:lib"),
+      node("ts:lib/repository/repository.ts", "module", "ts:lib/repository"),
+      node("ts:lib/repository/repository.ts#Repository", "class", "ts:lib/repository/repository.ts"),
+      node("ts:lib/repository/repository.ts#Repository.save", "method", "ts:lib/repository/repository.ts#Repository"),
+    ];
+    const edge = relationship(
+      "implemented-by:save",
+      "implementedBy",
+      "ts:app/contracts/store.ts#Store.save",
+      "ts:lib/repository/repository.ts#Repository.save",
+    );
+
+    const tree = mapTree(nodes, [edge], "ts:app");
+    expect(packageGhostIds(tree)).toEqual([]);
+    expect(tree.edges.some((entry) => entry.depKind === "implementedBy")).toBe(false);
+  });
+
   it("aggregates descendant imports/couplings into one comparable-depth peer folder", () => {
     const nodes = [
       node("ts:app", "package", null, "app"),

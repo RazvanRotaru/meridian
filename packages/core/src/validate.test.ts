@@ -101,4 +101,14 @@ describe("validateArtifact", () => {
       expect(result.warnings).toEqual([]);
     }
   });
+
+  it("recognizes method-level interface implementation edges", () => {
+    const artifact = validArtifact();
+    const edge = artifact.edges[0]!;
+    edge.kind = "implementedBy";
+    edge.id = `implementedBy@${edge.source}|${edge.target}`;
+    const result = validateArtifact(artifact);
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toEqual([]);
+  });
 });

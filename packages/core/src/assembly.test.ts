@@ -73,4 +73,12 @@ describe("collapseToDepth", () => {
     expect(result.edges).toHaveLength(1);
     expect(result.edges[0]).toMatchObject({ source: "py:m#A", target: "ext:lib#thing" });
   });
+
+  it("drops implementedBy when its method endpoints do not survive", () => {
+    const implementationEdges = aggregateEdges([
+      raw("py:m#A.f", "py:m#B.g", 3, "implementedBy"),
+    ]);
+    const result = collapseToDepth(nodes, implementationEdges, "class");
+    expect(result.edges).toEqual([]);
+  });
 });

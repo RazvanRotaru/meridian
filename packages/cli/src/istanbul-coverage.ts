@@ -273,6 +273,11 @@ function readCount(value: unknown, at: string): number {
 function graphSourceFiles(artifact: GraphArtifact): string[] {
   const files = new Set<string>();
   for (const node of artifact.nodes) {
+    // Boundary containers deliberately have no source coordinate. They are valid graph structure,
+    // but cannot participate in an Istanbul file join and must not make coverage attachment fail.
+    if (node.location.file.length === 0) {
+      continue;
+    }
     const path = parsePath(node.location.file, `node '${node.id}' location`, false);
     if (!path.absolute && path.segments.length > 0 && !path.segments.includes("..")) {
       files.add(path.segments.join("/"));

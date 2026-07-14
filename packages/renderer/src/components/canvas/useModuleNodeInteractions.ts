@@ -18,6 +18,7 @@ import type { Edge, NodeMouseHandler, Node } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { activeModuleSurfaceSpec, type SurfaceSpec } from "./surfaceSpec";
 import type { BlockData } from "../../derive/moduleLevel";
+import type { BaseNodeModel } from "../nodes/BaseNode";
 
 const SELECT_CLICK_DELAY_MS = 250;
 
@@ -36,6 +37,9 @@ export interface NodeInteractionOverrides {
 export interface ModuleNodeHandlers {
   onNodeClick: NodeMouseHandler<Node>;
   onNodeDoubleClick: NodeMouseHandler<Node>;
+  /** The same navigation path exposed directly to the shared node chassis. Unlike React Flow's
+   * wrapper callback, this receives the normalized occurrence/artifact model from BaseNode. */
+  navigateBaseNode?(model: BaseNodeModel, event: React.MouseEvent<HTMLDivElement>): void;
   onPaneClick: () => void;
   /** Real parent anchors expanded for the current selection. Exact ghosts remain canonical; this
    * mount-local set only tells the shared paint pass which child neighbours to disclose. */
@@ -358,15 +362,15 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
   // Double-click is navigation only. Expansion/collapse belongs exclusively to the node chevrons
   // and the canvas actions; no double-click branch may mutate `moduleExpanded`. Breadcrumb and
   // outward semantic navigation remain the ways back through the surface's real hierarchy.
-  const onNodeDoubleClick: NodeMouseHandler<Node> = (event, node) => {
+  const navigateNode = (event: React.MouseEvent, node: NavigationNode) => {
     // React Flow delivers the constituent clicks before a double-click. Cancel either a queued
     // selection before running the navigation path.
     clearPendingSelect();
     setGhostPaintContexts(new Map());
-    if (overrides.onDoubleClick?.(event, node) === true) {
+    if (overrides.onDoubleClick?.(event, node as Node) === true) {
       return;
     }
-    overrides.onBeforeDoubleClick?.(event, node);
+    overrides.onBeforeDoubleClick?.(event, node as Node);
     const surfaceActions = { setModuleFocus, revealModule, revealServiceGhost };
     const navigation = navigationForNode(node, spec);
     switch (navigation.kind) {
@@ -383,6 +387,10 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
         revealInView(navigation.id);
         break;
     }
+  };
+  const onNodeDoubleClick: NodeMouseHandler<Node> = (event, node) => navigateNode(event, node);
+  const navigateBaseNode = (model: BaseNodeModel, event: React.MouseEvent<HTMLDivElement>) => {
+    navigateNode(event, navigationNodeForBaseNode(model));
   };
   const onPaneClick = () => {
     clearPendingSelect();
@@ -405,6 +413,7 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
   return {
     onNodeClick,
     onNodeDoubleClick,
+    navigateBaseNode,
     onPaneClick,
     expandedGhostGroupIds,
     toggleGhostGroup,
@@ -429,10 +438,24 @@ export type NodeNavigation =
   | { kind: "logic"; id: string }
   | { kind: "reveal"; id: string };
 
+type NavigationNode = Pick<Node, "id" | "type" | "data">;
+
+/** BaseNode keeps occurrence and artifact identities separate. Module cards currently share both;
+ * view-only steps do not have an artifact target and intentionally fall back to their occurrence
+ * grammar. Keeping that choice here prevents future decorated occurrences from navigating by a
+ * layout id simply because expand/collapse must use one. */
+export function navigationNodeForBaseNode(model: BaseNodeModel): NavigationNode {
+  return {
+    id: model.targetId ?? model.instanceId,
+    type: model.nodeType,
+    data: model.data,
+  };
+}
+
 /** Resolve a double-click without side effects. No outcome is `select` or `expand`: every card
  * reaches one of the current lens's navigation paths. Grouped ghost parents keep their REAL parent
  * id, so they reveal exactly like an ungrouped ghost rather than acting as disclosure gestures. */
-export function navigationForNode(node: Node, spec: SurfaceSpec): NodeNavigation {
+export function navigationForNode(node: NavigationNode, spec: SurfaceSpec): NodeNavigation {
   if (spec.navigation.navigateInto !== null && spec.navigation.canNavigateInto(node.type, node.id)) {
     return { kind: "navigate-into", id: node.id };
   }

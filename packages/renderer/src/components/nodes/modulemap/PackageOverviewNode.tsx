@@ -1,18 +1,19 @@
 /**
  * A group card for the Map lens: one npm package (at the overview) or directory (deeper) showing
- * its name, file count, and import fan-in/out (Ca/Ce). A container card carries a chevron that
+ * its name, file count, and import fan-in/out (Ca/Ce). A container card carries a disclosure that
  * EXPANDS it in place — collapsed it is a solid box; expanded it becomes a transparent titled frame
  * whose body lets React Flow draw the nested children inside it, exactly like the call graph's
  * ContainerNode. Double-clicking the card still re-roots into it (handled by the surface); the
- * chevron is the coexisting inline gesture. The card body always keeps the shared Map selection
- * gesture; expansion belongs exclusively to the chevron. A green ring marks the selection, read
+ * disclosure is the coexisting inline gesture. The card body always keeps the shared Map selection
+ * gesture; expansion belongs exclusively to that control. A green ring marks the selection, read
  * from the store.
  */
 
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import type { ModuleGroupData } from "../../../derive/moduleTree";
-import { cardSelectedStyle, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
+import { BaseNode, type BaseNodeModel } from "../BaseNode";
+import { cardSelectedStyle, frameSelectedStyle, frameStyle, frameTitleBarStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, DeltaChip, useNodeDiff } from "./changed";
 import { CommonsChips } from "./CommonsChips";
 import { TOKENS } from "../../controlpanel/panelKit";
@@ -32,54 +33,79 @@ function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
 /**
  * Shared package-shaped container rendering. A Service-domain node is synthetic in the derive, but
  * it must wear the exact same interaction chrome as every other group: selection/diff treatment,
- * source/target handles, the expand chevron, and the collapsed-card/expanded-frame transition.
+ * source/target handles, shared disclosure, and the collapsed-card/expanded-frame transition.
  * Keep those mechanics here and let each React Flow node type be a thin semantic wrapper.
  */
 export function GroupContainerNodeView({ id, data }: { id: string; data: ModuleGroupData }) {
   const selected = useSurfaceNodeSelected(id);
   const diff = useNodeDiff(id);
-  const chevron = data.isContainer ? <ExpandChevron id={id} isExpanded={data.isExpanded} /> : null;
   const changedInside = data.readOnly && (data.changedInside ?? 0) > 0
     ? <ChangedInsideChip count={data.changedInside as number} />
     : null;
+  const model: BaseNodeModel = {
+    instanceId: id,
+    targetId: id,
+    nodeType: data.serviceDomain ? "serviceDomain" : "package",
+    kind: data.serviceDomain ? (data.serviceDomainKind ?? "service-domain") : "folder",
+    label: data.label,
+    childCount: data.fileCount,
+    canExpand: data.isContainer && data.fileCount > 0,
+    expanded: data.isExpanded,
+    canNavigate: true,
+    data,
+  };
+  const ports = (
+    <>
+      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+      <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+    </>
+  );
 
   if (data.isExpanded) {
     return (
-      <div style={borderFor(frameStyle(PACKAGE_ACCENT), frameSelectedStyle(PACKAGE_ACCENT), selected, diff)}>
-        <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-        <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-        <FrameTitleBar chevron={chevron} status={diff.status}>
-          <span className="lod-label" style={TITLE_LABEL} title={id}>{data.label}</span>
+      <BaseNode
+        model={model}
+        style={borderFor(frameStyle(PACKAGE_ACCENT), frameSelectedStyle(PACKAGE_ACCENT), selected, diff)}
+        headerStyle={frameTitleBarStyle(diff.status)}
+        labelStyle={TITLE_LABEL}
+        labelTitle={id}
+        actions={(
           <span className="lod-hide" style={CONTENTS}>
             {data.readOnly ? changedInside : <DeltaChip diff={diff} />}
             <Meta data={data} hideCoupling={data.readOnly} />
           </span>
-        </FrameTitleBar>
-      </div>
+        )}
+        ports={ports}
+      />
     );
   }
 
   return (
-    <div className="lod-tint" style={{ ...borderFor(CARD, cardSelectedStyle(CARD, PACKAGE_ACCENT), selected, diff), "--lod-accent": PACKAGE_ACCENT } as React.CSSProperties}>
-      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-      <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-      <div className="lod-rail" style={{ ...ACCENT_BAR, background: PACKAGE_ACCENT }} />
-      <span className="lod-place">{data.label}</span>
-      <PackageCardBody>
-        <div style={HEADER}>
-          <span style={LABEL} title={id}>{data.label}</span>
-          {data.readOnly ? changedInside : <DeltaChip diff={diff} />}
-          {chevron}
-        </div>
-        <Meta data={data} hideCoupling={data.readOnly} />
-        <CommonsChips chips={(data as { commonsChips?: string[] }).commonsChips} />
-      </PackageCardBody>
-    </div>
+    <BaseNode
+      model={model}
+      className="lod-tint"
+      style={{ ...borderFor(CARD, cardSelectedStyle(CARD, PACKAGE_ACCENT), selected, diff), "--lod-accent": PACKAGE_ACCENT } as React.CSSProperties}
+      headerStyle={HEADER}
+      labelStyle={LABEL}
+      labelTitle={id}
+      actions={data.readOnly ? changedInside : <DeltaChip diff={diff} />}
+      ports={(
+        <>
+          {ports}
+          <div className="lod-rail" style={{ ...ACCENT_BAR, background: PACKAGE_ACCENT }} />
+          <span className="lod-place">{data.label}</span>
+        </>
+      )}
+      contentStyle={INNER}
+    >
+      <Meta data={data} hideCoupling={data.readOnly} />
+      <CommonsChips chips={(data as { commonsChips?: string[] }).commonsChips} />
+    </BaseNode>
   );
 }
 
 /** The ordinary Map card body is deliberately inert. React Flow owns its click and routes it to
- * universal selection; only the nested ExpandChevron consumes a click for disclosure. */
+ * universal selection; disclosure and navigation live on the shared BaseNode shell. */
 export function PackageCardBody({ children }: { children: React.ReactNode }) {
   return <div className="lod-card-body" style={INNER}>{children}</div>;
 }

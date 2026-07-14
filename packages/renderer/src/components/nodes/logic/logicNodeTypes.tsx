@@ -20,6 +20,7 @@ import { executionCoverageIndex, executionEvidenceForCallTarget } from "../../..
 import { callTargetCoverageVerdict, COVERAGE_COLORS, type CoverageVerdict } from "../../../theme/coverageColors";
 import { CodeInlinePanel } from "../../CodeInlinePanel";
 import { changedColor, changedFill } from "../../ChangedBadge";
+import { BaseNode, type BaseNodeModel } from "../BaseNode";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
@@ -99,12 +100,60 @@ function ExecPins() {
   );
 }
 
+function callableBaseNodeModel(instanceId: string, data: LogicNodeData): BaseNodeModel {
+  return {
+    instanceId,
+    targetId: data.targetId,
+    nodeType: "block",
+    kind: data.runtime?.kind ?? data.callKind ?? data.logicKind,
+    label: data.label,
+    childCount: data.childCount,
+    canExpand: data.expandable,
+    expanded: data.isExpanded,
+    // Runtime occurrences historically select their mapped artifact on a single click; only static
+    // calls drill into a callee on double-click. The surface adapter owns the corresponding action.
+    canNavigate: data.runtime === undefined
+      && data.targetId !== null
+      && (data.navigable ?? data.expandable),
+    data: data as unknown as Record<string, unknown>,
+  };
+}
+
+function controlBaseNodeModel(instanceId: string, data: LogicNodeData): BaseNodeModel {
+  return {
+    instanceId,
+    targetId: data.targetId,
+    nodeType: "control",
+    kind: data.logicKind,
+    label: data.label,
+    childCount: data.childCount,
+    canExpand: data.expandable,
+    expanded: data.isExpanded,
+    // Controls navigate into their stored body paths rather than through an artifact target.
+    canNavigate: (data.bodies?.length ?? 0) > 0,
+    data: data as unknown as Record<string, unknown>,
+  };
+}
+
+function runtimeDomAttributes(
+  kind: NonNullable<LogicNodeData["runtime"]>["kind"],
+  status: NonNullable<LogicNodeData["runtime"]>["status"],
+  targetId: string | null,
+  expanded: boolean,
+): React.HTMLAttributes<HTMLDivElement> {
+  return {
+    "data-request-runtime-kind": kind,
+    "data-request-runtime-status": status,
+    "data-request-runtime-target": targetId ?? undefined,
+    "data-request-runtime-expanded": expanded ? "true" : "false",
+  } as React.HTMLAttributes<HTMLDivElement>;
+}
+
 function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
-  const { toggleLogicExpand, toggleRequestFlowExpand, showCode, expandCode, closeCode } = useBlueprintActions();
+  const { showCode, expandCode, closeCode } = useBlueprintActions();
   const index = useBlueprint((s) => s.index);
   const sourceUrl = useBlueprint((s) => s.sourceUrl);
   const logicSelected = useBlueprint((s) => s.logicSelected);
-  const requestOpen = useBlueprint((s) => s.flowPaneOrigin === "request");
   const requestSelected = useBlueprint((s) => (
     s.flowPaneOrigin === "request" && s.moduleSelected.size === 1
       ? [...s.moduleSelected][0] ?? null
@@ -127,7 +176,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   if (d.runtime) {
     return <RequestRuntimeBlock id={id} data={d} select={select} />;
   }
-  const toggleExpand = requestOpen ? toggleRequestFlowExpand : toggleLogicExpand;
+  const model = callableBaseNodeModel(id, d);
   // A method call (one made through a receiver / a class method) reads apart from a free function at a
   // glance: a distinct glyph, and a small indigo shift off the blue call accent. A "defined here" node
   // keeps its teal DECLARATION accent regardless (its declaration-ness dominates), gaining only the
@@ -158,7 +207,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   if (d.isContainer) {
     return (
       <div style={WRAP} data-coverage-verdict={covVerdict ?? undefined}>
-        <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleExpand(id)} provenance={d.provenance} select={select} badge={battery} changedRing={changed ? changedRing : null} nestedDetachedCount={d.nestedDetachedCount} />
+        <ContainerFrame model={model} accent={accent} glyph={glyph} provenance={d.provenance} select={select} badge={battery} changedRing={changed ? changedRing : null} nestedDetachedCount={d.nestedDetachedCount} />
         <AsyncDecoration d={d} />
       </div>
     );
@@ -188,56 +237,55 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
     const compactAccent = callScopeAccent(d.callScope, accent);
     return (
       <div style={WRAP} data-coverage-verdict={covVerdict ?? undefined}>
-        <div
+        <BaseNode
+          model={model}
           style={withChanged(selectStyle(compactBodyStyle(d.callScope, compactAccent), select), changed ? changedRing : null, select)}
-          title={d.navigable ? "Double-click to open this callable's logic" : d.callScope === "external" ? "External call boundary" : undefined}
-        >
-          <ExecPins />
-          <div style={compactTitleStyle(d.callScope, compactAccent)}>
-            <span style={COMPACT_GLYPH}>{scopeGlyph(d.callScope, glyph)}</span>
-            <span style={NAME} title={d.label}>{d.label}</span>
-            <span style={TITLE_TAIL}>
+          headerStyle={compactTitleStyle(d.callScope, compactAccent)}
+          labelStyle={NAME}
+          leading={<span style={COMPACT_GLYPH}>{scopeGlyph(d.callScope, glyph)}</span>}
+          actions={(
+            <>
               <NestedDetachedBadge count={d.nestedDetachedCount} />
               <AsyncBadge d={d} />
               {battery}
               {changed ? <ChangedTag color={changedRing} /> : null}
               {codeButton}
-            </span>
-          </div>
+            </>
+          )}
+          ports={<ExecPins />}
+          title={d.navigable ? "Double-click to open this callable's logic" : d.callScope === "external" ? "External call boundary" : undefined}
+        >
           {d.provenance ? <div style={COMPACT_PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.module}</div> : null}
           {(d.nestedDetachedCount ?? 0) > 0 ? <span style={NESTED_DETACHED_RAIL} aria-hidden="true" /> : null}
-        </div>
+        </BaseNode>
         <AsyncDecoration d={d} />
         {inline}
       </div>
     );
   }
-  // A normal block is an expandable call. Expand-in-place
-  // is now an explicit title-tail button beside </> (collapsed here, so ▸), not a header click —
-  // a single body click selects and a double-click dives, so the old click-to-expand was ambiguous.
+  // A normal block is an expandable call. BaseNode appends expand-in-place after </> in the shared
+  // action rail; a single body click selects and a double-click dives.
   // The relative WRAP (not clipped) hosts the clipped body PLUS the inline box hanging below it.
   return (
     <div style={WRAP} data-coverage-verdict={covVerdict ?? undefined}>
-      <div style={withChanged(selectStyle(BODY, select), changed ? changedRing : null, select)}>
-        <ExecPins />
-        <div style={titleStyle(accent)}>
-          <span style={GLYPH}>{glyph}</span>
-          <span style={NAME} title={d.label}>{d.label}</span>
-          <span style={TITLE_TAIL}>
+      <BaseNode
+        model={model}
+        style={withChanged(selectStyle(BODY, select), changed ? changedRing : null, select)}
+        headerStyle={titleStyle(accent)}
+        labelStyle={NAME}
+        leading={<span style={GLYPH}>{glyph}</span>}
+        actions={(
+          <>
             <NestedDetachedBadge count={d.nestedDetachedCount} />
             <AsyncBadge d={d} />
             {battery}
             {changed ? <ChangedTag color={changedRing} /> : null}
             {d.definition ? <span style={DEF_TAG}>def</span> : null}
-            {/* Gate on `expandable`: a call block is always expandable here, but a defined callable
-                with no flow of its own is not — so it drops the disclosure rather than dangling a
-                dead ▸. (Existing non-definition blocks are unaffected: non-greyed ⇒ expandable.)
-                Definition nodes also omit it: they're a grid appended after layout, so expand-in-place
-                never re-nests them — double-click to drill is their gesture instead. */}
-            {d.expandable && !d.definition ? <ExpandButton expanded={false} onToggle={() => toggleExpand(id)} /> : null}
             {codeButton}
-          </span>
-        </div>
+          </>
+        )}
+        ports={<ExecPins />}
+      >
         {/* A FRAMED block sits inside its service frame, whose title already names the owner — so it
             drops the provenance line and shows just name + signature. A standalone/external call (or a
             definition grid cell) keeps its `pkg › module` provenance. */}
@@ -246,7 +294,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
             they opt out; only in-flow call blocks carry it. */}
         {!d.definition && d.signature ? <div style={SIGNATURE} title={d.signature}>{d.signature}</div> : null}
         {(d.nestedDetachedCount ?? 0) > 0 ? <span style={NESTED_DETACHED_RAIL} aria-hidden="true" /> : null}
-      </div>
+      </BaseNode>
       <AsyncDecoration d={d} />
       {inline}
     </div>
@@ -258,8 +306,8 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
  * privacy-safe captured values. The normal exec pins let the existing Logic layout draw the actual
  * request order through these occurrence-specific cards. */
 function RequestRuntimeBlock(props: { id: string; data: LogicNodeData; select: SelectState }) {
-  const { toggleRequestFlowExpand } = useBlueprintActions();
   const runtime = props.data.runtime!;
+  const model = callableBaseNodeModel(props.id, props.data);
   const accent = runtimeAccent(runtime.kind, runtime.status);
   const glyph = runtime.kind === "span"
     ? "▶"
@@ -272,51 +320,50 @@ function RequestRuntimeBlock(props: { id: string; data: LogicNodeData; select: S
           : "⤳";
   if (props.data.isContainer) {
     return (
-      <div
+      <BaseNode
+        model={model}
         style={selectStyle(frameStyle(accent), props.select)}
-        data-request-runtime-kind={runtime.kind}
-        data-request-runtime-status={runtime.status}
-        data-request-runtime-target={props.data.targetId ?? undefined}
-        data-request-runtime-expanded="true"
+        headerStyle={runtimeTitleStyle(accent)}
+        labelStyle={NAME}
+        leading={<span style={GLYPH}>{glyph}</span>}
+        actions={(
+          <>
+            <span style={RUNTIME_KIND}>{runtime.kind}</span>
+            {runtime.durationMs === undefined ? null : <span style={RUNTIME_DURATION}>{formatRuntimeDuration(runtime.durationMs)}</span>}
+            {runtime.eventCount === undefined || runtime.eventCount === 0 ? null : <span style={RUNTIME_EVENT_COUNT}>{runtime.eventCount} evt</span>}
+            {runtime.badges?.slice(0, 2).map((badge, index) => (
+              <span key={`${index}:${badge}`} style={RUNTIME_FRAME_BADGE} title={badge}>{badge}</span>
+            ))}
+            {(runtime.badges?.length ?? 0) > 2 ? <span style={RUNTIME_MORE}>+{runtime.badges!.length - 2}</span> : null}
+            {runtime.status === undefined ? null : <span style={runtimeStatusStyle(runtime.status)}>{runtime.status}</span>}
+          </>
+        )}
+        ports={<ExecPins />}
+        domAttributes={runtimeDomAttributes(runtime.kind, runtime.status, props.data.targetId, true)}
         title={[runtime.detail, ...(runtime.badges ?? [])].filter(Boolean).join(" · ")}
-      >
-        <ExecPins />
-        <div style={runtimeTitleStyle(accent)}>
-          <span style={GLYPH}>{glyph}</span>
-          <span style={NAME}>{props.data.label}</span>
-          <span style={RUNTIME_KIND}>{runtime.kind}</span>
-          {runtime.durationMs === undefined ? null : <span style={RUNTIME_DURATION}>{formatRuntimeDuration(runtime.durationMs)}</span>}
-          {runtime.eventCount === undefined || runtime.eventCount === 0 ? null : <span style={RUNTIME_EVENT_COUNT}>{runtime.eventCount} evt</span>}
-          {runtime.badges?.slice(0, 2).map((badge, index) => (
-            <span key={`${index}:${badge}`} style={RUNTIME_FRAME_BADGE} title={badge}>{badge}</span>
-          ))}
-          {(runtime.badges?.length ?? 0) > 2 ? <span style={RUNTIME_MORE}>+{runtime.badges!.length - 2}</span> : null}
-          {runtime.status === undefined ? null : <span style={runtimeStatusStyle(runtime.status)}>{runtime.status}</span>}
-          <ExpandButton expanded onToggle={() => toggleRequestFlowExpand(props.id)} />
-        </div>
-      </div>
+      />
     );
   }
   return (
     <div style={WRAP}>
-      <div
+      <BaseNode
+        model={model}
         style={selectStyle({ ...RUNTIME_BODY, cursor: props.data.targetId === null ? "default" : "pointer" }, props.select)}
-        data-request-runtime-kind={runtime.kind}
-        data-request-runtime-status={runtime.status}
-        data-request-runtime-target={props.data.targetId ?? undefined}
-        data-request-runtime-expanded="false"
+        headerStyle={runtimeTitleStyle(accent)}
+        labelStyle={NAME}
+        leading={<span style={GLYPH}>{glyph}</span>}
+        actions={(
+          <>
+            <span style={RUNTIME_KIND}>{runtime.kind}</span>
+            {runtime.durationMs === undefined ? null : <span style={RUNTIME_DURATION}>{formatRuntimeDuration(runtime.durationMs)}</span>}
+            {runtime.eventCount === undefined || runtime.eventCount === 0 ? null : <span style={RUNTIME_EVENT_COUNT}>{runtime.eventCount} evt</span>}
+            {runtime.status === undefined ? null : <span style={runtimeStatusStyle(runtime.status)}>{runtime.status}</span>}
+          </>
+        )}
+        ports={<ExecPins />}
+        domAttributes={runtimeDomAttributes(runtime.kind, runtime.status, props.data.targetId, false)}
         title={props.data.targetId === null ? undefined : "Highlight this observed code node on the graph"}
       >
-        <ExecPins />
-        <div style={runtimeTitleStyle(accent)}>
-          <span style={GLYPH}>{glyph}</span>
-          <span style={NAME} title={props.data.label}>{props.data.label}</span>
-          <span style={RUNTIME_KIND}>{runtime.kind}</span>
-          {runtime.durationMs === undefined ? null : <span style={RUNTIME_DURATION}>{formatRuntimeDuration(runtime.durationMs)}</span>}
-          {runtime.eventCount === undefined || runtime.eventCount === 0 ? null : <span style={RUNTIME_EVENT_COUNT}>{runtime.eventCount} evt</span>}
-          {runtime.status === undefined ? null : <span style={runtimeStatusStyle(runtime.status)}>{runtime.status}</span>}
-          {props.data.expandable ? <ExpandButton expanded={false} onToggle={() => toggleRequestFlowExpand(props.id)} /> : null}
-        </div>
         {runtime.detail ? <div style={RUNTIME_DETAIL} title={runtime.detail}>{runtime.detail}</div> : null}
         {runtime.badges && runtime.badges.length > 0 ? (
           <div style={RUNTIME_BADGES}>
@@ -326,7 +373,7 @@ function RequestRuntimeBlock(props: { id: string; data: LogicNodeData; select: S
             {runtime.badges.length > 3 ? <span style={RUNTIME_MORE}>+{runtime.badges.length - 3}</span> : null}
           </div>
         ) : null}
-      </div>
+      </BaseNode>
     </div>
   );
 }
@@ -377,31 +424,33 @@ function ServiceGroupNode({ data }: NodeProps<LogicRfNode>) {
 }
 
 function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
-  const { toggleLogicExpand, toggleRequestFlowExpand } = useBlueprintActions();
   const logicSelected = useBlueprint((s) => s.logicSelected);
-  const requestOpen = useBlueprint((s) => s.flowPaneOrigin === "request");
   const d = data as LogicNodeData;
+  const model = controlBaseNodeModel(id, d);
   const select = selectStateFor(d.targetId, logicSelected);
-  const toggleExpand = requestOpen ? toggleRequestFlowExpand : toggleLogicExpand;
   const accent = CONTROL_ACCENT[d.logicKind] ?? LOOP_ACCENT;
   const glyph = CONTROL_GLYPH[d.logicKind] ?? "↻";
   const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
   if (d.isContainer) {
-    return <ContainerFrame accent={accent} label={d.label} glyph={glyph} onToggle={() => toggleExpand(id)} provenance={null} select={select} changedRing={changedRing} />;
+    return <ContainerFrame model={model} accent={accent} glyph={glyph} provenance={null} select={select} changedRing={changedRing} />;
   }
   // No whole-node onClick: a single click on a container would fight both node selection and the
   // double-click-to-dive gesture. Collapse/expand is the explicit title button only (collapsed → ▸).
   return (
-    <div style={withChanged(selectStyle(BODY, select), changedRing, select)}>
-      <ExecPins />
-      <div style={titleStyle(accent)}>
-        <span style={GLYPH}>{glyph}</span>
-        <span style={NAME} title={d.label}>{d.label}</span>
-        <span style={COUNT}>{d.childCount}</span>
-        {changedRing === null ? null : <ChangedTag color={changedRing} />}
-        <ExpandButton expanded={false} onToggle={() => toggleExpand(id)} />
-      </div>
-    </div>
+    <BaseNode
+      model={model}
+      style={withChanged(selectStyle(BODY, select), changedRing, select)}
+      headerStyle={titleStyle(accent)}
+      labelStyle={NAME}
+      leading={<span style={GLYPH}>{glyph}</span>}
+      actions={(
+        <>
+          <span style={COUNT}>{d.childCount}</span>
+          {changedRing === null ? null : <ChangedTag color={changedRing} />}
+        </>
+      )}
+      ports={<ExecPins />}
+    />
   );
 }
 
@@ -547,36 +596,31 @@ function conditionText(label: string): string {
 }
 
 /** A framed container (expanded call / loop / callback / try-finally fallback): a title bar sits
- * over ELK's reserved top pad;
- * child nodes render in the space below. Collapse is the explicit ▾ button in the title tail — the
- * whole-title click was removed so it no longer fights node selection / double-click-to-dive. */
-function ContainerFrame(props: { accent: string; label: string; glyph: string; onToggle: () => void; provenance: LogicNodeData["provenance"]; select: SelectState; badge?: React.ReactNode; changedRing?: string | null; nestedDetachedCount?: number }) {
+ * over ELK's reserved top pad; child nodes render in the space below. BaseNode owns the shared
+ * collapse control and keeps it as the final title action. */
+function ContainerFrame(props: { model: BaseNodeModel; accent: string; glyph: string; provenance: LogicNodeData["provenance"]; select: SelectState; badge?: React.ReactNode; changedRing?: string | null; nestedDetachedCount?: number }) {
   return (
-    <div style={withChanged(selectStyle(frameStyle(props.accent), props.select), props.changedRing ?? null, props.select)}>
-      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-      <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-      <div style={frameTitleStyle(props.accent)}>
-        <span style={GLYPH}>{props.glyph}</span>
-        <span style={NAME}>{props.label}</span>
-        {props.provenance ? <span style={FRAME_PROV}>{props.provenance.pkg} › {props.provenance.module}</span> : null}
-        <span style={TITLE_TAIL}>
+    <BaseNode
+      model={props.model}
+      style={withChanged(selectStyle(frameStyle(props.accent), props.select), props.changedRing ?? null, props.select)}
+      headerStyle={frameTitleStyle(props.accent)}
+      labelStyle={NAME}
+      leading={<span style={GLYPH}>{props.glyph}</span>}
+      actions={(
+        <>
+          {props.provenance ? <span style={FRAME_PROV}>{props.provenance.pkg} › {props.provenance.module}</span> : null}
           <NestedDetachedBadge count={props.nestedDetachedCount} />
           {props.badge}
           {props.changedRing ? <ChangedTag color={props.changedRing} /> : null}
-          {props.onToggle ? <ExpandButton expanded onToggle={props.onToggle} /> : null}
-        </span>
-      </div>
+        </>
+      )}
+      ports={<ExecPins />}
+    >
       {(props.nestedDetachedCount ?? 0) > 0 ? <span style={NESTED_DETACHED_RAIL} aria-hidden="true" /> : null}
-    </div>
+    </BaseNode>
   );
 }
 
-/**
- * The explicit expand/collapse toggle every EXPANDABLE node carries in its title tail, styled to sit
- * beside the </> code button. Expansion happens ONLY here now — a single body click selects and a
- * double-click dives — so it stops propagation so the node never also selects/drills/dives on it.
- * ▾ when expanded, ▸ when collapsed.
- */
 /**
  * The per-node coverage "battery": a dark-tracked mini progress bar (with a battery nub) whose fill
  * and colour show how well the callee is covered — full green when a test hits it directly, ~60%
@@ -843,19 +887,37 @@ function TerminalNode({ data }: NodeProps<LogicRfNode>) {
  * to it render OVER it. It is NOT an exec node — no exec pins, no target — so clicking it is a
  * harmless no-op (no selection/drill); only the def blocks inside it are interactive.
  */
-function DefGroupNode({ data }: NodeProps<LogicRfNode>) {
+function DefGroupNode({ id, data }: NodeProps<LogicRfNode>) {
   const d = data as DefGroupData;
   // The top-level functions group records kind "module": tag it FUNCTIONS. Every other group is an
   // owner (object/class), so its kind uppercases straight to the tag (OBJECT / CLASS / …).
   const tag = d.kind === "module" ? "FUNCTIONS" : d.kind.toUpperCase();
+  const model: BaseNodeModel = {
+    instanceId: id,
+    targetId: d.targetId,
+    nodeType: "defgroup",
+    kind: d.kind === "module" ? "functions" : d.kind,
+    label: d.label,
+    childCount: d.childCount,
+    canExpand: d.expandable,
+    expanded: d.isExpanded,
+    canNavigate: false,
+    data: d as unknown as Record<string, unknown>,
+  };
   return (
-    <div style={DEFGROUP_FRAME}>
-      <div style={DEFGROUP_TITLE}>
-        <span style={DEFGROUP_NAME} title={d.label}>{d.label}</span>
-        <span style={DEFGROUP_TAG}>{tag}</span>
-        <span style={DEFGROUP_COUNT}>{d.childCount}</span>
-      </div>
-    </div>
+    <BaseNode
+      model={model}
+      style={DEFGROUP_FRAME}
+      headerStyle={d.isExpanded ? DEFGROUP_TITLE : DEFGROUP_COLLAPSED_TITLE}
+      labelStyle={DEFGROUP_NAME}
+      labelTitle={d.label}
+      actions={(
+        <>
+          <span style={DEFGROUP_TAG}>{tag}</span>
+          <span style={DEFGROUP_COUNT}>{d.childCount}</span>
+        </>
+      )}
+    />
   );
 }
 
@@ -1426,12 +1488,8 @@ const ASYNC_GATE_GLYPH: React.CSSProperties = { position: "relative", color: AWA
 const ASYNC_GATE_LABEL: React.CSSProperties = { position: "relative", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10.5, fontWeight: 650 };
 
 const GLYPH: React.CSSProperties = { fontSize: 11, opacity: 0.85 };
-// Right-aligned title tail holding the expand toggle (and, on a call block, the </> button). A
-// content-sized flex box pushed right by its own auto margin, so its buttons sit snug together.
-const TITLE_TAIL: React.CSSProperties = { marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 };
-// The expand/collapse toggle, matched to CODE_BTN so the two title buttons read as a pair.
-// `color: inherit` keeps it dark on a solid accent title (like </>) and accent-coloured on a
-// container frame's dark title, where the </> button never appears.
+// BranchNode keeps a local condition disclosure because it reveals presentation detail without
+// changing the graph expansion state. Entity-node expansion is owned by BaseNode.
 const EXPAND_BTN: React.CSSProperties = { border: "none", background: "rgba(0,0,0,0.18)", color: "inherit", borderRadius: 4, padding: "1px 6px", fontSize: 10, lineHeight: 1, fontFamily: MONO, cursor: "pointer" };
 const NAME: React.CSSProperties = { flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const PROV: React.CSSProperties = { padding: "4px 8px", fontSize: 10, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
@@ -1516,6 +1574,7 @@ const DEFGROUP_TITLE: React.CSSProperties = {
   fontSize: 12,
   fontWeight: 700,
 };
+const DEFGROUP_COLLAPSED_TITLE: React.CSSProperties = { ...DEFGROUP_TITLE, borderBottom: "none" };
 // The owner name takes the row and truncates; the kind tag and count stay pinned at the right.
 const DEFGROUP_NAME: React.CSSProperties = { ...NAME, flex: 1, minWidth: 0 };
 const DEFGROUP_TAG: React.CSSProperties = { flexShrink: 0, fontSize: 8, fontWeight: 700, letterSpacing: "0.06em", border: "1px solid rgba(63,184,175,0.4)", borderRadius: 3, padding: "1px 4px", color: "#3FB8AF" };

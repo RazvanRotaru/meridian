@@ -25,6 +25,7 @@ const APP_FILE = "ts:app/app.ts";
 const APP_TYPE = `${APP_FILE}#App`;
 const RUN = `${APP_TYPE}.run`;
 const SELECTED_TYPE = `${APP_FILE}#Request`;
+const CONTRACT_METHOD = `${SELECTED_TYPE}.validate`;
 const LIB_PACKAGE = "ts:lib";
 const LIB_FILE = "ts:lib/worker.ts";
 const WORKER = `${LIB_FILE}#Worker`;
@@ -43,6 +44,7 @@ const NODES: GraphNode[] = [
   node(APP_TYPE, "class", APP_FILE),
   node(RUN, "method", APP_TYPE),
   node(SELECTED_TYPE, "interface", APP_FILE),
+  node(CONTRACT_METHOD, "method", SELECTED_TYPE),
   { ...node(LIB_PACKAGE, "package"), tags: ["npm-package"] },
   node(LIB_FILE, "module", LIB_PACKAGE),
   node(WORKER, "class", LIB_FILE),
@@ -71,6 +73,38 @@ function derive(
 const APP_VISIBLE = [APP_PACKAGE, APP_FILE, APP_TYPE, RUN, SELECTED_TYPE];
 
 describe("ghostDepWires — relation-aware semantic endpoints", () => {
+  it("only ghosts an implemented method after its contract method is visible", () => {
+    const implementation = edge("implemented-by:execute", "implementedBy", CONTRACT_METHOD, EXECUTE);
+
+    // A collapsed interface must not leak its hidden method relationship through either ghost
+    // direction: the implementation cannot appear as an outgoing ghost, and the contract cannot
+    // appear as an incoming ghost from a separately visible implementation.
+    expect(derive([implementation], APP_VISIBLE, [SELECTED_TYPE]).emission).toEqual({
+      ghosts: new Map(),
+      wires: [],
+    });
+    expect(derive(
+      [implementation],
+      [LIB_PACKAGE, LIB_FILE, WORKER, EXECUTE],
+      [WORKER, EXECUTE],
+    ).emission).toEqual({ ghosts: new Map(), wires: [] });
+
+    // Opening the interface makes the source method exact, while the off-level concrete method
+    // remains a useful semantic ghost.
+    const { emission } = derive(
+      [implementation],
+      [...APP_VISIBLE, CONTRACT_METHOD],
+      [SELECTED_TYPE, CONTRACT_METHOD],
+    );
+    expect([...emission.ghosts.keys()]).toEqual([EXECUTE]);
+    expect(emission.wires).toEqual([expect.objectContaining({
+      source: CONTRACT_METHOD,
+      target: EXECUTE,
+      kind: "implementedBy",
+      underlyingEdgeIds: ["implemented-by:execute"],
+    })]);
+  });
+
   it("keeps exact called methods/functions and aggregates evidence without folding them to a class", () => {
     const { emission } = derive(
       [edge("call:1", "calls", RUN, EXECUTE), edge("call:2", "calls", RUN, EXECUTE, 2), edge("call:3", "calls", RUN, HELPER)],

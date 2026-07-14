@@ -205,6 +205,7 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     flowPaneOrigin: null,
     requestFlowTraceId: null,
     requestFlowExpansionOverrides: new Set<string>(),
+    flowPaneExpansionOverrides: new Set<string>(),
     flowPaneRfNodes: [],
     flowPaneRfEdges: [],
     flowPaneLayoutStatus: "idle",

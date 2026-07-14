@@ -4,14 +4,14 @@
  * this component only mounts the read-only <ReactFlow> surface, an overlay header (breadcrumb +
  * "hide leaf blocks" toggle) that clears the floating Toolbar, and the empty/entry states.
  *
- * Node interactions live in the node components themselves — title-click expands a call/loop/try in
- * place, the `</>` button opens source. This adds the ONE gesture they can't: double-clicking a
- * resolved, flow-bearing block dives into that callee's own flow as a new breadcrumb level.
+ * Entity-node interactions use the shared BaseNode contract: a trailing disclosure expands a
+ * call/control/definition in place, while `</>` remains a decoration. This surface supplies the
+ * Logic-specific action adapter, including double-click drill into a resolved callee.
  *
  * While nothing is opened (`logicRoot === null`) it shows the entry picker instead of the graph.
  */
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type Edge,
   type EdgeMarker,
@@ -49,6 +49,8 @@ import { AltLogicSurface } from "./logicviews/AltLogicSurface";
 import { LogicViewTabs } from "./logicviews/LogicViewTabs";
 import { GraphLayoutIndicator } from "./canvas/GraphLayoutIndicator";
 import { logicEdgeTypes } from "./edges/AsyncRailEdge";
+import { BaseNodeActionScope, type BaseNodeModel } from "./nodes/BaseNode";
+import { LogicActionBar } from "./controlpanel/LogicActionBar";
 
 export function LogicFlowView() {
   const logicRoot = useBlueprint((state) => state.logicRoot);
@@ -97,14 +99,14 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
     [artifact, coverageMode],
   );
   const showLogicTests = useBlueprint((state) => state.showLogicTests);
-  const { drillLogicFlow, logicFlowTo, diveLogicContainer, logicFocusTo, toggleHideGreyed, toggleNestByService, setGhostDepth, selectLogicTarget, openComposition, toggleLogicTests } =
+  const { drillLogicFlow, logicFlowTo, diveLogicContainer, logicFocusTo, toggleLogicExpand, toggleHideGreyed, toggleNestByService, setGhostDepth, selectLogicTarget, openComposition, toggleLogicTests, expandAll, collapseAll } =
     useBlueprintActions();
 
   // The two gestures the node components don't own, mutually exclusive by node kind: a control
   // container (loop/callback, plus the conservative try/finally fallback) DIVES into its bodies as a
   // focused sub-view; an expandable call drills into its callee's own flow. Ordinary try/catch is an
   // explicit branch and needs no dive. Fires for every node, so a jump satellite is skipped.
-  const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => {
+  const navigateLogicNode = (node: Pick<Node, "id" | "type" | "data">) => {
     const data = logicDataOf(node);
     if (!data) {
       return;
@@ -125,6 +127,12 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
       drillLogicFlow(data.targetId);
     }
   };
+  const onNodeDoubleClick: NodeMouseHandler<Node> = (_event, node) => navigateLogicNode(node);
+  const navigateBaseNode = (model: BaseNodeModel) => navigateLogicNode({
+    id: model.instanceId,
+    type: model.nodeType,
+    data: model.data,
+  });
 
   // Single-click a building block to trace its call target: selection is BY TARGET, so every call
   // site of the same target lights up. Re-clicking the selected target clears it; container/branch
@@ -204,6 +212,24 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
   // A handle on the React Flow surface: the `fitView` prop only fits on mount, so navigation needs
   // this to recentre the viewport imperatively.
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance<Node, Edge> | null>(null);
+  const selectedActionScope = useMemo(
+    () => logicSelectionActionScope(nodes, logicSelected),
+    [nodes, logicSelected],
+  );
+  const focusSelection = useCallback(() => {
+    if (rfInstance === null || (logicSelected !== null && selectedActionScope.nodeIds.length === 0)) {
+      return;
+    }
+    void rfInstance.fitView({
+      ...(logicSelected === null
+        ? {}
+        : { nodes: selectedActionScope.nodeIds.map((id) => ({ id })) }),
+      padding: 0.28,
+      duration: 400,
+      minZoom: 0.01,
+      maxZoom: 1.05,
+    });
+  }, [logicSelected, rfInstance, selectedActionScope.nodeIds]);
 
   // The navigation identity: the callable drill trail plus the container-dive focus stack. It changes
   // on EVERY navigation — open/drill/dive/jump/pick, and breadcrumb-BACK too (the trail then differs
@@ -234,20 +260,36 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
 
   return (
     <div style={SURFACE_STYLE}>
-      <ReadonlyGraphCanvas<Node, Edge>
-        nodes={[...nodes, ...jumpNodes, ...testNodes]}
-        edges={[...styledEdges, ...jumpEdges, ...testEdges]}
-        nodeTypes={logicNodeTypes}
-        edgeTypes={logicEdgeTypes}
-        onInit={(instance) => {
-          setRfInstance(instance);
-        }}
-        onNodeClick={onNodeClick}
-        onNodeDoubleClick={onNodeDoubleClick}
-        onPaneClick={() => selectLogicTarget(null)}
-        miniMapColor={(node) => miniMapColor(node, coverage, logicRoot, execution, index)}
+      <BaseNodeActionScope
+        toggleExpand={(model) => toggleLogicExpand(model.instanceId)}
+        navigateInto={navigateBaseNode}
       >
-      </ReadonlyGraphCanvas>
+        <ReadonlyGraphCanvas<Node, Edge>
+          nodes={[...nodes, ...jumpNodes, ...testNodes]}
+          edges={[...styledEdges, ...jumpEdges, ...testEdges]}
+          nodeTypes={logicNodeTypes}
+          edgeTypes={logicEdgeTypes}
+          onInit={(instance) => {
+            setRfInstance(instance);
+          }}
+          onNodeClick={onNodeClick}
+          onNodeDoubleClick={onNodeDoubleClick}
+          onPaneClick={() => selectLogicTarget(null)}
+          miniMapColor={(node) => miniMapColor(node, coverage, logicRoot, execution, index)}
+        >
+          <LogicActionBar
+            selectedCount={selectedActionScope.nodeIds.length}
+            canFocus={rfInstance !== null && (logicSelected === null
+              ? nodes.length + jumpNodes.length + testNodes.length > 0
+              : selectedActionScope.nodeIds.length > 0)}
+            canExpand={selectedActionScope.canExpand}
+            canCollapse={selectedActionScope.canCollapse}
+            onFocusSelection={focusSelection}
+            onExpandSelection={expandAll}
+            onCollapseSelection={collapseAll}
+          />
+        </ReadonlyGraphCanvas>
+      </BaseNodeActionScope>
       <LogicOverlayHeader
         stack={logicStack}
         focus={logicFocus}
@@ -276,6 +318,61 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
       {isEmpty ? <EmptyFlowCard rootId={props.rootId} /> : null}
     </div>
   );
+}
+
+export interface LogicSelectionActionScope {
+  /** Every visible call-site occurrence carrying the selected target. */
+  nodeIds: string[];
+  /** Whether the active selection scope, or the whole flow, contains a collapsed/open disclosure. */
+  canExpand: boolean;
+  canCollapse: boolean;
+}
+
+/** Resolve Logic's target-based selection to React Flow occurrences plus its visible subtrees.
+ * With no selection, availability covers the whole visible flow while an empty `nodeIds` list
+ * tells focus to fit every rendered node. Availability mirrors the store's scoped expand/collapse
+ * walk, which includes each selected root and every currently visible descendant. */
+export function logicSelectionActionScope(
+  nodes: readonly LogicRfNode[],
+  selectedTarget: NodeId | null,
+): LogicSelectionActionScope {
+  const nodeIds = selectedTarget === null
+    ? []
+    : nodes
+      .filter((node) => node.data.targetId === selectedTarget)
+      .map((node) => node.id);
+  if (selectedTarget !== null && nodeIds.length === 0) {
+    return { nodeIds, canExpand: false, canCollapse: false };
+  }
+
+  const inScope = new Set(selectedTarget === null ? nodes.map((node) => node.id) : nodeIds);
+  // Layouts normally order parents before children, but repeat until stable so availability is
+  // independent of array order and stays in lockstep with scopedExpansion's tree walk.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const node of nodes) {
+      if (node.parentId !== undefined && inScope.has(node.parentId) && !inScope.has(node.id)) {
+        inScope.add(node.id);
+        changed = true;
+      }
+    }
+  }
+
+  let canExpand = false;
+  let canCollapse = false;
+  for (const node of nodes) {
+    const disclosure = node.data as { expandable?: boolean; isExpanded?: boolean };
+    if (!inScope.has(node.id) || disclosure.expandable !== true) {
+      continue;
+    }
+    if (disclosure.isExpanded === true) {
+      canCollapse = true;
+    } else {
+      canExpand = true;
+    }
+  }
+  return { nodeIds, canExpand, canCollapse };
 }
 
 const ENTRY_READING_SPAN = 1500;
@@ -647,7 +744,7 @@ function jumpEdge(source: string, target: string, pair: string, labeled: boolean
 // The click handlers run for every node on the surface, including the appended jump satellites and
 // the entry/exit end-caps. Those carry no call data (a satellite owns its own click; a terminal is
 // no call site), so hand back logic data only for real exec nodes.
-function logicDataOf(node: Node): LogicNodeData | null {
+function logicDataOf(node: Pick<Node, "type" | "data">): LogicNodeData | null {
   return node.type === "jumpflow" || node.type === "terminal" ? null : (node.data as LogicNodeData);
 }
 

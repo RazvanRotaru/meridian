@@ -16,6 +16,7 @@ import { BlocksView } from "../logicviews/BlocksView";
 import { FLOW_COLORS, type FlowViewProps } from "../../derive/flowViewModel";
 import { BASE_Y as METRO_MAIN_LINE_Y } from "../../derive/metroSpec";
 import type { ReviewFlowSplitView } from "../../state/reviewPreferences";
+import { BaseNodeActionScope } from "../nodes/BaseNode";
 
 export function FlowPane() {
   const selection = useBlueprint((state) => state.flowSelection);
@@ -250,7 +251,7 @@ function FlowPaneSurface() {
   const status = useBlueprint((state) => state.flowPaneLayoutStatus);
   const logicSelected = useBlueprint((state) => state.logicSelected);
   const requestOpen = useBlueprint((state) => state.flowPaneOrigin === "request");
-  const { selectFlowPaneTarget } = useBlueprintActions();
+  const { selectFlowPaneTarget, toggleFlowPaneExpand, toggleRequestFlowExpand } = useBlueprintActions();
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const fittedNodes = useRef<readonly Node[] | null>(null);
   // A request trace is mounted under its own ReactFlowProvider key, so this ref naturally resets
@@ -306,29 +307,39 @@ function FlowPaneSurface() {
   }
   return (
     <GraphSurface>
-      <ReactFlow<Node, Edge>
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={logicNodeTypes}
-        edgeTypes={logicEdgeTypes}
-        onInit={(instance) => {
-          rfRef.current = instance;
-          fittedNodes.current = null;
-          fitReadyNodes(instance);
-        }}
-        onNodeClick={(_event, node) => {
-          const target = artifactTargetOf(node);
-          if (target !== null) {
-            // Request occurrences always reveal their exact mapped artifact node. Static/review flows
-            // retain their historical toggle-by-target behavior through `logicSelected`.
-            selectFlowPaneTarget(requestOpen ? target : target === logicSelected ? null : target);
+      <BaseNodeActionScope
+        toggleExpand={(model) => {
+          if (requestOpen) {
+            toggleRequestFlowExpand(model.instanceId);
+          } else {
+            toggleFlowPaneExpand(model.instanceId);
           }
         }}
-        onPaneClick={() => selectFlowPaneTarget(null)}
-        {...READONLY_CANVAS_PROPS}
       >
-        <CanvasChrome nodeColor={miniMapColor} />
-      </ReactFlow>
+        <ReactFlow<Node, Edge>
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={logicNodeTypes}
+          edgeTypes={logicEdgeTypes}
+          onInit={(instance) => {
+            rfRef.current = instance;
+            fittedNodes.current = null;
+            fitReadyNodes(instance);
+          }}
+          onNodeClick={(_event, node) => {
+            const target = artifactTargetOf(node);
+            if (target !== null) {
+              // Request occurrences always reveal their exact mapped artifact node. Static/review flows
+              // retain their historical toggle-by-target behavior through `logicSelected`.
+              selectFlowPaneTarget(requestOpen ? target : target === logicSelected ? null : target);
+            }
+          }}
+          onPaneClick={() => selectFlowPaneTarget(null)}
+          {...READONLY_CANVAS_PROPS}
+        >
+          <CanvasChrome nodeColor={miniMapColor} />
+        </ReactFlow>
+      </BaseNodeActionScope>
     </GraphSurface>
   );
 }

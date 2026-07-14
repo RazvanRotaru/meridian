@@ -62,7 +62,7 @@ describe("request-aware split flow pane", () => {
     expect(ids).not.toContain(`request:${TRACE_ID}:event:1000000000000001:branch-1`);
     expect(ids.some((id) => id.includes(":exec::"))).toBe(false);
     expect(store.getState().flowPaneRfNodes.find((node) => node.id === `request:${TRACE_ID}:span:1000000000000001`)?.data)
-      .toMatchObject({ expandable: true, isExpanded: false, isContainer: false });
+      .toMatchObject({ expandable: true, isExpanded: false, isContainer: false, childCount: 2 });
     expect(ids.some((id) => id.startsWith(`${ALPHA_RUN}::`))).toBe(false);
     expect(store.getState().flowPaneRfEdges.length).toBeGreaterThan(0);
     expect(store.getState().flowPaneRfEdges.every((edge) => (
@@ -81,7 +81,7 @@ describe("request-aware split flow pane", () => {
     await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
     expect(store.getState().requestFlowExpansionOverrides).toEqual(new Set([occurrenceId]));
     expect(store.getState().flowPaneRfNodes.find((node) => node.id === occurrenceId)?.data)
-      .toMatchObject({ isExpanded: true, isContainer: true });
+      .toMatchObject({ isExpanded: true, isContainer: true, childCount: 2 });
     expect(store.getState().flowPaneRfNodes.map((node) => node.id))
       .toContain(`${occurrenceId}:exec::p0/0`);
     expect(store.getState().flowPaneRfEdges.some((edge) => (

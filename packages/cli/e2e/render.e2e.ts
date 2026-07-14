@@ -179,17 +179,17 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     // Expansion is the explicit chevron action, separate from navigation. It reveals the domain's
     // real `svc:` children in place and preserves their exact structural coupling kind. Calls are
     // abundant in this fixture but intentionally remain a hidden Service overlay by default.
-    const expandDomain = domain.getByRole("button", { name: "Expand", exact: true });
+    const expandDomain = nodeDisclosure(domain, false);
     expect(await expandDomain.count()).toBe(1);
     await expandDomain.dispatchEvent("click");
     const serviceFrames = page.locator('.react-flow__node-package[data-id^="svc:"]');
     await expect.poll(() => serviceFrames.count(), { timeout: 30_000 }).toBe(unassignedGroupCount);
-    expect(await domain.getByRole("button", { name: "Collapse", exact: true }).count()).toBe(1);
+    expect(await nodeDisclosure(domain, true).count()).toBe(1);
 
     // One domain action exposes only its direct synthetic `svc:` children. Every frame is still a
     // collapsed container with its own explicit Expand action; no class/unit (or method/block)
     // grandchild may leak through until that frame receives a separate action.
-    expect(await serviceFrames.getByRole("button", { name: "Expand", exact: true }).count()).toBe(unassignedGroupCount);
+    expect(await nodeDisclosure(serviceFrames, false).count()).toBe(unassignedGroupCount);
     expect(await page.locator('.react-flow__node-unit[data-id^="ts:"]').count()).toBe(0);
     expect(await page.locator('.react-flow__node-block[data-id^="ts:"]').count()).toBe(0);
 
@@ -270,7 +270,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     const validateOccurrence = requestFlow.locator(`.react-flow__node[data-id="${validateOccurrenceId}"]`);
     expect(await validateOccurrence.count()).toBe(1);
     expect(await requestFlow.locator(`.react-flow__node[data-id^="${validateOccurrenceId}:exec::"]`).count()).toBe(0);
-    await validateOccurrence.getByRole("button", { name: "expand in place" }).click();
+    await nodeDisclosure(validateOccurrence, false).click();
     for (const suffix of [":exec::p0/0", ":exec::p0/1", ":exec::p0/2", ":exec::p0/2/p0/0"]) {
       await requestFlow.locator(`.react-flow__node[data-id="${validateOccurrenceId}${suffix}"]`).waitFor();
     }
@@ -286,7 +286,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     for (const absorbedEventId of ["s-customer", "s-lines", "s-lines-loop"]) {
       expect(await requestFlow.locator(`.react-flow__node[data-id="request:11111111111111111111111111111111:event:1000000000000003:${absorbedEventId}"]`).count()).toBe(0);
     }
-    await validateOccurrence.getByRole("button", { name: "collapse" }).click();
+    await nodeDisclosure(validateOccurrence, true).click();
     await expect.poll(() => requestFlow.locator(`.react-flow__node[data-id^="${validateOccurrenceId}:exec::"]`).count()).toBe(0);
     await expect.poll(() => staticContextEdges.count()).toBe(0);
     await expect.poll(() => observedRequestEdges.count()).toBe(collapsedObservedEdgeCount);
@@ -296,14 +296,14 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     const priceOccurrenceId = "request:11111111111111111111111111111111:span:1000000000000004";
     const priceOccurrence = requestFlow.locator(`.react-flow__node[data-id="${priceOccurrenceId}"]`);
     expect(await priceOccurrence.count()).toBe(1);
-    await priceOccurrence.getByRole("button", { name: "expand in place" }).click();
+    await nodeDisclosure(priceOccurrence, false).click();
     await requestFlow.locator(`.react-flow__node[data-id="${priceOccurrenceId}:exec::p0/0"]`).waitFor();
     await expect.poll(() => observedRequestEdges.count()).toBeGreaterThan(collapsedObservedEdgeCount);
     expect(await requestFlow.locator(
       '.request-flow-edge--observed[data-request-flow-basis="span-body"][data-request-flow-span-id="1000000000000004"]',
     ).count()).toBe(3);
     expect(await staticContextEdges.count()).toBe(0);
-    await priceOccurrence.getByRole("button", { name: "collapse" }).click();
+    await nodeDisclosure(priceOccurrence, true).click();
     const rootNodeId = "ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder";
     const rootRuntimeOccurrence = requestFlow.locator(
       `[data-request-runtime-kind="span"][data-request-runtime-target="${rootNodeId}"]`,
@@ -347,13 +347,13 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     const negativePriceValidate = requestFlow.locator(
       `.react-flow__node[data-id="${negativePriceValidateOccurrenceId}"]`,
     );
-    await negativePriceValidate.getByRole("button", { name: "expand in place" }).click();
+    await nodeDisclosure(negativePriceValidate, false).click();
     const assertLineOccurrenceId = `${negativePriceValidateOccurrenceId}:exec::p0/2/p0/0`;
     const assertLineOccurrence = requestFlow.locator(
       `.react-flow__node[data-id="${assertLineOccurrenceId}"]`,
     );
     await assertLineOccurrence.waitFor();
-    await assertLineOccurrence.getByRole("button", { name: "expand in place" }).click();
+    await nodeDisclosure(assertLineOccurrence, false).click();
     await requestFlow.locator(`.react-flow__node[data-id="${assertLineOccurrenceId}/0"]`).waitFor();
     expect(await requestFlow.locator(
       '.request-flow-edge--observed[data-request-flow-basis="branch-path"][data-request-flow-site-id="validate:sku"][data-request-flow-path-ids="else"]',
@@ -509,6 +509,13 @@ function statusText(page: Page, regionName = "Request data"): Promise<string> {
 
 function requestDataRegion(page: Page, name = "Request data"): Locator {
   return page.getByRole("region", { name });
+}
+
+/** The shared disclosure contract used by every BaseNode-backed graph surface. */
+function nodeDisclosure(node: Locator, expanded: boolean): Locator {
+  return node.locator(
+    `button[data-base-node-disclosure="true"][aria-expanded="${expanded ? "true" : "false"}"]`,
+  );
 }
 
 async function selectAndLoadDemo(page: Page, setupRegionName: string): Promise<void> {

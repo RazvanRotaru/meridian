@@ -8,6 +8,7 @@ describe("relation theme", () => {
     expect(relationColor("registers")).toBe(relationColor("binds"));
     expect(relationColor("extends")).toBe(REL_COLORS.extends);
     expect(relationColor("implements")).toBe(REL_COLORS.implements);
+    expect(relationColor("implementedBy")).toBe(REL_COLORS.implementedBy);
     expect(relationColor("unknown-adapter-kind")).toBeNull();
   });
 
