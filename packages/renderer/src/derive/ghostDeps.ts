@@ -10,7 +10,7 @@
 
 import type { GraphNode } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
-import { UNIT_CARD_KINDS, type BlockDeps } from "./blockDeps";
+import { isVisibleBlockDepEdge, UNIT_CARD_KINDS, type BlockDeps } from "./blockDeps";
 import { crossesPackageBoundary, graphEdgeCrossesPackage } from "./packageBoundary";
 
 /** What a ghost card shows: the symbol's qualified name, its home file, and its kind (glyph tint).
@@ -98,6 +98,9 @@ export function ghostDepWires(
     }
   };
   for (const edge of blockDeps.edges) {
+    if (!isVisibleBlockDepEdge(edge, visibleIds)) {
+      continue;
+    }
     const sourceVisible = nearestVisible(edge.source, visibleIds, index);
     const targetVisible = nearestVisible(edge.target, visibleIds, index);
     const weight = edge.weight ?? 1;

@@ -257,4 +257,42 @@ describe("expandAll / collapseAll — Logic-flow graph", () => {
     // default-expanded flipped → closed. Both are now collapsed.
     expect(store.getState().expandedLogic).toEqual(new Set(["loop-1"]));
   });
+
+  it("expandAll opens every visible occurrence of the selected target without touching peers", () => {
+    const store = freshStore();
+    store.setState({
+      viewMode: "logic",
+      logicSelected: "ts:src/callee.ts#run",
+      logicRfNodes: [
+        { id: "selected-call-1", type: "block", position: { x: 0, y: 0 }, data: { targetId: "ts:src/callee.ts#run", expandable: true, isExpanded: false, isContainer: false } },
+        { id: "selected-call-2", type: "block", position: { x: 0, y: 0 }, data: { targetId: "ts:src/callee.ts#run", expandable: true, isExpanded: false, isContainer: false } },
+        { id: "other-call", type: "block", position: { x: 0, y: 0 }, data: { targetId: "ts:src/other.ts#run", expandable: true, isExpanded: false, isContainer: false } },
+      ] as never,
+      expandedLogic: new Set(),
+    });
+
+    store.getState().expandAll();
+
+    expect(store.getState().expandedLogic).toEqual(new Set(["selected-call-1", "selected-call-2"]));
+  });
+
+  it("collapseAll closes only the selected occurrences and their open descendants", () => {
+    const store = freshStore();
+    store.setState({
+      viewMode: "logic",
+      logicSelected: "ts:src/callee.ts#run",
+      logicRfNodes: [
+        { id: "selected-call", type: "block", position: { x: 0, y: 0 }, data: { targetId: "ts:src/callee.ts#run", expandable: true, isExpanded: true, isContainer: true } },
+        { id: "selected-loop", type: "control", parentId: "selected-call", position: { x: 0, y: 0 }, data: { targetId: null, expandable: true, isExpanded: true, isContainer: true } },
+        { id: "other-call", type: "block", position: { x: 0, y: 0 }, data: { targetId: "ts:src/other.ts#run", expandable: true, isExpanded: true, isContainer: true } },
+      ] as never,
+      expandedLogic: new Set(["selected-call", "other-call"]),
+    });
+
+    store.getState().collapseAll();
+
+    // The selected call's default-collapsed override is removed; its default-open nested loop gets
+    // an override so it remains collapsed when the call is reopened. The unrelated call stays open.
+    expect(store.getState().expandedLogic).toEqual(new Set(["other-call", "selected-loop"]));
+  });
 });

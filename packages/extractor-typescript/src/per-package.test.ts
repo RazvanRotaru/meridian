@@ -190,6 +190,7 @@ describe("extractPerPackage cross-package resolution edge cases", () => {
       "packages/dep/src/index.ts",
       "export function provide(): number {\n  return 1;\n}\n" +
         "export class Registry {\n  static register(): number {\n    return 3;\n  }\n  handle(): number {\n    return 4;\n  }\n}\n" +
+        "export class BaseProvider {\n  get(): number { return 5; }\n}\n" +
         "export interface Provider {\n  get(): number;\n}\n",
     );
     w("packages/dep/src/deep.ts", "export function deep(): number {\n  return 2;\n}\n");
@@ -236,6 +237,13 @@ describe("extractPerPackage cross-package resolution edge cases", () => {
       "packages/iface/src/index.ts",
       'import type { Provider } from "@fix/dep";\nexport function useIface(p: Provider): number {\n  return p.get();\n}\n',
     );
+    w("packages/implementation/package.json", JSON.stringify({ name: "@fix/implementation" }));
+    w(
+      "packages/implementation/src/index.ts",
+      'import { BaseProvider, type Provider } from "@fix/dep";\n' +
+        "export class DirectProvider implements Provider {\n  get(): number { return 7; }\n}\n" +
+        "export class InheritedProvider extends BaseProvider implements Provider {}\n",
+    );
     edges = extractPerPackage({ root: edgeRoot }).edges;
   });
 
@@ -276,5 +284,25 @@ describe("extractPerPackage cross-package resolution edge cases", () => {
 
   it("resolves a method call on a parameter typed by a cross-package interface", () => {
     expect(resolved("calls", "ts:packages/iface/src/index.ts#useIface", "ts:packages/dep/src/index.ts#Provider.get")).toBe(true);
+  });
+
+  it("derives method implementation edges after stitching a sibling-package contract", () => {
+    expect(
+      resolved(
+        "implementedBy",
+        "ts:packages/dep/src/index.ts#Provider.get",
+        "ts:packages/implementation/src/index.ts#DirectProvider.get",
+      ),
+    ).toBe(true);
+  });
+
+  it("follows a stitched superclass edge to its inherited concrete implementation", () => {
+    expect(
+      resolved(
+        "implementedBy",
+        "ts:packages/dep/src/index.ts#Provider.get",
+        "ts:packages/dep/src/index.ts#BaseProvider.get",
+      ),
+    ).toBe(true);
   });
 });

@@ -57,7 +57,7 @@ import { EdgeInspectionDock } from "../EdgeInspectionDock";
 import { MINIMAP_NODE_CAP } from "./flowCanvasProps";
 import { ReadonlyGraphCanvas } from "./ReadonlyGraphCanvas";
 import { MapLod } from "./MapLod";
-import { ghostGroupInteractionOf, type ModuleNodeHandlers } from "./useModuleNodeInteractions";
+import type { ModuleNodeHandlers } from "./useModuleNodeInteractions";
 import { useWireHover } from "./useWireHover";
 import type { HighwayFlags } from "./surfaceSpec";
 import { BUNDLE_EDGE_TYPE } from "../../layout/edgeBundling";
@@ -96,6 +96,7 @@ import {
 import type { SurfaceEmphasisMode } from "../moduleMapHighlight";
 import type { LensRelationPolicy } from "../../graph/lensRelationPolicy";
 import { SurfaceInteractionScope } from "./SurfaceInteractionContext";
+import { BaseNodeActionScope, type BaseNodeModel } from "../nodes/BaseNode";
 import {
   createPaintFrameRetentionState,
   resolvePaintFrameRetention,
@@ -301,7 +302,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const showHighways = useBlueprint((state) => state.showHighways);
   const groupGhostsByParent = useBlueprint((state) => state.groupGhostsByParent);
   const edgeEvidenceOpen = useBlueprint((state) => state.codeView?.edgeEvidence !== undefined);
-  const { showEdgeEvidence, closeEdgeEvidence } = useBlueprintActions();
+  const { showEdgeEvidence, closeEdgeEvidence, toggleModuleExpand } = useBlueprintActions();
   const emphasisMode = props.emphasisMode ?? highlightMode;
   const groupGhosts = props.groupGhosts ?? groupGhostsByParent;
   const activeTrace = useMemo(
@@ -383,12 +384,9 @@ export function GraphSurface(props: GraphSurfaceProps) {
     props.positionRetentionKey ?? null,
     props.positionAdmissionReady ?? (props.busy === undefined),
   );
-  // Group disclosure is deliberately downstream of the shared paint chain. It injects the
-  // mount-local explicit-chevron callback without feeding a function back into derive/layout.
-  const displayedNodes = useMemo(
-    () => decorateGhostGroupToggles(retainedPaintedNodes, props.interactions.toggleGhostGroup),
-    [retainedPaintedNodes, props.interactions.toggleGhostGroup],
-  );
+  // The shared BaseNode action scope routes grouped ghosts through the mount-local interaction
+  // adapter, so paint data remains serializable and no callback is injected into derived nodes.
+  const displayedNodes = retainedPaintedNodes;
   const projectedRequestNodes = useMemo(
     () => requestGraphOverlay === null
       ? null
@@ -643,13 +641,28 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const surfaceNodeClick = props.readOnly
     ? (props.onToggleExpand === undefined ? undefined : LOCAL_DISCLOSURE_NODE_CLICK)
     : props.interactions.onNodeClick;
+  const baseToggleExpand = useCallback((model: BaseNodeModel) => {
+    const ghostGroupId = model.nodeType === "ghost" && typeof model.data.ghostGroupId === "string"
+      ? model.data.ghostGroupId
+      : null;
+    if (ghostGroupId !== null) {
+      props.interactions.toggleGhostGroup(ghostGroupId);
+      return;
+    }
+    const action = props.onToggleExpand ?? (props.readOnly ? null : toggleModuleExpand);
+    action?.(model.instanceId);
+  }, [props.interactions.toggleGhostGroup, props.onToggleExpand, props.readOnly, toggleModuleExpand]);
+  const baseCanExpand = props.onToggleExpand !== undefined || !props.readOnly;
 
   return (
+    <BaseNodeActionScope
+      toggleExpand={baseCanExpand ? baseToggleExpand : null}
+      navigateInto={props.readOnly ? null : props.interactions.navigateBaseNode ?? null}
+    >
     <SurfaceInteractionScope
       readOnly={props.readOnly === true}
       selectionOverride={props.selectionOverride ?? null}
       reviewProgressEnabled={nodeDiffEnabled}
-      onToggleExpand={props.onToggleExpand ?? null}
     >
     <div
       style={SURFACE_STYLE}
@@ -753,6 +766,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
       {props.busy ? <GraphLayoutIndicator {...props.busy} /> : null}
     </div>
     </SurfaceInteractionScope>
+    </BaseNodeActionScope>
   );
 }
 
@@ -847,23 +861,6 @@ function withSemanticDepth<T extends Node | Edge>(entry: T, depth: number): T {
     data: { ...(entry.data ?? {}), semanticDepth: depth },
     className: appendClass(appendClass(entry.className, SEMANTIC_LAYER_CLASS), semanticLayerClass(depth)),
   } as T;
-}
-
-/** Attach the explicit disclosure action only to grouped ghost parents. Exact ghosts and every
- * geometry/layout field retain object identity; only the matching parents' paint data is cloned. */
-export function decorateGhostGroupToggles(
-  nodes: Node[],
-  toggleGhostGroup: (groupId: string) => void,
-): Node[] {
-  let decorated: Node[] | null = null;
-  nodes.forEach((node, index) => {
-    if (ghostGroupInteractionOf(node) === null) {
-      return;
-    }
-    decorated ??= [...nodes];
-    decorated[index] = { ...node, data: { ...node.data, toggleGhostGroup } };
-  });
-  return decorated ?? nodes;
 }
 
 /** MiniMap and viewport virtualization switch at the same boundary: below it every canonical

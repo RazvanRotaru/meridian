@@ -98,6 +98,7 @@ function relationDescription(kind: string): string {
   if (kind === "instantiates") return "construction with new X()";
   if (kind === "extends") return "class or interface inheritance";
   if (kind === "implements") return "implements a contract";
+  if (kind === "implementedBy") return "a contract method's concrete implementation";
   if (kind === "references") return "a type or value dependency";
   if (kind === "imports") return "module dependency";
   if (kind === "renders") return "component composition";

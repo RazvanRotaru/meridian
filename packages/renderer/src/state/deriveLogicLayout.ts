@@ -35,10 +35,11 @@ export async function deriveLogicLayout(
   // A module mostly EXPORTS callables; its top-level load-flow is thin (often empty), so the
   // methods it defines never show as steps. When a module root is open (not a container dive),
   // ALSO render those definitions as a disconnected grid below the flow — hence no early return on
-  // an empty module flow, and definitions are declarations, not exec steps (no parent, no edges).
+  // an empty module flow. Collapsed declarations have no wires; an expanded declaration owns its
+  // callable's independently laid-out child flow and internal wires.
   if (!focus && index.nodesById.get(rootId)?.kind === "module") {
-    const defs = definitionGroups(rootId, flow.nodes, flows, index, ownerLookup);
-    return { nodes: [...flow.nodes, ...defs], edges: flow.edges };
+    const defs = await definitionGroups(rootId, flow.nodes, flows, index, ownerLookup, expandedLogic, options);
+    return { nodes: [...flow.nodes, ...defs.nodes], edges: [...flow.edges, ...defs.edges] };
   }
   return flow;
 }
@@ -68,9 +69,9 @@ async function layoutFlow(
   return toReactFlowLogic(laidOut, specById, spec.edges);
 }
 
-// The definition-frame geometry: uniform method cells packed into a COLS-wide grid INSIDE each
-// frame, all hand-positioned (NOT via ELK) — ELK would splay a 20-method group into one wide row,
-// and frames are structural groups, not exec nodes ELK routes wires through.
+// The definition-frame geometry: collapsed method cells are uniform; expanded cells grow around
+// their own ELK-laid-out callable flow. The surrounding grid remains hand-positioned — feeding a
+// 20-method declaration group to ELK would splay it into one wide row.
 const COLS = 4;
 const DEF_W = 200;
 const DEF_H = 52;
@@ -78,6 +79,10 @@ const GAP_X = 16;
 const GAP_Y = 14;
 const PAD = 14;
 const TITLE_H = 32;
+// Expanded definition cells reuse a root-level callable layout. Its first children already clear
+// the card header via ELK's root padding; retain a small trailing gutter around their far edges.
+const EXPANDED_RIGHT_PAD = 16;
+const EXPANDED_BOTTOM_PAD = 16;
 // Vertical gap between stacked frames, and the clear band below the load-flow before the first one.
 const GROUP_GAP = 44;
 const FLOW_GAP = 80;
@@ -91,6 +96,15 @@ interface DefGroup {
   defIds: string[];
 }
 
+interface LaidOutDefinition {
+  occurrenceId: string;
+  width: number;
+  height: number;
+  data: ReturnType<typeof definitionNodeData>;
+  children: LogicRfNode[];
+  edges: LogicReactFlowGraph["edges"];
+}
+
 /**
  * The module's defined callables as titled FRAMES stacked below the flow — one per owner
  * (object/class) plus a trailing "functions" frame for top-level functions — each holding its
@@ -98,39 +112,160 @@ interface DefGroup {
  * so the view's single-click selection (→ jump-to-flow ghosts) and double-click drill keep working
  * with no extra wiring. Emitted frame-BEFORE-children so React Flow sees a parent before its kids.
  */
-function definitionGroups(
+async function definitionGroups(
   moduleId: string,
   flowNodes: LogicRfNode[],
   flows: LogicFlows,
   index: GraphIndex,
   ownerLookup: OwnerLookup,
-): LogicRfNode[] {
-  const out: LogicRfNode[] = [];
+  expandedLogic: ReadonlySet<string>,
+  options: LogicGraphOptions & { nestByService: boolean },
+): Promise<LogicReactFlowGraph> {
+  const nodes: LogicRfNode[] = [];
+  const edges: LogicReactFlowGraph["edges"] = [];
   let frameY = flowBottom(flowNodes) + FLOW_GAP;
   for (const group of groupDefinitions(index, moduleId)) {
     const n = group.defIds.length;
+    if (n === 0) {
+      continue;
+    }
+    const frameId = `${moduleId}::defgroup/${group.parentId}`;
+    // Definition-owner frames follow the same default-XOR convention as Logic control containers:
+    // they preserve the historical open presentation, while membership in `expandedLogic` folds
+    // this particular occurrence. Keeping the child's overrides untouched means reopening restores
+    // exactly the callable cells that were expanded before their owner frame was collapsed.
+    const isExpanded = !expandedLogic.has(frameId);
+    const data: DefGroupData = {
+      targetId: null,
+      label: group.label,
+      kind: group.kind,
+      childCount: n,
+      expandable: true,
+      isExpanded,
+      isContainer: isExpanded,
+    };
+    if (!isExpanded) {
+      nodes.push({
+        id: frameId,
+        type: "defgroup",
+        position: { x: 0, y: frameY },
+        width: DEF_W,
+        height: TITLE_H,
+        data,
+      });
+      frameY += TITLE_H + GROUP_GAP;
+      continue;
+    }
+
+    const definitions = await Promise.all(
+      group.defIds.map((defId) => layoutDefinition(moduleId, defId, flows, index, ownerLookup, expandedLogic, options)),
+    );
     const cols = Math.min(COLS, n);
     const rows = Math.ceil(n / cols);
-    const width = 2 * PAD + cols * DEF_W + (cols - 1) * GAP_X;
-    const height = TITLE_H + 2 * PAD + rows * DEF_H + (rows - 1) * GAP_Y;
-    const frameId = `${moduleId}::defgroup/${group.parentId}`;
-    const data: DefGroupData = { targetId: null, label: group.label, kind: group.kind, childCount: n };
-    out.push({ id: frameId, type: "defgroup", position: { x: 0, y: frameY }, width, height, data });
-    group.defIds.forEach((defId, i) => {
-      out.push({
-        id: `${moduleId}::def/${defId}`,
+    // An expanded callable may be much larger than a collapsed neighbour. Size each grid column and
+    // row from its largest member so cells never overlap and collapsing deterministically restores
+    // the compact uniform grid.
+    const columnWidths = Array.from({ length: cols }, () => DEF_W);
+    const rowHeights = Array.from({ length: rows }, () => DEF_H);
+    definitions.forEach((definition, i) => {
+      const column = i % cols;
+      const row = Math.floor(i / cols);
+      columnWidths[column] = Math.max(columnWidths[column], definition.width);
+      rowHeights[row] = Math.max(rowHeights[row], definition.height);
+    });
+    const columnX = offsets(columnWidths, GAP_X);
+    const rowY = offsets(rowHeights, GAP_Y);
+    const width = 2 * PAD + sum(columnWidths) + (cols - 1) * GAP_X;
+    const height = TITLE_H + 2 * PAD + sum(rowHeights) + (rows - 1) * GAP_Y;
+    nodes.push({ id: frameId, type: "defgroup", position: { x: 0, y: frameY }, width, height, data });
+    definitions.forEach((definition, i) => {
+      nodes.push({
+        id: definition.occurrenceId,
         type: "block",
         parentId: frameId,
         extent: "parent",
-        position: { x: PAD + (i % cols) * (DEF_W + GAP_X), y: TITLE_H + PAD + Math.floor(i / cols) * (DEF_H + GAP_Y) },
-        width: DEF_W,
-        height: DEF_H,
-        data: definitionNodeData(defId, flows, index, ownerLookup),
+        position: { x: PAD + columnX[i % cols], y: TITLE_H + PAD + rowY[Math.floor(i / cols)] },
+        width: definition.width,
+        height: definition.height,
+        data: definition.data,
       });
+      // Parents must precede children in React Flow. `layoutDefinition` keeps the callable layout's
+      // own preorder intact and reparents only its roots, so nested loop/call/service frames survive.
+      nodes.push(...definition.children);
+      edges.push(...definition.edges);
     });
     frameY += height + GROUP_GAP;
   }
+  return { nodes, edges };
+}
+
+/** Lay out one module-definition occurrence. Definition ids are view-occurrence ids, while every
+ * child retains the callable graph's stable semantic id; only top-level children move under the
+ * occurrence. Edge ids need an occurrence namespace because every independent graph starts at e0. */
+async function layoutDefinition(
+  moduleId: string,
+  defId: string,
+  flows: LogicFlows,
+  index: GraphIndex,
+  ownerLookup: OwnerLookup,
+  expandedLogic: ReadonlySet<string>,
+  options: LogicGraphOptions & { nestByService: boolean },
+): Promise<LaidOutDefinition> {
+  const occurrenceId = `${moduleId}::def/${defId}`;
+  const data = definitionNodeData(defId, flows, index, ownerLookup, expandedLogic.has(occurrenceId));
+  if (!data.isExpanded) {
+    return { occurrenceId, width: DEF_W, height: DEF_H, data, children: [], edges: [] };
+  }
+
+  const flow = await layoutFlow(defId, flows, index, expandedLogic, options, ownerLookup);
+  const children = flow.nodes.map((node) => (
+    node.parentId === undefined ? { ...node, parentId: occurrenceId, extent: "parent" as const } : node
+  ));
+  const { width, height } = expandedDefinitionSize(children, occurrenceId);
+  return {
+    occurrenceId,
+    width,
+    height,
+    data,
+    children,
+    edges: flow.edges.map((edge) => ({ ...edge, id: `${occurrenceId}::${edge.id}` })),
+  };
+}
+
+/** The separately laid-out callable has no RF root node whose dimensions we can reuse. Its roots
+ * already contain every nested descendant, so their far edges are the definition container's safe
+ * size floor. Ignore non-finite layout values defensively rather than poisoning the whole grid. */
+function expandedDefinitionSize(nodes: LogicRfNode[], occurrenceId: string): { width: number; height: number } {
+  let right = 0;
+  let bottom = 0;
+  for (const node of nodes) {
+    if (node.parentId === occurrenceId) {
+      right = Math.max(right, safeNumber(node.position.x) + safeNumber(node.width));
+      bottom = Math.max(bottom, safeNumber(node.position.y) + safeNumber(node.height));
+    }
+  }
+  return {
+    width: Math.max(DEF_W, right + EXPANDED_RIGHT_PAD),
+    height: Math.max(DEF_H, bottom + EXPANDED_BOTTOM_PAD),
+  };
+}
+
+function safeNumber(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function offsets(sizes: number[], gap: number): number[] {
+  const out: number[] = [];
+  let current = 0;
+  for (const size of sizes) {
+    out.push(current);
+    current += size + gap;
+  }
   return out;
+}
+
+function sum(values: number[]): number {
+  return values.reduce((total, value) => total + value, 0);
 }
 
 /**

@@ -21,9 +21,26 @@ export const UNIT_CARD_KINDS: ReadonlySet<string> = new Set(["class", "interface
 /** The leaf code blocks drawn inside a file or expanded unit frame: callables and type definitions. */
 export const BLOCK_KINDS: ReadonlySet<string> = new Set(["function", "method", "typeAlias", "enum"]);
 
+/** Method-level `implementedBy` is an inverse presentation relationship, not an extra architecture
+ * coupling (the owning class→interface `implements` edge already contributes that metric). It still
+ * belongs in code-detail dependency wires so an expanded contract can point at each implementation. */
+const BLOCK_DEP_KINDS: ReadonlySet<string> = new Set([...COUPLING_KINDS, "implementedBy"]);
+
 export interface BlockDeps {
   /** Every coupling edge at its REAL endpoints, ready for `liftEdges` (built once). */
   edges: GraphEdge[];
+}
+
+/** Whether a raw dependency belongs in the current visible-frontier projection. Most relationship
+ * kinds may lift from hidden descendants to a visible ancestor. `implementedBy` is intentionally
+ * different: it is inverse method-level detail, so it only appears after its contract method is
+ * actually drawn (opening the owning interface). This shared gate keeps ordinary wires and both
+ * ghost projections from telling the class-level `implements` story twice while collapsed. */
+export function isVisibleBlockDepEdge(
+  edge: Pick<GraphEdge, "kind" | "source">,
+  visible: ReadonlySet<string>,
+): boolean {
+  return edge.kind !== "implementedBy" || visible.has(edge.source);
 }
 
 /** Filter the artifact's coupling edges once (the store caches the result). An `instantiates`
@@ -31,7 +48,7 @@ export interface BlockDeps {
  * wire should land on that block when it is drawn (lifting folds it back to the frame otherwise). */
 export function buildBlockDeps(index: GraphIndex): BlockDeps {
   const edges = index.edges
-    .filter((edge) => COUPLING_KINDS.has(edge.kind))
+    .filter((edge) => BLOCK_DEP_KINDS.has(edge.kind))
     .map((edge) => (edge.kind === "instantiates" ? { ...edge, target: constructionTarget(edge.target, index) } : edge));
   return { edges };
 }
@@ -76,7 +93,10 @@ export function liftDepEdges(
   isCode: (id: string) => boolean,
 ): LiftedDepEdge[] {
   const byPair = new Map<string, LiftedDepEdge>();
-  const lifted = liftEdges(blockDeps.edges, visible, index.parentOf)
+  // Once the interface opens, the implementation endpoint may still lift to its class until that
+  // class is opened too, which keeps progressive disclosure useful.
+  const eligible = blockDeps.edges.filter((edge) => isVisibleBlockDepEdge(edge, visible));
+  const lifted = liftEdges(eligible, visible, index.parentOf)
     .filter((edge) => isCode(edge.source) || isCode(edge.target))
     .filter((edge) => !index.isWithinFocus(edge.source, edge.target) && !index.isWithinFocus(edge.target, edge.source));
   for (const edge of lifted) {

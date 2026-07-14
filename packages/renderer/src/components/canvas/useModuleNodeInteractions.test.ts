@@ -7,6 +7,7 @@ import {
   ghostInspectionSelectionsToDrop,
   ghostPaintSeedOverride,
   ghostGroupInteractionOf,
+  navigationNodeForBaseNode,
   navigationForNode,
   retainsGhostPaintContext,
   selectionGestureFor,
@@ -165,6 +166,31 @@ describe("double-click navigation", () => {
   const map = moduleSurfaceSpec("modules")!;
   const service = moduleSurfaceSpec("call")!;
   const ui = moduleSurfaceSpec("ui")!;
+
+  it("uses the artifact target for decorated occurrences and the occurrence for view-only steps", () => {
+    const base = {
+      nodeType: "block",
+      kind: "function",
+      label: "run",
+      childCount: 1,
+      canExpand: true,
+      expanded: false,
+      canNavigate: true,
+      data: { callable: true },
+    };
+
+    expect(navigationNodeForBaseNode({
+      ...base,
+      instanceId: "flow::call/2",
+      targetId: "ts:app.ts#run",
+    })).toMatchObject({ id: "ts:app.ts#run", type: "block" });
+    expect(navigationNodeForBaseNode({
+      ...base,
+      instanceId: "step:ts:app.ts#run:2",
+      targetId: null,
+      nodeType: "step",
+    })).toMatchObject({ id: "step:ts:app.ts#run:2", type: "step" });
+  });
 
   it("dives only through each surface's declared navigable containers", () => {
     expect(navigationForNode(node("ts:src", "package"), map)).toEqual({ kind: "navigate-into", id: "ts:src" });

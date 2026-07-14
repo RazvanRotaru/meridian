@@ -282,26 +282,26 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
       const members = activeCanvas.locator(`[data-id^="${CLASS}."]:visible`);
       const methodSteps = activeCanvas.locator(`[data-id^="step:${CLASS}."]:visible`);
       await expect.poll(() => container.count(), { timeout: 20_000 }).toBe(1);
-      expect(await container.getByLabel("Collapse", { exact: true }).count(), `${directContainer} open on ${lens}`).toBe(1);
+      expect(await nodeDisclosure(container, true).count(), `${directContainer} open on ${lens}`).toBe(1);
       expect(await members.count(), `CartService members remain closed on ${lens}`).toBe(0);
 
       // Replaying that parent action is deterministic on every graph lens: collapse removes the
       // class, re-expand restores the direct class only, and a separate class expansion reveals
       // its methods. This is the browser-level guard for the one-level expansion contract.
-      await container.getByLabel("Collapse", { exact: true }).dispatchEvent("click");
+      await nodeDisclosure(container, true).dispatchEvent("click");
       await expect.poll(() => visibleNode(activeCanvas, CLASS).count(), { timeout: 20_000 }).toBe(0);
-      await visibleNode(activeCanvas, directContainer).getByLabel("Expand", { exact: true }).dispatchEvent("click");
+      await nodeDisclosure(visibleNode(activeCanvas, directContainer), false).dispatchEvent("click");
       await expect.poll(() => visibleNode(activeCanvas, CLASS).count(), { timeout: 20_000 }).toBe(1);
       expect(await members.count(), `parent expansion does not cascade on ${lens}`).toBe(0);
 
-      await visibleNode(activeCanvas, CLASS).getByLabel("Expand", { exact: true }).dispatchEvent("click");
+      await nodeDisclosure(visibleNode(activeCanvas, CLASS), false).dispatchEvent("click");
       await expect.poll(() => members.count(), { timeout: 20_000 }).toBeGreaterThan(2);
       expect(await methodSteps.count(), `class expansion does not cascade into method flows on ${lens}`).toBe(0);
 
       // `addItem` has a deterministic extracted flow in the fixture. Opening it proves the next
       // explicit action reveals exactly its direct steps, while the branch nested in that flow stays
       // closed until its own chevron is used.
-      await visibleNode(activeCanvas, METHOD).getByLabel("Expand", { exact: true }).dispatchEvent("click");
+      await nodeDisclosure(visibleNode(activeCanvas, METHOD), false).dispatchEvent("click");
       await expect.poll(() => visibleNode(activeCanvas, METHOD_STEP).count(), { timeout: 20_000 }).toBe(1);
       expect(
         await activeCanvas.locator(`[data-id^="step:step:${METHOD}:"]:visible`).count(),
@@ -323,11 +323,11 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
     // back to a collapsed file, extract that file, and replay the exact hierarchy once more so a
     // regression cannot hide in the overlay-specific projection/layout path.
     const sourceCanvas = page.locator('[data-graph-surface="source"] .react-flow');
-    await visibleNode(sourceCanvas, METHOD).getByLabel("Collapse", { exact: true }).dispatchEvent("click");
+    await nodeDisclosure(visibleNode(sourceCanvas, METHOD), true).dispatchEvent("click");
     await expect.poll(() => visibleNode(sourceCanvas, METHOD_STEP).count(), { timeout: 20_000 }).toBe(0);
-    await visibleNode(sourceCanvas, CLASS).getByLabel("Collapse", { exact: true }).dispatchEvent("click");
+    await nodeDisclosure(visibleNode(sourceCanvas, CLASS), true).dispatchEvent("click");
     await expect.poll(() => sourceCanvas.locator(`[data-id^="${CLASS}."]:visible`).count(), { timeout: 20_000 }).toBe(0);
-    await visibleNode(sourceCanvas, FILE).getByLabel("Collapse", { exact: true }).dispatchEvent("click");
+    await nodeDisclosure(visibleNode(sourceCanvas, FILE), true).dispatchEvent("click");
     await expect.poll(() => visibleNode(sourceCanvas, CLASS).count(), { timeout: 20_000 }).toBe(0);
     await visibleNode(sourceCanvas, FILE).dispatchEvent("click");
     await expectSoleSelection(page, FILE);
@@ -336,15 +336,15 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
     const minimalCanvas = page.locator('[data-graph-surface="minimal"] .react-flow');
     await expect.poll(() => visibleNode(minimalCanvas, FILE).count(), { timeout: 20_000 }).toBe(1);
     expect(await visibleNode(minimalCanvas, CLASS).count()).toBe(0);
-    await visibleNode(minimalCanvas, FILE).getByLabel("Expand", { exact: true }).dispatchEvent("click");
+    await nodeDisclosure(visibleNode(minimalCanvas, FILE), false).dispatchEvent("click");
     await expect.poll(() => visibleNode(minimalCanvas, CLASS).count(), { timeout: 20_000 }).toBe(1);
     const minimalMembers = minimalCanvas.locator(`[data-id^="${CLASS}."]:visible`);
     expect(await minimalMembers.count(), "file expansion does not cascade in the extracted graph").toBe(0);
-    await visibleNode(minimalCanvas, CLASS).getByLabel("Expand", { exact: true }).dispatchEvent("click");
+    await nodeDisclosure(visibleNode(minimalCanvas, CLASS), false).dispatchEvent("click");
     await expect.poll(() => minimalMembers.count(), { timeout: 20_000 }).toBeGreaterThan(2);
     const minimalMethodSteps = minimalCanvas.locator(`[data-id^="step:${CLASS}."]:visible`);
     expect(await minimalMethodSteps.count(), "class expansion does not cascade in the extracted graph").toBe(0);
-    await visibleNode(minimalCanvas, METHOD).getByLabel("Expand", { exact: true }).dispatchEvent("click");
+    await nodeDisclosure(visibleNode(minimalCanvas, METHOD), false).dispatchEvent("click");
     await expect.poll(() => visibleNode(minimalCanvas, METHOD_STEP).count(), { timeout: 20_000 }).toBe(1);
     expect(
       await minimalCanvas.locator(`[data-id^="step:step:${METHOD}:"]:visible`).count(),
@@ -367,9 +367,16 @@ function dive(page: Page, nodeId: string): Promise<void> {
   return page.locator(`[data-id="${nodeId}"]`).dispatchEvent("dblclick");
 }
 
-/** The in-card expand chevron of one drawn card (aria-label Expand; stopPropagation — never selects). */
+/** The shared in-card expand chevron of one drawn card (stopPropagation — never selects). */
 function chevronOf(page: Page, nodeId: string): Locator {
-  return page.locator(`[data-id="${nodeId}"]`).getByLabel("Expand", { exact: true });
+  return nodeDisclosure(page.locator(`[data-id="${nodeId}"]`), false);
+}
+
+/** BaseNode owns this stable disclosure contract across Map, Service, UI, and Minimal surfaces. */
+function nodeDisclosure(node: Locator, expanded: boolean): Locator {
+  return node.locator(
+    `button[data-base-node-disclosure="true"][aria-expanded="${expanded ? "true" : "false"}"]`,
+  );
 }
 
 /** A lens segment button inside the Lens segmented control (ViewModeToggle). */

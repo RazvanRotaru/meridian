@@ -77,7 +77,9 @@ function VisibleReviewCommentNodeIndicators({
             isVisible
             position={Position.Bottom}
             align="end"
-            offset={-30 * zoom}
+            // Keep the interactive indicator just outside the card. Tucking it into the bottom-right
+            // corner overlaps BaseNode's shared source/disclosure rail on compact callable cards.
+            offset={2 * zoom}
             className={toolbarClass(depth)}
             style={toolbarStyle(zoom)}
             data-review-comment-node-id={node.id}

@@ -334,15 +334,21 @@ export function collectModuleDefinitions(index: GraphIndex, moduleId: string): s
  * `targetId`/`expandable` path an ordinary call block uses. `expandable` reflects whether that
  * callable actually ships a flow to dive into; provenance reads as `<owner> › <name>` (the owning
  * object/class/module, then the callable) so a bare method name always shows where it lives.
+ * `isExpanded` is the occurrence-level state supplied by the module layout; it is ignored for a
+ * callable without a flow so stale toggles cannot manufacture empty containers.
  */
 export function definitionNodeData(
   callableId: string,
   flows: LogicFlows,
   index: GraphIndex,
   ownerLookup: OwnerLookup = NO_OWNER,
+  isExpanded = false,
 ): LogicNodeData {
   const node = index.nodesById.get(callableId);
   const expandable = (flows[callableId]?.length ?? 0) > 0;
+  // A stale expansion override must never turn a declaration with no drawable flow into an empty
+  // container. Definition occurrences default collapsed, just like ordinary call blocks.
+  const expanded = expandable && isExpanded;
   return {
     logicKind: "call",
     definition: true,
@@ -351,10 +357,10 @@ export function definitionNodeData(
     resolution: "resolved",
     navigable: true,
     expandable,
-    isExpanded: false,
-    isContainer: false,
-    // Definition cells use their own fixed grid geometry; a missing child flow must not turn a
-    // declaration into the compact call-site vocabulary.
+    isExpanded: expanded,
+    isContainer: expanded,
+    // Definition cells use their declaration-grid geometry (and grow around an expanded flow); a
+    // missing child flow must not turn a declaration into the compact call-site vocabulary.
     compact: false,
     callScope: "internal",
     greyed: false,

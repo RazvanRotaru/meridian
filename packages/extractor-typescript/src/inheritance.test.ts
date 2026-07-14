@@ -13,6 +13,18 @@ import { createTypeScriptExtractor } from "./index";
 const SOURCE = [
   "export interface Animal { name(): string; }",
   "export interface Dog extends Animal { bark(): void; }",
+  "export interface Worker { run(): string; }",
+  "export interface ManagedWorker extends Worker { stop(): void; }",
+  "export class WorkerImpl implements ManagedWorker { run(): string { return 'ok'; } stop(): void {} }",
+  "export interface PersistedWorker { persist(value: string): string; }",
+  "export class WorkerBase { persist(value: string): string { return value; } }",
+  "export class InheritedWorker extends WorkerBase implements PersistedWorker {}",
+  "export interface Formatter { format(value: string): string; }",
+  "export class FormatterImpl implements Formatter {",
+  "  static format(value: string): string { return value; }",
+  "  format(value: string): string;",
+  "  format(value: string): string { return value; }",
+  "}",
   "export class Base {}",
   "export class Sub extends Base {}",
   "export function topcall(cb: () => void) { cb(); }",
@@ -52,6 +64,34 @@ describe("inheritance edges", () => {
 
   it("still emits an extends edge between classes", () => {
     expect(hasEdge(result, "extends", "Sub", "Base")).toBe(true);
+  });
+
+  it("emits method-level implementedBy edges from interface contracts to concrete methods", () => {
+    expect(hasEdge(result, "implements", "WorkerImpl", "ManagedWorker")).toBe(true);
+    expect(hasEdge(result, "implementedBy", "ManagedWorker.stop", "WorkerImpl.stop")).toBe(true);
+    // A class implementing a derived interface also fulfills methods inherited from its base.
+    expect(hasEdge(result, "implementedBy", "Worker.run", "WorkerImpl.run")).toBe(true);
+  });
+
+  it("resolves an implementation inherited from a superclass", () => {
+    expect(hasEdge(result, "implementedBy", "PersistedWorker.persist", "WorkerBase.persist")).toBe(true);
+  });
+
+  it("targets exactly the compatible instance body, not static lookalikes or overload signatures", () => {
+    const formatter = result.nodes.find((node) => node.qualifiedName === "Formatter");
+    const contract = result.nodes.find(
+      (node) => node.parentId === formatter?.id && node.displayName === "format",
+    );
+    const implementationEdges = result.edges.filter(
+      (edge) => edge.kind === "implementedBy" && edge.source === contract?.id,
+    );
+    expect(implementationEdges).toHaveLength(1);
+    const target = result.nodes.find((node) => node.id === implementationEdges[0]?.target);
+    expect(target?.parentId).toBe(result.nodes.find((node) => node.qualifiedName === "FormatterImpl")?.id);
+    expect(target?.tags ?? []).not.toContain("static");
+    expect(target?.location.startLine).toBe(
+      SOURCE.split("\n").findIndex((line) => line === "  format(value: string): string { return value; }") + 1,
+    );
   });
 });
 

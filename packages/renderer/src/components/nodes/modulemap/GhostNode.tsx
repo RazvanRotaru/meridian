@@ -15,11 +15,11 @@ import { useSurfaceNodeSelected, useSurfaceReadOnly } from "../../canvas/Surface
 import { accentForKind } from "../../../theme/kindColors";
 import type { GhostData } from "../../../derive/ghostDeps";
 import { cardSelectedStyle, MONO, PIN, SELECT_ACCENT } from "./frameChrome";
+import { BaseNode, type BaseNodeModel } from "../BaseNode";
 
 type GhostViewData = GhostData & {
   ghostRole?: "parent-anchor";
   ghostExpanded?: boolean;
-  toggleGhostGroup?: (groupId: string) => void;
 };
 type GhostRfNode = Node<GhostViewData, "ghost">;
 
@@ -31,6 +31,7 @@ function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
   const isGroup = data.ghostRole === "parent-anchor" && typeof data.ghostGroupId === "string" && groupMembers.length > 0;
   const groupExpanded = isGroup && data.ghostExpanded === true;
   const accent = accentForKind(data.ghostKind);
+  const glyph = ghostGlyph(data.ghostKind);
   // Plain selection wears the ghost's OWN accent (heavier); a BEACON — a selected call step's
   // definition — keeps the green marker so it stands out as the thing pointed at.
   const style = selected ? cardSelectedStyle(GHOST, accent) : data.beacon ? GHOST_BEACON : GHOST;
@@ -39,56 +40,62 @@ function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
     : isGroup
       ? `${data.label}, parent of ${groupMembers.length} related ghost nodes; click to select, double-click to reveal`
       : `${data.label}, ${data.ghostKind}, off-screen definition; double-click to reveal`;
+  const model: BaseNodeModel = {
+    instanceId: id,
+    targetId: id,
+    nodeType: "ghost",
+    kind: data.ghostKind,
+    label: data.label,
+    childCount: groupMembers.length,
+    canExpand: isGroup && !readOnly,
+    expanded: groupExpanded,
+    canNavigate: !readOnly,
+    data,
+  };
+  const domAttributes: React.HTMLAttributes<HTMLDivElement> = {
+    // The card remains one focusable selection surface, but it is a group rather than a button:
+    // grouped ghosts contain BaseNode's native disclosure button and nested interactive roles are
+    // otherwise ambiguous to assistive technology.
+    role: readOnly ? undefined : "group",
+    tabIndex: readOnly ? undefined : 0,
+    "aria-label": readOnly ? actionLabel : `${selected ? "Selected, " : ""}${actionLabel}`,
+    onMouseEnter: () => isGroup && setPreviewed(true),
+    onMouseLeave: () => setPreviewed(false),
+    onFocus: () => isGroup && setPreviewed(true),
+    onBlur: () => setPreviewed(false),
+    onKeyDown: readOnly ? undefined : (event) => {
+      if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+        event.preventDefault();
+        event.stopPropagation();
+        // React Flow owns the node click handler on the wrapper. A native click from the focused
+        // card bubbles through that same path, so keyboard and pointer inspection stay identical.
+        event.currentTarget.click();
+      }
+    },
+  };
   return (
-    <div
+    <BaseNode
+      model={model}
       className="lod-tint"
-      role={readOnly ? undefined : "button"}
-      tabIndex={readOnly ? undefined : 0}
-      aria-pressed={readOnly ? undefined : selected}
-      aria-label={actionLabel}
-      onMouseEnter={() => isGroup && setPreviewed(true)}
-      onMouseLeave={() => setPreviewed(false)}
-      onFocus={() => isGroup && setPreviewed(true)}
-      onBlur={() => setPreviewed(false)}
-      onKeyDown={readOnly ? undefined : (event) => {
-        if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
-          event.preventDefault();
-          event.stopPropagation();
-          // React Flow owns the node click handler on the wrapper. A native click from the focused
-          // card bubbles through that same path, so keyboard and pointer inspection stay identical.
-          event.currentTarget.click();
-        }
-      }}
       style={{ ...style, ...(isGroup ? GROUP_FRAME : null), "--lod-accent": accent } as React.CSSProperties}
       title={readOnly
         ? `${data.label} — related code outside this context`
         : isGroup
         ? `${data.label} — ${groupMembers.length} related ghosts; double-click to reveal the parent definition`
         : `${data.label} — off-screen; double-click to reveal it`}
+      headerStyle={HEAD}
+      labelStyle={LABEL}
+      labelContent={middleTruncate(data.label)}
+      leading={glyph === null ? undefined : <span style={{ ...GLYPH, color: accent }}>{glyph}</span>}
+      ports={(
+        <>
+          <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+          <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+          <span className="lod-place">{middleTruncate(data.label)}</span>
+        </>
+      )}
+      domAttributes={domAttributes}
     >
-      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-      <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-      <span className="lod-place">{middleTruncate(data.label)}</span>
-      <div className="lod-card-body" style={HEAD}>
-        {isGroup && !readOnly ? (
-          <button
-            type="button"
-            style={DISCLOSURE}
-            aria-label={groupExpanded ? `Collapse related definitions for ${data.label}` : `Expand related definitions for ${data.label}`}
-            aria-expanded={groupExpanded}
-            title={groupExpanded ? "Collapse related definitions" : "Expand related definitions"}
-            onClick={(event) => {
-              event.stopPropagation();
-              data.toggleGhostGroup?.(data.ghostGroupId as string);
-            }}
-            onDoubleClick={(event) => event.stopPropagation()}
-          >
-            {groupExpanded ? "▾" : "▸"}
-          </button>
-        ) : null}
-        {ghostGlyph(data.ghostKind) !== null && <span style={{ ...GLYPH, color: accent }}>{ghostGlyph(data.ghostKind)}</span>}
-        <span style={LABEL}>{middleTruncate(data.label)}</span>
-      </div>
       {data.context ? <div className="lod-card-body" style={CONTEXT}>{data.context}</div> : null}
       {isGroup && previewed && !readOnly ? (
         <div role="tooltip" style={GROUP_PREVIEW}>
@@ -103,7 +110,7 @@ function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
           ))}
         </div>
       ) : null}
-    </div>
+    </BaseNode>
   );
 }
 
@@ -151,22 +158,6 @@ const GHOST: React.CSSProperties = {
 };
 const GHOST_BEACON: React.CSSProperties = { ...GHOST, borderColor: SELECT_ACCENT };
 const HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 5, minWidth: 0 };
-const DISCLOSURE: React.CSSProperties = {
-  flexShrink: 0,
-  width: 16,
-  height: 16,
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  padding: 0,
-  border: "none",
-  borderRadius: 3,
-  background: "transparent",
-  color: "#9AA4B2",
-  cursor: "pointer",
-  font: "inherit",
-  fontSize: 11,
-};
 const GLYPH: React.CSSProperties = { fontSize: 9.5, flexShrink: 0, opacity: 0.8 };
 const LABEL: React.CSSProperties = {
   minWidth: 0,

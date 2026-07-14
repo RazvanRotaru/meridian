@@ -307,6 +307,9 @@ export interface BlueprintState {
   /** Request-occurrence/static-child ids toggled away from Exec's defaults. Empty means every
    * top-level request occurrence is collapsed; nested call/control ids retain Exec's XOR semantics. */
   requestFlowExpansionOverrides: Set<string>;
+  /** Static explorer/review-flow occurrence ids toggled away from Logic's defaults. This pane owns
+   * an isolated override set so expanding here never mutates the separately mounted Logic lens. */
+  flowPaneExpansionOverrides: Set<string>;
   flowPaneRfNodes: LogicRfNode[];
   flowPaneRfEdges: LogicRfEdge[];
   flowPaneLayoutStatus: LayoutStatus;
@@ -618,6 +621,8 @@ export interface BlueprintState {
   selectFlowPaneTarget(nodeId: NodeId | null): void;
   /** Expand/collapse one occurrence (or one namespaced static child) in the request split only. */
   toggleRequestFlowExpand(nodeId: string): void;
+  /** Expand/collapse one occurrence in the static explorer/review split only. */
+  toggleFlowPaneExpand(nodeId: string): void;
   flowPaneRelayout(): Promise<void>;
   /** The logic flow charted for a callable, or undefined when it has none (empty body). */
   logicFlowFor(nodeId: string): FlowStep[] | undefined;
@@ -1606,6 +1611,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     flowPaneOrigin: null,
     requestFlowTraceId: null,
     requestFlowExpansionOverrides: new Set<string>(),
+    flowPaneExpansionOverrides: new Set<string>(),
     flowPaneRfNodes: [],
     flowPaneRfEdges: [],
     flowPaneLayoutStatus: "idle",
@@ -1784,6 +1790,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           flowPaneOrigin: null,
           requestFlowTraceId: null,
           requestFlowExpansionOverrides: new Set<string>(),
+          flowPaneExpansionOverrides: new Set<string>(),
           flowPaneRfNodes: [],
           flowPaneRfEdges: [],
           flowPaneLayoutStatus: "idle",
@@ -1843,6 +1850,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           flowPaneOrigin: "explorer",
           requestFlowTraceId: null,
           requestFlowExpansionOverrides: new Set<string>(),
+          flowPaneExpansionOverrides: new Set<string>(),
           logicSelected: null,
           moduleSelected: related,
           moduleExpanded,
@@ -1879,6 +1887,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         flowPaneOrigin: "explorer",
         requestFlowTraceId: null,
         requestFlowExpansionOverrides: new Set<string>(),
+        flowPaneExpansionOverrides: new Set<string>(),
       });
       // Both module lenses the explorer serves (Map + UI) bulk-reveal the flow's modules in the
       // SHARED module spaces — the phase-C unification retired the ui lens's private expansion.
@@ -1977,6 +1986,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         flowPaneOrigin: "request",
         requestFlowTraceId: trace.traceId,
         requestFlowExpansionOverrides: new Set<string>(),
+        flowPaneExpansionOverrides: new Set<string>(),
         flowPaneRfNodes: [],
         flowPaneRfEdges: [],
         flowPaneLayoutStatus: "laying-out",
@@ -1991,11 +2001,28 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       const node = state.flowPaneRfNodes.find((candidate) => candidate.id === nodeId);
       const data = node?.data as Partial<LogicNodeData> | undefined;
-      if (data?.expandable !== true) {
+      if (data?.expandable !== true || !data.childCount) {
         return;
       }
       set({
         requestFlowExpansionOverrides: withToggled(state.requestFlowExpansionOverrides, nodeId),
+        flowPaneLayoutStatus: "laying-out",
+      });
+      void get().flowPaneRelayout();
+    },
+
+    toggleFlowPaneExpand(nodeId) {
+      const state = get();
+      if (state.flowPaneOrigin !== "explorer" || state.flowPaneLayoutStatus !== "ready") {
+        return;
+      }
+      const node = state.flowPaneRfNodes.find((candidate) => candidate.id === nodeId);
+      const data = node?.data as Partial<LogicNodeData> | undefined;
+      if (data?.expandable !== true || !data.childCount) {
+        return;
+      }
+      set({
+        flowPaneExpansionOverrides: withToggled(state.flowPaneExpansionOverrides, nodeId),
         flowPaneLayoutStatus: "laying-out",
       });
       void get().flowPaneRelayout();
@@ -2137,6 +2164,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         flowPaneOrigin,
         requestFlowTraceId,
         requestFlowExpansionOverrides,
+        flowPaneExpansionOverrides,
         index,
         artifact,
       } = get();
@@ -2175,7 +2203,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const sequence = ++flowPaneLayoutSeq;
       set({ flowPaneLayoutStatus: "laying-out" });
-      const graph = await deriveFlowPaneLayout(flowSelection, flows, index);
+      const graph = await deriveFlowPaneLayout(flowSelection, flows, index, flowPaneExpansionOverrides);
       if (flowPaneLayoutSeq !== sequence || get().flowSelection !== flowSelection) {
         return;
       }
@@ -3138,6 +3166,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               reviewLitNodeIds: null,
               reviewSelectedId: null,
               flowSelection: null,
+              flowPaneExpansionOverrides: new Set<string>(),
               logicSelected: null,
               flowPaneRfNodes: [] as LogicRfNode[],
               flowPaneRfEdges: [] as LogicRfEdge[],
@@ -3166,6 +3195,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             reviewLitNodeIds: null,
             reviewSelectedId: null,
             flowSelection: null,
+            flowPaneExpansionOverrides: new Set<string>(),
             logicSelected: null,
             flowPaneRfNodes: [] as LogicRfNode[],
             flowPaneRfEdges: [] as LogicRfEdge[],
@@ -3261,6 +3291,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         ...(reviewFlowOpen
           ? {
               flowSelection: null,
+              flowPaneExpansionOverrides: new Set<string>(),
               logicSelected: null,
               flowPaneRfNodes: [] as LogicRfNode[],
               flowPaneRfEdges: [] as LogicRfEdge[],
@@ -3560,6 +3591,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // A file/unit click switches back to graph review; the bottom split belongs to a selected
         // logic flow and must not linger with a now-unrelated pane selection.
         flowSelection: null,
+        flowPaneExpansionOverrides: new Set<string>(),
         logicSelected: null,
         flowPaneRfNodes: [],
         flowPaneRfEdges: [],
@@ -3599,6 +3631,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewSelectedId: file.moduleId,
         reviewLitNodeIds: new Set(lit),
         flowSelection: null,
+        flowPaneExpansionOverrides: new Set<string>(),
         logicSelected: null,
         flowPaneRfNodes: [],
         flowPaneRfEdges: [],
@@ -3646,6 +3679,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewSelectedId: null,
         reviewLitNodeIds: null,
         flowSelection: null,
+        flowPaneExpansionOverrides: new Set<string>(),
         logicSelected: null,
         flowPaneRfNodes: [],
         flowPaneRfEdges: [],
@@ -3692,6 +3726,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewSelectedId: null,
         reviewLitNodeIds: null,
         flowSelection: null,
+        flowPaneExpansionOverrides: new Set<string>(),
         logicSelected: null,
         flowPaneRfNodes: [],
         flowPaneRfEdges: [],
@@ -3807,6 +3842,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         flowPaneOrigin: null,
         requestFlowTraceId: null,
         requestFlowExpansionOverrides: new Set<string>(),
+        flowPaneExpansionOverrides: new Set<string>(),
         flowPaneRfNodes: [],
         flowPaneRfEdges: [],
         flowPaneLayoutStatus: "idle",
@@ -5958,6 +5994,7 @@ function requestFlowPaneReset(state?: BlueprintState): Partial<BlueprintState> {
     flowPaneOrigin: null,
     requestFlowTraceId: null,
     requestFlowExpansionOverrides: new Set<string>(),
+    flowPaneExpansionOverrides: new Set<string>(),
     flowPaneRfNodes: [],
     flowPaneRfEdges: [],
     flowPaneLayoutStatus: "idle",
@@ -6270,7 +6307,12 @@ function applyScoped(
     // toggle/expand/collapse actions route through.
     void relayoutActiveModuleSurface(get, activity);
   } else if (state.viewMode === "logic") {
-    const ids = pick(logicVisibleNodes(state), [null]);
+    // Logic selects by callable target, while its expansion set is keyed by visible occurrence.
+    // Scope every action to all call sites carrying the selected target; no selection retains the
+    // canvas-wide fallback used by the existing generic commands.
+    const selectedOccurrences = logicSelectedOccurrenceIds(state);
+    const scope = state.logicSelected === null ? [null] : selectedOccurrences;
+    const ids = pick(logicVisibleNodes(state), scope);
     if (ids.length === 0) {
       return;
     }
@@ -6309,6 +6351,17 @@ function logicVisibleNodes(state: BlueprintState): ExpandableNode[] {
       const data = rfNode.data as { expandable: boolean; isExpanded?: boolean };
       return { id: rfNode.id, parentId: rfNode.parentId ?? null, isContainer: data.expandable, isExpanded: data.isExpanded === true };
     });
+}
+
+/** Visible React Flow occurrence ids for Logic's target-based selection. The same callable can be
+ * invoked more than once, so selection actions deliberately operate on every matching call site. */
+function logicSelectedOccurrenceIds(state: BlueprintState): string[] {
+  if (state.logicSelected === null) {
+    return [];
+  }
+  return state.logicRfNodes
+    .filter((rfNode) => rfNode.data.targetId === state.logicSelected)
+    .map((rfNode) => rfNode.id);
 }
 
 /** The minimal overlay's CURRENT rendered containment frontier. Ghosts carry no expansion facts and

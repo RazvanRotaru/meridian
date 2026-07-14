@@ -165,6 +165,10 @@ function callEdge(source: string, target: string): GraphEdge {
   return { id: `calls:${source}->${target}`, source, target, kind: "calls", resolution: "resolved" } as GraphEdge;
 }
 
+function implementedByEdge(source: string, target: string): GraphEdge {
+  return { id: `implementedBy:${source}->${target}`, source, target, kind: "implementedBy", resolution: "resolved" } as GraphEdge;
+}
+
 const SVC_FILE_ID = "ts:pkg/src/svc.ts";
 const ORDER_UNIT_ID = `${SVC_FILE_ID}#OrderService`;
 const PLACE_ID = `${ORDER_UNIT_ID}.place`;
@@ -287,6 +291,57 @@ describe("deriveModuleTree — code level (the merged composition level)", () =>
     expect(iface?.isContainer).toBe(false);
     expect(iface?.isExpanded).toBe(false);
     expect(iface?.data as UnitCardData).toMatchObject({ memberCount: 0, isContainer: false, isExpanded: false, isFrame: false });
+  });
+
+  it("expands a method-bearing interface and wires each contract method to its implementation", () => {
+    const { nodes, edges } = unitFixture();
+    const contractId = `${SVC_FILE_ID}#OrderContract`;
+    const contractMethodId = `${contractId}.place`;
+    const contractNodes = [
+      ...nodes,
+      node(contractId, "interface", SVC_FILE_ID, "OrderContract"),
+      node(contractMethodId, "method", contractId, "place"),
+    ];
+    const contractEdges = [...edges, implementedByEdge(contractMethodId, PLACE_ID)];
+
+    // Keep the inverse member relationship out of the collapsed unit view: the class-level
+    // `implements` wire already owns that story until the contract method itself is visible.
+    const collapsed = treeOf(contractNodes, contractEdges, "ts:pkg", [SVC_FILE_ID]);
+    expect(collapsed.edges.some((edge) => edge.depKind === "implementedBy")).toBe(false);
+
+    // Progressive disclosure still works when only the interface is open: its method points to the
+    // collapsed implementing class, then lands on the exact method once that class opens too.
+    const contractOnly = treeOf(contractNodes, contractEdges, "ts:pkg", [SVC_FILE_ID, contractId]);
+    expect(contractOnly.edges.find((edge) => edge.depKind === "implementedBy")).toMatchObject({
+      source: contractMethodId,
+      target: ORDER_UNIT_ID,
+    });
+
+    const expanded = treeOf(
+      contractNodes,
+      contractEdges,
+      "ts:pkg",
+      [SVC_FILE_ID, ORDER_UNIT_ID, contractId],
+    );
+
+    const contract = expanded.nodes.find((entry) => entry.id === contractId);
+    expect(contract).toMatchObject({ kind: "unit", isContainer: true, isExpanded: true, childCount: 1 });
+    expect(contract?.data as UnitCardData).toMatchObject({
+      unitKind: "interface",
+      memberCount: 1,
+      isContainer: true,
+      isExpanded: true,
+      isFrame: true,
+    });
+    expect(expanded.nodes.find((entry) => entry.id === contractMethodId)).toMatchObject({
+      kind: "block",
+      parentId: contractId,
+    });
+    expect(expanded.edges.find((edge) => edge.depKind === "implementedBy")).toMatchObject({
+      source: contractMethodId,
+      target: PLACE_ID,
+      relationKind: "implementedBy",
+    });
   });
 
   it("folds a file's typed deps onto its card even while collapsed (alongside the import wire)", () => {

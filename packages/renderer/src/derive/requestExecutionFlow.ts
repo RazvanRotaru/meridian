@@ -86,6 +86,7 @@ export function deriveRequestExecutionFlow(
       node: runtimeNode(spanMomentId, spanLabel(span, index), targetId, runtime, {
         expandable,
         isExpanded,
+        childCount: staticSteps?.length ?? 0,
         nestedChildCount: graft?.nodes.length ?? 0,
       }),
       ...(graft === null ? {} : { nestedNodes: graft.nodes, nestedEdges: graft.edges }),
@@ -324,7 +325,7 @@ function runtimeNode(
   label: string,
   targetId: string | null,
   runtime: RequestRuntimeEvidence,
-  options: { expandable?: boolean; isExpanded?: boolean; nestedChildCount?: number } = {},
+  options: { expandable?: boolean; isExpanded?: boolean; childCount?: number; nestedChildCount?: number } = {},
 ): LogicNodeSpec {
   const badgeRows = Math.min(runtime.badges?.length ?? 0, 3);
   const expandable = options.expandable ?? false;
@@ -343,7 +344,10 @@ function runtimeNode(
     callScope: targetId === null ? null : "internal",
     greyed: false,
     provenance: null,
-    childCount: nestedChildCount,
+    // Capability is stable across collapsed/expanded presentation. Keep the source body's potential
+    // child count on the card; nestedChildCount only decides whether this particular layout frames
+    // rendered children. Otherwise a collapsed expandable request span looks like an empty leaf.
+    childCount: options.childCount ?? nestedChildCount,
     runtime,
   };
   const node: LogicNodeSpec = {

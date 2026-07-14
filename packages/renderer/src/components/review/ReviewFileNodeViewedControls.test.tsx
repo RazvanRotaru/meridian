@@ -140,7 +140,6 @@ function renderReviewNodes({ fingerprint, enabled = true }: { fingerprint?: stri
         readOnly={false}
         selectionOverride={null}
         reviewProgressEnabled={enabled}
-        onToggleExpand={null}
       >
         <ReviewNodeViewedChrome nodeId={FILE_ID} scope="file" borderRadius={8}>
           <div>file</div>

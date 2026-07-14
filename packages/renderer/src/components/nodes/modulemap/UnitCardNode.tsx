@@ -11,7 +11,8 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useSurfaceNodeSelected } from "../../canvas/SurfaceInteractionContext";
 import { accentForKind, kindLetter } from "../../../theme/kindColors";
 import type { UnitCardData } from "../../../derive/moduleLevel";
-import { cardSelectedStyle, CodeButton, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
+import { BaseNode, type BaseNodeModel } from "../BaseNode";
+import { cardSelectedStyle, CodeButton, frameSelectedStyle, frameStyle, frameTitleBarStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, useNodeDiff } from "./changed";
 import { ReviewNodeViewedChrome } from "../../review/ReviewFileNodeViewedControls";
 
@@ -21,27 +22,40 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
   const selected = useSurfaceNodeSelected(id);
   const diff = useNodeDiff(id);
   const accent = accentForKind(data.unitKind);
-  const chevron = data.isContainer ? (
-    <ExpandChevron id={id} isExpanded={data.isExpanded} collapsedTitle={`Expand — ${data.memberCount} member(s) in this unit`} />
-  ) : null;
-
-  // A single-letter kind glyph (f/c/m/i/…) in the kind's colour is the ONE kind marker — no text tag.
-  const identity = (
+  const model: BaseNodeModel = {
+    instanceId: id,
+    targetId: id,
+    nodeType: "unit",
+    kind: data.unitKind,
+    label: data.label,
+    childCount: data.memberCount,
+    canExpand: data.isContainer && data.memberCount > 0,
+    expanded: data.isExpanded,
+    canNavigate: true,
+    data,
+  };
+  const handles = (
     <>
-      <span style={{ ...GLYPH, color: accent }}>{kindLetter(data.unitKind)}</span>
-      <span style={LABEL} title={id}>{data.label}</span>
-      <CodeButton id={id} />
+      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+      <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
     </>
   );
+  // A single-letter kind glyph (f/c/m/i/…) in the kind's colour is the ONE kind marker — no text tag.
+  const glyph = <span style={{ ...GLYPH, color: accent }}>{kindLetter(data.unitKind)}</span>;
 
   if (data.isFrame) {
     return (
       <ReviewNodeViewedChrome nodeId={id} scope="unit" borderRadius={8}>
-        <div style={borderFor(frameStyle(accent), frameSelectedStyle(accent), selected, diff)}>
-          <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-          <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-          <FrameTitleBar chevron={chevron} status={diff.status}>{identity}</FrameTitleBar>
-        </div>
+        <BaseNode
+          model={model}
+          style={borderFor(frameStyle(accent), frameSelectedStyle(accent), selected, diff)}
+          headerStyle={frameTitleBarStyle(diff.status)}
+          labelStyle={LABEL}
+          labelTitle={id}
+          leading={glyph}
+          actions={<CodeButton id={id} />}
+          ports={handles}
+        />
       </ReviewNodeViewedChrome>
     );
   }
@@ -49,36 +63,47 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
   if (data.isContainer) {
     return (
       <ReviewNodeViewedChrome nodeId={id} scope="unit" borderRadius={8}>
-        <div style={borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff)}>
-          <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-          <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-          <div style={{ ...ACCENT_BAR, background: accent }} />
-          <div style={INNER_STACK}>
-            <div style={HEADER}>
-              {chevron}
-              <span style={{ ...GLYPH, color: accent }}>{kindLetter(data.unitKind)}</span>
-              <span style={LABEL} title={id}>{data.label}</span>
-              <CodeButton id={id} />
-            </div>
-            <div style={META}>
-              <span style={MEMBERS} title={`${data.memberCount} member declaration(s)`}>{data.memberCount} members</span>
-            </div>
+        <BaseNode
+          model={model}
+          style={borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff)}
+          headerStyle={HEADER}
+          labelStyle={LABEL}
+          labelTitle={id}
+          leading={glyph}
+          actions={<CodeButton id={id} />}
+          ports={(
+            <>
+              {handles}
+              <div style={{ ...ACCENT_BAR, background: accent }} />
+            </>
+          )}
+          contentStyle={INNER_STACK}
+        >
+          <div style={META}>
+            <span style={MEMBERS} title={`${data.memberCount} member declaration(s)`}>{data.memberCount} members</span>
           </div>
-        </div>
+        </BaseNode>
       </ReviewNodeViewedChrome>
     );
   }
 
   return (
     <ReviewNodeViewedChrome nodeId={id} scope="unit" borderRadius={8}>
-      <div style={borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff)}>
-        <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-        <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-        <div style={{ ...ACCENT_BAR, background: accent }} />
-        <div style={INNER}>
-          {identity}
-        </div>
-      </div>
+      <BaseNode
+        model={model}
+        style={borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff)}
+        headerStyle={INNER}
+        labelStyle={LABEL}
+        labelTitle={id}
+        leading={glyph}
+        actions={<CodeButton id={id} />}
+        ports={(
+          <>
+            {handles}
+            <div style={{ ...ACCENT_BAR, background: accent }} />
+          </>
+        )}
+      />
     </ReviewNodeViewedChrome>
   );
 }

@@ -62,7 +62,7 @@ export function collapseToDepth(nodes: GraphNode[], edges: GraphEdge[], depth: E
   const liftTo = nearestSurviving(surviving, parentOf);
   return {
     nodes: nodes.filter((node) => surviving.has(node.id)),
-    edges: relinkEdges(edges, liftTo, parentOf),
+    edges: relinkEdges(edges, liftTo, parentOf, surviving),
   };
 }
 
@@ -88,9 +88,15 @@ function relinkEdges(
   edges: GraphEdge[],
   liftTo: (id: string) => string | null,
   parentOf: ReadonlyMap<string, string | null>,
+  surviving: ReadonlySet<string>,
 ): GraphEdge[] {
   const merged = new Map<string, GraphEdge>();
   for (const edge of edges) {
+    // This relationship is specifically method-to-method. Lifting it creates a reversed,
+    // duplicate class/interface relationship beside the ordinary `implements` edge.
+    if (edge.kind === "implementedBy" && (!surviving.has(edge.source) || !surviving.has(edge.target))) {
+      continue;
+    }
     const source = liftTo(edge.source);
     const target = relinkTarget(edge.target, parentOf, liftTo);
     if (!source || !target || source === target) {

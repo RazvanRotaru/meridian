@@ -16,8 +16,14 @@ export interface CollapseResult {
 export function collapseToDepth(nodes: GraphNode[], edges: GraphEdge[], depth: ExtractionDepth): CollapseResult {
   const maxRank = DEPTH_RANK[depth];
   const survivors = nodes.filter((node) => rankOfKind(node.kind) <= maxRank);
-  const lift = ancestorLifter(nodes, new Set(survivors.map((node) => node.id)));
-  const repointed = edges.map((edge) => repoint(edge, lift)).filter(isEdge);
+  const survivorIds = new Set(survivors.map((node) => node.id));
+  const lift = ancestorLifter(nodes, survivorIds);
+  // A method-level implementation edge has no useful coarser equivalent: lifting it would
+  // duplicate the ordinary class -> interface `implements` relationship in reverse.
+  const repointed = edges
+    .filter((edge) => edge.kind !== "implementedBy" || (survivorIds.has(edge.source) && survivorIds.has(edge.target)))
+    .map((edge) => repoint(edge, lift))
+    .filter(isEdge);
   return { nodes: survivors, edges: mergeDuplicates(repointed) };
 }
 

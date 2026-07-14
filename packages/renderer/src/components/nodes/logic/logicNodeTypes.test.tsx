@@ -1,6 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import type { NodeProps } from "@xyflow/react";
 import { describe, expect, it } from "vitest";
-import { ChangedTag, withChanged } from "./logicNodeTypes";
+import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
+import { BaseNodeActionScope } from "../BaseNode";
+import { ChangedTag, logicNodeTypes, withChanged } from "./logicNodeTypes";
 
 describe("logic PR-change paint", () => {
   it("washes the whole node, keeps external hatching, and strengthens a dimmed changed node", () => {
@@ -47,5 +50,32 @@ describe("logic PR-change paint", () => {
     expect(markup).toContain('data-pr-change-marker="true"');
     expect(markup).toContain("background:#E5484D33");
     expect(markup).toContain("Δ");
+  });
+});
+
+describe("Logic definition-owner frame", () => {
+  it("uses BaseNode's trailing disclosure for the shared owner-frame expansion contract", () => {
+    const DefGroup = logicNodeTypes.defgroup;
+    const data: DefGroupData = {
+      targetId: null,
+      label: "Repository",
+      kind: "interface",
+      childCount: 3,
+      expandable: true,
+      isExpanded: true,
+      isContainer: true,
+    };
+    const props = { id: "module::defgroup/interface", data } as NodeProps<LogicRfNode>;
+    const markup = renderToStaticMarkup(
+      <BaseNodeActionScope toggleExpand={() => undefined}>
+        <DefGroup {...props} />
+      </BaseNodeActionScope>,
+    );
+
+    expect(markup).toContain('data-base-node="true"');
+    expect(markup).toContain('data-base-node-kind="interface"');
+    expect(markup).toContain('aria-expanded="true"');
+    expect(markup.match(/data-base-node-disclosure/g)).toHaveLength(1);
+    expect(markup.indexOf("INTERFACE")).toBeLessThan(markup.indexOf("data-base-node-disclosure"));
   });
 });

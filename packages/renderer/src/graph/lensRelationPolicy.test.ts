@@ -125,6 +125,7 @@ describe("built-in lens policies", () => {
       "imports",
       "extends",
       "implements",
+      "implementedBy",
       "instantiates",
       "sends",
       "handles",
@@ -145,7 +146,7 @@ describe("built-in lens policies", () => {
       layoutRole: "primary",
       highwayWeight: 5,
     });
-    for (const kind of ["extends", "implements", "instantiates"]) {
+    for (const kind of ["extends", "implements", "implementedBy", "instantiates"]) {
       expect(isRelationVisible(SERVICE_RELATION_POLICY, kind), kind).toBe(true);
       expect(relationParticipatesInLayout(SERVICE_RELATION_POLICY, kind), kind).toBe(true);
     }

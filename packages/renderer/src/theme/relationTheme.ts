@@ -26,6 +26,7 @@ const TOKEN_COLORS: Readonly<Record<RelationStyleToken, string>> = {
 const EXACT_COLORS: Readonly<Record<string, string>> = {
   extends: REL_COLORS.extends,
   implements: REL_COLORS.implements,
+  implementedBy: REL_COLORS.implementedBy,
 };
 
 export function relationColor(kind: string | null | undefined): string | null {

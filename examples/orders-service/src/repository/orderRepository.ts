@@ -1,7 +1,14 @@
 import type { Order } from "../domain/order.js";
 
+/** Persistence contract. Expanding it in Meridian reveals the methods and their implementations. */
+export interface OrderStore {
+  save(order: Order): void;
+  findById(id: string): Order | undefined;
+  count(): number;
+}
+
 /** Stores orders and reads them back. In-memory stand-in for a database. */
-export class OrderRepository {
+export class OrderRepository implements OrderStore {
   private readonly byId = new Map<string, Order>();
 
   /** Persist an order so it can be looked up later. */

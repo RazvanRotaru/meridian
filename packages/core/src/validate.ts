@@ -29,7 +29,7 @@ const KNOWN_NODE_KINDS = new Set([
 ]);
 const KNOWN_EDGE_KINDS = new Set([
   "registers", "binds", "provides", "injects", "owns", "aliases",
-  "calls", "references", "imports", "extends", "implements", "instantiates", "renders",
+  "calls", "references", "imports", "extends", "implements", "implementedBy", "instantiates", "renders",
   "sends", "handles",
 ]);
 

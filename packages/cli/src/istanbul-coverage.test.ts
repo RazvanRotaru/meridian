@@ -129,6 +129,26 @@ describe("importIstanbulCoverage", () => {
     expect(result.files).toEqual({});
   });
 
+  it("ignores boundary containers that have no source path", () => {
+    const graph = artifact();
+    graph.nodes.push({
+      id: "ext:__external__",
+      kind: "external",
+      qualifiedName: "External",
+      displayName: "External",
+      parentId: null,
+      location: { file: "", startLine: 1 },
+    });
+
+    const result = importIstanbulCoverage(
+      { "/repo/src/order.ts": fileCoverage("/repo/src/order.ts") },
+      graph,
+      "/repo",
+    );
+
+    expect(Object.keys(result.files)).toEqual(["src/order.ts"]);
+  });
+
   it("refuses an ambiguous suffix rather than guessing a graph file", () => {
     try {
       importIstanbulCoverage(

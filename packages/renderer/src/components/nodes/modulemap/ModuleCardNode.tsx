@@ -2,7 +2,7 @@
  * A file card for the Map lens: one source file (meridian `module`) as a compact card showing
  * its name, a category chip (UI / Utilities / Config / App), and its afferent/efferent import counts.
  * The blast-radius root wears an "ENTRY" badge. A file that declares units (classes/interfaces/
- * objects) carries the same chevron as a group card: expanding turns the card into a transparent
+ * objects) carries the same disclosure as a group card: expanding turns the card into a transparent
  * frame whose unit cards nest inside — the merged Service-composition level. A green ring marks the
  * selected card — read from the store, mirroring how the composition and logic nodes show theirs.
  */
@@ -18,7 +18,8 @@ import { UnitCardNode } from "./UnitCardNode";
 import { BlockNode } from "./BlockNode";
 import { StepNode } from "./StepNode";
 import { GhostNode } from "./GhostNode";
-import { cardSelectedStyle, CodeButton, ExpandChevron, FrameTitleBar, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
+import { BaseNode, type BaseNodeModel } from "../BaseNode";
+import { cardSelectedStyle, CodeButton, frameSelectedStyle, frameStyle, frameTitleBarStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, useNodeDiff } from "./changed";
 import { CHANGED_COLORS } from "../../../theme/changedColors";
 import { CommonsChips } from "./CommonsChips";
@@ -40,60 +41,85 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
   // Every file wears the neutral file-family accent; its CATEGORY is carried by the text chip alone,
   // so category never competes for a hue with the relationship (caller/callee) or kind palettes.
   const accent = FILE_FRAME_ACCENT;
-  const chevron = data.isContainer ? (
-    <ExpandChevron id={id} isExpanded={data.isExpanded} collapsedTitle={`Expand — ${data.unitCount} declaration(s) in this file`} />
-  ) : null;
   const entryBadge = data.isEntry ? <span style={ENTRY_BADGE} title="Blast-radius root">ENTRY</span> : null;
+  const model: BaseNodeModel = {
+    instanceId: id,
+    targetId: id,
+    nodeType: "file",
+    kind: "file",
+    label: data.label,
+    childCount: data.unitCount,
+    canExpand: data.isContainer && data.unitCount > 0,
+    expanded: data.isExpanded,
+    canNavigate: true,
+    data,
+  };
+  const handles = (
+    <>
+      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+      <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+    </>
+  );
 
   if (data.isExpanded) {
     return (
       <ReviewNodeViewedChrome nodeId={id} scope="file" borderRadius={8}>
-        <div style={borderFor(frameStyle(FILE_FRAME_ACCENT), frameSelectedStyle(FILE_FRAME_ACCENT), selected, diff)}>
-          <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-          <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-          <FrameTitleBar chevron={chevron} status={diff.status}>
-            <DiffStat delta={delta} />
-            <span className="lod-label" style={LABEL} title={data.fullPath}>{data.label}</span>
+        <BaseNode
+          model={model}
+          style={borderFor(frameStyle(FILE_FRAME_ACCENT), frameSelectedStyle(FILE_FRAME_ACCENT), selected, diff)}
+          headerStyle={frameTitleBarStyle(diff.status)}
+          labelStyle={LABEL}
+          labelTitle={data.fullPath}
+          leading={<DiffStat delta={delta} />}
+          actions={(
             <span className="lod-hide" style={CONTENTS}>
               {entryBadge}
               <CodeButton id={id} />
               <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
             </span>
-          </FrameTitleBar>
-        </div>
+          )}
+          ports={handles}
+        />
       </ReviewNodeViewedChrome>
     );
   }
 
   return (
     <ReviewNodeViewedChrome nodeId={id} scope="file" borderRadius={8}>
-      <div className="lod-tint" style={{ ...borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff), "--lod-accent": accent } as React.CSSProperties}>
-        <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-        <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
-        <div className="lod-rail" style={{ ...ACCENT_BAR, background: accent }} />
-        <span className="lod-place">{data.label}</span>
-        <div className="lod-card-body" style={INNER}>
-          <div style={HEADER}>
-            <DiffStat delta={delta} />
-            <span style={LABEL} title={data.fullPath}>{data.label}</span>
-            <span className="lod-hide" style={CONTENTS}>
-              {entryBadge}
-              <CodeButton id={id} />
-            </span>
-            {chevron}
-          </div>
-          <div style={META}>
-            <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
-            <span style={COUNTS} title={`${data.inCount} importer(s) · ${data.outCount} import(s)`}>
-              <span style={COUNT_MUTED}>in</span>
-              <span style={COUNT_VALUE}>{data.inCount}</span>
-              <span style={COUNT_MUTED}>out</span>
-              <span style={COUNT_VALUE}>{data.outCount}</span>
-            </span>
-            <CommonsChips chips={data.commonsChips} />
-          </div>
+      <BaseNode
+        model={model}
+        className="lod-tint"
+        style={{ ...borderFor(CARD, cardSelectedStyle(CARD, accent), selected, diff), "--lod-accent": accent } as React.CSSProperties}
+        headerStyle={HEADER}
+        labelStyle={LABEL}
+        labelTitle={data.fullPath}
+        leading={<DiffStat delta={delta} />}
+        actions={(
+          <span className="lod-hide" style={CONTENTS}>
+            {entryBadge}
+            <CodeButton id={id} />
+          </span>
+        )}
+        ports={(
+          <>
+            {handles}
+            <div className="lod-rail" style={{ ...ACCENT_BAR, background: accent }} />
+            <span className="lod-place">{data.label}</span>
+          </>
+        )}
+        contentStyle={INNER}
+      >
+        <div style={META}>
+          <span style={{ ...CHIP, color: accent, borderColor: accent }}>{data.category.toUpperCase()}</span>
+          <span style={COUNTS} title={`${data.inCount} importer(s) · ${data.outCount} import(s)`}>
+            <span style={COUNT_MUTED}>in</span>
+            <span style={COUNT_VALUE}>{data.inCount}</span>
+            <span style={COUNT_MUTED}>out</span>
+            <span style={COUNT_VALUE}>{data.outCount}</span>
+          </span>
+          <CommonsChips chips={data.commonsChips} />
         </div>
-      </div>
+      </BaseNode>
     </ReviewNodeViewedChrome>
   );
 }

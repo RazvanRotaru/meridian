@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.1.0",
-  "generatedAt": "2026-07-13T15:43:24.872Z",
+  "generatedAt": "2026-07-14T09:21:24.841Z",
   "generator": {
     "name": "meridian",
     "version": "meridian@0.1.0 (ts-morph@28)"
@@ -28,6 +28,19 @@
       "parentId": null,
       "location": {
         "file": "src",
+        "startLine": 1,
+        "endLine": 1
+      }
+    },
+    {
+      "id": "ts:test-runtime",
+      "kind": "package",
+      "qualifiedName": "test-runtime",
+      "displayName": "test-runtime",
+      "summary": null,
+      "parentId": null,
+      "location": {
+        "file": "test-runtime",
         "startLine": 1,
         "endLine": 1
       }
@@ -150,6 +163,19 @@
       }
     },
     {
+      "id": "ts:vitest.coverage.config.ts",
+      "kind": "module",
+      "qualifiedName": "vitest.coverage.config.ts",
+      "displayName": "vitest.coverage.config.ts",
+      "summary": null,
+      "parentId": null,
+      "location": {
+        "file": "vitest.coverage.config.ts",
+        "startLine": 1,
+        "endLine": 21
+      }
+    },
+    {
       "id": "ts:src/index.ts",
       "kind": "module",
       "qualifiedName": "src/index.ts",
@@ -185,6 +211,22 @@
           "buildOrdersApp"
         ]
       }
+    },
+    {
+      "id": "ts:test-runtime/orderService.vitest.test.ts",
+      "kind": "module",
+      "qualifiedName": "test-runtime/orderService.vitest.test.ts",
+      "displayName": "orderService.vitest.test.ts",
+      "summary": null,
+      "parentId": "ts:test-runtime",
+      "location": {
+        "file": "test-runtime/orderService.vitest.test.ts",
+        "startLine": 1,
+        "endLine": 22
+      },
+      "tags": [
+        "test"
+      ]
     },
     {
       "id": "ts:src/__tests__/orderService.test.ts",
@@ -937,7 +979,7 @@
       "location": {
         "file": "src/repository/orderRepository.ts",
         "startLine": 1,
-        "endLine": 22
+        "endLine": 29
       }
     },
     {
@@ -949,8 +991,8 @@
       "parentId": "ts:src/repository/orderRepository.ts",
       "location": {
         "file": "src/repository/orderRepository.ts",
-        "startLine": 4,
-        "endLine": 21
+        "startLine": 11,
+        "endLine": 28
       },
       "tags": [
         "export"
@@ -965,8 +1007,8 @@
       "parentId": "ts:src/repository/orderRepository.ts#OrderRepository",
       "location": {
         "file": "src/repository/orderRepository.ts",
-        "startLine": 8,
-        "endLine": 10
+        "startLine": 15,
+        "endLine": 17
       },
       "signature": "save(order: Order): void",
       "tags": [
@@ -990,8 +1032,8 @@
       "parentId": "ts:src/repository/orderRepository.ts#OrderRepository",
       "location": {
         "file": "src/repository/orderRepository.ts",
-        "startLine": 13,
-        "endLine": 15
+        "startLine": 20,
+        "endLine": 22
       },
       "signature": "findById(id: string): Order | undefined",
       "tags": [
@@ -1015,8 +1057,8 @@
       "parentId": "ts:src/repository/orderRepository.ts#OrderRepository",
       "location": {
         "file": "src/repository/orderRepository.ts",
-        "startLine": 18,
-        "endLine": 20
+        "startLine": 25,
+        "endLine": 27
       },
       "signature": "count(): number",
       "tags": [
@@ -1027,6 +1069,88 @@
         "codeFunction": "count",
         "spanNameHints": [
           "OrderRepository.count",
+          "count"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/repository/orderRepository.ts#OrderStore",
+      "kind": "interface",
+      "qualifiedName": "OrderStore",
+      "displayName": "OrderStore",
+      "summary": "Persistence contract.",
+      "parentId": "ts:src/repository/orderRepository.ts",
+      "location": {
+        "file": "src/repository/orderRepository.ts",
+        "startLine": 4,
+        "endLine": 8
+      },
+      "tags": [
+        "export"
+      ]
+    },
+    {
+      "id": "ts:src/repository/orderRepository.ts#OrderStore.save",
+      "kind": "method",
+      "qualifiedName": "OrderStore.save",
+      "displayName": "save",
+      "summary": null,
+      "parentId": "ts:src/repository/orderRepository.ts#OrderStore",
+      "location": {
+        "file": "src/repository/orderRepository.ts",
+        "startLine": 5,
+        "endLine": 5
+      },
+      "signature": "save(order: Order): void",
+      "telemetry": {
+        "codeNamespace": "OrderStore",
+        "codeFunction": "save",
+        "spanNameHints": [
+          "OrderStore.save",
+          "save"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/repository/orderRepository.ts#OrderStore.findById",
+      "kind": "method",
+      "qualifiedName": "OrderStore.findById",
+      "displayName": "findById",
+      "summary": null,
+      "parentId": "ts:src/repository/orderRepository.ts#OrderStore",
+      "location": {
+        "file": "src/repository/orderRepository.ts",
+        "startLine": 6,
+        "endLine": 6
+      },
+      "signature": "findById(id: string): Order | undefined",
+      "telemetry": {
+        "codeNamespace": "OrderStore",
+        "codeFunction": "findById",
+        "spanNameHints": [
+          "OrderStore.findById",
+          "findById"
+        ]
+      }
+    },
+    {
+      "id": "ts:src/repository/orderRepository.ts#OrderStore.count",
+      "kind": "method",
+      "qualifiedName": "OrderStore.count",
+      "displayName": "count",
+      "summary": null,
+      "parentId": "ts:src/repository/orderRepository.ts#OrderStore",
+      "location": {
+        "file": "src/repository/orderRepository.ts",
+        "startLine": 7,
+        "endLine": 7
+      },
+      "signature": "count(): number",
+      "telemetry": {
+        "codeNamespace": "OrderStore",
+        "codeFunction": "count",
+        "spanNameHints": [
+          "OrderStore.count",
           "count"
         ]
       }
@@ -2639,9 +2763,324 @@
           "assertLineIsSane"
         ]
       }
+    },
+    {
+      "id": "ext:__external__",
+      "kind": "external",
+      "qualifiedName": "External",
+      "displayName": "External",
+      "summary": "dependencies that leave the analyzed code — libraries, builtins, dynamic targets",
+      "parentId": null,
+      "location": {
+        "file": "",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:node:url#fileURLToPath",
+      "kind": "external",
+      "qualifiedName": "fileURLToPath",
+      "displayName": "fileURLToPath",
+      "summary": "external · node:url",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "node:url",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:typescript/lib/lib.dom.d.ts#URL",
+      "kind": "external",
+      "qualifiedName": "URL",
+      "displayName": "URL",
+      "summary": "external · typescript/lib/lib.dom.d.ts",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "typescript/lib/lib.dom.d.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:typescript/lib/lib.dom.d.ts#info",
+      "kind": "external",
+      "qualifiedName": "info",
+      "displayName": "info",
+      "summary": "external · typescript/lib/lib.dom.d.ts",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "typescript/lib/lib.dom.d.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:typescript/lib/lib.dom.d.ts#setTimeout",
+      "kind": "external",
+      "qualifiedName": "setTimeout",
+      "displayName": "setTimeout",
+      "summary": "external · typescript/lib/lib.dom.d.ts",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "typescript/lib/lib.dom.d.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:typescript/lib/lib.dom.d.ts#timeStamp",
+      "kind": "external",
+      "qualifiedName": "timeStamp",
+      "displayName": "timeStamp",
+      "summary": "external · typescript/lib/lib.dom.d.ts",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "typescript/lib/lib.dom.d.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:typescript/lib/lib.es2015.collection.d.ts#Map",
+      "kind": "external",
+      "qualifiedName": "Map",
+      "displayName": "Map",
+      "summary": "external · typescript/lib/lib.es2015.collection.d.ts",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "typescript/lib/lib.es2015.collection.d.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:typescript/lib/lib.es2015.collection.d.ts#get",
+      "kind": "external",
+      "qualifiedName": "get",
+      "displayName": "get",
+      "summary": "external · typescript/lib/lib.es2015.collection.d.ts",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "typescript/lib/lib.es2015.collection.d.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:typescript/lib/lib.es2015.collection.d.ts#set",
+      "kind": "external",
+      "qualifiedName": "set",
+      "displayName": "set",
+      "summary": "external · typescript/lib/lib.es2015.collection.d.ts",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "typescript/lib/lib.es2015.collection.d.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:typescript/lib/lib.es2015.iterable.d.ts#all",
+      "kind": "external",
+      "qualifiedName": "all",
+      "displayName": "all",
+      "summary": "external · typescript/lib/lib.es2015.iterable.d.ts",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "typescript/lib/lib.es2015.iterable.d.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:typescript/lib/lib.es2020.promise.d.ts#allSettled",
+      "kind": "external",
+      "qualifiedName": "allSettled",
+      "displayName": "allSettled",
+      "summary": "external · typescript/lib/lib.es2020.promise.d.ts",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "typescript/lib/lib.es2020.promise.d.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:typescript/lib/lib.es5.d.ts#Error",
+      "kind": "external",
+      "qualifiedName": "Error",
+      "displayName": "Error",
+      "summary": "external · typescript/lib/lib.es5.d.ts",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "typescript/lib/lib.es5.d.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:typescript/lib/lib.es5.d.ts#Pick",
+      "kind": "external",
+      "qualifiedName": "Pick",
+      "displayName": "Pick",
+      "summary": "external · typescript/lib/lib.es5.d.ts",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "typescript/lib/lib.es5.d.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "external",
+      "qualifiedName": "Promise",
+      "displayName": "Promise",
+      "summary": "external · typescript/lib/lib.es5.d.ts",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "typescript/lib/lib.es5.d.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:typescript/lib/lib.es5.d.ts#String",
+      "kind": "external",
+      "qualifiedName": "String",
+      "displayName": "String",
+      "summary": "external · typescript/lib/lib.es5.d.ts",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "typescript/lib/lib.es5.d.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:typescript/lib/lib.es5.d.ts#forEach",
+      "kind": "external",
+      "qualifiedName": "forEach",
+      "displayName": "forEach",
+      "summary": "external · typescript/lib/lib.es5.d.ts",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "typescript/lib/lib.es5.d.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:typescript/lib/lib.es5.d.ts#reduce",
+      "kind": "external",
+      "qualifiedName": "reduce",
+      "displayName": "reduce",
+      "summary": "external · typescript/lib/lib.es5.d.ts",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "typescript/lib/lib.es5.d.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:typescript/lib/lib.es5.d.ts#round",
+      "kind": "external",
+      "qualifiedName": "round",
+      "displayName": "round",
+      "summary": "external · typescript/lib/lib.es5.d.ts",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "typescript/lib/lib.es5.d.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:typescript/lib/lib.es5.d.ts#toFixed",
+      "kind": "external",
+      "qualifiedName": "toFixed",
+      "displayName": "toFixed",
+      "summary": "external · typescript/lib/lib.es5.d.ts",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "typescript/lib/lib.es5.d.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:vitest#describe",
+      "kind": "external",
+      "qualifiedName": "describe",
+      "displayName": "describe",
+      "summary": "external · vitest",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "vitest",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:vitest#it",
+      "kind": "external",
+      "qualifiedName": "it",
+      "displayName": "it",
+      "summary": "external · vitest",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "vitest",
+        "startLine": 1
+      }
+    },
+    {
+      "id": "ext:vitest/config#defineConfig",
+      "kind": "external",
+      "qualifiedName": "defineConfig",
+      "displayName": "defineConfig",
+      "summary": "external · vitest/config",
+      "parentId": "ext:__external__",
+      "location": {
+        "file": "vitest/config",
+        "startLine": 1
+      }
     }
   ],
   "edges": [
+    {
+      "id": "calls@ts:vitest.coverage.config.ts|ext:node:url#fileURLToPath",
+      "source": "ts:vitest.coverage.config.ts",
+      "target": "ext:node:url#fileURLToPath",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "vitest.coverage.config.ts",
+          "line": 5,
+          "col": 21,
+          "endLine": 5,
+          "endCol": 65
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:vitest.coverage.config.ts|ext:vitest/config#defineConfig",
+      "source": "ts:vitest.coverage.config.ts",
+      "target": "ext:vitest/config#defineConfig",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "vitest.coverage.config.ts",
+          "line": 7,
+          "col": 16,
+          "endLine": 20,
+          "endCol": 3
+        }
+      ]
+    },
+    {
+      "id": "instantiates@ts:vitest.coverage.config.ts|ext:typescript/lib/lib.dom.d.ts#URL",
+      "source": "ts:vitest.coverage.config.ts",
+      "target": "ext:typescript/lib/lib.dom.d.ts#URL",
+      "kind": "instantiates",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "vitest.coverage.config.ts",
+          "line": 5,
+          "col": 35,
+          "endLine": 5,
+          "endCol": 64
+        }
+      ]
+    },
     {
       "id": "instantiates@ts:src/index.ts#buildOrdersApp|ts:src/pricing/pricingService.ts#PricingService",
       "source": "ts:src/index.ts#buildOrdersApp",
@@ -2741,6 +3180,85 @@
           "col": 35,
           "endLine": 8,
           "endCol": 46
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:test-runtime/orderService.vitest.test.ts|ext:vitest#describe",
+      "source": "ts:test-runtime/orderService.vitest.test.ts",
+      "target": "ext:vitest#describe",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "test-runtime/orderService.vitest.test.ts",
+          "line": 16,
+          "col": 1,
+          "endLine": 21,
+          "endCol": 3
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:test-runtime/orderService.vitest.test.ts|ext:vitest#it",
+      "source": "ts:test-runtime/orderService.vitest.test.ts",
+      "target": "ext:vitest#it",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 4,
+      "callSites": [
+        {
+          "file": "test-runtime/orderService.vitest.test.ts",
+          "line": 17,
+          "col": 3,
+          "endLine": 17,
+          "endCol": 66
+        },
+        {
+          "file": "test-runtime/orderService.vitest.test.ts",
+          "line": 18,
+          "col": 3,
+          "endLine": 18,
+          "endCol": 74
+        },
+        {
+          "file": "test-runtime/orderService.vitest.test.ts",
+          "line": 19,
+          "col": 3,
+          "endLine": 19,
+          "endCol": 69
+        },
+        {
+          "file": "test-runtime/orderService.vitest.test.ts",
+          "line": 20,
+          "col": 3,
+          "endLine": 20,
+          "endCol": 71
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/__tests__/orderService.test.ts#expectEqual|ext:typescript/lib/lib.es5.d.ts#String",
+      "source": "ts:src/__tests__/orderService.test.ts#expectEqual",
+      "target": "ext:typescript/lib/lib.es5.d.ts#String",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 2,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 16,
+          "col": 43,
+          "endLine": 16,
+          "endCol": 59
+        },
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 16,
+          "col": 68,
+          "endLine": 16,
+          "endCol": 82
         }
       ]
     },
@@ -2905,6 +3423,23 @@
       ]
     },
     {
+      "id": "instantiates@ts:src/__tests__/orderService.test.ts#expectEqual|ext:typescript/lib/lib.es5.d.ts#Error",
+      "source": "ts:src/__tests__/orderService.test.ts#expectEqual",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Error",
+      "kind": "instantiates",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/orderService.test.ts",
+          "line": 16,
+          "col": 11,
+          "endLine": 16,
+          "endCol": 85
+        }
+      ]
+    },
+    {
       "id": "instantiates@ts:src/__tests__/orderService.test.ts#buildService|ts:src/services/orderService.ts#OrderService",
       "source": "ts:src/__tests__/orderService.test.ts#buildService",
       "target": "ts:src/services/orderService.ts#OrderService",
@@ -3003,6 +3538,30 @@
           "col": 26,
           "endLine": 31,
           "endCol": 38
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/__tests__/pricingService.test.ts#expectEqual|ext:typescript/lib/lib.es5.d.ts#String",
+      "source": "ts:src/__tests__/pricingService.test.ts#expectEqual",
+      "target": "ext:typescript/lib/lib.es5.d.ts#String",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 2,
+      "callSites": [
+        {
+          "file": "src/__tests__/pricingService.test.ts",
+          "line": 12,
+          "col": 43,
+          "endLine": 12,
+          "endCol": 59
+        },
+        {
+          "file": "src/__tests__/pricingService.test.ts",
+          "line": 12,
+          "col": 68,
+          "endLine": 12,
+          "endCol": 82
         }
       ]
     },
@@ -3119,6 +3678,23 @@
           "col": 3,
           "endLine": 33,
           "endCol": 64
+        }
+      ]
+    },
+    {
+      "id": "instantiates@ts:src/__tests__/pricingService.test.ts#expectEqual|ext:typescript/lib/lib.es5.d.ts#Error",
+      "source": "ts:src/__tests__/pricingService.test.ts#expectEqual",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Error",
+      "kind": "instantiates",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/__tests__/pricingService.test.ts",
+          "line": 12,
+          "col": 11,
+          "endLine": 12,
+          "endCol": 85
         }
       ]
     },
@@ -3429,6 +4005,23 @@
       ]
     },
     {
+      "id": "calls@ts:src/notifications/emailService.ts#EmailService.renderConfirmation|ext:typescript/lib/lib.es5.d.ts#toFixed",
+      "source": "ts:src/notifications/emailService.ts#EmailService.renderConfirmation",
+      "target": "ext:typescript/lib/lib.es5.d.ts#toFixed",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/notifications/emailService.ts",
+          "line": 13,
+          "col": 19,
+          "endLine": 13,
+          "endCol": 54
+        }
+      ]
+    },
+    {
       "id": "references@ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation|ts:src/domain/order.ts#Order",
       "source": "ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation",
       "target": "ts:src/domain/order.ts#Order",
@@ -3514,6 +4107,23 @@
       ]
     },
     {
+      "id": "calls@ts:src/pricing/pricingService.ts#PricingService.subtotal|ext:typescript/lib/lib.es5.d.ts#reduce",
+      "source": "ts:src/pricing/pricingService.ts#PricingService.subtotal",
+      "target": "ext:typescript/lib/lib.es5.d.ts#reduce",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/pricing/pricingService.ts",
+          "line": 23,
+          "col": 12,
+          "endLine": 23,
+          "endCol": 85
+        }
+      ]
+    },
+    {
       "id": "calls@ts:src/pricing/pricingService.ts#PricingService.discountFor|ts:src/pricing/pricingService.ts#PricingService.isKnownCode",
       "source": "ts:src/pricing/pricingService.ts#PricingService.discountFor",
       "target": "ts:src/pricing/pricingService.ts#PricingService.isKnownCode",
@@ -3531,6 +4141,40 @@
       ]
     },
     {
+      "id": "calls@ts:src/pricing/pricingService.ts#PricingService.discountFor|ext:typescript/lib/lib.es5.d.ts#round",
+      "source": "ts:src/pricing/pricingService.ts#PricingService.discountFor",
+      "target": "ext:typescript/lib/lib.es5.d.ts#round",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/pricing/pricingService.ts",
+          "line": 31,
+          "col": 12,
+          "endLine": 31,
+          "endCol": 43
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/pricing/pricingService.ts#PricingService.tax|ext:typescript/lib/lib.es5.d.ts#round",
+      "source": "ts:src/pricing/pricingService.ts#PricingService.tax",
+      "target": "ext:typescript/lib/lib.es5.d.ts#round",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/pricing/pricingService.ts",
+          "line": 41,
+          "col": 12,
+          "endLine": 41,
+          "endCol": 44
+        }
+      ]
+    },
+    {
       "id": "references@ts:src/pricing/pricingService.ts#PricingService.price|ts:src/domain/order.ts#OrderRequest",
       "source": "ts:src/pricing/pricingService.ts#PricingService.price",
       "target": "ts:src/domain/order.ts#OrderRequest",
@@ -3544,6 +4188,23 @@
           "col": 18,
           "endLine": 8,
           "endCol": 30
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/pricing/pricingService.ts#PricingService.price|ext:typescript/lib/lib.es5.d.ts#Pick",
+      "source": "ts:src/pricing/pricingService.ts#PricingService.price",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Pick",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/pricing/pricingService.ts",
+          "line": 8,
+          "col": 33,
+          "endLine": 8,
+          "endCol": 107
         }
       ]
     },
@@ -3582,6 +4243,91 @@
       ]
     },
     {
+      "id": "calls@ts:src/repository/orderRepository.ts#OrderRepository.save|ext:typescript/lib/lib.es2015.collection.d.ts#set",
+      "source": "ts:src/repository/orderRepository.ts#OrderRepository.save",
+      "target": "ext:typescript/lib/lib.es2015.collection.d.ts#set",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/repository/orderRepository.ts",
+          "line": 16,
+          "col": 5,
+          "endLine": 16,
+          "endCol": 35
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/repository/orderRepository.ts#OrderRepository.findById|ext:typescript/lib/lib.es2015.collection.d.ts#get",
+      "source": "ts:src/repository/orderRepository.ts#OrderRepository.findById",
+      "target": "ext:typescript/lib/lib.es2015.collection.d.ts#get",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/repository/orderRepository.ts",
+          "line": 21,
+          "col": 12,
+          "endLine": 21,
+          "endCol": 29
+        }
+      ]
+    },
+    {
+      "id": "instantiates@ts:src/repository/orderRepository.ts|ext:typescript/lib/lib.es2015.collection.d.ts#Map",
+      "source": "ts:src/repository/orderRepository.ts",
+      "target": "ext:typescript/lib/lib.es2015.collection.d.ts#Map",
+      "kind": "instantiates",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/repository/orderRepository.ts",
+          "line": 12,
+          "col": 27,
+          "endLine": 12,
+          "endCol": 51
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/repository/orderRepository.ts#OrderStore.save|ts:src/domain/order.ts#Order",
+      "source": "ts:src/repository/orderRepository.ts#OrderStore.save",
+      "target": "ts:src/domain/order.ts#Order",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/repository/orderRepository.ts",
+          "line": 5,
+          "col": 15,
+          "endLine": 5,
+          "endCol": 20
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/repository/orderRepository.ts#OrderStore.findById|ts:src/domain/order.ts#Order",
+      "source": "ts:src/repository/orderRepository.ts#OrderStore.findById",
+      "target": "ts:src/domain/order.ts#Order",
+      "kind": "references",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/repository/orderRepository.ts",
+          "line": 6,
+          "col": 25,
+          "endLine": 6,
+          "endCol": 30
+        }
+      ]
+    },
+    {
       "id": "references@ts:src/repository/orderRepository.ts#OrderRepository|ts:src/domain/order.ts#Order",
       "source": "ts:src/repository/orderRepository.ts#OrderRepository",
       "target": "ts:src/domain/order.ts#Order",
@@ -3591,9 +4337,9 @@
       "callSites": [
         {
           "file": "src/repository/orderRepository.ts",
-          "line": 5,
+          "line": 12,
           "col": 43,
-          "endLine": 5,
+          "endLine": 12,
           "endCol": 48
         }
       ]
@@ -3608,9 +4354,9 @@
       "callSites": [
         {
           "file": "src/repository/orderRepository.ts",
-          "line": 8,
+          "line": 15,
           "col": 15,
-          "endLine": 8,
+          "endLine": 15,
           "endCol": 20
         }
       ]
@@ -3625,9 +4371,9 @@
       "callSites": [
         {
           "file": "src/repository/orderRepository.ts",
-          "line": 13,
+          "line": 20,
           "col": 25,
-          "endLine": 13,
+          "endLine": 20,
           "endCol": 30
         }
       ]
@@ -3884,6 +4630,23 @@
           "col": 14,
           "endLine": 34,
           "endCol": 26
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/services/orderService.ts#OrderService.assemble|ext:typescript/lib/lib.es5.d.ts#Pick",
+      "source": "ts:src/services/orderService.ts#OrderService.assemble",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Pick",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/services/orderService.ts",
+          "line": 35,
+          "col": 12,
+          "endLine": 35,
+          "endCol": 86
         }
       ]
     },
@@ -4235,6 +4998,23 @@
       ]
     },
     {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier|ext:typescript/lib/lib.es2015.iterable.d.ts#all",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier",
+      "target": "ext:typescript/lib/lib.es2015.iterable.d.ts#all",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 70,
+          "col": 11,
+          "endLine": 70,
+          "endCol": 68
+        }
+      ]
+    },
+    {
       "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
       "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier",
       "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.recordCheckpoint",
@@ -4248,6 +5028,23 @@
           "col": 5,
           "endLine": 71,
           "endCol": 48
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier|ext:typescript/lib/lib.es2020.promise.d.ts#allSettled",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier",
+      "target": "ext:typescript/lib/lib.es2020.promise.d.ts#allSettled",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 76,
+          "col": 11,
+          "endLine": 80,
+          "endCol": 7
         }
       ]
     },
@@ -4711,6 +5508,23 @@
       ]
     },
     {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs|ext:typescript/lib/lib.dom.d.ts#setTimeout",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs",
+      "target": "ext:typescript/lib/lib.dom.d.ts#setTimeout",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 176,
+          "col": 5,
+          "endLine": 179,
+          "endCol": 11
+        }
+      ]
+    },
+    {
       "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.retryLater",
       "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs",
       "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.retryLater",
@@ -4796,6 +5610,23 @@
       ]
     },
     {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs|ext:typescript/lib/lib.es5.d.ts#forEach",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs",
+      "target": "ext:typescript/lib/lib.es5.d.ts#forEach",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 186,
+          "col": 5,
+          "endLine": 188,
+          "endCol": 7
+        }
+      ]
+    },
+    {
       "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs|ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.inspectCandidate",
       "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.callbackHandOffs",
       "target": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.inspectCandidate",
@@ -4809,6 +5640,40 @@
           "col": 7,
           "endLine": 187,
           "endCol": 41
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.externalAndDetached|ext:typescript/lib/lib.dom.d.ts#info",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.externalAndDetached",
+      "target": "ext:typescript/lib/lib.dom.d.ts#info",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 193,
+          "col": 5,
+          "endLine": 193,
+          "endCol": 43
+        }
+      ]
+    },
+    {
+      "id": "calls@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.externalAndDetached|ext:typescript/lib/lib.dom.d.ts#timeStamp",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.externalAndDetached",
+      "target": "ext:typescript/lib/lib.dom.d.ts#timeStamp",
+      "kind": "calls",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 194,
+          "col": 5,
+          "endLine": 194,
+          "endCol": 44
         }
       ]
     },
@@ -4915,6 +5780,40 @@
       ]
     },
     {
+      "id": "instantiates@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.highRiskError|ext:typescript/lib/lib.es5.d.ts#Error",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.highRiskError",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Error",
+      "kind": "instantiates",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 267,
+          "col": 12,
+          "endLine": 267,
+          "endCol": 60
+        }
+      ]
+    },
+    {
+      "id": "instantiates@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.unknownStateError|ext:typescript/lib/lib.es5.d.ts#Error",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.unknownStateError",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Error",
+      "kind": "instantiates",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 271,
+          "col": 12,
+          "endLine": 271,
+          "endCol": 62
+        }
+      ]
+    },
+    {
       "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour|ts:src/showcase/executionGraphGallery.ts#GalleryOrder",
       "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour",
       "target": "ts:src/showcase/executionGraphGallery.ts#GalleryOrder",
@@ -4928,6 +5827,23 @@
           "col": 27,
           "endLine": 28,
           "endCol": 39
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.guidedTour",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 28,
+          "col": 42,
+          "endLine": 28,
+          "endCol": 68
         }
       ]
     },
@@ -4949,6 +5865,74 @@
       ]
     },
     {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.directAwait|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.directAwait",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 46,
+          "col": 39,
+          "endLine": 46,
+          "endCol": 54
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.launchThenAwait|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.launchThenAwait",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 53,
+          "col": 43,
+          "endLine": 53,
+          "endCol": 58
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllBarrier",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 65,
+          "col": 43,
+          "endLine": 65,
+          "endCol": 56
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.awaitAllSettledBarrier",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 75,
+          "col": 50,
+          "endLine": 75,
+          "endCol": 63
+        }
+      ]
+    },
+    {
       "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions|ts:src/showcase/executionGraphGallery.ts#GalleryOrder",
       "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.nestedDecisions",
       "target": "ts:src/showcase/executionGraphGallery.ts#GalleryOrder",
@@ -4962,6 +5946,295 @@
           "col": 26,
           "endLine": 85,
           "endCol": 38
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchOnly|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchOnly",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 148,
+          "col": 40,
+          "endLine": 148,
+          "endCol": 55
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.tryCatchFinally",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 158,
+          "col": 43,
+          "endLine": 158,
+          "endCol": 58
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.fetchOrder|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.fetchOrder",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 200,
+          "col": 46,
+          "endLine": 200,
+          "endCol": 61
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.fetchInventory|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.fetchInventory",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 204,
+          "col": 50,
+          "endLine": 204,
+          "endCol": 65
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reserveInventory|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.reserveInventory",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 208,
+          "col": 53,
+          "endLine": 208,
+          "endCol": 66
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.authorizePayment|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.authorizePayment",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 210,
+          "col": 53,
+          "endLine": 210,
+          "endCol": 66
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.prepareNotification|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.prepareNotification",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 212,
+          "col": 56,
+          "endLine": 212,
+          "endCol": 69
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.sendReceipt|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.sendReceipt",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 214,
+          "col": 48,
+          "endLine": 214,
+          "endCol": 61
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.updateSearchIndex|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.updateSearchIndex",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 216,
+          "col": 54,
+          "endLine": 216,
+          "endCol": 67
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.archiveAuditTrail|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.archiveAuditTrail",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 218,
+          "col": 54,
+          "endLine": 218,
+          "endCol": 67
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.performProtectedWork|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.performProtectedWork",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 220,
+          "col": 56,
+          "endLine": 220,
+          "endCol": 71
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.publishTelemetry|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.publishTelemetry",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 224,
+          "col": 52,
+          "endLine": 224,
+          "endCol": 65
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.refreshReadModel|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.refreshReadModel",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 229,
+          "col": 52,
+          "endLine": 229,
+          "endCol": 65
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.shipTelemetryEnvelope|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.shipTelemetryEnvelope",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 234,
+          "col": 58,
+          "endLine": 234,
+          "endCol": 71
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loadReadModelProjection|ext:typescript/lib/lib.es5.d.ts#Promise",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.loadReadModelProjection",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Promise",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 236,
+          "col": 59,
+          "endLine": 236,
+          "endCol": 74
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.highRiskError|ext:typescript/lib/lib.es5.d.ts#Error",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.highRiskError",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Error",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 266,
+          "col": 43,
+          "endLine": 266,
+          "endCol": 48
+        }
+      ]
+    },
+    {
+      "id": "references@ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.unknownStateError|ext:typescript/lib/lib.es5.d.ts#Error",
+      "source": "ts:src/showcase/executionGraphGallery.ts#ExecutionGraphGallery.unknownStateError",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Error",
+      "kind": "references",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/showcase/executionGraphGallery.ts",
+          "line": 270,
+          "col": 47,
+          "endLine": 270,
+          "endCol": 52
         }
       ]
     },
@@ -5055,6 +6328,125 @@
       ]
     },
     {
+      "id": "implements@ts:src/repository/orderRepository.ts#OrderRepository|ts:src/repository/orderRepository.ts#OrderStore",
+      "source": "ts:src/repository/orderRepository.ts#OrderRepository",
+      "target": "ts:src/repository/orderRepository.ts#OrderStore",
+      "kind": "implements",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/repository/orderRepository.ts",
+          "line": 11,
+          "col": 41,
+          "endLine": 11,
+          "endCol": 51
+        }
+      ]
+    },
+    {
+      "id": "extends@ts:src/validation/orderValidator.ts#ValidationError|ext:typescript/lib/lib.es5.d.ts#Error",
+      "source": "ts:src/validation/orderValidator.ts#ValidationError",
+      "target": "ext:typescript/lib/lib.es5.d.ts#Error",
+      "kind": "extends",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/validation/orderValidator.ts",
+          "line": 4,
+          "col": 38,
+          "endLine": 4,
+          "endCol": 43
+        }
+      ]
+    },
+    {
+      "id": "implementedBy@ts:src/repository/orderRepository.ts#OrderStore.save|ts:src/repository/orderRepository.ts#OrderRepository.save",
+      "source": "ts:src/repository/orderRepository.ts#OrderStore.save",
+      "target": "ts:src/repository/orderRepository.ts#OrderRepository.save",
+      "kind": "implementedBy",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/repository/orderRepository.ts",
+          "line": 15,
+          "col": 3,
+          "endLine": 17,
+          "endCol": 4
+        }
+      ]
+    },
+    {
+      "id": "implementedBy@ts:src/repository/orderRepository.ts#OrderStore.findById|ts:src/repository/orderRepository.ts#OrderRepository.findById",
+      "source": "ts:src/repository/orderRepository.ts#OrderStore.findById",
+      "target": "ts:src/repository/orderRepository.ts#OrderRepository.findById",
+      "kind": "implementedBy",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/repository/orderRepository.ts",
+          "line": 20,
+          "col": 3,
+          "endLine": 22,
+          "endCol": 4
+        }
+      ]
+    },
+    {
+      "id": "implementedBy@ts:src/repository/orderRepository.ts#OrderStore.count|ts:src/repository/orderRepository.ts#OrderRepository.count",
+      "source": "ts:src/repository/orderRepository.ts#OrderStore.count",
+      "target": "ts:src/repository/orderRepository.ts#OrderRepository.count",
+      "kind": "implementedBy",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "src/repository/orderRepository.ts",
+          "line": 25,
+          "col": 3,
+          "endLine": 27,
+          "endCol": 4
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:vitest.coverage.config.ts|ext:node:url#fileURLToPath",
+      "source": "ts:vitest.coverage.config.ts",
+      "target": "ext:node:url#fileURLToPath",
+      "kind": "imports",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "vitest.coverage.config.ts",
+          "line": 1,
+          "col": 1,
+          "endLine": 1,
+          "endCol": 42
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:vitest.coverage.config.ts|ext:vitest/config#defineConfig",
+      "source": "ts:vitest.coverage.config.ts",
+      "target": "ext:vitest/config#defineConfig",
+      "kind": "imports",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "vitest.coverage.config.ts",
+          "line": 3,
+          "col": 1,
+          "endLine": 3,
+          "endCol": 46
+        }
+      ]
+    },
+    {
       "id": "imports@ts:src/index.ts|ts:src/api/orderRoutes.ts",
       "source": "ts:src/index.ts",
       "target": "ts:src/api/orderRoutes.ts",
@@ -5136,6 +6528,74 @@
           "col": 1,
           "endLine": 5,
           "endCol": 64
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:test-runtime/orderService.vitest.test.ts|ext:vitest#describe",
+      "source": "ts:test-runtime/orderService.vitest.test.ts",
+      "target": "ext:vitest#describe",
+      "kind": "imports",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "test-runtime/orderService.vitest.test.ts",
+          "line": 1,
+          "col": 1,
+          "endLine": 1,
+          "endCol": 39
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:test-runtime/orderService.vitest.test.ts|ext:vitest#it",
+      "source": "ts:test-runtime/orderService.vitest.test.ts",
+      "target": "ext:vitest#it",
+      "kind": "imports",
+      "resolution": "external",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "test-runtime/orderService.vitest.test.ts",
+          "line": 1,
+          "col": 1,
+          "endLine": 1,
+          "endCol": 39
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:test-runtime/orderService.vitest.test.ts|ts:src/__tests__/orderService.test.ts",
+      "source": "ts:test-runtime/orderService.vitest.test.ts",
+      "target": "ts:src/__tests__/orderService.test.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "test-runtime/orderService.vitest.test.ts",
+          "line": 3,
+          "col": 1,
+          "endLine": 6,
+          "endCol": 45
+        }
+      ]
+    },
+    {
+      "id": "imports@ts:test-runtime/orderService.vitest.test.ts|ts:src/__tests__/pricingService.test.ts",
+      "source": "ts:test-runtime/orderService.vitest.test.ts",
+      "target": "ts:src/__tests__/pricingService.test.ts",
+      "kind": "imports",
+      "resolution": "resolved",
+      "weight": 1,
+      "callSites": [
+        {
+          "file": "test-runtime/orderService.vitest.test.ts",
+          "line": 7,
+          "col": 1,
+          "endLine": 10,
+          "endCol": 47
         }
       ]
     },
@@ -5465,6 +6925,47 @@
   ],
   "extensions": {
     "logicFlow": {
+      "ts:vitest.coverage.config.ts": [
+        {
+          "kind": "call",
+          "label": "URL",
+          "target": null,
+          "resolution": "external",
+          "source": {
+            "file": "vitest.coverage.config.ts",
+            "line": 5,
+            "col": 34,
+            "endLine": 5,
+            "endCol": 63
+          }
+        },
+        {
+          "kind": "call",
+          "label": "fileURLToPath",
+          "target": null,
+          "resolution": "external",
+          "source": {
+            "file": "vitest.coverage.config.ts",
+            "line": 5,
+            "col": 20,
+            "endLine": 5,
+            "endCol": 64
+          }
+        },
+        {
+          "kind": "call",
+          "label": "defineConfig",
+          "target": null,
+          "resolution": "external",
+          "source": {
+            "file": "vitest.coverage.config.ts",
+            "line": 7,
+            "col": 15,
+            "endLine": 20,
+            "endCol": 2
+          }
+        }
+      ],
       "ts:src/index.ts#buildOrdersApp": [
         {
           "kind": "call",
@@ -5541,6 +7042,86 @@
             "col": 2,
             "endLine": 13,
             "endCol": 33
+          }
+        }
+      ],
+      "ts:test-runtime/orderService.vitest.test.ts": [
+        {
+          "kind": "call",
+          "label": "describe",
+          "target": null,
+          "resolution": "external",
+          "source": {
+            "file": "test-runtime/orderService.vitest.test.ts",
+            "line": 16,
+            "col": 0,
+            "endLine": 21,
+            "endCol": 2
+          }
+        },
+        {
+          "kind": "callback",
+          "label": "callback → describe",
+          "body": [
+            {
+              "kind": "call",
+              "label": "it",
+              "target": null,
+              "resolution": "external",
+              "source": {
+                "file": "test-runtime/orderService.vitest.test.ts",
+                "line": 17,
+                "col": 2,
+                "endLine": 17,
+                "endCol": 65
+              }
+            },
+            {
+              "kind": "call",
+              "label": "it",
+              "target": null,
+              "resolution": "external",
+              "source": {
+                "file": "test-runtime/orderService.vitest.test.ts",
+                "line": 18,
+                "col": 2,
+                "endLine": 18,
+                "endCol": 73
+              }
+            },
+            {
+              "kind": "call",
+              "label": "it",
+              "target": null,
+              "resolution": "external",
+              "source": {
+                "file": "test-runtime/orderService.vitest.test.ts",
+                "line": 19,
+                "col": 2,
+                "endLine": 19,
+                "endCol": 68
+              }
+            },
+            {
+              "kind": "call",
+              "label": "it",
+              "target": null,
+              "resolution": "external",
+              "source": {
+                "file": "test-runtime/orderService.vitest.test.ts",
+                "line": 20,
+                "col": 2,
+                "endLine": 20,
+                "endCol": 70
+              }
+            }
+          ],
+          "source": {
+            "file": "test-runtime/orderService.vitest.test.ts",
+            "line": 16,
+            "col": 44,
+            "endLine": 21,
+            "endCol": 1
           }
         }
       ],
@@ -6504,9 +8085,9 @@
           "resolution": "external",
           "source": {
             "file": "src/repository/orderRepository.ts",
-            "line": 9,
+            "line": 16,
             "col": 4,
-            "endLine": 9,
+            "endLine": 16,
             "endCol": 34
           }
         }
@@ -6519,9 +8100,9 @@
           "resolution": "external",
           "source": {
             "file": "src/repository/orderRepository.ts",
-            "line": 14,
+            "line": 21,
             "col": 11,
-            "endLine": 14,
+            "endLine": 21,
             "endCol": 28
           }
         },
@@ -6531,9 +8112,9 @@
           "label": "this.byId.get(id)",
           "source": {
             "file": "src/repository/orderRepository.ts",
-            "line": 14,
+            "line": 21,
             "col": 4,
-            "endLine": 14,
+            "endLine": 21,
             "endCol": 29
           }
         }
@@ -9156,21 +10737,21 @@
               "hits": 2,
               "decl": {
                 "start": {
-                  "line": 8,
+                  "line": 15,
                   "column": 2
                 },
                 "end": {
-                  "line": 8,
+                  "line": 15,
                   "column": 7
                 }
               },
               "location": {
                 "start": {
-                  "line": 8,
+                  "line": 15,
                   "column": 27
                 },
                 "end": {
-                  "line": 10
+                  "line": 17
                 }
               }
             },
@@ -9179,21 +10760,21 @@
               "hits": 1,
               "decl": {
                 "start": {
-                  "line": 13,
+                  "line": 20,
                   "column": 2
                 },
                 "end": {
-                  "line": 13,
+                  "line": 20,
                   "column": 11
                 }
               },
               "location": {
                 "start": {
-                  "line": 13,
+                  "line": 20,
                   "column": 42
                 },
                 "end": {
-                  "line": 15
+                  "line": 22
                 }
               }
             },
@@ -9202,21 +10783,21 @@
               "hits": 0,
               "decl": {
                 "start": {
-                  "line": 18,
+                  "line": 25,
                   "column": 2
                 },
                 "end": {
-                  "line": 18,
+                  "line": 25,
                   "column": 18
                 }
               },
               "location": {
                 "start": {
-                  "line": 18,
+                  "line": 25,
                   "column": 18
                 },
                 "end": {
-                  "line": 20
+                  "line": 27
                 }
               }
             }

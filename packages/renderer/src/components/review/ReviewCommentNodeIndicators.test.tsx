@@ -58,8 +58,8 @@ describe("ReviewCommentNodeIndicatorLayer", () => {
     );
 
     expect(toolbarCalls).toEqual([
-      { nodeId: "one", className: expect.stringContaining("semantic-layer-2"), position: "bottom", align: "end", offset: -15 },
-      { nodeId: "two", className: "review-comment-node-toolbar", position: "bottom", align: "end", offset: -15 },
+      { nodeId: "one", className: expect.stringContaining("semantic-layer-2"), position: "bottom", align: "end", offset: 1 },
+      { nodeId: "two", className: "review-comment-node-toolbar", position: "bottom", align: "end", offset: 1 },
     ]);
     expect(markup).toContain('aria-label="1 review comment"');
     expect(markup).toContain('aria-label="2 review comments"');

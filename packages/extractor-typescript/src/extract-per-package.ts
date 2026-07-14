@@ -40,6 +40,11 @@ import { loadUnitProject } from "./project-loader";
 import { buildResolutionIndex } from "./resolution-index";
 import { buildStats } from "./stats";
 import { buildStructure } from "./structural-pass";
+import {
+  deriveImplementedByEdges,
+  implementationMembers,
+  type ImplementationMember,
+} from "./implementation-edges";
 import { absoluteRoot, isUnderRoot, relativeToRoot, toPosix } from "./paths";
 import { discoverWorkspaceUnits, type Workspace, type WorkspaceUnit } from "./workspace-units";
 import { dirname, resolve } from "node:path";
@@ -48,6 +53,7 @@ import { dirname, resolve } from "node:path";
 interface UnitExtraction {
   nodes: GraphNode[];
   rawEdges: RawEdge[];
+  implementationMembers: ImplementationMember[];
   flows: LogicFlows;
   ports: Port[];
   summary: UnitSummary;
@@ -138,6 +144,7 @@ function extractUnit(
   return {
     nodes: buildGraphNodes(descriptors),
     rawEdges: [...behavioural, ...imports, ...valueRefs],
+    implementationMembers: implementationMembers(descriptors),
     flows,
     ports: collectPorts(loaded, index, moduleByFilePath),
     summary: buildUnitSummary(unit, loaded, index, moduleIds, resolver),
@@ -153,8 +160,13 @@ function stitch(units: UnitExtraction[], options: ExtractOptions, depth: Extract
     units.flatMap((unit) => unit.rawEdges),
     summaries,
   );
-  const built = buildEdges(joined, options);
   const nodes = dedupeSharedAncestors(units.flatMap((unit) => unit.nodes));
+  const implementedBy = deriveImplementedByEdges(
+    joined,
+    nodes,
+    units.flatMap((unit) => unit.implementationMembers),
+  );
+  const built = buildEdges([...joined, ...implementedBy], options);
   const collapsed = collapseToDepth(nodes, built.edges, depth);
   const keepIds = new Set(collapsed.nodes.map((node) => node.id));
   const moduleIds = new Map(summaries.flatMap((summary) => [...summary.moduleIdByRelPath]));

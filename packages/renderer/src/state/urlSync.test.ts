@@ -87,12 +87,13 @@ describe("restoreFromUrl review exit", () => {
     expect(store.getState().moduleFocus).toBe(PACKAGE_ID);
   });
 
-  it("clears request split identity and expansion state during structural history restore", async () => {
+  it("clears split identity and both pane-owned expansion sets during structural history restore", async () => {
     const store = freshStore();
     store.setState({
       flowPaneOrigin: "request",
       requestFlowTraceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       requestFlowExpansionOverrides: new Set(["request:span:one"]),
+      flowPaneExpansionOverrides: new Set(["static-occurrence"]),
       flowPaneLayoutStatus: "ready",
     });
     stubWindow();
@@ -102,6 +103,7 @@ describe("restoreFromUrl review exit", () => {
     expect(store.getState().flowPaneOrigin).toBeNull();
     expect(store.getState().requestFlowTraceId).toBeNull();
     expect(store.getState().requestFlowExpansionOverrides).toEqual(new Set());
+    expect(store.getState().flowPaneExpansionOverrides).toEqual(new Set());
     expect(store.getState().flowPaneLayoutStatus).toBe("idle");
   });
 

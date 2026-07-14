@@ -12,6 +12,7 @@
 
 import type { GraphEdge } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
+import { isVisibleBlockDepEdge } from "./blockDeps";
 import { ghostData, nearestVisible, type GhostEmission, type GhostWire } from "./ghostDeps";
 import { graphEdgeCrossesPackage } from "./packageBoundary";
 
@@ -42,6 +43,9 @@ export function folderGhostEmission(
   const byWire = new Map<string, FolderWire>();
   const membersByPeer = new Map<string, Set<string>>();
   for (const edge of edges) {
+    if (!isVisibleBlockDepEdge(edge, visibleIds)) {
+      continue;
+    }
     // Hidden descendant endpoints must not reappear as a visible ancestor's folder ghost.
     if (hiddenIds.has(edge.source) || hiddenIds.has(edge.target)) {
       continue;

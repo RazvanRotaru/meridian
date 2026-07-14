@@ -159,6 +159,7 @@ export function restorePrReviewBaseline(
     reviewLitNodeIds: null,
     reviewSelectedId: null,
     flowSelection: null,
+    flowPaneExpansionOverrides: new Set<string>(),
     logicSelected: null,
     flowPaneRfNodes: [],
     flowPaneRfEdges: [],

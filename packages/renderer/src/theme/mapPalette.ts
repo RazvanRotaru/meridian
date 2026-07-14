@@ -17,6 +17,7 @@ export const REL_COLORS: Record<string, string> = {
   instantiates: "#CE7040", // orange — `new X()`
   extends: "#B865AB", // orchid — class/interface inheritance
   implements: "#4E90DE", // steel blue — implementing a contract
+  implementedBy: "#4E90DE", // same contract link, read from interface method to implementation
   references: "#2FA8A3", // teal — a symbol used in a type position / as a value
 };
 
