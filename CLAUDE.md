@@ -40,7 +40,8 @@ knowledge/adr/0001-...md       THE contract decision. Read it before touching th
   `kind`s are an **open vocabulary** (pattern-validated + warn-lint); the only closed enum is
   `edge.resolution` (`resolved | external | unresolved`).
 - **Honest resolution:** static analysis can't resolve everything, so every edge carries a
-  `resolution`; unresolved/external targets are `ext:` / `unresolved:` pseudo-ids.
+  `resolution`; unresolved/external targets are ecosystem-qualified pseudo-ids such as
+  `ext:npm/react`, `ext:python/requests#get`, and `unresolved:python/?`.
 - **Never-prod is in the data:** `service.name` / `deployment.environment.name` never appear in an
   artifact; the top-level `telemetry` contract asserts `serviceDefaulting: "forbidden"`. The renderer
   mirrors it (env selector mandatory, `defaultEnv` always null).
@@ -50,7 +51,8 @@ knowledge/adr/0001-...md       THE contract decision. Read it before touching th
   (`extensions.ports`; channel read ONLY from literals — dynamic == `channel: null`, never guessed);
   matching ends join through `ipc:` channel pseudo-nodes (`sends`/`handles` edges, core/ports.ts).
   `meridian link` merges artifacts into a system graph — ids namespaced per source under `sys:`
-  frames, `ext:`/`unresolved:`/`ipc:` deliberately shared; concrete HTTP exits unify onto entry
+  frames; ecosystem-qualified `ext:`/`unresolved:` ids are shared within an ecosystem (but not
+  across ecosystems), while `ipc:` ids are globally shared. Concrete HTTP exits unify onto entry
   route templates (core/link.ts).
 - **Test code is IN the graph by default**, tagged `"test"` via the open `tags` vocabulary (no schema
   change; tagging happens language-agnostically in `extract-pipeline.ts`, heuristics in core's
@@ -119,7 +121,8 @@ launchers.
 Implement `LanguageExtractor` (see `core/extractor.ts`) in a new `packages/extractor-<lang>`:
 `detect(root)`, `extract(options) → { language, nodes, edges, stats, diagnostics }`. Build node ids
 with `buildNodeId`, fold edges with `aggregateEdges`, collapse with `collapseToDepth`. Register it in
-`cli/src/extract-pipeline.ts`'s `ExtractorRegistry`. Add a golden test against a fixture. The schema,
+`cli/src/extract-pipeline.ts`'s `ExtractorRegistry`; every matching registered extractor runs and its
+result is merged, with no product language selector. Add a golden test against a fixture. The schema,
 renderer, and CLI need **no** changes — that's the whole point.
 
 ## Working style here

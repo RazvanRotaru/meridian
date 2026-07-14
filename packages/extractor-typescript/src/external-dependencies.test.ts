@@ -93,47 +93,47 @@ describe("external package and tsconfig-alias dependencies", () => {
   it("inventories named, type-only, default, namespace, side-effect, and missing package imports", () => {
     const targets = externalTargets("imports");
     for (const target of [
-      "ext:@vendor/sdk/register",
-      "ext:@vendor/sdk#default",
-      "ext:@vendor/sdk#PaymentService",
-      "ext:@vendor/sdk#SDK_VERSION",
-      "ext:@vendor/sdk#PaymentRequest",
-      "ext:@vendor/sdk#UnusedContract",
-      "ext:@vendor/sdk",
-      "ext:@missing/services",
-      "ext:@missing/contracts#MissingContract",
-      "ext:%23platform#PlatformContract",
-      "ext:%5F%5Fexternal%5F%5F",
-      "ext:node:fs#readFile",
+      "ext:npm/@vendor/sdk/register",
+      "ext:npm/@vendor/sdk#default",
+      "ext:npm/@vendor/sdk#PaymentService",
+      "ext:npm/@vendor/sdk#SDK_VERSION",
+      "ext:npm/@vendor/sdk#PaymentRequest",
+      "ext:npm/@vendor/sdk#UnusedContract",
+      "ext:npm/@vendor/sdk",
+      "ext:npm/@missing/services",
+      "ext:npm/@missing/contracts#MissingContract",
+      "ext:npm/%23platform#PlatformContract",
+      "ext:npm/%5F%5Fexternal%5F%5F",
+      "ext:npm/node:fs#readFile",
     ]) {
       expect(targets).toContain(target);
     }
-    expect(targets).not.toContain("ext:./missing#MissingLocal");
-    expect(targets).not.toContain("ext:@vendro/sdk#TypoContract");
+    expect(targets).not.toContain("ext:npm/./missing#MissingLocal");
+    expect(targets).not.toContain("ext:npm/@vendro/sdk#TypoContract");
     expect(targets).not.toContain("ext:__external__");
   });
 
   it("uses public import identities for external type and service usage", () => {
     expect(externalTargets("references")).toEqual(expect.arrayContaining([
-      "ext:@vendor/sdk#PaymentRequest",
-      "ext:@vendor/sdk#SDK_VERSION",
-      "ext:@vendor/sdk",
-      "ext:@missing/services",
-      "ext:@missing/contracts#MissingContract",
-      "ext:@shared/contracts#SharedService",
-      "ext:%23platform#PlatformContract",
+      "ext:npm/@vendor/sdk#PaymentRequest",
+      "ext:npm/@vendor/sdk#SDK_VERSION",
+      "ext:npm/@vendor/sdk",
+      "ext:npm/@missing/services",
+      "ext:npm/@missing/contracts#MissingContract",
+      "ext:npm/@shared/contracts#SharedService",
+      "ext:npm/%23platform#PlatformContract",
     ]));
     expect(externalTargets("instantiates")).toEqual(expect.arrayContaining([
-      "ext:@vendor/sdk#default",
-      "ext:@vendor/sdk#PaymentService",
-      "ext:@missing/services#MissingService",
+      "ext:npm/@vendor/sdk#default",
+      "ext:npm/@vendor/sdk#PaymentService",
+      "ext:npm/@missing/services#MissingService",
     ]));
     expect(externalTargets("calls")).toEqual(expect.arrayContaining([
-      "ext:@vendor/sdk#PaymentService.charge",
-      "ext:@vendor/sdk#track",
-      "ext:@shared/contracts#SharedService.send",
-      "ext:@missing/services#MissingService.run",
-      "ext:@missing/services#run",
+      "ext:npm/@vendor/sdk#PaymentService.charge",
+      "ext:npm/@vendor/sdk#track",
+      "ext:npm/@shared/contracts#SharedService.send",
+      "ext:npm/@missing/services#MissingService.run",
+      "ext:npm/@missing/services#run",
     ]));
     const publicTargets = withExternal.edges
       .filter((edge) => edge.resolution === "external" && /vendor|missing|shared|platform/.test(edge.target))
@@ -143,14 +143,14 @@ describe("external package and tsconfig-alias dependencies", () => {
         (target) => target.includes("node_modules") || target.includes(".d.ts") || target.includes(workspace),
       ),
     ).toBe(false);
-    expect(withExternal.edges.some((edge) => /^ext:(contracts|platform)\.ts/.test(edge.target))).toBe(false);
-    expect(withExternal.edges.some((edge) => edge.target === "ext:@vendor/sdk#PaymentService.map")).toBe(false);
+    expect(withExternal.edges.some((edge) => /^ext:npm\/(contracts|platform)\.ts/.test(edge.target))).toBe(false);
+    expect(withExternal.edges.some((edge) => edge.target === "ext:npm/@vendor/sdk#PaymentService.map")).toBe(false);
     expect(
       withExternal.edges.some(
         (edge) =>
           edge.kind === "calls" &&
           edge.source === "ts:src/checkout.ts#ExternalApp.run" &&
-          edge.target === "ext:@vendor/sdk#PaymentService.charge",
+          edge.target === "ext:npm/@vendor/sdk#PaymentService.charge",
       ),
     ).toBe(true);
     expect(
@@ -158,19 +158,30 @@ describe("external package and tsconfig-alias dependencies", () => {
         (edge) =>
           edge.kind === "calls" &&
           edge.source === "ts:src/checkout.ts#MissingApp.run" &&
-          edge.target === "ext:@missing/services#MissingService.run",
+          edge.target === "ext:npm/@missing/services#MissingService.run",
       ),
     ).toBe(true);
   });
 
   it("retains explicit external service composition behind the same option", () => {
-    expect(externalTargets("registers")).toContain("ext:@vendor/sdk#PaymentService");
-    expect(externalTargets("injects")).toContain("ext:@vendor/sdk#PaymentService");
+    expect(externalTargets("registers")).toContain("ext:npm/@vendor/sdk#PaymentService");
+    expect(externalTargets("injects")).toContain("ext:npm/@vendor/sdk#PaymentService");
+  });
+
+  it("uses the same npm-qualified external id in dependency edges and Logic-flow calls", () => {
+    const edge = withExternal.edges.find(
+      (entry) => entry.kind === "calls" && entry.source === "ts:src/checkout.ts#ExternalApp.run",
+    );
+    const flow = withExternal.flows?.["ts:src/checkout.ts#ExternalApp.run"] ?? [];
+    const call = flow.find((step) => step.kind === "call" && step.label === "charge");
+
+    expect(edge?.target).toBe("ext:npm/@vendor/sdk#PaymentService.charge");
+    expect(call).toMatchObject({ resolution: "external", target: edge?.target });
   });
 
   it("materializes valid boundary nodes and keeps an in-scope tsconfig alias resolved", () => {
     const nodes = materializeBoundaryNodes(withExternal.nodes, withExternal.edges);
-    expect(nodes.find((node) => node.id === "ext:@vendor/sdk#PaymentService")?.displayName).toBe("PaymentService");
+    expect(nodes.find((node) => node.id === "ext:npm/@vendor/sdk#PaymentService")?.displayName).toBe("PaymentService");
     expect(resolved("imports", "ts:src/checkout.ts", "ts:src/local.ts", withExternal)).toBe(true);
     expect(validateArtifact(artifact(nodes)).errors).toEqual([]);
   });

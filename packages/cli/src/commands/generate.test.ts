@@ -1,7 +1,7 @@
 /**
  * `generate` is a headless export adapter over the app's canonical workspace analysis. A root
- * tsconfig must never select a second whole-program path that silently drops cross-package
- * relationships in monorepos.
+ * tsconfig must neither select a second whole-program path nor suppress another detected language
+ * in a polyglot monorepo.
  */
 
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -37,6 +37,8 @@ describe("generate canonical repository analysis", () => {
     );
     write("workspace/packages/beta/package.json", JSON.stringify({ name: "@fixture/beta" }));
     write("workspace/packages/beta/src/index.ts", "export function beta(): string { return 'beta'; }\n");
+    write("pyproject.toml", "[project]\nname = \"mixed-workspace\"\n");
+    write("backend/orders.py", "def calculate_total(quantity: int) -> int:\n    return quantity * 2\n");
   });
 
   afterEach(() => rmSync(root, { recursive: true, force: true }));
@@ -45,6 +47,7 @@ describe("generate canonical repository analysis", () => {
     const discoveredOut = join(root, "discovered.graph.json");
     await runGenerate(root, generateOptions(discoveredOut));
     expect(moduleFiles(discoveredOut)).toEqual([
+      "backend/orders.py",
       "workspace/packages/alpha/src/index.ts",
       "workspace/packages/beta/src/index.ts",
     ]);
@@ -60,13 +63,15 @@ describe("generate canonical repository analysis", () => {
       sources: new Map(),
       tempCleanups: new Set(),
     } as unknown as Context;
-    const generated = await generateGraph(
-      context,
-      { kind: "path", value: root, lang: "typescript" },
-      undefined,
-    );
+    const generated = await generateGraph(context, { kind: "path", value: root }, undefined);
     const webArtifact = graphs.get(generated.id);
     const cliArtifact = readArtifact(discoveredOut);
+    expect(cliArtifact.target.language).toBe("mixed");
+    expect(cliArtifact.nodes.some((node) => node.id.startsWith("ts:"))).toBe(true);
+    expect(cliArtifact.nodes).toContainEqual(expect.objectContaining({
+      id: "py:backend.orders#calculate_total",
+      location: expect.objectContaining({ file: "backend/orders.py" }),
+    }));
     expect(webArtifact?.nodes).toEqual(cliArtifact.nodes);
     expect(webArtifact?.edges).toEqual(cliArtifact.edges);
   });
@@ -83,6 +88,7 @@ describe("generate canonical repository analysis", () => {
       "--include-unresolved",
       "--exclude-tests",
       "--value-refs",
+      "--lang",
     ]));
   });
 
@@ -102,7 +108,6 @@ describe("generate canonical repository analysis", () => {
     return {
       cwd: root,
       out,
-      lang: "typescript",
       quiet: true,
     };
   }

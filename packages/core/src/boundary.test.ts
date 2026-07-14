@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { EXTERNAL_CONTAINER_ID, materializeBoundaryNodes } from "./boundary";
+import {
+  EXTERNAL_CONTAINER_ID,
+  externalTargetId,
+  materializeBoundaryNodes,
+  unresolvedTargetId,
+} from "./boundary";
 import { validateArtifact } from "./validate";
 import { validArtifact } from "./testing/fixtures";
 import type { GraphEdge, GraphNode } from "./types";
@@ -13,6 +18,13 @@ function externalEdge(source: string, target: string, resolution: GraphEdge["res
 }
 
 describe("materializeBoundaryNodes", () => {
+  it("builds ecosystem-qualified external and unresolved target ids", () => {
+    expect(externalTargetId("npm", "shared", "Client")).toBe("ext:npm/shared#Client");
+    expect(externalTargetId("python", "shared", "Client")).toBe("ext:python/shared#Client");
+    expect(unresolvedTargetId("npm")).toBe("unresolved:npm/?");
+    expect(unresolvedTargetId("python")).toBe("unresolved:python/?");
+  });
+
   it("is a no-op when no boundary targets exist", () => {
     const nodes = [node("ts:a.ts#A.f", "method", "ts:a.ts")];
     expect(materializeBoundaryNodes(nodes, [])).toBe(nodes);
@@ -21,8 +33,8 @@ describe("materializeBoundaryNodes", () => {
   it("creates an External container and a leaf per external/unresolved target", () => {
     const nodes = [node("ts:a.ts", "module"), node("ts:a.ts#A.f", "method", "ts:a.ts")];
     const edges = [
-      externalEdge("ts:a.ts#A.f", "ext:typescript/lib.es5.d.ts#Error", "external"),
-      externalEdge("ts:a.ts#A.f", "unresolved:?", "unresolved"),
+      externalEdge("ts:a.ts#A.f", "ext:npm/typescript/lib.es5.d.ts#Error", "external"),
+      externalEdge("ts:a.ts#A.f", "unresolved:npm/?", "unresolved"),
     ];
     const added = materializeBoundaryNodes(nodes, edges).filter((entry) => !nodes.includes(entry));
     const container = added.find((entry) => entry.id === EXTERNAL_CONTAINER_ID);
@@ -35,7 +47,7 @@ describe("materializeBoundaryNodes", () => {
   it("keeps the artifact valid with no warnings (boundary kinds are registered)", () => {
     const artifact = validArtifact();
     const source = artifact.nodes[3]!.id;
-    const target = "ext:typescript/lib.es5.d.ts#Error";
+    const target = "ext:npm/typescript/lib.es5.d.ts#Error";
     artifact.edges.push(externalEdge(source, target, "external"));
     artifact.nodes = materializeBoundaryNodes(artifact.nodes, artifact.edges);
     const result = validateArtifact(artifact);

@@ -17,7 +17,6 @@ describe("canonical repository analysis", () => {
     await analyzeRepository({
       absoluteRoot: "/repo",
       cwd: "/repo",
-      language: "typescript",
       targetName: "repo",
       changedSince: "origin/main",
     });
@@ -27,7 +26,6 @@ describe("canonical repository analysis", () => {
     expect(extractToArtifact).toHaveBeenCalledWith({
       absoluteRoot: "/repo",
       cwd: "/repo",
-      language: "typescript",
       depth: "function",
       includeExternal: true,
       includeUnresolved: false,
@@ -41,6 +39,7 @@ describe("canonical repository analysis", () => {
       vcs: undefined,
     });
     const request = vi.mocked(extractToArtifact).mock.calls[0][0];
+    expect(request).not.toHaveProperty("language");
     expect(request).not.toHaveProperty("project");
     expect(request).not.toHaveProperty("include");
   });

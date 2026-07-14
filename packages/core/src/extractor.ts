@@ -28,7 +28,7 @@ export interface ExtractOptions {
   supplementalFiles?: string[];
   exclude?: string[];
   depth?: ExtractionDepth;
-  /** Keep library/builtin/package dependency edges as `ext:` boundary targets. */
+  /** Keep library/builtin/package dependency edges as `ext:<ecosystem>/...` boundary targets. */
   includeExternal?: boolean;
   includeUnresolved?: boolean;
   emitImportEdges?: boolean;
@@ -108,24 +108,62 @@ export class ExtractorRegistry {
     return this;
   }
 
-  byLanguage(language: string): LanguageExtractor | undefined {
-    return this.byLang.get(language);
-  }
-
   all(): LanguageExtractor[] {
     return [...this.byLang.values()];
   }
 
-  async select(root: string, language?: string): Promise<LanguageExtractor | undefined> {
-    if (language) {
-      return this.byLanguage(language);
-    }
-    for (const extractor of this.all()) {
-      const detection = await extractor.detect(root);
-      if (detection.matches) {
-        return extractor;
-      }
-    }
-    return undefined;
+  async matching(root: string): Promise<LanguageExtractor[]> {
+    const extractors = this.all();
+    const detections = await Promise.all(extractors.map((extractor) => extractor.detect(root)));
+    return extractors.filter((_extractor, index) => detections[index].matches);
   }
+}
+
+/** Merge independently extracted languages into one canonical repository graph. */
+export function mergeExtractionResults(results: readonly ExtractionResult[]): ExtractionResult {
+  if (results.length === 0) {
+    throw new Error("cannot merge an empty extraction set");
+  }
+  const languages = new Set(results.map((result) => result.language));
+  const mixed = languages.size > 1;
+  const flows = Object.assign({}, ...results.map((result) => result.flows ?? {}));
+  const ports = results.flatMap((result) => result.ports ?? []);
+  const merged: ExtractionResult = {
+    language: mixed ? "mixed" : results[0].language,
+    nodes: results.flatMap((result) => result.nodes.map((node) => (
+      mixed && node.language === undefined ? { ...node, language: result.language } : node
+    ))),
+    edges: results.flatMap((result) => result.edges),
+    stats: mergeStats(results.map((result) => result.stats)),
+    diagnostics: results.flatMap((result) => result.diagnostics),
+  };
+  if (Object.keys(flows).length > 0) merged.flows = flows;
+  if (ports.length > 0) merged.ports = ports;
+  return merged;
+}
+
+function mergeStats(stats: readonly ExtractionStats[]): ExtractionStats {
+  return {
+    files: sum(stats.map((entry) => entry.files)),
+    nodeCountByKind: sumRecords(stats.map((entry) => entry.nodeCountByKind)),
+    edgeCountByResolution: sumRecords(stats.map((entry) => entry.edgeCountByResolution)),
+    summaryCoverage: {
+      withSummary: sum(stats.map((entry) => entry.summaryCoverage.withSummary)),
+      total: sum(stats.map((entry) => entry.summaryCoverage.total)),
+    },
+    externalCallsDropped: sum(stats.map((entry) => entry.externalCallsDropped)),
+    unresolvedCalls: sum(stats.map((entry) => entry.unresolvedCalls)),
+  };
+}
+
+function sumRecords(records: readonly Record<string, number>[]): Record<string, number> {
+  const merged: Record<string, number> = {};
+  for (const record of records) {
+    for (const [key, count] of Object.entries(record)) merged[key] = (merged[key] ?? 0) + count;
+  }
+  return merged;
+}
+
+function sum(values: readonly number[]): number {
+  return values.reduce((total, value) => total + value, 0);
 }

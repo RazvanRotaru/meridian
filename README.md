@@ -64,7 +64,8 @@ the tangled `services` layer (breadcrumb `System › Src › Services`), everyth
 
 **Boundary edges** — every generated graph surfaces library/builtin calls
 plus dependencies from static TypeScript imports and out-of-scope aliases as dim/dashed wires into an `External` group.
-Type/service targets use stable public ids such as `ext:@vendor/sdk#PaymentService` rather than
+Type/service targets use ecosystem-qualified public ids such as
+`ext:npm/@vendor/sdk#PaymentService` rather than
 `node_modules` paths:
 
 ![External boundary edges](docs/media/04-boundary-edges.png)
@@ -88,9 +89,10 @@ node id **and** the telemetry join key, so structure and runtime data never desy
 1. **Structure (`meridian generate`).** A pluggable `LanguageExtractor` turns a source tree into a
    versioned graph-JSON artifact: nodes (package → module → class → function) with human display
    names and one-line summaries from doc comments, plus edges (calls, instantiates, extends,
-   renders). **TypeScript/TSX** (via `ts-morph`) and **Python** (via the stdlib `ast`) ship today,
-   auto-detected; new languages slot in as additional extractors against the same contract. The
-   artifact *is* the code — re-generate it and it stays in sync.
+   renders). **TypeScript/TSX** (via `ts-morph`) and **Python** (via the stdlib `ast`) ship today.
+   Every language present is detected and extracted into one graph automatically; mixed repositories
+   are never reduced to one configured language. New languages slot in as additional extractors
+   against the same contract. The artifact *is* the code — re-generate it and it stays in sync.
 2. **Renderer (`meridian web`).** A dark-mode SPA (React + `@xyflow/react` + `elkjs`):
    compound nodes with custom expand/collapse, auto-layout that routes edges across nested groups,
    typed pins, and progressive disclosure from the system level down. **Dive-in ("black box"):**
@@ -135,14 +137,15 @@ published as JSON Schema at
 
 | Command | What it does |
 | --- | --- |
-| `meridian generate [path]` | Headless export of the same canonical workspace graph produced by the web app. `--lang` (auto: `typescript` \| `python`), `-o`, `--changed-since`, `--test-coverage <coverage-final.json>` (attach aggregate Istanbul execution coverage). |
+| `meridian generate [path]` | Headless export of the same canonical, automatically multi-language workspace graph produced by the web app. `-o`, `--changed-since`, `--test-coverage <coverage-final.json>` (attach aggregate Istanbul execution coverage). |
 | `meridian web [source]` | The single app launcher. Open the landing page, a **GitHub repo** (`owner/repo` or URL), a local workspace, or an existing graph artifact. Repository sources use canonical workspace analysis; graph artifacts may add `--overlay <file\|mock>`, `--env`, `--source-root`, or `--test-coverage`. Also supports `--port`, `--host`, `--no-open`, and `--github-client-id`. |
 | `meridian mock-telemetry [graph]` | Mint a deterministic mock overlay. **`--env` is required** (no default, never prod); `-o`, `--seed`. |
 | `meridian coverage [graph]` | Terminal report of estimated static test reachability: per-class percentages, every unreachable member with its reason. `--fail-under <pct>` makes it a CI gate (exit 3 below threshold). |
 | `meridian link <graphs...>` | Join two or more artifacts into one **system graph** via their IPC channel keys — HTTP paths unify onto route templates, electron/queue channels match exactly; dangling channels (nobody answers) stay visible. `-o`, `--name`. |
 
-TypeScript generation always discovers the workspace and its package-local configs. There is no
-separate root-tsconfig mode, so the web app, headless export, cache, and PR analysis cannot drift.
+Repository generation runs every detected language extractor. TypeScript discovers the workspace
+and its package-local configs; there is no language or root-tsconfig mode, so the web app, headless
+export, cache, and PR analysis cannot drift.
 
 ## Packages
 

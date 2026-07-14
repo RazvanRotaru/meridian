@@ -64,6 +64,11 @@ describe("persistent web graph cache", () => {
     expect(webAnalysisKey(REQUEST)).toBe(disabled);
   });
 
+  it("does not vary analysis identity with a retired language field from an older client", () => {
+    const legacyRequest = { ...REQUEST, lang: "python" } as GenerateRequest & { lang: string };
+    expect(webAnalysisKey(legacyRequest)).toBe(webAnalysisKey(REQUEST));
+  });
+
   it("reuses both the checkout and artifact for an unchanged commit", async () => {
     const firstStages: string[] = [];
     const secondStages: string[] = [];
@@ -79,6 +84,30 @@ describe("persistent web graph cache", () => {
     expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(1);
     expect(readFileSync(join(second.sourceDir, "apps", "one", "index.ts"), "utf8")).toContain("one = 1");
+  });
+
+  it("persists analysis warnings for web cache hits", async () => {
+    const warnings = ["Fake TypeScript: extractor warning", "validation warning"];
+    vi.mocked(analyzeRepository).mockResolvedValueOnce({
+      artifact: artifactFor("owner/repo", FIRST_COMMIT),
+      warnings,
+    } as never);
+
+    const first = await generate(REQUEST);
+    const second = await generate(REQUEST);
+    const metadata = JSON.parse(readFileSync(join(
+      cacheRoot,
+      "artifacts",
+      first.checkout.repositoryKey,
+      first.checkout.commit,
+      first.analysisKey,
+      "metadata.json",
+    ), "utf8")) as { warnings?: string[] };
+
+    expect(first.warnings).toEqual(warnings);
+    expect(metadata.warnings).toEqual(warnings);
+    expect(second.cache).toBe("hit");
+    expect(second.warnings).toEqual(warnings);
   });
 
   it("creates a new immutable checkout and artifact when the remote commit changes", async () => {

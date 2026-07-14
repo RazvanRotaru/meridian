@@ -82,7 +82,6 @@ async function generateLocal(ctx: Context, request: GenerateRequest, onStage: St
     const { artifact, warnings } = await analyzeRepository({
       absoluteRoot: source.dir,
       cwd: source.dir,
-      language: request.lang,
       targetName: source.target,
     });
     const id = artifactId(request);
@@ -113,5 +112,5 @@ function registerGraph(
 ): void {
   ctx.graphs.set(id, artifact);
   ctx.sourceRoots.set(id, sourceDir);
-  ctx.sources.set(id, artifactSourceFor(request, artifact.target.language));
+  ctx.sources.set(id, artifactSourceFor(request));
 }

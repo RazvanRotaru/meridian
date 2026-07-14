@@ -66,7 +66,8 @@ Adopt **GraphArtifact v1.0.0**: one JSON file = one project snapshot, emitted by
 5. **Adversarial honesty.** Static call resolution is imperfect (ts-morph `getSymbol()`
    can be undefined/external/ambiguous), so every edge carries `resolution` and
    over-approximated edges may carry `confidence`. External/unresolved targets are
-   pseudo-ids (`ext:`, `unresolved:`) tolerated without a backing node.
+   ecosystem-qualified pseudo-ids (`ext:npm/react`, `ext:python/requests#get`,
+   `unresolved:python/?`) tolerated without a backing node.
 
 6. **One schema, two encodings.** The schema is authored once as a **zod** schema in
    `@meridian/core` (source of truth; `z.infer` → the TS types; `.safeParse` → the
@@ -119,7 +120,7 @@ Node = {
 Edge = {
   id,                 // `${kind}@${source}|${target}` — at most one edge per (source,target,kind)
   source,             // node id, always in-graph
-  target,             // node id; in-graph when resolution=resolved, else an ext:/unresolved: pseudo-id
+  target,             // node id; in-graph when resolved, else ext:<ecosystem>/... or unresolved:<ecosystem>/?
   kind,               // OPEN vocab: calls|references|imports|extends|implements|instantiates|...
   resolution,         // CLOSED enum: resolved | external | unresolved  (default resolved)
   weight?,            // >=1; when callSites present, weight === callSites.length
@@ -133,11 +134,13 @@ Edge = {
 Grammar: `<lang> ":" <modulePath> [ "#" <qualname> ] [ "~" <n> ]`
 
 - `<lang>`: short lowercase tag (`ts`, `py`, `go`…). Reserved pseudo-langs `ext`,
-  `unresolved` for non-resolved edge TARGETS only.
+  `unresolved` are used for non-resolved edge TARGETS only.
 - `<modulePath>`: `target.root`-relative POSIX locator. File-based langs (TS/JS): file
   path WITH extension (`src/services/orderService.ts`); a package node = its directory
   path (`src/services`). Logical-module langs (Python): dotted module name
-  (`app.services.auth`).
+  (`app.services.auth`). For `ext` and `unresolved`, the first segment is the dependency
+  ecosystem (`npm`, `python`, …), so unrelated packages with the same name cannot collide
+  when artifacts are linked.
 - `<qualname>`: the substring after `#` IS the generalized `__qualname__` = dotted chain
   of enclosing named containers + member. Normalizations make it cross-language: every
   native scope separator (`::`, `#`, `$`, `.`) normalizes to `.`; static-vs-instance is
@@ -154,7 +157,7 @@ ts:src/services                                          (package)
 ts:src/services/orderService.ts                          (module)
 ts:src/services/orderService.ts#OrderService             (class)
 ts:src/services/orderService.ts#OrderService.placeOrder  (method)
-ext:typescript/lib.es5.d.ts#Error                        (external base, only as an edge target)
+ext:npm/typescript/lib.es5.d.ts#Error                    (external base, only as an edge target)
 ```
 
 ### Telemetry join ladder (forward-compatible, never prod by default)

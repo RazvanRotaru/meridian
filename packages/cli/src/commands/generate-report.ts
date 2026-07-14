@@ -9,8 +9,10 @@
 import type { ExtractionResult, GraphArtifact, LanguageExtractor } from "@meridian/core";
 import type { Reporter } from "../reporter";
 
+const MAX_HUMAN_WARNINGS = 20;
+
 export interface ReportInputs {
-  extractor: LanguageExtractor;
+  extractors: LanguageExtractor[];
   depth: string;
   artifact: GraphArtifact;
   extraction: ExtractionResult;
@@ -29,14 +31,23 @@ function humanLines(inputs: ReportInputs): string[] {
   const stats = inputs.extraction.stats;
   const coverage = stats.summaryCoverage;
   return [
-    `extractor   ${inputs.extractor.displayName} (depth=${inputs.depth})`,
+    `extractors  ${inputs.extractors.map((extractor) => extractor.displayName).join(" + ")} (depth=${inputs.depth})`,
     `files       ${stats.files}`,
     `nodes       ${inputs.artifact.nodes.length}  [${formatCounts(nodeKindCounts(inputs.artifact))}]`,
     `edges       ${inputs.artifact.edges.length}  [${formatCounts(edgeResolutionCounts(inputs.artifact))}]`,
     `summaries   ${coverage.withSummary}/${coverage.total} nodes carry a one-line summary`,
     `validated   ok (${inputs.warnings.length} warning${inputs.warnings.length === 1 ? "" : "s"})`,
+    ...humanWarningLines(inputs.warnings),
     `wrote       ${inputs.outPath}`,
   ];
+}
+
+function humanWarningLines(warnings: readonly string[]): string[] {
+  const lines = warnings.slice(0, MAX_HUMAN_WARNINGS).map((warning) => `warning     ${warning}`);
+  if (warnings.length > MAX_HUMAN_WARNINGS) {
+    lines.push(`warning     … and ${warnings.length - MAX_HUMAN_WARNINGS} more`);
+  }
+  return lines;
 }
 
 function formatCounts(counts: Record<string, number>): string {
@@ -66,7 +77,8 @@ function jsonSummary(inputs: ReportInputs): Record<string, unknown> {
   const stats = inputs.extraction.stats;
   return {
     out: inputs.outPath,
-    extractor: inputs.extractor.language,
+    extractor: inputs.extraction.language,
+    extractors: inputs.extractors.map((extractor) => extractor.language),
     depth: inputs.depth,
     files: stats.files,
     nodeCount: inputs.artifact.nodes.length,

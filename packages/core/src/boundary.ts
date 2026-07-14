@@ -2,18 +2,36 @@
  * Boundary-node materialization.
  *
  * When an extractor is asked to include external/unresolved dependency targets, those targets are
- * pseudo-ids (`ext:` / `unresolved:`) that reference nothing in the tree. This turns each into
- * a real leaf node grouped under a synthetic "External" container, so the renderer can draw
- * the honest boundary edges (dim/dashed) instead of silently dropping them. It runs after
- * depth collapse and is a no-op when no boundary targets are present.
+ * ecosystem-qualified pseudo-ids (`ext:<ecosystem>/...` / `unresolved:<ecosystem>/?`) that
+ * reference nothing in the tree. This turns each into a real leaf node grouped under a synthetic
+ * "External" container, so the renderer can draw the honest boundary edges (dim/dashed) instead of
+ * silently dropping them. It runs after depth collapse and is a no-op when no boundary targets are
+ * present.
  */
 
-import { parseNodeId, type NodeIdParts } from "./ids";
-import type { GraphEdge, GraphNode } from "./types";
+import { buildNodeId, parseNodeId, type NodeIdParts } from "./ids";
+import type { GraphEdge, GraphNode, NodeId } from "./types";
 
 export const EXTERNAL_CONTAINER_ID = "ext:__external__";
 const EXTERNAL_KIND = "external";
 const UNRESOLVED_KIND = "unresolved";
+
+/** A dependency namespace whose module names are comparable across extractors (for example npm or
+ * Python's import space). It is part of every non-resolved target id so linking can share a package
+ * within one ecosystem without conflating equal-looking names from different ecosystems. */
+export type BoundaryEcosystem = "npm" | "python" | (string & {});
+
+export function externalTargetId(
+  ecosystem: BoundaryEcosystem,
+  modulePath: string,
+  qualname?: string,
+): NodeId {
+  return buildNodeId({ lang: "ext", modulePath: `${ecosystem}/${modulePath}`, qualname });
+}
+
+export function unresolvedTargetId(ecosystem: BoundaryEcosystem): NodeId {
+  return buildNodeId({ lang: "unresolved", modulePath: `${ecosystem}/?` });
+}
 
 export function materializeBoundaryNodes(nodes: GraphNode[], edges: GraphEdge[]): GraphNode[] {
   const known = new Set(nodes.map((node) => node.id));

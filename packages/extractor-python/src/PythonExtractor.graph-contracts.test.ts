@@ -48,8 +48,25 @@ describe("PythonExtractor graph contracts", () => {
 
         expect(externalEdges).toHaveLength(2);
         expect(externalEdges.map((edge) => edge.kind).sort()).toEqual(["calls", "imports"]);
+        expect(externalEdges.map((edge) => edge.target).sort()).toEqual([
+          "ext:python/third_party",
+          "ext:python/third_party#execute",
+        ]);
         expect(result.stats.edgeCountByResolution.external).toBe(2);
         expect(result.stats.externalCallsDropped).toBe(0);
+      },
+    );
+  });
+
+  it("uses a Python-qualified unresolved sentinel", async () => {
+    await withProject(
+      { "main.py": "def run(callback):\n    return callback()\n" },
+      async (root) => {
+        const result = await extract(root, { includeUnresolved: true });
+        const unresolved = result.edges.filter((edge) => edge.resolution === "unresolved");
+
+        expect(unresolved.length).toBeGreaterThan(0);
+        expect(new Set(unresolved.map((edge) => edge.target))).toEqual(new Set(["unresolved:python/?"]));
       },
     );
   });

@@ -4,7 +4,7 @@
  * from the current focus and emits a NESTED set: a group card that the reader expanded yields its
  * children as `parentId`-nested nodes, exactly like the logic-flow tab.
  *
- *   - `focus === null` → the whole-repo overview: npm packages that own at least one file.
+ *   - `focus === null` → the whole-repo overview: package/file ownership roots covering every file.
  *   - a `focus` package/dir → its children, after chain-collapsing a lone `src`.
  *   - a focused/expanded FILE enters `codeWalk`: classes/interfaces/objects become unit cards that
  *     expand into member frames, file-level functions/types become block cards, and flow-bearing

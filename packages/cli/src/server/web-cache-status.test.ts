@@ -20,7 +20,7 @@ describe("cache-status analysis identity", () => {
     vi.clearAllMocks();
   });
 
-  it("forwards repository, ref, subdirectory, and language to the cache probe", async () => {
+  it("forwards repository, ref, and subdirectory while ignoring the retired language selector", async () => {
     await handleCacheStatus(
       {
         cacheRoot: "/cache",
@@ -47,7 +47,6 @@ describe("cache-status analysis identity", () => {
         value: "octo/repo",
         ref: "main",
         subdir: "packages/app",
-        lang: "typescript",
         refresh: false,
       },
       token: undefined,

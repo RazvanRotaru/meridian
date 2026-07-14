@@ -91,32 +91,19 @@ a depth-1 re-root couldn't show real nesting. The final model (`d43ac44`) collap
 - `components/nodes/modulemap/ModuleCardNode.tsx` (file card) + `PackageOverviewNode.tsx` (group card);
   registry `{ package, file }`. `Toolbar.tsx` (no toggle); `ViewModeToggle.tsx` 4th segment.
 
-## Autopilot extraction recipe (the reusable, hard-won part)
+## Autopilot extraction recipe
 
-> **Superseded:** these commands record the original spike. Current product generation always uses
-> canonical workspace discovery; do not pass a root or combined tsconfig.
-
-Autopilot (`UiPath/Autopilot`) is a multi-language monorepo of ~10 loosely-federated npm roots.
-Getting a correct TS import graph out of it:
+Autopilot (`UiPath/Autopilot`) is a mixed TypeScript/Python monorepo. Current product generation
+discovers its workspace and runs every matching extractor automatically:
 
 ```bash
 AP=/path/to/Autopilot
-# 1. package family (18 packages, 389 cross-package edges):
-generate $AP/src/packages --lang typescript --tsconfig $AP/src/packages/tsconfig.typecheck.json
-# 2. whole TS surface incl. aria/app (2,861 files; aria/app 1,914; pkgs↔aria both ways):
-#    use a combined tsconfig = typecheck.json + explicit aria/app + aria/lib includes, rooted at src.
-generate $AP/src          --lang typescript --tsconfig <combined-tsconfig>
+meridian generate "$AP" -o autopilot.graph.json
 ```
 
-- **`--lang typescript` is mandatory** — without it, detection falls to Python on stray `node_modules`
-  `.py` files and emits garbage.
-- **`tsconfig.typecheck.json` is the only config that source-maps** internal `@uipath/autopilot-*`
-  aliases to sibling *source* (the root `tsconfig.json` is references-only → 0 edges; per-package
-  configs resolve to `.d.ts` which meridian drops).
-- **Full aria/app** requires *explicitly* adding `../aria/app/src/**` + `../aria/lib/**` to the
-  tsconfig `include` (import-following alone pulled only 1 aria/app file). Overriding
-  `@uipath/autopilot-types` → the real package source (vs aria's local shim) is what lifts
-  `aria → packages` from 1 edge to 265.
+- TypeScript workspace/package discovery keeps internal package imports source-backed.
+- Python discovery prunes dependency, build, virtual-environment, and nested-worktree directories.
+- The resulting artifact is labeled `mixed`, and both `ts:` and `py:` nodes enter Map and PR views.
 - **Static-analysis blind spots** (not meridian bugs): bundler-only `resolve.alias`
   (delegate-iframe/-web, studiodesktop, uia), Module-Federation `exposes`/`shared`, and dynamic
   `import()`.

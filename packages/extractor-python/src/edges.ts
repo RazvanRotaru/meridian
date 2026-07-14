@@ -1,11 +1,12 @@
 /** Apply graph policy to analyzer relationships, then aggregate and collapse them. */
 
-import { aggregateEdges, buildNodeId, collapseToDepth } from "@meridian/core";
+import { aggregateEdges, collapseToDepth, externalTargetId, unresolvedTargetId } from "@meridian/core";
 import type { CallSite, EdgeKind, EdgeResolution, ExtractOptions, GraphEdge, GraphNode, RawGraphEdge } from "@meridian/core";
 import type { NodeIndex } from "./nodes";
 import type { AnalyzeEdge, AnalyzeModule, AnalyzeOutput } from "./types";
 
-const UNRESOLVED_TARGET = buildNodeId({ lang: "unresolved", modulePath: "?" });
+const PYTHON_BOUNDARY_ECOSYSTEM = "python";
+const UNRESOLVED_TARGET = unresolvedTargetId(PYTHON_BOUNDARY_ECOSYSTEM);
 
 interface Counters {
   externalCallsDropped: number;
@@ -106,7 +107,7 @@ function externalVerdict(
     return null;
   }
   return {
-    target: buildNodeId({ lang: "ext", modulePath: module, qualname: name ?? undefined }),
+    target: externalTargetId(PYTHON_BOUNDARY_ECOSYSTEM, module, name ?? undefined),
     kind: kindOf(edge),
     resolution: "external",
   };

@@ -11,6 +11,7 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, extname, join, relative, resolve, sep } from "node:path";
+import { parseNodeId } from "@meridian/core";
 import type { GraphNode, JsonValue, NodeId } from "@meridian/core";
 
 /** Directories that only ever hold build output or vendored deps — never a source entry. */
@@ -18,6 +19,8 @@ const IGNORED_DIRS = new Set(["node_modules", "dist", "out", "build", "coverage"
 
 /** package.json fields that name an entry, in the order we trust them. */
 const ENTRY_FIELDS = ["main", "module"] as const;
+const NODE_PACKAGE_LANGUAGES = new Set(["typescript", "javascript"]);
+const NODE_PACKAGE_ID_LANGUAGES = new Set(["ts", "js"]);
 
 interface PackageEntry {
   /** Absolute directory containing the package.json. */
@@ -31,15 +34,25 @@ interface PackageEntry {
  * resolves. Never throws — a repo with no `main` field is a valid, common case.
  */
 export function resolveEntryModules(rootDir: string, moduleNodes: GraphNode[]): NodeId[] {
+  // package.json describes the Node/JavaScript ecosystem. In a mixed artifact, a same-basename
+  // Python module is not a candidate even when its source path would otherwise rank higher.
+  const nodePackageModules = moduleNodes.filter(isNodePackageModule);
   const resolved: NodeId[] = [];
   for (const pkg of findPackageEntries(rootDir)) {
     const entryBase = entryBasename(pkg.entryPath);
-    const node = pickSourceModule(rootDir, pkg.dir, entryBase, moduleNodes);
+    const node = pickSourceModule(rootDir, pkg.dir, entryBase, nodePackageModules);
     if (node) {
       resolved.push(node.id);
     }
   }
-  return sortBestFirst(dedupe(resolved), moduleNodes);
+  return sortBestFirst(dedupe(resolved), nodePackageModules);
+}
+
+function isNodePackageModule(node: GraphNode): boolean {
+  if (node.language !== undefined) {
+    return NODE_PACKAGE_LANGUAGES.has(node.language);
+  }
+  return NODE_PACKAGE_ID_LANGUAGES.has(parseNodeId(node.id).lang);
 }
 
 /** Walk `rootDir` (skipping build/vendor dirs) collecting each package.json's declared entry. */

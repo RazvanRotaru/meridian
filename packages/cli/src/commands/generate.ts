@@ -1,7 +1,7 @@
 /**
  * `generate`: source tree -> validated GraphArtifact on disk.
  *
- * The pipeline (select-extractor -> extract -> stamp header -> validate) lives in
+ * The pipeline (detect-extractors -> extract -> merge -> stamp header -> validate) lives in
  * `extract-pipeline` so `web` can share it; this command adds only the on-disk concerns:
  * writing atomically and reporting. It fails closed — a validation
  * error throws before the write, so a downstream `view` never loads a half-formed graph.
@@ -14,11 +14,10 @@ import { Reporter } from "../reporter";
 import type { GlobalOptions } from "../reporter";
 import { reportGenerate } from "./generate-report";
 import { attachIstanbulCoverage } from "../istanbul-coverage";
-import { validateOrThrow } from "../validation";
+import { mergeWarnings, validateOrThrow } from "../validation";
 
 export interface GenerateOptions extends GlobalOptions {
   out: string;
-  lang?: string;
   changedSince?: string;
   testCoverage?: string;
 }
@@ -31,7 +30,6 @@ export async function runGenerate(path: string, options: GenerateOptions): Promi
   const result = await analyzeRepository({
     absoluteRoot,
     cwd,
-    language: options.lang,
     changedSince: options.changedSince,
   });
   const validated = options.testCoverage
@@ -44,13 +42,14 @@ export async function runGenerate(path: string, options: GenerateOptions): Promi
         "generated artifact with test coverage",
       )
     : { artifact: result.artifact, warnings: [] };
+  const warnings = mergeWarnings(result.warnings, validated.warnings);
   writeJsonAtomic(outPath, validated.artifact);
   reportGenerate(reporter, {
-    extractor: result.extractor,
+    extractors: result.extractors,
     depth: "function",
     artifact: validated.artifact,
     extraction: result.extraction,
-    warnings: options.testCoverage ? validated.warnings : result.warnings,
+    warnings,
     outPath,
   });
 }

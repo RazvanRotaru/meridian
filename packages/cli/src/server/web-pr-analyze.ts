@@ -108,7 +108,6 @@ function prGraphId(source: GitHubSource, body: PrAnalyzeRequest, headSha: string
     source.owner,
     source.repo,
     source.subdir ?? "",
-    source.language ?? "auto",
     body.prNumber,
     body.headRef,
     headSha,

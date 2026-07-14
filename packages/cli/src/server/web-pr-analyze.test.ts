@@ -112,28 +112,23 @@ describe("handlePrAnalyze", () => {
     expect(second.map((line) => line.stage)).toEqual(["done"]);
     expect(second.at(-1)?.cache).toBe("hit");
     expect(second.at(-1)?.graphId).toBe(first.at(-1)?.graphId);
+    expect(second.at(-1)?.warnings).toEqual(["w1"]);
     expect(runGitClone).toHaveBeenCalledTimes(1);
     expect(analyzeRepository).toHaveBeenCalledTimes(1);
     expect(existsSync(restarted.sourceRoots.get(second.at(-1)?.graphId as string)!)).toBe(true);
   });
 
-  it("preserves the selected language and separates PR analysis identity by language", async () => {
-    const typescript = { kind: "github", owner: "org", repo: "repo", language: "typescript" } as const;
-    const python = { kind: "github", owner: "org", repo: "repo", language: "python" } as const;
-    const ctx = githubCtx(typescript);
+  it("runs canonical PR analysis without persisting or forwarding a language selector", async () => {
+    const ctx = githubCtx();
+    const done = (await invoke(ctx, BODY)).lines().at(-1)!;
 
-    const first = (await invoke(ctx, BODY)).lines().at(-1)!;
-    ctx.sources.set(BODY.id, python);
-    const second = (await invoke(ctx, BODY)).lines().at(-1)!;
-
-    expect(first.graphId).not.toBe(second.graphId);
-    expect(runGitClone).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(analyzeRepository).mock.calls.map(([request]) => request.language)).toEqual([
-      "typescript",
-      "python",
-    ]);
-    expect(ctx.sources.get(first.graphId as string)).toMatchObject({ language: "typescript" });
-    expect(ctx.sources.get(second.graphId as string)).toMatchObject({ language: "python" });
+    expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(analyzeRepository).mock.calls[0][0]).not.toHaveProperty("language");
+    expect(ctx.sources.get(done.graphId as string)).toEqual({
+      kind: "github",
+      owner: "org",
+      repo: "repo",
+    });
   });
 
   it("re-analyzes when the base branch moves even if the PR head is unchanged", async () => {

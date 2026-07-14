@@ -38,7 +38,8 @@ Matching ends join through a **channel node**, never a direct edge:
 sender —sends→ [ ipc:<protocol>/<channel-slug> ] —handles→ handler
 ```
 
-- The `ipc:` pseudo-id reuses the ADR-0001 node-id grammar exactly as `ext:`/`unresolved:` do.
+- The `ipc:` pseudo-id reuses the ADR-0001 node-id grammar exactly as ecosystem-qualified
+  `ext:<ecosystem>/...` and `unresolved:<ecosystem>/?` ids do.
 - `channel`/`system` node kinds and `sends`/`handles` edge kinds join the lint vocabulary
   (open vocabulary — warn-level, never breaking).
 - A **one-ended channel is kept** — a dangling channel IS the finding ("someone sends on this and
@@ -52,7 +53,8 @@ sender —sends→ [ ipc:<protocol>/<channel-slug> ] —handles→ handler
 - Each source becomes a `system` container (`sys:<name>`); its node ids are **namespaced** by
   prefixing the module path with the system name (`ts:src/x.ts` → `ts:orders-api/src/x.ts`) so two
   repos' identical paths never collide. `ext:`/`unresolved:`/`ipc:` ids are deliberately NOT
-  namespaced — they are the shared space where systems meet.
+  namespaced by system: boundary ids share only inside their explicit ecosystem, while channel ids
+  are the global shared space where systems meet.
 - Channels are **rebuilt from scratch** over the merged port set (per-artifact channel nodes are
   stripped first) so intra- and cross-system joins come out of one code path.
 - One extra join rule for HTTP: a concrete exit path unifies onto an entry **route template**

@@ -25,6 +25,7 @@ import { flowSource } from "./flow-source";
 import { bodyOf, type FlowWalker } from "./flow-walker";
 import { resolveTarget } from "./edge-resolve";
 import type { NodeDescriptor } from "./model";
+import { targetIdForResolution } from "./resolution-target";
 import type { ResolutionIndex } from "./resolution-index";
 
 /** A generous ceiling that only truly pathological nesting hits — a stack-overflow guard. */
@@ -180,7 +181,14 @@ function callSteps(node: CallExpression | NewExpression, walker: FlowWalker, dep
   const label = calleeName(callee);
   if (label) {
     const resolution = resolveTarget(callee, walker.index);
-    steps.push({ kind: "call", label, target: resolution.resolvedTarget, resolution: resolution.resolution, ...walker.annotate(node), source: walker.source(node) });
+    steps.push({
+      kind: "call",
+      label,
+      target: targetIdForResolution(resolution),
+      resolution: resolution.resolution,
+      ...walker.annotate(node),
+      source: walker.source(node),
+    });
   }
   steps.push(...inlineCallbackSteps(node, label, walker, depth));
   return steps;

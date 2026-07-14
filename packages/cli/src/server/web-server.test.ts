@@ -179,14 +179,14 @@ describe("createWebServer generate -> view (offline path source)", () => {
         parentId: null,
       }));
       expect(graph.nodes).toContainEqual(expect.objectContaining({
-        id: "ext:rxjs#BehaviorSubject",
+        id: "ext:npm/rxjs#BehaviorSubject",
         kind: "external",
         parentId: "ext:__external__",
       }));
       expect(graph.edges).toContainEqual(expect.objectContaining({
         kind: "imports",
         resolution: "external",
-        target: "ext:rxjs#BehaviorSubject",
+        target: "ext:npm/rxjs#BehaviorSubject",
       }));
     } finally {
       rmSync(root, { recursive: true, force: true });
