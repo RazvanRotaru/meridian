@@ -10,6 +10,7 @@
 
 import type { GraphNode } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
+import { declarationSemantics, type NodeSemanticModel } from "../nodeSemantics";
 import { isVisibleBlockDepEdge, UNIT_CARD_KINDS, type BlockDeps } from "./blockDeps";
 import { crossesPackageBoundary, graphEdgeCrossesPackage } from "./packageBoundary";
 
@@ -19,6 +20,7 @@ export type GhostData = {
   label: string;
   context: string;
   ghostKind: string;
+  semantics?: NodeSemanticModel;
   /** A real folder ghost's contributing home FILES, so main's "+" promotion pins exactly the
    * relationships represented by that folder instead of arbitrary children. */
   members?: string[];
@@ -188,9 +190,11 @@ export function nearestVisible(startId: string, visibleIds: ReadonlySet<string>,
 /** What a real artifact node reads as when charted as a ghost card. Exported for the Service
  * lens's cluster-level ghosts (serviceGhosts.ts), which share this one card vocabulary. */
 export function ghostData(node: GraphNode): GhostData {
+  const semantics = declarationSemantics(node);
   return {
     label: node.qualifiedName ?? node.displayName ?? node.id,
     context: node.location?.file ?? "",
     ghostKind: node.kind,
+    ...(semantics ? { semantics } : {}),
   };
 }

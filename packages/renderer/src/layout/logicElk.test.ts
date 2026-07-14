@@ -46,11 +46,13 @@ describe("logic ELK graph", () => {
       [target]: [call("child")],
     };
     const spec = deriveLogicGraph("r", flows, changedIndex, new Set(["r::0"]), { hideGreyed: false });
+    const measured = spec.nodes.find((node) => node.id === "r::0")!;
     const container = elkNode(buildLogicElkGraph(spec), "r::0");
 
+    expect(measured.width).toBeGreaterThanOrEqual(260);
     expect(container.layoutOptions).toMatchObject({
       "elk.nodeSize.constraints": "MINIMUM_SIZE",
-      "elk.nodeSize.minimum": "(260,58)",
+      "elk.nodeSize.minimum": `(${measured.width},${measured.height})`,
     });
   });
 
@@ -114,6 +116,53 @@ describe("logic ELK graph", () => {
     }
     const rf = toReactFlowLogic(graph, new Map(spec.nodes.map((node) => [node.id, node])), spec.edges, "vertical");
     expect(rf.edges.every((edge) => edge.data?.orientation === "vertical")).toBe(true);
+  });
+
+  it("does not install hidden lane ports on folded branch and try summaries", () => {
+    const structures: FlowStep[] = [
+      {
+        kind: "branch",
+        branchKind: "if",
+        label: "if ready",
+        paths: [
+          { label: "then", role: "then", body: [call("yes")] },
+          { label: "else", role: "else", body: [call("no")] },
+        ],
+      },
+      {
+        kind: "branch",
+        branchKind: "try",
+        label: "try/catch",
+        paths: [
+          { label: "try", role: "try", body: [call("normal")] },
+          { label: "catch error", role: "catch", body: [call("recover")] },
+        ],
+      },
+    ];
+
+    for (const structure of structures) {
+      const spec = deriveLogicGraph(
+        "r",
+        { r: [structure, call("after")] },
+        index,
+        new Set(["r::0"]),
+        { hideGreyed: false },
+      );
+      const graph = buildLogicElkGraph(spec);
+      const summary = elkNode(graph, "r::0");
+
+      expect(spec.nodes.find((node) => node.id === "r::0")?.data).toMatchObject({
+        expandable: true,
+        isExpanded: false,
+      });
+      expect(summary.ports ?? []).toEqual([]);
+      expect(summary.layoutOptions?.["elk.portConstraints"]).not.toBe("FIXED_ORDER");
+      expect(spec.edges).toEqual([
+        expect.objectContaining({ source: "r::0", target: "r::1", kind: "seq" }),
+      ]);
+      expect(spec.edges[0].sourcePort).toBeUndefined();
+      expect(graph.edges?.[0]?.sources).toEqual(["r::0"]);
+    }
   });
 
   it("passes branch and async endpoint ids through to React Flow handles", () => {
@@ -187,9 +236,9 @@ describe("logic ELK graph", () => {
     const spec = deriveLogicGraph("r", { r: [tryCatch, call("after")] }, index, new Set(), { hideGreyed: false });
     expect(spec.nodes.find((node) => node.id === "r::0")).toMatchObject({
       type: "exception",
-      width: 112,
-      height: 68,
-      data: { logicKind: "try", isContainer: false },
+      width: 190,
+      height: 66,
+      data: { logicKind: "try", expandable: true, isExpanded: true, isContainer: false },
     });
 
     const laidOut = await runElkLayout(buildLogicElkGraph(spec));

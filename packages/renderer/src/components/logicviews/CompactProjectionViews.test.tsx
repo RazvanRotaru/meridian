@@ -55,6 +55,27 @@ describe("compact alternate flow projections", () => {
     expect(markup).not.toContain("aria-keyshortcuts");
   });
 
+  it("distinguishes a dropped result from a proven Promise handoff in Blocks", () => {
+    const generic = renderToStaticMarkup(
+      <BlocksView {...viewProps(false)} steps={[{ ...STEPS[0] as Extract<FlowStep, { kind: "call" }>, detached: true }]} />,
+    );
+    const promise = renderToStaticMarkup(
+      <BlocksView
+        {...viewProps(false)}
+        steps={[{
+          ...STEPS[0] as Extract<FlowStep, { kind: "call" }>,
+          detached: true,
+          async: { kind: "launch", taskId: "task:work" },
+        }]}
+      />,
+    );
+
+    expect(generic).toContain("RESULT DROPPED");
+    expect(generic).not.toContain("HANDED OFF · RUNS LATER");
+    expect(promise).toContain("PROMISE · NOT AWAITED");
+    expect(promise).toContain("HANDED OFF · RUNS LATER");
+  });
+
   it.each([
     ["Metro", MetroView],
     ["Blocks", BlocksView],

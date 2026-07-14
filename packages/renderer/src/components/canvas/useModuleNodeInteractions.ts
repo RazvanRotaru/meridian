@@ -18,6 +18,7 @@ import type { Edge, NodeMouseHandler, Node } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { activeModuleSurfaceSpec, type SurfaceSpec } from "./surfaceSpec";
 import type { BlockData } from "../../derive/moduleLevel";
+import type { StepData } from "../../derive/flowSteps";
 import type { BaseNodeModel } from "../nodes/BaseNode";
 
 const SELECT_CLICK_DELAY_MS = 250;
@@ -466,6 +467,10 @@ export function navigationForNode(node: NavigationNode, spec: SurfaceSpec): Node
     return { kind: "logic", id: node.id };
   }
   if (node.type === "step") {
+    const step = node.data as StepData;
+    if (step.resolution === "resolved" && typeof step.targetId === "string") {
+      return { kind: "logic", id: step.targetId };
+    }
     const owner = artifactOwnerOfStep(node.id);
     if (owner !== null) {
       return { kind: "logic", id: owner };

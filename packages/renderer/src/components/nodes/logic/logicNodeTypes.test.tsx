@@ -2,9 +2,9 @@ import type { ComponentType } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ReactFlowProvider, type NodeProps } from "@xyflow/react";
 import { describe, expect, it } from "vitest";
-import type { DefGroupData, LogicFlowOrientation, LogicRfNode } from "../../../layout/logicElk";
 import type { LogicNodeData } from "../../../derive/logicGraph";
-import { freshStore, ALPHA_RUN } from "../../../parity/surfaceFixture";
+import type { DefGroupData, LogicFlowOrientation, LogicRfNode } from "../../../layout/logicElk";
+import { ALPHA_RUN, freshStore } from "../../../parity/surfaceFixture";
 import { StoreProvider } from "../../../state/StoreContext";
 import { BaseNodeActionScope } from "../BaseNode";
 import {
@@ -102,10 +102,177 @@ describe("Logic definition-owner frame", () => {
     expect(markup).toContain('data-base-node="true"');
     expect(markup).toContain('data-base-node-kind="interface"');
     expect(markup).toContain('aria-expanded="true"');
-    expect(markup.match(/data-base-node-disclosure/g)).toHaveLength(1);
+    expect(markup.match(/data-base-node-disclosure="true"/g)).toHaveLength(1);
     expect(markup.indexOf("INTERFACE")).toBeLessThan(markup.indexOf("data-base-node-disclosure"));
   });
 });
+describe("Logic async node composition", () => {
+  it("uses the shared kind and semantic rail for a standalone await gate", () => {
+    const AsyncNode = logicNodeTypes.async;
+    const data: LogicNodeData = {
+      logicKind: "await",
+      label: "await pending",
+      targetId: null,
+      resolution: null,
+      expandable: false,
+      isExpanded: false,
+      isContainer: false,
+      compact: false,
+      callScope: null,
+      greyed: false,
+      provenance: null,
+      childCount: 1,
+      awaited: true,
+      semantics: { asyncState: { kind: "await", taskCount: 1 } },
+      asyncEvent: { kind: "await", mode: "single", inputs: [] },
+      asyncPorts: [],
+    };
+    const props = { id: "flow::await/0", data } as NodeProps<LogicRfNode>;
+    const markup = renderToStaticMarkup(
+      <ReactFlowProvider><AsyncNode {...props} /></ReactFlowProvider>,
+    );
+
+    expect(markup).toContain('data-base-node-kind="await"');
+    expect(markup).toContain('data-node-kind-label="await"');
+    expect(markup).toContain('data-node-semantic-state="await"');
+    expect(markup).toContain("AWAITED");
+  });
+});
+
+describe("Logic callable semantic composition", () => {
+  it("keeps identity, declaration, result, occurrence, and provenance when a card expands into a frame", () => {
+    const base: LogicNodeData = {
+      logicKind: "call",
+      label: "launchInventoryRefresh",
+      targetId: ALPHA_RUN,
+      resolution: "resolved",
+      navigable: true,
+      expandable: true,
+      isExpanded: false,
+      isContainer: false,
+      compact: false,
+      callScope: "internal",
+      greyed: false,
+      provenance: { pkg: "inventory-domain", module: "refreshInventory.ts" },
+      childCount: 2,
+      callKind: "method",
+      semantics: {
+        modifiers: ["async", "static"],
+        returnsPromise: true,
+        asyncState: { kind: "launched", binding: "inventoryTask" },
+      },
+    };
+    const collapsed = renderBlock(base);
+    const expanded = renderBlock({ ...base, isExpanded: true, isContainer: true });
+
+    for (const markup of [collapsed, expanded]) {
+      expect(markup).toContain('data-base-node-kind="method"');
+      expect(markup).toContain("METHOD");
+      expect(markup).toContain("ASYNC");
+      expect(markup).toContain("STATIC");
+      expect(markup).toContain("PROMISE");
+      expect(markup).toContain("LAUNCHED · inventoryTask");
+      expect(markup).toContain("inventory-domain");
+      expect(markup).toContain("refreshInventory.ts");
+      expect(markup.match(/data-base-node-disclosure="true"/g)).toHaveLength(1);
+    }
+    expect(collapsed).toContain('data-base-node-expanded="false"');
+    expect(expanded).toContain('data-base-node-expanded="true"');
+    expect(expanded.indexOf("refreshInventory.ts")).toBeLessThan(expanded.indexOf("data-base-node-disclosure"));
+  });
+
+  it("uses the same disclosure and semantic composition for an empty callable's honest expanded state", () => {
+    const base: LogicNodeData = {
+      logicKind: "call",
+      label: "performProtectedWork",
+      targetId: ALPHA_RUN,
+      resolution: "resolved",
+      navigable: true,
+      expandable: true,
+      isExpanded: false,
+      isContainer: false,
+      compact: false,
+      callScope: "internal",
+      greyed: false,
+      provenance: { pkg: "orders-service", module: "executionGraphGallery.ts" },
+      childCount: 0,
+      emptyFlow: true,
+      callKind: "method",
+      semantics: {
+        modifiers: ["async"],
+        returnsPromise: true,
+        asyncState: { kind: "awaited" },
+      },
+    };
+    const collapsed = renderBlock(base);
+    const expanded = renderBlock({ ...base, isExpanded: true, isContainer: true });
+
+    for (const markup of [collapsed, expanded]) {
+      expect(markup.match(/data-base-node-disclosure="true"/g)).toHaveLength(1);
+      expect(markup).toContain("METHOD");
+      expect(markup).toContain("ASYNC");
+      expect(markup).toContain("PROMISE");
+      expect(markup).toContain("AWAITED");
+    }
+    expect(collapsed).not.toContain('data-node-empty-expansion="true"');
+    expect(expanded).toContain('data-node-empty-expansion="true"');
+    expect(expanded).toContain('role="note"');
+    expect(expanded).toContain("No charted calls or control flow");
+    expect(expanded).toContain('aria-expanded="true"');
+  });
+});
+
+describe("Logic structural node disclosure", () => {
+  const branchPorts = [
+    { id: "then", label: "then", role: "then" as const, order: 0 },
+    { id: "else", label: "else", role: "else" as const, order: 1 },
+  ];
+  const exceptionPorts = [
+    { id: "try", label: "try", role: "try" as const, order: 0 },
+    { id: "catch", label: "catch error", role: "catch" as const, order: 1 },
+  ];
+  const cases: Array<{
+    name: string;
+    type: "control" | "branch" | "exception" | "finally";
+    kind: LogicNodeData["logicKind"];
+    label: string;
+    branchPorts?: LogicNodeData["branchPorts"];
+  }> = [
+    { name: "loop control", type: "control", kind: "loop", label: "for each order" },
+    { name: "branch", type: "branch", kind: "if", label: "if order.ready", branchPorts },
+    { name: "exception", type: "exception", kind: "try", label: "try/catch", branchPorts: exceptionPorts },
+    { name: "finally", type: "finally", kind: "finally", label: "finally" },
+  ];
+
+  for (const nodeCase of cases) {
+    it(`renders one shared, accessible disclosure for the ${nodeCase.name} in both states`, () => {
+      for (const isExpanded of [false, true]) {
+        const markup = renderStructuralNode(nodeCase.type, {
+          logicKind: nodeCase.kind,
+          label: nodeCase.label,
+          targetId: null,
+          resolution: null,
+          expandable: true,
+          isExpanded,
+          isContainer: nodeCase.type === "control" && isExpanded,
+          compact: false,
+          callScope: null,
+          greyed: false,
+          provenance: null,
+          childCount: 2,
+          branchPorts: nodeCase.branchPorts,
+        });
+
+        expect(markup).toContain('data-base-node="true"');
+        expect(markup.match(/data-base-node-disclosure="true"/g)).toHaveLength(1);
+        expect(markup).toContain(`aria-expanded="${isExpanded}"`);
+        expect(markup).toContain(`data-node-disclosure-state="${isExpanded ? "expanded" : "collapsed"}"`);
+        expect(markup.toLowerCase()).not.toContain("expand in place");
+      }
+    });
+  }
+});
+
 describe("synthetic runtime node snapshots", () => {
   it("renders explicit compact IN/OUT rows and selects only the clicked occurrence", () => {
     const store = freshStore();
@@ -180,6 +347,43 @@ describe("synthetic runtime node snapshots", () => {
     expect(html).toContain("OUT");
   });
 });
+
+function renderBlock(data: LogicNodeData): string {
+  const store = freshStore();
+  const state = store.getState();
+  Object.assign(store, { getInitialState: () => state });
+  const Block = logicNodeTypes.block;
+  const props = { id: "flow::call/0", data } as NodeProps<LogicRfNode>;
+  return renderToStaticMarkup(
+    <StoreProvider store={store}>
+      <ReactFlowProvider>
+        <BaseNodeActionScope toggleExpand={() => undefined}>
+          <Block {...props} />
+        </BaseNodeActionScope>
+      </ReactFlowProvider>
+    </StoreProvider>,
+  );
+}
+
+function renderStructuralNode(
+  type: "control" | "branch" | "exception" | "finally",
+  data: LogicNodeData,
+): string {
+  const store = freshStore();
+  const state = store.getState();
+  Object.assign(store, { getInitialState: () => state });
+  const Node = logicNodeTypes[type];
+  const props = { id: `flow::${type}/0`, data } as NodeProps<LogicRfNode>;
+  return renderToStaticMarkup(
+    <StoreProvider store={store}>
+      <ReactFlowProvider>
+        <BaseNodeActionScope toggleExpand={() => undefined}>
+          <Node {...props} />
+        </BaseNodeActionScope>
+      </ReactFlowProvider>
+    </StoreProvider>,
+  );
+}
 
 function renderRuntimeNode(
   store: ReturnType<typeof freshStore>,

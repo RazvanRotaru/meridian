@@ -7,7 +7,7 @@
 
 import type { GraphNode, LogicFlows } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
-import { BLOCK_KINDS, constructionTarget, liftDepEdges, UNIT_CARD_KINDS, type BlockDeps } from "./blockDeps";
+import { BLOCK_KINDS, CALLABLE_BLOCK_KINDS, constructionTarget, liftDepEdges, UNIT_CARD_KINDS, type BlockDeps } from "./blockDeps";
 import { emitFlowSteps, type StepData } from "./flowSteps";
 import { nearestVisible } from "./ghostDeps";
 import { crossesPackageBoundary, underlyingEdgesCrossPackage } from "./packageBoundary";
@@ -84,41 +84,49 @@ function memberChildren(index: GraphIndex, unitId: string): GraphNode[] {
 
 function visitFile(id: string, parentId: string | null, depth: number, ctx: CodeWalkContext, walk: CodeWalk): void {
   const decls = declChildren(ctx.index, id);
-  const isContainer = decls.length > 0;
-  const isExpanded = isContainer && ctx.expanded.has(id);
-  walk.skeleton.push({ id, parentId, kind: "file", isContainer, isExpanded, depth, childCount: decls.length });
+  // A source file is an expandable entity even when extraction found no drawable declarations.
+  // `childCount` stays honest; the renderer owns the shared empty-details presentation.
+  const isExpanded = ctx.expanded.has(id);
+  walk.skeleton.push({ id, parentId, kind: "file", isContainer: true, isExpanded, depth, childCount: decls.length });
   if (isExpanded) {
     decls.forEach((decl) => visitCode(decl.id, id, depth + 1, ctx, walk));
   }
 }
 
-/** A unit with members can open as a frame of member blocks — methods are first-class nodes,
- * not rows on a card. Memberless units and file-level functions/types are leaf blocks. */
+/** Every class/interface/object can open as a frame of member blocks — methods are first-class
+ * nodes, not rows on a card. Memberless units use the shared honest empty-details frame. */
 function visitDecl(decl: GraphNode, parentId: string | null, depth: number, ctx: CodeWalkContext, walk: CodeWalk): void {
   const members = memberChildren(ctx.index, decl.id);
-  const isContainer = members.length > 0;
-  const isExpanded = isContainer && ctx.expanded.has(decl.id);
-  walk.skeleton.push({ id: decl.id, parentId, kind: "unit", isContainer, isExpanded, depth, childCount: members.length });
+  const isExpanded = ctx.expanded.has(decl.id);
+  walk.skeleton.push({ id: decl.id, parentId, kind: "unit", isContainer: true, isExpanded, depth, childCount: members.length });
   if (isExpanded) {
     members.forEach((member) => visitCode(member.id, decl.id, depth + 1, ctx, walk));
   }
 }
 
-/** POC — a callable block WITH a logic flow is itself expandable: opening it turns the block into
- * a frame whose top-level flow steps chart in place, chained by execution wires. */
+/** Every callable block is expandable. A non-empty flow charts its steps in place; an empty,
+ * computation-only or return-only callable becomes a frame with the shared honest empty state. */
 function visitBlock(id: string, parentId: string | null, depth: number, ctx: CodeWalkContext, walk: CodeWalk): void {
-  const flow = ctx.flows[id];
-  const isContainer = (flow?.length ?? 0) > 0;
+  const node = ctx.index.nodesById.get(id);
+  const flow = ctx.flows[id] ?? [];
+  const isContainer = node !== undefined && CALLABLE_BLOCK_KINDS.has(node.kind);
   const isExpanded = isContainer && ctx.expanded.has(id);
-  walk.skeleton.push({ id, parentId, kind: "block", isContainer, isExpanded, depth, childCount: flow?.length ?? 0 });
-  if (!isExpanded || !flow) {
+  walk.skeleton.push({ id, parentId, kind: "block", isContainer, isExpanded, depth, childCount: flow.length });
+  if (!isExpanded || flow.length === 0) {
     return;
   }
   walk.expandedBlocks.add(id);
   // The emission recurses into every step the reader expanded (nested step ids live in the same
   // `expanded` set), so a call step opens its callee's flow and a construct opens its body. Call
   // targets resolve constructions to the constructor block, whose flow (and drawn node) is real.
-  const emission = emitFlowSteps(id, flow, ctx.flows, ctx.expanded, (target) => constructionTarget(target, ctx.index));
+  const emission = emitFlowSteps(
+    id,
+    flow,
+    ctx.flows,
+    ctx.expanded,
+    (target) => constructionTarget(target, ctx.index),
+    (target) => ctx.index.nodesById.get(target),
+  );
   emission.steps.forEach((step) => {
     walk.stepData.set(step.id, step.data);
     walk.skeleton.push({

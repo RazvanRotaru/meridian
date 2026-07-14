@@ -96,6 +96,51 @@ describe("request-aware split flow pane", () => {
     expect(store.getState().flowPaneRfNodes.some((node) => node.id.startsWith(`${occurrenceId}:exec::`))).toBe(false);
   });
 
+  it("toggles a zero-child mapped request occurrence without manufacturing nested graph data", async () => {
+    const store = requestStore();
+    const occurrenceId = `request:${TRACE_ID}:span:1000000000000002`;
+    store.getState().openSelectedRequestFlowPane();
+    await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
+
+    const collapsed = store.getState().flowPaneRfNodes.find((node) => node.id === occurrenceId)!;
+    expect(collapsed).toMatchObject({ id: occurrenceId, type: "block" });
+    expect(collapsed.data).toMatchObject({
+      targetId: ORDER_LOAD,
+      expandable: true,
+      isExpanded: false,
+      isContainer: false,
+      childCount: 0,
+      emptyFlow: true,
+    });
+    expect(store.getState().flowPaneRfNodes.some((node) => node.parentId === occurrenceId)).toBe(false);
+
+    store.getState().toggleRequestFlowExpand(occurrenceId);
+    await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
+
+    expect(store.getState().requestFlowExpansionOverrides).toEqual(new Set([occurrenceId]));
+    expect(store.getState().flowPaneRfNodes.find((node) => node.id === occurrenceId)).toMatchObject({
+      id: occurrenceId,
+      type: "block",
+      data: {
+        targetId: ORDER_LOAD,
+        expandable: true,
+        isExpanded: true,
+        isContainer: true,
+        childCount: 0,
+        emptyFlow: true,
+      },
+    });
+    expect(store.getState().flowPaneRfNodes.some((node) => node.parentId === occurrenceId)).toBe(false);
+    expect(store.getState().flowPaneRfNodes.some((node) => node.id.startsWith(`${occurrenceId}:exec::`))).toBe(false);
+    expect(store.getState().flowPaneRfEdges.some((edge) => edge.id.includes(":exec:"))).toBe(false);
+
+    store.getState().toggleRequestFlowExpand(occurrenceId);
+    await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
+    expect(store.getState().requestFlowExpansionOverrides).toEqual(new Set());
+    expect(store.getState().flowPaneRfNodes.find((node) => node.id === occurrenceId)?.data)
+      .toMatchObject({ isExpanded: false, isContainer: false, childCount: 0, emptyFlow: true });
+  });
+
   it("does not replace an existing explorer or PR-compatible flow pane", () => {
     const store = requestStore();
     store.setState({ flowPaneRelayout: vi.fn(async () => {}) });

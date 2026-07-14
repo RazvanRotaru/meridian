@@ -64,6 +64,34 @@ export default memo(() => {
 function ping() {}
 `;
 
+const ASYNC_BINDINGS = `
+import { memo } from "./react-lite";
+
+export const load = async () => "loaded";
+export const wrapped = memo(async () => "wrapped");
+export const contextualLoad: (id: string) => Promise<string> = id => Promise.resolve(id);
+export function declaredPromise(): Promise<string> { return Promise.resolve("declared"); }
+export function declaredPromiseLike(): PromiseLike<string> { return Promise.resolve("like"); }
+
+export class Worker {
+  static readonly read = async () => 1;
+  static contextualRead: (id: string) => Promise<number> = id => Promise.resolve(Number(id));
+}
+
+export const api = {
+  save: async () => true,
+};
+
+export async function* stream() {
+  yield 1;
+}
+export const streamBinding = async function* () {
+  yield 2;
+};
+
+export default async () => "default";
+`;
+
 const HOOKS = `
 function useEffect(effect: () => void, deps: unknown[]) {}
 function useMemo<T>(factory: () => T, deps: unknown[]): T { return factory(); }
@@ -186,6 +214,7 @@ beforeAll(async () => {
   writeFileSync(join(root, "src", "components.tsx"), COMPONENTS);
   writeFileSync(join(root, "src", "default-arrow.tsx"), DEFAULT_ARROW);
   writeFileSync(join(root, "src", "default-hoc.tsx"), DEFAULT_HOC);
+  writeFileSync(join(root, "src", "async-bindings.ts"), ASYNC_BINDINGS);
   writeFileSync(join(root, "src", "hooks.tsx"), HOOKS);
   writeFileSync(join(root, "src", "phantoms.tsx"), PHANTOMS);
   writeFileSync(join(root, "src", "export-equals.ts"), EXPORT_EQUALS);
@@ -267,6 +296,49 @@ describe("HOC-wrapped const components (gap A)", () => {
 
   it("does not mint a node for an iteration-result const (doubled)", () => {
     expect(nodeIn("hooks.tsx", "doubled")).toBeUndefined();
+  });
+});
+
+describe("callable binding semantics", () => {
+  it.each([
+    { qualname: "load", kind: "function" },
+    { qualname: "wrapped", kind: "function" },
+    { qualname: "Worker.read", kind: "method" },
+    { qualname: "api.save", kind: "method" },
+    { qualname: "default", kind: "function" },
+  ])("preserves async and inferred Promise tags for $qualname", ({ qualname, kind }) => {
+    const node = nodeIn("async-bindings.ts", qualname);
+    expect(node).toMatchObject({ kind });
+    expect(node?.tags).toEqual(expect.arrayContaining(["async", "returns-promise"]));
+  });
+
+  it.each(["stream", "streamBinding"])("keeps async generator %s distinct from Promise-returning callables", (qualname) => {
+    const stream = nodeIn("async-bindings.ts", qualname);
+    expect(stream?.tags).toEqual(expect.arrayContaining(["async", "generator"]));
+    expect(stream?.tags).not.toContain("returns-promise");
+  });
+
+  it("merges class-property and callable-expression modifiers", () => {
+    expect(nodeIn("async-bindings.ts", "Worker.read")?.tags).toEqual(
+      expect.arrayContaining(["static", "readonly", "async", "returns-promise"]),
+    );
+  });
+
+  it("retains export identity on an anonymous default binding", () => {
+    expect(nodeIn("async-bindings.ts", "default")?.tags).toContain("export");
+  });
+
+  it.each([
+    { qualname: "contextualLoad", signature: "contextualLoad(id: string): Promise<string>" },
+    { qualname: "Worker.contextualRead", signature: "contextualRead(id: string): Promise<number>" },
+  ])("preserves a direct contextual Promise signature for $qualname", ({ qualname, signature }) => {
+    const node = nodeIn("async-bindings.ts", qualname);
+    expect(node?.signature).toBe(signature);
+    expect(node?.tags).toContain("returns-promise");
+  });
+
+  it.each(["declaredPromise", "declaredPromiseLike"])("tags an explicit direct Promise result on %s", (qualname) => {
+    expect(nodeIn("async-bindings.ts", qualname)?.tags).toContain("returns-promise");
   });
 });
 

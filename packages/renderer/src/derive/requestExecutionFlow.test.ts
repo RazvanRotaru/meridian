@@ -159,6 +159,60 @@ describe("deriveRequestExecutionFlow", () => {
     expect(graph.edges.filter((edge) => edge.source === branchNode.id)).toHaveLength(1);
   });
 
+  it("expands a mapped callable with no static body in place without inventing graph children", () => {
+    const trace = requestTrace();
+    const index = freshStore().getState().index;
+    const mappedId = `request:${TRACE_ID}:span:1000000000000002`;
+    const unmappedId = `request:${TRACE_ID}:span:1000000000000004`;
+    const collapsed = deriveRequestExecutionFlow(trace, index, {}, new Set());
+
+    const mappedCollapsed = collapsed.nodes.find((node) => node.id === mappedId)!;
+    expect(mappedCollapsed).toMatchObject({ id: mappedId, type: "block", parentId: null });
+    expect(mappedCollapsed.data).toMatchObject({
+      targetId: ALPHA_RUN,
+      resolution: "resolved",
+      expandable: true,
+      isExpanded: false,
+      isContainer: false,
+      childCount: 0,
+      emptyFlow: true,
+    });
+    expect(collapsed.nodes.find((node) => node.id === unmappedId)?.data).toMatchObject({
+      targetId: null,
+      resolution: "unresolved",
+      expandable: false,
+      isExpanded: false,
+      isContainer: false,
+      childCount: 0,
+    });
+
+    // Even an accidental override cannot make an unresolved runtime span masquerade as a local
+    // callable. The resolved occurrence, however, opens the same block node and renders its shared
+    // empty state; there is no synthetic child or edge solely to justify the disclosure control.
+    const expanded = deriveRequestExecutionFlow(trace, index, {}, new Set([mappedId, unmappedId]));
+    const mappedExpanded = expanded.nodes.find((node) => node.id === mappedId)!;
+    expect(mappedExpanded).toMatchObject({ id: mappedId, type: "block", parentId: null });
+    expect(mappedExpanded.data).toMatchObject({
+      targetId: ALPHA_RUN,
+      expandable: true,
+      isExpanded: true,
+      isContainer: true,
+      childCount: 0,
+      emptyFlow: true,
+    });
+    expect(expanded.nodes.find((node) => node.id === unmappedId)?.data).toMatchObject({
+      expandable: false,
+      isExpanded: false,
+      isContainer: false,
+      childCount: 0,
+    });
+    expect(expanded.nodes.map((node) => node.id)).toEqual(collapsed.nodes.map((node) => node.id));
+    expect(expanded.edges).toEqual(collapsed.edges);
+    expect(expanded.nodes.some((node) => node.parentId === mappedId)).toBe(false);
+    expect(expanded.nodes.some((node) => node.id.startsWith(`${mappedId}:exec::`))).toBe(false);
+    expect(expanded.edges.some((edge) => edge.id.includes(":exec:"))).toBe(false);
+  });
+
   it("starts every flow-backed occurrence collapsed and expands repeated calls independently", () => {
     const base = requestTrace();
     const trace: RequestTrace = {

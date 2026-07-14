@@ -54,7 +54,7 @@ export function GroupContainerNodeView({ id, data }: { id: string; data: ModuleG
     kind: data.serviceDomain ? (data.serviceDomainKind ?? "service-domain") : "folder",
     label: data.label,
     childCount: data.fileCount,
-    canExpand: data.isContainer && data.fileCount > 0,
+    canExpand: data.isContainer,
     expanded: data.isExpanded,
     canNavigate: true,
     data,

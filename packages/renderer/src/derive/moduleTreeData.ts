@@ -29,7 +29,12 @@ export function finalizeModuleNode(
     entry.kind === "step"
       ? (stepData.get(entry.id) as StepData)
       : entry.kind === "block"
-      ? blockData(entry.id, index, { hasFlow: entry.isContainer, isExpanded: entry.isExpanded })
+      ? blockData(entry.id, index, {
+          expandable: entry.isContainer,
+          emptyFlow: entry.isContainer && entry.childCount === 0,
+          childCount: entry.childCount,
+          isExpanded: entry.isExpanded,
+        })
       : entry.kind === "unit"
       ? unitData(entry.id, index, {
           memberCount: entry.childCount,

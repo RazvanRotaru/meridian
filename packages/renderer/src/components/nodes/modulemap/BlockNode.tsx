@@ -2,17 +2,19 @@
  * A code block for the Map lens: one method inside an expanded unit frame, or a file-level function/type
  * definition. The block is the DEPENDENCY ANCHOR — its wires say what this specific code uses —
  * and the unit of navigation: double-clicking a callable block opens its logic flow (the map→logic
- * link). A block WITH a charted flow also carries the shared disclosure: expanding it charts the flow's steps
- * in place, the block becoming a small frame on this canvas (the POC for logic-flows-on-the-Map).
- * Kind glyph + name only; a green ring marks selection, mirroring every other Map card.
+ * link). Every callable block carries the shared disclosure: expanding it charts the flow's steps
+ * in place, or shows the same honest empty state used by the Logic lens when there are no drawable
+ * steps. The block becomes a small frame on this canvas (the POC for logic-flows-on-the-Map).
+ * Shared kind badge + name; a green ring marks selection, mirroring every other Map card.
  */
 
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useSurfaceNodeSelected } from "../../canvas/SurfaceInteractionContext";
-import { accentForKind, kindLetter } from "../../../theme/kindColors";
+import { accentForKind } from "../../../theme/kindColors";
 import type { BlockData } from "../../../derive/moduleLevel";
 import { BaseNode, type BaseNodeModel } from "../BaseNode";
+import { EmptyNodeExpansion } from "../EmptyNodeExpansion";
 import { cardSelectedStyle, CodeButton, frameSelectedStyle, frameStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, useNodeDiff } from "./changed";
 import { ReviewNodeViewedChrome } from "../../review/ReviewFileNodeViewedControls";
@@ -29,9 +31,10 @@ function BlockNodeImpl({ id, data }: NodeProps<BlockRfNode>) {
     targetId: id,
     nodeType: "block",
     kind: data.blockKind,
+    semantics: data.semantics,
     label: data.label,
-    childCount: data.hasFlow ? 1 : 0,
-    canExpand: data.hasFlow,
+    childCount: data.childCount,
+    canExpand: data.expandable,
     expanded: data.isExpanded,
     canNavigate: true,
     data,
@@ -42,8 +45,6 @@ function BlockNodeImpl({ id, data }: NodeProps<BlockRfNode>) {
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
     </>
   );
-  const glyph = <span style={{ ...GLYPH, color: accent }}>{kindLetter(data.blockKind)}</span>;
-
   if (data.isExpanded) {
     return (
       <ReviewNodeViewedChrome nodeId={id} scope="unit" borderRadius={8}>
@@ -52,11 +53,12 @@ function BlockNodeImpl({ id, data }: NodeProps<BlockRfNode>) {
           style={borderFor(frameStyle(accent), frameSelectedStyle(accent), selected, diff)}
           headerStyle={TITLE_BAR}
           labelStyle={FRAME_LABEL}
-          leading={glyph}
           actions={<CodeButton id={id} />}
           ports={handles}
           title={title}
-        />
+        >
+          {data.emptyFlow ? <EmptyNodeExpansion /> : null}
+        </BaseNode>
       </ReviewNodeViewedChrome>
     );
   }
@@ -68,7 +70,6 @@ function BlockNodeImpl({ id, data }: NodeProps<BlockRfNode>) {
         style={borderFor(BLOCK, cardSelectedStyle(BLOCK, accent), selected, diff)}
         headerStyle={BLOCK_HEADER}
         labelStyle={LABEL}
-        leading={glyph}
         actions={<CodeButton id={id} />}
         ports={handles}
         title={title}
@@ -109,7 +110,6 @@ const TITLE_BAR: React.CSSProperties = {
   background: "rgba(27,34,45,0.9)",
   fontFamily: MONO,
 };
-const GLYPH: React.CSSProperties = { fontSize: 10, flexShrink: 0 };
 const LABEL: React.CSSProperties = {
   minWidth: 0,
   fontSize: 11.5,

@@ -22,6 +22,11 @@ const FILE_ID = "ts:pkg/src/svc.ts";
 const UNIT_ID = `${FILE_ID}#OrderService`;
 const METHOD_ID = `${UNIT_ID}.place`;
 const HELPER_ID = `${FILE_ID}#helper`;
+const EMPTY_FILE_ID = "ts:empty/src/empty.ts";
+const ENTITY_FILE_ID = "ts:empty/src/entities.ts";
+const EMPTY_UNIT_ID = `${ENTITY_FILE_ID}#Marker`;
+const HOST_UNIT_ID = `${ENTITY_FILE_ID}#Host`;
+const EMPTY_METHOD_ID = `${HOST_UNIT_ID}.visitOrder`;
 
 const ARTIFACT: GraphArtifact = {
   schemaVersion: "1.0.0",
@@ -57,6 +62,22 @@ const SINGLE_SERVICE_ARTIFACT: GraphArtifact = {
       [METHOD_ID]: [{ kind: "call", label: "charge", target: null, resolution: "unresolved" }],
     },
   },
+};
+
+const EMPTY_ENTITY_ARTIFACT: GraphArtifact = {
+  ...ARTIFACT,
+  target: { ...ARTIFACT.target, name: "empty-entities" },
+  nodes: [
+    node("ts:empty", "package", undefined, "empty"),
+    node("ts:empty/src", "package", "ts:empty", "src"),
+    node(EMPTY_FILE_ID, "module", "ts:empty/src", "empty.ts"),
+    node(ENTITY_FILE_ID, "module", "ts:empty/src", "entities.ts"),
+    node(EMPTY_UNIT_ID, "interface", ENTITY_FILE_ID, "Marker"),
+    node(HOST_UNIT_ID, "class", ENTITY_FILE_ID, "Host"),
+    node(EMPTY_METHOD_ID, "method", HOST_UNIT_ID, "visitOrder"),
+  ],
+  edges: [],
+  extensions: { logicFlow: {} },
 };
 
 function storeFor(artifact: GraphArtifact): BlueprintStore {
@@ -131,6 +152,24 @@ describe("expandAll / collapseAll — Map surface", () => {
     store.getState().expandAll();
     // The frontier at focus ts:pkg is the svc.ts file card; opening the level reveals it.
     expect(store.getState().moduleExpanded.has(FILE_ID)).toBe(true);
+  });
+
+  it.each([
+    { name: "source-only file", id: EMPTY_FILE_ID, open: [] },
+    { name: "memberless interface", id: EMPTY_UNIT_ID, open: [ENTITY_FILE_ID] },
+    { name: "zero-step method", id: EMPTY_METHOD_ID, open: [ENTITY_FILE_ID, HOST_UNIT_ID] },
+  ])("expandAll includes a selected $name with zero children", ({ id, open }) => {
+    const store = storeFor(EMPTY_ENTITY_ARTIFACT);
+    store.setState({
+      viewMode: "modules",
+      moduleFocus: "ts:empty",
+      moduleExpanded: new Set(open),
+      moduleSelected: new Set([id]),
+    });
+
+    store.getState().expandAll();
+
+    expect(store.getState().moduleExpanded).toEqual(new Set([...open, id]));
   });
 });
 
@@ -226,6 +265,26 @@ describe("expandAll / collapseAll — Logic-flow graph", () => {
     expect(store.getState().expandedLogic).toEqual(new Set(["call-1"]));
   });
 
+  it("expandAll includes a zero-child local callable occurrence", () => {
+    const store = freshStore();
+    store.setState({
+      viewMode: "logic",
+      logicRfNodes: [
+        {
+          id: "visit-order",
+          type: "block",
+          position: { x: 0, y: 0 },
+          data: { expandable: true, isExpanded: false, isContainer: false, childCount: 0, emptyFlow: true },
+        },
+      ] as never,
+      expandedLogic: new Set(),
+    });
+
+    store.getState().expandAll();
+
+    expect(store.getState().expandedLogic).toEqual(new Set(["visit-order"]));
+  });
+
   it("collapseAll toggles an expanded node closed", () => {
     const store = freshStore();
     store.setState({
@@ -256,6 +315,42 @@ describe("expandAll / collapseAll — Logic-flow graph", () => {
     // call-1: override removed → default-collapsed → closed. loop-1: added as an override →
     // default-expanded flipped → closed. Both are now collapsed.
     expect(store.getState().expandedLogic).toEqual(new Set(["loop-1"]));
+  });
+
+  it("round-trips default-open branch, try, and finally nodes through the canvas actions", () => {
+    const store = freshStore();
+    const structuralNodes = [
+      { id: "branch-1", type: "branch" },
+      { id: "try-1", type: "exception" },
+      { id: "finally-1", type: "finally" },
+    ];
+    store.setState({
+      viewMode: "logic",
+      logicRfNodes: structuralNodes.map(({ id, type }) => ({
+        id,
+        type,
+        position: { x: 0, y: 0 },
+        data: { expandable: true, isExpanded: true, isContainer: false },
+      })) as never,
+      expandedLogic: new Set(),
+    });
+
+    store.getState().collapseAll();
+    expect(store.getState().expandedLogic).toEqual(new Set(["branch-1", "try-1", "finally-1"]));
+
+    // In production the relayout derives these same occurrences as closed from those XOR
+    // overrides. Reflect that rendered frontier before exercising the inverse canvas action.
+    store.setState({
+      logicRfNodes: structuralNodes.map(({ id, type }) => ({
+        id,
+        type,
+        position: { x: 0, y: 0 },
+        data: { expandable: true, isExpanded: false, isContainer: false },
+      })) as never,
+    });
+    store.getState().expandAll();
+
+    expect(store.getState().expandedLogic).toEqual(new Set());
   });
 
   it("expandAll opens every visible occurrence of the selected target without touching peers", () => {

@@ -176,7 +176,11 @@ function emitBinding(
   context.emit(
     memberDescriptor(context, {
       kind, localName, enclosingNames, parent,
-      declarationNode, callableNode: callable, signatureSource: asSignature(callable), emitTelemetry: true,
+      declarationNode,
+      modifierSource: callable,
+      callableNode: callable,
+      signatureSource: bindingSignatureSource(callable, declarationNode),
+      emitTelemetry: true,
     }),
   );
 }
@@ -187,6 +191,17 @@ function container(kind: "class" | "interface" | "namespace" | "object", localNa
 
 function asSignature(node: Node | null): SignatureLike | null {
   return node ? (node as unknown as SignatureLike) : null;
+}
+
+/** Prefer the inline callable's own annotation. When it omits one, a direct contextual function
+ * type on the binding is still source-level proof (`const load: (...) => Promise<X> = ...`). */
+function bindingSignatureSource(callable: Node | null, declarationNode: Node): SignatureLike | null {
+  const inline = asSignature(callable);
+  if (inline?.getReturnTypeNode()) return inline;
+  const contextual = (declarationNode as { getTypeNode?(): Node | undefined }).getTypeNode?.();
+  return contextual && Node.isFunctionTypeNode(contextual)
+    ? contextual as unknown as SignatureLike
+    : inline;
 }
 
 function bodyOf(node: Node): Node | null {

@@ -230,6 +230,14 @@ describe("double-click navigation", () => {
       kind: "logic",
       id: "ts:app.ts#run",
     });
+    expect(navigationForNode(node("step:ts:app.ts#run:3", "step", {
+      stepKind: "call",
+      targetId: "ts:orders.ts#OrderStore.visitOrder",
+      resolution: "resolved",
+    }), map)).toEqual({
+      kind: "logic",
+      id: "ts:orders.ts#OrderStore.visitOrder",
+    });
   });
 
   it("routes every other real card to the current lens's reveal path, never select or expand", () => {

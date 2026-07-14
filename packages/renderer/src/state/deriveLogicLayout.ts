@@ -11,6 +11,7 @@ import {
   definitionNodeData,
   deriveLogicGraph,
   deriveLogicGraphFromBodies,
+  logicNodeSize,
   type LogicGraphOptions,
   type LogicNodeSpec,
 } from "../derive/logicGraph";
@@ -213,15 +214,17 @@ async function layoutDefinition(
 ): Promise<LaidOutDefinition> {
   const occurrenceId = `${moduleId}::def/${defId}`;
   const data = definitionNodeData(defId, flows, index, ownerLookup, expandedLogic.has(occurrenceId));
+  const ownSize = logicNodeSize(data, "block");
+  const headerWidth = Math.max(DEF_W, ownSize.width);
   if (!data.isExpanded) {
-    return { occurrenceId, width: DEF_W, height: DEF_H, data, children: [], edges: [] };
+    return { occurrenceId, width: headerWidth, height: DEF_H, data, children: [], edges: [] };
   }
 
   const flow = await layoutFlow(defId, flows, index, expandedLogic, options, ownerLookup);
   const children = flow.nodes.map((node) => (
     node.parentId === undefined ? { ...node, parentId: occurrenceId, extent: "parent" as const } : node
   ));
-  const { width, height } = expandedDefinitionSize(children, occurrenceId);
+  const { width, height } = expandedDefinitionSize(children, occurrenceId, headerWidth, ownSize.height);
   return {
     occurrenceId,
     width,
@@ -235,7 +238,12 @@ async function layoutDefinition(
 /** The separately laid-out callable has no RF root node whose dimensions we can reuse. Its roots
  * already contain every nested descendant, so their far edges are the definition container's safe
  * size floor. Ignore non-finite layout values defensively rather than poisoning the whole grid. */
-function expandedDefinitionSize(nodes: LogicRfNode[], occurrenceId: string): { width: number; height: number } {
+function expandedDefinitionSize(
+  nodes: LogicRfNode[],
+  occurrenceId: string,
+  headerWidth: number,
+  ownHeight: number,
+): { width: number; height: number } {
   let right = 0;
   let bottom = 0;
   for (const node of nodes) {
@@ -245,8 +253,8 @@ function expandedDefinitionSize(nodes: LogicRfNode[], occurrenceId: string): { w
     }
   }
   return {
-    width: Math.max(DEF_W, right + EXPANDED_RIGHT_PAD),
-    height: Math.max(DEF_H, bottom + EXPANDED_BOTTOM_PAD),
+    width: Math.max(headerWidth, right + EXPANDED_RIGHT_PAD),
+    height: Math.max(DEF_H, ownHeight, bottom + EXPANDED_BOTTOM_PAD),
   };
 }
 

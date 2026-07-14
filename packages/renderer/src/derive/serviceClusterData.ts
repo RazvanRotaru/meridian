@@ -41,7 +41,12 @@ export function finalizeServiceNode(
               isExpanded: entry.isExpanded,
             })
           : entry.kind === "block"
-            ? blockData(entry.id, index, { hasFlow: entry.isContainer, isExpanded: entry.isExpanded })
+            ? blockData(entry.id, index, {
+                expandable: entry.isContainer,
+                emptyFlow: entry.isContainer && entry.childCount === 0,
+                childCount: entry.childCount,
+                isExpanded: entry.isExpanded,
+              })
             : (walk.stepData.get(entry.id) as StepData);
   return { ...entry, data };
 }

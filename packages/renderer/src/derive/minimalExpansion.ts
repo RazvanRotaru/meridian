@@ -25,7 +25,8 @@ export interface MinimalExpansion {
 }
 
 /** The file card's container facts (for the flat card's chevron) plus, when it is expanded, its
- * drawn code subtree. A collapsed or childless file yields `expansion: null`. `calls` and
+ * drawn code subtree. A collapsed file yields `expansion: null`; an expanded source-only file
+ * yields the same one-node empty-details frame as the Map. `calls` and
  * `expandedBlocks` surface the walk's step-call/expansion facts for the overlay's GHOST projection —
  * the same inputs `moduleTree` feeds `ghostDepWires` from its own walk (empty while collapsed). */
 export interface FileCodeWalk {

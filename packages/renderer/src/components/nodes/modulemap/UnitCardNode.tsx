@@ -1,17 +1,18 @@
 /**
- * A unit for the Map lens: one class/interface/object — the service definition. With members it is
- * an expandable card that can become a titled FRAME whose method nodes nest inside (methods are
+ * A unit for the Map lens: one class/interface/object — the service definition. It is an
+ * expandable card that can become a titled FRAME whose method nodes nest inside (methods are
  * first-class nodes, so wires attach to the specific code that uses a dependency, and logic flows
- * can later chart in place); memberless it is a compact identity card. Deliberately light-weight:
- * dependencies are the violet wires' story, not the card's. A green ring marks selection.
+ * can later chart in place); memberless it opens the shared honest empty state. Deliberately
+ * light-weight: dependencies are the violet wires' story, not the card's. A green ring marks selection.
  */
 
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useSurfaceNodeSelected } from "../../canvas/SurfaceInteractionContext";
-import { accentForKind, kindLetter } from "../../../theme/kindColors";
+import { accentForKind } from "../../../theme/kindColors";
 import type { UnitCardData } from "../../../derive/moduleLevel";
 import { BaseNode, type BaseNodeModel } from "../BaseNode";
+import { EmptyNodeExpansion } from "../EmptyNodeExpansion";
 import { cardSelectedStyle, CodeButton, frameSelectedStyle, frameStyle, frameTitleBarStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, useNodeDiff } from "./changed";
 import { ReviewNodeViewedChrome } from "../../review/ReviewFileNodeViewedControls";
@@ -27,9 +28,10 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
     targetId: id,
     nodeType: "unit",
     kind: data.unitKind,
+    semantics: data.semantics,
     label: data.label,
     childCount: data.memberCount,
-    canExpand: data.isContainer && data.memberCount > 0,
+    canExpand: data.isContainer,
     expanded: data.isExpanded,
     canNavigate: true,
     data,
@@ -40,9 +42,6 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
     </>
   );
-  // A single-letter kind glyph (f/c/m/i/…) in the kind's colour is the ONE kind marker — no text tag.
-  const glyph = <span style={{ ...GLYPH, color: accent }}>{kindLetter(data.unitKind)}</span>;
-
   if (data.isFrame) {
     return (
       <ReviewNodeViewedChrome nodeId={id} scope="unit" borderRadius={8}>
@@ -52,10 +51,11 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
           headerStyle={frameTitleBarStyle(diff.status)}
           labelStyle={LABEL}
           labelTitle={id}
-          leading={glyph}
           actions={<CodeButton id={id} />}
           ports={handles}
-        />
+        >
+          {data.memberCount === 0 ? <EmptyNodeExpansion message="No charted members" /> : null}
+        </BaseNode>
       </ReviewNodeViewedChrome>
     );
   }
@@ -69,7 +69,6 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
           headerStyle={HEADER}
           labelStyle={LABEL}
           labelTitle={id}
-          leading={glyph}
           actions={<CodeButton id={id} />}
           ports={(
             <>
@@ -95,7 +94,6 @@ function UnitCardNodeImpl({ id, data }: NodeProps<UnitRfNode>) {
         headerStyle={INNER}
         labelStyle={LABEL}
         labelTitle={id}
-        leading={glyph}
         actions={<CodeButton id={id} />}
         ports={(
           <>
@@ -132,7 +130,6 @@ const INNER_STACK: React.CSSProperties = {
   padding: "0 10px 0 12px",
 };
 const HEADER: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6, minWidth: 0 };
-const GLYPH: React.CSSProperties = { fontSize: 11, flexShrink: 0 };
 const LABEL: React.CSSProperties = {
   flex: 1,
   minWidth: 0,

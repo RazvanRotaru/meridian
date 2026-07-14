@@ -2473,7 +2473,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       const node = state.flowPaneRfNodes.find((candidate) => candidate.id === nodeId);
       const data = node?.data as Partial<LogicNodeData> | undefined;
-      if (data?.expandable !== true || !data.childCount) {
+      if (data?.expandable !== true) {
         return;
       }
       set({
@@ -2490,7 +2490,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       const node = state.flowPaneRfNodes.find((candidate) => candidate.id === nodeId);
       const data = node?.data as Partial<LogicNodeData> | undefined;
-      if (data?.expandable !== true || !data.childCount) {
+      if (data?.expandable !== true) {
         return;
       }
       set({

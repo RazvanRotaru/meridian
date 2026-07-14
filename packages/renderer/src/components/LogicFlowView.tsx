@@ -920,7 +920,7 @@ function miniMapColor(
   if (data.logicKind === "finally") return "#D98A5B";
   if (data.logicKind === "callback") return "#5FA8A0";
   if (data.logicKind === "if" || data.logicKind === "switch" || data.logicKind === "join" || data.logicKind === "await") return "#5FC1CE";
-  if ((data.nestedDetachedCount ?? 0) > 0) return FLOW_COLORS.detached;
+  if ((data.semantics?.nestedNotAwaited ?? 0) > 0) return FLOW_COLORS.detached;
   if (data.callScope === "external") return "#92A1B4";
   if (data.callScope === "unresolved") return "#E06C6C";
   return data.callKind === "method" ? "#5E74C6" : "#3B7AC0";

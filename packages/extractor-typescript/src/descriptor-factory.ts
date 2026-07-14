@@ -8,7 +8,7 @@ import type { Node } from "ts-morph";
 import { buildNodeId, collapseLocals, normalizeScopeSeparators } from "@meridian/core";
 import type { NodeKind } from "@meridian/core";
 import { lineColOf, type NodeDescriptor } from "./model";
-import { modifierTagsOf, signatureOf, summaryOf, telemetryFor, type SignatureLike } from "./node-fields";
+import { callableSemanticTagsOf, signatureOf, summaryOf, telemetryFor, type SignatureLike } from "./node-fields";
 import { posixBasename } from "./paths";
 
 export interface IdContext {
@@ -23,6 +23,8 @@ export interface MemberSpec {
   enclosingNames: string[];
   parent: NodeDescriptor;
   declarationNode: Node;
+  /** Unwrapped callable expression when declaration and body syntax live on different nodes. */
+  modifierSource?: Node | null;
   callableNode: Node | null;
   signatureSource: SignatureLike | null;
   emitTelemetry: boolean;
@@ -68,6 +70,10 @@ export function moduleDescriptor(context: IdContext, sourceFile: Node, parent: N
 
 export function memberDescriptor(context: IdContext, spec: MemberSpec): NodeDescriptor {
   const qualifiedName = qualnameFor(spec.enclosingNames, spec.localName);
+  const tags = callableSemanticTagsOf(
+    [spec.declarationNode, ...(spec.modifierSource ? [spec.modifierSource] : [])],
+    spec.signatureSource,
+  );
   return {
     kind: spec.kind,
     idParts: { lang: context.lang, modulePath: context.modulePath, qualname: qualifiedName },
@@ -75,7 +81,7 @@ export function memberDescriptor(context: IdContext, spec: MemberSpec): NodeDesc
     qualifiedName,
     summary: summaryOf(spec.declarationNode),
     signature: signatureOf(spec.localName, spec.signatureSource),
-    tags: modifierTagsOf(spec.declarationNode),
+    tags: [...new Set(tags)],
     telemetry: spec.emitTelemetry ? telemetryFor(spec.localName, qualifiedName, spec.enclosingNames) : null,
     location: locationOf(spec.declarationNode, context.relPath),
     startCol: lineColOf(spec.declarationNode).column,

@@ -11,6 +11,7 @@ import { buildGraphIndex } from "../graph/graphIndex";
 import { buildModuleGraph } from "./moduleGraph";
 import { buildBlockDeps } from "./blockDeps";
 import type { BlockData, ModuleCardData, UnitCardData } from "./moduleLevel";
+import type { StepData } from "./flowSteps";
 import { deriveModuleTree, type ModuleGroupData } from "./moduleTree";
 
 function node(id: string, kind: string, parentId?: string, displayName?: string): GraphNode {
@@ -289,6 +290,33 @@ describe("deriveModuleTree — code level (the merged composition level)", () =>
     const data = method?.data as BlockData;
     expect(data.label).toBe("place");
     expect(data.callable).toBe(true);
+    expect(method).toMatchObject({ isContainer: true, isExpanded: false, childCount: 0 });
+    expect(data).toMatchObject({ expandable: true, emptyFlow: true, childCount: 0, isExpanded: false });
+  });
+
+  it("expands an empty callable as the same block and preserves its dependency wire", () => {
+    const { nodes, edges } = unitFixture();
+    const collapsed = treeOf(nodes, edges, "ts:pkg", [SVC_FILE_ID, ORDER_UNIT_ID]);
+    const expanded = treeOf(nodes, edges, "ts:pkg", [SVC_FILE_ID, ORDER_UNIT_ID, PLACE_ID]);
+
+    expect(collapsed.nodes.find((entry) => entry.id === PLACE_ID)).toMatchObject({
+      kind: "block",
+      isContainer: true,
+      isExpanded: false,
+      childCount: 0,
+      data: { expandable: true, emptyFlow: true, childCount: 0 },
+    });
+    expect(expanded.nodes.find((entry) => entry.id === PLACE_ID)).toMatchObject({
+      kind: "block",
+      isContainer: true,
+      isExpanded: true,
+      childCount: 0,
+      data: { expandable: true, emptyFlow: true, childCount: 0, isExpanded: true },
+    });
+    expect(expanded.nodes.filter((entry) => entry.parentId === PLACE_ID)).toEqual([]);
+    // Empty expansion must not suppress the folded definition-level dependency.
+    expect(expanded.edges.filter((edge) => edge.category === "dep").map((edge) => `${edge.source}->${edge.target}`))
+      .toEqual([`${PLACE_ID}->${PAY_FILE_ID}`]);
   });
 
   it("lifts member dependency wires to a collapsed unit card", () => {
@@ -331,15 +359,49 @@ describe("deriveModuleTree — code level (the merged composition level)", () =>
     expect(deps).toContain(`ts:pkg/src/svc.ts#helper->${PAY_FILE_ID}`);
   });
 
-  it("renders a memberless unit as a leaf identity card, not a frame", () => {
+  it("keeps a memberless unit expandable and opens the shared empty-details frame", () => {
     const { nodes, edges } = unitFixture();
-    const extra = [...nodes, node("ts:pkg/src/svc.ts#ApiResponse", "interface", "ts:pkg/src/svc.ts", "ApiResponse")];
-    const tree = treeOf(extra, edges, "ts:pkg", [SVC_FILE_ID]);
-    const iface = tree.nodes.find((n) => n.id === "ts:pkg/src/svc.ts#ApiResponse");
+    const interfaceId = "ts:pkg/src/svc.ts#ApiResponse";
+    const extra = [...nodes, node(interfaceId, "interface", "ts:pkg/src/svc.ts", "ApiResponse")];
+    const collapsed = treeOf(extra, edges, "ts:pkg", [SVC_FILE_ID]);
+    const expanded = treeOf(extra, edges, "ts:pkg", [SVC_FILE_ID, interfaceId]);
+    const iface = collapsed.nodes.find((n) => n.id === interfaceId);
     expect(iface?.kind).toBe("unit");
-    expect(iface?.isContainer).toBe(false);
+    expect(iface?.isContainer).toBe(true);
     expect(iface?.isExpanded).toBe(false);
-    expect(iface?.data as UnitCardData).toMatchObject({ memberCount: 0, isContainer: false, isExpanded: false, isFrame: false });
+    expect(iface?.data as UnitCardData).toMatchObject({ memberCount: 0, isContainer: true, isExpanded: false, isFrame: false });
+    expect(expanded.nodes.find((n) => n.id === interfaceId)).toMatchObject({
+      kind: "unit",
+      isContainer: true,
+      isExpanded: true,
+      childCount: 0,
+      data: { memberCount: 0, isContainer: true, isExpanded: true, isFrame: true },
+    });
+    expect(expanded.nodes.filter((n) => n.parentId === interfaceId)).toEqual([]);
+  });
+
+  it("keeps a source-only file expandable without inventing declarations", () => {
+    const packageId = "ts:empty";
+    const fileId = `${packageId}/empty.ts`;
+    const nodes = [npmPkg(packageId, "empty"), node(fileId, "module", packageId, "empty.ts")];
+    const collapsed = treeOf(nodes, [], packageId, []);
+    const expanded = treeOf(nodes, [], packageId, [fileId]);
+
+    expect(collapsed.nodes.find((entry) => entry.id === fileId)).toMatchObject({
+      kind: "file",
+      isContainer: true,
+      isExpanded: false,
+      childCount: 0,
+      data: { unitCount: 0, isContainer: true, isExpanded: false },
+    });
+    expect(expanded.nodes.find((entry) => entry.id === fileId)).toMatchObject({
+      kind: "file",
+      isContainer: true,
+      isExpanded: true,
+      childCount: 0,
+      data: { unitCount: 0, isContainer: true, isExpanded: true },
+    });
+    expect(expanded.nodes.filter((entry) => entry.parentId === fileId)).toEqual([]);
   });
 
   it("expands a method-bearing interface and wires each contract method to its implementation", () => {
@@ -607,6 +669,11 @@ describe("deriveModuleTree — flow steps charted in place (POC)", () => {
     expect(block?.isExpanded).toBe(true);
     const steps = tree.nodes.filter((n) => n.kind === "step");
     expect(steps.map((n) => n.parentId)).toEqual(Array(3).fill(PLACE_ID));
+    expect(steps[0]?.data as StepData).toMatchObject({
+      resolution: "unresolved",
+      isContainer: false,
+      isExpanded: false,
+    });
     // Execution-order chain: step 0 → 1 → 2.
     const chain = tree.edges.filter((e) => e.category === "flow").map((e) => `${e.source}->${e.target}`);
     expect(chain).toEqual([
@@ -648,6 +715,44 @@ describe("deriveModuleTree — flow steps charted in place (POC)", () => {
     // The expanded call keeps its wire to the definition — the frame still says where the code lives.
     const deps = tree.edges.filter((e) => e.category === "dep").map((e) => `${e.source}->${e.target}`);
     expect(deps).toContain(`${callStep}->${PAY_FILE_ID}`);
+  });
+
+  it("a resolved call step with an empty callee keeps the shared disclosure and expands without fake children", () => {
+    const { nodes, edges } = unitFixture();
+    const callStep = `step:${PLACE_ID}:0`;
+    const flows: LogicFlows = {
+      [PLACE_ID]: [{ kind: "call", label: "charge", target: CHARGE_ID, resolution: "resolved" }],
+      [CHARGE_ID]: [],
+    };
+
+    const collapsed = treeOf(nodes, edges, "ts:pkg", [SVC_FILE_ID, ORDER_UNIT_ID, PLACE_ID], flows);
+    const expanded = treeOf(nodes, edges, "ts:pkg", [SVC_FILE_ID, ORDER_UNIT_ID, PLACE_ID, callStep], flows);
+
+    expect(collapsed.nodes.find((entry) => entry.id === callStep)).toMatchObject({
+      kind: "step",
+      isContainer: true,
+      isExpanded: false,
+      childCount: 0,
+      data: {
+        targetId: CHARGE_ID,
+        resolution: "resolved",
+        isContainer: true,
+        isExpanded: false,
+        emptyFlow: true,
+      },
+    });
+    expect(expanded.nodes.find((entry) => entry.id === callStep)).toMatchObject({
+      kind: "step",
+      isContainer: true,
+      isExpanded: true,
+      childCount: 0,
+      data: { isContainer: true, isExpanded: true, emptyFlow: true },
+    });
+    expect(expanded.nodes.filter((entry) => entry.parentId === callStep)).toEqual([]);
+    expect(expanded.edges.filter((edge) => edge.category === "flow")).toEqual([]);
+    // The expanded empty occurrence still points at the real callee definition.
+    expect(expanded.edges.filter((edge) => edge.category === "dep").map((edge) => `${edge.source}->${edge.target}`))
+      .toContain(`${callStep}->${PAY_FILE_ID}`);
   });
 
   it("a construct step's body unrolls in place when its id joins the expansion set", () => {

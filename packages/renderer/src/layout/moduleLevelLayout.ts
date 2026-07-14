@@ -20,6 +20,8 @@ import type { ModuleGroupData, ModuleTreeEdge, VisibleModuleNode } from "../deri
 import type { BlockData, ModuleCardData, UnitCardData } from "../derive/moduleLevel";
 import type { StepData } from "../derive/flowSteps";
 import type { GhostData } from "../derive/ghostDeps";
+import { displayNodeKind, semanticLabels, SEMANTIC_STATE_TEXT_MAX_WIDTH, type NodeSemanticModel } from "../nodeSemantics";
+import { NODE_DISCLOSURE_SIZE, NODE_EMPTY_EXPANSION_HEIGHT } from "../theme/nodeChrome";
 import {
   MAP_RELATION_POLICY,
   relationParticipatesInLayout,
@@ -37,8 +39,8 @@ const UNIT_CONTAINER_CARD_HEIGHT = 54;
 // long component name is never clipped. Clamped to a readable floor and a ceiling that still fits any
 // real name, so a pathological generated name can't blow the layout out sideways.
 const CARD_MIN_WIDTH = 150;
-const CARD_MAX_WIDTH = 420;
-const CHEVRON_WIDTH = 16; // the expand-chevron button (frameChrome CHEVRON)
+const CARD_MAX_WIDTH = 620;
+const CHEVRON_WIDTH = NODE_DISCLOSURE_SIZE;
 const HEADER_GAP = 6; // gap between chevron / label / trailing badge in a header
 const META_GAP = 8; // gap between the metric groups on a card's meta row
 const COUNTS_GAP = 4; // gap between the spans inside one `uses N used by N` group
@@ -49,29 +51,29 @@ const CHIP_LETTER_SPACING = CHIP_FONT * 0.06; // chips render with letter-spacin
 const PACKAGE_CHROME = 2 + 14 + 12;
 const FILE_CHROME = 2 + 12 + 10;
 const UNIT_CHROME = 2 + 12 + 10;
-const UNIT_ROW_GAP = 7; // gap between glyph / label / kind chip on a unit card's single row
-const UNIT_GLYPH_WIDTH = 12; // one geometric kind glyph rendered at 11px
-// Code blocks (methods, functions, type definitions): a kind glyph + name (+ a chevron when the block
-// has a charted flow), sized to that name so long identifiers never clip.
+const UNIT_ROW_GAP = 7; // gap between kind / label / trailing chrome on a unit card's single row
+// Code blocks (methods, functions, type definitions): a kind chip + name + the shared callable
+// disclosure, sized to that name so long identifiers never clip.
 const BLOCK_MIN_WIDTH = 120;
-const BLOCK_MAX_WIDTH = 420;
+const BLOCK_MAX_WIDTH = 620;
 const BLOCK_HEIGHT = 30;
 const BLOCK_ROW_GAP = 6;
 const BLOCK_CHROME = 2 + 5 + 9; // border + inner padding (left 5 + right 9)
-// Flow steps are the smallest shapes on the canvas — a glyph + name (+ chevron when expandable).
+// Flow steps are the smallest shapes on the canvas — a kind chip + name (+ chevron when expandable).
 const STEP_MIN_WIDTH = 96;
-const STEP_MAX_WIDTH = 360;
+const STEP_MAX_WIDTH = 620;
 const STEP_HEIGHT = 26;
 const STEP_ROW_GAP = 5;
 const STEP_CHROME = 2 + 5 + 8; // border + inner padding (left 5 + right 8)
 // Ghost cards (off-screen definitions/callers): two lines — qualified name + faint home file — sized
 // to whichever line is longer so neither clips.
 const GHOST_MIN_WIDTH = 150;
-const GHOST_MAX_WIDTH = 420;
+const GHOST_MAX_WIDTH = 620;
 const GHOST_HEIGHT = 42;
 const GHOST_ROW_GAP = 5;
 const GHOST_CHROME = 2 + 9 + 9; // border + inner padding (left 9 + right 9)
-const CODE_GLYPH_WIDTH = 9; // the ƒ / τ / kind glyph on code + ghost cards
+const SEMANTIC_FONT = 7.5;
+const SEMANTIC_LETTER_SPACING = SEMANTIC_FONT * 0.035;
 // Temporary ghost-inspection roots are ordinary exact cards in ELK. An outline (rather than a
 // border) distinguishes their reversible status without changing the measured box or its layout.
 const GHOST_INSPECTION_PREVIEW_OUTLINE = "1px dashed #596575";
@@ -98,7 +100,7 @@ const adapter: ElkNestAdapter<VisibleModuleNode> = {
   parentId: (node) => node.parentId,
   isContainer: (node) => node.isExpanded,
   leafSize: (node) => leafSize(node),
-  containerMinSize: (node) => ({ width: frameTitleWidth(node), height: FRAME_MIN_HEIGHT }),
+  containerMinSize: (node) => ({ width: frameTitleWidth(node), height: frameMinHeight(node) }),
   containerOptions: CONTAINER_OPTIONS,
 };
 
@@ -167,13 +169,13 @@ function leafSize(node: VisibleModuleNode): { width: number; height: number } {
   if (node.kind === "file") {
     return fileSize(node.data as ModuleCardData);
   }
-  return groupSize(node.data as ModuleGroupData);
+  return groupSize(node.data as ModuleGroupData, node.kind);
 }
 
 /** A package/directory group card: chevron + name in the header, `N files` + `uses N used by N` on
  * the meta row below — the box fits whichever of the two lines is wider. */
-function groupSize(data: ModuleGroupData): { width: number; height: number } {
-  const header = (data.isContainer ? CHEVRON_WIDTH + HEADER_GAP : 0) + monoTextWidth(data.label, 13);
+function groupSize(data: ModuleGroupData, kind: string): { width: number; height: number } {
+  const header = (data.isContainer ? CHEVRON_WIDTH + HEADER_GAP : 0) + kindChipWidth(kind) + HEADER_GAP + monoTextWidth(data.label, 13);
   const meta = groupMetaWidth(data);
   const chips = commonsChipsWidth((data as { commonsChips?: string[] }).commonsChips);
   return { width: cardWidth(PACKAGE_CHROME + Math.max(header, meta, chips)), height: GROUP_HEIGHT };
@@ -184,7 +186,7 @@ function groupSize(data: ModuleGroupData): { width: number; height: number } {
 function fileSize(data: ModuleCardData): { width: number; height: number } {
   const chevron = data.isContainer ? CHEVRON_WIDTH + HEADER_GAP : 0;
   const entry = data.isEntry ? HEADER_GAP + pillWidth("ENTRY", CHIP_FONT, { letterSpacing: CHIP_LETTER_SPACING }) : 0;
-  const header = chevron + monoTextWidth(data.label, 12.5) + entry + TRAILING_BADGES;
+  const header = chevron + kindChipWidth("file") + HEADER_GAP + monoTextWidth(data.label, 12.5) + entry + TRAILING_BADGES;
   const meta =
     pillWidth(data.category.toUpperCase(), CHIP_FONT, { letterSpacing: CHIP_LETTER_SPACING }) +
     META_GAP +
@@ -206,13 +208,14 @@ function commonsChipsWidth(chips: string[] | undefined): number {
 
 /** A unit identity card: memberless units use one row; collapsed memberful units add a meta row. */
 function unitSize(data: UnitCardData): { width: number; height: number } {
-  const chip = pillWidth(data.unitKind.toUpperCase(), CHIP_FONT, { letterSpacing: CHIP_LETTER_SPACING });
+  const kind = kindChipWidth(data.unitKind);
+  const semantics = semanticRailWidth(data.semantics);
   if (data.isContainer) {
-    const header = CHEVRON_WIDTH + HEADER_GAP + UNIT_GLYPH_WIDTH + HEADER_GAP + monoTextWidth(data.label, 12.5) + TRAILING_BADGES;
-    const meta = chip + META_GAP + monoTextWidth(`${data.memberCount} members`, 10.5);
+    const header = CHEVRON_WIDTH + HEADER_GAP + kind + HEADER_GAP + monoTextWidth(data.label, 12.5) + semantics + TRAILING_BADGES;
+    const meta = monoTextWidth(`${data.memberCount} members`, 10.5);
     return { width: cardWidth(UNIT_CHROME + Math.max(header, meta)), height: UNIT_CONTAINER_CARD_HEIGHT };
   }
-  const content = UNIT_GLYPH_WIDTH + UNIT_ROW_GAP + monoTextWidth(data.label, 12.5) + UNIT_ROW_GAP + chip + TRAILING_BADGES;
+  const content = kind + UNIT_ROW_GAP + monoTextWidth(data.label, 12.5) + semantics + TRAILING_BADGES;
   return { width: cardWidth(UNIT_CHROME + content), height: UNIT_LEAF_HEIGHT };
 }
 
@@ -221,21 +224,67 @@ function cardWidth(content: number): number {
   return Math.round(clamp(CARD_MIN_WIDTH, CARD_MAX_WIDTH, content));
 }
 
+function kindChipWidth(kind: string): number {
+  return pillWidth(displayNodeKind(kind), SEMANTIC_FONT, {
+    padX: 4,
+    letterSpacing: SEMANTIC_FONT * 0.055,
+  });
+}
+
+function semanticRailWidth(semantics: NodeSemanticModel | undefined): number {
+  const labels = semanticLabels(semantics);
+  if (labels.length === 0) return 0;
+  const chips = labels.reduce((width, label) => {
+    const measured = pillWidth(label, SEMANTIC_FONT, {
+      padX: 4,
+      letterSpacing: SEMANTIC_LETTER_SPACING,
+    });
+    const capped = label.startsWith("LAUNCHED · ")
+      ? Math.min(measured, SEMANTIC_STATE_TEXT_MAX_WIDTH + 8)
+      : measured;
+    return width + capped;
+  }, 0);
+  return HEADER_GAP + chips + Math.max(0, labels.length - 1) * 4;
+}
+
 function blockSize(data: BlockData): { width: number; height: number } {
-  const chevron = data.hasFlow ? CHEVRON_WIDTH + BLOCK_ROW_GAP : 0;
-  const content = chevron + CODE_GLYPH_WIDTH + BLOCK_ROW_GAP + monoTextWidth(data.label, 11.5) + TRAILING_BADGES;
+  const chevron = data.expandable ? CHEVRON_WIDTH + BLOCK_ROW_GAP : 0;
+  const content = chevron + kindChipWidth(data.blockKind) + BLOCK_ROW_GAP + monoTextWidth(data.label, 11.5) + semanticRailWidth(data.semantics) + TRAILING_BADGES;
   return { width: Math.round(clamp(BLOCK_MIN_WIDTH, BLOCK_MAX_WIDTH, BLOCK_CHROME + content)), height: BLOCK_HEIGHT };
+}
+
+function frameMinHeight(node: VisibleModuleNode): number {
+  if (node.kind === "file" && (node.data as ModuleCardData).unitCount === 0) {
+    return NODE_EMPTY_EXPANSION_HEIGHT;
+  }
+  if (node.kind === "unit" && (node.data as UnitCardData).memberCount === 0) {
+    return NODE_EMPTY_EXPANSION_HEIGHT;
+  }
+  if (node.kind === "block" && (node.data as BlockData).emptyFlow) {
+    return NODE_EMPTY_EXPANSION_HEIGHT;
+  }
+  if (node.kind === "step" && (node.data as StepData).emptyFlow) {
+    return NODE_EMPTY_EXPANSION_HEIGHT;
+  }
+  return FRAME_MIN_HEIGHT;
 }
 
 function stepSize(data: StepData): { width: number; height: number } {
   const chevron = data.isContainer ? CHEVRON_WIDTH + STEP_ROW_GAP : 0;
-  const content = chevron + CODE_GLYPH_WIDTH + STEP_ROW_GAP + monoTextWidth(data.label, 10.5);
+  const content = chevron + kindChipWidth(data.nodeKind) + STEP_ROW_GAP + monoTextWidth(data.label, 10.5) + semanticRailWidth(data.semantics);
   return { width: Math.round(clamp(STEP_MIN_WIDTH, STEP_MAX_WIDTH, STEP_CHROME + content)), height: STEP_HEIGHT };
 }
 
 /** A ghost card stacks a name over a faint home-file line; size to the wider of the two. */
 export function ghostSize(data: GhostData): { width: number; height: number } {
-  const head = CODE_GLYPH_WIDTH + GHOST_ROW_GAP + monoTextWidth(data.label, 11);
+  const grouped = (data as GhostData & { ghostRole?: string }).ghostRole === "parent-anchor"
+    && (data.semanticMembers?.length ?? 0) > 0;
+  const disclosure = grouped ? CHEVRON_WIDTH + GHOST_ROW_GAP : 0;
+  const head = kindChipWidth(data.ghostKind)
+    + GHOST_ROW_GAP
+    + monoTextWidth(data.label, 11)
+    + semanticRailWidth(data.semantics)
+    + disclosure;
   const context = data.context ? monoTextWidth(data.context, 9) : 0;
   return { width: Math.round(clamp(GHOST_MIN_WIDTH, GHOST_MAX_WIDTH, GHOST_CHROME + Math.max(head, context))), height: GHOST_HEIGHT };
 }
@@ -253,18 +302,18 @@ function frameTitleWidth(node: VisibleModuleNode): number {
     const data = node.data as ModuleCardData;
     const entry = data.isEntry ? HEADER_GAP + chipWidth("ENTRY") : 0;
     const category = HEADER_GAP + chipWidth(data.category.toUpperCase());
-    return cardWidth(FILE_CHROME + CHEVRON_WIDTH + HEADER_GAP + monoTextWidth(data.label, 12.5) + entry + TRAILING_BADGES + category);
+    return cardWidth(FILE_CHROME + CHEVRON_WIDTH + HEADER_GAP + kindChipWidth("file") + HEADER_GAP + monoTextWidth(data.label, 12.5) + entry + TRAILING_BADGES + category);
   }
   if (node.kind === "unit") {
     const data = node.data as UnitCardData;
-    const content = CHEVRON_WIDTH + HEADER_GAP + UNIT_GLYPH_WIDTH + HEADER_GAP + monoTextWidth(data.label, 12.5) + HEADER_GAP + chipWidth(data.unitKind.toUpperCase()) + TRAILING_BADGES;
+    const content = CHEVRON_WIDTH + HEADER_GAP + kindChipWidth(data.unitKind) + HEADER_GAP + monoTextWidth(data.label, 12.5) + semanticRailWidth(data.semantics) + TRAILING_BADGES;
     return cardWidth(UNIT_CHROME + content);
   }
   if (node.kind === "package" || node.kind === "serviceDomain") {
     const data = node.data as ModuleGroupData;
     const meta = groupMetaWidth(data);
     const chevron = data.isContainer ? CHEVRON_WIDTH + HEADER_GAP : 0;
-    return cardWidth(PACKAGE_CHROME + chevron + monoTextWidth(data.label, 13) + HEADER_GAP + DELTA_CHIP_WIDTH + HEADER_GAP + meta);
+    return cardWidth(PACKAGE_CHROME + chevron + kindChipWidth(node.kind) + HEADER_GAP + monoTextWidth(data.label, 13) + HEADER_GAP + DELTA_CHIP_WIDTH + HEADER_GAP + meta);
   }
   // Blocks and steps wear a title bar identical to their collapsed row, so the leaf size already fits.
   return leafSize(node).width;

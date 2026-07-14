@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { buildModuleGraph } from "./moduleGraph";
-import { basename, collapseChain, fileData } from "./moduleLevel";
+import { basename, blockData, collapseChain, fileData, unitData } from "./moduleLevel";
 
 function node(id: string, kind: string, parentId?: string, displayName?: string): GraphNode {
   return {
@@ -85,6 +85,50 @@ describe("fileData", () => {
     const data = fileData("ts:pkgA/src/index.ts", buildModuleGraph(index), index, "ts:pkgA/src/index.ts", NO_UNITS);
     expect(data.isEntry).toBe(true);
     expect(data.category).toBe("entry");
+  });
+});
+
+describe("code node semantics", () => {
+  it("carries artifact kind, modifiers, and Promise result into Map card data", () => {
+    const callable = node("ts:work.ts#Worker.load", "method", undefined, "load");
+    callable.signature = "load(): Promise<Result>";
+    callable.tags = ["async", "public", "static"];
+    const index = indexOf([callable], []);
+
+    expect(blockData(callable.id, index, { expandable: true, emptyFlow: false, childCount: 1, isExpanded: false })).toMatchObject({
+      blockKind: "method",
+      semantics: { modifiers: ["async", "static"], returnsPromise: true },
+    });
+  });
+
+  it("retains high-signal modifiers on class/interface/object cards", () => {
+    const owner = node("ts:work.ts#Worker", "class", undefined, "Worker");
+    owner.tags = ["abstract", "export"];
+    const index = indexOf([owner], []);
+
+    expect(unitData(owner.id, index, {
+      memberCount: 2,
+      isContainer: true,
+      isExpanded: false,
+    }).semantics).toEqual({ modifiers: ["abstract"] });
+  });
+
+  it("keeps callable expansion capability independent from an honest zero child count", () => {
+    const callable = node("ts:work.ts#Worker.pollOrder", "method", undefined, "pollOrder");
+    const index = indexOf([callable], []);
+
+    expect(blockData(callable.id, index, {
+      expandable: true,
+      emptyFlow: true,
+      childCount: 0,
+      isExpanded: true,
+    })).toMatchObject({
+      callable: true,
+      expandable: true,
+      emptyFlow: true,
+      childCount: 0,
+      isExpanded: true,
+    });
   });
 });
 

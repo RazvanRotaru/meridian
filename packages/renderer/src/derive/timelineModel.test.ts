@@ -16,7 +16,7 @@ const PLACE_ORDER: FlowStep[] = [
   { kind: "branch", label: "if", paths: [{ label: "lines empty", body: [call("count"), { kind: "exit", variant: "return", label: "0" }] }] },
   call("pricing.price", { awaited: true }),
   { kind: "loop", label: "reserve × lines", body: [call("reserve")] },
-  call("audit.track", { detached: true }),
+  call("audit.track", { detached: true, async: { kind: "launch", taskId: "task:audit" } }),
   { kind: "callback", label: "email.send", body: [call("log")] },
   { kind: "exit", variant: "return", label: "order" },
 ];
@@ -37,6 +37,8 @@ describe("buildTimeline", () => {
     expect(spec.returnsAt).not.toBeNull();
     const detached = spec.bgRows.find((row) => row[0]?.text.includes("audit.track"));
     expect(detached).toBeDefined();
+    expect(detached![0].text).toContain("Promise · not awaited");
+    expect(detached![0].text).not.toContain("result dropped");
     expect(detached![0].t1).toBeGreaterThan(spec.returnsAt!);
   });
 
@@ -66,6 +68,14 @@ describe("buildTimeline", () => {
     expect(spec.bgRows).toHaveLength(2); // detached audit.track + email.send callback
     expect(spec.connectors.filter((c) => c.kind === "detach")).toHaveLength(2);
     expect(spec.connectors.filter((c) => c.kind === "await")).toHaveLength(2); // drop + rise
+  });
+
+  it("keeps an unproven discarded result on the main lane instead of inventing async work", () => {
+    const s = buildTimeline([call("sync.cleanup", { detached: true })], FLOWS, INDEX);
+
+    expect(s.bgRows).toHaveLength(0);
+    expect(s.connectors.filter((connector) => connector.kind === "detach")).toHaveLength(0);
+    expect(s.mainRow[0]?.text).toBe("sync.cleanup · result dropped");
   });
 
   it("keeps every alt bar inside the axis (t1 <= ticks)", () => {
