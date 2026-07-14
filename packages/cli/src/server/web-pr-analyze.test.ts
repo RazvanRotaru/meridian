@@ -12,7 +12,7 @@ import { Readable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { SCHEMA_VERSION } from "@meridian/core";
 import type { GraphArtifact } from "@meridian/core";
-import { extractToArtifact } from "../extract-pipeline";
+import { analyzeRepository } from "../repository-analysis";
 import { base64Auth, runGit, runGitClone } from "./git-exec";
 import { handlePrAnalyze } from "./web-pr-analyze";
 import type { Context } from "./web-server";
@@ -22,7 +22,10 @@ import { sendJson } from "./http-response";
 import { WebError } from "./web-error";
 import { createGitHubClient } from "./github";
 
-vi.mock("../extract-pipeline", () => ({ extractToArtifact: vi.fn() }));
+vi.mock("../repository-analysis", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../repository-analysis")>();
+  return { ...actual, analyzeRepository: vi.fn() };
+});
 vi.mock("./git-exec", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./git-exec")>();
   return { ...actual, runGit: vi.fn(), runGitClone: vi.fn() };
@@ -53,7 +56,7 @@ describe("handlePrAnalyze", () => {
     });
     // rev-parse yields the analyzed head commit (with git's trailing newline); every other call "".
     mockGitRevisions();
-    vi.mocked(extractToArtifact).mockResolvedValue({ artifact: ARTIFACT, warnings: ["w1"] } as never);
+    vi.mocked(analyzeRepository).mockResolvedValue({ artifact: ARTIFACT, warnings: ["w1"] } as never);
   });
 
   afterEach(() => {
@@ -110,8 +113,27 @@ describe("handlePrAnalyze", () => {
     expect(second.at(-1)?.cache).toBe("hit");
     expect(second.at(-1)?.graphId).toBe(first.at(-1)?.graphId);
     expect(runGitClone).toHaveBeenCalledTimes(1);
-    expect(extractToArtifact).toHaveBeenCalledTimes(1);
+    expect(analyzeRepository).toHaveBeenCalledTimes(1);
     expect(existsSync(restarted.sourceRoots.get(second.at(-1)?.graphId as string)!)).toBe(true);
+  });
+
+  it("preserves the selected language and separates PR analysis identity by language", async () => {
+    const typescript = { kind: "github", owner: "org", repo: "repo", language: "typescript" } as const;
+    const python = { kind: "github", owner: "org", repo: "repo", language: "python" } as const;
+    const ctx = githubCtx(typescript);
+
+    const first = (await invoke(ctx, BODY)).lines().at(-1)!;
+    ctx.sources.set(BODY.id, python);
+    const second = (await invoke(ctx, BODY)).lines().at(-1)!;
+
+    expect(first.graphId).not.toBe(second.graphId);
+    expect(runGitClone).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(analyzeRepository).mock.calls.map(([request]) => request.language)).toEqual([
+      "typescript",
+      "python",
+    ]);
+    expect(ctx.sources.get(first.graphId as string)).toMatchObject({ language: "typescript" });
+    expect(ctx.sources.get(second.graphId as string)).toMatchObject({ language: "python" });
   });
 
   it("re-analyzes when the base branch moves even if the PR head is unchanged", async () => {
@@ -123,7 +145,7 @@ describe("handlePrAnalyze", () => {
     expect(second.headSha).toBe(first.headSha);
     expect(second.graphId).not.toBe(first.graphId);
     expect(runGitClone).toHaveBeenCalledTimes(2);
-    expect(extractToArtifact).toHaveBeenCalledTimes(2);
+    expect(analyzeRepository).toHaveBeenCalledTimes(2);
   });
 
   it("clones full history and drives git in fetch-base, fetch-pr-head, detach order", async () => {
@@ -146,10 +168,8 @@ describe("handlePrAnalyze", () => {
     );
     expect(runGit).toHaveBeenCalledWith(["fetch", "origin", "pull/41/head"], { cwd: tmpDir, token: "", timeoutMs: 300_000 });
     expect(runGit).toHaveBeenCalledWith(["checkout", "--detach", "FETCH_HEAD"], { cwd: tmpDir, token: "", timeoutMs: 300_000 });
-    expect(vi.mocked(extractToArtifact)).toHaveBeenCalledWith(
+    expect(vi.mocked(analyzeRepository)).toHaveBeenCalledWith(
       expect.objectContaining({
-        includeExternal: true,
-        materializeBoundary: true,
         changedSince: "origin/main",
         changedSinceTimeoutMs: 300_000,
         changedSinceGitExecutor: expect.any(Function),
@@ -166,7 +186,7 @@ describe("handlePrAnalyze", () => {
     expect(vi.mocked(runGit).mock.calls[0][1]).toMatchObject({ token: "env_secret" });
     expect(vi.mocked(runGit).mock.calls[2][1]).toMatchObject({ token: "env_secret" });
 
-    const executeDiff = vi.mocked(extractToArtifact).mock.calls[0][0].changedSinceGitExecutor;
+    const executeDiff = vi.mocked(analyzeRepository).mock.calls[0][0].changedSinceGitExecutor;
     expect(executeDiff).toBeTypeOf("function");
     const diffArgs = ["diff", "--merge-base", "origin/main", "--relative", "--unified=0", "--no-color"];
     await executeDiff!("/tmp/private-repo", diffArgs, 300_000);
@@ -193,7 +213,7 @@ describe("handlePrAnalyze", () => {
   });
 
   it("never echoes a non-WebError's text into the error line", async () => {
-    vi.mocked(extractToArtifact).mockRejectedValueOnce(new Error("/tmp/leaky/path exploded"));
+    vi.mocked(analyzeRepository).mockRejectedValueOnce(new Error("/tmp/leaky/path exploded"));
     const lines = (await invoke(githubCtx(), BODY)).lines();
     const errors = lines.filter((line) => line.stage === "error");
     expect(errors).toHaveLength(1);

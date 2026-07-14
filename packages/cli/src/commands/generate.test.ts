@@ -1,0 +1,126 @@
+/**
+ * `generate` is a headless export adapter over the app's canonical workspace analysis. A root
+ * tsconfig must never select a second whole-program path that silently drops cross-package
+ * relationships in monorepos.
+ */
+
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { GraphArtifact } from "@meridian/core";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { buildProgram } from "../program";
+import { generateGraph } from "../server/web-generation";
+import type { Context } from "../server/web-server";
+import { runGenerate, type GenerateOptions } from "./generate";
+
+describe("generate canonical repository analysis", () => {
+  let root: string;
+
+  beforeEach(() => {
+    // Canonicalize macOS's /var -> /private/var temp path so workspace roots and ts-morph source
+    // files stay under the same real path during discovery.
+    root = realpathSync(mkdtempSync(join(tmpdir(), "meridian-generate-workspace-")));
+    write("tsconfig.json", JSON.stringify({ files: [], references: [{ path: "./workspace" }] }));
+    write("workspace/package.json", JSON.stringify({ private: true, workspaces: ["packages/*"] }));
+    write("workspace/packages/alpha/package.json", JSON.stringify({ name: "@fixture/alpha" }));
+    write("workspace/packages/alpha/tsconfig.json", JSON.stringify({
+      compilerOptions: {
+        baseUrl: ".",
+        paths: { "@fixture/beta-alias": ["../beta/src/index.ts"] },
+      },
+      include: ["src/**/*.ts"],
+    }));
+    write(
+      "workspace/packages/alpha/src/index.ts",
+      'import { beta } from "@fixture/beta-alias";\nexport function alpha(): string { return beta(); }\n',
+    );
+    write("workspace/packages/beta/package.json", JSON.stringify({ name: "@fixture/beta" }));
+    write("workspace/packages/beta/src/index.ts", "export function beta(): string { return 'beta'; }\n");
+  });
+
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it("uses workspace discovery even when a root tsconfig exists", async () => {
+    const discoveredOut = join(root, "discovered.graph.json");
+    await runGenerate(root, generateOptions(discoveredOut));
+    expect(moduleFiles(discoveredOut)).toEqual([
+      "workspace/packages/alpha/src/index.ts",
+      "workspace/packages/beta/src/index.ts",
+    ]);
+    expect(importPairs(discoveredOut)).toContain(
+      "ts:workspace/packages/alpha/src/index.ts->ts:workspace/packages/beta/src/index.ts",
+    );
+
+    const graphs = new Map<string, GraphArtifact>();
+    const context = {
+      cwd: root,
+      graphs,
+      sourceRoots: new Map(),
+      sources: new Map(),
+      tempCleanups: new Set(),
+    } as unknown as Context;
+    const generated = await generateGraph(
+      context,
+      { kind: "path", value: root, lang: "typescript" },
+      undefined,
+    );
+    const webArtifact = graphs.get(generated.id);
+    const cliArtifact = readArtifact(discoveredOut);
+    expect(webArtifact?.nodes).toEqual(cliArtifact.nodes);
+    expect(webArtifact?.edges).toEqual(cliArtifact.edges);
+  });
+
+  it("does not expose alternate graph-shaping paths", () => {
+    const generate = buildProgram().commands.find((command) => command.name() === "generate");
+    const optionNames = generate?.options.map((option) => option.long) ?? [];
+    expect(optionNames).not.toEqual(expect.arrayContaining([
+      "--tsconfig",
+      "--include",
+      "--exclude",
+      "--depth",
+      "--include-external",
+      "--include-unresolved",
+      "--exclude-tests",
+      "--value-refs",
+    ]));
+  });
+
+  it("advertises web as the only app launcher", () => {
+    const commandNames = buildProgram().commands.map((command) => command.name());
+    expect(commandNames).toContain("web");
+    expect(commandNames).not.toContain("view");
+  });
+
+  function write(relativePath: string, contents: string): void {
+    const absolutePath = join(root, relativePath);
+    mkdirSync(join(absolutePath, ".."), { recursive: true });
+    writeFileSync(absolutePath, contents);
+  }
+
+  function generateOptions(out: string): GenerateOptions {
+    return {
+      cwd: root,
+      out,
+      lang: "typescript",
+      quiet: true,
+    };
+  }
+});
+
+function moduleFiles(path: string): string[] {
+  return readArtifact(path).nodes
+    .filter((node) => node.kind === "module")
+    .map((node) => node.location.file)
+    .sort();
+}
+
+function importPairs(path: string): string[] {
+  return readArtifact(path).edges
+    .filter((edge) => edge.kind === "imports" && edge.resolution === "resolved")
+    .map((edge) => `${edge.source}->${edge.target}`);
+}
+
+function readArtifact(path: string): GraphArtifact {
+  return JSON.parse(readFileSync(path, "utf8")) as GraphArtifact;
+}

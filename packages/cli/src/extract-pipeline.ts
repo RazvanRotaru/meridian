@@ -37,9 +37,9 @@ export interface PipelineRequest {
   includeUnresolved?: boolean;
   /** Turn retained `ext:` / `unresolved:` targets into renderer-visible boundary nodes. */
   materializeBoundary: boolean;
-  /** Drop test code from the artifact entirely (`--exclude-tests`); default is include + tag. */
+  /** Drop test code from the artifact entirely; canonical product analysis keeps and tags it. */
   excludeTests?: boolean;
-  /** Emit `references` edges for imported symbols used as values (`--value-refs`); default off. */
+  /** Emit `references` edges for imported symbols used as values; canonical product analysis leaves this off. */
   valueRefs?: boolean;
   /** Tag nodes the PR changed (git diff --merge-base <ref> vs the working tree) `"changed"`. */
   changedSince?: string;
@@ -101,7 +101,8 @@ export async function selectExtractor(absoluteRoot: string, language: string | u
 
 /**
  * Language-agnostic test classification: tag test-path nodes (any extractor benefits), or —
- * under `--exclude-tests` — drop test code plus every edge touching it, restoring a lean
+ * when explicitly requested by a lower-level caller, drop test code plus every edge touching it,
+ * restoring a lean
  * production-only graph.
  */
 function classifyTests(extraction: ExtractionResult, excludeTests: boolean): ExtractionResult {
@@ -120,7 +121,7 @@ function classifyTests(extraction: ExtractionResult, excludeTests: boolean): Ext
 /**
  * Materialize the extractor's IPC ports into the graph: channel pseudo-nodes plus sends/handles
  * edges (language-agnostic — any extractor that reports ports benefits). Ports owned by nodes
- * dropped upstream (e.g. --exclude-tests) are dropped with them so the manifest never dangles.
+ * dropped upstream are dropped with them so the manifest never dangles.
  */
 function channelize(extraction: ExtractionResult): ExtractionResult {
   const rawPorts = extraction.ports ?? [];

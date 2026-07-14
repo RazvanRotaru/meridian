@@ -1,5 +1,5 @@
 /**
- * End-to-end: `blueprint generate` the fixture, `blueprint view` it, and drive a real
+ * End-to-end: generate the fixture, open it through `meridian web`, and drive a real
  * headless Chromium to prove the blueprint renders, drills down, gates telemetry behind an
  * explicit environment, and refuses to default to prod. Skips cleanly when the Playwright
  * browser is not installed (`npx playwright install chromium`).
@@ -79,7 +79,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     const recenter = actionBar.getByRole("button", { name: "Recenter view" });
     const expand = actionBar.getByRole("button", { name: "Expand one level" });
     const collapse = actionBar.getByRole("button", { name: "Collapse all" });
-    const repositorySummary = panel.getByText("Repository · 1 package · 11 files", { exact: true });
+    const repositorySummary = panel.getByText("Repository · 2 packages · 13 files", { exact: true });
     const requestData = panel.getByRole("region", { name: "Request data" });
     const unavailableBadge = panel.getByText("Unavailable", { exact: true });
     const disclosure = panel.locator('button[aria-controls="meridian-control-panel-controls"]');
@@ -497,7 +497,7 @@ describe("never-prod gate", () => {
   it("refuses --overlay without --env (exit code 2)", () => {
     const { graphPath, dir } = generateGraph();
     graphDir = dir;
-    const result = runCli(["view", graphPath, "--overlay", "mock", "--no-open"]);
+    const result = runCli(["web", graphPath, "--overlay", "mock", "--no-open"]);
     expect(result.code).toBe(2);
     expect(result.stderr).toMatch(/never defaults/i);
   });

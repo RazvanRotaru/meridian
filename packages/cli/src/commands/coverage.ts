@@ -42,7 +42,7 @@ function print(reporter: Reporter, artifact: GraphArtifact, report: CoverageRepo
   reporter.info(`coverage    ${artifact.target.name}: ${summary.percent}% of ${summary.callables} callables reached by tests`);
   reporter.info(`            ${summary.covered} direct, ${summary.indirect} transitive, ${summary.uncovered} uncovered (${summary.testNodes} test nodes)`);
   if (summary.testNodes === 0) {
-    reporter.info(`            no test code found in the graph — was it generated with --exclude-tests?`);
+    reporter.info("            no test code found in the graph");
   }
   if (summary.unresolvedFromTests > 0) {
     reporter.info(`            caveat: ${summary.unresolvedFromTests} unresolved call(s) leave test code; real coverage may be higher`);

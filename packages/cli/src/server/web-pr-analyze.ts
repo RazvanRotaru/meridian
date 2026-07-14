@@ -75,7 +75,7 @@ function storeArtifact(
   const graphId = prGraphId(source, body, headSha, baseSha);
   ctx.graphs.set(graphId, artifact);
   ctx.sourceRoots.set(graphId, sourceDir);
-  ctx.sources.set(graphId, { kind: "github", owner: source.owner, repo: source.repo, subdir: source.subdir });
+  ctx.sources.set(graphId, source);
   return graphId;
 }
 
@@ -103,7 +103,17 @@ function changedFilesOf(artifact: GraphArtifact): { path: string; status: string
 
 /** Deterministic per-commit id: a force-pushed ref can never replace a stale client's artifact. */
 function prGraphId(source: GitHubSource, body: PrAnalyzeRequest, headSha: string, baseSha: string): string {
-  const key = ["pr", source.owner, source.repo, source.subdir ?? "", body.prNumber, body.headRef, headSha, baseSha].join(" ");
+  const key = [
+    "pr",
+    source.owner,
+    source.repo,
+    source.subdir ?? "",
+    source.language ?? "auto",
+    body.prNumber,
+    body.headRef,
+    headSha,
+    baseSha,
+  ].join(" ");
   const keyDigest = createHash("sha1").update(key).digest("hex").slice(0, 12);
   return `pr-${keyDigest}-${headSha}`;
 }

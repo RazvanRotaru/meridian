@@ -77,7 +77,7 @@ const DEV_FALLBACK: BootConfig = {
   overlayUrl: "/api/overlay",
   traceUrl: "/api/traces",
   traceAvailable: false,
-  // Dev sample ships with no telemetry, so the env gate is off by default — a real `meridian view`
+  // Dev sample ships with no telemetry, so the env gate is off by default — a real `meridian web`
   // / `web` overlay still sets hasOverlay via the injected config, so the production gate is intact.
   hasOverlay: false,
   overlayKind: "mock",

@@ -24,14 +24,14 @@ Unreal-Blueprints-style (calls, branches, loops, drill-in, ⌘P symbol search).
 
 ```bash
 pnpm install && pnpm build     # build all packages and stage the web renderer
-pnpm start                     # launch the web UI and open the landing page in your browser
+pnpm start -- sindresorhus/ky  # the supported app launcher; omit the repo for the landing page
 
-# The web way — paste a repo, see its graph (self-hosted; nothing is uploaded)
+# The installed CLI uses the same launcher (self-hosted; nothing is uploaded)
 node packages/cli/dist/bin.js web sindresorhus/ky        # any GitHub owner/repo, URL, or local path
 
-# The CLI way — generate an artifact, then view it
-node packages/cli/dist/bin.js generate ./my-service -o graph.json    # auto-detects TypeScript or Python
-node packages/cli/dist/bin.js view graph.json --overlay mock --env staging
+# Headless export uses the exact same analysis as the web app
+node packages/cli/dist/bin.js generate ./my-service -o graph.json
+node packages/cli/dist/bin.js web graph.json --overlay mock --env staging
 
 # Optional real JS/TS execution coverage (an existing Istanbul coverage-final.json)
 node packages/cli/dist/bin.js generate ./my-service --test-coverage coverage/coverage-final.json -o graph.json
@@ -62,7 +62,7 @@ the tangled `services` layer (breadcrumb `System › Src › Services`), everyth
 
 ![UI composition render tree](docs/media/03-ui-composition.png)
 
-**Boundary edges** — `generate --include-external` and the Web flow surface library/builtin calls
+**Boundary edges** — every generated graph surfaces library/builtin calls
 plus dependencies from static TypeScript imports and out-of-scope aliases as dim/dashed wires into an `External` group.
 Type/service targets use stable public ids such as `ext:@vendor/sdk#PaymentService` rather than
 `node_modules` paths:
@@ -91,7 +91,7 @@ node id **and** the telemetry join key, so structure and runtime data never desy
    renders). **TypeScript/TSX** (via `ts-morph`) and **Python** (via the stdlib `ast`) ship today,
    auto-detected; new languages slot in as additional extractors against the same contract. The
    artifact *is* the code — re-generate it and it stays in sync.
-2. **Renderer (`meridian view` / `web`).** A dark-mode SPA (React + `@xyflow/react` + `elkjs`):
+2. **Renderer (`meridian web`).** A dark-mode SPA (React + `@xyflow/react` + `elkjs`):
    compound nodes with custom expand/collapse, auto-layout that routes edges across nested groups,
    typed pins, and progressive disclosure from the system level down. **Dive-in ("black box"):**
    double-click a box to re-root the canvas *into* it, with a breadcrumb to climb out — so a huge
@@ -135,12 +135,14 @@ published as JSON Schema at
 
 | Command | What it does |
 | --- | --- |
-| `meridian generate [path]` | Extract a codebase into a graph artifact. `--lang` (auto: `typescript` \| `python`), `-o`, `--depth package\|module\|class\|function`, `--include-external`, `--include`, `--exclude`, `--tsconfig`, `--exclude-tests` (default: tests included, tagged `test`), `--test-coverage <coverage-final.json>` (attach aggregate Istanbul execution coverage). |
-| `meridian view [graph]` | Serve the renderer on a graph + open the browser. `--port`, `--host`, `--no-open`, `--overlay <file\|mock>`, `--env`, `--test-coverage <coverage-final.json>` (in-memory only). |
-| `meridian web [source]` | Local web UI: paste a **GitHub repo** (`owner/repo` or URL) / local path — clones (`--depth 1`) + extracts + renders, including materialized external dependencies. **Sign in with GitHub** (device flow, enabled by default) lists your repositories to pick from; private repos also work via `GITHUB_TOKEN`/`GH_TOKEN` or a local-only token field. `--port`, `--host`, `--no-open`, `--github-client-id`. |
+| `meridian generate [path]` | Headless export of the same canonical workspace graph produced by the web app. `--lang` (auto: `typescript` \| `python`), `-o`, `--changed-since`, `--test-coverage <coverage-final.json>` (attach aggregate Istanbul execution coverage). |
+| `meridian web [source]` | The single app launcher. Open the landing page, a **GitHub repo** (`owner/repo` or URL), a local workspace, or an existing graph artifact. Repository sources use canonical workspace analysis; graph artifacts may add `--overlay <file\|mock>`, `--env`, `--source-root`, or `--test-coverage`. Also supports `--port`, `--host`, `--no-open`, and `--github-client-id`. |
 | `meridian mock-telemetry [graph]` | Mint a deterministic mock overlay. **`--env` is required** (no default, never prod); `-o`, `--seed`. |
 | `meridian coverage [graph]` | Terminal report of estimated static test reachability: per-class percentages, every unreachable member with its reason. `--fail-under <pct>` makes it a CI gate (exit 3 below threshold). |
 | `meridian link <graphs...>` | Join two or more artifacts into one **system graph** via their IPC channel keys — HTTP paths unify onto route templates, electron/queue channels match exactly; dangling channels (nobody answers) stay visible. `-o`, `--name`. |
+
+TypeScript generation always discovers the workspace and its package-local configs. There is no
+separate root-tsconfig mode, so the web app, headless export, cache, and PR analysis cannot drift.
 
 ## Packages
 
@@ -151,7 +153,7 @@ packages/
                          LanguageExtractor interface. (@meridian/core/mock = node-only mock overlay.)
   extractor-typescript/  @meridian/extractor-typescript — the ts-morph TS/TSX adapter (incl. JSX renders).
   extractor-python/      @meridian/extractor-python — a stdlib-ast analyzer + adapter.
-  cli/                   @meridian/cli — the `meridian` binary (generate / view / web / mock-telemetry).
+  cli/                   @meridian/cli — the `meridian` binary (generate / web / mock-telemetry).
   renderer/              @meridian/renderer — the dark Unreal-Blueprints SPA.
 examples/
   orders-service/        a small readable TypeScript fixture.
@@ -170,7 +172,7 @@ pnpm typecheck
 # Refresh the checked-in renderer sample from real V8 execution counters (emitted as Istanbul JSON)
 pnpm sample:refresh       # sample:coverage, then sample:graph
 
-# End-to-end (generate → view → headless Chromium). Install the browser once:
+# End-to-end (generate → web → headless Chromium). Install the browser once:
 npx playwright install chromium
 pnpm e2e
 ```

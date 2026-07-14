@@ -1,7 +1,7 @@
 {
   "name": "@meridian/cli",
   "version": "0.1.0",
-  "description": "The `meridian` CLI: generate a graph artifact, mint a mock telemetry overlay, and view it in the renderer.",
+  "description": "The `meridian` CLI: analyze repositories, export graph artifacts, and open them in the web app.",
   "type": "module",
   "bin": {
     "meridian": "./dist/bin.js"

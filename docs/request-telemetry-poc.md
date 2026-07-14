@@ -1,7 +1,7 @@
 # Request telemetry POC
 
 Status: Implemented POC
-Scope: TypeScript, local `meridian view`, deterministic demo data
+Scope: TypeScript, local `meridian web <graph>`, deterministic demo data
 Fixture: `examples/orders-service`
 
 ## Outcome
@@ -39,7 +39,7 @@ Request traces are therefore a separate contract and endpoint. Aggregate metrics
 - Request telemetry is an explicit presentation mode. Outside **Telemetry** mode the source picker,
   request controls, runtime card badges, and request paint stay hidden; leaving the mode preserves
   the loaded bundle so returning does not require another fetch.
-- Local `meridian view` advertises an in-app source catalog even when it was launched without
+- Local `meridian web <graph>` advertises an in-app source catalog even when it was launched without
   `--overlay`. The POC catalog always includes **Synthetic demo**; a configured saved overlay is an
   additional opaque choice. Browser input never contains or selects a server filesystem path.
 - Source selection starts **Off** unless the CLI explicitly configured a source. Choosing a source

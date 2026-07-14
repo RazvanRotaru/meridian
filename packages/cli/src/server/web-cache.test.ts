@@ -4,13 +4,16 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SCHEMA_VERSION } from "@meridian/core";
 import type { GraphArtifact } from "@meridian/core";
-import { extractToArtifact } from "../extract-pipeline";
+import { analyzeRepository } from "../repository-analysis";
 import { runGit, runGitClone } from "./git-exec";
-import { cachedRemoteGraph } from "./web-cache";
+import { cachedRemoteGraph, webAnalysisKey } from "./web-cache";
 import { probeRemoteGraph } from "./web-cache-probe";
 import type { GenerateRequest } from "./web-request";
 
-vi.mock("../extract-pipeline", () => ({ extractToArtifact: vi.fn() }));
+vi.mock("../repository-analysis", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../repository-analysis")>();
+  return { ...actual, analyzeRepository: vi.fn() };
+});
 vi.mock("./git-exec", () => ({
   base64Auth: (token: string) => Buffer.from(`x-access-token:${token}`, "utf8").toString("base64"),
   runGit: vi.fn(),
@@ -40,7 +43,7 @@ beforeEach(() => {
     writeFileSync(join(repoDir, "apps", "one", "index.ts"), "export const one = 1;\n");
     writeFileSync(join(repoDir, "apps", "two", "index.ts"), "export const two = 2;\n");
   });
-  vi.mocked(extractToArtifact).mockImplementation(async (request) => ({
+  vi.mocked(analyzeRepository).mockImplementation(async (request) => ({
     artifact: artifactFor(request.targetName ?? "repo", request.vcs?.commit ?? FIRST_COMMIT),
     warnings: [],
   }) as never);
@@ -48,10 +51,19 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(cacheRoot, { recursive: true, force: true });
+  vi.unstubAllEnvs();
   vi.clearAllMocks();
 });
 
 describe("persistent web graph cache", () => {
+  it("does not vary analysis identity with the retired value-ref environment switch", () => {
+    vi.stubEnv("MERIDIAN_VALUE_REFS", "0");
+    const disabled = webAnalysisKey(REQUEST);
+    vi.stubEnv("MERIDIAN_VALUE_REFS", "1");
+
+    expect(webAnalysisKey(REQUEST)).toBe(disabled);
+  });
+
   it("reuses both the checkout and artifact for an unchanged commit", async () => {
     const firstStages: string[] = [];
     const secondStages: string[] = [];
@@ -65,7 +77,7 @@ describe("persistent web graph cache", () => {
     expect(second.checkout.cache).toBe("hit");
     expect(secondStages).toEqual([]);
     expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(extractToArtifact)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(1);
     expect(readFileSync(join(second.sourceDir, "apps", "one", "index.ts"), "utf8")).toContain("one = 1");
   });
 
@@ -78,7 +90,7 @@ describe("persistent web graph cache", () => {
     expect(second.checkout.commit).toBe(SECOND_COMMIT);
     expect(second.cache).toBe("miss");
     expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(extractToArtifact)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(2);
   });
 
   it("probes an unchanged graph without loading or regenerating it", async () => {
@@ -92,7 +104,7 @@ describe("persistent web graph cache", () => {
     expect(hit.id).toHaveLength(12);
     expect(miss).toEqual({ status: "miss" });
     expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(extractToArtifact)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(1);
     expect(generated.checkout.commit).toBe(FIRST_COMMIT);
   });
 
@@ -102,7 +114,7 @@ describe("persistent web graph cache", () => {
 
     expect(first.analysisKey).not.toBe(second.analysisKey);
     expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(extractToArtifact)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(2);
   });
 
   it("shares one commit checkout and graph across refs without losing branch provenance", async () => {
@@ -113,7 +125,7 @@ describe("persistent web graph cache", () => {
     expect(fromHead.artifact.target.vcs?.branch).toBeUndefined();
     expect(fromMain.artifact.target.vcs?.branch).toBe("main");
     expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(extractToArtifact)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(1);
   });
 
   it("treats a corrupt cached artifact as a miss", async () => {
@@ -130,7 +142,7 @@ describe("persistent web graph cache", () => {
 
     const second = await generate(REQUEST);
     expect(second.cache).toBe("miss");
-    expect(vi.mocked(extractToArtifact)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(2);
   });
 
   it("forces re-extraction without cloning the unchanged checkout again", async () => {
@@ -139,7 +151,7 @@ describe("persistent web graph cache", () => {
 
     expect(refreshed.cache).toBe("miss");
     expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(extractToArtifact)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(2);
   });
 
   it("never persists the clone token", async () => {

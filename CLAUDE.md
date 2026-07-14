@@ -25,7 +25,7 @@ packages/extractor-typescript  ts-morph adapter (TS/TSX incl. JSX renders edges)
 packages/extractor-python      spawns a bundled stdlib-ast analyzer (python/*.py) + a TS adapter.
 packages/design-metrics        pure graph→metrics: Martin's Ca/Ce/I/A/D + LCOM4 cohesion, design
                                smells, worst-first ranking, and per-unit diagnosis/advice. No React.
-packages/cli                   commander CLI: generate / view / web / mock-telemetry / coverage / link.
+packages/cli                   commander CLI: generate / web / mock-telemetry / coverage / link.
 packages/renderer              React 19 + @xyflow/react + elkjs SPA (Vite); consumes @meridian/design-metrics.
 examples/{orders-service, orders-service-py, shopfront}   fixtures used by golden + e2e tests.
 knowledge/adr/0001-...md       THE contract decision. Read it before touching the schema.
@@ -54,11 +54,11 @@ knowledge/adr/0001-...md       THE contract decision. Read it before touching th
   route templates (core/link.ts).
 - **Test code is IN the graph by default**, tagged `"test"` via the open `tags` vocabulary (no schema
   change; tagging happens language-agnostically in `extract-pipeline.ts`, heuristics in core's
-  `test-detection.ts`). `generate --exclude-tests` drops it; the renderer's Tests toggle hides it;
+  `test-detection.ts`). The renderer's Tests toggle hides it without changing the canonical graph;
   `coverage.ts` derives static coverage (direct/indirect/uncovered + reasons) from resolved
   execution edges only — unresolved calls from tests are a reported caveat, never counted.
 - `validateArtifact` is two-tier (zod shape + cross-array invariants). `generate` fails **closed**
-  (writes nothing on error); `view`/`web` are lenient (warn-level) so a new extractor isn't blocked.
+  (writes nothing on error); `web` validates an existing or generated graph before serving it.
 
 ## Commands
 
@@ -67,18 +67,21 @@ pnpm install
 pnpm build            # tsup for libs, vite for the renderer (topological order)
 pnpm test             # ~100 vitest tests across packages
 pnpm typecheck
+pnpm start -- owner/repo           # the only full-app launcher; omit the repo for the landing page
 pnpm --filter @meridian/cli e2e     # headless-Chromium e2e (needs: npx playwright install chromium)
 
 # Run the CLI without a global install:
 node packages/cli/dist/bin.js generate examples/orders-service -o /tmp/g.json
-node packages/cli/dist/bin.js view /tmp/g.json --overlay mock --env staging
+node packages/cli/dist/bin.js web /tmp/g.json --overlay mock --env staging
 node packages/cli/dist/bin.js web sindresorhus/ky
 node packages/cli/dist/bin.js coverage /tmp/g.json --fail-under 60   # static coverage CI gate
 node packages/cli/dist/bin.js link /tmp/web.json /tmp/api.json -o /tmp/system.json  # IPC system graph
 ```
 
-`meridian view`/`web` serve the renderer from `packages/cli/renderer-dist` — after changing the
+`meridian web` serves the renderer from `packages/cli/renderer-dist` — after changing the
 renderer, run `pnpm --filter @meridian/cli copy-renderer` (or `prepack`).
+The renderer's `dev:sample` / `preview:sample` scripts are isolated sample-fixture tools, not app
+launchers.
 
 ## Gotchas (these will bite you)
 
@@ -122,6 +125,6 @@ renderer, and CLI need **no** changes — that's the whole point.
 ## Working style here
 
 - Verify visually when touching the renderer: `pnpm --filter @meridian/cli build && copy-renderer`,
-  then drive `view`/`web` headless with Playwright and screenshot (see prior e2e scripts).
+  then drive `web` headless with Playwright and screenshot (see prior e2e scripts).
 - After a feature, run an adversarial review over the new code before committing — it has repeatedly
   found real bugs the happy path missed (cycle hangs, blank-canvas focus, module-sourced renders).

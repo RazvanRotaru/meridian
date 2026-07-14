@@ -3,15 +3,17 @@ import type { GenerateRequest } from "./web-request";
 const OWNER_REPO = /^[\w.-]+\/[\w.-]+$/;
 
 export type ArtifactSource =
-  | { kind: "github"; owner: string; repo: string; subdir?: string }
+  | { kind: "github"; owner: string; repo: string; subdir?: string; language?: string }
   | { kind: "other" };
 
-export function artifactSourceFor(request: GenerateRequest): ArtifactSource {
+export function artifactSourceFor(request: GenerateRequest, resolvedLanguage?: string): ArtifactSource {
   if (request.kind !== "github") {
     return { kind: "other" };
   }
   const repo = parseGitHubRepo(request.value);
-  return repo ? { kind: "github", ...repo, subdir: request.subdir } : { kind: "other" };
+  return repo
+    ? { kind: "github", ...repo, subdir: request.subdir, language: request.lang ?? resolvedLanguage }
+    : { kind: "other" };
 }
 
 export function stripExtractionSubdir<T extends { path: string }>(files: T[], subdir: string | undefined): T[] {
