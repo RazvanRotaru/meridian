@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GraphArtifact, GraphNode } from "@meridian/core";
+import type { GraphArtifact, GraphNode, SyntheticExecution, SyntheticScenarioDescriptor } from "@meridian/core";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PrReviewSection } from "../components/controlpanel/PrReviewSection";
@@ -134,7 +134,7 @@ function freshStoreForArtifact(artifact: GraphArtifact, extra?: Partial<StoreDep
     provider: null,
     hasOverlay: false,
     sourceUrl: null,
-    prSessionSource: { repository: "https://github.com/o/r", subdir: "" },
+    prSessionSource: { repository: "o/r", subdir: "" },
     prsUrl: "/api/prs?id=artifact-1",
     prOneUrl: "/api/prs/one?id=artifact-1",
     prFilesUrl: "/api/prs/files?id=artifact-1",
@@ -143,6 +143,61 @@ function freshStoreForArtifact(artifact: GraphArtifact, extra?: Partial<StoreDep
     prChecksUrl: "/api/prs/checks?id=artifact-1",
     prReviewUrl: "/api/prs/review?id=artifact-1",
     ...extra,
+  });
+}
+
+function seedStaleSyntheticSession(store: ReturnType<typeof freshStore>): void {
+  const staleExecution = { rootId: METHOD_ID } as SyntheticExecution;
+  store.setState({
+    flowSelection: { rootId: METHOD_ID, blockPath: [] },
+    flowPaneOrigin: "synthetic",
+    syntheticExecution: staleExecution,
+    syntheticPreviousExecution: staleExecution,
+    syntheticExecutionRootId: METHOD_ID,
+    syntheticExecutionHost: "flow-pane",
+    syntheticExecutionStatus: "ready",
+    syntheticExecutionError: "old PR error",
+    syntheticExperimentRootId: METHOD_ID,
+    syntheticInputOverrides: [{
+      id: "old-override",
+      target: { nodeId: METHOD_ID, occurrenceKey: "old-occurrence" },
+      input: { value: "old" },
+    }],
+    syntheticFieldWatchers: [{
+      id: "old-watcher",
+      nodeId: METHOD_ID,
+      phase: "input",
+      path: ["value"],
+      operator: "exists",
+    }],
+    syntheticEditorRequest: { rootId: METHOD_ID, host: "flow-pane" },
+    syntheticSelectedMomentId: "old-moment",
+    syntheticFlowOrientation: "horizontal",
+    syntheticFlowPresentation: "overview",
+    flowPaneLayoutStatus: "ready",
+  });
+}
+
+function expectSyntheticSessionReset(store: ReturnType<typeof freshStore>): void {
+  expect(store.getState()).toMatchObject({
+    flowSelection: null,
+    flowPaneOrigin: null,
+    syntheticExecution: null,
+    syntheticPreviousExecution: null,
+    syntheticExecutionRootId: null,
+    syntheticExecutionHost: null,
+    syntheticExecutionStatus: "idle",
+    syntheticExecutionError: null,
+    syntheticExperimentRootId: null,
+    syntheticInputOverrides: [],
+    syntheticFieldWatchers: [],
+    syntheticEditorRequest: null,
+    syntheticSelectedMomentId: null,
+    syntheticFlowOrientation: "vertical",
+    syntheticFlowPresentation: "focused",
+    flowPaneRfNodes: [],
+    flowPaneRfEdges: [],
+    flowPaneLayoutStatus: "idle",
   });
 }
 
@@ -210,6 +265,9 @@ describe("PR store slice", () => {
         artifact: taggedDeletedArtifact,
         index: buildGraphIndex(taggedDeletedArtifact),
         review: null,
+        syntheticExecutionUrl: null,
+        syntheticScenarios: [],
+        syntheticExecutionTrust: null,
       },
     });
     expect(countTestFiles(plainStore.getState())).toBe(1);
@@ -1622,6 +1680,7 @@ const ANALYZE_DEPS: Partial<StoreDependencies> = {
   analyzeUrl: "/api/pr/analyze",
   graphId: "artifact-1",
   graphUrl: "/api/graph?id=artifact-1",
+  metaUrl: "/api/meta?id=artifact-1",
 };
 
 /**
@@ -1646,6 +1705,29 @@ const HEAD_ARTIFACT: GraphArtifact = {
     },
   } as GraphArtifact["extensions"],
 };
+
+const BOOT_SYNTHETIC_SCENARIO: SyntheticScenarioDescriptor = {
+  id: "boot-run",
+  label: "Boot run",
+  rootId: METHOD_ID,
+  defaultInput: { value: "boot" },
+};
+
+function preparedSyntheticMeta(graphId: string, headSha: string) {
+  return {
+    syntheticExecutionUrl: `/api/synthetic-executions?id=${graphId}`,
+    syntheticScenarios: [{
+      id: `prepared-${graphId}`,
+      label: `Prepared ${graphId}`,
+      rootId: METHOD_ID,
+      defaultInput: { value: graphId },
+    }],
+    syntheticExecutionTrust: {
+      mode: "sandboxed-pr",
+      provenance: { repository: "o/r", headSha },
+    },
+  };
+}
 
 const REFRESHED_HEAD_SHA = "def5678abc1234000000";
 const REFRESHED_GRAPH_ID = "pr-head-2";
@@ -1692,12 +1774,15 @@ function routedFetch(options?: { graphId?: string; graph?: () => Promise<Respons
     if (url.includes("/api/graph")) {
       return options?.graph ? options.graph() : Promise.resolve(Response.json(HEAD_ARTIFACT));
     }
+    if (url.includes("/api/meta")) {
+      return Promise.resolve(Response.json(preparedSyntheticMeta(graphId, "abc1234def5678900000")));
+    }
     return Promise.resolve(Response.json({ files: [], truncated: false }));
   });
 }
 
 /** Route an in-place refresh of an already prepared review, optionally failing before graph fetch. */
-function preparedRefreshFetch(options: { analyzeError?: string } = {}) {
+function preparedRefreshFetch(options: { analyzeError?: string; invalidMeta?: boolean; meta?: unknown; graph?: GraphArtifact } = {}) {
   return vi.fn((input: RequestInfo | URL) => {
     const url = input.toString();
     if (url.includes("/api/prs/one")) {
@@ -1718,7 +1803,12 @@ function preparedRefreshFetch(options: { analyzeError?: string } = {}) {
         : ndjsonResponse([{ stage: "clone" }, { stage: "checkout" }, { stage: "extract" }, { stage: "done", graphId: REFRESHED_GRAPH_ID, headSha: REFRESHED_HEAD_SHA }]));
     }
     if (url.includes("/api/graph")) {
-      return Promise.resolve(Response.json(REFRESHED_HEAD_ARTIFACT));
+      return Promise.resolve(Response.json(options.graph ?? REFRESHED_HEAD_ARTIFACT));
+    }
+    if (url.includes("/api/meta")) {
+      return Promise.resolve(Response.json(options.meta ?? (options.invalidMeta
+        ? { syntheticExecutionUrl: "/api/synthetic-executions", syntheticScenarios: [], syntheticExecutionTrust: { mode: "sandboxed-pr" } }
+        : preparedSyntheticMeta(REFRESHED_GRAPH_ID, REFRESHED_HEAD_SHA))));
     }
     return Promise.reject(new Error(`Unexpected request: ${url}`));
   });
@@ -1764,6 +1854,9 @@ async function swappedReviewStore() {
     ...ANALYZE_DEPS,
     sourceUrl: "/api/source?id=artifact-1",
     prFileUrl: "/api/prs/file?id=artifact-1",
+    syntheticExecutionUrl: "/api/synthetic-executions?id=artifact-1",
+    syntheticExecutionTrust: { mode: "local" },
+    syntheticScenarios: [BOOT_SYNTHETIC_SCENARIO],
   });
   const bootIndex = store.getState().index;
   store.setState(headSelectedPrState(7));
@@ -1788,9 +1881,14 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     const graphResponse = new Promise<Response>((resolve) => {
       releaseGraph = resolve;
     });
-    const fetchMock = vi.fn((input: RequestInfo | URL) => input.toString().includes("/api/pr/analyze")
-      ? Promise.resolve(new Response(analyzeStream, { status: 200 }))
-      : graphResponse);
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/api/pr/analyze")) return Promise.resolve(new Response(analyzeStream, { status: 200 }));
+      if (url.includes("/api/meta")) {
+        return Promise.resolve(Response.json(preparedSyntheticMeta("pr-gated", "abc1234")));
+      }
+      return graphResponse;
+    });
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore(ANALYZE_DEPS);
     store.setState(selectedPrState(7));
@@ -1822,6 +1920,79 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts"]);
     expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
     expect(store.getState().prPreparedGraphId).toBe("pr-gated");
+  });
+
+  it("does not expose the prepared graph before its sandbox capability arrives", async () => {
+    let releaseMeta!: (response: Response) => void;
+    const metaResponse = new Promise<Response>((resolve) => { releaseMeta = resolve; });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/api/pr/analyze")) {
+        return Promise.resolve(ndjsonResponse([{ stage: "done", graphId: "pr-atomic", headSha: "atomic123" }]));
+      }
+      if (url.includes("/api/graph")) return Promise.resolve(Response.json(HEAD_ARTIFACT));
+      if (url.includes("/api/meta")) return metaResponse;
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore(ANALYZE_DEPS);
+    store.setState(selectedPrState(7));
+
+    const review = store.getState().reviewPrInGraph();
+    await vi.waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) => input.toString().includes("/api/meta?id=pr-atomic"))).toBe(true);
+    });
+    expect(store.getState().artifact).toBe(ARTIFACT);
+    expect(store.getState().prReviewBaseline).toBeNull();
+    expect(store.getState().syntheticExecutionUrl).toBeNull();
+
+    releaseMeta(Response.json(preparedSyntheticMeta("pr-atomic", "atomic123")));
+    await review;
+    expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
+    expect(store.getState()).toMatchObject(preparedSyntheticMeta("pr-atomic", "atomic123"));
+  });
+
+  it.each([
+    {
+      mismatch: "repository",
+      meta: {
+        ...preparedSyntheticMeta("pr-bound", "bound123"),
+        syntheticExecutionTrust: {
+          mode: "sandboxed-pr",
+          provenance: { repository: "other/repository", headSha: "bound123" },
+        },
+      },
+      error: "repository provenance",
+    },
+    {
+      mismatch: "head SHA",
+      meta: preparedSyntheticMeta("pr-bound", "stale-head"),
+      error: "head SHA provenance",
+    },
+  ])("rejects prepared sandbox capability with mismatched $mismatch before swapping", async ({ meta, error }) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/api/pr/analyze")) {
+        return Promise.resolve(ndjsonResponse([{ stage: "done", graphId: "pr-bound", headSha: "bound123" }]));
+      }
+      if (url.includes("/api/graph")) return Promise.resolve(Response.json(HEAD_ARTIFACT));
+      if (url.includes("/api/meta")) return Promise.resolve(Response.json(meta));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore(ANALYZE_DEPS);
+    store.setState(selectedPrState(7));
+
+    await store.getState().reviewPrInGraph();
+
+    expect(store.getState().artifact).toBe(ARTIFACT);
+    expect(store.getState().prReviewBaseline).toBeNull();
+    expect(store.getState().prPreparedArtifactCurrent).toBe(false);
+    expect(store.getState().prPreparedGraphId).toBeNull();
+    expect(store.getState().syntheticExecutionUrl).toBeNull();
+    expect(store.getState().syntheticExecutionTrust).toBeNull();
+    expect(store.getState().prReviewStatus).toBe("error");
+    expect(store.getState().prPrepareError).toContain(error);
   });
 
   it("walks clone→checkout→extract, stores the prepared graph id + head sha, and re-lands the review's post-conditions", async () => {
@@ -1909,15 +2080,19 @@ describe("PR head preparation (prepareHeadGraph)", () => {
       start(controller) {
         controller.enqueue(encoder.encode('{"stage":"clone"}\n'));
         releaseFirst = () => {
-          controller.enqueue(encoder.encode('{"stage":"done","graphId":"pr-first"}\n'));
+          controller.enqueue(encoder.encode('{"stage":"done","graphId":"pr-first","headSha":"abc1234"}\n'));
           controller.close();
         };
       },
     });
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(new Response(firstStream, { status: 200 }))
-      .mockResolvedValue(Response.json(HEAD_ARTIFACT));
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/api/pr/analyze")) return Promise.resolve(new Response(firstStream, { status: 200 }));
+      if (url.includes("/api/meta")) {
+        return Promise.resolve(Response.json(preparedSyntheticMeta("pr-first", "abc1234")));
+      }
+      return Promise.resolve(Response.json(HEAD_ARTIFACT));
+    });
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore(ANALYZE_DEPS);
     store.setState(selectedPrState(7));
@@ -2150,6 +2325,8 @@ describe("PR review artifact swap and restore", () => {
     // The prepared artifact was fetched from the boot graph endpoint with the id exchanged.
     const graphCall = fetchMock.mock.calls.find((call) => call[0].toString().includes("/api/graph"));
     expect(graphCall?.[0].toString()).toBe("http://meridian.local/api/graph?id=pr-head-1");
+    const metaCall = fetchMock.mock.calls.find((call) => call[0].toString().includes("/api/meta"));
+    expect(metaCall?.[0].toString()).toBe("http://meridian.local/api/meta?id=pr-head-1");
     // The CURRENT graph is the head artifact/index, not the boot one.
     expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
     expect(store.getState().index.nodesById.get(METHOD_ID)?.location.startLine).toBe(20);
@@ -2161,6 +2338,11 @@ describe("PR review artifact swap and restore", () => {
     // first review application happened only after the prepared artifact became current.
     expect(store.getState().prReviewBaseline?.artifact.generatedAt).toBe(ARTIFACT.generatedAt);
     expect(store.getState().prReviewBaseline?.index).toBe(bootIndex);
+    expect(store.getState().prReviewBaseline).toMatchObject({
+      syntheticExecutionUrl: "/api/synthetic-executions?id=artifact-1",
+      syntheticExecutionTrust: { mode: "local" },
+      syntheticScenarios: [BOOT_SYNTHETIC_SCENARIO],
+    });
     expect(bootIndex.changedIds.has(METHOD_ID)).toBe(false);
     // The line-diff channel keeps the artifact's own extract-pipeline stamp (origin/<base>), not
     // the client-side GitHub-hunk join (which would have restamped it as "pr#7").
@@ -2169,6 +2351,7 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().prPreparedGraphId).toBe("pr-head-1");
     expect(store.getState().prPreparedHeadSha).toBe("abc1234def5678900000");
     expect(store.getState().prPreparedArtifactCurrent).toBe(true);
+    expect(store.getState()).toMatchObject(preparedSyntheticMeta("pr-head-1", "abc1234def5678900000"));
     expect(store.getState().prReviewed).toBe(7);
     // Head-mode guards: node locations are already head-relative, so the #134 base→head remap
     // machinery must be disarmed — showCode reads the prepared checkout via /api/source instead.
@@ -2185,6 +2368,7 @@ describe("PR review artifact swap and restore", () => {
     // coincidence must not let an old-revision draft silently attach to different new code.
     store.getState().addReviewComment(path, null, "Keep this old line safely", 31);
     const drafts = store.getState().reviewComments;
+    seedStaleSyntheticSession(store);
     store.setState({ prReviewStale: true });
     const fetchMock = preparedRefreshFetch();
     vi.stubGlobal("fetch", fetchMock);
@@ -2208,6 +2392,9 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().prReviewBaseline?.artifact.generatedAt).toBe(ARTIFACT.generatedAt);
     expect(store.getState().prReviewBaseline?.index).toBe(bootIndex);
     expect(fetchMock.mock.calls.some(([input]) => input.toString().includes(`/api/graph?id=${REFRESHED_GRAPH_ID}`))).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => input.toString().includes(`/api/meta?id=${REFRESHED_GRAPH_ID}`))).toBe(true);
+    expect(store.getState()).toMatchObject(preparedSyntheticMeta(REFRESHED_GRAPH_ID, REFRESHED_HEAD_SHA));
+    expectSyntheticSessionReset(store);
   });
 
   it("disarms a persisted line draft when a new session opens on a later head", async () => {
@@ -2301,6 +2488,12 @@ describe("PR review artifact swap and restore", () => {
       if (url.includes(`/api/graph?id=${before.prPreparedGraphId}`)) {
         return Promise.resolve(Response.json(HEAD_ARTIFACT));
       }
+      if (url.includes(`/api/meta?id=${noMatchGraphId}`)) {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(noMatchGraphId, REFRESHED_HEAD_SHA)));
+      }
+      if (url.includes(`/api/meta?id=${before.prPreparedGraphId}`)) {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(before.prPreparedGraphId!, before.prPreparedHeadSha!)));
+      }
       return Promise.reject(new Error(`Unexpected request: ${url}`));
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -2324,6 +2517,71 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
     expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
     expect(store.getState().prPreparedArtifactCurrent).toBe(true);
+  });
+
+  it("keeps the prior prepared graph and capability when refreshed meta fails closed", async () => {
+    const { store } = await swappedReviewStore();
+    const before = store.getState();
+    store.setState({ prReviewStale: true });
+    const fetchMock = preparedRefreshFetch({ invalidMeta: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await store.getState().refreshPrReview();
+
+    expect(fetchMock.mock.calls.some(([input]) => input.toString().includes(`/api/graph?id=${REFRESHED_GRAPH_ID}`))).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => input.toString().includes(`/api/meta?id=${REFRESHED_GRAPH_ID}`))).toBe(true);
+    expect(store.getState().artifact).toBe(before.artifact);
+    expect(store.getState().index).toBe(before.index);
+    expect(store.getState().prPreparedGraphId).toBe(before.prPreparedGraphId);
+    expect(store.getState().syntheticExecutionUrl).toBe(before.syntheticExecutionUrl);
+    expect(store.getState().syntheticScenarios).toEqual(before.syntheticScenarios);
+    expect(store.getState().syntheticExecutionTrust).toEqual(before.syntheticExecutionTrust);
+    expect(store.getState().prReviewStatus).toBe("error");
+    expect(store.getState().prPrepareError).toContain("syntheticExecutionTrust");
+  });
+
+  it("keeps the prior prepared graph and capability when refreshed sandbox provenance is stale", async () => {
+    const { store } = await swappedReviewStore();
+    const before = store.getState();
+    store.setState({ prReviewStale: true });
+    const fetchMock = preparedRefreshFetch({
+      meta: preparedSyntheticMeta(REFRESHED_GRAPH_ID, "stale-refreshed-head"),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await store.getState().refreshPrReview();
+
+    expect(store.getState().artifact).toBe(before.artifact);
+    expect(store.getState().index).toBe(before.index);
+    expect(store.getState().prPreparedGraphId).toBe(before.prPreparedGraphId);
+    expect(store.getState().prPreparedHeadSha).toBe(before.prPreparedHeadSha);
+    expect(store.getState().syntheticExecutionUrl).toBe(before.syntheticExecutionUrl);
+    expect(store.getState().syntheticScenarios).toEqual(before.syntheticScenarios);
+    expect(store.getState().syntheticExecutionTrust).toEqual(before.syntheticExecutionTrust);
+    expect(store.getState().prReviewStatus).toBe("error");
+    expect(store.getState().prPrepareError).toContain("head SHA provenance");
+  });
+
+  it("restores the prior prepared capability when the refreshed head swaps but no longer matches", async () => {
+    const { store } = await swappedReviewStore();
+    const before = store.getState();
+    const unmatched: GraphArtifact = {
+      ...REFRESHED_HEAD_ARTIFACT,
+      nodes: [node("ts:other", "package", "other"), node("ts:other/b.ts", "module", "other/b.ts", "ts:other")],
+    };
+    store.setState({ prReviewStale: true });
+    vi.stubGlobal("fetch", preparedRefreshFetch({ graph: unmatched }));
+
+    await store.getState().refreshPrReview();
+
+    expect(store.getState().artifact).toBe(before.artifact);
+    expect(store.getState().index).toBe(before.index);
+    expect(store.getState().prPreparedGraphId).toBe(before.prPreparedGraphId);
+    expect(store.getState().syntheticExecutionUrl).toBe(before.syntheticExecutionUrl);
+    expect(store.getState().syntheticScenarios).toEqual(before.syntheticScenarios);
+    expect(store.getState().syntheticExecutionTrust).toEqual(before.syntheticExecutionTrust);
+    expect(store.getState().prReviewStatus).toBe("error");
+    expect(store.getState().prPrepareError).toBe("The refreshed pull request no longer matches this graph.");
   });
 
   it("closing during prepared refresh cancels the analyze waiter promptly and rejects its late graph", async () => {
@@ -2433,6 +2691,11 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().prReviewed).toBe(7);
     expect(store.getState().review).not.toBe(null);
     expect(store.getState().reviewAffectedIds.size).toBeGreaterThan(0);
+    expect(store.getState()).toMatchObject({
+      syntheticExecutionUrl: "/api/synthetic-executions?id=artifact-1",
+      syntheticExecutionTrust: { mode: "local" },
+      syntheticScenarios: [BOOT_SYNTHETIC_SCENARIO],
+    });
     expect(store.getState().minimalSeedIds).toEqual([]);
     expect(store.getState().moduleExpanded.size).toBeGreaterThan(0);
     store.getInitialState = store.getState;
@@ -2444,6 +2707,7 @@ describe("PR review artifact swap and restore", () => {
 
   it("browsing a different PR keeps the parked review and resumes its snapshotted PR", async () => {
     const { store, bootIndex } = await swappedReviewStore();
+    seedStaleSyntheticSession(store);
     store.getState().setViewMode("prs");
     await store.getState().selectPr(9);
     expect(store.getState().artifact.generatedAt).toBe(ARTIFACT.generatedAt);
@@ -2452,6 +2716,7 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().prReviewed).toBe(7);
     expect(store.getState().review).not.toBe(null);
     expect(store.getState().prSelected).toBe(9);
+    expectSyntheticSessionReset(store);
 
     await store.getState().resumePrReview();
 
@@ -2460,6 +2725,7 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().prReviewed).toBe(7);
     expect(store.getState().prFiles?.[0]?.hunks).toEqual([{ start: 21, end: 21 }]);
     expect(store.getState().minimalSeedIds).toContain(FILE_ID);
+    expect(store.getState()).toMatchObject(preparedSyntheticMeta("pr-head-1", "abc1234def5678900000"));
   });
 
   it("replaces the parked review only when another PR starts reviewing", async () => {
@@ -2496,17 +2762,30 @@ describe("PR review artifact swap and restore", () => {
     const fetchMock = routedFetch();
     vi.stubGlobal("fetch", fetchMock);
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
-    const store = freshStore({ ...ANALYZE_DEPS, sourceUrl: "/api/source?id=artifact-1" });
+    const store = freshStore({
+      ...ANALYZE_DEPS,
+      sourceUrl: "/api/source?id=artifact-1",
+      syntheticExecutionUrl: "/api/synthetic-executions?id=artifact-1",
+      syntheticExecutionTrust: { mode: "local" },
+      syntheticScenarios: [BOOT_SYNTHETIC_SCENARIO],
+    });
     store.setState(headSelectedPrState(7));
     await store.getState().reviewPrInGraph();
     await vi.waitFor(() => {
       expect(store.getState().prPreparedGraphId).toBe("pr-head-1");
     });
 
+    seedStaleSyntheticSession(store);
     store.getState().closeMinimalGraph();
     expect(store.getState().artifact.generatedAt).toBe(ARTIFACT.generatedAt);
     expect(store.getState().prPreparedGraphId).toBe("pr-head-1");
     expect(store.getState().prPreparedArtifactCurrent).toBe(false);
+    expect(store.getState()).toMatchObject({
+      syntheticExecutionUrl: "/api/synthetic-executions?id=artifact-1",
+      syntheticExecutionTrust: { mode: "local" },
+      syntheticScenarios: [BOOT_SYNTHETIC_SCENARIO],
+    });
+    expectSyntheticSessionReset(store);
     await store.getState().showCode(store.getState().index.nodesById.get(METHOD_ID)!);
     const bootSourceCall = fetchMock.mock.calls.filter((call) => call[0].toString().includes("/api/source")).at(-1)!;
     expect(new URL(bootSourceCall[0].toString()).searchParams.get("id")).toBe("artifact-1");
@@ -2514,6 +2793,7 @@ describe("PR review artifact swap and restore", () => {
     await store.getState().resumePrReview();
     expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
     expect(store.getState().prPreparedArtifactCurrent).toBe(true);
+    expect(store.getState()).toMatchObject(preparedSyntheticMeta("pr-head-1", "abc1234def5678900000"));
     await store.getState().showCode(store.getState().index.nodesById.get(METHOD_ID)!);
     const headSourceCall = fetchMock.mock.calls.filter((call) => call[0].toString().includes("/api/source")).at(-1)!;
     expect(new URL(headSourceCall[0].toString()).searchParams.get("id")).toBe("pr-head-1");
@@ -2533,7 +2813,11 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().prReviewStatus).toBe("error");
     expect(store.getState().prPrepareError).toContain("Could not resume the pull request review");
 
-    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(Response.json(HEAD_ARTIFACT))));
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => (
+      input.toString().includes("/api/meta")
+        ? Promise.resolve(Response.json(preparedSyntheticMeta("pr-head-1", "abc1234def5678900000")))
+        : Promise.resolve(Response.json(HEAD_ARTIFACT))
+    )));
     await store.getState().resumePrReview();
 
     expect(store.getState().prReviewStatus).toBe("idle");
@@ -2547,22 +2831,92 @@ describe("PR review artifact swap and restore", () => {
     store.getState().closeMinimalGraph();
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
     let releaseGraph!: (response: Response) => void;
+    let releaseMeta!: (response: Response) => void;
     const graph = new Promise<Response>((resolve) => {
       releaseGraph = resolve;
     });
-    const fetchMock = vi.fn(() => graph);
+    const meta = new Promise<Response>((resolve) => {
+      releaseMeta = resolve;
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => (
+      input.toString().includes("/api/meta") ? meta : graph
+    ));
     vi.stubGlobal("fetch", fetchMock);
 
     const first = store.getState().resumePrReview();
     const second = store.getState().resumePrReview();
     await vi.waitFor(() => expect(store.getState().prReviewStatus).toBe("preparing"));
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
 
     releaseGraph(Response.json(HEAD_ARTIFACT));
+    releaseMeta(Response.json(preparedSyntheticMeta("pr-head-1", "abc1234def5678900000")));
     await Promise.all([first, second]);
 
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
     expect(store.getState().prReviewStatus).toBe("idle");
+  });
+
+  it("rejects stale sandbox provenance on resume without replacing the restored boot artifact", async () => {
+    const { store, bootIndex } = await swappedReviewStore();
+    store.getState().closeMinimalGraph();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/api/graph")) return Promise.resolve(Response.json(HEAD_ARTIFACT));
+      if (url.includes("/api/meta")) {
+        return Promise.resolve(Response.json(preparedSyntheticMeta("pr-head-1", "stale-resume-head")));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await store.getState().resumePrReview();
+
+    expect(store.getState().artifact).toBe(ARTIFACT);
+    expect(store.getState().index).toBe(bootIndex);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(false);
+    expect(store.getState().prPreparedGraphId).toBe("pr-head-1");
+    expect(store.getState().prPreparedHeadSha).toBe("abc1234def5678900000");
+    expect(store.getState().prReviewBaseline).not.toBeNull();
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().prReviewStatus).toBe("error");
+    expect(store.getState().prPrepareError).toContain("head SHA provenance");
+    expect(store.getState()).toMatchObject({
+      syntheticExecutionUrl: "/api/synthetic-executions?id=artifact-1",
+      syntheticExecutionTrust: { mode: "local" },
+      syntheticScenarios: [BOOT_SYNTHETIC_SCENARIO],
+    });
+  });
+
+  it("invalidates an in-flight synthetic run when soft close restores the boot artifact", async () => {
+    const { store } = await swappedReviewStore();
+    const scenario = store.getState().syntheticScenarios[0]!;
+    let releaseExecution!: (response: Response) => void;
+    const response = new Promise<Response>((resolve) => { releaseExecution = resolve; });
+    const executionFetch = vi.fn(() => response);
+    vi.stubGlobal("fetch", executionFetch);
+    store.setState({
+      flowSelection: { rootId: scenario.rootId, blockPath: [] },
+      flowPaneOrigin: "synthetic",
+    });
+
+    const pending = store.getState().runSyntheticExecution({
+      rootId: scenario.rootId,
+      scenarioId: scenario.id,
+      input: scenario.defaultInput,
+      host: "flow-pane",
+      sandboxConsent: true,
+    });
+    expect(store.getState().syntheticExecutionStatus).toBe("running");
+
+    store.getState().closeMinimalGraph();
+    expectSyntheticSessionReset(store);
+    releaseExecution(Response.json({ stale: true }));
+    await pending;
+
+    expect(executionFetch).toHaveBeenCalledTimes(1);
+    expectSyntheticSessionReset(store);
+    expect(store.getState().syntheticExecutionUrl).toBe("/api/synthetic-executions?id=artifact-1");
+    expect(store.getState().syntheticExecutionTrust).toEqual({ mode: "local" });
   });
 });

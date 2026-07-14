@@ -8,6 +8,11 @@
 
 import { createHash } from "node:crypto";
 import type { IncomingMessage } from "node:http";
+import {
+  syntheticFieldWatchersSchema,
+  syntheticInputOverridesSchema,
+} from "@meridian/core";
+import type { JsonValue, SyntheticFieldWatcher, SyntheticInputOverride } from "@meridian/core";
 import type { SourceRequest } from "./clone";
 import { WebError } from "./web-error";
 
@@ -16,6 +21,14 @@ const MAX_BODY_BYTES = 64_000;
 export interface GenerateRequest extends SourceRequest {
   token?: string;
   refresh?: boolean;
+}
+
+export interface SyntheticExecutionRequest {
+  scenarioId: string;
+  rootNodeId: string;
+  input: JsonValue;
+  inputOverrides: SyntheticInputOverride[];
+  watchers: SyntheticFieldWatcher[];
 }
 
 export function readJsonBody(request: IncomingMessage): Promise<unknown> {
@@ -60,6 +73,41 @@ export function parseGenerateRequest(body: unknown): GenerateRequest {
     subdir: optionalString(raw.subdir),
     token: optionalString(raw.token),
     refresh: raw.refresh === true,
+  };
+}
+
+/** A deliberately small, JSON-only execution request. The shared body reader has already enforced
+ * the 64 KB cap; this parser keeps scenario identity bounded and requires an explicit input value
+ * (including `null`) so a missing payload can never silently select a runner default. */
+export function parseSyntheticExecutionRequest(body: unknown): SyntheticExecutionRequest {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new WebError(400, "synthetic execution request must be a JSON object");
+  }
+  const raw = body as Record<string, unknown>;
+  if (typeof raw.scenarioId !== "string" || raw.scenarioId.trim().length === 0 || raw.scenarioId.length > 256) {
+    throw new WebError(400, "scenarioId must be a non-empty string of at most 256 characters");
+  }
+  if (!Object.prototype.hasOwnProperty.call(raw, "input")) {
+    throw new WebError(400, "input is required");
+  }
+  if (typeof raw.rootNodeId !== "string" || raw.rootNodeId.trim().length === 0 || raw.rootNodeId.length > 2_048) {
+    throw new WebError(400, "rootNodeId must be a non-empty string of at most 2048 characters");
+  }
+  const inputOverrides = syntheticInputOverridesSchema.safeParse(raw.inputOverrides ?? []);
+  if (!inputOverrides.success) {
+    throw new WebError(400, "inputOverrides must contain bounded, unique synthetic input overrides");
+  }
+  const watchers = syntheticFieldWatchersSchema.safeParse(raw.watchers ?? []);
+  if (!watchers.success) {
+    throw new WebError(400, "watchers must contain bounded synthetic field watchers");
+  }
+  // `body` came from JSON.parse, so every present value is JSON-compatible by construction.
+  return {
+    scenarioId: raw.scenarioId.trim(),
+    rootNodeId: raw.rootNodeId.trim(),
+    input: raw.input as JsonValue,
+    inputOverrides: inputOverrides.data,
+    watchers: watchers.data,
   };
 }
 

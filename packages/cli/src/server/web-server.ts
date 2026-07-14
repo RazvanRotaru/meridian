@@ -2,18 +2,20 @@ import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { GraphArtifact } from "@meridian/core";
+import type { GraphArtifact, SyntheticScenarioDescriptor } from "@meridian/core";
 import { CliError, EXIT } from "../errors";
 import { serveStatic } from "./static-files";
 import type { StaticAssets } from "./static-files";
+import { sendOverlay as sendTelemetryOverlay, sendTraces as sendTelemetryTraces } from "./api";
 import { WebError } from "./web-error";
 import { injectPrefill } from "./web-boot";
+import type { SyntheticExecutionTrust } from "./web-boot";
 import { sendHtml, sendJson } from "./http-response";
 import { createGitHubClient, resolveGitHubClientId } from "./github";
 import type { GitHubClient } from "./github";
 import type { GitHubUser } from "./github-parse";
 import { SessionStore } from "./session";
-import { assertJsonContentType, assertSameOrigin } from "./web-guards";
+import { assertJsonContentType, assertLoopbackHost, assertSameOrigin } from "./web-guards";
 import {
   handleAuthSession,
   handleAuthStatus,
@@ -43,6 +45,15 @@ import { sendSource } from "./source-serve";
 import type { CachedGraph } from "./web-cache";
 import { resolveWebCacheRoot } from "./web-cache-storage";
 import { handleCacheStatus } from "./web-cache-status";
+import { parseSyntheticExecutionRequest, readJsonBody } from "./web-request";
+import {
+  runSyntheticScenario,
+  runSyntheticScenarioInOci,
+  SyntheticExecutionError,
+  syntheticPrSandboxRuntimeSupported,
+} from "./synthetic-execution";
+
+const WEB_TELEMETRY_SOURCE = { kind: "none" } as const;
 
 export interface WebServerConfig {
   rendererRoot: string;
@@ -62,6 +73,10 @@ export interface WebServerConfig {
   cacheRoot?: string;
   /** Re-extract artifacts for this server run while retaining immutable checkouts. */
   refreshCache?: boolean;
+  /** Explicit opt-in; individual graph ids are still restricted to local `kind:path` sources. */
+  allowSyntheticExecution?: boolean;
+  /** Separate opt-in for consent-gated prepared PR-head runs in an available OCI sandbox. */
+  allowSyntheticPrExecution?: boolean;
 }
 
 export interface Context {
@@ -70,6 +85,12 @@ export interface Context {
   sourceRoots: Map<string, string>;
   /** Per-id original source metadata retained for GitHub PR listing. */
   sources: Map<string, ArtifactSource>;
+  /** Prevalidated scenario manifests for per-id execution capabilities. */
+  syntheticScenarios: Map<string, SyntheticScenarioDescriptor[]>;
+  /** Private source/config snapshots paired with the scenarios advertised for each graph. */
+  syntheticSourceFingerprints: Map<string, string>;
+  /** Explicit per-id trust and provenance; absence prevents boot endpoint advertisement. */
+  syntheticExecutionTrust: Map<string, SyntheticExecutionTrust>;
   /** Per-PR repo-root changed paths, invalidated when GitHub's updated_at or head SHA changes. */
   prFilesCache: Map<string, { updatedAt: string; headSha: string | null; paths: string[] }>;
   /** Temp-clone removers, held until process exit so retained sources are cleaned on shutdown. */
@@ -88,6 +109,12 @@ export interface Context {
   fallbackToken?: string;
   /** Identity behind `fallbackToken`, surfaced by `/api/auth/session` as the signed-in user. */
   fallbackUser?: GitHubUser;
+  allowSyntheticExecution: boolean;
+  allowSyntheticPrExecution: boolean;
+  /** Injectable capability probe; production checks for the prebuilt, no-fallback OCI runner. */
+  syntheticPrSandboxRuntimeSupported: () => boolean;
+  /** Injectable OCI executor; never substituted with the host-process runner. */
+  runSyntheticScenarioInOci: typeof runSyntheticScenarioInOci;
 }
 
 export function createWebServer(config: WebServerConfig): Server {
@@ -109,6 +136,9 @@ function buildContext(config: WebServerConfig): Context {
     graphs: new Map(),
     sourceRoots: new Map(),
     sources: new Map(),
+    syntheticScenarios: new Map(),
+    syntheticSourceFingerprints: new Map(),
+    syntheticExecutionTrust: new Map(),
     prFilesCache: new Map(),
     tempCleanups: new Set(),
     cacheJobs: new Map(),
@@ -123,6 +153,10 @@ function buildContext(config: WebServerConfig): Context {
     github,
     fallbackToken: config.fallbackToken,
     fallbackUser: config.fallbackUser,
+    allowSyntheticExecution: config.allowSyntheticExecution === true,
+    allowSyntheticPrExecution: config.allowSyntheticPrExecution === true,
+    syntheticPrSandboxRuntimeSupported,
+    runSyntheticScenarioInOci,
   };
   cleanRetainedSourcesOnExit(ctx);
   return ctx;
@@ -177,6 +211,10 @@ async function handleApiPost(ctx: Context, request: IncomingMessage, response: S
     await handlePrAnalyze(ctx, request, response);
     return;
   }
+  if (pathname === "/api/synthetic-executions") {
+    await handleSyntheticExecution(ctx, request, response, url.searchParams.get("id"));
+    return;
+  }
   if (pathname === "/api/auth/device") {
     await handleDeviceStart(ctx, response);
     return;
@@ -204,6 +242,64 @@ async function handleApiPost(ctx: Context, request: IncomingMessage, response: S
   sendJson(response, 404, { error: "unknown endpoint" });
 }
 
+export async function handleSyntheticExecution(
+  ctx: Context,
+  request: IncomingMessage,
+  response: ServerResponse,
+  id: string | null,
+): Promise<void> {
+  assertLoopbackHost(request);
+  const artifact = id === null ? undefined : ctx.graphs.get(id);
+  const sourceRoot = id === null ? undefined : ctx.sourceRoots.get(id);
+  const source = id === null ? undefined : ctx.sources.get(id);
+  const scenarios = id === null ? undefined : ctx.syntheticScenarios.get(id);
+  const sourceFingerprint = id === null ? undefined : ctx.syntheticSourceFingerprints.get(id);
+  const trust = id === null ? undefined : ctx.syntheticExecutionTrust.get(id);
+  const localAdmission = source?.kind === "path"
+    && ctx.allowSyntheticExecution
+    && trust?.mode === "local";
+  const sandboxedPrAdmission = source?.kind === "github"
+    && ctx.allowSyntheticPrExecution
+    && trust?.mode === "sandboxed-pr"
+    && trust.provenance.repository === `${source.owner}/${source.repo}`
+    && trust.provenance.headSha.length > 0
+    && ctx.syntheticPrSandboxRuntimeSupported();
+  if (
+    (!localAdmission && !sandboxedPrAdmission)
+    || artifact === undefined
+    || sourceRoot === undefined
+    || scenarios === undefined
+    || scenarios.length === 0
+    || sourceFingerprint === undefined
+  ) {
+    sendJson(response, 404, { error: "synthetic execution is not enabled for this graph" });
+    return;
+  }
+  if (sandboxedPrAdmission && request.headers["x-meridian-sandbox-consent"] !== "true") {
+    sendJson(response, 403, { error: "sandbox consent is required for GitHub synthetic execution" });
+    return;
+  }
+  const body = parseSyntheticExecutionRequest(await readJsonBody(request));
+  const scenario = scenarios.find((candidate) => candidate.id === body.scenarioId);
+  if (scenario !== undefined && scenario.rootId !== body.rootNodeId) {
+    throw new WebError(409, "selected flow no longer matches the synthetic scenario");
+  }
+  const executionRequest = {
+    sourceRoot,
+    artifact,
+    scenarioId: body.scenarioId,
+    expectedRootId: body.rootNodeId,
+    expectedSourceFingerprint: sourceFingerprint,
+    input: body.input,
+    inputOverrides: body.inputOverrides,
+    watchers: body.watchers,
+  };
+  const execution = sandboxedPrAdmission
+    ? await ctx.runSyntheticScenarioInOci(executionRequest)
+    : await runSyntheticScenario(executionRequest);
+  sendJson(response, 200, execution);
+}
+
 async function handleApiGet(ctx: Context, request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
   const pathname = url.pathname;
   if (pathname === "/api/graph") {
@@ -215,11 +311,27 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
     return;
   }
   if (pathname === "/api/overlay") {
-    sendJson(response, 400, { error: "no telemetry overlay in web mode" });
+    const artifact = telemetryGraph(ctx, response, url.searchParams.get("id"));
+    if (artifact === null) return;
+    sendTelemetryOverlay(
+      response,
+      artifact,
+      WEB_TELEMETRY_SOURCE,
+      url.searchParams.get("env"),
+      url.searchParams.get("source"),
+    );
     return;
   }
   if (pathname === "/api/traces") {
-    sendJson(response, 400, { error: "no telemetry traces in web mode" });
+    const artifact = telemetryGraph(ctx, response, url.searchParams.get("id"));
+    if (artifact === null) return;
+    sendTelemetryTraces(
+      response,
+      artifact,
+      WEB_TELEMETRY_SOURCE,
+      url.searchParams.get("env"),
+      url.searchParams.get("source"),
+    );
     return;
   }
   if (pathname === "/api/source") {
@@ -281,12 +393,21 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
   sendJson(response, 404, { error: "unknown endpoint" });
 }
 
+function telemetryGraph(ctx: Context, response: ServerResponse, id: string | null): GraphArtifact | null {
+  const artifact = id === null ? undefined : ctx.graphs.get(id);
+  if (artifact === undefined) {
+    sendJson(response, 404, { error: "unknown graph id" });
+    return null;
+  }
+  return artifact;
+}
+
 function sendError(response: ServerResponse, error: unknown): void {
   if (response.headersSent) {
     response.end();
     return;
   }
-  if (error instanceof WebError) {
+  if (error instanceof SyntheticExecutionError || error instanceof WebError) {
     sendJson(response, error.status, { error: error.message });
     return;
   }

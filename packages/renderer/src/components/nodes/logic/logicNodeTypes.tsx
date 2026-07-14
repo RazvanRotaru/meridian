@@ -23,6 +23,7 @@ import { CodeInlinePanel } from "../../CodeInlinePanel";
 import { changedColor, changedFill } from "../../ChangedBadge";
 import { changedTextColor } from "../../../theme/changedColors";
 import { BaseNode, type BaseNodeModel } from "../BaseNode";
+import { useLogicFlowOrientation } from "./LogicFlowOrientationContext";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
@@ -115,10 +116,11 @@ function StructuralChangedMarker({ color }: { color: string }) {
 }
 
 function ExecPins() {
+  const orientation = useLogicFlowOrientation();
   return (
     <>
-      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-      <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+      <Handle type="target" position={orientation === "horizontal" ? Position.Left : Position.Top} style={PIN} isConnectable={false} />
+      <Handle type="source" position={orientation === "horizontal" ? Position.Right : Position.Bottom} style={PIN} isConnectable={false} />
     </>
   );
 }
@@ -177,6 +179,8 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   const index = useBlueprint((s) => s.index);
   const sourceUrl = useBlueprint((s) => s.sourceUrl);
   const logicSelected = useBlueprint((s) => s.logicSelected);
+  const flowPaneOrigin = useBlueprint((s) => s.flowPaneOrigin);
+  const syntheticSelectedMomentId = useBlueprint((s) => s.syntheticSelectedMomentId);
   const requestSelected = useBlueprint((s) => (
     s.flowPaneOrigin === "request" && s.moduleSelected.size === 1
       ? [...s.moduleSelected][0] ?? null
@@ -191,7 +195,9 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
     [artifact, coverageMode],
   );
   const d = data as LogicNodeData;
-  const select = selectStateFor(d.targetId, d.runtime ? requestSelected : logicSelected);
+  const select = d.runtime && flowPaneOrigin === "synthetic" && syntheticSelectedMomentId !== null
+    ? syntheticOccurrenceSelectState(id, syntheticSelectedMomentId)
+    : selectStateFor(d.targetId, d.runtime ? requestSelected : logicSelected);
   const changedStatus = d.changedStatus
     ?? (d.definition && d.targetId ? index.changedStatus.get(d.targetId) : undefined);
   const changed = changedStatus !== undefined;
@@ -333,7 +339,8 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
  * request order through these occurrence-specific cards. */
 function RequestRuntimeBlock(props: { id: string; data: LogicNodeData; select: SelectState }) {
   const runtime = props.data.runtime!;
-  const model = callableBaseNodeModel(props.id, props.data);
+  const baseModel = callableBaseNodeModel(props.id, props.data);
+  const model = runtime.focused ? { ...baseModel, canExpand: false } : baseModel;
   const accent = runtimeAccent(runtime.kind, runtime.status);
   const glyph = runtime.kind === "span"
     ? "▶"
@@ -367,7 +374,9 @@ function RequestRuntimeBlock(props: { id: string; data: LogicNodeData; select: S
         ports={<ExecPins />}
         domAttributes={runtimeDomAttributes(runtime.kind, runtime.status, props.data.targetId, true)}
         title={[runtime.detail, ...(runtime.badges ?? [])].filter(Boolean).join(" · ")}
-      />
+      >
+        {runtime.focused ? null : <SnapshotRows snapshot={runtime.snapshot} spanMomentId={props.id} compact />}
+      </BaseNode>
     );
   }
   return (
@@ -391,6 +400,7 @@ function RequestRuntimeBlock(props: { id: string; data: LogicNodeData; select: S
         title={props.data.targetId === null ? undefined : "Highlight this observed code node on the graph"}
       >
         {runtime.detail ? <div style={RUNTIME_DETAIL} title={runtime.detail}>{runtime.detail}</div> : null}
+        {runtime.focused ? null : <SnapshotRows snapshot={runtime.snapshot} spanMomentId={props.id} />}
         {runtime.badges && runtime.badges.length > 0 ? (
           <div style={RUNTIME_BADGES}>
             {runtime.badges.slice(0, 3).map((badge, index) => (
@@ -402,6 +412,47 @@ function RequestRuntimeBlock(props: { id: string; data: LogicNodeData; select: S
       </BaseNode>
     </div>
   );
+}
+
+function SnapshotRows(props: {
+  snapshot: NonNullable<LogicNodeData["runtime"]>["snapshot"];
+  spanMomentId: string;
+  compact?: boolean;
+}) {
+  if (props.snapshot === undefined) return null;
+  const output = props.snapshot.error === undefined
+    ? snapshotValue(props.snapshot.output)
+    : `ERROR · ${props.snapshot.error}`;
+  return (
+    <div
+      style={props.compact ? RUNTIME_SNAPSHOT_ROWS_COMPACT : RUNTIME_SNAPSHOT_ROWS}
+      data-synthetic-snapshot={props.spanMomentId}
+      aria-label="Synthetic input and output snapshot"
+    >
+      <SnapshotRow label="IN" value={snapshotValue(props.snapshot.input)} />
+      <SnapshotRow label="OUT" value={output} error={props.snapshot.error !== undefined} />
+    </div>
+  );
+}
+
+function SnapshotRow(props: { label: "IN" | "OUT"; value: string; error?: boolean }) {
+  return (
+    <div style={RUNTIME_SNAPSHOT_ROW} aria-label={`${props.label} ${props.value}`}>
+      <span style={props.error ? RUNTIME_SNAPSHOT_LABEL_ERROR : RUNTIME_SNAPSHOT_LABEL}>{props.label}</span>
+      <span style={props.error ? RUNTIME_SNAPSHOT_VALUE_ERROR : RUNTIME_SNAPSHOT_VALUE} title={props.value}>{props.value}</span>
+    </div>
+  );
+}
+
+function snapshotValue(value: unknown): string {
+  if (value === undefined) return "—";
+  let rendered: string;
+  try {
+    rendered = JSON.stringify(value);
+  } catch {
+    rendered = String(value);
+  }
+  return rendered.length <= 90 ? rendered : `${rendered.slice(0, 87)}…`;
 }
 
 function runtimeAccent(kind: NonNullable<LogicNodeData["runtime"]>["kind"], status: NonNullable<LogicNodeData["runtime"]>["status"]): string {
@@ -481,6 +532,7 @@ function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
 }
 
 function BranchNode({ data }: NodeProps<LogicRfNode>) {
+  const orientation = useLogicFlowOrientation();
   const logicSelected = useBlueprint((s) => s.logicSelected);
   const d = data as LogicNodeData;
   const select = selectStateFor(d.targetId, logicSelected);
@@ -493,14 +545,16 @@ function BranchNode({ data }: NodeProps<LogicRfNode>) {
     <div style={withChanged(selectStyle(BRANCH_WRAP, select), changedRing, select)}>
       {/* Every arm owns a stable source pin. Separate physical pins let the layout hold branch lanes
           apart instead of collapsing every outcome through one ambiguous right handle. */}
-      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+      <Handle type="target" position={orientation === "horizontal" ? Position.Left : Position.Top} style={PIN} isConnectable={false} />
       {(d.branchPorts?.length ? d.branchPorts : [{ id: undefined }]).map((port, index, all) => (
         <Handle
           key={port.id ?? "branch"}
           id={port.id}
           type="source"
-          position={Position.Right}
-          style={{ ...BRANCH_PIN, top: branchPortTop(index, all.length) }}
+          position={orientation === "horizontal" ? Position.Right : Position.Bottom}
+          style={orientation === "horizontal"
+            ? { ...BRANCH_PIN, top: branchPortTop(index, all.length) }
+            : { ...BRANCH_PIN, left: branchPortTop(index, all.length) }}
           isConnectable={false}
           title={"label" in port ? port.label : undefined}
         />
@@ -525,18 +579,19 @@ function BranchNode({ data }: NodeProps<LogicRfNode>) {
  * height through an ivory trunk; the catch outlet sits lower and uses the amber exception colour.
  * Its edge is dashed by `logicElk`, so the visual grammar reads "peels off on throw". */
 function ExceptionNode({ data }: NodeProps<LogicRfNode>) {
+  const orientation = useLogicFlowOrientation();
   const d = data as LogicNodeData;
   const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
   return (
     <div style={withChanged(EXCEPTION_GATE, changedRing, "none")} title="try / catch">
-      <Handle type="target" position={Position.Left} style={{ ...PIN, top: "50%" }} isConnectable={false} />
+      <Handle type="target" position={orientation === "horizontal" ? Position.Left : Position.Top} style={PIN} isConnectable={false} />
       {(d.branchPorts ?? []).map((port, index, ports) => (
         <Handle
           key={port.id}
           id={port.id}
           type="source"
-          position={Position.Right}
-          style={exceptionPinStyle(port, index, ports.length)}
+          position={orientation === "horizontal" ? Position.Right : Position.Bottom}
+          style={exceptionPinStyle(port, index, ports.length, orientation)}
           isConnectable={false}
           title={port.label}
         />
@@ -569,24 +624,33 @@ function FinallyNode({ data }: NodeProps<LogicRfNode>) {
   );
 }
 
-function exceptionPinStyle(port: LogicBranchPort, index: number, count: number): React.CSSProperties {
+function exceptionPinStyle(
+  port: LogicBranchPort,
+  index: number,
+  count: number,
+  orientation: "horizontal" | "vertical",
+): React.CSSProperties {
+  const placement = (position: string): React.CSSProperties => orientation === "horizontal"
+    ? { top: position }
+    : { left: position };
   if (port.role === "try") {
-    return { ...EXCEPTION_NORMAL_PIN, top: "50%" };
+    return { ...EXCEPTION_NORMAL_PIN, ...placement("50%") };
   }
   if (port.role === "catch") {
-    return { ...EXCEPTION_CATCH_PIN, top: "82%" };
+    return { ...EXCEPTION_CATCH_PIN, ...placement("82%") };
   }
-  return { ...EXCEPTION_CATCH_PIN, top: branchPortTop(index, count) };
+  return { ...EXCEPTION_CATCH_PIN, ...placement(branchPortTop(index, count)) };
 }
 
 /** Explicit branch reconvergence. A one-way open funnel deliberately avoids the closed diamond
  * silhouette reserved for decisions. A return/throw arm dead-ends before it and never arrives here. */
 function JoinNode() {
+  const orientation = useLogicFlowOrientation();
   return (
     <div style={JOIN_WRAP} title="Branch paths merge" role="img" aria-label="Branch paths merge">
-      <Handle type="target" position={Position.Left} style={JOIN_INPUT_PIN} isConnectable={false} />
-      <Handle type="source" position={Position.Right} style={JOIN_OUTPUT_PIN} isConnectable={false} />
-      <svg viewBox="0 0 42 72" preserveAspectRatio="none" style={BRANCH_SVG} aria-hidden="true">
+      <Handle type="target" position={orientation === "horizontal" ? Position.Left : Position.Top} style={JOIN_INPUT_PIN} isConnectable={false} />
+      <Handle type="source" position={orientation === "horizontal" ? Position.Right : Position.Bottom} style={JOIN_OUTPUT_PIN} isConnectable={false} />
+      <svg viewBox="0 0 42 72" preserveAspectRatio="none" style={orientation === "horizontal" ? BRANCH_SVG : JOIN_SVG_VERTICAL} aria-hidden="true">
         <path d="M4 9 L25 36 L4 63" fill="none" stroke={BRANCH_ACCENT} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
         <path d="M25 36 H40" fill="none" stroke={FLOW_COLORS.ink} strokeWidth="2" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
         <circle cx="25" cy="36" r="4.5" fill={FLOW_COLORS.ink} />
@@ -735,6 +799,7 @@ function AsyncDecoration({ d }: { d: LogicNodeData }) {
 }
 
 function AsyncPortHandles({ ports }: { ports: LogicNodeData["asyncPorts"] }) {
+  const orientation = useLogicFlowOrientation();
   if (!ports?.length) return null;
   return (
     <>
@@ -743,8 +808,10 @@ function AsyncPortHandles({ ports }: { ports: LogicNodeData["asyncPorts"] }) {
           key={port.id}
           id={port.id}
           type={port.direction}
-          position={Position.Bottom}
-          style={{ ...ASYNC_PIN, left: asyncPortLeft(index, ports.length) }}
+          position={orientation === "horizontal" ? Position.Bottom : Position.Right}
+          style={orientation === "horizontal"
+            ? { ...ASYNC_PIN, left: asyncPortLeft(index, ports.length) }
+            : { ...ASYNC_PIN, top: asyncPortLeft(index, ports.length) }}
           isConnectable={false}
           title={port.label}
         />
@@ -871,13 +938,14 @@ function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
  * (`targetId: null`), so clicking one is a harmless no-op.
  */
 function TerminalNode({ data }: NodeProps<LogicRfNode>) {
+  const orientation = useLogicFlowOrientation();
   const d = data as TerminalData;
   if (d.terminal === "entry") {
     const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
     return (
       <div style={withChanged(ENTRY_BODY, changedRing, "none")} title={`Flow entry: ${d.label}`}>
-        <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
-        <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
+        <Handle type="target" position={orientation === "horizontal" ? Position.Left : Position.Top} style={PIN} isConnectable={false} />
+        <Handle type="source" position={orientation === "horizontal" ? Position.Right : Position.Bottom} style={PIN} isConnectable={false} />
         <span style={TERMINAL_GLYPH}>▶</span>
         <span style={NAME} title={d.label}>{d.label}</span>
         {changedRing === null ? null : <ChangedTag color={changedRing} />}
@@ -891,7 +959,7 @@ function TerminalNode({ data }: NodeProps<LogicRfNode>) {
     const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
     return (
       <div style={withChanged(RETURN_BODY, changedRing, "none")} title={`Path ${d.terminal === "throw" ? "throws" : "returns"} here: ${d.label}`}>
-        <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+        <Handle type="target" position={orientation === "horizontal" ? Position.Left : Position.Top} style={PIN} isConnectable={false} />
         <span style={TERMINAL_GLYPH}>{d.terminal === "throw" ? "⚡" : "⏎"}</span>
         <span style={NAME} title={d.label}>{d.label}</span>
         {changedRing === null ? null : <ChangedTag color={changedRing} />}
@@ -900,7 +968,7 @@ function TerminalNode({ data }: NodeProps<LogicRfNode>) {
   }
   return (
     <div style={EXIT_BODY} title="Flow exit">
-      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+      <Handle type="target" position={orientation === "horizontal" ? Position.Left : Position.Top} style={PIN} isConnectable={false} />
       <span style={TERMINAL_GLYPH}>■</span>
       <span style={NAME}>EXIT</span>
     </div>
@@ -958,6 +1026,13 @@ export type SelectState = "selected" | "dimmed" | "none";
 // ring and the edge glow can't drift. Sourced from the flow palette — the alternate projections
 // (metro/blocks/timeline) highlight with the very same token.
 export const SELECT_ACCENT = FLOW_COLORS.select;
+
+/** Synthetic execution selects occurrence identity, not the artifact target shared by repeated
+ * calls. This pure seam keeps the exact-ring policy directly regression-testable. */
+export function syntheticOccurrenceSelectState(momentId: string, selectedMomentId: string | null): SelectState {
+  if (selectedMomentId === null) return "none";
+  return momentId === selectedMomentId ? "selected" : "dimmed";
+}
 
 function selectStateFor(targetId: string | null, logicSelected: string | null): SelectState {
   if (logicSelected === null) {
@@ -1125,6 +1200,13 @@ const RUNTIME_DETAIL: React.CSSProperties = { padding: "7px 9px 3px", color: "#9
 const RUNTIME_BADGES: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "4px 8px 7px", overflow: "hidden" };
 const RUNTIME_BADGE: React.CSSProperties = { minWidth: 0, maxWidth: 190, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", border: "1px solid #334150", borderRadius: 999, background: "rgba(101,137,166,0.09)", color: "#AAB9C8", padding: "1px 6px", fontSize: 8.5 };
 const RUNTIME_MORE: React.CSSProperties = { flexShrink: 0, color: "#768697", fontSize: 8.5 };
+const RUNTIME_SNAPSHOT_ROWS: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 3, padding: "5px 8px 1px", overflow: "hidden" };
+const RUNTIME_SNAPSHOT_ROWS_COMPACT: React.CSSProperties = { ...RUNTIME_SNAPSHOT_ROWS, padding: "4px 9px 0" };
+const RUNTIME_SNAPSHOT_ROW: React.CSSProperties = { minWidth: 0, height: 16, display: "flex", alignItems: "center", gap: 6, fontFamily: MONO, fontSize: 8.5 };
+const RUNTIME_SNAPSHOT_LABEL: React.CSSProperties = { width: 26, flexShrink: 0, border: "1px solid #376454", borderRadius: 4, color: "#70D2AF", background: "rgba(88,201,163,0.09)", textAlign: "center", fontSize: 7.5, fontWeight: 800, letterSpacing: "0.06em" };
+const RUNTIME_SNAPSHOT_LABEL_ERROR: React.CSSProperties = { ...RUNTIME_SNAPSHOT_LABEL, borderColor: "#79434A", color: "#F08A91", background: "rgba(240,120,124,0.09)" };
+const RUNTIME_SNAPSHOT_VALUE: React.CSSProperties = { minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#B6C5D3" };
+const RUNTIME_SNAPSHOT_VALUE_ERROR: React.CSSProperties = { ...RUNTIME_SNAPSHOT_VALUE, color: "#E7A0A4" };
 
 // A branch renders as an outline diamond (the classic decision shape) so it never reads as a
 // rectangular building block. The wrapper hosts the exec pins and any selection dim.
@@ -1187,6 +1269,11 @@ const BRANCH_SHAPE: React.CSSProperties = {
 // the stroke a constant width while the polygon stretches (preserveAspectRatio="none") to the box.
 const BRANCH_SVG: React.CSSProperties = { position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "visible" };
 const JOIN_WRAP: React.CSSProperties = { position: "relative", width: "100%", height: "100%" };
+const JOIN_SVG_VERTICAL: React.CSSProperties = {
+  ...BRANCH_SVG,
+  transform: "rotate(90deg)",
+  transformOrigin: "center",
+};
 const JOIN_INPUT_PIN: React.CSSProperties = { ...PIN, width: 7, height: 7, background: BRANCH_ACCENT, boxShadow: `0 0 0 2px ${FLOW_COLORS.canvas}` };
 const JOIN_OUTPUT_PIN: React.CSSProperties = { ...PIN, width: 7, height: 7, background: FLOW_COLORS.ink, boxShadow: `0 0 0 2px ${FLOW_COLORS.canvas}` };
 // The single "X" marker sits ABOVE the diamond, centred on its middle.

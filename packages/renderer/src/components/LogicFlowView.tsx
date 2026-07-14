@@ -69,7 +69,7 @@ export function LogicFlowView() {
       aria-busy={layoutStatus === "laying-out" ? "true" : undefined}
     >
       {logicView === "graph" ? <LogicFlowGraph rootId={logicRoot} /> : <AltLogicSurface rootId={logicRoot} mode={logicView} />}
-      <LogicViewTabs />
+      <LogicViewTabs rootId={logicRoot} />
       {layoutStatus === "laying-out" && layoutActivity ? <GraphLayoutIndicator {...layoutActivity} /> : null}
     </div>
   );

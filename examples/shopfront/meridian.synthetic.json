@@ -1,0 +1,32 @@
+{
+  "manifestVersion": "1.0.0",
+  "scenarios": [
+    {
+      "id": "shopfront-get-cart",
+      "label": "Get cart — empty cart summary",
+      "rootId": "ts:src/api/cartRoutes.ts#CartRoutes.handleGetCart",
+      "description": "Builds the real shopfront application and follows the GET cart flow through the cart and pricing services.",
+      "defaultInput": "synthetic_cart",
+      "invoke": {
+        "module": "src/app.ts",
+        "export": "buildShopfrontApp",
+        "method": "cartRoutes.handleGetCart"
+      }
+    },
+    {
+      "id": "shopfront-add-item-unavailable",
+      "label": "Add cart item — unavailable product",
+      "rootId": "ts:src/api/cartRoutes.ts#CartRoutes.handleAddItem",
+      "description": "Runs the real POST cart-item flow with editable route arguments and follows the unavailable-product branch through cart, catalog, and inventory services.",
+      "defaultInput": {
+        "cartId": "synthetic_cart",
+        "productId": "coffee-beans",
+        "quantity": 2
+      },
+      "invoke": {
+        "module": "src/syntheticScenarios.ts",
+        "export": "runHandleAddItem"
+      }
+    }
+  ]
+}

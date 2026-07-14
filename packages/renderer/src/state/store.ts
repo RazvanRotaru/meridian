@@ -17,11 +17,16 @@ import type {
   FlowStep,
   GraphArtifact,
   GraphNode,
+  JsonValue,
   LineRange,
   LogicFlows,
   NodeId,
   NodeMetrics,
   RequestTrace,
+  SyntheticExecution,
+  SyntheticFieldWatcher,
+  SyntheticInputOverride,
+  SyntheticScenarioDescriptor,
   TraceBundle,
   TraceGraphRef,
 } from "@meridian/core";
@@ -49,7 +54,10 @@ import { idsToExpand, idsToCollapse, type ExpandableNode } from "../derive/scope
 import type { LogicViewMode } from "../derive/flowViewModel";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveFlowPaneLayout } from "./deriveFlowPaneLayout";
-import { deriveRequestFlowPaneLayout } from "./deriveRequestFlowPaneLayout";
+import { deriveFocusedRequestFlowPaneLayout, deriveRequestFlowPaneLayout } from "./deriveRequestFlowPaneLayout";
+import { defaultSyntheticMomentId, syntheticOccurrenceSteps } from "../synthetic/syntheticFlowModel";
+import { requestSyntheticExecution } from "../synthetic/client";
+import type { SyntheticExecutionTrust } from "./syntheticExecutionTrust";
 import { layoutModuleTree } from "../layout/moduleLevelLayout";
 import { deriveMinimalGraphLayout, reviewDiffVisibleIds } from "./deriveMinimalGraphLayout";
 import { minimalRollupExpansions } from "../derive/minimalRollupExpansion";
@@ -102,7 +110,7 @@ import {
   serviceRevealStateForMany,
   uiRevealStateForMany,
 } from "./lensPath";
-import type { LogicRfNode, LogicRfEdge } from "../layout/logicElk";
+import type { LogicFlowOrientation, LogicRfNode, LogicRfEdge } from "../layout/logicElk";
 import {
   edgeEvidenceKey,
   type EdgeEvidenceContext,
@@ -129,7 +137,7 @@ import { reviewNodeStatusEntries, reviewNodeStatusSourcesFromKinds, reviewSource
 import { streamPrAnalysis, type PrAnalyzeStage } from "./prAnalysis";
 import { isPrReviewStale, prReviewRevisionKey, reviewRevision, type PrReviewRevision } from "./prReviewFreshness";
 import {
-  fetchPreparedArtifact,
+  fetchPreparedGraphSession,
   hasPrReviewLineDiff,
   resetChangedIdsToArtifact,
   restorePrReviewBaseline,
@@ -166,7 +174,17 @@ import {
 export const GHOST_DEPTH_ALL = 99;
 
 export type LayoutStatus = "idle" | "laying-out" | "ready" | "error";
-export type FlowPaneOrigin = "explorer" | "request";
+export type FlowPaneOrigin = "explorer" | "request" | "synthetic";
+export type SyntheticExecutionHost = "flow-pane" | "logic";
+
+export interface RunSyntheticExecutionArgs {
+  rootId: NodeId;
+  scenarioId: string;
+  input: JsonValue;
+  host: SyntheticExecutionHost;
+  /** Ephemeral confirmation from the currently open editor. Never copied into store state. */
+  sandboxConsent?: boolean;
+}
 
 /** One in-flight layout request's copy. It is snapshotted at the initiating action, never inferred
  * later from sticky lens settings, and cleared only by that request's winning completion/failure. */
@@ -310,6 +328,36 @@ export interface BlueprintState {
   /** Static explorer/review-flow occurrence ids toggled away from Logic's defaults. This pane owns
    * an isolated override set so expanding here never mutates the separately mounted Logic lens. */
   flowPaneExpansionOverrides: Set<string>;
+  /** Explicit server capability plus its bounded, advertised harnesses. These are independent of
+   * telemetry sources: running trusted local code never changes environment/source selection. */
+  syntheticExecutionUrl: string | null;
+  syntheticExecutionTrust: SyntheticExecutionTrust | null;
+  syntheticScenarios: SyntheticScenarioDescriptor[];
+  /** One opt-in run attached to the currently selected static flow. `flowSelection` and the PR
+   * review baseline remain authoritative while this execution temporarily owns the lower pane. */
+  syntheticExecution: SyntheticExecution | null;
+  /** The immediately preceding successful run for the same root and scenario. Retained only for
+   * session-local before/after comparison; unrelated scenarios never become a false baseline. */
+  syntheticPreviousExecution: SyntheticExecution | null;
+  /** The root and UI surface that initiated the current/in-flight run. Unlike the completed
+   * execution payload these also exist while the runner is still working, so controls scope cleanly. */
+  syntheticExecutionRootId: NodeId | null;
+  syntheticExecutionHost: SyntheticExecutionHost | null;
+  syntheticExecutionStatus: "idle" | "running" | "ready" | "error";
+  syntheticExecutionError: string | null;
+  /** Session-only experiments staged against one flow root. They deliberately stay out of URL and
+   * browser persistence because inputs can contain sensitive data. */
+  syntheticExperimentRootId: NodeId | null;
+  syntheticInputOverrides: SyntheticInputOverride[];
+  syntheticFieldWatchers: SyntheticFieldWatcher[];
+  /** One-shot request from an entry point (notably a PR impacted-flow row) to open the matching
+   * synthetic editor as soon as that flow surface mounts. */
+  syntheticEditorRequest: { rootId: NodeId; host: SyntheticExecutionHost } | null;
+  /** Runtime moment id, not target node id: repeated calls keep independent inspection identity. */
+  syntheticSelectedMomentId: string | null;
+  /** Focused synthetic callable layout. This is intentionally independent from the main Logic view. */
+  syntheticFlowOrientation: LogicFlowOrientation;
+  syntheticFlowPresentation: "focused" | "overview";
   flowPaneRfNodes: LogicRfNode[];
   flowPaneRfEdges: LogicRfEdge[];
   flowPaneLayoutStatus: LayoutStatus;
@@ -753,6 +801,20 @@ export interface BlueprintState {
   revealSelectedTraceInCodebase(): void;
   /** Open the selected request's reconstructed execution in the shared split pane. */
   openSelectedRequestFlowPane(): void;
+  /** Execute one server-advertised, trusted local harness for an explicit flow root. */
+  runSyntheticExecution(args: RunSyntheticExecutionArgs): Promise<void>;
+  requestSyntheticEditor(rootId: NodeId, host: SyntheticExecutionHost): void;
+  consumeSyntheticEditorRequest(rootId: NodeId, host: SyntheticExecutionHost): void;
+  stageSyntheticInputOverride(rootId: NodeId, override: SyntheticInputOverride): void;
+  removeSyntheticInputOverride(id: string): void;
+  addSyntheticFieldWatcher(rootId: NodeId, watcher: SyntheticFieldWatcher): void;
+  removeSyntheticFieldWatcher(id: string): void;
+  /** Return the selected PR/explorer flow to its static projection without closing the split. */
+  clearSyntheticExecution(): void;
+  /** Select one exact runtime occurrence while reusing the normal linked-graph highlight path. */
+  selectSyntheticMoment(momentId: string | null, targetId: NodeId | null): void;
+  setSyntheticFlowOrientation(orientation: LogicFlowOrientation): void;
+  setSyntheticFlowPresentation(presentation: "focused" | "overview"): void;
   setTelemetrySource(id: string | null): void;
   setEnvironment(environment: string): void;
   setSelectedTrace(traceId: string | null): void;
@@ -807,6 +869,9 @@ export interface StoreDependencies {
   telemetrySourceId?: string | null;
   hasOverlay: boolean;
   sourceUrl: string | null;
+  syntheticExecutionUrl?: string | null;
+  syntheticExecutionTrust?: SyntheticExecutionTrust | null;
+  syntheticScenarios?: SyntheticScenarioDescriptor[];
   prSessionSource?: PrSessionSource | null;
   prsUrl: string;
   prOneUrl: string;
@@ -823,6 +888,8 @@ export interface StoreDependencies {
   graphId?: string | null;
   /** The graph-fetch URL; wave 2 loads the prepared PR artifact from it by swapping the id. */
   graphUrl?: string;
+  /** Meta endpoint paired with graphUrl; prepared PR swaps exchange its id in the same transaction. */
+  metaUrl?: string;
   /** POST target for submitting review comments (web sessions only; 404s elsewhere). */
   prReviewUrl: string;
 }
@@ -838,6 +905,21 @@ function activeSourceUrl(state: BlueprintState): string | null {
     return state.sourceUrl;
   }
   const url = new URL(state.sourceUrl, requestOrigin());
+  url.searchParams.set("id", state.prPreparedGraphId);
+  return url.toString();
+}
+
+/** Keep local execution pinned to the source tree backing the active artifact. A prepared PR review
+ * swaps to a distinct retained checkout exactly like source viewing, so exchange the graph id too. */
+function activeSyntheticExecutionUrl(state: BlueprintState): string | null {
+  if (
+    state.syntheticExecutionUrl === null
+    || !state.prPreparedArtifactCurrent
+    || state.prPreparedGraphId === null
+  ) {
+    return state.syntheticExecutionUrl;
+  }
+  const url = new URL(state.syntheticExecutionUrl, requestOrigin());
   url.searchParams.set("id", state.prPreparedGraphId);
   return url.toString();
 }
@@ -1381,6 +1463,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // Aggregate metrics and request traces share one invalidation sequence. Each settles independently,
   // while a newer load/environment prevents either stale channel from repainting the store.
   let telemetryFetchSeq = 0;
+  // Local code execution is explicit and independently stale-guarded. Selecting another flow or
+  // starting a newer run invalidates the prior child-process response without touching telemetry.
+  let syntheticExecutionSeq = 0;
   let prAnalyzeCancellation: { sequence: number; resolve: () => void } | null = null;
   let prReviewEntryRequest: { number: number; promise: Promise<void> } | null = null;
   let prReviewResumeRequest: { number: number; promise: Promise<void> } | null = null;
@@ -1407,6 +1492,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     invalidateModuleLayout();
     invalidateMinimalLayout();
   };
+  const invalidateSyntheticArtifactBoundary = () => {
+    syntheticExecutionSeq += 1;
+    flowPaneLayoutSeq += 1;
+  };
+  const restorePreparedReviewBaseline = (
+    getState: () => BlueprintState,
+    setState: (partial: Partial<BlueprintState>) => void,
+    options: { endSession?: boolean } = {},
+  ) => {
+    invalidateSyntheticArtifactBoundary();
+    return restorePrReviewBaseline(getState, setState, invalidateArtifactCaches, options);
+  };
   // The parsed review payload from a `meridian review` artifact (null when the artifact carries no
   // valid `review` extension — e.g. a plain `web`/`view` session). Computed once (the artifact never
   // changes after boot); a GitHub PR opened via reviewPrInGraph can later populate `review` at runtime.
@@ -1426,7 +1523,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       ),
     );
   }
-  const bootReviewBaseline: PrReviewBaseline = { artifact: dependencies.artifact, index: dependencies.index, review: artifactReview };
+  const initialSyntheticExecutionUrl = dependencies.syntheticExecutionUrl ?? null;
+  const initialSyntheticExecutionTrust = dependencies.syntheticExecutionTrust === undefined
+    ? initialSyntheticExecutionUrl ? { mode: "local" as const } : null
+    : dependencies.syntheticExecutionTrust;
+  const initialSyntheticScenarios = [...(dependencies.syntheticScenarios ?? [])];
+  const bootReviewBaseline: PrReviewBaseline = {
+    artifact: dependencies.artifact,
+    index: dependencies.index,
+    review: artifactReview,
+    syntheticExecutionUrl: initialSyntheticExecutionUrl,
+    syntheticScenarios: initialSyntheticScenarios,
+    syntheticExecutionTrust: initialSyntheticExecutionTrust,
+  };
   // The files checklist + persisted progress for an artifact-sourced review; a GitHub PR opened via
   // reviewPrInGraph re-derives both at runtime under its own reviewKey.
   const reviewFiles = initialReviewProjection?.files ?? [];
@@ -1443,6 +1552,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const prChecksUrl = dependencies.prChecksUrl;
   const prFileUrl = dependencies.prFileUrl ?? null;
   const analyzeGraphId = dependencies.graphId ?? null;
+  const metaUrl = dependencies.metaUrl ?? "";
   // The route alone is not a usable prepare capability: plain `view` still knows the route name,
   // but has no stored graph id for the request. Expose null in that context so every consumer has
   // one truthful capability flag and reviewPrInGraph takes its synchronous path.
@@ -1613,6 +1723,22 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     requestFlowTraceId: null,
     requestFlowExpansionOverrides: new Set<string>(),
     flowPaneExpansionOverrides: new Set<string>(),
+    syntheticExecutionUrl: initialSyntheticExecutionUrl,
+    syntheticExecutionTrust: initialSyntheticExecutionTrust,
+    syntheticScenarios: initialSyntheticScenarios,
+    syntheticExecution: null,
+    syntheticPreviousExecution: null,
+    syntheticExecutionRootId: null,
+    syntheticExecutionHost: null,
+    syntheticExecutionStatus: "idle",
+    syntheticExecutionError: null,
+    syntheticExperimentRootId: null,
+    syntheticInputOverrides: [],
+    syntheticFieldWatchers: [],
+    syntheticEditorRequest: null,
+    syntheticSelectedMomentId: null,
+    syntheticFlowOrientation: "vertical",
+    syntheticFlowPresentation: "focused",
     flowPaneRfNodes: [],
     flowPaneRfEdges: [],
     flowPaneLayoutStatus: "idle",
@@ -1777,6 +1903,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     selectFlowEntry(ref) {
+      syntheticExecutionSeq += 1;
       if (ref === null) {
         const state = get();
         const baseline = state.reviewFlowBaseline;
@@ -1792,6 +1919,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           requestFlowTraceId: null,
           requestFlowExpansionOverrides: new Set<string>(),
           flowPaneExpansionOverrides: new Set<string>(),
+          ...syntheticExecutionReset(),
           flowPaneRfNodes: [],
           flowPaneRfEdges: [],
           flowPaneLayoutStatus: "idle",
@@ -1852,6 +1980,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           requestFlowTraceId: null,
           requestFlowExpansionOverrides: new Set<string>(),
           flowPaneExpansionOverrides: new Set<string>(),
+          ...syntheticExecutionReset(),
           logicSelected: null,
           moduleSelected: related,
           moduleExpanded,
@@ -1889,6 +2018,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         requestFlowTraceId: null,
         requestFlowExpansionOverrides: new Set<string>(),
         flowPaneExpansionOverrides: new Set<string>(),
+        ...syntheticExecutionReset(),
       });
       // Both module lenses the explorer serves (Map + UI) bulk-reveal the flow's modules in the
       // SHARED module spaces — the phase-C unification retired the ui lens's private expansion.
@@ -1995,9 +2125,235 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().flowPaneRelayout();
     },
 
+    async runSyntheticExecution(args) {
+      const { rootId, scenarioId, input, host } = args;
+      const state = get();
+      const scenario = state.syntheticScenarios.find((candidate) => (
+        candidate.id === scenarioId && candidate.rootId === rootId
+      ));
+      const endpoint = activeSyntheticExecutionUrl(state);
+      if (state.syntheticExecutionTrust?.mode === "sandboxed-pr" && args.sandboxConsent !== true) {
+        set({
+          syntheticExecutionRootId: rootId,
+          syntheticExecutionHost: host,
+          syntheticExecutionStatus: "error",
+          syntheticExecutionError: "Confirm the untrusted PR sandbox before running code.",
+        });
+        return;
+      }
+      if (!syntheticExecutionContextMatches(state, host, rootId) || scenario === undefined || endpoint === null) {
+        set({
+          syntheticExecutionRootId: rootId,
+          syntheticExecutionHost: host,
+          syntheticExecutionStatus: "error",
+          syntheticExecutionError: endpoint === null
+            ? "Synthetic execution is not available in this session."
+            : scenario === undefined
+              ? "This synthetic scenario does not match the selected flow."
+              : "The selected flow is no longer open.",
+        });
+        return;
+      }
+
+      const sequence = ++syntheticExecutionSeq;
+      set({
+        syntheticExecutionRootId: rootId,
+        syntheticExecutionHost: host,
+        syntheticExecutionStatus: "running",
+        syntheticExecutionError: null,
+      });
+      try {
+        const experimentMatches = state.syntheticExperimentRootId === rootId;
+        const execution = await requestSyntheticExecution(endpoint, {
+          scenarioId: scenario.id,
+          rootNodeId: rootId,
+          input,
+          inputOverrides: experimentMatches ? state.syntheticInputOverrides : [],
+          watchers: experimentMatches ? state.syntheticFieldWatchers : [],
+        }, { sandboxConsent: state.syntheticExecutionTrust?.mode === "sandboxed-pr" });
+        if (syntheticExecutionSeq !== sequence) {
+          return;
+        }
+        if (!syntheticExecutionContextMatches(get(), host, rootId)) {
+          set(syntheticExecutionReset());
+          return;
+        }
+        if (execution.scenarioId !== scenario.id || execution.rootId !== rootId) {
+          throw new Error("Synthetic execution response does not match the requested flow.");
+        }
+        const currentSelection = get().flowSelection;
+        const executionSelection = host === "logic"
+          ? currentSelection?.rootId === rootId ? currentSelection : { rootId, blockPath: [] }
+          : currentSelection;
+        if (executionSelection === null || executionSelection.rootId !== rootId) {
+          throw new Error("The selected flow changed before synthetic execution completed.");
+        }
+        const previousExecution = get().syntheticExecution;
+        const comparablePrevious = previousExecution?.rootId === execution.rootId
+          && previousExecution.scenarioId === execution.scenarioId
+          ? previousExecution
+          : null;
+        flowPaneLayoutSeq += 1;
+        const stoppedHit = execution.stop?.reason === "watcher"
+          ? execution.watchHits.find((hit) => hit.id === execution.stop?.watchHitId) ?? null
+          : null;
+        const initialMomentId = stoppedHit === null
+          ? defaultSyntheticMomentId(execution.trace)
+          : syntheticOccurrenceSteps(execution, get().index).find((step) => step.spanId === stoppedHit.spanId)?.id
+            ?? defaultSyntheticMomentId(execution.trace);
+        set({
+          flowSelection: executionSelection,
+          flowPaneOrigin: "synthetic",
+          requestFlowTraceId: null,
+          requestFlowExpansionOverrides: new Set<string>(),
+          syntheticExecution: execution,
+          syntheticPreviousExecution: comparablePrevious,
+          syntheticExecutionRootId: rootId,
+          syntheticExecutionHost: host,
+          syntheticExecutionStatus: "ready",
+          syntheticExecutionError: null,
+          syntheticSelectedMomentId: initialMomentId,
+          syntheticFlowPresentation: "focused",
+          flowPaneRfNodes: [],
+          flowPaneRfEdges: [],
+          flowPaneLayoutStatus: "laying-out",
+        });
+        await get().flowPaneRelayout();
+      } catch (error) {
+        if (syntheticExecutionSeq !== sequence) {
+          return;
+        }
+        if (!syntheticExecutionContextMatches(get(), host, rootId)) {
+          set(syntheticExecutionReset());
+          return;
+        }
+        set({
+          syntheticExecutionRootId: rootId,
+          syntheticExecutionHost: host,
+          syntheticExecutionStatus: "error",
+          syntheticExecutionError: syntheticExecutionFailure(error),
+        });
+      }
+    },
+
+    requestSyntheticEditor(rootId, host) {
+      set({ syntheticEditorRequest: { rootId, host } });
+    },
+
+    consumeSyntheticEditorRequest(rootId, host) {
+      const request = get().syntheticEditorRequest;
+      if (request?.rootId === rootId && request.host === host) {
+        set({ syntheticEditorRequest: null });
+      }
+    },
+
+    stageSyntheticInputOverride(rootId, override) {
+      const state = get();
+      const current = state.syntheticExperimentRootId === rootId ? state.syntheticInputOverrides : [];
+      set({
+        syntheticExperimentRootId: rootId,
+        syntheticInputOverrides: [...current.filter((candidate) => candidate.id !== override.id), override],
+        ...(state.syntheticExperimentRootId === rootId ? {} : { syntheticFieldWatchers: [] }),
+      });
+    },
+
+    removeSyntheticInputOverride(id) {
+      set({ syntheticInputOverrides: get().syntheticInputOverrides.filter((override) => override.id !== id) });
+    },
+
+    addSyntheticFieldWatcher(rootId, watcher) {
+      const state = get();
+      const current = state.syntheticExperimentRootId === rootId ? state.syntheticFieldWatchers : [];
+      set({
+        syntheticExperimentRootId: rootId,
+        syntheticFieldWatchers: [...current.filter((candidate) => candidate.id !== watcher.id), watcher],
+        ...(state.syntheticExperimentRootId === rootId ? {} : { syntheticInputOverrides: [] }),
+      });
+    },
+
+    removeSyntheticFieldWatcher(id) {
+      set({ syntheticFieldWatchers: get().syntheticFieldWatchers.filter((watcher) => watcher.id !== id) });
+    },
+
+    clearSyntheticExecution() {
+      const state = get();
+      syntheticExecutionSeq += 1;
+      if (state.syntheticExecutionHost === "logic") {
+        flowPaneLayoutSeq += 1;
+        set({
+          flowSelection: null,
+          flowPaneOrigin: null,
+          requestFlowTraceId: null,
+          requestFlowExpansionOverrides: new Set<string>(),
+          ...syntheticExecutionReset(),
+          logicSelected: null,
+          flowPaneRfNodes: [],
+          flowPaneRfEdges: [],
+          flowPaneLayoutStatus: "idle",
+        });
+        return;
+      }
+      const selection = state.flowSelection;
+      if (selection !== null) {
+        // Replay the existing flow-selection entry path. In review this restores the whole related
+        // set from the preserved baseline; outside review it re-runs the normal bulk reveal after a
+        // synthetic occurrence narrowed the canonical Map to one exact node.
+        get().selectFlowEntry(selection);
+        return;
+      }
+      flowPaneLayoutSeq += 1;
+      set({
+        flowPaneOrigin: null,
+        requestFlowExpansionOverrides: new Set<string>(),
+        ...syntheticExecutionReset(),
+        logicSelected: null,
+        flowPaneRfNodes: [],
+        flowPaneRfEdges: [],
+        flowPaneLayoutStatus: "idle",
+      });
+    },
+
+    selectSyntheticMoment(momentId, targetId) {
+      const state = get();
+      if (state.flowPaneOrigin !== "synthetic" || state.syntheticExecution === null) return;
+      const steps = syntheticOccurrenceSteps(state.syntheticExecution, state.index);
+      const nextMomentId = momentId ?? defaultSyntheticMomentId(state.syntheticExecution.trace);
+      if (nextMomentId !== null && !steps.some((step) => step.id === nextMomentId)) return;
+      const changed = nextMomentId !== state.syntheticSelectedMomentId;
+      set({
+        syntheticSelectedMomentId: nextMomentId,
+        ...(changed ? { flowPaneLayoutStatus: "laying-out" as const } : {}),
+      });
+      get().selectFlowPaneTarget(targetId);
+      if (changed && nextMomentId !== null) void get().flowPaneRelayout();
+    },
+
+    setSyntheticFlowOrientation(orientation) {
+      const state = get();
+      if (state.syntheticFlowOrientation === orientation) return;
+      set({
+        syntheticFlowOrientation: orientation,
+        ...(state.flowPaneOrigin === "synthetic" ? { flowPaneLayoutStatus: "laying-out" as const } : {}),
+      });
+      if (state.flowPaneOrigin === "synthetic") void get().flowPaneRelayout();
+    },
+
+    setSyntheticFlowPresentation(presentation) {
+      const state = get();
+      if (state.syntheticFlowPresentation === presentation) return;
+      set({
+        syntheticFlowPresentation: presentation,
+        ...(state.flowPaneOrigin === "synthetic" ? { flowPaneLayoutStatus: "laying-out" as const } : {}),
+      });
+      if (state.flowPaneOrigin === "synthetic") void get().flowPaneRelayout();
+    },
+
     toggleRequestFlowExpand(nodeId) {
       const state = get();
-      if (state.flowPaneOrigin !== "request" || state.flowPaneLayoutStatus !== "ready") {
+      if (
+        (state.flowPaneOrigin !== "request" && state.flowPaneOrigin !== "synthetic")
+        || state.flowPaneLayoutStatus !== "ready"
+      ) {
         return;
       }
       const node = state.flowPaneRfNodes.find((candidate) => candidate.id === nodeId);
@@ -2031,15 +2387,24 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     selectFlowPaneTarget(nodeId) {
       const state = get();
-      if (state.flowPaneOrigin === "request") {
+      const syntheticReview = state.flowPaneOrigin === "synthetic"
+        && state.review !== null
+        && state.minimalSeedIds.length > 0
+        && state.reviewFlowBaseline !== null;
+      const mapLinkedExecution = state.flowPaneOrigin === "request"
+        || (state.flowPaneOrigin === "synthetic" && !syntheticReview);
+      if (mapLinkedExecution) {
         const revealSequence = ++requestTargetRevealSeq;
-        const trace = state.requestFlowTraceId === null
-          ? null
-          : state.requestTraces.find((candidate) => candidate.traceId === state.requestFlowTraceId) ?? null;
+        const executionOrigin = state.flowPaneOrigin;
+        const trace = executionOrigin === "synthetic"
+          ? state.syntheticExecution?.trace ?? null
+          : state.requestFlowTraceId === null
+            ? null
+            : state.requestTraces.find((candidate) => candidate.traceId === state.requestFlowTraceId) ?? null;
         const graphTarget = nodeId !== null
           && trace !== null
           && requestFlowContainsTarget(state, trace, nodeId)
-          && traceGraphRefMismatches(state.traceGraphRef, state.artifact).length === 0
+          && (executionOrigin === "synthetic" || traceGraphRefMismatches(state.traceGraphRef, state.artifact).length === 0)
           && state.index.nodesById.has(nodeId)
           ? nodeId
           : null;
@@ -2056,7 +2421,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           return;
         }
 
-        const traceId = state.requestFlowTraceId;
+        const traceId = trace!.traceId;
         const targetSet = new Set([graphTarget]);
         const semanticDepths = state.moduleRfNodes
           .map((node) => (node.data as { semanticDepth?: unknown }).semanticDepth)
@@ -2074,8 +2439,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           const current = get();
           if (
             revealSequence === requestTargetRevealSeq
-            && current.flowPaneOrigin === "request"
-            && current.requestFlowTraceId === traceId
+            && current.flowPaneOrigin === executionOrigin
+            && (executionOrigin === "synthetic"
+              ? current.syntheticExecution?.trace.traceId === traceId
+              : current.requestFlowTraceId === traceId)
             && current.moduleLayoutStatus === "ready"
             && current.moduleSelected.has(graphTarget)
           ) {
@@ -2106,7 +2473,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         const context = requestCodebaseContextFor(state, [graphTarget]);
         if (context === null || !context.highlightTargetIds.has(graphTarget)) return;
         set(canonicalRequestMapPatch(state, context));
-        void get().moduleRelayout({ label: `Revealing ${state.index.nodesById.get(graphTarget)?.displayName ?? graphTarget} from request…` }).then(recenterIfCurrent);
+        const subject = executionOrigin === "synthetic" ? "synthetic run" : "request";
+        void get().moduleRelayout({ label: `Revealing ${state.index.nodesById.get(graphTarget)?.displayName ?? graphTarget} from ${subject}…` }).then(recenterIfCurrent);
         return;
       }
       const selection = state.flowSelection;
@@ -2166,16 +2534,22 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         requestFlowTraceId,
         requestFlowExpansionOverrides,
         flowPaneExpansionOverrides,
+        syntheticSelectedMomentId,
+        syntheticFlowOrientation,
+        syntheticFlowPresentation,
         index,
         artifact,
         prPreparedArtifactCurrent,
         prReviewed,
         reviewDiffByFile,
       } = get();
-      if (flowPaneOrigin === "request") {
-        const trace = requestFlowTraceId === null
-          ? null
-          : get().requestTraces.find((candidate) => candidate.traceId === requestFlowTraceId) ?? null;
+      if (flowPaneOrigin === "request" || flowPaneOrigin === "synthetic") {
+        const execution = flowPaneOrigin === "synthetic" ? get().syntheticExecution : null;
+        const trace = flowPaneOrigin === "synthetic"
+          ? execution?.trace ?? null
+          : requestFlowTraceId === null
+            ? null
+            : get().requestTraces.find((candidate) => candidate.traceId === requestFlowTraceId) ?? null;
         if (trace === null) {
           set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
           return;
@@ -2184,16 +2558,33 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         const traceId = trace.traceId;
         set({ flowPaneLayoutStatus: "laying-out" });
         const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
-        const graph = await deriveRequestFlowPaneLayout(
-          trace,
-          index,
-          flows,
-          requestFlowExpansionOverrides,
-        );
+        const graph = flowPaneOrigin === "synthetic"
+          && syntheticFlowPresentation === "focused"
+          && syntheticSelectedMomentId !== null
+          ? await deriveFocusedRequestFlowPaneLayout(
+              trace,
+              index,
+              flows,
+              syntheticSelectedMomentId,
+              syntheticFlowOrientation,
+              requestFlowExpansionOverrides,
+              execution?.snapshots ?? [],
+            )
+          : await deriveRequestFlowPaneLayout(
+              trace,
+              index,
+              flows,
+              requestFlowExpansionOverrides,
+              execution?.snapshots ?? [],
+            );
         if (
           flowPaneLayoutSeq !== sequence
-          || get().flowPaneOrigin !== "request"
-          || get().requestFlowTraceId !== traceId
+          || get().flowPaneOrigin !== flowPaneOrigin
+          || (flowPaneOrigin === "request" && get().requestFlowTraceId !== traceId)
+          || (flowPaneOrigin === "synthetic" && get().syntheticExecution?.trace.traceId !== traceId)
+          || (flowPaneOrigin === "synthetic" && get().syntheticSelectedMomentId !== syntheticSelectedMomentId)
+          || (flowPaneOrigin === "synthetic" && get().syntheticFlowOrientation !== syntheticFlowOrientation)
+          || (flowPaneOrigin === "synthetic" && get().syntheticFlowPresentation !== syntheticFlowPresentation)
         ) {
           return;
         }
@@ -2238,7 +2629,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const state = get();
       moduleLayoutSeq += 1;
       beginLensTransition(get, set);
-      set({ viewMode: "logic", logicRoot: nodeId, logicStack: [nodeId], logicFocus: [], logicSelected: null, expandedLogic: new Set<string>() });
+      const resetSynthetic = shouldResetLogicHostedSynthetic(state, nodeId);
+      if (resetSynthetic) {
+        syntheticExecutionSeq += 1;
+        flowPaneLayoutSeq += 1;
+      }
+      set({
+        viewMode: "logic",
+        logicRoot: nodeId,
+        logicStack: [nodeId],
+        logicFocus: [],
+        logicSelected: null,
+        expandedLogic: new Set<string>(),
+        ...(resetSynthetic ? logicHostedSyntheticReset() : {}),
+      });
       void get().logicRelayout(nodeLayoutActivity(state, "Opening logic for", nodeId));
     },
 
@@ -2276,7 +2680,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // A changed callable starts unfocused, so any container dive is dropped.
     drillLogicFlow(nodeId) {
       const state = get();
-      set({ logicStack: [...state.logicStack, nodeId], logicRoot: nodeId, logicFocus: [], logicSelected: null, expandedLogic: new Set<string>() });
+      const resetSynthetic = shouldResetLogicHostedSynthetic(state, nodeId);
+      if (resetSynthetic) {
+        syntheticExecutionSeq += 1;
+        flowPaneLayoutSeq += 1;
+      }
+      set({
+        logicStack: [...state.logicStack, nodeId],
+        logicRoot: nodeId,
+        logicFocus: [],
+        logicSelected: null,
+        expandedLogic: new Set<string>(),
+        ...(resetSynthetic ? logicHostedSyntheticReset() : {}),
+      });
       void get().logicRelayout(nodeLayoutActivity(state, "Opening logic for", nodeId));
     },
 
@@ -2288,7 +2704,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (index === -1) {
         return;
       }
-      set({ logicStack: state.logicStack.slice(0, index + 1), logicRoot: nodeId, logicFocus: [], logicSelected: null, expandedLogic: new Set<string>() });
+      const resetSynthetic = shouldResetLogicHostedSynthetic(state, nodeId);
+      if (resetSynthetic) {
+        syntheticExecutionSeq += 1;
+        flowPaneLayoutSeq += 1;
+      }
+      set({
+        logicStack: state.logicStack.slice(0, index + 1),
+        logicRoot: nodeId,
+        logicFocus: [],
+        logicSelected: null,
+        expandedLogic: new Set<string>(),
+        ...(resetSynthetic ? logicHostedSyntheticReset() : {}),
+      });
       void get().logicRelayout(nodeLayoutActivity(state, "Returning to", nodeId));
     },
 
@@ -3264,7 +3692,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // them); in sync mode (never swapped, so no baseline to restore) just strip the review's amber
       // back to the boot artifact's own marking. No-op for a non-review overlay close.
       if (get().prReviewed !== null) {
-        if (!restorePrReviewBaseline(get, set, invalidateArtifactCaches, { endSession: false })) {
+        if (!restorePreparedReviewBaseline(get, set, { endSession: false })) {
           resetChangedIdsToArtifact(get().artifact, get().index);
         }
       }
@@ -4001,6 +4429,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (!reviewFlowOpen) {
         return;
       }
+      // A concrete synthetic run always uses the occurrence graph; remember the reader's static
+      // projection preference for when they return, but do not discard the active execution.
+      if (state.flowPaneOrigin === "synthetic") {
+        return;
+      }
       if (!state.reviewOpenFlowSplitOnSelect || view !== "graph") {
         flowPaneLayoutSeq += 1;
         set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
@@ -4031,7 +4464,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (!reviewFlowSelected) {
         return;
       }
-      if (!open || state.reviewFlowSplitView !== "graph") {
+      const executionGraph = state.flowPaneOrigin === "synthetic" || state.reviewFlowSplitView === "graph";
+      if (!open || !executionGraph) {
         flowPaneLayoutSeq += 1;
         set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
         return;
@@ -4921,7 +5355,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       get().cancelPrReviewPreparation();
       // Browsing another card must not discard a parked review. Only an explicit navigation restore
       // away from review state requests teardown; starting another review owns replacement below.
-      if (options.endReviewSession && restoreSelectedPrReview(get, set, invalidateArtifactCaches, bootReviewBaseline)) {
+      if (
+        options.endReviewSession
+        && restoreSelectedPrReview(get, set, bootReviewBaseline, () => restorePreparedReviewBaseline(get, set))
+      ) {
         void get().relayout();
       }
       const prepareReset = { prReviewStatus: "idle" as const, prPrepareStage: null, prPrepareError: null };
@@ -5226,7 +5663,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // Selection is only browsing; pressing Review in graph is the commit point that replaces an
       // older parked session. Restore the immutable boot pair before preparing the new PR.
       if (get().prReviewed !== null) {
-        restoreSelectedPrReview(get, set, invalidateArtifactCaches, bootReviewBaseline);
+        restoreSelectedPrReview(get, set, bootReviewBaseline, () => restorePreparedReviewBaseline(get, set));
       }
       if (analyzeUrl === null || analyzeGraphId === null) {
         await get().reviewPrOnBaseGraph();
@@ -5282,6 +5719,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         prReviewSource,
         minimalSeedIds,
         prPreparedGraphId,
+        prPreparedHeadSha,
         reviewActiveGroupId: resumeGroupId,
         reviewPathScope: resumePathScope,
       } = get();
@@ -5296,11 +5734,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // closed. It belongs to that Map, not the resumed review/head artifact; clear it before any
       // possible artifact swap so only a flow selected inside the review enters review mode.
       const clearResumeFlow = () => {
-        const staleFlowOpen = get().flowSelection !== null || get().flowPaneOrigin === "request";
+        const staleFlowOpen = get().flowSelection !== null;
         flowPaneLayoutSeq += 1;
+        syntheticExecutionSeq += 1;
         set({
           moduleGhostInspection: null,
           ...requestFlowPaneReset(),
+          ...syntheticExecutionReset(),
+          syntheticExperimentRootId: null,
+          syntheticInputOverrides: [],
+          syntheticFieldWatchers: [],
+          syntheticEditorRequest: null,
           logicSelected: null,
           reviewFlowBaseline: null,
           ...(staleFlowOpen
@@ -5327,14 +5771,23 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({ prReviewStatus: "preparing", prPrepareStage: null, prPrepareError: null });
         try {
           if (prPreparedGraphId !== null) {
-            const prepared = await fetchPreparedArtifact(get().graphUrl, prPreparedGraphId);
-            if (get().prReviewed !== prReviewed || get().minimalSeedIds.length > 0) {
+            const prepared = await fetchPreparedGraphSession(get().graphUrl, metaUrl, prPreparedGraphId, {
+              repository: dependencies.prSessionSource?.repository ?? null,
+              headSha: prPreparedHeadSha,
+            });
+            if (
+              get().prReviewed !== prReviewed
+              || get().minimalSeedIds.length > 0
+              || get().prPreparedGraphId !== prPreparedGraphId
+              || get().prPreparedHeadSha !== prPreparedHeadSha
+            ) {
               return; // the review moved on (or resumed elsewhere) while the artifact was in flight.
             }
             // The base Map stayed interactive during the fetch. Clear once more so a Code Flow opened
             // in that window cannot ride the stale base-artifact ref across the head-graph swap.
             clearResumeFlow();
-            swapToPreparedArtifact(get, set, prepared, invalidateArtifactCaches);
+            invalidateSyntheticArtifactBoundary();
+            swapToPreparedArtifact(get, set, prepared.artifact, invalidateArtifactCaches, prepared);
           }
           const resumed = applyPrReviewToMap(
             get,
@@ -5352,7 +5805,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             // active behind a closed overlay. Sync reviews do not swap, but surface the same honest
             // retry state instead of leaving Resume stuck on "preparing".
             if (prPreparedGraphId !== null) {
-              restorePrReviewBaseline(get, set, invalidateArtifactCaches, { endSession: false });
+              restorePreparedReviewBaseline(get, set, { endSession: false });
             }
             set({
               prReviewStatus: "error",
@@ -5406,6 +5859,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             coverage: state.coverage,
             graphId: state.prPreparedGraphId,
             headSha: state.prPreparedHeadSha,
+            syntheticExecutionUrl: state.syntheticExecutionUrl,
+            syntheticScenarios: [...state.syntheticScenarios],
+            syntheticExecutionTrust: state.syntheticExecutionTrust,
           }
         : null;
       if (
@@ -5449,6 +5905,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         if (previousPrepared === null) {
           return false;
         }
+        invalidateSyntheticArtifactBoundary();
         invalidateArtifactCaches();
         set({
           artifact: previousPrepared.artifact,
@@ -5458,6 +5915,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           prPreparedArtifactCurrent: true,
           prPreparedGraphId: previousPrepared.graphId,
           prPreparedHeadSha: previousPrepared.headSha,
+          syntheticExecutionUrl: previousPrepared.syntheticExecutionUrl,
+          syntheticScenarios: [...previousPrepared.syntheticScenarios],
+          syntheticExecutionTrust: previousPrepared.syntheticExecutionTrust,
           prReviewBlocked: null,
         });
         return true;
@@ -5475,11 +5935,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           }
           // SWAP: load the prepared PR-head artifact and make it the CURRENT graph BEFORE the review
           // body runs, so amber marking, seeds, and the line diff compute in HEAD coordinates.
-          const prepared = await fetchPreparedArtifact(get().graphUrl, analysis.graphId);
+          const prepared = await fetchPreparedGraphSession(get().graphUrl, metaUrl, analysis.graphId, {
+            repository: dependencies.prSessionSource?.repository ?? null,
+            headSha: analysis.headSha,
+          });
           if (!active()) {
             return;
           }
-          swapToPreparedArtifact(get, set, prepared, invalidateArtifactCaches);
+          invalidateSyntheticArtifactBoundary();
+          swapToPreparedArtifact(get, set, prepared.artifact, invalidateArtifactCaches, prepared);
           swappedNewArtifact = true;
           set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null, prPreparedGraphId: analysis.graphId, prPreparedHeadSha: analysis.headSha });
           const entered = applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, {
@@ -5489,7 +5953,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             // The zero-match decision was made against HEAD. Do not leak that unreviewed prepared
             // graph behind the PRs page (or replace an explicit base fallback that still matches).
             if (!restorePreviousPrepared()) {
-              restorePrReviewBaseline(get, set, invalidateArtifactCaches, { endSession: enteringFromPrs });
+              restorePreparedReviewBaseline(get, set, { endSession: enteringFromPrs });
             }
             if (!enteringFromPrs && previousPrepared === null) {
               set({ prPreparedGraphId: null, prPreparedHeadSha: null });
@@ -5507,7 +5971,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             // Derivation after a successful fetch is still part of preparation. If it throws after
             // the swap, put the prior graph back before exposing the retry/fallback state.
             if (swappedNewArtifact && !restorePreviousPrepared()) {
-              restorePrReviewBaseline(get, set, invalidateArtifactCaches, { endSession: enteringFromPrs });
+              restorePreparedReviewBaseline(get, set, { endSession: enteringFromPrs });
               if (!enteringFromPrs && previousPrepared === null) {
                 set({ prPreparedGraphId: null, prPreparedHeadSha: null });
               }
@@ -5899,14 +6363,14 @@ export function selectedPrSummary(state: BlueprintState, number: number | null =
 function restoreSelectedPrReview(
   get: () => BlueprintState,
   set: (partial: Partial<BlueprintState>) => void,
-  invalidateArtifactCaches: () => void,
   bootBaseline: PrReviewBaseline,
+  restoreBaseline: () => boolean,
 ): boolean {
   const state = get();
   if (state.prReviewed !== null && state.prReviewBaseline === null) {
     set({ prReviewBaseline: bootBaseline });
   }
-  return restorePrReviewBaseline(get, set, invalidateArtifactCaches);
+  return restoreBaseline();
 }
 
 function prepareErrorMessage(error: unknown): string {
@@ -6038,6 +6502,77 @@ function requestFlowPaneReset(state?: BlueprintState): Partial<BlueprintState> {
     flowPaneRfNodes: [],
     flowPaneRfEdges: [],
     flowPaneLayoutStatus: "idle",
+  };
+}
+
+function syntheticExecutionReset(): Pick<
+  BlueprintState,
+  | "syntheticExecution"
+  | "syntheticPreviousExecution"
+  | "syntheticExecutionRootId"
+  | "syntheticExecutionHost"
+  | "syntheticExecutionStatus"
+  | "syntheticExecutionError"
+  | "syntheticSelectedMomentId"
+  | "syntheticFlowPresentation"
+> {
+  return {
+    syntheticExecution: null,
+    syntheticPreviousExecution: null,
+    syntheticExecutionRootId: null,
+    syntheticExecutionHost: null,
+    syntheticExecutionStatus: "idle",
+    syntheticExecutionError: null,
+    syntheticSelectedMomentId: null,
+    syntheticFlowPresentation: "focused",
+  };
+}
+
+function syntheticExecutionContextMatches(
+  state: Pick<
+    BlueprintState,
+    | "viewMode"
+    | "logicRoot"
+    | "flowSelection"
+    | "flowPaneOrigin"
+    | "syntheticExecutionHost"
+    | "syntheticExecutionRootId"
+  >,
+  host: SyntheticExecutionHost,
+  rootId: NodeId,
+): boolean {
+  if (host === "flow-pane") return state.flowSelection?.rootId === rootId;
+  return (state.viewMode === "logic" && state.logicRoot === rootId)
+    || (
+      // Selecting an observed occurrence deliberately reveals its codebase node in Map. The
+      // synthetic pane still owns the originating Logic flow, so edits and watcher reruns must
+      // remain valid until that pane is closed or replaced.
+      state.flowPaneOrigin === "synthetic"
+      && state.syntheticExecutionHost === "logic"
+      && state.syntheticExecutionRootId === rootId
+      && state.flowSelection?.rootId === rootId
+    );
+}
+
+function shouldResetLogicHostedSynthetic(
+  state: Pick<BlueprintState, "syntheticExecutionHost" | "syntheticExecutionRootId">,
+  nextRootId: NodeId,
+): boolean {
+  return state.syntheticExecutionHost === "logic"
+    && state.syntheticExecutionRootId !== null
+    && state.syntheticExecutionRootId !== nextRootId;
+}
+
+function logicHostedSyntheticReset(): Partial<BlueprintState> {
+  return {
+    flowSelection: null,
+    flowPaneOrigin: null,
+    requestFlowTraceId: null,
+    requestFlowExpansionOverrides: new Set<string>(),
+    flowPaneRfNodes: [],
+    flowPaneRfEdges: [],
+    flowPaneLayoutStatus: "idle",
+    ...syntheticExecutionReset(),
   };
 }
 
@@ -6535,6 +7070,12 @@ async function errorMessage(response: Response): Promise<string> {
  * rejection values still collapse to a fixed fallback rather than being stringified into the UI. */
 function telemetryFailure(reason: unknown, fallback: string): string {
   return reason instanceof Error && reason.message.length > 0 ? reason.message : fallback;
+}
+
+function syntheticExecutionFailure(reason: unknown): string {
+  return reason instanceof Error && reason.message.trim().length > 0
+    ? reason.message
+    : "Synthetic execution failed.";
 }
 
 function newestTrace(traces: readonly RequestTrace[]): RequestTrace | undefined {

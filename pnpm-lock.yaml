@@ -58,6 +58,9 @@ importers:
       commander:
         specifier: 15.0.0
         version: 15.0.0
+      ts-morph:
+        specifier: 28.0.0
+        version: 28.0.0
     devDependencies:
       '@meridian/renderer':
         specifier: workspace:*

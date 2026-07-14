@@ -23,7 +23,7 @@ describe("artifact source provenance", () => {
     });
   });
 
-  it("does not attach repository analysis provenance to local paths", () => {
-    expect(artifactSourceFor({ kind: "path", value: "." })).toEqual({ kind: "other" });
+  it("retains local-path trust without persisting the filesystem value", () => {
+    expect(artifactSourceFor({ kind: "path", value: "/private/worktree" })).toEqual({ kind: "path" });
   });
 });

@@ -6,7 +6,13 @@
 
 import { describe, expect, it } from "vitest";
 import type { IncomingMessage } from "node:http";
-import { assertJsonContentType, assertSameOrigin, isSameOrigin } from "./web-guards";
+import {
+  assertJsonContentType,
+  assertLoopbackHost,
+  assertSameOrigin,
+  isLoopbackHost,
+  isSameOrigin,
+} from "./web-guards";
 import { WebError } from "./web-error";
 
 function request(headers: Record<string, string>): IncomingMessage {
@@ -33,6 +39,23 @@ describe("assertSameOrigin", () => {
   it("throws on a cross-origin request and passes a same-origin one", () => {
     expect(() => assertSameOrigin(request({ origin: "http://evil.example", host: "127.0.0.1:4180" }))).toThrow(WebError);
     expect(() => assertSameOrigin(request({ host: "127.0.0.1:4180" }))).not.toThrow();
+  });
+});
+
+describe("loopback execution guard", () => {
+  it("accepts literal localhost addresses and rejects DNS-rebinding hostnames", () => {
+    expect(isLoopbackHost("127.0.0.1:4180")).toBe(true);
+    expect(isLoopbackHost("127.12.34.56:4180")).toBe(true);
+    expect(isLoopbackHost("localhost:4180")).toBe(true);
+    expect(isLoopbackHost("[::1]:4180")).toBe(true);
+    expect(isLoopbackHost("evil.example:4180")).toBe(false);
+    expect(isLoopbackHost("0.0.0.0:4180")).toBe(false);
+  });
+
+  it("rejects an attacker-controlled Host even when Origin matches it", () => {
+    const rebound = request({ origin: "http://evil.example:4180", host: "evil.example:4180" });
+    expect(() => assertSameOrigin(rebound)).not.toThrow();
+    expect(() => assertLoopbackHost(rebound)).toThrow(WebError);
   });
 });
 

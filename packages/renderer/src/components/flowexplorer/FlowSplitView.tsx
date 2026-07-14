@@ -10,13 +10,13 @@ import {
 
 export const FLOW_SPLIT_HANDLE_PX = 10;
 export const FLOW_SPLIT_EDGE_SNAP_PX = 72;
-export const DEFAULT_GRAPH_RATIOS = { standard: 0.6, review: 0.7 } as const;
+export const DEFAULT_GRAPH_RATIOS = { standard: 0.6, review: 0.7, synthetic: 0.44 } as const;
 
 export type SplitVariant = keyof typeof DEFAULT_GRAPH_RATIOS;
 export type GraphRatios = Record<SplitVariant, number>;
 
 /** A top/bottom editor split whose separator remains reachable when either pane is minimized. */
-export function FlowSplitView(props: { open: boolean; review: boolean; graph: ReactNode; flow: ReactNode }) {
+export function FlowSplitView(props: { open: boolean; review: boolean; synthetic?: boolean; graph: ReactNode; flow: ReactNode }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const activePointer = useRef<number | null>(null);
   const pointerGrabOffset = useRef(FLOW_SPLIT_HANDLE_PX / 2);
@@ -24,7 +24,7 @@ export function FlowSplitView(props: { open: boolean; review: boolean; graph: Re
   const [dragging, setDragging] = useState(false);
   const [handleFocused, setHandleFocused] = useState(false);
   const [handleHovered, setHandleHovered] = useState(false);
-  const variant: SplitVariant = props.review ? "review" : "standard";
+  const variant: SplitVariant = props.review ? "review" : props.synthetic ? "synthetic" : "standard";
   const graphRatio = ratios[variant];
   const graphMinimized = props.open && graphRatio === 0;
   const flowMinimized = props.open && graphRatio === 1;

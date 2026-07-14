@@ -23,7 +23,8 @@
     "@meridian/core": "workspace:*",
     "@meridian/extractor-python": "workspace:*",
     "@meridian/extractor-typescript": "workspace:*",
-    "commander": "15.0.0"
+    "commander": "15.0.0",
+    "ts-morph": "28.0.0"
   },
   "devDependencies": {
     "@meridian/renderer": "workspace:*",

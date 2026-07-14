@@ -4,8 +4,15 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { GraphArtifact } from "@meridian/core";
 import { CliError } from "../errors";
 import { sendHtml, sendJson } from "./http-response";
+import { telemetrySourceDescriptors } from "./overlay-source";
+import {
+  loadSyntheticScenarios,
+  SyntheticExecutionError,
+  syntheticExecutionRuntimeSupported,
+  syntheticSourceFingerprint,
+} from "./synthetic-execution";
 import { githubTokenFor } from "./web-auth";
-import { injectViewBoot } from "./web-boot";
+import { injectViewBoot, syntheticExecutionBootCapability } from "./web-boot";
 import { WebError } from "./web-error";
 import { generateGraph } from "./web-generation";
 import { parseGenerateRequest, readJsonBody } from "./web-request";
@@ -18,6 +25,7 @@ export async function handleGenerate(ctx: Context, request: IncomingMessage, res
   }
   const parsed = parseGenerateRequest(await readJsonBody(request));
   const result = await generateGraph(ctx, parsed, githubTokenFor(ctx, request, parsed.token));
+  registerLocalSyntheticCapability(ctx, result.id);
   sendJson(response, 200, result);
 }
 
@@ -28,12 +36,36 @@ async function handleGenerateStream(ctx: Context, request: IncomingMessage, resp
     const result = await generateGraph(ctx, parsed, githubTokenFor(ctx, request, parsed.token), (stage) =>
       writeLine(response, { stage }),
     );
+    registerLocalSyntheticCapability(ctx, result.id);
     await writeLine(response, { stage: "done", ...result });
   } catch (error) {
     await writeLine(response, { stage: "error", message: safeGenerateMessage(error) });
   } finally {
     response.end();
   }
+}
+
+/** Attach executable state only to explicitly admitted local sources. Ordinary GitHub graphs are
+ * never commit-pinned PR capabilities; `web-pr-analyze` is the sole path that may admit those. */
+function registerLocalSyntheticCapability(ctx: Context, id: string): void {
+  const source = ctx.sources.get(id);
+  const sourceRoot = ctx.sourceRoots.get(id);
+  const artifact = ctx.graphs.get(id);
+  const admitted = source?.kind === "path"
+    && ctx.allowSyntheticExecution
+    && syntheticExecutionRuntimeSupported();
+
+  ctx.syntheticScenarios.delete(id);
+  ctx.syntheticSourceFingerprints.delete(id);
+  ctx.syntheticExecutionTrust.delete(id);
+  if (!admitted || sourceRoot === undefined || artifact === undefined) return;
+
+  const scenarios = loadSyntheticScenarios(sourceRoot);
+  if (scenarios.length > 0) {
+    ctx.syntheticScenarios.set(id, scenarios);
+    ctx.syntheticSourceFingerprints.set(id, syntheticSourceFingerprint(sourceRoot, artifact));
+  }
+  ctx.syntheticExecutionTrust.set(id, { mode: "local" });
 }
 
 function acceptsNdjson(request: IncomingMessage): boolean {
@@ -62,7 +94,7 @@ function writeLine(response: ServerResponse, line: Record<string, unknown>): Pro
 }
 
 function safeGenerateMessage(error: unknown): string {
-  if (error instanceof WebError || error instanceof CliError) {
+  if (error instanceof SyntheticExecutionError || error instanceof WebError || error instanceof CliError) {
     return error.message;
   }
   return "internal error while generating the blueprint";
@@ -83,12 +115,20 @@ export function sendMeta(ctx: Context, response: ServerResponse, id: string | nu
     sendJson(response, 404, { error: "unknown graph id" });
     return;
   }
+  const graphId = id as string;
   sendJson(response, 200, {
     schemaVersion: artifact.schemaVersion,
     generatedAt: artifact.generatedAt,
     nodeCount: artifact.nodes.length,
     hasOverlay: false,
     environments: [],
+    telemetrySources: telemetrySourceDescriptors({ kind: "none" }),
+    ...syntheticExecutionBootCapability(
+      graphId,
+      ctx.sources.get(graphId),
+      ctx.syntheticScenarios.get(graphId) ?? null,
+      ctx.syntheticExecutionTrust.get(graphId) ?? null,
+    ),
   });
 }
 
@@ -98,7 +138,13 @@ export function sendView(ctx: Context, response: ServerResponse, id: string | nu
     return;
   }
   const graphId = id as string;
-  sendHtml(response, injectViewBoot(ctx.rendererIndex, graphId, ctx.sources.get(graphId)));
+  sendHtml(response, injectViewBoot(
+    ctx.rendererIndex,
+    graphId,
+    ctx.sources.get(graphId),
+    ctx.syntheticScenarios.get(graphId) ?? null,
+    ctx.syntheticExecutionTrust.get(graphId) ?? null,
+  ));
 }
 
 function lookup(ctx: Context, id: string | null): GraphArtifact | undefined {

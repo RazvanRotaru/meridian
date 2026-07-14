@@ -89,6 +89,33 @@ describe("logic ELK graph", () => {
     expect(spec.nodes.find((node) => node.id === "r::0::join")).toMatchObject({ type: "join", width: 42, height: 72 });
   });
 
+  it("turns branch lanes and pins onto the vertical axis without changing the spec", () => {
+    const branch: FlowStep = {
+      kind: "branch",
+      label: "if ready",
+      paths: [
+        { label: "then", role: "then", body: [call("yes")] },
+        { label: "else", role: "else", body: [call("no")] },
+      ],
+    };
+    const spec = deriveLogicGraph("r", { r: [branch, call("after")] }, index, new Set(), { hideGreyed: false });
+    const graph = buildLogicElkGraph(spec, "vertical");
+
+    expect(graph.layoutOptions).toMatchObject({
+      "elk.direction": "DOWN",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "76",
+    });
+    const split = elkNode(graph, "r::0");
+    expect(split.ports?.map((port) => port.layoutOptions?.["elk.port.side"])).toEqual(["SOUTH", "SOUTH"]);
+    for (const edge of spec.edges.filter((candidate) => candidate.source === "r::0")) {
+      expect(elkNode(graph, edge.target).layoutOptions?.["elk.spacing.individual"]).toBe(
+        "[top=0,left=48,bottom=0,right=48]",
+      );
+    }
+    const rf = toReactFlowLogic(graph, new Map(spec.nodes.map((node) => [node.id, node])), spec.edges, "vertical");
+    expect(rf.edges.every((edge) => edge.data?.orientation === "vertical")).toBe(true);
+  });
+
   it("passes branch and async endpoint ids through to React Flow handles", () => {
     const flows: LogicFlows = {
       r: [

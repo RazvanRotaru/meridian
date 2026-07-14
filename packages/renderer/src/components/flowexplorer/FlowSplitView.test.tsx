@@ -11,14 +11,19 @@ import {
 } from "./FlowSplitView";
 
 describe("FlowSplitView", () => {
-  it("keeps the existing ordinary and review proportions as separate defaults", () => {
+  it("keeps ordinary, review, and synthetic proportions as separate defaults", () => {
     const standard = renderSplit(false);
     const review = renderSplit(true);
+    const synthetic = renderToStaticMarkup(
+      <FlowSplitView open review={false} synthetic graph={<span>graph surface</span>} flow={<span>flow surface</span>} />,
+    );
 
     expect(standard).toContain(`aria-valuenow="${DEFAULT_GRAPH_RATIOS.standard * 100}"`);
     expect(standard).toContain("Graph 60%; logic flow 40%");
     expect(review).toContain(`aria-valuenow="${DEFAULT_GRAPH_RATIOS.review * 100}"`);
     expect(review).toContain("Graph 70%; logic flow 30%");
+    expect(synthetic).toContain(`aria-valuenow="${DEFAULT_GRAPH_RATIOS.synthetic * 100}"`);
+    expect(synthetic).toContain("Graph 44%; logic flow 56%");
   });
 
   it("renders a focusable horizontal separator with resize and minimize instructions", () => {
@@ -110,12 +115,12 @@ describe("flow split keyboard controls", () => {
 });
 
 describe("flow split mode memory", () => {
-  it("keeps ordinary and review positions independent", () => {
+  it("keeps ordinary, review, and synthetic positions independent", () => {
     const standardMoved = updateGraphRatio({ ...DEFAULT_GRAPH_RATIOS }, "standard", 0.42);
     const reviewMoved = updateGraphRatio(standardMoved, "review", 0.81);
 
-    expect(standardMoved).toEqual({ standard: 0.42, review: 0.7 });
-    expect(reviewMoved).toEqual({ standard: 0.42, review: 0.81 });
+    expect(standardMoved).toEqual({ standard: 0.42, review: 0.7, synthetic: 0.44 });
+    expect(reviewMoved).toEqual({ standard: 0.42, review: 0.81, synthetic: 0.44 });
   });
 });
 

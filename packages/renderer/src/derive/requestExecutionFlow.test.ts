@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { LogicFlows, RequestTrace, TimelineSpan } from "@meridian/core";
+import type { LogicFlows, RequestTrace, SyntheticNodeSnapshot, TimelineSpan } from "@meridian/core";
 import { ALPHA_RUN, BETA_RUN, freshStore } from "../parity/surfaceFixture";
 import type { LogicNodeData } from "./logicGraph";
-import { deriveRequestExecutionFlow } from "./requestExecutionFlow";
+import { deriveFocusedRequestExecutionFlow, deriveRequestExecutionFlow } from "./requestExecutionFlow";
 
 const TRACE_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -226,6 +226,71 @@ describe("deriveRequestExecutionFlow", () => {
     expect(new Set(graftEdgeIds).size).toBe(graftEdgeIds.length);
     expect(graftEdgeIds.some((id) => id.includes(":span:1000000000000002:exec:"))).toBe(true);
     expect(graftEdgeIds.some((id) => id.includes(":span:1000000000000003:exec:"))).toBe(true);
+  });
+
+  it("attaches explicit IN/OUT snapshots to their exact span occurrence without target inference", () => {
+    const snapshots: SyntheticNodeSnapshot[] = [{
+      spanId: "1000000000000002",
+      nodeId: ALPHA_RUN,
+      occurrenceKey: "alpha:1",
+      input: { total: 42 },
+      output: { accepted: true },
+    }, {
+      // The span exists, but the node id disagrees. Pure derivation must ignore the stale snapshot.
+      spanId: "1000000000000003",
+      nodeId: BETA_RUN,
+      occurrenceKey: "beta:1",
+      input: { total: 99 },
+      error: "wrong occurrence",
+    }];
+    const graph = deriveRequestExecutionFlow(
+      requestTrace(),
+      freshStore().getState().index,
+      {},
+      new Set<string>(),
+      snapshots,
+    );
+    const first = graph.nodes.find((node) => node.id.endsWith(":span:1000000000000002"))!;
+    const repeated = graph.nodes.find((node) => node.id.endsWith(":span:1000000000000003"))!;
+
+    expect((first.data as LogicNodeData).runtime?.snapshot).toEqual({
+      input: { total: 42 },
+      output: { accepted: true },
+    });
+    expect(first.height).toBeGreaterThan(100);
+    expect((repeated.data as LogicNodeData).runtime?.snapshot).toBeUndefined();
+  });
+
+  it("focuses one occurrence with its expanded static body and moves values out of the canvas", () => {
+    const selectedId = `request:${TRACE_ID}:span:1000000000000002`;
+    const graph = deriveFocusedRequestExecutionFlow(
+      requestTrace(),
+      freshStore().getState().index,
+      CONTROL_FLOWS,
+      selectedId,
+      new Set<string>(),
+      [{
+        spanId: "1000000000000002",
+        nodeId: ALPHA_RUN,
+        occurrenceKey: "alpha:1",
+        input: { total: 42 },
+        output: { accepted: true },
+      }],
+    );
+
+    expect(graph.nodes.length).toBeGreaterThan(1);
+    expect(graph.nodes.some((node) => node.id.includes(":span:1000000000000003"))).toBe(false);
+    expect(graph.nodes.every((node) => node.id === selectedId || node.parentId !== null)).toBe(true);
+    const selected = graph.nodes.find((node) => node.id === selectedId)!;
+    expect(selected.data as LogicNodeData).toMatchObject({
+      isExpanded: true,
+      isContainer: true,
+      expandable: false,
+      runtime: { focused: true },
+    });
+    expect((selected.data as LogicNodeData).runtime?.snapshot).toBeUndefined();
+    const ids = new Set(graph.nodes.map((node) => node.id));
+    expect(graph.edges.every((edge) => ids.has(edge.source) && ids.has(edge.target))).toBe(true);
   });
 });
 

@@ -1,0 +1,41 @@
+{
+  "manifestVersion": "1.0.0",
+  "scenarios": [
+    {
+      "id": "place-order-happy",
+      "label": "Place order — priced and persisted",
+      "rootId": "ts:src/services/orderService.ts#OrderService.placeOrder",
+      "description": "Runs the real order-service flow with a valid two-line synthetic request.",
+      "defaultInput": {
+        "customerId": "synthetic_customer",
+        "lines": [
+          { "sku": "tea", "quantity": 2, "unitPriceCents": 450 },
+          { "sku": "mug", "quantity": 1, "unitPriceCents": 1200 }
+        ],
+        "discountCode": "WELCOME10"
+      },
+      "invoke": {
+        "module": "src/index.ts",
+        "export": "buildOrdersApp",
+        "method": "orders.placeOrder"
+      }
+    },
+    {
+      "id": "create-order-validation-error",
+      "label": "Create order — validation error",
+      "rootId": "ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder",
+      "description": "Runs the request entry point with a missing customer and captures the handled validation branch.",
+      "defaultInput": {
+        "customerId": "",
+        "lines": [
+          { "sku": "tea", "quantity": 1, "unitPriceCents": 450 }
+        ]
+      },
+      "invoke": {
+        "module": "src/index.ts",
+        "export": "buildOrdersApp",
+        "method": "handleCreateOrder"
+      }
+    }
+  ]
+}

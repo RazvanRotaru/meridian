@@ -311,6 +311,13 @@ describe("static request traversal correlation", () => {
     expect(edge(graph, prepareId, riskyId)?.requestTraversal)
       .toMatchObject({ basis: "branch-path", eventIds: ["caught"], pathIds: ["catch"] });
     expect(edge(graph, riskyId, skippedId)?.requestTraversal).toBeUndefined();
+    expect(edge(graph, riskyId, recoverId, "throws → catch"))
+      .toMatchObject({
+        id: expect.stringContaining("request-exception:0"),
+        kind: "branch",
+        branchRole: "catch",
+        requestTraversal: { basis: "branch-path", eventIds: ["caught"], pathIds: ["catch"] },
+      });
     expect(edge(graph, tryId, recoverId, "catch error")?.requestTraversal)
       .toMatchObject({ basis: "branch-path", eventIds: ["caught"] });
     expect(edge(graph, recoverId, recoveredId)?.requestTraversal)
@@ -326,6 +333,65 @@ describe("static request traversal correlation", () => {
       .toMatchObject({ basis: "branch-path", eventIds: ["caught"] });
     expect(edge(graph, cleanedId, afterId)?.requestTraversal)
       .toMatchObject({ basis: "branch-path", eventIds: ["caught"] });
+  });
+
+  it("bridges a failing child call to the caught arm without lighting its normal continuation", () => {
+    const request = trace([branchAt("repository-timeout", 29, "route:create:try", "catch")], "error");
+    request.spans.push(
+      childSpan("4000000000000001", 1, "error"),
+      childSpan("4000000000000002", 3, "ok"),
+    );
+    const flows: LogicFlows = {
+      [ALPHA_RUN]: [{
+        kind: "branch",
+        branchKind: "try",
+        label: "try/catch",
+        source: { file: "order.ts", line: 29 },
+        paths: [
+          {
+            label: "try",
+            role: "try",
+            pathId: "try",
+            body: [
+              { kind: "call", label: "placeOrder", target: BETA_RUN, resolution: "resolved" },
+              { kind: "call", label: "created", target: null, resolution: "unresolved" },
+            ],
+          },
+          {
+            label: "catch error",
+            role: "catch",
+            pathId: "catch",
+            body: [
+              { kind: "call", label: "toErrorResponse", target: BETA_RUN, resolution: "resolved" },
+              { kind: "exit", variant: "return", label: "error response" },
+            ],
+          },
+        ],
+      }],
+    };
+    const graph = deriveRequestExecutionFlow(
+      request,
+      freshStore().getState().index,
+      flows,
+      new Set([OCCURRENCE]),
+    );
+    const tryPath = logicStepPath(logicTopLevelBodyPrefix(0), 0);
+    const execPrefix = `${OCCURRENCE}:exec`;
+    const placeId = logicNodeId(execPrefix, logicStepPath(logicBranchBodyPrefix(tryPath, 0), 0));
+    const createdId = logicNodeId(execPrefix, logicStepPath(logicBranchBodyPrefix(tryPath, 0), 1));
+    const recoveryId = logicNodeId(execPrefix, logicStepPath(logicBranchBodyPrefix(tryPath, 1), 0));
+
+    expect(edge(graph, placeId, createdId)?.kind).toBe("seq");
+    expect(edge(graph, placeId, createdId)?.requestTraversal).toBeUndefined();
+    expect(edge(graph, placeId, recoveryId, "throws → catch")).toMatchObject({
+      kind: "branch",
+      branchRole: "catch",
+      requestTraversal: {
+        basis: "branch-path",
+        eventIds: ["repository-timeout"],
+        pathIds: ["catch"],
+      },
+    });
   });
 
   it("does not guess a try arm from span status without branch evidence", () => {

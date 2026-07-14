@@ -4,10 +4,10 @@
  * clone spawn itself is covered by the live smoke test, not here.
  */
 
-import { describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
 import { base64Auth, buildCloneArgs, parseGitHubSource, resolveExtractionSubdir, sanitizeSubdir } from "./clone";
 import { WebError } from "./web-error";
 
@@ -75,15 +75,51 @@ describe("base64Auth", () => {
 
 describe("sanitizeSubdir", () => {
   it("joins a normal subfolder within the clone", () => {
-    const root = resolve("repo");
-    expect(sanitizeSubdir(root, "src")).toBe(resolve(root, "src"));
-    expect(sanitizeSubdir(root, "  ")).toBe(root);
-    expect(sanitizeSubdir(root, undefined)).toBe(root);
+    const root = mkdtempSync(join(tmpdir(), "meridian-subdir-"));
+    try {
+      mkdirSync(join(root, "src"));
+      expect(sanitizeSubdir(root, "src")).toBe(realpathSync.native(join(root, "src")));
+      expect(sanitizeSubdir(root, "  ")).toBe(realpathSync.native(root));
+      expect(sanitizeSubdir(root, undefined)).toBe(realpathSync.native(root));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("rejects a `..` escape out of the clone", () => {
-    expect(() => sanitizeSubdir("/repo", "../etc")).toThrow(WebError);
-    expect(() => sanitizeSubdir("/repo", "../../..")).toThrow(WebError);
+    const root = mkdtempSync(join(tmpdir(), "meridian-subdir-"));
+    try {
+      expect(() => sanitizeSubdir(root, "../etc")).toThrow(WebError);
+      expect(() => sanitizeSubdir(root, "../../..")).toThrow(WebError);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects repository symlinks and nested symlink components that escape the clone", () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-subdir-"));
+    const outside = mkdtempSync(join(tmpdir(), "meridian-outside-"));
+    try {
+      mkdirSync(join(root, "packages"));
+      symlinkSync(outside, join(root, "escaped"));
+      symlinkSync(outside, join(root, "packages", "escaped"));
+      expect(() => sanitizeSubdir(root, "escaped")).toThrow(WebError);
+      expect(() => sanitizeSubdir(root, "packages/escaped")).toThrow(WebError);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects missing and non-directory subfolders", () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-subdir-"));
+    try {
+      writeFileSync(join(root, "file.ts"), "export {};\n", "utf8");
+      expect(() => sanitizeSubdir(root, "missing")).toThrow(WebError);
+      expect(() => sanitizeSubdir(root, "file.ts")).toThrow(WebError);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("rejects an extraction root linked outside the clone", () => {

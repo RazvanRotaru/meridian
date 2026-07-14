@@ -74,6 +74,11 @@ function registerWeb(program: Command): void {
     .option("--env <env>", "existing-graph environment (also read from BLUEPRINT_ENV)")
     .option("--source-root <dir>", "existing-graph source root for code view")
     .option("--test-coverage <coverage-final.json>", "attach aggregate Istanbul coverage to an existing graph")
+    .option("--allow-synthetic-execution", "allow explicit synthetic-flow runs for local path sources only")
+    .option(
+      "--allow-synthetic-pr-execution",
+      "allow consent-gated synthetic-flow runs for prepared PR heads in an available OCI sandbox",
+    )
     .action((source, _options, command) => runWeb(source, command.optsWithGlobals() as WebOptions));
 }
 

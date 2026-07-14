@@ -25,6 +25,7 @@ import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type 
 // deriveLogicLayout) — not exec nodes the graph builder ever emits — so the React Flow node type
 // widens the builder's exec types with "defgroup".
 export type LogicNodeType = ExecNodeType | "defgroup";
+export type LogicFlowOrientation = "horizontal" | "vertical";
 
 /**
  * A def-group frame's data. It participates in the same expandable-node contract as executable
@@ -86,6 +87,7 @@ export type LogicRfEdgeData = {
   staticLane?: StaticLaneSignal;
   /** Imported runtime branch-path evidence. When present it always supersedes `staticLane`. */
   executionLane?: ExecutionLaneSignal;
+  orientation?: LogicFlowOrientation;
 };
 export type LogicRfEdge = Edge<LogicRfEdgeData>;
 export const LOGIC_ASYNC_EDGE_TYPE = "logicAsync";
@@ -118,11 +120,26 @@ const ROOT_LAYOUT_OPTIONS: Record<string, string> = {
   "elk.padding": "[top=40,left=36,bottom=40,right=36]",
 };
 
+function rootLayoutOptions(orientation: LogicFlowOrientation): Record<string, string> {
+  if (orientation === "horizontal") return ROOT_LAYOUT_OPTIONS;
+  return {
+    ...ROOT_LAYOUT_OPTIONS,
+    "elk.direction": "DOWN",
+    "elk.layered.spacing.nodeNodeBetweenLayers": "76",
+    "elk.spacing.nodeNode": "96",
+    "elk.padding": "[top=32,left=40,bottom=32,right=40]",
+  };
+}
+
 // Top padding clears the container's title bar (React Flow draws nothing there itself).
 const CONTAINER_LAYOUT_OPTIONS: Record<string, string> = {
   "elk.padding": "[top=42,left=16,bottom=16,right=16]",
 };
 const TARGET_CHANGED_CONTAINER_MIN_WIDTH = 260;
+
+const SNAPSHOT_CONTAINER_LAYOUT_OPTIONS: Record<string, string> = {
+  "elk.padding": "[top=84,left=16,bottom=16,right=16]",
+};
 
 const EXEC_COLOR = "#C8D3E0";
 const BRANCH_COLOR = "#E6B84D";
@@ -144,11 +161,19 @@ const adapter: ElkNestAdapter<LogicNodeSpec> = {
     ? null
     : { width: TARGET_CHANGED_CONTAINER_MIN_WIDTH, height: 58 },
   containerOptions: CONTAINER_LAYOUT_OPTIONS,
+  containerOptionsFor: (node) => (
+    "runtime" in node.data && node.data.runtime?.snapshot !== undefined
+      ? SNAPSHOT_CONTAINER_LAYOUT_OPTIONS
+      : null
+  ),
 };
 
-export function buildLogicElkGraph(spec: LogicGraphSpec): ElkNode {
-  const graph = buildNestedElkGraph(spec.nodes, spec.edges, adapter, ROOT_LAYOUT_OPTIONS);
-  applyFlowGeometry(graph, spec);
+export function buildLogicElkGraph(
+  spec: LogicGraphSpec,
+  orientation: LogicFlowOrientation = "horizontal",
+): ElkNode {
+  const graph = buildNestedElkGraph(spec.nodes, spec.edges, adapter, rootLayoutOptions(orientation));
+  applyFlowGeometry(graph, spec, orientation);
   return graph;
 }
 
@@ -156,7 +181,11 @@ export function buildLogicElkGraph(spec: LogicGraphSpec): ElkNode {
  * from that exact port. The same ids are passed to React Flow as sourceHandle below, so layout and
  * rendering share a single branch-pin contract. Direct arm targets get branch-only vertical margin;
  * ordinary seq nodes keep the tighter linear rhythm. */
-function applyFlowGeometry(graph: ElkNode, spec: LogicGraphSpec): void {
+function applyFlowGeometry(
+  graph: ElkNode,
+  spec: LogicGraphSpec,
+  orientation: LogicFlowOrientation,
+): void {
   const elkById = new Map<string, ElkNode>();
   collectElkNodes(graph.children ?? [], elkById);
 
@@ -173,7 +202,10 @@ function applyFlowGeometry(graph: ElkNode, spec: LogicGraphSpec): void {
         id: port.id,
         width: 2,
         height: 2,
-        layoutOptions: { "elk.port.side": "EAST", "elk.port.index": String(index) },
+        layoutOptions: {
+          "elk.port.side": orientation === "horizontal" ? "EAST" : "SOUTH",
+          "elk.port.index": String(index),
+        },
       })),
       ...asyncPorts.map((port, index) => ({
         id: port.id,
@@ -181,7 +213,10 @@ function applyFlowGeometry(graph: ElkNode, spec: LogicGraphSpec): void {
         height: 2,
         // Async task lifetime is a parallel rail below the white exec thread. Both launch and wait
         // endpoints therefore live on SOUTH; direction remains a React Flow handle concern.
-        layoutOptions: { "elk.port.side": "SOUTH", "elk.port.index": String(index) },
+        layoutOptions: {
+          "elk.port.side": orientation === "horizontal" ? "SOUTH" : "EAST",
+          "elk.port.index": String(index),
+        },
       })),
     ];
   }
@@ -205,7 +240,9 @@ function applyFlowGeometry(graph: ElkNode, spec: LogicGraphSpec): void {
       if (target) {
         target.layoutOptions = {
           ...(target.layoutOptions ?? {}),
-          "elk.spacing.individual": `[top=${BRANCH_LANE_CLEARANCE},left=0,bottom=${BRANCH_LANE_CLEARANCE},right=0]`,
+          "elk.spacing.individual": orientation === "horizontal"
+            ? `[top=${BRANCH_LANE_CLEARANCE},left=0,bottom=${BRANCH_LANE_CLEARANCE},right=0]`
+            : `[top=0,left=${BRANCH_LANE_CLEARANCE},bottom=0,right=${BRANCH_LANE_CLEARANCE}]`,
         };
       }
     }
@@ -219,12 +256,17 @@ function collectElkNodes(nodes: ElkNode[], out: Map<string, ElkNode>): void {
   }
 }
 
-export function toReactFlowLogic(laidOut: ElkNode, specById: Map<string, LogicNodeSpec>, edges: LogicEdgeSpec[]): LogicReactFlowGraph {
+export function toReactFlowLogic(
+  laidOut: ElkNode,
+  specById: Map<string, LogicNodeSpec>,
+  edges: LogicEdgeSpec[],
+  orientation: LogicFlowOrientation = "horizontal",
+): LogicReactFlowGraph {
   const nodes = emitReactFlowNodes(laidOut, (elkNode, parentId) => {
     const spec = specById.get(elkNode.id);
     return spec ? toReactFlowNode(elkNode, parentId, spec) : null;
   });
-  return { nodes, edges: edges.map(toReactFlowEdge) };
+  return { nodes, edges: edges.map((edge) => toReactFlowEdge(edge, orientation)) };
 }
 
 function toReactFlowNode(elkNode: ElkNode, parentId: string | undefined, spec: LogicNodeSpec): LogicRfNode {
@@ -238,7 +280,7 @@ function toReactFlowNode(elkNode: ElkNode, parentId: string | undefined, spec: L
 
 // Exec wires (seq) are the white-ish Blueprint execution thread; branch pins carry a colored,
 // labeled wire (then/else/case).
-function toReactFlowEdge(edge: LogicEdgeSpec): LogicRfEdge {
+function toReactFlowEdge(edge: LogicEdgeSpec, orientation: LogicFlowOrientation): LogicRfEdge {
   const branch = edge.kind === "branch";
   const async = edge.kind === "async";
   const exceptional = edge.branchRole === "catch";
@@ -268,6 +310,7 @@ function toReactFlowEdge(edge: LogicEdgeSpec): LogicRfEdge {
       ...(edge.targetPort ? { targetPort: edge.targetPort } : {}),
       ...(edge.taskId ? { taskId: edge.taskId } : {}),
       ...(edge.branchRole ? { branchRole: edge.branchRole } : {}),
+      orientation,
     },
   };
 }

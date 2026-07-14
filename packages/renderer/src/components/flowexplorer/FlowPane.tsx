@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlow, ReactFlowProvider, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
-import type { LogicFlows, RequestTrace } from "@meridian/core";
+import type {
+  LogicFlows,
+  RequestTrace,
+  SyntheticExecution,
+  SyntheticFieldWatcher,
+  SyntheticInputOverride,
+} from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { logicNodeTypes } from "../nodes/logic/logicNodeTypes";
 import { logicEdgeTypes } from "../edges/AsyncRailEdge";
@@ -20,6 +26,41 @@ import { BaseNodeActionScope } from "../nodes/BaseNode";
 import { reviewFlowChanges, type ReviewFlowChange } from "../../derive/reviewFlowChanges";
 import { changedColor } from "../ChangedBadge";
 import { changedTextColor } from "../../theme/changedColors";
+import {
+  SYNTHETIC_ACTION_BUTTON_STYLE,
+  SYNTHETIC_ERROR_STYLE,
+  SyntheticAvailabilityNotice,
+  SyntheticInputEditor,
+} from "../synthetic/SyntheticExecutionControls";
+import {
+  useSyntheticExecutionController,
+  formatSyntheticInputJson,
+  type SyntheticExecutionController,
+} from "../synthetic/useSyntheticExecutionController";
+import { SyntheticFlowNavigator } from "../synthetic/SyntheticFlowNavigator";
+import { SyntheticDataInspector } from "../synthetic/SyntheticDataInspector";
+import { SyntheticRunInputPanel } from "../synthetic/SyntheticRunInputPanel";
+import { SyntheticRunImpactPanel } from "../synthetic/SyntheticRunImpactPanel";
+import { SyntheticExperimentSummary } from "../synthetic/SyntheticExperimentPanel";
+import {
+  adjacentSyntheticOccurrence,
+  selectedSyntheticOccurrenceIndex,
+  syntheticOccurrenceSteps,
+  type SyntheticOccurrenceStep,
+} from "../../synthetic/syntheticFlowModel";
+import { compareSyntheticExecutions } from "../../synthetic/syntheticExecutionComparison";
+import { LogicFlowOrientationProvider } from "../nodes/logic/LogicFlowOrientationContext";
+import type { LogicFlowOrientation } from "../../layout/logicElk";
+import { deriveObservedRequestRoute } from "../../derive/requestObservedRoute";
+import { ObservedRouteStrip } from "./ObservedRouteStrip";
+
+const EMPTY_INPUT_OVERRIDES: readonly SyntheticInputOverride[] = [];
+const EMPTY_FIELD_WATCHERS: readonly SyntheticFieldWatcher[] = [];
+
+export {
+  preferredSyntheticScenario,
+  syntheticScenariosForRoot,
+} from "../synthetic/useSyntheticExecutionController";
 
 interface FlowPaneFocusRequest {
   targetId: string;
@@ -37,21 +78,39 @@ export function FlowPane() {
   const flows = useLogicFlows();
   const environment = useBlueprint((state) => state.environment);
   const logicSelected = useBlueprint((state) => state.logicSelected);
+  const syntheticExecutionHost = useBlueprint((state) => state.syntheticExecutionHost);
+  const synthetic = useSyntheticExecutionController(
+    selection?.rootId ?? null,
+    syntheticExecutionHost ?? "flow-pane",
+  );
+  const syntheticExecution = synthetic.execution;
+  const syntheticSelectedMomentId = useBlueprint((state) => state.syntheticSelectedMomentId);
+  const syntheticFlowOrientation = useBlueprint((state) => state.syntheticFlowOrientation);
+  const syntheticFlowPresentation = useBlueprint((state) => state.syntheticFlowPresentation);
   const requestTrace = useBlueprint((state) => origin !== "request" || requestFlowTraceId === null
     ? null
     : state.requestTraces.find((trace) => trace.traceId === requestFlowTraceId) ?? null);
   const { selectFlowEntry, selectFlowPaneTarget, openLogicFlow } = useBlueprintActions();
   const [focusRequest, setFocusRequest] = useState<FlowPaneFocusRequest | null>(null);
+  const observedRequestRoute = useMemo(
+    () => requestTrace === null ? null : deriveObservedRequestRoute(requestTrace),
+    [requestTrace],
+  );
   const requestOpen = origin === "request" && requestTrace !== null;
-  if (!requestOpen && (selection === null || !flowPaneShouldRender(reviewActive, reviewOpenFlowSplitOnSelect))) {
+  const syntheticOpen = origin === "synthetic" && syntheticExecution !== null && selection !== null;
+  const executionOpen = requestOpen || syntheticOpen;
+  if (!executionOpen && (selection === null || !flowPaneShouldRender(reviewActive, reviewOpenFlowSplitOnSelect))) {
     return null;
   }
   const rootLabel = requestOpen
     ? "Request execution"
-    : index.nodesById.get(selection!.rootId)?.displayName ?? selection!.rootId;
-  const crumbs = requestOpen ? [] : blockBreadcrumbs(flows, selection!);
+    : syntheticOpen
+      ? "Synthetic execution"
+      : index.nodesById.get(selection!.rootId)?.displayName ?? selection!.rootId;
+  const crumbs = executionOpen ? [] : blockBreadcrumbs(flows, selection!);
   const requestContext = requestOpen ? requestFlowContext(requestTrace, environment) : null;
-  const presentation = requestOpen ? "graph" : flowPanePresentation(reviewActive, reviewFlowSplitView);
+  const syntheticContext = syntheticOpen ? requestFlowContext(syntheticExecution.trace, null) : null;
+  const presentation = executionOpen ? "graph" : flowPanePresentation(reviewActive, reviewFlowSplitView);
   const reviewChanges = reviewActive && selection !== null
     ? reviewFlowChanges(selection.rootId, stepsAt(flows, selection) ?? [], index)
     : [];
@@ -61,12 +120,17 @@ export function FlowPane() {
   };
   const viewKey = requestOpen
     ? `request:${requestTrace!.traceId}`
+    : syntheticOpen
+      ? `synthetic:${syntheticExecution.trace.traceId}:${syntheticExecution.generatedAt}:${syntheticSelectedMomentId ?? "none"}:${syntheticFlowOrientation}:${syntheticFlowPresentation}`
     : `${presentation}:${selectionKey(selection!)}`;
+  const canLaunchSynthetic = !requestOpen
+    && !syntheticOpen
+    && selection !== null;
   return (
     <aside
       id={reviewActive ? REVIEW_FLOW_SPLIT_ID : undefined}
       style={DRAWER}
-      aria-label={reviewActive ? "Logic flow review" : requestOpen ? "Selected request logic flow" : "Code flow"}
+      aria-label={reviewActive ? "Logic flow review" : requestOpen ? "Selected request logic flow" : syntheticOpen ? "Synthetic flow execution" : "Code flow"}
     >
       <header style={HEADER}>
         <div style={TITLE_ROW}>
@@ -75,12 +139,21 @@ export function FlowPane() {
           {reviewChanges.length > 0 ? (
             <FlowChangeNavigator changes={reviewChanges} selectedTarget={logicSelected} onFocus={focusChange} />
           ) : null}
-          {requestOpen ? null : (
+          {canLaunchSynthetic ? (
             <button
               type="button"
-              style={OPEN_BUTTON}
-              onClick={() => openLogicFlow(selection!.rootId)}
+              style={SYNTHETIC_ACTION_BUTTON_STYLE}
+              disabled={synthetic.status === "running"}
+              aria-expanded={synthetic.editorOpen}
+              onClick={synthetic.toggleEditor}
             >
+              {synthetic.buttonLabel}
+            </button>
+          ) : null}
+          {syntheticOpen ? (
+            <button type="button" style={OPEN_BUTTON} onClick={synthetic.clear}>Static flow</button>
+          ) : requestOpen ? null : (
+            <button type="button" style={OPEN_BUTTON} onClick={() => openLogicFlow(selection!.rootId)}>
               Open in Logic flow
             </button>
           )}
@@ -88,7 +161,51 @@ export function FlowPane() {
             ✕
           </button>
         </div>
-        {requestContext ? <RequestContext context={requestContext} /> : (
+        {synthetic.editorOpen && canLaunchSynthetic ? (
+          synthetic.canGenerate ? (
+            <SyntheticInputEditor
+              scenario={synthetic.scenario!}
+              scenarios={synthetic.scenarios}
+              value={synthetic.input}
+              status={synthetic.status}
+              error={synthetic.inputError ?? synthetic.error}
+              executionTrust={synthetic.executionTrust!}
+              sandboxConsent={synthetic.sandboxConsent}
+              onChange={synthetic.setInput}
+              onSandboxConsentChange={synthetic.setSandboxConsent}
+              onScenarioChange={synthetic.selectScenario}
+              onCancel={synthetic.cancelEditor}
+              onRun={synthetic.submit}
+            />
+          ) : (
+            <SyntheticAvailabilityNotice
+              message={synthetic.availabilityMessage ?? "Synthetic execution is unavailable for this flow."}
+              onClose={synthetic.cancelEditor}
+            />
+          )
+        ) : synthetic.error !== null && !syntheticOpen
+          ? <div style={SYNTHETIC_ERROR_STYLE} role="alert">{synthetic.error}</div>
+          : null}
+        {requestContext ? (
+          <>
+            <RequestContext context={requestContext} />
+            {observedRequestRoute === null ? null : (
+              <ObservedRouteStrip
+                route={observedRequestRoute}
+                labelForNode={(nodeId) => index.nodesById.get(nodeId)?.displayName}
+              />
+            )}
+          </>
+        ) : syntheticContext ? (
+          <RequestContext
+            context={syntheticContext}
+            eyebrow={synthetic.executionTrust?.mode === "sandboxed-pr"
+              ? "SYNTHETIC · UNTRUSTED PR SANDBOX"
+              : "SYNTHETIC · TRUSTED LOCAL RUN"}
+            warnings={syntheticExecution!.warnings}
+            observedEdgeLabel="observed execution path"
+          />
+        ) : (
           <nav style={BREADCRUMBS} aria-label="Selected flow block">
             <button type="button" style={CRUMB} onClick={() => selectFlowEntry(ancestorSelection(selection!, 0))}>
               {rootLabel}
@@ -105,7 +222,9 @@ export function FlowPane() {
         )}
       </header>
       <div style={BODY}>
-        {presentation === "graph" ? (
+        {syntheticOpen ? (
+          <SyntheticFlowPlayer execution={syntheticExecution!} controller={synthetic} />
+        ) : presentation === "graph" ? (
           <ReactFlowProvider key={viewKey}>
             <FlowPaneSurface focusRequest={focusRequest} />
           </ReactFlowProvider>
@@ -176,6 +295,207 @@ export function flowPanePresentation(
  * ordinary Code-flow explorer ignores this review preference and always keeps its pane. */
 export function flowPaneShouldRender(reviewActive: boolean, openFlowSplitOnSelect: boolean): boolean {
   return !reviewActive || openFlowSplitOnSelect;
+}
+
+function SyntheticFlowPlayer({
+  execution,
+  controller,
+}: {
+  execution: SyntheticExecution;
+  controller: SyntheticExecutionController;
+}) {
+  const index = useBlueprint((state) => state.index);
+  const scenarios = useBlueprint((state) => state.syntheticScenarios);
+  const previousExecution = useBlueprint((state) => state.syntheticPreviousExecution);
+  const experimentRootId = useBlueprint((state) => state.syntheticExperimentRootId);
+  // Keep store snapshots referentially stable. Returning a fresh [] from a Zustand selector makes
+  // React 19 correctly treat every getSnapshot call as a new state and can cause a render loop.
+  const stagedInputOverrides = useBlueprint((state) => state.syntheticInputOverrides);
+  const stagedFieldWatchers = useBlueprint((state) => state.syntheticFieldWatchers);
+  const inputOverrides = experimentRootId === execution.rootId ? stagedInputOverrides : EMPTY_INPUT_OVERRIDES;
+  const fieldWatchers = experimentRootId === execution.rootId ? stagedFieldWatchers : EMPTY_FIELD_WATCHERS;
+  const selectedId = useBlueprint((state) => state.syntheticSelectedMomentId);
+  const orientation = useBlueprint((state) => state.syntheticFlowOrientation);
+  const presentation = useBlueprint((state) => state.syntheticFlowPresentation);
+  const {
+    selectSyntheticMoment,
+    setSyntheticFlowOrientation,
+    setSyntheticFlowPresentation,
+    stageSyntheticInputOverride,
+    removeSyntheticInputOverride,
+    addSyntheticFieldWatcher,
+    removeSyntheticFieldWatcher,
+  } = useBlueprintActions();
+  const steps = useMemo(() => syntheticOccurrenceSteps(execution, index), [execution, index]);
+  const selectedIndex = selectedSyntheticOccurrenceIndex(steps, selectedId);
+  const selected = selectedIndex < 0 ? null : steps[selectedIndex] ?? null;
+  const scenario = scenarios.find((candidate) => candidate.id === execution.scenarioId);
+  const rootLabel = index.nodesById.get(execution.rootId)?.displayName ?? execution.rootId;
+  const comparison = useMemo(
+    () => previousExecution === null ? null : compareSyntheticExecutions(previousExecution, execution),
+    [execution, previousExecution],
+  );
+  const visibleComparison = controller.scenario?.id === execution.scenarioId ? comparison : null;
+  const selectedOverride = selected?.snapshot === null || selected?.snapshot === undefined
+    ? null
+    : inputOverrides.find((override) => override.target.nodeId === selected.snapshot!.nodeId
+      && override.target.occurrenceKey === selected.snapshot!.occurrenceKey) ?? null;
+  const selectedWatchers = selected?.snapshot === null || selected?.snapshot === undefined
+    ? []
+    : fieldWatchers.filter((watcher) => watcher.nodeId === selected.snapshot!.nodeId
+      && (watcher.occurrenceKey === undefined || watcher.occurrenceKey === selected.snapshot!.occurrenceKey));
+  const selectedWatchHit = selected === null
+    ? null
+    : execution.watchHits.find((hit) => hit.spanId === selected.spanId) ?? null;
+
+  const selectStep = (step: SyntheticOccurrenceStep | null) => {
+    if (step !== null) selectSyntheticMoment(step.id, step.nodeId);
+  };
+
+  return (
+    <div style={SYNTHETIC_PLAYER} data-synthetic-flow-player>
+      {controller.scenario === null ? null : (
+        <div style={syntheticExperimentRowStyle(visibleComparison !== null)}>
+          <SyntheticRunInputPanel
+            rootLabel={rootLabel}
+            scenario={controller.scenario}
+            scenarios={controller.scenarios}
+            value={controller.input}
+            currentInput={execution.input}
+            status={controller.status}
+            error={controller.inputError ?? controller.error}
+            executionTrust={controller.executionTrust!}
+            sandboxConsent={controller.sandboxConsent}
+            onChange={controller.setInput}
+            onSandboxConsentChange={controller.setSandboxConsent}
+            onScenarioChange={controller.selectScenario}
+            onReset={() => controller.setInput(formatSyntheticInputJson(execution.input))}
+            onRun={controller.submit}
+          />
+          {visibleComparison === null ? null : (
+            <SyntheticRunImpactPanel
+              comparison={visibleComparison}
+              selectedCurrentSpanId={selected?.spanId ?? null}
+              labelForNode={(nodeId) => index.nodesById.get(nodeId)?.displayName}
+              onSelectCurrentOccurrence={(spanId) => {
+                selectStep(steps.find((step) => step.spanId === spanId) ?? null);
+              }}
+            />
+          )}
+        </div>
+      )}
+      {experimentRootId !== execution.rootId ? null : (
+        <SyntheticExperimentSummary
+          overrides={inputOverrides}
+          watchers={fieldWatchers}
+          execution={execution}
+          onRemoveOverride={removeSyntheticInputOverride}
+          onRemoveWatcher={removeSyntheticFieldWatcher}
+        />
+      )}
+      <SyntheticFlowNavigator
+        steps={steps}
+        selectedId={selected?.id ?? null}
+        scenarioLabel={scenario?.label ?? execution.scenarioId}
+        rootLabel={rootLabel}
+        onSelect={(id) => selectStep(steps.find((step) => step.id === id) ?? null)}
+        onPrevious={() => selectStep(adjacentSyntheticOccurrence(steps, selected?.id ?? null, -1))}
+        onNext={() => selectStep(adjacentSyntheticOccurrence(steps, selected?.id ?? null, 1))}
+      />
+      <div style={SYNTHETIC_PLAYER_CONTENT}>
+        <section
+          style={SYNTHETIC_CANVAS_COLUMN}
+          aria-label={selected === null ? "Focused synthetic logic flow" : `Focused synthetic logic flow for ${selected.label}`}
+          data-synthetic-flow-orientation={orientation}
+          data-synthetic-flow-presentation={presentation}
+        >
+          <SyntheticFlowToolbar
+            selected={selected}
+            orientation={orientation}
+            presentation={presentation}
+            onOrientationChange={setSyntheticFlowOrientation}
+            onPresentationChange={setSyntheticFlowPresentation}
+          />
+          <div style={SYNTHETIC_CANVAS}>
+            <LogicFlowOrientationProvider value={presentation === "overview" ? "horizontal" : orientation}>
+              <ReactFlowProvider key={`${execution.trace.traceId}:${selected?.id ?? "none"}:${orientation}:${presentation}`}>
+                <FlowPaneSurface />
+              </ReactFlowProvider>
+            </LogicFlowOrientationProvider>
+          </div>
+        </section>
+        <div style={SYNTHETIC_INSPECTOR_COLUMN}>
+          <SyntheticDataInspector
+            occurrenceLabel={selected?.label ?? "No captured occurrence"}
+            snapshot={selected?.snapshot ?? null}
+            position={selectedIndex < 0 ? undefined : { current: selectedIndex + 1, total: steps.length }}
+            experiment={selected?.snapshot === null || selected?.snapshot === undefined ? undefined : {
+              activeOverride: selectedOverride,
+              watchers: selectedWatchers,
+              watchHit: selectedWatchHit,
+              onStageOverride: (override) => stageSyntheticInputOverride(execution.rootId, override),
+              onRemoveOverride: removeSyntheticInputOverride,
+              onAddWatcher: (watcher) => addSyntheticFieldWatcher(execution.rootId, watcher),
+              onRemoveWatcher: removeSyntheticFieldWatcher,
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SyntheticFlowToolbar({
+  selected,
+  orientation,
+  presentation,
+  onOrientationChange,
+  onPresentationChange,
+}: {
+  selected: SyntheticOccurrenceStep | null;
+  orientation: LogicFlowOrientation;
+  presentation: "focused" | "overview";
+  onOrientationChange(orientation: LogicFlowOrientation): void;
+  onPresentationChange(presentation: "focused" | "overview"): void;
+}) {
+  return (
+    <div style={SYNTHETIC_CANVAS_TOOLBAR}>
+      <div style={SYNTHETIC_SELECTED_META}>
+        <strong style={SYNTHETIC_SELECTED_NAME}>{selected?.label ?? "No captured flow"}</strong>
+        {selected === null ? null : (
+          <span style={SYNTHETIC_SELECTED_DETAIL}>
+            <span style={statusStyle(selected.status)}>{selected.status}</span>
+            <span>{formatRequestDuration(selected.durationMs)}</span>
+          </span>
+        )}
+      </div>
+      <div style={DISPLAY_CONTROLS}>
+        {presentation === "focused" ? (
+          <div style={ORIENTATION_CONTROL} role="group" aria-label="Focused flow orientation">
+            {(["vertical", "horizontal"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                style={orientationButtonStyle(value === orientation)}
+                aria-pressed={value === orientation}
+                onClick={() => onOrientationChange(value)}
+              >
+                {value === "vertical" ? "Vertical" : "Horizontal"}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <button
+          type="button"
+          style={overviewButtonStyle(presentation === "overview")}
+          aria-pressed={presentation === "overview"}
+          onClick={() => onPresentationChange(presentation === "overview" ? "focused" : "overview")}
+        >
+          {presentation === "overview" ? "Focused flow" : "Full request"}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 type AlternateFlowPaneMode = Exclude<ReviewFlowSplitView, "graph">;
@@ -284,10 +604,20 @@ export function requestFlowContext(
   };
 }
 
-function RequestContext({ context }: { context: RequestFlowContext }) {
+function RequestContext({
+  context,
+  eyebrow = "REQUEST",
+  warnings = [],
+  observedEdgeLabel = "telemetry path",
+}: {
+  context: RequestFlowContext;
+  eyebrow?: string;
+  warnings?: readonly string[];
+  observedEdgeLabel?: string;
+}) {
   return (
     <div style={REQUEST_CONTEXT} aria-label="Selected request context">
-      <span style={REQUEST_EYEBROW}>REQUEST</span>
+      <span style={REQUEST_EYEBROW}>{eyebrow}</span>
       <span style={REQUEST_NAME} title={context.requestName}>{context.requestName}</span>
       {context.environment ? <span style={REQUEST_CHIP}>{context.environment}</span> : null}
       <span style={REQUEST_CHIP}>{context.status}</span>
@@ -295,9 +625,10 @@ function RequestContext({ context }: { context: RequestFlowContext }) {
       <span style={REQUEST_CHIP}>{context.spanCount} span{context.spanCount === 1 ? "" : "s"}</span>
       <span style={REQUEST_CHIP}>{context.eventCount} event{context.eventCount === 1 ? "" : "s"}</span>
       <span style={REQUEST_CHIP}>{context.complete ? "complete" : "partial"}</span>
+      {warnings.length > 0 ? <span style={SYNTHETIC_WARNING} title={warnings.join("\n")}>{warnings.length} warning{warnings.length === 1 ? "" : "s"}</span> : null}
       <span style={REQUEST_EDGE_LEGEND} aria-label="Request flow edge legend">
-        <span style={REQUEST_EDGE_KEY} title="Captured telemetry causality">
-          <span style={REQUEST_EDGE_OBSERVED_SWATCH} /> telemetry path
+        <span style={REQUEST_EDGE_KEY} title={observedEdgeLabel === "telemetry path" ? "Captured telemetry causality" : "Captured synthetic execution causality"}>
+          <span style={REQUEST_EDGE_OBSERVED_SWATCH} /> {observedEdgeLabel}
         </span>
         <span style={REQUEST_EDGE_KEY} title="Static code edge without an exact telemetry join">
           <span style={REQUEST_EDGE_CONTEXT_SWATCH} /> code context
@@ -332,13 +663,21 @@ function formatRequestDuration(durationMs: number): string {
   return `${durationMs.toFixed(2)}ms`;
 }
 
-function FlowPaneSurface({ focusRequest }: { focusRequest: FlowPaneFocusRequest | null }) {
+function FlowPaneSurface({ focusRequest = null }: { focusRequest?: FlowPaneFocusRequest | null }) {
   const nodes = useBlueprint((state) => state.flowPaneRfNodes);
   const edges = useBlueprint((state) => state.flowPaneRfEdges);
   const status = useBlueprint((state) => state.flowPaneLayoutStatus);
   const logicSelected = useBlueprint((state) => state.logicSelected);
-  const requestOpen = useBlueprint((state) => state.flowPaneOrigin === "request");
-  const { selectFlowPaneTarget, toggleFlowPaneExpand, toggleRequestFlowExpand } = useBlueprintActions();
+  const executionOpen = useBlueprint((state) => state.flowPaneOrigin === "request" || state.flowPaneOrigin === "synthetic");
+  const syntheticOpen = useBlueprint((state) => state.flowPaneOrigin === "synthetic");
+  const syntheticPresentation = useBlueprint((state) => state.syntheticFlowPresentation);
+  const {
+    selectFlowPaneTarget,
+    selectSyntheticMoment,
+    toggleFlowPaneExpand,
+    toggleRequestFlowExpand,
+  } = useBlueprintActions();
+  const focusedSynthetic = syntheticOpen && syntheticPresentation === "focused";
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const fittedNodes = useRef<readonly Node[] | null>(null);
   // A request trace is mounted under its own ReactFlowProvider key, so this ref naturally resets
@@ -351,10 +690,10 @@ function FlowPaneSurface({ focusRequest }: { focusRequest: FlowPaneFocusRequest 
       return;
     }
     fittedNodes.current = nodes;
-    if (!shouldAutoFitFlowPane(requestOpen, requestInitialFitDone.current)) {
+    if (!shouldAutoFitFlowPane(executionOpen, requestInitialFitDone.current)) {
       return;
     }
-    if (requestOpen) {
+    if (executionOpen) {
       requestInitialFitDone.current = true;
     }
     requestAnimationFrame(() => {
@@ -364,11 +703,30 @@ function FlowPaneSurface({ focusRequest }: { focusRequest: FlowPaneFocusRequest 
       // Nested static Exec bodies are emitted immediately after their runtime parent. Fit the first
       // five TOP-LEVEL request moments, not the first five raw RF nodes, so an expanded callable is
       // treated as one readable unit and the opening camera still advances along the request.
-      const requestMoments = requestOpen ? nodes.filter((node) => node.parentId === undefined) : nodes;
-      const openingNodes = requestOpen ? requestMoments.slice(0, Math.min(requestMoments.length, 5)) : nodes;
+      const requestMoments = executionOpen ? nodes.filter((node) => node.parentId === undefined) : nodes;
+      const focusedRoot = focusedSynthetic ? requestMoments[0] : undefined;
+      const focusedChildren = focusedRoot === undefined
+        ? []
+        : nodes.filter((node) => node.parentId === focusedRoot.id)
+          .slice(0, 2);
+      const openingNodes = focusedSynthetic
+        ? focusedChildren.length > 0 ? focusedChildren : requestMoments.slice(0, 1)
+        : executionOpen
+          ? requestMoments.slice(0, Math.min(requestMoments.length, 5))
+          : nodes;
+      if (focusedSynthetic && focusedChildren.length > 0) {
+        const center = focusedOpeningCenter(focusedChildren, nodes);
+        void instance.setCenter(center.x, center.y, { zoom: 1, duration: 0 });
+        return;
+      }
       // #182's explicit joins and async rails make the opening request bounds taller. Let fitView
       // zoom out far enough to keep title controls inside the usable canvas below the pane header.
-      void instance.fitView({ nodes: openingNodes, padding: 0.16, minZoom: requestOpen ? 0.42 : undefined, maxZoom: 1.25 });
+      void instance.fitView({
+        nodes: openingNodes,
+        padding: focusedSynthetic ? 0.24 : 0.16,
+        minZoom: focusedSynthetic ? 0.78 : executionOpen ? 0.42 : undefined,
+        maxZoom: focusedSynthetic ? 1.1 : 1.25,
+      });
     });
   };
 
@@ -404,7 +762,7 @@ function FlowPaneSurface({ focusRequest }: { focusRequest: FlowPaneFocusRequest 
   if (nodes.length === 0 && status === "ready") {
     return (
       <GraphSurface>
-        <PaneMessage mark="∅" text={requestOpen ? "No execution steps were captured for this request." : "This block has no charted call flow."} />
+        <PaneMessage mark="∅" text={executionOpen ? "No execution steps were captured for this run." : "This block has no charted call flow."} />
       </GraphSurface>
     );
   }
@@ -415,7 +773,7 @@ function FlowPaneSurface({ focusRequest }: { focusRequest: FlowPaneFocusRequest 
     <GraphSurface>
       <BaseNodeActionScope
         toggleExpand={(model) => {
-          if (requestOpen) {
+          if (executionOpen) {
             toggleRequestFlowExpand(model.instanceId);
           } else {
             toggleFlowPaneExpand(model.instanceId);
@@ -423,10 +781,14 @@ function FlowPaneSurface({ focusRequest }: { focusRequest: FlowPaneFocusRequest 
         }}
       >
         <ReactFlow<Node, Edge>
+          {...READONLY_CANVAS_PROPS}
           nodes={nodes}
           edges={edges}
           nodeTypes={logicNodeTypes}
           edgeTypes={logicEdgeTypes}
+          fitViewOptions={focusedSynthetic ? { padding: 0.2, minZoom: 0.78, maxZoom: 1.5 } : READONLY_CANVAS_PROPS.fitViewOptions}
+          minZoom={focusedSynthetic ? 0.78 : READONLY_CANVAS_PROPS.minZoom}
+          maxZoom={focusedSynthetic ? 1.5 : READONLY_CANVAS_PROPS.maxZoom}
           onInit={(instance) => {
             rfRef.current = instance;
             fittedNodes.current = null;
@@ -434,14 +796,22 @@ function FlowPaneSurface({ focusRequest }: { focusRequest: FlowPaneFocusRequest 
           }}
           onNodeClick={(_event, node) => {
             const target = artifactTargetOf(node);
+            if (syntheticOpen) {
+              const runtime = (node.data as Partial<LogicNodeData>).runtime;
+              if (runtime !== undefined) {
+                selectSyntheticMoment(node.id, target);
+              } else if (target !== null) {
+                selectFlowPaneTarget(target);
+              }
+              return;
+            }
             if (target !== null) {
               // Request occurrences always reveal their exact mapped artifact node. Static/review flows
               // retain their historical toggle-by-target behavior through `logicSelected`.
-              selectFlowPaneTarget(requestOpen ? target : target === logicSelected ? null : target);
+              selectFlowPaneTarget(executionOpen ? target : target === logicSelected ? null : target);
             }
           }}
           onPaneClick={() => selectFlowPaneTarget(null)}
-          {...READONLY_CANVAS_PROPS}
         >
           <CanvasChrome nodeColor={miniMapColor} />
         </ReactFlow>
@@ -459,6 +829,41 @@ function GraphSurface(props: { children: React.ReactNode }) {
  * behavior. Exported only as a pure policy seam for the focused regression test. */
 export function shouldAutoFitFlowPane(requestOpen: boolean, requestInitialFitDone: boolean): boolean {
   return !requestOpen || !requestInitialFitDone;
+}
+
+/** React Flow stores nested child positions relative to their containers. Center the first two
+ * focused steps at reading zoom without fitting the selected callable's entire (possibly very long)
+ * container back into a thumbnail. */
+export function focusedOpeningCenter(
+  openingNodes: readonly Node[],
+  allNodes: readonly Node[],
+): { x: number; y: number } {
+  const byId = new Map(allNodes.map((node) => [node.id, node]));
+  const rects = openingNodes.map((node) => absoluteNodeRect(node, byId));
+  const left = Math.min(...rects.map((rect) => rect.x));
+  const top = Math.min(...rects.map((rect) => rect.y));
+  const right = Math.max(...rects.map((rect) => rect.x + rect.width));
+  const bottom = Math.max(...rects.map((rect) => rect.y + rect.height));
+  return { x: (left + right) / 2, y: (top + bottom) / 2 };
+}
+
+function absoluteNodeRect(
+  node: Node,
+  byId: ReadonlyMap<string, Node>,
+): { x: number; y: number; width: number; height: number } {
+  let x = node.position.x;
+  let y = node.position.y;
+  let parentId = node.parentId;
+  const visited = new Set<string>();
+  while (parentId !== undefined && !visited.has(parentId)) {
+    visited.add(parentId);
+    const parent = byId.get(parentId);
+    if (parent === undefined) break;
+    x += parent.position.x;
+    y += parent.position.y;
+    parentId = parent.parentId;
+  }
+  return { x, y, width: node.width ?? 0, height: node.height ?? 0 };
 }
 
 /** Static call blocks and request runtime moments map directly to their artifact target. Structural
@@ -592,6 +997,7 @@ const REQUEST_CONTEXT: React.CSSProperties = { display: "flex", alignItems: "cen
 const REQUEST_EYEBROW: React.CSSProperties = { color: "#58C9A3", fontSize: 9, fontWeight: 750, letterSpacing: "0.09em" };
 const REQUEST_NAME: React.CSSProperties = { minWidth: 0, maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#AAB6C5" };
 const REQUEST_CHIP: React.CSSProperties = { flexShrink: 0, border: "1px solid #2A3742", borderRadius: 999, padding: "1px 6px", color: "#8FA0B2" };
+const SYNTHETIC_WARNING: React.CSSProperties = { ...REQUEST_CHIP, borderColor: "#66542E", color: "#D4B56A" };
 const REQUEST_EDGE_LEGEND: React.CSSProperties = { marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flexShrink: 0, color: "#788898", fontSize: 9 };
 const REQUEST_EDGE_KEY: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" };
 const REQUEST_EDGE_OBSERVED_SWATCH: React.CSSProperties = { width: 18, height: 0, borderTop: "3px solid #C8D3E0", borderRadius: 999, filter: "drop-shadow(0 0 3px rgba(88, 201, 163, 0.95))" };
@@ -611,6 +1017,137 @@ const CRUMB: React.CSSProperties = {
 };
 const BODY: React.CSSProperties = { position: "relative", flex: 1, minHeight: 0 };
 const SURFACE_FILL: React.CSSProperties = { position: "relative", width: "100%", height: "100%" };
+const SYNTHETIC_PLAYER: React.CSSProperties = {
+  width: "100%",
+  height: "100%",
+  minWidth: 0,
+  minHeight: 0,
+  display: "grid",
+  gridTemplateRows: "auto auto minmax(0, 1fr)",
+  gap: 8,
+  padding: 8,
+  boxSizing: "border-box",
+  overflow: "hidden",
+  background: "#090C11",
+};
+function syntheticExperimentRowStyle(hasComparison: boolean): React.CSSProperties {
+  return {
+    minWidth: 0,
+    maxHeight: "min(34vh, 270px)",
+    display: "grid",
+    gridTemplateColumns: hasComparison
+      ? "minmax(430px, 1.25fr) minmax(300px, 0.8fr)"
+      : "minmax(0, 1fr)",
+    gap: 8,
+    overflow: "auto",
+    overscrollBehavior: "contain",
+  };
+}
+const SYNTHETIC_PLAYER_CONTENT: React.CSSProperties = {
+  minWidth: 0,
+  minHeight: 0,
+  display: "grid",
+  gridTemplateColumns: "minmax(360px, 1.55fr) minmax(300px, 0.9fr)",
+  gap: 8,
+};
+const SYNTHETIC_CANVAS_COLUMN: React.CSSProperties = {
+  minWidth: 0,
+  minHeight: 0,
+  display: "grid",
+  gridTemplateRows: "auto minmax(0, 1fr)",
+  overflow: "hidden",
+  border: "1px solid #27313C",
+  borderRadius: 8,
+  background: FLOW_COLORS.canvas,
+};
+const SYNTHETIC_CANVAS_TOOLBAR: React.CSSProperties = {
+  minWidth: 0,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 10,
+  padding: "7px 9px",
+  borderBottom: "1px solid #202833",
+  background: "#0E131A",
+  fontFamily: MONO,
+};
+const SYNTHETIC_SELECTED_META: React.CSSProperties = {
+  minWidth: 0,
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+};
+const SYNTHETIC_SELECTED_NAME: React.CSSProperties = {
+  minWidth: 0,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  color: "#E3EBF2",
+  fontSize: 11,
+};
+const SYNTHETIC_SELECTED_DETAIL: React.CSSProperties = {
+  flexShrink: 0,
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  color: "#8795A4",
+  fontSize: 9,
+  fontVariantNumeric: "tabular-nums",
+};
+const DISPLAY_CONTROLS: React.CSSProperties = { flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 6 };
+const ORIENTATION_CONTROL: React.CSSProperties = {
+  flexShrink: 0,
+  display: "inline-flex",
+  padding: 2,
+  border: "1px solid #2B3541",
+  borderRadius: 6,
+  background: "#090D12",
+};
+const SYNTHETIC_CANVAS: React.CSSProperties = { position: "relative", minWidth: 0, minHeight: 0 };
+const SYNTHETIC_INSPECTOR_COLUMN: React.CSSProperties = { minWidth: 0, minHeight: 0, overflow: "hidden" };
+
+function orientationButtonStyle(selected: boolean): React.CSSProperties {
+  return {
+    minWidth: 74,
+    border: "none",
+    borderRadius: 4,
+    background: selected ? "#58C9A3" : "transparent",
+    color: selected ? "#07120E" : "#8C9AAA",
+    padding: "4px 8px",
+    fontFamily: MONO,
+    fontSize: 9,
+    fontWeight: selected ? 750 : 600,
+    cursor: "pointer",
+  };
+}
+
+function overviewButtonStyle(selected: boolean): React.CSSProperties {
+  return {
+    minWidth: 88,
+    border: selected ? "1px solid #58C9A377" : "1px solid transparent",
+    borderRadius: 4,
+    background: selected ? "rgba(88,201,163,0.1)" : "transparent",
+    color: selected ? "#8DE0C2" : "#9AA8B7",
+    padding: "3px 8px",
+    fontFamily: MONO,
+    fontSize: 9,
+    fontWeight: 650,
+    cursor: "pointer",
+  };
+}
+
+function statusStyle(status: SyntheticOccurrenceStep["status"]): React.CSSProperties {
+  const color = status === "error" ? "#F0787C" : status === "ok" ? "#65D5AE" : "#8B98A6";
+  return {
+    border: `1px solid ${color}66`,
+    borderRadius: 999,
+    background: `${color}12`,
+    color,
+    padding: "1px 5px",
+    fontSize: 8,
+    textTransform: "uppercase",
+  };
+}
 const ALTERNATE_SURFACE: React.CSSProperties = {
   ...SURFACE_FILL,
   overflow: "auto",

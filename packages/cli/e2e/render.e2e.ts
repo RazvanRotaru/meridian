@@ -253,8 +253,15 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     await requestOverlay.getByRole("button", { name: "Show selected request logic flow" }).click();
     const requestFlow = page.getByRole("complementary", { name: "Selected request logic flow" });
     await requestFlow.waitFor({ timeout: 30_000 });
-    await requestFlow.getByText("sendOrderConfirmation", { exact: true }).waitFor();
-    expect(await requestFlow.getByText("RepositoryTimeout", { exact: false }).count()).toBe(0);
+    const requestFlowNodes = requestFlow.locator(".react-flow__nodes");
+    const runtimeSpan = (target: string) => requestFlow.locator(
+      `[data-request-runtime-kind="span"][data-request-runtime-target="${target}"]`,
+    );
+    const sendOrderConfirmation = runtimeSpan(
+      "ts:src/notifications/emailService.ts#EmailService.sendOrderConfirmation",
+    );
+    await sendOrderConfirmation.waitFor();
+    expect(await requestFlowNodes.getByText("RepositoryTimeout", { exact: false }).count()).toBe(0);
     const observedRequestEdges = requestFlow.locator(
       '.request-flow-edge--observed[data-request-flow-evidence="observed"]',
     );
@@ -282,7 +289,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     expect(await requestFlow.locator(
       '.request-flow-edge--observed[data-request-flow-basis="branch-path"][data-request-flow-site-id="validate:lines"][data-request-flow-path-ids="else"]',
     ).count()).toBe(1);
-    await requestFlow.getByText("assertLineIsSane", { exact: true }).waitFor();
+    await requestFlowNodes.getByText("assertLineIsSane", { exact: true }).waitFor();
     for (const absorbedEventId of ["s-customer", "s-lines", "s-lines-loop"]) {
       expect(await requestFlow.locator(`.react-flow__node[data-id="request:11111111111111111111111111111111:event:1000000000000003:${absorbedEventId}"]`).count()).toBe(0);
     }
@@ -333,7 +340,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     await page.locator('.react-flow__node[data-id="ts:src/services/orderService.ts#OrderService.placeOrder"]').click();
     await page.waitForTimeout(350);
     expect(await requestFlow.isVisible()).toBe(true);
-    expect(await requestFlow.getByText("sendOrderConfirmation", { exact: true }).count()).toBe(1);
+    expect(await sendOrderConfirmation.count()).toBe(1);
 
     // Nested expansion uses the same source/path contract. This request reaches two implicit
     // fallthroughs inside assertLineIsSane before taking the negative-price throw arm.
@@ -373,9 +380,9 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     await requestFlow.getByLabel("Selected request context")
       .getByText("POST /orders — missing customer", { exact: true })
       .waitFor();
-    await expect.poll(() => requestFlow.getByText("sendOrderConfirmation", { exact: true }).count()).toBe(0);
-    await expect.poll(() => requestFlow.getByText("price", { exact: true }).count()).toBe(0);
-    expect(await requestFlow.getByText("toErrorResponse", { exact: true }).count()).toBe(1);
+    await expect.poll(() => sendOrderConfirmation.count()).toBe(0);
+    await expect.poll(() => runtimeSpan("ts:src/pricing/pricingService.ts#PricingService.price").count()).toBe(0);
+    expect(await runtimeSpan("ts:src/api/orderRoutes.ts#OrderRoutes.toErrorResponse").count()).toBe(1);
     for (const id of [
       "ts:src/pricing/pricingService.ts#PricingService.price",
       "ts:src/repository/orderRepository.ts#OrderRepository.save",

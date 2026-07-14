@@ -29,6 +29,9 @@ export interface ElkNestAdapter<T> {
   containerMinSize?(node: T): { width: number; height: number } | null;
   /** Layout options for child container subgraphs. NEVER includes `hierarchyHandling` (root-only). */
   containerOptions: Record<string, string>;
+  /** Optional node-specific override, used when a container's visible chrome needs more room than
+   * the pipeline default (for example synthetic IN/OUT snapshot rows under a runtime title). */
+  containerOptionsFor?(node: T): Record<string, string> | null;
 }
 
 type ElkNestEdge = { id: string; source: string; target: string };
@@ -59,12 +62,13 @@ function toElkNode<T>(node: T, adapter: ElkNestAdapter<T>): ElkNode {
 /** Container options, plus an ELK size floor when the adapter supplies one — so a frame is never laid
  * out narrower than its own title bar (ELK sizes a compound node to its children otherwise). */
 function containerLayoutOptions<T>(node: T, adapter: ElkNestAdapter<T>): Record<string, string> {
+  const base = adapter.containerOptionsFor?.(node) ?? adapter.containerOptions;
   const min = adapter.containerMinSize?.(node);
   if (!min) {
-    return adapter.containerOptions;
+    return base;
   }
   return {
-    ...adapter.containerOptions,
+    ...base,
     "elk.nodeSize.constraints": "MINIMUM_SIZE",
     "elk.nodeSize.minimum": `(${Math.round(min.width)},${Math.round(min.height)})`,
   };

@@ -6,6 +6,7 @@
  * rather than letting the SPA infer an environment.
  */
 
+import type { SyntheticScenarioDescriptor } from "@meridian/core";
 import {
   hasOverlay,
   overlayKind,
@@ -21,8 +22,9 @@ export function injectBootScript(
   overlay: OverlaySource,
   preselectedEnv: string | null,
   sourceRoot: string | null,
+  syntheticScenarios: SyntheticScenarioDescriptor[] | null = null,
 ): string {
-  const script = `<script>window.__MERIDIAN__=${escapeForScript(bootJson(overlay, preselectedEnv, sourceRoot))}</script>`;
+  const script = `<script>window.__MERIDIAN__=${escapeForScript(bootJson(overlay, preselectedEnv, sourceRoot, syntheticScenarios))}</script>`;
   if (html.includes(HEAD_CLOSE)) {
     return html.replace(HEAD_CLOSE, `${script}${HEAD_CLOSE}`);
   }
@@ -35,13 +37,20 @@ function escapeForScript(json: string): string {
   return json.replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
 }
 
-function bootJson(overlay: OverlaySource, preselectedEnv: string | null, sourceRoot: string | null): string {
+function bootJson(
+  overlay: OverlaySource,
+  preselectedEnv: string | null,
+  sourceRoot: string | null,
+  syntheticScenarios: SyntheticScenarioDescriptor[] | null,
+): string {
   return JSON.stringify({
     graphUrl: "/api/graph",
     metaUrl: "/api/meta",
     overlayUrl: "/api/overlay",
     traceUrl: "/api/traces",
     sourceUrl: sourceRoot ? "/api/source" : null,
+    syntheticExecutionUrl: syntheticScenarios === null ? null : "/api/synthetic-executions",
+    syntheticScenarios: syntheticScenarios ?? [],
     hasOverlay: hasOverlay(overlay),
     overlayKind: overlayKind(overlay),
     telemetrySources: telemetrySourceDescriptors(overlay, preselectedEnv),
