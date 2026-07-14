@@ -255,6 +255,7 @@ export function restorePrReviewBaseline(
     reviewActiveGroupId: null,
     reviewPathScope: null,
     reviewFocusedSubgraph: null,
+    minimalGraphHistory: [],
     reviewAllSeedIds: [],
     prReviewed: null,
     prReviewSource: null,

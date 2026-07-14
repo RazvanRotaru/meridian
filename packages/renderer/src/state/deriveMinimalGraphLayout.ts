@@ -110,11 +110,40 @@ export function filterMinimalSubgraph(
   spec: MinimalSubgraphSpec,
   visibleIds: ReadonlySet<string>,
 ): MinimalSubgraphSpec {
+  const syntheticMemberOwners = spec.syntheticMemberOwners ?? new Map<string, string>();
+  const visibleSyntheticMembers = new Set(
+    [...syntheticMemberOwners]
+      .filter(([, ownerId]) => visibleIds.has(ownerId))
+      .map(([id]) => id),
+  );
   const expansions = spec.expansions.flatMap((expansion) => {
-    if (!visibleIds.has(expansion.fileId)) {
+    const syntheticVisible = expansion.artifactOwnerId !== undefined
+      && visibleIds.has(expansion.artifactOwnerId);
+    if (!visibleIds.has(expansion.fileId) && !syntheticVisible) {
       return [];
     }
-    const nodes = expansion.nodes.filter((node) => visibleIds.has(node.id));
+    const selectedSubtree = new Set(
+      expansion.nodes
+        .filter((node) => visibleSyntheticMembers.has(node.id))
+        .map((node) => node.id),
+    );
+    for (const node of expansion.nodes) {
+      if (selectedSubtree.has(node.parentId ?? "")) {
+        selectedSubtree.add(node.id);
+      }
+    }
+    const parentById = new Map(expansion.nodes.map((node) => [node.id, node.parentId]));
+    const selectedPaths = new Set(selectedSubtree);
+    for (const selectedId of selectedSubtree) {
+      let parentId = parentById.get(selectedId) ?? null;
+      while (parentId !== null && !selectedPaths.has(parentId)) {
+        selectedPaths.add(parentId);
+        parentId = parentById.get(parentId) ?? null;
+      }
+    }
+    const nodes = syntheticVisible
+      ? expansion.nodes
+      : expansion.nodes.filter((node) => visibleIds.has(node.id) || selectedPaths.has(node.id));
     const retained = new Set(nodes.map((node) => node.id));
     return [{
       ...expansion,
@@ -122,10 +151,19 @@ export function filterMinimalSubgraph(
       edges: expansion.edges.filter((edge) => retained.has(edge.source) && retained.has(edge.target)),
     }];
   });
+  // Outer cross-root edges may target a selected synthetic node embedded in an artifact-root
+  // expansion, so every node that survived expansion filtering participates in endpoint retention.
+  const retainedExpansionIds = new Set(
+    expansions.flatMap((expansion) => expansion.nodes.map((node) => node.id)),
+  );
+  const retainedIds = new Set([...visibleIds, ...retainedExpansionIds]);
   return {
-    nodes: spec.nodes.filter((node) => visibleIds.has(node.id)),
-    edges: spec.edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)),
+    nodes: spec.nodes.filter((node) => retainedIds.has(node.id)),
+    edges: spec.edges.filter((edge) => retainedIds.has(edge.source) && retainedIds.has(edge.target)),
     expansions,
+    syntheticMemberOwners: new Map(
+      [...syntheticMemberOwners].filter(([id]) => retainedIds.has(id)),
+    ),
   };
 }
 

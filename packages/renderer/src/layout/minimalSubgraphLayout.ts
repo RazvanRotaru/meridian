@@ -176,6 +176,10 @@ function minimalEdgeParticipatesInLayout(
   edge: MinimalSubgraphEdge,
   relationPolicy: LensRelationPolicy,
 ): boolean {
+  // Execution order always shapes nested Map layout, independent of the semantic-relation lens.
+  if (edge.kind === "flow") {
+    return true;
+  }
   const kind = edge.kind === "import" ? "imports" : edge.depKind;
   return kind !== undefined && relationParticipatesInLayout(relationPolicy, kind);
 }
@@ -319,8 +323,10 @@ function emitCards(
       edges.push(...laid.edges);
     } else if (card.kind === "group") {
       nodes.push(toGroupCardNode(card, rect));
-    } else {
+    } else if (card.kind === "file") {
       nodes.push(toFileNode(card, rect));
+    } else {
+      nodes.push(toExactCodeNode(card, rect));
     }
   }
   return { nodes, edges };
@@ -348,6 +354,19 @@ function toFileNode(node: MinimalSubgraphNode, rect: PlacedRect): Node {
   };
 }
 
+// Exact declaration and synthetic-step members normally arrive through a one-root canonical Map
+// expansion. Keep this direct emitter as a truthful fallback so a future filtered expansion cannot
+// silently turn the member back into a file/package card.
+function toExactCodeNode(node: MinimalSubgraphNode, rect: PlacedRect): Node {
+  return {
+    id: node.id,
+    type: node.kind,
+    position: { x: rect.x, y: rect.y },
+    style: { width: rect.width, height: rect.height },
+    data: { ...node.data, tier: node.tier },
+  };
+}
+
 // A group member is the Map's own `package` card at an absolute position — ONE card, never a frame
 // of files. `readOnly` hides the (unmeaningful in a subgraph) coupling counts. Expandability is
 // already carried by the ordinary ModuleGroupData contract; the shared chevron owns disclosure.
@@ -367,6 +386,20 @@ function toRfEdge(edge: MinimalSubgraphEdge): Edge {
   // `data` is the map's edge shape that chain reads. Preserve the ghost bit so the shared paint
   // pruner shows only satellites attached to the current selection. This is what turns the raw ring
   // derived from every current member into an on-demand, member-by-member exploration frontier.
+  if (edge.kind === "flow") {
+    return {
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      data: {
+        weight: edge.weight,
+        crossFrame: edge.crossFrame,
+        crossPackage: edge.crossPackage,
+        outsideView: edge.outsideView,
+        category: "flow",
+      },
+    };
+  }
   if (edge.kind === "dep") {
     return {
       id: edge.id,

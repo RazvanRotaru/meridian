@@ -190,7 +190,11 @@ export function flowChainEdges(walk: CodeWalk) {
 /** A resolved call step's wire OUT to its target's drawn definition (dropped when the target lifts
  * back into the step's own block — a recursive call needs no wire to its own frame). Constructions
  * arrive already resolved to the constructor block (the emitter's resolveTarget). */
-export function stepCallEdges(walk: CodeWalk, visibleIds: ReadonlySet<string>, index: GraphIndex) {
+export function stepCallEdges(
+  walk: { calls: ReadonlyArray<CodeWalk["calls"][number]> },
+  visibleIds: ReadonlySet<string>,
+  index: GraphIndex,
+) {
   const edges = [];
   for (const call of walk.calls) {
     const target = nearestVisible(call.target, visibleIds, index);

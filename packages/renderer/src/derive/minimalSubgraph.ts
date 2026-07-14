@@ -22,14 +22,22 @@ import { categorize } from "./moduleCategory";
 import { normalizePath } from "./matchAffectedFiles";
 import { collapseChains, type ChainCollapse } from "./collapseChains";
 import { subtreeFileCount } from "./moduleFrontier";
-import type { ModuleCardData } from "./moduleLevel";
+import type { BlockData, ModuleCardData, UnitCardData } from "./moduleLevel";
 import type { ModulePackageData } from "./packageOverview";
 import type { ModuleGroupData } from "./moduleTree";
-import type { BlockDeps } from "./blockDeps";
-import { depWireEdges } from "./codeWalk";
+import { BLOCK_KINDS, UNIT_CARD_KINDS, constructionTarget, type BlockDeps } from "./blockDeps";
+import type { StepData } from "./flowSteps";
+import { depWireEdges, stepCallEdges } from "./codeWalk";
 import { ghostDepWires, withoutHidden, type GhostData, type GhostEmission } from "./ghostDeps";
 import { crossesPackageBoundary, underlyingEdgesCrossPackage } from "./packageBoundary";
-import { walkFileCode, type FileCodeWalk, type MinimalExpansion } from "./minimalExpansion";
+import {
+  walkCodeRoot,
+  walkFileCode,
+  walkFlowStepRoot,
+  visibleFlowChainEdges,
+  type FileCodeWalk,
+  type MinimalExpansion,
+} from "./minimalExpansion";
 
 const MODULE_KIND = "module";
 const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
@@ -38,13 +46,13 @@ export type MinimalTier = "seed" | "persistent";
 
 export interface MinimalSubgraphNode {
   id: string;
-  kind: "group" | "file" | "ghost";
+  kind: "group" | "file" | "unit" | "block" | "step" | "ghost";
   parentId: string | null;
   /** Member LEAF cards (a file, or a group member) carry their tier; frames and ghosts leave it null. */
   tier: MinimalTier | null;
   /** Joined path segments when this frame is a collapsed package chain. */
   collapsedLabel?: string;
-  data: ModuleCardData | ModulePackageData | ModuleGroupData | GhostData;
+  data: ModuleCardData | ModulePackageData | ModuleGroupData | UnitCardData | BlockData | StepData | GhostData;
 }
 
 export interface MinimalSubgraphEdge {
@@ -52,8 +60,8 @@ export interface MinimalSubgraphEdge {
   source: string;
   target: string;
   weight: number;
-  /** "import"/"dep" wires both connect two drawn boxes; the paint colours each by kind. */
-  kind: "import" | "dep";
+  /** Every wire connects two drawn boxes; the paint colours each by its canonical Map kind. */
+  kind: "import" | "dep" | "flow";
   /** Presentational colour cue: the drawn boxes sit in different directory/package frames. This is
    * deliberately separate from npm-package ownership — a monorepo directory is not a package.json. */
   crossFrame: boolean;
@@ -74,6 +82,8 @@ export interface MinimalSubgraphSpec {
   edges: MinimalSubgraphEdge[];
   /** One entry per EXPANDED member file: its nested code subtree, for the per-file frame layout. */
   expansions: MinimalExpansion[];
+  /** Exact selected synthetic members and the artifact callable whose flow emitted each one. */
+  syntheticMemberOwners?: ReadonlyMap<string, string>;
 }
 
 /** The code-walk inputs needed to make file cards containers and expand them in place — the SAME
@@ -107,11 +117,15 @@ export function buildMinimalSubgraph(
   code: CodeContext = NO_CODE,
   hiddenIds: ReadonlySet<string> = EMPTY_IDS,
 ): MinimalSubgraphSpec {
-  const groupLeaf = new Set([...memberIds].filter((id) => !isModule(index, id)));
   const fileVisible = new Set([...memberIds].filter((id) => isModule(index, id)));
   const { keptNodeIds, fileCountByGroup } = closeOverAncestors(index, fileVisible);
   const collapse = collapseChains(index, keptNodeIds);
-  const walks = walkVisibleFiles(index, graph, fileVisible, code);
+  const allWalks = walkVisibleMembers(index, graph, memberIds, code);
+  const walks = withoutEmbeddedMemberWalks(allWalks);
+  // An exact member absorbed into another selected expansion is still code, even though it no
+  // longer owns a second top-level walk. Keep it out of the group-card fallback.
+  const codeLeaf = new Set([...allWalks.keys()].filter((id) => !fileVisible.has(id)));
+  const groupLeaf = new Set([...memberIds].filter((id) => !fileVisible.has(id) && !codeLeaf.has(id)));
   const context: NodeContext = {
     memberIds,
     originIds,
@@ -122,14 +136,39 @@ export function buildMinimalSubgraph(
   };
   const emission = projectGhosts(index, memberIds, walks, code, hiddenIds);
   const inspection = inspectionDepEdges(index, memberIds, walks, code);
+  const visibility = minimalVisibility(memberIds, walks);
+  // Cross-expansion step calls are needed only when the extraction itself names an exact
+  // declaration/step root. Ordinary file members retain their grouped file-level relationships.
+  const exactRootCalls = uniqueStepCalls(
+    [...allWalks.entries()]
+      .filter(([id]) => !fileVisible.has(id))
+      .flatMap(([, walk]) => [...walk.calls]),
+  );
+  const exactStepCallEdges = stepCallEdges(
+    { calls: exactRootCalls },
+    visibility.visibleIds,
+    index,
+  ).map(toMinimalDepEdge);
+  const supersededCalls = new Set(
+    exactRootCalls.map((call) => `${call.blockId}\u0000${call.target}`),
+  );
   // Direct mode is the settled presentation substrate: it already projects every visible raw
   // dependency, so do not scan the full dependency set again merely to exclude every one of them.
-  const dependencies = code.directDependencies === true
+  // Exact synthetic step calls are separate from that artifact substrate and remain additive.
+  const projectedDependencies = code.directDependencies === true
     ? inspection.edges
-    : mergeProjectedDepEdges([
-        ...depEdges(index, memberIds, code, inspection.incidentEdgeIds),
+    : [
+        ...depEdges(index, memberIds, code, inspection.incidentEdgeIds, supersededCalls),
         ...inspection.edges,
-      ]);
+      ];
+  const dependencies = mergeProjectedDepEdges([
+    ...projectedDependencies,
+    // Per-expansion call edges cannot see a target owned by another selected root. Re-project exact
+    // roots over the complete extracted frontier so step→definition relationships survive.
+    ...exactStepCallEdges,
+  ]);
+  const flowEdges = visibleFlowChainEdges(visibility.visibleIds, index, code.expanded, code.flows)
+    .map(toMinimalFlowEdge);
   // A folder group-ghost can carry the id of a member's own (never-rendered) ancestor frame — the
   // ghost card wins the id so the spec stays one-node-per-id (frames are flattened away anyway).
   const ghostIds = new Set(emission.ghosts.keys());
@@ -137,15 +176,31 @@ export function buildMinimalSubgraph(
     nodes: [
       ...buildContainmentNodes(index, graph, keptNodeIds, new Set([...groupLeaf, ...ghostIds]), context),
       ...buildLeafGroupNodes(index, [...groupLeaf], context),
+      ...buildCodeLeafNodes(walks, fileVisible, context),
       ...ghostNodes(emission),
     ],
     edges: [
       ...importEdges(index, graph, memberIds),
       ...dependencies,
+      ...flowEdges,
       ...ghostEdges(emission),
     ],
     expansions: [...walks.values()].map((walk) => walk.expansion).filter((exp): exp is MinimalExpansion => exp !== null),
+    syntheticMemberOwners: new Map(
+      [...allWalks.entries()].flatMap(([id, walk]) => {
+        const owner = walk.expansion?.artifactOwnerId;
+        return id.startsWith("step:") && owner !== undefined ? [[id, owner] as const] : [];
+      }),
+    ),
   };
+}
+
+function uniqueStepCalls(calls: FileCodeWalk["calls"]): FileCodeWalk["calls"] {
+  const unique = new Map<string, FileCodeWalk["calls"][number]>();
+  for (const call of calls) {
+    unique.set(`${call.stepId}\u0000${call.blockId}\u0000${call.target}`, call);
+  }
+  return [...unique.values()];
 }
 
 /**
@@ -314,18 +369,43 @@ interface NodeContext {
   expandableGroupIds: ReadonlySet<string>;
 }
 
-/** Walk every member FILE's code once (with the shared `expanded` set): the file card reads its
- * container facts from here, an expanded file carries its drawn subtree, and the ghost projection
- * reads the walks' step calls + expanded blocks. */
-function walkVisibleFiles(index: GraphIndex, graph: ModuleGraph, fileVisible: ReadonlySet<string>, code: CodeContext): Map<string, FileCodeWalk> {
+/** Walk every exact member once with the shared disclosure state. Files retain their normal flat /
+ * expanded contract; declarations and visible `step:` pseudo-nodes always contribute an exact root
+ * expansion so nested extraction cannot coerce them into package cards or drop them entirely. */
+function walkVisibleMembers(index: GraphIndex, graph: ModuleGraph, memberIds: ReadonlySet<string>, code: CodeContext): Map<string, FileCodeWalk> {
   const walks = new Map<string, FileCodeWalk>();
-  for (const id of fileVisible) {
-    if (!isModule(index, id)) {
-      continue; // defensive: only file modules carry a code walk.
+  for (const id of memberIds) {
+    const node = index.nodesById.get(id);
+    if (node?.kind === MODULE_KIND) {
+      walks.set(id, walkFileCode(id, index, graph, code.expanded, code.blockDeps, code.flows));
+      continue;
     }
-    walks.set(id, walkFileCode(id, index, graph, code.expanded, code.blockDeps, code.flows));
+    const exact = node !== undefined && (UNIT_CARD_KINDS.has(node.kind) || BLOCK_KINDS.has(node.kind))
+      ? walkCodeRoot(id, index, graph, code.expanded, code.blockDeps, code.flows)
+      : node === undefined
+        ? walkFlowStepRoot(id, index, graph, code.expanded, code.blockDeps, code.flows)
+        : null;
+    if (exact !== null) {
+      walks.set(id, exact);
+    }
   }
   return walks;
+}
+
+/** Give every rendered id exactly one expansion owner. When a selected ancestor's disclosed walk
+ * already contains another selected root (file→callable, unit→method, outer step→nested step), the
+ * ancestor owns that descendant and the redundant top-level walk is discarded. */
+function withoutEmbeddedMemberWalks(allWalks: ReadonlyMap<string, FileCodeWalk>): Map<string, FileCodeWalk> {
+  const roots = new Set(allWalks.keys());
+  const embedded = new Set<string>();
+  for (const [rootId, walk] of allWalks) {
+    for (const node of walk.expansion?.nodes ?? []) {
+      if (node.id !== rootId && roots.has(node.id)) {
+        embedded.add(node.id);
+      }
+    }
+  }
+  return new Map([...allWalks].filter(([id]) => !embedded.has(id)));
 }
 
 /** Ancestor-close the member files (root..file inclusive) and tally member files per ancestor frame. */
@@ -425,6 +505,31 @@ function buildLeafGroupNodes(index: GraphIndex, ids: string[], context: NodeCont
     }));
 }
 
+/** Exact declaration/step members are represented by their canonical Map vocabulary. Their one-
+ * root expansions own final sizing and rendering; this tiered node is the top-level placement card. */
+function buildCodeLeafNodes(
+  walks: ReadonlyMap<string, FileCodeWalk>,
+  fileVisible: ReadonlySet<string>,
+  context: NodeContext,
+): MinimalSubgraphNode[] {
+  return [...walks.entries()]
+    .filter(([id]) => !fileVisible.has(id))
+    .flatMap(([id, walk]) => {
+      const root = walk.expansion?.nodes.find((node) => node.id === id);
+      if (root === undefined || (root.kind !== "unit" && root.kind !== "block" && root.kind !== "step")) {
+        return [];
+      }
+      return [{
+        id,
+        kind: root.kind,
+        parentId: null,
+        tier: tierOf(id, context),
+        data: root.data,
+      } satisfies MinimalSubgraphNode];
+    })
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
 /** Import wires between two member boxes: file-level edges lifted so each endpoint rises to its
  * nearest member ancestor-or-self (folding a group member's files onto its card). Folded to one per
  * ordered box pair, self-loops dropped. `crossFrame` preserves the existing directory-boundary
@@ -500,14 +605,27 @@ function depEdges(
   memberIds: ReadonlySet<string>,
   code: CodeContext,
   excludedEdgeIds: ReadonlySet<string> = EMPTY_IDS,
+  supersededCalls: ReadonlySet<string> = EMPTY_IDS,
 ): MinimalSubgraphEdge[] {
   const blockDeps = excludedEdgeIds.size === 0
     ? code.blockDeps
     : { edges: code.blockDeps.edges.filter((edge) => !excludedEdgeIds.has(edge.id)) };
-  return depWireEdges(blockDeps, memberIds, index, (id) => memberIds.has(id), new Set()).map(toMinimalDepEdge);
+  // Filter before lifting: once f→g folds to selected files m1→m2, the lifted source no longer tells
+  // depWireEdges that f is expanded and already represented as a step→g call.
+  const withoutExpandedCallers = supersededCalls.size === 0
+    ? blockDeps
+    : {
+        edges: blockDeps.edges.filter((edge) =>
+          edge.kind !== "calls"
+          || !supersededCalls.has(`${edge.source}\u0000${constructionTarget(edge.target, index)}`),
+        ),
+      };
+  return depWireEdges(withoutExpandedCallers, memberIds, index, (id) => memberIds.has(id), EMPTY_IDS).map(toMinimalDepEdge);
 }
 
-function toMinimalDepEdge(edge: ReturnType<typeof depWireEdges>[number]): MinimalSubgraphEdge {
+function toMinimalDepEdge(
+  edge: ReturnType<typeof depWireEdges>[number] | ReturnType<typeof stepCallEdges>[number],
+): MinimalSubgraphEdge {
   return {
     id: edge.id,
     source: edge.source,
@@ -518,7 +636,22 @@ function toMinimalDepEdge(edge: ReturnType<typeof depWireEdges>[number]): Minima
     crossPackage: edge.crossPackage,
     outsideView: false,
     depKind: edge.depKind,
-    underlyingEdgeIds: [...(edge.underlyingEdgeIds ?? [])],
+    underlyingEdgeIds: "underlyingEdgeIds" in edge ? [...(edge.underlyingEdgeIds ?? [])] : [],
+  };
+}
+
+function toMinimalFlowEdge(
+  edge: ReturnType<typeof visibleFlowChainEdges>[number],
+): MinimalSubgraphEdge {
+  return {
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    weight: edge.weight,
+    kind: "flow",
+    crossFrame: edge.crossFrame,
+    crossPackage: edge.crossPackage,
+    outsideView: edge.outsideView,
   };
 }
 

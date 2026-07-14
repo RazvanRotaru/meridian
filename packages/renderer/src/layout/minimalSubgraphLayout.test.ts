@@ -96,6 +96,16 @@ function specFor(expanded: string[]) {
   });
 }
 
+function overlappingExactMemberSpec() {
+  const index = buildGraphIndex({ nodes: NODES, edges: EDGES } as unknown as GraphArtifact);
+  const members = new Set(["m:a", "fn:foo"]);
+  return buildMinimalSubgraph(index, buildModuleGraph(index), members, members, {
+    expanded: new Set(["m:a"]),
+    blockDeps: { edges: [] },
+    flows: {},
+  });
+}
+
 // foo() in a.ts calls baz() in b.ts — the overlay spec carries a per-kind dep wire a→b.
 function couplingSpec() {
   const nodes = [...NODES, fn("fn:baz", "baz", "m:b")];
@@ -191,6 +201,13 @@ const overlaps = (a: PlacedRect, b: PlacedRect): boolean =>
 const topLevelFiles = (nodes: Node[]): Node[] => nodes.filter((node) => node.type === "file" && node.parentId === undefined);
 
 describe("layoutMinimalSubgraph", () => {
+  it("emits one React Flow node when selected ancestor and descendant overlap", async () => {
+    const { nodes } = await layoutMinimalSubgraph(overlappingExactMemberSpec(), {});
+    expect(new Set(nodes.map((node) => node.id)).size).toBe(nodes.length);
+    expect(nodes.filter((node) => node.id === "fn:foo")).toHaveLength(1);
+    expect(nodes.find((node) => node.id === "fn:foo")?.parentId).toBe("m:a");
+  });
+
   it("mirrors the captured positions byte-for-byte when nothing is expanded", async () => {
     const base: Record<string, PlacedRect> = {
       "m:a": { x: 10, y: 20, width: 200, height: 50 },

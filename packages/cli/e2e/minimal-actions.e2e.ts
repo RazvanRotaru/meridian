@@ -75,14 +75,30 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
     const highlightInCodebase = extractedActions.getByRole("button", { name: "Highlight code in codebase" });
     await extractedGraph.waitFor();
     await extractedActions.waitFor();
-    expect(await extract.count()).toBe(0);
+    expect(await extract.isVisible()).toBe(true);
     expect(await remove.isVisible()).toBe(true);
     expect(await remove.isDisabled()).toBe(true);
     expect(await rearrange.isEnabled()).toBe(true);
     expect(await reset.isDisabled()).toBe(true);
     expect(await close.isVisible()).toBe(true);
     expect(await highlightInCodebase.isVisible()).toBe(true);
+    const back = extractedActions.getByRole("button", { name: "Back to previous graph" });
+    expect(await back.isVisible()).toBe(true);
     expect(await page.getByRole("region", { name: "Extracted selection" }).count()).toBe(0);
+
+    // Extraction is recursive: narrow the current selection, push a child, then restore the exact
+    // eight-member parent with one Back step instead of closing the whole overlay.
+    await extractedGraph.locator(`[data-id="${MEMBER_FILES[0]}"]`).dispatchEvent("click");
+    const extractOne = extractedActions.getByRole("button", { name: "Extract selection (1)" });
+    await extractOne.waitFor();
+    await extractOne.click();
+    await back.waitFor();
+    await extractedGraph.locator(`[data-id="${MEMBER_FILES[0]}"]`).waitFor();
+    await back.click();
+    await back.waitFor();
+    for (const member of MEMBER_FILES) {
+      await extractedGraph.locator(`[data-id="${member}"]`).waitFor();
+    }
 
     // The context action swaps only the graph pane: all curated members are placed in their
     // canonical Map ancestry. Curation/navigation stay frozen, while card chevrons disclose code
@@ -94,18 +110,22 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
       () => page.evaluate(() => document.activeElement?.getAttribute("aria-label")),
     ).toBe("Back to extracted graph");
     await contextGraph.getByText(`${MEMBER_FILES.length} graph nodes highlighted`, { exact: true }).waitFor();
-    const contextBounds = await contextGraph.boundingBox();
-    expect(contextBounds).not.toBeNull();
     for (const member of MEMBER_FILES) {
-      const contextMember = contextGraph.locator(`[data-id="${member}"]`);
-      await contextMember.waitFor();
-      const memberBounds = await contextMember.boundingBox();
-      expect(memberBounds).not.toBeNull();
-      expect(memberBounds!.x).toBeGreaterThanOrEqual(contextBounds!.x);
-      expect(memberBounds!.y).toBeGreaterThanOrEqual(contextBounds!.y);
-      expect(memberBounds!.x + memberBounds!.width).toBeLessThanOrEqual(contextBounds!.x + contextBounds!.width);
-      expect(memberBounds!.y + memberBounds!.height).toBeLessThanOrEqual(contextBounds!.y + contextBounds!.height);
+      await contextGraph.locator(`[data-id="${member}"]`).waitFor();
     }
+    // Initial navigation fits the highlighted population with a short animated handoff. Wait for
+    // that camera transition instead of sampling an intermediate transform.
+    await expect.poll(async () => {
+      const [contextBounds, ...memberBounds] = await Promise.all([
+        contextGraph.boundingBox(),
+        ...MEMBER_FILES.map((member) => contextGraph.locator(`[data-id="${member}"]`).boundingBox()),
+      ]);
+      return contextBounds !== null && memberBounds.every((bounds) => bounds !== null
+        && bounds.x >= contextBounds.x
+        && bounds.y >= contextBounds.y
+        && bounds.x + bounds.width <= contextBounds.x + contextBounds.width
+        && bounds.y + bounds.height <= contextBounds.y + contextBounds.height);
+    }, { timeout: 5_000 }).toBe(true);
     expect(await page.getByRole("region", { name: "Extracted selection" }).count()).toBe(0);
     const contextMember = contextGraph.locator(`[data-id="${MEMBER_FILES[0]}"]`);
     const contextNodeCount = await contextGraph.locator(".react-flow__node").count();
@@ -174,7 +194,9 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
     expect(await rearrange.isEnabled()).toBe(true);
     expect(await reset.isDisabled()).toBe(true);
     await close.click();
-    await extract.waitFor();
+    // Back restored the eight-member parent graph and its one-node selection verbatim; Close keeps
+    // that selection when returning to the source canvas.
+    await actionBar.getByRole("button", { name: "Extract selection (1)" }).waitFor();
     expect(await extractedActions.count()).toBe(0);
     expect(pageErrors).toEqual([]);
   });

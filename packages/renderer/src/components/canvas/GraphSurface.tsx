@@ -268,6 +268,9 @@ export interface GraphSurfaceProps {
   busy?: GraphLayoutIndicatorProps;
   /** Frozen overview mode: pan/zoom and source inspection remain, graph selection/navigation do not. */
   readOnly?: boolean;
+  /** A frozen overview may still own ordinary node selection for follow-on actions, while keeping
+   * navigation, dragging, and shared expansion disabled. */
+  selectionOnly?: boolean;
   /** Surface-local highlight set which does not mutate the Map/minimal graph's real selection. */
   selectionOverride?: ReadonlySet<string>;
   /** Separate paint owners when node rings and relationship emphasis intentionally differ. */
@@ -639,7 +642,9 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const nodeDiffEnabled = props.nodeDiffPreview === true;
   const nodeDiff = useNodeDiffPreview(nodeDiffEnabled, reviewCodePreviewTrigger);
   const surfaceNodeClick = props.readOnly
-    ? (props.onToggleExpand === undefined ? undefined : LOCAL_DISCLOSURE_NODE_CLICK)
+    ? props.selectionOnly
+      ? props.interactions.onNodeClick
+      : (props.onToggleExpand === undefined ? undefined : LOCAL_DISCLOSURE_NODE_CLICK)
     : props.interactions.onNodeClick;
   const baseToggleExpand = useCallback((model: BaseNodeModel) => {
     const ghostGroupId = model.nodeType === "ghost" && typeof model.data.ghostGroupId === "string"
@@ -702,7 +707,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
               surfaceNodeClick?.(event, node);
             }
           : surfaceNodeClick}
-        onNodeDoubleClick={props.readOnly ? undefined : props.interactions.onNodeDoubleClick}
+        onNodeDoubleClick={props.readOnly || props.selectionOnly ? undefined : props.interactions.onNodeDoubleClick}
         onNodeMouseEnter={nodeDiffEnabled ? nodeDiff.onNodeMouseEnter : undefined}
         onNodeMouseMove={nodeDiffEnabled ? nodeDiff.onNodeMouseMove : undefined}
         onNodeMouseLeave={nodeDiffEnabled ? nodeDiff.onNodeMouseLeave : undefined}
@@ -713,7 +718,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
           }
           // A pane click always unpins the inspector. Frozen context views keep their fixed target set.
           wire.clearInspected();
-          if (!props.readOnly) {
+          if (!props.readOnly || props.selectionOnly) {
             props.interactions.onPaneClick();
           }
         }}
@@ -729,9 +734,9 @@ export function GraphSurface(props: GraphSurfaceProps) {
         onMoveEnd={onMoveEnd}
         // Manual z: basic mode ADDS a nested endpoint's node-z to the edge — see useWireHover's z rule.
         zIndexMode="manual"
-        elementsSelectable={!props.readOnly}
-        nodesFocusable={!props.readOnly}
-        edgesFocusable={!props.readOnly}
+        elementsSelectable={!props.readOnly || props.selectionOnly}
+        nodesFocusable={!props.readOnly || props.selectionOnly}
+        edgesFocusable={!props.readOnly || props.selectionOnly}
         fitView={props.autoFitView ?? !hasSemanticComposite}
         miniMapColor={props.miniMapColor}
         minimap={!virtualizeCanvas}

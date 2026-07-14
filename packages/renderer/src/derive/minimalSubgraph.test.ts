@@ -68,6 +68,145 @@ const NODES = [
 const EDGES = [importEdge("m:a", "m:b"), importEdge("m:b", "m:c"), importEdge("m:c", "m:d"), importEdge("m:e", "m:a")];
 
 describe("buildMinimalSubgraph", () => {
+  it("keeps an exact callable member as a block instead of coercing it to a package card", () => {
+    const spec = build(NODES, EDGES, ["fn:foo"]);
+    expect(nodeById(spec.nodes, "fn:foo")).toMatchObject({ kind: "block", tier: "seed" });
+    expect(spec.expansions.find((expansion) => expansion.fileId === "fn:foo")?.nodes[0]).toMatchObject({
+      id: "fn:foo",
+      kind: "block",
+      parentId: null,
+      data: { label: "foo", blockKind: "function" },
+    });
+  });
+
+  it("keeps a selected review directory in the group vocabulary", () => {
+    const directory = { ...pkg("dir:src", "src", null), kind: "directory" } as GraphNode;
+    const spec = build([directory, mod("m:dir", "src/dir.ts", directory.id)], [], [directory.id]);
+    expect(nodeById(spec.nodes, directory.id)).toMatchObject({ kind: "group", tier: "seed" });
+    expect(spec.expansions).toHaveLength(0);
+  });
+
+  it("reconstructs a selected flow-step pseudo-node and its call ghost", () => {
+    const index = buildGraphIndex({ nodes: NODES, edges: EDGES } as unknown as GraphArtifact);
+    const stepId = "step:fn:foo:0";
+    const spec = buildMinimalSubgraph(index, buildModuleGraph(index), new Set([stepId]), new Set([stepId]), {
+      expanded: new Set(),
+      blockDeps: { edges: [] },
+      flows: {
+        "fn:foo": [{ kind: "call", label: "baz", target: "fn:baz", resolution: "resolved" }],
+      },
+    });
+
+    expect(nodeById(spec.nodes, stepId)).toMatchObject({
+      kind: "step",
+      tier: "seed",
+      data: { label: "baz", stepKind: "call", resolved: true },
+    });
+    expect(spec.expansions.find((expansion) => expansion.fileId === stepId)?.nodes[0]).toMatchObject({
+      id: stepId,
+      kind: "step",
+      parentId: null,
+    });
+    expect(nodeById(spec.nodes, "fn:baz")?.kind).toBe("ghost");
+    expect(spec.edges).toContainEqual(expect.objectContaining({ source: stepId, target: "fn:baz", ghost: true }));
+  });
+
+  it("keeps execution and call wires across separately selected exact roots", () => {
+    const index = buildGraphIndex({ nodes: NODES, edges: EDGES } as unknown as GraphArtifact);
+    const first = "step:fn:foo:0";
+    const second = "step:fn:foo:1";
+    const members = new Set([first, second, "fn:baz"]);
+    const spec = buildMinimalSubgraph(index, buildModuleGraph(index), members, members, {
+      expanded: new Set(),
+      blockDeps: { edges: [] },
+      flows: {
+        "fn:foo": [
+          { kind: "call", label: "baz", target: "fn:baz", resolution: "resolved" },
+          { kind: "call", label: "qux", target: "fn:qux", resolution: "resolved" },
+        ],
+      },
+    });
+
+    expect(spec.edges).toContainEqual(expect.objectContaining({
+      id: "flow:fn:foo:1",
+      source: first,
+      target: second,
+      kind: "flow",
+    }));
+    expect(spec.edges).toContainEqual(expect.objectContaining({
+      id: `dep:${first}->fn:baz`,
+      source: first,
+      target: "fn:baz",
+      kind: "dep",
+      depKind: "calls",
+    }));
+  });
+
+  it("replaces an expanded exact callable's folded raw call with its step call", () => {
+    const call = callsEdge("fn:foo", "fn:baz");
+    const reference = {
+      id: "references:fn:foo->fn:baz",
+      source: "fn:foo",
+      target: "fn:baz",
+      kind: "references",
+      resolution: "resolved",
+    } as GraphEdge;
+    const index = buildGraphIndex({ nodes: NODES, edges: [...EDGES, call, reference] } as unknown as GraphArtifact);
+    const members = new Set(["fn:foo", "fn:baz"]);
+    const spec = buildMinimalSubgraph(index, buildModuleGraph(index), members, members, {
+      expanded: new Set(["fn:foo"]),
+      blockDeps: { edges: [call, reference] },
+      flows: {
+        "fn:foo": [{ kind: "call", label: "baz", target: "fn:baz", resolution: "resolved" }],
+      },
+    });
+
+    expect(spec.edges).toContainEqual(expect.objectContaining({
+      id: "dep:step:fn:foo:0->fn:baz",
+      source: "step:fn:foo:0",
+      target: "fn:baz",
+    }));
+    expect(spec.edges.some((edge) => edge.id === "dep:calls:fn:foo->fn:baz")).toBe(false);
+    expect(spec.edges).toContainEqual(expect.objectContaining({
+      id: "dep:references:fn:foo->fn:baz",
+      depKind: "references",
+    }));
+  });
+
+  it("keeps grouped calls for ordinary expanded file members", () => {
+    const call = callsEdge("fn:foo", "fn:baz");
+    const index = buildGraphIndex({ nodes: NODES, edges: [...EDGES, call] } as unknown as GraphArtifact);
+    const members = new Set(["m:a", "m:b"]);
+    const spec = buildMinimalSubgraph(index, buildModuleGraph(index), members, members, {
+      expanded: new Set(["m:a", "fn:foo"]),
+      blockDeps: { edges: [call] },
+      flows: {
+        "fn:foo": [{ kind: "call", label: "baz", target: "fn:baz", resolution: "resolved" }],
+      },
+    });
+
+    expect(spec.edges).toContainEqual(expect.objectContaining({
+      id: "dep:calls:m:a->m:b",
+      source: "m:a",
+      target: "m:b",
+    }));
+    expect(spec.edges.some((edge) => edge.source === "step:fn:foo:0")).toBe(false);
+  });
+
+  it("lets an expanded selected ancestor own an exact selected descendant once", () => {
+    const index = buildGraphIndex({ nodes: NODES, edges: EDGES } as unknown as GraphArtifact);
+    const members = new Set(["m:a", "fn:foo"]);
+    const spec = buildMinimalSubgraph(index, buildModuleGraph(index), members, members, {
+      expanded: new Set(["m:a"]),
+      blockDeps: { edges: [] },
+      flows: {},
+    });
+
+    expect(spec.expansions.map((expansion) => expansion.fileId)).toEqual(["m:a"]);
+    expect(spec.nodes.filter((node) => node.id === "fn:foo")).toEqual([]);
+    expect(spec.expansions[0].nodes.some((node) => node.id === "fn:foo")).toBe(true);
+  });
+
   it("extracts members only — an import neighbour never joins as a peer box", () => {
     const { nodes } = build(NODES, EDGES, ["m:a"]);
     expect(nodeById(nodes, "m:a")?.tier).toBe("seed");

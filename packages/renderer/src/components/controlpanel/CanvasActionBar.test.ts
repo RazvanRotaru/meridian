@@ -13,40 +13,40 @@ describe("canvasActionPlacement", () => {
   it("centers each single-row footprint at its exact clearance threshold", () => {
     expect(canvasActionPlacement(798, "base")).toEqual({ position: "bottom-center", layout: "row" });
     expect(canvasActionPlacement(916, "extract")).toEqual({ position: "bottom-center", layout: "row" });
-    expect(canvasActionPlacement(1178, "minimal")).toEqual({ position: "bottom-center", layout: "row" });
-    expect(canvasActionPlacement(1220, "review-focus")).toEqual({ position: "bottom-center", layout: "row" });
-    expect(canvasActionPlacement(852, "codebase")).toEqual({ position: "bottom-center", layout: "row" });
+    expect(canvasActionPlacement(1244, "minimal")).toEqual({ position: "bottom-center", layout: "row" });
+    expect(canvasActionPlacement(1304, "review-focus")).toEqual({ position: "bottom-center", layout: "row" });
+    expect(canvasActionPlacement(936, "codebase")).toEqual({ position: "bottom-center", layout: "row" });
   });
 
   it("moves a full row beside the control panel when centering would overlap it", () => {
     expect(canvasActionPlacement(797, "base")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
     expect(canvasActionPlacement(915, "extract")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(1177, "minimal")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(1219, "review-focus")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(851, "codebase")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(1243, "minimal")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(1303, "review-focus")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(935, "codebase")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
   });
 
   it("keeps the minimal actions in one row down to the exact side-lane boundary", () => {
-    expect(canvasActionPlacement(867, "minimal")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(866, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(909, "review-focus")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(908, "review-focus")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(933, "minimal")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(932, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(993, "review-focus")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(992, "review-focus")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
   });
 
   it("stacks whole groups after a review panel narrows the graph pane", () => {
-    expect(canvasActionPlacement(542, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 192, bottom: 181 });
-    expect(canvasActionPlacement(541, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 191, bottom: 181 });
-    expect(canvasActionPlacement(520, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 170, bottom: 181 });
-    expect(canvasActionPlacement(540, "codebase")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(541, "codebase")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(542, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 126, bottom: 181 });
+    expect(canvasActionPlacement(541, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 125, bottom: 181 });
+    expect(canvasActionPlacement(520, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 104, bottom: 181 });
+    expect(canvasActionPlacement(624, "codebase")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
+    expect(canvasActionPlacement(625, "codebase")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
     expect(canvasActionPlacement(605, "extract")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
     expect(canvasActionPlacement(604, "extract")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
   });
 
   it("keeps the short stacked layout when the side lane disappears", () => {
-    expect(canvasActionPlacement(497, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 147, bottom: 181 });
-    expect(canvasActionPlacement(496, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 146, bottom: 181 });
-    expect(canvasActionPlacement(400, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 50, bottom: 181 });
+    expect(canvasActionPlacement(497, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 81, bottom: 181 });
+    expect(canvasActionPlacement(496, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 80, bottom: 181 });
+    expect(canvasActionPlacement(400, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 16, bottom: 181 });
   });
 
   it("clamps a stacked bar to the canvas edge at a truly tiny width", () => {
@@ -54,17 +54,17 @@ describe("canvasActionPlacement", () => {
   });
 
   it("slides toward the bottom only when the graph itself becomes short", () => {
-    expect(canvasActionPlacement(520, "minimal", 306)).toEqual({ position: "bottom-left", layout: "stacked", left: 170, bottom: 181 });
-    expect(canvasActionPlacement(520, "minimal", 305)).toEqual({ position: "bottom-left", layout: "stacked", left: 170, bottom: 180 });
-    expect(canvasActionPlacement(520, "minimal", 141)).toEqual({ position: "bottom-left", layout: "stacked", left: 170, bottom: 16 });
+    expect(canvasActionPlacement(520, "minimal", 306)).toEqual({ position: "bottom-left", layout: "stacked", left: 104, bottom: 181 });
+    expect(canvasActionPlacement(520, "minimal", 305)).toEqual({ position: "bottom-left", layout: "stacked", left: 104, bottom: 180 });
+    expect(canvasActionPlacement(520, "minimal", 141)).toEqual({ position: "bottom-left", layout: "stacked", left: 104, bottom: 16 });
   });
 
   it("lifts the bar above chrome when horizontal or vertical overlap is unavoidable", () => {
     expect(panelAnchorStyle(canvasActionPlacement(330, "minimal", 600))).toMatchObject({ left: 16, bottom: 181, zIndex: 7 });
     expect(panelAnchorStyle(canvasActionPlacement(520, "minimal", 305))).toMatchObject({
-      left: 170,
+      left: 104,
       bottom: 180,
-      maxWidth: "calc(100% - 170px)",
+      maxWidth: "calc(100% - 104px)",
       zIndex: 7,
     });
   });
@@ -115,6 +115,114 @@ describe("CanvasActionBar Remove action", () => {
     expect(renderActionBar(store, { minimalView: "codebase" })).not.toContain(
       'aria-label="Remove added nodes in selection"',
     );
+  });
+});
+
+describe("CanvasActionBar nested extraction", () => {
+  it("withholds extraction while a synthetic run is in flight", () => {
+    const store = actionBarStore();
+    store.setState({
+      minimalSeedIds: [ACTION_FILE],
+      minimalMemberIds: [ACTION_FILE],
+      minimalLayoutStatus: "ready",
+      moduleSelected: new Set([ACTION_METHOD]),
+      syntheticExecutionStatus: "running",
+    });
+
+    expect(renderActionBar(store)).not.toContain('aria-label="Extract selection (1)"');
+    store.setState({ syntheticExecutionStatus: "ready" });
+    expect(renderActionBar(store)).toContain('aria-label="Extract selection (1)"');
+  });
+
+  it("keeps Back in the same action slot from nested children through the root source exit", async () => {
+    const store = actionBarStore();
+    store.setState({
+      minimalSeedIds: [ACTION_FILE],
+      minimalMemberIds: [ACTION_FILE],
+      minimalLayoutStatus: "ready",
+      moduleSelected: new Set([ACTION_METHOD]),
+    });
+
+    const rootMarkup = renderActionBar(store);
+    expect(rootMarkup).toContain('aria-label="Extract selection (1)"');
+    expect(describedText(rootMarkup, actionButtonMarkup(rootMarkup, "Back to previous graph"))).toBe(
+      "Return to the source graph",
+    );
+    const rootCodebaseMarkup = renderActionBar(store, { minimalView: "codebase" });
+    expect(rootCodebaseMarkup).toContain('aria-label="Extract selection (1)"');
+    expect(describedText(rootCodebaseMarkup, actionButtonMarkup(rootCodebaseMarkup, "Back to previous graph"))).toBe(
+      "Return to the source graph",
+    );
+
+    store.getState().buildMinimalGraph();
+
+    expect(store.getState().minimalGraphHistory).toHaveLength(1);
+    expect(actionButtonMarkup(renderActionBar(store), "Back to previous graph")).toBeDefined();
+    expect(actionButtonMarkup(renderActionBar(store, { minimalView: "codebase" }), "Back to previous graph")).toBeDefined();
+
+    store.getState().backMinimalGraph();
+    expect(store.getState().minimalGraphHistory).toHaveLength(0);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(store.getState().minimalSeedIds).toEqual([ACTION_FILE]);
+    expect(store.getState().minimalLayoutStatus).toBe("ready");
+    expect(renderActionBar(store)).toContain('aria-label="Back to previous graph"');
+
+    store.getState().backMinimalGraph();
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().minimalMemberIds).toEqual([]);
+    expect(renderActionBar(store)).not.toContain('aria-label="Back to previous graph"');
+  });
+
+  it("does not offer a review-container action that the current focus would reject", () => {
+    const store = actionBarStore();
+    store.setState({
+      minimalSeedIds: [ACTION_FILE],
+      minimalMemberIds: [ACTION_FILE],
+      minimalLayoutStatus: "ready",
+      moduleSelected: new Set(["ts:src"]),
+      review: {
+        context: {
+          changedFiles: [{ path: "src/action.ts", status: "modified" }],
+          baseRef: null,
+          baseSha: null,
+          headRef: null,
+          reviewKey: "action-bar-review",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+      reviewFiles: [{
+        path: "src/action.ts",
+        status: "modified",
+        moduleId: ACTION_FILE,
+        isTest: false,
+        units: [],
+        fingerprint: "modified",
+        blastRadius: 0,
+        deletedImpact: null,
+      }],
+    });
+
+    expect(renderActionBar(store)).toContain('aria-label="Open selected container as review subgraph"');
+    expect(renderActionBar(store, { minimalView: "codebase" })).toContain(
+      'aria-label="Open selected container as review subgraph"',
+    );
+    expect(renderActionBar(store, { minimalView: "codebase" })).not.toContain(
+      'aria-label="Extract selection (1)"',
+    );
+    store.setState({ syntheticExecutionStatus: "running" });
+    expect(renderActionBar(store)).not.toContain('aria-label="Open selected container as review subgraph"');
+    store.setState({ syntheticExecutionStatus: "idle" });
+    store.setState({
+      reviewFocusedSubgraph: {
+        rootId: "ts:src",
+        label: "src",
+        filePaths: ["src/action.ts"],
+        moduleIds: [ACTION_FILE],
+      },
+    });
+    expect(renderActionBar(store)).not.toContain('aria-label="Open selected container as review subgraph"');
   });
 });
 

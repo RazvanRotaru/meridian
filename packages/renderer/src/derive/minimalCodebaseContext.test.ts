@@ -209,6 +209,46 @@ describe("deriveMinimalCodebaseContext", () => {
     expect(context?.reveal.moduleExpanded.has(FUNCTION_B)).toBe(true);
   });
 
+  it("locates an exact synthetic step by its artifact owner", () => {
+    const stepId = `step:${FUNCTION_B}:0`;
+    const context = derive([stepId], {}, INDEX, {
+      flows: {
+        [FUNCTION_B]: [{ kind: "call", label: "changed", target: METHOD_A, resolution: "resolved" }],
+      },
+    });
+
+    expect(context?.reveal.moduleFocus).toBe(FILE_B);
+    expect(context?.tree.nodes).toContainEqual(expect.objectContaining({ id: stepId, parentId: FUNCTION_B }));
+    expect(context?.reveal.moduleExpanded.has(FUNCTION_B)).toBe(true);
+    expect(context?.highlightTargetIds).toEqual(new Set([stepId]));
+    expect(context?.unresolvedTargetIds).toEqual(new Set());
+    expect(context?.targetAnchorIds.get(stepId)).toBe(FUNCTION_B);
+  });
+
+  it("resolves a recursively nested step without parsing its id", () => {
+    const outerStep = `step:${FUNCTION_B}:0`;
+    const nestedStep = `step:${outerStep}:0`;
+    const context = derive([nestedStep], {}, INDEX, {
+      flows: {
+        [FUNCTION_B]: [{
+          kind: "loop",
+          label: "items",
+          body: [{ kind: "call", label: "changed", target: METHOD_A, resolution: "resolved" }],
+        }],
+      },
+      expandedIds: new Set([outerStep]),
+    });
+
+    expect(context?.tree.nodes).toContainEqual(expect.objectContaining({ id: nestedStep, parentId: outerStep }));
+    expect(context?.reveal.moduleExpanded).toEqual(new Set([FUNCTION_B, outerStep]));
+    expect(context?.highlightTargetIds).toEqual(new Set([nestedStep]));
+    expect(context?.targetPathsById.get(nestedStep)?.slice(-3)).toEqual([
+      FUNCTION_B,
+      outerStep,
+      nestedStep,
+    ]);
+  });
+
   it("normalizes only a current PR rollup package to its changed files", () => {
     const staleRollup = "ts:stale";
     const context = derive(

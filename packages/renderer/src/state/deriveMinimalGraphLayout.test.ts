@@ -81,6 +81,47 @@ describe("PR diff-only minimal graph projection", () => {
     expect(spec.nodes).toHaveLength(6);
   });
 
+  it("keeps an exact selected step and its disclosed subtree when its callable is changed", () => {
+    const visible = reviewDiffVisibleIds(buildGraphIndex(ARTIFACT), new Set([CHANGED_ID]));
+    const stepId = `step:${CHANGED_ID}:0`;
+    const nestedId = `step:${stepId}:0`;
+    const siblingId = `step:${CHANGED_ID}:1`;
+    const spec = {
+      nodes: [FILE_ID].map((id) => ({
+        id,
+        kind: "file" as const,
+        parentId: null,
+        tier: "seed" as const,
+        data: {},
+      })),
+      edges: [],
+      expansions: [{
+        fileId: FILE_ID,
+        nodes: [
+          visibleNode(FILE_ID),
+          visibleNode(CLASS_ID, FILE_ID),
+          visibleNode(CHANGED_ID, CLASS_ID),
+          visibleNode(stepId, CHANGED_ID),
+          visibleNode(nestedId, stepId),
+          visibleNode(siblingId, CHANGED_ID),
+        ],
+        edges: [],
+      }],
+      syntheticMemberOwners: new Map([[stepId, CHANGED_ID]]),
+    } as unknown as MinimalSubgraphSpec;
+
+    const filtered = filterMinimalSubgraph(spec, visible);
+
+    expect(filtered.expansions[0].nodes.map((node) => node.id)).toEqual([
+      FILE_ID,
+      CLASS_ID,
+      CHANGED_ID,
+      stepId,
+      nestedId,
+    ]);
+    expect(filtered.syntheticMemberOwners).toEqual(new Map([[stepId, CHANGED_ID]]));
+  });
+
   it("prunes an opened package rollup to its changed-file frontier", () => {
     const visible = reviewDiffVisibleIds(buildGraphIndex(ARTIFACT), new Set([CHANGED_ID]));
     const expansion = {

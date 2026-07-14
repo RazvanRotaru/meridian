@@ -292,7 +292,7 @@ describe("PR store slice", () => {
     expect(countTestFiles(plainStore.getState())).toBe(1);
   });
 
-  it("projects artifact-carried review paint and rows through the Tests toggle", () => {
+  it("projects artifact-carried review paint and rows through the Tests toggle and nested Back", async () => {
     const store = freshStoreForArtifact(ARTIFACT_REVIEW_WITH_TESTS);
 
     expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
@@ -302,6 +302,29 @@ describe("PR store slice", () => {
 
     store.getState().toggleShowTests();
 
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual([
+      "src/a.test.ts",
+      "src/a.ts",
+      "src/added.spec.ts",
+    ]);
+    expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID, TEST_METHOD_ID]));
+    expect(store.getState().index.changedIds).toEqual(new Set([METHOD_ID, TEST_METHOD_ID]));
+
+    store.setState({
+      minimalSeedIds: [FILE_ID],
+      minimalMemberIds: [FILE_ID],
+      minimalLayoutStatus: "ready",
+      moduleSelected: new Set([METHOD_ID]),
+    });
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    store.getState().toggleShowTests();
+    expect(store.getState().showTests).toBe(false);
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
+
+    store.getState().backMinimalGraph();
+    expect(store.getState().showTests).toBe(true);
     expect(store.getState().reviewFiles.map((file) => file.path)).toEqual([
       "src/a.test.ts",
       "src/a.ts",
@@ -481,6 +504,35 @@ describe("PR store slice", () => {
     expect(minimalRelayout).toHaveBeenCalledWith({ label: "Restoring graph context…" });
   });
 
+  it("extracts unchanged Codebase context from Diff-only review without opening a blank child", async () => {
+    const store = freshStoreForArtifact(REVIEW_WITH_CONTEXT_ARTIFACT);
+    store.setState({
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 10, end: 10 }] }],
+    });
+    await store.getState().reviewPrInGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.getState().toggleReviewDiffOnly();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.getState().setMinimalView("codebase");
+
+    // Codebase keeps structural siblings visible even though the Graph projection hides them.
+    store.getState().selectModule(UNCHANGED_METHOD_ID);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    expect(store.getState().minimalSeedIds).toEqual([UNCHANGED_METHOD_ID]);
+    expect(store.getState().reviewDiffOnly).toBe(false);
+    expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: UNCHANGED_METHOD_ID }));
+
+    store.getState().backMinimalGraph();
+    expect(store.getState().reviewDiffOnly).toBe(true);
+    expect(store.getState().minimalView).toBe("codebase");
+  });
+
   it("uses the existing Tests toggle to remove and losslessly restore every PR-review test surface", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -556,6 +608,124 @@ describe("PR store slice", () => {
     expect(store.getState().reviewFiles.some((file) => file.path === testFile.path)).toBe(true);
     expect(store.getState().reviewUnitTicks[TEST_METHOD_ID]).toBeDefined();
     expect(store.getState().reviewComments[0]?.body).toBe("Keep this hidden test draft");
+  });
+
+  it("reprojects Tests inside a nested live-PR graph without discarding its stack", async () => {
+    const store = freshStoreForArtifact(REVIEW_WITH_TESTS_ARTIFACT);
+    store.setState({
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles: [
+        { path: "src/a.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 10, end: 10 }] },
+        { path: "src/a.test.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 5, end: 5 }] },
+      ],
+    });
+    await store.getState().reviewPrInGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    store.getState().selectModule(METHOD_ID);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalSeedIds).toEqual([METHOD_ID]);
+    expect(store.getState().minimalGraphHistory).toHaveLength(1);
+
+    store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().showTests).toBe(true);
+    expect(store.getState().minimalSeedIds).toEqual([METHOD_ID]);
+    expect(store.getState().minimalGraphHistory).toHaveLength(1);
+    expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: METHOD_ID }));
+
+    store.getState().backMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().showTests).toBe(false);
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().minimalGraphHistory).toHaveLength(0);
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
+  });
+
+  it("keeps Back reachable when Tests hides every member in a nested live-PR child", async () => {
+    const store = freshStoreForArtifact(REVIEW_WITH_TESTS_ARTIFACT);
+    store.setState({
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles: [
+        { path: "src/a.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 10, end: 10 }] },
+        { path: "src/a.test.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 5, end: 5 }] },
+      ],
+    });
+    await store.getState().reviewPrInGraph();
+    store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    store.getState().selectModule(TEST_METHOD_ID);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    store.getState().selectFlowEntry({ rootId: TEST_METHOD_ID, blockPath: [] });
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().moduleSelected).toEqual(new Set([TEST_METHOD_ID, METHOD_ID]));
+    const staleExecution = { rootId: TEST_METHOD_ID } as SyntheticExecution;
+    store.setState({
+      flowPaneOrigin: "synthetic",
+      syntheticExecution: staleExecution,
+      syntheticPreviousExecution: staleExecution,
+      syntheticExecutionRootId: TEST_METHOD_ID,
+      syntheticExecutionHost: "flow-pane",
+      syntheticExecutionStatus: "error",
+      syntheticExecutionError: "test run failed",
+      syntheticExperimentRootId: TEST_METHOD_ID,
+      syntheticInputOverrides: [{
+        id: "test-override",
+        target: { nodeId: TEST_METHOD_ID, occurrenceKey: "test:1" },
+        input: { value: "test" },
+      }],
+      syntheticFieldWatchers: [{
+        id: "test-watcher",
+        nodeId: TEST_METHOD_ID,
+        phase: "input",
+        path: ["value"],
+        operator: "exists",
+      }],
+      syntheticEditorRequest: { rootId: TEST_METHOD_ID, host: "flow-pane" },
+      syntheticSelectedMomentId: "test-moment",
+      syntheticFlowPresentation: "overview",
+    });
+
+    store.getState().toggleShowTests();
+    expect(store.getState().showTests).toBe(false);
+    expect(store.getState().minimalSeedIds).toEqual([TEST_METHOD_ID]);
+    expect(store.getState().minimalMemberIds).toEqual([]);
+    expect(store.getState().minimalLayoutStatus).toBe("idle");
+    expect(store.getState().minimalGraphHistory).toHaveLength(1);
+    expect(store.getState().moduleSelected).toEqual(new Set());
+    expect(store.getState().flowSelection).toBeNull();
+    expect(store.getState().flowPaneOrigin).toBeNull();
+    expect(store.getState().reviewFlowBaseline).toBeNull();
+    expect(store.getState()).toMatchObject({
+      syntheticExecution: null,
+      syntheticPreviousExecution: null,
+      syntheticExecutionRootId: null,
+      syntheticExecutionHost: null,
+      syntheticExecutionStatus: "idle",
+      syntheticExecutionError: null,
+      syntheticExperimentRootId: null,
+      syntheticInputOverrides: [],
+      syntheticFieldWatchers: [],
+      syntheticEditorRequest: null,
+      syntheticSelectedMomentId: null,
+      syntheticFlowPresentation: "focused",
+    });
+
+    store.getState().backMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().showTests).toBe(true);
+    expect(store.getState().minimalGraphHistory).toHaveLength(0);
+    expect(store.getState().minimalMemberIds).toEqual([TEST_FILE_ID, FILE_ID]);
   });
 
   it("keeps an all-test review open as an empty workspace until Tests is turned on", async () => {

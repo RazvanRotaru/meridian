@@ -140,6 +140,10 @@ function writeUrl(store: BlueprintStore): void {
   const url = `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`;
   const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   if (url === current) {
+    // Some session-only state is deliberately omitted from the URL (notably nested PR extraction).
+    // Still advance the comparison baseline so a later encoded repaint is not misclassified against
+    // stale in-memory navigation state.
+    prevNav = nav;
     return;
   }
   const navigational = prevNav ? isNavigationChange(prevNav, nav) : false;
@@ -230,6 +234,11 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     // Rollup expansion is session-only. A review rebuild derives the mapping again from its files.
     minimalRollups: {},
     minimalArrange: false,
+    minimalGraphHistory: [],
+    minimalView: "graph",
+    minimalShowGhostNodes: true,
+    minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
+    reviewFocusedSubgraph: null,
     minimalRfNodes: [],
     minimalRfEdges: [],
     minimalLayoutStatus: "idle",

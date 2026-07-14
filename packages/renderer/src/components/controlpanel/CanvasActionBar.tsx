@@ -59,15 +59,19 @@ export function CanvasActionBar({
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const minimalHasMembers = useBlueprint((state) => state.minimalMemberIds.length > 0);
   const minimalArranged = useBlueprint((state) => state.minimalArrange);
+  const minimalLayoutStatus = useBlueprint((state) => state.minimalLayoutStatus);
+  const flowPaneLayoutStatus = useBlueprint((state) => state.flowPaneLayoutStatus);
+  const syntheticExecutionStatus = useBlueprint((state) => state.syntheticExecutionStatus);
+  const minimalHistory = useBlueprint((state) => state.minimalGraphHistory);
   const showHighways = useBlueprint((state) => state.showHighways);
   const reviewActive = useBlueprint((state) => state.review !== null);
-  const focusedReview = useBlueprint((state) => state.reviewFocusedSubgraph);
   const selectedReviewContainerId = useBlueprint((state) => {
     if (
       state.review === null
       || state.minimalLayoutStatus !== "ready"
       || state.moduleSelected.size !== 1
       || state.flowSelection !== null
+      || state.syntheticExecutionStatus === "running"
     ) {
       return null;
     }
@@ -77,6 +81,7 @@ export function CanvasActionBar({
       node === undefined
       || (node.kind !== "package" && node.kind !== "directory")
       || !state.index.isContainer(node.id)
+      || state.reviewFocusedSubgraph?.rootId === node.id
     ) {
       return null;
     }
@@ -102,24 +107,32 @@ export function CanvasActionBar({
     expandAll,
     collapseAll,
     buildMinimalGraph,
+    backMinimalGraph,
     removeSelectionFromView,
     rearrangeMinimalGraph,
     resetMinimalGraph,
     closeMinimalGraph,
     openReviewSubgraph,
-    closeReviewSubgraph,
     toggleHighways,
   } = useBlueprintActions();
   const [anchorRef, surfaceSize] = useSurfaceSize();
 
-  const canExtract = selectedCount > 0 && !minimalOpen;
+  const canExtract = selectedCount > 0
+    && (!minimalOpen || minimalLayoutStatus === "ready")
+    && flowPaneLayoutStatus !== "laying-out"
+    && syntheticExecutionStatus !== "running";
+  const showSourceSelectionActions = canExtract && !minimalOpen;
   const codebaseView = minimalOpen && minimalView === "codebase";
-  const reviewNavigationAction = focusedReview !== null || (reviewActive && selectedReviewContainerId !== null);
+  // Back is present at every extraction depth. A root graph also needs the wider nested-action
+  // footprint whenever Extract (or the review-container equivalent) sits beside it.
+  const wideMinimalActions = minimalHistory.length > 0
+    || canExtract
+    || (reviewActive && selectedReviewContainerId !== null);
   const mode: CanvasActionMode = codebaseView
     ? "codebase"
     : minimalOpen
-      ? reviewNavigationAction ? "review-focus" : "minimal"
-      : canExtract ? "extract" : "base";
+      ? wideMinimalActions ? "review-focus" : "minimal"
+      : showSourceSelectionActions ? "extract" : "base";
   const placement = canvasActionPlacement(surfaceSize?.width ?? null, mode, surfaceSize?.height ?? null);
   const boundaryOrientation = placement.layout === "row" ? "vertical" : "horizontal";
   return (
@@ -162,7 +175,7 @@ export function CanvasActionBar({
             </>
           )}
         </CanvasActionGroup>
-        {canExtract ? (
+        {showSourceSelectionActions ? (
           <>
             <CanvasActionSeparator orientation={boundaryOrientation} />
             <CanvasActionGroup label="Selection actions">
@@ -192,22 +205,32 @@ export function CanvasActionBar({
           <>
             <CanvasActionSeparator orientation={boundaryOrientation} />
             <CanvasActionGroup label="Extracted graph actions">
-              {focusedReview === null ? null : (
-                <CanvasActionButton
-                  primary
-                  ariaLabel="Back to PR graph"
-                  title={`Return from ${focusedReview.label} to the previous PR graph`}
-                  icon={<BackToGraphIcon size={18} />}
-                  onClick={closeReviewSubgraph}
-                />
-              )}
-              {!reviewActive || focusedReview !== null || selectedReviewContainerId === null ? null : (
+              <CanvasActionButton
+                primary
+                ariaLabel="Back to previous graph"
+                title={minimalHistory.length === 0
+                  ? "Return to the source graph"
+                  : `Return to ${minimalHistory.at(-1)?.label ?? "the previous graph"}`}
+                icon={<BackToGraphIcon size={18} />}
+                onClick={backMinimalGraph}
+              />
+              {!reviewActive || selectedReviewContainerId === null ? null : (
                 <CanvasActionButton
                   primary
                   ariaLabel="Open selected container as review subgraph"
                   title="Open the selected container's changed files in a separate review graph"
                   icon={<ExtractSelectionIcon size={18} />}
                   onClick={() => openReviewSubgraph(selectedReviewContainerId)}
+                />
+              )}
+              {!canExtract || selectedReviewContainerId !== null ? null : (
+                <CanvasActionButton
+                  primary
+                  badge={selectedCount}
+                  ariaLabel={`Extract selection (${selectedCount})`}
+                  title="Extract the current selection into another focused graph"
+                  icon={<ExtractSelectionIcon size={18} />}
+                  onClick={buildMinimalGraph}
                 />
               )}
               {onToggleGhostNodes === undefined ? null : (
@@ -272,7 +295,7 @@ export function CanvasActionBar({
               <CanvasActionSeparator orientation="vertical" />
               <CanvasActionButton
                 ariaLabel="Close extracted graph"
-                title="Return to the previous graph"
+                title="Close all extracted graphs and return to the source graph"
                 icon={<CloseIcon size={18} />}
                 onClick={closeMinimalGraph}
               />
@@ -284,6 +307,40 @@ export function CanvasActionBar({
             <CanvasActionSeparator orientation={boundaryOrientation} />
             <CanvasActionGroup label="Codebase view actions">
               <CanvasActionButton
+                primary
+                ariaLabel="Back to previous graph"
+                title={minimalHistory.length === 0
+                  ? "Return to the source graph"
+                  : `Return to ${minimalHistory.at(-1)?.label ?? "the previous graph"}`}
+                icon={<BackToGraphIcon size={18} />}
+                onClick={backMinimalGraph}
+              />
+              {!reviewActive || selectedReviewContainerId === null ? null : (
+                <CanvasActionButton
+                  primary
+                  ariaLabel="Open selected container as review subgraph"
+                  title="Open the selected container's changed files in a separate review graph"
+                  icon={<ExtractSelectionIcon size={18} />}
+                  onClick={() => {
+                    openReviewSubgraph(selectedReviewContainerId);
+                    onBackToGraph?.();
+                  }}
+                />
+              )}
+              {!canExtract || selectedReviewContainerId !== null ? null : (
+                <CanvasActionButton
+                  primary
+                  badge={selectedCount}
+                  ariaLabel={`Extract selection (${selectedCount})`}
+                  title="Extract the current selection into another focused graph"
+                  icon={<ExtractSelectionIcon size={18} />}
+                  onClick={() => {
+                    buildMinimalGraph();
+                    onBackToGraph?.();
+                  }}
+                />
+              )}
+              <CanvasActionButton
                 ariaLabel="Back to extracted graph"
                 title="Return to the curated extracted graph"
                 icon={<BackToGraphIcon size={18} />}
@@ -292,7 +349,7 @@ export function CanvasActionBar({
               />
               <CanvasActionButton
                 ariaLabel="Close extracted graph"
-                title="Return to the previous graph"
+                title="Close all extracted graphs and return to the source graph"
                 icon={<CloseIcon size={18} />}
                 onClick={closeMinimalGraph}
               />

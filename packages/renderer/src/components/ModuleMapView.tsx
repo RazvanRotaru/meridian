@@ -23,7 +23,7 @@
  * containment trail) navigates back out. Recenter/focus is a separate explicit canvas action.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { Node } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { EmptyModuleMapCard, ServiceScopeBreadcrumb } from "./ModuleMapChrome";
@@ -58,15 +58,15 @@ const SERVICE_DOMAIN_KIND = "serviceDomain";
 export function ModuleMapView() {
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const reviewActive = useBlueprint((state) => state.review !== null);
+  const minimalView = useBlueprint((state) => state.minimalView);
+  const { setMinimalView } = useBlueprintActions();
   const sourceMounted = !minimalOpen || !reviewActive;
-  const [minimalView, setMinimalView] = useState<"graph" | "codebase">("graph");
   const codebaseButtonRef = useRef<HTMLButtonElement>(null);
   const backButtonRef = useRef<HTMLButtonElement>(null);
   const focusTransfer = useRef<"graph" | "codebase" | null>(null);
   useEffect(() => {
     if (!minimalOpen) {
       focusTransfer.current = null;
-      setMinimalView("graph");
       return;
     }
     if (focusTransfer.current !== minimalView) return;

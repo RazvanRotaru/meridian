@@ -30,7 +30,7 @@
  * page-specific gestures are that "+" (promote) and explicit Close.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { MapLegend } from "./MapLegend";
 import { GraphSurface } from "./canvas/GraphSurface";
@@ -70,6 +70,7 @@ export function MinimalGraphView({
   const layoutActivity = useBlueprint((state) => state.minimalLayoutActivity);
   const reviewSelectedId = useBlueprint((state) => state.reviewSelectedId);
   const reviewActive = useBlueprint((state) => state.review !== null);
+  const nestedExtraction = useBlueprint((state) => state.minimalGraphHistory.length > 0);
   const reviewFlowOpen = useBlueprint((state) => state.flowSelection !== null && state.reviewFlowBaseline !== null);
   const index = useBlueprint((state) => state.index);
   const viewMode = useBlueprint((state) => state.viewMode);
@@ -80,9 +81,16 @@ export function MinimalGraphView({
   const serviceGroupingTargetSize = useBlueprint((state) => state.serviceGroupingTargetSize);
   const serviceGroupingLabelMode = useBlueprint((state) => state.serviceGroupingLabelMode);
   const showExternalGhosts = useBlueprint((state) => state.showExternalGhosts);
-  const { closeMinimalGraph, promoteGhost, openReviewSubgraph, minimalRelayout, selectModule } = useBlueprintActions();
+  const showGhostNodes = useBlueprint((state) => state.minimalShowGhostNodes);
+  const {
+    closeMinimalGraph,
+    promoteGhost,
+    openReviewSubgraph,
+    minimalRelayout,
+    selectModule,
+    setMinimalShowGhostNodes,
+  } = useBlueprintActions();
   const relations = activeModuleSurfaceSpec(viewMode).relations;
-  const [showGhostNodes, setShowGhostNodes] = useState(true);
   const ghostIds = useMemo(
     () => new Set(nodes.filter((node) => node.type === "ghost").map((node) => node.id)),
     [nodes],
@@ -101,8 +109,8 @@ export function MinimalGraphView({
       // A hidden selection must not leave the surviving graph dimmed around an absent paint seed.
       selectModule(null);
     }
-    setShowGhostNodes(next);
-  }, [ghostIds, selectModule, selected, showGhostNodes]);
+    setMinimalShowGhostNodes(next);
+  }, [ghostIds, selectModule, selected, setMinimalShowGhostNodes, showGhostNodes]);
 
   // A review-panel click centers the viewport on the clicked node itself (recenterSeq bump); else
   // the selection is the recenter target, like every module surface.
@@ -147,13 +155,15 @@ export function MinimalGraphView({
     return filterGhostNodes(externalFiltered.nodes, externalFiltered.edges, showGhostNodes);
   }, [edges, nodes, showExternalGhosts, showGhostNodes]);
   const semanticScene = useMemo(
-    () => reviewActive
+    () => reviewActive || nestedExtraction
       ? { ...visibleGraph, semanticLayers: [] as const }
       : adaptMinimalGraphToSemanticSource(visibleGraph, sourceRef.current!),
-    [reviewActive, visibleGraph],
+    [nestedExtraction, reviewActive, visibleGraph],
   );
-  // A PR overlay is a navigation boundary. It also bypasses the semantic adapter entirely: there is
-  // no parent preview/commit to stamp, so cloning every review node and edge would be pure overhead.
+  // PR and nested overlays are navigation boundaries. A nested frame's immediate parent is a store
+  // snapshot rather than the source canvas mounted underneath, so semantic zoom stays disabled
+  // until toolbar Back restores that frame; otherwise the fade would preview the wrong ancestor and
+  // Close would discard the whole stack. Root non-review extracts still zoom back to their source.
   const semanticLayers = semanticScene.semanticLayers;
   const semanticNavigation = useSemanticSurfaceNavigation({
     nodes: semanticScene.nodes,

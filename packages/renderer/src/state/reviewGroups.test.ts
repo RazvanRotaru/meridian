@@ -241,6 +241,18 @@ describe("change groups in PR review", () => {
     const outerNodes = [{ id: "outer", position: { x: 12, y: 34 }, data: {} }];
     const outerEdges = [{ id: "outer-edge", source: FILE_A, target: FILE_B }];
     const outerExpanded = new Set([PACKAGE_ID, FS_ID]);
+    const outerOverride = {
+      id: "outer-override",
+      target: { nodeId: FN_A, occurrenceKey: "fn-a:1" },
+      input: { value: "outer" },
+    };
+    const outerWatcher = {
+      id: "outer-watcher",
+      nodeId: FN_A,
+      phase: "input" as const,
+      path: ["value"],
+      operator: "exists" as const,
+    };
     store.setState({
       minimalLayoutStatus: "ready",
       minimalRfNodes: outerNodes,
@@ -250,6 +262,12 @@ describe("change groups in PR review", () => {
       moduleExpanded: outerExpanded,
       reviewSelectedId: FN_A,
       reviewLitNodeIds: new Set([FN_A, FN_B]),
+      syntheticExecutionStatus: "error",
+      syntheticExecutionError: "outer experiment failed",
+      syntheticExperimentRootId: FN_A,
+      syntheticInputOverrides: [outerOverride],
+      syntheticFieldWatchers: [outerWatcher],
+      syntheticEditorRequest: { rootId: FN_A, host: "flow-pane" },
     });
 
     store.getState().openReviewSubgraph(FS_ID);
@@ -264,6 +282,14 @@ describe("change groups in PR review", () => {
     expect(store.getState().minimalRollups).toEqual({});
     expect(store.getState().moduleExpanded).toEqual(new Set([PACKAGE_ID]));
     expect(store.getState().moduleSelected).toEqual(new Set());
+    expect(store.getState()).toMatchObject({
+      syntheticExecutionStatus: "idle",
+      syntheticExecutionError: null,
+      syntheticExperimentRootId: null,
+      syntheticInputOverrides: [],
+      syntheticFieldWatchers: [],
+      syntheticEditorRequest: null,
+    });
 
     store.getState().selectFlowEntry({ rootId: FN_A, blockPath: [] });
     expect(store.getState().flowSelection?.rootId).toBe(FN_A);
@@ -283,6 +309,14 @@ describe("change groups in PR review", () => {
     expect(store.getState().moduleExpanded).toEqual(outerExpanded);
     expect(store.getState().reviewSelectedId).toBe(FN_A);
     expect(store.getState().reviewLitNodeIds).toEqual(new Set([FN_A, FN_B]));
+    expect(store.getState()).toMatchObject({
+      syntheticExecutionStatus: "error",
+      syntheticExecutionError: "outer experiment failed",
+      syntheticExperimentRootId: FN_A,
+      syntheticInputOverrides: [outerOverride],
+      syntheticFieldWatchers: [outerWatcher],
+      syntheticEditorRequest: { rootId: FN_A, host: "flow-pane" },
+    });
   });
 
   it("lays out an exact-file child graph across columns on its first open", async () => {
@@ -354,19 +388,28 @@ describe("change groups in PR review", () => {
     expect(store.getState().reviewGroups?.groups).toHaveLength(1);
   });
 
-  it("does not let a manual Map extraction replace an active PR review", () => {
+  it("extracts inside the PR without discarding its review session", async () => {
     const store = reviewedStore(MIXED_PR);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    const outerSeeds = [...store.getState().minimalSeedIds];
     const review = store.getState().review;
     const groups = store.getState().reviewGroups;
-    const seeds = store.getState().minimalSeedIds;
     store.setState({ moduleSelected: new Set([FILE_A]) });
-    store.getState().buildMinimalGraph();
 
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    expect(store.getState().minimalSeedIds).toEqual([FILE_A]);
+    expect(store.getState().minimalGraphHistory).toHaveLength(1);
     expect(store.getState().prReviewed).toBe(5);
     expect(store.getState().review).toBe(review);
     expect(store.getState().reviewGroups).toBe(groups);
     expect(store.getState().reviewActiveGroupId).toBeNull();
     expect(store.getState().reviewPathScope).toBeNull();
-    expect(store.getState().minimalSeedIds).toEqual(seeds);
+    expect(store.getState().reviewAllSeedIds).toEqual(outerSeeds);
+
+    store.getState().backMinimalGraph();
+    expect(store.getState().minimalSeedIds).toEqual(outerSeeds);
+    expect(store.getState().minimalGraphHistory).toHaveLength(0);
   });
 });

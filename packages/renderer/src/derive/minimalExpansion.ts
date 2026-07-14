@@ -10,8 +10,9 @@
 import type { LogicFlows } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { ModuleGraph } from "./moduleGraph";
-import type { BlockDeps } from "./blockDeps";
+import { constructionTarget, type BlockDeps } from "./blockDeps";
 import { createCodeWalk, depWireEdges, flowChainEdges, stepCallEdges, visitCode, type Skeleton } from "./codeWalk";
+import { emitFlowSteps, type StepEmission } from "./flowSteps";
 import { finalizeModuleNode } from "./moduleTreeData";
 import type { ModulePackageData } from "./packageOverview";
 import type { ModuleTreeEdge, VisibleModuleNode } from "./moduleTreeTypes";
@@ -20,8 +21,16 @@ import type { ModuleTreeEdge, VisibleModuleNode } from "./moduleTreeTypes";
  * nested unit/block/step cards, and their intra-file dep/flow/step wires. Ready for `layoutModuleTree`. */
 export interface MinimalExpansion {
   fileId: string;
+  /** Owning artifact callable for a synthetic `step:*` root; absent for real artifact roots. */
+  artifactOwnerId?: string;
   nodes: VisibleModuleNode[];
   edges: ModuleTreeEdge[];
+}
+
+export interface ResolvedFlowStep {
+  artifactOwnerId: string;
+  emission: StepEmission;
+  step: StepEmission["steps"][number];
 }
 
 /** The file card's container facts (for the flat card's chevron) plus, when it is expanded, its
@@ -62,6 +71,157 @@ export function walkFileCode(
     return { ...facts, expansion: null };
   }
   return { ...facts, expansion: assembleExpansion(fileId, walk.skeleton, walk, index, graph, blockDeps) };
+}
+
+/** Materialize one real declaration as an exact top-level Map card. Unlike a file, a declaration
+ * needs its one-node expansion even while collapsed: the minimal graph must render a selected class
+ * as a `unit` and a selected callable as a `block`, never as a package-summary placeholder. */
+export function walkCodeRoot(
+  rootId: string,
+  index: GraphIndex,
+  graph: ModuleGraph,
+  expanded: ReadonlySet<string>,
+  blockDeps: BlockDeps,
+  flows: LogicFlows,
+): FileCodeWalk | null {
+  const walk = createCodeWalk();
+  visitCode(rootId, null, 0, { index, expanded, flows }, walk);
+  const root = walk.skeleton[0];
+  if (root?.id !== rootId || (root.kind !== "unit" && root.kind !== "block")) {
+    return null;
+  }
+  return {
+    isContainer: root.isContainer,
+    isExpanded: root.isExpanded,
+    unitCount: root.childCount,
+    expansion: assembleExpansion(rootId, walk.skeleton, walk, index, graph, blockDeps),
+    calls: walk.calls,
+    expandedBlocks: walk.expandedBlocks,
+  };
+}
+
+/** Reconstruct a selected view-only flow step from the same emitter that drew it on its parent
+ * graph. Step ids deliberately do not enter GraphIndex, so resolving against the visible expanded
+ * flow forest is the only truthful way to retain the step's kind, label, and nested disclosure. */
+export function walkFlowStepRoot(
+  rootId: string,
+  index: GraphIndex,
+  graph: ModuleGraph,
+  expanded: ReadonlySet<string>,
+  blockDeps: BlockDeps,
+  flows: LogicFlows,
+): FileCodeWalk | null {
+  const resolved = resolveFlowStep(rootId, index, expanded, flows);
+  if (resolved === null) {
+    return null;
+  }
+  const { artifactOwnerId, emission, step: root } = resolved;
+
+  // Emission is parents-before-children. One forward pass therefore captures the selected step's
+  // complete currently-disclosed subtree without parsing the intentionally recursive step id.
+  const retained = new Set([rootId]);
+  for (const step of emission.steps) {
+    if (retained.has(step.parentId)) {
+      retained.add(step.id);
+    }
+  }
+  const walk = createCodeWalk();
+  walk.skeleton = emission.steps
+    .filter((step) => retained.has(step.id))
+    .map((step) => ({
+      id: step.id,
+      parentId: step.id === rootId ? null : step.parentId,
+      kind: "step" as const,
+      isContainer: step.data.isContainer,
+      isExpanded: step.data.isExpanded,
+      depth: step.depth - root.depth,
+      childCount: 0,
+    }));
+  emission.steps
+    .filter((step) => retained.has(step.id))
+    .forEach((step) => walk.stepData.set(step.id, step.data));
+  walk.chains = emission.chain.filter((edge) => retained.has(edge.source) && retained.has(edge.target));
+  walk.calls = emission.calls.filter((call) => retained.has(call.stepId));
+  walk.seen = new Set(retained);
+  return {
+    isContainer: root.data.isContainer,
+    isExpanded: root.data.isExpanded,
+    unitCount: 0,
+    expansion: {
+      ...assembleExpansion(rootId, walk.skeleton, walk, index, graph, blockDeps),
+      artifactOwnerId,
+    },
+    calls: walk.calls,
+    expandedBlocks: walk.expandedBlocks,
+  };
+}
+
+/** Resolve a recursively nested synthetic step through the canonical emitted flow forest. The
+ * artifact owner is explicit output, so callers never need to parse ids whose owner may itself be a
+ * `step:*` path. */
+export function resolveFlowStep(
+  rootId: string,
+  index: GraphIndex,
+  expanded: ReadonlySet<string>,
+  flows: LogicFlows,
+): ResolvedFlowStep | null {
+  if (!rootId.startsWith("step:")) {
+    return null;
+  }
+  for (const [blockId, flow] of Object.entries(flows).sort(([left], [right]) => left.localeCompare(right))) {
+    const emission = emitFlowSteps(
+      blockId,
+      flow,
+      flows,
+      expanded,
+      (target) => constructionTarget(target, index),
+    );
+    const step = emission.steps.find((candidate) => candidate.id === rootId);
+    if (step !== undefined) {
+      return { artifactOwnerId: blockId, emission, step };
+    }
+  }
+  return null;
+}
+
+/** Recover execution-order wires whose endpoints are visible but owned by different extracted
+ * roots. A per-root step walk deliberately keeps only that root's subtree, so two selected sibling
+ * steps otherwise become truthful cards with their connecting chain silently missing. Re-emitting
+ * the shared flow forest lets the outer minimal layout keep cross-root chains while suppressing the
+ * copies already owned by one expansion. */
+export function visibleFlowChainEdges(
+  visibleIds: ReadonlySet<string>,
+  index: GraphIndex,
+  expanded: ReadonlySet<string>,
+  flows: LogicFlows,
+): ModuleTreeEdge[] {
+  if (![...visibleIds].some((id) => id.startsWith("step:"))) {
+    return [];
+  }
+  const edges = new Map<string, ModuleTreeEdge>();
+  for (const [blockId, flow] of Object.entries(flows).sort(([left], [right]) => left.localeCompare(right))) {
+    const emission = emitFlowSteps(
+      blockId,
+      flow,
+      flows,
+      expanded,
+      (target) => constructionTarget(target, index),
+    );
+    for (const chain of emission.chain) {
+      if (!visibleIds.has(chain.source) || !visibleIds.has(chain.target)) {
+        continue;
+      }
+      edges.set(chain.id, {
+        ...chain,
+        weight: 1,
+        crossFrame: false,
+        crossPackage: false,
+        outsideView: false,
+        category: "flow",
+      });
+    }
+  }
+  return [...edges.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function assembleExpansion(

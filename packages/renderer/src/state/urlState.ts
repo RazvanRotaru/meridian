@@ -52,9 +52,9 @@ export interface NavState {
   serviceGroupingTargetSize: ServiceGroupingTargetSize;
   /** One or two ranked semantic concepts in inferred Service parent labels. */
   serviceGroupingLabelMode: ServiceGroupingLabelMode;
-  /** The OPEN minimal-graph overlay's seed file ids; empty == closed. Opening it is a navigation
-   * (a place you can go Back from), so it lives here and in `isNavigationChange`. The overlay's grown
-   * state (committed ghosts + expansions) is ephemeral exploration, deliberately not in the URL. */
+  /** The OPEN minimal-graph overlay's seed ids; empty == closed. The URL snapshots only the current
+   * frame. Its nested extraction stack (plus committed ghosts + expansions) is session-only, so
+   * changing frames replaces one browser entry while the in-product Back action walks the stack. */
   minimalSeedIds: string[];
   /** Group cards expanded in place in the Module map — a comma-joined list of node ids in the URL. */
   moduleExpanded: string[];
@@ -215,7 +215,10 @@ export function encodeNav(nav: NavState): Map<string, string> {
   if (nav.serviceGroupingLabelMode !== DEFAULT_SERVICE_GROUPING_LABEL_MODE) {
     out.set("sglabels", nav.serviceGroupingLabelMode);
   }
-  setList(out, "mgraph", nav.minimalSeedIds);
+  // A PR URL identifies the review, whose graph is re-derived from the prepared HEAD artifact on
+  // restore. Encoding its current extraction frame would promise a state restore cannot honour;
+  // nested PR extraction therefore remains wholly session-local.
+  if (!activeReview) setList(out, "mgraph", nav.minimalSeedIds);
   setList(out, "mexp", nav.moduleExpanded);
   if (nav.moduleRadius !== 1) out.set("mdepth", String(nav.moduleRadius));
   /** `hmode=node` is the baseline; only persist reach mode so default URLs stay short. */
@@ -330,9 +333,11 @@ export function isNavigationChange(prev: NavState, next: NavState): boolean {
     prev.viewMode !== next.viewMode ||
     prev.compRoot !== next.compRoot ||
     prev.moduleFocus !== next.moduleFocus ||
-    // Building/closing the minimal-graph overlay is a real navigation, so Back returns to the level
-    // you built it from (the overlay's grown state is ephemeral and never in the URL).
-    prev.minimalSeedIds.join(",") !== next.minimalSeedIds.join(",") ||
+    // Opening/closing the extraction session is navigation. Moving between two open frames is not:
+    // the URL snapshots the latest frame with replaceState while the session-only toolbar stack owns
+    // stepwise Back. Browser Back therefore exits the extraction instead of landing on a partial
+    // reconstruction that cannot restore the stack.
+    (prev.minimalSeedIds.length === 0) !== (next.minimalSeedIds.length === 0) ||
     prev.reviewPr !== next.reviewPr ||
     prev.logicRoot !== next.logicRoot ||
     // logicView is deliberately absent: a sub-view flip is a presentation change (replaceState,
