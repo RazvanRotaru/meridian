@@ -79,7 +79,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     const recenter = actionBar.getByRole("button", { name: "Recenter view" });
     const expand = actionBar.getByRole("button", { name: "Expand one level" });
     const collapse = actionBar.getByRole("button", { name: "Collapse all" });
-    const repositorySummary = panel.getByText("Repository · 1 package · 11 files", { exact: true });
+    const repositorySummary = panel.getByText("Repository · 2 packages · 13 files", { exact: true });
     const requestData = panel.getByRole("region", { name: "Request data" });
     const unavailableBadge = panel.getByText("Unavailable", { exact: true });
     const disclosure = panel.locator('button[aria-controls="meridian-control-panel-controls"]');

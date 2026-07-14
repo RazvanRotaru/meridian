@@ -159,7 +159,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await loyaltyTierNode.waitFor();
     const loyaltyCommentIndicator = extractedReviewSurface
       .locator(`[data-review-comment-node-id="${LOYALTY_TIER_FUNCTION_ID}"]`)
-      .getByRole("img", { name: "1 review comment" });
+      .getByRole("button", { name: "1 review comment" });
     await loyaltyCommentIndicator.waitFor();
     expect(await extractedReviewSurface.locator(`[data-review-comment-node-id="${ORDER_SERVICE_MODULE_ID}"]`).count()).toBe(0);
     await loyaltyTierNode.hover();
@@ -259,8 +259,8 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await page.getByText("1/2 files viewed", { exact: true }).waitFor();
 
     // 4f — submit one GitHub review whose two drafts stay as two ordered inline comments.
-    await page.getByRole("button", { name: "Submit review" }).click();
-    await page.getByText("Review submitted", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Submit comments" }).click();
+    await page.getByText("Comments submitted", { exact: true }).waitFor();
     expect(submittedReviews).toEqual([
       {
         event: "COMMENT",
