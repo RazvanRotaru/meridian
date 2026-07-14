@@ -12,8 +12,9 @@ import type { Node } from "@xyflow/react";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { buildModuleGraph } from "../derive/moduleGraph";
 import { buildMinimalSubgraph } from "../derive/minimalSubgraph";
-import { deriveModuleTree } from "../derive/moduleTree";
+import { deriveModuleTree, type ModuleGroupData } from "../derive/moduleTree";
 import { minimalRollupExpansions } from "../derive/minimalRollupExpansion";
+import { groupCardSize } from "./moduleLevelLayout";
 import { layoutMinimalSubgraph } from "./minimalSubgraphLayout";
 import type { PlacedRect } from "./minimalPlacement";
 
@@ -248,6 +249,44 @@ describe("layoutMinimalSubgraph", () => {
         tier: "seed",
       },
     });
+  });
+
+  it("reuses a source package's renderer contract and canonical footprint", async () => {
+    const data: ModuleGroupData = {
+      label: "src",
+      fileCount: 2,
+      changedInside: 1,
+      ca: 7,
+      ce: 4,
+      isContainer: true,
+      isExpanded: false,
+    };
+    const style = groupCardSize(data, "package");
+    const sourceNode: Node = {
+      id: "p:src",
+      type: "package",
+      position: { x: 10, y: 20 },
+      style,
+      data,
+    };
+
+    const { nodes } = await layoutMinimalSubgraph(
+      rolledGroupSpec(),
+      {},
+      false,
+      undefined,
+      [],
+      [sourceNode],
+    );
+    const group = nodes.find((node) => node.id === "p:src");
+
+    expect(group).toMatchObject({
+      id: "p:src",
+      type: "package",
+      style,
+      data: { ...data, tier: "seed" },
+    });
+    expect(group?.data).not.toHaveProperty("readOnly");
   });
 
   it("keeps an opened rollup as the ordinary Map package frame around its contained files", async () => {

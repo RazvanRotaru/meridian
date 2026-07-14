@@ -48,6 +48,7 @@ import { matchAffectedFiles } from "../derive/matchAffectedFiles";
 import { isReviewPathInScope, normalizeReviewPathScope } from "../derive/reviewPathScope";
 import { isSourceBackedNode } from "../derive/sourceBackedNode";
 import { rollupSeeds } from "../derive/seedRollup";
+import { minimalGraphConnectorIds } from "../derive/minimalGraphConnectors";
 import { filesInScope } from "../derive/filesInScope";
 import { deriveRequestGraphOverlay } from "../derive/requestGraphOverlay";
 import { traceGraphRefMismatches } from "../derive/requestTimelineModel";
@@ -4324,23 +4325,50 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
         const hidden = showTests ? EMPTY_HIDDEN_IDS : index.testIds;
         const members = minimalMembersForFlowInspection(state);
-        const requestedRollups = new Set(
-          Object.keys(state.minimalRollups).filter((id) => members.has(id) && moduleExpanded.has(id)),
-        );
         const surface = activeModuleSurfaceSpec(state.viewMode);
-        const rollupExpansions = requestedRollups.size === 0
+        // An ordinary Extract retains the strongest shortest weak bridge between same-abstraction
+        // source cards. Derive it from the already-laid structural scene on every pass: URL restore lays
+        // that scene first, while PR/Service projections whose seeds do not exist there safely add
+        // none. Relationship visibility and redundant-import suppression remain paint-only, so
+        // toggling presentation cannot silently change the extracted graph's membership.
+        const connectorIds = state.review === null
+          ? minimalGraphConnectorIds(state.moduleRfNodes, state.moduleRfEdges, new Set(minimalSeedIds))
+          : EMPTY_HIDDEN_IDS;
+        const derivedMembers = connectorIds.size === 0
+          ? members
+          : new Set([...members, ...connectorIds]);
+        // Source-backed group members keep the exact Map card contract, including real coupling
+        // counts and disclosure. Review-only rollups have no source card and retain their synthetic
+        // summary contract. Both kinds use the same canonical subtree expansion when disclosed.
+        const sourceGroupNodes = state.review === null
+          ? state.moduleRfNodes.filter((node) =>
+              derivedMembers.has(node.id)
+              && (node.type === "package" || node.type === "serviceDomain"),
+            )
+          : [];
+        const expandableGroupIds = new Set([
+          ...Object.keys(state.minimalRollups),
+          ...sourceGroupNodes
+            .filter((node) => (node.data as { isContainer?: unknown }).isContainer === true)
+            .map((node) => node.id),
+        ]);
+        const requestedGroupExpansions = new Set(
+          [...expandableGroupIds].filter((id) => derivedMembers.has(id) && moduleExpanded.has(id)),
+        );
+        const rollupExpansions = requestedGroupExpansions.size === 0
           ? []
           : minimalRollupExpansions(
               surface.deriveTree(state, { graph: moduleGraph, deps, flows }, { hiddenIds: hidden }),
               index,
-              requestedRollups,
+              requestedGroupExpansions,
             );
-        const layout = await deriveMinimalGraphLayout(index, moduleGraph, members, new Set(minimalSeedIds), minimalBasePositions, {
+        const layout = await deriveMinimalGraphLayout(index, moduleGraph, derivedMembers, new Set(minimalSeedIds), minimalBasePositions, {
           moduleExpanded,
           blockDeps: deps,
           flows,
-          expandableGroupIds: new Set(Object.keys(state.minimalRollups)),
+          expandableGroupIds,
           rollupExpansions,
+          sourceGroupNodes,
           // Highways is a visual transform over exact wires. Preparing that substrate once per
           // structural scene lets selection unspool its strands at paint time, just like the Map.
           directDependencies: true,

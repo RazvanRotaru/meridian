@@ -56,12 +56,19 @@ function source(overrides: Partial<MinimalSourceGraphState> = {}): MinimalSource
 
 describe("stampMinimalGraphAsSemanticDetail", () => {
   it("canonically stamps nodes and edges at depth zero without mutating their inputs", () => {
+    const semantics = { modifiers: ["export"] };
     const node: Node = {
       id: "member",
       type: "file",
       position: { x: 10, y: 20 },
       className: "member semantic-layer semantic-layer-7 semantic-context",
-      data: { label: "member.ts", semanticDepth: 7, semanticRole: "context", semanticAnchorId: "old" },
+      data: {
+        label: "member.ts",
+        semantics,
+        semanticDepth: 7,
+        semanticRole: "context",
+        semanticAnchorId: "old",
+      },
     };
     const edge: Edge = {
       id: "wire",
@@ -74,7 +81,14 @@ describe("stampMinimalGraphAsSemanticDetail", () => {
     const stamped = stampMinimalGraphAsSemanticDetail({ nodes: [node], edges: [edge] });
 
     expect(stamped.nodes[0]).not.toBe(node);
-    expect(stamped.nodes[0]).toMatchObject({ id: "member", position: { x: 10, y: 20 } });
+    // Semantic navigation may decorate a card, but it must not change the React Flow type that
+    // resolves through GraphSurface's shared moduleNodeTypes registry (and therefore BaseNode).
+    expect(stamped.nodes[0]).toMatchObject({
+      id: "member",
+      type: "file",
+      position: { x: 10, y: 20 },
+    });
+    expect(stamped.nodes[0].data.semantics).toBe(semantics);
     expect(stamped.nodes[0].className?.split(/\s+/)).toEqual([
       "member",
       "semantic-layer",

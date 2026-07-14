@@ -32,6 +32,24 @@ export interface RelationPaintOptions {
   overrides: RelationVisibilityOverrides;
 }
 
+/** Restore an ordinary extracted graph's immutable origin as its paint owner when transient Map
+ * selection is unavailable (notably after URL restore or HMR). Origins retain their literal
+ * identity — a selected package remains a package seed — and a later drawable selection resumes
+ * the normal on-demand frontier. */
+export function extractedGraphPaintSelectionOverride(
+  nodes: readonly Node[],
+  selected: ReadonlySet<string>,
+  seedIds: readonly string[],
+  ordinaryExtract: boolean,
+): ReadonlySet<string> | undefined {
+  if (!ordinaryExtract) {
+    return undefined;
+  }
+  const drawnIds = new Set(nodes.map((node) => node.id));
+  const needsOrigin = selected.size === 0 || [...selected].some((id) => !drawnIds.has(id));
+  return needsOrigin ? new Set([...seedIds, ...selected]) : undefined;
+}
+
 /**
  * Paint a laid-out level with the Map's own edge chain: suppress a pair's import wire when a typed
  * dep wire already joins it, drop the relationship kinds the Map's toggles hide (the pills stay

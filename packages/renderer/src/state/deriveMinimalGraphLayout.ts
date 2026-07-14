@@ -32,6 +32,9 @@ export interface MinimalCodeInputs {
   expandableGroupIds?: ReadonlySet<string>;
   /** Canonical Map subtrees for the rolled packages currently opened in place. */
   rollupExpansions?: readonly MinimalRollupExpansion[];
+  /** Source-surface group cards whose exact type/data contract the ordinary extracted graph keeps.
+   * Synthetic review rollups omit this and retain their intentionally read-only summary contract. */
+  sourceGroupNodes?: readonly Node[];
   /** PR flow review: exact drawn callables whose incident dependencies must stay attached to the
    * callable instead of folding to their member files. */
   inspectionIds?: ReadonlySet<string>;
@@ -84,7 +87,14 @@ export async function deriveMinimalGraphLayout(
       ? "seed" as const
       : "persistent" as const,
   }));
-  return layoutMinimalSubgraph(spec, basePositions, arrange, relationPolicy, groupExpansions);
+  return layoutMinimalSubgraph(
+    spec,
+    basePositions,
+    arrange,
+    relationPolicy,
+    groupExpansions,
+    code.sourceGroupNodes,
+  );
 }
 
 /** Canonical review visibility: exact hunk-matched nodes plus their root-to-node containment chain.

@@ -9,12 +9,11 @@
  */
 
 import type { Node } from "@xyflow/react";
+import type { ModuleGroupData } from "../derive/moduleTree";
+import { groupCardSize } from "../layout/moduleLevelLayout";
 import type { PlacedRect } from "../layout/minimalPlacement";
 import { FILE_WIDTH, FILE_HEIGHT } from "../layout/minimalPlacement";
 
-// A collapsed package card's fallback footprint when its `style` carries no explicit size.
-const GROUP_WIDTH = 230;
-const GROUP_HEIGHT = 64;
 const CAPTURED_TYPES: ReadonlySet<string> = new Set(["file", "package"]);
 
 /** Absolute map position + size for every `file` / `package` card, keyed by node id, to mirror. */
@@ -25,10 +24,12 @@ export function captureMapPositions(moduleRfNodes: readonly Node[]): Record<stri
     if (!CAPTURED_TYPES.has(node.type ?? "")) {
       continue;
     }
-    // A package renders as a COLLAPSED leaf card in the overlay, so mirror only its position at a fixed
-    // group-card size — an expanded frame's tall captured `style` height would stretch the leaf card.
+    // A package renders as a collapsed leaf card in the overlay. Recompute its footprint through the
+    // Map's canonical content measurement so the extracted card retains the exact same chrome even
+    // when the source node is currently an expanded frame.
     if (node.type === "package") {
-      positions[node.id] = { ...absolutePosition(node, byId), width: GROUP_WIDTH, height: GROUP_HEIGHT };
+      const size = groupCardSize(node.data as ModuleGroupData, node.type);
+      positions[node.id] = { ...absolutePosition(node, byId), ...size };
       continue;
     }
     const style = (node.style ?? {}) as { width?: number; height?: number };
@@ -47,7 +48,9 @@ export function captureMapPositions(moduleRfNodes: readonly Node[]): Record<stri
  * far-right vertical band. */
 export function promotedMemberRect(at: { x: number; y: number }, isGroup: boolean): PlacedRect {
   return isGroup
-    ? { x: at.x, y: at.y, width: GROUP_WIDTH, height: GROUP_HEIGHT }
+    // A promoted folder has no source package contract yet; keep a neutral fallback until its next
+    // derivation can measure the real canonical card.
+    ? { x: at.x, y: at.y, width: 230, height: 76 }
     : { x: at.x, y: at.y, width: FILE_WIDTH, height: FILE_HEIGHT };
 }
 

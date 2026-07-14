@@ -5,8 +5,11 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { GraphArtifact, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
+import { extractedGraphPaintSelectionOverride, paintMinimalLevel } from "../components/paintMinimal";
 import {
   createBlueprintStore,
   removableModuleSelectionCount,
@@ -50,6 +53,11 @@ const ARTIFACT: GraphArtifact = {
     },
   ],
 };
+
+const SAMPLE_ARTIFACT = JSON.parse(readFileSync(
+  fileURLToPath(new URL("../../public/sample-graph.json", import.meta.url)),
+  "utf8",
+)) as GraphArtifact;
 
 const BUILD_ORDERS = "ts:src/a.ts#buildOrdersApp";
 const ROUTES_FILE = "ts:src/routes.ts";
@@ -940,6 +948,147 @@ describe("minimal-graph overlay (extract selection)", () => {
     const store = withBuiltGraph();
     expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
     expect(store.getState().minimalMemberIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
+  });
+
+  it("keeps selected folders as seeds and restores their minimal context after selection loss", async () => {
+    const selectedFolders = ["ts:src/notifications", "ts:src/pricing"];
+    const services = "ts:src/services";
+    const store = freshStore(SAMPLE_ARTIFACT);
+    store.setState({
+      moduleFocus: "ts:src",
+      moduleExpanded: new Set(["ts:src"]),
+      moduleSelected: new Set(selectedFolders),
+    });
+    await store.getState().moduleRelayout();
+    store.getState().buildMinimalGraph();
+
+    expect(store.getState().minimalSeedIds).toEqual(selectedFolders);
+    expect(store.getState().minimalMemberIds).toEqual(selectedFolders);
+
+    await store.getState().minimalRelayout();
+    const state = store.getState();
+    expect(state.minimalRfNodes).toContainEqual(expect.objectContaining({
+      id: selectedFolders[0],
+      type: "package",
+    }));
+    expect(state.minimalRfNodes).toContainEqual(expect.objectContaining({
+      id: selectedFolders[1],
+      type: "package",
+    }));
+    expect(state.minimalRfNodes).toContainEqual(expect.objectContaining({
+      id: services,
+      type: "package",
+      data: expect.objectContaining({ tier: "persistent" }),
+    }));
+    expect(state.minimalRfEdges).toContainEqual(expect.objectContaining({
+      source: services,
+      target: selectedFolders[0],
+    }));
+    expect(state.minimalRfEdges).toContainEqual(expect.objectContaining({
+      source: services,
+      target: selectedFolders[1],
+    }));
+    expect(state.minimalRfNodes.map((node) => node.id)).not.toContain("ts:src/notifications/emailService.ts");
+    expect(state.minimalRfNodes.map((node) => node.id)).not.toContain("ts:src/pricing/pricingService.ts");
+
+    const paintOverride = extractedGraphPaintSelectionOverride(
+      state.minimalRfNodes,
+      new Set(),
+      state.minimalSeedIds,
+      true,
+    );
+    const painted = paintMinimalLevel(
+      state.minimalRfNodes,
+      state.minimalRfEdges,
+      new Set(),
+      1,
+      "node",
+      new Set(),
+      undefined,
+      paintOverride,
+    );
+    expect(painted.nodes.map((node) => node.id)).toContain(services);
+    expect(painted.edges).toContainEqual(expect.objectContaining({
+      source: services,
+      target: selectedFolders[0],
+    }));
+    expect(painted.edges).toContainEqual(expect.objectContaining({
+      source: services,
+      target: selectedFolders[1],
+    }));
+  });
+
+  it("retains the same-level folder on the strongest shortest path independently of paint filters", async () => {
+    const api = "ts:src/api";
+    const repository = "ts:src/repository";
+    const services = "ts:src/services";
+    const store = freshStore(SAMPLE_ARTIFACT);
+    store.setState({ moduleExpanded: new Set(["ts:src"]) });
+    await store.getState().moduleRelayout();
+    const sourceServices = store.getState().moduleRfNodes.find((node) => node.id === services)!;
+    expect(sourceServices).toMatchObject({
+      type: "package",
+      data: {
+        label: "services",
+        fileCount: 1,
+        ca: 3,
+        ce: 5,
+        isContainer: true,
+        isExpanded: false,
+      },
+    });
+    store.setState({
+      moduleSelected: new Set([api, repository]),
+      // Relationship filters are presentation-only on main. Hiding every relation involved in the
+      // path must not make a later structural relayout forget that `services` connects the seeds.
+      relationVisibilityOverrides: {
+        modules: { calls: false, references: false, imports: false, instantiates: false },
+      },
+    });
+
+    store.getState().buildMinimalGraph();
+    await store.getState().minimalRelayout();
+
+    const state = store.getState();
+    const extractedServices = state.minimalRfNodes.find((node) => node.id === services)!;
+    const { tier, ...extractedServicesData } = extractedServices.data;
+    expect(state.minimalSeedIds).toEqual([api, repository]);
+    expect(state.minimalMemberIds).toEqual([api, repository]);
+    expect(extractedServices.type).toBe(sourceServices.type);
+    expect(extractedServices.style).toEqual(sourceServices.style);
+    expect(extractedServicesData).toEqual(sourceServices.data);
+    expect(tier).toBe("persistent");
+    expect(state.minimalRfEdges).toContainEqual(expect.objectContaining({ source: api, target: services }));
+    expect(state.minimalRfEdges).toContainEqual(expect.objectContaining({ source: services, target: repository }));
+    // Equal-hop single-relation alternatives do not displace the stronger service path.
+    expect(state.minimalRfNodes).not.toContainEqual(expect.objectContaining({
+      id: "ts:src/index.ts",
+      data: expect.objectContaining({ tier: "persistent" }),
+    }));
+    expect(state.minimalRfNodes).not.toContainEqual(expect.objectContaining({
+      id: "ts:src/domain",
+      data: expect.objectContaining({ tier: "persistent" }),
+    }));
+
+    // The retained disclosure is the real shared action, not copied decoration: expanding the
+    // connector opens its canonical Map subtree inside the extracted graph, then collapses cleanly.
+    store.getState().toggleModuleExpand(services);
+    await vi.waitFor(() => expect(
+      store.getState().minimalRfNodes.find((node) => node.id === services)?.data.isExpanded,
+    ).toBe(true));
+    expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({
+      id: "ts:src/services/orderService.ts",
+      type: "file",
+      parentId: services,
+    }));
+
+    store.getState().toggleModuleExpand(services);
+    await vi.waitFor(() => expect(
+      store.getState().minimalRfNodes.find((node) => node.id === services)?.data.isExpanded,
+    ).toBe(false));
+    expect(store.getState().minimalRfNodes.map((node) => node.id)).not.toContain(
+      "ts:src/services/orderService.ts",
+    );
   });
 
   it("lets an exact ghost or grouped ghost parent seed extraction on the Map", () => {
