@@ -18,6 +18,7 @@ import { borderFor, DeltaChip, useNodeDiff } from "./changed";
 import { CommonsChips } from "./CommonsChips";
 import { TOKENS } from "../../controlpanel/panelKit";
 import { useSurfaceNodeSelected } from "../../canvas/SurfaceInteractionContext";
+import { ReviewNodeViewedChrome } from "../../review/ReviewFileNodeViewedControls";
 
 // A neutral package hue — the cross-package coupling gold lives on the wires, not the boxes.
 const PACKAGE_ACCENT = "#5B9BE3";
@@ -27,7 +28,11 @@ type PackageRfNode = Node<ModuleGroupData, "package">;
 type PackageMetaData = Pick<ModuleGroupData, "fileCount" | "ca" | "ce" | "countLabel">;
 
 function PackageOverviewNodeImpl({ id, data }: NodeProps<PackageRfNode>) {
-  return <GroupContainerNodeView id={id} data={data} />;
+  return (
+    <ReviewNodeViewedChrome nodeId={id} scope="folder" borderRadius={8}>
+      <GroupContainerNodeView id={id} data={data} />
+    </ReviewNodeViewedChrome>
+  );
 }
 
 /**

@@ -7,7 +7,16 @@
 import { describe, expect, it } from "vitest";
 import type { GraphArtifact, GraphEdge, GraphNode, ReviewContext } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
-import { applyFileToggle, applyUnitTick, checkStateOf, deriveReviewFiles, fileViewState, isReviewTestPath } from "./reviewFiles";
+import {
+  applyFilesToggle,
+  applyFileToggle,
+  applyUnitTick,
+  checkStateOf,
+  deriveReviewFiles,
+  filesViewState,
+  fileViewState,
+  isReviewTestPath,
+} from "./reviewFiles";
 
 function node(id: string, kind: string, file: string, start: number, end: number, parentId: string | null): GraphNode {
   return {
@@ -251,5 +260,33 @@ describe("view state + tick transitions", () => {
     expect(fileViewState(docs, {}, { [docs.path]: { at: "t", fingerprint: "other" } })).toBe("stale");
     const off = applyFileToggle(docs, {}, on.fileTicks, "t");
     expect(off.fileTicks).toEqual({});
+  });
+
+  it("completes a partly viewed folder without clearing files that were already done", () => {
+    const aDone = applyFileToggle(a, {}, {}, "t1");
+    const unrelatedTick = { at: "earlier", fingerprint: "unrelated" };
+    const partialTicks = { ...aDone.unitTicks, unrelated: unrelatedTick };
+    const partialFileTicks = { ...aDone.fileTicks, "outside.md": unrelatedTick };
+    expect(filesViewState([a, docs], partialTicks, partialFileTicks)).toBe("todo");
+
+    const completed = applyFilesToggle([a, docs], partialTicks, partialFileTicks, "t2");
+    expect(fileViewState(a, completed.unitTicks, completed.fileTicks)).toBe("done");
+    expect(fileViewState(docs, completed.unitTicks, completed.fileTicks)).toBe("done");
+    expect(filesViewState([a, docs], completed.unitTicks, completed.fileTicks)).toBe("done");
+    expect(completed.unitTicks.unrelated).toBe(unrelatedTick);
+    expect(completed.fileTicks["outside.md"]).toBe(unrelatedTick);
+
+    const cleared = applyFilesToggle([a, docs], completed.unitTicks, completed.fileTicks, "t3");
+    expect(filesViewState([a, docs], cleared.unitTicks, cleared.fileTicks)).toBe("todo");
+    expect(cleared.unitTicks).toEqual({ unrelated: unrelatedTick });
+    expect(cleared.fileTicks).toEqual({ "outside.md": unrelatedTick });
+  });
+
+  it("marks a folder stale when any represented file changed, then refreshes every unfinished file", () => {
+    const staleFileTicks = { [docs.path]: { at: "t1", fingerprint: "old" } };
+    expect(filesViewState([a, docs], {}, staleFileTicks)).toBe("stale");
+
+    const refreshed = applyFilesToggle([a, docs], {}, staleFileTicks, "t2");
+    expect(filesViewState([a, docs], refreshed.unitTicks, refreshed.fileTicks)).toBe("done");
   });
 });

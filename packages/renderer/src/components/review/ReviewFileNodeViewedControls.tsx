@@ -1,18 +1,31 @@
 /**
  * Viewed-state chrome rendered inside Map nodes. Because it sits beneath React Flow's node
  * transform, the outline and attached check scale with the graph instead of becoming a fixed-size
- * screen overlay. Unit controls toggle only that declaration; file controls are the aggregate bulk
- * action and retain the existing cascade semantics.
+ * screen overlay. Unit controls toggle only that declaration; file and folder controls are
+ * aggregate bulk actions and retain the existing cascade semantics.
  */
 
 import { CheckIcon, CircleIcon, ReloadIcon } from "@radix-ui/react-icons";
 import type { ReactNode } from "react";
-import { checkStateOf, fileViewState, type CheckState, type ReviewFileRow, type ReviewUnitRow } from "../../derive/reviewFiles";
+import {
+  checkStateOf,
+  filesViewState,
+  fileViewState,
+  type CheckState,
+  type ReviewFileRow,
+  type ReviewUnitRow,
+} from "../../derive/reviewFiles";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { useSurfaceReviewProgressEnabled } from "../canvas/SurfaceInteractionContext";
 import { REVIEW_VIEWED_ACCENT, REVIEW_VIEWED_STALE } from "./reviewPanelKit";
 
-export type ReviewViewedScope = "file" | "unit";
+export type ReviewViewedScope = "folder" | "file" | "unit";
+
+interface FolderTarget {
+  kind: "folder";
+  label: string;
+  files: readonly ReviewFileRow[];
+}
 
 interface FileTarget {
   kind: "file";
@@ -25,11 +38,18 @@ interface UnitTarget {
   unit: ReviewUnitRow;
 }
 
-type ReviewViewedTarget = FileTarget | UnitTarget;
+type ReviewViewedTarget = FolderTarget | FileTarget | UnitTarget;
+
+interface CachedFolderTarget {
+  memberIds: readonly string[] | undefined;
+  label: string;
+  target: FolderTarget | null;
+}
 
 interface ReviewTargetIndex {
   filesByModuleId: ReadonlyMap<string, FileTarget>;
   unitsByNodeId: ReadonlyMap<string, UnitTarget>;
+  foldersByNodeId: Map<string, CachedFolderTarget>;
 }
 
 const TARGET_INDEX_CACHE = new WeakMap<readonly ReviewFileRow[], ReviewTargetIndex>();
@@ -68,9 +88,15 @@ function EnabledReviewNodeViewedChrome({
   borderRadius: number;
   children: ReactNode;
 }) {
-  const target = useBlueprint((state) => targetFor(state.reviewFiles, scope, nodeId));
+  const target = useBlueprint((state) => targetFor(
+    state.reviewFiles,
+    scope,
+    nodeId,
+    state.minimalRollups[nodeId],
+    state.index.nodesById.get(nodeId)?.displayName ?? nodeId,
+  ));
   const state = useBlueprint((blueprint) => viewStateFor(target, blueprint.reviewUnitTicks, blueprint.reviewFileTicks));
-  const { toggleReviewFileViewed, toggleReviewUnitTick } = useBlueprintActions();
+  const { toggleReviewFilesViewed, toggleReviewFileViewed, toggleReviewUnitTick } = useBlueprintActions();
   if (target === null || state === null) {
     return children;
   }
@@ -103,7 +129,9 @@ function EnabledReviewNodeViewedChrome({
           state={state}
           label={label}
           onToggle={() => {
-            if (target.kind === "file") {
+            if (target.kind === "folder") {
+              toggleReviewFilesViewed(target.files.map((file) => file.path));
+            } else if (target.kind === "file") {
               toggleReviewFileViewed(target.file.path);
             } else {
               toggleReviewUnitTick(target.unit.nodeId);
@@ -160,11 +188,42 @@ function ViewedIcon({ state }: { state: CheckState }) {
   return <CircleIcon width={10} height={10} aria-hidden="true" />;
 }
 
-function targetFor(files: readonly ReviewFileRow[], scope: ReviewViewedScope, nodeId: string): ReviewViewedTarget | null {
+function targetFor(
+  files: readonly ReviewFileRow[],
+  scope: ReviewViewedScope,
+  nodeId: string,
+  folderMemberIds: readonly string[] | undefined,
+  folderLabel: string,
+): ReviewViewedTarget | null {
   const index = reviewTargetIndex(files);
-  return scope === "file"
-    ? index.filesByModuleId.get(nodeId) ?? null
-    : index.unitsByNodeId.get(nodeId) ?? null;
+  if (scope === "file") {
+    return index.filesByModuleId.get(nodeId) ?? null;
+  }
+  if (scope === "unit") {
+    return index.unitsByNodeId.get(nodeId) ?? null;
+  }
+  return folderTarget(index, nodeId, folderMemberIds, folderLabel);
+}
+
+/** A review folder is the exact large-review rollup, not every source file in its displayed
+ * subtree. That keeps the marker scoped to the changed files represented by this graph node. */
+function folderTarget(
+  index: ReviewTargetIndex,
+  nodeId: string,
+  memberIds: readonly string[] | undefined,
+  label: string,
+): FolderTarget | null {
+  const cached = index.foldersByNodeId.get(nodeId);
+  if (cached !== undefined && cached.memberIds === memberIds && cached.label === label) {
+    return cached.target;
+  }
+  const memberSet = new Set(memberIds ?? []);
+  const files = [...index.filesByModuleId.entries()]
+    .filter(([moduleId]) => memberSet.has(moduleId))
+    .map(([, target]) => target.file);
+  const target = files.length === 0 ? null : { kind: "folder" as const, label, files };
+  index.foldersByNodeId.set(nodeId, { memberIds, label, target });
+  return target;
 }
 
 function reviewTargetIndex(files: readonly ReviewFileRow[]): ReviewTargetIndex {
@@ -182,7 +241,7 @@ function reviewTargetIndex(files: readonly ReviewFileRow[]): ReviewTargetIndex {
       unitsByNodeId.set(unit.nodeId, { kind: "unit", file, unit });
     }
   }
-  const index = { filesByModuleId, unitsByNodeId };
+  const index = { filesByModuleId, unitsByNodeId, foldersByNodeId: new Map<string, CachedFolderTarget>() };
   TARGET_INDEX_CACHE.set(files, index);
   return index;
 }
@@ -195,13 +254,18 @@ function viewStateFor(
   if (target === null) {
     return null;
   }
+  if (target.kind === "folder") {
+    return filesViewState(target.files, unitTicks, fileTicks);
+  }
   return target.kind === "file"
     ? fileViewState(target.file, unitTicks, fileTicks)
     : checkStateOf(target.unit.fingerprint, unitTicks[target.unit.nodeId]);
 }
 
 function viewedLabel(target: ReviewViewedTarget, state: CheckState): string {
-  const subject = target.kind === "file" ? target.file.path : target.unit.displayName;
+  const subject = target.kind === "folder"
+    ? `${target.label} folder`
+    : target.kind === "file" ? target.file.path : target.unit.displayName;
   if (state === "done") {
     return `Viewed ${subject} — click to unmark`;
   }

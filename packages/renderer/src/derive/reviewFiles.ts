@@ -246,6 +246,20 @@ export function fileViewState(
   return states.every((state) => state === "done") ? "done" : "todo";
 }
 
+/** Aggregate a set of changed files for folder-level progress. A stale descendant wins so a folder
+ * can never retain a completed marker after one of its reviewed files changes. */
+export function filesViewState(
+  files: readonly ReviewFileRow[],
+  unitTicks: Record<string, ReviewTick>,
+  fileTicks: Record<string, ReviewTick>,
+): CheckState {
+  const states = files.map((file) => fileViewState(file, unitTicks, fileTicks));
+  if (states.some((state) => state === "stale")) {
+    return "stale";
+  }
+  return states.length > 0 && states.every((state) => state === "done") ? "done" : "todo";
+}
+
 /** How many rows read as fully "viewed" (all their units done). ONE definition so the panel header,
  * the collapsed rail, and the control-panel resume chip all report the same progress fraction. */
 export function countViewedFiles(
@@ -301,6 +315,30 @@ export function applyFileToggle(
     }
   }
   return { unitTicks: nextUnits, fileTicks };
+}
+
+/** Folder-level bulk toggle. A partially viewed folder completes only its unfinished/stale files;
+ * a fully viewed folder clears every descendant tick. This preserves already-completed work while
+ * making the folder control an unambiguous all-on/all-off gesture. */
+export function applyFilesToggle(
+  files: readonly ReviewFileRow[],
+  unitTicks: Record<string, ReviewTick>,
+  fileTicks: Record<string, ReviewTick>,
+  at: string,
+): { unitTicks: Record<string, ReviewTick>; fileTicks: Record<string, ReviewTick> } {
+  const markViewed = filesViewState(files, unitTicks, fileTicks) !== "done";
+  let nextUnitTicks = unitTicks;
+  let nextFileTicks = fileTicks;
+  for (const file of files) {
+    const state = fileViewState(file, nextUnitTicks, nextFileTicks);
+    if ((markViewed && state === "done") || (!markViewed && state !== "done")) {
+      continue;
+    }
+    const next = applyFileToggle(file, nextUnitTicks, nextFileTicks, at);
+    nextUnitTicks = next.unitTicks;
+    nextFileTicks = next.fileTicks;
+  }
+  return { unitTicks: nextUnitTicks, fileTicks: nextFileTicks };
 }
 
 /** Join an affected node to its display shape; null when the node vanished from the index. */
