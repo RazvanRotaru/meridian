@@ -2,9 +2,10 @@
  * A logic-flow STEP charted in place on the Map — one entry of an expanded block's flow: a call, or
  * a control construct (loop/branch/callback). The quietest shape on the canvas: it reads as the
  * inside of a block, not a peer of one. Resolved call steps are where the flow leaves the frame —
- * their violet wires point at the definition being called. A step with something INSIDE (a charted
- * callee flow, a construct body) carries the same disclosure as a block: expanding it unrolls that
- * flow in place, recursively — the expand gesture works at every depth. View-only pseudo-node
+ * their violet wires point at the definition being called. Every resolved local call and every
+ * structural step carries the same disclosure as a block: expanding it unrolls that flow in place,
+ * recursively (or shows the shared empty state) — the expand gesture works at every
+ * depth. View-only pseudo-node
  * (never an artifact id).
  */
 
@@ -13,10 +14,9 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useSurfaceNodeSelected } from "../../canvas/SurfaceInteractionContext";
 import type { StepData } from "../../../derive/flowSteps";
 import { BaseNode, type BaseNodeModel } from "../BaseNode";
+import { EmptyNodeExpansion } from "../EmptyNodeExpansion";
 import { cardSelectedStyle, MONO, PIN } from "./frameChrome";
 import { CALL_RESOLVED, CALL_UNRESOLVED, CONSTRUCT } from "../../../theme/mapPalette";
-
-const STEP_GLYPH: Record<StepData["stepKind"], string> = { call: "→", await: "⏸", loop: "↻", branch: "⑂", callback: "λ", exit: "⏎" };
 
 type StepRfNode = Node<StepData, "step">;
 
@@ -26,13 +26,14 @@ function StepNodeImpl({ id, data }: NodeProps<StepRfNode>) {
   const glyphColor = data.stepKind === "call" ? (data.resolved ? CALL_RESOLVED : CALL_UNRESOLVED) : CONSTRUCT;
   const model: BaseNodeModel = {
     instanceId: id,
-    // A step is a view occurrence. Its owner is recovered from the occurrence grammar for Logic
-    // navigation; it is not itself a canonical artifact.
-    targetId: null,
+    // Structural steps fall back to their occurrence owner; resolved call steps retain the callee
+    // identity so the same node can expand in place and navigate into that callable.
+    targetId: data.targetId ?? null,
     nodeType: "step",
-    kind: data.stepKind,
+    kind: data.nodeKind,
+    semantics: data.semantics,
     label: data.label,
-    childCount: data.isContainer ? 1 : 0,
+    childCount: data.childCount,
     canExpand: data.isContainer,
     expanded: data.isExpanded,
     canNavigate: true,
@@ -44,8 +45,6 @@ function StepNodeImpl({ id, data }: NodeProps<StepRfNode>) {
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
     </>
   );
-  const glyph = <span style={{ ...GLYPH, color: glyphColor }}>{STEP_GLYPH[data.stepKind]}</span>;
-
   if (data.isExpanded) {
     return (
       <BaseNode
@@ -53,10 +52,11 @@ function StepNodeImpl({ id, data }: NodeProps<StepRfNode>) {
         style={selected ? cardSelectedStyle(FRAME, glyphColor) : FRAME}
         headerStyle={TITLE_BAR}
         labelStyle={FRAME_LABEL}
-        leading={glyph}
         ports={handles}
         title={data.label}
-      />
+      >
+        {data.emptyFlow ? <EmptyNodeExpansion /> : null}
+      </BaseNode>
     );
   }
 
@@ -66,7 +66,6 @@ function StepNodeImpl({ id, data }: NodeProps<StepRfNode>) {
       style={selected ? cardSelectedStyle(STEP, glyphColor) : STEP}
       headerStyle={STEP_HEADER}
       labelStyle={LABEL}
-      leading={glyph}
       ports={handles}
       title={data.label}
     />
@@ -112,7 +111,6 @@ const TITLE_BAR: React.CSSProperties = {
   borderBottom: "1px solid #202632",
   background: "rgba(22,28,37,0.9)",
 };
-const GLYPH: React.CSSProperties = { fontSize: 9.5, flexShrink: 0 };
 const LABEL: React.CSSProperties = {
   minWidth: 0,
   fontSize: 10.5,

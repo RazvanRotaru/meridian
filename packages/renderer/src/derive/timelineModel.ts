@@ -10,7 +10,7 @@ import type { FlowStep, LogicFlows, NodeId } from "@meridian/core";
 import { branchCoversAllCases, exitLabel, pathTerminates, tryArms } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { BranchStep, CallStep, ExitStep } from "./flowViewModel";
-import { FLOW_COLORS, callDisplay, isTryStep } from "./flowViewModel";
+import { FLOW_COLORS, callDisplay, isPromiseHandoff, isTryStep } from "./flowViewModel";
 
 export interface TimelineItem {
   t0: number; t1: number; kind: "chip" | "bar" | "suspend"; color: string; glyph: string; text: string;
@@ -74,10 +74,11 @@ class Builder {
 
   private call(step: CallStep, ghost: boolean): void {
     if (step.awaited) return this.awaitCall(step);
-    if (step.detached) return this.detachCall(step);
+    if (isPromiseHandoff(step, this.index)) return this.detachCall(step);
     const d = callDisplay(step, this.flows, this.index);
     const color = d.method ? FLOW_COLORS.method : FLOW_COLORS.call;
-    this.mainRow.push({ t0: this.t, t1: this.t, kind: "chip", color, glyph: d.method ? "∷" : "ƒ", text: step.label, target: step.target, expandable: d.navigable, ghost });
+    const text = step.detached ? `${step.label} · result dropped` : step.label;
+    this.mainRow.push({ t0: this.t, t1: this.t, kind: "chip", color, glyph: d.method ? "∷" : "ƒ", text, target: step.target, expandable: d.navigable, ghost });
     this.t += ADVANCE;
   }
 
@@ -106,7 +107,7 @@ class Builder {
     const row = this.bgRows.length;
     const d = callDisplay(step, this.flows, this.index);
     this.mainRow.push({ t0: this.t, t1: this.t, kind: "chip", color: FLOW_COLORS.detached, glyph: "⤳", text: step.label, target: step.target, expandable: d.navigable });
-    this.bgRows.push([{ t0: this.t, t1: OPEN, kind: "bar", color: FLOW_COLORS.detached, glyph: "⤳", text: `${step.label} · result dropped →`, target: step.target, expandable: d.navigable }]);
+    this.bgRows.push([{ t0: this.t, t1: OPEN, kind: "bar", color: FLOW_COLORS.detached, glyph: "⤳", text: `${step.label} · Promise · not awaited →`, target: step.target, expandable: d.navigable }]);
     this.connectors.push({ kind: "detach", t: this.t, row });
     this.t += ADVANCE;
   }

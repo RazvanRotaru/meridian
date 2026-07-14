@@ -7,9 +7,12 @@
 
 import { describe, expect, it } from "vitest";
 import type { GhostData } from "../derive/ghostDeps";
-import type { ModuleCardData } from "../derive/moduleLevel";
+import type { BlockData, ModuleCardData } from "../derive/moduleLevel";
+import type { StepData } from "../derive/flowSteps";
 import type { ModuleTreeEdge, VisibleModuleNode } from "../derive/moduleTree";
-import { layoutEdgesForPolicy, layoutModuleTree } from "./moduleLevelLayout";
+import type { NodeSemanticModel } from "../nodeSemantics";
+import { NODE_DISCLOSURE_SIZE, NODE_EMPTY_EXPANSION_HEIGHT } from "../theme/nodeChrome";
+import { ghostSize, layoutEdgesForPolicy, layoutModuleTree } from "./moduleLevelLayout";
 import { SERVICE_RELATION_POLICY, UI_RELATION_POLICY } from "../graph/lensRelationPolicy";
 
 function fileNode(id: string): VisibleModuleNode {
@@ -30,6 +33,50 @@ function fileNode(id: string): VisibleModuleNode {
 function ghostNode(id: string): VisibleModuleNode {
   const data: GhostData = { label: id, context: "off/screen.ts", ghostKind: "function" };
   return { id, parentId: null, kind: "ghost", isContainer: false, isExpanded: false, depth: 0, childCount: 0, data };
+}
+
+function blockNode(
+  id: string,
+  semantics?: NodeSemanticModel,
+  expansion: Partial<Pick<BlockData, "expandable" | "emptyFlow" | "childCount" | "isExpanded">> = {},
+): VisibleModuleNode {
+  const data: BlockData = {
+    label: "loadOrder",
+    blockKind: "method",
+    ...(semantics ? { semantics } : {}),
+    callable: true,
+    expandable: false,
+    emptyFlow: false,
+    childCount: 0,
+    isExpanded: false,
+    ...expansion,
+  };
+  return {
+    id,
+    parentId: null,
+    kind: "block",
+    isContainer: data.expandable,
+    isExpanded: data.isExpanded,
+    depth: 0,
+    childCount: data.childCount,
+    data,
+  };
+}
+
+function emptyCallStep(id: string, isExpanded: boolean): VisibleModuleNode {
+  const data: StepData = {
+    label: "visitOrder",
+    stepKind: "call",
+    nodeKind: "method",
+    targetId: "ts:orders.ts#visitOrder",
+    resolution: "resolved",
+    resolved: true,
+    isContainer: true,
+    isExpanded,
+    childCount: 0,
+    emptyFlow: true,
+  };
+  return { id, parentId: null, kind: "step", isContainer: true, isExpanded, depth: 0, childCount: 0, data };
 }
 
 function importEdge(source: string, target: string): ModuleTreeEdge {
@@ -101,6 +148,62 @@ function outsideBox(r: Rect, box: Box): boolean {
 }
 
 describe("layoutModuleTree ghost placement", () => {
+  it("reserves width for the shared declaration and invocation semantic rail", async () => {
+    const [plainLayout, semanticLayout] = await Promise.all([
+      layoutModuleTree([blockNode("plain")], []),
+      layoutModuleTree([blockNode("semantic", {
+        modifiers: ["async", "static"],
+        returnsPromise: true,
+        asyncState: { kind: "awaited" },
+      })], []),
+    ]);
+
+    const plainWidth = rectOf(plainLayout.nodes[0]).width;
+    const semanticWidth = rectOf(semanticLayout.nodes[0]).width;
+    expect(semanticWidth).toBeGreaterThan(plainWidth);
+    expect(semanticWidth).toBeGreaterThanOrEqual(300);
+  });
+
+  it("reserves disclosure width and an honest empty-body frame for a zero-child callable", async () => {
+    const [leafLayout, collapsedLayout, expandedLayout] = await Promise.all([
+      layoutModuleTree([blockNode("leaf")], []),
+      layoutModuleTree([blockNode("collapsed", undefined, { expandable: true, emptyFlow: true })], []),
+      layoutModuleTree([blockNode("expanded", undefined, {
+        expandable: true,
+        emptyFlow: true,
+        childCount: 0,
+        isExpanded: true,
+      })], []),
+    ]);
+
+    expect(rectOf(collapsedLayout.nodes[0]).width - rectOf(leafLayout.nodes[0]).width)
+      .toBeGreaterThanOrEqual(NODE_DISCLOSURE_SIZE);
+    expect(rectOf(expandedLayout.nodes[0]).height).toBeGreaterThanOrEqual(NODE_EMPTY_EXPANSION_HEIGHT);
+  });
+
+  it("gives an expanded empty resolved call step the same empty-body height floor", async () => {
+    const collapsed = await layoutModuleTree([emptyCallStep("step:owner:0", false)], []);
+    const expanded = await layoutModuleTree([emptyCallStep("step:owner:0", true)], []);
+
+    expect(rectOf(collapsed.nodes[0]).height).toBe(26);
+    expect(rectOf(expanded.nodes[0]).height).toBeGreaterThanOrEqual(NODE_EMPTY_EXPANSION_HEIGHT);
+  });
+
+  it("reserves the shared disclosure slot on an expandable grouped ghost", () => {
+    const ordinary: GhostData = {
+      label: "qualified.namespace.with.a.longGhostSymbol",
+      context: "off/screen.ts",
+      ghostKind: "function",
+    };
+    const grouped = {
+      ...ordinary,
+      ghostRole: "parent-anchor",
+      semanticMembers: [{ id: "child", data: ordinary }],
+    } as GhostData & { ghostRole: "parent-anchor" };
+
+    expect(ghostSize(grouped).width - ghostSize(ordinary).width).toBe(NODE_DISCLOSURE_SIZE + 5);
+  });
+
   it("outlines a transient inspection preview without changing its measured geometry", async () => {
     const ordinary = fileNode("f:a");
     const preview: VisibleModuleNode = {

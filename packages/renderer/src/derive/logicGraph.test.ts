@@ -5,11 +5,27 @@ import type { GraphIndex } from "../graph/graphIndex";
 import { collectModuleDefinitions, definitionNodeData, deriveLogicGraph, deriveLogicGraphFromBodies, type LogicNodeData } from "./logicGraph";
 
 /** A GraphIndex stub: deriveLogicGraph reads nodesById + ancestorsOf + changed status (entry cap). */
-function makeIndex(entries: Array<{ id: string; name: string; kind: string; parentId: string | null }>): GraphIndex {
+function makeIndex(entries: Array<{
+  id: string;
+  name: string;
+  kind: string;
+  parentId: string | null;
+  signature?: string;
+  tags?: string[];
+}>): GraphIndex {
   const nodesById = new Map<string, GraphNode>(
     entries.map((e) => [
       e.id,
-      { id: e.id, kind: e.kind, displayName: e.name, qualifiedName: e.name, parentId: e.parentId, location: { file: "", startLine: 1 } } as GraphNode,
+      {
+        id: e.id,
+        kind: e.kind,
+        displayName: e.name,
+        qualifiedName: e.name,
+        parentId: e.parentId,
+        location: { file: "", startLine: 1 },
+        ...(e.signature ? { signature: e.signature } : {}),
+        ...(e.tags ? { tags: e.tags } : {}),
+      } as GraphNode,
     ]),
   );
   const parentOf = new Map(entries.map((e) => [e.id, e.parentId]));
@@ -69,7 +85,16 @@ describe("deriveLogicGraph", () => {
     expect(leaf.width!).toBeLessThan(fn.width!);
   });
 
-  it("keeps compactness independent from internal/external/unresolved call scope", () => {
+  it("uses the resolved target kind instead of a dotted-call heuristic", () => {
+    const target = "ts:src/utils.ts#load";
+    const flows: LogicFlows = { r: [call("utils.load", target, "resolved")] };
+    const index = makeIndex([{ id: target, name: "load", kind: "function", parentId: null }]);
+    const { nodes } = deriveLogicGraph("r", flows, index, NONE, { hideGreyed: false });
+
+    expect(execData(nodes[0]).callKind).toBe("function");
+  });
+
+  it("keeps resolved local callables expandable while external and unresolved boundaries remain leaves", () => {
     const flows: LogicFlows = {
       r: [
         call("service.leaf", "ts:m#leaf", "resolved"),
@@ -79,11 +104,20 @@ describe("deriveLogicGraph", () => {
     };
     const index = makeIndex([{ id: "ts:m#leaf", name: "leaf", kind: "method", parentId: null }]);
     const { nodes } = deriveLogicGraph("r", flows, index, NONE, { hideGreyed: false });
-    expect(execData(nodes[0])).toMatchObject({ navigable: true, expandable: false, compact: true, callScope: "internal", resolution: "resolved", greyed: false });
+    expect(execData(nodes[0])).toMatchObject({
+      navigable: true,
+      expandable: true,
+      compact: false,
+      callScope: "internal",
+      resolution: "resolved",
+      greyed: false,
+      childCount: 0,
+      emptyFlow: true,
+    });
     expect(execData(nodes[1])).toMatchObject({ navigable: false, expandable: false, compact: true, callScope: "external", resolution: "external", greyed: false });
     expect(execData(nodes[2])).toMatchObject({ navigable: false, expandable: false, compact: true, callScope: "unresolved", resolution: "unresolved", greyed: true });
-    // Every one of these leaves carries a provenance row, so its layout reserves both rows.
-    expect(new Set(nodes.map((node) => node.height))).toEqual(new Set([42]));
+    expect(nodes[0].width).toBeGreaterThan(nodes[1].width!);
+    expect(nodes[1].height).toBe(nodes[2].height);
   });
 
   it("nests an expandable call's flow as children only when expanded", () => {
@@ -96,14 +130,74 @@ describe("deriveLogicGraph", () => {
     const child = expanded.nodes.find((n) => n.id !== "r::0")!;
     expect(child.parentId).toBe("r::0");
     expect(expanded.nodes.find((n) => n.id === "r::0")!.data.isContainer).toBe(true);
+    expect(expanded.nodes.find((n) => n.id === "r::0")!.width).toBeGreaterThan(
+      collapsed.nodes.find((n) => n.id === "r::0")!.width!,
+    );
+  });
+
+  it("expands an empty local callable in place without inventing child nodes or edges", () => {
+    const target = "ts:m#leaf";
+    const flows: LogicFlows = {
+      r: [
+        call("before", "ext:l#before", "external"),
+        call("leaf", target, "resolved"),
+        call("after", "ext:l#after", "external"),
+      ],
+    };
+    const index = makeIndex([{ id: target, name: "leaf", kind: "method", parentId: null }]);
+    const collapsed = deriveLogicGraph("r", flows, index, NONE, { hideGreyed: false });
+    const expanded = deriveLogicGraph("r", flows, index, new Set(["r::1"]), { hideGreyed: false });
+    const collapsedLeaf = collapsed.nodes.find((node) => node.id === "r::1")!;
+    const expandedLeaf = expanded.nodes.find((node) => node.id === "r::1")!;
+
+    expect(execData(collapsedLeaf)).toMatchObject({
+      expandable: true,
+      isExpanded: false,
+      isContainer: false,
+      childCount: 0,
+      emptyFlow: true,
+    });
+    expect(execData(expandedLeaf)).toMatchObject({
+      expandable: true,
+      isExpanded: true,
+      isContainer: true,
+      childCount: 0,
+      emptyFlow: true,
+    });
+    expect(expanded.nodes.map((node) => node.id)).toEqual(collapsed.nodes.map((node) => node.id));
+    expect(expanded.nodes.some((node) => node.parentId === expandedLeaf.id)).toBe(false);
+    expect(expanded.edges.map(({ source, target, kind }) => ({ source, target, kind }))).toEqual(
+      collapsed.edges.map(({ source, target, kind }) => ({ source, target, kind })),
+    );
+    expect(expandedLeaf.width).toBeGreaterThan(collapsedLeaf.width!);
+    expect(expandedLeaf.height).toBeGreaterThan(collapsedLeaf.height!);
   });
 
   it("renders a loop as a default-expanded container with nested children", () => {
     const loop: FlowStep = { kind: "loop", label: "for each x", body: [call("step", "ext:l#s", "external")] };
     const { nodes } = deriveLogicGraph("r", { r: [loop] }, makeIndex([]), NONE, { hideGreyed: false });
     const container = nodes.find((n) => n.id === "r::0")!;
-    expect(container).toMatchObject({ type: "control", data: { logicKind: "loop", isContainer: true, expandable: true } });
+    expect(container).toMatchObject({ type: "control", data: { logicKind: "loop", isContainer: true, expandable: true, isExpanded: true } });
     expect(nodes.find((n) => n.parentId === "r::0")).toBeTruthy();
+  });
+
+  it("folds a loop into one ordinary exec step and reconnects the surrounding sequence", () => {
+    const loop: FlowStep = { kind: "loop", label: "for each x", body: [call("step", "ext:l#s", "external")] };
+    const flows: LogicFlows = {
+      r: [call("before", "ext:l#before", "external"), loop, call("after", "ext:l#after", "external")],
+    };
+    const { nodes, edges } = deriveLogicGraph("r", flows, makeIndex([]), new Set(["r::1"]), { hideGreyed: false });
+
+    expect(nodes.map((node) => node.id)).toEqual(["r::0", "r::1", "r::2"]);
+    expect(nodes.find((node) => node.id === "r::1")).toMatchObject({
+      type: "control",
+      data: { logicKind: "loop", expandable: true, isExpanded: false, isContainer: false },
+    });
+    expect(nodes.some((node) => node.parentId === "r::1")).toBe(false);
+    expect(edges).toEqual([
+      expect.objectContaining({ source: "r::0", target: "r::1", kind: "seq" }),
+      expect.objectContaining({ source: "r::1", target: "r::2", kind: "seq" }),
+    ]);
   });
 
   it("renders an if as a branch node with then/else edges that merge into the following step", () => {
@@ -129,6 +223,8 @@ describe("deriveLogicGraph", () => {
         logicKind: "if",
         branchKind: "if",
         branchSource,
+        expandable: true,
+        isExpanded: true,
         isContainer: false,
         branchPorts: [
           { id: "r::0::port/0", label: "then", role: "then", order: 0, pathId: "then", source: thenSource },
@@ -145,6 +241,59 @@ describe("deriveLogicGraph", () => {
     expect(edges).toContainEqual(expect.objectContaining({ source: thenNode.id, target: join.id, kind: "seq" }));
     expect(edges).toContainEqual(expect.objectContaining({ source: "r::0", target: join.id, kind: "branch", label: "else", sourcePort: "r::0::port/1" }));
     expect(edges).toContainEqual(expect.objectContaining({ source: join.id, target: after.id, kind: "seq" }));
+  });
+
+  it("folds a branch into one exec step without rendering its arms or join", () => {
+    const branch: FlowStep = {
+      kind: "branch",
+      branchKind: "if",
+      label: "if cond",
+      paths: [
+        { label: "then", role: "then", body: [call("yes", "ext:l#yes", "external")] },
+        { label: "else", role: "else", body: [call("no", "ext:l#no", "external")] },
+      ],
+    };
+    const { nodes, edges } = deriveLogicGraph(
+      "r",
+      { r: [branch, call("after", "ext:l#after", "external")] },
+      makeIndex([]),
+      new Set(["r::0"]),
+      { hideGreyed: false },
+    );
+
+    expect(nodes.map((node) => node.id)).toEqual(["r::0", "r::1"]);
+    expect(nodes[0]).toMatchObject({
+      type: "branch",
+      data: { logicKind: "if", expandable: true, isExpanded: false, isContainer: false, childCount: 2 },
+    });
+    expect(nodes.some((node) => node.id.includes("/b") || node.id.endsWith("::join"))).toBe(false);
+    expect(edges).toEqual([
+      expect.objectContaining({ source: "r::0", target: "r::1", kind: "seq" }),
+    ]);
+    expect(edges[0].sourcePort).toBeUndefined();
+  });
+
+  it("keeps an exhaustive terminating branch terminal while folded", () => {
+    const branch: FlowStep = {
+      kind: "branch",
+      branchKind: "if",
+      label: "if cond",
+      paths: [
+        { label: "then", role: "then", body: [{ kind: "exit", variant: "return", label: "yes" }] },
+        { label: "else", role: "else", body: [{ kind: "exit", variant: "throw", label: "no" }] },
+      ],
+    };
+    const { nodes, edges } = deriveLogicGraph(
+      "r",
+      { r: [branch, call("unreachable", "ext:l#unreachable", "external")] },
+      makeIndex([]),
+      new Set(["r::0"]),
+      { hideGreyed: false },
+    );
+
+    expect(nodes.map((node) => node.id)).toEqual(["r::0"]);
+    expect(nodes[0]).toMatchObject({ type: "branch", data: { expandable: true, isExpanded: false } });
+    expect(edges).toEqual([]);
   });
 
   it("renders ordinary try/catch as explicit normal/error lanes with stable pins and a join", () => {
@@ -164,7 +313,8 @@ describe("deriveLogicGraph", () => {
       data: {
         logicKind: "try",
         isContainer: false,
-        expandable: false,
+        expandable: true,
+        isExpanded: true,
         branchPorts: [
           { id: "r::0::port/0", label: "try", role: "try", order: 0 },
           { id: "r::0::port/1", label: "catch e", role: "catch", order: 1 },
@@ -178,6 +328,35 @@ describe("deriveLogicGraph", () => {
     expect(edges).toContainEqual(expect.objectContaining({ source: "r::0/b0/0", target: "r::0::join", kind: "seq", branchRole: "try" }));
     expect(edges).toContainEqual(expect.objectContaining({ source: "r::0/b1/0", target: "r::0::join", kind: "seq", branchRole: "catch" }));
     expect(edges).toContainEqual(expect.objectContaining({ source: "r::0::join", target: "r::1", kind: "seq" }));
+  });
+
+  it("folds try/catch into one exec step and omits its protected lanes", () => {
+    const tryStep: FlowStep = {
+      kind: "branch",
+      branchKind: "try",
+      label: "try/catch",
+      paths: [
+        { label: "try", role: "try", body: [call("t", "ext:l#t", "external")] },
+        { label: "catch e", role: "catch", body: [call("c", "ext:l#c", "external")] },
+      ],
+    };
+    const { nodes, edges } = deriveLogicGraph(
+      "r",
+      { r: [tryStep, call("after", "ext:l#after", "external")] },
+      makeIndex([]),
+      new Set(["r::0"]),
+      { hideGreyed: false },
+    );
+
+    expect(nodes.map((node) => node.id)).toEqual(["r::0", "r::1"]);
+    expect(nodes[0]).toMatchObject({
+      type: "exception",
+      data: { logicKind: "try", expandable: true, isExpanded: false, isContainer: false },
+    });
+    expect(edges).toEqual([
+      expect.objectContaining({ source: "r::0", target: "r::1", kind: "seq" }),
+    ]);
+    expect(edges[0].sourcePort).toBeUndefined();
   });
 
   it("charts finally as one mandatory phase after the explicit try/catch lanes merge", () => {
@@ -197,14 +376,77 @@ describe("deriveLogicGraph", () => {
     const finallyNode = nodes.find((n) => n.id === "r::0::finally")!;
     const cleanup = nodes.find((n) => n.id === "r::0/finally/0")!;
     const loopNode = nodes.find((n) => n.id === "r::1")!;
-    expect(tryNode).toMatchObject({ type: "exception", data: { logicKind: "try", isContainer: false } });
-    expect(finallyNode).toMatchObject({ type: "finally", width: 118, height: 38, data: { logicKind: "finally", label: "finally · always" } });
+    expect(tryNode).toMatchObject({ type: "exception", data: { logicKind: "try", expandable: true, isExpanded: true, isContainer: false } });
+    expect(finallyNode).toMatchObject({
+      type: "finally",
+      width: 256,
+      height: 66,
+      data: { logicKind: "finally", label: "finally · always", expandable: true, isExpanded: true },
+    });
     expect(cleanup).toMatchObject({ type: "block", data: { label: "cleanup" } });
     expect(edges).toContainEqual(expect.objectContaining({ source: "r::0::join", target: finallyNode.id, kind: "seq" }));
     expect(edges).toContainEqual(expect.objectContaining({ source: finallyNode.id, target: cleanup.id, kind: "seq" }));
     expect(edges).toContainEqual(expect.objectContaining({ source: cleanup.id, target: loopNode.id, kind: "seq" }));
     expect(edges.some((edge) => edge.source === "r::0::join" && edge.target === loopNode.id)).toBe(false);
     expect(execData(loopNode).bodies?.map((b) => b.label)).toEqual(["for each x"]);
+  });
+
+  it("folds the finally phase independently while preserving its mandatory place in the sequence", () => {
+    const tryFinally: FlowStep = {
+      kind: "branch",
+      branchKind: "try",
+      label: "try/catch",
+      paths: [
+        { label: "try", role: "try", body: [call("t", "ext:l#t", "external")] },
+        { label: "catch e", role: "catch", body: [call("c", "ext:l#c", "external")] },
+        { label: "finally", role: "finally", body: [call("cleanup", "ext:l#cleanup", "external")] },
+      ],
+    };
+    const { nodes, edges } = deriveLogicGraph(
+      "r",
+      { r: [tryFinally, call("after", "ext:l#after", "external")] },
+      makeIndex([]),
+      new Set(["r::0::finally"]),
+      { hideGreyed: false },
+    );
+
+    expect(nodes.some((node) => node.id === "r::0/finally/0")).toBe(false);
+    expect(nodes.find((node) => node.id === "r::0::finally")).toMatchObject({
+      type: "finally",
+      data: { logicKind: "finally", expandable: true, isExpanded: false, isContainer: false },
+    });
+    expect(edges).toContainEqual(expect.objectContaining({ source: "r::0::join", target: "r::0::finally", kind: "seq" }));
+    expect(edges).toContainEqual(expect.objectContaining({ source: "r::0::finally", target: "r::1", kind: "seq" }));
+    expect(edges.some((edge) => edge.source === "r::0::join" && edge.target === "r::1")).toBe(false);
+  });
+
+  it("folds a charted try/finally as one structural summary", () => {
+    const tryFinally: FlowStep = {
+      kind: "branch",
+      branchKind: "try",
+      label: "try/catch",
+      paths: [
+        { label: "try", role: "try", body: [call("t", "ext:l#t", "external")] },
+        { label: "catch e", role: "catch", body: [call("c", "ext:l#c", "external")] },
+        { label: "finally", role: "finally", body: [call("cleanup", "ext:l#cleanup", "external")] },
+      ],
+    };
+    const { nodes, edges } = deriveLogicGraph(
+      "r",
+      { r: [tryFinally, call("after", "ext:l#after", "external")] },
+      makeIndex([]),
+      new Set(["r::0"]),
+      { hideGreyed: false },
+    );
+
+    expect(nodes.map((node) => node.id)).toEqual(["r::0", "r::1"]);
+    expect(nodes[0]).toMatchObject({
+      type: "exception",
+      data: { logicKind: "try", expandable: true, isExpanded: false, isContainer: false, childCount: 3 },
+    });
+    expect(edges).toEqual([
+      expect.objectContaining({ source: "r::0", target: "r::1", kind: "seq" }),
+    ]);
   });
 
   it("retains the honest fallback when a protected return must be deferred through finally", () => {
@@ -413,9 +655,28 @@ describe("definitionNodeData", () => {
     });
   });
 
-  it("is not expandable when the callable ships no flow", () => {
-    const data = definitionNodeData("ts:m.ts#leaf", {}, index);
-    expect(data).toMatchObject({ definition: true, expandable: false, childCount: 0, greyed: false });
+  it("keeps an empty callable definition expandable with an honest zero child count", () => {
+    const collapsed = definitionNodeData("ts:m.ts#leaf", {}, index);
+    const expanded = definitionNodeData("ts:m.ts#leaf", {}, index, undefined, true);
+
+    expect(collapsed).toMatchObject({
+      definition: true,
+      expandable: true,
+      isExpanded: false,
+      isContainer: false,
+      childCount: 0,
+      emptyFlow: true,
+      greyed: false,
+    });
+    expect(expanded).toMatchObject({
+      definition: true,
+      expandable: true,
+      isExpanded: true,
+      isContainer: true,
+      childCount: 0,
+      emptyFlow: true,
+      greyed: false,
+    });
   });
 });
 
@@ -523,8 +784,14 @@ describe("deriveLogicGraph — exits, synthesized else, async flags", () => {
       ],
     };
     const { nodes } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false });
-    expect(execData(nodes[0]).awaited).toBe(true);
-    expect(execData(nodes[1]).detached).toBe(true);
+    expect(execData(nodes[0])).toMatchObject({
+      awaited: true,
+      semantics: { asyncState: { kind: "awaited" } },
+    });
+    expect(execData(nodes[1])).toMatchObject({
+      detached: true,
+      semantics: { asyncState: { kind: "detached" } },
+    });
   });
 
   it("summarizes detached promises inside a callee on both collapsed and expanded parent blocks", () => {
@@ -552,13 +819,48 @@ describe("deriveLogicGraph — exits, synthesized else, async flags", () => {
     expect(execData(collapsed.nodes.find((node) => node.id === "r::0")!)).toMatchObject({
       isContainer: false,
       nestedDetachedCount: 4,
+      semantics: { nestedNotAwaited: 4 },
     });
 
     const expanded = deriveLogicGraph("r", flows, index, new Set(["r::0"]), { hideGreyed: false });
     expect(execData(expanded.nodes.find((node) => node.id === "r::0")!)).toMatchObject({
       isContainer: true,
       nestedDetachedCount: 4,
+      semantics: { nestedNotAwaited: 4 },
     });
+  });
+
+  it("keeps an arbitrary nested dropped result distinct from a not-awaited Promise", () => {
+    const target = "ts:m#worker";
+    const flows: LogicFlows = {
+      r: [call("worker", target, "resolved")],
+      [target]: [{ kind: "call", label: "void syncLog", target: null, resolution: "unresolved", detached: true }],
+    };
+    const index = makeIndex([{ id: target, name: "worker", kind: "method", parentId: null }]);
+    const { nodes } = deriveLogicGraph("r", flows, index, NONE, { hideGreyed: false });
+
+    expect(execData(nodes[0])).toMatchObject({
+      nestedDetachedCount: 1,
+      semantics: { nestedResultsDropped: 1 },
+    });
+    expect(execData(nodes[0]).semantics).not.toHaveProperty("nestedNotAwaited");
+  });
+
+  it("recovers a legacy nested not-awaited Promise from its resolved declaration", () => {
+    const worker = "ts:m#worker";
+    const publish = "ts:m#publish";
+    const flows: LogicFlows = {
+      r: [call("worker", worker, "resolved")],
+      [worker]: [{ kind: "call", label: "publish", target: publish, resolution: "resolved", detached: true }],
+    };
+    const index = makeIndex([
+      { id: worker, name: "worker", kind: "method", parentId: null },
+      { id: publish, name: "publish", kind: "function", parentId: null, signature: "publish(): Promise<void>" },
+    ]);
+    const { nodes } = deriveLogicGraph("r", flows, index, NONE, { hideGreyed: false });
+
+    expect(execData(nodes[0]).semantics).toMatchObject({ nestedNotAwaited: 1 });
+    expect(execData(nodes[0]).semantics).not.toHaveProperty("nestedResultsDropped");
   });
 
   it("does not paint correlation sockets for fire-and-forget work with no possible consumer", () => {
@@ -574,7 +876,13 @@ describe("deriveLogicGraph — exits, synthesized else, async flags", () => {
     };
     const index = makeIndex([{ id: "ts:m#publishTelemetry", name: "publishTelemetry", kind: "method", parentId: null }]);
     const { nodes, edges } = deriveLogicGraph("r", flows, index, NONE, { hideGreyed: false });
-    expect(execData(nodes[0])).toMatchObject({ navigable: true, detached: true, asyncEvent: { kind: "launch" }, asyncPorts: [] });
+    expect(execData(nodes[0])).toMatchObject({
+      navigable: true,
+      detached: true,
+      semantics: { returnsPromise: true, asyncState: { kind: "detached" } },
+      asyncEvent: { kind: "launch" },
+      asyncPorts: [],
+    });
     expect(edges.filter((edge) => edge.kind === "async")).toHaveLength(0);
   });
 
@@ -596,6 +904,7 @@ describe("deriveLogicGraph — exits, synthesized else, async flags", () => {
     const launch = execData(nodes.find((node) => node.id === "r::0")!);
     const wait = nodes.find((node) => node.id === "r::2")!;
     expect(launch).toMatchObject({
+      semantics: { returnsPromise: true, asyncState: { kind: "launched", binding: "pending" } },
       asyncEvent: { kind: "launch", taskId: "task:10", binding: "pending" },
       asyncPorts: [{ id: "r::0::async/source/0", direction: "source", taskId: "task:10" }],
     });
@@ -603,6 +912,7 @@ describe("deriveLogicGraph — exits, synthesized else, async flags", () => {
       type: "async",
       data: {
         logicKind: "await",
+        semantics: { asyncState: { kind: "await", taskCount: 1 } },
         asyncEvent: { kind: "await", mode: "single" },
         asyncPorts: [{ id: "r::2::async/target/0", direction: "target", taskId: "task:10" }],
       },
@@ -651,7 +961,11 @@ describe("deriveLogicGraph — exits, synthesized else, async flags", () => {
     };
     const { nodes, edges } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false });
     const barrier = execData(nodes.find((node) => node.id === "r::2")!);
-    expect(barrier).toMatchObject({ compact: false, asyncEvent: { kind: "barrier", mode: "all" } });
+    expect(barrier).toMatchObject({
+      compact: false,
+      semantics: { returnsPromise: true, asyncState: { kind: "barrier", mode: "all", taskCount: 2 } },
+      asyncEvent: { kind: "barrier", mode: "all" },
+    });
     expect(barrier.asyncPorts?.map((port) => port.id)).toEqual([
       "r::2::async/target/0",
       "r::2::async/target/1",
@@ -675,6 +989,7 @@ describe("deriveLogicGraph — exits, synthesized else, async flags", () => {
       }],
     };
     const { nodes, edges } = deriveLogicGraph("r", flows, makeIndex([]), NONE, { hideGreyed: false });
+    expect(execData(nodes[0]).semantics).toEqual({ asyncState: { kind: "awaited" } });
     expect(execData(nodes[0]).asyncPorts).toEqual([
       expect.objectContaining({ id: "r::0::async/source/0", direction: "source", taskId: "task:20" }),
       expect.objectContaining({ id: "r::0::async/target/0", direction: "target", taskId: "task:20" }),

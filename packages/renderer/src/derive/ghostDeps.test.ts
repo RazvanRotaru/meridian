@@ -49,7 +49,7 @@ const NODES: GraphNode[] = [
   node(LIB_FILE, "module", LIB_PACKAGE),
   node(WORKER, "class", LIB_FILE),
   node(WORKER_CTOR, "method", WORKER),
-  node(EXECUTE, "method", WORKER),
+  { ...node(EXECUTE, "method", WORKER), signature: "execute(): Promise<void>", tags: ["async", "static"] },
   node(HELPER, "function", LIB_FILE),
   node(BASE, "class", LIB_FILE),
   node(PROTOCOL, "interface", LIB_FILE),
@@ -115,6 +115,10 @@ describe("ghostDepWires — relation-aware semantic endpoints", () => {
     expect([...emission.ghosts.keys()].sort()).toEqual([EXECUTE, HELPER].sort());
     expect(emission.ghosts.has(WORKER)).toBe(false);
     expect(emission.ghosts.get(EXECUTE)?.ghostKind).toBe("method");
+    expect(emission.ghosts.get(EXECUTE)?.semantics).toEqual({
+      modifiers: ["async", "static"],
+      returnsPromise: true,
+    });
     const executeWire = emission.wires.find((wire) => wire.target === EXECUTE);
     expect(executeWire).toMatchObject({ source: RUN, target: EXECUTE, kind: "calls", weight: 3 });
     expect(executeWire?.underlyingEdgeIds.sort()).toEqual(["call:1", "call:2"]);

@@ -8,11 +8,11 @@ import { parseNodeId } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { ModuleGraph } from "./moduleGraph";
 import { categorize, type ModuleCategory } from "./moduleCategory";
-import { unitLabel } from "./blockDeps";
+import { CALLABLE_BLOCK_KINDS, unitLabel } from "./blockDeps";
+import { declarationSemantics, type NodeSemanticModel } from "../nodeSemantics";
 
 const MODULE_KIND = "module";
 const PACKAGE_KIND = "package";
-const CALLABLE_KINDS: ReadonlySet<string> = new Set(["function", "method"]);
 
 // `type` (not interface) so it carries @xyflow/react's implicit index signature on Node<T>.
 export type ModuleCardData = {
@@ -22,7 +22,7 @@ export type ModuleCardData = {
   inCount: number;
   outCount: number;
   isEntry: boolean;
-  /** The file holds unit (class/interface/object) children, so its card carries an expand chevron. */
+  /** Files are expandable entities; zero declarations open the shared honest empty state. */
   isContainer: boolean;
   /** Expanded in place: the card becomes a frame with its unit cards nested inside. */
   isExpanded: boolean;
@@ -33,12 +33,13 @@ export type ModuleCardData = {
   commonsChips?: string[];
 };
 
-/** A unit's identity strip: one class/interface/object. With members it can expand into a FRAME
- * whose method nodes nest inside; memberless it is a compact leaf card. No uses list —
+/** A unit's identity strip: one class/interface/object. It can expand into a FRAME whose method
+ * nodes nest inside; memberless units open the shared honest empty state. No uses list —
  * dependencies are the wires' story, not the card's. */
 export type UnitCardData = {
   label: string;
   unitKind: string;
+  semantics?: NodeSemanticModel;
   memberCount: number;
   isContainer: boolean;
   isExpanded: boolean;
@@ -54,35 +55,53 @@ export interface UnitExpansion {
 
 /** The card data for one unit node — identity plus its inline-expansion affordance. */
 export function unitData(id: string, index: GraphIndex, expansion: UnitExpansion): UnitCardData {
+  const node = index.nodesById.get(id);
+  const semantics = declarationSemantics(node);
   return {
     label: unitLabel(id, index),
-    unitKind: index.nodesById.get(id)?.kind ?? "class",
+    unitKind: node?.kind ?? "class",
+    ...(semantics ? { semantics } : {}),
     ...expansion,
     isFrame: expansion.isExpanded,
   };
 }
 
 /** A code block: a method inside an expanded unit frame, or a file-level function/type definition.
- * The block IS the dependency anchor — its wires say what this specific code uses. A block with a
- * logic flow carries a chevron: expanding charts its flow steps in place (isExpanded → frame). */
+ * The block IS the dependency anchor — its wires say what this specific code uses. Every callable
+ * carries the shared disclosure; a callable without chartable steps opens the shared empty state. */
 export type BlockData = {
   label: string;
   blockKind: string;
+  semantics?: NodeSemanticModel;
   /** Callable blocks double-click into their logic flow (the map→logic link). */
   callable: boolean;
-  /** The block has a charted logic flow, so it can expand into a flow frame in place. */
-  hasFlow: boolean;
+  /** The block is a local callable and can expand into a flow/details frame in place. */
+  expandable: boolean;
+  /** The callable has no drawable flow steps, so its expanded frame renders the shared empty state. */
+  emptyFlow: boolean;
+  /** Number of top-level drawable flow steps; capability remains independent from this count. */
+  childCount: number;
   isExpanded: boolean;
 };
 
 export interface BlockExpansion {
-  hasFlow: boolean;
+  expandable: boolean;
+  emptyFlow: boolean;
+  childCount: number;
   isExpanded: boolean;
 }
 
 export function blockData(id: string, index: GraphIndex, expansion: BlockExpansion): BlockData {
-  const kind = index.nodesById.get(id)?.kind ?? "function";
-  return { label: unitLabel(id, index), blockKind: kind, callable: CALLABLE_KINDS.has(kind), ...expansion };
+  const node = index.nodesById.get(id);
+  const kind = node?.kind ?? "function";
+  const semantics = declarationSemantics(node);
+  return {
+    label: unitLabel(id, index),
+    blockKind: kind,
+    ...(semantics ? { semantics } : {}),
+    callable: CALLABLE_BLOCK_KINDS.has(kind),
+    ...expansion,
+  };
 }
 
 /** Descend through single-directory levels so a lone `src` box is never a wasted click. */

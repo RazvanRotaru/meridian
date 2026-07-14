@@ -1,9 +1,9 @@
 /**
  * A file card for the Map lens: one source file (meridian `module`) as a compact card showing
  * its name, a category chip (UI / Utilities / Config / App), and its afferent/efferent import counts.
- * The blast-radius root wears an "ENTRY" badge. A file that declares units (classes/interfaces/
- * objects) carries the same disclosure as a group card: expanding turns the card into a transparent
- * frame whose unit cards nest inside — the merged Service-composition level. A green ring marks the
+ * The blast-radius root wears an "ENTRY" badge. Every file carries the same disclosure as a group
+ * card: expanding turns the card into a transparent frame whose unit cards nest inside, or an
+ * honest empty state when there are no drawable declarations. A green ring marks the
  * selected card — read from the store, mirroring how the composition and logic nodes show theirs.
  */
 
@@ -19,6 +19,7 @@ import { BlockNode } from "./BlockNode";
 import { StepNode } from "./StepNode";
 import { GhostNode } from "./GhostNode";
 import { BaseNode, type BaseNodeModel } from "../BaseNode";
+import { EmptyNodeExpansion } from "../EmptyNodeExpansion";
 import { cardSelectedStyle, CodeButton, frameSelectedStyle, frameStyle, frameTitleBarStyle, MONO, PIN } from "./frameChrome";
 import { borderFor, useNodeDiff } from "./changed";
 import { CHANGED_COLORS } from "../../../theme/changedColors";
@@ -49,7 +50,7 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
     kind: "file",
     label: data.label,
     childCount: data.unitCount,
-    canExpand: data.isContainer && data.unitCount > 0,
+    canExpand: data.isContainer,
     expanded: data.isExpanded,
     canNavigate: true,
     data,
@@ -79,7 +80,9 @@ function ModuleCardNodeImpl({ id, data }: NodeProps<ModuleCardRfNode>) {
             </span>
           )}
           ports={handles}
-        />
+        >
+          {data.unitCount === 0 ? <EmptyNodeExpansion message="No charted declarations" /> : null}
+        </BaseNode>
       </ReviewNodeViewedChrome>
     );
   }

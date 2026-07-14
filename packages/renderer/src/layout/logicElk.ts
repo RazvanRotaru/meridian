@@ -155,11 +155,15 @@ const adapter: ElkNestAdapter<LogicNodeSpec> = {
   parentId: (node) => node.parentId,
   isContainer: (node) => node.data.isContainer,
   leafSize: (node) => ({ width: node.width ?? 200, height: node.height ?? 60 }),
-  // Expanded calls render the textual target-change tag in their title action rail too. A compound
-  // ELK node otherwise sizes itself from narrow children alone and can clip that header chrome.
-  containerMinSize: (node) => !("targetChangedStatus" in node.data) || node.data.targetChangedStatus === undefined
-    ? null
-    : { width: TARGET_CHANGED_CONTAINER_MIN_WIDTH, height: 58 },
+  // Every expanded node keeps the same paint-aware header floor as its collapsed card. Preserve
+  // the legacy target-change minimum as a lower bound for older specs that lack measured chrome.
+  containerMinSize: (node) => {
+    const targetChanged = "targetChangedStatus" in node.data && node.data.targetChangedStatus !== undefined;
+    return {
+      width: Math.max(node.width ?? 200, targetChanged ? TARGET_CHANGED_CONTAINER_MIN_WIDTH : 0),
+      height: Math.max(node.height ?? 60, targetChanged ? 58 : 0),
+    };
+  },
   containerOptions: CONTAINER_LAYOUT_OPTIONS,
   containerOptionsFor: (node) => (
     "runtime" in node.data && node.data.runtime?.snapshot !== undefined
@@ -191,7 +195,11 @@ function applyFlowGeometry(
 
   for (const node of spec.nodes) {
     const elkNode = elkById.get(node.id);
-    const branchPorts = "branchPorts" in node.data ? node.data.branchPorts ?? [] : [];
+    // Folded structural summaries keep their semantic arm metadata for coverage/tooltips, but they
+    // expose one ordinary exec output. Hidden case/catch pins must not survive into ELK geometry.
+    const branchPorts = "branchPorts" in node.data && node.data.isExpanded
+      ? node.data.branchPorts ?? []
+      : [];
     const asyncPorts = "asyncPorts" in node.data ? node.data.asyncPorts ?? [] : [];
     if (!elkNode || (branchPorts.length === 0 && asyncPorts.length === 0)) {
       continue;

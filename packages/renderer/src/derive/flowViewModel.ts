@@ -10,6 +10,7 @@
 import type { FlowStep, LogicFlows, NodeId } from "@meridian/core";
 import { branchKindOf, parseNodeId } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
+import { callReturnsPromise } from "../nodeSemantics";
 
 /** Which projection of the logic flow is on screen. "graph" is the exec-pins canvas (the default). */
 export type LogicViewMode = "graph" | "metro" | "blocks" | "timeline" | "request";
@@ -81,7 +82,7 @@ export type BranchStep = Extract<FlowStep, { kind: "branch" }>;
 export interface CallDisplay {
   /** Resolved to local code, so double-click can open the callable even when its flow is empty. */
   navigable: boolean;
-  /** Resolved to a callable that ships its own flow — double-click drills into it. */
+  /** Resolved local code always owns an in-place expansion, including the shared empty-flow state. */
   expandable: boolean;
   /** `receiver.method` labels read as method calls (the exec graph's heuristic, shared). */
   method: boolean;
@@ -89,11 +90,17 @@ export interface CallDisplay {
   provenance: string | null;
 }
 
-export function callDisplay(step: CallStep, flows: LogicFlows, index: GraphIndex): CallDisplay {
+export function callDisplay(step: CallStep, _flows: LogicFlows, index: GraphIndex): CallDisplay {
   const navigable = step.resolution === "resolved" && step.target !== null;
-  const expandable = navigable && (flows[step.target!]?.length ?? 0) > 0;
+  // Expansion is an entity capability, not a child-count heuristic. Resolved local callables with
+  // no drawable steps expand to the shared empty-flow state rather than becoming a different leaf.
+  const expandable = navigable;
   const target = step.target ? index.nodesById.get(step.target) : undefined;
-  const method = target?.kind === "method" || step.label.includes(".");
+  const method = target?.kind === "method"
+    ? true
+    : target?.kind === "function"
+      ? false
+      : step.label.includes(".");
   return { navigable, expandable, method, provenance: step.target ? baseName(parseNodeId(step.target).modulePath) : null };
 }
 
@@ -110,11 +117,17 @@ export interface HandoffEntry {
   context: string;
 }
 
-export function collectHandoffs(steps: FlowStep[]): HandoffEntry[] {
+/** A discarded result becomes an asynchronous handoff only when Promise-ness is proven. */
+export function isPromiseHandoff(step: CallStep, index: GraphIndex): boolean {
+  return step.detached === true
+    && callReturnsPromise(step, step.target ? index.nodesById.get(step.target) : undefined);
+}
+
+export function collectHandoffs(steps: FlowStep[], index: GraphIndex): HandoffEntry[] {
   const out: HandoffEntry[] = [];
   const walk = (list: FlowStep[], context: string): void => {
     for (const step of list) {
-      if (step.kind === "call" && step.detached) {
+      if (step.kind === "call" && isPromiseHandoff(step, index)) {
         out.push({ step, context });
       } else if (step.kind === "callback") {
         out.push({ step, context });

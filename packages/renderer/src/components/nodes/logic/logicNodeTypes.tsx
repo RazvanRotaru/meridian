@@ -9,12 +9,12 @@
  * peels into a dashed error lane. Every lane owns a stable source pin.
  */
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import type { ChangeStatus } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
-import type { LogicBranchPort, LogicNodeData, TerminalData } from "../../../derive/logicGraph";
+import { FRAME_PROVENANCE_MAX_WIDTH, type LogicBranchPort, type LogicNodeData, type TerminalData } from "../../../derive/logicGraph";
 import { FLOW_COLORS } from "../../../derive/flowViewModel";
 import { isSourceBackedNode } from "../../../derive/sourceBackedNode";
 import { executionCoverageIndex, executionEvidenceForCallTarget } from "../../../derive/logicExecutionCoverage";
@@ -23,6 +23,7 @@ import { CodeInlinePanel } from "../../CodeInlinePanel";
 import { changedColor, changedFill } from "../../ChangedBadge";
 import { changedTextColor } from "../../../theme/changedColors";
 import { BaseNode, type BaseNodeModel } from "../BaseNode";
+import { EmptyNodeExpansion } from "../EmptyNodeExpansion";
 import { useLogicFlowOrientation } from "./LogicFlowOrientationContext";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -131,6 +132,7 @@ function callableBaseNodeModel(instanceId: string, data: LogicNodeData): BaseNod
     targetId: data.targetId,
     nodeType: "block",
     kind: data.runtime?.kind ?? data.callKind ?? data.logicKind,
+    semantics: data.semantics,
     label: data.label,
     childCount: data.childCount,
     canExpand: data.expandable,
@@ -150,6 +152,7 @@ function controlBaseNodeModel(instanceId: string, data: LogicNodeData): BaseNode
     targetId: data.targetId,
     nodeType: "control",
     kind: data.logicKind,
+    semantics: data.semantics,
     label: data.label,
     childCount: data.childCount,
     canExpand: data.expandable,
@@ -207,11 +210,8 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
     return <RequestRuntimeBlock id={id} data={d} select={select} />;
   }
   const model = callableBaseNodeModel(id, d);
-  // A method call (one made through a receiver / a class method) reads apart from a free function at a
-  // glance: a distinct glyph, and a small indigo shift off the blue call accent. A "defined here" node
-  // keeps its teal DECLARATION accent regardless (its declaration-ness dominates), gaining only the
-  // glyph — so defs stay visually consistent with their existing treatment.
-  const glyph = d.callKind === "method" ? METHOD_GLYPH : "ƒ";
+  // Method/function identity is rendered textually by BaseNode. The accent remains a fast secondary
+  // cue without forcing readers to memorize the former ƒ/∷ glyph vocabulary.
   // In coverage mode the title bar recolors by the CALLEE's coverage verdict (green/amber/red), so the
   // exec flow doubles as a coverage map; otherwise it keeps the call/method/def accent.
   const executionEvidence = executionEvidenceForCallTarget(d.targetId, d.resolution, index, execution);
@@ -234,24 +234,12 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
           : undefined}
       />
     : null;
-  if (d.isContainer) {
-    return (
-      <div style={WRAP} data-coverage-verdict={covVerdict ?? undefined}>
-        <ContainerFrame model={model} accent={accent} glyph={glyph} provenance={d.provenance} select={select} badge={battery} changedRing={changed ? changedRing : null} targetChangedStatus={targetChangedStatus} nestedDetachedCount={d.nestedDetachedCount} />
-        <AsyncDecoration d={d} />
-      </div>
-    );
-  }
   const codeNode = d.targetId ? index.nodesById.get(d.targetId) : undefined;
   const canCode = isSourceBackedNode(codeNode) && Boolean(sourceUrl);
   // The inline box shows only for THIS block's own target, and only while the store keeps it in
   // the compact "inline" mode (the modal takes over once expandCode flips mode → "modal").
   const showingInline = codeNode != null && codeView != null && codeView.node.id === codeNode.id && codeView.mode === "inline";
   const stop = (e: React.MouseEvent) => e.stopPropagation();
-  // </> now TOGGLES the compact inline view instead of jumping straight to the modal: a second
-  // click on the block that's already showing closes it; the modal is reached from the box's ⤢.
-  // Open the source straight in the big centered modal (the readable diff surface, scrolled to the
-  // first change) instead of a cramped inline box that clips wide lines and buries the diff.
   const toggleCode = () => {
     void showCode(codeNode!);
     expandCode();
@@ -260,6 +248,32 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
     <button type="button" style={d.compact ? COMPACT_CODE_BTN : CODE_BTN} title="view source" onClick={(e) => { stop(e); toggleCode(); }}>{"</>"}</button>
   ) : null;
   const inline = showingInline && codeView ? <CodeInlinePanel codeView={codeView} onExpand={expandCode} onClose={closeCode} /> : null;
+  if (d.isContainer) {
+    return (
+      <div style={WRAP} data-coverage-verdict={covVerdict ?? undefined}>
+        <ContainerFrame
+          model={model}
+          accent={accent}
+          provenance={d.provenance}
+          select={select}
+          indicators={(
+            <>
+              {battery}
+              {changed ? <ChangedTag color={changedRing} /> : null}
+              {targetChangedStatus ? <TargetChangedTag status={targetChangedStatus} /> : null}
+              {d.definition ? <span style={DEF_TAG}>def</span> : null}
+            </>
+          )}
+          actions={codeButton}
+          changedRing={changed ? changedRing : null}
+          nestedNotAwaitedCount={d.semantics?.nestedNotAwaited}
+          emptyFlow={d.emptyFlow === true}
+        />
+        <AsyncDecoration d={d} />
+        {inline}
+      </div>
+    );
+  }
   // A leaf stays physically smaller without being semantically faded. Resolution owns its costume:
   // an internal leaf is filled, an external/platform call is hollow and hatched, and an unresolved
   // call is a broken coral outline. Expandability no longer masquerades as trust.
@@ -272,22 +286,19 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
           style={withChanged(selectStyle(compactBodyStyle(d.callScope, compactAccent), select), changed ? changedRing : null, select)}
           headerStyle={compactTitleStyle(d.callScope, compactAccent)}
           labelStyle={NAME}
-          leading={<span style={COMPACT_GLYPH}>{scopeGlyph(d.callScope, glyph)}</span>}
-          actions={(
+          indicators={(
             <>
-              <NestedDetachedBadge count={d.nestedDetachedCount} />
-              <AsyncBadge d={d} />
               {battery}
               {changed ? <ChangedTag color={changedRing} /> : null}
               {targetChangedStatus ? <TargetChangedTag status={targetChangedStatus} /> : null}
-              {codeButton}
             </>
           )}
+          actions={codeButton}
           ports={<ExecPins />}
           title={d.navigable ? "Double-click to open this callable's logic" : d.callScope === "external" ? "External call boundary" : undefined}
         >
           {d.provenance ? <div style={COMPACT_PROV} title={`${d.provenance.pkg} › ${d.provenance.module}`}>{d.provenance.module}</div> : null}
-          {(d.nestedDetachedCount ?? 0) > 0 ? <span style={NESTED_DETACHED_RAIL} aria-hidden="true" /> : null}
+          {(d.semantics?.nestedNotAwaited ?? 0) > 0 ? <span style={NESTED_DETACHED_RAIL} aria-hidden="true" /> : null}
         </BaseNode>
         <AsyncDecoration d={d} />
         {inline}
@@ -304,18 +315,15 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
         style={withChanged(selectStyle(BODY, select), changed ? changedRing : null, select)}
         headerStyle={titleStyle(accent)}
         labelStyle={NAME}
-        leading={<span style={GLYPH}>{glyph}</span>}
-        actions={(
+        indicators={(
           <>
-            <NestedDetachedBadge count={d.nestedDetachedCount} />
-            <AsyncBadge d={d} />
             {battery}
             {changed ? <ChangedTag color={changedRing} /> : null}
             {targetChangedStatus ? <TargetChangedTag status={targetChangedStatus} /> : null}
             {d.definition ? <span style={DEF_TAG}>def</span> : null}
-            {codeButton}
           </>
         )}
+        actions={codeButton}
         ports={<ExecPins />}
       >
         {/* A FRAMED block sits inside its service frame, whose title already names the owner — so it
@@ -325,7 +333,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
         {/* The signature — WHAT the block calls. Definition grid cells are a fixed compact size, so
             they opt out; only in-flow call blocks carry it. */}
         {!d.definition && d.signature ? <div style={SIGNATURE} title={d.signature}>{d.signature}</div> : null}
-        {(d.nestedDetachedCount ?? 0) > 0 ? <span style={NESTED_DETACHED_RAIL} aria-hidden="true" /> : null}
+        {(d.semantics?.nestedNotAwaited ?? 0) > 0 ? <span style={NESTED_DETACHED_RAIL} aria-hidden="true" /> : null}
       </BaseNode>
       <AsyncDecoration d={d} />
       {inline}
@@ -359,9 +367,8 @@ function RequestRuntimeBlock(props: { id: string; data: LogicNodeData; select: S
         headerStyle={runtimeTitleStyle(accent)}
         labelStyle={NAME}
         leading={<span style={GLYPH}>{glyph}</span>}
-        actions={(
+        indicators={(
           <>
-            <span style={RUNTIME_KIND}>{runtime.kind}</span>
             {runtime.durationMs === undefined ? null : <span style={RUNTIME_DURATION}>{formatRuntimeDuration(runtime.durationMs)}</span>}
             {runtime.eventCount === undefined || runtime.eventCount === 0 ? null : <span style={RUNTIME_EVENT_COUNT}>{runtime.eventCount} evt</span>}
             {runtime.badges?.slice(0, 2).map((badge, index) => (
@@ -376,6 +383,7 @@ function RequestRuntimeBlock(props: { id: string; data: LogicNodeData; select: S
         title={[runtime.detail, ...(runtime.badges ?? [])].filter(Boolean).join(" · ")}
       >
         {runtime.focused ? null : <SnapshotRows snapshot={runtime.snapshot} spanMomentId={props.id} compact />}
+        {props.data.emptyFlow ? <EmptyNodeExpansion /> : null}
       </BaseNode>
     );
   }
@@ -387,9 +395,8 @@ function RequestRuntimeBlock(props: { id: string; data: LogicNodeData; select: S
         headerStyle={runtimeTitleStyle(accent)}
         labelStyle={NAME}
         leading={<span style={GLYPH}>{glyph}</span>}
-        actions={(
+        indicators={(
           <>
-            <span style={RUNTIME_KIND}>{runtime.kind}</span>
             {runtime.durationMs === undefined ? null : <span style={RUNTIME_DURATION}>{formatRuntimeDuration(runtime.durationMs)}</span>}
             {runtime.eventCount === undefined || runtime.eventCount === 0 ? null : <span style={RUNTIME_EVENT_COUNT}>{runtime.eventCount} evt</span>}
             {runtime.status === undefined ? null : <span style={runtimeStatusStyle(runtime.status)}>{runtime.status}</span>}
@@ -509,7 +516,17 @@ function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
   const glyph = CONTROL_GLYPH[d.logicKind] ?? "↻";
   const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
   if (d.isContainer) {
-    return <ContainerFrame model={model} accent={accent} glyph={glyph} provenance={null} select={select} changedRing={changedRing} />;
+    return (
+      <ContainerFrame
+        model={model}
+        accent={accent}
+        provenance={null}
+        select={select}
+        indicators={changedRing === null ? null : <ChangedTag color={changedRing} />}
+        changedRing={changedRing}
+        emptyFlow={d.emptyFlow === true}
+      />
+    );
   }
   // No whole-node onClick: a single click on a container would fight both node selection and the
   // double-click-to-dive gesture. Collapse/expand is the explicit title button only (collapsed → ▸).
@@ -520,7 +537,7 @@ function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
       headerStyle={titleStyle(accent)}
       labelStyle={NAME}
       leading={<span style={GLYPH}>{glyph}</span>}
-      actions={(
+      indicators={(
         <>
           <span style={COUNT}>{d.childCount}</span>
           {changedRing === null ? null : <ChangedTag color={changedRing} />}
@@ -531,24 +548,19 @@ function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
   );
 }
 
-function BranchNode({ data }: NodeProps<LogicRfNode>) {
+function BranchNode({ id, data }: NodeProps<LogicRfNode>) {
   const orientation = useLogicFlowOrientation();
   const logicSelected = useBlueprint((s) => s.logicSelected);
   const d = data as LogicNodeData;
+  const model = controlBaseNodeModel(id, d);
   const select = selectStateFor(d.targetId, logicSelected);
   const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
-  // The diamond is a fixed marker: its content is always a single "X", so the flow stays glanceable
-  // and every decision reads the same until asked. The condition is revealed on demand.
-  const [open, setOpen] = useState(false);
-  const toggle = () => setOpen((v) => !v);
-  return (
-    <div style={withChanged(selectStyle(BRANCH_WRAP, select), changedRing, select)}>
-      {/* Every arm owns a stable source pin. Separate physical pins let the layout hold branch lanes
-          apart instead of collapsing every outcome through one ambiguous right handle. */}
+  const ports = d.isExpanded ? (
+    <>
       <Handle type="target" position={orientation === "horizontal" ? Position.Left : Position.Top} style={PIN} isConnectable={false} />
-      {(d.branchPorts?.length ? d.branchPorts : [{ id: undefined }]).map((port, index, all) => (
+      {(d.branchPorts ?? []).map((port, index, all) => (
         <Handle
-          key={port.id ?? "branch"}
+          key={port.id}
           id={port.id}
           type="source"
           position={orientation === "horizontal" ? Position.Right : Position.Bottom}
@@ -556,71 +568,113 @@ function BranchNode({ data }: NodeProps<LogicRfNode>) {
             ? { ...BRANCH_PIN, top: branchPortTop(index, all.length) }
             : { ...BRANCH_PIN, left: branchPortTop(index, all.length) }}
           isConnectable={false}
-          title={"label" in port ? port.label : undefined}
+          title={port.label}
         />
       ))}
-      {/* Conditional diamonds reveal their expression without relayout. */}
-      <div style={BRANCH_SHAPE} title={d.label} onDoubleClick={(e) => { e.stopPropagation(); toggle(); }}>
-        <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={BRANCH_SVG} aria-hidden="true">
-          <polygon points="50,1 99,50 50,99 1,50" fill={BRANCH_FILL} stroke={BRANCH_ACCENT} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
-        </svg>
-        <span style={BRANCH_LABEL}>X</span>
-      </div>
-      <div style={BRANCH_DROPDOWN}>
-        <ExpandButton expanded={open} onToggle={toggle} />
-        {open ? <div style={BRANCH_CONDITION}>{conditionText(d.label)}</div> : null}
-      </div>
-      {changedRing === null ? null : <StructuralChangedMarker color={changedRing} />}
-    </div>
+    </>
+  ) : <ExecPins />;
+  return (
+    <BaseNode
+      model={model}
+      style={withChanged(structuralBodyStyle(BRANCH_ACCENT), changedRing, select)}
+      headerStyle={structuralHeaderStyle(BRANCH_ACCENT)}
+      labelStyle={NAME}
+      labelContent={conditionText(d.label)}
+      labelTitle={d.label}
+      leading={<span style={{ ...STRUCTURAL_GLYPH, color: BRANCH_ACCENT }}>◇</span>}
+      indicators={(
+        <>
+          <span style={COUNT}>{d.branchPorts?.length ?? d.childCount}</span>
+          {changedRing === null ? null : <ChangedTag color={changedRing} />}
+        </>
+      )}
+      ports={ports}
+      title={d.isExpanded ? "Collapse to hide branch paths" : "Expand to show branch paths"}
+    />
   );
 }
 
 /** TRY/CATCH is an exception gate, not a decision. The normal route enters and leaves at the same
  * height through an ivory trunk; the catch outlet sits lower and uses the amber exception colour.
  * Its edge is dashed by `logicElk`, so the visual grammar reads "peels off on throw". */
-function ExceptionNode({ data }: NodeProps<LogicRfNode>) {
+function ExceptionNode({ id, data }: NodeProps<LogicRfNode>) {
   const orientation = useLogicFlowOrientation();
+  const logicSelected = useBlueprint((s) => s.logicSelected);
   const d = data as LogicNodeData;
+  const model = controlBaseNodeModel(id, d);
+  const select = selectStateFor(d.targetId, logicSelected);
   const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
-  return (
-    <div style={withChanged(EXCEPTION_GATE, changedRing, "none")} title="try / catch">
-      <Handle type="target" position={orientation === "horizontal" ? Position.Left : Position.Top} style={PIN} isConnectable={false} />
-      {(d.branchPorts ?? []).map((port, index, ports) => (
+  const ports = d.isExpanded ? (
+    <>
+      <Handle
+        type="target"
+        position={orientation === "horizontal" ? Position.Left : Position.Top}
+        style={orientation === "horizontal" ? { ...PIN, top: "50%" } : { ...PIN, left: "50%" }}
+        isConnectable={false}
+      />
+      {(d.branchPorts ?? []).map((port, index, all) => (
         <Handle
           key={port.id}
           id={port.id}
           type="source"
           position={orientation === "horizontal" ? Position.Right : Position.Bottom}
-          style={exceptionPinStyle(port, index, ports.length, orientation)}
+          style={exceptionPinStyle(port, index, all.length, orientation)}
           isConnectable={false}
           title={port.label}
         />
       ))}
-      <span style={EXCEPTION_TRUNK} aria-hidden="true" />
-      <span style={EXCEPTION_SPINE} aria-hidden="true" />
-      <span style={EXCEPTION_TRY}>TRY</span>
-      <span style={EXCEPTION_CATCH}>CATCH</span>
-      <span style={EXCEPTION_ALERT} aria-hidden="true">!</span>
-      {changedRing === null ? null : <StructuralChangedMarker color={changedRing} />}
-    </div>
+    </>
+  ) : <ExecPins />;
+  return (
+    <BaseNode
+      model={model}
+      style={withChanged(structuralBodyStyle(TRY_ACCENT), changedRing, select)}
+      headerStyle={structuralHeaderStyle(TRY_ACCENT)}
+      labelStyle={NAME}
+      labelContent="protected block"
+      labelTitle={d.label}
+      leading={<span style={{ ...STRUCTURAL_GLYPH, color: TRY_ACCENT }}>!</span>}
+      indicators={(
+        <>
+          <span style={STRUCTURAL_ROLE}>CATCH</span>
+          {changedRing === null ? null : <ChangedTag color={changedRing} />}
+        </>
+      )}
+      ports={ports}
+      title={d.isExpanded ? "Collapse to hide try/catch paths" : "Expand to show try/catch paths"}
+    />
   );
 }
 
 /** Mandatory cleanup checkpoint after TRY/CATCH lanes reconverge. It sits on the single exec trunk,
  * so topology says "always" before the tag does; the paired amber bars read as a phase boundary,
  * never as another optional branch or ordinary call. */
-function FinallyNode({ data }: NodeProps<LogicRfNode>) {
+function FinallyNode({ id, data }: NodeProps<LogicRfNode>) {
+  const logicSelected = useBlueprint((s) => s.logicSelected);
   const d = data as LogicNodeData;
+  const model = controlBaseNodeModel(id, d);
+  const select = selectStateFor(d.targetId, logicSelected);
   const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
   return (
-    <div style={withChanged(FINALLY_GATE, changedRing, "none")} title="Finally — always runs after try or catch" role="img" aria-label="Finally phase; always runs after try or catch">
-      <ExecPins />
-      <span style={FINALLY_BAR_LEFT} aria-hidden="true" />
-      <span style={FINALLY_TEXT}>FINALLY</span>
-      <span style={FINALLY_ALWAYS}>ALWAYS</span>
-      <span style={FINALLY_BAR_RIGHT} aria-hidden="true" />
-      {changedRing === null ? null : <StructuralChangedMarker color={changedRing} />}
-    </div>
+    <BaseNode
+      model={model}
+      style={withChanged(structuralBodyStyle(TRY_ACCENT), changedRing, select)}
+      headerStyle={structuralHeaderStyle(TRY_ACCENT)}
+      labelStyle={NAME}
+      labelContent="cleanup"
+      labelTitle={d.label}
+      leading={<span style={{ ...STRUCTURAL_GLYPH, color: TRY_ACCENT }}>↦</span>}
+      indicators={(
+        <>
+          <span style={STRUCTURAL_ROLE}>ALWAYS</span>
+          {changedRing === null ? null : <ChangedTag color={changedRing} />}
+        </>
+      )}
+      ports={<ExecPins />}
+      title={d.isExpanded ? "Collapse to hide cleanup steps" : "Expand to show cleanup steps"}
+    >
+      {d.emptyFlow && d.isExpanded ? <EmptyNodeExpansion message="No charted cleanup steps" /> : null}
+    </BaseNode>
   );
 }
 
@@ -661,18 +715,23 @@ function JoinNode() {
 
 /** A later `await pending` is a real execution gate: the ivory exec thread enters/leaves sideways,
  * while the cyan lifetime rail lands on one of the sockets below. */
-function AsyncNode({ data }: NodeProps<LogicRfNode>) {
+function AsyncNode({ id, data }: NodeProps<LogicRfNode>) {
   const d = data as LogicNodeData;
   const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
+  const model = { ...controlBaseNodeModel(id, d), nodeType: "async" };
   return (
-    <div style={withChanged(ASYNC_GATE_BODY, changedRing, "none")} title={d.label}>
-      <ExecPins />
+    <BaseNode
+      model={model}
+      style={withChanged(ASYNC_GATE_BODY, changedRing, "none")}
+      headerStyle={ASYNC_GATE_HEADER}
+      labelStyle={ASYNC_GATE_LABEL}
+      leading={<span style={ASYNC_GATE_GLYPH}>⌟</span>}
+      ports={<><ExecPins /><AsyncPortHandles ports={d.asyncPorts} /></>}
+      title={d.label}
+    >
       <div style={ASYNC_GATE_HATCH} />
-      <span style={ASYNC_GATE_GLYPH}>⌟</span>
-      <span style={ASYNC_GATE_LABEL}>{d.label}</span>
-      <AsyncPortHandles ports={d.asyncPorts} />
       {changedRing === null ? null : <StructuralChangedMarker color={changedRing} />}
-    </div>
+    </BaseNode>
   );
 }
 
@@ -688,26 +747,34 @@ function conditionText(label: string): string {
 /** A framed container (expanded call / loop / callback / try-finally fallback): a title bar sits
  * over ELK's reserved top pad; child nodes render in the space below. BaseNode owns the shared
  * collapse control and keeps it as the final title action. */
-function ContainerFrame(props: { model: BaseNodeModel; accent: string; glyph: string; provenance: LogicNodeData["provenance"]; select: SelectState; badge?: React.ReactNode; changedRing?: string | null; targetChangedStatus?: ChangeStatus; nestedDetachedCount?: number }) {
+function ContainerFrame(props: {
+  model: BaseNodeModel;
+  accent: string;
+  provenance: LogicNodeData["provenance"];
+  select: SelectState;
+  indicators?: React.ReactNode;
+  actions?: React.ReactNode;
+  changedRing?: string | null;
+  nestedNotAwaitedCount?: number;
+  emptyFlow?: boolean;
+}) {
   return (
     <BaseNode
       model={props.model}
       style={withChanged(selectStyle(frameStyle(props.accent), props.select), props.changedRing ?? null, props.select)}
       headerStyle={frameTitleStyle(props.accent)}
       labelStyle={NAME}
-      leading={<span style={GLYPH}>{props.glyph}</span>}
-      actions={(
+      indicators={(
         <>
           {props.provenance ? <span style={FRAME_PROV}>{props.provenance.pkg} › {props.provenance.module}</span> : null}
-          <NestedDetachedBadge count={props.nestedDetachedCount} />
-          {props.badge}
-          {props.changedRing ? <ChangedTag color={props.changedRing} /> : null}
-          {props.targetChangedStatus ? <TargetChangedTag status={props.targetChangedStatus} /> : null}
+          {props.indicators}
         </>
       )}
+      actions={props.actions}
       ports={<ExecPins />}
     >
-      {(props.nestedDetachedCount ?? 0) > 0 ? <span style={NESTED_DETACHED_RAIL} aria-hidden="true" /> : null}
+      {(props.nestedNotAwaitedCount ?? 0) > 0 ? <span style={NESTED_DETACHED_RAIL} aria-hidden="true" /> : null}
+      {props.emptyFlow ? <EmptyNodeExpansion /> : null}
     </BaseNode>
   );
 }
@@ -739,52 +806,12 @@ function CoverageBattery({ verdict, title = BATTERY_TITLE[verdict] }: { verdict:
   );
 }
 
-/**
- * The async-semantics badge a call block wears: ⏱ for an awaited call (Unreal's "latent node" clock
- * — execution holds here), ⤳ for a detached fire-and-forget call (result dropped; the work may
- * outlive this flow). Absent on plain synchronous calls, so the common case stays quiet.
- */
-function AsyncBadge({ d }: { d: LogicNodeData }) {
-  // A dropped Promise is first and foremost detached. The extractor also records its launch, but
-  // showing that cyan lifecycle badge alongside a violet tail implies a later await that cannot exist.
-  if (d.detached) {
-    return <span style={DETACH_BADGE} title="Detached async work — this promise is not awaited in this flow">⤳ DETACHED</span>;
-  }
-  if (d.asyncEvent?.kind === "launch") {
-    return <span style={LAUNCH_BADGE} title="starts async work; execution continues">●</span>;
-  }
-  if (d.asyncEvent?.kind === "barrier") {
-    return <span style={AWAIT_BADGE} title={`waits for ${d.asyncEvent.inputs.length} tasks`}>{`⋮${d.asyncEvent.inputs.length}`}</span>;
-  }
-  if (d.asyncEvent?.kind === "direct-await" || d.awaited) {
-    return <span style={AWAIT_BADGE} title="starts async work and waits here">⌟</span>;
-  }
-  return null;
-}
-
-/** A parent-call warning, intentionally distinct from AsyncBadge: the parent invocation is ordinary,
- * but expanding it will reveal detached promises. The violet frame rail repeats this signal spatially. */
-function NestedDetachedBadge({ count }: { count: number | undefined }) {
-  if (!count) return null;
-  const noun = count === 1 ? "promise" : "promises";
-  const verb = count === 1 ? "is" : "are";
-  const explanation = `${count} ${noun} inside ${verb} not awaited in this flow`;
-  return (
-    <span
-      style={NESTED_DETACHED_BADGE}
-      title={explanation}
-      aria-label={explanation}
-    >
-      ⤳ {count} NOT AWAITED
-    </span>
-  );
-}
-
 /** Structural async marks around a call card. The local direct-await loop is self-contained; launch
  * sockets and barrier inputs are the endpoints used by the cyan correlation-edge layer. */
 function AsyncDecoration({ d }: { d: LogicNodeData }) {
   const event = d.asyncEvent;
-  if (!event && !d.detached) {
+  const promiseDetached = d.detached === true && d.semantics?.returnsPromise === true;
+  if (!event && !promiseDetached) {
     return null;
   }
   return (
@@ -793,7 +820,7 @@ function AsyncDecoration({ d }: { d: LogicNodeData }) {
       {event?.kind === "direct-await" || (!event && d.awaited) ? <DirectAwaitLoop /> : null}
       {event?.kind === "barrier" ? <BarrierComb count={event.inputs.length} /> : null}
       {event?.kind === "launch" && event.binding ? <VariableBead label={event.binding} filled /> : null}
-      {d.detached ? <DetachedTail /> : null}
+      {promiseDetached ? <DetachedTail /> : null}
     </>
   );
 }
@@ -860,25 +887,6 @@ function DetachedTail() {
       </svg>
       <span style={DETACHED_LABEL}>continues · not awaited</span>
     </span>
-  );
-}
-
-function ExpandButton(props: { expanded: boolean; onToggle: () => void }) {
-  const actionLabel = props.expanded ? "collapse" : "expand in place";
-  return (
-    <button
-      type="button"
-      style={EXPAND_BTN}
-      title={actionLabel}
-      aria-label={actionLabel}
-      aria-expanded={props.expanded}
-      onClick={(e) => {
-        e.stopPropagation();
-        props.onToggle();
-      }}
-    >
-      {props.expanded ? "▾" : "▸"}
-    </button>
   );
 }
 
@@ -984,9 +992,6 @@ function TerminalNode({ data }: NodeProps<LogicRfNode>) {
  */
 function DefGroupNode({ id, data }: NodeProps<LogicRfNode>) {
   const d = data as DefGroupData;
-  // The top-level functions group records kind "module": tag it FUNCTIONS. Every other group is an
-  // owner (object/class), so its kind uppercases straight to the tag (OBJECT / CLASS / …).
-  const tag = d.kind === "module" ? "FUNCTIONS" : d.kind.toUpperCase();
   const model: BaseNodeModel = {
     instanceId: id,
     targetId: d.targetId,
@@ -1006,12 +1011,7 @@ function DefGroupNode({ id, data }: NodeProps<LogicRfNode>) {
       headerStyle={d.isExpanded ? DEFGROUP_TITLE : DEFGROUP_COLLAPSED_TITLE}
       labelStyle={DEFGROUP_NAME}
       labelTitle={d.label}
-      actions={(
-        <>
-          <span style={DEFGROUP_TAG}>{tag}</span>
-          <span style={DEFGROUP_COUNT}>{d.childCount}</span>
-        </>
-      )}
+      indicators={<span style={DEFGROUP_COUNT}>{d.childCount}</span>}
     />
   );
 }
@@ -1060,8 +1060,6 @@ const BLOCK_ACCENT = FLOW_COLORS.call;
 // A small INDIGO shift off the blue call accent — same family, not a jarring new colour — so a method
 // call (through a receiver / a class method) is distinguishable at a glance from a free function.
 const METHOD_ACCENT = FLOW_COLORS.method;
-// Evokes the `::` scope-resolution of a member call, versus the `ƒ` of a free function.
-const METHOD_GLYPH = "∷";
 // Teal, deliberately unlike the blue call accent: a definition node is a declaration ("defined
 // here"), a different kind of thing from a call site in the flow.
 const DEF_ACCENT = "#3FB8AF";
@@ -1187,12 +1185,7 @@ function compactTitleStyle(scope: LogicNodeData["callScope"], accent: string): R
   };
 }
 
-function scopeGlyph(scope: LogicNodeData["callScope"], fallback: string): string {
-  return scope === "external" ? "↗" : scope === "unresolved" ? "?" : fallback;
-}
-
 const RUNTIME_BODY: React.CSSProperties = { ...BODY, borderColor: "#34404C", background: "#0F151C" };
-const RUNTIME_KIND: React.CSSProperties = { flexShrink: 0, border: "1px solid rgba(5,12,17,0.28)", borderRadius: 999, padding: "1px 5px", fontSize: 8, letterSpacing: "0.05em", textTransform: "uppercase", opacity: 0.78 };
 const RUNTIME_DURATION: React.CSSProperties = { flexShrink: 0, marginLeft: "auto", fontSize: 9.5, fontVariantNumeric: "tabular-nums", opacity: 0.82 };
 const RUNTIME_EVENT_COUNT: React.CSSProperties = { flexShrink: 0, fontSize: 8.5, fontVariantNumeric: "tabular-nums", opacity: 0.82 };
 const RUNTIME_FRAME_BADGE: React.CSSProperties = { minWidth: 0, maxWidth: 170, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", border: "1px solid rgba(5,12,17,0.28)", borderRadius: 999, padding: "1px 6px", fontSize: 8.5, fontWeight: 500 };
@@ -1208,63 +1201,12 @@ const RUNTIME_SNAPSHOT_LABEL_ERROR: React.CSSProperties = { ...RUNTIME_SNAPSHOT_
 const RUNTIME_SNAPSHOT_VALUE: React.CSSProperties = { minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#B6C5D3" };
 const RUNTIME_SNAPSHOT_VALUE_ERROR: React.CSSProperties = { ...RUNTIME_SNAPSHOT_VALUE, color: "#E7A0A4" };
 
-// A branch renders as an outline diamond (the classic decision shape) so it never reads as a
-// rectangular building block. The wrapper hosts the exec pins and any selection dim.
-const BRANCH_WRAP: React.CSSProperties = { position: "relative", width: "100%", height: "100%", fontFamily: MONO };
 const BRANCH_PIN: React.CSSProperties = { ...PIN, width: 8, height: 8, background: BRANCH_ACCENT, boxShadow: `0 0 0 2px ${BRANCH_FILL}` };
 function branchPortTop(index: number, count: number): string {
   return `${((index + 1) / (count + 1)) * 100}%`;
 }
-// TRY/CATCH has its own narrow gate vocabulary. The normal trunk is horizontal and ivory; the amber
-// spine drops to a lower catch socket so its dashed edge visibly peels away from ordinary execution.
-const EXCEPTION_GATE: React.CSSProperties = {
-  position: "relative",
-  width: "100%",
-  height: "100%",
-  boxSizing: "border-box",
-  border: `1px solid ${TRY_ACCENT}`,
-  borderRadius: 7,
-  background: "linear-gradient(90deg, rgba(217,138,91,0.05), rgba(11,14,19,0.96))",
-  boxShadow: "inset 0 0 0 1px rgba(217,138,91,0.08)",
-  fontFamily: MONO,
-};
-const EXCEPTION_TRUNK: React.CSSProperties = { position: "absolute", left: 0, right: 0, top: "50%", height: 2, transform: "translateY(-1px)", background: FLOW_COLORS.ink, opacity: 0.85 };
-const EXCEPTION_SPINE: React.CSSProperties = { position: "absolute", right: 17, top: "50%", bottom: "18%", width: 2, background: TRY_ACCENT };
-const EXCEPTION_TRY: React.CSSProperties = { position: "absolute", left: 10, top: 8, color: "#E7EDF4", fontSize: 10, fontWeight: 800, letterSpacing: "0.08em" };
-const EXCEPTION_CATCH: React.CSSProperties = { position: "absolute", left: 10, bottom: 5, color: TRY_ACCENT, fontSize: 8.5, fontWeight: 800, letterSpacing: "0.07em" };
-const EXCEPTION_ALERT: React.CSSProperties = { position: "absolute", right: 10, top: 7, color: TRY_ACCENT, fontSize: 13, fontWeight: 900, lineHeight: 1 };
 const EXCEPTION_NORMAL_PIN: React.CSSProperties = { ...PIN, width: 8, height: 8, background: FLOW_COLORS.ink, boxShadow: `0 0 0 2px ${FLOW_COLORS.canvas}` };
 const EXCEPTION_CATCH_PIN: React.CSSProperties = { ...PIN, width: 9, height: 9, background: TRY_ACCENT, border: "1px solid #FFD0B2", boxShadow: `0 0 0 2px ${FLOW_COLORS.canvas}` };
-const FINALLY_GATE: React.CSSProperties = {
-  position: "relative",
-  width: "100%",
-  height: "100%",
-  boxSizing: "border-box",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  gap: 6,
-  overflow: "visible",
-  borderTop: `1px solid ${TRY_ACCENT}99`,
-  borderBottom: `1px solid ${TRY_ACCENT}99`,
-  background: "rgba(217,138,91,0.08)",
-  color: "#F1D5C3",
-  fontFamily: MONO,
-};
-const FINALLY_BAR_BASE: React.CSSProperties = { position: "absolute", top: 3, bottom: 3, width: 3, borderRadius: 2, background: TRY_ACCENT, boxShadow: `0 0 6px ${TRY_ACCENT}55` };
-const FINALLY_BAR_LEFT: React.CSSProperties = { ...FINALLY_BAR_BASE, left: 5 };
-const FINALLY_BAR_RIGHT: React.CSSProperties = { ...FINALLY_BAR_BASE, right: 5 };
-const FINALLY_TEXT: React.CSSProperties = { fontSize: 9.5, fontWeight: 850, letterSpacing: "0.07em" };
-const FINALLY_ALWAYS: React.CSSProperties = { padding: "1px 4px", border: `1px solid ${TRY_ACCENT}99`, borderRadius: 3, color: TRY_ACCENT, fontSize: 7, fontWeight: 800, letterSpacing: "0.06em" };
-// The shape is a centring frame for the SVG diamond and its overlaid caption.
-const BRANCH_SHAPE: React.CSSProperties = {
-  position: "relative",
-  width: "100%",
-  height: "100%",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-};
 // clip-path can't paint a border, so the diamond outline is an SVG polygon; non-scaling-stroke keeps
 // the stroke a constant width while the polygon stretches (preserveAspectRatio="none") to the box.
 const BRANCH_SVG: React.CSSProperties = { position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "visible" };
@@ -1276,46 +1218,6 @@ const JOIN_SVG_VERTICAL: React.CSSProperties = {
 };
 const JOIN_INPUT_PIN: React.CSSProperties = { ...PIN, width: 7, height: 7, background: BRANCH_ACCENT, boxShadow: `0 0 0 2px ${FLOW_COLORS.canvas}` };
 const JOIN_OUTPUT_PIN: React.CSSProperties = { ...PIN, width: 7, height: 7, background: FLOW_COLORS.ink, boxShadow: `0 0 0 2px ${FLOW_COLORS.canvas}` };
-// The single "X" marker sits ABOVE the diamond, centred on its middle.
-const BRANCH_LABEL: React.CSSProperties = {
-  position: "relative",
-  color: BRANCH_ACCENT,
-  fontSize: 14,
-  fontWeight: 700,
-  lineHeight: 1,
-};
-// The reveal affordance hangs just below the diamond (wrapper overflow is visible), holding the
-// expand toggle and, once open, the condition panel. A high z-index keeps it above neighbouring rows.
-const BRANCH_DROPDOWN: React.CSSProperties = {
-  position: "absolute",
-  top: "100%",
-  left: "50%",
-  transform: "translateX(-50%)",
-  marginTop: 3,
-  display: "flex",
-  flexDirection: "column",
-  alignItems: "center",
-  gap: 4,
-  zIndex: 10,
-  // Size to content (not the ~72px diamond it hangs off), so the condition panel fills its own width
-  // instead of collapsing to a one-char-per-line column against the narrow absolute containing block.
-  width: "max-content",
-  maxWidth: 320,
-};
-const BRANCH_CONDITION: React.CSSProperties = {
-  fontFamily: MONO,
-  fontSize: 11,
-  color: "#D7E3EF",
-  background: "#10151C",
-  border: `1px solid ${BRANCH_ACCENT}`,
-  borderRadius: 6,
-  padding: "5px 9px",
-  maxWidth: 320,
-  whiteSpace: "normal",
-  wordBreak: "break-word",
-  lineHeight: 1.4,
-  boxShadow: "0 4px 14px rgba(0,0,0,0.4)",
-};
 
 function titleStyle(accent: string): React.CSSProperties {
   return {
@@ -1357,6 +1259,50 @@ function frameStyle(accent: string): React.CSSProperties {
 function frameTitleStyle(accent: string): React.CSSProperties {
   return { display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderBottom: `1px solid ${accent}`, color: accent, fontSize: 11, fontWeight: 700 };
 }
+
+/** Flat control-flow gates reuse BaseNode even though their expanded bodies remain sibling lanes. */
+function structuralBodyStyle(accent: string): React.CSSProperties {
+  return {
+    width: "100%",
+    height: "100%",
+    boxSizing: "border-box",
+    border: `1px solid ${accent}CC`,
+    borderRadius: 8,
+    background: "#10151C",
+    overflow: "visible",
+    fontFamily: MONO,
+    boxShadow: `inset 3px 0 0 ${accent}55`,
+  };
+}
+
+function structuralHeaderStyle(accent: string): React.CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    width: "100%",
+    height: "100%",
+    boxSizing: "border-box",
+    padding: "0 9px",
+    borderRadius: 7,
+    background: `linear-gradient(90deg, ${accent}1F, rgba(16,21,28,0.96) 58%)`,
+    color: "#DCE6F2",
+    fontSize: 11,
+    fontWeight: 700,
+  };
+}
+
+const STRUCTURAL_GLYPH: React.CSSProperties = { flexShrink: 0, fontSize: 15, fontWeight: 850, lineHeight: 1 };
+const STRUCTURAL_ROLE: React.CSSProperties = {
+  flexShrink: 0,
+  padding: "1px 4px",
+  border: `1px solid ${TRY_ACCENT}99`,
+  borderRadius: 3,
+  color: TRY_ACCENT,
+  fontSize: 7,
+  fontWeight: 800,
+  letterSpacing: "0.06em",
+};
 
 // The satellite "ghost" look: dashed border, muted fill/text — it reads as a detached shortcut, not
 // a step in this flow. Full opacity (it's never dimmed by the selection) so it stays clickable.
@@ -1472,28 +1418,6 @@ const RETURN_BODY: React.CSSProperties = {
 const TERMINAL_GLYPH: React.CSSProperties = { fontSize: 10, flexShrink: 0, opacity: 0.85 };
 const ENTRY_TAG: React.CSSProperties = { marginLeft: "auto", flexShrink: 0, fontSize: 8, fontWeight: 700, letterSpacing: "0.08em", border: `1px solid ${ENTRY_ACCENT}`, borderRadius: 3, padding: "1px 4px", color: ENTRY_ACCENT };
 
-// The async badges: compact dark chips so they stay legible over a solid accent title bar AND over
-// a greyed chip's muted body. flex-none so they never squeeze the call name.
-const ASYNC_BADGE_BASE: React.CSSProperties = {
-  flexShrink: 0,
-  fontSize: 8.5,
-  fontWeight: 700,
-  letterSpacing: "0.05em",
-  borderRadius: 3,
-  padding: "1px 4px",
-  background: "rgba(11,14,19,0.55)",
-  whiteSpace: "nowrap",
-};
-const AWAIT_BADGE: React.CSSProperties = { ...ASYNC_BADGE_BASE, color: AWAIT_ACCENT, border: `1px solid ${AWAIT_ACCENT}88` };
-const LAUNCH_BADGE: React.CSSProperties = { ...ASYNC_BADGE_BASE, color: AWAIT_ACCENT, border: `1px solid ${AWAIT_ACCENT}66`, textShadow: `0 0 8px ${AWAIT_ACCENT}` };
-const DETACH_BADGE: React.CSSProperties = { ...ASYNC_BADGE_BASE, fontSize: 7.5, color: "#D5C1F2", border: `1px solid ${DETACH_ACCENT}AA`, background: "rgba(87,55,118,0.72)" };
-const NESTED_DETACHED_BADGE: React.CSSProperties = {
-  ...ASYNC_BADGE_BASE,
-  fontSize: 7.25,
-  color: "#DCCAF4",
-  border: `1px solid ${DETACH_ACCENT}99`,
-  background: "rgba(87,55,118,0.62)",
-};
 const NESTED_DETACHED_RAIL: React.CSSProperties = {
   position: "absolute",
   left: 0,
@@ -1593,11 +1517,7 @@ const ASYNC_GATE_BODY: React.CSSProperties = {
   width: "100%",
   height: "100%",
   boxSizing: "border-box",
-  display: "flex",
-  alignItems: "center",
-  gap: 7,
   overflow: "visible",
-  padding: "0 12px",
   border: `1px solid ${AWAIT_ACCENT}`,
   borderLeftWidth: 3,
   borderRightWidth: 3,
@@ -1606,6 +1526,17 @@ const ASYNC_GATE_BODY: React.CSSProperties = {
   color: "#CFE9EC",
   fontFamily: MONO,
   boxShadow: `0 0 0 1px ${AWAIT_ACCENT}1F`,
+};
+const ASYNC_GATE_HEADER: React.CSSProperties = {
+  position: "relative",
+  zIndex: 1,
+  width: "100%",
+  height: "100%",
+  boxSizing: "border-box",
+  display: "flex",
+  alignItems: "center",
+  gap: 7,
+  padding: "0 9px",
 };
 const ASYNC_GATE_HATCH: React.CSSProperties = {
   position: "absolute",
@@ -1619,9 +1550,6 @@ const ASYNC_GATE_GLYPH: React.CSSProperties = { position: "relative", color: AWA
 const ASYNC_GATE_LABEL: React.CSSProperties = { position: "relative", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10.5, fontWeight: 650 };
 
 const GLYPH: React.CSSProperties = { fontSize: 11, opacity: 0.85 };
-// BranchNode keeps a local condition disclosure because it reveals presentation detail without
-// changing the graph expansion state. Entity-node expansion is owned by BaseNode.
-const EXPAND_BTN: React.CSSProperties = { border: "none", background: "rgba(0,0,0,0.18)", color: "inherit", borderRadius: 4, padding: "1px 6px", fontSize: 10, lineHeight: 1, fontFamily: MONO, cursor: "pointer" };
 const NAME: React.CSSProperties = { flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const PROV: React.CSSProperties = { padding: "4px 8px", fontSize: 10, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 // The signature line: dimmer than provenance (secondary detail), mono, one clipped line — the full
@@ -1670,9 +1598,17 @@ const SERVICE_SMELL: React.CSSProperties = { flexShrink: 0, fontSize: 10, color:
 const SERVICE_COUNT: React.CSSProperties = { marginLeft: "auto", flexShrink: 0, fontSize: 10, fontWeight: 600, color: "#6C7683" };
 // Compact leaves keep full contrast; smaller type/spacing communicates density, while their boundary
 // costume communicates internal/external/unresolved independently.
-const COMPACT_GLYPH: React.CSSProperties = { fontSize: 9.5, opacity: 0.9, flexShrink: 0 };
 const COMPACT_PROV: React.CSSProperties = { padding: "1px 7px 3px", fontSize: 9, lineHeight: 1.1, color: "#8A96A5", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
-const FRAME_PROV: React.CSSProperties = { fontSize: 9, fontWeight: 400, color: "#7B8695", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const FRAME_PROV: React.CSSProperties = {
+  flexShrink: 0,
+  maxWidth: FRAME_PROVENANCE_MAX_WIDTH,
+  fontSize: 9,
+  fontWeight: 400,
+  color: "#7B8695",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
 const COUNT: React.CSSProperties = { marginLeft: "auto", fontSize: 10, fontWeight: 600, opacity: 0.75 };
 // The little "def" pill on a definition node's title: dark on the teal accent, so it reads as a
 // quiet kind-tag ("defined here") without competing with the callable name beside it.
@@ -1708,5 +1644,4 @@ const DEFGROUP_TITLE: React.CSSProperties = {
 const DEFGROUP_COLLAPSED_TITLE: React.CSSProperties = { ...DEFGROUP_TITLE, borderBottom: "none" };
 // The owner name takes the row and truncates; the kind tag and count stay pinned at the right.
 const DEFGROUP_NAME: React.CSSProperties = { ...NAME, flex: 1, minWidth: 0 };
-const DEFGROUP_TAG: React.CSSProperties = { flexShrink: 0, fontSize: 8, fontWeight: 700, letterSpacing: "0.06em", border: "1px solid rgba(63,184,175,0.4)", borderRadius: 3, padding: "1px 4px", color: "#3FB8AF" };
 const DEFGROUP_COUNT: React.CSSProperties = { flexShrink: 0, fontSize: 10, fontWeight: 600, color: "#6C7683" };

@@ -15,6 +15,9 @@
  */
 
 import { createContext, useContext, useMemo } from "react";
+import type { NodeSemanticModel } from "../../nodeSemantics";
+import { NODE_DISCLOSURE_SIZE } from "../../theme/nodeChrome";
+import { NodeKindBadge, NodeSemanticRail } from "./NodeSemanticRail";
 
 export interface BaseNodeModel {
   /** React Flow/layout identity; expansion is always keyed by this id. */
@@ -25,6 +28,8 @@ export interface BaseNodeModel {
   nodeType?: string;
   /** Semantic identity shown by this node (`file`, `class`, `method`, ...). */
   kind: string;
+  /** Declaration and call-occurrence facts rendered by the shared semantic rail. */
+  semantics?: NodeSemanticModel;
   label: string;
   childCount: number;
   canExpand: boolean;
@@ -65,8 +70,11 @@ export interface BaseNodeProps {
   labelStyle: React.CSSProperties;
   /** Optional visual label treatment; interaction/ARIA text continues to use `model.label`. */
   labelContent?: React.ReactNode;
+  /** Optional non-kind visual mark. BaseNode renders the readable kind marker itself. */
   leading?: React.ReactNode;
-  /** Status/source/coverage actions. Disclosure is always appended after this slot. */
+  /** Coverage/change/runtime indicators, rendered after semantics and before utility actions. */
+  indicators?: React.ReactNode;
+  /** Source and other utility actions. Disclosure is always appended after this slot. */
   actions?: React.ReactNode;
   /** Handles and other elements that must be direct children of the node shell. */
   ports?: React.ReactNode;
@@ -87,6 +95,7 @@ export function BaseNode({
   labelStyle,
   labelContent,
   leading,
+  indicators,
   actions,
   ports,
   children,
@@ -97,7 +106,10 @@ export function BaseNode({
   domAttributes,
 }: BaseNodeProps) {
   const controller = useBaseNodeActions();
-  const disclosure = model.canExpand && model.childCount > 0 && controller.toggleExpand !== null
+  // `canExpand` is the authoritative content contract. A local callable may have zero graph
+  // children yet still own the shared empty-flow expansion; inferring capability from childCount
+  // would make those real source entities look like a different leaf component.
+  const disclosure = model.canExpand && controller.toggleExpand !== null
     ? <NodeDisclosure model={model} onToggle={controller.toggleExpand} />
     : null;
   const navigate = model.canNavigate ? controller.navigateInto : null;
@@ -105,9 +117,12 @@ export function BaseNode({
     <>
       <div style={headerStyle} data-base-node-header="true">
         {leading}
+        <NodeKindBadge kind={model.kind} />
         <span style={labelStyle} title={labelTitle ?? model.label}>{labelContent ?? model.label}</span>
-        {(actions !== undefined || disclosure !== null) ? (
+        {(model.semantics !== undefined || indicators !== undefined || actions !== undefined || disclosure !== null) ? (
           <span style={ACTION_RAIL} data-base-node-actions="true">
+            <NodeSemanticRail semantics={model.semantics} />
+            {indicators}
             {actions}
             {disclosure}
           </span>
@@ -161,13 +176,16 @@ export function NodeDisclosure({
       aria-label={`${label} ${model.label}`}
       aria-expanded={model.expanded}
       data-base-node-disclosure="true"
+      data-node-disclosure-state={model.expanded ? "expanded" : "collapsed"}
       onClick={(event) => {
         event.stopPropagation();
         onToggle(model);
       }}
       onDoubleClick={(event) => event.stopPropagation()}
     >
-      {model.expanded ? "▾" : "▸"}
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" style={DISCLOSURE_ICON}>
+        <path d={model.expanded ? "M3.5 6 L8 10.5 L12.5 6" : "M6 3.5 L10.5 8 L6 12.5"} />
+      </svg>
     </button>
   );
 }
@@ -186,17 +204,28 @@ const ACTION_RAIL: React.CSSProperties = {
 
 const DISCLOSURE: React.CSSProperties = {
   flexShrink: 0,
-  width: 16,
-  height: 16,
+  width: NODE_DISCLOSURE_SIZE,
+  height: NODE_DISCLOSURE_SIZE,
+  boxSizing: "border-box",
   display: "inline-flex",
   alignItems: "center",
   justifyContent: "center",
   padding: 0,
-  border: "none",
-  borderRadius: 3,
-  background: "transparent",
-  color: "#9AA4B2",
+  marginLeft: 2,
+  border: "1px solid rgba(200, 211, 224, 0.5)",
+  borderRadius: 5,
+  background: "rgba(7, 11, 17, 0.72)",
+  color: "#EDF4FC",
+  boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.035), 0 1px 4px rgba(0,0,0,0.32)",
   cursor: "pointer",
-  font: "inherit",
-  fontSize: 11,
+};
+
+const DISCLOSURE_ICON: React.CSSProperties = {
+  display: "block",
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 2.25,
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+  vectorEffect: "non-scaling-stroke",
 };

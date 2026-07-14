@@ -24,11 +24,23 @@ import type {
   LogicFlows,
   SyntheticNodeSnapshot,
 } from "@meridian/core";
-import { branchKindOf, exitLabel, parseNodeId, pathRole, syntheticFallThroughLabel, tryArms } from "@meridian/core";
+import { branchKindOf, exitLabel, parseNodeId, pathRole, pathTerminates, syntheticFallThroughLabel, tryArms } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
+import { NODE_DISCLOSURE_SIZE, NODE_EMPTY_EXPANSION_HEIGHT } from "../theme/nodeChrome";
 import { baseName, callDisplay } from "./flowViewModel";
 import type { LogicOwner, OwnerLookup } from "./logicOwner";
 import { clamp, monoTextWidth } from "../layout/measure";
+import {
+  awaitSemantics,
+  callOccurrenceSemantics,
+  declarationSemantics,
+  detachedCallSummary,
+  mergeNodeSemantics,
+  displayNodeKind,
+  semanticLabels,
+  SEMANTIC_STATE_TEXT_MAX_WIDTH,
+  type NodeSemanticModel,
+} from "../nodeSemantics";
 import {
   logicBranchBodyPrefix,
   logicCallBodyPrefix,
@@ -93,6 +105,8 @@ export type LogicNodeData = {
   greyed: boolean;
   provenance: { pkg: string; module: string } | null;
   childCount: number;
+  /** Resolved local callable with no drawable nested steps; expansion renders shared honest content. */
+  emptyFlow?: boolean;
   /** A callable DEFINED in the open module (not a step in its load-flow): rendered as a distinct
    * disconnected "defined here" node so the view can style it apart from ordinary call blocks. */
   definition?: boolean;
@@ -133,6 +147,8 @@ export type LogicNodeData = {
   /** Rich async event + its task-rail endpoints. Legacy awaited/detached remain above for old data. */
   asyncEvent?: LogicAsyncEvent;
   asyncPorts?: LogicAsyncPort[];
+  /** Shared declaration + occurrence semantics rendered identically in Map and Logic headers. */
+  semantics?: NodeSemanticModel;
   /** One concrete request occurrence rendered in the shared split pane. Static Logic flows never
    * set this field; request reconstruction uses it to preserve span/event identity, timing, status,
    * caller context, and safely captured values without pretending those observations are source
@@ -340,11 +356,11 @@ export function collectModuleDefinitions(index: GraphIndex, moduleId: string): s
 /**
  * Block-like data for a "defined here" node: it targets the callable itself, so single-click
  * selection (and its jump-to-flow ghosts) and double-click drill both route through the same
- * `targetId`/`expandable` path an ordinary call block uses. `expandable` reflects whether that
- * callable actually ships a flow to dive into; provenance reads as `<owner> › <name>` (the owning
+ * `targetId`/`expandable` path an ordinary call block uses. Every local callable is expandable;
+ * declarations with no drawable steps use the same explicit empty-flow state as call occurrences.
+ * Provenance reads as `<owner> › <name>` (the owning
  * object/class/module, then the callable) so a bare method name always shows where it lives.
- * `isExpanded` is the occurrence-level state supplied by the module layout; it is ignored for a
- * callable without a flow so stale toggles cannot manufacture empty containers.
+ * `isExpanded` is the occurrence-level state supplied by the module layout.
  */
 export function definitionNodeData(
   callableId: string,
@@ -354,10 +370,10 @@ export function definitionNodeData(
   isExpanded = false,
 ): LogicNodeData {
   const node = index.nodesById.get(callableId);
-  const expandable = (flows[callableId]?.length ?? 0) > 0;
-  // A stale expansion override must never turn a declaration with no drawable flow into an empty
-  // container. Definition occurrences default collapsed, just like ordinary call blocks.
+  const flow = flows[callableId] ?? [];
+  const expandable = node?.kind === "function" || node?.kind === "method";
   const expanded = expandable && isExpanded;
+  const semantics = declarationSemantics(node);
   return {
     logicKind: "call",
     definition: true,
@@ -374,10 +390,12 @@ export function definitionNodeData(
     callScope: "internal",
     greyed: false,
     provenance: definitionProvenance(callableId, node, index),
-    childCount: expandable ? flows[callableId].length : 0,
+    childCount: flow.length,
+    ...(expandable && flow.length === 0 ? { emptyFlow: true } : {}),
     // A declared callable's own node kind is authoritative here (no receiver to infer from).
     callKind: node?.kind === "method" ? "method" : "function",
     signature: node?.signature,
+    ...(semantics ? { semantics } : {}),
     owner: ownerLookup(callableId),
   };
 }
@@ -546,7 +564,7 @@ class LogicGraphBuilder {
     if (!this.options.nestByService || step.kind !== "call") {
       return null; // nesting off (the default) ⇒ nothing frames, every call emits as a flat block.
     }
-    const expandable = step.resolution === "resolved" && step.target !== null && (this.flows[step.target]?.length ?? 0) > 0;
+    const expandable = callDisplay(step, this.flows, this.index).expandable;
     if (expandable && this.expandedState(id, false)) {
       return null;
     }
@@ -603,6 +621,11 @@ class LogicGraphBuilder {
     // container rather than drawing a terminal before FINALLY and lying that cleanup can be skipped.
     if (branchKindOf(step) === "try" && step.paths.some((flowPath) => pathRole(flowPath) === "finally")) {
       if (canChartFinallyAsSharedPhase(step)) {
+        // A charted TRY/CATCH/FINALLY folds as one structural beat. Reopening it restores the exact
+        // split/join/finally topology; a FINALLY phase can then be folded independently as well.
+        if (!this.expandedState(id, true)) {
+          return this.branchStep(step, parentId, path, id, asyncScope);
+        }
         return this.tryFinallyStep(step, parentId, path, id, asyncScope);
       }
       const count = step.paths.reduce((sum, p) => sum + p.body.length, 0);
@@ -640,6 +663,8 @@ class LogicGraphBuilder {
     const display = callDisplay(step, this.flows, this.index);
     const navigable = display.navigable;
     const expandable = display.expandable;
+    const calleeFlow = step.target ? this.flows[step.target] ?? [] : [];
+    const emptyFlow = expandable && calleeFlow.length === 0;
     // A barrier is execution structure, not a disposable leaf chip: give it full node geometry even
     // when Promise.all itself has no expandable repository flow.
     const compact = !expandable && step.async?.kind !== "barrier";
@@ -648,7 +673,23 @@ class LogicGraphBuilder {
     // are independent: a resolved internal leaf is compact but never "unknown"/greyed.
     const greyed = callScope === "unresolved";
     const isExpanded = expandable && this.expandedState(id, false);
-    const nestedDetachedCount = step.target ? countDetached(this.flows[step.target] ?? []) : 0;
+    const targetNode = step.target ? this.index.nodesById.get(step.target) : undefined;
+    const nestedDetached = detachedCallSummary(
+      calleeFlow,
+      (nestedStep) => nestedStep.target !== null
+        && declarationSemantics(this.index.nodesById.get(nestedStep.target))?.returnsPromise === true,
+    );
+    const nestedDetachedCount = nestedDetached.notAwaited + nestedDetached.resultsDropped;
+    const semantics = mergeNodeSemantics(
+      declarationSemantics(targetNode),
+      callOccurrenceSemantics(step),
+      nestedDetachedCount > 0
+        ? {
+            ...(nestedDetached.notAwaited > 0 ? { nestedNotAwaited: nestedDetached.notAwaited } : {}),
+            ...(nestedDetached.resultsDropped > 0 ? { nestedResultsDropped: nestedDetached.resultsDropped } : {}),
+          }
+        : undefined,
+    );
     // A detached Promise has no consumer by definition. Giving it a launch socket creates a cyan
     // endpoint with no rail, which reads like a mysterious standalone node. Its violet tail is the
     // complete lifecycle signal; correlation ports are reserved for work that can later be joined.
@@ -667,13 +708,15 @@ class LogicGraphBuilder {
       callScope,
       greyed,
       provenance: provenanceOf(step.target, step.resolution, this.index),
-      childCount: expandable && step.target ? this.flows[step.target].length : 0,
+      childCount: calleeFlow.length,
+      ...(emptyFlow ? { emptyFlow: true } : {}),
       changedStatus: this.changedStatus(step.source),
       targetChangedStatus: step.resolution === "resolved" && step.target !== null
         ? this.index.changedStatus.get(step.target)
         : undefined,
       callKind: display.method ? "method" : "function",
       signature: step.target ? this.index.nodesById.get(step.target)?.signature : undefined,
+      ...(semantics ? { semantics } : {}),
       owner: this.ownerLookup(step.target),
       framed,
       awaited: step.awaited,
@@ -683,8 +726,8 @@ class LogicGraphBuilder {
     };
     this.push(id, parentId, "block", data);
     this.wireCallAsync(correlatedAsync, asyncPorts, id, asyncScope);
-    if (isExpanded && step.target) {
-      this.sequence(this.flows[step.target], id, logicCallBodyPrefix(path), id);
+    if (isExpanded && calleeFlow.length > 0) {
+      this.sequence(calleeFlow, id, logicCallBodyPrefix(path), id);
     }
     return { entry: id, exits: [{ id }] };
   }
@@ -714,6 +757,7 @@ class LogicGraphBuilder {
       childCount: step.inputs.length,
       changedStatus: this.changedStatus(step.source),
       awaited: true,
+      semantics: awaitSemantics(step.inputs.length),
       asyncEvent: { kind: "await", mode: step.mode, inputs: step.inputs },
       asyncPorts,
     };
@@ -794,6 +838,7 @@ class LogicGraphBuilder {
       greyed: false,
       provenance: null,
       childCount,
+      ...(childCount === 0 ? { emptyFlow: true } : {}),
       changedStatus: this.changedStatus(source),
       // Carried so a double-click can DIVE into these sub-chains without re-parsing the flow.
       bodies,
@@ -815,6 +860,7 @@ class LogicGraphBuilder {
     asyncScope: string,
   ): { entry: string; exits: Exit[] } {
     const kind = branchKindOf(step);
+    const isExpanded = this.expandedState(id, true);
     const synthetic = syntheticFallThroughLabel(step);
     const branchPorts: LogicBranchPort[] = step.paths.map((flowPath, order) => ({
       id: branchPortId(id, order),
@@ -838,8 +884,8 @@ class LogicGraphBuilder {
       label: step.label,
       targetId: null,
       resolution: null,
-      expandable: false,
-      isExpanded: false,
+      expandable: true,
+      isExpanded,
       isContainer: false,
       compact: false,
       callScope: null,
@@ -854,6 +900,11 @@ class LogicGraphBuilder {
     // IF/SWITCH own the decision diamond. TRY/CATCH is an exception gate with a straight normal
     // route and a lower catch outlet; keeping a separate node type prevents it reading as a choice.
     this.push(id, parentId, kind === "try" ? "exception" : "branch", data);
+    if (!isExpanded) {
+      // The structural summary is atomic while folded. Preserve true termination so collapsing an
+      // exhaustive return/throw branch cannot manufacture a fall-through path to unreachable code.
+      return { entry: id, exits: pathTerminates([step]) ? [] : [{ id }] };
+    }
     const exits: Exit[] = [];
     step.paths.forEach((flowPath, pi) => {
       const port = branchPorts[pi];
@@ -904,24 +955,31 @@ class LogicGraphBuilder {
       asyncScope,
     );
     const finallyId = `${id}::finally`;
+    const finallyExpandable = true;
+    const finallyExpanded = this.expandedState(finallyId, true);
     const finallyData: LogicNodeData = {
       logicKind: "finally",
       label: "finally · always",
       targetId: null,
       resolution: null,
-      expandable: false,
-      isExpanded: false,
+      expandable: finallyExpandable,
+      isExpanded: finallyExpanded,
       isContainer: false,
       compact: false,
       callScope: null,
       greyed: false,
       provenance: null,
       childCount: finallyPath.body.length,
+      ...(finallyPath.body.length === 0 ? { emptyFlow: true } : {}),
       changedStatus: this.changedStatus(finallyPath.source),
     };
     this.push(finallyId, parentId, "finally", finallyData);
     for (const exit of protectedFlow.exits) {
       this.link(exit, finallyId);
+    }
+
+    if (!finallyExpanded) {
+      return { entry: protectedFlow.entry, exits: [{ id: finallyId }] };
     }
 
     const cleanup = this.sequence(finallyPath.body, parentId, logicFinallyBodyPrefix(path), asyncScope);
@@ -968,7 +1026,7 @@ class LogicGraphBuilder {
     if (step.async) {
       return false;
     }
-    return !(step.resolution === "resolved" && step.target !== null && (this.flows[step.target]?.length ?? 0) > 0);
+    return !callDisplay(step, this.flows, this.index).expandable;
   }
 
   /** default XOR toggle: calls default collapsed, loop/try default expanded. */
@@ -1004,20 +1062,11 @@ class LogicGraphBuilder {
 
   private push(id: string, parentId: string | null, type: LogicNodeType, data: LogicNodeData): void {
     const spec: LogicNodeSpec = { id, parentId, type, data };
-    if (!data.isContainer) {
-      const { width, height } = sizeFor(
-        data.label,
-        data.compact,
-        type,
-        Boolean(data.signature),
-        Boolean(data.provenance),
-        data.detached === true,
-        (data.nestedDetachedCount ?? 0) > 0,
-        data.targetChangedStatus !== undefined,
-      );
-      spec.width = width;
-      spec.height = height;
-    }
+    // Containers need the same measured header floor as their collapsed card; otherwise ELK sizes
+    // only around narrow children and the kind/Promise/state/source/disclosure rail clips.
+    const { width, height } = logicNodeSize(data, type);
+    spec.width = width;
+    spec.height = height;
     this.nodes.push(spec);
   }
 }
@@ -1046,18 +1095,6 @@ function containsExit(steps: FlowStep[]): boolean {
     if (step.kind === "loop" || step.kind === "callback") return containsExit(step.body);
     return false;
   });
-}
-
-/** Count only work structurally inside this callable's extracted flow. Recurse through synchronous
- * control/callback bodies, but never chase call targets: a parent badge describes what expansion
- * will reveal directly, not an unbounded transitive call-graph warning. */
-function countDetached(steps: FlowStep[]): number {
-  return steps.reduce((count, step) => {
-    if (step.kind === "call") return count + (step.detached ? 1 : 0);
-    if (step.kind === "branch") return count + step.paths.reduce((sum, path) => sum + countDetached(path.body), 0);
-    if (step.kind === "loop" || step.kind === "callback") return count + countDetached(step.body);
-    return count;
-  }, 0);
 }
 
 /** Package + module the building block comes from, so a block is never a bare name. */
@@ -1160,20 +1197,55 @@ function entryTerminalWidth(label: string): number {
 // button, and occasionally an async / coverage badge). The name must clear the glyph, the padding, and
 // that tail, so the box is sized to fit the whole name rather than truncating it under the buttons.
 const BLOCK_TITLE_FONT = 12;
-const BLOCK_TITLE_CHROME = 40; // title padding (8+8) + border (2) + glyph (~10) + two 6px gaps
-const BLOCK_TITLE_TAIL = 58; // room for the expand + </> buttons (async / coverage badges ride here too)
+const BLOCK_TITLE_CHROME = 30; // title padding (8+8) + border (2) + gaps around the kind chip
+const BLOCK_TITLE_TAIL = 42 + NODE_DISCLOSURE_SIZE; // room for the disclosure + </> buttons
 const BLOCK_MIN_WIDTH = 190;
-const BLOCK_MAX_WIDTH = 460;
+const BLOCK_MAX_WIDTH = 620;
+const CONTAINER_MAX_WIDTH = 760;
+/** Paint/layout contract for the provenance chip moved into an expanded frame's header. */
+export const FRAME_PROVENANCE_MAX_WIDTH = 150;
+// Any resolved call card may gain a coverage battery at render time, independently of graph
+// derivation. Reserve its fixed footprint on leaves and frames alike; changed/def slots are added
+// from serializable data below. Source/disclosure stay in the fixed title-tail reserve.
+const CALL_INDICATOR_RESERVE = 38;
 // A compact leaf stays a small chip — its 30px height says "no child flow" without implying anything
 // about whether the call is internal/external/unresolved. Its name remains priority and never clips.
 const COMPACT_TITLE_FONT = 10;
-const COMPACT_TITLE_CHROME = 30; // title padding (6+6) + border (2) + glyph (~8) + two 4px gaps
-const COMPACT_TITLE_TAIL = 58; // room for the </> button plus an async/detached badge
+const COMPACT_TITLE_CHROME = 22; // title padding (6+6) + border (2) + gaps around the kind chip
+const COMPACT_TITLE_TAIL = 34; // room for the </> button; semantic chips are measured below
 const COMPACT_MIN_WIDTH = 96;
-const COMPACT_MAX_WIDTH = 440;
-const DETACHED_BADGE_WIDTH = 72;
-const NESTED_DETACHED_BADGE_WIDTH = 104;
 const TARGET_CHANGED_BADGE_WIDTH = 88;
+const COMPACT_MAX_WIDTH = 600;
+
+/** Shared paint-aware measurement for a Logic node, including the common kind/semantic rail. */
+export function logicNodeSize(data: LogicNodeData, type: LogicNodeType): { width: number; height: number } {
+  const callHeaderExtra = type === "block"
+    ? CALL_INDICATOR_RESERVE
+      + (data.isContainer && data.provenance
+        ? 5 + Math.min(
+            FRAME_PROVENANCE_MAX_WIDTH,
+            monoTextWidth(`${data.provenance.pkg} › ${data.provenance.module}`, 9),
+          )
+        : 0)
+      + (data.changedStatus ? 20 : 0)
+      + (data.definition ? 24 : 0)
+      + (data.targetChangedStatus ? TARGET_CHANGED_BADGE_WIDTH : 0)
+    : 0;
+  const measured = sizeFor(
+    data.label,
+    data.compact,
+    type,
+    Boolean(data.signature) && !data.definition,
+    Boolean(data.provenance),
+    data.callKind ?? data.logicKind,
+    data.semantics,
+    callHeaderExtra,
+    data.isContainer ? CONTAINER_MAX_WIDTH : BLOCK_MAX_WIDTH,
+  );
+  return data.emptyFlow && data.isExpanded
+    ? { width: Math.max(260, measured.width), height: Math.max(NODE_EMPTY_EXPANSION_HEIGHT, measured.height) }
+    : measured;
+}
 
 function sizeFor(
   label: string,
@@ -1181,41 +1253,68 @@ function sizeFor(
   type: LogicNodeType,
   hasSignature: boolean,
   hasProvenance: boolean,
-  detached: boolean,
-  nestedDetached: boolean,
-  targetChanged: boolean,
+  kind: string,
+  semantics: NodeSemanticModel | undefined,
+  headerExtra: number,
+  blockMaxWidth: number,
 ): { width: number; height: number } {
-  if (type === "branch") {
-    // A FIXED, glanceable decision diamond. Its content is always a single "X" (the condition is
-    // revealed on demand in an inline panel), so the node never tracks label length — it stays a
-    // small, constant marker, never a sprawling box.
-    return { width: 72, height: 56 };
-  }
-  if (type === "exception") {
-    // A compact vertical exception gate: enough width for explicit TRY/CATCH vocabulary and enough
-    // height to separate the straight-through normal pin from the lower catch outlet.
-    return { width: 112, height: 68 };
-  }
-  if (type === "finally") {
-    return { width: 118, height: 38 };
-  }
   if (type === "join") {
     // A one-way funnel, deliberately wider than a line but nowhere near a decision diamond.
     return { width: 42, height: 72 };
   }
   if (type === "async") {
-    return { width: roundedClamp(118, 300, 54 + monoTextWidth(label, 11)), height: 42 };
+    return {
+      width: roundedClamp(150, 420, 30 + kindChipWidth(kind) + monoTextWidth(label, 10.5) + semanticRailWidth(semantics)),
+      height: 42,
+    };
   }
   if (compact) {
     // External leaves stay one row. Resolved/unresolved leaves with provenance reserve a real
     // second row; the former 30px blanket height clipped that row behind BODY overflow.
     return {
-      width: roundedClamp(COMPACT_MIN_WIDTH, COMPACT_MAX_WIDTH, COMPACT_TITLE_CHROME + monoTextWidth(label, COMPACT_TITLE_FONT) + COMPACT_TITLE_TAIL + (detached ? DETACHED_BADGE_WIDTH : 0) + (nestedDetached ? NESTED_DETACHED_BADGE_WIDTH : 0) + (targetChanged ? TARGET_CHANGED_BADGE_WIDTH : 0)),
+      width: roundedClamp(
+        COMPACT_MIN_WIDTH,
+        COMPACT_MAX_WIDTH,
+        COMPACT_TITLE_CHROME
+          + kindChipWidth(kind)
+          + monoTextWidth(label, COMPACT_TITLE_FONT)
+          + COMPACT_TITLE_TAIL
+          + semanticRailWidth(semantics)
+          + headerExtra,
+      ),
       height: hasProvenance ? 42 : 30,
     };
   }
   // Fit glyph + name + the title tail; the signature row adds its band below so it never clips either.
-  return { width: roundedClamp(BLOCK_MIN_WIDTH, BLOCK_MAX_WIDTH, BLOCK_TITLE_CHROME + monoTextWidth(label, BLOCK_TITLE_FONT) + BLOCK_TITLE_TAIL + (detached ? DETACHED_BADGE_WIDTH : 0) + (nestedDetached ? NESTED_DETACHED_BADGE_WIDTH : 0) + (targetChanged ? TARGET_CHANGED_BADGE_WIDTH : 0)), height: 66 + (hasSignature ? SIGNATURE_ROW_H : 0) };
+  return {
+    width: roundedClamp(
+      BLOCK_MIN_WIDTH,
+      blockMaxWidth,
+      BLOCK_TITLE_CHROME
+        + kindChipWidth(kind)
+        + monoTextWidth(label, BLOCK_TITLE_FONT)
+        + BLOCK_TITLE_TAIL
+        + semanticRailWidth(semantics)
+        + headerExtra,
+    ),
+    height: 66 + (hasSignature ? SIGNATURE_ROW_H : 0),
+  };
+}
+
+function kindChipWidth(kind: string): number {
+  return 10 + monoTextWidth(displayNodeKind(kind), 7.5);
+}
+
+function semanticRailWidth(semantics: NodeSemanticModel | undefined): number {
+  const labels = semanticLabels(semantics);
+  if (labels.length === 0) return 0;
+  return 6 + labels.reduce((width, label) => {
+    const measured = monoTextWidth(label, 7.5);
+    const capped = label.startsWith("LAUNCHED · ")
+      ? Math.min(measured, SEMANTIC_STATE_TEXT_MAX_WIDTH)
+      : measured;
+    return width + 10 + capped;
+  }, 0) + (labels.length - 1) * 4;
 }
 
 function roundedClamp(min: number, max: number, value: number): number {

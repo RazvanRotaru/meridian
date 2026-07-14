@@ -51,18 +51,51 @@ describe("shared base graph node", () => {
     expect(markup.match(/data-base-node-disclosure/g)).toHaveLength(1);
     expect(markup).toContain('aria-expanded="true"');
     expect(markup).toContain('aria-label="Collapse method"');
-    expect(markup).toContain("▾");
+    expect(markup).toContain('data-node-disclosure-state="expanded"');
+    expect(markup).toContain('<svg');
   });
 
-  it("does not render a dangling disclosure without children or a mounted expansion action", () => {
+  it("composes identity, semantics, indicators, utilities, then disclosure in one stable order", () => {
+    const semanticModel: BaseNodeModel = {
+      ...model("method"),
+      semantics: {
+        modifiers: ["async"],
+        returnsPromise: true,
+        asyncState: { kind: "awaited" },
+      },
+    };
+    const markup = renderToStaticMarkup(
+      <BaseNodeActionScope toggleExpand={() => undefined} navigateInto={() => undefined}>
+        <BaseNode
+          model={semanticModel}
+          style={STYLE}
+          headerStyle={STYLE}
+          labelStyle={STYLE}
+          indicators={<span data-indicator="true">coverage</span>}
+          actions={<button type="button" data-utility="true">source</button>}
+        />
+      </BaseNodeActionScope>,
+    );
+
+    expect(markup).toContain('data-node-kind-label="method"');
+    expect(markup).toContain('data-node-semantic-modifier="async"');
+    expect(markup).toContain('data-node-semantic-result="promise"');
+    expect(markup).toContain('data-node-semantic-state="awaited"');
+    expect(markup.indexOf("data-node-kind-label")).toBeLessThan(markup.indexOf("data-node-semantic-rail"));
+    expect(markup.indexOf("data-node-semantic-rail")).toBeLessThan(markup.indexOf("data-indicator"));
+    expect(markup.indexOf("data-indicator")).toBeLessThan(markup.indexOf("data-utility"));
+    expect(markup.indexOf("data-utility")).toBeLessThan(markup.indexOf("data-base-node-disclosure"));
+  });
+
+  it("treats expansion capability as authoritative even with zero graph children", () => {
     const empty = { ...model("interface"), canExpand: false, childCount: 0 };
-    const inconsistentEmpty = { ...model("object"), canExpand: true, childCount: 0 };
+    const expandableEmpty = { ...model("object"), canExpand: true, childCount: 0 };
     const withoutChildren = renderToStaticMarkup(
       <BaseNode model={empty} style={STYLE} headerStyle={STYLE} labelStyle={STYLE} />,
     );
-    const withoutActualChildren = renderToStaticMarkup(
+    const withEmptyExpansion = renderToStaticMarkup(
       <BaseNodeActionScope toggleExpand={() => undefined}>
-        <BaseNode model={inconsistentEmpty} style={STYLE} headerStyle={STYLE} labelStyle={STYLE} />
+        <BaseNode model={expandableEmpty} style={STYLE} headerStyle={STYLE} labelStyle={STYLE} />
       </BaseNodeActionScope>,
     );
     const withoutController = renderToStaticMarkup(
@@ -70,7 +103,9 @@ describe("shared base graph node", () => {
     );
 
     expect(withoutChildren).not.toContain("data-base-node-disclosure");
-    expect(withoutActualChildren).not.toContain("data-base-node-disclosure");
+    expect(withEmptyExpansion.match(/data-base-node-disclosure="true"/g)).toHaveLength(1);
+    expect(withEmptyExpansion).toContain('aria-label="Expand object"');
+    expect(withEmptyExpansion).toContain('aria-expanded="false"');
     expect(withoutController).not.toContain("data-base-node-disclosure");
   });
 

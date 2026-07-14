@@ -7,11 +7,27 @@ import { deriveLogicLayout, groupDefinitions } from "./deriveLogicLayout";
 
 /** A GraphIndex stub covering what groupDefinitions/collectModuleDefinitions touch:
  * nodesById, parentOf, and childrenOf (walked recursively to collect callables). */
-function makeIndex(entries: Array<{ id: string; name: string; kind: string; parentId: string | null }>): GraphIndex {
+function makeIndex(entries: Array<{
+  id: string;
+  name: string;
+  kind: string;
+  parentId: string | null;
+  signature?: string;
+  tags?: string[];
+}>): GraphIndex {
   const nodesById = new Map<string, GraphNode>(
     entries.map((e) => [
       e.id,
-      { id: e.id, kind: e.kind, displayName: e.name, qualifiedName: e.name, parentId: e.parentId, location: { file: "", startLine: 1 } } as GraphNode,
+      {
+        id: e.id,
+        kind: e.kind,
+        displayName: e.name,
+        qualifiedName: e.name,
+        parentId: e.parentId,
+        location: { file: "", startLine: 1 },
+        ...(e.signature ? { signature: e.signature } : {}),
+        ...(e.tags ? { tags: e.tags } : {}),
+      } as GraphNode,
     ]),
   );
   const parentOf = new Map<string, string | null>(entries.map((e) => [e.id, e.parentId]));
@@ -191,6 +207,36 @@ describe("deriveLogicLayout definition-owner frames", () => {
 });
 
 describe("deriveLogicLayout module definition expansion", () => {
+  it("widens a declaration cell for its kind and semantic header rail", async () => {
+    const asyncMethod = "ts:m.ts#worker.loadOrderProjection";
+    const index = makeIndex([
+      { id: MODULE, name: "m.ts", kind: "module", parentId: null },
+      { id: OBJECT, name: "worker", kind: "object", parentId: MODULE },
+      {
+        id: asyncMethod,
+        name: "loadOrderProjection",
+        kind: "method",
+        parentId: OBJECT,
+        signature: "loadOrderProjection(): Promise<OrderProjection>",
+        tags: ["async", "static"],
+      },
+    ]);
+    const graph = await deriveLogicLayout(
+      MODULE,
+      {},
+      index,
+      new Set(),
+      { hideGreyed: false, nestByService: false },
+    );
+    const definition = requiredNode(graph, `${MODULE}::def/${asyncMethod}`);
+
+    expect(definition.width).toBeGreaterThan(200);
+    expect(logicData(definition).semantics).toEqual({
+      modifiers: ["async", "static"],
+      returnsPromise: true,
+    });
+  });
+
   it.each([
     { label: "top-level function", defId: FUNCTION },
     { label: "owned method", defId: METHOD },
@@ -205,7 +251,9 @@ describe("deriveLogicLayout module definition expansion", () => {
       isExpanded: false,
       isContainer: false,
     });
-    expect(collapsedDefinition).toMatchObject({ width: 200, height: 52 });
+    // The declaration floor is 200px, but its shared kind/indicator/action slots may require more.
+    expect(collapsedDefinition.width).toBeGreaterThanOrEqual(200);
+    expect(collapsedDefinition.height).toBe(52);
     expect(collapsed.nodes.some((node) => node.id === `${defId}::entry`)).toBe(false);
     expect(collapsed.edges).toHaveLength(0);
 
@@ -238,6 +286,36 @@ describe("deriveLogicLayout module definition expansion", () => {
     expect(requiredNode(recollapsed, occurrenceId)).toEqual(collapsedDefinition);
     expect(recollapsed.nodes.some((node) => node.id === `${defId}::entry`)).toBe(false);
     expect(recollapsed.edges).toHaveLength(0);
+  });
+
+  it("expands a zero-step definition without synthesizing graph children or edges", async () => {
+    const occurrenceId = `${MODULE}::def/${LEAF_FUNCTION}`;
+    const collapsed = await layoutDefinitions(new Set());
+    const collapsedDefinition = requiredNode(collapsed, occurrenceId);
+    const expanded = await layoutDefinitions(new Set([occurrenceId]));
+    const expandedDefinition = requiredNode(expanded, occurrenceId);
+
+    expect(logicData(collapsedDefinition)).toMatchObject({
+      definition: true,
+      expandable: true,
+      isExpanded: false,
+      isContainer: false,
+      childCount: 0,
+      emptyFlow: true,
+    });
+    expect(logicData(expandedDefinition)).toMatchObject({
+      definition: true,
+      expandable: true,
+      isExpanded: true,
+      isContainer: true,
+      childCount: 0,
+      emptyFlow: true,
+    });
+    expect(expanded.nodes.some((node) => node.parentId === occurrenceId)).toBe(false);
+    expect(expanded.nodes.some((node) => node.id.startsWith(`${LEAF_FUNCTION}::`))).toBe(false);
+    expect(expanded.edges.some((edge) => edge.id.startsWith(`${occurrenceId}::`))).toBe(false);
+    expect(expandedDefinition.width).toBeGreaterThanOrEqual(collapsedDefinition.width ?? 0);
+    expect(expandedDefinition.height).toBeGreaterThan(collapsedDefinition.height ?? 0);
   });
 
   it("preserves parents inside an expanded definition flow and grows its grid frame around it", async () => {

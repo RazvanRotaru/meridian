@@ -150,6 +150,43 @@ describe("static request traversal correlation", () => {
       });
   });
 
+  it("keeps observed branch evidence on the visible summary when the branch is collapsed", () => {
+    const branchId = `${OCCURRENCE}:exec::p0/0`;
+    const afterId = `${OCCURRENCE}:exec::p0/1`;
+    const collapsedFlows: LogicFlows = {
+      [ALPHA_RUN]: [
+        {
+          kind: "branch",
+          branchKind: "if",
+          label: "if ready",
+          source: { file: "order.ts", line: 8 },
+          paths: [{
+            label: "then",
+            role: "then",
+            pathId: "then",
+            body: [{ kind: "call", label: "inside", target: null, resolution: "unresolved" }],
+          }],
+        },
+        { kind: "call", label: "after", target: null, resolution: "unresolved" },
+      ],
+    };
+    const graph = deriveRequestExecutionFlow(
+      trace([branch("taken", 8, "branch:ready", "then")]),
+      freshStore().getState().index,
+      collapsedFlows,
+      // The span occurrence is default-collapsed, while structural branches are default-open.
+      // Toggle both ids: reveal the static body, then fold only this branch summary.
+      new Set([OCCURRENCE, branchId]),
+    );
+
+    expect(graph.nodes.some((node) => node.id === `${branchId}/b0/0`)).toBe(false);
+    expect(edge(graph, branchId, afterId)?.requestTraversal).toMatchObject({
+      basis: "branch-path",
+      eventIds: ["taken"],
+      pathIds: ["then"],
+    });
+  });
+
   it("shares nested call, branch, and control addresses with the Logic graph builder", () => {
     const nestedFlows: LogicFlows = {
       [ALPHA_RUN]: [
@@ -391,6 +428,31 @@ describe("static request traversal correlation", () => {
         eventIds: ["repository-timeout"],
         pathIds: ["catch"],
       },
+    });
+  });
+
+  it("keeps mandatory-finally evidence on the visible summary when cleanup is collapsed", () => {
+    const execPrefix = `${OCCURRENCE}:exec`;
+    const tryPath = logicStepPath(logicTopLevelBodyPrefix(0), 0);
+    const tryId = logicNodeId(execPrefix, tryPath);
+    const finallyId = `${tryId}::finally`;
+    const cleanupId = logicNodeId(execPrefix, logicStepPath(logicFinallyBodyPrefix(tryPath), 0));
+    const afterId = logicNodeId(execPrefix, logicStepPath(logicTopLevelBodyPrefix(0), 1));
+    const graph = deriveRequestExecutionFlow(
+      trace([
+        branchAt("caught", 29, "try:order", "catch"),
+        exception("try-throw", 31),
+      ]),
+      freshStore().getState().index,
+      caughtTryFlows(),
+      new Set([OCCURRENCE, finallyId]),
+    );
+
+    expect(graph.nodes.some((node) => node.id === cleanupId)).toBe(false);
+    expect(edge(graph, finallyId, afterId)?.requestTraversal).toMatchObject({
+      basis: "branch-path",
+      eventIds: ["caught"],
+      pathIds: ["catch"],
     });
   });
 

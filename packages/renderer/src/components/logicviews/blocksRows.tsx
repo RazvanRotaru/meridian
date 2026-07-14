@@ -10,7 +10,7 @@ import type { ChangeStatus, FlowStep, LogicFlows, NodeId } from "@meridian/core"
 import type { GraphIndex } from "../../graph/graphIndex";
 import type { CallStep, ExitStep, BranchStep } from "../../derive/flowViewModel";
 import { branchKindOf } from "@meridian/core";
-import { FLOW_COLORS, callDisplay } from "../../derive/flowViewModel";
+import { FLOW_COLORS, callDisplay, isPromiseHandoff } from "../../derive/flowViewModel";
 import { branchCompartments } from "../../derive/blocksModel";
 import type { Compartment } from "../../derive/blocksModel";
 import { TargetChangedTag } from "../nodes/logic/logicNodeTypes";
@@ -102,6 +102,7 @@ function CallRow({ step, ctx }: { step: CallStep; ctx: RowCtx }) {
   const dimmed = ctx.selected !== null && !isSelected;
   const opacity = isSelected ? 1 : dimmed ? (targetChangedStatus ? 0.82 : 0.55) : 1;
   const canDrill = ctx.drillEnabled && display.navigable;
+  const promiseHandoff = isPromiseHandoff(step, ctx.index);
   const style: React.CSSProperties = {
     ...ROW,
     borderLeft: `3px solid ${accent}`,
@@ -117,7 +118,12 @@ function CallRow({ step, ctx }: { step: CallStep; ctx: RowCtx }) {
       {targetChangedStatus ? <TargetChangedTag status={targetChangedStatus} /> : null}
       <span style={SPRING} />
       {step.awaited ? <Badge accent={FLOW_COLORS.awaited} text="⏱ AWAIT" /> : null}
-      {step.detached ? <Badge accent={FLOW_COLORS.detached} text="⤳ DETACHED" /> : null}
+      {step.detached ? (
+        <Badge
+          accent={promiseHandoff ? FLOW_COLORS.detached : FLOW_COLORS.dim}
+          text={promiseHandoff ? "PROMISE · NOT AWAITED" : "RESULT DROPPED"}
+        />
+      ) : null}
     </>
   );
 

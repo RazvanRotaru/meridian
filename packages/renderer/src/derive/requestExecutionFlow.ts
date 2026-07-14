@@ -26,6 +26,7 @@ import {
   observedBranchValue,
   requestControlEventBadge,
 } from "./requestEventPresentation";
+import { NODE_EMPTY_EXPANSION_HEIGHT } from "../theme/nodeChrome";
 
 const NODE_WIDTH = 260;
 const NODE_BASE_HEIGHT = 70;
@@ -81,17 +82,20 @@ export function deriveRequestExecutionFlow(
     const spanMomentId = requestSpanMomentId(trace.traceId, span.spanId);
     // Expansion belongs to this exact occurrence, never its artifact target: repeated/recursive
     // calls can be opened independently. Every mapped callable with a real static body gets the
-    // affordance; the empty override set makes the whole request compact on first open.
-    const expandable = staticSteps !== undefined && staticSteps.length > 0;
+    // affordance; the empty override set makes the whole request compact on first open. A mapped
+    // local callable without static steps uses the same honest empty expansion as the static graph.
+    const expandable = targetId !== null;
+    const hasStaticFlow = (staticSteps?.length ?? 0) > 0;
+    const emptyFlow = expandable && !hasStaticFlow;
     const isExpanded = expandable && requestFlowExpansionOverrides.has(spanMomentId);
-    const graft = isExpanded && staticSteps !== undefined
+    const graft = isExpanded && hasStaticFlow && staticSteps !== undefined
       ? staticBodyGraft(spanMomentId, staticSteps, flows, index, requestFlowExpansionOverrides, trace, span)
       : null;
     const runtimeBadges = [
-      // Keep observed decisions on the occurrence header in BOTH states. When expanded, the
-      // source/path join additionally paints the exact static edges without changing the captured
-      // runtime chain or duplicating those events as standalone nodes.
-      ...(expandable ? controlEvents.map(requestControlEventBadge) : []),
+      // Control events become static-flow badges only when there is a static graph to annotate.
+      // Empty resolved callables keep their runtime events as real sibling moments instead of
+      // duplicating the same observation in the callable header.
+      ...(hasStaticFlow ? controlEvents.map(requestControlEventBadge) : []),
       ...values,
     ];
     const runtime: RequestRuntimeEvidence = {
@@ -110,6 +114,7 @@ export function deriveRequestExecutionFlow(
         isExpanded,
         childCount: staticSteps?.length ?? 0,
         nestedChildCount: graft?.nodes.length ?? 0,
+        emptyFlow,
       }),
       ...(graft === null ? {} : { nestedNodes: graft.nodes, nestedEdges: graft.edges }),
     };
@@ -118,7 +123,7 @@ export function deriveRequestExecutionFlow(
 
     for (const event of orderedEvents) {
       if (event.type === "data.observe") continue;
-      if (expandable && isControlEvent(event)) continue;
+      if (hasStaticFlow && isControlEvent(event)) continue;
       const eventMoment = momentForEvent(prefix, span, event, targetId);
       moments.push(eventMoment);
       spanMoments.push(eventMoment);
@@ -407,14 +412,15 @@ function runtimeNode(
   label: string,
   targetId: string | null,
   runtime: RequestRuntimeEvidence,
-  options: { expandable?: boolean; isExpanded?: boolean; childCount?: number; nestedChildCount?: number } = {},
+  options: { expandable?: boolean; isExpanded?: boolean; childCount?: number; nestedChildCount?: number; emptyFlow?: boolean } = {},
 ): LogicNodeSpec {
   const badgeRows = Math.min(runtime.badges?.length ?? 0, 3);
   const snapshotRows = runtime.snapshot === undefined ? 0 : 2;
   const expandable = options.expandable ?? false;
   const isExpanded = options.isExpanded ?? false;
   const nestedChildCount = options.nestedChildCount ?? 0;
-  const isContainer = isExpanded && nestedChildCount > 0;
+  const emptyFlow = options.emptyFlow === true;
+  const isContainer = isExpanded && (nestedChildCount > 0 || emptyFlow);
   const data: LogicNodeData = {
     logicKind: "call",
     label,
@@ -431,6 +437,7 @@ function runtimeNode(
     // child count on the card; nestedChildCount only decides whether this particular layout frames
     // rendered children. Otherwise a collapsed expandable request span looks like an empty leaf.
     childCount: options.childCount ?? nestedChildCount,
+    ...(emptyFlow ? { emptyFlow: true } : {}),
     runtime,
   };
   const node: LogicNodeSpec = {
@@ -442,6 +449,12 @@ function runtimeNode(
   if (!isContainer) {
     node.width = Math.max(NODE_WIDTH, Math.min(360, 105 + label.length * 7));
     node.height = NODE_BASE_HEIGHT + badgeRows * 18 + snapshotRows * 20;
+  } else if (emptyFlow) {
+    node.width = Math.max(NODE_WIDTH, Math.min(360, 105 + label.length * 7));
+    node.height = Math.max(
+      NODE_EMPTY_EXPANSION_HEIGHT,
+      NODE_BASE_HEIGHT + badgeRows * 18 + snapshotRows * 20,
+    );
   }
   return node;
 }

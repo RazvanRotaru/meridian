@@ -39,12 +39,21 @@ describe("layoutMetro", () => {
   });
 
   it("keeps a detached call on the main line and sends a dashed arrowed lane to the edge", () => {
-    const spec = run([call("track", { detached: true })]);
+    const spec = run([call("track", { detached: true, async: { kind: "launch", taskId: "task:track" } })]);
     const station = spec.stations.find((s) => s.name === "track");
     expect(station).toMatchObject({ kind: "station", y: BASE_Y });
     const departure = spec.lines.find((l) => l.dash && l.arrow);
     expect(departure).toBeTruthy();
     expect(spec.labels.some((l) => l.text.includes("still running"))).toBe(true);
+  });
+
+  it("shows a generic discarded result without drawing an asynchronous departure", () => {
+    const spec = run([call("cleanup", { detached: true })]);
+    const station = spec.stations.find((entry) => entry.name === "cleanup");
+
+    expect(station).toMatchObject({ kind: "station", y: BASE_Y, sub: "cleanup.ts · result dropped" });
+    expect(spec.lines.some((line) => line.dash && line.arrow)).toBe(false);
+    expect(spec.labels.some((label) => label.text.includes("still running"))).toBe(false);
   });
 
   it("ends a guard's returning then-path in a terminus and continues the main line", () => {

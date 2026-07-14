@@ -29,7 +29,7 @@ export function BlocksView(props: FlowViewProps & { density?: "full" | "compact"
   };
   const rootName = props.index.nodesById.get(props.rootId)?.displayName ?? props.rootId;
   // Selection clicks repaint this component; the whole-tree walk must not re-run for them.
-  const handoffs = useMemo(() => collectHandoffs(props.steps), [props.steps]);
+  const handoffs = useMemo(() => collectHandoffs(props.steps, props.index), [props.index, props.steps]);
 
   return (
     <div style={props.density === "compact" ? COMPACT_WRAP : WRAP}>

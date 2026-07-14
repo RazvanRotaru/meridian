@@ -6,6 +6,7 @@ import type { RequestTrace, SyntheticScenarioDescriptor } from "@meridian/core";
 import { STATIC_LOGIC_VIEW_MODES } from "../../derive/flowViewModel";
 import {
   flowPanePresentation,
+  flowPaneNavigationTarget,
   flowPaneShouldRender,
   FlowChangeNavigator,
   flowPaneFocusNode,
@@ -23,6 +24,18 @@ describe("flowPanePresentation", () => {
 
   it.each(STATIC_LOGIC_VIEW_MODES)("keeps the ordinary Code flows explorer on its execution graph when $mode is preferred", ({ mode }) => {
     expect(flowPanePresentation(false, mode)).toBe("graph");
+  });
+});
+
+describe("flowPaneNavigationTarget", () => {
+  it("routes a navigable static occurrence to its canonical callable", () => {
+    expect(flowPaneNavigationTarget({ targetId: "ts:orders.ts#visitOrder", canNavigate: true }))
+      .toBe("ts:orders.ts#visitOrder");
+  });
+
+  it("keeps structural, runtime-only, and unresolved moments in the pane", () => {
+    expect(flowPaneNavigationTarget({ targetId: null, canNavigate: true })).toBeNull();
+    expect(flowPaneNavigationTarget({ targetId: "ts:orders.ts#visitOrder", canNavigate: false })).toBeNull();
   });
 });
 

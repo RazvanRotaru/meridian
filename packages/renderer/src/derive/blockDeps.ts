@@ -21,6 +21,9 @@ export const UNIT_CARD_KINDS: ReadonlySet<string> = new Set(["class", "interface
 /** The leaf code blocks drawn inside a file or expanded unit frame: callables and type definitions. */
 export const BLOCK_KINDS: ReadonlySet<string> = new Set(["function", "method", "typeAlias", "enum"]);
 
+/** The subset of block entities that owns navigation and an in-place Logic expansion. */
+export const CALLABLE_BLOCK_KINDS: ReadonlySet<string> = new Set(["function", "method"]);
+
 /** Method-level `implementedBy` is an inverse presentation relationship, not an extra architecture
  * coupling (the owning class→interface `implements` edge already contributes that metric). It still
  * belongs in code-detail dependency wires so an expanded contract can point at each implementation. */

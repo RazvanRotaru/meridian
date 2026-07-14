@@ -10,7 +10,7 @@ import type { FlowPath, FlowStep, LogicFlows } from "@meridian/core";
 import { branchCoversAllCases, exitLabel, pathRole, pathTerminates, syntheticFallThroughLabel, tryArms } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { BranchStep, CallStep } from "./flowViewModel";
-import { FLOW_COLORS, callDisplay, isTryStep } from "./flowViewModel";
+import { FLOW_COLORS, callDisplay, isPromiseHandoff, isTryStep } from "./flowViewModel";
 import { createCanvas } from "./metroCanvas";
 import type { MetroSpec } from "./metroSpec";
 import {
@@ -70,12 +70,16 @@ export function layoutMetro(steps: FlowStep[], flows: LogicFlows, index: GraphIn
     const shared = { x, target: step.target, expandable: disp.navigable };
     if (step.awaited) {
       c.mark({ ...shared, y: lane.y, kind: "interchange", color: FLOW_COLORS.awaited, labelSide: -1, name: step.label, sub: disp.provenance ?? "awaited · the line holds here" });
-    } else if (step.detached) {
-      c.mark({ ...shared, y: lane.y, kind: "station", color: FLOW_COLORS.detached, labelSide: side, name: step.label, sub: disp.provenance ?? "void · result dropped" });
+    } else if (isPromiseHandoff(step, index)) {
+      const sub = disp.provenance ? `${disp.provenance} · Promise · not awaited` : "Promise · not awaited";
+      c.mark({ ...shared, y: lane.y, kind: "station", color: FLOW_COLORS.detached, labelSide: side, name: step.label, sub });
       c.detach(x, lane.y);
     } else {
       const color = disp.method ? FLOW_COLORS.method : FLOW_COLORS.call;
-      c.mark({ ...shared, y: lane.y, kind: "station", color, labelSide: side, name: step.label, sub: disp.provenance ?? undefined });
+      const sub = step.detached
+        ? [disp.provenance, "result dropped"].filter(Boolean).join(" · ")
+        : disp.provenance ?? undefined;
+      c.mark({ ...shared, y: lane.y, kind: "station", color, labelSide: side, name: step.label, sub });
     }
   }
 

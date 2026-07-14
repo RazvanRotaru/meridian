@@ -78,7 +78,7 @@ function fileNode(id: string): VisibleModuleNode {
 }
 
 function blockNode(id: string, parentId: string | null): VisibleModuleNode {
-  const data: BlockData = { label: id, blockKind: "function", callable: true, hasFlow: false, isExpanded: false };
+  const data: BlockData = { label: id, blockKind: "function", callable: true, expandable: false, emptyFlow: false, childCount: 0, isExpanded: false };
   return { id, parentId, kind: "block", isContainer: false, isExpanded: false, depth: parentId === null ? 0 : 2, childCount: 0, data };
 }
 

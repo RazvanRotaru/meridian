@@ -270,19 +270,19 @@ class StaticTraversalCorrelator {
         const body = this.sequence(selected.body, logicBranchBodyPrefix(path, selectedIndex), span, evidence);
         if (body.firstId === null) {
           const armExits = [{ id, edgeLabel: selected.label, evidence }];
+          continuingEvents.push(...pathEvents);
           if (joinId === null) exits.push(...armExits);
           else {
             this.markExitsTo(armExits, joinId, evidence);
-            continuingEvents.push(...pathEvents);
           }
           continue;
         }
         this.mark(id, body.firstId, selected.label, evidence);
         const armExits = body.lastExits.map((exit) => ({ ...exit, evidence }));
+        if (armExits.length > 0) continuingEvents.push(...pathEvents);
         if (joinId === null) exits.push(...armExits);
         else if (armExits.length > 0) {
           this.markExitsTo(armExits, joinId, evidence);
-          continuingEvents.push(...pathEvents);
         }
         terminations.push(...body.terminations);
         throwSourceIds.push(...(body.throwSourceIds ?? []));
@@ -292,12 +292,24 @@ class StaticTraversalCorrelator {
       const fallthrough = syntheticFallThroughLabel(step);
       if (fallthrough !== null && pathId === fallthrough) {
         const armExits = [{ id, edgeLabel: fallthrough, evidence }];
+        continuingEvents.push(...pathEvents);
         if (joinId === null) exits.push(...armExits);
         else {
           this.markExitsTo(armExits, joinId, evidence);
-          continuingEvents.push(...pathEvents);
         }
       }
+    }
+    if (!this.expanded(id, true)) {
+      // The folded summary has one ordinary exec outlet. Traverse hidden arms above for accurate
+      // completion semantics, then attach evidence to the visible summary→next edge instead of to
+      // absent body/join ids.
+      return {
+        entry: id,
+        exits: continuingEvents.length > 0
+          ? [{ id, evidence: branchEvidence(this.trace.traceId, span.spanId, continuingEvents) }]
+          : [],
+        terminations: uniqueTerminations(terminations),
+      };
     }
     return {
       entry: id,
@@ -478,7 +490,8 @@ class StaticTraversalCorrelator {
       span,
       evidence,
     );
-    if (finallyResult.firstId !== null) {
+    const finallyExpanded = this.expanded(finallyId, true);
+    if (finallyExpanded && finallyResult.firstId !== null) {
       this.mark(finallyId, finallyResult.firstId, undefined, evidence);
     }
     const completion = applyFinally(selected.result, finallyResult);
@@ -489,6 +502,9 @@ class StaticTraversalCorrelator {
         terminations: completion.terminations,
         ...(completion.throwSourceIds === undefined ? {} : { throwSourceIds: completion.throwSourceIds }),
       };
+    }
+    if (!finallyExpanded) {
+      return { entry: id, exits: [{ id: finallyId, evidence }], terminations: completion.terminations };
     }
     return {
       entry: id,

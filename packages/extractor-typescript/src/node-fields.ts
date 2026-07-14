@@ -18,6 +18,7 @@ interface ModifierProbe {
   isStatic?(): boolean;
   isAbstract?(): boolean;
   isReadonly?(): boolean;
+  isGenerator?(): boolean;
   getScope?(): string;
 }
 
@@ -65,7 +66,7 @@ function formatParameter(parameter: ParameterDeclaration): string {
 export function modifierTagsOf(node: Node): string[] {
   const probe = node as ModifierProbe;
   const tags: string[] = [];
-  if (probe.isExported?.()) tags.push("export");
+  if (Node.isExportAssignment(node) || probe.isExported?.()) tags.push("export");
   if (probe.isAsync?.()) tags.push("async");
   if (probe.isStatic?.()) tags.push("static");
   if (probe.isAbstract?.()) tags.push("abstract");
@@ -73,6 +74,38 @@ export function modifierTagsOf(node: Node): string[] {
   const scope = probe.getScope?.();
   if (scope) tags.push(scope);
   return tags;
+}
+
+/** Exact syntax-level callable semantics. Ordinary async functions always return a Promise; async
+ * generators do not, so retain the generator fact and never infer across that boundary. */
+export function semanticTagsOf(node: Node): string[] {
+  const signature = typeof (node as { getReturnTypeNode?: unknown }).getReturnTypeNode === "function"
+    ? node as unknown as SignatureLike
+    : null;
+  return callableSemanticTagsOf([node], signature);
+}
+
+/** Merge declaration/container modifiers with the unwrapped callable and its chosen signature.
+ * This keeps contextual/explicit Promise annotations as artifact facts while letting an async
+ * generator veto the ordinary async=>Promise rule. */
+export function callableSemanticTagsOf(
+  sources: readonly Node[],
+  signature: SignatureLike | null,
+): string[] {
+  const tags = sources.flatMap(modifierTagsOf);
+  const generator = sources.some((source) => (source as ModifierProbe).isGenerator?.() === true);
+  const async = sources.some((source) => (source as ModifierProbe).isAsync?.() === true);
+  if (generator) tags.push("generator");
+  if (!generator && (async || hasDirectPromiseReturn(signature))) tags.push("returns-promise");
+  return [...new Set(tags)];
+}
+
+function hasDirectPromiseReturn(signature: SignatureLike | null): boolean {
+  const returnType = signature?.getReturnTypeNode()?.getText().trim();
+  if (!returnType) return false;
+  // Source text is already a parsed TypeNode. Anchoring the whole annotation rejects arrays,
+  // unions, and objects that merely contain a nested Promise.
+  return /^(?:globalThis\.)?Promise(?:Like)?(?:\s*<[\s\S]*>)?$/.test(returnType);
 }
 
 export function telemetryFor(localName: string, qualifiedName: string, enclosingNames: string[]): TelemetryKey {

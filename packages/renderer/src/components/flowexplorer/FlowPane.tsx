@@ -22,7 +22,7 @@ import { BlocksView } from "../logicviews/BlocksView";
 import { FLOW_COLORS, type FlowViewProps } from "../../derive/flowViewModel";
 import { BASE_Y as METRO_MAIN_LINE_Y } from "../../derive/metroSpec";
 import type { ReviewFlowSplitView } from "../../state/reviewPreferences";
-import { BaseNodeActionScope } from "../nodes/BaseNode";
+import { BaseNodeActionScope, type BaseNodeModel } from "../nodes/BaseNode";
 import { reviewFlowChanges, type ReviewFlowChange } from "../../derive/reviewFlowChanges";
 import { changedColor } from "../ChangedBadge";
 import { changedTextColor } from "../../theme/changedColors";
@@ -676,6 +676,7 @@ function FlowPaneSurface({ focusRequest = null }: { focusRequest?: FlowPaneFocus
     selectSyntheticMoment,
     toggleFlowPaneExpand,
     toggleRequestFlowExpand,
+    openLogicFlow,
   } = useBlueprintActions();
   const focusedSynthetic = syntheticOpen && syntheticPresentation === "focused";
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
@@ -779,6 +780,12 @@ function FlowPaneSurface({ focusRequest = null }: { focusRequest?: FlowPaneFocus
             toggleFlowPaneExpand(model.instanceId);
           }
         }}
+        navigateInto={(model) => {
+          const target = flowPaneNavigationTarget(model);
+          if (target !== null) {
+            openLogicFlow(target);
+          }
+        }}
       >
         <ReactFlow<Node, Edge>
           {...READONLY_CANVAS_PROPS}
@@ -864,6 +871,15 @@ function absoluteNodeRect(
     parentId = parent.parentId;
   }
   return { x, y, width: node.width ?? 0, height: node.height ?? 0 };
+}
+
+/** The split pane uses the same double-click navigation contract as the main Logic canvas. Static
+ * call occurrences open their canonical callee; structural and runtime-only moments deliberately
+ * remain in-pane because they have no independently navigable artifact target. */
+export function flowPaneNavigationTarget(
+  model: Pick<BaseNodeModel, "targetId" | "canNavigate">,
+): string | null {
+  return model.canNavigate && model.targetId !== null ? model.targetId : null;
 }
 
 /** Static call blocks and request runtime moments map directly to their artifact target. Structural

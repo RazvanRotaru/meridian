@@ -31,7 +31,6 @@ function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
   const isGroup = data.ghostRole === "parent-anchor" && typeof data.ghostGroupId === "string" && groupMembers.length > 0;
   const groupExpanded = isGroup && data.ghostExpanded === true;
   const accent = accentForKind(data.ghostKind);
-  const glyph = ghostGlyph(data.ghostKind);
   // Plain selection wears the ghost's OWN accent (heavier); a BEACON — a selected call step's
   // definition — keeps the green marker so it stands out as the thing pointed at.
   const style = selected ? cardSelectedStyle(GHOST, accent) : data.beacon ? GHOST_BEACON : GHOST;
@@ -45,6 +44,7 @@ function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
     targetId: id,
     nodeType: "ghost",
     kind: data.ghostKind,
+    semantics: data.semantics,
     label: data.label,
     childCount: groupMembers.length,
     canExpand: isGroup && !readOnly,
@@ -86,7 +86,6 @@ function GhostNodeImpl({ id, data }: NodeProps<GhostRfNode>) {
       headerStyle={HEAD}
       labelStyle={LABEL}
       labelContent={middleTruncate(data.label)}
-      leading={glyph === null ? undefined : <span style={{ ...GLYPH, color: accent }}>{glyph}</span>}
       ports={(
         <>
           <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
@@ -129,18 +128,6 @@ function middleTruncate(label: string): string {
 
 export const GhostNode = memo(GhostNodeImpl);
 
-/** Callable ghosts wear the letter glyphs (ƒ/τ); unit kinds show the bare name — the ◆/◇/❑ kind
- * glyph vocabulary is retired everywhere in favour of textual labels. */
-function ghostGlyph(kind: string): string | null {
-  if (kind === "method" || kind === "function") {
-    return "ƒ";
-  }
-  if (kind === "typeAlias" || kind === "enum") {
-    return "τ";
-  }
-  return null;
-}
-
 const GHOST: React.CSSProperties = {
   width: "100%",
   height: "100%",
@@ -158,7 +145,6 @@ const GHOST: React.CSSProperties = {
 };
 const GHOST_BEACON: React.CSSProperties = { ...GHOST, borderColor: SELECT_ACCENT };
 const HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 5, minWidth: 0 };
-const GLYPH: React.CSSProperties = { fontSize: 9.5, flexShrink: 0, opacity: 0.8 };
 const LABEL: React.CSSProperties = {
   minWidth: 0,
   fontSize: 11,
