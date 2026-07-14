@@ -194,6 +194,12 @@ import {
   toggleRelationOverride,
   type RelationVisibilityOverrides,
 } from "../graph/relationVisibility";
+import {
+  captureMinimalGraphHistory,
+  restoreMinimalGraphHistory,
+  type MinimalGraphHistoryEntry,
+} from "./minimalGraphHistory";
+import { resolveFlowStep } from "../derive/minimalExpansion";
 
 /**
  * The "All" setting for the related-flows depth dial: a depth larger than any real call-graph chain.
@@ -282,28 +288,13 @@ export interface CodeView {
   };
 }
 
-/** A review container opened as its own exact-file graph. The outer review projection is retained
- * verbatim so Back restores its curation and geometry instead of re-deriving an approximation. */
+/** A review container opened as its own exact-file graph. Navigation history is owned by the
+ * generic minimal-graph stack, so this value only scopes the review panel to the current frame. */
 export interface ReviewFocusedSubgraph {
   rootId: string;
   label: string;
   filePaths: string[];
   moduleIds: string[];
-  baseline: {
-    moduleSelected: Set<string>;
-    moduleExpanded: Set<string>;
-    minimalSeedIds: string[];
-    minimalMemberIds: string[];
-    minimalRollups: Record<string, string[]>;
-    minimalBasePositions: Record<string, PlacedRect>;
-    minimalArrange: boolean;
-    minimalRfNodes: Node[];
-    minimalRfEdges: Edge[];
-    minimalLayoutStatus: LayoutStatus;
-    minimalLayoutActivity: LayoutActivity | null;
-    reviewSelectedId: NodeId | null;
-    reviewLitNodeIds: Set<NodeId> | null;
-  };
 }
 
 export interface BlueprintState {
@@ -519,6 +510,12 @@ export interface BlueprintState {
   minimalRfEdges: Edge[];
   minimalLayoutStatus: LayoutStatus;
   minimalLayoutActivity: LayoutActivity | null;
+  /** Which presentation of this extracted frame is active. Captured per history frame. */
+  minimalView: "graph" | "codebase";
+  /** Frame-local ghost declutter choice; Back restores the parent's exact visibility. */
+  minimalShowGhostNodes: boolean;
+  /** Codebase presentation's local disclosure overrides, preserved across nested extraction. */
+  minimalCodebaseExpansionOverrides: Map<string, boolean>;
   /** The parsed PR-review data (affected-flow rows + flow trees); null hides the review surface.
    * Sourced EITHER from a `meridian review` artifact extension, OR built at runtime from a GitHub PR
    * (selectPr → reviewPrInGraph). */
@@ -577,8 +574,11 @@ export interface BlueprintState {
   /** Optional repo-relative path prefix intersected with the active change group. Session-only. */
   reviewPathScope: string | null;
   /** A container's changed files temporarily replacing the outer PR graph. Session-only; its
-   * baseline makes the return trip exact and deliberately stays separate from moduleFocus. */
+   * review-panel scope deliberately stays separate from moduleFocus. */
   reviewFocusedSubgraph: ReviewFocusedSubgraph | null;
+  /** Exact parent scenes for nested extraction. The last entry is one Back step away; unbounded
+   * array depth keeps extraction independent of whether the source is Map, PR, or another extract. */
+  minimalGraphHistory: MinimalGraphHistoryEntry[];
   /** Snapshot of the full seed list at review time — the "All groups" restore target. */
   reviewAllSeedIds: string[];
   /** Bumped by the Toolbar's "Recenter" action. The active graph surface subscribes to it and, on a
@@ -819,6 +819,11 @@ export interface BlueprintState {
   /** Switch inferred Service parents between one- and two-concept labels. */
   setServiceGroupingLabelMode(mode: ServiceGroupingLabelMode): void;
   buildMinimalGraph(): void;
+  setMinimalView(view: "graph" | "codebase"): void;
+  setMinimalShowGhostNodes(visible: boolean): void;
+  setMinimalCodebaseExpansionOverride(nodeId: string, expanded: boolean): void;
+  /** Restore one exact parent extracted graph without closing the overall overlay/review. */
+  backMinimalGraph(): void;
   closeMinimalGraph(): void;
   resetMinimalGraph(): void;
   rearrangeMinimalGraph(): void;
@@ -833,7 +838,7 @@ export interface BlueprintState {
   selectReviewPathScope(path: string | null): void;
   /** Open one review container as an exact-file subgraph, bypassing the large-review rollup. */
   openReviewSubgraph(rootId: string): void;
-  /** Restore the exact PR graph captured before openReviewSubgraph. */
+  /** Restore the exact immediate parent captured before openReviewSubgraph. */
   closeReviewSubgraph(): void;
   toggleReviewTick(flowId: string): void;
   resetReviewTicks(): void;
@@ -1718,6 +1723,259 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     const requestMinimalRelayout = (activity?: LayoutActivity): Promise<void> =>
       get().minimalRelayout(activity);
 
+    const reprojectArtifactReview = (showTests: boolean): void => {
+      const state = get();
+      if (state.prReviewed !== null || artifactReview === null || state.review === null) {
+        return;
+      }
+      const projection = deriveReviewProjection(artifactReview.context, state.artifact, state.index, {
+        baseIndex: null,
+        showTests,
+      });
+      applyChangedIds(state.index, projection.affected.map((node) => node.nodeId));
+      applyChangedStatus(
+        state.index,
+        reviewNodeStatusEntries(
+          state.index,
+          projection.affected,
+          reviewNodeStatusSourcesFromDiff(
+            changedLineKindsFromExtensions(state.artifact.extensions),
+            changedDiffLinesFromExtensions(state.artifact.extensions),
+          ),
+        ),
+      );
+      set({
+        review: projection.review,
+        reviewFiles: projection.files,
+        reviewAffectedIds: new Set(projection.affected.map((node) => node.nodeId)),
+      });
+    };
+
+    const flowStepArtifactOwner = (
+      state: BlueprintState,
+      id: string,
+      expanded: ReadonlySet<string> = state.moduleExpanded,
+    ): string | null => {
+      if (!id.startsWith("step:")) {
+        return null;
+      }
+      const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+      return resolveFlowStep(id, state.index, expanded, flows)?.artifactOwnerId ?? null;
+    };
+
+    const idPassesTestsProjection = (
+      state: BlueprintState,
+      id: string,
+      expanded: ReadonlySet<string> = state.moduleExpanded,
+    ): boolean => {
+      if (state.showTests) {
+        return true;
+      }
+      const owner = flowStepArtifactOwner(state, id, expanded);
+      return !state.index.testIds.has(id) && (owner === null || !state.index.testIds.has(owner));
+    };
+
+    const idPassesReviewDiffProjection = (
+      state: BlueprintState,
+      id: string,
+      visibleIds: ReadonlySet<string>,
+    ): boolean => {
+      if (visibleIds.has(id)) {
+        return true;
+      }
+      const owner = flowStepArtifactOwner(state, id);
+      return owner !== null && visibleIds.has(owner);
+    };
+
+    /** Recompute live-PR metadata/artifact paint without letting its root seeding destroy the
+     * current recursively extracted frame. The queued root layout becomes stale as soon as this
+     * restored child requests its own pass. */
+    const reprojectLivePrReview = (label: string, rebuildFlowPane = false): boolean => {
+      const before = get();
+      if (before.prReviewed === null) {
+        return false;
+      }
+      const frame = captureMinimalGraphHistory(before);
+      const history = before.minimalGraphHistory;
+      const previousGroup = before.reviewActiveGroupId === null
+        ? null
+        : before.reviewGroups?.groups.find((group) => group.id === before.reviewActiveGroupId) ?? null;
+      const applied = applyPrReviewToMap(
+        get,
+        set,
+        prFilesUrl,
+        invalidateMinimalLayout,
+        invalidateModuleLayout,
+        invalidateArtifactCaches,
+        { reprojecting: true, preserveReviewSelection: true },
+      );
+      if (!applied) {
+        return false;
+      }
+
+      const projected = get();
+      // applyPrReviewToMap queued a root-review layout. This frame restoration owns the next scene,
+      // even when filtering leaves it intentionally empty, so invalidate that root pass now.
+      invalidateMinimalLayout();
+      const keep = (id: string) => idPassesTestsProjection(projected, id, frame.moduleExpanded);
+      const projectedFilePaths = new Set(projected.reviewFiles.map((file) => file.path));
+      const survivingGroupFiles = new Set(
+        (previousGroup?.files ?? []).filter((path) => projectedFilePaths.has(path)),
+      );
+      const projectedGroup = previousGroup === null || survivingGroupFiles.size === 0
+        ? null
+        : (projected.reviewGroups?.groups ?? [])
+            .map((group) => ({
+              group,
+              overlap: group.files.filter((path) => survivingGroupFiles.has(path)).length,
+            }))
+            .sort((left, right) => right.overlap - left.overlap || left.group.id.localeCompare(right.group.id))[0];
+      const reviewActiveGroupId = projectedGroup !== null && projectedGroup.overlap > 0
+        ? projectedGroup.group.id
+        : null;
+      const activeGroupFiles = reviewActiveGroupId === null
+        ? null
+        : new Set(projectedGroup?.group.files ?? []);
+      const reviewPathScope = before.reviewPathScope !== null
+        && projected.reviewFiles.some((file) =>
+          (activeGroupFiles === null || activeGroupFiles.has(file.path))
+          && isReviewPathInScope(file.path, before.reviewPathScope),
+        )
+          ? before.reviewPathScope
+          : null;
+      // Origins remain as the overlay sentinel when every current member is filtered (the live PR
+      // root uses the same raw-seed/empty-member contract for an all-test review), keeping Back
+      // reachable from a test-only nested child.
+      const minimalSeedIds = frame.minimalSeedIds;
+      const minimalMemberIds = frame.minimalMemberIds.filter(keep);
+      const moduleSelected = new Set([...frame.moduleSelected].filter(keep));
+      const moduleExpanded = new Set([...frame.moduleExpanded].filter(keep));
+      const reviewLitNodeIds = frame.reviewLitNodeIds === null
+        ? null
+        : new Set([...frame.reviewLitNodeIds].filter(keep));
+      const reviewSelectedId = frame.reviewSelectedId !== null && keep(frame.reviewSelectedId)
+        ? frame.reviewSelectedId
+        : null;
+      const logicSelected = frame.logicSelected !== null && keep(frame.logicSelected)
+        ? frame.logicSelected
+        : null;
+      const flowSelection = frame.flowSelection !== null && keep(frame.flowSelection.rootId)
+        ? frame.flowSelection
+        : null;
+      const projectedFlowBaseline = frame.reviewFlowBaseline === null
+        ? null
+        : {
+            ...frame.reviewFlowBaseline,
+            moduleSelected: new Set([...frame.reviewFlowBaseline.moduleSelected].filter(keep)),
+            moduleExpanded: new Set([...frame.reviewFlowBaseline.moduleExpanded].filter(keep)),
+            minimalSeedIds: frame.reviewFlowBaseline.minimalSeedIds,
+            minimalMemberIds: frame.reviewFlowBaseline.minimalMemberIds.filter(keep),
+            reviewSelectedId: frame.reviewFlowBaseline.reviewSelectedId !== null
+              && keep(frame.reviewFlowBaseline.reviewSelectedId)
+                ? frame.reviewFlowBaseline.reviewSelectedId
+                : null,
+            reviewLitNodeIds: frame.reviewFlowBaseline.reviewLitNodeIds === null
+              ? null
+              : new Set([...frame.reviewFlowBaseline.reviewLitNodeIds].filter(keep)),
+          };
+      const filteredFlow = frame.flowSelection !== null && flowSelection === null;
+      const reviewFlowBaseline = flowSelection === null ? null : projectedFlowBaseline;
+      const effectiveMinimalSeedIds = filteredFlow && projectedFlowBaseline !== null
+        ? projectedFlowBaseline.minimalSeedIds
+        : minimalSeedIds;
+      const effectiveMinimalMemberIds = filteredFlow && projectedFlowBaseline !== null
+        ? projectedFlowBaseline.minimalMemberIds
+        : minimalMemberIds;
+      const effectiveModuleSelected = filteredFlow && projectedFlowBaseline !== null
+        ? projectedFlowBaseline.moduleSelected
+        : moduleSelected;
+      const effectiveModuleExpanded = filteredFlow && projectedFlowBaseline !== null
+        ? projectedFlowBaseline.moduleExpanded
+        : moduleExpanded;
+      const effectiveReviewSelectedId = filteredFlow && projectedFlowBaseline !== null
+        ? projectedFlowBaseline.reviewSelectedId
+        : reviewSelectedId;
+      const effectiveReviewLitNodeIds = filteredFlow && projectedFlowBaseline !== null
+        ? projectedFlowBaseline.reviewLitNodeIds
+        : reviewLitNodeIds;
+      if (filteredFlow) {
+        syntheticExecutionSeq += 1;
+        flowPaneLayoutSeq += 1;
+      }
+      const visibleReviewPaths = new Set(projected.reviewFiles.map((file) => file.path));
+      const reviewFocusedSubgraph = frame.reviewFocusedSubgraph === null
+        ? null
+        : {
+            ...frame.reviewFocusedSubgraph,
+            moduleIds: frame.reviewFocusedSubgraph.moduleIds.filter(keep),
+            filePaths: frame.reviewFocusedSubgraph.filePaths.filter((path) => visibleReviewPaths.has(path)),
+          };
+      const restore = restoreMinimalGraphHistory(frame);
+      set({
+        ...restore,
+        minimalGraphHistory: history,
+        reviewActiveGroupId,
+        reviewPathScope,
+        reviewFocusedSubgraph,
+        minimalSeedIds: effectiveMinimalSeedIds,
+        minimalMemberIds: effectiveMinimalMemberIds,
+        ...(filteredFlow && projectedFlowBaseline !== null
+          ? {
+              minimalBasePositions: projectedFlowBaseline.minimalBasePositions,
+              minimalArrange: projectedFlowBaseline.minimalArrange,
+            }
+          : {}),
+        minimalRollups: Object.fromEntries(
+          Object.entries(frame.minimalRollups)
+            .map(([id, fileIds]) => [id, fileIds.filter(keep)] as const)
+            .filter(([id, fileIds]) => keep(id) && fileIds.length > 0),
+        ),
+        moduleSelected: effectiveModuleSelected,
+        moduleExpanded: effectiveModuleExpanded,
+        reviewSelectedId: effectiveReviewSelectedId,
+        reviewLitNodeIds: effectiveReviewLitNodeIds !== null && effectiveReviewLitNodeIds.size > 0
+          ? effectiveReviewLitNodeIds
+          : null,
+        logicSelected: filteredFlow ? null : logicSelected,
+        flowSelection,
+        reviewFlowBaseline,
+        ...(filteredFlow
+          ? {
+              flowPaneOrigin: null,
+              requestFlowTraceId: null,
+              requestFlowExpansionOverrides: new Set<string>(),
+              flowPaneExpansionOverrides: new Set<string>(),
+              ...syntheticExecutionReset(),
+              syntheticExperimentRootId: null,
+              syntheticInputOverrides: [],
+              syntheticFieldWatchers: [],
+              syntheticEditorRequest: null,
+            }
+          : {}),
+        flowPaneRfNodes: [],
+        flowPaneRfEdges: [],
+        flowPaneLayoutStatus: "idle",
+        minimalRfNodes: [],
+        minimalRfEdges: [],
+        minimalLayoutStatus: effectiveMinimalMemberIds.length > 0 ? "laying-out" : "idle",
+        minimalLayoutActivity: effectiveMinimalMemberIds.length > 0 ? { label } : null,
+      });
+      if (effectiveMinimalMemberIds.length > 0) {
+        void requestMinimalRelayout({ label });
+      }
+      if (
+        rebuildFlowPane
+        && flowSelection !== null
+        && (
+          frame.flowPaneOrigin === "synthetic"
+          || (projected.reviewOpenFlowSplitOnSelect && projected.reviewFlowSplitView === "graph")
+        )
+      ) {
+        void get().flowPaneRelayout();
+      }
+      return true;
+    };
+
     const mutatePrReviewComment = async (mutation: {
       number: number;
       action: "edit" | "reply";
@@ -1892,6 +2150,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     minimalRfEdges: [],
     minimalLayoutStatus: "idle",
     minimalLayoutActivity: null,
+    minimalView: "graph",
+    minimalShowGhostNodes: true,
+    minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
     review,
     reviewAffectedIds: new Set(initialReviewProjection?.affected.map((node) => node.nodeId) ?? []),
     reviewDiffOnly: false,
@@ -1919,6 +2180,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewActiveGroupId: null,
     reviewPathScope: null,
     reviewFocusedSubgraph: null,
+    minimalGraphHistory: [],
     reviewAllSeedIds: [],
     recenterSeq: 0,
     telemetry: {},
@@ -3681,30 +3943,67 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ moduleSelected: id === null ? new Set<string>() : new Set([id]) });
     },
 
-    // The "Extract selection" action: EXTRACT the current selection verbatim (any kind — a selected
-    // package stays ONE card) as the overlay's members/origin, and open on their curated subgraph
-    // (members + their on-map 1-hop ghost ring). A fresh build discards any prior curation. Inert when
-    // nothing is selected or while a PR review owns the extracted graph.
+    setMinimalView(view) {
+      if (get().minimalSeedIds.length > 0 && get().minimalView !== view) {
+        set({ minimalView: view });
+      }
+    },
+
+    setMinimalShowGhostNodes(visible) {
+      if (get().minimalShowGhostNodes !== visible) {
+        set({ minimalShowGhostNodes: visible });
+      }
+    },
+
+    setMinimalCodebaseExpansionOverride(nodeId, expanded) {
+      const next = new Map(get().minimalCodebaseExpansionOverrides);
+      next.set(nodeId, expanded);
+      set({ minimalCodebaseExpansionOverrides: next });
+    },
+
+    // Extract the current selection into a child graph. The first extraction covers the module
+    // surface; every later extraction snapshots the active graph and pushes another frame. An open
+    // PR is ambient session context, not an overlay owner, so nested extraction never destroys it.
     buildMinimalGraph() {
-      const initial = get();
-      if (initial.prReviewed !== null) {
+      const state = get();
+      const nested = state.minimalSeedIds.length > 0;
+      if (
+        state.moduleSelected.size === 0
+        || (!nested && state.prReviewed !== null)
+        || (nested && state.minimalLayoutStatus !== "ready")
+        || state.flowPaneLayoutStatus === "laying-out"
+        || state.syntheticExecutionStatus === "running"
+      ) {
         return;
       }
       // The active surface's spec decides how a selection seeds the overlay: identity on the Map,
-      // while the Service lens decomposes a selected `svc:` frame into its cluster's member units.
-      const origin = activeModuleSurfaceSpec(initial.viewMode).minimalSeeds(
-        [...initial.moduleSelected],
-        initial.index,
-        initial.serviceGroupingMode,
-        initial.serviceGroupingTargetSize,
-      );
+      // while Service decomposes a selected synthetic frame. Once an extracted graph is active its
+      // cards are already in the minimal graph's identity space, so deeper pushes stay verbatim.
+      const selected = [...state.moduleSelected];
+      const origin = nested
+        ? selected
+        : activeModuleSurfaceSpec(state.viewMode).minimalSeeds(
+            selected,
+            state.index,
+            state.serviceGroupingMode,
+            state.serviceGroupingTargetSize,
+          );
       if (origin.length === 0) {
         return;
       }
+      // Codebase deliberately includes structural context around a Diff-only PR scene. If the user
+      // extracts one of those unchanged context nodes, the child must stop inheriting the parent's
+      // diff projection or its exact seed would be filtered into a blank graph. The parent frame
+      // retains Diff-only in history, so Back restores the original projection losslessly.
+      const diffVisibleIds = nested && state.review !== null && state.reviewDiffOnly
+        ? reviewDiffVisibleIds(state.index, state.reviewAffectedIds)
+        : null;
+      const childEscapesReviewDiff = diffVisibleIds !== null
+        && origin.some((id) => !idPassesReviewDiffProjection(state, id, diffVisibleIds));
       // Snapshot the map's current on-screen card positions ONCE, at build — the overlay mirrors them,
       // and re-capturing on curation would let already-placed cards jump. Artifact-sourced review
       // (`prReviewed` null) is allowed because this overlay is that session's only review surface.
-      const clearArtifactReviewFlow = get().review !== null && get().prReviewed === null
+      const clearArtifactReviewFlow = !nested && state.review !== null && state.prReviewed === null
         ? {
             reviewLitNodeIds: null,
             reviewSelectedId: null,
@@ -3717,21 +4016,72 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             reviewFlowBaseline: null,
           }
         : {};
-      if (get().flowSelection !== null || get().flowPaneOrigin === "request") {
+      if (state.flowSelection !== null || state.flowPaneOrigin !== null) {
         flowPaneLayoutSeq += 1;
+        requestTargetRevealSeq += 1;
       }
-      const inspectedSource = get().moduleGhostInspection !== null;
-      const minimalBasePositions = captureMapPositions(get().moduleRfNodes);
+      syntheticExecutionSeq += 1;
+      const inspectedSource = !nested && state.moduleGhostInspection !== null;
+      const minimalBasePositions = captureMapPositions(nested ? state.minimalRfNodes : state.moduleRfNodes);
+      const history = nested
+        ? [...state.minimalGraphHistory, captureMinimalGraphHistory(state)]
+        : [];
+      const clearSyntheticFlow = state.flowPaneOrigin === "synthetic"
+        ? {
+            flowSelection: null,
+            flowPaneOrigin: null,
+            requestFlowTraceId: null,
+            requestFlowExpansionOverrides: new Set<string>(),
+            flowPaneExpansionOverrides: new Set<string>(),
+            flowPaneRfNodes: [] as LogicRfNode[],
+            flowPaneRfEdges: [] as LogicRfEdge[],
+            flowPaneLayoutStatus: "idle" as const,
+            logicSelected: null,
+            reviewFlowBaseline: null,
+          }
+        : {};
       set({
-        minimalSeedIds: origin,
-        minimalMemberIds: origin,
+        minimalSeedIds: [...origin],
+        minimalMemberIds: [...origin],
         minimalRollups: {},
         minimalBasePositions,
         minimalArrange: false,
+        minimalRfNodes: [],
+        minimalRfEdges: [],
+        minimalLayoutStatus: "laying-out",
+        minimalLayoutActivity: { label: "Extracting selection…" },
+        minimalGraphHistory: history,
+        minimalView: "graph",
+        minimalShowGhostNodes: true,
+        minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
+        reviewDiffOnly: childEscapesReviewDiff ? false : state.reviewDiffOnly,
         moduleGhostInspection: null,
-        prReviewed: null,
-        prReviewSource: null,
-        ...requestFlowPaneReset(get()),
+        ...syntheticExecutionReset(),
+        syntheticExperimentRootId: null,
+        syntheticInputOverrides: [],
+        syntheticFieldWatchers: [],
+        syntheticEditorRequest: null,
+        ...(nested
+          ? {
+              flowSelection: null,
+              flowPaneOrigin: null,
+              requestFlowTraceId: null,
+              requestFlowExpansionOverrides: new Set<string>(),
+              flowPaneExpansionOverrides: new Set<string>(),
+              flowPaneRfNodes: [] as LogicRfNode[],
+              flowPaneRfEdges: [] as LogicRfEdge[],
+              flowPaneLayoutStatus: "idle" as const,
+              logicSelected: null,
+              reviewFlowBaseline: null,
+              reviewSelectedId: null,
+              reviewLitNodeIds: null,
+            }
+          : {
+              prReviewed: null,
+              prReviewSource: null,
+              ...requestFlowPaneReset(state),
+            }),
+        ...clearSyntheticFlow,
         ...clearArtifactReviewFlow,
       });
       if (inspectedSource) {
@@ -3740,6 +4090,70 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         void get().moduleRelayout({ label: "Restoring source graph…" });
       }
       void requestMinimalRelayout({ label: "Extracting selection…" });
+    },
+
+    // Navigate exactly one graph outward. Nested parents restore synchronously from their captured
+    // scene; at the root, use the canonical close path so source/PR baselines and URL state receive
+    // the same cleanup as the explicit Close action.
+    backMinimalGraph() {
+      const state = get();
+      const parent = state.minimalGraphHistory.at(-1);
+      if (parent === undefined) {
+        get().closeMinimalGraph();
+        return;
+      }
+      minimalLayoutSeq += 1;
+      flowPaneLayoutSeq += 1;
+      requestTargetRevealSeq += 1;
+      syntheticExecutionSeq += 1;
+      const restoredModuleSelected = new Set(
+        [...parent.moduleSelected].filter((id) =>
+          (state.showExternalGhosts || !id.startsWith("ext:"))
+          && (state.showPrivate || !state.index.privateIds.has(id)),
+        ),
+      );
+      set({
+        ...restoreMinimalGraphHistory(parent),
+        moduleSelected: restoredModuleSelected,
+        minimalGraphHistory: state.minimalGraphHistory.slice(0, -1),
+      });
+      // The restored RF scene already reflects its captured selection and geometry. Selection is
+      // paint-only, so returning to the parent cannot queue a competing layout over this snapshot.
+      const showTestsChanged = state.showTests !== parent.showTests;
+      if (showTestsChanged) {
+        const liveReprojected = reprojectLivePrReview(
+          parent.showTests ? "Restoring tests…" : "Restoring production review…",
+        );
+        if (!liveReprojected) {
+          reprojectArtifactReview(parent.showTests);
+        }
+        if (!liveReprojected && moduleSurfaceSpec(get().viewMode) !== null) {
+          void get().moduleRelayout({ label: parent.showTests ? "Restoring tests…" : "Restoring production graph…" });
+        }
+      }
+      const restored = get();
+      const reviewFlowSelected = restored.review !== null
+        && restored.minimalSeedIds.length > 0
+        && restored.flowSelection !== null
+        && restored.reviewFlowBaseline !== null;
+      if (reviewFlowSelected) {
+        const wantsExecutionGraph = restored.flowPaneOrigin === "synthetic"
+          || (restored.reviewOpenFlowSplitOnSelect && restored.reviewFlowSplitView === "graph");
+        const flowPresentationChanged = state.reviewOpenFlowSplitOnSelect !== parent.reviewOpenFlowSplitOnSelect
+          || state.reviewFlowSplitView !== parent.reviewFlowSplitView;
+        if (!wantsExecutionGraph) {
+          if (
+            restored.flowPaneLayoutStatus !== "idle"
+            || restored.flowPaneRfNodes.length > 0
+            || restored.flowPaneRfEdges.length > 0
+          ) {
+            flowPaneLayoutSeq += 1;
+            set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
+          }
+        } else if (flowPresentationChanged || restored.flowPaneLayoutStatus !== "ready") {
+          void get().flowPaneRelayout();
+        }
+      }
     },
 
     // Close the overlay back to the Module-map level canvas. The selection is kept, so the reader
@@ -3790,6 +4204,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalRfEdges: [],
         minimalLayoutStatus: "idle",
         minimalLayoutActivity: null,
+        minimalGraphHistory: [],
+        minimalView: "graph",
+        minimalShowGhostNodes: true,
+        minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         reviewFocusedSubgraph: null,
         ...(closingPrReview !== null
           ? {
@@ -4194,8 +4612,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewActiveGroupId: group ? group.id : null,
         reviewPathScope: null,
         reviewFocusedSubgraph: null,
+        minimalGraphHistory: [],
+        minimalView: "graph",
+        minimalShowGhostNodes: true,
+        minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         reviewSelectedId: null,
         reviewLitNodeIds: null,
+        moduleSelected: new Set<string>(),
         flowSelection: null,
         flowPaneExpansionOverrides: new Set<string>(),
         logicSelected: null,
@@ -4244,8 +4667,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({
         reviewPathScope: normalized,
         reviewFocusedSubgraph: null,
+        minimalGraphHistory: [],
+        minimalView: "graph",
+        minimalShowGhostNodes: true,
+        minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         reviewSelectedId: null,
         reviewLitNodeIds: null,
+        moduleSelected: new Set<string>(),
         flowSelection: null,
         flowPaneExpansionOverrides: new Set<string>(),
         logicSelected: null,
@@ -4269,8 +4697,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     // A review container focus is a child surface of the current PR graph, not a moduleFocus dive.
     // Exact file seeds deliberately bypass rollupSeeds so opening a large `fs` package reveals its
-    // files rather than reproducing the same summary card. The first outer graph is snapshotted
-    // once; nested focuses keep that baseline so Back always returns to the PR graph in one step.
+    // files rather than reproducing the same summary card. Every open pushes the immediate scene,
+    // so package focus and ordinary selection extraction share unlimited stepwise Back navigation.
     openReviewSubgraph(rootId) {
       const state = get();
       const root = state.index.nodesById.get(rootId);
@@ -4280,6 +4708,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         || state.minimalLayoutStatus !== "ready"
         || state.flowSelection !== null
         || state.reviewFlowBaseline !== null
+        || state.syntheticExecutionStatus === "running"
         || root === undefined
         || (root.kind !== "package" && root.kind !== "directory")
         || !state.index.isContainer(rootId)
@@ -4303,24 +4732,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (seeds.length === 0) {
         return;
       }
-      const baseline = state.reviewFocusedSubgraph?.baseline ?? {
-        moduleSelected: new Set(state.moduleSelected),
-        moduleExpanded: new Set(state.moduleExpanded),
-        minimalSeedIds: [...state.minimalSeedIds],
-        minimalMemberIds: [...state.minimalMemberIds],
-        minimalRollups: cloneRollups(state.minimalRollups),
-        minimalBasePositions: { ...state.minimalBasePositions },
-        minimalArrange: state.minimalArrange,
-        minimalRfNodes: state.minimalRfNodes,
-        minimalRfEdges: state.minimalRfEdges,
-        minimalLayoutStatus: state.minimalLayoutStatus,
-        minimalLayoutActivity: state.minimalLayoutActivity,
-        reviewSelectedId: state.reviewSelectedId,
-        reviewLitNodeIds: state.reviewLitNodeIds === null ? null : new Set(state.reviewLitNodeIds),
-      };
       // Treat the focused root as a rollup boundary only for expansion calculation: every file and
       // declaration below it starts collapsed, while the exact file modules remain the graph seeds.
       const expansionBoundary = new Map<string, string[]>([[rootId, seeds]]);
+      syntheticExecutionSeq += 1;
+      flowPaneLayoutSeq += 1;
       invalidateMinimalLayout();
       set({
         reviewFocusedSubgraph: {
@@ -4328,10 +4744,28 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           label: root.displayName || rootId,
           filePaths: [...new Set(matched.map((match) => match.path))].sort(),
           moduleIds: seeds,
-          baseline,
         },
+        minimalGraphHistory: [...state.minimalGraphHistory, captureMinimalGraphHistory(state)],
+        minimalView: "graph",
+        minimalShowGhostNodes: true,
+        minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         reviewSelectedId: null,
         reviewLitNodeIds: null,
+        flowSelection: null,
+        flowPaneOrigin: null,
+        requestFlowTraceId: null,
+        requestFlowExpansionOverrides: new Set<string>(),
+        flowPaneExpansionOverrides: new Set<string>(),
+        logicSelected: null,
+        flowPaneRfNodes: [] as LogicRfNode[],
+        flowPaneRfEdges: [] as LogicRfEdge[],
+        flowPaneLayoutStatus: "idle" as const,
+        reviewFlowBaseline: null,
+        ...syntheticExecutionReset(),
+        syntheticExperimentRootId: null,
+        syntheticInputOverrides: [],
+        syntheticFieldWatchers: [],
+        syntheticEditorRequest: null,
         moduleSelected: new Set<string>(),
         moduleExpanded: reviewExpansionForMatches(state.index, matched, expansionBoundary),
         minimalSeedIds: seeds,
@@ -4350,41 +4784,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Back from a focused container is intentionally synchronous: reuse the already-laid outer
     // nodes/edges and its exact curation instead of asking ELK to approximate the old PR graph.
     closeReviewSubgraph() {
-      const focused = get().reviewFocusedSubgraph;
-      if (focused === null) {
+      if (get().reviewFocusedSubgraph === null) {
         return;
       }
-      invalidateMinimalLayout();
-      flowPaneLayoutSeq += 1;
-      requestTargetRevealSeq += 1;
-      set({
-        reviewFocusedSubgraph: null,
-        flowSelection: null,
-        flowPaneOrigin: null,
-        requestFlowTraceId: null,
-        requestFlowExpansionOverrides: new Set<string>(),
-        flowPaneExpansionOverrides: new Set<string>(),
-        flowPaneRfNodes: [],
-        flowPaneRfEdges: [],
-        flowPaneLayoutStatus: "idle",
-        logicSelected: null,
-        reviewFlowBaseline: null,
-        moduleSelected: new Set(focused.baseline.moduleSelected),
-        moduleExpanded: new Set(focused.baseline.moduleExpanded),
-        minimalSeedIds: [...focused.baseline.minimalSeedIds],
-        minimalMemberIds: [...focused.baseline.minimalMemberIds],
-        minimalRollups: cloneRollups(focused.baseline.minimalRollups),
-        minimalBasePositions: { ...focused.baseline.minimalBasePositions },
-        minimalArrange: focused.baseline.minimalArrange,
-        minimalRfNodes: focused.baseline.minimalRfNodes,
-        minimalRfEdges: focused.baseline.minimalRfEdges,
-        minimalLayoutStatus: focused.baseline.minimalLayoutStatus,
-        minimalLayoutActivity: focused.baseline.minimalLayoutActivity,
-        reviewSelectedId: focused.baseline.reviewSelectedId,
-        reviewLitNodeIds: focused.baseline.reviewLitNodeIds === null
-          ? null
-          : new Set(focused.baseline.reviewLitNodeIds),
-      });
+      get().backMinimalGraph();
     },
 
     // Toggle a flow's reviewed tick and persist the whole record under the reviewKey.
@@ -4577,15 +4980,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const visible = reviewDiffOnly
         ? reviewDiffVisibleIds(state.index, state.reviewAffectedIds)
         : null;
-      const remainsVisible = (id: string | null) => id === null || visible === null || visible.has(id);
+      const remainsVisible = (id: string | null) => id === null
+        || visible === null
+        || idPassesReviewDiffProjection(state, id, visible);
       const reviewLitNodeIds = state.reviewLitNodeIds === null || visible === null
         ? state.reviewLitNodeIds
-        : new Set([...state.reviewLitNodeIds].filter((id) => visible.has(id)));
+        : new Set([...state.reviewLitNodeIds].filter((id) => idPassesReviewDiffProjection(state, id, visible)));
       set({
         reviewDiffOnly,
         moduleSelected: visible === null
           ? state.moduleSelected
-          : new Set([...state.moduleSelected].filter((id) => visible.has(id))),
+          : new Set([...state.moduleSelected].filter((id) => idPassesReviewDiffProjection(state, id, visible))),
         reviewSelectedId: remainsVisible(state.reviewSelectedId) ? state.reviewSelectedId : null,
         reviewLitNodeIds: reviewLitNodeIds !== null && reviewLitNodeIds.size === 0 ? null : reviewLitNodeIds,
         logicSelected: remainsVisible(state.logicSelected) ? state.logicSelected : null,
@@ -4909,37 +5314,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // every review surface through the same toggle (members, files, flows, groups, progress and
       // amber paint) while retaining the raw PR context/ticks/drafts for a lossless toggle-back.
       if (prReviewed !== null && minimalSeedIds.length > 0) {
-        applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches, {
-          reprojecting: true,
-          preserveReviewSelection: true,
-        });
+        if (get().minimalGraphHistory.length > 0) {
+          reprojectLivePrReview(showTests ? "Showing tests…" : "Hiding tests…", true);
+        } else {
+          applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches, {
+            reprojecting: true,
+            preserveReviewSelection: true,
+          });
+        }
         return;
       }
-      const artifactReview = get().review;
-      if (prReviewed === null && artifactReview !== null) {
-        const state = get();
-        const projection = deriveReviewProjection(artifactReview.context, state.artifact, state.index, {
-          baseIndex: null,
-          showTests,
-        });
-        applyChangedIds(state.index, projection.affected.map((node) => node.nodeId));
-        applyChangedStatus(
-          state.index,
-          reviewNodeStatusEntries(
-            state.index,
-            projection.affected,
-            reviewNodeStatusSourcesFromDiff(
-              changedLineKindsFromExtensions(state.artifact.extensions),
-              changedDiffLinesFromExtensions(state.artifact.extensions),
-            ),
-          ),
-        );
-        set({
-          review: projection.review,
-          reviewFiles: projection.files,
-          reviewAffectedIds: new Set(projection.affected.map((node) => node.nodeId)),
-        });
-      }
+      reprojectArtifactReview(showTests);
       // The module surfaces (Map / Service / UI) re-derive: test code can be half a level's cards
       // (and a wall of off-level test ghosts), and paint-hiding kept a crater of empty space —
       // moduleRelayout re-derives the level with testIds excluded, so the survivors compact.
@@ -6521,6 +6906,10 @@ function applyPrReviewToMap(
     reviewActiveGroupId: null,
     reviewPathScope: null,
     reviewFocusedSubgraph: null,
+    minimalGraphHistory: [],
+    minimalView: "graph",
+    minimalShowGhostNodes: true,
+    minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
     reviewAllSeedIds: workspaceSeeds,
     viewMode: "modules",
     moduleFocus: null,
@@ -7041,10 +7430,6 @@ function deriveReviewScopeGraph(
 
 function rollupsRecord(rolledUp: ReadonlyMap<string, string[]>): Record<string, string[]> {
   return Object.fromEntries([...rolledUp].map(([packageId, fileIds]) => [packageId, [...fileIds]]));
-}
-
-function cloneRollups(rollups: Readonly<Record<string, readonly string[]>>): Record<string, string[]> {
-  return Object.fromEntries(Object.entries(rollups).map(([packageId, fileIds]) => [packageId, [...fileIds]]));
 }
 
 /** Declaration-level expansion for the current review seed set. Changed paths are pre-armed exactly

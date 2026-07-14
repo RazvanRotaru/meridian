@@ -159,10 +159,21 @@ describe("urlState", () => {
       viewMode: "modules",
       flowSelection,
       logicSelected: "ts:src/b.ts#validate",
-      minimalSeedIds: ["ts:src/a.ts"],
       reviewPr: 76,
       reviewActive: true,
     });
+  });
+
+  it("does not encode the session-only extraction frame of an active review", () => {
+    const encoded = encodeNav({
+      ...emptyNav(),
+      minimalSeedIds: ["ts:src/a.ts#run"],
+      reviewPr: 76,
+      reviewActive: true,
+    });
+
+    expect(encoded.has("mgraph")).toBe(false);
+    expect(Object.fromEntries(encoded)).toMatchObject({ view: "modules", prn: "76", rev: "1" });
   });
 
   it("still drops a stale Logic selection from a Map URL when no flow is selected", () => {
@@ -406,6 +417,13 @@ describe("urlState", () => {
     it("is true when the overlay closes (seeds go back to empty)", () => {
       const open = { ...base, minimalSeedIds: ["ts:src/a.ts"] };
       expect(isNavigationChange(open, base)).toBe(true);
+    });
+
+    it("is false when moving between open extraction frames", () => {
+      const outer = { ...base, minimalSeedIds: ["ts:src/a.ts"] };
+      const nested = { ...base, minimalSeedIds: ["ts:src/a.ts#run"] };
+      expect(isNavigationChange(outer, nested)).toBe(false);
+      expect(isNavigationChange(nested, outer)).toBe(false);
     });
 
     it("is true when a review starts even when it has no graph seeds", () => {

@@ -80,7 +80,7 @@ function ChangeGroupStripImpl() {
           <span style={FOCUS_MARK}>◎</span>
           <span style={FOCUS_LABEL} title={focusedSubgraph.rootId}>Focused subgraph: {focusedSubgraph.label}</span>
           <span style={ROW_META}>{focusedSubgraph.filePaths.length} changed files</span>
-          <button type="button" style={FOCUS_BACK} onClick={closeReviewSubgraph}>Back to PR graph</button>
+          <button type="button" style={FOCUS_BACK} onClick={closeReviewSubgraph}>Back to previous graph</button>
         </div>
       )}
       {showGroups && (

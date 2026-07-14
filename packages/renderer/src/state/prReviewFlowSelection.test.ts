@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { FlowStep, GraphArtifact, GraphNode } from "@meridian/core";
+import type { FlowStep, GraphArtifact, GraphNode, SyntheticExecution } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import type { FlowSelectionRef } from "../derive/flowBlocks";
 import { paintMinimalLevel } from "../components/paintMinimal";
@@ -143,6 +143,51 @@ const ARTIFACT: GraphArtifact = {
 } as unknown as GraphArtifact;
 
 const FLOW_SELECTION: FlowSelectionRef = { rootId: ROOT_METHOD, blockPath: [] };
+
+function syntheticExecution(): SyntheticExecution {
+  const traceId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const spanId = "1000000000000001";
+  return {
+    executionVersion: "1.0.0",
+    outcome: "completed",
+    scenarioId: "place-order-happy",
+    rootId: ROOT_METHOD,
+    generatedAt: "2026-07-11T00:00:01.000Z",
+    input: { orderId: "ord_1" },
+    output: { accepted: true },
+    warnings: [],
+    trace: {
+      traceId,
+      name: "Synthetic placeOrder",
+      rootSpanId: spanId,
+      startedAtUnixNano: "1000000000",
+      endedAtUnixNano: "1002000000",
+      status: "ok",
+      attributes: {},
+      spans: [{
+        spanId,
+        nodeId: ROOT_METHOD,
+        name: "placeOrder",
+        kind: "internal",
+        startedAtUnixNano: "1000000000",
+        endedAtUnixNano: "1002000000",
+        status: "ok",
+        attributes: {},
+        events: [],
+      }],
+      completeness: { complete: true, droppedSpans: 0, droppedEvents: 0, droppedValues: 0 },
+    },
+    snapshots: [{
+      spanId,
+      nodeId: ROOT_METHOD,
+      occurrenceKey: "placeOrder:1",
+      input: { orderId: "ord_1" },
+      output: { accepted: true },
+    }],
+    inputOverrideResults: [],
+    watchHits: [],
+  };
+}
 
 function pr(number: number): PrSummary {
   return {
@@ -398,6 +443,51 @@ describe("PR-review logic-flow selection", () => {
     expect(store.getState().logicSelected).toBeNull();
   });
 
+  it("extracts the complete multi-node flow selection as one nested PR graph", async () => {
+    const store = await activeReviewStore();
+    store.getState().selectFlowEntry(FLOW_SELECTION);
+    await vi.waitFor(() => {
+      expect(store.getState().minimalLayoutStatus).toBe("ready");
+      expect(store.getState().flowPaneLayoutStatus).toBe("ready");
+    });
+    expect(store.getState().moduleSelected).toEqual(new Set([ROOT_METHOD, TARGET_FUNCTION]));
+
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    expect(new Set(store.getState().minimalSeedIds)).toEqual(new Set([ROOT_METHOD, TARGET_FUNCTION]));
+    expect(store.getState().minimalRfNodes.some((node) => node.id === ROOT_METHOD)).toBe(true);
+    expect(store.getState().minimalRfNodes.some((node) => node.id === TARGET_FUNCTION)).toBe(true);
+    expect(store.getState().review).not.toBeNull();
+    expect(store.getState().minimalGraphHistory).toHaveLength(1);
+  });
+
+  it("keeps an exact nested flow step selected in Diff-only review", async () => {
+    const store = await activeReviewStore();
+    const stepId = `step:${ROOT_METHOD}:0`;
+    store.setState({
+      moduleExpanded: new Set([
+        ...store.getState().moduleExpanded,
+        ROOT_CLASS,
+        ROOT_METHOD,
+      ]),
+    });
+    await store.getState().minimalRelayout({ label: "Opening changed flow…" });
+    expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: stepId, type: "step" }));
+
+    store.getState().selectModule(stepId);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalSeedIds).toEqual([stepId]);
+
+    store.getState().toggleReviewDiffOnly();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().reviewDiffOnly).toBe(true);
+    expect(store.getState().moduleSelected).toEqual(new Set([stepId]));
+    expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: stepId, type: "step" }));
+  });
+
   it("narrows the graph to one flow target and restores the whole-flow selection", async () => {
     const store = await activeReviewStore();
     store.getState().selectFlowEntry(FLOW_SELECTION);
@@ -477,6 +567,141 @@ describe("PR-review logic-flow selection", () => {
     expect(store.getState().moduleSelected).toEqual(new Set([ROOT_METHOD, TARGET_FUNCTION]));
     expect(store.getState().reviewSelectedId).toBeNull();
     expect(store.getState().logicSelected).toBeNull();
+  });
+
+  it.each(["graph", "metro", "blocks", "timeline"] as const)(
+    "extracts a selected %s flow target through arbitrarily nested PR graphs",
+    async (projection) => {
+      const store = await activeReviewStore(projection);
+      store.getState().selectFlowEntry(FLOW_SELECTION);
+      await vi.waitFor(() => {
+        expect(store.getState().minimalLayoutStatus).toBe("ready");
+        expect(store.getState().flowPaneLayoutStatus).toBe(projection === "graph" ? "ready" : "idle");
+      });
+      store.getState().selectFlowPaneTarget(TARGET_FUNCTION);
+      await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+      const flowParent = store.getState();
+      const parentNodes = flowParent.minimalRfNodes;
+      const parentFlowNodes = flowParent.flowPaneRfNodes;
+      expect(flowParent.moduleSelected).toEqual(new Set([TARGET_FUNCTION]));
+
+      store.getState().buildMinimalGraph();
+      await vi.waitFor(() => {
+        expect(store.getState().minimalLayoutStatus).toBe("ready");
+        expect(store.getState().minimalSeedIds).toEqual([TARGET_FUNCTION]);
+      });
+      expect(store.getState().reviewFlowSplitView).toBe(projection);
+      expect(store.getState().review).not.toBeNull();
+      expect(store.getState().prReviewed).toBe(17);
+      expect(store.getState().flowSelection).toBeNull();
+      expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({
+        id: TARGET_FUNCTION,
+        type: "block",
+      }));
+      expect(store.getState().minimalGraphHistory).toHaveLength(1);
+      expect(store.getState().minimalGraphHistory[0]?.label).toBe("PR graph");
+
+      store.getState().selectModule(NEXT_FUNCTION);
+      await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+      store.getState().buildMinimalGraph();
+      await vi.waitFor(() => {
+        expect(store.getState().minimalLayoutStatus).toBe("ready");
+        expect(store.getState().minimalSeedIds).toEqual([NEXT_FUNCTION]);
+      });
+      expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({
+        id: NEXT_FUNCTION,
+        type: "block",
+      }));
+      expect(store.getState().minimalGraphHistory).toHaveLength(2);
+      expect(store.getState().minimalGraphHistory[1]?.label).toBe("extracted graph");
+
+      store.getState().backMinimalGraph();
+      expect(store.getState().minimalSeedIds).toEqual([TARGET_FUNCTION]);
+      expect(store.getState().flowSelection).toBeNull();
+
+      store.getState().backMinimalGraph();
+      const restored = store.getState();
+      expect(restored.flowSelection).toEqual(FLOW_SELECTION);
+      expect(restored.logicSelected).toBe(TARGET_FUNCTION);
+      expect(restored.reviewFlowBaseline).not.toBeNull();
+      expect(restored.minimalRfNodes).toBe(parentNodes);
+      expect(restored.flowPaneRfNodes).toBe(parentFlowNodes);
+      expect(restored.flowPaneLayoutStatus).toBe(projection === "graph" ? "ready" : "idle");
+      expect(restored.minimalGraphHistory).toHaveLength(0);
+    },
+  );
+
+  it("rebuilds a synthetic parent after Tests changes in a nested Metro review", async () => {
+    const store = await activeReviewStore("metro", false);
+    store.getState().selectFlowEntry(FLOW_SELECTION);
+    await vi.waitFor(() => {
+      expect(store.getState().minimalLayoutStatus).toBe("ready");
+      expect(store.getState().flowPaneLayoutStatus).toBe("idle");
+    });
+    const execution = syntheticExecution();
+    store.setState({
+      flowPaneOrigin: "synthetic",
+      syntheticExecution: execution,
+      syntheticExecutionRootId: ROOT_METHOD,
+      syntheticExecutionHost: "flow-pane",
+      syntheticExecutionStatus: "ready",
+      syntheticExecutionError: null,
+      syntheticSelectedMomentId: null,
+      syntheticFlowPresentation: "overview",
+      flowPaneLayoutStatus: "laying-out",
+    });
+    await store.getState().flowPaneRelayout();
+    expect(store.getState().flowPaneLayoutStatus).toBe("ready");
+    expect(store.getState().flowPaneRfNodes.length).toBeGreaterThan(0);
+
+    store.setState({ moduleSelected: new Set([TARGET_FUNCTION]) });
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().showTests).toBe(true);
+
+    store.getState().backMinimalGraph();
+    await vi.waitFor(() => {
+      expect(store.getState().minimalLayoutStatus).toBe("ready");
+      expect(store.getState().flowPaneLayoutStatus).toBe("ready");
+      expect(store.getState().flowPaneRfNodes.length).toBeGreaterThan(0);
+    });
+    expect(store.getState()).toMatchObject({
+      showTests: false,
+      reviewFlowSplitView: "metro",
+      reviewOpenFlowSplitOnSelect: false,
+      flowSelection: FLOW_SELECTION,
+      flowPaneOrigin: "synthetic",
+      syntheticExecution: execution,
+      syntheticExecutionStatus: "ready",
+      minimalGraphHistory: [],
+    });
+  });
+
+  it("rebuilds a restored parent flow when its split preference changed in a child", async () => {
+    const store = await activeReviewStore("metro", false);
+    store.getState().selectFlowEntry(FLOW_SELECTION);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().flowPaneLayoutStatus).toBe("idle");
+
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().flowSelection).toBeNull();
+
+    // Preferences are session-global, so Back must retain these newer values while rebuilding the
+    // restored parent pane that was captured under Metro/closed.
+    store.setState({ reviewFlowSplitView: "graph", reviewOpenFlowSplitOnSelect: true });
+    store.getState().backMinimalGraph();
+
+    expect(store.getState().reviewFlowSplitView).toBe("graph");
+    expect(store.getState().reviewOpenFlowSplitOnSelect).toBe(true);
+    expect(store.getState().flowSelection).toEqual(FLOW_SELECTION);
+    await vi.waitFor(() => {
+      expect(store.getState().flowPaneLayoutStatus).toBe("ready");
+      expect(store.getState().flowPaneRfNodes.length).toBeGreaterThan(0);
+    });
   });
 
   it("materializes an unchanged impacted flow root so every flow member is highlighted", async () => {

@@ -98,16 +98,16 @@ const BASE_BAR_WIDTH = 144;
 const BAR_WIDTHS: Record<CanvasActionMode, number> = {
   base: BASE_BAR_WIDTH,
   extract: 262,
-  minimal: 524,
-  "review-focus": 566,
-  codebase: 198,
+  minimal: 590,
+  "review-focus": 650,
+  codebase: 282,
 };
 const STACKED_BAR_WIDTHS: Record<CanvasActionMode, number> = {
   base: BASE_BAR_WIDTH,
   extract: BASE_BAR_WIDTH,
-  minimal: 334,
-  "review-focus": 376,
-  codebase: 154,
+  minimal: 400,
+  "review-focus": 460,
+  codebase: 228,
 };
 const CENTERED_ANCHOR_STYLE: React.CSSProperties = {
   marginBottom: EDGE_GAP,

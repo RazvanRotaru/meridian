@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GraphArtifact, SyntheticExecution, SyntheticScenarioDescriptor } from "@meridian/core";
+import type {
+  GraphArtifact,
+  SyntheticExecution,
+  SyntheticFieldWatcher,
+  SyntheticInputOverride,
+  SyntheticScenarioDescriptor,
+} from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import type { LogicNodeData } from "../derive/logicGraph";
 import { createBlueprintStore } from "./store";
@@ -537,6 +543,164 @@ describe("synthetic flow execution state", () => {
       syntheticExecution: null,
       syntheticExecutionStatus: "idle",
     });
+  });
+
+  it("restores an exact synthetic parent and ignores a late child run after Back", async () => {
+    const initial = execution();
+    const previous = executionFor(
+      SCENARIO,
+      { customerId: "cust_previous" },
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "2026-07-12T00:00:00.000Z",
+    );
+    const late = executionFor(
+      SCENARIO,
+      { customerId: "cust_late" },
+      "cccccccccccccccccccccccccccccccc",
+      "2026-07-12T00:00:03.000Z",
+    );
+    let resolveLate!: (response: Response) => void;
+    let requestCount = 0;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(() => {
+      requestCount += 1;
+      if (requestCount === 1) return Promise.resolve(jsonResponse(initial));
+      return new Promise<Response>((resolve) => { resolveLate = resolve; });
+    }));
+    const store = makeStore();
+    store.setState({ moduleSelected: new Set([FILE]) });
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    store.setState({ flowSelection: { rootId: ROOT, blockPath: [] }, flowPaneOrigin: "explorer" });
+    await store.getState().runSyntheticExecution({
+      rootId: ROOT,
+      scenarioId: SCENARIO.id,
+      input: SCENARIO.defaultInput,
+      host: "flow-pane",
+    });
+    const parentExecution = store.getState().syntheticExecution;
+    const parentFlowNodes = store.getState().flowPaneRfNodes;
+    const parentFlowEdges = store.getState().flowPaneRfEdges;
+    expect(parentExecution).not.toBeNull();
+    expect(parentFlowNodes.length).toBeGreaterThan(0);
+
+    const overrides: SyntheticInputOverride[] = [{
+      id: "parent-override",
+      target: { nodeId: ROOT, occurrenceKey: "placeOrder:1" },
+      input: { customerId: "cust_parent" },
+    }];
+    const watchers: SyntheticFieldWatcher[] = [{
+      id: "parent-watcher",
+      nodeId: ROOT,
+      phase: "output",
+      path: ["id"],
+      operator: "exists",
+    }];
+    const editorRequest = { rootId: ROOT, host: "flow-pane" as const };
+    store.setState({
+      syntheticPreviousExecution: previous,
+      syntheticExecutionStatus: "error",
+      syntheticExecutionError: "parent rerun failed",
+      syntheticExperimentRootId: ROOT,
+      syntheticInputOverrides: overrides,
+      syntheticFieldWatchers: watchers,
+      syntheticEditorRequest: editorRequest,
+      syntheticSelectedMomentId: "parent-moment",
+      syntheticFlowOrientation: "horizontal",
+      syntheticFlowPresentation: "overview",
+      moduleSelected: new Set([CHILD]),
+    });
+
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => {
+      expect(store.getState().minimalLayoutStatus).toBe("ready");
+      expect(store.getState().minimalSeedIds).toEqual([CHILD]);
+    });
+    expect(store.getState()).toMatchObject({
+      flowSelection: null,
+      flowPaneOrigin: null,
+      syntheticExecution: null,
+      syntheticPreviousExecution: null,
+      syntheticExecutionRootId: null,
+      syntheticExecutionHost: null,
+      syntheticExecutionStatus: "idle",
+      syntheticExecutionError: null,
+      syntheticExperimentRootId: null,
+      syntheticInputOverrides: [],
+      syntheticFieldWatchers: [],
+      syntheticEditorRequest: null,
+      syntheticSelectedMomentId: null,
+      syntheticFlowPresentation: "focused",
+      flowPaneRfNodes: [],
+      flowPaneRfEdges: [],
+      flowPaneLayoutStatus: "idle",
+    });
+
+    // Use the same flow root as the parent so only the extraction-history invalidation can prevent
+    // this response from repainting the restored scene.
+    store.setState({
+      flowSelection: { rootId: ROOT, blockPath: [] },
+      flowPaneOrigin: "explorer",
+      syntheticFlowOrientation: "vertical",
+    });
+    const pending = store.getState().runSyntheticExecution({
+      rootId: ROOT,
+      scenarioId: SCENARIO.id,
+      input: late.input,
+      host: "flow-pane",
+    });
+    expect(store.getState().syntheticExecutionStatus).toBe("running");
+
+    store.getState().backMinimalGraph();
+    resolveLate(jsonResponse(late));
+    await pending;
+
+    const restored = store.getState();
+    expect(restored.syntheticExecution).toBe(parentExecution);
+    expect(restored.syntheticPreviousExecution).toBe(previous);
+    expect(restored).toMatchObject({
+      syntheticExecutionRootId: ROOT,
+      syntheticExecutionHost: "flow-pane",
+      syntheticExecutionStatus: "error",
+      syntheticExecutionError: "parent rerun failed",
+      syntheticExperimentRootId: ROOT,
+      syntheticInputOverrides: overrides,
+      syntheticFieldWatchers: watchers,
+      syntheticEditorRequest: editorRequest,
+      syntheticSelectedMomentId: "parent-moment",
+      syntheticFlowOrientation: "horizontal",
+      syntheticFlowPresentation: "overview",
+      flowSelection: { rootId: ROOT, blockPath: [] },
+      flowPaneOrigin: "synthetic",
+      flowPaneLayoutStatus: "ready",
+    });
+    expect(restored.syntheticInputOverrides).not.toBe(overrides);
+    expect(restored.syntheticFieldWatchers).not.toBe(watchers);
+    expect(restored.syntheticEditorRequest).not.toBe(editorRequest);
+    expect(restored.flowPaneRfNodes).toBe(parentFlowNodes);
+    expect(restored.flowPaneRfEdges).toBe(parentFlowEdges);
+  });
+
+  it("rejects extraction while a synthetic run is in flight", async () => {
+    const store = makeStore();
+    store.setState({ moduleSelected: new Set([FILE]) });
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    const parentSeeds = store.getState().minimalSeedIds;
+    const parentNodes = store.getState().minimalRfNodes;
+    const parentEdges = store.getState().minimalRfEdges;
+    store.setState({
+      moduleSelected: new Set([CHILD]),
+      syntheticExecutionStatus: "running",
+    });
+
+    store.getState().buildMinimalGraph();
+
+    expect(store.getState().minimalSeedIds).toBe(parentSeeds);
+    expect(store.getState().minimalRfNodes).toBe(parentNodes);
+    expect(store.getState().minimalRfEdges).toBe(parentEdges);
+    expect(store.getState().minimalGraphHistory).toEqual([]);
+    expect(store.getState().syntheticExecutionStatus).toBe("running");
   });
 
   it("does not mutate telemetry source state when local execution fails", async () => {

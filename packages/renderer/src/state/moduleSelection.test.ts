@@ -149,6 +149,21 @@ const GROUPED_GHOST_ARTIFACT: GraphArtifact = {
   ],
 };
 
+// A nested view-only step id (`step:step:…`) is never present in GraphIndex. Keeping the owner and
+// construct expanded lets the minimal derivation reconstruct that exact pseudo-node at every push.
+const NESTED_STEP_ARTIFACT: GraphArtifact = {
+  ...ARTIFACT,
+  extensions: {
+    logicFlow: {
+      [BUILD_ORDERS]: [{
+        kind: "loop",
+        label: "for (order of orders)",
+        body: [{ kind: "call", label: "list", target: ROUTES_METHOD, resolution: "resolved" }],
+      }],
+    },
+  },
+};
+
 function freshStore(artifact: GraphArtifact = ARTIFACT): BlueprintStore {
   const index = buildGraphIndex(artifact);
   return createBlueprintStore({
@@ -1228,13 +1243,122 @@ describe("minimal-graph overlay (extract selection)", () => {
     expect(store.getState().minimalArrange).toBe(false);
   });
 
-  it("a fresh build resets any prior curation", () => {
+  it("pushes and restores exact extracted graphs at arbitrary depth", async () => {
+    const store = withBuiltIterativeGhostGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    const rootSeeds = [...store.getState().minimalSeedIds];
+    const nestedSeeds = [ROUTES_METHOD, DOWNSTREAM_METHOD, TERMINAL_METHOD, BUILD_ORDERS];
+
+    for (const [index, id] of nestedSeeds.entries()) {
+      store.getState().selectModule(id);
+      await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+      store.getState().buildMinimalGraph();
+      await vi.waitFor(() => {
+        expect(store.getState().minimalLayoutStatus).toBe("ready");
+        expect(store.getState().minimalSeedIds).toEqual([id]);
+      });
+      expect(store.getState().minimalGraphHistory).toHaveLength(index + 1);
+    }
+
+    for (let index = nestedSeeds.length - 2; index >= 0; index -= 1) {
+      store.getState().backMinimalGraph();
+      expect(store.getState().minimalSeedIds).toEqual([nestedSeeds[index]]);
+      expect(store.getState().minimalGraphHistory).toHaveLength(index + 1);
+    }
+    store.getState().backMinimalGraph();
+    expect(store.getState().minimalSeedIds).toEqual(rootSeeds);
+    expect(store.getState().minimalGraphHistory).toHaveLength(0);
+
+    store.getState().closeMinimalGraph();
+    expect(store.getState().minimalSeedIds).toEqual([]);
+  });
+
+  it("restores the parent presentation and Codebase disclosure after nested extraction", async () => {
     const store = withBuiltGraph();
-    store.getState().promoteGhost("ts:src/a.test.ts");
-    store.getState().rearrangeMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.getState().setMinimalView("codebase");
+    store.getState().setMinimalCodebaseExpansionOverride("ts:src", false);
+    store.getState().setMinimalShowGhostNodes(false);
+    store.getState().selectModule(BUILD_ORDERS);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
     store.getState().buildMinimalGraph();
-    expect(store.getState().minimalMemberIds).toEqual(store.getState().minimalSeedIds);
-    expect(store.getState().minimalArrange).toBe(false);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalView).toBe("graph");
+    expect(store.getState().minimalShowGhostNodes).toBe(true);
+    expect(store.getState().minimalCodebaseExpansionOverrides).toEqual(new Map());
+
+    store.getState().backMinimalGraph();
+    expect(store.getState().minimalView).toBe("codebase");
+    expect(store.getState().minimalShowGhostNodes).toBe(false);
+    expect(store.getState().minimalCodebaseExpansionOverrides).toEqual(new Map([["ts:src", false]]));
+  });
+
+  it("keeps a deeply nested synthetic step non-empty and typed through repeated extraction", async () => {
+    const store = freshStore(NESTED_STEP_ARTIFACT);
+    const loopStep = `step:${BUILD_ORDERS}:0`;
+    const nestedCallStep = `step:${loopStep}:0`;
+    store.setState({ moduleExpanded: new Set([BUILD_ORDERS, loopStep]) });
+    store.getState().selectModule(BUILD_ORDERS);
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => {
+      expect(store.getState().minimalLayoutStatus).toBe("ready");
+      expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: BUILD_ORDERS, type: "block" }));
+      expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: nestedCallStep, type: "step" }));
+    });
+
+    store.getState().selectModule(nestedCallStep);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => {
+      expect(store.getState().minimalSeedIds).toEqual([nestedCallStep]);
+      expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: nestedCallStep, type: "step" }));
+    });
+    expect(store.getState().minimalRfNodes.length).toBeGreaterThan(0);
+
+    // The child remains in the same identity space, so another push does not depend on its vanished
+    // artifact ancestors or collapse into an empty graph.
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => {
+      expect(store.getState().minimalGraphHistory).toHaveLength(2);
+      expect(store.getState().minimalSeedIds).toEqual([nestedCallStep]);
+      expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: nestedCallStep, type: "step" }));
+    });
+    expect(store.getState().minimalRfNodes.length).toBeGreaterThan(0);
+  });
+
+  it("restores a curated parent scene without re-laying it", async () => {
+    const store = withBuiltGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.getState().promoteGhost("ts:src/a.test.ts");
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.getState().rearrangeMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.getState().selectModule(ROUTES_METHOD);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    const parent = store.getState();
+    const parentNodes = parent.minimalRfNodes;
+    const parentEdges = parent.minimalRfEdges;
+    const parentMembers = [...parent.minimalMemberIds];
+    const parentExpanded = new Set(parent.moduleExpanded);
+    const parentBasePositions = { ...parent.minimalBasePositions };
+
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalSeedIds).toEqual([ROUTES_METHOD]);
+
+    store.getState().backMinimalGraph();
+    const restored = store.getState();
+    expect(restored.minimalMemberIds).toEqual(parentMembers);
+    expect(restored.moduleExpanded).toEqual(parentExpanded);
+    expect(restored.minimalBasePositions).toEqual(parentBasePositions);
+    expect(restored.minimalArrange).toBe(true);
+    expect(restored.minimalRfNodes).toBe(parentNodes);
+    expect(restored.minimalRfEdges).toBe(parentEdges);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(store.getState().minimalLayoutStatus).toBe("ready");
+    expect(store.getState().minimalRfNodes).toBe(parentNodes);
+    expect(store.getState().minimalRfEdges).toBe(parentEdges);
   });
 
   it("closeMinimalGraph clears the overlay but keeps the selection for a rebuild", () => {
@@ -1244,6 +1368,18 @@ describe("minimal-graph overlay (extract selection)", () => {
     expect(store.getState().minimalMemberIds).toEqual([]);
     expect(store.getState().minimalArrange).toBe(false);
     expect(store.getState().moduleSelected.size).toBe(2);
+  });
+
+  it("uses Back at the root to return to the source graph without losing the selection", () => {
+    const store = withBuiltGraph();
+    const selection = new Set(store.getState().moduleSelected);
+
+    store.getState().backMinimalGraph();
+
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().minimalMemberIds).toEqual([]);
+    expect(store.getState().minimalGraphHistory).toEqual([]);
+    expect(store.getState().moduleSelected).toEqual(selection);
   });
 
   it("leaving the Map lens closes the overlay (it never lingers behind another tab)", () => {

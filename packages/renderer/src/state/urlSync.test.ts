@@ -3,7 +3,7 @@ import type { GraphArtifact } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import type { TelemetryProvider, TelemetrySourceRegistration } from "../telemetry/provider";
 import { createBlueprintStore } from "./store";
-import { restoreFromUrl } from "./urlSync";
+import { restoreFromUrl, startUrlSync } from "./urlSync";
 
 const PACKAGE_ID = "ts:src";
 const FILE_ID = "ts:src/a.ts";
@@ -102,6 +102,12 @@ describe("restoreFromUrl review exit", () => {
       requestFlowExpansionOverrides: new Set(["request:span:one"]),
       flowPaneExpansionOverrides: new Set(["static-occurrence"]),
       flowPaneLayoutStatus: "ready",
+      reviewFocusedSubgraph: {
+        rootId: PACKAGE_ID,
+        label: "src",
+        filePaths: ["src/a.ts"],
+        moduleIds: [FILE_ID],
+      },
     });
     stubWindow();
 
@@ -112,6 +118,7 @@ describe("restoreFromUrl review exit", () => {
     expect(store.getState().requestFlowExpansionOverrides).toEqual(new Set());
     expect(store.getState().flowPaneExpansionOverrides).toEqual(new Set());
     expect(store.getState().flowPaneLayoutStatus).toBe("idle");
+    expect(store.getState().reviewFocusedSubgraph).toBeNull();
   });
 
   it("enters telemetry mode for a deep-linked request trace", async () => {
@@ -181,3 +188,77 @@ describe("restoreFromUrl review exit", () => {
     expect(store.getState().minimalSeedIds).toEqual([]);
   });
 });
+
+describe("startUrlSync extraction history", () => {
+  it("pushes once when extraction opens and replaces nested frames in that entry", async () => {
+    const store = freshStore();
+    const browser = stubUrlSyncBrowser();
+    await restoreFromUrl(store, "");
+    const stop = startUrlSync(store);
+
+    store.setState({ minimalSeedIds: [FILE_ID], minimalMemberIds: [FILE_ID] });
+    expect(browser.pushState).toHaveBeenCalledOnce();
+    expect(browser.replaceState).not.toHaveBeenCalled();
+
+    const nestedId = `${FILE_ID}#run`;
+    store.setState({ minimalSeedIds: [nestedId], minimalMemberIds: [nestedId] });
+    expect(browser.pushState).toHaveBeenCalledOnce();
+    expect(browser.replaceState).toHaveBeenCalledOnce();
+    expect(new URLSearchParams(browser.location.search).get("mgraph")).toBe(nestedId);
+
+    // The in-product Back action restores an outer frame in memory; URL sync rewrites the same
+    // browser entry instead of manufacturing a history stack it cannot hydrate after popstate.
+    store.setState({ minimalSeedIds: [FILE_ID], minimalMemberIds: [FILE_ID] });
+    expect(browser.pushState).toHaveBeenCalledOnce();
+    expect(browser.replaceState).toHaveBeenCalledTimes(2);
+    expect(new URLSearchParams(browser.location.search).get("mgraph")).toBe(FILE_ID);
+
+    stop();
+  });
+
+  it("does not write nested extraction frames into an active review URL", async () => {
+    const store = freshStore();
+    const browser = stubUrlSyncBrowser();
+    await restoreFromUrl(store, "");
+    const stop = startUrlSync(store);
+
+    store.setState({
+      prReviewed: 76,
+      minimalSeedIds: [FILE_ID],
+      minimalMemberIds: [FILE_ID],
+    });
+    expect(browser.pushState).toHaveBeenCalledOnce();
+    expect(new URLSearchParams(browser.location.search).has("mgraph")).toBe(false);
+
+    browser.pushState.mockClear();
+    browser.replaceState.mockClear();
+    const nestedId = `${FILE_ID}#run`;
+    store.setState({ minimalSeedIds: [nestedId], minimalMemberIds: [nestedId] });
+
+    expect(browser.pushState).not.toHaveBeenCalled();
+    expect(browser.replaceState).not.toHaveBeenCalled();
+    expect(new URLSearchParams(browser.location.search).has("mgraph")).toBe(false);
+
+    stop();
+  });
+});
+
+function stubUrlSyncBrowser() {
+  const location = { origin: "http://meridian.local", search: "", pathname: "/", hash: "" };
+  const applyUrl = (url: string | URL | null) => {
+    if (url === null) return;
+    const next = new URL(String(url), location.origin);
+    location.pathname = next.pathname;
+    location.search = next.search;
+    location.hash = next.hash;
+  };
+  const pushState = vi.fn((_data: unknown, _unused: string, url: string | URL | null) => applyUrl(url));
+  const replaceState = vi.fn((_data: unknown, _unused: string, url: string | URL | null) => applyUrl(url));
+  vi.stubGlobal("window", {
+    location,
+    history: { pushState, replaceState },
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  });
+  return { location, pushState, replaceState };
+}
