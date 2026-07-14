@@ -10,7 +10,7 @@
 
 import { mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { resolveAgainst } from "../paths";
 import { WebError } from "./web-error";
 import { base64Auth, runGitClone } from "./git-exec";
@@ -88,33 +88,44 @@ export function buildCloneArgs(url: string, targetDir: string, opts: { ref?: str
   return args;
 }
 
-/** Join a subdir onto the clone root, rejecting any `..` escape out of the repository. */
+/** Resolve an existing subdir to a canonical directory contained by the canonical clone root.
+ * The second containment check is essential: a repository-controlled symlink can be lexically
+ * inside the checkout while resolving to an arbitrary host path. */
 export function sanitizeSubdir(cloneDir: string, subdir?: string): string {
-  const clean = subdir?.trim();
-  if (!clean) {
-    return cloneDir;
+  let root: string;
+  try {
+    root = realpathSync.native(resolve(cloneDir));
+    if (!statSync(root).isDirectory()) throw new Error("not a directory");
+  } catch {
+    throw new WebError(400, "repository checkout is unavailable");
   }
-  const root = resolve(cloneDir);
-  const candidate = resolve(root, clean);
-  const withinRoot = candidate === root || candidate.startsWith(root + sep);
-  if (!withinRoot) {
+  const clean = subdir?.trim();
+  const lexical = clean ? resolve(root, clean) : root;
+  if (!isPathWithin(root, lexical)) {
+    throw new WebError(400, "source subfolder escapes the repository");
+  }
+  let candidate: string;
+  try {
+    candidate = realpathSync.native(lexical);
+    if (!statSync(candidate).isDirectory()) throw new Error("not a directory");
+  } catch {
+    throw new WebError(400, "source subfolder was not found in the repository");
+  }
+  if (!isPathWithin(root, candidate)) {
     throw new WebError(400, "source subfolder escapes the repository");
   }
   return candidate;
 }
 
-/** Resolve an existing extraction root and reject a symlink or junction that leaves the clone. */
+/** Backwards-compatible name used by the remote cache path. `sanitizeSubdir` now performs both
+ * lexical and canonical containment checks itself. */
 export function resolveExtractionSubdir(cloneDir: string, subdir?: string): string {
-  const candidate = sanitizeSubdir(cloneDir, subdir);
-  if (!isDirectory(candidate)) {
-    throw new WebError(400, "source subfolder was not found in the repository");
-  }
-  const root = realpathSync.native(resolve(cloneDir));
-  const canonical = realpathSync.native(candidate);
-  if (canonical !== root && !canonical.startsWith(root + sep)) {
-    throw new WebError(400, "source subfolder escapes the repository through a symbolic link");
-  }
-  return candidate;
+  return sanitizeSubdir(cloneDir, subdir);
+}
+
+function isPathWithin(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 export async function resolveSource(request: SourceRequest, cwd: string, token?: string): Promise<ResolvedSource> {

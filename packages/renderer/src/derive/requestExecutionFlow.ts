@@ -7,7 +7,7 @@
  * between sibling spans.
  */
 
-import type { LogicFlows, RequestTrace, TimelineEvent, TimelineSpan } from "@meridian/core";
+import type { LogicFlows, RequestTrace, SyntheticNodeSnapshot, TimelineEvent, TimelineSpan } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type {
   LogicEdgeSpec,
@@ -21,10 +21,19 @@ import type {
 import { deriveLogicGraphFromBodies } from "./logicGraph";
 import { buildRequestTimeline } from "./requestTimelineModel";
 import { correlateStaticRequestEdges } from "./requestStaticTraversal";
+import {
+  compactTraceValue,
+  observedBranchValue,
+  requestControlEventBadge,
+} from "./requestEventPresentation";
 
 const NODE_WIDTH = 260;
 const NODE_BASE_HEIGHT = 70;
 const TERMINAL_HEIGHT = 38;
+
+export function requestSpanMomentId(traceId: string, spanId: string): string {
+  return `request:${traceId}:span:${spanId}`;
+}
 
 interface RequestMoment {
   id: string;
@@ -40,10 +49,12 @@ export function deriveRequestExecutionFlow(
   index: GraphIndex,
   flows: LogicFlows = {},
   requestFlowExpansionOverrides: ReadonlySet<string> = new Set<string>(),
+  snapshots: readonly SyntheticNodeSnapshot[] = [],
 ): LogicGraphSpec {
   const timeline = buildRequestTimeline(trace);
   const prefix = `request:${trace.traceId}`;
   const spansById = new Map(trace.spans.map((span) => [span.spanId, span]));
+  const snapshotsBySpanId = new Map(snapshots.map((snapshot) => [snapshot.spanId, snapshot]));
   const moments: RequestMoment[] = [];
   const momentsBySpanId = new Map<string, RequestMoment[]>();
 
@@ -54,10 +65,20 @@ export function deriveRequestExecutionFlow(
     const parent = span.parentSpanId === undefined ? null : spansById.get(span.parentSpanId) ?? null;
     const values = orderedEvents
       .filter((event): event is Extract<TimelineEvent, { type: "data.observe" }> => event.type === "data.observe")
-      .map((event) => `${event.name} = ${compactValue(event.value)}`);
+      .map((event) => `${event.name} = ${compactTraceValue(event.value)}`);
     const staticSteps = targetId === null ? undefined : flows[targetId];
+    const capturedSnapshot = snapshotsBySpanId.get(span.spanId);
+    // Both ids must agree. A stale/malformed runner result remains absent rather than painting one
+    // occurrence's values onto another callable with the same display label.
+    const snapshot = capturedSnapshot !== undefined && capturedSnapshot.nodeId === span.nodeId
+      ? {
+          input: capturedSnapshot.input,
+          ...(capturedSnapshot.output === undefined ? {} : { output: capturedSnapshot.output }),
+          ...(capturedSnapshot.error === undefined ? {} : { error: capturedSnapshot.error }),
+        }
+      : undefined;
     const controlEvents = orderedEvents.filter(isControlEvent);
-    const spanMomentId = `${prefix}:span:${span.spanId}`;
+    const spanMomentId = requestSpanMomentId(trace.traceId, span.spanId);
     // Expansion belongs to this exact occurrence, never its artifact target: repeated/recursive
     // calls can be opened independently. Every mapped callable with a real static body gets the
     // affordance; the empty override set makes the whole request compact on first open.
@@ -70,7 +91,7 @@ export function deriveRequestExecutionFlow(
       // Keep observed decisions on the occurrence header in BOTH states. When expanded, the
       // source/path join additionally paints the exact static edges without changing the captured
       // runtime chain or duplicating those events as standalone nodes.
-      ...(expandable ? controlEvents.map(controlEventBadge) : []),
+      ...(expandable ? controlEvents.map(requestControlEventBadge) : []),
       ...values,
     ];
     const runtime: RequestRuntimeEvidence = {
@@ -80,6 +101,7 @@ export function deriveRequestExecutionFlow(
       detail: spanDetail(span, parent, row.linkedFrom),
       eventCount: span.events.length,
       ...(runtimeBadges.length > 0 ? { badges: runtimeBadges } : {}),
+      ...(snapshot === undefined ? {} : { snapshot }),
     };
     const spanMoment: RequestMoment = {
       id: spanMomentId,
@@ -254,6 +276,68 @@ export function deriveRequestExecutionFlow(
   return { nodes, edges: [...nestedEdges, ...runtimeEdges] };
 }
 
+/**
+ * Project one synthetic occurrence into a focused flow-player spec. The selected runtime card stays
+ * as the titled container while its static body is expanded underneath it; every other request
+ * occurrence is omitted. Captured values move to the dedicated inspector, so the canvas keeps only
+ * compact runtime context and positively-correlated observed edges.
+ */
+export function deriveFocusedRequestExecutionFlow(
+  trace: RequestTrace,
+  index: GraphIndex,
+  flows: LogicFlows,
+  selectedMomentId: string,
+  requestFlowExpansionOverrides: ReadonlySet<string> = new Set<string>(),
+  snapshots: readonly SyntheticNodeSnapshot[] = [],
+): LogicGraphSpec {
+  const expanded = new Set(requestFlowExpansionOverrides);
+  expanded.add(selectedMomentId);
+  const full = deriveRequestExecutionFlow(trace, index, flows, expanded, snapshots);
+  return focusRequestExecutionFlow(full, selectedMomentId);
+}
+
+export function focusRequestExecutionFlow(
+  spec: LogicGraphSpec,
+  selectedMomentId: string,
+): LogicGraphSpec {
+  const selected = spec.nodes.find((node) => node.id === selectedMomentId);
+  if (selected === undefined) return { nodes: [], edges: [] };
+  const byId = new Map(spec.nodes.map((node) => [node.id, node]));
+  const included = new Set<string>();
+  for (const node of spec.nodes) {
+    let current: LogicNodeSpec | undefined = node;
+    while (current !== undefined) {
+      if (current.id === selectedMomentId) {
+        included.add(node.id);
+        break;
+      }
+      current = current.parentId === null ? undefined : byId.get(current.parentId);
+    }
+  }
+  const nodes = spec.nodes
+    .filter((node) => included.has(node.id))
+    .map((node) => node.id === selectedMomentId ? focusedRuntimeNode(node) : node);
+  const edges = spec.edges.filter((edge) => included.has(edge.source) && included.has(edge.target));
+  return { nodes, edges };
+}
+
+function focusedRuntimeNode(node: LogicNodeSpec): LogicNodeSpec {
+  if (!("runtime" in node.data) || node.data.runtime === undefined) return node;
+  const { snapshot: _snapshot, ...runtimeEvidence } = node.data.runtime;
+  const runtime: RequestRuntimeEvidence = {
+    ...runtimeEvidence,
+    focused: true,
+  };
+  return {
+    ...node,
+    data: {
+      ...node.data,
+      expandable: false,
+      runtime,
+    },
+  };
+}
+
 function momentForEvent(
   prefix: string,
   span: TimelineSpan,
@@ -276,9 +360,7 @@ function runtimeForEvent(event: Exclude<TimelineEvent, { type: "data.observe" }>
   outgoingLabel?: string;
 } {
   if (event.type === "branch.taken") {
-    const observedValue = event.valueName && event.value !== undefined
-      ? `${event.valueName} = ${compactValue(event.value)}`
-      : `outcome = ${compactValue(event.outcome)}`;
+    const observedValue = observedBranchValue(event);
     return {
       label: event.condition,
       runtime: {
@@ -328,6 +410,7 @@ function runtimeNode(
   options: { expandable?: boolean; isExpanded?: boolean; childCount?: number; nestedChildCount?: number } = {},
 ): LogicNodeSpec {
   const badgeRows = Math.min(runtime.badges?.length ?? 0, 3);
+  const snapshotRows = runtime.snapshot === undefined ? 0 : 2;
   const expandable = options.expandable ?? false;
   const isExpanded = options.isExpanded ?? false;
   const nestedChildCount = options.nestedChildCount ?? 0;
@@ -358,7 +441,7 @@ function runtimeNode(
   };
   if (!isContainer) {
     node.width = Math.max(NODE_WIDTH, Math.min(360, 105 + label.length * 7));
-    node.height = NODE_BASE_HEIGHT + badgeRows * 18;
+    node.height = NODE_BASE_HEIGHT + badgeRows * 18 + snapshotRows * 20;
   }
   return node;
 }
@@ -405,18 +488,6 @@ function isControlEvent(
   return event.type === "branch.taken" || event.type === "loop.summary";
 }
 
-function controlEventBadge(
-  event: Extract<TimelineEvent, { type: "branch.taken" | "loop.summary" }>,
-): string {
-  if (event.type === "loop.summary") {
-    return `${event.iterations} iteration${event.iterations === 1 ? "" : "s"} · ${event.label}`;
-  }
-  const observed = event.valueName && event.value !== undefined
-    ? `${event.valueName} = ${compactValue(event.value)}`
-    : `outcome = ${compactValue(event.outcome)}`;
-  return `${event.pathId} · ${observed}`;
-}
-
 function spanLabel(span: TimelineSpan, index: GraphIndex): string {
   return span.nodeId === undefined ? span.name : index.nodesById.get(span.nodeId)?.displayName ?? span.name;
 }
@@ -435,17 +506,6 @@ function handoffLabel(mode: "awaited" | "detached" | "callback"): string {
   if (mode === "awaited") return "Awaited async";
   if (mode === "detached") return "Detached async";
   return "Callback";
-}
-
-function compactValue(value: unknown): string {
-  let rendered: string;
-  try {
-    rendered = typeof value === "string" ? value : JSON.stringify(value);
-  } catch {
-    rendered = String(value);
-  }
-  if (rendered.length <= 42) return rendered;
-  return `${rendered.slice(0, 39)}…`;
 }
 
 function shortId(id: string): string {

@@ -7,9 +7,10 @@
  * sample, so the production path is never coupled to the dev convenience path.
  */
 
-import { telemetrySourceDescriptorSchema } from "@meridian/core";
-import type { TelemetrySourceDescriptor } from "@meridian/core";
+import { syntheticScenarioDescriptorSchema, telemetrySourceDescriptorSchema } from "@meridian/core";
+import type { SyntheticScenarioDescriptor, TelemetrySourceDescriptor } from "@meridian/core";
 import type { PrSessionSource } from "../state/prTypes";
+import type { SyntheticExecutionTrust } from "../state/syntheticExecutionTrust";
 
 export interface BootConfig {
   graphUrl: string;
@@ -28,6 +29,12 @@ export interface BootConfig {
   preselectedTelemetrySourceId: string | null;
   /** Base URL the renderer GETs to fetch a node's source; null when source isn't available. */
   sourceUrl: string | null;
+  /** Explicit opt-in local execution capability. Null means this server cannot run code. */
+  syntheticExecutionUrl: string | null;
+  /** Server-attested boundary in which synthetic code executes. Null means no runnable boundary. */
+  syntheticExecutionTrust: SyntheticExecutionTrust | null;
+  /** Bounded server-authored scenarios; arbitrary graph nodes never become executable by inference. */
+  syntheticScenarios: SyntheticScenarioDescriptor[];
   /** Exact GitHub session source; null for local/plain-view artifacts. */
   githubSource: PrSessionSource | null;
   defaultEnv: null;
@@ -54,7 +61,7 @@ export interface PrApiUrls {
   graphId: string | null;
 }
 
-interface InjectedConfig extends Omit<BootConfig, "defaultEnv" | "githubSource" | "traceUrl" | "traceAvailable" | "telemetrySources" | "preselectedTelemetrySourceId"> {
+interface InjectedConfig extends Omit<BootConfig, "defaultEnv" | "githubSource" | "traceUrl" | "traceAvailable" | "telemetrySources" | "preselectedTelemetrySourceId" | "syntheticExecutionUrl" | "syntheticExecutionTrust" | "syntheticScenarios"> {
   /** Optional so a renderer cached before the trace endpoint shipped still boots safely. */
   traceUrl?: unknown;
   /** Optional for HTML produced before in-app source selection shipped. */
@@ -62,6 +69,10 @@ interface InjectedConfig extends Omit<BootConfig, "defaultEnv" | "githubSource" 
   preselectedTelemetrySourceId?: unknown;
   /** Optional for compatibility with renderer HTML cached from before this capability existed. */
   githubSource?: unknown;
+  /** Optional for compatibility with servers predating opt-in local execution. */
+  syntheticExecutionUrl?: unknown;
+  syntheticExecutionTrust?: unknown;
+  syntheticScenarios?: unknown;
   defaultEnv: unknown;
 }
 
@@ -83,9 +94,21 @@ const DEV_FALLBACK: BootConfig = {
   overlayKind: "mock",
   envRequired: true,
   preselectedEnv: null,
-  telemetrySources: [],
+  telemetrySources: [{
+    id: "demo",
+    kind: "mock",
+    label: "Synthetic demo",
+    provenance: "synthetic",
+    environments: ["demo"],
+    environmentMode: "enumerated",
+    supportsMetrics: true,
+    supportsTraces: true,
+  }],
   preselectedTelemetrySourceId: null,
   sourceUrl: null,
+  syntheticExecutionUrl: null,
+  syntheticExecutionTrust: null,
+  syntheticScenarios: [],
   githubSource: null,
   defaultEnv: null,
 };
@@ -128,6 +151,15 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
     ? injected.traceUrl as string
     : "/api/traces";
   const telemetrySources = normalizeTelemetrySources(injected.telemetrySources);
+  const syntheticExecutionUrl = typeof injected.syntheticExecutionUrl === "string"
+    && injected.syntheticExecutionUrl.trim().length > 0
+    ? injected.syntheticExecutionUrl
+    : null;
+  const syntheticScenarios = normalizeSyntheticScenarios(injected.syntheticScenarios);
+  const syntheticExecutionTrust = normalizeSyntheticExecutionTrust(
+    injected.syntheticExecutionTrust,
+    syntheticExecutionUrl,
+  );
   const explicitTelemetrySourceId = typeof injected.preselectedTelemetrySourceId === "string"
     && injected.preselectedTelemetrySourceId.trim().length > 0
     ? injected.preselectedTelemetrySourceId
@@ -145,9 +177,58 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
     traceAvailable,
     telemetrySources,
     preselectedTelemetrySourceId,
+    syntheticExecutionUrl,
+    syntheticExecutionTrust,
+    syntheticScenarios,
     githubSource,
     defaultEnv: null,
   };
+}
+
+function normalizeSyntheticExecutionTrust(
+  value: unknown,
+  executionUrl: string | null,
+): SyntheticExecutionTrust | null {
+  if (executionUrl === null) return null;
+  // Compatibility for trusted-local servers shipped before the trust descriptor. A server that
+  // does inject the field must provide a valid object; malformed explicit claims fail closed.
+  if (value === undefined) return { mode: "local" };
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as { mode?: unknown; provenance?: unknown };
+  if (candidate.mode !== "local" && candidate.mode !== "sandboxed-pr") return null;
+  const provenance = normalizeSyntheticExecutionProvenance(candidate.provenance);
+  if (candidate.mode === "sandboxed-pr") {
+    if (provenance?.repository === undefined || provenance.headSha === undefined) return null;
+    return { mode: "sandboxed-pr", provenance: { repository: provenance.repository, headSha: provenance.headSha } };
+  }
+  return provenance === undefined ? { mode: "local" } : { mode: "local", provenance };
+}
+
+function normalizeSyntheticExecutionProvenance(value: unknown): SyntheticExecutionTrust["provenance"] {
+  if (typeof value !== "object" || value === null) return undefined;
+  const candidate = value as { repository?: unknown; headSha?: unknown };
+  const repository = normalizedBoundedString(candidate.repository, 512);
+  const headSha = normalizedBoundedString(candidate.headSha, 128);
+  return repository === undefined && headSha === undefined ? undefined : { repository, headSha };
+}
+
+function normalizedBoundedString(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized.length === 0 || normalized.length > maxLength ? undefined : normalized;
+}
+
+function normalizeSyntheticScenarios(value: unknown): SyntheticScenarioDescriptor[] {
+  if (!Array.isArray(value)) return [];
+  const scenarios: SyntheticScenarioDescriptor[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value) {
+    const parsed = syntheticScenarioDescriptorSchema.safeParse(candidate);
+    if (!parsed.success || seen.has(parsed.data.id)) continue;
+    seen.add(parsed.data.id);
+    scenarios.push(parsed.data);
+  }
+  return scenarios;
 }
 
 function normalizeTelemetrySources(value: unknown): TelemetrySourceDescriptor[] {

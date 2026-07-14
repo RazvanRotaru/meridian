@@ -21,6 +21,10 @@ import { WebError } from "./web-error";
 import type { ArtifactSource } from "./web-source";
 import type { Context } from "./web-server";
 import { cachedPrGraph } from "./web-pr-cache";
+import {
+  loadSyntheticScenarios,
+  syntheticSourceFingerprint,
+} from "./synthetic-execution";
 
 type GitHubSource = Extract<ArtifactSource, { kind: "github" }>;
 
@@ -54,8 +58,22 @@ async function streamAnalysis(
       refresh: ctx.refreshCache,
       onStage: (stage) => writeLine(response, { stage }),
     });
-    const graphId = storeArtifact(ctx, cached.artifact, source, cached.sourceDir, body, cached.headSha, cached.baseSha);
-    writeLine(response, doneLine(graphId, cached.headSha, cached.artifact, cached.warnings, cached.cache));
+    const stored = storeArtifact(
+      ctx,
+      cached.artifact,
+      source,
+      cached.sourceDir,
+      body,
+      cached.headSha,
+      cached.baseSha,
+    );
+    writeLine(response, doneLine(
+      stored.graphId,
+      cached.headSha,
+      cached.artifact,
+      [...cached.warnings, ...stored.syntheticWarnings],
+      cached.cache,
+    ));
   } catch (error) {
     writeLine(response, { stage: "error", message: safeMessage(error) });
   } finally {
@@ -71,12 +89,49 @@ function storeArtifact(
   body: PrAnalyzeRequest,
   headSha: string,
   baseSha: string,
-): string {
+): { graphId: string; syntheticWarnings: string[] } {
   const graphId = prGraphId(source, body, headSha, baseSha);
+  const sandboxAdmission = ctx.allowSyntheticPrExecution && ctx.syntheticPrSandboxRuntimeSupported();
+  let syntheticScenarios = [] as ReturnType<typeof loadSyntheticScenarios>;
+  let syntheticFingerprint: string | null = null;
+  let syntheticTrustReady = sandboxAdmission;
+  const syntheticWarnings: string[] = [];
+  if (sandboxAdmission) {
+    try {
+      syntheticScenarios = loadSyntheticScenarios(sourceDir);
+      if (syntheticScenarios.length > 0) {
+        syntheticFingerprint = syntheticSourceFingerprint(sourceDir, artifact);
+      } else {
+        syntheticWarnings.push("Synthetic execution needs a valid meridian.synthetic.json scenario manifest.");
+      }
+    } catch {
+      // A PR controls this file. Never leak parser/path details and never let a malformed manifest
+      // prevent review of the graph itself; simply withhold the executable capability.
+      syntheticScenarios = [];
+      syntheticFingerprint = null;
+      syntheticTrustReady = false;
+      syntheticWarnings.push("Synthetic execution was disabled because the PR scenario manifest is invalid.");
+    }
+  }
   ctx.graphs.set(graphId, artifact);
   ctx.sourceRoots.set(graphId, sourceDir);
-  ctx.sources.set(graphId, source);
-  return graphId;
+  ctx.sources.set(graphId, { kind: "github", owner: source.owner, repo: source.repo, subdir: source.subdir });
+  if (syntheticFingerprint !== null) {
+    ctx.syntheticScenarios.set(graphId, syntheticScenarios);
+    ctx.syntheticSourceFingerprints.set(graphId, syntheticFingerprint);
+  } else {
+    ctx.syntheticScenarios.delete(graphId);
+    ctx.syntheticSourceFingerprints.delete(graphId);
+  }
+  if (syntheticTrustReady) {
+    ctx.syntheticExecutionTrust.set(graphId, {
+      mode: "sandboxed-pr",
+      provenance: { repository: `${source.owner}/${source.repo}`, headSha },
+    });
+  } else {
+    ctx.syntheticExecutionTrust.delete(graphId);
+  }
+  return { graphId, syntheticWarnings };
 }
 
 /** The terminal `done` line: the new graph id, the analyzed head commit, counts, changed files, warnings. */

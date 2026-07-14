@@ -107,6 +107,45 @@ describe("request flow edge evidence paint", () => {
       "data-request-flow-event-ids": "s-customer",
     });
   });
+
+  it("keeps a request-only caught-exception bridge visibly exceptional and observed", () => {
+    const bridge = edge("request-exception", { animated: false });
+    bridge.style = { stroke: "#D98A5B", strokeWidth: 2, strokeDasharray: "7 5" };
+    bridge.data = { kind: "branch", branchRole: "catch" };
+    const [painted] = decorateRequestFlowEdges([bridge], [{
+      id: bridge.id,
+      source: bridge.source,
+      target: bridge.target,
+      kind: "branch",
+      label: "throws → catch",
+      branchRole: "catch",
+      requestTraversal: {
+        traceId: TRACE_ID,
+        basis: "branch-path",
+        spanId: "1000000000000001",
+        eventIds: ["caught"],
+        siteId: "route:create:try",
+        pathIds: ["catch"],
+      },
+    }], TRACE_ID);
+
+    expect(painted).toMatchObject({
+      className: expect.stringContaining(REQUEST_FLOW_EDGE_OBSERVED_CLASS),
+      zIndex: 3,
+      style: {
+        opacity: 1,
+        stroke: "#D98A5B",
+        strokeWidth: 3.4,
+        strokeDasharray: "7 5",
+      },
+      data: {
+        kind: "branch",
+        branchRole: "catch",
+        requestFlowDisposition: "observed",
+        requestFlowEvidence: { basis: "branch-path", pathIds: ["catch"] },
+      },
+    });
+  });
 });
 
 function edge(

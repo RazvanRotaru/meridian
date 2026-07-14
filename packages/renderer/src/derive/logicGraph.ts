@@ -22,6 +22,7 @@ import type {
   FlowStep,
   GraphNode,
   LogicFlows,
+  SyntheticNodeSnapshot,
 } from "@meridian/core";
 import { branchKindOf, exitLabel, parseNodeId, pathRole, syntheticFallThroughLabel, tryArms } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
@@ -147,12 +148,17 @@ export type LogicNodeData = {
 
 export interface RequestRuntimeEvidence {
   kind: "span" | "branch" | "loop" | "exception" | "async";
+  /** The one occurrence currently opened as the synthetic flow player's focused static body. */
+  focused?: boolean;
   status?: "unset" | "ok" | "error";
   durationMs?: number;
   /** All events captured under this span, including data observations. */
   eventCount?: number;
   detail?: string;
   badges?: string[];
+  /** Explicit runner-captured boundary values for this exact span occurrence. Absence means the
+   * producer did not capture a snapshot; it must never be inferred from neighbouring events. */
+  snapshot?: Pick<SyntheticNodeSnapshot, "input" | "output" | "error">;
 }
 
 /**

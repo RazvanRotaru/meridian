@@ -38,6 +38,9 @@ interface StepResult {
   exits: ActualExit[];
   terminations: Termination[];
   entryChildSpanId?: string;
+  /** Exact rendered steps where synchronous execution was observed to throw. This is separate from
+   * ordinary exits because a caught exception has no normal continuation out of the try lane. */
+  throwSourceIds?: string[];
 }
 
 interface SequenceResult {
@@ -45,6 +48,7 @@ interface SequenceResult {
   lastExits: ActualExit[];
   terminations: Termination[];
   fallsThrough: boolean;
+  throwSourceIds?: string[];
 }
 
 interface SpanContext {
@@ -77,15 +81,17 @@ export function correlateStaticRequestEdges(args: {
   );
   const rootEvidence = spanEvidence(args.trace, args.span);
   correlator.sequence(args.steps, logicTopLevelBodyPrefix(0), args.span, rootEvidence);
-  return args.edges.map((edge) => {
+  const correlated = args.edges.map((edge) => {
     const evidence = correlator.evidenceFor(edge);
     return evidence === undefined ? edge : { ...edge, requestTraversal: evidence };
   });
+  return [...correlated, ...correlator.exceptionBridges()];
 }
 
 class StaticTraversalCorrelator {
   private readonly evidenceByEdge = new Map<string, RequestEdgeTraversalEvidence>();
   private readonly spanContexts = new Map<string, SpanContext>();
+  private readonly supplementalExceptionBridges: LogicEdgeSpec[] = [];
 
   constructor(
     private readonly execPrefix: string,
@@ -99,6 +105,10 @@ class StaticTraversalCorrelator {
     return this.evidenceByEdge.get(edgeKey(edge.source, edge.target, edge.label));
   }
 
+  exceptionBridges(): readonly LogicEdgeSpec[] {
+    return this.supplementalExceptionBridges;
+  }
+
   sequence(
     steps: FlowStep[],
     prefix: string,
@@ -108,6 +118,7 @@ class StaticTraversalCorrelator {
     let firstId: string | null = null;
     let previous: ActualExit[] = [];
     const terminations: Termination[] = [];
+    const throwSourceIds: string[] = [];
 
     for (let index = 0; index < steps.length; index += 1) {
       const step = steps[index]!;
@@ -124,8 +135,15 @@ class StaticTraversalCorrelator {
         }
       }
       terminations.push(...result.terminations);
+      throwSourceIds.push(...(result.throwSourceIds ?? []));
       if (result.exits.length === 0) {
-        return { firstId, lastExits: [], terminations: uniqueTerminations(terminations), fallsThrough: false };
+        return {
+          firstId,
+          lastExits: [],
+          terminations: uniqueTerminations(terminations),
+          fallsThrough: false,
+          ...(throwSourceIds.length === 0 ? {} : { throwSourceIds: [...new Set(throwSourceIds)] }),
+        };
       }
       previous = result.exits;
     }
@@ -135,6 +153,7 @@ class StaticTraversalCorrelator {
       lastExits: previous,
       terminations: uniqueTerminations(terminations),
       fallsThrough: steps.length === 0 || previous.length > 0,
+      ...(throwSourceIds.length === 0 ? {} : { throwSourceIds: [...new Set(throwSourceIds)] }),
     };
   }
 
@@ -155,7 +174,12 @@ class StaticTraversalCorrelator {
       return { entry: id, exits: [{ id }], terminations: [] };
     }
     if (step.kind === "exit") {
-      return { entry: id, exits: [], terminations: [step.variant] };
+      return {
+        entry: id,
+        exits: [],
+        terminations: [step.variant],
+        ...(step.variant === "throw" ? { throwSourceIds: [id] } : {}),
+      };
     }
     if (step.kind === "loop") {
       return this.loop(step, path, id, span);
@@ -214,6 +238,7 @@ class StaticTraversalCorrelator {
         ? []
         : [{ id, ...((child === null || detached) ? {} : { childSpanId: child.spanId }) }],
       terminations: stops ? ["throw"] : [],
+      ...(stops ? { throwSourceIds: [id] } : {}),
     };
   }
 
@@ -234,6 +259,7 @@ class StaticTraversalCorrelator {
     const exits: ActualExit[] = [];
     const continuingEvents: BranchEvent[] = [];
     const terminations: Termination[] = [];
+    const throwSourceIds: string[] = [];
     const joinId = this.renderedNodeId(`${id}::join`);
     for (const pathEvents of byPath.values()) {
       const pathId = pathEvents[0]!.pathId;
@@ -259,6 +285,7 @@ class StaticTraversalCorrelator {
           continuingEvents.push(...pathEvents);
         }
         terminations.push(...body.terminations);
+        throwSourceIds.push(...(body.throwSourceIds ?? []));
         continue;
       }
 
@@ -278,6 +305,7 @@ class StaticTraversalCorrelator {
         ? [{ id: joinId, evidence: branchEvidence(this.trace.traceId, span.spanId, continuingEvents) }]
         : exits,
       terminations: uniqueTerminations(terminations),
+      ...(throwSourceIds.length === 0 ? {} : { throwSourceIds: [...new Set(throwSourceIds)] }),
     };
   }
 
@@ -300,7 +328,12 @@ class StaticTraversalCorrelator {
       // post-loop edge. Even if repeated branch observations also yielded a continuing arm, the
       // captured terminating occurrence makes that outer continuation uncertain.
       if (body.terminations.length > 0) {
-        return { entry: id, exits: [], terminations: body.terminations };
+        return {
+          entry: id,
+          exits: [],
+          terminations: body.terminations,
+          ...(body.throwSourceIds === undefined ? {} : { throwSourceIds: body.throwSourceIds }),
+        };
       }
     }
     return { entry: id, exits: [{ id }], terminations: [] };
@@ -389,6 +422,7 @@ class StaticTraversalCorrelator {
       entry: id,
       exits: selectedResult.fallsThrough ? [{ id, evidence: selectedEvidence }] : [],
       terminations: selectedResult.terminations,
+      ...(selectedResult.throwSourceIds === undefined ? {} : { throwSourceIds: selectedResult.throwSourceIds }),
     };
   }
 
@@ -412,6 +446,11 @@ class StaticTraversalCorrelator {
     const selected = selectedRole === "catch"
       ? this.chartedArm(step, path, id, catchIndex, span, evidence)
       : protectedTry;
+    if (selectedRole === "catch" && selected.result.firstId !== null) {
+      for (const throwSourceId of protectedTry.result.throwSourceIds ?? []) {
+        this.addExceptionBridge(throwSourceId, selected.result.firstId, evidence);
+      }
+    }
     const joinId = this.renderedNodeId(`${id}::join`);
     const protectedExits = selected.result.fallsThrough
       ? this.routeExitsThrough(selected.exits, joinId, evidence)
@@ -423,6 +462,7 @@ class StaticTraversalCorrelator {
         entry: id,
         exits: protectedExits,
         terminations: selected.result.terminations,
+        ...(selected.result.throwSourceIds === undefined ? {} : { throwSourceIds: selected.result.throwSourceIds }),
       };
     }
 
@@ -443,7 +483,12 @@ class StaticTraversalCorrelator {
     }
     const completion = applyFinally(selected.result, finallyResult);
     if (!completion.fallsThrough) {
-      return { entry: id, exits: [], terminations: completion.terminations };
+      return {
+        entry: id,
+        exits: [],
+        terminations: completion.terminations,
+        ...(completion.throwSourceIds === undefined ? {} : { throwSourceIds: completion.throwSourceIds }),
+      };
     }
     return {
       entry: id,
@@ -451,6 +496,7 @@ class StaticTraversalCorrelator {
         ? [{ id: finallyId, evidence }]
         : finallyResult.lastExits.map((exit) => ({ ...exit, evidence })),
       terminations: completion.terminations,
+      ...(completion.throwSourceIds === undefined ? {} : { throwSourceIds: completion.throwSourceIds }),
     };
   }
 
@@ -513,6 +559,28 @@ class StaticTraversalCorrelator {
     evidence: RequestEdgeTraversalEvidence,
   ): void {
     this.evidenceByEdge.set(edgeKey(source, target, label), evidence);
+  }
+
+  /** Static Logic deliberately has no call-site-to-catch edge because the throwing site is only
+   * known at runtime. Add that missing transfer solely to the request projection so a caught path
+   * remains visually continuous without changing the reusable static graph. */
+  private addExceptionBridge(
+    source: string,
+    target: string,
+    evidence: RequestEdgeTraversalEvidence,
+  ): void {
+    if (source === target || this.supplementalExceptionBridges.some((edge) => edge.source === source && edge.target === target)) {
+      return;
+    }
+    this.supplementalExceptionBridges.push({
+      id: `request-exception:${this.supplementalExceptionBridges.length}`,
+      source,
+      target,
+      kind: "branch",
+      label: "throws → catch",
+      branchRole: "catch",
+      requestTraversal: evidence,
+    });
   }
 
   private expanded(id: string, defaultExpanded: boolean): boolean {
@@ -626,6 +694,7 @@ function applyFinally(selected: SequenceResult, finalizer: SequenceResult): Sequ
       lastExits: [],
       terminations: finalizer.terminations,
       fallsThrough: false,
+      ...(finalizer.throwSourceIds === undefined ? {} : { throwSourceIds: finalizer.throwSourceIds }),
     };
   }
   return {
@@ -633,6 +702,7 @@ function applyFinally(selected: SequenceResult, finalizer: SequenceResult): Sequ
     lastExits: selected.lastExits,
     terminations: uniqueTerminations([...selected.terminations, ...finalizer.terminations]),
     fallsThrough: selected.fallsThrough,
+    ...(selected.throwSourceIds === undefined ? {} : { throwSourceIds: selected.throwSourceIds }),
   };
 }
 

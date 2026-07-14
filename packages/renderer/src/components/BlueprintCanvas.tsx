@@ -33,13 +33,15 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
   const reviewFlowOpen = useBlueprint((state) => state.flowPaneOrigin !== "request"
     && state.flowSelection !== null
     && state.reviewFlowBaseline !== null
-    && state.reviewOpenFlowSplitOnSelect);
+      && state.reviewOpenFlowSplitOnSelect);
+  const syntheticFlowOpen = useBlueprint((state) => state.flowPaneOrigin === "synthetic" && state.flowSelection !== null);
   return (
     <div style={SHELL_STYLE}>
       <FlowExplorerPanel />
       <FlowSplitView
         open={flowPaneOpen}
         review={reviewFlowOpen}
+        synthetic={syntheticFlowOpen}
         graph={(
           <div style={MAIN_STYLE}>
             {/* Each view is its OWN ReactFlow surface; keying a fresh provider per mode gives each its own

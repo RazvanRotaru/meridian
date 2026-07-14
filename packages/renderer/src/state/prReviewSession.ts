@@ -7,8 +7,19 @@
  * store (erased at build), so there is no runtime cycle.
  */
 
-import { changedLineKindsFromExtensions, collectChangedIds, computeCoverage } from "@meridian/core";
-import type { ChangedLineSpan, GraphArtifact, LineRange, ReviewContext } from "@meridian/core";
+import {
+  changedLineKindsFromExtensions,
+  collectChangedIds,
+  computeCoverage,
+  syntheticScenarioDescriptorSchema,
+} from "@meridian/core";
+import type {
+  ChangedLineSpan,
+  GraphArtifact,
+  LineRange,
+  ReviewContext,
+  SyntheticScenarioDescriptor,
+} from "@meridian/core";
 import { loadArtifact } from "../boot/loadArtifact";
 import { applyChangedIds, applyChangedStatus, buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
 import type { FileMatch } from "../derive/matchAffectedFiles";
@@ -17,6 +28,25 @@ import { deriveReviewProjection } from "../derive/reviewProjection";
 import { readReviewProgress } from "./reviewTicksPref";
 import { reviewNodeStatusEntries, reviewNodeStatusSourcesFromKinds } from "./reviewNodeStatus";
 import type { BlueprintState } from "./store";
+import type { SyntheticExecutionTrust } from "./syntheticExecutionTrust";
+
+export interface PreparedSyntheticCapability {
+  syntheticExecutionUrl: string | null;
+  syntheticScenarios: SyntheticScenarioDescriptor[];
+  syntheticExecutionTrust: SyntheticExecutionTrust | null;
+}
+
+export interface PreparedGraphSession extends PreparedSyntheticCapability {
+  artifact: GraphArtifact;
+}
+
+/** Immutable identity the renderer already learned from the analyze stream (or saved review
+ * session). An executable prepared capability is accepted only when its server-attested sandbox
+ * provenance names this exact repository and commit. */
+export interface PreparedGraphIdentity {
+  repository: string | null;
+  headSha: string | null;
+}
 
 /** The boot artifact/index (+ its artifact-carried review, if any), saved once when the first swap
  * happens so ending the session restores the exact graph the session booted with. */
@@ -24,6 +54,9 @@ export interface PrReviewBaseline {
   artifact: GraphArtifact;
   index: GraphIndex;
   review: ReviewData | null;
+  syntheticExecutionUrl: string | null;
+  syntheticScenarios: SyntheticScenarioDescriptor[];
+  syntheticExecutionTrust: SyntheticExecutionTrust | null;
 }
 
 /** GET the prepared PR-head artifact from the same graph endpoint the boot artifact came from,
@@ -38,6 +71,27 @@ export async function fetchPreparedArtifact(graphUrl: string, preparedGraphId: s
   return loadArtifact(url.toString());
 }
 
+/** Load both halves of a prepared review session before committing either. A valid graph paired
+ * with missing or malformed execution metadata is a failed prepare, not a partially capable UI. */
+export async function fetchPreparedGraphSession(
+  graphUrl: string,
+  metaUrl: string,
+  preparedGraphId: string,
+  expectedIdentity: PreparedGraphIdentity,
+): Promise<PreparedGraphSession> {
+  if (metaUrl === "") {
+    throw new Error("this session has no meta endpoint to load prepared synthetic capabilities from");
+  }
+  const preparedMetaUrl = new URL(metaUrl, requestOrigin());
+  preparedMetaUrl.searchParams.set("id", preparedGraphId);
+  const [artifact, capability] = await Promise.all([
+    fetchPreparedArtifact(graphUrl, preparedGraphId),
+    fetchPreparedSyntheticCapability(preparedMetaUrl.toString()),
+  ]);
+  assertPreparedCapabilityIdentity(capability, expectedIdentity);
+  return { artifact, ...capability };
+}
+
 /**
  * Make the prepared PR-head artifact the CURRENT graph. The boot pair is saved ONCE — a re-review
  * (the same PR again, or another PR without leaving the session) must keep restoring to the
@@ -49,6 +103,7 @@ export function swapToPreparedArtifact(
   set: (partial: Partial<BlueprintState>) => void,
   prepared: GraphArtifact,
   invalidateArtifactCaches: () => void,
+  capability: PreparedSyntheticCapability = currentSyntheticCapability(get()),
 ): void {
   const state = get();
   // Snapshot the review the BOOT artifact itself carries (if any) — never the live PR review:
@@ -58,6 +113,9 @@ export function swapToPreparedArtifact(
     artifact: state.artifact,
     index: state.index,
     review: deriveReviewData(state.artifact, state.index),
+    syntheticExecutionUrl: state.syntheticExecutionUrl,
+    syntheticScenarios: [...state.syntheticScenarios],
+    syntheticExecutionTrust: state.syntheticExecutionTrust,
   };
   invalidateArtifactCaches();
   set({
@@ -65,6 +123,10 @@ export function swapToPreparedArtifact(
     index: buildGraphIndex(prepared),
     prReviewBaseline: baseline,
     prPreparedArtifactCurrent: true,
+    syntheticExecutionUrl: capability.syntheticExecutionUrl,
+    syntheticScenarios: [...capability.syntheticScenarios],
+    syntheticExecutionTrust: capability.syntheticExecutionTrust,
+    ...resetSyntheticRunState(state),
     // The cached coverage report belongs to the outgoing artifact: recompute for the head graph
     // when coverage mode is showing, else drop it so the next toggle recomputes lazily.
     coverage: state.coverageMode ? computeCoverage(prepared.nodes, prepared.edges) : null,
@@ -115,6 +177,10 @@ export function restorePrReviewBaseline(
     coverage: get().coverageMode ? computeCoverage(baseline.artifact.nodes, baseline.artifact.edges) : null,
     codeView: null,
     moduleGhostInspection: null,
+    syntheticExecutionUrl: baseline.syntheticExecutionUrl,
+    syntheticScenarios: [...baseline.syntheticScenarios],
+    syntheticExecutionTrust: baseline.syntheticExecutionTrust,
+    ...resetSyntheticRunState(get()),
   };
   if (!endSession) {
     // Soft close: the review stays fully populated (chip + resume). The overlay's own arrays are
@@ -198,6 +264,141 @@ export function restorePrReviewBaseline(
     minimalLayoutStatus: "idle",
   });
   return true;
+}
+
+function currentSyntheticCapability(state: BlueprintState): PreparedSyntheticCapability {
+  return {
+    syntheticExecutionUrl: state.syntheticExecutionUrl,
+    syntheticScenarios: [...state.syntheticScenarios],
+    syntheticExecutionTrust: state.syntheticExecutionTrust,
+  };
+}
+
+/** Disabled execution metadata carries no authority and can accompany an otherwise valid prepared
+ * review graph. A runnable prepared capability, however, must be the sandboxed capability minted
+ * for the exact PR repository + analyzed commit; local or stale sandbox authority fails closed. */
+function assertPreparedCapabilityIdentity(
+  capability: PreparedSyntheticCapability,
+  expected: PreparedGraphIdentity,
+): void {
+  if (capability.syntheticExecutionUrl === null) {
+    return;
+  }
+  const trust = capability.syntheticExecutionTrust;
+  if (trust?.mode !== "sandboxed-pr") {
+    throw new Error("prepared synthetic execution capability is not bound to a PR sandbox");
+  }
+  if (expected.repository === null || trust.provenance.repository !== expected.repository) {
+    throw new Error("prepared synthetic execution repository provenance does not match this PR session");
+  }
+  if (expected.headSha === null || trust.provenance.headSha !== expected.headSha) {
+    throw new Error("prepared synthetic execution head SHA provenance does not match the analyzed PR head");
+  }
+}
+
+function resetSyntheticRunState(state: BlueprintState): Partial<BlueprintState> {
+  const reset: Partial<BlueprintState> = {
+    syntheticExecution: null,
+    syntheticPreviousExecution: null,
+    syntheticExecutionRootId: null,
+    syntheticExecutionHost: null,
+    syntheticExecutionStatus: "idle",
+    syntheticExecutionError: null,
+    syntheticExperimentRootId: null,
+    syntheticInputOverrides: [],
+    syntheticFieldWatchers: [],
+    syntheticEditorRequest: null,
+    syntheticSelectedMomentId: null,
+    syntheticFlowOrientation: "vertical",
+    syntheticFlowPresentation: "focused",
+  };
+  if (state.flowPaneOrigin === "synthetic") {
+    Object.assign(reset, {
+      flowSelection: null,
+      flowPaneOrigin: null,
+      requestFlowTraceId: null,
+      requestFlowExpansionOverrides: new Set<string>(),
+      flowPaneRfNodes: [],
+      flowPaneRfEdges: [],
+      flowPaneLayoutStatus: "idle",
+    } satisfies Partial<BlueprintState>);
+  }
+  return reset;
+}
+
+async function fetchPreparedSyntheticCapability(metaUrl: string): Promise<PreparedSyntheticCapability> {
+  const response = await fetch(metaUrl);
+  if (!response.ok) {
+    throw new Error(`prepared meta fetch failed (${response.status}) from ${metaUrl}`);
+  }
+  const body = await response.json() as unknown;
+  if (typeof body !== "object" || body === null) {
+    throw new Error("prepared meta returned an invalid synthetic execution capability");
+  }
+  const candidate = body as Record<string, unknown>;
+  const rawUrl = candidate.syntheticExecutionUrl;
+  const syntheticExecutionUrl = rawUrl === null
+    ? null
+    : typeof rawUrl === "string" && rawUrl.trim().length > 0
+      ? rawUrl
+      : invalidPreparedCapability("syntheticExecutionUrl");
+  const rawScenarios = candidate.syntheticScenarios;
+  if (!Array.isArray(rawScenarios)) invalidPreparedCapability("syntheticScenarios");
+  const scenarios: SyntheticScenarioDescriptor[] = [];
+  const scenarioIds = new Set<string>();
+  for (const rawScenario of rawScenarios as unknown[]) {
+    const parsed = syntheticScenarioDescriptorSchema.safeParse(rawScenario);
+    if (!parsed.success || scenarioIds.has(parsed.data.id)) {
+      invalidPreparedCapability("syntheticScenarios");
+    }
+    scenarioIds.add(parsed.data.id);
+    scenarios.push(parsed.data);
+  }
+  const trust = parsePreparedTrust(candidate.syntheticExecutionTrust);
+  if (syntheticExecutionUrl === null) {
+    if (trust !== null || scenarios.length > 0) invalidPreparedCapability("disabled execution metadata");
+  } else if (trust === null) {
+    invalidPreparedCapability("syntheticExecutionTrust");
+  }
+  return { syntheticExecutionUrl, syntheticScenarios: scenarios, syntheticExecutionTrust: trust };
+}
+
+function parsePreparedTrust(value: unknown): SyntheticExecutionTrust | null {
+  if (value === null) return null;
+  if (typeof value !== "object" || value === null) invalidPreparedCapability("syntheticExecutionTrust");
+  const candidate = value as Record<string, unknown>;
+  if (candidate.mode !== "local" && candidate.mode !== "sandboxed-pr") {
+    invalidPreparedCapability("syntheticExecutionTrust.mode");
+  }
+  const provenance = parsePreparedProvenance(candidate.provenance);
+  if (candidate.mode === "sandboxed-pr") {
+    if (provenance?.repository === undefined || provenance.headSha === undefined) {
+      invalidPreparedCapability("syntheticExecutionTrust.provenance");
+    }
+    return { mode: "sandboxed-pr", provenance: { repository: provenance.repository, headSha: provenance.headSha } };
+  }
+  return provenance === undefined ? { mode: "local" } : { mode: "local", provenance };
+}
+
+function parsePreparedProvenance(value: unknown): SyntheticExecutionTrust["provenance"] {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null) invalidPreparedCapability("syntheticExecutionTrust.provenance");
+  const candidate = value as Record<string, unknown>;
+  const repository = optionalPreparedString(candidate.repository, "repository", 512);
+  const headSha = optionalPreparedString(candidate.headSha, "headSha", 128);
+  return repository === undefined && headSha === undefined ? undefined : { repository, headSha };
+}
+
+function optionalPreparedString(value: unknown, field: string, maxLength: number): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim().length === 0 || value.trim().length > maxLength) {
+    invalidPreparedCapability(`syntheticExecutionTrust.provenance.${field}`);
+  }
+  return value.trim();
+}
+
+function invalidPreparedCapability(field: string): never {
+  throw new Error(`prepared meta returned invalid ${field}`);
 }
 
 /**

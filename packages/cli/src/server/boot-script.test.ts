@@ -17,6 +17,8 @@ describe("injectBootScript", () => {
   it("still injects a parseable boot object that never defaults the environment", () => {
     const html = injectBootScript("<head></head>", { kind: "mock" }, "staging", null);
     expect(html).toContain('"traceUrl":"/api/traces"');
+    expect(html).toContain('"syntheticExecutionUrl":null');
+    expect(html).toContain('"syntheticScenarios":[]');
     expect(html).toContain('"telemetrySources":[{"id":"demo","kind":"mock","label":"Synthetic demo","provenance":"synthetic","environments":["demo","dev","staging","prod"],"environmentMode":"arbitrary","supportsMetrics":true,"supportsTraces":true}]');
     expect(html).toContain('"preselectedTelemetrySourceId":"demo"');
     expect(html).toContain('"preselectedEnv":"staging"');
@@ -34,6 +36,22 @@ describe("injectBootScript", () => {
   it("advertises the source endpoint only when a source root is configured", () => {
     expect(injectBootScript("<head></head>", { kind: "mock" }, null, "/repo")).toContain('"sourceUrl":"/api/source"');
     expect(injectBootScript("<head></head>", { kind: "mock" }, null, null)).toContain('"sourceUrl":null');
+  });
+
+  it("advertises synthetic execution only when the server passes an enabled local manifest", () => {
+    const scenario = {
+      id: "place-order",
+      label: "Place an order",
+      rootId: "ts:src/services/orderService.ts#OrderService.placeOrder",
+      defaultInput: { customerId: "cust_demo", lines: [] },
+    };
+    const enabled = injectBootScript("<head></head>", { kind: "none" }, null, "/repo", [scenario]);
+
+    expect(enabled).toContain('"syntheticExecutionUrl":"/api/synthetic-executions"');
+    expect(enabled).toContain('"syntheticScenarios":[{"id":"place-order"');
+    expect(injectBootScript("<head></head>", { kind: "none" }, null, "/repo")).toContain(
+      '"syntheticExecutionUrl":null',
+    );
   });
 
   it("advertises a narrow built-in demo while leaving source and environment unselected", () => {

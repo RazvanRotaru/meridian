@@ -1,9 +1,20 @@
+import type { ComponentType } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { NodeProps } from "@xyflow/react";
+import { ReactFlowProvider, type NodeProps } from "@xyflow/react";
 import { describe, expect, it } from "vitest";
-import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
+import type { DefGroupData, LogicFlowOrientation, LogicRfNode } from "../../../layout/logicElk";
+import type { LogicNodeData } from "../../../derive/logicGraph";
+import { freshStore, ALPHA_RUN } from "../../../parity/surfaceFixture";
+import { StoreProvider } from "../../../state/StoreContext";
 import { BaseNodeActionScope } from "../BaseNode";
-import { ChangedTag, logicNodeTypes, TargetChangedTag, withChanged } from "./logicNodeTypes";
+import {
+  ChangedTag,
+  logicNodeTypes,
+  syntheticOccurrenceSelectState,
+  TargetChangedTag,
+  withChanged,
+} from "./logicNodeTypes";
+import { LogicFlowOrientationProvider } from "./LogicFlowOrientationContext";
 
 describe("logic PR-change paint", () => {
   it("washes the whole node, keeps external hatching, and strengthens a dimmed changed node", () => {
@@ -95,3 +106,95 @@ describe("Logic definition-owner frame", () => {
     expect(markup.indexOf("INTERFACE")).toBeLessThan(markup.indexOf("data-base-node-disclosure"));
   });
 });
+describe("synthetic runtime node snapshots", () => {
+  it("renders explicit compact IN/OUT rows and selects only the clicked occurrence", () => {
+    const store = freshStore();
+    store.setState({
+      flowPaneOrigin: "synthetic",
+      syntheticSelectedMomentId: "occurrence:first",
+    });
+    const data: LogicNodeData = {
+      logicKind: "call",
+      label: "run",
+      targetId: ALPHA_RUN,
+      resolution: "resolved",
+      expandable: false,
+      isExpanded: false,
+      isContainer: false,
+      compact: false,
+      callScope: "internal",
+      greyed: false,
+      provenance: null,
+      childCount: 0,
+      runtime: {
+        kind: "span",
+        status: "ok",
+        snapshot: {
+          input: { amount: 42 },
+          output: { accepted: true },
+        },
+      },
+    };
+
+    const selected = renderRuntimeNode(store, "occurrence:first", data);
+    const repeated = renderRuntimeNode(store, "occurrence:second", data);
+
+    expect(selected).toContain('data-synthetic-snapshot="occurrence:first"');
+    expect(selected).toContain("IN");
+    expect(selected).toContain("OUT");
+    expect(selected).toContain("{&quot;amount&quot;:42}");
+    expect(selected).toContain("{&quot;accepted&quot;:true}");
+    expect(repeated).toContain('data-synthetic-snapshot="occurrence:second"');
+    expect(syntheticOccurrenceSelectState("occurrence:first", "occurrence:first")).toBe("selected");
+    expect(syntheticOccurrenceSelectState("occurrence:second", "occurrence:first")).toBe("dimmed");
+    expect(syntheticOccurrenceSelectState("occurrence:first", null)).toBe("none");
+
+    const vertical = renderRuntimeNode(store, "occurrence:first", data, "vertical");
+    expect(vertical).toContain("react-flow__handle-top");
+    expect(vertical).toContain("react-flow__handle-bottom");
+    expect(vertical).not.toContain("react-flow__handle-left");
+    expect(vertical).not.toContain("react-flow__handle-right");
+  });
+
+  it("keeps failures on the OUT row instead of inventing an output value", () => {
+    const store = freshStore();
+    store.setState({ flowPaneOrigin: "synthetic" });
+    const data = {
+      logicKind: "call",
+      label: "run",
+      targetId: ALPHA_RUN,
+      resolution: "resolved",
+      expandable: false,
+      isExpanded: false,
+      isContainer: false,
+      compact: false,
+      callScope: "internal",
+      greyed: false,
+      provenance: null,
+      childCount: 0,
+      runtime: { kind: "span", snapshot: { input: 4, error: "boom" } },
+    } satisfies LogicNodeData;
+
+    const html = renderRuntimeNode(store, "occurrence:error", data);
+    expect(html).toContain("ERROR · boom");
+    expect(html).toContain("OUT");
+  });
+});
+
+function renderRuntimeNode(
+  store: ReturnType<typeof freshStore>,
+  id: string,
+  data: LogicNodeData,
+  orientation: LogicFlowOrientation = "horizontal",
+): string {
+  const Block = logicNodeTypes.block as ComponentType<{ id: string; data: LogicNodeData }>;
+  return renderToStaticMarkup(
+    <StoreProvider store={store}>
+      <ReactFlowProvider>
+        <LogicFlowOrientationProvider value={orientation}>
+          <Block id={id} data={data} />
+        </LogicFlowOrientationProvider>
+      </ReactFlowProvider>
+    </StoreProvider>,
+  );
+}

@@ -5,15 +5,18 @@
  * deterministic — so this doubles as the no-network smoke test: path -> id -> graph -> /view.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AddressInfo } from "node:net";
-import type { Server } from "node:http";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { request as httpRequest } from "node:http";
-import { createWebServer } from "./web-server";
+import { Readable } from "node:stream";
+import type { GraphArtifact } from "@meridian/core";
+import { createWebServer, handleSyntheticExecution } from "./web-server";
+import type { Context } from "./web-server";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const WEB_UI = fileURLToPath(new URL("../../web-ui/index.html", import.meta.url));
@@ -33,7 +36,13 @@ let base: string;
 
 beforeAll(async () => {
   rendererRoot = writeFakeRenderer();
-  server = createWebServer({ rendererRoot, webUiPath: WEB_UI, cwd: REPO_ROOT, source: "sindresorhus/type-fest" });
+  server = createWebServer({
+    rendererRoot,
+    webUiPath: WEB_UI,
+    cwd: REPO_ROOT,
+    source: "sindresorhus/type-fest",
+    allowSyntheticExecution: true,
+  });
   base = await listenEphemeral(server);
 });
 
@@ -124,20 +133,75 @@ describe("createWebServer generate -> view (offline path source)", () => {
     expect(graph.schemaVersion).toBeTruthy();
     expect(graph.nodes.length).toBe(result.counts.nodes);
 
-    const meta = await getJson<{ hasOverlay: boolean; environments: unknown[] }>(`${base}/api/meta?id=${result.id}`);
-    expect(meta).toMatchObject({ hasOverlay: false, environments: [] });
+    const meta = await getJson<{
+      hasOverlay: boolean;
+      environments: unknown[];
+      telemetrySources: Array<{ id: string }>;
+      syntheticExecutionUrl: string | null;
+      syntheticScenarios: Array<{ id: string }>;
+      syntheticExecutionTrust: { mode: string } | null;
+    }>(`${base}/api/meta?id=${result.id}`);
+    expect(meta).toMatchObject({
+      hasOverlay: false,
+      environments: [],
+      telemetrySources: [{ id: "demo" }],
+      syntheticExecutionUrl: `/api/synthetic-executions?id=${result.id}`,
+      syntheticExecutionTrust: { mode: "local" },
+    });
+    expect(meta.syntheticScenarios).toContainEqual(expect.objectContaining({ id: "place-order-happy" }));
 
     const view = await (await fetch(`${base}/view?id=${result.id}`)).text();
     expect(view).toContain("window.__MERIDIAN__=");
     expect(view).toContain(`"graphUrl":"/api/graph?id=${result.id}"`);
-    expect(view).toContain('"traceUrl":"/api/traces"');
+    expect(view).toContain(`"overlayUrl":"/api/overlay?id=${result.id}"`);
+    expect(view).toContain(`"traceUrl":"/api/traces?id=${result.id}"`);
+    expect(view).toContain(`"syntheticExecutionUrl":"/api/synthetic-executions?id=${result.id}"`);
+    expect(view).toContain('"id":"place-order-happy"');
     expect(view).toContain('"hasOverlay":false');
-    expect(view).toContain('"telemetrySources":[]');
+    expect(view).toContain('"telemetrySources":[{"id":"demo"');
     expect(view).toContain('"preselectedTelemetrySourceId":null');
     expect(view).toContain('"defaultEnv":null');
     // A path-sourced session has no GitHub identity: the boot contract carries null (a GitHub
     // session carries the {repository, subdir} source object instead of the old boolean).
     expect(view).toContain('"githubSource":null');
+
+    const missingSource = await fetch(`${base}/api/overlay?id=${result.id}&env=demo`);
+    expect(missingSource.status).toBe(404);
+    expect(await missingSource.json()).toEqual({ error: "no overlay for env 'demo'" });
+
+    const missingEnvironment = await fetch(`${base}/api/overlay?id=${result.id}&source=demo`);
+    expect(missingEnvironment.status).toBe(400);
+    expect(await missingEnvironment.json()).toEqual({ error: "env query parameter is required; blueprint never defaults" });
+
+    const overlay = await getJson<{ kind: string; env: string; graphRef: { nodeCount: number } }>(
+      `${base}/api/overlay?id=${result.id}&source=demo&env=demo`,
+    );
+    expect(overlay).toMatchObject({ kind: "mock", env: "demo", graphRef: { nodeCount: result.counts.nodes } });
+
+    const traces = await getJson<{ source: string; env: string; traces: unknown[] }>(
+      `${base}/api/traces?id=${result.id}&source=demo&env=demo`,
+    );
+    expect(traces).toMatchObject({ source: "mock", env: "demo" });
+    expect(traces.traces.length).toBeGreaterThanOrEqual(10);
+
+    const executionResponse = await post(`/api/synthetic-executions?id=${result.id}`, {
+      scenarioId: "place-order-happy",
+      rootNodeId: "ts:src/services/orderService.ts#OrderService.placeOrder",
+      input: {
+        customerId: "cust_synthetic",
+        lines: [{ sku: "kettle", quantity: 1, unitPriceCents: 10_000 }],
+        discountCode: "WELCOME10",
+      },
+    });
+    expect(executionResponse.status).toBe(200);
+    expect(await executionResponse.json()).toMatchObject({
+      executionVersion: "1.0.0",
+      scenarioId: "place-order-happy",
+      rootId: "ts:src/services/orderService.ts#OrderService.placeOrder",
+      output: { customerId: "cust_synthetic", subtotalCents: 10_000, discountCents: 1_000, totalCents: 10_800 },
+      trace: { spans: expect.any(Array) },
+      snapshots: expect.any(Array),
+    });
   }, 60_000);
 
   it("auto-detects Python for a pyproject tree", async () => {
@@ -145,6 +209,10 @@ describe("createWebServer generate -> view (offline path source)", () => {
     expect(result.counts.nodes).toBeGreaterThanOrEqual(25);
     const graph = await getJson<{ target: { language: string } }>(`${base}/api/graph?id=${result.id}`);
     expect(graph.target.language).toBe("python");
+    const view = await (await fetch(`${base}/view?id=${result.id}`)).text();
+    expect(view).toContain(`"syntheticExecutionUrl":"/api/synthetic-executions?id=${result.id}"`);
+    expect(view).toContain('"syntheticScenarios":[]');
+    expect(view).toContain('"syntheticExecutionTrust":{"mode":"local"}');
   }, 60_000);
 
   it("keeps and materializes declared external imports for the rendered graph", async () => {
@@ -230,11 +298,67 @@ describe("createWebServer auth routes (sign-in always available)", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
   });
 
-  it("keeps request telemetry unavailable in web mode", async () => {
-    const res = await fetch(`${base}/api/traces?env=staging`);
-    expect(res.status).toBe(400);
+  it("requires telemetry requests to identify a generated graph", async () => {
+    const res = await fetch(`${base}/api/traces?source=demo&env=demo`);
+    expect(res.status).toBe(404);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/no telemetry traces/i) });
+    expect(await res.json()).toEqual({ error: "unknown graph id" });
+  });
+
+  it("keeps synthetic execution unavailable for unknown or non-local graph ids", async () => {
+    const res = await post("/api/synthetic-executions?id=nope", {
+      scenarioId: "place-order",
+      rootNodeId: "ts:src/services/orderService.ts#OrderService.placeOrder",
+      input: {},
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "synthetic execution is not enabled for this graph" });
+  });
+});
+
+describe("GitHub synthetic execution admission", () => {
+  const id = "pr-graph";
+  const rootNodeId = "ts:src/api/cartRoutes.ts#CartRoutes.handleAddItem";
+
+  it("denies by default even when stale capability state is present", async () => {
+    const { ctx, runInOci } = githubExecutionCtx({ allow: false, runtime: true });
+    const result = await invokeSynthetic(ctx, id, false);
+
+    expect(result.status).toBe(404);
+    expect(result.json).toEqual({ error: "synthetic execution is not enabled for this graph" });
+    expect(runInOci).not.toHaveBeenCalled();
+  });
+
+  it("requires explicit per-request sandbox consent after flag and OCI admission", async () => {
+    const { ctx, runInOci } = githubExecutionCtx({ allow: true, runtime: true });
+    const result = await invokeSynthetic(ctx, id, false);
+
+    expect(result.status).toBe(403);
+    expect(result.json).toEqual({ error: "sandbox consent is required for GitHub synthetic execution" });
+    expect(runInOci).not.toHaveBeenCalled();
+  });
+
+  it("routes an explicitly admitted and consented GitHub run only to the OCI executor", async () => {
+    const { ctx, runInOci } = githubExecutionCtx({ allow: true, runtime: true });
+    const result = await invokeSynthetic(ctx, id, true);
+
+    expect(result.status).toBe(200);
+    expect(result.json).toEqual({ executionVersion: "fixture-oci" });
+    expect(runInOci).toHaveBeenCalledWith(expect.objectContaining({
+      scenarioId: "add-item",
+      expectedRootId: rootNodeId,
+      expectedSourceFingerprint: "fingerprint",
+    }));
+  });
+
+  it("fails closed when the OCI runtime is unavailable or no scenario is authored", async () => {
+    const unavailable = githubExecutionCtx({ allow: true, runtime: false });
+    expect((await invokeSynthetic(unavailable.ctx, id, true)).status).toBe(404);
+
+    const empty = githubExecutionCtx({ allow: true, runtime: true, withScenario: false });
+    expect((await invokeSynthetic(empty.ctx, id, true)).status).toBe(404);
+    expect(unavailable.runInOci).not.toHaveBeenCalled();
+    expect(empty.runInOci).not.toHaveBeenCalled();
   });
 });
 
@@ -266,6 +390,61 @@ function writeFakeRenderer(): string {
   writeFileSync(join(dir, "index.html"), "<!doctype html><html><head></head><body></body></html>");
   writeFileSync(join(dir, "assets", "app.js"), "export const ready = true;");
   return dir;
+}
+
+function githubExecutionCtx(options: { allow: boolean; runtime: boolean; withScenario?: boolean }): {
+  ctx: Context;
+  runInOci: ReturnType<typeof vi.fn>;
+} {
+  const id = "pr-graph";
+  const rootId = "ts:src/api/cartRoutes.ts#CartRoutes.handleAddItem";
+  const runInOci = vi.fn().mockResolvedValue({ executionVersion: "fixture-oci" });
+  const withScenario = options.withScenario !== false;
+  const ctx = {
+    graphs: new Map([[id, {} as GraphArtifact]]),
+    sourceRoots: new Map([[id, "/tmp/pr-source"]]),
+    sources: new Map([[id, { kind: "github", owner: "octo", repo: "repo" }]]),
+    syntheticScenarios: new Map(withScenario ? [[id, [{
+      id: "add-item",
+      label: "Add item",
+      rootId,
+      defaultInput: {},
+    }]]] : []),
+    syntheticSourceFingerprints: new Map(withScenario ? [[id, "fingerprint"]] : []),
+    syntheticExecutionTrust: new Map([[id, {
+      mode: "sandboxed-pr",
+      provenance: { repository: "octo/repo", headSha: "abc123" },
+    }]]),
+    allowSyntheticExecution: false,
+    allowSyntheticPrExecution: options.allow,
+    syntheticPrSandboxRuntimeSupported: () => options.runtime,
+    runSyntheticScenarioInOci: runInOci,
+  } as unknown as Context;
+  return { ctx, runInOci };
+}
+
+async function invokeSynthetic(ctx: Context, id: string, consent: boolean): Promise<{ status: number; json: unknown }> {
+  const headers: Record<string, string> = { host: "127.0.0.1:4180" };
+  if (consent) headers["x-meridian-sandbox-consent"] = "true";
+  const request = Object.assign(Readable.from([Buffer.from(JSON.stringify({
+    scenarioId: "add-item",
+    rootNodeId: "ts:src/api/cartRoutes.ts#CartRoutes.handleAddItem",
+    input: {},
+  }))]), { headers }) as unknown as IncomingMessage;
+  let status = 0;
+  let body = "";
+  const response = {
+    writeHead(code: number) {
+      status = code;
+      return response;
+    },
+    end(chunk?: unknown) {
+      body += chunk === undefined ? "" : String(chunk);
+    },
+  } as unknown as ServerResponse;
+
+  await handleSyntheticExecution(ctx, request, response, id);
+  return { status, json: JSON.parse(body) as unknown };
 }
 
 function listenEphemeral(target: Server): Promise<string> {

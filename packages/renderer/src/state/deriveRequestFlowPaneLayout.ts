@@ -1,10 +1,11 @@
-import type { LogicFlows, RequestTrace } from "@meridian/core";
-import { deriveRequestExecutionFlow } from "../derive/requestExecutionFlow";
+import type { LogicFlows, RequestTrace, SyntheticNodeSnapshot } from "@meridian/core";
+import { deriveFocusedRequestExecutionFlow, deriveRequestExecutionFlow } from "../derive/requestExecutionFlow";
 import type { GraphIndex } from "../graph/graphIndex";
 import {
   buildLogicElkGraph,
   toReactFlowLogic,
   type LogicRfEdge,
+  type LogicFlowOrientation,
   type LogicReactFlowGraph,
 } from "../layout/logicElk";
 import { runElkLayout } from "../layout/elkLayout";
@@ -24,12 +25,43 @@ export async function deriveRequestFlowPaneLayout(
   index: GraphIndex,
   flows: LogicFlows = {},
   requestFlowExpansionOverrides: ReadonlySet<string> = new Set<string>(),
+  snapshots: readonly SyntheticNodeSnapshot[] = [],
 ): Promise<LogicReactFlowGraph> {
-  const spec = deriveRequestExecutionFlow(trace, index, flows, requestFlowExpansionOverrides);
+  const spec = deriveRequestExecutionFlow(trace, index, flows, requestFlowExpansionOverrides, snapshots);
   if (spec.nodes.length === 0) return { nodes: [], edges: [] };
   const laidOut = await runElkLayout(buildLogicElkGraph(spec));
   const specById = new Map<string, LogicNodeSpec>(spec.nodes.map((node) => [node.id, node]));
   const graph = toReactFlowLogic(laidOut, specById, spec.edges);
+  return {
+    ...graph,
+    edges: decorateRequestFlowEdges(graph.edges, spec.edges, trace.traceId),
+  };
+}
+
+/** The synthetic flow player charts one selected callable occurrence at a time. It shares the
+ * request evidence paint, but gives the reader an explicit orientation choice for that focused
+ * static body without changing the main Logic view's established horizontal layout. */
+export async function deriveFocusedRequestFlowPaneLayout(
+  trace: RequestTrace,
+  index: GraphIndex,
+  flows: LogicFlows,
+  selectedMomentId: string,
+  orientation: LogicFlowOrientation,
+  requestFlowExpansionOverrides: ReadonlySet<string> = new Set<string>(),
+  snapshots: readonly SyntheticNodeSnapshot[] = [],
+): Promise<LogicReactFlowGraph> {
+  const spec = deriveFocusedRequestExecutionFlow(
+    trace,
+    index,
+    flows,
+    selectedMomentId,
+    requestFlowExpansionOverrides,
+    snapshots,
+  );
+  if (spec.nodes.length === 0) return { nodes: [], edges: [] };
+  const laidOut = await runElkLayout(buildLogicElkGraph(spec, orientation));
+  const specById = new Map<string, LogicNodeSpec>(spec.nodes.map((node) => [node.id, node]));
+  const graph = toReactFlowLogic(laidOut, specById, spec.edges, orientation);
   return {
     ...graph,
     edges: decorateRequestFlowEdges(graph.edges, spec.edges, trace.traceId),

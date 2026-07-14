@@ -5,7 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -21,6 +21,10 @@ import { SessionStore } from "./session";
 import { sendJson } from "./http-response";
 import { WebError } from "./web-error";
 import { createGitHubClient } from "./github";
+import {
+  loadSyntheticScenarios,
+  syntheticSourceFingerprint,
+} from "./synthetic-execution";
 
 vi.mock("../repository-analysis", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../repository-analysis")>();
@@ -29,6 +33,14 @@ vi.mock("../repository-analysis", async (importOriginal) => {
 vi.mock("./git-exec", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./git-exec")>();
   return { ...actual, runGit: vi.fn(), runGitClone: vi.fn() };
+});
+vi.mock("./synthetic-execution", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./synthetic-execution")>();
+  return {
+    ...actual,
+    loadSyntheticScenarios: vi.fn(() => []),
+    syntheticSourceFingerprint: vi.fn(() => "fixture-fingerprint"),
+  };
 });
 
 const ARTIFACT = {
@@ -54,9 +66,10 @@ describe("handlePrAnalyze", () => {
     vi.mocked(runGitClone).mockImplementation(async (args) => {
       mkdirSync(args.at(-1)!, { recursive: true });
     });
-    // rev-parse yields the analyzed head commit (with git's trailing newline); every other call "".
     mockGitRevisions();
     vi.mocked(analyzeRepository).mockResolvedValue({ artifact: ARTIFACT, warnings: ["w1"] } as never);
+    vi.mocked(loadSyntheticScenarios).mockReturnValue([]);
+    vi.mocked(syntheticSourceFingerprint).mockReturnValue("fixture-fingerprint");
   });
 
   afterEach(() => {
@@ -67,6 +80,7 @@ describe("handlePrAnalyze", () => {
 
   it("streams clone -> checkout -> extract -> done and registers the persistent checkout", async () => {
     const ctx = githubCtx();
+    ctx.allowSyntheticExecution = true; // The local-only flag must never admit a PR artifact.
     const captured = await invoke(ctx, BODY);
     expect(captured.status()).toBe(200);
     expect(captured.contentType()).toContain("application/x-ndjson");
@@ -85,8 +99,109 @@ describe("handlePrAnalyze", () => {
     expect(ctx.graphs.get(done.graphId as string)).toStrictEqual(ARTIFACT);
     expect(sourceDir).toContain(cacheRoot);
     expect(ctx.sources.get(done.graphId as string)).toMatchObject({ kind: "github", owner: "org", repo: "repo" });
+    expect(ctx.syntheticScenarios.has(done.graphId as string)).toBe(false);
+    expect(ctx.syntheticSourceFingerprints.has(done.graphId as string)).toBe(false);
+    expect(ctx.syntheticExecutionTrust.has(done.graphId as string)).toBe(false);
     expect(ctx.tempCleanups.size).toBe(0);
     expect(existsSync(sourceDir)).toBe(true);
+  });
+
+  it("retains validated scenarios, fingerprint, and commit provenance only with PR opt-in plus OCI support", async () => {
+    const ctx = githubCtx();
+    ctx.allowSyntheticPrExecution = true;
+    ctx.syntheticPrSandboxRuntimeSupported = () => true;
+    vi.mocked(loadSyntheticScenarios).mockReturnValue([{
+      id: "add-item",
+      label: "Add item",
+      rootId: "ts:src/api/cartRoutes.ts#CartRoutes.handleAddItem",
+      defaultInput: { cartId: "cart-1" },
+    }]);
+
+    const done = (await invoke(ctx, BODY)).lines().at(-1)!;
+    const graphId = done.graphId as string;
+    expect(ctx.syntheticScenarios.get(graphId)).toEqual([expect.objectContaining({ id: "add-item" })]);
+    expect(ctx.syntheticSourceFingerprints.get(graphId)).toBe("fixture-fingerprint");
+    expect(ctx.syntheticExecutionTrust.get(graphId)).toEqual({
+      mode: "sandboxed-pr",
+      provenance: {
+        repository: "org/repo",
+        headSha: "abc1234def5678900000aaaabbbbccccddddeeee",
+      },
+    });
+    expect(loadSyntheticScenarios).toHaveBeenCalledWith(ctx.sourceRoots.get(graphId));
+    expect(syntheticSourceFingerprint).toHaveBeenCalledWith(ctx.sourceRoots.get(graphId), ARTIFACT);
+    for (const cleanup of ctx.tempCleanups) cleanup();
+  });
+
+  it("retains sandbox provenance when enabled even when the PR has no authored scenarios", async () => {
+    const ctx = githubCtx();
+    ctx.allowSyntheticPrExecution = true;
+    ctx.syntheticPrSandboxRuntimeSupported = () => true;
+
+    const done = (await invoke(ctx, BODY)).lines().at(-1)!;
+    const graphId = done.graphId as string;
+    expect(ctx.syntheticScenarios.has(graphId)).toBe(false);
+    expect(ctx.syntheticSourceFingerprints.has(graphId)).toBe(false);
+    expect(ctx.syntheticExecutionTrust.get(graphId)).toEqual({
+      mode: "sandboxed-pr",
+      provenance: {
+        repository: "org/repo",
+        headSha: "abc1234def5678900000aaaabbbbccccddddeeee",
+      },
+    });
+    expect(done.warnings).toEqual([
+      "w1",
+      "Synthetic execution needs a valid meridian.synthetic.json scenario manifest.",
+    ]);
+    for (const cleanup of ctx.tempCleanups) cleanup();
+  });
+
+  it("keeps the PR graph reviewable and leaks no details when its synthetic manifest is malformed", async () => {
+    const ctx = githubCtx();
+    ctx.allowSyntheticPrExecution = true;
+    ctx.syntheticPrSandboxRuntimeSupported = () => true;
+    vi.mocked(loadSyntheticScenarios).mockImplementation(() => {
+      throw new Error("/tmp/private-clone: hostile <manifest> payload");
+    });
+
+    const captured = await invoke(ctx, BODY);
+    const lines = captured.lines();
+    expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
+    const done = lines.at(-1)!;
+    const graphId = done.graphId as string;
+    expect(ctx.graphs.get(graphId)).toStrictEqual(ARTIFACT);
+    expect(ctx.syntheticScenarios.has(graphId)).toBe(false);
+    expect(ctx.syntheticSourceFingerprints.has(graphId)).toBe(false);
+    expect(ctx.syntheticExecutionTrust.has(graphId)).toBe(false);
+    expect(done.warnings).toEqual([
+      "w1",
+      "Synthetic execution was disabled because the PR scenario manifest is invalid.",
+    ]);
+    expect(JSON.stringify(done)).not.toContain("/tmp/private-clone");
+    expect(JSON.stringify(done)).not.toContain("hostile");
+    for (const cleanup of ctx.tempCleanups) cleanup();
+  });
+
+  it("rejects a PR-controlled extraction subdir symlink before extracting or storing a capability", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "meridian-pr-outside-"));
+    vi.mocked(runGitClone).mockImplementationOnce(async (args) => {
+      const cloneRoot = args.at(-1)!;
+      symlinkSync(outside, join(cloneRoot, "selected"));
+    });
+    const ctx = githubCtx({ kind: "github", owner: "org", repo: "repo", subdir: "selected" });
+    ctx.allowSyntheticPrExecution = true;
+    ctx.syntheticPrSandboxRuntimeSupported = () => true;
+    try {
+      const captured = await invoke(ctx, BODY);
+      expect(captured.lines().map((line) => line.stage)).toEqual(["clone", "error"]);
+      expect(ctx.graphs.size).toBe(0);
+      expect(ctx.sourceRoots.size).toBe(0);
+      expect(ctx.syntheticExecutionTrust.size).toBe(0);
+      expect(analyzeRepository).not.toHaveBeenCalled();
+      expect(existsSync(clonedDir())).toBe(false);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it("stores force-pushed heads under different commit-pinned graph ids", async () => {
@@ -287,6 +402,9 @@ function githubCtx(source: ArtifactSource = { kind: "github", owner: "org", repo
     graphs: new Map(),
     sourceRoots: new Map(),
     sources: new Map([["artifact", source]]),
+    syntheticScenarios: new Map(),
+    syntheticSourceFingerprints: new Map(),
+    syntheticExecutionTrust: new Map(),
     prFilesCache: new Map(),
     tempCleanups: new Set(),
     rendererIndex: "",
@@ -296,6 +414,11 @@ function githubCtx(source: ArtifactSource = { kind: "github", owner: "org", repo
     sessions: new SessionStore(),
     github: createGitHubClient({ clientId: "Iv1.test" }),
     cacheRoot,
+    cacheJobs: new Map(),
+    refreshCache: false,
+    allowSyntheticExecution: false,
+    allowSyntheticPrExecution: false,
+    syntheticPrSandboxRuntimeSupported: () => false,
   } as Context;
 }
 

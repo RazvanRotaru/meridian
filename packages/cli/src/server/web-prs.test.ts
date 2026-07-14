@@ -741,6 +741,8 @@ function ctxWithSource(source: ArtifactSource, sessions = new SessionStore()): C
     graphs: new Map(),
     sourceRoots: new Map(),
     sources: new Map([["artifact", source]]),
+    syntheticScenarios: new Map(),
+    syntheticSourceFingerprints: new Map(),
     prFilesCache: new Map(),
     tempCleanups: new Set(),
     rendererIndex: "",
@@ -749,6 +751,7 @@ function ctxWithSource(source: ArtifactSource, sessions = new SessionStore()): C
     cwd: "",
     sessions,
     github: createGitHubClient({ clientId: "Iv1.test" }),
+    allowSyntheticExecution: false,
   } as Context;
 }
 

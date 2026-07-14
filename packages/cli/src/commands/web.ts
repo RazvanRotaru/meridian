@@ -17,6 +17,8 @@ import type { GitHubUser } from "../server/github-parse";
 import { resolveGhCliToken } from "../server/gh-cli-token";
 import { serve } from "../server/serve";
 import { runView } from "./view";
+import { CliError, EXIT } from "../errors";
+import { isLoopbackHost } from "../server/web-guards";
 
 export interface WebOptions extends GlobalOptions {
   port: number;
@@ -28,9 +30,18 @@ export interface WebOptions extends GlobalOptions {
   env?: string;
   sourceRoot?: string;
   testCoverage?: string;
+  allowSyntheticExecution?: boolean;
+  allowSyntheticPrExecution?: boolean;
 }
 
 export async function runWeb(source: string | undefined, options: WebOptions): Promise<void> {
+  if ((options.allowSyntheticExecution === true || options.allowSyntheticPrExecution === true)
+    && !isLoopbackHost(options.host)) {
+    const flag = options.allowSyntheticPrExecution === true
+      ? "--allow-synthetic-pr-execution"
+      : "--allow-synthetic-execution";
+    throw new CliError(EXIT.usage, `${flag} requires a loopback --host`);
+  }
   const cwd = resolveCwd(options.cwd);
   if (source && isFile(resolveAgainst(cwd, source))) {
     return runView(source, options);
@@ -47,6 +58,8 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
     fallbackToken: fallback.token,
     fallbackUser: fallback.user,
     refreshCache: options.refreshCache,
+    allowSyntheticExecution: options.allowSyntheticExecution === true,
+    allowSyntheticPrExecution: options.allowSyntheticPrExecution === true,
   });
   await serve(
     server,

@@ -137,7 +137,7 @@ interface NavSource {
   logicSelected: string | null;
   flowExplorerOpen: boolean;
   flowSelection: FlowSelectionRef | null;
-  flowPaneOrigin?: "explorer" | "request" | null;
+  flowPaneOrigin?: "explorer" | "request" | "synthetic" | null;
   logicRoot: string | null;
   logicView: LogicViewMode;
   logicStack: readonly string[];

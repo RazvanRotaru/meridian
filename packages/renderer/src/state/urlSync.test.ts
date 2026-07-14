@@ -63,7 +63,14 @@ describe("restoreFromUrl review exit", () => {
     store.setState({
       artifact: HEAD_ARTIFACT,
       index: buildGraphIndex(HEAD_ARTIFACT),
-      prReviewBaseline: { artifact: BOOT_ARTIFACT, index: bootIndex, review: null },
+      prReviewBaseline: {
+        artifact: BOOT_ARTIFACT,
+        index: bootIndex,
+        review: null,
+        syntheticExecutionUrl: null,
+        syntheticScenarios: [],
+        syntheticExecutionTrust: null,
+      },
       prReviewed: 7,
       prSelected: 7,
       prPreparedGraphId: "pr-head-7",

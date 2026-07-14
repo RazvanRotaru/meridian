@@ -76,7 +76,7 @@ function FlowRow(props: {
   const { row, ticks, spansGroups } = props;
   const flowSelection = useBlueprint((state) => state.flowSelection);
   const openFlowSplitOnSelect = useBlueprint((state) => state.reviewOpenFlowSplitOnSelect);
-  const { toggleReviewTick, setReviewLit, selectFlowEntry } = useBlueprintActions();
+  const { toggleReviewTick, setReviewLit, selectFlowEntry, setReviewOpenFlowSplitOnSelect, requestSyntheticEditor } = useBlueprintActions();
   const tick = tickStateOf(row, ticks);
   const ref = useMemo(() => ({ rootId: row.flow.flowId, blockPath: [] }), [row.flow.flowId]);
   // A nested block selection still belongs to this flow. Keep its owning row active, and let the
@@ -111,6 +111,23 @@ function FlowRow(props: {
           {row.isTest && <span style={TEST_CHIP}>test</span>}
           <span style={ROW_LOC}>{row.file ? `${basename(row.file)}:${row.startLine}` : "—"}</span>
         </button>
+        <button
+          type="button"
+          style={SYNTHETIC_RUN_BUTTON}
+          aria-label={`Generate synthetic data for ${row.displayName}`}
+          title="Generate synthetic data"
+          aria-controls={REVIEW_FLOW_SPLIT_ID}
+          onClick={(event) => {
+            event.stopPropagation();
+            setReviewLit(null);
+            if (!openFlowSplitOnSelect) setReviewOpenFlowSplitOnSelect(true);
+            selectFlowEntry(ref);
+            requestSyntheticEditor(ref.rootId, "flow-pane");
+          }}
+        >
+          <span aria-hidden="true">ƒ</span>
+          <span>Generate synthetic data</span>
+        </button>
       </div>
       {row.flow.changedFilesHit.length > 0 && (
         <div style={HITS}>
@@ -134,6 +151,7 @@ const ROW_HEAD: React.CSSProperties = { display: "flex", alignItems: "center", g
 const ROW_MAIN: React.CSSProperties = { flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, border: "none", background: "transparent", cursor: "pointer", font: "inherit", padding: "4px 2px", textAlign: "left", ...NO_FOCUS_RING };
 const ROW_NAME: React.CSSProperties = { flex: 1, minWidth: 0, fontSize: 12.5, color: "#E6EDF3", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
 const ROW_LOC: React.CSSProperties = { fontFamily: MONO, fontSize: 10, color: "#5A6472", flexShrink: 0 };
+const SYNTHETIC_RUN_BUTTON: React.CSSProperties = { flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 4, border: "1px solid #315B50", borderRadius: 5, background: "rgba(88,201,163,0.09)", color: "#78D8B7", padding: "3px 6px", fontFamily: MONO, fontSize: 8.5, cursor: "pointer", whiteSpace: "nowrap" };
 const SPANS_CHIP: React.CSSProperties = { fontSize: 9, fontWeight: 700, color: "#E6C07A", border: "1px solid #5A4A22", borderRadius: 4, padding: "0 4px", flexShrink: 0 };
 const HITS: React.CSSProperties = { display: "flex", flexWrap: "wrap", gap: 4, padding: "0 6px 4px 26px" };
 const HIT_CHIP: React.CSSProperties = { fontSize: 9.5, color: "#E6C07A", background: "rgba(210,153,34,0.1)", border: "1px solid #5A4A22", borderRadius: 4, padding: "0 5px", fontFamily: MONO };

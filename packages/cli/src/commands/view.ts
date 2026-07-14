@@ -19,6 +19,7 @@ import { createBlueprintServer } from "../server/server";
 import { serve } from "../server/serve";
 import { normalizeTelemetryEnvironment } from "../telemetry-environment";
 import { attachIstanbulCoverage } from "../istanbul-coverage";
+import { isLoopbackHost } from "../server/web-guards";
 
 export interface ViewOptions extends GlobalOptions {
   port: number;
@@ -28,9 +29,11 @@ export interface ViewOptions extends GlobalOptions {
   env?: string;
   sourceRoot?: string;
   testCoverage?: string;
+  allowSyntheticExecution?: boolean;
 }
 
 export async function runView(graph: string, options: ViewOptions): Promise<void> {
+  requireLoopbackForSyntheticExecution(options.host, options.allowSyntheticExecution === true);
   const reporter = new Reporter(options);
   const cwd = resolveCwd(options.cwd);
   const env = requireEnvForOverlay(options);
@@ -48,8 +51,21 @@ export async function runView(graph: string, options: ViewOptions): Promise<void
         "graph with test coverage",
       ).artifact
     : loadedArtifact;
-  const server = createBlueprintServer({ artifact, overlay, preselectedEnv: env, rendererRoot: rendererRoot(), sourceRoot });
+  const server = createBlueprintServer({
+    artifact,
+    overlay,
+    preselectedEnv: env,
+    rendererRoot: rendererRoot(),
+    sourceRoot,
+    allowSyntheticExecution: options.allowSyntheticExecution === true,
+  });
   await serve(server, { host: options.host, startPort: options.port, openBrowser: options.open }, reporter);
+}
+
+function requireLoopbackForSyntheticExecution(host: string, enabled: boolean): void {
+  if (enabled && !isLoopbackHost(host)) {
+    throw new CliError(EXIT.usage, "--allow-synthetic-execution requires a loopback --host");
+  }
 }
 
 function requireEnvForOverlay(options: ViewOptions): string | null {

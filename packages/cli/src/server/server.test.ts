@@ -5,8 +5,9 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
@@ -29,6 +30,21 @@ const artifact: GraphArtifact = {
     location: { file: "src/api/orderRoutes.ts", startLine: 16, endLine: 23 },
   }],
   edges: [],
+};
+const ORDERS_SOURCE = fileURLToPath(new URL("../../../../examples/orders-service/", import.meta.url));
+const PLACE_ORDER_ROOT = "ts:src/services/orderService.ts#OrderService.placeOrder";
+const syntheticArtifact: GraphArtifact = {
+  ...artifact,
+  nodes: [
+    ...artifact.nodes,
+    {
+      id: PLACE_ORDER_ROOT,
+      kind: "method",
+      qualifiedName: "OrderService.placeOrder",
+      displayName: "placeOrder",
+      location: { file: "src/services/orderService.ts", startLine: 18, endLine: 32 },
+    },
+  ],
 };
 
 let rendererRoot: string;
@@ -174,11 +190,110 @@ describe("createBlueprintServer", () => {
     const html = await (await fetch(`${base}/`)).text();
     expect(html).toContain('window.__MERIDIAN__=');
     expect(html).toContain('"traceUrl":"/api/traces"');
+    expect(html).toContain('"syntheticExecutionUrl":null');
+    expect(html).toContain('"syntheticScenarios":[]');
     expect(html).toContain('"telemetrySources":[{"id":"demo"');
     expect(html).toContain('"preselectedTelemetrySourceId":"demo"');
     expect(html).toContain('"preselectedEnv":"staging"');
     expect(html).toContain('"defaultEnv":null');
     expect(html).toContain('"githubSource":false');
+  });
+
+  it("keeps synthetic execution unavailable without the explicit local-source capability", async () => {
+    const response = await fetch(`${base}/api/synthetic-executions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scenarioId: "place-order", rootNodeId: artifact.nodes[0]!.id, input: {} }),
+    });
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "synthetic execution is not enabled for this local view" });
+
+    const wrongType = await fetch(`${base}/api/synthetic-executions`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "{}",
+    });
+    expect(wrongType.status).toBe(415);
+
+    const crossOrigin = await fetch(`${base}/api/synthetic-executions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://evil.example" },
+      body: "{}",
+    });
+    expect(crossOrigin.status).toBe(403);
+  });
+
+  it("advertises an opted-in local manifest and rejects stale or malformed flow requests before execution", async () => {
+    const enabledServer = createBlueprintServer({
+      artifact,
+      overlay: { kind: "none" },
+      preselectedEnv: null,
+      rendererRoot,
+      sourceRoot: ORDERS_SOURCE,
+      allowSyntheticExecution: true,
+    });
+    const enabledBase = await listenEphemeral(enabledServer);
+    try {
+      const html = await (await fetch(`${enabledBase}/`)).text();
+      expect(html).toContain('"syntheticExecutionUrl":"/api/synthetic-executions"');
+      expect(html).toContain('"id":"place-order-happy"');
+
+      const stale = await fetch(`${enabledBase}/api/synthetic-executions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ scenarioId: "place-order-happy", rootNodeId: artifact.nodes[0]!.id, input: {} }),
+      });
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toEqual({ error: "selected flow no longer matches the synthetic scenario" });
+
+      const missingRoot = await fetch(`${enabledBase}/api/synthetic-executions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ scenarioId: "place-order-happy", input: {} }),
+      });
+      expect(missingRoot.status).toBe(400);
+      expect(await missingRoot.json()).toMatchObject({ error: expect.stringContaining("rootNodeId") });
+
+      const unknown = await fetch(`${enabledBase}/api/synthetic-executions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ scenarioId: "missing", rootNodeId: PLACE_ORDER_ROOT, input: {} }),
+      });
+      expect(unknown.status).toBe(404);
+      expect(await unknown.json()).toMatchObject({ error: expect.stringMatching(/scenario/i) });
+    } finally {
+      await closeServer(enabledServer);
+    }
+  });
+
+  it("rejects execution when advertised local source changes before the request", async () => {
+    const sourceRoot = mkdtempSync(join(tmpdir(), "meridian-synthetic-route-"));
+    cpSync(ORDERS_SOURCE, sourceRoot, { recursive: true });
+    const enabledServer = createBlueprintServer({
+      artifact: syntheticArtifact,
+      overlay: { kind: "none" },
+      preselectedEnv: null,
+      rendererRoot,
+      sourceRoot,
+      allowSyntheticExecution: true,
+    });
+    const enabledBase = await listenEphemeral(enabledServer);
+    try {
+      const sourceFile = join(sourceRoot, "src", "services", "orderService.ts");
+      writeFileSync(sourceFile, `${readFileSync(sourceFile, "utf8")}\n// changed after advertisement\n`);
+
+      const response = await fetch(`${enabledBase}/api/synthetic-executions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ scenarioId: "place-order-happy", rootNodeId: PLACE_ORDER_ROOT, input: {} }),
+      });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ error: expect.stringMatching(/source changed.*reload/i) });
+    } finally {
+      await closeServer(enabledServer);
+      rmSync(sourceRoot, { recursive: true, force: true });
+    }
   });
 
   it("serves real assets and falls back to index for unknown routes", async () => {

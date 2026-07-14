@@ -4,11 +4,12 @@ const OWNER_REPO = /^[\w.-]+\/[\w.-]+$/;
 
 export type ArtifactSource =
   | { kind: "github"; owner: string; repo: string; subdir?: string }
+  | { kind: "path" }
   | { kind: "other" };
 
 export function artifactSourceFor(request: GenerateRequest): ArtifactSource {
-  if (request.kind !== "github") {
-    return { kind: "other" };
+  if (request.kind === "path") {
+    return { kind: "path" };
   }
   const repo = parseGitHubRepo(request.value);
   return repo
