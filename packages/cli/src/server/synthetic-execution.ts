@@ -104,7 +104,7 @@ async function runSyntheticScenarioWithIsolation(
     throw new SyntheticExecutionError(
       "unsupported-runtime",
       422,
-      "Synthetic execution requires Node 24.12 or newer with filesystem and network permission controls.",
+      "Synthetic execution requires Node 25 or newer with filesystem and network permission controls.",
     );
   }
   const sourceRoot = canonicalDirectory(request.sourceRoot);
