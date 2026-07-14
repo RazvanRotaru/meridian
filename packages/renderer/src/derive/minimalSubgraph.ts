@@ -87,8 +87,8 @@ export interface CodeContext {
   /** Exact visible callables under PR flow-node inspection. Their incident dependencies bypass the
    * ordinary member-file fold so wires remain attached to the selected block. */
   inspectionIds?: ReadonlySet<string>;
-  /** Project every dependency over the full visible code frontier. Used by an extracted graph with
-   * highways disabled so expanded declarations connect directly while collapsed files still fold. */
+  /** Project every dependency over the full visible code frontier. Used as the extracted graph's
+   * settled presentation substrate so expanded declarations connect directly in either highway mode. */
   directDependencies?: boolean;
 }
 
@@ -122,10 +122,14 @@ export function buildMinimalSubgraph(
   };
   const emission = projectGhosts(index, memberIds, walks, code, hiddenIds);
   const inspection = inspectionDepEdges(index, memberIds, walks, code);
-  const dependencies = mergeProjectedDepEdges([
-    ...depEdges(index, memberIds, code, inspection.incidentEdgeIds),
-    ...inspection.edges,
-  ]);
+  // Direct mode is the settled presentation substrate: it already projects every visible raw
+  // dependency, so do not scan the full dependency set again merely to exclude every one of them.
+  const dependencies = code.directDependencies === true
+    ? inspection.edges
+    : mergeProjectedDepEdges([
+        ...depEdges(index, memberIds, code, inspection.incidentEdgeIds),
+        ...inspection.edges,
+      ]);
   // A folder group-ghost can carry the id of a member's own (never-rendered) ancestor frame — the
   // ghost card wins the id so the spec stays one-node-per-id (frames are flattened away anyway).
   const ghostIds = new Set(emission.ghosts.keys());
@@ -193,7 +197,7 @@ function inspectionDepEdges(
   memberIds: ReadonlySet<string>,
   walks: Map<string, FileCodeWalk>,
   code: CodeContext,
-): { edges: MinimalSubgraphEdge[]; incidentEdgeIds: Set<string> } {
+): { edges: MinimalSubgraphEdge[]; incidentEdgeIds: ReadonlySet<string> } {
   const direct = code.directDependencies === true;
   if (!direct && (!code.inspectionIds || code.inspectionIds.size === 0)) {
     return { edges: [], incidentEdgeIds: new Set() };
@@ -243,7 +247,9 @@ function inspectionDepEdges(
     };
     incident = incident.filter((edge) => isInspectedEndpoint(edge.source) || isInspectedEndpoint(edge.target));
   }
-  const incidentEdgeIds = new Set(incident.map((edge) => edge.id));
+  // Direct mode covers the complete substrate and its caller bypasses ordinary member folding.
+  // Avoid retaining a second all-edge id set for large reviews.
+  const incidentEdgeIds = direct ? EMPTY_IDS : new Set(incident.map((edge) => edge.id));
   const representedInsideExpansion = new Set(
     [...walks.values()].flatMap((walk) =>
       (walk.expansion?.edges ?? []).flatMap((edge) => edge.underlyingEdgeIds ?? []),

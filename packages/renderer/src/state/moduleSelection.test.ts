@@ -657,13 +657,20 @@ describe("minimal-graph overlay (extract selection)", () => {
       .map((candidate) => candidate.id)
       .sort();
 
-  it("re-derives selected incident links once per actual change only for an open graph with highways on", async () => {
+  it.each([true, false])("keeps canvas selection paint-only with highways %s", async (showHighways) => {
     const store = freshStore();
-    const minimalRelayout = vi.fn(async (_activity?: { label: string; detail?: string }) => undefined);
+    const minimalRelayout = vi.fn(async () => undefined);
+    const nodes = [{ id: "settled", position: { x: 0, y: 0 }, data: {} }];
+    const edges = [{ id: "settled-edge", source: "settled", target: "peer" }];
     store.setState({
       minimalSeedIds: ["ts:src/a.ts"],
       minimalMemberIds: ["ts:src/a.ts"],
-      showHighways: true,
+      minimalRfNodes: nodes,
+      minimalRfEdges: edges,
+      minimalLayoutStatus: "ready",
+      minimalLayoutActivity: null,
+      recenterSeq: 7,
+      showHighways,
       minimalRelayout,
     });
 
@@ -674,27 +681,65 @@ describe("minimal-graph overlay (extract selection)", () => {
     store.getState().selectModule(null);
     await Promise.resolve();
 
-    expect(minimalRelayout).toHaveBeenCalledTimes(3);
-    expect(minimalRelayout.mock.calls.map(([activity]) => activity?.label)).toEqual([
-      "Showing selected links…",
-      "Updating selected links…",
-      "Restoring grouped links…",
-    ]);
-
-    store.setState({ showHighways: false });
-    minimalRelayout.mockClear();
-    store.getState().selectModule(BUILD_ORDERS);
-    store.getState().toggleModuleSelect(ROUTES_UNIT);
-    await Promise.resolve();
     expect(minimalRelayout).not.toHaveBeenCalled();
+    expect(store.getState()).toMatchObject({
+      minimalRfNodes: nodes,
+      minimalRfEdges: edges,
+      minimalLayoutStatus: "ready",
+      minimalLayoutActivity: null,
+      recenterSeq: 7,
+    });
+    expect(store.getState().minimalRfNodes).toBe(nodes);
+    expect(store.getState().minimalRfEdges).toBe(edges);
   });
 
-  it("re-derives once when hiding private members prunes an open graph selection", async () => {
+  it("prepares exact highway strands structurally, then selects without replacing either scene", async () => {
+    const store = freshStore();
+    store.setState({
+      minimalSeedIds: ["ts:src/a.ts", ROUTES_FILE],
+      minimalMemberIds: ["ts:src/a.ts", ROUTES_FILE],
+      moduleExpanded: new Set(["ts:src/a.ts", ROUTES_FILE, ROUTES_UNIT]),
+      moduleSelected: new Set(),
+      showHighways: true,
+    });
+    await store.getState().minimalRelayout();
+
+    const nodes = store.getState().minimalRfNodes;
+    const edges = store.getState().minimalRfEdges;
+    expect(nodes).toContainEqual(expect.objectContaining({ id: BUILD_ORDERS, type: "block" }));
+    expect(nodes).toContainEqual(expect.objectContaining({ id: ROUTES_METHOD, type: "block" }));
+    expect(edges).toContainEqual(expect.objectContaining({
+      source: BUILD_ORDERS,
+      target: ROUTES_METHOD,
+    }));
+    expect(store.getState().minimalLayoutStatus).toBe("ready");
+    expect(store.getState().minimalLayoutActivity).toBeNull();
+
+    const minimalRelayout = vi.fn(async () => undefined);
+    store.setState({ minimalRelayout });
+    store.getState().selectModule(BUILD_ORDERS);
+    await Promise.resolve();
+
+    const state = store.getState();
+    expect(state.moduleSelected).toEqual(new Set([BUILD_ORDERS]));
+    expect(minimalRelayout).not.toHaveBeenCalled();
+    expect(state.minimalRfNodes).toBe(nodes);
+    expect(state.minimalRfEdges).toBe(edges);
+    expect(state.minimalLayoutStatus).toBe("ready");
+    expect(state.minimalLayoutActivity).toBeNull();
+  });
+
+  it("keeps private-selection pruning paint-only", async () => {
     const store = freshStore(PRIVATE_ARTIFACT);
-    const minimalRelayout = vi.fn(async (_activity?: { label: string; detail?: string }) => undefined);
+    const minimalRelayout = vi.fn(async () => undefined);
+    const nodes = [{ id: "settled", position: { x: 0, y: 0 }, data: {} }];
+    const edges = [{ id: "settled-edge", source: "settled", target: "peer" }];
     store.setState({
       minimalSeedIds: ["ts:src/a.ts"],
       minimalMemberIds: ["ts:src/a.ts"],
+      minimalRfNodes: nodes,
+      minimalRfEdges: edges,
+      minimalLayoutStatus: "ready",
       moduleSelected: new Set([BUILD_ORDERS, ROUTES_METHOD]),
       showHighways: true,
       minimalRelayout,
@@ -705,10 +750,10 @@ describe("minimal-graph overlay (extract selection)", () => {
 
     expect(store.getState().showPrivate).toBe(false);
     expect(store.getState().moduleSelected).toEqual(new Set([BUILD_ORDERS]));
-    expect(minimalRelayout).toHaveBeenCalledOnce();
-    expect(minimalRelayout).toHaveBeenCalledWith({ label: "Updating selected links…" });
+    expect(minimalRelayout).not.toHaveBeenCalled();
+    expect(store.getState().minimalRfNodes).toBe(nodes);
+    expect(store.getState().minimalRfEdges).toBe(edges);
 
-    minimalRelayout.mockClear();
     store.getState().togglePrivateMembers();
     store.getState().togglePrivateMembers();
     await Promise.resolve();
@@ -718,35 +763,50 @@ describe("minimal-graph overlay (extract selection)", () => {
     expect(minimalRelayout).not.toHaveBeenCalled();
   });
 
-  it("re-derives direct endpoints when highways change only while an extracted graph is open", () => {
+  it("toggles highways over the settled exact-edge scene without relayout", async () => {
     const store = freshStore();
-    const minimalRelayout = vi.fn(async (_activity?: { label: string; detail?: string }) => undefined);
-    store.setState({ minimalRelayout, showHighways: true });
+    const minimalRelayout = vi.fn(async () => undefined);
+    const nodes = [{ id: "settled", position: { x: 0, y: 0 }, data: {} }];
+    const edges = [{ id: "settled-edge", source: "settled", target: "peer" }];
+    store.setState({
+      minimalSeedIds: ["ts:src/a.ts"],
+      minimalMemberIds: ["ts:src/a.ts"],
+      minimalRfNodes: nodes,
+      minimalRfEdges: edges,
+      minimalLayoutStatus: "ready",
+      minimalLayoutActivity: null,
+      recenterSeq: 4,
+      minimalRelayout,
+      showHighways: true,
+    });
 
     store.getState().toggleHighways();
     expect(store.getState().showHighways).toBe(false);
+    store.getState().toggleHighways();
+    await Promise.resolve();
+
+    expect(store.getState().showHighways).toBe(true);
     expect(minimalRelayout).not.toHaveBeenCalled();
-
-    store.setState({
-      minimalSeedIds: ["ts:src/a.ts"],
-      minimalMemberIds: ["ts:src/a.ts"],
+    expect(store.getState().minimalRfNodes).toBe(nodes);
+    expect(store.getState().minimalRfEdges).toBe(edges);
+    expect(store.getState()).toMatchObject({
+      minimalLayoutStatus: "ready",
+      minimalLayoutActivity: null,
+      recenterSeq: 4,
     });
-    store.getState().toggleHighways();
-    store.getState().toggleHighways();
-
-    expect(minimalRelayout).toHaveBeenCalledTimes(2);
-    expect(minimalRelayout.mock.calls.map(([activity]) => activity?.label)).toEqual([
-      "Grouping links into highways…",
-      "Showing direct links…",
-    ]);
   });
 
-  it("re-derives panel-selected and cleared review-node links before recentering", async () => {
+  it("recenters panel selection without replacing the graph scene", async () => {
     const store = freshStore();
-    const minimalRelayout = vi.fn(async (_activity?: { label: string; detail?: string }) => undefined);
+    const minimalRelayout = vi.fn(async () => undefined);
+    const nodes = [{ id: "settled", position: { x: 0, y: 0 }, data: {} }];
+    const edges = [{ id: "settled-edge", source: "settled", target: "peer" }];
     store.setState({
       minimalSeedIds: ["ts:src/a.ts"],
       minimalMemberIds: ["ts:src/a.ts"],
+      minimalRfNodes: nodes,
+      minimalRfEdges: edges,
+      minimalLayoutStatus: "ready",
       showHighways: true,
       minimalRelayout,
     });
@@ -759,10 +819,10 @@ describe("minimal-graph overlay (extract selection)", () => {
     store.getState().selectReviewNode(null);
     await Promise.resolve();
     expect(store.getState().moduleSelected).toEqual(new Set());
-    expect(minimalRelayout.mock.calls.map(([activity]) => activity?.label)).toEqual([
-      "Showing selected links…",
-      "Restoring grouped links…",
-    ]);
+    expect(store.getState().recenterSeq).toBe(1);
+    expect(minimalRelayout).not.toHaveBeenCalled();
+    expect(store.getState().minimalRfNodes).toBe(nodes);
+    expect(store.getState().minimalRfEdges).toBe(edges);
   });
 
   it("keeps every pre-armed expansion inside a review rollup collapsed", () => {

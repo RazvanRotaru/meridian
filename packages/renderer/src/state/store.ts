@@ -449,9 +449,8 @@ export interface BlueprintState {
   moduleRadius: number;
   /** Whether Module-map selection lights incident node wires only, or the full radius-based reach. */
   highlightMode: HighlightMode;
-  /** Whether cross-container edges merge into thick "highway" bundles. The source Map switches at
-   * paint time; an extracted graph also reprojects expanded dependencies so off can recover exact
-   * declaration endpoints. A selected node's own wires always draw individually. */
+  /** Whether cross-container edges merge into thick "highway" bundles. Every surface switches at
+   * paint time over its settled exact-edge substrate; selected-node wires always draw individually. */
   showHighways: boolean;
   /** Whether utility hubs demote into the COMMONS DOCK below the graph (commonsDemotion). A
    * RELAYOUT toggle like Tests — the docked cards leave/rejoin ELK, so positions change. */
@@ -1715,50 +1714,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // auto-root a meaningful entry is an open design question (see docs/service-composition-design.md §8).
   const defaultCompRoot = null;
 
-  return createStore<BlueprintState>((storeSet, get) => {
-    // Exact minimal-graph wires are derived from moduleSelected while highways are enabled. Keep a
-    // single revision lane around every in-store selection write so less-obvious mutations (filter
-    // toggles, flow-pane clears, async visibility pruning) cannot leave those wires stale. Explicit
-    // relayout actions mark the revision they cover; the microtask fallback therefore coalesces a
-    // burst and never duplicates work already requested by the owning action.
-    let moduleSelectionRevision = 0;
-    let minimalSelectionLayoutRevision = 0;
-    let minimalSelectionSyncQueued = false;
-
-    const queueMinimalSelectionSync = () => {
-      if (minimalSelectionSyncQueued) return;
-      minimalSelectionSyncQueued = true;
-      queueMicrotask(() => {
-        minimalSelectionSyncQueued = false;
-        const state = get();
-        if (
-          minimalSelectionLayoutRevision >= moduleSelectionRevision
-          || state.minimalMemberIds.length === 0
-          || !state.showHighways
-        ) {
-          return;
-        }
-        minimalSelectionLayoutRevision = moduleSelectionRevision;
-        void state.minimalRelayout({
-          label: state.moduleSelected.size === 0 ? "Restoring grouped links…" : "Updating selected links…",
-        });
-      });
-    };
-
-    const set = (partial: Partial<BlueprintState>): void => {
-      const previousSelection = get().moduleSelected;
-      storeSet(partial);
-      const nextSelection = get().moduleSelected;
-      if (!sameStringSet(previousSelection, nextSelection)) {
-        moduleSelectionRevision += 1;
-        queueMinimalSelectionSync();
-      }
-    };
-
-    const requestMinimalRelayout = (activity?: LayoutActivity): Promise<void> => {
-      minimalSelectionLayoutRevision = moduleSelectionRevision;
-      return get().minimalRelayout(activity);
-    };
+  return createStore<BlueprintState>((set, get) => {
+    const requestMinimalRelayout = (activity?: LayoutActivity): Promise<void> =>
+      get().minimalRelayout(activity);
 
     const mutatePrReviewComment = async (mutation: {
       number: number;
@@ -3616,17 +3574,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ highlightMode: get().highlightMode === "reach" ? "node" : "reach" });
     },
 
-    // Merge/unmerge cross-container edges into highway bundles. The source Map re-bundles in paint;
-    // an extracted graph re-derives so disabling highways can recover exact expanded endpoints.
+    // Merge/unmerge cross-container edges into highway bundles. Every surface retains exact raw
+    // edges, so this is presentation-only: the canvas bundles or restores them without derivation,
+    // layout, scene replacement, or a camera reset.
     toggleHighways() {
-      const state = get();
-      const showHighways = !state.showHighways;
-      set({ showHighways });
-      if (state.minimalMemberIds.length > 0) {
-        void requestMinimalRelayout({
-          label: showHighways ? "Grouping links into highways…" : "Showing direct links…",
-        });
-      }
+      set({ showHighways: !get().showHighways });
     },
 
     // Park/unpark utility hubs in the commons dock. A RELAYOUT toggle (like Tests): the docked
@@ -3704,7 +3656,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     // Select a Module-map node, REPLACING the whole selection (pass null to clear) — the plain-click
-    // gesture. An open extracted graph re-derives selected incident links while highways are on.
+    // gesture. Selection is paint-only on every surface; exact raw wires are already in the scene.
     selectModule(id) {
       const state = get();
       if (state.review !== null && state.minimalSeedIds.length > 0 && state.flowSelection !== null && state.reviewFlowBaseline !== null) {
@@ -3726,12 +3678,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({ moduleSelected: new Set([id]), reviewSelectedId: null, reviewLitNodeIds: null });
         return;
       }
-      const moduleSelected = id === null ? new Set<string>() : new Set([id]);
-      const selectionChanged = !sameStringSet(state.moduleSelected, moduleSelected);
-      set({ moduleSelected });
-      if (selectionChanged && state.minimalMemberIds.length > 0 && state.showHighways) {
-        void requestMinimalRelayout({ label: id === null ? "Restoring grouped links…" : "Showing selected links…" });
-      }
+      set({ moduleSelected: id === null ? new Set<string>() : new Set([id]) });
     },
 
     // The "Extract selection" action: EXTRACT the current selection verbatim (any kind — a selected
@@ -3935,8 +3882,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Lay out the overlay's curated subgraph (members + their ghost-satellite ring) through the
     // shared minimal-graph pass, behind its own stale-seq guard. `minimalArrange` picks the fresh
     // ELK layout over the map-mirror; hidden tests drop out of the ring like on the Map beneath.
+    // This path is structural only. Selection and Highways consume the settled exact-edge scene in
+    // GraphSurface and never enter derivation or ELK.
     async minimalRelayout(activity) {
-      minimalSelectionLayoutRevision = moduleSelectionRevision;
       if (get().minimalMemberIds.length === 0) {
         set({ minimalLayoutStatus: "idle", minimalLayoutActivity: null });
         return;
@@ -3975,8 +3923,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           flows,
           expandableGroupIds: new Set(Object.keys(state.minimalRollups)),
           rollupExpansions,
-          inspectionIds: minimalDependencyInspectionIds(state, flows),
-          directDependencies: !state.showHighways,
+          // Highways is a visual transform over exact wires. Preparing that substrate once per
+          // structural scene lets selection unspool its strands at paint time, just like the Map.
+          directDependencies: true,
           visibleIds: state.review !== null && state.reviewDiffOnly
             ? reviewDiffVisibleIds(index, state.reviewAffectedIds)
             : undefined,
@@ -3999,8 +3948,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     // Flip one Module-map node in/out of the selection WITHOUT touching the rest — the ctrl/cmd+click
-    // gesture that accumulates a multi-selection. An open extracted graph re-derives selected
-    // incident links while highways are on, like selectModule.
+    // gesture that accumulates a multi-selection. Paint-only, like selectModule.
     toggleModuleSelect(id) {
       const state = get();
       if (state.review !== null && state.minimalSeedIds.length > 0 && state.flowSelection !== null && state.reviewFlowBaseline !== null) {
@@ -4020,9 +3968,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       set({ moduleSelected: withToggled(get().moduleSelected, id) });
-      if (state.minimalMemberIds.length > 0 && state.showHighways) {
-        void requestMinimalRelayout({ label: "Updating selected links…" });
-      }
     },
 
     // Scope the Service lens to the current anchors' owning cluster(s) plus every cluster coupled
@@ -4148,7 +4093,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const before = get();
       const flowBaseline = before.reviewFlowBaseline;
       const moduleSelected = id === null ? new Set<string>() : new Set([id]);
-      const selectionChanged = !sameStringSet(before.moduleSelected, moduleSelected);
       set({
         ...(flowBaseline ?? {}),
         reviewSelectedId: id,
@@ -4171,8 +4115,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       };
       if (flowBaseline !== null) {
         void requestMinimalRelayout({ label: "Returning to changed node review…" }).then(recenter);
-      } else if (selectionChanged && get().minimalMemberIds.length > 0 && get().showHighways) {
-        void requestMinimalRelayout({ label: id === null ? "Restoring grouped links…" : "Showing selected links…" }).then(recenter);
       } else {
         recenter();
       }
@@ -4190,7 +4132,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const flowBaseline = state.reviewFlowBaseline;
       const lit = file.units.length > 0 ? file.units.map((unit) => unit.nodeId) : [file.moduleId];
       const moduleSelected = new Set([file.moduleId]);
-      const selectionChanged = !sameStringSet(state.moduleSelected, moduleSelected);
       set({
         ...(flowBaseline ?? {}),
         moduleSelected,
@@ -4211,8 +4152,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       };
       if (flowBaseline !== null) {
         void requestMinimalRelayout({ label: "Returning to changed file review…" }).then(recenter);
-      } else if (selectionChanged && get().minimalMemberIds.length > 0 && get().showHighways) {
-        void requestMinimalRelayout({ label: "Updating selected links…" }).then(recenter);
       } else {
         recenter();
       }
@@ -7190,26 +7129,6 @@ function minimalMembersForFlowInspection(state: BlueprintState): Set<string> {
     members.add(fileId);
   }
   return members;
-}
-
-/** Exact dependency projection follows the same two review states as paint: the complete selected
- * flow while no resolvable pane node is selected, then only the selected node's incident edges.
- * External/unresolved pane calls leave `reviewSelectedId` null and honestly fall back to the whole
- * in-graph flow context. */
-function flowInspectionIds(state: BlueprintState, flows: LogicFlows): ReadonlySet<string> | undefined {
-  if (state.review === null || state.flowSelection === null || state.reviewFlowBaseline === null) {
-    return undefined;
-  }
-  return state.reviewSelectedId === null
-    ? relatedNodeIds(state.index, flows, state.flowSelection)
-    : new Set([state.reviewSelectedId]);
-}
-
-/** Flow review owns exact-edge inspection while its temporary baseline is active. Everywhere else,
- * ordinary graph selection drives the same bounded projection in an open extracted graph. */
-function minimalDependencyInspectionIds(state: BlueprintState, flows: LogicFlows): ReadonlySet<string> | undefined {
-  return flowInspectionIds(state, flows)
-    ?? (state.moduleSelected.size > 0 ? state.moduleSelected : undefined);
 }
 
 function replaceRollupSeed(ids: readonly string[], packageId: string, fileIds: readonly string[]): string[] {
