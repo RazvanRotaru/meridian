@@ -50,7 +50,6 @@ import {
 import { CanvasActionBar } from "./controlpanel/CanvasActionBar";
 import { minimalMiniMapColor } from "./minimalGraphStyles";
 import { filterExternalGhosts, filterGhostNodes } from "./moduleMapPaint";
-import { extractedGraphPaintSelectionOverride } from "./paintMinimal";
 import { relationKindOf } from "../graph/relationEdge";
 
 // A review-panel click centers on a single (possibly tiny) method card, so cap how far the fit zooms in.
@@ -114,14 +113,6 @@ export function MinimalGraphView({
     setMinimalShowGhostNodes(next);
   }, [ghostIds, selectModule, selected, setMinimalShowGhostNodes, showGhostNodes]);
 
-  // `mgraph` restores the immutable extracted members, while the source Map's selection remains
-  // deliberately session-only. Paint an ordinary restored graph from its exact origin so its
-  // one-hop context does not disappear merely because there is no transient selection to own it.
-  const originPaintSelectionOverride = useMemo(
-    () => extractedGraphPaintSelectionOverride(nodes, selected, seedIds, !reviewActive),
-    [nodes, reviewActive, seedIds, selected],
-  );
-
   // Interactions ARE the Module map's own (the shared hook — called HERE so the debounce dies with
   // the overlay). During PR review, package double-click opens an exact-file child graph and every
   // other double-click stays inside the review boundary; outside review, double-click retains the
@@ -138,18 +129,22 @@ export function MinimalGraphView({
       : undefined,
     onBeforeDoubleClick: reviewActive ? undefined : closeMinimalGraph,
   });
-  // A clicked ghost carries more precise frontier provenance than the restored-origin fallback.
-  const paintSelectionOverride = interactions.paintSelectionOverride === null
-    ? originPaintSelectionOverride
-    : undefined;
 
-  // A review-panel click centers on the clicked node. Ordinary URL-restored graphs center on their
-  // immutable origin until a new drawable selection takes over.
+  // Recenter may fall back to an ordinary URL-restored graph's immutable origin, but paint never
+  // does: like every other canvas, ghost context belongs only to a live drawable selection.
   const recenterIds = useMemo(
-    () => (reviewSelectedId !== null
-      ? [reviewSelectedId]
-      : [...(paintSelectionOverride ?? selected)]),
-    [paintSelectionOverride, reviewSelectedId, selected],
+    () => {
+      if (reviewSelectedId !== null) {
+        return [reviewSelectedId];
+      }
+      if (reviewActive) {
+        return [...selected];
+      }
+      const drawnIds = new Set(nodes.map((node) => node.id));
+      const needsOrigin = selected.size === 0 || [...selected].some((id) => !drawnIds.has(id));
+      return needsOrigin ? [...new Set([...seedIds, ...selected])] : [...selected];
+    },
+    [nodes, reviewActive, reviewSelectedId, seedIds, selected],
   );
   useRecenter(recenterIds, RECENTER_OPTIONS);
 
@@ -212,7 +207,6 @@ export function MinimalGraphView({
         wireHover
         requestOverlayChrome={false}
         reviewEmphasis={reviewActive}
-        paintSelectionOverride={paintSelectionOverride}
         emphasisMode={reviewFlowOpen ? (reviewSelectedId === null ? "subgraph" : "node") : undefined}
         groupGhosts={reviewFlowOpen && reviewSelectedId !== null ? false : undefined}
         showGhostNodes={showGhostNodes}

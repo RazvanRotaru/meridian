@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { GraphArtifact, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
-import { extractedGraphPaintSelectionOverride, paintMinimalLevel } from "../components/paintMinimal";
+import { paintMinimalLevel } from "../components/paintMinimal";
 import {
   createBlueprintStore,
   removableModuleSelectionCount,
@@ -991,12 +991,6 @@ describe("minimal-graph overlay (extract selection)", () => {
     expect(state.minimalRfNodes.map((node) => node.id)).not.toContain("ts:src/notifications/emailService.ts");
     expect(state.minimalRfNodes.map((node) => node.id)).not.toContain("ts:src/pricing/pricingService.ts");
 
-    const paintOverride = extractedGraphPaintSelectionOverride(
-      state.minimalRfNodes,
-      new Set(),
-      state.minimalSeedIds,
-      true,
-    );
     const painted = paintMinimalLevel(
       state.minimalRfNodes,
       state.minimalRfEdges,
@@ -1004,8 +998,6 @@ describe("minimal-graph overlay (extract selection)", () => {
       1,
       "node",
       new Set(),
-      undefined,
-      paintOverride,
     );
     expect(painted.nodes.map((node) => node.id)).toContain(services);
     expect(painted.edges).toContainEqual(expect.objectContaining({
@@ -1016,6 +1008,10 @@ describe("minimal-graph overlay (extract selection)", () => {
       source: services,
       target: selectedFolders[1],
     }));
+    expect(painted.nodes.filter((node) => node.type === "ghost")).toEqual([]);
+    expect(painted.edges.filter((edge) => (
+      edge.data as { ghost?: boolean } | undefined
+    )?.ghost === true)).toEqual([]);
   });
 
   it("retains the same-level folder on the strongest shortest path independently of paint filters", async () => {
