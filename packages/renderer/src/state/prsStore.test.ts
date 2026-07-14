@@ -1559,6 +1559,74 @@ describe("PR store slice", () => {
     expect(store.getState().codeView).toBe(openModal);
   });
 
+  it("gives hover and modal the same canonical diff rows from one source request", async () => {
+    vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
+    const fullCode = Array.from({ length: 20 }, (_value, index) => `line${index + 1}`).join("\n");
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: fullCode, truncated: false }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ sourceUrl: "/api/source?id=artifact-1", prFileUrl: "/api/prs/file?id=artifact-1" });
+    const diffLines = [
+      { kind: "deleted" as const, oldLine: 10, newLine: null, beforeNewLine: 10, text: "old10" },
+      { kind: "added" as const, oldLine: null, newLine: 10, beforeNewLine: 10, text: "line10" },
+    ];
+    store.setState({
+      prReviewed: 7,
+      reviewHeadRef: "abc1234",
+      reviewFileDelta: { "src/a.ts": { added: 1, deleted: 1, status: "modified" } },
+      reviewDiffByFile: {
+        "src/a.ts": {
+          edits: [{ oldStart: 10, oldLines: 1, newStart: 10, newLines: 1 }],
+          kinds: [{ start: 10, end: 10, kind: "modified" }],
+        },
+      },
+      reviewDiffLinesByFile: { "src/a.ts": diffLines },
+    });
+    const method = store.getState().index.nodesById.get(METHOD_ID)!;
+
+    const preview = await store.getState().loadCodePreview(method);
+    await store.getState().showCode(method);
+    const modal = store.getState().codeView;
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(preview?.code).toBe(modal?.code);
+    expect(preview?.baseLine).toBe(modal?.baseLine);
+    expect(preview?.diffLines).toEqual(diffLines);
+    expect(modal?.diffLines).toEqual(diffLines);
+  });
+
+  it("carries exact comparison spans into declaration previews but leaves module previews file-wide", async () => {
+    vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: "line10\nline11\nline12", startLine: 10, truncated: false }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ sourceUrl: "/api/source?id=artifact-1" });
+    const comparisonIndex = buildGraphIndex(ARTIFACT);
+    store.setState({
+      prReviewed: 7,
+      prPreparedArtifactCurrent: true,
+      prPreparedGraphId: "pr-head-boundary",
+      prReviewComparison: { artifact: ARTIFACT, index: comparisonIndex },
+      reviewBaseSpanByHeadId: new Map([[METHOD_ID, { start: 10, end: 12 }]]),
+      reviewDiffLinesByFile: {
+        "src/a.ts": [
+          // Both rows can share the cursor immediately after this HEAD method. The old span is what
+          // keeps the next declaration's row out of this preview in SourceDiffBody.
+          { kind: "deleted", oldLine: 12, newLine: null, beforeNewLine: 13, text: "method EOF" },
+          { kind: "deleted", oldLine: 13, newLine: null, beforeNewLine: 13, text: "next declaration" },
+        ],
+      },
+    });
+    const method = store.getState().index.nodesById.get(METHOD_ID)!;
+    const module = store.getState().index.nodesById.get(FILE_ID)!;
+
+    const methodPreview = await store.getState().loadCodePreview(method);
+    const modulePreview = await store.getState().loadCodePreview(module);
+
+    expect(methodPreview?.diffOldSpan).toEqual({ start: 10, end: 12 });
+    expect(methodPreview?.diffLines).toHaveLength(2);
+    expect(modulePreview).not.toHaveProperty("diffOldSpan");
+    expect(modulePreview?.diffLines).toHaveLength(2);
+  });
+
   it("does not issue a source request for a package directory", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -1624,6 +1692,46 @@ describe("PR store slice", () => {
     });
   });
 
+  it("preserves an explicit zero-row PR-head response for a file emptied by the change", async () => {
+    vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: "", lineCount: 0, truncated: false }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ prFileUrl: "/api/prs/file?id=artifact-1" });
+    const path = "repo/src/emptied.ts";
+    store.setState({
+      prReviewed: 7,
+      reviewHeadRef: "feature",
+      reviewFileDelta: { [path]: { added: 0, deleted: 2, status: "modified" } },
+      reviewDiffLinesByFile: {
+        [path]: [
+          { kind: "deleted", oldLine: 1, newLine: null, beforeNewLine: 1, text: "first old line" },
+          { kind: "deleted", oldLine: 2, newLine: null, beforeNewLine: 1, text: "second old line" },
+        ],
+      },
+      reviewFiles: [{
+        path,
+        status: "modified",
+        moduleId: null,
+        isTest: false,
+        units: [],
+        fingerprint: "empty-head-file",
+        blastRadius: 0,
+        deletedImpact: null,
+      }],
+    });
+
+    await store.getState().showReviewFile(path);
+
+    expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/prs/file?id=artifact-1&path=repo%2Fsrc%2Femptied.ts&ref=feature");
+    expect(store.getState().codeView).toMatchObject({
+      code: "",
+      lineCount: 0,
+      mode: "modal",
+      baseLine: 1,
+      wholeFile: true,
+    });
+  });
+
   it("reads a removed file from base source because it no longer exists at PR head", async () => {
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: "old10\nold11\nold12", startLine: 10, truncated: false }));
@@ -1635,9 +1743,16 @@ describe("PR store slice", () => {
       reviewFileDelta: { "src/a.ts": { added: 0, deleted: 20, status: "removed" } },
       reviewDiffByFile: {
         "src/a.ts": {
-          edits: [{ oldStart: 1, oldLines: 20, newStart: 0, newLines: 0 }],
-          kinds: [{ start: 1, end: 20, kind: "deleted" }],
+          edits: [{ oldStart: 1, oldLines: 20, newStart: 1, newLines: 0 }],
+          kinds: [],
         },
+      },
+      reviewDiffLinesByFile: {
+        "src/a.ts": [
+          { kind: "deleted", oldLine: 10, newLine: null, beforeNewLine: 1, text: "old10" },
+          { kind: "deleted", oldLine: 11, newLine: null, beforeNewLine: 1, text: "old11" },
+          { kind: "deleted", oldLine: 12, newLine: null, beforeNewLine: 1, text: "old12" },
+        ],
       },
     });
     const method = store.getState().index.nodesById.get(METHOD_ID)!;
@@ -1647,6 +1762,8 @@ describe("PR store slice", () => {
     expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/source?id=artifact-1&file=src%2Fa.ts&start=10&end=12");
     expect(preview?.code).toBe("old10\nold11\nold12");
     expect(preview?.baseLine).toBe(10);
+    expect(preview?.sourceSide).toBe("base");
+    expect(preview?.diffLines).toEqual(store.getState().reviewDiffLinesByFile["src/a.ts"]);
     expect([...preview!.changedLineKinds!.entries()]).toEqual([[10, "deleted"], [11, "deleted"], [12, "deleted"]]);
   });
 
@@ -1702,6 +1819,13 @@ const HEAD_ARTIFACT: GraphArtifact = {
       baseRef: "origin/main",
       files: { "src/a.ts": [{ start: 20, end: 21 }] },
       kinds: { "src/a.ts": [{ start: 20, end: 21, kind: "modified" }] },
+      diffLines: {
+        "src/a.ts": [
+          { kind: "deleted", oldLine: 10, newLine: null, beforeNewLine: 20, text: "old20" },
+          { kind: "added", oldLine: null, newLine: 20, beforeNewLine: 20, text: "line20" },
+          { kind: "added", oldLine: null, newLine: 21, beforeNewLine: 21, text: "line21" },
+        ],
+      },
     },
   } as GraphArtifact["extensions"],
 };
@@ -1757,6 +1881,12 @@ const REFRESHED_HEAD_ARTIFACT: GraphArtifact = {
       baseRef: "origin/main",
       files: { "src/a.ts": [{ start: 31, end: 31 }] },
       kinds: { "src/a.ts": [{ start: 31, end: 31, kind: "modified" }] },
+      diffLines: {
+        "src/a.ts": [
+          { kind: "deleted", oldLine: 21, newLine: null, beforeNewLine: 31, text: "old31" },
+          { kind: "added", oldLine: null, newLine: 31, beforeNewLine: 31, text: "line31" },
+        ],
+      },
     },
   } as GraphArtifact["extensions"],
 };
@@ -2042,6 +2172,125 @@ describe("PR head preparation (prepareHeadGraph)", () => {
 
     expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID]));
     expect(store.getState().index.changedStatus.get(METHOD_ID)).toBe("added");
+  });
+
+  it("recovers a base-only declaration when GitHub's bounded file response omits its deleted file", async () => {
+    const deletedFileId = "ts:src/removed.ts";
+    const deletedFunctionId = `${deletedFileId}#removedHandler`;
+    const headChangedSince = (HEAD_ARTIFACT.extensions as {
+      changedSince: {
+        baseRef: string;
+        files: Record<string, unknown>;
+        kinds: Record<string, unknown>;
+        diffLines: Record<string, unknown>;
+      };
+    }).changedSince;
+    const canonicalHead: GraphArtifact = {
+      ...HEAD_ARTIFACT,
+      extensions: {
+        changedSince: {
+          ...headChangedSince,
+          manifest: [
+            { path: "src/a.ts", status: "modified" },
+            { path: "src/removed.ts", status: "deleted" },
+          ],
+          stats: {
+            "src/a.ts": { added: 2, deleted: 1 },
+            "src/removed.ts": { added: 0, deleted: 3 },
+          },
+          diffLines: {
+            ...headChangedSince.diffLines,
+            "src/removed.ts": [
+              { kind: "deleted", oldLine: 4, newLine: null, beforeNewLine: 1, text: "removed4" },
+              { kind: "deleted", oldLine: 5, newLine: null, beforeNewLine: 1, text: "removed5" },
+              { kind: "deleted", oldLine: 6, newLine: null, beforeNewLine: 1, text: "removed6" },
+            ],
+          },
+        },
+      } as GraphArtifact["extensions"],
+    };
+    const comparison: GraphArtifact = {
+      ...ARTIFACT,
+      generatedAt: "2026-07-08T12:00:00.000Z",
+      nodes: [
+        ...ARTIFACT.nodes,
+        node(deletedFileId, "module", "src/removed.ts", PACKAGE_ID),
+        node(deletedFunctionId, "function", "src/removed.ts", deletedFileId, { start: 4, end: 6 }),
+      ],
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/pr/analyze") {
+        return Promise.resolve(ndjsonResponse([{
+          stage: "done",
+          graphId: "pr-head-canonical",
+          comparisonGraphId: "pr-base-canonical",
+          headSha: "abc1234def5678900000",
+          mergeBaseSha: "base1234def567890000",
+        }]));
+      }
+      if (url.pathname === "/api/graph") {
+        return Promise.resolve(Response.json(
+          url.searchParams.get("id") === "pr-base-canonical" ? comparison : canonicalHead,
+        ));
+      }
+      if (url.pathname === "/api/meta") {
+        return Promise.resolve(Response.json({
+          syntheticExecutionUrl: null,
+          syntheticScenarios: [],
+          syntheticExecutionTrust: null,
+        }));
+      }
+      if (url.pathname === "/api/source") {
+        return Promise.resolve(Response.json({ code: "removed4\nremoved5\nremoved6", startLine: 4, truncated: false }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...ANALYZE_DEPS,
+      sourceUrl: "/api/source?id=artifact-1",
+      prFileUrl: "/api/prs/file?id=artifact-1",
+    });
+    store.setState({
+      ...headSelectedPrState(7),
+      // Simulate GitHub's bounded endpoint: it returned only the first of two changed files.
+      prFiles: [{ path: "src/a.ts", status: "modified", additions: 2, deletions: 1, hunks: [{ start: 21, end: 21 }] }],
+      prFilesTruncated: true,
+      prFilesTotal: 2,
+    });
+
+    await store.getState().reviewPrInGraph();
+
+    const state = store.getState();
+    const deletedFile = state.reviewFiles.find((file) => file.path === "src/removed.ts");
+    expect(deletedFile).toMatchObject({
+      status: "deleted",
+      moduleId: deletedFileId,
+      units: [expect.objectContaining({ nodeId: deletedFunctionId, sourceSide: "base" })],
+    });
+    expect(state.reviewDeletedNodeIds.has(deletedFunctionId)).toBe(true);
+    expect(state.reviewBaseNodeIds.has(deletedFunctionId)).toBe(true);
+    expect(state.index.nodesById.get(deletedFunctionId)?.location).toMatchObject({
+      file: "src/removed.ts",
+      startLine: 4,
+      endLine: 6,
+    });
+
+    const preview = await state.loadCodePreview(state.index.nodesById.get(deletedFunctionId)!);
+
+    const sourceRequests = fetchMock.mock.calls
+      .map(([input]) => input.toString())
+      .filter((url) => url.includes("/api/source"));
+    expect(sourceRequests).toEqual([
+      "http://meridian.local/api/source?id=pr-base-canonical&file=src%2Fremoved.ts&start=4&end=6",
+    ]);
+    expect(preview).toMatchObject({
+      code: "removed4\nremoved5\nremoved6",
+      baseLine: 4,
+      sourceSide: "base",
+    });
   });
 
   it("evaluates the zero-match guard against the prepared graph", async () => {
@@ -2671,6 +2920,9 @@ describe("PR review artifact swap and restore", () => {
     expect(preview?.code).toBe("line20\nline21\nline22");
     // The prepared artifact's own 20..21 line kinds win over the weaker one-line GitHub detail.
     expect([...preview!.changedLineKinds!.entries()]).toEqual([[20, "modified"], [21, "modified"]]);
+    expect(preview?.diffLines).toEqual(
+      (HEAD_ARTIFACT.extensions as { changedSince: { diffLines: { "src/a.ts": unknown[] } } }).changedSince.diffLines["src/a.ts"],
+    );
   });
 
   it("returning to the PRs lens parks the review and keeps Resume review visible", async () => {

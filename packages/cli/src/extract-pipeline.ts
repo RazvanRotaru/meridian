@@ -9,6 +9,8 @@
 
 import { ExtractorRegistry, collectTestIds, materializeBoundaryNodes, materializeChannels, mergeExtractionResults, tagChangedNodes, tagTestNodes } from "@meridian/core";
 import type {
+  ChangedDiffLines,
+  ChangedFileManifestEntry,
   ChangedLineKinds,
   ChangedLineStats,
   ChangedRanges,
@@ -53,6 +55,10 @@ export interface PipelineRequest {
   targetName?: string;
   /** Source revision supplied by a caller that resolved the Git checkout. */
   vcs?: GraphArtifact["target"]["vcs"];
+  /** Internal file hints used to select extractors when the source root is deliberately empty. */
+  hintedFiles?: readonly string[];
+  /** Permit selected extractors to return an empty artifact for an intentionally absent PR side. */
+  allowEmpty?: boolean;
 }
 
 export interface PipelineResult {
@@ -64,8 +70,20 @@ export interface PipelineResult {
 
 export async function extractToArtifact(request: PipelineRequest): Promise<PipelineResult> {
   const changedSince = await changedRangesFor(request);
-  const changedFiles = changedSince ? Object.keys(changedSince.ranges) : [];
-  const selectedExtractors = await selectExtractors(request.absoluteRoot, changedFiles);
+  // The canonical manifest is complete even when a diff has no HEAD-side ranges. Only paths that
+  // exist at HEAD can be supplemental extraction inputs; deleted paths remain in artifact metadata
+  // for review projection but must never be handed to a language extractor.
+  const changedFiles = changedSince
+    ? changedSince.manifest.filter((file) => file.status !== "deleted").map((file) => file.path)
+    : [];
+  // Language selection must also see deleted paths and populated-side hints: neither exists in an
+  // intentionally empty checkout, while both still identify which registered extractors own it.
+  // Supplemental extraction inputs remain HEAD-only so deleted paths are never opened as files.
+  const selectionHints = [
+    ...(changedSince?.manifest.map((file) => file.path) ?? []),
+    ...(request.hintedFiles ?? []),
+  ];
+  const selectedExtractors = await selectExtractors(request.absoluteRoot, selectionHints);
   const run = await runExtractors(selectedExtractors, request, changedFiles.length > 0 ? changedFiles : undefined);
   const raw = run.extraction;
   const classified = channelize(
@@ -83,7 +101,14 @@ export async function extractToArtifact(request: PipelineRequest): Promise<Pipel
     vcs: request.vcs,
     changedSince:
       request.changedSince && changedSince
-        ? { baseRef: request.changedSince, files: changedSince.ranges, stats: changedSince.stats, kinds: changedSince.kinds }
+        ? {
+            baseRef: request.changedSince,
+            files: changedSince.ranges,
+            stats: changedSince.stats,
+            kinds: changedSince.kinds,
+            diffLines: changedSince.diffLines,
+            manifest: changedSince.manifest,
+          }
         : undefined,
   });
   const { warnings: validationWarnings } = validateOrThrow(artifact, "generated artifact");
@@ -157,7 +182,13 @@ function channelize(extraction: ExtractionResult): ExtractionResult {
  */
 async function changedRangesFor(
   request: PipelineRequest,
-): Promise<{ ranges: ChangedRanges; stats: ChangedLineStats; kinds: ChangedLineKinds } | null> {
+): Promise<{
+  ranges: ChangedRanges;
+  stats: ChangedLineStats;
+  kinds: ChangedLineKinds;
+  diffLines: ChangedDiffLines;
+  manifest: ChangedFileManifestEntry[];
+} | null> {
   if (!request.changedSince) {
     return null;
   }
@@ -208,12 +239,13 @@ async function runExtractors(
     completed.push({ extractor, result });
   }
   const nonempty = completed.filter(({ result }) => result.stats.files > 0);
-  if (nonempty.length === 0) {
+  if (nonempty.length === 0 && !request.allowEmpty) {
     throw new CliError(EXIT.extractor, `detected extractors found no source files under ${request.absoluteRoot}`);
   }
+  const included = nonempty.length > 0 ? nonempty : completed;
   return {
-    extractors: nonempty.map(({ extractor }) => extractor),
-    extraction: mergeExtractionResults(nonempty.map(({ result }) => result)),
+    extractors: included.map(({ extractor }) => extractor),
+    extraction: mergeExtractionResults(included.map(({ result }) => result)),
     diagnosticWarnings,
   };
 }

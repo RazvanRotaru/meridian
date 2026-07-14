@@ -5,6 +5,7 @@ import {
   handlePullRequestChecks,
   handlePullRequestCommentMutation,
   handlePullRequestComments,
+  handlePullRequestFileContent,
   handlePullRequestFiles,
   handlePullRequests,
   handleRelatedPullRequests,
@@ -96,6 +97,24 @@ describe("PR routes", () => {
     expect(seenAuth).toEqual(["Bearer env_secret", "Bearer env_secret"]);
   });
 
+  it("preserves exact source row metadata in the PR-head file response", async () => {
+    stubFetch({ encoding: "base64", content: "" });
+    const captured = await invoke(
+      handlePullRequestFileContent,
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo" }),
+      requestWith(undefined),
+      new URLSearchParams({ id: "artifact", ref: "head-sha", path: "src/empty.ts" }),
+    );
+
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body())).toEqual({
+      file: "src/empty.ts",
+      code: "",
+      truncated: false,
+      lineCount: 0,
+    });
+  });
+
   it("keeps public-repo requests unauthenticated when no token source exists", async () => {
     vi.stubEnv("GITHUB_TOKEN", "");
     vi.stubEnv("GH_TOKEN", "");
@@ -126,8 +145,8 @@ describe("PR routes", () => {
     expect(captured.status()).toBe(200);
     expect(JSON.parse(captured.body())).toEqual({
       files: [
-        { path: "src/a.ts", status: "modified", additions: 0, deletions: 0 },
-        { path: "package.json", status: "renamed", additions: 0, deletions: 0 },
+        { path: "src/a.ts", status: "modified", additions: 0, deletions: 0, diffComplete: false },
+        { path: "package.json", status: "renamed", additions: 0, deletions: 0, diffComplete: false },
       ],
       truncated: false,
       totalFiles: 4,

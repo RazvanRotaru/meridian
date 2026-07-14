@@ -3,6 +3,8 @@
  * call; response shaping is delegated to the pure whitelisting parsers.
  */
 
+import { StringDecoder } from "node:string_decoder";
+
 import {
   classifyQuery,
   parseBranchList,
@@ -225,6 +227,8 @@ export interface FileAtRefRequest {
 export interface FileAtRefResult {
   code: string;
   truncated: boolean;
+  /** Number of source rows represented by `code`; zero when GitHub returned no visible content. */
+  lineCount: number;
 }
 
 /** One file's text content at a git ref (the PR head), for the review code panel. */
@@ -243,11 +247,34 @@ async function fetchFileAtRefWithFetch(fetchImpl: typeof fetch, request: FileAtR
   const raw = (json as { content?: unknown; encoding?: unknown } | null) ?? null;
   if (!raw || typeof raw.content !== "string" || raw.encoding !== "base64") {
     // Files over ~1MB come back without inline content; treat as unavailable rather than guessing.
-    return { code: "", truncated: true };
+    return { code: "", truncated: true, lineCount: 0 };
   }
   const bytes = Buffer.from(raw.content, "base64");
   const capped = bytes.length > FILE_AT_REF_MAX_BYTES;
-  return { code: (capped ? bytes.subarray(0, FILE_AT_REF_MAX_BYTES) : bytes).toString("utf8"), truncated: capped };
+  // A raw byte cap can bisect a multibyte code point. StringDecoder retains that incomplete tail
+  // instead of injecting U+FFFD into source that was valid before truncation.
+  const visible = capped
+    ? new StringDecoder("utf8").write(bytes.subarray(0, FILE_AT_REF_MAX_BYTES))
+    : bytes.toString("utf8");
+  // A complete file's final line ending terminates its last source row; it is not an additional
+  // empty row. Strip exactly one LF/CRLF so intentional blank lines remain. Never do this at the
+  // byte cap because that newline may precede content we did not read.
+  const code = capped ? visible : stripTerminalLineEnding(visible);
+  return {
+    code,
+    truncated: capped,
+    // `code === ""` is ambiguous after stripping a complete terminal newline: empty bytes are zero
+    // rows, while a file containing only `\n` is one blank row. The original byte length preserves
+    // that distinction. A capped prefix is never empty and reports the rows its visible text spans.
+    lineCount: code.length > 0 ? code.split("\n").length : bytes.length > 0 ? 1 : 0,
+  };
+}
+
+function stripTerminalLineEnding(text: string): string {
+  if (text.endsWith("\r\n")) {
+    return text.slice(0, -2);
+  }
+  return text.endsWith("\n") ? text.slice(0, -1) : text;
 }
 
 async function requestDeviceCode(fetchImpl: typeof fetch, clientId: string): Promise<DeviceCode> {

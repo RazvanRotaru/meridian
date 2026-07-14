@@ -35,6 +35,18 @@ describe("runGit", () => {
     expect(spawn).toHaveBeenCalledWith("git", ["fetch", "origin", "main"], expect.objectContaining({ cwd: "/clone" }));
   });
 
+  it("decodes a UTF-8 character split across stdout chunks without replacement characters", async () => {
+    const child = nextChild();
+    const pending = runGit(["diff"], { cwd: "/clone" });
+    const encoded = Buffer.from("before é after", "utf8");
+    const split = encoded.indexOf(0xc3) + 1;
+    child.stdout.emit("data", encoded.subarray(0, split));
+    child.stdout.emit("data", encoded.subarray(split));
+    child.emit("close", 0);
+
+    await expect(pending).resolves.toBe("before é after");
+  });
+
   it("injects the token ONLY as a -c http.extraHeader before the subcommand — never raw in argv", async () => {
     const child = nextChild();
     const pending = runGit(["fetch", "origin", "main"], { cwd: "/clone", token: TOKEN });
@@ -73,6 +85,14 @@ describe("runGit", () => {
     vi.advanceTimersByTime(5_000);
     await expect(pending).rejects.toThrow("git timed out after 5s");
     expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+  });
+
+  it("rejects stdout overflow instead of returning a plausible truncated prefix", async () => {
+    const child = nextChild();
+    const pending = runGit(["diff", "--name-status", "-z"], { cwd: "/clone" });
+    child.stdout.emit("data", Buffer.alloc(32 * 1024 * 1024 + 1, 0));
+    child.emit("close", 0);
+    await expect(pending).rejects.toThrow("refusing truncated output");
   });
 });
 

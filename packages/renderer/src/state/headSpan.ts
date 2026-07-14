@@ -9,28 +9,49 @@
 import type { ChangedLineKind, ChangedLineSpan } from "@meridian/core";
 import type { LineEdit } from "./prTypes";
 
-/** A base (old-side) line number → its line number in the PR head file, given the hunk spans. */
+/** A base (old-side) line number → its line number in the PR head file, given exact contiguous
+ * edit runs. Insertions shift the base line at their cursor; replacements map deleted base rows
+ * onto the surviving new run; pure deletions map to their HEAD seam. */
 export function mapBaseLineToHead(line: number, edits: readonly LineEdit[]): number {
   let delta = 0;
   for (const edit of edits) {
-    const oldEnd = edit.oldStart + Math.max(edit.oldLines, 1) - 1;
-    if (oldEnd < line) {
-      delta += edit.newLines - edit.oldLines; // hunk lies fully before the line — accumulate its shift
-    } else if (edit.oldStart <= line) {
-      // Inside the hunk: map onto the new side, clamped so a shrunk hunk can't overshoot its range.
-      const maxNew = edit.newStart + Math.max(edit.newLines - 1, 0);
-      return Math.min(edit.newStart + (line - edit.oldStart), maxNew);
-    } else {
-      break; // edits are in file order; this hunk (and the rest) are past the line
+    if (line < edit.oldStart) {
+      break;
     }
+    if (edit.oldLines === 0) {
+      // `oldStart` is the next base row: an insertion immediately precedes it.
+      delta += edit.newLines;
+      continue;
+    }
+    const oldEndExclusive = edit.oldStart + edit.oldLines;
+    if (line >= oldEndExclusive) {
+      delta += edit.newLines - edit.oldLines;
+      continue;
+    }
+    if (edit.newLines === 0) {
+      return Math.max(1, edit.newStart);
+    }
+    return edit.newStart + Math.min(line - edit.oldStart, edit.newLines - 1);
   }
-  return line + delta;
+  return Math.max(1, line + delta);
 }
 
 /** The head span of a node whose base span is [baseStart, baseEnd]. */
 export function headSpanFor(baseStart: number, baseEnd: number, edits: readonly LineEdit[]): { start: number; end: number } {
-  const start = mapBaseLineToHead(baseStart, edits);
-  const end = Math.max(start, mapBaseLineToHead(baseEnd, edits));
+  let start = mapBaseLineToHead(baseStart, edits);
+  let end = Math.max(start, mapBaseLineToHead(baseEnd, edits));
+  // Endpoint mapping alone misses extra new rows in a replacement and insertions immediately before
+  // a node's first base row. Expand to every exact new-side run owned by the base span.
+  for (const edit of edits) {
+    const overlaps = edit.oldLines === 0
+      ? edit.oldStart >= baseStart && edit.oldStart <= baseEnd
+      : edit.oldStart <= baseEnd && edit.oldStart + edit.oldLines - 1 >= baseStart;
+    if (!overlaps || edit.newLines === 0) {
+      continue;
+    }
+    start = Math.min(start, edit.newStart);
+    end = Math.max(end, edit.newStart + edit.newLines - 1);
+  }
   return { start, end };
 }
 

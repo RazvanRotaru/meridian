@@ -173,10 +173,47 @@ describe("parsePullRequestFiles", () => {
         { filename: "src/weird.ts", status: "unknown" },
       ]),
     ).toEqual([
-      { path: "src/new.ts", status: "added", additions: 12, deletions: 0 },
-      { path: "src/changed.ts", status: "modified", additions: 3, deletions: 7 },
-      { path: "src/weird.ts", status: "modified", additions: 0, deletions: 0 },
+      { path: "src/new.ts", status: "added", additions: 12, deletions: 0, diffComplete: false },
+      { path: "src/changed.ts", status: "modified", additions: 3, deletions: 7, diffComplete: false },
+      { path: "src/weird.ts", status: "modified", additions: 0, deletions: 0, diffComplete: false },
     ]);
+  });
+
+  it("preserves rename identity and verifies patch completeness against GitHub totals", () => {
+    const [file] = parsePullRequestFiles([{
+      filename: "src/new-name.ts",
+      previous_filename: "src/old-name.ts",
+      status: "renamed",
+      additions: 1,
+      deletions: 1,
+      patch: "@@ -4 +4 @@\n-old\n+new",
+    }]);
+
+    expect(file.previousPath).toBe("src/old-name.ts");
+    expect(file.diffComplete).toBe(true);
+    expect(file.contextHunks).toEqual([{ start: 4, end: 4 }]);
+    expect(file.diffLines).toEqual([
+      { kind: "deleted", oldLine: 4, newLine: null, beforeNewLine: 4, text: "old" },
+      { kind: "added", oldLine: null, newLine: 4, beforeNewLine: 4, text: "new" },
+    ]);
+  });
+
+  it("fails closed to whole-file metadata instead of exposing a partial patch", () => {
+    const [file] = parsePullRequestFiles([{
+      filename: "src/truncated.ts",
+      status: "modified",
+      additions: 2,
+      deletions: 2,
+      patch: "@@ -1,2 +1,2 @@\n-old\n+new",
+    }]);
+
+    expect(file).toEqual({
+      path: "src/truncated.ts",
+      status: "modified",
+      additions: 2,
+      deletions: 2,
+      diffComplete: false,
+    });
   });
 });
 
@@ -284,13 +321,12 @@ describe("parsePatchDetail", () => {
 
   it("paints only the changed body lines, not the context-padded hunk header", () => {
     const detail = parsePatchDetail(patch);
-    // One replacement line is `modified`, the unpaired new line is `added`, and the pure deletion
-    // paints the seam it occupied. This matches the local `git diff` classifier exactly.
+    // One replacement line is `modified` and the unpaired new line is `added`. A pure deletion has
+    // no surviving HEAD row to paint; its graph seam lives in `hunks` only.
     expect(detail.kinds).toEqual([
       { start: 13, end: 13, kind: "modified" },
       { start: 14, end: 14, kind: "added" },
       { start: 34, end: 34, kind: "added" },
-      { start: 58, end: 59, kind: "deleted" },
     ]);
     expect(detail.removed).toEqual([
       { afterNewLine: 12, lines: ["  const old = 1;"] },
@@ -299,12 +335,21 @@ describe("parsePatchDetail", () => {
     expect(detail.removedTruncated).toBe(false);
   });
 
-  it("records each hunk's old/new spans for base→head line mapping", () => {
+  it("records each exact edit run for base→head line mapping", () => {
     expect(parsePatchDetail(patch).edits).toEqual([
-      { oldStart: 10, oldLines: 7, newStart: 10, newLines: 8 },
-      { oldStart: 30, oldLines: 6, newStart: 31, newLines: 7 },
-      { oldStart: 50, oldLines: 7, newStart: 55, newLines: 6 },
+      { oldStart: 13, oldLines: 1, newStart: 13, newLines: 2 },
+      { oldStart: 33, oldLines: 0, newStart: 34, newLines: 1 },
+      { oldStart: 53, oldLines: 1, newStart: 58, newLines: 0 },
     ]);
+  });
+
+  it("retains context-padded hunk ranges separately for GitHub commentability", () => {
+    expect(parsePatchDetail(patch).contextHunks).toEqual([
+      { start: 10, end: 17 },
+      { start: 31, end: 37 },
+      { start: 55, end: 60 },
+    ]);
+    expect(parsePatchDetail("@@ -1,2 +0,0 @@\n-one\n-two").contextHunks).toEqual([]);
   });
 
   it("marks TIGHT changed-line ranges (body, not header) so an unchanged next declaration isn't flagged", () => {
@@ -315,7 +360,7 @@ describe("parsePatchDetail", () => {
       { start: 34, end: 34 }, // the lone insertion
       { start: 58, end: 58 }, // the pure deletion's seam (the line it now precedes)
     ]);
-    expect(parsePatchDetail("@@ -1,2 +0,0 @@\n-one\n-two").hunks).toEqual([]);
+    expect(parsePatchDetail("@@ -1,2 +0,0 @@\n-one\n-two").hunks).toEqual([{ start: 1, end: 1 }]);
   });
 
   it("also emits BASE-side ranges so a base-graph review marks nodes in base coordinates", () => {
@@ -326,6 +371,21 @@ describe("parsePatchDetail", () => {
       { start: 33, end: 33 }, // the insertion's base seam
       { start: 53, end: 53 }, // the deleted base line
     ]);
+  });
+
+  it("retains exact changed rows in patch order", () => {
+    expect(parsePatchDetail(patch).diffLines).toEqual([
+      { kind: "deleted", oldLine: 13, newLine: null, beforeNewLine: 13, text: "  const old = 1;" },
+      { kind: "added", oldLine: null, newLine: 13, beforeNewLine: 13, text: "  const changed = 2;" },
+      { kind: "added", oldLine: null, newLine: 14, beforeNewLine: 14, text: "  const added = 3;" },
+      { kind: "added", oldLine: null, newLine: 34, beforeNewLine: 34, text: "  brandNew();" },
+      { kind: "deleted", oldLine: 53, newLine: null, beforeNewLine: 58, text: "  gone();" },
+    ]);
+  });
+
+  it("validates hunk body counts and exposes exact +/- totals", () => {
+    expect(parsePatchDetail(patch)).toMatchObject({ complete: true, added: 3, deleted: 2 });
+    expect(parsePatchDetail("@@ -1,2 +1,2 @@\n-old\n+new")).toMatchObject({ complete: false, added: 1, deleted: 1 });
   });
 });
 

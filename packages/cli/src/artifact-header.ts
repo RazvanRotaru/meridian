@@ -9,6 +9,8 @@
 import { basename } from "node:path";
 import { LOGIC_FLOW_EXTENSION, PORTS_EXTENSION, SCHEMA_VERSION } from "@meridian/core";
 import type {
+  ChangedDiffLines,
+  ChangedFileManifestEntry,
   ChangedLineKinds,
   ChangedLineStats,
   ChangedRanges,
@@ -25,8 +27,7 @@ import { generatorVersion } from "./version";
 /** Free-form extension key: the repo's declared application entry points, best-first (NodeId[]). */
 const ENTRY_MODULES_EXTENSION = "entryModules";
 
-/** Free-form extension key: `{ baseRef, files, stats, kinds }` when generated with `--changed-since` —
- * the base ref plus per-file diff metadata (ranges, +/− totals, line kinds) for viewer markings/chips. */
+/** Free-form extension key persisted when generated with `--changed-since`. */
 const CHANGED_SINCE_EXTENSION = "changedSince";
 
 const TELEMETRY_CONTRACT: GraphArtifact["telemetry"] = {
@@ -44,8 +45,15 @@ export interface HeaderInputs {
   name?: string;
   /** Optional source revision resolved by the caller that owns the Git checkout. */
   vcs?: GraphArtifact["target"]["vcs"];
-  /** The `--changed-since` base ref + per-file line ranges/+− totals/line kinds for renderer diff UI. */
-  changedSince?: { baseRef: string; files: ChangedRanges; stats: ChangedLineStats; kinds: ChangedLineKinds };
+  /** The `--changed-since` base ref plus canonical per-file diff metadata for renderer diff UI. */
+  changedSince?: {
+    baseRef: string;
+    files: ChangedRanges;
+    stats: ChangedLineStats;
+    kinds: ChangedLineKinds;
+    diffLines: ChangedDiffLines;
+    manifest: ChangedFileManifestEntry[];
+  };
 }
 
 export function buildArtifact(inputs: HeaderInputs): GraphArtifact {

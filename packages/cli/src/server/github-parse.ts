@@ -4,8 +4,8 @@
  * response fields — only these typed projections leave the server, and only over `textContent`.
  */
 
-import type { ChangedLineSpan, LineRange } from "@meridian/core";
-import { classifyChangedLineRun } from "../changed-line-kinds";
+import type { ChangedDiffLine, ChangedLineSpan, LineRange } from "@meridian/core";
+import { parseUnifiedDiffBody, type UnifiedDiffEdit } from "../unified-diff";
 import { asObject, numberOr, optionalString, requireNumber, requireString } from "./json-fields";
 import { isAllowedCloneRef } from "./git-ref";
 import { WebError } from "./web-error";
@@ -83,13 +83,8 @@ export interface PrChecks {
   url: string | null;
 }
 
-/** One unified-diff hunk's old/new line spans — enough to map a base line number to its head line. */
-export interface LineEdit {
-  oldStart: number;
-  oldLines: number;
-  newStart: number;
-  newLines: number;
-}
+/** One exact edit run's old/new spans, using next-row cursor coordinates for an empty side. */
+export type LineEdit = UnifiedDiffEdit;
 
 export interface PrFile {
   path: string;
@@ -103,15 +98,23 @@ export interface PrFile {
   /** Base-side (old) tight changed ranges — the base-graph node marking uses these so a shifted
    * new-side hunk can't spill onto the next unchanged declaration in base coordinates. */
   oldHunks?: LineRange[];
-  /** Per-hunk old/new spans, for mapping a node's base span to its position in the PR head file. */
+  /** Per-edit-run old/new spans, for mapping a node's base span to its position in the PR head file. */
   edits?: LineEdit[];
+  /** New-side context ranges from GitHub's original U3 hunk headers, used only for commentability. */
+  contextHunks?: LineRange[];
   /** Head-relative added/modified line spans, read from the patch BODY (not the context-padded hunk
    * header), so the code panel paints exactly the changed lines green/gold — not the whole hunk. */
   kinds?: ChangedLineSpan[];
+  /** Exact ordered +/- rows from the same canonical parser used by local git diffs. */
+  diffLines?: ChangedDiffLine[];
+  /** Whether the supplied patch is internally complete and matches GitHub's file-level totals. */
+  diffComplete?: boolean;
   /** Removed patch text grouped by deletion run and anchored after the preceding HEAD-side line. */
   removed?: Array<{ afterNewLine: number; lines: string[] }>;
   /** True when `removed` reached its per-file safety cap. */
   removedTruncated?: boolean;
+  /** Renames only: the pre-image path. */
+  previousPath?: string;
 }
 
 export type RepoQuery =
@@ -351,36 +354,56 @@ function toPrFile(body: Record<string, unknown>): PrFile {
     additions: Math.max(0, Math.trunc(numberOr(body.additions, 0))),
     deletions: Math.max(0, Math.trunc(numberOr(body.deletions, 0))),
   };
+  const previousPath = optionalString(body, "previous_filename");
+  if (file.status === "renamed" && previousPath) {
+    file.previousPath = previousPath;
+  }
   const patch = optionalString(body, "patch");
   if (patch) {
     const detail = parsePatchDetail(patch);
-    if (detail.hunks.length > 0) {
-      file.hunks = detail.hunks;
+    const verified = detail.complete && detail.added === file.additions && detail.deleted === file.deletions;
+    file.diffComplete = verified;
+    // Fail closed: a partial GitHub patch must never look authoritative. Omitting all derived detail
+    // makes downstream use its existing whole-file fallback instead of rendering a plausible subset.
+    if (verified) {
+      if (detail.hunks.length > 0) {
+        file.hunks = detail.hunks;
+      }
+      if (detail.oldHunks.length > 0) {
+        file.oldHunks = detail.oldHunks;
+      }
+      if (detail.edits.length > 0) {
+        file.edits = detail.edits;
+      }
+      if (detail.contextHunks.length > 0) {
+        file.contextHunks = detail.contextHunks;
+      }
+      if (detail.kinds.length > 0) {
+        file.kinds = detail.kinds;
+      }
+      if (detail.diffLines.length > 0) {
+        file.diffLines = detail.diffLines;
+      }
+      if (detail.removed.length > 0) {
+        file.removed = detail.removed;
+      }
+      if (detail.removedTruncated) {
+        file.removedTruncated = true;
+      }
     }
-    if (detail.oldHunks.length > 0) {
-      file.oldHunks = detail.oldHunks;
-    }
-    if (detail.edits.length > 0) {
-      file.edits = detail.edits;
-    }
-    if (detail.kinds.length > 0) {
-      file.kinds = detail.kinds;
-    }
-    if (detail.removed.length > 0) {
-      file.removed = detail.removed;
-    }
-    if (detail.removedTruncated) {
-      file.removedTruncated = true;
-    }
+  } else {
+    // GitHub omits `patch` for binary files and may omit it for oversized textual diffs. Treat the
+    // absence as explicitly incomplete so every source host explains that it has metadata only,
+    // instead of silently presenting unchanged code as though no +/- rows existed.
+    file.diffComplete = false;
   }
   return file;
 }
 
 /**
- * New-side changed line ranges from a unified-diff patch, read from its hunk headers alone
- * (`@@ -a,b +c,d @@`): `c` is the new-side start, `d` the line count (absent ⇒ 1). A `+c,0` header
- * is a pure deletion — anchored to a 1-line span at `c` so a delete-only edit still names the block
- * it sits in (mirrors the local `meridian review` diff parser). Ranges are 1-based and inclusive.
+ * New-side context ranges from unified-diff hunk headers (`@@ -a,b +c,d @@`): `c` is the new-side
+ * start and `d` the count (absent ⇒ 1). Empty new-side ranges are omitted: there is no RIGHT-side
+ * line GitHub can accept a review comment on. Ranges are 1-based and inclusive.
  */
 export function parsePatchHunks(patch: string): LineRange[] {
   const ranges: LineRange[] = [];
@@ -391,14 +414,15 @@ export function parsePatchHunks(patch: string): LineRange[] {
     }
     const start = Number(match[1]);
     const count = match[2] === undefined ? 1 : Number(match[2]);
-    ranges.push(count === 0 ? { start, end: start + 1 } : { start, end: start + count - 1 });
+    if (Number.isSafeInteger(start) && Number.isSafeInteger(count) && start >= 1 && count >= 1) {
+      ranges.push({ start, end: start + count - 1 });
+    }
   }
   return ranges;
 }
 
 export interface PatchDetail {
-  /** New-side TIGHT changed ranges — code-panel head paint + review-comment anchoring + head-graph
-   * marking. */
+  /** New-side TIGHT changed ranges for head-graph marking. */
   hunks: LineRange[];
   /** Old-side (BASE) tight changed ranges — base-graph node marking. Because the synchronous review
    * overlays the diff on the BASE graph (whose node line numbers are base-side), a new-side range
@@ -406,7 +430,13 @@ export interface PatchDetail {
    * declaration; the old-side range can't, so only genuinely-changed base nodes mark. */
   oldHunks: LineRange[];
   edits: LineEdit[];
+  /** Context-padded new-side U3 ranges, retained solely for GitHub review-comment validation. */
+  contextHunks: LineRange[];
   kinds: ChangedLineSpan[];
+  diffLines: ChangedDiffLine[];
+  added: number;
+  deleted: number;
+  complete: boolean;
   /** Removed patch text, one entry per contiguous deletion run, positioned in HEAD coordinates. */
   removed: Array<{ afterNewLine: number; lines: string[] }>;
   /** True when more than REMOVED_LINE_LIMIT deleted lines were present in this file's patch. */
@@ -416,97 +446,54 @@ export interface PatchDetail {
 /**
  * A GitHub PR `patch` carries CONTEXT lines (the default `-U3`), so the hunk HEADER range covers
  * more than the edit — marking nodes off it spills into the next declaration. This walks the hunk
- * BODY instead, tracking BOTH the new- and old-side line counters, and emits, per contiguous run of
- * additions/deletions, TIGHT changed-line spans: `kinds` (new-side, tagged modified/added/deleted, code
- * panel), `hunks` (new-side, comments + head-graph marking) and `oldHunks` (base-side, base-graph
- * marking — see the interface). `edits` records each hunk's old/new spans for base→head mapping.
- * 1-based, inclusive.
+ * BODY instead. The shared local/GitHub parser emits exact ordered +/- rows, per-run base→HEAD
+ * edits, paintable HEAD kinds, and tight old/new graph ranges. Header context survives separately
+ * as `contextHunks`, solely for GitHub review-comment validation.
  */
 export function parsePatchDetail(patch: string): PatchDetail {
-  const hunks: LineRange[] = [];
-  const oldHunks: LineRange[] = [];
-  const edits: LineEdit[] = [];
-  const kinds: ChangedLineSpan[] = [];
+  const parsed = parseUnifiedDiffBody(patch);
+  const { removed, removedTruncated } = removedFromDiffLines(parsed.diffLines);
+  return {
+    hunks: parsed.ranges,
+    oldHunks: parsed.oldRanges,
+    edits: parsed.edits,
+    contextHunks: parsePatchHunks(patch),
+    kinds: parsed.kinds,
+    diffLines: parsed.diffLines,
+    added: parsed.added,
+    deleted: parsed.deleted,
+    complete: parsed.complete,
+    removed,
+    removedTruncated,
+  };
+}
+
+function removedFromDiffLines(diffLines: readonly ChangedDiffLine[]): {
+  removed: Array<{ afterNewLine: number; lines: string[] }>;
+  removedTruncated: boolean;
+} {
   const removed: Array<{ afterNewLine: number; lines: string[] }> = [];
-  let newLine = 0;
-  let oldLine = 0;
-  let inHunk = false;
-  let addRun: number[] = []; // new-side line numbers of the current contiguous `+` run
-  let delRun: number[] = []; // old-side (base) line numbers of the current contiguous `-` run
-  let removedRun: string[] = [];
-  let removedAfterNewLine = 0;
-  let capturedRemovedLines = 0;
+  let active: { afterNewLine: number; lines: string[] } | null = null;
+  let captured = 0;
   let removedTruncated = false;
-  const flush = () => {
-    kinds.push(...classifyChangedLineRun(addRun, delRun.length, newLine));
-    if (addRun.length > 0) {
-      const span = { start: addRun[0], end: addRun[addRun.length - 1] };
-      hunks.push(span);
-    } else if (delRun.length > 0 && newLine > 0) {
-      // Pure deletion: the node it sat in changed — new-side seam at the line the removed block now
-      // precedes. A whole-file deletion has no new-side seam to anchor.
-      hunks.push({ start: newLine, end: newLine });
-    }
-    // Base-side marking range: deleted/modified base lines, or a seam at the base insertion point.
-    if (delRun.length > 0) {
-      oldHunks.push({ start: delRun[0], end: delRun[delRun.length - 1] });
-    } else if (addRun.length > 0) {
-      oldHunks.push({ start: Math.max(oldLine, 1), end: Math.max(oldLine, 1) });
-    }
-    addRun = [];
-    delRun = [];
-  };
-  const flushRemoved = () => {
-    if (removedRun.length > 0) {
-      removed.push({ afterNewLine: removedAfterNewLine, lines: removedRun });
-      removedRun = [];
-    }
-  };
-  for (const raw of patch.split("\n")) {
-    const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(raw);
-    if (header) {
-      flush();
-      flushRemoved();
-      const oldStart = Number(header[1]);
-      const oldLines = header[2] === undefined ? 1 : Number(header[2]);
-      const newStart = Number(header[3]);
-      const newLines = header[4] === undefined ? 1 : Number(header[4]);
-      edits.push({ oldStart, oldLines, newStart, newLines });
-      oldLine = oldStart;
-      newLine = newStart;
-      inHunk = true;
+  for (const row of diffLines) {
+    if (row.kind !== "deleted") {
+      active = null;
       continue;
     }
-    if (!inHunk || raw.startsWith("\\")) {
-      continue; // preamble (diff --git / ---/+++), or a "\ No newline at end of file" marker
+    if (captured >= REMOVED_LINE_LIMIT) {
+      removedTruncated = true;
+      continue;
     }
-    const marker = raw[0];
-    if (marker === "+") {
-      flushRemoved();
-      addRun.push(newLine);
-      newLine += 1;
-    } else if (marker === "-") {
-      if (removedRun.length === 0) {
-        removedAfterNewLine = Math.max(newLine - 1, 0);
-      }
-      if (capturedRemovedLines < REMOVED_LINE_LIMIT) {
-        removedRun.push(raw.slice(1));
-        capturedRemovedLines += 1;
-      } else {
-        removedTruncated = true;
-      }
-      delRun.push(oldLine);
-      oldLine += 1;
-    } else {
-      flush(); // a context line ends any run
-      flushRemoved();
-      oldLine += 1;
-      newLine += 1;
+    const afterNewLine = row.beforeNewLine - 1;
+    if (active === null || active.afterNewLine !== afterNewLine) {
+      active = { afterNewLine, lines: [] };
+      removed.push(active);
     }
+    active.lines.push(row.text);
+    captured += 1;
   }
-  flush();
-  flushRemoved();
-  return { hunks, oldHunks, edits, kinds, removed, removedTruncated };
+  return { removed, removedTruncated };
 }
 
 function prFileStatus(status: unknown): PrFile["status"] {

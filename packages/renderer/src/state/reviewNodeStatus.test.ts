@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GraphNode } from "@meridian/core";
-import { reviewNodeChangeStatus, reviewSourceChangeStatus } from "./reviewNodeStatus";
+import { reviewNodeChangeStatus, reviewNodeStatusSourcesFromDiff, reviewSourceChangeStatus } from "./reviewNodeStatus";
 
 function node(id: string, start: number, end: number, parentId?: string): GraphNode {
   return {
@@ -80,5 +80,15 @@ describe("reviewSourceChangeStatus", () => {
         kinds: [{ start: 23, end: 23, kind: "deleted" }],
       },
     })).toBe("deleted");
+  });
+});
+
+describe("reviewNodeStatusSourcesFromDiff", () => {
+  it("creates a graph-only deletion seam without adding a displayed HEAD deletion kind", () => {
+    expect(reviewNodeStatusSourcesFromDiff({}, {
+      "src/settings.ts": [{ kind: "deleted", oldLine: 42, newLine: null, beforeNewLine: 42, text: "gone();" }],
+    })).toEqual({
+      "src/settings.ts": { kinds: [{ start: 42, end: 42, kind: "deleted" }] },
+    });
   });
 });

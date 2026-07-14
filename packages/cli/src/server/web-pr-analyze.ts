@@ -3,16 +3,18 @@
  * checkout and changed-node graph, then stream real miss stages to the browser as NDJSON.
  *
  * This is the PR-review sibling of `/api/generate` (web-graph.ts): it stores the artifact under a
- * deterministic `pr-` id in `ctx.graphs`/`ctx.sourceRoots`/`ctx.sources` so the browser then loads
- * it with `GET /api/graph?id=` and slices code with `GET /api/source?id=`. Unlike generate it needs
- * FULL commit/tree history (a shallow clone can't resolve `merge-base` against the base branch),
- * while a blobless partial clone keeps the persistent miss smaller. Cache identity includes both
- * revisions, so a head force-push or base update cannot reuse a stale diff.
+ * deterministic commit-pinned ids in `ctx.graphs`/`ctx.sourceRoots`/`ctx.sources` so the browser
+ * can load both HEAD and its exact merge-base comparison with `GET /api/graph?id=` and slice either
+ * side with `GET /api/source?id=`. Unlike generate it needs FULL commit/tree history (a shallow
+ * clone can't resolve `merge-base` against the base branch), while a blobless partial clone keeps
+ * the persistent miss smaller. Cache identity includes both revisions, so a head force-push or
+ * base update cannot reuse a stale diff.
  */
 
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { GraphArtifact } from "@meridian/core";
+import { changedFileManifestFromExtensions } from "@meridian/core";
+import type { ChangedFileManifestEntry, GraphArtifact } from "@meridian/core";
 import { readJsonBody } from "./web-request";
 import { parsePrAnalyzeRequest } from "./web-pr-request";
 import type { PrAnalyzeRequest } from "./web-pr-request";
@@ -67,9 +69,19 @@ async function streamAnalysis(
       cached.headSha,
       cached.baseSha,
     );
+    const comparisonGraphId = storeComparisonArtifact(
+      ctx,
+      cached.comparisonArtifact,
+      source,
+      cached.comparisonSourceDir,
+      body,
+      cached.mergeBaseSha,
+    );
     writeLine(response, doneLine(
       stored.graphId,
+      comparisonGraphId,
       cached.headSha,
+      cached.mergeBaseSha,
       cached.artifact,
       [...cached.warnings, ...stored.syntheticWarnings],
       cached.cache,
@@ -134,12 +146,37 @@ function storeArtifact(
   return { graphId, syntheticWarnings };
 }
 
-/** The terminal `done` line: the new graph id, the analyzed head commit, counts, changed files, warnings. */
-function doneLine(graphId: string, headSha: string, artifact: GraphArtifact, warnings: string[], cache: "hit" | "miss"): Record<string, unknown> {
+function storeComparisonArtifact(
+  ctx: Context,
+  artifact: GraphArtifact,
+  source: GitHubSource,
+  sourceDir: string,
+  body: PrAnalyzeRequest,
+  mergeBaseSha: string,
+): string {
+  const graphId = prComparisonGraphId(source, body, mergeBaseSha);
+  ctx.graphs.set(graphId, artifact);
+  ctx.sourceRoots.set(graphId, sourceDir);
+  ctx.sources.set(graphId, source);
+  return graphId;
+}
+
+/** The terminal `done` line carries immutable ids and commit provenance for both comparison sides. */
+function doneLine(
+  graphId: string,
+  comparisonGraphId: string,
+  headSha: string,
+  mergeBaseSha: string,
+  artifact: GraphArtifact,
+  warnings: string[],
+  cache: "hit" | "miss",
+): Record<string, unknown> {
   return {
     stage: "done",
     graphId,
+    comparisonGraphId,
     headSha,
+    mergeBaseSha,
     counts: { nodes: artifact.nodes.length, edges: artifact.edges.length },
     changedFiles: changedFilesOf(artifact),
     warnings,
@@ -147,13 +184,17 @@ function doneLine(graphId: string, headSha: string, artifact: GraphArtifact, war
   };
 }
 
-/** Derive `{ path, status }[]` from the diff's per-file ranges stamped into `extensions.changedSince`. */
-function changedFilesOf(artifact: GraphArtifact): { path: string; status: string }[] {
+/** Exact file inventory from local Git; ranges are only a backward-compatible old-artifact fallback. */
+function changedFilesOf(artifact: GraphArtifact): ChangedFileManifestEntry[] {
+  const manifest = changedFileManifestFromExtensions(artifact.extensions);
+  if (manifest !== null) {
+    return [...manifest].sort((left, right) => left.path.localeCompare(right.path));
+  }
   const changedSince = (artifact.extensions?.changedSince ?? null) as { files?: Record<string, unknown> } | null;
   const files = changedSince?.files ?? {};
   return Object.keys(files)
     .sort()
-    .map((path) => ({ path, status: "modified" }));
+    .map((path) => ({ path, status: "modified" as const }));
 }
 
 /** Deterministic per-commit id: a force-pushed ref can never replace a stale client's artifact. */
@@ -170,6 +211,20 @@ function prGraphId(source: GitHubSource, body: PrAnalyzeRequest, headSha: string
   ].join(" ");
   const keyDigest = createHash("sha1").update(key).digest("hex").slice(0, 12);
   return `pr-${keyDigest}-${headSha}`;
+}
+
+/** The comparison id is pinned to the exact merge base, never to a branch name that can drift. */
+function prComparisonGraphId(source: GitHubSource, body: PrAnalyzeRequest, mergeBaseSha: string): string {
+  const key = [
+    "pr-comparison",
+    source.owner,
+    source.repo,
+    source.subdir ?? "",
+    body.prNumber,
+    mergeBaseSha,
+  ].join(" ");
+  const keyDigest = createHash("sha1").update(key).digest("hex").slice(0, 12);
+  return `pr-base-${keyDigest}-${mergeBaseSha}`;
 }
 
 function beginNdjson(response: ServerResponse): void {

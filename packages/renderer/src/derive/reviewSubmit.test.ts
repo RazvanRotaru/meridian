@@ -57,6 +57,32 @@ describe("buildReviewSubmission", () => {
     expect(submission.blocked).toEqual([]);
   });
 
+  it("blocks comments on base-only deleted units even when an old line number matches HEAD diff context", () => {
+    const baseOnlyFiles: ReviewFileRow[] = FILES.map((file) => file.path === "src/a.ts"
+      ? {
+          ...file,
+          units: [{
+            nodeId: "ts:src/a.ts#deleted",
+            displayName: "deleted",
+            kind: "method",
+            startLine: 25,
+            endLine: 30,
+            sourceSide: "base",
+            depth: 0,
+            isTest: false,
+            fingerprint: "deleted-base-span",
+          }],
+        }
+      : file);
+    const rowDraft = draft("src/a.ts", "ts:src/a.ts#deleted", "why remove this?");
+    const lineDraft = draft("src/a.ts", "ts:src/a.ts#deleted", "old line", "deleted", 25);
+
+    const submission = buildReviewSubmission([rowDraft, lineDraft], baseOnlyFiles, CONTEXT);
+
+    expect(submission.comments).toEqual([]);
+    expect(submission.blocked).toEqual([rowDraft, lineDraft]);
+  });
+
   it("clamps to the unit start when the hunk begins above it", () => {
     const submission = buildReviewSubmission([draft("src/a.ts", "ts:src/a.ts#helper", "hm")], FILES, CONTEXT);
     // helper spans 78..90; its overlapping hunk is 80..85 ⇒ line 80.

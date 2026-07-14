@@ -8,13 +8,20 @@
  */
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import type { ChangedLineKind } from "@meridian/core";
+import type { ChangedDiffLine, ChangedLineKind } from "@meridian/core";
 import type { PrGitHubComment } from "../state/prTypes";
 import type { ReviewComment } from "../state/reviewTicksPref";
 import { ExistingCommentList } from "./review/ExistingReviewComments";
 import { CommentComposer, CommentList } from "./review/ReviewComments";
 import { unchangedCodeFoldKey, unchangedCodeFolds } from "./codeFolding";
 import { UnchangedCodeFoldRow } from "./UnchangedCodeFoldRow";
+
+/** One canonical unified-diff row. Added rows live in the shown HEAD source; deleted rows retain
+ * their BASE text and are inserted immediately before `beforeNewLine`. Both line coordinates are
+ * explicit so tests and accessibility tooling never have to infer diff semantics from colour. */
+export type CodeDiffLine = ChangedDiffLine;
+
+export type CodeSourceSide = "head" | "base";
 
 const COLOR = {
   plain: "#C9D3E0",
@@ -69,6 +76,7 @@ function colorFor(m: RegExpExecArray): string {
 
 export function CodeBlock({
   code,
+  lineCount,
   maxHeight = 220,
   startLine,
   showGutter = false,
@@ -83,8 +91,12 @@ export function CodeBlock({
   removedRows,
   removedTruncated = false,
   foldUnchanged = false,
+  diffLines,
+  sourceSide = "head",
 }: {
   code: string;
+  /** Exact source rows represented by `code`; zero prevents an empty string becoming a fake line 1. */
+  lineCount?: number;
   maxHeight?: number | string;
   /** The span's absolute first line. Anchors the diff paint (rows map to `changedLineKinds`) and the
    * scroll-to-first-change; independent of the gutter. Omitted → a plain listing, no diff paint. */
@@ -113,6 +125,11 @@ export function CodeBlock({
   removedTruncated?: boolean;
   /** Collapse large unchanged gaps around review changes, preserving three context rows. */
   foldUnchanged?: boolean;
+  /** Canonical display rows from the merge-base diff. Presence wins over legacy changed-kind and
+   * removed-row projections, including when the array is empty. */
+  diffLines?: readonly CodeDiffLine[];
+  /** Which revision `code` belongs to. Removed-file fallbacks show BASE rows directly as deletes. */
+  sourceSide?: CodeSourceSide;
 }) {
   // Reset the shared regex's lastIndex per run (it is stateful with the `g` flag) and never let a
   // tokenizing surprise blank the panel — fall back to the raw, still-escaped source.
@@ -124,7 +141,10 @@ export function CodeBlock({
       return [{ text: code, color: COLOR.plain }];
     }
   }, [code]);
-  const highlightedLines = useMemo(() => splitHighlightedLines(pieces), [pieces]);
+  const highlightedLines = useMemo(
+    () => lineCount === 0 ? [] : splitHighlightedLines(pieces),
+    [lineCount, pieces],
+  );
   const existingCommentsByLine = useMemo(() => {
     const byLine = new Map<number, PrGitHubComment[]>();
     for (const comment of existingComments) {
@@ -143,34 +163,47 @@ export function CodeBlock({
     }
     return byLine;
   }, [pendingComments]);
-  const unchangedFolds = useMemo(() => foldUnchanged && startLine !== undefined
-    ? unchangedCodeFolds({
-        startLine,
-        lineCount: highlightedLines.length,
-        focusLines: foldFocusLines({
-          changedLines,
-          changedLineKinds,
-          evidenceLines,
-          commentableLines,
-          existingCommentsByLine,
-          pendingCommentsByLine,
-          composerLine: lineComposer?.line,
-          removedRows,
-        }),
-      })
-    : [], [
+  const canonicalRows = useMemo(
+    () => diffLines === undefined || startLine === undefined
+      ? null
+      : canonicalRowsForSource(diffLines, sourceSide, startLine, highlightedLines.length),
+    [diffLines, highlightedLines.length, sourceSide, startLine],
+  );
+  const effectiveRemovedRows = diffLines === undefined ? removedRows : undefined;
+  const effectiveRemovedTruncated = diffLines === undefined ? removedTruncated : false;
+  const unchangedFolds = useMemo(() => {
+    if (!foldUnchanged || startLine === undefined) return [];
+    const focus = foldFocus({
       changedLines,
       changedLineKinds,
-      commentableLines,
       evidenceLines,
       existingCommentsByLine,
-      foldUnchanged,
-      highlightedLines.length,
-      lineComposer?.line,
       pendingCommentsByLine,
-      removedRows,
+      composerLine: lineComposer?.line,
+      removedRows: effectiveRemovedRows,
+      diffLines,
+      sourceSide,
+    });
+    return unchangedCodeFolds({
       startLine,
-    ]);
+      lineCount: highlightedLines.length,
+      focusLines: focus.lines,
+      focusGaps: focus.gaps,
+    });
+  }, [
+    changedLines,
+    changedLineKinds,
+    evidenceLines,
+    existingCommentsByLine,
+    foldUnchanged,
+    highlightedLines.length,
+    lineComposer?.line,
+    pendingCommentsByLine,
+    effectiveRemovedRows,
+    diffLines,
+    sourceSide,
+    startLine,
+  ]);
   const foldSignature = unchangedFolds.map(unchangedCodeFoldKey).join(",");
   const [expandedFolds, setExpandedFolds] = useState<Set<string>>(new Set());
   useEffect(() => setExpandedFolds(new Set()), [code, foldSignature]);
@@ -208,14 +241,23 @@ export function CodeBlock({
   // source row and its optional composer share one table, so inserting a composer or ghost row can
   // never desynchronise independently-rendered code and gutter columns.
   const hasCommentableLines = (commentableLines?.size ?? 0) > 0 && onLineClick !== undefined;
-  const showReviewGutter = hasCommentableLines || (removedRows?.size ?? 0) > 0 || removedTruncated;
+  const showReviewGutter = hasCommentableLines
+    || (effectiveRemovedRows?.size ?? 0) > 0
+    || effectiveRemovedTruncated
+    || (canonicalRows?.deletedByBeforeLine.size ?? 0) > 0
+    || (sourceSide === "base" && (canonicalRows?.sourceRows.size ?? 0) > 0);
   const gutterVisible = showGutter || showReviewGutter;
+  const firstLine = startLine;
+  const lastLine = startLine + highlightedLines.length - 1;
   return (
     <div ref={listingRef} style={{ ...LISTING_STYLE, maxHeight }}>
       <table style={CODE_TABLE_STYLE}>
         <tbody>
-          {removedRows?.get(0)?.map((line, index) => (
-            <GhostRow key={`removed-0-${index}`} text={line} showGutter={gutterVisible} />
+          {canonicalRows?.deletedByBeforeLine.get(firstLine)?.map((line) => (
+            <GhostRow key={diffRowKey(line)} line={line} showGutter={gutterVisible} />
+          ))}
+          {effectiveRemovedRows?.get(firstLine - 1)?.map((line, index) => (
+            <GhostRow key={`removed-${firstLine - 1}-${index}`} text={line} showGutter={gutterVisible} />
           ))}
           {highlightedLines.map((line, index) => {
             const lineNo = startLine + index;
@@ -233,8 +275,11 @@ export function CodeBlock({
                 />
               );
             }
-            const kind = changedLineKinds?.get(lineNo);
-            const changed = changedLines?.has(lineNo) ?? false;
+            const canonicalRow = canonicalRows?.sourceRows.get(lineNo);
+            const kind = canonicalRow
+              ? canonicalRow.kind === "added" ? "added" : "deleted"
+              : diffLines === undefined ? changedLineKinds?.get(lineNo) : undefined;
+            const changed = diffLines === undefined && (changedLines?.has(lineNo) ?? false);
             const evidence = evidenceLines?.has(lineNo) ?? false;
             const commentable = onLineClick !== undefined && (commentableLines?.has(lineNo) ?? false);
             const composerOpen = lineComposer?.line === lineNo;
@@ -256,6 +301,12 @@ export function CodeBlock({
                 ) : null}
                 <tr
                   data-source-line={lineNo}
+                  data-diff-origin={canonicalRow?.kind === "added" ? "add" : canonicalRow?.kind === "deleted" ? "delete" : undefined}
+                  data-old-line={canonicalRow?.kind === "deleted" ? canonicalRow.oldLine ?? undefined : undefined}
+                  data-new-line={canonicalRow?.kind === "added" ? canonicalRow.newLine ?? undefined : undefined}
+                  data-before-new-line={canonicalRow?.beforeNewLine}
+                  data-no-newline={canonicalRow?.noNewline ? "true" : undefined}
+                  aria-label={canonicalDiffAriaLabel(canonicalRow)}
                   data-edge-evidence-line={evidence ? "true" : undefined}
                   data-review-comment-line={commentable ? lineNo : undefined}
                   onMouseEnter={() => setHoveredLine(lineNo)}
@@ -295,6 +346,9 @@ export function CodeBlock({
                     {line.length > 0 ? line : " "}
                   </td>
                 </tr>
+                {canonicalRow?.noNewline ? (
+                  <NoNewlineMarkerRow side={canonicalRow.kind === "added" ? "new" : "old"} showGutter={gutterVisible} />
+                ) : null}
                 {lineComments.length > 0 ? (
                   <tr data-existing-review-comments-line={lineNo}>
                     <td colSpan={gutterVisible ? 2 : 1} style={EXISTING_COMMENT_CELL_STYLE}>
@@ -322,17 +376,23 @@ export function CodeBlock({
                     </td>
                   </tr>
                 ) : null}
-                {removedRows?.get(lineNo)?.map((removedLine, removedIndex) => (
+                {effectiveRemovedRows?.get(lineNo)?.map((removedLine, removedIndex) => (
                   <GhostRow
                     key={`removed-${lineNo}-${removedIndex}`}
                     text={removedLine}
                     showGutter={gutterVisible}
                   />
                 ))}
+                {lineNo < lastLine ? canonicalRows?.deletedByBeforeLine.get(lineNo + 1)?.map((deletedLine) => (
+                  <GhostRow key={diffRowKey(deletedLine)} line={deletedLine} showGutter={gutterVisible} />
+                )) : null}
               </Fragment>
             );
           })}
-          {removedTruncated ? (
+          {highlightedLines.length > 0 ? canonicalRows?.deletedByBeforeLine.get(lastLine + 1)?.map((line) => (
+            <GhostRow key={diffRowKey(line)} line={line} showGutter={gutterVisible} />
+          )) : null}
+          {effectiveRemovedTruncated ? (
             <GhostRow text="… removed lines truncated" showGutter={gutterVisible} marker />
           ) : null}
         </tbody>
@@ -341,43 +401,120 @@ export function CodeBlock({
   );
 }
 
-function foldFocusLines(options: {
+function foldFocus(options: {
   changedLines?: ReadonlySet<number>;
   changedLineKinds?: ReadonlyMap<number, ChangedLineKind>;
   evidenceLines?: ReadonlySet<number>;
-  commentableLines?: ReadonlySet<number>;
   existingCommentsByLine: ReadonlyMap<number, readonly PrGitHubComment[]>;
   pendingCommentsByLine: ReadonlyMap<number, readonly ReviewComment[]>;
   composerLine?: number;
   removedRows?: ReadonlyMap<number, string[]>;
-}): Set<number> {
+  diffLines?: readonly CodeDiffLine[];
+  sourceSide: CodeSourceSide;
+}): { lines: Set<number>; gaps: Set<number> } {
   const lines = new Set<number>();
+  const gaps = new Set<number>();
   options.changedLines?.forEach((line) => lines.add(line));
   options.changedLineKinds?.forEach((_kind, line) => lines.add(line));
   options.evidenceLines?.forEach((line) => lines.add(line));
-  options.commentableLines?.forEach((line) => lines.add(line));
+  // GitHub commentability already covers the patch's U3 context. Treating every commentable row as
+  // a change focus would add another three rows around that context and silently widen U3 to U6.
+  // Canonical +/- rows define the fold; existing comments/drafts below can still pin their rows.
   options.existingCommentsByLine.forEach((_comments, line) => lines.add(line));
   options.pendingCommentsByLine.forEach((_comments, line) => lines.add(line));
   if (options.composerLine !== undefined) lines.add(options.composerLine);
-  options.removedRows?.forEach((_rows, line) => lines.add(line));
-  return lines;
+  options.removedRows?.forEach((_rows, line) => gaps.add(line + 1));
+  for (const row of options.diffLines ?? []) {
+    if (options.sourceSide === "base") {
+      if (row.oldLine !== null) lines.add(row.oldLine);
+    } else if (row.kind === "added") {
+      if (row.newLine !== null) lines.add(row.newLine);
+    } else {
+      gaps.add(row.beforeNewLine);
+    }
+  }
+  return { lines, gaps };
 }
 
-function GhostRow(props: { text: string; showGutter: boolean; marker?: boolean }) {
+function GhostRow(props: { text?: string; line?: CodeDiffLine; showGutter: boolean; marker?: boolean }) {
+  const text = props.line?.text ?? props.text ?? "";
   return (
-    <tr style={GHOST_ROW_STYLE}>
-      {props.showGutter ? (
-        <td style={{ ...GUTTER_CELL_STYLE, ...GHOST_GUTTER_STYLE }} aria-hidden="true">
-          <div style={GUTTER_CONTENT_STYLE}>
-            <span>{"− "}</span>
-          </div>
+    <>
+      <tr
+        style={GHOST_ROW_STYLE}
+        data-diff-origin={props.line ? "delete" : undefined}
+        data-old-line={props.line?.oldLine ?? undefined}
+        data-before-new-line={props.line?.beforeNewLine}
+        data-no-newline={props.line?.noNewline ? "true" : undefined}
+        aria-label={canonicalDiffAriaLabel(props.line)}
+      >
+        {props.showGutter ? (
+          <td style={{ ...GUTTER_CELL_STYLE, ...GHOST_GUTTER_STYLE }} aria-hidden="true">
+            <div style={GUTTER_CONTENT_STYLE}>
+              <span>{props.line?.oldLine === null || props.line?.oldLine === undefined ? "− " : `− ${props.line.oldLine}`}</span>
+            </div>
+          </td>
+        ) : null}
+        <td style={{ ...CODE_CELL_STYLE, ...GHOST_CODE_STYLE, ...(props.marker ? GHOST_MARKER_STYLE : {}) }}>
+          {text.length > 0 ? text : " "}
         </td>
-      ) : null}
-      <td style={{ ...CODE_CELL_STYLE, ...GHOST_CODE_STYLE, ...(props.marker ? GHOST_MARKER_STYLE : {}) }}>
-        {props.text.length > 0 ? props.text : " "}
-      </td>
+      </tr>
+      {props.line?.noNewline ? <NoNewlineMarkerRow side="old" showGutter={props.showGutter} /> : null}
+    </>
+  );
+}
+
+function NoNewlineMarkerRow({ side, showGutter }: { side: "old" | "new"; showGutter: boolean }) {
+  return (
+    <tr data-no-newline-marker={side} aria-label={`No newline at end of ${side} file`}>
+      {showGutter ? <td style={{ ...GUTTER_CELL_STYLE, ...NO_NEWLINE_GUTTER_STYLE }} aria-hidden="true" /> : null}
+      <td style={{ ...CODE_CELL_STYLE, ...NO_NEWLINE_CODE_STYLE }}>\ No newline at end of file</td>
     </tr>
   );
+}
+
+function canonicalDiffAriaLabel(line: CodeDiffLine | undefined): string | undefined {
+  const suffix = line?.noNewline ? "; no newline at end of file" : "";
+  if (line?.kind === "added" && line.newLine !== null) return `Added new line ${line.newLine}${suffix}`;
+  if (line?.kind === "deleted" && line.oldLine !== null) return `Deleted old line ${line.oldLine}${suffix}`;
+  return undefined;
+}
+
+interface CanonicalRows {
+  sourceRows: ReadonlyMap<number, CodeDiffLine>;
+  deletedByBeforeLine: ReadonlyMap<number, readonly CodeDiffLine[]>;
+}
+
+function canonicalRowsForSource(
+  diffLines: readonly CodeDiffLine[],
+  sourceSide: CodeSourceSide,
+  startLine: number,
+  lineCount: number,
+): CanonicalRows {
+  const sourceRows = new Map<number, CodeDiffLine>();
+  const deletedByBeforeLine = new Map<number, CodeDiffLine[]>();
+  const endLine = startLine + lineCount - 1;
+  for (const line of diffLines) {
+    if (sourceSide === "base") {
+      if (line.kind === "deleted" && line.oldLine !== null && line.oldLine >= startLine && line.oldLine <= endLine) {
+        sourceRows.set(line.oldLine, line);
+      }
+      continue;
+    }
+    if (line.kind === "added" && line.newLine !== null && line.newLine >= startLine && line.newLine <= endLine) {
+      sourceRows.set(line.newLine, line);
+      continue;
+    }
+    if (line.kind === "deleted" && line.beforeNewLine >= startLine && line.beforeNewLine <= endLine + 1) {
+      const bucket = deletedByBeforeLine.get(line.beforeNewLine);
+      bucket ? bucket.push(line) : deletedByBeforeLine.set(line.beforeNewLine, [line]);
+    }
+  }
+  return { sourceRows, deletedByBeforeLine };
+}
+
+function diffRowKey(line: CodeDiffLine): string {
+  return `diff-delete-${line.oldLine ?? "unknown"}-${line.beforeNewLine}`;
 }
 
 function firstFocusedLine(
@@ -555,5 +692,13 @@ const EXISTING_COMMENT_CELL_STYLE: React.CSSProperties = { padding: "6px 8px 7px
 const PENDING_COMMENT_CELL_STYLE: React.CSSProperties = { padding: "6px 8px 7px 26px", background: "rgba(210,153,34,0.035)" };
 const GHOST_ROW_STYLE: React.CSSProperties = { background: "rgba(240,120,124,0.14)" };
 const GHOST_GUTTER_STYLE: React.CSSProperties = { color: "#F0787C", background: "rgba(50,22,27,0.96)", fontWeight: 700 };
-const GHOST_CODE_STYLE: React.CSSProperties = { color: "#E98A8E", textDecoration: "line-through" };
+// A deleted row is still source that must be read precisely. GitHub distinguishes it with the red
+// surface and minus gutter, not strike-through typography (which obscures punctuation and tokens).
+const GHOST_CODE_STYLE: React.CSSProperties = { color: "#E6EDF3" };
 const GHOST_MARKER_STYLE: React.CSSProperties = { color: "#A66B70", textDecoration: "none", fontStyle: "italic" };
+const NO_NEWLINE_GUTTER_STYLE: React.CSSProperties = { background: "rgba(33,28,28,0.96)" };
+const NO_NEWLINE_CODE_STYLE: React.CSSProperties = {
+  color: "#9AA4B2",
+  background: "rgba(88,62,48,0.18)",
+  fontStyle: "italic",
+};

@@ -7,8 +7,20 @@
 
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { Edge, Node } from "@xyflow/react";
-import { buildNodeId, changedLineKindsFromExtensions, changedRangesFromExtensions, computeChangeGroups, computeCoverage } from "@meridian/core";
+import {
+  buildNodeId,
+  changedDiffLinesFromExtensions,
+  changedFileManifestFromExtensions,
+  changedLineKindsFromExtensions,
+  changedLineStatsFromExtensions,
+  changedRangesFromExtensions,
+  computeAffectedNodes,
+  computeChangeGroups,
+  computeCoverage,
+} from "@meridian/core";
 import type {
+  AffectedNode,
+  ChangedDiffLine,
   ChangedLineKind,
   ChangedLineSpan,
   ChangeGroupsResult,
@@ -23,6 +35,7 @@ import type {
   NodeId,
   NodeMetrics,
   RequestTrace,
+  ReviewContext,
   SyntheticExecution,
   SyntheticFieldWatcher,
   SyntheticInputOverride,
@@ -30,7 +43,7 @@ import type {
   TraceBundle,
   TraceGraphRef,
 } from "@meridian/core";
-import { applyChangedIds, applyChangedStatus, type GraphIndex } from "../graph/graphIndex";
+import { applyChangedIds, applyChangedStatus, buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
 import { matchAffectedFiles } from "../derive/matchAffectedFiles";
 import { isReviewPathInScope, normalizeReviewPathScope } from "../derive/reviewPathScope";
 import { isSourceBackedNode } from "../derive/sourceBackedNode";
@@ -133,10 +146,16 @@ import {
   type RelatedPrsState,
 } from "./prTypes";
 import { headKindsWithin, headSpanFor } from "./headSpan";
-import { reviewNodeStatusEntries, reviewNodeStatusSourcesFromKinds, reviewSourceChangeStatus } from "./reviewNodeStatus";
+import {
+  reviewNodeStatusEntries,
+  reviewNodeStatusSourcesFromDiff,
+  reviewNodeStatusSourcesFromKinds,
+  reviewSourceChangeStatus,
+} from "./reviewNodeStatus";
 import { streamPrAnalysis, type PrAnalyzeStage } from "./prAnalysis";
 import { isPrReviewStale, prReviewRevisionKey, reviewRevision, type PrReviewRevision } from "./prReviewFreshness";
 import {
+  fetchPreparedArtifact,
   fetchPreparedGraphSession,
   hasPrReviewLineDiff,
   resetChangedIdsToArtifact,
@@ -144,12 +163,23 @@ import {
   swapToPreparedArtifact,
   withPrLineDiff,
   type PrReviewBaseline,
+  type PrReviewComparison,
 } from "./prReviewSession";
 import { deriveReviewData, applyTick, type ReviewData } from "../derive/reviewData";
 import { readReviewProgress, writeReviewProgress, type ReviewComment, type ReviewProgress, type ReviewTick } from "./reviewTicksPref";
 import { reviewContextFromPrFiles } from "../derive/prReviewContext";
-import { applyFilesToggle, applyFileToggle, applyUnitTick, isReviewTestPath, type ReviewFileRow } from "../derive/reviewFiles";
+import {
+  applyFilesToggle,
+  applyFileToggle,
+  applyUnitTick,
+  isReviewTestPath,
+  type ReviewFileRow,
+  type ReviewUnitRow,
+} from "../derive/reviewFiles";
 import { deriveReviewProjection } from "../derive/reviewProjection";
+import { deriveDeletedNodeProjection, type DeletedNodeProjection } from "../derive/deletedNodeProjection";
+import { canonicalPrFiles } from "../derive/canonicalPrFiles";
+import { expandReviewScopeBaseUnits, type ReviewScopeBaseNodes } from "../derive/reviewScopeExpansion";
 import { buildReviewSubmission } from "../derive/reviewSubmit";
 import {
   DEFAULT_SERVICE_GROUPING_TARGET_SIZE,
@@ -211,6 +241,8 @@ type SurfaceSemanticContext = NonNullable<SurfaceSemanticParent["context"]>;
 export interface CodeView {
   node: GraphNode;
   code: string | null;
+  /** Exact source rows represented by `code`. Distinguishes an empty file from one blank line. */
+  lineCount?: number;
   loading: boolean;
   error: string | null;
   /** Where the code shows: a compact panel hanging off the node, or a large source surface. */
@@ -227,6 +259,17 @@ export interface CodeView {
    * the highlight is exactly its added/modified lines, even on the synchronous (base-graph) review. */
   changedLineKinds?: ReadonlyMap<number, ChangedLineKind>;
   changedLines?: ReadonlySet<number>;
+  /** Exact ordered +/- rows from the canonical unified diff. Unlike `changedLineKinds`, these
+   * retain deleted text and old/new coordinates and are therefore the source of truth for source
+   * rendering, row counts, and parity tests. */
+  diffLines?: readonly ChangedDiffLine[];
+  /** Exact comparison-side span for this surviving declaration. `null` means the comparison graph
+   * proved that no counterpart exists; `undefined` keeps the legacy cursor-only fallback when no
+   * comparison graph is available. Whole-file/module views intentionally leave this undefined. */
+  diffOldSpan?: LineRange | null;
+  /** Which side `code` belongs to. Normally HEAD; a removed file has no HEAD source, so its base
+   * snippet is rendered directly as deleted rows instead of duplicating it as ghost text. */
+  sourceSide?: "head" | "base";
   /** Edge-click mode: the concrete syntax occurrences behind the aggregate wire and the currently
    * loaded one. Its focus range is in the coordinates of the code being shown (HEAD during a
    * synchronous PR review, otherwise artifact/source coordinates). Presence moves the large source
@@ -619,10 +662,26 @@ export interface BlueprintState {
   prReviewStale: boolean;
   /** The stale review is fetching fresh PR data and rebuilding its graph in place. */
   prReviewRefreshing: boolean;
-  /** Head ref of the PR under review — the code panel fetches changed files at this ref. Null off-review. */
+  /** Immutable head SHA (falling back to the ref only when GitHub omitted it) used by synchronous
+   * source requests. Null off-review. */
   reviewHeadRef: string | null;
   /** Per changed file (keyed by node.location.file): the PR diff needed to slice + paint the head code. */
   reviewDiffByFile: Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>;
+  /** Exact ordered +/- rows from the selected PR, keyed like reviewDiffByFile. This is the
+   * synchronous-review fallback; prepared reviews prefer the local merge-base Git rows stamped
+   * into the artifact. */
+  reviewDiffLinesByFile: Record<string, ChangedDiffLine[]>;
+  /** Review-only nodes whose source coordinates belong to the exact merge-base comparison graph.
+   * The active prepared graph remains HEAD-authoritative for edges/flows; these ids are appended
+   * only as containment-preserving deletion tombstones and must always read BASE source. */
+  reviewBaseNodeIds: Set<string>;
+  /** Directly vanished declarations/files within reviewBaseNodeIds. Structural base ancestors are
+   * kept separate so they can expose the deleted child without being mistaken for a changed unit. */
+  reviewDeletedNodeIds: Set<string>;
+  /** Exact merge-base declaration spans keyed by their surviving HEAD node id. This is derived by
+   * the same fail-closed semantic pairing that projects deleted nodes, then carried into every
+   * source host so a boundary deletion cannot appear in two adjacent declaration previews. */
+  reviewBaseSpanByHeadId: Map<string, LineRange>;
   /** Context-padded new-side hunk ranges accepted by GitHub's public inline-review API. */
   reviewCommentRangesByFile: Record<string, LineRange[]>;
   /** Removed patch text keyed like reviewDiffByFile. Positions are HEAD-side in both review modes. */
@@ -639,6 +698,10 @@ export interface BlueprintState {
   /** The server-side graph id of the prepared PR-head artifact (the analyze stream's "done"
    * payload). Kept across a soft close so the review can resume without another extraction. */
   prPreparedGraphId: string | null;
+  /** Exact merge-base graph paired with prPreparedGraphId. Its source root serves deleted nodes. */
+  prPreparedComparisonGraphId: string | null;
+  /** Immutable merge-base commit represented by prPreparedComparisonGraphId. */
+  prPreparedMergeBaseSha: string | null;
   /** The head commit the server analyzed for the prepared artifact (the "done" payload's
    * provenance); shown in the review header. Set on swap, cleared with prPreparedGraphId. */
   prPreparedHeadSha: string | null;
@@ -649,6 +712,9 @@ export interface BlueprintState {
    * artifact and restored while the review is parked. It is cleared only when another review starts
    * or history explicitly leaves review state. Null outside a swapped review. */
   prReviewBaseline: PrReviewBaseline | null;
+  /** Exact merge-base artifact/index for the current prepared review. Kept distinct from
+   * prReviewBaseline: the latter restores the user's boot graph, which may be a newer base tip. */
+  prReviewComparison: PrReviewComparison | null;
   /** The artifact endpoint this session loaded from; the wave-2 swap fetches the prepared PR
    * graph from it by exchanging the `id` query param. Empty when booted without a server. */
   graphUrl: string;
@@ -904,8 +970,13 @@ function activeSourceUrl(state: BlueprintState): string | null {
   if (state.sourceUrl === null || !state.prPreparedArtifactCurrent || state.prPreparedGraphId === null) {
     return state.sourceUrl;
   }
-  const url = new URL(state.sourceUrl, requestOrigin());
-  url.searchParams.set("id", state.prPreparedGraphId);
+  return sourceUrlForGraph(state.sourceUrl, state.prPreparedGraphId);
+}
+
+/** Exchange only the immutable graph id while retaining the boot endpoint's origin/path. */
+function sourceUrlForGraph(sourceUrl: string, graphId: string): string {
+  const url = new URL(sourceUrl, requestOrigin());
+  url.searchParams.set("id", graphId);
   return url.toString();
 }
 
@@ -952,15 +1023,29 @@ interface CodeLoadRequest {
   /** Present when the request reads the PR head rather than the loaded source root. */
   headSpan: { start: number; end: number } | null;
   headKinds: readonly ChangedLineSpan[];
+  diffLines: readonly ChangedDiffLine[];
+  /** See CodeView.diffOldSpan. */
+  diffOldSpan: LineRange | null | undefined;
+  sourceSide: "head" | "base";
 }
 
 interface CodePayload {
   code: string;
   truncated: boolean;
   startLine?: number;
+  lineCount?: number;
 }
 
 type CodePayloadCache = Map<string, Promise<CodePayload>>;
+
+function liveReviewStatusSources(
+  files: Readonly<Record<string, { edits: readonly LineEdit[]; kinds: readonly ChangedLineSpan[] }>>,
+  diffLines: Readonly<Record<string, ChangedDiffLine[]>>,
+) {
+  const kinds = Object.fromEntries(Object.entries(files).map(([file, detail]) => [file, [...detail.kinds]]));
+  const edits = Object.fromEntries(Object.entries(files).map(([file, detail]) => [file, detail.edits]));
+  return reviewNodeStatusSourcesFromDiff(kinds, diffLines, edits);
+}
 
 /** Generous surrounding source for edge evidence: enough to understand the declaration/control
  * flow without asking the source server for only the proving line or risking its 2,000-line cap. */
@@ -1033,7 +1118,15 @@ function codeLoadRequest(
   // graph id and keep it out of the GitHub head-file branch: its nodes and source already share HEAD
   // coordinates, while the head-file fallback below exists for reviews on the loaded base artifact.
   const preparedArtifactCurrent = state.prPreparedArtifactCurrent;
-  const resolvedSourceUrl = preparedArtifactCurrent ? activeSourceUrl(state) : sourceUrl;
+  const removedAtHead = state.reviewFileDelta[node.location.file]?.status === "removed";
+  const readsComparisonBase = state.reviewBaseNodeIds.has(node.id) || removedAtHead;
+  const resolvedSourceUrl = preparedArtifactCurrent
+    ? readsComparisonBase && state.sourceUrl !== null && state.prPreparedComparisonGraphId !== null
+      ? sourceUrlForGraph(state.sourceUrl, state.prPreparedComparisonGraphId)
+      : readsComparisonBase
+        ? sourceUrl
+        : activeSourceUrl(state)
+    : sourceUrl;
   // A live PR review reads changed files from the PR head. The synchronous path holds BASE node
   // coordinates and therefore needs the edit map; a prepared artifact is already in HEAD
   // coordinates, so mapping it again would double-shift the preview after an earlier hunk.
@@ -1044,8 +1137,7 @@ function codeLoadRequest(
   // file-delta entry is the fallback capability signal so the preview never silently shows BASE
   // source just because GitHub omitted hunk detail. Removed files are the exception: no HEAD path
   // exists, so their old (entirely deleted) node span must come from the base source endpoint.
-  const removedAtHead = state.reviewFileDelta[node.location.file]?.status === "removed";
-  const readsPrHead = !preparedArtifactCurrent && !removedAtHead
+  const readsPrHead = !preparedArtifactCurrent && !readsComparisonBase
     && state.prReviewed !== null && prFileUrl !== null && state.reviewHeadRef !== null
     && (reviewDiff !== null || state.reviewFileDelta[node.location.file] !== undefined);
   if (!readsPrHead && !resolvedSourceUrl) {
@@ -1058,12 +1150,34 @@ function codeLoadRequest(
       : headSpanFor(node.location.startLine, node.location.endLine ?? node.location.startLine, reviewDiff.edits)
     : null;
   const baseLine = wholeFile ? 1 : headSpan ? headSpan.start : node.location.startLine;
-  // A prepared head artifact's local diff is keyed to the CURRENT node coordinates and is more
-  // accurate than GitHub's possibly-truncated patch detail. The synchronous path still needs the
-  // latter because its artifact/node coordinates are on the base side.
-  const artifactKinds = preparedArtifactCurrent
-    ? changedLineKindsFromExtensions(state.artifact.extensions)?.[node.location.file]
+  // A deletion cursor at `endLine + 1` is inherently shared by the declarations on either side of
+  // that boundary. Declaration previews therefore need the exact old-side counterpart span before
+  // accepting the row. In synchronous reviews the active node itself is in BASE coordinates; in a
+  // prepared review the deletion projection supplies the fail-closed semantic counterpart. File
+  // modules and explicit whole-file views intentionally remain cursor-scoped so EOF deletions stay
+  // visible even when the extractor's module span stops before the physical final line.
+  const scopesDeletedRows = !wholeFile && node.kind !== "module" && !readsComparisonBase;
+  const diffOldSpan: LineRange | null | undefined = !scopesDeletedRows
+    ? undefined
+    : preparedArtifactCurrent && state.prReviewComparison !== null
+      ? state.reviewBaseSpanByHeadId.get(node.id) ?? null
+      : readsPrHead
+        ? {
+            start: node.location.startLine,
+            end: node.location.endLine ?? node.location.startLine,
+          }
+        : undefined;
+  const normalizedFile = node.location.file.replace(/\\/g, "/");
+  // Prepared/local artifacts carry the canonical merge-base diff beside the graph. A synchronous
+  // GitHub review has not swapped artifacts, so it uses the selected PR response parsed through the
+  // same unified-diff model. Never hybridize local additions with GitHub deletions.
+  const artifactKinds = !readsComparisonBase && (preparedArtifactCurrent || state.prReviewed === null)
+    ? changedLineKindsFromExtensions(state.artifact.extensions)?.[normalizedFile]
     : undefined;
+  const artifactDiffLines = preparedArtifactCurrent || state.prReviewed === null
+    ? changedDiffLinesFromExtensions(state.artifact.extensions)?.[normalizedFile]
+    : undefined;
+  const reviewDiffLines = state.reviewDiffLinesByFile[node.location.file] ?? state.reviewDiffLinesByFile[normalizedFile];
   return {
     node,
     url: readsPrHead
@@ -1074,9 +1188,12 @@ function codeLoadRequest(
     headSpan,
     // A removed file has no head-side text or line kinds. Its base snippet is entirely deleted,
     // so paint the node span explicitly instead of reducing the hover card to plain source.
-    headKinds: removedAtHead
+    headKinds: removedAtHead || state.reviewDeletedNodeIds.has(node.id)
       ? [{ start: node.location.startLine, end: node.location.endLine ?? node.location.startLine, kind: "deleted" }]
       : artifactKinds ?? reviewDiff?.kinds ?? [],
+    diffLines: artifactDiffLines ?? reviewDiffLines ?? [],
+    diffOldSpan,
+    sourceSide: readsComparisonBase ? "base" : "head",
   };
 }
 
@@ -1093,11 +1210,12 @@ async function fetchCodeView(
       if (!response.ok) {
         throw new Error(`source request failed with ${response.status}`);
       }
-      const data = await response.json() as { code?: unknown; truncated?: unknown; startLine?: unknown };
+      const data = await response.json() as { code?: unknown; truncated?: unknown; startLine?: unknown; lineCount?: unknown };
       return {
         code: typeof data.code === "string" ? data.code : String(data.code ?? ""),
         truncated: data.truncated === true,
         ...(typeof data.startLine === "number" ? { startLine: data.startLine } : {}),
+        ...(isSourceLineCount(data.lineCount) ? { lineCount: data.lineCount } : {}),
       };
     });
     payloadCache?.set(key, pending);
@@ -1108,25 +1226,34 @@ async function fetchCodeView(
       return sliceHeadCodeView(
         request.node,
         data.code,
+        data.lineCount,
         data.truncated,
         request.headSpan,
         request.headKinds,
+        request.diffLines,
+        request.diffOldSpan,
+        request.sourceSide,
         mode,
       );
     }
     const baseLine = data.startLine ?? request.baseLine;
+    const lineCount = data.lineCount ?? data.code.split("\n").length;
     const changedLineKinds = request.headKinds.length > 0
-      ? headKindsWithin(request.headKinds, baseLine, baseLine + Math.max(data.code.split("\n").length - 1, 0))
+      ? headKindsWithin(request.headKinds, baseLine, baseLine + lineCount - 1)
       : undefined;
     return {
       node: request.node,
       code: data.code,
+      lineCount,
       loading: false,
       error: null,
       truncated: data.truncated,
       mode,
       baseLine,
       wholeFile: request.wholeFile,
+      sourceSide: request.sourceSide,
+      ...(request.diffLines.length > 0 ? { diffLines: request.diffLines } : {}),
+      ...(request.diffOldSpan !== undefined ? { diffOldSpan: request.diffOldSpan } : {}),
       ...(changedLineKinds && changedLineKinds.size > 0
         ? { changedLineKinds, changedLines: new Set(changedLineKinds.keys()) }
         : {}),
@@ -1144,6 +1271,9 @@ async function fetchCodeView(
       mode,
       baseLine: request.baseLine,
       wholeFile: request.wholeFile,
+      sourceSide: request.sourceSide,
+      ...(request.diffLines.length > 0 ? { diffLines: request.diffLines } : {}),
+      ...(request.diffOldSpan !== undefined ? { diffOldSpan: request.diffOldSpan } : {}),
     };
   }
 }
@@ -1152,27 +1282,44 @@ async function fetchCodeView(
 function sliceHeadCodeView(
   node: GraphNode,
   fullCode: string,
+  fullLineCount: number | undefined,
   truncated: boolean,
   headSpan: { start: number; end: number },
   kinds: readonly ChangedLineSpan[],
+  diffLines: readonly ChangedDiffLine[],
+  diffOldSpan: LineRange | null | undefined,
+  sourceSide: "head" | "base",
   mode: "inline" | "modal",
 ): CodeView {
-  const lines = fullCode.length > 0 ? fullCode.split("\n") : [];
-  const start = Math.min(Math.max(headSpan.start, 1), Math.max(lines.length, 1));
-  const end = Math.min(Math.max(headSpan.end, start), Math.max(lines.length, 1));
+  const lines = fullLineCount === 0 ? [] : fullCode.length > 0 || fullLineCount === 1 ? fullCode.split("\n") : [];
+  const start = lines.length === 0
+    ? Math.max(headSpan.start, 1)
+    : Math.min(Math.max(headSpan.start, 1), lines.length);
+  const end = lines.length === 0
+    ? start - 1
+    : Math.min(Math.max(headSpan.end, start), lines.length);
+  const slicedLines = lines.slice(start - 1, end);
   const changedLineKinds = headKindsWithin(kinds, start, end);
   return {
     node,
-    code: lines.slice(start - 1, end).join("\n"),
+    code: slicedLines.join("\n"),
+    lineCount: slicedLines.length,
     loading: false,
     error: null,
     truncated,
     mode,
     baseLine: start,
     wholeFile: false,
+    sourceSide,
+    ...(diffLines.length > 0 ? { diffLines } : {}),
+    ...(diffOldSpan !== undefined ? { diffOldSpan } : {}),
     changedLineKinds,
     changedLines: new Set(changedLineKinds.keys()),
   };
+}
+
+function isSourceLineCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 /** The module surface (Map + Service) opened at its top level: whole-repo overview, nothing expanded
@@ -1519,7 +1666,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       reviewNodeStatusEntries(
         dependencies.index,
         initialReviewProjection.affected,
-        reviewNodeStatusSourcesFromKinds(changedLineKindsFromExtensions(dependencies.artifact.extensions)),
+        reviewNodeStatusSourcesFromDiff(
+          changedLineKindsFromExtensions(dependencies.artifact.extensions),
+          changedDiffLinesFromExtensions(dependencies.artifact.extensions),
+        ),
       ),
     );
   }
@@ -1859,6 +2009,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prReviewRefreshing: false,
     reviewHeadRef: null,
     reviewDiffByFile: {},
+    reviewDiffLinesByFile: {},
+    reviewBaseNodeIds: new Set<string>(),
+    reviewDeletedNodeIds: new Set<string>(),
+    reviewBaseSpanByHeadId: new Map<string, LineRange>(),
     reviewCommentRangesByFile: {},
     reviewRemovedByFile: {},
     reviewRemovedTruncatedByFile: {},
@@ -1866,9 +2020,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prPrepareStage: null,
     prPrepareError: null,
     prPreparedGraphId: null,
+    prPreparedComparisonGraphId: null,
+    prPreparedMergeBaseSha: null,
     prPreparedHeadSha: null,
     prPreparedArtifactCurrent: false,
     prReviewBaseline: null,
+    prReviewComparison: null,
     graphUrl: dependencies.graphUrl ?? "",
     codeView: null,
 
@@ -2815,6 +2972,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         prPreparedArtifactCurrent,
         prReviewed,
         reviewDiffByFile,
+        reviewDiffLinesByFile,
       } = get();
       if (logicRoot === null) {
         set({ logicRfNodes: [], logicRfEdges: [], logicLayoutStatus: "idle", logicLayoutActivity: null });
@@ -2837,8 +2995,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // Flow nodes represent source sites, not their callees. Resolve their PR status from each
         // FlowStep source anchor using the same aligned line-kind source as node colouring.
         const stepStatusSources = prReviewed !== null && !prPreparedArtifactCurrent
-          ? reviewDiffByFile
-          : reviewNodeStatusSourcesFromKinds(changedLineKindsFromExtensions(artifact.extensions));
+          ? liveReviewStatusSources(reviewDiffByFile, reviewDiffLinesByFile)
+          : reviewNodeStatusSourcesFromDiff(
+              changedLineKindsFromExtensions(artifact.extensions),
+              changedDiffLinesFromExtensions(artifact.extensions),
+            );
         const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, {
           hideGreyed,
           nestByService,
@@ -3576,60 +3737,26 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // The "Extract selection" action: EXTRACT the current selection verbatim (any kind — a selected
     // package stays ONE card) as the overlay's members/origin, and open on their curated subgraph
     // (members + their on-map 1-hop ghost ring). A fresh build discards any prior curation. Inert when
-    // nothing is selected.
+    // nothing is selected or while a PR review owns the extracted graph.
     buildMinimalGraph() {
+      const initial = get();
+      if (initial.prReviewed !== null) {
+        return;
+      }
       // The active surface's spec decides how a selection seeds the overlay: identity on the Map,
       // while the Service lens decomposes a selected `svc:` frame into its cluster's member units.
-      const origin = activeModuleSurfaceSpec(get().viewMode).minimalSeeds(
-        [...get().moduleSelected],
-        get().index,
-        get().serviceGroupingMode,
-        get().serviceGroupingTargetSize,
+      const origin = activeModuleSurfaceSpec(initial.viewMode).minimalSeeds(
+        [...initial.moduleSelected],
+        initial.index,
+        initial.serviceGroupingMode,
+        initial.serviceGroupingTargetSize,
       );
       if (origin.length === 0) {
         return;
       }
       // Snapshot the map's current on-screen card positions ONCE, at build — the overlay mirrors them,
-      // and re-capturing on curation would let already-placed cards jump. A selection-built graph is not
-      // a PR review, so drop any stale prReviewed marker (else the PR-review card would show it) AND,
-      // when the live review came from a PR, its runtime review state — else the panel would ride this
-      // unrelated hand-built graph showing the old PR's checklist. An artifact-sourced review
-      // (prReviewed null) is the session's purpose and could never be re-derived, so it stays.
-      const clearPrReview =
-        get().prReviewed !== null
-          ? {
-              review: null,
-              reviewFiles: [] as ReviewFileRow[],
-              reviewAffectedIds: new Set<string>(),
-              reviewDiffOnly: false,
-              reviewComments: [] as ReviewComment[],
-              reviewLitNodeIds: null,
-              reviewSelectedId: null,
-              flowSelection: null,
-              flowPaneExpansionOverrides: new Set<string>(),
-              logicSelected: null,
-              flowPaneRfNodes: [] as LogicRfNode[],
-              flowPaneRfEdges: [] as LogicRfEdge[],
-              flowPaneLayoutStatus: "idle" as const,
-              reviewFlowBaseline: null,
-              reviewGroups: null,
-              reviewActiveGroupId: null,
-              reviewPathScope: null,
-              reviewFocusedSubgraph: null,
-              reviewAllSeedIds: [] as string[],
-              reviewSubmitStatus: "idle" as const,
-              reviewSubmitError: null,
-              reviewSubmittedUrl: null,
-              prReviewRevision: null,
-              prReviewStale: false,
-              prReviewRefreshing: false,
-              reviewHeadRef: null,
-              reviewDiffByFile: {} as Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>,
-              reviewCommentRangesByFile: {} as Record<string, LineRange[]>,
-              reviewRemovedByFile: {} as Record<string, { afterNewLine: number; lines: string[] }[]>,
-              reviewRemovedTruncatedByFile: {} as Record<string, boolean>,
-            }
-          : {};
+      // and re-capturing on curation would let already-placed cards jump. Artifact-sourced review
+      // (`prReviewed` null) is allowed because this overlay is that session's only review surface.
       const clearArtifactReviewFlow = get().review !== null && get().prReviewed === null
         ? {
             reviewLitNodeIds: null,
@@ -3659,7 +3786,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         prReviewSource: null,
         ...requestFlowPaneReset(get()),
         ...clearArtifactReviewFlow,
-        ...clearPrReview,
       });
       if (inspectedSource) {
         // The overlay commits its own explicit member set. Rebuild the still-mounted source without
@@ -4097,7 +4223,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // — a pure seed/member swap, no dimming and no bespoke graph. Mirrors applyPrReviewToMap's reset
     // of the minimal fields exactly so the overlay rebuilds identically.
     selectReviewGroup(groupId) {
-      const { review, reviewFiles, reviewGroups, reviewActiveGroupId, reviewPathScope, reviewFocusedSubgraph, index } = get();
+      const {
+        review,
+        reviewFiles,
+        reviewGroups,
+        reviewActiveGroupId,
+        reviewPathScope,
+        reviewFocusedSubgraph,
+        reviewBaseNodeIds,
+        reviewDeletedNodeIds,
+        index,
+      } = get();
       if (
         !review
         || !reviewGroups
@@ -4110,7 +4246,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const allowed = group === null ? null : new Set(group.moduleIds);
       // The threshold belongs to THIS isolated set, not the PR as a whole: an eight-file group stays
       // eight file cards even when the full review was large enough to roll up.
-      const projection = deriveReviewScopeGraph(index, reviewFiles, allowed, null);
+      const projection = deriveReviewScopeGraph(index, reviewFiles, allowed, null, {
+        baseNodeIds: reviewBaseNodeIds,
+        deletedNodeIds: reviewDeletedNodeIds,
+      });
       invalidateMinimalLayout();
       set({
         reviewActiveGroupId: group ? group.id : null,
@@ -4155,7 +4294,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         ? null
         : state.reviewGroups?.groups.find((group) => group.id === state.reviewActiveGroupId) ?? null;
       const allowed = activeGroup === null ? null : new Set(activeGroup.moduleIds);
-      const projection = deriveReviewScopeGraph(state.index, state.reviewFiles, allowed, normalized);
+      const projection = deriveReviewScopeGraph(state.index, state.reviewFiles, allowed, normalized, {
+        baseNodeIds: state.reviewBaseNodeIds,
+        deletedNodeIds: state.reviewDeletedNodeIds,
+      });
       if (normalized !== null && projection.seeds.length === 0) {
         return;
       }
@@ -4828,7 +4970,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // every review surface through the same toggle (members, files, flows, groups, progress and
       // amber paint) while retaining the raw PR context/ticks/drafts for a lossless toggle-back.
       if (prReviewed !== null && minimalSeedIds.length > 0) {
-        applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, {
+        applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches, {
           reprojecting: true,
           preserveReviewSelection: true,
         });
@@ -4847,7 +4989,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           reviewNodeStatusEntries(
             state.index,
             projection.affected,
-            reviewNodeStatusSourcesFromKinds(changedLineKindsFromExtensions(state.artifact.extensions)),
+            reviewNodeStatusSourcesFromDiff(
+              changedLineKindsFromExtensions(state.artifact.extensions),
+              changedDiffLinesFromExtensions(state.artifact.extensions),
+            ),
           ),
         );
         set({
@@ -5609,7 +5754,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             coverage: previous.coverageMode ? computeCoverage(bootReviewBaseline.artifact.nodes, bootReviewBaseline.artifact.edges) : null,
             codeView: null,
           });
-          if (!applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, {
+          if (!applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches, {
             preserveReviewDiffOnly: true,
           })) {
             // The refreshed PR no longer intersects this extraction. Keep the old review rather than
@@ -5705,7 +5850,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           return;
         }
       }
-      applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout);
+      applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches);
     },
 
     // Re-open a review whose overlay was soft-closed (explicit Close/lens switch) — cheaply. The
@@ -5719,6 +5864,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         prReviewSource,
         minimalSeedIds,
         prPreparedGraphId,
+        prPreparedComparisonGraphId,
         prPreparedHeadSha,
         reviewActiveGroupId: resumeGroupId,
         reviewPathScope: resumePathScope,
@@ -5771,14 +5917,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({ prReviewStatus: "preparing", prPrepareStage: null, prPrepareError: null });
         try {
           if (prPreparedGraphId !== null) {
-            const prepared = await fetchPreparedGraphSession(get().graphUrl, metaUrl, prPreparedGraphId, {
-              repository: dependencies.prSessionSource?.repository ?? null,
-              headSha: prPreparedHeadSha,
-            });
+            const [prepared, comparison] = await Promise.all([
+              fetchPreparedGraphSession(get().graphUrl, metaUrl, prPreparedGraphId, {
+                repository: dependencies.prSessionSource?.repository ?? null,
+                headSha: prPreparedHeadSha,
+              }),
+              prPreparedComparisonGraphId === null
+                ? Promise.resolve(null)
+                : fetchPreparedArtifact(get().graphUrl, prPreparedComparisonGraphId),
+            ]);
             if (
               get().prReviewed !== prReviewed
               || get().minimalSeedIds.length > 0
               || get().prPreparedGraphId !== prPreparedGraphId
+              || get().prPreparedComparisonGraphId !== prPreparedComparisonGraphId
               || get().prPreparedHeadSha !== prPreparedHeadSha
             ) {
               return; // the review moved on (or resumed elsewhere) while the artifact was in flight.
@@ -5787,7 +5939,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             // in that window cannot ride the stale base-artifact ref across the head-graph swap.
             clearResumeFlow();
             invalidateSyntheticArtifactBoundary();
-            swapToPreparedArtifact(get, set, prepared.artifact, invalidateArtifactCaches, prepared);
+            swapToPreparedArtifact(get, set, prepared.artifact, invalidateArtifactCaches, prepared, comparison);
           }
           const resumed = applyPrReviewToMap(
             get,
@@ -5795,9 +5947,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             prFilesUrl,
             invalidateMinimalLayout,
             invalidateModuleLayout,
+            invalidateArtifactCaches,
             {
-            reprojecting: true,
-            preserveReviewSelection: true,
+              reprojecting: true,
+              preserveReviewSelection: true,
             },
           );
           if (!resumed) {
@@ -5856,12 +6009,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         ? {
             artifact: state.artifact,
             index: state.index,
+            comparison: state.prReviewComparison,
             coverage: state.coverage,
             graphId: state.prPreparedGraphId,
+            comparisonGraphId: state.prPreparedComparisonGraphId,
+            mergeBaseSha: state.prPreparedMergeBaseSha,
             headSha: state.prPreparedHeadSha,
             syntheticExecutionUrl: state.syntheticExecutionUrl,
             syntheticScenarios: [...state.syntheticScenarios],
             syntheticExecutionTrust: state.syntheticExecutionTrust,
+            baseNodeIds: state.reviewBaseNodeIds,
+            deletedNodeIds: state.reviewDeletedNodeIds,
+            baseSpanByHeadId: state.reviewBaseSpanByHeadId,
           }
         : null;
       if (
@@ -5897,7 +6056,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         prReviewStatus: "preparing",
         prPrepareStage: "clone",
         prPrepareError: null,
-        ...(previousPrepared === null ? { prPreparedGraphId: null, prPreparedHeadSha: null } : {}),
+        ...(previousPrepared === null
+          ? {
+              prPreparedGraphId: null,
+              prPreparedComparisonGraphId: null,
+              prPreparedMergeBaseSha: null,
+              prPreparedHeadSha: null,
+              prReviewComparison: null,
+              reviewBaseNodeIds: new Set<string>(),
+              reviewDeletedNodeIds: new Set<string>(),
+              reviewBaseSpanByHeadId: new Map<string, LineRange>(),
+            }
+          : {}),
         prReviewBlocked: null,
       });
       let swappedNewArtifact = false;
@@ -5910,14 +6080,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({
           artifact: previousPrepared.artifact,
           index: previousPrepared.index,
+          prReviewComparison: previousPrepared.comparison,
           coverage: previousPrepared.coverage,
           codeView: null,
           prPreparedArtifactCurrent: true,
           prPreparedGraphId: previousPrepared.graphId,
+          prPreparedComparisonGraphId: previousPrepared.comparisonGraphId,
+          prPreparedMergeBaseSha: previousPrepared.mergeBaseSha,
           prPreparedHeadSha: previousPrepared.headSha,
           syntheticExecutionUrl: previousPrepared.syntheticExecutionUrl,
           syntheticScenarios: [...previousPrepared.syntheticScenarios],
           syntheticExecutionTrust: previousPrepared.syntheticExecutionTrust,
+          reviewBaseNodeIds: previousPrepared.baseNodeIds,
+          reviewDeletedNodeIds: previousPrepared.deletedNodeIds,
+          reviewBaseSpanByHeadId: previousPrepared.baseSpanByHeadId,
           prReviewBlocked: null,
         });
         return true;
@@ -5935,18 +6111,31 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           }
           // SWAP: load the prepared PR-head artifact and make it the CURRENT graph BEFORE the review
           // body runs, so amber marking, seeds, and the line diff compute in HEAD coordinates.
-          const prepared = await fetchPreparedGraphSession(get().graphUrl, metaUrl, analysis.graphId, {
-            repository: dependencies.prSessionSource?.repository ?? null,
-            headSha: analysis.headSha,
-          });
+          const [prepared, comparison] = await Promise.all([
+            fetchPreparedGraphSession(get().graphUrl, metaUrl, analysis.graphId, {
+              repository: dependencies.prSessionSource?.repository ?? null,
+              headSha: analysis.headSha,
+            }),
+            analysis.comparisonGraphId === null
+              ? Promise.resolve(null)
+              : fetchPreparedArtifact(get().graphUrl, analysis.comparisonGraphId),
+          ]);
           if (!active()) {
             return;
           }
           invalidateSyntheticArtifactBoundary();
-          swapToPreparedArtifact(get, set, prepared.artifact, invalidateArtifactCaches, prepared);
+          swapToPreparedArtifact(get, set, prepared.artifact, invalidateArtifactCaches, prepared, comparison);
           swappedNewArtifact = true;
-          set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null, prPreparedGraphId: analysis.graphId, prPreparedHeadSha: analysis.headSha });
-          const entered = applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, {
+          set({
+            prReviewStatus: "idle",
+            prPrepareStage: null,
+            prPrepareError: null,
+            prPreparedGraphId: analysis.graphId,
+            prPreparedComparisonGraphId: analysis.comparisonGraphId,
+            prPreparedMergeBaseSha: analysis.mergeBaseSha,
+            prPreparedHeadSha: analysis.headSha,
+          });
+          const entered = applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches, {
             preserveReviewDiffOnly: !enteringFromPrs,
           });
           if (!entered) {
@@ -5956,7 +6145,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               restorePreparedReviewBaseline(get, set, { endSession: enteringFromPrs });
             }
             if (!enteringFromPrs && previousPrepared === null) {
-              set({ prPreparedGraphId: null, prPreparedHeadSha: null });
+              set({
+                prPreparedGraphId: null,
+                prPreparedComparisonGraphId: null,
+                prPreparedMergeBaseSha: null,
+                prPreparedHeadSha: null,
+                prReviewComparison: null,
+              });
             }
             if (get().prReviewRefreshing) {
               set({
@@ -5973,7 +6168,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             if (swappedNewArtifact && !restorePreviousPrepared()) {
               restorePreparedReviewBaseline(get, set, { endSession: enteringFromPrs });
               if (!enteringFromPrs && previousPrepared === null) {
-                set({ prPreparedGraphId: null, prPreparedHeadSha: null });
+                set({
+                  prPreparedGraphId: null,
+                  prPreparedComparisonGraphId: null,
+                  prPreparedMergeBaseSha: null,
+                  prPreparedHeadSha: null,
+                  prReviewComparison: null,
+                });
               }
             }
             set({ prReviewStatus: "error", prPrepareStage: null, prPrepareError: prepareErrorMessage(error) });
@@ -6030,6 +6231,7 @@ function applyPrReviewToMap(
   prFilesUrl: string,
   invalidateMinimalLayout: () => void,
   invalidateModuleLayout: () => void,
+  invalidateArtifactCaches: () => void,
   options: {
     reprojecting?: boolean;
     preserveReviewSelection?: boolean;
@@ -6041,11 +6243,12 @@ function applyPrReviewToMap(
     prSelected,
     prFilesTotal,
     prFilesOutside,
-    artifact,
-    index,
+    artifact: activeArtifact,
+    index: activeIndex,
     prPreparedArtifactCurrent,
     prPreparedHeadSha,
-    prReviewBaseline,
+    prReviewComparison,
+    reviewBaseNodeIds: activeBaseNodeIds,
     review: liveReview,
     reviewTicks: liveReviewTicks,
     reviewUnitTicks: liveReviewUnitTicks,
@@ -6059,6 +6262,24 @@ function applyPrReviewToMap(
   // head-relative, so every base→head remap below must stand down (running it would corrupt an
   // already-correct coordinate space — the #134 machinery is for the base-graph sync mode only).
   const swapped = prPreparedArtifactCurrent;
+  // Tests reprojection and refresh can re-enter while the presentation composite is current. Strip
+  // its prior base-only overlay first so every pass starts from one pure HEAD coordinate space and
+  // cannot duplicate tombstones or let their old spans influence HEAD affected-node derivation.
+  const headArtifact = swapped && activeBaseNodeIds.size > 0
+    ? { ...activeArtifact, nodes: activeArtifact.nodes.filter((node) => !activeBaseNodeIds.has(node.id)) }
+    : activeArtifact;
+  const headIndex = headArtifact === activeArtifact ? activeIndex : buildGraphIndex(headArtifact);
+  // GitHub caps the PR-files endpoint, while line-less changes (fully deleted files, pure renames,
+  // binary edits, and mode-only edits) cannot be reconstructed from patch hunks. A prepared HEAD
+  // artifact carries Git's exact merge-base name-status transaction, so make that inventory the
+  // review's authority and retain GitHub detail only for files the bounded response did include.
+  const exactManifest = swapped ? changedFileManifestFromExtensions(headArtifact.extensions) : null;
+  const reviewPrFiles = exactManifest === null
+    ? (prFiles ?? [])
+    : canonicalPrFiles(prFiles ?? [], headArtifact);
+  const reviewFilesTotal = exactManifest === null
+    ? prFilesTotal
+    : Math.max(prFilesTotal, reviewPrFiles.length + prFilesOutside);
   const summary = selectedPrSummary(get());
   const context = reviewContextFromPrFiles(
     {
@@ -6066,7 +6287,7 @@ function applyPrReviewToMap(
       headRef: summary?.headRef ?? null,
       baseRef: summary?.baseRef ?? null,
       scopeId: prFilesUrl,
-      files: prFiles ?? [],
+      files: reviewPrFiles,
     },
     // Base-side hunks mark base coordinates — right for the boot artifact, wrong for a head graph.
     { baseSide: !swapped },
@@ -6081,14 +6302,58 @@ function applyPrReviewToMap(
         comments: liveReviewComments,
       }
     : null;
-  // Gate entry on the COMPLETE PR before applying the Tests projection. An all-test PR is still a
-  // valid review: with Tests off it opens an intentionally empty workspace whose existing toolbar
-  // toggle can restore the test changes immediately. A genuinely unmatched PR remains blocked.
+  const projection = deriveReviewProjection(context, headArtifact, headIndex, {
+    // Deleted impact and test classification must use the same exact merge-base Git diff used to
+    // build the prepared artifact. The boot graph may represent a newer base tip.
+    baseIndex: swapped ? (prReviewComparison?.index ?? null) : null,
+    showTests: get().showTests,
+  });
+  const { review, visibleContext } = projection;
+  const headMatchedFiles = matchAffectedFiles(
+    headIndex,
+    visibleContext.changedFiles.map((file) => file.path),
+  ).matched;
+  const reviewedHeadArtifact =
+    changedRangesFromExtensions(headArtifact.extensions) !== null && !hasPrReviewLineDiff(headArtifact)
+      ? headArtifact
+      : withPrLineDiff(headArtifact, headIndex, visibleContext, headMatchedFiles, prSelected);
+  const deletedProjection: DeletedNodeProjection = swapped && prReviewComparison !== null
+    ? deriveDeletedNodeProjection({
+        headArtifact: reviewedHeadArtifact,
+        headIndex,
+        baseArtifact: prReviewComparison.artifact,
+        baseIndex: prReviewComparison.index,
+        // Compose the COMPLETE PR before the Tests filter. An all-test deletion still needs a
+        // hidden workspace sentinel so the review opens and the Tests toggle can reveal it.
+        context,
+        prFiles: reviewPrFiles,
+      })
+    : emptyDeletedNodeProjection(reviewedHeadArtifact, headIndex);
+  const artifact = deletedProjection.artifact;
+  const index = deletedProjection.index;
+  const visiblePaths = new Set(visibleContext.changedFiles.map((file) => file.path));
+  const visibleDeletedFiles = deletedProjection.files.filter((file) => visiblePaths.has(file.path));
+  const headAffected = swapped && prReviewComparison !== null
+    ? preparedHeadAffected(
+        visibleContext,
+        reviewPrFiles,
+        reviewedHeadArtifact,
+        headIndex,
+        deletedProjection.survivingAffectedHeadIds,
+      )
+    : projection.affected;
+  const deletedAffected = visibleDeletedFiles.flatMap((file) => file.affected);
+  const affected = mergeAffectedNodes(headAffected, deletedAffected);
+  const files = mergeDeletedReviewFiles(projection.files, headAffected, visibleDeletedFiles, index);
+
+  // Gate entry on the COMPLETE two-sided graph before applying the Tests projection. A deletion-
+  // only PR now resolves through its merge-base module instead of being rejected by a HEAD-only
+  // seed check. An all-test PR still opens an intentionally empty workspace with Tests off.
   const allMatchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
   const allRollup = rollupSeeds(allMatchedFiles, index);
   if (allRollup.seeds.length === 0) {
-    const allOutside = (prFiles?.length ?? 0) === 0 && prFilesOutside > 0;
-    const changedFileCount = prFilesTotal > 0 ? prFilesTotal : (prFiles?.length ?? 0) + prFilesOutside;
+    const allOutside = reviewPrFiles.length === 0 && prFilesOutside > 0;
+    const changedFileCount = reviewFilesTotal > 0 ? reviewFilesTotal : reviewPrFiles.length + prFilesOutside;
     set({
       prReviewBlocked: {
         number: prSelected,
@@ -6101,16 +6366,9 @@ function applyPrReviewToMap(
   }
   // A first entry/manual re-extract owes every shared lens-transition side effect. An in-place
   // refresh is already on this review surface; its final atomic state replaces the old overlay.
-  // Skipping closeMinimalGraph here is also essential: a user close cancels refresh, while this
-  // internal replacement must not cancel itself.
   if (!get().prReviewRefreshing && !options.reprojecting) {
     beginLensTransition(get, set);
   }
-  const projection = deriveReviewProjection(context, artifact, index, {
-    baseIndex: swapped ? (prReviewBaseline?.index ?? null) : null,
-    showTests: get().showTests,
-  });
-  const { review, files, affected, visibleContext } = projection;
   // Test files are excluded before every graph/checklist derivation. Keep the complete PR's seeds
   // only as an invisible workspace sentinel when ALL matched changes are tests: minimalMemberIds
   // remains empty, so no hidden test card can leak onto the canvas, while the review panel and the
@@ -6118,44 +6376,64 @@ function applyPrReviewToMap(
   const matchedFiles = matchAffectedFiles(index, visibleContext.changedFiles.map((file) => file.path)).matched;
   const { seeds: visibleSeeds, rolledUp } = rollupSeeds(matchedFiles, index);
   const workspaceSeeds = visibleSeeds.length > 0 ? visibleSeeds : allRollup.seeds;
-  const prFileByPath = new Map((prFiles ?? []).map((file) => [file.path, file]));
+  const fileBindings = bindReviewFiles(
+    reviewPrFiles,
+    headIndex,
+    swapped ? (prReviewComparison?.index ?? null) : null,
+    deletedProjection,
+  );
   // The synchronous review's graph is base-relative while patch kinds are head-relative. Preserve
   // each file's edit map beside its exact kinds so node spans can be translated before colouring.
   // A prepared graph instead reads its own authoritative, already-aligned changedSince stamp.
   const reviewDiffByFile: Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }> = {};
+  const reviewDiffLinesByFile: Record<string, ChangedDiffLine[]> = {};
   if (!swapped) {
-    for (const match of matchedFiles) {
-      const locFile = index.nodesById.get(match.moduleId)?.location?.file;
-      const file = prFileByPath.get(match.path);
-      if (locFile && file?.edits && file.edits.length > 0) {
-        reviewDiffByFile[locFile] = { edits: file.edits, kinds: file.kinds ?? [] };
+    for (const binding of fileBindings) {
+      if (binding.file.diffComplete !== false && binding.file.edits && binding.file.edits.length > 0) {
+        for (const locFile of binding.headFiles) {
+          reviewDiffByFile[locFile] = { edits: binding.file.edits, kinds: binding.file.kinds ?? [] };
+        }
       }
     }
   }
+  const canonicalDiffLines = swapped ? changedDiffLinesFromExtensions(reviewedHeadArtifact.extensions) : null;
+  for (const binding of fileBindings) {
+    const rows = valueForReviewAliases(canonicalDiffLines, binding.aliases)
+      ?? (binding.file.diffComplete !== false ? binding.file.diffLines : undefined);
+    if (!rows || rows.length === 0) continue;
+    for (const locFile of binding.aliases) reviewDiffLinesByFile[locFile] = rows;
+  }
   const nodeStatusSources = swapped
-    ? reviewNodeStatusSourcesFromKinds(changedLineKindsFromExtensions(artifact.extensions))
-    : reviewDiffByFile;
+    ? reviewNodeStatusSourcesFromDiff(
+        changedLineKindsFromExtensions(reviewedHeadArtifact.extensions),
+        changedDiffLinesFromExtensions(reviewedHeadArtifact.extensions),
+      )
+    : liveReviewStatusSources(reviewDiffByFile, reviewDiffLinesByFile);
   // The changed code blocks (hunks ∩ node ranges); repaint main's changed-node channel to THIS PR.
   applyChangedIds(index, affected.map((node) => node.nodeId));
   // Colour each touched CODE BLOCK by its own exact edits: additions-only green, deletions-only red,
   // replacements/mixed edits gold. Fall back to the file status when exact kinds are unavailable.
-  applyChangedStatus(index, reviewNodeStatusEntries(index, affected, nodeStatusSources));
+  applyChangedStatus(index, [
+    ...reviewNodeStatusEntries(index, headAffected, nodeStatusSources),
+    ...deletedAffected.map((entry) => [entry.nodeId, "deleted" as const] as const),
+  ]);
   // Partition the change into disjoint groups (one per weakly-connected component of the changed
   // modules), sharing the SAME flow substrate the review rows already read. Stored so the rail can
   // offer per-group isolation; ignored (strip hidden) when the change is a single connected component.
   const changeGroups = computeChangeGroups(artifact.nodes, artifact.edges, visibleContext.changedFiles, review.flows);
   // GitHub's whole-file +N/-M churn per changed file, keyed by node.location.file, for the marker a
   // changed FILE card shows before its name (files aren't coloured; only their touched blocks are).
-  const deltaByPath = new Map<string, { added: number; deleted: number; status: PrFileStatus }>(
-    (prFiles ?? []).map((file) => [file.path, { added: file.additions, deleted: file.deletions, status: file.status }]),
-  );
+  const artifactStats = swapped ? changedLineStatsFromExtensions(reviewedHeadArtifact.extensions) : null;
   const reviewFileDelta: Record<string, { added: number; deleted: number; status?: PrFileStatus }> = {};
-  for (const match of matchedFiles) {
-    const locFile = index.nodesById.get(match.moduleId)?.location?.file;
-    const delta = deltaByPath.get(match.path);
-    if (locFile && delta) {
-      reviewFileDelta[locFile] = delta;
-    }
+  for (const binding of fileBindings) {
+    const fallback = {
+      added: binding.file.additions,
+      deleted: binding.file.deletions,
+      status: binding.file.status,
+    };
+    const canonical = valueForReviewAliases(artifactStats, binding.aliases);
+    const delta = canonical ? { ...canonical, status: binding.file.status } : fallback;
+    for (const locFile of binding.aliases) reviewFileDelta[locFile] = delta;
   }
   // ONE source of truth for the line-level changedSince channel (the code panel's </> diff): the
   // artifact's OWN stamp when it carries one — the prepared PR-head artifact does, computed by the
@@ -6164,21 +6442,26 @@ function applyPrReviewToMap(
   // the GitHub patch hunks is strictly weaker (suffix-matched paths, "added"-only kinds, and it
   // silently misses files whenever the server capped the PR file list), so it remains only as the
   // fallback for a boot artifact that carries no stamp (the synchronous, no-analyze-endpoint path).
-  const reviewedArtifact =
-    changedRangesFromExtensions(artifact.extensions) !== null && !hasPrReviewLineDiff(artifact)
-      ? artifact
-      : withPrLineDiff(artifact, index, visibleContext, matchedFiles, prSelected);
+  const reviewedArtifact = artifact;
   // Pre-expand the packages and file modules on the path to each changed file (packages too,
   // else deriveModuleTree never descends to the file — mirrors flowExplorer's
   // expandedModulePaths): review reads at declaration level (class/type cards), so classes stay
   // collapsed "N members" cards and blocks never chart flow steps — drilling deeper stays a
   // manual gesture.
-  const expanded = reviewExpansionForMatches(index, matchedFiles, rolledUp);
+  const expanded = expandedCodePaths(
+    reviewExpansionForMatches(index, matchedFiles, rolledUp),
+    new Set(deletedAffected.map((entry) => entry.nodeId)),
+    index,
+  );
   // The review owns the only mounted graph surface. Cancel and release the covered source Map
   // instead of deriving and retaining a second complete ELK/ReactFlow scene for large PRs. Closing
   // the review rebuilds the restored boot Map through the guarded path in closeMinimalGraph.
-  invalidateModuleLayout();
-  invalidateMinimalLayout();
+  if (activeBaseNodeIds.size > 0 || deletedProjection.baseSourceNodeIds.size > 0) {
+    invalidateArtifactCaches();
+  } else {
+    invalidateModuleLayout();
+    invalidateMinimalLayout();
+  }
   // Capture the head ref + each changed file's real per-line diff (old/new spans + head-relative
   // added/modified lines), keyed by node.location.file, so opening a changed unit's </> fetches the
   // PR HEAD of that file and paints exactly its diff — code + highlight that match the PR, not base.
@@ -6187,17 +6470,20 @@ function applyPrReviewToMap(
   // SWAPPED mode carries neither field: node.location is already head-relative, so showCode's
   // headSpanFor remap must never run — it reads the local head checkout via activeSourceUrl instead.
   const reviewCommentRangesByFile: Record<string, LineRange[]> = {};
-  for (const match of matchedFiles) {
-    const locFile = index.nodesById.get(match.moduleId)?.location?.file;
-    const edits = prFileByPath.get(match.path)?.edits;
-    if (!locFile || !edits) {
+  for (const binding of fileBindings) {
+    const file = binding.file;
+    if (file.status === "removed" || file.diffComplete === false) {
       continue;
     }
-    const ranges = edits
-      .filter((edit) => edit.newStart >= 1 && edit.newLines > 0)
-      .map((edit) => ({ start: edit.newStart, end: edit.newStart + edit.newLines - 1 }));
+    // GitHub accepts inline comments anywhere in the context-padded patch hunk. Keep those U3
+    // ranges separate from the exact edit runs used for base→HEAD coordinate mapping.
+    const ranges = file.contextHunks && file.contextHunks.length > 0
+      ? file.contextHunks
+      : (file.edits ?? [])
+        .filter((edit) => edit.newStart >= 1 && edit.newLines > 0)
+        .map((edit) => ({ start: edit.newStart, end: edit.newStart + edit.newLines - 1 }));
     if (ranges.length > 0) {
-      reviewCommentRangesByFile[locFile] = ranges;
+      for (const locFile of binding.headFiles) reviewCommentRangesByFile[locFile] = ranges;
     }
   }
   // Removed text is parsed from GitHub's patch in HEAD coordinates, so unlike the base→head edit
@@ -6205,17 +6491,13 @@ function applyPrReviewToMap(
   // path so the code panel can look it up with node.location.file in either graph.
   const reviewRemovedByFile: Record<string, { afterNewLine: number; lines: string[] }[]> = {};
   const reviewRemovedTruncatedByFile: Record<string, boolean> = {};
-  for (const match of matchedFiles) {
-    const locFile = index.nodesById.get(match.moduleId)?.location?.file;
-    const prFile = prFileByPath.get(match.path);
-    if (!locFile || !prFile) {
-      continue;
-    }
+  for (const binding of fileBindings) {
+    const prFile = binding.file;
     if ((prFile.removed?.length ?? 0) > 0) {
-      reviewRemovedByFile[locFile] = prFile.removed ?? [];
+      for (const locFile of binding.aliases) reviewRemovedByFile[locFile] = prFile.removed ?? [];
     }
     if (prFile.removedTruncated === true) {
-      reviewRemovedTruncatedByFile[locFile] = true;
+      for (const locFile of binding.aliases) reviewRemovedTruncatedByFile[locFile] = true;
     }
   }
   const progress = liveProgress ?? readReviewProgress(context.reviewKey);
@@ -6250,9 +6532,11 @@ function applyPrReviewToMap(
     prReviewed: prSelected,
     prReviewSource: {
       number: prSelected,
-      files: prFiles ?? [],
-      truncated: get().prFilesTruncated,
-      total: prFilesTotal,
+      files: reviewPrFiles,
+      // The exact local manifest is complete for this extraction root even when GitHub's response
+      // was capped. Preserve the warning only for the legacy/no-manifest fallback.
+      truncated: exactManifest === null && get().prFilesTruncated,
+      total: reviewFilesTotal,
       outside: prFilesOutside,
       suggestedSubdir: get().prFilesSuggestedSubdir,
     },
@@ -6262,8 +6546,12 @@ function applyPrReviewToMap(
     prReviewStale: revisionMismatch,
     reviewHeadRef: options.reprojecting
       ? currentSelection.reviewHeadRef
-      : swapped ? null : summary?.headRef ?? null,
+      : swapped ? null : summary?.headSha ?? summary?.headRef ?? null,
     reviewDiffByFile,
+    reviewDiffLinesByFile,
+    reviewBaseNodeIds: deletedProjection.baseSourceNodeIds,
+    reviewDeletedNodeIds: deletedProjection.deletedNodeIds,
+    reviewBaseSpanByHeadId: deletedProjection.baseSpanByHeadId,
     reviewCommentRangesByFile,
     reviewRemovedByFile,
     reviewRemovedTruncatedByFile,
@@ -6326,6 +6614,186 @@ function applyPrReviewToMap(
     void get().minimalRelayout({ label: "Preparing review graph…" });
   }
   return true;
+}
+
+/** Empty two-sided projection for synchronous reviews and older prepared-review servers. */
+function emptyDeletedNodeProjection(artifact: GraphArtifact, index: GraphIndex): DeletedNodeProjection {
+  return {
+    artifact,
+    index,
+    baseSourceNodeIds: new Set<string>(),
+    deletedNodeIds: new Set<string>(),
+    survivingAffectedHeadIds: new Set<string>(),
+    baseSpanByHeadId: new Map<string, LineRange>(),
+    affected: [],
+    files: [],
+  };
+}
+
+/** HEAD affected nodes without fabricated pure-deletion seams. Paintable local kinds identify rows
+ * that survive; exact base projection supplies both vanished tombstones and surviving declarations
+ * touched only by deletions. This prevents the old seam from marking the next declaration red. */
+function preparedHeadAffected(
+  context: ReviewContext,
+  prFiles: readonly PrChangedFile[],
+  artifact: GraphArtifact,
+  index: GraphIndex,
+  survivingDeletionIds: ReadonlySet<string>,
+): AffectedNode[] {
+  const kindsByFile = changedLineKindsFromExtensions(artifact.extensions);
+  const statsByFile = changedLineStatsFromExtensions(artifact.extensions);
+  const rawByPath = new Map(prFiles.map((file) => [normalizeReviewFilePath(file.path), file]));
+  const statusByCanonicalFile = new Map<string, AffectedNode["status"]>();
+  const changedFiles = context.changedFiles.map((changed) => {
+    const match = matchAffectedFiles(index, [changed.path]).matched[0];
+    const canonicalPath = match === undefined
+      ? changed.path
+      : index.nodesById.get(match.moduleId)?.location.file ?? changed.path;
+    statusByCanonicalFile.set(canonicalPath, changed.status);
+    const aliases = new Set([changed.path, canonicalPath]);
+    const raw = rawByPath.get(normalizeReviewFilePath(changed.path));
+    const canonicalKinds = valueForReviewAliases(kindsByFile, aliases);
+    const canonicalStats = valueForReviewAliases(statsByFile, aliases);
+    const exactKinds = canonicalKinds
+      ?? (raw?.diffComplete === true ? raw.kinds ?? [] : undefined);
+    const file = { ...changed, path: canonicalPath };
+    delete file.oldHunks;
+    if (exactKinds !== undefined || canonicalStats !== undefined) {
+      // `[]` is meaningful: a pure deletion has no surviving HEAD row, so core rings only the file
+      // module fallback until the base-side pass supplies the real declaration target.
+      file.hunks = (exactKinds ?? []).map((span) => ({ start: span.start, end: span.end }));
+    } else {
+      delete file.hunks; // incomplete/omitted detail keeps core's conservative module fallback.
+    }
+    return file;
+  });
+  const affected = computeAffectedNodes(artifact.nodes, changedFiles);
+  const byId = new Map(affected.map((entry) => [entry.nodeId, entry]));
+  for (const id of survivingDeletionIds) {
+    const node = index.nodesById.get(id);
+    if (!node || !statusByCanonicalFile.has(node.location.file)) continue;
+    byId.set(id, {
+      nodeId: id,
+      status: statusByCanonicalFile.get(node.location.file)!,
+      file: node.location.file,
+      overlapsHunk: true,
+    });
+  }
+  return [...byId.values()].sort(compareAffectedNodes);
+}
+
+function mergeAffectedNodes(head: readonly AffectedNode[], deleted: readonly AffectedNode[]): AffectedNode[] {
+  const merged = new Map<string, AffectedNode>();
+  for (const entry of [...head, ...deleted]) merged.set(entry.nodeId, entry);
+  return [...merged.values()].sort(compareAffectedNodes);
+}
+
+function compareAffectedNodes(left: AffectedNode, right: AffectedNode): number {
+  return left.file.localeCompare(right.file) || left.nodeId.localeCompare(right.nodeId);
+}
+
+/** Replace the checklist's seam-derived units with the exact two-sided affected set, then append
+ * base-coordinate tombstone units. Every visible ChangedFile already has a row, so this preserves
+ * progress, deleted-impact callers, and file fingerprints while changing only graph-backed units. */
+function mergeDeletedReviewFiles(
+  files: readonly ReviewFileRow[],
+  headAffected: readonly AffectedNode[],
+  deletedFiles: ReadonlyArray<DeletedNodeProjection["files"][number]>,
+  index: GraphIndex,
+): ReviewFileRow[] {
+  const headIds = new Set(headAffected.map((entry) => entry.nodeId));
+  const deletedByPath = new Map(deletedFiles.map((file) => [file.path, file]));
+  return files.map((file) => {
+    const deleted = deletedByPath.get(file.path);
+    const units = new Map<string, ReviewUnitRow>();
+    for (const unit of file.units) {
+      if (headIds.has(unit.nodeId)) units.set(unit.nodeId, unit);
+    }
+    for (const unit of deleted?.units ?? []) units.set(unit.nodeId, unit);
+    const moduleId = deleted?.moduleId ?? file.moduleId;
+    return {
+      ...file,
+      moduleId,
+      isTest: moduleId === null ? file.isTest : index.testIds.has(moduleId),
+      units: [...units.values()].sort((left, right) =>
+        left.startLine - right.startLine || left.nodeId.localeCompare(right.nodeId)),
+    };
+  });
+}
+
+interface BoundReviewFile {
+  file: PrChangedFile;
+  /** Every exact source/metadata spelling used by HEAD, merge-base, and a synthetic file target. */
+  aliases: Set<string>;
+  /** Current-graph aliases eligible for RIGHT-side comments or base→HEAD edit remapping. */
+  headFiles: Set<string>;
+}
+
+/** Resolve each PR file once against both revisions. Every diff/delta/source/comment map consumes
+ * these bindings so removed files cannot disappear merely because one call site joined HEAD only. */
+function bindReviewFiles(
+  files: readonly PrChangedFile[],
+  headIndex: GraphIndex,
+  baseIndex: GraphIndex | null,
+  deleted: DeletedNodeProjection,
+): BoundReviewFile[] {
+  const deletedByPath = new Map(deleted.files.map((file) => [normalizeReviewFilePath(file.path), file]));
+  return files.map((file) => {
+    const aliases = new Set<string>([file.path, normalizeReviewFilePath(file.path)]);
+    const headFiles = new Set<string>();
+    const headMatch = matchAffectedFiles(headIndex, [file.path]).matched[0];
+    const headFile = headMatch === undefined ? undefined : headIndex.nodesById.get(headMatch.moduleId)?.location.file;
+    if (headFile) {
+      aliases.add(headFile);
+      headFiles.add(headFile);
+    }
+    const baseCandidate = file.previousPath ?? file.path;
+    if (file.previousPath) aliases.add(file.previousPath);
+    const baseMatch = baseIndex === null ? undefined : matchAffectedFiles(baseIndex, [baseCandidate]).matched[0];
+    const baseFile = baseMatch === undefined ? undefined : baseIndex!.nodesById.get(baseMatch.moduleId)?.location.file;
+    if (baseFile) aliases.add(baseFile);
+    const projected = deletedByPath.get(normalizeReviewFilePath(file.path));
+    if (projected) aliases.add(projected.basePath);
+    return { file, aliases, headFiles };
+  });
+}
+
+/** Exact key first, then one unambiguous slash-boundary suffix alias. The latter mirrors graph file
+ * matching for extraction subfolders without guessing between duplicated monorepo tails. */
+function valueForReviewAliases<T>(
+  record: Readonly<Record<string, T>> | null,
+  aliases: ReadonlySet<string>,
+): T | undefined {
+  if (record === null) return undefined;
+  const normalizedAliases = new Set([...aliases].map(normalizeReviewFilePath));
+  for (const [key, value] of Object.entries(record)) {
+    if (normalizedAliases.has(normalizeReviewFilePath(key))) return value;
+  }
+  let bestLength = 0;
+  let winner: T | undefined;
+  let ambiguous = false;
+  for (const [key, value] of Object.entries(record)) {
+    const normalizedKey = normalizeReviewFilePath(key);
+    for (const alias of normalizedAliases) {
+      const length = normalizedKey.endsWith(`/${alias}`)
+        ? alias.length
+        : alias.endsWith(`/${normalizedKey}`) ? normalizedKey.length : 0;
+      if (length > bestLength) {
+        bestLength = length;
+        winner = value;
+        ambiguous = false;
+      } else if (length > 0 && length === bestLength && winner !== value) {
+        ambiguous = true;
+      }
+    }
+  }
+  return bestLength > 0 && !ambiguous ? winner : undefined;
+}
+
+function normalizeReviewFilePath(path: string): string {
+  let normalized = path.replace(/\\/g, "/");
+  while (normalized.startsWith("./")) normalized = normalized.slice(2);
+  return normalized;
 }
 
 /** A line number belongs to one immutable HEAD revision. On refresh OR a later restored session,
@@ -6605,6 +7073,7 @@ function deriveReviewScopeGraph(
   reviewFiles: readonly ReviewFileRow[],
   allowedModuleIds: ReadonlySet<string> | null,
   pathScope: string | null,
+  baseNodes: ReviewScopeBaseNodes,
 ): {
   seeds: string[];
   rolledUp: Map<string, string[]>;
@@ -6616,10 +7085,18 @@ function deriveReviewScopeGraph(
   const matched = matchAffectedFiles(index, paths).matched
     .filter((match) => allowedModuleIds === null || allowedModuleIds.has(match.moduleId));
   const { seeds, rolledUp } = rollupSeeds(matched, index);
+  const fileExpansion = reviewExpansionForMatches(index, matched, rolledUp);
   return {
     seeds,
     rolledUp,
-    expanded: reviewExpansionForMatches(index, matched, rolledUp),
+    expanded: expandReviewScopeBaseUnits(
+      fileExpansion,
+      index,
+      reviewFiles,
+      new Set(matched.map((match) => match.path)),
+      baseNodes,
+      new Set(rolledUp.keys()),
+    ),
   };
 }
 

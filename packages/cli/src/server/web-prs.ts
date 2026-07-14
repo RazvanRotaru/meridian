@@ -351,7 +351,7 @@ export async function handlePullRequestFileContent(
   }
   const repoPath = restoreExtractionSubdir(file, source.subdir);
   const result = await fetchFileAtRef({ owner: source.owner, repo: source.repo, ref, path: repoPath, token: githubTokenFor(ctx, request) });
-  sendJson(response, 200, { file, code: result.code, truncated: result.truncated });
+  sendJson(response, 200, { file, ...result });
 }
 
 interface CommentMutationBody {

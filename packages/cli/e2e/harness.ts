@@ -161,7 +161,7 @@ function populatePrReviewFixture(dir: string): PrReviewFixture {
   };
 }
 
-export async function startSmartGitServer(fixture: PrReviewFixture): Promise<{ server: Server; repoUrl: string }> {
+export async function startSmartGitServer(fixture: { bareRepo: string }): Promise<{ server: Server; repoUrl: string }> {
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://localhost");
     if (

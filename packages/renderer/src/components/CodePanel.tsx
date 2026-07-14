@@ -5,16 +5,13 @@
  * wire evidence together. CodeBlock escapes source as plain text children.
  */
 
-import { useEffect, useMemo, useState } from "react";
-import { anchorableHunks } from "../derive/reviewSubmit";
+import { useMemo } from "react";
 import { formatCallSite } from "../graph/edgeEvidence";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import type { CodeView } from "../state/store";
 import { relationColor } from "../theme/relationTheme";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
-import { CodeBlock } from "./CodeBlock";
-import { useCodeReviewComments, useGitHubCommentableReviewLines, usePendingCodeReviewComments } from "./review/useCodeReviewComments";
-import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeKinds } from "./useChangedLines";
+import { SourceDiffBody, useSourceDiffModel } from "./SourceDiffBody";
 
 export function CodePanel() {
   const codeView = useBlueprint((state) => state.codeView);
@@ -53,21 +50,10 @@ function SourcePanel({
   presentation: "modal" | "edge";
   onClose?: () => void;
 }) {
-  const review = useBlueprint((state) => state.review);
-  const prReviewed = useBlueprint((state) => state.prReviewed);
   const index = useBlueprint((state) => state.index);
-  const removed = useBlueprint((state) => state.reviewRemovedByFile[codeView.node.location?.file ?? ""] ?? EMPTY_REMOVED);
-  const removedTruncated = useBlueprint((state) => state.reviewRemovedTruncatedByFile[codeView.node.location?.file ?? ""] === true);
-  const { addReviewComment, selectEdgeEvidence } = useBlueprintActions();
+  const { selectEdgeEvidence } = useBlueprintActions();
+  const model = useSourceDiffModel(codeView);
   const wholeFile = codeView.wholeFile ?? false;
-  // A PR-review panel carries its own head-relative diff; otherwise the artifact's `changedSince`
-  // drives the paint. The hooks run unconditionally (rules of hooks) and are overridden when carried.
-  const hookChangedLines = useChangedLines(codeView.node, wholeFile);
-  const hookChangedLineKinds = useLineChangeKinds(codeView.node, wholeFile);
-  const hookSummary = useChangeSummary(codeView.node, wholeFile);
-  const changedLines = codeView.changedLines ?? hookChangedLines;
-  const changedLineKinds = codeView.changedLineKinds ?? hookChangedLineKinds;
-  const summary = codeView.changedLineKinds ? summarizeChangeKinds(codeView.changedLineKinds) : hookSummary;
   const edgeEvidence = codeView.edgeEvidence;
   const activeEvidence = edgeEvidence?.contexts[edgeEvidence.activeIndex];
   const evidenceLines = useMemo(() => {
@@ -78,62 +64,27 @@ function SourcePanel({
     }
     return lines;
   }, [edgeEvidence]);
-  const reviewFile = codeView.node.location?.file ?? null;
-  const reviewBaseLine = codeView.baseLine ?? codeView.node.location?.startLine ?? 1;
-  const visibleLineCount = codeView.code === null ? 0 : codeView.code.split("\n").length;
-  const visibleEnd = reviewBaseLine + Math.max(visibleLineCount - 1, 0);
-  const existingComments = useCodeReviewComments(reviewFile, reviewBaseLine, codeView.code);
-  const pendingComments = usePendingCodeReviewComments(reviewFile, reviewBaseLine, codeView.code);
-  const githubCommentableLines = useGitHubCommentableReviewLines(reviewFile, reviewBaseLine, codeView.code);
-  const commentableLines = useMemo(() => {
-    if (reviewFile === null || review === null) {
-      return EMPTY_COMMENTABLE_LINES;
-    }
-    // GitHub accepts inline threads only on rows present in the PR diff (changed + context). The
-    // shared hook carries exactly that server-parsed range and intersects it with this source slice.
-    if (prReviewed !== null) {
-      return githubCommentableLines;
-    }
-    if (anchorableHunks(reviewFile, review.context).length === 0) {
-      return EMPTY_COMMENTABLE_LINES;
-    }
-    // Review code is HEAD-side in both modes: sync fetches the head file, while swapped graph
-    // locations are head-native. These absolute values therefore map directly to RIGHT-side lines.
-    return changedLineKinds.size > 0
-      ? new Set([...changedLineKinds].filter(([, kind]) => kind === "added" || kind === "modified").map(([line]) => line))
-      : new Set(changedLines);
-  }, [changedLineKinds, changedLines, githubCommentableLines, prReviewed, review, reviewFile]);
-  const visibleRemovedRows = useMemo(() => {
-    const rows = new Map<number, string[]>();
-    for (const entry of removed) {
-      if ((entry.afterNewLine === 0 && reviewBaseLine === 1) || (entry.afterNewLine >= reviewBaseLine && entry.afterNewLine <= visibleEnd)) {
-        rows.set(entry.afterNewLine, [...(rows.get(entry.afterNewLine) ?? []), ...entry.lines]);
-      }
-    }
-    return rows;
-  }, [removed, reviewBaseLine, visibleEnd]);
-  const [activeCommentLine, setActiveCommentLine] = useState<number | null>(null);
-  useEffect(() => setActiveCommentLine(null), [codeView.node.id, reviewBaseLine]);
-
-  const { node, code, loading, error, truncated } = codeView;
+  const { node } = codeView;
   const { file, startLine, endLine } = node.location;
-  const baseLine = codeView.baseLine ?? startLine;
+  const baseLine = model.baseLine;
   // A PR-review panel shows the HEAD file sliced to where the unit moved to, so the subtitle range
   // must track the shown lines (baseLine..+len), not the node's base span. Whole-file view titles by
   // the file and lands on the first change, so its own span in the subtitle would be misleading too.
-  const isHead = codeView.changedLineKinds !== undefined;
-  const shownEnd = isHead ? baseLine + Math.max((code?.split("\n").length ?? 1) - 1, 0) : endLine ?? startLine;
+  const shownEnd = codeView.code === null ? endLine ?? startLine : model.shownEnd;
   const evidenceTitle = activeEvidence
     ? `${index.nodesById.get(activeEvidence.source)?.displayName ?? activeEvidence.source} → ${index.nodesById.get(activeEvidence.target)?.displayName ?? activeEvidence.target}`
     : null;
   const title = presentation === "edge" && activeEvidence
     ? `Source · ${file.split("/").pop() ?? file}`
     : evidenceTitle ?? (wholeFile ? (file.split("/").pop() ?? file) : node.displayName);
-  const range = shownEnd !== baseLine ? `${baseLine}-${shownEnd}` : String(baseLine);
+  const emptySource = codeView.code !== null && model.sourceLineCount === 0;
+  const range = emptySource
+    ? "empty"
+    : shownEnd !== baseLine ? `${baseLine}-${shownEnd}` : String(baseLine);
   const location = activeEvidence && edgeEvidence
     ? displayedEvidenceLocation(activeEvidence.site, edgeEvidence.focusStartLine, edgeEvidence.focusEndLine)
     : wholeFile
-      ? file
+      ? `${file}${emptySource ? " · empty" : ""}`
       : `${file}:${range}`;
 
   return (
@@ -179,10 +130,10 @@ function SourcePanel({
                 ) : null}
               </div>
             ) : null}
-            {summary ? (
+            {model.summary ? (
               <div style={SUMMARY_ROW_STYLE}>
-                <span style={ADDED_STYLE}>{`+${summary.added} lines`}</span>
-                <span style={DELETED_STYLE}>{`-${summary.deleted} lines`}</span>
+                <span style={ADDED_STYLE}>{`+${model.summary.added} lines`}</span>
+                <span style={DELETED_STYLE}>{`-${model.summary.deleted} lines`}</span>
               </div>
             ) : null}
           </div>
@@ -193,39 +144,18 @@ function SourcePanel({
           ) : null}
         </header>
         <div style={BODY_STYLE}>
-          {loading ? <div style={STATUS_STYLE}>Loading source…</div> : null}
-          {error ? <div style={ERROR_STYLE}>{error}</div> : null}
-          {code !== null ? (
-            <CodeBlock
-              code={code}
-              maxHeight={presentation === "edge" ? "62vh" : "70vh"}
-              startLine={baseLine}
-              showGutter
-              changedLines={changedLines}
-              changedLineKinds={changedLineKinds}
-              evidenceLines={evidenceLines}
-              commentableLines={commentableLines}
-              onLineClick={commentableLines.size > 0 ? setActiveCommentLine : undefined}
-              lineComposer={activeCommentLine === null || !commentableLines.has(activeCommentLine) ? null : {
-                line: activeCommentLine,
-                onAdd: (body) => addReviewComment(file, null, body, activeCommentLine),
-                onCancel: () => setActiveCommentLine(null),
-              }}
-              existingComments={existingComments}
-              pendingComments={pendingComments}
-              removedRows={visibleRemovedRows}
-              removedTruncated={removedTruncated}
-            />
-          ) : null}
-          {truncated ? <div style={TRUNCATED_STYLE}>Snippet truncated by the server.</div> : null}
+          <SourceDiffBody
+            model={model}
+            maxHeight={presentation === "edge" ? "62vh" : "70vh"}
+            evidenceLines={evidenceLines}
+            showGutter
+          />
         </div>
     </div>
   );
 }
 
-const EMPTY_COMMENTABLE_LINES: ReadonlySet<number> = new Set<number>();
 const EMPTY_EVIDENCE_LINES: ReadonlySet<number> = new Set<number>();
-const EMPTY_REMOVED: readonly { afterNewLine: number; lines: string[] }[] = [];
 
 function displayedEvidenceLocation(
   site: { file: string; line: number; col?: number; endLine?: number; endCol?: number },
@@ -365,6 +295,3 @@ const BODY_STYLE: React.CSSProperties = {
   overflow: "auto",
   padding: 12,
 };
-const STATUS_STYLE: React.CSSProperties = { fontSize: 12, color: "#7B8695" };
-const ERROR_STYLE: React.CSSProperties = { fontSize: 12, color: "#f2777a" };
-const TRUNCATED_STYLE: React.CSSProperties = { marginTop: 8, fontSize: 11, color: "#7B8695" };

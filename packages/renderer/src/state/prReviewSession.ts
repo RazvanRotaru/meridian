@@ -8,6 +8,7 @@
  */
 
 import {
+  changedDiffLinesFromExtensions,
   changedLineKindsFromExtensions,
   collectChangedIds,
   computeCoverage,
@@ -26,7 +27,7 @@ import type { FileMatch } from "../derive/matchAffectedFiles";
 import { deriveReviewData, type ReviewData } from "../derive/reviewData";
 import { deriveReviewProjection } from "../derive/reviewProjection";
 import { readReviewProgress } from "./reviewTicksPref";
-import { reviewNodeStatusEntries, reviewNodeStatusSourcesFromKinds } from "./reviewNodeStatus";
+import { reviewNodeStatusEntries, reviewNodeStatusSourcesFromDiff } from "./reviewNodeStatus";
 import type { BlueprintState } from "./store";
 import type { SyntheticExecutionTrust } from "./syntheticExecutionTrust";
 
@@ -57,6 +58,14 @@ export interface PrReviewBaseline {
   syntheticExecutionUrl: string | null;
   syntheticScenarios: SyntheticScenarioDescriptor[];
   syntheticExecutionTrust: SyntheticExecutionTrust | null;
+}
+
+/** The immutable graph extracted at the PR's exact merge-base. This is deliberately not the boot
+ * baseline: main can advance after a PR branches, and deleted symbols must come from the revision
+ * Git actually compares with HEAD rather than from whatever graph opened the browser session. */
+export interface PrReviewComparison {
+  artifact: GraphArtifact;
+  index: GraphIndex;
 }
 
 /** GET the prepared PR-head artifact from the same graph endpoint the boot artifact came from,
@@ -104,6 +113,7 @@ export function swapToPreparedArtifact(
   prepared: GraphArtifact,
   invalidateArtifactCaches: () => void,
   capability: PreparedSyntheticCapability = currentSyntheticCapability(get()),
+  comparison: GraphArtifact | null = null,
 ): void {
   const state = get();
   // Snapshot the review the BOOT artifact itself carries (if any) — never the live PR review:
@@ -121,12 +131,16 @@ export function swapToPreparedArtifact(
   set({
     artifact: prepared,
     index: buildGraphIndex(prepared),
+    prReviewComparison: comparison === null ? null : { artifact: comparison, index: buildGraphIndex(comparison) },
     prReviewBaseline: baseline,
     prPreparedArtifactCurrent: true,
     syntheticExecutionUrl: capability.syntheticExecutionUrl,
     syntheticScenarios: [...capability.syntheticScenarios],
     syntheticExecutionTrust: capability.syntheticExecutionTrust,
     ...resetSyntheticRunState(state),
+    reviewBaseNodeIds: new Set<string>(),
+    reviewDeletedNodeIds: new Set<string>(),
+    reviewBaseSpanByHeadId: new Map<string, LineRange>(),
     // The cached coverage report belongs to the outgoing artifact: recompute for the head graph
     // when coverage mode is showing, else drop it so the next toggle recomputes lazily.
     coverage: state.coverageMode ? computeCoverage(prepared.nodes, prepared.edges) : null,
@@ -174,6 +188,9 @@ export function restorePrReviewBaseline(
     artifact: baseline.artifact,
     index: baseline.index,
     prPreparedArtifactCurrent: false,
+    reviewBaseNodeIds: new Set<string>(),
+    reviewDeletedNodeIds: new Set<string>(),
+    reviewBaseSpanByHeadId: new Map<string, LineRange>(),
     coverage: get().coverageMode ? computeCoverage(baseline.artifact.nodes, baseline.artifact.edges) : null,
     codeView: null,
     moduleGhostInspection: null,
@@ -204,7 +221,10 @@ export function restorePrReviewBaseline(
       reviewNodeStatusEntries(
         baseline.index,
         projection.affected,
-        reviewNodeStatusSourcesFromKinds(changedLineKindsFromExtensions(baseline.artifact.extensions)),
+        reviewNodeStatusSourcesFromDiff(
+          changedLineKindsFromExtensions(baseline.artifact.extensions),
+          changedDiffLinesFromExtensions(baseline.artifact.extensions),
+        ),
       ),
     );
   }
@@ -243,11 +263,18 @@ export function restorePrReviewBaseline(
     prReviewRefreshing: false,
     reviewHeadRef: null,
     reviewDiffByFile: {},
+    reviewDiffLinesByFile: {},
+    reviewBaseNodeIds: new Set<string>(),
+    reviewDeletedNodeIds: new Set<string>(),
+    reviewBaseSpanByHeadId: new Map<string, LineRange>(),
     reviewCommentRangesByFile: {},
     reviewRemovedByFile: {},
     reviewRemovedTruncatedByFile: {},
     prReviewBaseline: null,
+    prReviewComparison: null,
     prPreparedGraphId: null,
+    prPreparedComparisonGraphId: null,
+    prPreparedMergeBaseSha: null,
     prPreparedHeadSha: null,
     // The review pre-expanded/seeded the Map around the PR; none of that is the reader's own
     // navigation, so the Map returns to its top level and the minimal overlay closes.

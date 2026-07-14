@@ -25,5 +25,6 @@ jobs:
       - run: pnpm test
       # playwright is a CLI-package devDependency, not a root one — resolve it in that workspace
       - run: pnpm --filter @meridian/cli exec playwright install --with-deps chromium
-      # full e2e: the cross-lens parity drive + render smoke tests
+      # full e2e: cross-lens/render smoke tests plus same-file Meridian ↔ GitHub U3 ↔ raw Git
+      # parity across replacement, shifted-line, diverged-base, deleted-node, and removed-file PRs
       - run: pnpm --filter @meridian/cli e2e

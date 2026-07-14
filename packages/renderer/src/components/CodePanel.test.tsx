@@ -66,6 +66,9 @@ function pendingComment(
 function sourceModal(options: {
   live: boolean;
   status?: ChangeStatus;
+  code?: string;
+  lineCount?: number;
+  wholeFile?: boolean;
   comments?: PrGitHubComment[];
   pendingComments?: ReviewComment[];
   commentsVisible?: boolean;
@@ -127,11 +130,13 @@ function sourceModal(options: {
     minimalSeedIds: [NODE.id],
     codeView: {
       node: NODE,
-      code: "before\nstill before\nchanged\nafter",
+      code: options.code ?? "before\nstill before\nchanged\nafter",
+      ...(options.lineCount === undefined ? {} : { lineCount: options.lineCount }),
       loading: false,
       error: null,
       mode: "modal",
       baseLine: 17,
+      wholeFile: options.wholeFile,
       changedLineKinds: new Map([[19, "modified"]]),
       changedLines: new Set([19]),
     },
@@ -142,6 +147,16 @@ function sourceModal(options: {
 }
 
 describe("CodePanel review comments", () => {
+  it("labels a loaded zero-row source as empty instead of showing an inverted range", () => {
+    const markup = sourceModal({ live: true, code: "", lineCount: 0 });
+    const wholeFileMarkup = sourceModal({ live: true, code: "", lineCount: 0, wholeFile: true });
+
+    expect(markup).toContain("src/order.ts:empty");
+    expect(markup).not.toContain("src/order.ts:17-16");
+    expect(markup).not.toContain("data-source-line");
+    expect(wholeFileMarkup).toContain("src/order.ts · empty");
+  });
+
   it("keeps code-button source in the shared centered popup during an active graph review", () => {
     const markup = sourceModal({ live: true });
 

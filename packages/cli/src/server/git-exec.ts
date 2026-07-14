@@ -8,6 +8,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { WebError } from "./web-error";
 
 const CLONE_TIMEOUT_MS = 90_000;
@@ -54,15 +55,21 @@ function spawnGit(args: string[], opts: SpawnOptions): Promise<string> {
   return new Promise((resolveRun, rejectRun) => {
     const child = spawn("git", args, { cwd: opts.cwd, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
+    const stdoutDecoder = new StringDecoder("utf8");
+    let stdoutBytes = 0;
+    let stdoutOverflowed = false;
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
       rejectRun(new WebError(422, `git timed out after ${Math.round(opts.timeoutMs / 1000)}s`));
     }, opts.timeoutMs);
     child.stdout?.on("data", (chunk: Buffer) => {
-      if (stdout.length < MAX_STDOUT_BYTES) {
-        stdout += chunk.toString("utf8");
+      stdoutBytes += chunk.byteLength;
+      if (stdoutBytes > MAX_STDOUT_BYTES) {
+        stdoutOverflowed = true;
+        return;
       }
+      stdout += stdoutDecoder.write(chunk);
     });
     child.stderr?.on("data", (chunk: Buffer) => {
       stderr = (stderr + chunk.toString("utf8")).slice(-MAX_STDERR_BYTES);
@@ -73,7 +80,15 @@ function spawnGit(args: string[], opts: SpawnOptions): Promise<string> {
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      code === 0 ? resolveRun(stdout) : rejectRun(new WebError(422, gitFailureMessage(redact(stderr))));
+      if (code !== 0) {
+        rejectRun(new WebError(422, gitFailureMessage(redact(stderr))));
+      } else if (stdoutOverflowed) {
+        // Never hand a syntactically plausible prefix to a parser: name-status output can happen
+        // to end on a NUL and a patch can end after a complete hunk even when later files vanished.
+        rejectRun(new WebError(422, "git output exceeded 32MB; refusing truncated output"));
+      } else {
+        resolveRun(stdout + stdoutDecoder.end());
+      }
     });
   });
 }
