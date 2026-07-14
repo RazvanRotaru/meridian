@@ -8,10 +8,12 @@
 
 import type { CSSProperties } from "react";
 import { useMemo } from "react";
+import type { ChangeStatus } from "@meridian/core";
 import type { FlowViewProps } from "../../derive/flowViewModel";
 import { FLOW_COLORS } from "../../derive/flowViewModel";
 import { layoutMetro } from "../../derive/metroLayout";
 import type { MetroStation } from "../../derive/metroSpec";
+import { TargetChangedTag } from "../nodes/logic/logicNodeTypes";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 export const METRO_COMPACT_TOP_PADDING = 20;
@@ -24,6 +26,10 @@ export function MetroView(props: FlowViewProps & { density?: "full" | "compact";
     () => layoutMetro(props.steps, props.flows, props.index, rootName),
     [props.steps, props.flows, props.index, rootName],
   );
+  // The navigator may focus the changed flow owner (or an item summarized by this projection),
+  // neither of which has a selectable station. Keep the visible map at full contrast in that case.
+  const selectionVisible = props.selected !== null
+    && spec.stations.some((station) => station.target === props.selected);
   return (
     <div style={compact ? COMPACT_WRAP : FULL_WRAP}>
       <div style={{ position: "relative", width: spec.width, height: spec.height }}>
@@ -53,7 +59,7 @@ export function MetroView(props: FlowViewProps & { density?: "full" | "compact";
             />
           ))}
           {spec.stations.map((s, i) => (
-            <Mark key={i} s={s} selected={props.selected} />
+            <Mark key={i} s={s} selected={selectionVisible ? props.selected : null} />
           ))}
         </svg>
         {spec.stations.map((s, i) =>
@@ -61,7 +67,8 @@ export function MetroView(props: FlowViewProps & { density?: "full" | "compact";
             <Label
               key={i}
               s={s}
-              selected={props.selected}
+              targetChangedStatus={s.target ? props.index.changedStatus.get(s.target) : undefined}
+              selected={selectionVisible ? props.selected : null}
               onSelect={props.onSelect}
               onDrill={props.onDrill}
               drillEnabled={drillEnabled}
@@ -107,8 +114,9 @@ function Mark({ s, selected }: { s: MetroStation; selected: FlowViewProps["selec
 }
 
 /** The floating HTML label for a station (name bold, sub dim), alternating above/below the line. */
-function Label({ s, selected, onSelect, onDrill, drillEnabled }: {
+function Label({ s, targetChangedStatus, selected, onSelect, onDrill, drillEnabled }: {
   s: MetroStation;
+  targetChangedStatus?: ChangeStatus;
   selected: FlowViewProps["selected"];
   onSelect: FlowViewProps["onSelect"];
   onDrill: FlowViewProps["onDrill"];
@@ -117,7 +125,7 @@ function Label({ s, selected, onSelect, onDrill, drillEnabled }: {
   const clickable = s.target != null;
   const selectedStation = selected !== null && s.target === selected;
   const dimmed = selected !== null && s.target !== selected;
-  const gap = s.kind === "interchange" ? 62 : s.sub ? 46 : 32;
+  const gap = (s.kind === "interchange" ? 62 : s.sub ? 46 : 32) + (targetChangedStatus && s.labelSide < 0 ? 20 : 0);
   const top = s.labelSide < 0 ? s.y - gap : s.y + 13;
   const style: CSSProperties = {
     position: "absolute",
@@ -128,7 +136,7 @@ function Label({ s, selected, onSelect, onDrill, drillEnabled }: {
     lineHeight: 1.35,
     fontFamily: MONO,
     cursor: clickable ? "pointer" : "default",
-    opacity: dimmed ? 0.55 : 1,
+    opacity: dimmed ? (targetChangedStatus ? 0.82 : 0.55) : 1,
     userSelect: "none",
   };
   const copy = (
@@ -138,6 +146,7 @@ function Label({ s, selected, onSelect, onDrill, drillEnabled }: {
         {s.name}
       </span>
       {s.sub ? <span style={{ display: "block", fontSize: 9, color: FLOW_COLORS.dim, whiteSpace: "nowrap" }}>{s.sub}</span> : null}
+      {targetChangedStatus ? <span style={{ display: "block", marginTop: 3 }}><TargetChangedTag status={targetChangedStatus} /></span> : null}
     </>
   );
   if (!clickable) {

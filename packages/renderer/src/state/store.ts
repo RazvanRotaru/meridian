@@ -2167,6 +2167,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         flowPaneExpansionOverrides,
         index,
         artifact,
+        prPreparedArtifactCurrent,
+        prReviewed,
+        reviewDiffByFile,
       } = get();
       if (flowPaneOrigin === "request") {
         const trace = requestFlowTraceId === null
@@ -2203,7 +2206,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const sequence = ++flowPaneLayoutSeq;
       set({ flowPaneLayoutStatus: "laying-out" });
-      const graph = await deriveFlowPaneLayout(flowSelection, flows, index, flowPaneExpansionOverrides);
+      // Match the full Logic lens: a flow node's PR status belongs to its own source site, not its
+      // callee. Synchronous reviews resolve base-coordinate anchors through GitHub's aligned diff;
+      // prepared/current artifacts already carry head-coordinate changed-line kinds themselves.
+      const stepStatusSources = prReviewed !== null && !prPreparedArtifactCurrent
+        ? reviewDiffByFile
+        : reviewNodeStatusSourcesFromKinds(changedLineKindsFromExtensions(artifact.extensions));
+      const graph = await deriveFlowPaneLayout(flowSelection, flows, index, flowPaneExpansionOverrides, {
+        changedStatusForSource: (source) => reviewSourceChangeStatus(source, stepStatusSources),
+      });
       if (flowPaneLayoutSeq !== sequence || get().flowSelection !== flowSelection) {
         return;
       }
@@ -4342,6 +4353,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // exist, so selection — including the composition panel's own selection/root — retreats first.
     toggleShowTests() {
       const showTests = !get().showTests;
+      const beforeToggle = get();
+      // Live PR reprojection below replaces the whole review workspace and clears its split. An
+      // artifact-carried review only replaces rows/paint, so explicitly leave its transient flow
+      // inspection first; otherwise the navigator and its old layout keep pointing at the prior
+      // Tests projection. Restore before filtering selections so hiding tests cannot resurrect a
+      // test-backed selection captured in the flow baseline.
+      if (
+        beforeToggle.prReviewed === null
+        && beforeToggle.review !== null
+        && beforeToggle.flowSelection !== null
+        && beforeToggle.reviewFlowBaseline !== null
+      ) {
+        beforeToggle.selectFlowEntry(null);
+      }
       const { compSelectedId, compRoot, moduleSelected, viewMode, index, prReviewed, minimalSeedIds } = get();
       const strandedById = (id: string | null) => !showTests && id !== null && index.testIds.has(id);
       set({

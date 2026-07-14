@@ -11,6 +11,7 @@
 
 import { useMemo, useState } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
+import type { ChangeStatus } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
 import type { LogicBranchPort, LogicNodeData, TerminalData } from "../../../derive/logicGraph";
@@ -20,6 +21,7 @@ import { executionCoverageIndex, executionEvidenceForCallTarget } from "../../..
 import { callTargetCoverageVerdict, COVERAGE_COLORS, type CoverageVerdict } from "../../../theme/coverageColors";
 import { CodeInlinePanel } from "../../CodeInlinePanel";
 import { changedColor, changedFill } from "../../ChangedBadge";
+import { changedTextColor } from "../../../theme/changedColors";
 import { BaseNode, type BaseNodeModel } from "../BaseNode";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -36,6 +38,27 @@ export function ChangedTag({ color }: { color: string }) {
       style={{ ...CHANGED_TAG, color, borderColor: color, background: `${color}33` }}
     >
       Δ
+    </span>
+  );
+}
+
+/** A call can point at code changed by the PR while its own source line is untouched. Keep that
+ * relationship explicit and textual: it must not borrow the whole-card wash used for a changed
+ * call site, and it must remain understandable without relying on the status colour. */
+export function TargetChangedTag({ status }: { status: ChangeStatus }) {
+  const accent = changedColor(status);
+  const color = changedTextColor(status);
+  const statusLabel = status.toUpperCase();
+  return (
+    <span
+      role="img"
+      aria-label={`Call target ${status} in this PR`}
+      title={`Call target ${status} in this PR`}
+      data-pr-target-change-marker="true"
+      data-pr-target-change-status={status}
+      style={{ ...TARGET_CHANGED_TAG, color, borderColor: accent, background: `${accent}20` }}
+    >
+      TARGET {statusLabel}
     </span>
   );
 }
@@ -173,6 +196,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
     ?? (d.definition && d.targetId ? index.changedStatus.get(d.targetId) : undefined);
   const changed = changedStatus !== undefined;
   const changedRing = changedColor(changedStatus);
+  const targetChangedStatus = d.definition ? undefined : d.targetChangedStatus;
   if (d.runtime) {
     return <RequestRuntimeBlock id={id} data={d} select={select} />;
   }
@@ -207,7 +231,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
   if (d.isContainer) {
     return (
       <div style={WRAP} data-coverage-verdict={covVerdict ?? undefined}>
-        <ContainerFrame model={model} accent={accent} glyph={glyph} provenance={d.provenance} select={select} badge={battery} changedRing={changed ? changedRing : null} nestedDetachedCount={d.nestedDetachedCount} />
+        <ContainerFrame model={model} accent={accent} glyph={glyph} provenance={d.provenance} select={select} badge={battery} changedRing={changed ? changedRing : null} targetChangedStatus={targetChangedStatus} nestedDetachedCount={d.nestedDetachedCount} />
         <AsyncDecoration d={d} />
       </div>
     );
@@ -249,6 +273,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
               <AsyncBadge d={d} />
               {battery}
               {changed ? <ChangedTag color={changedRing} /> : null}
+              {targetChangedStatus ? <TargetChangedTag status={targetChangedStatus} /> : null}
               {codeButton}
             </>
           )}
@@ -280,6 +305,7 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
             <AsyncBadge d={d} />
             {battery}
             {changed ? <ChangedTag color={changedRing} /> : null}
+            {targetChangedStatus ? <TargetChangedTag status={targetChangedStatus} /> : null}
             {d.definition ? <span style={DEF_TAG}>def</span> : null}
             {codeButton}
           </>
@@ -598,7 +624,7 @@ function conditionText(label: string): string {
 /** A framed container (expanded call / loop / callback / try-finally fallback): a title bar sits
  * over ELK's reserved top pad; child nodes render in the space below. BaseNode owns the shared
  * collapse control and keeps it as the final title action. */
-function ContainerFrame(props: { model: BaseNodeModel; accent: string; glyph: string; provenance: LogicNodeData["provenance"]; select: SelectState; badge?: React.ReactNode; changedRing?: string | null; nestedDetachedCount?: number }) {
+function ContainerFrame(props: { model: BaseNodeModel; accent: string; glyph: string; provenance: LogicNodeData["provenance"]; select: SelectState; badge?: React.ReactNode; changedRing?: string | null; targetChangedStatus?: ChangeStatus; nestedDetachedCount?: number }) {
   return (
     <BaseNode
       model={props.model}
@@ -612,6 +638,7 @@ function ContainerFrame(props: { model: BaseNodeModel; accent: string; glyph: st
           <NestedDetachedBadge count={props.nestedDetachedCount} />
           {props.badge}
           {props.changedRing ? <ChangedTag color={props.changedRing} /> : null}
+          {props.targetChangedStatus ? <TargetChangedTag status={props.targetChangedStatus} /> : null}
         </>
       )}
       ports={<ExecPins />}
@@ -1008,6 +1035,23 @@ const CHANGED_TAG: React.CSSProperties = {
   fontSize: 9,
   fontWeight: 900,
   lineHeight: 1,
+  boxShadow: "0 0 8px currentColor",
+};
+const TARGET_CHANGED_TAG: React.CSSProperties = {
+  flexShrink: 0,
+  height: 16,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  boxSizing: "border-box",
+  border: "1px solid",
+  borderRadius: 999,
+  padding: "0 6px",
+  fontSize: 7.5,
+  fontWeight: 900,
+  lineHeight: 1,
+  letterSpacing: "0.055em",
+  whiteSpace: "nowrap",
   boxShadow: "0 0 8px currentColor",
 };
 const STRUCTURAL_CHANGED_MARKER: React.CSSProperties = {

@@ -3,14 +3,20 @@ import type { GraphArtifact, GraphEdge, GraphNode, ReviewContext } from "@meridi
 import { buildGraphIndex } from "../graph/graphIndex";
 import { deriveReviewProjection } from "./reviewProjection";
 
-function node(id: string, kind: string, file: string, parentId: string | null): GraphNode {
+function node(
+  id: string,
+  kind: string,
+  file: string,
+  parentId: string | null,
+  lines: { start: number; end: number } = { start: 1, end: 20 },
+): GraphNode {
   return {
     id,
     kind,
     qualifiedName: id,
     displayName: id.split("#").pop() ?? id,
     parentId,
-    location: { file, startLine: 1, endLine: 20 },
+    location: { file, startLine: lines.start, endLine: lines.end },
   };
 }
 
@@ -77,5 +83,59 @@ describe("deriveReviewProjection", () => {
       "src/new.spec.ts",
     ]);
     expect(projection.excludedTestFileCount).toBe(0);
+  });
+
+  it("derives impacted flows from exact changed blocks, not their unchanged file siblings", () => {
+    const cartFile = "src/cartService.ts";
+    const cartModuleId = "ts:src/cartService.ts";
+    const cartClassId = `${cartModuleId}#CartService`;
+    const addItemId = `${cartClassId}.addItem`;
+    const getCartId = `${cartClassId}.getCart`;
+    const updateCartId = "ts:src/cartRoutes.ts#updateCart";
+    const placeOrderId = "ts:src/checkoutService.ts#placeOrder";
+    const artifact = {
+      schemaVersion: "1.0.0",
+      generatedAt: "2026-07-12T00:00:00.000Z",
+      generator: { name: "test", version: "0" },
+      target: { name: "fixture", root: ".", language: "typescript" },
+      nodes: [
+        node(cartModuleId, "module", cartFile, null, { start: 1, end: 40 }),
+        node(cartClassId, "class", cartFile, cartModuleId, { start: 3, end: 30 }),
+        node(addItemId, "method", cartFile, cartClassId, { start: 10, end: 15 }),
+        node(getCartId, "method", cartFile, cartClassId, { start: 20, end: 25 }),
+        node(updateCartId, "function", "src/cartRoutes.ts", null, { start: 5, end: 8 }),
+        node(placeOrderId, "function", "src/checkoutService.ts", null, { start: 5, end: 8 }),
+      ],
+      edges: [],
+      extensions: {
+        logicFlow: {
+          [addItemId]: [],
+          [getCartId]: [],
+          [updateCartId]: [{ kind: "call", label: "addItem", target: addItemId, resolution: "resolved" }],
+          [placeOrderId]: [{ kind: "call", label: "getCart", target: getCartId, resolution: "resolved" }],
+        },
+      },
+    } as unknown as GraphArtifact;
+    const context: ReviewContext = {
+      changedFiles: [{ path: cartFile, status: "modified", hunks: [{ start: 12, end: 12 }] }],
+      baseRef: "main",
+      baseSha: null,
+      headRef: "feature",
+      reviewKey: "repo|pr-sibling",
+      warnings: [],
+    };
+
+    const projection = deriveReviewProjection(context, artifact, buildGraphIndex(artifact), {
+      baseIndex: null,
+      showTests: true,
+    });
+
+    expect(projection.affected.map((entry) => entry.nodeId)).toEqual([addItemId]);
+    expect(projection.review.rows.map((row) => [row.flow.flowId, row.group])).toEqual([
+      [addItemId, "changed"],
+      [updateCartId, "impacted"],
+    ]);
+    expect(projection.review.rows.some((row) => row.flow.flowId === getCartId)).toBe(false);
+    expect(projection.review.rows.some((row) => row.flow.flowId === placeOrderId)).toBe(false);
   });
 });

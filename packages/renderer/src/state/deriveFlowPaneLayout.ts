@@ -2,7 +2,7 @@ import type { FlowPath, LogicFlows } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { FlowSelectionRef } from "../derive/flowBlocks";
 import { stepsAt } from "../derive/flowBlocks";
-import { deriveLogicGraphFromBodies, type LogicNodeSpec } from "../derive/logicGraph";
+import { deriveLogicGraphFromBodies, type LogicGraphOptions, type LogicNodeSpec } from "../derive/logicGraph";
 import { buildOwnerLookup } from "../derive/logicOwner";
 import { buildLogicElkGraph, toReactFlowLogic, type LogicReactFlowGraph } from "../layout/logicElk";
 import { runElkLayout } from "../layout/elkLayout";
@@ -13,16 +13,29 @@ export async function deriveFlowPaneLayout(
   flows: LogicFlows,
   index: GraphIndex,
   expansionOverrides: ReadonlySet<string> = new Set<string>(),
+  options: Pick<LogicGraphOptions, "changedStatusForSource"> = {},
 ): Promise<LogicReactFlowGraph> {
   if (ref.blockPath.length === 0) {
-    return deriveLogicLayout(ref.rootId, flows, index, expansionOverrides, { hideGreyed: false, nestByService: false });
+    return deriveLogicLayout(ref.rootId, flows, index, expansionOverrides, {
+      hideGreyed: false,
+      nestByService: false,
+      ...options,
+    });
   }
   const steps = stepsAt(flows, ref);
   if (!steps || steps.length === 0) {
     return { nodes: [], edges: [] };
   }
   const ownerLookup = buildOwnerLookup([...index.nodesById.values()], index.edges);
-  const spec = deriveLogicGraphFromBodies(selectionPrefix(ref), [selectedBody(steps)], flows, index, expansionOverrides, { hideGreyed: false, nestByService: false }, ownerLookup);
+  const spec = deriveLogicGraphFromBodies(
+    selectionPrefix(ref),
+    [selectedBody(steps)],
+    flows,
+    index,
+    expansionOverrides,
+    { hideGreyed: false, nestByService: false, ...options },
+    ownerLookup,
+  );
   if (spec.nodes.length === 0) {
     return { nodes: [], edges: [] };
   }

@@ -122,6 +122,7 @@ const ROOT_LAYOUT_OPTIONS: Record<string, string> = {
 const CONTAINER_LAYOUT_OPTIONS: Record<string, string> = {
   "elk.padding": "[top=42,left=16,bottom=16,right=16]",
 };
+const TARGET_CHANGED_CONTAINER_MIN_WIDTH = 260;
 
 const EXEC_COLOR = "#C8D3E0";
 const BRANCH_COLOR = "#E6B84D";
@@ -137,6 +138,11 @@ const adapter: ElkNestAdapter<LogicNodeSpec> = {
   parentId: (node) => node.parentId,
   isContainer: (node) => node.data.isContainer,
   leafSize: (node) => ({ width: node.width ?? 200, height: node.height ?? 60 }),
+  // Expanded calls render the textual target-change tag in their title action rail too. A compound
+  // ELK node otherwise sizes itself from narrow children alone and can clip that header chrome.
+  containerMinSize: (node) => !("targetChangedStatus" in node.data) || node.data.targetChangedStatus === undefined
+    ? null
+    : { width: TARGET_CHANGED_CONTAINER_MIN_WIDTH, height: 58 },
   containerOptions: CONTAINER_LAYOUT_OPTIONS,
 };
 

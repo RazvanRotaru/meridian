@@ -7,7 +7,7 @@
  * `deriveReviewData` returns null when there is no valid `review` extension — the tab gates off.
  */
 
-import { changedPathSet, computeAffectedFlows, flowFingerprint, LOGIC_FLOW_EXTENSION, readReviewContext } from "@meridian/core";
+import { computeAffectedFlows, flowFingerprint, LOGIC_FLOW_EXTENSION, readReviewContext } from "@meridian/core";
 import type { AffectedFlow, GraphArtifact, LogicFlows, ReviewContext } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { ReviewTick } from "../state/reviewTicksPref";
@@ -55,8 +55,7 @@ export function deriveReviewDataFromContext(
   index: GraphIndex,
 ): ReviewData {
   const flows = readLogicFlows(artifact);
-  const changedSet = changedPathSet(context.changedFiles);
-  const affected = computeAffectedFlows(artifact.nodes, flows, changedSet);
+  const affected = computeAffectedFlows(artifact.nodes, flows, context.changedFiles);
   const rows = affected.map((flow) => decorate(flow, flows, index));
   return { context, rows, flows };
 }

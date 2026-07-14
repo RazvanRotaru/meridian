@@ -16,10 +16,13 @@ import type { RowCtx } from "./blocksRows";
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
 export function BlocksView(props: FlowViewProps & { density?: "full" | "compact"; drillEnabled?: boolean }) {
+  // A root focus has no call row in this source-shaped projection. Avoid dimming every row when the
+  // review navigator is still doing useful work in the linked upper graph.
+  const selectionVisible = props.selected !== null && containsTarget(props.steps, props.selected);
   const ctx: RowCtx = {
     flows: props.flows,
     index: props.index,
-    selected: props.selected,
+    selected: selectionVisible ? props.selected : null,
     onSelect: props.onSelect,
     onDrill: props.onDrill,
     drillEnabled: props.drillEnabled !== false,
@@ -37,6 +40,15 @@ export function BlocksView(props: FlowViewProps & { density?: "full" | "compact"
       {handoffs.length > 0 ? <Tray handoffs={handoffs} /> : null}
     </div>
   );
+}
+
+function containsTarget(steps: FlowViewProps["steps"], targetId: string): boolean {
+  return steps.some((step) => {
+    if (step.kind === "call") return step.target === targetId;
+    if (step.kind === "loop" || step.kind === "callback") return containsTarget(step.body, targetId);
+    if (step.kind === "branch") return step.paths.some((path) => containsTarget(path.body, targetId));
+    return false;
+  });
 }
 
 function Tray({ handoffs }: { handoffs: HandoffEntry[] }) {

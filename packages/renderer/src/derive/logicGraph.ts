@@ -140,6 +140,9 @@ export type LogicNodeData = {
   /** Exact PR status at this rendered step's own source anchor. This is intentionally separate from
    * `targetId`: a call site can be new while its callee is unchanged, and vice versa. */
   changedStatus?: ChangeStatus;
+  /** Exact PR status of a call step's resolved callee. Kept separate from `changedStatus` so the
+   * renderer can say "target changed" without falsely painting an unchanged call site as edited. */
+  targetChangedStatus?: ChangeStatus;
 };
 
 export interface RequestRuntimeEvidence {
@@ -660,6 +663,9 @@ class LogicGraphBuilder {
       provenance: provenanceOf(step.target, step.resolution, this.index),
       childCount: expandable && step.target ? this.flows[step.target].length : 0,
       changedStatus: this.changedStatus(step.source),
+      targetChangedStatus: step.resolution === "resolved" && step.target !== null
+        ? this.index.changedStatus.get(step.target)
+        : undefined,
       callKind: display.method ? "method" : "function",
       signature: step.target ? this.index.nodesById.get(step.target)?.signature : undefined,
       owner: this.ownerLookup(step.target),
@@ -1001,6 +1007,7 @@ class LogicGraphBuilder {
         Boolean(data.provenance),
         data.detached === true,
         (data.nestedDetachedCount ?? 0) > 0,
+        data.targetChangedStatus !== undefined,
       );
       spec.width = width;
       spec.height = height;
@@ -1160,6 +1167,7 @@ const COMPACT_MIN_WIDTH = 96;
 const COMPACT_MAX_WIDTH = 440;
 const DETACHED_BADGE_WIDTH = 72;
 const NESTED_DETACHED_BADGE_WIDTH = 104;
+const TARGET_CHANGED_BADGE_WIDTH = 88;
 
 function sizeFor(
   label: string,
@@ -1169,6 +1177,7 @@ function sizeFor(
   hasProvenance: boolean,
   detached: boolean,
   nestedDetached: boolean,
+  targetChanged: boolean,
 ): { width: number; height: number } {
   if (type === "branch") {
     // A FIXED, glanceable decision diamond. Its content is always a single "X" (the condition is
@@ -1195,12 +1204,12 @@ function sizeFor(
     // External leaves stay one row. Resolved/unresolved leaves with provenance reserve a real
     // second row; the former 30px blanket height clipped that row behind BODY overflow.
     return {
-      width: roundedClamp(COMPACT_MIN_WIDTH, COMPACT_MAX_WIDTH, COMPACT_TITLE_CHROME + monoTextWidth(label, COMPACT_TITLE_FONT) + COMPACT_TITLE_TAIL + (detached ? DETACHED_BADGE_WIDTH : 0) + (nestedDetached ? NESTED_DETACHED_BADGE_WIDTH : 0)),
+      width: roundedClamp(COMPACT_MIN_WIDTH, COMPACT_MAX_WIDTH, COMPACT_TITLE_CHROME + monoTextWidth(label, COMPACT_TITLE_FONT) + COMPACT_TITLE_TAIL + (detached ? DETACHED_BADGE_WIDTH : 0) + (nestedDetached ? NESTED_DETACHED_BADGE_WIDTH : 0) + (targetChanged ? TARGET_CHANGED_BADGE_WIDTH : 0)),
       height: hasProvenance ? 42 : 30,
     };
   }
   // Fit glyph + name + the title tail; the signature row adds its band below so it never clips either.
-  return { width: roundedClamp(BLOCK_MIN_WIDTH, BLOCK_MAX_WIDTH, BLOCK_TITLE_CHROME + monoTextWidth(label, BLOCK_TITLE_FONT) + BLOCK_TITLE_TAIL + (detached ? DETACHED_BADGE_WIDTH : 0) + (nestedDetached ? NESTED_DETACHED_BADGE_WIDTH : 0)), height: 66 + (hasSignature ? SIGNATURE_ROW_H : 0) };
+  return { width: roundedClamp(BLOCK_MIN_WIDTH, BLOCK_MAX_WIDTH, BLOCK_TITLE_CHROME + monoTextWidth(label, BLOCK_TITLE_FONT) + BLOCK_TITLE_TAIL + (detached ? DETACHED_BADGE_WIDTH : 0) + (nestedDetached ? NESTED_DETACHED_BADGE_WIDTH : 0) + (targetChanged ? TARGET_CHANGED_BADGE_WIDTH : 0)), height: 66 + (hasSignature ? SIGNATURE_ROW_H : 0) };
 }
 
 function roundedClamp(min: number, max: number, value: number): number {

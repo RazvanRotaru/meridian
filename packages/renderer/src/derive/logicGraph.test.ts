@@ -307,7 +307,7 @@ describe("deriveLogicGraph", () => {
     expect(nodes.find((node) => node.id === "r::entry")?.data).toMatchObject({ changedStatus: "added" });
   });
 
-  it("carries source-site status on call and structural steps without inheriting callee status", () => {
+  it("carries source-site status separately from a changed callee", () => {
     const target = "ts:src/service.ts#save";
     const index = makeIndex([{ id: target, name: "save", kind: "function", parentId: null }]);
     index.changedStatus.set(target, "modified");
@@ -329,7 +329,13 @@ describe("deriveLogicGraph", () => {
       changedStatusForSource: (source) => source?.line === 10 ? "added" : source?.line === 12 ? "deleted" : undefined,
     });
 
-    expect(nodes.find((node) => node.id === "r::0")?.data).toMatchObject({ changedStatus: "added" });
+    expect(nodes.find((node) => node.id === "r::0")?.data).toMatchObject({
+      changedStatus: "added",
+      targetChangedStatus: "modified",
+    });
+    expect(nodes.find((node) => node.id === "r::1")?.data).toMatchObject({
+      targetChangedStatus: "modified",
+    });
     expect((nodes.find((node) => node.id === "r::1")?.data as LogicNodeData).changedStatus).toBeUndefined();
     expect(nodes.find((node) => node.id === "r::2")?.data).toMatchObject({ changedStatus: "deleted" });
   });

@@ -158,6 +158,36 @@ describe("computeChangeGroups — flows", () => {
     expect(result.groups.every((group) => group.flowIds.length === 0)).toBe(true);
     expect(result.crossGroupFlowIds).toEqual([]);
   });
+
+  it("assigns callers of the changed block but not callers of an unchanged sibling in its file", () => {
+    const cartModule = mod("src/cart.ts");
+    const cartClass = node("ts:src/cart.ts#Cart", "class", "src/cart.ts", cartModule.id);
+    const addItem = {
+      ...node("ts:src/cart.ts#Cart.addItem", "method", "src/cart.ts", cartClass.id),
+      location: { file: "src/cart.ts", startLine: 10, endLine: 15 },
+    };
+    const getCart = {
+      ...node("ts:src/cart.ts#Cart.getCart", "method", "src/cart.ts", cartClass.id),
+      location: { file: "src/cart.ts", startLine: 20, endLine: 25 },
+    };
+    const updateCart = node("ts:src/routes.ts#updateCart", "function", "src/routes.ts");
+    const placeOrder = node("ts:src/checkout.ts#placeOrder", "function", "src/checkout.ts");
+    const exactFlows: LogicFlows = {
+      [addItem.id]: [],
+      [getCart.id]: [],
+      [updateCart.id]: [{ kind: "call", label: "addItem", target: addItem.id, resolution: "resolved" }],
+      [placeOrder.id]: [{ kind: "call", label: "getCart", target: getCart.id, resolution: "resolved" }],
+    };
+
+    const result = computeChangeGroups(
+      [cartModule, cartClass, addItem, getCart, updateCart, placeOrder],
+      [],
+      [{ path: "src/cart.ts", status: "modified", hunks: [{ start: 12, end: 12 }] }],
+      exactFlows,
+    );
+
+    expect(result.groups[0].flowIds).toEqual([addItem.id, updateCart.id].sort());
+  });
 });
 
 describe("computeChangeGroups — determinism", () => {

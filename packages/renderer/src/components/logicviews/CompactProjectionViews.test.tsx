@@ -20,6 +20,7 @@ const INDEX = {
     [ROOT, { id: ROOT, kind: "function", displayName: "run", location: { file: "src/run.ts", startLine: 1 } }],
     [TARGET, { id: TARGET, kind: "function", location: { file: "src/work.ts", startLine: 1 } }],
   ]),
+  changedStatus: new Map([[TARGET, "modified"]]),
 } as unknown as GraphIndex;
 
 function viewProps(drillEnabled: boolean): FlowViewProps & { density: "compact"; drillEnabled: boolean } {
@@ -52,6 +53,29 @@ describe("compact alternate flow projections", () => {
     expect(markup).toContain("▶ run");
     expect(markup).toMatch(/<button(?=[^>]*type="button")(?=[^>]*aria-pressed="true")[^>]*>/);
     expect(markup).not.toContain("aria-keyshortcuts");
+  });
+
+  it.each([
+    ["Metro", MetroView],
+    ["Blocks", BlocksView],
+  ] as const)("labels modified callees in the %s projection without marking the source call changed", (_name, View) => {
+    const markup = renderToStaticMarkup(<View {...viewProps(false)} />);
+
+    expect(markup).toContain("TARGET MODIFIED");
+    expect(markup).toContain('aria-label="Call target modified in this PR"');
+    expect(markup).toContain('data-pr-target-change-status="modified"');
+    expect(markup).not.toContain('data-pr-change-marker="true"');
+  });
+
+  it.each([
+    ["Metro", MetroView],
+    ["Blocks", BlocksView],
+  ] as const)("does not dim the %s projection when the navigator focuses its changed root", (_name, View) => {
+    const markup = renderToStaticMarkup(<View {...viewProps(false)} selected={ROOT} />);
+
+    expect(markup).not.toContain('aria-pressed="true"');
+    expect(markup).not.toContain("opacity:0.55");
+    expect(markup).not.toContain("opacity:0.82");
   });
 
   it.each([
