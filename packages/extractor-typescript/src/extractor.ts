@@ -40,7 +40,10 @@ import { absoluteRoot } from "./paths";
 import { discoverWorkspaceUnits, workspaceFromMemberDirs, type Workspace } from "./workspace-units";
 import { manifestMemberDirs } from "./workspace-scope";
 
-const MAX_DETECT_DEPTH = 5;
+// Match the extractor's default source scope without capping directory depth. Once languages are
+// selected automatically, a deep workspace must not silently lose TypeScript just because its first
+// source sits below an arbitrary detection horizon.
+const DETECT_SKIP_DIRS = new Set(["node_modules", "dist", "out", "build", "coverage"]);
 
 export class TypeScriptExtractor implements LanguageExtractor {
   readonly language: LanguageTag = "typescript";
@@ -56,29 +59,31 @@ export class TypeScriptExtractor implements LanguageExtractor {
   }
 }
 
-// Mirrors the Python extractor's detection: a marker file at root, else a bounded scan for
+// Mirrors the Python extractor's detection: a marker file at root, else a pruned complete scan for
 // sources — so pointing at a subfolder of a project (no tsconfig there) still detects.
 function detectTypeScript(root: string): DetectionResult {
   if (existsSync(join(root, "tsconfig.json"))) {
     return { matches: true, confidence: 0.9, reason: "found tsconfig.json" };
   }
-  if (containsTypeScriptFile(root, MAX_DETECT_DEPTH)) {
+  if (containsTypeScriptFile(root)) {
     return { matches: true, confidence: 0.6, reason: "found a .ts/.tsx file" };
   }
   return { matches: false, confidence: 0, reason: "no tsconfig.json or .ts/.tsx file under root" };
 }
 
-function containsTypeScriptFile(directory: string, depth: number): boolean {
-  if (depth < 0) return false;
-  const entries = readEntries(directory);
-  if (entries.some((entry) => entry.isFile() && isTypeScriptSource(entry.name))) return true;
-  return entries.some(
-    (entry) =>
-      entry.isDirectory() &&
-      entry.name !== "node_modules" &&
-      !entry.name.startsWith(".") &&
-      containsTypeScriptFile(join(directory, entry.name), depth - 1),
-  );
+function containsTypeScriptFile(root: string): boolean {
+  const pending = [root];
+  while (pending.length > 0) {
+    const directory = pending.pop() as string;
+    const entries = readEntries(directory);
+    if (entries.some((entry) => entry.isFile() && isTypeScriptSource(entry.name))) return true;
+    for (const entry of entries) {
+      if (entry.isDirectory() && !DETECT_SKIP_DIRS.has(entry.name) && !entry.name.startsWith(".")) {
+        pending.push(join(directory, entry.name));
+      }
+    }
+  }
+  return false;
 }
 
 function isTypeScriptSource(name: string): boolean {

@@ -9,6 +9,7 @@ import {
   appendFileSync,
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   rmSync,
@@ -27,6 +28,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const CLI = join(HERE, "..", "dist", "bin.js");
 export const RENDERER_INDEX = join(HERE, "..", "renderer-dist", "index.html");
 export const FIXTURE = join(HERE, "..", "..", "..", "examples", "orders-service");
+// Deliberately deeper than the historical detector horizon: the PR introduces Python into an
+// otherwise TypeScript-only base, proving changed-file hints and complete discovery activate it.
+export const PYTHON_REVIEW_PATH = "src/backend/features/risk/engines/rules/deep/risk.py";
 
 export interface PrReviewFixtureFile {
   api: { filename: string; status: "added" | "modified"; additions: number; deletions: number; patch: string };
@@ -137,17 +141,23 @@ function populatePrReviewFixture(dir: string): PrReviewFixture {
   fixtureGit(["switch", "-c", "pr-head"], worktree);
   writeFileSync(join(worktree, "src/pricing/loyaltyTiers.ts"), LOYALTY_TIERS_SOURCE);
   appendFileSync(join(worktree, "src/services/orderService.ts"), ORDER_SERVICE_CHANGE);
+  mkdirSync(dirname(join(worktree, PYTHON_REVIEW_PATH)), { recursive: true });
+  writeFileSync(join(worktree, PYTHON_REVIEW_PATH), PYTHON_RISK_HEAD_SOURCE);
   fixtureGit(["add", "."], worktree);
   fixtureGit(["commit", "-m", "add PR review fixture changes"], worktree);
   fixtureGit(["push", "origin", "pr-head", "pr-head:refs/pull/7/head"], worktree);
 
-  const paths = ["src/pricing/loyaltyTiers.ts", "src/services/orderService.ts"] as const;
+  const changedFiles = [
+    { path: "src/pricing/loyaltyTiers.ts", status: "added" },
+    { path: "src/services/orderService.ts", status: "modified" },
+    { path: PYTHON_REVIEW_PATH, status: "added" },
+  ] as const;
   return {
     dir,
     bareRepo,
     worktree,
     headSha: fixtureGit(["rev-parse", "pr-head"], worktree).trim(),
-    files: paths.map((path) => fixtureFile(worktree, path, path.includes("loyaltyTiers") ? "added" : "modified")),
+    files: changedFiles.map(({ path, status }) => fixtureFile(worktree, path, status)),
   };
 }
 
@@ -255,4 +265,8 @@ const ORDER_SERVICE_CHANGE = `
 export function reviewFixtureMarker(): string {
   return "pr-head";
 }
+`;
+
+const PYTHON_RISK_HEAD_SOURCE = `def risk_label(order_count: int) -> str:
+    return "priority" if order_count >= 10 else "standard"
 `;

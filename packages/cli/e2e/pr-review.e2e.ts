@@ -12,6 +12,7 @@ import { chromium, type Browser, type Locator, type Page } from "playwright";
 import { buildNodeId } from "@meridian/core";
 import { createWebServer } from "../src/server/web-server";
 import {
+  PYTHON_REVIEW_PATH,
   RENDERER_INDEX,
   buildPrReviewFixture,
   chromiumInstalled,
@@ -40,6 +41,12 @@ const LOYALTY_TIER_FUNCTION_ID = buildNodeId({
   modulePath: "src/pricing/loyaltyTiers.ts",
   qualname: "loyaltyTierFor",
 });
+const PYTHON_RISK_FUNCTION_ID = buildNodeId({
+  lang: "py",
+  modulePath: "backend.features.risk.engines.rules.deep.risk",
+  qualname: "risk_label",
+});
+const PYTHON_RISK_SIGNATURE = "def risk_label(order_count: int) -> str:";
 const nativeFetch = globalThis.fetch.bind(globalThis);
 
 interface SubmittedReview {
@@ -72,13 +79,14 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await prCard.innerText()).toContain("pr-head");
     await prCard.click();
 
-    // 4b — the real-patch response has exactly two files and prepares the HEAD graph before opening the review.
+    // 4b — the real-patch response has exactly three files across TypeScript and Python, then
+    // prepares the mixed-language HEAD graph before opening the review.
     const detail = page.locator("aside.mrd-scroll");
     const detailFiles = detail.locator(
-      '[title="src/pricing/loyaltyTiers.ts"], [title="src/services/orderService.ts"]',
+      `[title="src/pricing/loyaltyTiers.ts"], [title="src/services/orderService.ts"], [title="${PYTHON_REVIEW_PATH}"]`,
     );
     await detailFiles.first().waitFor();
-    expect(await detailFiles.count()).toBe(2);
+    expect(await detailFiles.count()).toBe(3);
     await detail.getByRole("button", { name: "Review in graph" }).click();
     const preparing = page.getByText("Preparing PR review", { exact: true });
     const reviewFiles = page.getByText("Files changed", { exact: true });
@@ -104,6 +112,8 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await unchangedModule.waitFor();
     const changedFunction = codebaseContext.locator(`.react-flow__node[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
     await changedFunction.waitFor();
+    const contextPythonRisk = codebaseContext.locator(`.react-flow__node[data-id="${PYTHON_RISK_FUNCTION_ID}"]`);
+    await contextPythonRisk.waitFor();
     await expect.poll(
       () => changedFunction.evaluate((element) => {
         const root = element.firstElementChild;
@@ -144,7 +154,11 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await page.getByRole("region", { name: "Extracted graph" }).waitFor();
     await syncProvenance.waitFor();
 
-    // 4c — the added file is immediately in the prepared HEAD graph with reviewable units.
+    // 4c — both added languages' files are immediately in the prepared HEAD graph with reviewable
+    // units. The deeply nested Python callable opens the actual head source.
+    const extractedReviewSurface = page.getByRole("region", { name: "Extracted graph" });
+    const pythonRiskNode = extractedReviewSurface.locator(`.react-flow__node[data-id="${PYTHON_RISK_FUNCTION_ID}"]`);
+    await pythonRiskNode.waitFor();
     let addedFile = reviewFileButton(page, "src/pricing/loyaltyTiers.ts");
     let addedBlock = addedFile.locator("xpath=../..");
     const addedUnits = addedBlock.getByTitle("Mark as reviewed");
@@ -152,9 +166,19 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await addedUnits.count()).toBeGreaterThan(0);
     expect(await addedFile.getByText("added — extract head to view", { exact: true }).count()).toBe(0);
 
+    const pythonFile = reviewFileButton(page, PYTHON_REVIEW_PATH);
+    const pythonUnits = pythonFile.locator("xpath=../..").getByTitle("Mark as reviewed");
+    await pythonUnits.first().waitFor();
+    expect(await pythonUnits.count()).toBeGreaterThan(0);
+    await pythonRiskNode.getByRole("button", { name: "View source" }).click();
+    const pythonSourceDialog = page.getByRole("dialog", { name: "Source code" });
+    await pythonSourceDialog.waitFor();
+    await pythonSourceDialog.getByText(PYTHON_RISK_SIGNATURE, { exact: true }).waitFor();
+    await page.keyboard.press("Escape");
+    await pythonSourceDialog.waitFor({ state: "detached" });
+
     // 4d — existing GitHub comments live on their HEAD source line in both canvas code hosts;
     // the review-panel control hides and restores that layer without disabling either host.
-    const extractedReviewSurface = page.getByRole("region", { name: "Extracted graph" });
     const loyaltyTierNode = extractedReviewSurface.locator(`.react-flow__node[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
     await loyaltyTierNode.waitFor();
     const loyaltyCommentIndicator = extractedReviewSurface
@@ -207,7 +231,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await page.mouse.move(0, 0);
     await page.waitForTimeout(250);
     expect(await loyaltyPreview.isVisible()).toBe(true);
-    await extractedReviewSurface.locator(".react-flow__pane").click({ position: { x: 8, y: 8 }, force: true });
+    await clickBareCanvas(page, extractedReviewSurface);
     await loyaltyPreview.waitFor({ state: "detached" });
     await preferencesButton.click();
     await preferencesPane.getByRole("radio", { name: /^On hover/ }).check();
@@ -254,9 +278,9 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await loyaltySourceDialog.waitFor({ state: "detached" });
 
     // 4e — one unit tick completes the added file and advances the header fraction.
-    await page.getByText("0/2 files viewed", { exact: true }).waitFor();
+    await page.getByText("0/3 files viewed", { exact: true }).waitFor();
     await addedBlock.getByTitle("Mark as reviewed").first().click();
-    await page.getByText("1/2 files viewed", { exact: true }).waitFor();
+    await page.getByText("1/3 files viewed", { exact: true }).waitFor();
 
     // 4f — submit one GitHub review whose two drafts stay as two ordered inline comments.
     await page.getByRole("button", { name: "Submit comments" }).click();
@@ -403,6 +427,31 @@ async function waitForGraphViewportToSettle(surface: Locator): Promise<void> {
     previous = current;
     return stableSamples;
   }, { interval: 100, timeout: 5_000 }).toBeGreaterThanOrEqual(3);
+}
+
+/** Pick an actual empty point on React Flow's pane before issuing the real pointer click. A fixed
+ * corner stops being bare as the mixed-language review adds cards and changes the fitted viewport. */
+async function clickBareCanvas(target: Page, surface: Locator): Promise<void> {
+  const pane = surface.locator(".react-flow__pane");
+  const bounds = await pane.boundingBox();
+  if (bounds === null) throw new Error("review graph pane has no clickable bounds");
+  for (let row = 1; row <= 7; row += 1) {
+    for (let column = 1; column <= 7; column += 1) {
+      const point = {
+        x: bounds.x + (bounds.width * column) / 8,
+        y: bounds.y + (bounds.height * row) / 8,
+      };
+      const isBare = await pane.evaluate(
+        (element, candidate) => document.elementFromPoint(candidate.x, candidate.y) === element,
+        point,
+      );
+      if (isBare) {
+        await target.mouse.click(point.x, point.y);
+        return;
+      }
+    }
+  }
+  throw new Error("review graph has no bare canvas point for the dismissal gesture");
 }
 
 async function generateSession(baseUrl: string): Promise<{ id: string }> {

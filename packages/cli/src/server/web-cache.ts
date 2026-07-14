@@ -75,7 +75,6 @@ export async function cachedRemoteGraph(inputs: {
   const { artifact, warnings } = await analyzeRepository({
     absoluteRoot: sourceDir,
     cwd: sourceDir,
-    language: inputs.request.lang,
     targetName: target,
     vcs: { repository: checkout.remoteUrl, commit: checkout.commit, branch: checkout.branch },
   });
@@ -99,7 +98,6 @@ export function webAnalysisKey(request: GenerateRequest): string {
     schemaVersion: SCHEMA_VERSION,
     generatorVersion: generatorVersion(),
     subdir: request.subdir ?? "",
-    language: request.lang ?? "auto",
     policy: REPOSITORY_ANALYSIS_POLICY,
   };
   return createHash("sha256").update(JSON.stringify(settings)).digest("hex").slice(0, 24);

@@ -20,8 +20,21 @@ import { buildEdges, type EdgeResult } from "./edges";
 import { buildStats } from "./stats";
 import type { AnalyzeOutput } from "./types";
 
-const MAX_DETECT_DEPTH = 5;
-const DETECT_SKIP_DIRS = new Set(["__pycache__", "node_modules", "site-packages", "venv", "worktrees", "dist", "build", "out"]);
+// Detection must cover the same source-shaped tree as extraction. A depth cap made the language
+// disappear whenever its first file lived deep in a monorepo, which is untenable now that language
+// selection is automatic. Generated/dependency trees stay pruned, so the walk remains bounded by
+// the repository's own source.
+const DETECT_SKIP_DIRS = new Set([
+  "__pycache__",
+  "node_modules",
+  "site-packages",
+  "venv",
+  "worktrees",
+  "coverage",
+  "dist",
+  "build",
+  "out",
+]);
 
 export class PythonExtractor implements LanguageExtractor {
   readonly language: LanguageTag = "python";
@@ -45,23 +58,25 @@ function detectPython(root: string): DetectionResult {
   if (existsSync(join(root, "pyproject.toml")) || existsSync(join(root, "setup.py"))) {
     return { matches: true, confidence: 0.9, reason: "found pyproject.toml/setup.py" };
   }
-  if (containsPythonFile(root, MAX_DETECT_DEPTH)) {
+  if (containsPythonFile(root)) {
     return { matches: true, confidence: 0.6, reason: "found a .py file" };
   }
   return { matches: false, confidence: 0, reason: "no .py file or pyproject.toml/setup.py" };
 }
 
-function containsPythonFile(directory: string, depth: number): boolean {
-  if (depth < 0) return false;
-  const entries = readEntries(directory);
-  if (entries.some((entry) => entry.isFile() && entry.name.endsWith(".py"))) return true;
-  return entries.some(
-    (entry) =>
-      entry.isDirectory() &&
-      !DETECT_SKIP_DIRS.has(entry.name) &&
-      !entry.name.startsWith(".") &&
-      containsPythonFile(join(directory, entry.name), depth - 1),
-  );
+function containsPythonFile(root: string): boolean {
+  const pending = [root];
+  while (pending.length > 0) {
+    const directory = pending.pop() as string;
+    const entries = readEntries(directory);
+    if (entries.some((entry) => entry.isFile() && entry.name.endsWith(".py"))) return true;
+    for (const entry of entries) {
+      if (entry.isDirectory() && !DETECT_SKIP_DIRS.has(entry.name) && !entry.name.startsWith(".")) {
+        pending.push(join(directory, entry.name));
+      }
+    }
+  }
+  return false;
 }
 
 function readEntries(directory: string): Dirent[] {

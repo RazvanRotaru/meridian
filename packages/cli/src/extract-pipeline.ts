@@ -1,18 +1,19 @@
 /**
  * The shared "source directory -> validated GraphArtifact" pipeline.
  *
- * `generate` and `web` both need select-extractor -> extract -> stamp header -> validate; only
+ * `generate` and `web` both need detect-extractors -> extract -> stamp header -> validate; only
  * their I/O differs (generate writes a file, web keeps the artifact in memory). Centralizing it
  * here means one place enforces the fail-closed rule: a validation error throws before any
  * caller can persist or serve a half-formed graph.
  */
 
-import { ExtractorRegistry, collectTestIds, materializeBoundaryNodes, materializeChannels, tagChangedNodes, tagTestNodes } from "@meridian/core";
+import { ExtractorRegistry, collectTestIds, materializeBoundaryNodes, materializeChannels, mergeExtractionResults, tagChangedNodes, tagTestNodes } from "@meridian/core";
 import type {
   ChangedLineKinds,
   ChangedLineStats,
   ChangedRanges,
   ExtractOptions,
+  ExtractionDiagnostic,
   ExtractionResult,
   GraphArtifact,
   LanguageExtractor,
@@ -23,12 +24,13 @@ import { CliError, EXIT } from "./errors";
 import { changedSinceMetadata, type GitDiffExecutor } from "./git-diff";
 import { rootRelativeToCwd } from "./paths";
 import { buildArtifact } from "./artifact-header";
-import { validateOrThrow } from "./validation";
+import { mergeWarnings, validateOrThrow } from "./validation";
+
+const MAX_REPORTED_DIAGNOSTICS = 20;
 
 export interface PipelineRequest {
   absoluteRoot: string;
   cwd: string;
-  language?: string;
   project?: string;
   include?: string[];
   exclude?: string[];
@@ -54,16 +56,18 @@ export interface PipelineRequest {
 }
 
 export interface PipelineResult {
-  extractor: LanguageExtractor;
+  extractors: LanguageExtractor[];
   extraction: ExtractionResult;
   artifact: GraphArtifact;
   warnings: string[];
 }
 
 export async function extractToArtifact(request: PipelineRequest): Promise<PipelineResult> {
-  const extractor = await selectExtractor(request.absoluteRoot, request.language);
   const changedSince = await changedRangesFor(request);
-  const raw = await runExtract(extractor, request, changedSince ? Object.keys(changedSince.ranges) : undefined);
+  const changedFiles = changedSince ? Object.keys(changedSince.ranges) : [];
+  const selectedExtractors = await selectExtractors(request.absoluteRoot, changedFiles);
+  const run = await runExtractors(selectedExtractors, request, changedFiles.length > 0 ? changedFiles : undefined);
+  const raw = run.extraction;
   const classified = channelize(
     classifyChanges(classifyTests(raw, request.excludeTests ?? false), changedSince?.ranges ?? null),
   );
@@ -82,21 +86,32 @@ export async function extractToArtifact(request: PipelineRequest): Promise<Pipel
         ? { baseRef: request.changedSince, files: changedSince.ranges, stats: changedSince.stats, kinds: changedSince.kinds }
         : undefined,
   });
-  const { warnings } = validateOrThrow(artifact, "generated artifact");
-  return { extractor, extraction, artifact, warnings };
+  const { warnings: validationWarnings } = validateOrThrow(artifact, "generated artifact");
+  return {
+    extractors: run.extractors,
+    extraction,
+    artifact,
+    warnings: mergeWarnings(run.diagnosticWarnings, validationWarnings),
+  };
 }
 
-export async function selectExtractor(absoluteRoot: string, language: string | undefined): Promise<LanguageExtractor> {
+export async function selectExtractors(absoluteRoot: string, hintedFiles: readonly string[] = []): Promise<LanguageExtractor[]> {
   const registry = new ExtractorRegistry()
     .register(new TypeScriptExtractor())
     .register(new PythonExtractor());
-  const extractor = await registry.select(absoluteRoot, language);
-  if (!extractor) {
-    const available = registry.all().map((entry) => entry.language).join(", ");
-    const reason = language ? `no extractor for language '${language}'` : `could not detect a language under ${absoluteRoot}`;
-    throw new CliError(EXIT.extractor, `${reason} (available: ${available})`);
+  const detected = await registry.matching(absoluteRoot);
+  const selectedLanguages = new Set(detected.map((extractor) => extractor.language));
+  for (const extractor of registry.all()) {
+    if (hintedFiles.some((file) => extractor.extensions.some((extension) => hasExtension(file, extension)))) {
+      selectedLanguages.add(extractor.language);
+    }
   }
-  return extractor;
+  const extractors = registry.all().filter((extractor) => selectedLanguages.has(extractor.language));
+  if (extractors.length === 0) {
+    const available = registry.all().map((entry) => entry.language).join(", ");
+    throw new CliError(EXIT.extractor, `could not detect a language under ${absoluteRoot} (available: ${available})`);
+  }
+  return extractors;
 }
 
 /**
@@ -162,27 +177,81 @@ function classifyChanges(extraction: ExtractionResult, ranges: ChangedRanges | n
   return { ...extraction, nodes: tagChangedNodes(extraction.nodes, ranges) };
 }
 
-async function runExtract(
-  extractor: LanguageExtractor,
+async function runExtractors(
+  extractors: readonly LanguageExtractor[],
   request: PipelineRequest,
   changedFiles: string[] | undefined,
-): Promise<ExtractionResult> {
-  try {
-    return await extractor.extract({
-      root: request.absoluteRoot,
-      project: request.project,
-      include: request.include,
-      // An explicit include is an intentional hard boundary. Otherwise changed-since/PR files must
-      // remain reviewable even when a solution tsconfig forgot to reference their project.
-      supplementalFiles: request.include ? undefined : changedFiles,
-      exclude: request.exclude,
-      depth: request.depth,
-      includeExternal: request.includeExternal,
-      includeUnresolved: request.includeUnresolved,
-      valueRefs: request.valueRefs,
-    });
-  } catch (cause) {
-    const reason = cause instanceof Error ? cause.message : String(cause);
-    throw new CliError(EXIT.extractor, `extraction failed: ${reason}`);
+): Promise<{ extractors: LanguageExtractor[]; extraction: ExtractionResult; diagnosticWarnings: string[] }> {
+  const completed: Array<{ extractor: LanguageExtractor; result: ExtractionResult }> = [];
+  const diagnosticWarnings: string[] = [];
+  for (const extractor of extractors) {
+    let result: ExtractionResult;
+    try {
+      result = await extractor.extract({
+        root: request.absoluteRoot,
+        project: request.project,
+        include: request.include,
+        // An explicit include is an intentional hard boundary. Otherwise changed-since/PR files must
+        // remain reviewable even when a solution tsconfig forgot to reference their project.
+        supplementalFiles: request.include ? undefined : changedFiles,
+        exclude: request.exclude,
+        depth: request.depth,
+        includeExternal: request.includeExternal,
+        includeUnresolved: request.includeUnresolved,
+        valueRefs: request.valueRefs,
+      });
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      throw new CliError(EXIT.extractor, `${extractor.displayName} extraction failed: ${reason}`);
+    }
+    diagnosticWarnings.push(...diagnosticWarningsOrThrow(extractor, result.diagnostics));
+    completed.push({ extractor, result });
   }
+  const nonempty = completed.filter(({ result }) => result.stats.files > 0);
+  if (nonempty.length === 0) {
+    throw new CliError(EXIT.extractor, `detected extractors found no source files under ${request.absoluteRoot}`);
+  }
+  return {
+    extractors: nonempty.map(({ extractor }) => extractor),
+    extraction: mergeExtractionResults(nonempty.map(({ result }) => result)),
+    diagnosticWarnings,
+  };
+}
+
+function diagnosticWarningsOrThrow(
+  extractor: LanguageExtractor,
+  diagnostics: readonly ExtractionDiagnostic[],
+): string[] {
+  const errors = diagnostics.filter((diagnostic) => diagnostic.severity === "error");
+  if (errors.length > 0) {
+    const details = errors
+      .slice(0, MAX_REPORTED_DIAGNOSTICS)
+      .map((diagnostic) => `  - ${formatDiagnostic(extractor, diagnostic)}`);
+    if (errors.length > MAX_REPORTED_DIAGNOSTICS) {
+      details.push(`  … and ${errors.length - MAX_REPORTED_DIAGNOSTICS} more`);
+    }
+    throw new CliError(
+      EXIT.extractor,
+      `${extractor.displayName} extraction reported ${errors.length} error diagnostic${errors.length === 1 ? "" : "s"}`,
+      details,
+    );
+  }
+  return diagnostics
+    .filter((diagnostic) => diagnostic.severity === "warn")
+    .map((diagnostic) => formatDiagnostic(extractor, diagnostic));
+}
+
+function formatDiagnostic(extractor: LanguageExtractor, diagnostic: ExtractionDiagnostic): string {
+  const message = oneLine(diagnostic.message);
+  const nodeId = diagnostic.nodeId ? oneLine(diagnostic.nodeId) : "";
+  const location = nodeId && !message.includes(nodeId) ? ` [${nodeId}]` : "";
+  return `${extractor.displayName}: ${message}${location}`;
+}
+
+function oneLine(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function hasExtension(file: string, extension: string): boolean {
+  return file.toLowerCase().endsWith(extension.toLowerCase());
 }

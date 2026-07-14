@@ -1,18 +1,14 @@
 /**
  * Aggregation + the external/unresolved policy. Resolved edges always materialize; external
- * and unresolved ones are dropped (and counted) by default, or materialized as `ext:` /
- * sentinel targets when the caller opts in. Edges fold by (kind, source, target) so weight
- * stays equal to the call-site count.
+ * and unresolved ones are dropped (and counted) by default, or materialized as ecosystem-qualified
+ * `ext:npm/` / `unresolved:npm/` targets when the caller opts in. Edges fold by (kind, source,
+ * target) so weight stays equal to the call-site count.
  */
 
-import { buildNodeId } from "@meridian/core";
 import type { CallSite, EdgeResolution, ExtractOptions, GraphEdge } from "@meridian/core";
 import { aggregationKey, edgeId } from "./edge-id";
 import type { RawEdge } from "./edge-pass";
-
-// The reserved `unresolved:` pseudo-lang (ADR 0001) so consumers can tell a boundary target
-// apart from a real in-graph `ts:` node by its prefix.
-const UNRESOLVED_TARGET = buildNodeId({ lang: "unresolved", modulePath: "?" });
+import { targetIdForResolution } from "./resolution-target";
 
 interface AggregatedEdge {
   source: string;
@@ -48,20 +44,12 @@ export function buildEdges(rawEdges: RawEdge[], options: ExtractOptions): EdgeBu
 function targetFor(raw: RawEdge, options: ExtractOptions): string | null {
   switch (raw.resolution.resolution) {
     case "resolved":
-      return raw.resolution.resolvedTarget;
+      return targetIdForResolution(raw.resolution);
     case "external":
-      return options.includeExternal ? externalTarget(raw) : null;
+      return options.includeExternal ? targetIdForResolution(raw.resolution) : null;
     default:
-      return options.includeUnresolved ? UNRESOLVED_TARGET : null;
+      return options.includeUnresolved ? targetIdForResolution(raw.resolution) : null;
   }
-}
-
-function externalTarget(raw: RawEdge): string {
-  return buildNodeId({
-    lang: "ext",
-    modulePath: raw.resolution.externalModulePath ?? "unknown",
-    qualname: raw.resolution.externalQualname ?? undefined,
-  });
 }
 
 function accumulate(aggregator: Map<string, AggregatedEdge>, raw: RawEdge, target: string): void {

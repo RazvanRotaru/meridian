@@ -12,10 +12,11 @@ import type { ModuleGraph } from "./moduleGraph";
 const MODULE_KIND = "module";
 const PACKAGE_KIND = "package";
 
-/** The top-level nodes of the drawn level: npm packages at the overview, else the focus's children. */
+/** The top-level nodes of the drawn level: source-ownership roots at the overview, else the
+ * focus's children. */
 export function frontierRoots(index: GraphIndex, effectiveFocus: string | null, graph: ModuleGraph): string[] {
   if (effectiveFocus === null) {
-    return overviewPackages(index, graph);
+    return overviewRoots(index, graph);
   }
   if (index.nodesById.get(effectiveFocus)?.kind === MODULE_KIND) {
     return codeChildren(index, effectiveFocus);
@@ -23,31 +24,48 @@ export function frontierRoots(index: GraphIndex, effectiveFocus: string | null, 
   return containmentChildren(index, effectiveFocus);
 }
 
-/** The npm packages that own ≥1 source file — the whole-repo overview's frontier (deduped, sorted).
- * A single-project artifact carries no npm-package tags at all; falling back to the files' topmost
- * package (directory) roots keeps the DEFAULT lens from booting into an empty canvas. */
-function overviewPackages(index: GraphIndex, graph: ModuleGraph): string[] {
-  const packages = new Set<string>();
-  const rootDirs = new Set<string>();
+/** A frontier that assigns every source file to an overview root. Tagged npm packages remain
+ * first-class roots (including intentionally nested package boundaries);
+ * an unowned file falls back to the shallowest structural package that does not also contain an npm
+ * root, or to the file itself. This keeps mixed-language and linked-system graphs complete without
+ * pairing a structural fallback ancestor with its npm descendant and double-counting their source. */
+function overviewRoots(index: GraphIndex, graph: ModuleGraph): string[] {
+  const npmPackages = new Set<string>();
+  const unownedFiles: string[] = [];
   for (const fileId of graph.fileIds) {
     const pkg = npmPackageIdOf(fileId, index.nodesById);
     if (pkg !== null) {
-      packages.add(pkg);
+      npmPackages.add(pkg);
     } else {
-      const root = topmostPackageOf(fileId, index);
-      if (root !== null) {
-        rootDirs.add(root);
+      unownedFiles.push(fileId);
+    }
+  }
+
+  // Any structural package above a selected npm root cannot also be a frontier root: their
+  // containment subtrees would overlap. Precomputing this set keeps selection linear in path depth.
+  const blockedPackages = new Set<string>();
+  for (const packageId of npmPackages) {
+    for (const ancestor of index.ancestorsOf(packageId)) {
+      if (ancestor.kind === PACKAGE_KIND) {
+        blockedPackages.add(ancestor.id);
       }
     }
   }
-  const frontier = packages.size > 0 ? packages : rootDirs;
-  return [...frontier].sort();
+
+  const roots = new Set<string>(npmPackages);
+  for (const fileId of unownedFiles) {
+    roots.add(unownedRootOf(fileId, index, blockedPackages));
+  }
+  return [...roots].sort();
 }
 
-/** The file's topmost `package`-kind ancestor (the containment root directory), or null if none. */
-function topmostPackageOf(fileId: string, index: GraphIndex): string | null {
-  const root = index.ancestorsOf(fileId)[0];
-  return root && root.kind === PACKAGE_KIND ? root.id : null;
+/** The shallowest usable structural package, skipping linked `system` wrappers and any package whose
+ * subtree also owns an npm frontier; a truly package-less module is its own overview card. */
+function unownedRootOf(fileId: string, index: GraphIndex, blockedPackages: ReadonlySet<string>): string {
+  const root = index
+    .ancestorsOf(fileId)
+    .find((ancestor) => ancestor.kind === PACKAGE_KIND && !blockedPackages.has(ancestor.id));
+  return root?.id ?? fileId;
 }
 
 /** A node's package/file children (directories + source files), skipping members and other kinds. */

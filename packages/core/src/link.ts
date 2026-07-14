@@ -3,8 +3,9 @@
  *
  * Each source becomes a top-level `system` container (`sys:<name>`); its node ids are namespaced by
  * prefixing the module path with the system name so two repos' `src/index.ts` never collide.
- * Boundary ids (`ext:`/`unresolved:`) and channel ids (`ipc:`) are deliberately NOT namespaced —
- * they are the shared space systems meet in; channels are the join key.
+ * Boundary ids (`ext:`/`unresolved:`) and channel ids (`ipc:`) are deliberately NOT namespaced by
+ * system. Boundary ids carry an ecosystem segment, so only dependencies in the same ecosystem
+ * share identity; channels are the cross-system join key.
  *
  * Channels are rebuilt from scratch over the merged port set (per-artifact channel nodes/edges are
  * stripped first), with one extra join rule: a concrete HTTP exit path is unified onto a matching
@@ -92,8 +93,9 @@ export function linkArtifacts(sources: LinkSource[]): LinkedGraph {
 /**
  * Merge one source's logic flows into the accumulator, namespacing every node id so the flows still
  * join on the linked graph's (now-prefixed) ids: the record KEYS (the callables) and every `call`
- * step's `target` are remapped; control-structure bodies recurse. Shared-space targets
- * (`ext:`/`unresolved:`/`ipc:`) pass through `remap` untouched, and `null` targets stay null.
+ * step's `target` are remapped; control-structure bodies recurse. System-shared targets
+ * (`ext:`/`unresolved:`/`ipc:`) pass through `remap` untouched (boundary targets are already
+ * ecosystem-qualified), and `null` targets stay null.
  */
 function mergeLogicFlow(into: LogicFlows, flows: LogicFlows | undefined, remap: (id: NodeId) => NodeId): void {
   if (!flows) {
@@ -147,7 +149,7 @@ function systemId(name: string): NodeId {
   return `sys:${name.replace(/\s+/g, "-").replace(/#/g, "%23")}`;
 }
 
-/** Shared-space ids (`ext:`/`unresolved:`/`ipc:`) keep their identity; everything else namespaces. */
+/** System-shared ids keep their identity; boundary ids already encode their ecosystem. */
 function namespacedId(id: NodeId, name: string): NodeId {
   const parts = parseNodeId(id);
   if (parts.lang === "ext" || parts.lang === "unresolved" || parts.lang === "ipc") {

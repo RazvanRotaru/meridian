@@ -12,12 +12,14 @@ import type { GraphNode } from "@meridian/core";
 import { resolveEntryModules } from "./entry-points";
 
 /** Minimal but correctly-shaped module node; `file` is relative to the extraction root. */
-function moduleNode(file: string): GraphNode {
+function moduleNode(file: string, language: "typescript" | "python" = "typescript"): GraphNode {
+  const prefix = language === "python" ? "py" : "ts";
   return {
-    id: `ts:${file}`,
+    id: `${prefix}:${file}`,
     kind: "module",
     qualifiedName: file,
     displayName: file,
+    language,
     location: { file, startLine: 1, endLine: 1 },
   };
 }
@@ -51,6 +53,13 @@ describe("resolveEntryModules", () => {
     const nodes = [moduleNode("index.tsx"), moduleNode("src/index.tsx")];
 
     expect(resolveEntryModules(root, nodes)).toEqual(["ts:src/index.tsx"]);
+  });
+
+  it("never resolves a package.json entry to a same-basename Python module", () => {
+    writePackageJson(".", { main: "dist/index.js" });
+    const nodes = [moduleNode("src/index.py", "python"), moduleNode("lib/index.ts")];
+
+    expect(resolveEntryModules(root, nodes)).toEqual(["ts:lib/index.ts"]);
   });
 
   it("falls back to module then exports['.'] when main is absent", () => {

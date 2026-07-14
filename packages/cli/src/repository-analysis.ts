@@ -13,7 +13,7 @@ import type { PipelineResult } from "./extract-pipeline";
 import type { GitDiffExecutor } from "./git-diff";
 
 /** Bump when the fixed product profile or its interpretation changes, invalidating graph caches. */
-export const REPOSITORY_ANALYSIS_VERSION = 2;
+export const REPOSITORY_ANALYSIS_VERSION = 4;
 
 export const REPOSITORY_ANALYSIS_POLICY = Object.freeze({
   scope: "workspace",
@@ -28,7 +28,6 @@ export const REPOSITORY_ANALYSIS_POLICY = Object.freeze({
 export interface RepositoryAnalysisRequest {
   absoluteRoot: string;
   cwd: string;
-  language?: string;
   /** Display name for the artifact; remote callers use the repository label, not a checkout dir. */
   targetName?: string;
   /** Source revision supplied by a caller that resolved the Git checkout. */
@@ -44,7 +43,6 @@ export function analyzeRepository(request: RepositoryAnalysisRequest): Promise<P
   return extractToArtifact({
     absoluteRoot: request.absoluteRoot,
     cwd: request.cwd,
-    language: request.language,
     depth: REPOSITORY_ANALYSIS_POLICY.depth,
     includeExternal: REPOSITORY_ANALYSIS_POLICY.includeExternal,
     includeUnresolved: REPOSITORY_ANALYSIS_POLICY.includeUnresolved,

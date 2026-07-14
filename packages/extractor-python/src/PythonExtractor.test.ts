@@ -160,6 +160,21 @@ describe("PythonExtractor over orders-service-py", () => {
     }
   });
 
+  it("keeps syntax diagnostics repository-relative", async () => {
+    const root = await mkdtemp(join(tmpdir(), "meridian-pysyntax-"));
+    try {
+      await writeFile(join(root, "broken.py"), "def broken(:\n    pass\n");
+      const result = await createPythonExtractor().extract({ root });
+      const warning = result.diagnostics.find((diagnostic) => diagnostic.message.includes("failed to parse broken.py"));
+
+      expect(warning?.severity).toBe("warn");
+      expect(warning?.message).toContain("broken.py");
+      expect(warning?.message).not.toContain(root);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("resolves nested-class fields and locally constructed instances", async () => {
     const root = await mkdtemp(join(tmpdir(), "meridian-pynested-class-"));
     try {

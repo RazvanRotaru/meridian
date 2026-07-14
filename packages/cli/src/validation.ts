@@ -24,6 +24,11 @@ export function validateOrThrow(candidate: unknown, label: string): Validated {
   return { artifact: result.artifact, warnings: result.warnings.map((issue) => issue.message) };
 }
 
+/** Preserve first-seen warning order while collapsing the same diagnostic across validation passes. */
+export function mergeWarnings(...groups: ReadonlyArray<readonly string[]>): string[] {
+  return [...new Set(groups.flat())];
+}
+
 function summarizeIssues(issues: Array<{ message: string }>): string[] {
   const shown = issues.slice(0, MAX_REPORTED_ISSUES).map((issue) => `  - ${issue.message}`);
   if (issues.length > MAX_REPORTED_ISSUES) {

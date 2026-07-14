@@ -5,7 +5,9 @@
  */
 
 import { useMemo } from "react";
-import type { GraphNode } from "@meridian/core";
+import type { GraphIndex } from "../../graph/graphIndex";
+import { frontierRoots } from "../../derive/moduleFrontier";
+import { buildModuleGraph } from "../../derive/moduleGraph";
 import { useBlueprint } from "../../state/StoreContext";
 import { TOKENS } from "./panelKit";
 
@@ -14,7 +16,7 @@ const PROJECT_DOT = "#5B9BE3";
 export function ControlPanelHeader() {
   const targetName = useBlueprint((state) => state.artifact.target.name);
   const index = useBlueprint((state) => state.index);
-  const counts = useMemo(() => countKinds(index.roots, index.nodesById), [index]);
+  const counts = useMemo(() => countKinds(index), [index]);
   return (
     <div style={WRAP_STYLE}>
       <div style={PROJECT_CHIP_STYLE} title={targetName}>
@@ -31,21 +33,15 @@ interface Counts {
   files: number;
 }
 
-// "Packages" counts the declared npm packages (the `npm-package` tag — matches the cards the Map
-// overview draws for a monorepo). Extractors that don't tag them (a plain single service) fall back
-// to root package nodes, so a lone service still reads "1 package". "Files" counts every module.
-function countKinds(roots: readonly GraphNode[], nodesById: ReadonlyMap<string, GraphNode>): Counts {
-  let files = 0;
-  let npmPackages = 0;
-  for (const node of nodesById.values()) {
-    if (node.kind === "module") {
-      files += 1;
-    } else if (node.kind === "package" && node.tags?.includes("npm-package")) {
-      npmPackages += 1;
-    }
-  }
-  const packages = npmPackages > 0 ? npmPackages : roots.filter((node) => node.kind === "package").length;
-  return { packages, files };
+// Use the Map's actual overview frontier so tagged npm ownership roots and structural roots from
+// other languages are counted together. Package-less module fallback cards remain files, not
+// pretend packages.
+export function countKinds(index: GraphIndex): Counts {
+  const graph = buildModuleGraph(index);
+  const packages = frontierRoots(index, null, graph)
+    .filter((id) => index.nodesById.get(id)?.kind === "package")
+    .length;
+  return { packages, files: graph.fileIds.size };
 }
 
 function subtitle(counts: Counts): string {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { EXTERNAL_CONTAINER_ID, externalTargetId, materializeBoundaryNodes } from "./boundary";
 import { linkArtifacts, type LinkSource } from "./link";
 import type { Port } from "./ports";
 import type { GraphEdge, GraphNode } from "./types";
@@ -9,6 +10,22 @@ function node(id: string, kind: string, parentId: string | null = null): GraphNo
 
 function port(nodeId: string, direction: "in" | "out", protocol: string, channel: string | null): Port {
   return { nodeId, direction, protocol, channel, label: channel ?? "(dynamic)", callSite: { file: "src/index.ts", line: 1 } };
+}
+
+function boundarySource(name: string, sourceId: string, target: string): LinkSource {
+  const edge: GraphEdge = {
+    id: `calls@${sourceId}|${target}`,
+    source: sourceId,
+    target,
+    kind: "calls",
+    resolution: "external",
+  };
+  return {
+    name,
+    nodes: materializeBoundaryNodes([node(sourceId, "function")], [edge]),
+    edges: [edge],
+    ports: [],
+  };
 }
 
 // Two repos with COLLIDING module paths: web fetches what api serves.
@@ -85,7 +102,7 @@ describe("linkArtifacts", () => {
       logicFlow: {
         "ts:src/index.ts#load": [
           { kind: "call", label: "helper()", target: "ts:src/index.ts#helper", resolution: "resolved" },
-          { kind: "call", label: "fetch()", target: "ext:node-fetch", resolution: "external" },
+          { kind: "call", label: "fetch()", target: "ext:npm/node-fetch", resolution: "external" },
           { kind: "loop", label: "for", body: [{ kind: "call", label: "log()", target: null, resolution: "unresolved" }] },
           { kind: "branch", label: "if bad", paths: [{ label: "then", body: [{ kind: "exit", variant: "throw", label: "boom" }] }] },
           { kind: "exit", variant: "return", label: null },
@@ -102,13 +119,34 @@ describe("linkArtifacts", () => {
     // ...as is a resolved in-repo call target...
     expect(steps[0]).toMatchObject({ target: "ts:checkout-web/src/index.ts#helper" });
     // ...while a shared-space (ext:) target and a null target pass through untouched.
-    expect(steps[1]).toMatchObject({ target: "ext:node-fetch" });
+    expect(steps[1]).toMatchObject({ target: "ext:npm/node-fetch" });
     expect((steps[2] as { body: Array<{ target: string | null }> }).body[0].target).toBeNull();
     // Exit steps carry no target and no body — they must survive the remap unchanged, at any depth.
     expect((steps[3] as { paths: Array<{ body: unknown[] }> }).paths[0].body[0]).toEqual({ kind: "exit", variant: "throw", label: "boom" });
     expect(steps[4]).toEqual({ kind: "exit", variant: "return", label: null });
     // Declared entry modules are namespaced too.
     expect(relinked.entryModules).toEqual(["ts:checkout-web/src/index.ts"]);
+  });
+
+  it("shares boundary nodes within one ecosystem without conflating equal cross-ecosystem names", () => {
+    const npmTarget = externalTargetId("npm", "shared", "Client");
+    const pythonTarget = externalTargetId("python", "shared", "Client");
+    const relinked = linkArtifacts([
+      boundarySource("web-a", "ts:a.ts#run", npmTarget),
+      boundarySource("web-b", "ts:b.ts#run", npmTarget),
+      boundarySource("worker", "py:worker#run", pythonTarget),
+    ]);
+
+    const boundaryLeaves = relinked.nodes
+      .filter((entry) => entry.parentId === EXTERNAL_CONTAINER_ID)
+      .map((entry) => entry.id)
+      .sort();
+    expect(boundaryLeaves).toEqual([npmTarget, pythonTarget].sort());
+    expect(relinked.edges.map((edge) => edge.target).sort()).toEqual([
+      npmTarget,
+      npmTarget,
+      pythonTarget,
+    ].sort());
   });
 
   it("strips per-artifact channels and rebuilds them once over the merged ports", () => {

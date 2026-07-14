@@ -201,10 +201,10 @@
     <div class="sec-h">
       <span class="sec-n">01</span>
       <h2 class="sec-t">The pipeline</h2>
-      <p class="sec-c">source &#8594; extractor &#8594; artifact &#8594; renderer</p>
+      <p class="sec-c">source &#8594; detect all &#8594; extract + merge &#8594; artifact &#8594; renderer</p>
     </div>
     <div class="diagram">
-      <svg viewBox="0 0 1160 190" role="img" aria-label="Left-to-right pipeline: source code, LanguageExtractor, graph artifact JSON, renderer, interactive blueprint.">
+      <svg viewBox="0 0 1160 190" role="img" aria-label="Left-to-right pipeline: source code, detect every matching language extractor and merge their output, graph artifact JSON, renderer, interactive blueprint.">
         <!-- arrows first (behind boxes) -->
         <line x1="212" y1="86" x2="243" y2="86" class="e-call" marker-end="url(#ah-grey)"/>
         <line x1="447" y1="86" x2="478" y2="86" class="e-call" marker-end="url(#ah-grey)"/>
@@ -215,10 +215,10 @@
         <g transform="translate(10,40)"><rect class="n" width="202" height="92" rx="11"/>
           <g transform="translate(16,30)" stroke="var(--mod)" stroke-width="1.7" fill="none"><path d="M2 0 h16 l6 6 v20 h-22 z"/><path d="M4 12 l-3 3 l3 3" /><path d="M14 12 l3 3 l-3 3"/></g>
           <text class="t" x="56" y="42">source code</text><text class="sub" x="56" y="62">a repo · a folder</text></g>
-        <!-- 2 extractor -->
+        <!-- 2 extractors + merge -->
         <g transform="translate(245,40)"><rect class="n" width="202" height="92" rx="11"/>
           <g transform="translate(15,32)" stroke="var(--fn)" stroke-width="1.7" fill="none"><path d="M0 0 h26 l-9 11 v11 l-8 4 v-15 z"/></g>
-          <text class="t" x="52" y="40" font-size="12.5">LanguageExtractor</text><text class="sub" x="52" y="60" font-size="10.5">ts-morph · Python ast</text></g>
+          <text class="t" x="52" y="40" font-size="12.5">extract all + merge</text><text class="sub" x="52" y="60" font-size="10.5">ts-morph · Python ast · …</text></g>
         <!-- 3 artifact -->
         <g transform="translate(480,40)"><rect class="n" width="202" height="92" rx="11"/>
           <text class="mono" x="14" y="53" font-size="22" fill="var(--cls)">{ }</text>
@@ -333,7 +333,7 @@
         <!-- external box -->
         <rect class="n" x="900" y="166" width="238" height="66" rx="10" stroke-dasharray="4 4"/>
         <rect x="910" y="178" width="4" height="20" rx="2" fill="var(--ext)"/><text class="t-sm" x="924" y="190" font-size="11.5" fill="#c3cbd6">stripe.charge</text><text class="k" x="1126" y="189" text-anchor="end" fill="var(--ext)">EXTERNAL</text>
-        <text class="lbl-mono" x="924" y="212" font-size="9.5">ext:stripe#charge</text>
+        <text class="lbl-mono" x="924" y="212" font-size="9.5">ext:npm/stripe#charge</text>
 
         <!-- edges -->
         <path class="e-call" d="M798,168 C850,164 862,104 896,100" marker-end="url(#ah-grey)"/>
@@ -461,7 +461,7 @@
         <g transform="translate(122,236)"><rect class="n" width="212" height="66" rx="10"/><rect x="8" y="11" width="4" height="44" rx="2" fill="var(--mod)"/>
           <text class="t-sm mono" x="24" y="30" font-size="12">extractor-python</text><text class="sub" x="24" y="49" font-size="10.5">stdlib ast analyzer</text></g>
         <g transform="translate(830,60)"><rect class="n" width="212" height="66" rx="10"/><rect x="8" y="11" width="4" height="44" rx="2" fill="var(--fn)"/>
-          <text class="t-sm mono" x="24" y="30" font-size="12">cli</text><text class="sub" x="24" y="49" font-size="10.5">generate &#183; view &#183; web</text></g>
+          <text class="t-sm mono" x="24" y="30" font-size="12">cli</text><text class="sub" x="24" y="49" font-size="10.5">generate &#183; web &#183; link</text></g>
         <g transform="translate(830,236)"><rect class="n" width="212" height="66" rx="10"/><rect x="8" y="11" width="4" height="44" rx="2" fill="var(--pkg)"/>
           <text class="t-sm mono" x="24" y="30" font-size="12">renderer</text><text class="sub" x="24" y="49" font-size="10.5">the dark Blueprints SPA</text></g>
 

@@ -14,7 +14,6 @@ import { WebError } from "./web-error";
 const MAX_BODY_BYTES = 64_000;
 
 export interface GenerateRequest extends SourceRequest {
-  lang?: string;
   token?: string;
   refresh?: boolean;
 }
@@ -59,7 +58,6 @@ export function parseGenerateRequest(body: unknown): GenerateRequest {
     value: raw.value,
     ref: optionalString(raw.ref),
     subdir: optionalString(raw.subdir),
-    lang: optionalString(raw.lang),
     token: optionalString(raw.token),
     refresh: raw.refresh === true,
   };
@@ -76,7 +74,6 @@ export function artifactId(request: GenerateRequest, commit = "", analysisKey = 
     request.value,
     request.ref ?? "",
     request.subdir ?? "",
-    request.lang ?? "auto",
     commit,
     analysisKey,
   ].join(" ");

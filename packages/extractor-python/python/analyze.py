@@ -69,9 +69,12 @@ def parse_modules(modules: list[DiscoveredModule], diagnostics: list[str]) -> li
 def parse_file(module: DiscoveredModule, diagnostics: list[str]) -> ast.Module | None:
     try:
         with tokenize.open(module.abs_path) as handle:
-            return ast.parse(handle.read(), filename=module.abs_path)
+            # SyntaxError.__str__ includes the parser filename. Keep diagnostics safe for cache and
+            # web responses by using the already-normalized repository-relative path here.
+            return ast.parse(handle.read(), filename=module.file)
     except (OSError, SyntaxError, UnicodeError, ValueError) as error:
-        diagnostics.append(f"failed to parse {module.file}: {error}")
+        detail = str(error).replace(module.abs_path, module.file)
+        diagnostics.append(f"failed to parse {module.file}: {detail}")
         return None
 
 

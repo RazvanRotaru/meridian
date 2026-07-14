@@ -1,6 +1,6 @@
 /**
  * Regression coverage the orders-service fixture lacks: interface-to-interface `extends`
- * edges, and the reserved `unresolved:` pseudo-lang on unbindable call targets.
+ * edges, and the npm-qualified `unresolved:` pseudo-lang on unbindable call targets.
  */
 
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -96,9 +96,16 @@ describe("inheritance edges", () => {
 });
 
 describe("unresolved sentinel", () => {
-  it("targets the reserved unresolved: pseudo-lang, not a ts: node", () => {
+  it("uses the npm-qualified target consistently in graph edges and Logic-flow calls", () => {
     const unresolved = withUnresolved.edges.filter((edge) => edge.resolution === "unresolved");
     expect(unresolved.length).toBeGreaterThan(0);
-    expect(unresolved.every((edge) => edge.target.startsWith("unresolved:"))).toBe(true);
+    expect(new Set(unresolved.map((edge) => edge.target))).toEqual(new Set(["unresolved:npm/?"]));
+    const dynFlow = withUnresolved.flows?.["ts:src/shapes.ts#dyn"] ?? [];
+    expect(dynFlow).toContainEqual(expect.objectContaining({
+      kind: "call",
+      label: "o.whatever",
+      resolution: "unresolved",
+      target: "unresolved:npm/?",
+    }));
   });
 });

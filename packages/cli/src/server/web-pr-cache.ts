@@ -187,7 +187,6 @@ async function extractPr(cwd: string, source: GitHubSource, body: PrAnalyzeReque
   return analyzeRepository({
     absoluteRoot: root,
     cwd: root,
-    language: source.language,
     targetName: `${source.owner}/${source.repo}`,
     changedSince: `origin/${body.baseRef}`,
     changedSinceTimeoutMs: GIT_TIMEOUT_MS,
@@ -203,7 +202,6 @@ function prAnalysisKey(source: GitHubSource, body: PrAnalyzeRequest): string {
     schemaVersion: SCHEMA_VERSION,
     generatorVersion: generatorVersion(),
     subdir: source.subdir ?? "",
-    language: source.language ?? "auto",
     headRef: body.headRef,
     policy: REPOSITORY_ANALYSIS_POLICY,
   })).digest("hex").slice(0, 24);

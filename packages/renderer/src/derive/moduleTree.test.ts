@@ -195,7 +195,7 @@ function unitFixture(): { nodes: GraphNode[]; edges: GraphEdge[] } {
   return { nodes, edges };
 }
 
-describe("deriveModuleTree — overview fallback (no npm-package tags)", () => {
+describe("deriveModuleTree — overview ownership roots", () => {
   it("falls back to the topmost directory roots so a single-project artifact is never blank", () => {
     const nodes = [
       node("ts:src", "package", undefined, "src"),
@@ -206,6 +206,55 @@ describe("deriveModuleTree — overview fallback (no npm-package tags)", () => {
     const tree = treeOf(nodes, edges, null, []);
     expect(tree.nodes.map((n) => n.id)).toEqual(["ts:src"]);
     expect(tree.nodes[0].kind).toBe("package");
+  });
+
+  it("keeps untagged Python roots beside tagged TypeScript packages in a mixed artifact", () => {
+    const nodes = [
+      npmPkg("ts:web", "web"),
+      node("ts:web/index.ts", "module", "ts:web", "index.ts"),
+      node("py:backend", "package", undefined, "backend"),
+      node("py:backend.app", "module", "py:backend", "app"),
+    ];
+    const tree = treeOf(nodes, [], null, []);
+
+    expect(tree.nodes.map((entry) => entry.id)).toEqual(["py:backend", "ts:web"]);
+    expect(tree.nodes.every((entry) => entry.kind === "package" && entry.parentId === null)).toBe(true);
+  });
+
+  it("finds an untagged language root below a linked-system wrapper", () => {
+    const nodes = [
+      node("sys:application", "system", undefined, "application"),
+      node("py:backend", "package", "sys:application", "backend"),
+      node("py:backend.app", "module", "py:backend", "app"),
+    ];
+
+    expect(treeOf(nodes, [], null, []).nodes.map((entry) => entry.id)).toEqual(["py:backend"]);
+  });
+
+  it("shows a package-less root module beside tagged packages", () => {
+    const nodes = [
+      npmPkg("ts:web", "web"),
+      node("ts:web/index.ts", "module", "ts:web", "index.ts"),
+      node("py:settings", "module", undefined, "settings"),
+    ];
+    const tree = treeOf(nodes, [], null, []);
+
+    expect(tree.nodes.map((entry) => entry.id)).toEqual(["py:settings", "ts:web"]);
+    expect(tree.nodes.map((entry) => entry.kind)).toEqual(["file", "package"]);
+  });
+
+  it("uses disjoint fallback branches around a nested npm root", () => {
+    const nodes = [
+      node("ts:repo", "package", undefined, "repo"),
+      npmPkg("ts:repo/app", "app", "ts:repo"),
+      node("ts:repo/app/index.ts", "module", "ts:repo/app", "index.ts"),
+      node("ts:repo/scripts", "package", "ts:repo", "scripts"),
+      node("ts:repo/scripts/release.ts", "module", "ts:repo/scripts", "release.ts"),
+    ];
+    const tree = treeOf(nodes, [], null, []);
+
+    expect(tree.nodes.map((entry) => entry.id)).toEqual(["ts:repo/app", "ts:repo/scripts"]);
+    expect(tree.nodes.every((entry) => entry.parentId === null)).toBe(true);
   });
 });
 

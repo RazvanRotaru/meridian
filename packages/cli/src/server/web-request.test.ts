@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { artifactId } from "./web-request";
+import { artifactId, parseGenerateRequest } from "./web-request";
 
 describe("web graph identity", () => {
-  it("separates local analyses by selected language", () => {
-    const source = { kind: "path", value: "/repo" } as const;
-    expect(artifactId({ ...source, lang: "typescript" })).not.toBe(
-      artifactId({ ...source, lang: "python" }),
-    );
+  it("ignores the retired language selector and keeps one canonical analysis identity", () => {
+    const typescript = parseGenerateRequest({ kind: "path", value: "/repo", lang: "typescript" });
+    const python = parseGenerateRequest({ kind: "path", value: "/repo", lang: "python" });
+
+    expect(typescript).not.toHaveProperty("lang");
+    expect(python).not.toHaveProperty("lang");
+    expect(artifactId(typescript)).toBe(artifactId(python));
   });
 });
