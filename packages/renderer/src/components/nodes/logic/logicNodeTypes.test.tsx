@@ -3,7 +3,7 @@ import type { NodeProps } from "@xyflow/react";
 import { describe, expect, it } from "vitest";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
 import { BaseNodeActionScope } from "../BaseNode";
-import { ChangedTag, logicNodeTypes, withChanged } from "./logicNodeTypes";
+import { ChangedTag, logicNodeTypes, TargetChangedTag, withChanged } from "./logicNodeTypes";
 
 describe("logic PR-change paint", () => {
   it("washes the whole node, keeps external hatching, and strengthens a dimmed changed node", () => {
@@ -50,6 +50,22 @@ describe("logic PR-change paint", () => {
     expect(markup).toContain('data-pr-change-marker="true"');
     expect(markup).toContain("background:#E5484D33");
     expect(markup).toContain("Δ");
+  });
+
+  it.each([
+    ["added", "#3FB950"],
+    ["modified", "#E2A33C"],
+    ["deleted", "#FF7B82"],
+    ["renamed", "#E2A33C"],
+  ] as const)("renders a textual accessible %s-callee cue without claiming the call site changed", (status, color) => {
+    const markup = renderToStaticMarkup(<TargetChangedTag status={status} />);
+
+    expect(markup).toContain(`aria-label="Call target ${status} in this PR"`);
+    expect(markup).toContain('data-pr-target-change-marker="true"');
+    expect(markup).toContain(`data-pr-target-change-status="${status}"`);
+    expect(markup).toContain(`color:${color}`);
+    expect(markup).toContain(`TARGET ${status.toUpperCase()}`);
+    expect(markup).not.toContain('data-pr-change-marker="true"');
   });
 });
 

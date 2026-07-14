@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import type { Node } from "@xyflow/react";
 import type { RequestTrace } from "@meridian/core";
 import { STATIC_LOGIC_VIEW_MODES } from "../../derive/flowViewModel";
 import {
   flowPanePresentation,
   flowPaneShouldRender,
+  FlowChangeNavigator,
+  flowPaneFocusNode,
   requestFlowContext,
   shouldAutoFitFlowPane,
 } from "./FlowPane";
@@ -64,5 +69,46 @@ describe("request flow camera fitting", () => {
     expect(shouldAutoFitFlowPane(true, true)).toBe(false);
     expect(shouldAutoFitFlowPane(false, false)).toBe(true);
     expect(shouldAutoFitFlowPane(false, true)).toBe(true);
+  });
+});
+
+describe("review flow change navigation", () => {
+  it("exposes an explicit, status-named focus action that is not color-only", () => {
+    const markup = renderToStaticMarkup(createElement(FlowChangeNavigator, {
+      changes: [{ targetId: "target", status: "modified", label: "validateOrder" }],
+      selectedTarget: null,
+      onFocus: () => undefined,
+    }));
+
+    expect(markup).toContain('role="group"');
+    expect(markup).toContain('aria-label="Changed nodes in this logic flow"');
+    expect(markup).toContain('aria-label="Focus modified node validateOrder"');
+    expect(markup).toContain("MODIFIED");
+    expect(markup).toContain("validateOrder");
+  });
+
+  it("uses the legible deletion text color while retaining deletion semantics", () => {
+    const markup = renderToStaticMarkup(createElement(FlowChangeNavigator, {
+      changes: [{ targetId: "target", status: "deleted", label: "oldHandler" }],
+      selectedTarget: null,
+      onFocus: () => undefined,
+    }));
+
+    expect(markup).toContain("color:#FF7B82");
+    expect(markup).toContain("DELETED");
+    expect(markup).toContain('aria-label="Focus deleted node oldHandler"');
+  });
+
+  it("prefers a changed root entry over a recursive occurrence and resolves other targets", () => {
+    const nodes = [
+      { id: "root::entry", position: { x: 0, y: 0 }, data: { targetId: null } },
+      { id: "root::recursive", position: { x: 50, y: 0 }, data: { targetId: "root" } },
+      { id: "root::0", position: { x: 100, y: 0 }, data: { targetId: "target" } },
+      { id: "root::1", position: { x: 200, y: 0 }, data: { targetId: "target" } },
+    ] as Node[];
+
+    expect(flowPaneFocusNode(nodes, "target")?.id).toBe("root::0");
+    expect(flowPaneFocusNode(nodes, "root")?.id).toBe("root::entry");
+    expect(flowPaneFocusNode(nodes, "missing")).toBeNull();
   });
 });

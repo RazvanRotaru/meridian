@@ -17,6 +17,7 @@ const INDEX = {
   nodesById: new Map([
     [TARGET, { id: TARGET, kind: "function", location: { file: "src/work.ts", startLine: 1 } }],
   ]),
+  changedStatus: new Map([[TARGET, "modified"]]),
 } as unknown as GraphIndex;
 
 function render(selected: string | null = null, drillEnabled = true) {
@@ -46,6 +47,35 @@ describe("TimelineView", () => {
 
   it("does not advertise drill navigation in the review-only Timeline", () => {
     expect(render(null, false)).not.toContain("aria-keyshortcuts");
+  });
+
+  it("labels an unchanged call whose target is modified without using the call-site change marker", () => {
+    const markup = render();
+
+    expect(markup).toContain("TARGET MODIFIED");
+    expect(markup).toContain('aria-label="Call target modified in this PR"');
+    expect(markup).toContain('data-pr-target-change-status="modified"');
+    expect(markup).toContain("bottom:-20px");
+    expect(markup).not.toContain('data-pr-change-marker="true"');
+  });
+
+  it("does not dim the whole Timeline when review focus points inside a summarized loop", () => {
+    const markup = renderToStaticMarkup(
+      <TimelineView
+        density="compact"
+        rootId={ROOT}
+        steps={[{ kind: "loop", label: "for each item", body: STEPS }]}
+        flows={FLOWS}
+        index={INDEX}
+        selected={TARGET}
+        drillEnabled={false}
+        onSelect={() => undefined}
+        onDrill={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("for each item");
+    expect(markup).not.toContain("opacity:0.55");
   });
 
   it("keeps the compact return label inside the scrollable surface", () => {

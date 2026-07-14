@@ -95,6 +95,25 @@ const REVIEW_WITH_TESTS_ARTIFACT: GraphArtifact = {
   },
 };
 
+const ARTIFACT_REVIEW_WITH_TESTS: GraphArtifact = {
+  ...REVIEW_WITH_TESTS_ARTIFACT,
+  extensions: {
+    ...REVIEW_WITH_TESTS_ARTIFACT.extensions,
+    review: {
+      changedFiles: [
+        { path: "src/a.ts", status: "modified", hunks: [{ start: 10, end: 10 }] },
+        { path: "src/a.test.ts", status: "modified", hunks: [{ start: 5, end: 5 }] },
+        { path: "src/added.spec.ts", status: "added" },
+      ],
+      baseRef: "main",
+      baseSha: null,
+      headRef: "feature",
+      reviewKey: "artifact-review",
+      warnings: [],
+    },
+  },
+};
+
 const REVIEW_WITH_CONTEXT_ARTIFACT: GraphArtifact = {
   ...ARTIFACT,
   nodes: [
@@ -216,25 +235,7 @@ describe("PR store slice", () => {
   });
 
   it("projects artifact-carried review paint and rows through the Tests toggle", () => {
-    const artifactReview = {
-      ...REVIEW_WITH_TESTS_ARTIFACT,
-      extensions: {
-        ...REVIEW_WITH_TESTS_ARTIFACT.extensions,
-        review: {
-          changedFiles: [
-            { path: "src/a.ts", status: "modified", hunks: [{ start: 10, end: 10 }] },
-            { path: "src/a.test.ts", status: "modified", hunks: [{ start: 5, end: 5 }] },
-            { path: "src/added.spec.ts", status: "added" },
-          ],
-          baseRef: "main",
-          baseSha: null,
-          headRef: "feature",
-          reviewKey: "artifact-review",
-          warnings: [],
-        },
-      },
-    } as GraphArtifact;
-    const store = freshStoreForArtifact(artifactReview);
+    const store = freshStoreForArtifact(ARTIFACT_REVIEW_WITH_TESTS);
 
     expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
     expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID]));
@@ -250,6 +251,39 @@ describe("PR store slice", () => {
     ]);
     expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID, TEST_METHOD_ID]));
     expect(store.getState().index.changedIds).toEqual(new Set([METHOD_ID, TEST_METHOD_ID]));
+  });
+
+  it("closes an open artifact-review flow before the Tests projection changes", async () => {
+    const store = freshStoreForArtifact(ARTIFACT_REVIEW_WITH_TESTS);
+    store.getState().toggleShowTests();
+    expect(store.getState().showTests).toBe(true);
+    const baselineSelection = new Set([TEST_METHOD_ID]);
+    store.setState({
+      minimalSeedIds: [TEST_FILE_ID],
+      minimalMemberIds: [TEST_FILE_ID],
+      moduleSelected: baselineSelection,
+      reviewFlowSplitView: "graph",
+      reviewOpenFlowSplitOnSelect: true,
+    });
+    store.getState().selectFlowEntry({ rootId: TEST_METHOD_ID, blockPath: [] });
+
+    await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
+    expect(store.getState().flowSelection).not.toBeNull();
+    expect(store.getState().reviewFlowBaseline).not.toBeNull();
+    expect(store.getState().flowPaneRfNodes.length).toBeGreaterThan(0);
+
+    store.getState().toggleShowTests();
+
+    expect(store.getState().showTests).toBe(false);
+    expect(store.getState().flowSelection).toBeNull();
+    expect(store.getState().flowPaneOrigin).toBeNull();
+    expect(store.getState().flowPaneExpansionOverrides).toEqual(new Set());
+    expect(store.getState().flowPaneRfNodes).toEqual([]);
+    expect(store.getState().flowPaneRfEdges).toEqual([]);
+    expect(store.getState().flowPaneLayoutStatus).toBe("idle");
+    expect(store.getState().logicSelected).toBeNull();
+    expect(store.getState().reviewFlowBaseline).toBeNull();
+    expect(store.getState().moduleSelected).toEqual(new Set());
   });
 
   it("does not call PR endpoints for a graph that is not connected to GitHub", async () => {

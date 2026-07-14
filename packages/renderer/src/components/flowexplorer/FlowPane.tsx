@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlow, ReactFlowProvider, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
 import type { LogicFlows, RequestTrace } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
@@ -17,31 +17,48 @@ import { FLOW_COLORS, type FlowViewProps } from "../../derive/flowViewModel";
 import { BASE_Y as METRO_MAIN_LINE_Y } from "../../derive/metroSpec";
 import type { ReviewFlowSplitView } from "../../state/reviewPreferences";
 import { BaseNodeActionScope } from "../nodes/BaseNode";
+import { reviewFlowChanges, type ReviewFlowChange } from "../../derive/reviewFlowChanges";
+import { changedColor } from "../ChangedBadge";
+import { changedTextColor } from "../../theme/changedColors";
+
+interface FlowPaneFocusRequest {
+  targetId: string;
+  sequence: number;
+}
 
 export function FlowPane() {
   const selection = useBlueprint((state) => state.flowSelection);
   const origin = useBlueprint((state) => state.flowPaneOrigin);
   const requestFlowTraceId = useBlueprint((state) => state.requestFlowTraceId);
-  const nodesById = useBlueprint((state) => state.index.nodesById);
+  const index = useBlueprint((state) => state.index);
   const reviewActive = useBlueprint((state) => state.flowSelection !== null && state.reviewFlowBaseline !== null);
   const reviewFlowSplitView = useBlueprint((state) => state.reviewFlowSplitView);
   const reviewOpenFlowSplitOnSelect = useBlueprint((state) => state.reviewOpenFlowSplitOnSelect);
   const flows = useLogicFlows();
   const environment = useBlueprint((state) => state.environment);
+  const logicSelected = useBlueprint((state) => state.logicSelected);
   const requestTrace = useBlueprint((state) => origin !== "request" || requestFlowTraceId === null
     ? null
     : state.requestTraces.find((trace) => trace.traceId === requestFlowTraceId) ?? null);
-  const { selectFlowEntry, openLogicFlow } = useBlueprintActions();
+  const { selectFlowEntry, selectFlowPaneTarget, openLogicFlow } = useBlueprintActions();
+  const [focusRequest, setFocusRequest] = useState<FlowPaneFocusRequest | null>(null);
   const requestOpen = origin === "request" && requestTrace !== null;
   if (!requestOpen && (selection === null || !flowPaneShouldRender(reviewActive, reviewOpenFlowSplitOnSelect))) {
     return null;
   }
   const rootLabel = requestOpen
     ? "Request execution"
-    : nodesById.get(selection!.rootId)?.displayName ?? selection!.rootId;
+    : index.nodesById.get(selection!.rootId)?.displayName ?? selection!.rootId;
   const crumbs = requestOpen ? [] : blockBreadcrumbs(flows, selection!);
   const requestContext = requestOpen ? requestFlowContext(requestTrace, environment) : null;
   const presentation = requestOpen ? "graph" : flowPanePresentation(reviewActive, reviewFlowSplitView);
+  const reviewChanges = reviewActive && selection !== null
+    ? reviewFlowChanges(selection.rootId, stepsAt(flows, selection) ?? [], index)
+    : [];
+  const focusChange = (change: ReviewFlowChange) => {
+    selectFlowPaneTarget(change.targetId);
+    setFocusRequest((current) => ({ targetId: change.targetId, sequence: (current?.sequence ?? 0) + 1 }));
+  };
   const viewKey = requestOpen
     ? `request:${requestTrace!.traceId}`
     : `${presentation}:${selectionKey(selection!)}`;
@@ -55,8 +72,15 @@ export function FlowPane() {
         <div style={TITLE_ROW}>
           <span style={GLYPH}>ƒ</span>
           <span style={TITLE} title={requestOpen ? requestTrace!.name : selection!.rootId}>{rootLabel}</span>
+          {reviewChanges.length > 0 ? (
+            <FlowChangeNavigator changes={reviewChanges} selectedTarget={logicSelected} onFocus={focusChange} />
+          ) : null}
           {requestOpen ? null : (
-            <button type="button" style={OPEN_BUTTON} onClick={() => openLogicFlow(selection!.rootId)}>
+            <button
+              type="button"
+              style={OPEN_BUTTON}
+              onClick={() => openLogicFlow(selection!.rootId)}
+            >
               Open in Logic flow
             </button>
           )}
@@ -83,13 +107,59 @@ export function FlowPane() {
       <div style={BODY}>
         {presentation === "graph" ? (
           <ReactFlowProvider key={viewKey}>
-            <FlowPaneSurface />
+            <FlowPaneSurface focusRequest={focusRequest} />
           </ReactFlowProvider>
         ) : (
-          <FlowPaneProjection key={viewKey} mode={presentation} selection={selection!} flows={flows} />
+          <FlowPaneProjection key={viewKey} mode={presentation} selection={selection!} flows={flows} focusRequest={focusRequest} />
         )}
       </div>
     </aside>
+  );
+}
+
+export function FlowChangeNavigator(props: {
+  changes: readonly ReviewFlowChange[];
+  selectedTarget: string | null;
+  onFocus: (change: ReviewFlowChange) => void;
+}) {
+  if (props.changes.length === 0) {
+    return null;
+  }
+  const selectedIndex = props.selectedTarget === null
+    ? -1
+    : props.changes.findIndex((change) => change.targetId === props.selectedTarget);
+  const currentIndex = selectedIndex >= 0 ? selectedIndex : 0;
+  const current = props.changes[currentIndex];
+  const count = props.changes.length;
+  const focusAt = (index: number) => props.onFocus(props.changes[(index + count) % count]);
+  const status = current.status.toUpperCase();
+  const accent = changedColor(current.status);
+  const color = changedTextColor(current.status);
+  const position = count === 1 ? "" : ` · ${currentIndex + 1}/${count}`;
+  return (
+    <div style={CHANGE_NAV} role="group" aria-label="Changed nodes in this logic flow">
+      {count > 1 ? (
+        <button type="button" style={CHANGE_ARROW} aria-label="Previous changed node" title="Previous changed node" onClick={() => focusAt(currentIndex - 1)}>
+          ‹
+        </button>
+      ) : null}
+      <button
+        type="button"
+        style={{ ...CHANGE_FOCUS, color, borderColor: `${accent}99`, background: `${accent}1F` }}
+        aria-label={`Focus ${current.status} node ${current.label}${count > 1 ? `, ${currentIndex + 1} of ${count}` : ""}`}
+        title={`Focus ${current.status} node: ${current.label}`}
+        onClick={() => focusAt(currentIndex)}
+      >
+        <span style={CHANGE_GLYPH} aria-hidden="true">Δ</span>
+        <span style={CHANGE_STATUS}>{status}{position}</span>
+        <span style={CHANGE_NAME}>{current.label}</span>
+      </button>
+      {count > 1 ? (
+        <button type="button" style={CHANGE_ARROW} aria-label="Next changed node" title="Next changed node" onClick={() => focusAt(currentIndex + 1)}>
+          ›
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -114,6 +184,7 @@ function FlowPaneProjection(props: {
   mode: AlternateFlowPaneMode;
   selection: FlowSelectionRef;
   flows: LogicFlows;
+  focusRequest: FlowPaneFocusRequest | null;
 }) {
   const index = useBlueprint((state) => state.index);
   const logicSelected = useBlueprint((state) => state.logicSelected);
@@ -138,6 +209,22 @@ function FlowPaneProjection(props: {
     });
     return () => cancelAnimationFrame(frame);
   }, [props.mode, steps]);
+
+  // The header navigator is shared by every review projection. Graph mode moves its camera; the
+  // DOM-based projections center their already-selected native button in the split scroller.
+  useEffect(() => {
+    if (props.focusRequest === null || props.focusRequest.targetId !== logicSelected) {
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      scrollRef.current?.querySelector<HTMLElement>('[aria-pressed="true"]')?.scrollIntoView({
+        block: "center",
+        inline: "center",
+        behavior: "smooth",
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [logicSelected, props.focusRequest]);
 
   if (steps.length === 0) {
     return (
@@ -245,7 +332,7 @@ function formatRequestDuration(durationMs: number): string {
   return `${durationMs.toFixed(2)}ms`;
 }
 
-function FlowPaneSurface() {
+function FlowPaneSurface({ focusRequest }: { focusRequest: FlowPaneFocusRequest | null }) {
   const nodes = useBlueprint((state) => state.flowPaneRfNodes);
   const edges = useBlueprint((state) => state.flowPaneRfEdges);
   const status = useBlueprint((state) => state.flowPaneLayoutStatus);
@@ -291,6 +378,25 @@ function FlowPaneSurface() {
     }
     fitReadyNodes(rfRef.current);
   }, [nodes, status]);
+
+  useEffect(() => {
+    if (
+      focusRequest === null
+      || logicSelected !== focusRequest.targetId
+      || status !== "ready"
+      || rfRef.current === null
+    ) {
+      return;
+    }
+    const target = flowPaneFocusNode(nodes, focusRequest.targetId);
+    if (target === null) {
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      void rfRef.current?.fitView({ nodes: [target], padding: 0.55, duration: 350, maxZoom: 1.25 });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focusRequest, logicSelected, nodes, status]);
 
   if (nodes.length === 0 && status === "laying-out") {
     return <GraphSurface><PaneMessage mark="…" text="Laying out flow." /></GraphSurface>;
@@ -365,6 +471,15 @@ function artifactTargetOf(node: Node): string | null {
   return null;
 }
 
+/** The navigator focuses the first visible occurrence of a changed callable. A changed flow root is
+ * represented by its synthetic entry cap (which intentionally has no artifact target), so retain
+ * that exact fallback without broad id substring matching. */
+export function flowPaneFocusNode(nodes: readonly Node[], targetId: string): Node | null {
+  return nodes.find((node) => node.id === `${targetId}::entry`)
+    ?? nodes.find((node) => artifactTargetOf(node) === targetId)
+    ?? null;
+}
+
 function PaneMessage(props: { mark: string; text: string }) {
   return (
     <div style={EMPTY}>
@@ -382,6 +497,8 @@ function miniMapColor(node: Node): string {
   if (data.runtime?.kind === "loop") return "#61C4D8";
   if (data.runtime?.kind === "exception") return "#D98A5B";
   if (data.runtime?.kind === "async") return "#9B7BD8";
+  if (data.changedStatus !== undefined) return changedColor(data.changedStatus);
+  if (data.targetChangedStatus !== undefined) return changedColor(data.targetChangedStatus);
   if (data.logicKind === "loop") return "#E6B84D";
   if (data.logicKind === "try") return "#D98A5B";
   if (data.logicKind === "if" || data.logicKind === "switch") return "#61DAFB";
@@ -434,6 +551,41 @@ const OPEN_BUTTON: React.CSSProperties = {
   fontSize: 12,
   cursor: "pointer",
 };
+const CHANGE_NAV: React.CSSProperties = { minWidth: 0, maxWidth: 300, display: "inline-flex", alignItems: "center", gap: 4, flex: "0 1 300px" };
+const CHANGE_ARROW: React.CSSProperties = {
+  width: 22,
+  height: 22,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 0,
+  border: "1px solid #343C49",
+  borderRadius: 5,
+  background: "#111720",
+  color: "#AAB6C5",
+  cursor: "pointer",
+  fontSize: 16,
+  lineHeight: 1,
+};
+const CHANGE_FOCUS: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  maxWidth: 300,
+  height: 24,
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "0 8px",
+  border: "1px solid",
+  borderRadius: 6,
+  cursor: "pointer",
+  font: "inherit",
+  fontSize: 10,
+  boxShadow: "0 0 12px currentColor",
+};
+const CHANGE_GLYPH: React.CSSProperties = { fontSize: 11, fontWeight: 900, lineHeight: 1, flexShrink: 0 };
+const CHANGE_STATUS: React.CSSProperties = { fontWeight: 800, letterSpacing: "0.06em", flexShrink: 0 };
+const CHANGE_NAME: React.CSSProperties = { color: "#D6DEE9", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: MONO };
 const CLOSE: React.CSSProperties = { width: 22, height: 22, border: "1px solid #2A313D", borderRadius: 5, background: "transparent", color: "#9AA4B2", cursor: "pointer", fontSize: 11, lineHeight: 1 };
 const BREADCRUMBS: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, minWidth: 0 };
 const REQUEST_CONTEXT: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6, minWidth: 0, fontFamily: MONO, fontSize: 10.5 };

@@ -6,13 +6,14 @@
  * drill); the selection/drill wiring rides down through `RowCtx` so this file needs no store access.
  */
 
-import type { FlowStep, LogicFlows, NodeId } from "@meridian/core";
+import type { ChangeStatus, FlowStep, LogicFlows, NodeId } from "@meridian/core";
 import type { GraphIndex } from "../../graph/graphIndex";
 import type { CallStep, ExitStep, BranchStep } from "../../derive/flowViewModel";
 import { branchKindOf } from "@meridian/core";
 import { FLOW_COLORS, callDisplay } from "../../derive/flowViewModel";
 import { branchCompartments } from "../../derive/blocksModel";
 import type { Compartment } from "../../derive/blocksModel";
+import { TargetChangedTag } from "../nodes/logic/logicNodeTypes";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
@@ -94,9 +95,12 @@ function CallRow({ step, ctx }: { step: CallStep; ctx: RowCtx }) {
   const display = callDisplay(step, ctx.flows, ctx.index);
   const accent = display.method ? FLOW_COLORS.method : FLOW_COLORS.call;
   const hasTarget = step.target !== null;
+  const targetChangedStatus: ChangeStatus | undefined = step.resolution === "resolved" && step.target
+    ? ctx.index.changedStatus.get(step.target)
+    : undefined;
   const isSelected = ctx.selected !== null && step.target === ctx.selected;
   const dimmed = ctx.selected !== null && !isSelected;
-  const opacity = isSelected ? 1 : dimmed ? 0.55 : 1;
+  const opacity = isSelected ? 1 : dimmed ? (targetChangedStatus ? 0.82 : 0.55) : 1;
   const canDrill = ctx.drillEnabled && display.navigable;
   const style: React.CSSProperties = {
     ...ROW,
@@ -110,6 +114,7 @@ function CallRow({ step, ctx }: { step: CallStep; ctx: RowCtx }) {
       <span style={{ ...GLYPH, color: accent }}>{display.method ? "∷" : "ƒ"}</span>
       <span style={NAME}>{step.label}</span>
       {display.provenance ? <span style={PROV}>{display.provenance}</span> : null}
+      {targetChangedStatus ? <TargetChangedTag status={targetChangedStatus} /> : null}
       <span style={SPRING} />
       {step.awaited ? <Badge accent={FLOW_COLORS.awaited} text="⏱ AWAIT" /> : null}
       {step.detached ? <Badge accent={FLOW_COLORS.detached} text="⤳ DETACHED" /> : null}

@@ -7,10 +7,12 @@
  */
 
 import { useMemo } from "react";
+import type { ChangeStatus } from "@meridian/core";
 import type { FlowViewProps } from "../../derive/flowViewModel";
 import { FLOW_COLORS } from "../../derive/flowViewModel";
 import { buildTimeline } from "../../derive/timelineModel";
 import type { AltItem, Connector, TimelineItem } from "../../derive/timelineModel";
+import { TargetChangedTag } from "../nodes/logic/logicNodeTypes";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
@@ -50,7 +52,12 @@ export function TimelineView(props: FlowViewProps & { density?: "full" | "compac
   const bgY = (i: number) => geometry.bgBase + i * geometry.bgStep;
   const axisY = Math.max(bgY(spec.bgRows.length), geometry.y.catch + 60) + 20;
   const width = tx(spec.ticks) + 60;
-  const dimmed = props.selected != null;
+  // Timeline intentionally summarizes loop/callback/terminated-path internals into bars. The
+  // review navigator can still focus one of those exact targets in the upper graph; because there
+  // is no individual Timeline item to select, do not dim every visible item around an absent match.
+  const visibleTargets = [spec.mainRow, spec.taskRow, spec.catchRow, ...spec.bgRows]
+    .flatMap((row) => row.map((item) => item.target).filter((target): target is string => typeof target === "string"));
+  const dimmed = props.selected != null && visibleTargets.includes(props.selected);
 
   const onPick = (item: TimelineItem, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -69,6 +76,7 @@ export function TimelineView(props: FlowViewProps & { density?: "full" | "compac
       item={item}
       y={y}
       tx={tx}
+      targetChangedStatus={item.target ? props.index.changedStatus.get(item.target) : undefined}
       selected={props.selected}
       dimmed={dimmed}
       drillEnabled={drillEnabled}
@@ -109,6 +117,7 @@ export function TimelineView(props: FlowViewProps & { density?: "full" | "compac
  * same linked-graph selection available by mouse is reachable by keyboard and assistive tech. */
 function Node(props: {
   item: TimelineItem; y: number; tx: (t: number) => number; selected: string | null;
+  targetChangedStatus?: ChangeStatus;
   dimmed: boolean; drillEnabled: boolean;
   onPick: (i: TimelineItem, e: React.MouseEvent) => void;
   onDrill: (i: TimelineItem, e: React.MouseEvent) => void;
@@ -116,7 +125,7 @@ function Node(props: {
 }) {
   const { item, y, tx } = props;
   const on = props.selected != null && item.target === props.selected;
-  const opacity = props.dimmed && !on ? 0.55 : 1;
+  const opacity = props.dimmed && !on ? (props.targetChangedStatus ? 0.82 : 0.55) : 1;
   const clickable = !!item.target;
 
   if (item.kind === "suspend") {
@@ -146,7 +155,8 @@ function Node(props: {
         style={{ ...barBox(tx(item.t0), tx(item.t1), y), border: `1px solid ${item.color}`, background: item.ghost ? "transparent" : `${item.color}20`, color: item.ghost ? FLOW_COLORS.dim : FLOW_COLORS.ink, ...common }}
       >
         <span style={{ color: item.color }}>{item.glyph}</span>
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{item.text}</span>
+        <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{item.text}</span>
+        {props.targetChangedStatus ? <TimelineTargetChanged status={props.targetChangedStatus} /> : null}
       </ItemElement>
     );
   }
@@ -156,11 +166,19 @@ function Node(props: {
       selected={on}
       handlers={handlers}
       onKeyboardDrill={keyboardDrill}
-      style={{ position: "absolute", left: tx(item.t0), top: y, transform: "translateY(-50%)", border: `1px solid ${item.color}`, borderRadius: 4, background: FLOW_COLORS.card, color: FLOW_COLORS.ink, fontFamily: MONO, fontSize: 10, padding: "3px 8px", whiteSpace: "nowrap", zIndex: 2, ...common }}
+      style={{ position: "absolute", left: tx(item.t0), top: y, transform: "translateY(-50%)", display: "flex", alignItems: "center", gap: 6, border: `1px solid ${item.color}`, borderRadius: 4, background: FLOW_COLORS.card, color: FLOW_COLORS.ink, fontFamily: MONO, fontSize: 10, padding: "3px 8px", whiteSpace: "nowrap", zIndex: 2, ...common }}
     >
-      <span style={{ color: item.color }}>{item.glyph}</span> {item.text}
+      <span style={{ color: item.color }}>{item.glyph}</span>
+      <span>{item.text}</span>
+      {props.targetChangedStatus ? <TimelineTargetChanged status={props.targetChangedStatus} /> : null}
     </ItemElement>
   );
+}
+
+/** Status is pinned below the 30px event card instead of extending its measured width. Compact
+ * timeline ticks are intentionally close together; an in-row label would overlap the next event. */
+function TimelineTargetChanged({ status }: { status: ChangeStatus }) {
+  return <span style={TIMELINE_TARGET_CHANGED}><TargetChangedTag status={status} /></span>;
 }
 
 function ItemElement(props: {
@@ -288,3 +306,11 @@ function ghostFrame(left: number, right: number, mainY: number): React.CSSProper
 }
 
 const GHOST_TAG: React.CSSProperties = { position: "absolute", top: -8, left: 8, fontSize: 8, letterSpacing: "0.12em", color: FLOW_COLORS.branch, background: FLOW_COLORS.canvas, padding: "0 5px", textTransform: "uppercase" };
+const TIMELINE_TARGET_CHANGED: React.CSSProperties = {
+  position: "absolute",
+  right: 0,
+  bottom: -20,
+  height: 16,
+  pointerEvents: "none",
+  zIndex: 3,
+};

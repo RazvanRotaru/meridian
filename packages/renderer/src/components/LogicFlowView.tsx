@@ -51,6 +51,7 @@ import { GraphLayoutIndicator } from "./canvas/GraphLayoutIndicator";
 import { logicEdgeTypes } from "./edges/AsyncRailEdge";
 import { BaseNodeActionScope, type BaseNodeModel } from "./nodes/BaseNode";
 import { LogicActionBar } from "./controlpanel/LogicActionBar";
+import { changedColor } from "./ChangedBadge";
 
 export function LogicFlowView() {
   const logicRoot = useBlueprint((state) => state.logicRoot);
@@ -902,6 +903,11 @@ function miniMapColor(
       if (root) return VERDICT_COLOR[root.status];
     }
   }
+  // Runtime/coverage colors are the minimap's primary diagnostic contract. PR status takes over
+  // only when no active evidence lens has a verdict for this node.
+  const reviewData = node.data as Partial<LogicNodeData>;
+  if (reviewData.changedStatus !== undefined) return changedColor(reviewData.changedStatus);
+  if (reviewData.targetChangedStatus !== undefined) return changedColor(reviewData.targetChangedStatus);
   if (node.type === "terminal") {
     const terminal = (node.data as TerminalData).terminal;
     if (terminal === "entry") return "#4FB477";

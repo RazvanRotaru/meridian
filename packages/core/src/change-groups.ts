@@ -67,7 +67,7 @@ export function computeChangeGroups(
   const globalRoot = commonDirSegments(changedModules.map((node) => node.location.file));
   const groups = components.map((members) => buildGroup(members, nodesById, globalRoot));
 
-  const crossGroupFlowIds = assignFlows(groups, nodes, changedPaths, flows);
+  const crossGroupFlowIds = assignFlows(groups, nodes, changedFiles, flows);
   const grouped = new Set(groups.flatMap((group) => group.files));
   return {
     groups: sortGroups(groups),
@@ -206,7 +206,7 @@ function segmentsEqual(a: string[], b: string[]): boolean {
 function assignFlows(
   groups: ChangeGroup[],
   nodes: readonly GraphNode[],
-  changedPaths: ReadonlySet<string>,
+  changedFiles: readonly ChangedFile[],
   flows: LogicFlows | undefined,
 ): string[] {
   if (!flows) {
@@ -218,7 +218,7 @@ function assignFlows(
   }
   const accumulated = new Map<ChangeGroup, Set<string>>();
   const cross = new Set<string>();
-  for (const flow of computeAffectedFlows(nodes, flows, changedPaths)) {
+  for (const flow of computeAffectedFlows(nodes, flows, changedFiles)) {
     const touched = touchedGroups(flow, groupByFile);
     for (const group of touched) addFlow(accumulated, group, flow.flowId);
     if (touched.size > 1) cross.add(flow.flowId);

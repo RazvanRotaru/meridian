@@ -34,6 +34,26 @@ function elkNode(root: ElkNode, id: string): ElkNode {
 }
 
 describe("logic ELK graph", () => {
+  it("gives an expanded changed-call container enough width for its textual status rail", () => {
+    const target = "ts:src/work.ts#work";
+    const changedIndex = {
+      ...index,
+      nodesById: new Map([[target, { id: target, kind: "function", displayName: "work" }]]),
+      changedStatus: new Map([[target, "modified"]]),
+    } as unknown as GraphIndex;
+    const flows: LogicFlows = {
+      r: [{ kind: "call", label: "work", target, resolution: "resolved" }],
+      [target]: [call("child")],
+    };
+    const spec = deriveLogicGraph("r", flows, changedIndex, new Set(["r::0"]), { hideGreyed: false });
+    const container = elkNode(buildLogicElkGraph(spec), "r::0");
+
+    expect(container.layoutOptions).toMatchObject({
+      "elk.nodeSize.constraints": "MINIMUM_SIZE",
+      "elk.nodeSize.minimum": "(260,58)",
+    });
+  });
+
   it("uses a roomy horizontal cadence and fixed ordered ports for branch lanes", () => {
     const branch: FlowStep = {
       kind: "branch",

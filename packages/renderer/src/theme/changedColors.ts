@@ -20,6 +20,13 @@ export function changedColor(status: ChangeStatus | undefined | null): string {
   return status ? CHANGED_COLORS[status] : CHANGED_COLORS.modified;
 }
 
+/** Small textual status chips need a little more luminance than the corresponding graph ring.
+ * In particular, the canonical deletion red is intentionally dense and falls short for tiny type
+ * on the dark review canvas; keep the semantic hue while lifting only its text treatment. */
+export function changedTextColor(status: ChangeStatus): string {
+  return status === "deleted" ? "#FF7B82" : changedColor(status);
+}
+
 /** The translucent body wash layered over a card's dark base for a changed node — a visible warm
  * (or green / red) fill that reads as "touched" without drowning the card's own content. ~18%. */
 export function changedFill(color: string): string {
