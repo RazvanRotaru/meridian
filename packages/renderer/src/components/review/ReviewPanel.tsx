@@ -32,10 +32,12 @@ function ReviewPanelImpl() {
   const flowView = useBlueprint((state) => state.reviewFlowSplitView);
   const openFlowSplitOnSelect = useBlueprint((state) => state.reviewOpenFlowSplitOnSelect);
   const codePreviewTrigger = useBlueprint((state) => state.reviewCodePreviewTrigger);
+  const hideAddedSourceCommentDiffs = useBlueprint((state) => state.reviewHideAddedSourceCommentDiffs);
   const {
     setReviewFlowSplitView,
     setReviewOpenFlowSplitOnSelect,
     setReviewCodePreviewTrigger,
+    setReviewHideAddedSourceCommentDiffs,
     toggleReviewDiffOnly,
     toggleShowTests,
   } = useBlueprintActions();
@@ -88,6 +90,7 @@ function ReviewPanelImpl() {
               flowView={flowView}
               openFlowSplitOnSelect={openFlowSplitOnSelect}
               codePreviewTrigger={codePreviewTrigger}
+              hideAddedSourceCommentDiffs={hideAddedSourceCommentDiffs}
               onExcludeTestChangesChange={(exclude) => {
                 if (exclude === showTests) {
                   toggleShowTests();
@@ -101,6 +104,7 @@ function ReviewPanelImpl() {
               onFlowViewChange={setReviewFlowSplitView}
               onOpenFlowSplitOnSelectChange={setReviewOpenFlowSplitOnSelect}
               onCodePreviewTriggerChange={setReviewCodePreviewTrigger}
+              onHideAddedSourceCommentDiffsChange={setReviewHideAddedSourceCommentDiffs}
               onClose={closePreferences}
             />
           </div>

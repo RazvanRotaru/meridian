@@ -256,6 +256,7 @@ function fixtureGitAsync(args: string[], cwd?: string): Promise<string> {
 }
 
 const LOYALTY_TIERS_SOURCE = `export function loyaltyTierFor(orderCount: number): string {
+  // Keep the loyalty threshold explicit before choosing the customer's tier.
   return orderCount >= 10 ? "gold" : "standard";
 }
 `;

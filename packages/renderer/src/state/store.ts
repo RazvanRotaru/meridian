@@ -562,6 +562,9 @@ export interface BlueprintState {
   /** Pointer gesture which opens the graph node's transient code preview. Browser-local so a
    * reader's preference follows them between repositories and reviews. */
   reviewCodePreviewTrigger: ReviewCodePreviewTrigger;
+  /** Show newly added, comment-only source rows as neutral context instead of diff additions.
+   * Browser-local so the reader's source-diff preference follows them between reviews. */
+  reviewHideAddedSourceCommentDiffs: boolean;
   /** Hides the review side panel so the graph takes the full width; session-only. */
   reviewPanelHidden: boolean;
   /** Shows existing GitHub review comments in canvas source widgets. Session-only; draft comment
@@ -873,6 +876,7 @@ export interface BlueprintState {
   setReviewFlowSplitView(view: ReviewFlowSplitView): void;
   setReviewOpenFlowSplitOnSelect(open: boolean): void;
   setReviewCodePreviewTrigger(trigger: ReviewCodePreviewTrigger): void;
+  setReviewHideAddedSourceCommentDiffs(hide: boolean): void;
   toggleReviewDiffOnly(): void;
   toggleReviewPanel(): void;
   toggleReviewCommentsVisible(): void;
@@ -2229,6 +2233,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewFlowSplitView: reviewPreferences.flowSplitView,
     reviewOpenFlowSplitOnSelect: reviewPreferences.openFlowSplitOnSelect,
     reviewCodePreviewTrigger: reviewPreferences.codePreviewTrigger,
+    reviewHideAddedSourceCommentDiffs: reviewPreferences.hideAddedSourceCommentDiffs,
     reviewPanelHidden: false,
     reviewCommentsVisible: true,
     reviewSubmitStatus: "idle",
@@ -5091,10 +5096,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     setReviewFlowSplitView(view) {
       const state = get();
       writeReviewPreferences({
-        version: 3,
+        version: 4,
         flowSplitView: view,
         openFlowSplitOnSelect: state.reviewOpenFlowSplitOnSelect,
         codePreviewTrigger: state.reviewCodePreviewTrigger,
+        hideAddedSourceCommentDiffs: state.reviewHideAddedSourceCommentDiffs,
       });
       const reviewFlowOpen = state.review !== null
         && state.minimalSeedIds.length > 0
@@ -5123,10 +5129,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       writeReviewPreferences({
-        version: 3,
+        version: 4,
         flowSplitView: state.reviewFlowSplitView,
         openFlowSplitOnSelect: open,
         codePreviewTrigger: state.reviewCodePreviewTrigger,
+        hideAddedSourceCommentDiffs: state.reviewHideAddedSourceCommentDiffs,
       });
       const reviewFlowSelected = state.review !== null
         && state.minimalSeedIds.length > 0
@@ -5154,12 +5161,28 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       writeReviewPreferences({
-        version: 3,
+        version: 4,
         flowSplitView: state.reviewFlowSplitView,
         openFlowSplitOnSelect: state.reviewOpenFlowSplitOnSelect,
         codePreviewTrigger: trigger,
+        hideAddedSourceCommentDiffs: state.reviewHideAddedSourceCommentDiffs,
       });
       set({ reviewCodePreviewTrigger: trigger });
+    },
+
+    setReviewHideAddedSourceCommentDiffs(hide) {
+      const state = get();
+      if (state.reviewHideAddedSourceCommentDiffs === hide) {
+        return;
+      }
+      writeReviewPreferences({
+        version: 4,
+        flowSplitView: state.reviewFlowSplitView,
+        openFlowSplitOnSelect: state.reviewOpenFlowSplitOnSelect,
+        codePreviewTrigger: state.reviewCodePreviewTrigger,
+        hideAddedSourceCommentDiffs: hide,
+      });
+      set({ reviewHideAddedSourceCommentDiffs: hide });
     },
 
     toggleReviewDiffOnly() {

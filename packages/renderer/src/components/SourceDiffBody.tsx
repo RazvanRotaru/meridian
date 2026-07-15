@@ -9,6 +9,7 @@ import { useEffect, useMemo } from "react";
 import type { ChangedLineKind, LineRange } from "@meridian/core";
 import { nonTextualDiffNotice } from "../derive/nonTextualDiffNotice";
 import { anchorableHunks } from "../derive/reviewSubmit";
+import { sourceCommentOnlyLines, withoutAddedSourceCommentDiffLines } from "../derive/sourceCommentLines";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { prReviewRevisionKey } from "../state/prReviewFreshness";
 import { matchesReviewLineComposerTarget } from "../state/reviewLineComposer";
@@ -64,6 +65,7 @@ export interface SourceDiffModel {
 /** Build the exact presentation model once. Every host must pass this model to SourceDiffBody. */
 export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
   const review = useBlueprint((state) => state.review);
+  const hideAddedSourceCommentDiffs = useBlueprint((state) => state.reviewHideAddedSourceCommentDiffs);
   const prReviewed = useBlueprint((state) => state.prReviewed);
   const prReviewRefreshing = useBlueprint((state) => state.prReviewRefreshing);
   const prReviewStatus = useBlueprint((state) => state.prReviewStatus);
@@ -84,11 +86,42 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
   const canonicalDiffLines = Array.isArray(diffView.diffLines) ? diffView.diffLines : undefined;
   const sourceSide = diffView.sourceSide ?? "head";
   const diffOldSpan = diffView.diffOldSpan;
-  const diffLines = useMemo(
+  const rawDiffLines = useMemo(
     () => canonicalDiffLines === undefined
       ? undefined
       : diffLinesWithinSlice(canonicalDiffLines, sourceSide, baseLine, shownEnd, diffOldSpan),
     [baseLine, canonicalDiffLines, diffOldSpan, shownEnd, sourceSide],
+  );
+  const neutralizedSourceCommentLines = useMemo(() => {
+    if (
+      canonicalDiffLines === undefined
+      || review === null
+      || !hideAddedSourceCommentDiffs
+      || sourceSide !== "head"
+      || codeView.code === null
+    ) {
+      return EMPTY_NEUTRALIZED_LINES;
+    }
+    const commentLines = sourceCommentOnlyLines(file, codeView.code, baseLine);
+    return new Set(canonicalDiffLines.flatMap((line) => (
+      line.kind === "added"
+      && line.newLine !== null
+      && commentLines.has(line.newLine)
+        ? [line.newLine]
+        : []
+    )));
+  }, [baseLine, canonicalDiffLines, codeView.code, file, hideAddedSourceCommentDiffs, review, sourceSide]);
+  const displayCanonicalDiffLines = useMemo(
+    () => canonicalDiffLines === undefined
+      ? undefined
+      : withoutAddedSourceCommentDiffLines(canonicalDiffLines, neutralizedSourceCommentLines),
+    [canonicalDiffLines, neutralizedSourceCommentLines],
+  );
+  const diffLines = useMemo(
+    () => displayCanonicalDiffLines === undefined
+      ? undefined
+      : diffLinesWithinSlice(displayCanonicalDiffLines, sourceSide, baseLine, shownEnd, diffOldSpan),
+    [baseLine, diffOldSpan, displayCanonicalDiffLines, shownEnd, sourceSide],
   );
   const canonicalKinds = useMemo(
     () => diffLines === undefined ? null : canonicalKindsWithinSlice(diffLines, sourceSide),
@@ -96,10 +129,25 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
   );
   const changedLineKinds = canonicalKinds ?? codeView.changedLineKinds ?? hookChangedLineKinds;
   const changedLines = useMemo(
-    () => canonicalKinds === null
+    () => {
+      const visibleChangedLines = canonicalKinds === null
       ? codeView.changedLines ?? hookChangedLines
-      : new Set(canonicalKinds.keys()),
-    [canonicalKinds, codeView.changedLines, hookChangedLines],
+        : new Set(canonicalKinds.keys());
+      if (neutralizedSourceCommentLines.size === 0) return visibleChangedLines;
+      return new Set([...visibleChangedLines, ...neutralizedSourceCommentLines]);
+    },
+    [canonicalKinds, codeView.changedLines, hookChangedLines, neutralizedSourceCommentLines],
+  );
+  const rawCanonicalKinds = useMemo(
+    () => rawDiffLines === undefined ? null : canonicalKindsWithinSlice(rawDiffLines, sourceSide),
+    [rawDiffLines, sourceSide],
+  );
+  const rawChangedLineKinds = rawCanonicalKinds ?? codeView.changedLineKinds ?? hookChangedLineKinds;
+  const rawChangedLines = useMemo(
+    () => rawCanonicalKinds === null
+      ? codeView.changedLines ?? hookChangedLines
+      : new Set(rawCanonicalKinds.keys()),
+    [codeView.changedLines, hookChangedLines, rawCanonicalKinds],
   );
   const summary = diffLines === undefined
     ? codeView.changedLineKinds ? summarizeChangeKinds(codeView.changedLineKinds) : hookSummary
@@ -130,10 +178,10 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
     if (prReviewed !== null) return githubCommentableLines;
     if (anchorableHunks(file, review.context).length === 0) return EMPTY_COMMENTABLE_LINES;
     // Artifact-only reviews have no GitHub comment range. Offer only actual shown HEAD additions.
-    return changedLineKinds.size > 0
-      ? new Set([...changedLineKinds].filter(([, kind]) => kind === "added" || kind === "modified").map(([line]) => line))
-      : new Set(changedLines);
-  }, [changedLineKinds, changedLines, file, githubCommentableLines, prReviewed, review, sourceSide]);
+    return rawChangedLineKinds.size > 0
+      ? new Set([...rawChangedLineKinds].filter(([, kind]) => kind === "added" || kind === "modified").map(([line]) => line))
+      : new Set(rawChangedLines);
+  }, [file, githubCommentableLines, prReviewed, rawChangedLineKinds, rawChangedLines, review, sourceSide]);
   const reviewCommentScopeNote = useMemo(
     () => githubCommentingReady && sourceSide === "head" && textualDiffNotice === null
       ? githubLineCommentScopeNote(githubCommentableLines, sourceLineCount)
@@ -383,6 +431,7 @@ function summarizeDiffLines(lines: readonly CodeDiffLine[]): SourceDiffSummary |
 
 const EMPTY_COMMENTABLE_LINES: ReadonlySet<number> = new Set<number>();
 const EMPTY_EVIDENCE_LINES: ReadonlySet<number> = new Set<number>();
+const EMPTY_NEUTRALIZED_LINES: ReadonlySet<number> = new Set<number>();
 const EMPTY_REMOVED: readonly { afterNewLine: number; lines: string[] }[] = [];
 const EMPTY_REMOVED_ROWS: ReadonlyMap<number, string[]> = new Map<number, string[]>();
 const STATUS_STYLE: React.CSSProperties = { padding: 16, color: "#8B949E", fontSize: 12 };
