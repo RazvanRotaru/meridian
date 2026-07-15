@@ -3,6 +3,7 @@ import type { BlueprintState, BlueprintStore } from "../state/store";
 import {
   isHorizontalNavigationWheel,
   PR_REVIEW_LEAVE_MESSAGE,
+  REVIEW_COMMENT_LEAVE_MESSAGE,
   prReviewNeedsNavigationLock,
   reviewRestoreRequested,
   startPrReviewNavigationGuard,
@@ -12,6 +13,7 @@ const IDLE = {
   viewMode: "modules" as const,
   prReviewed: null,
   prReviewStatus: "idle" as const,
+  reviewLineComposer: null,
   minimalSeedIds: [] as string[],
 };
 
@@ -30,6 +32,19 @@ describe("PR review navigation gesture lock", () => {
     expect(prReviewNeedsNavigationLock({ ...review, minimalSeedIds: [] })).toBe(true);
     expect(prReviewNeedsNavigationLock({ ...review, viewMode: "logic" })).toBe(true);
     expect(prReviewNeedsNavigationLock({ ...review, prReviewed: null })).toBe(false);
+  });
+
+  it("locks an artifact review only while an unfinished line comment has text", () => {
+    const target = {
+      reviewKey: "artifact-review",
+      lineRevision: null,
+      path: "src/a.ts",
+      line: 10,
+      confirmDiscard: false,
+      error: null,
+    };
+    expect(prReviewNeedsNavigationLock({ ...IDLE, reviewLineComposer: { ...target, body: "unfinished" } })).toBe(true);
+    expect(prReviewNeedsNavigationLock({ ...IDLE, reviewLineComposer: { ...target, body: "   " } })).toBe(false);
   });
 
   it("recognizes horizontal history-wheel input without swallowing pinch or vertical scroll", () => {
@@ -109,7 +124,23 @@ describe("PR review navigation gesture lock", () => {
     browser.popstate!(acceptedBack.event);
     expect(acceptedBack.stopImmediatePropagation).not.toHaveBeenCalled();
 
-    store.set({ prReviewed: null });
+    store.set({
+      prReviewed: null,
+      reviewLineComposer: {
+        reviewKey: "artifact-review",
+        lineRevision: null,
+        path: "src/a.ts",
+        line: 10,
+        body: "unfinished",
+        confirmDiscard: false,
+        error: null,
+      },
+    });
+    browser.confirm.mockReturnValueOnce(false);
+    browser.popstate!(popStateEvent().event);
+    expect(browser.confirm).toHaveBeenLastCalledWith(REVIEW_COMMENT_LEAVE_MESSAGE);
+
+    store.set({ reviewLineComposer: null });
     expect(browser.beforeunload).toBeNull();
     expect(browser.popstate).toBeNull();
 

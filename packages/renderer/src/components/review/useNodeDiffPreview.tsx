@@ -17,14 +17,18 @@ import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { ReviewCodePreviewTrigger } from "../../state/reviewPreferences";
 import type { CodeView } from "../../state/store";
 import { SourceDiffBody, useSourceDiffModel } from "../SourceDiffBody";
+import { useClearOnEscape } from "../canvas/useClearOnEscape";
+import { useReviewLineComposerGuard } from "./useReviewLineComposerGuard";
 
 const OPEN_DWELL_MS = 220;
-const CLOSE_GRACE_MS = 180;
+const CLOSE_GRACE_MS = 320;
 const PANEL_WIDTH = 680;
 const PANEL_MIN_WIDTH = 360;
 const PANEL_MAX_HEIGHT = 430;
 const PANEL_GAP = 12;
 const PANEL_MARGIN = 12;
+const PREVIEW_CHROME_HEIGHT = 74;
+const COMMENT_SCOPE_NOTE_RESERVE = 58;
 
 export interface PreviewRect {
   left: number;
@@ -132,6 +136,10 @@ export function useNodeDiffPreview(
   const requestToken = useRef(0);
   const activeId = useRef<string | null>(null);
   const pendingId = useRef<string | null>(null);
+  // Opening method and interaction intent are distinct. Click previews are already visually pinned
+  // but may still switch on another explicit node click; engaging with the card locks its subject.
+  const engagedRef = useRef(false);
+  const [pinnedNodeId, setPinnedNodeId] = useState<string | null>(null);
 
   const clearOpenTimer = useCallback(() => {
     if (openTimer.current !== null) {
@@ -151,10 +159,12 @@ export function useNodeDiffPreview(
     clearCloseTimer();
     requestToken.current += 1;
     activeId.current = null;
+    engagedRef.current = false;
+    setPinnedNodeId(null);
     setPreview(null);
   }, [clearCloseTimer, clearOpenTimer]);
   const scheduleHide = useCallback(() => {
-    if (activeId.current === null && pendingId.current === null) {
+    if (engagedRef.current || (activeId.current === null && pendingId.current === null)) {
       return;
     }
     clearOpenTimer();
@@ -167,6 +177,17 @@ export function useNodeDiffPreview(
     clearOpenTimer();
     clearCloseTimer();
   }, [clearCloseTimer, clearOpenTimer]);
+  const pinPreview = useCallback(() => {
+    if (activeId.current === null) return;
+    engagedRef.current = true;
+    setPinnedNodeId(activeId.current);
+    holdPreview();
+  }, [holdPreview]);
+  const requestHide = useReviewLineComposerGuard(hideNow, preview?.node.location.file ?? null);
+  const requestHideRef = useRef(requestHide);
+  const previousTrigger = useRef(trigger);
+  requestHideRef.current = requestHide;
+  useClearOnEscape(requestHide, preview !== null && pinnedNodeId !== null);
 
   useEffect(() => {
     hideNow();
@@ -176,7 +197,13 @@ export function useNodeDiffPreview(
       hideNow();
     }
   }, [codeModalOpen, enabled, hideNow]);
-  useEffect(() => hideNow(), [hideNow, trigger]);
+  useEffect(() => {
+    if (previousTrigger.current === trigger) return;
+    previousTrigger.current = trigger;
+    // Preference changes are allowed while a preview is open, but they are still a host close.
+    // Route them through the same Keep/Discard contract instead of orphaning an engaged draft.
+    requestHideRef.current();
+  }, [trigger]);
   useEffect(() => () => {
     // Unmount invalidates late requests and timers; no state write is needed once the layer is gone.
     clearOpenTimer();
@@ -198,6 +225,12 @@ export function useNodeDiffPreview(
     const graphNode = codePreviewNode(index.nodesById, flowNode.id);
     if (!graphNode) {
       scheduleHide();
+      return;
+    }
+    // Once the reader interacts with a preview it becomes a small working surface. Incidental node
+    // hover—and even another node click while writing—cannot replace its subject underneath them.
+    if (engagedRef.current) {
+      clearOpenTimer();
       return;
     }
     // Returning from the card to the same node should keep the already-loaded preview steady.
@@ -223,6 +256,8 @@ export function useNodeDiffPreview(
       pendingId.current = null;
       const token = ++requestToken.current;
       activeId.current = graphNode.id;
+      engagedRef.current = false;
+      setPinnedNodeId(dwell ? null : graphNode.id);
       setPreview({ node: graphNode, anchor, bounds, loading: true, view: null, unavailable: false });
       // Do not retain a second component-local payload cache. The store already deduplicates source
       // requests by immutable URL, while a mounted hook cache could survive a revision refresh and
@@ -268,6 +303,9 @@ export function useNodeDiffPreview(
     ? createPortal(
         <NodeDiffPreviewCard
           preview={preview}
+          pinned={pinnedNodeId === preview.node.id}
+          onEngage={pinPreview}
+          onClose={requestHide}
           onMouseEnter={holdPreview}
           onMouseLeave={onPointerLeave}
         />,
@@ -280,7 +318,7 @@ export function useNodeDiffPreview(
     onNodeMouseEnter,
     onNodeMouseMove: onNodeMouseEnter,
     onNodeMouseLeave: onPointerLeave,
-    onPaneClick: hideNow,
+    onPaneClick: requestHide,
     onPaneMouseMove: onPointerLeave,
     layer,
   };
@@ -288,6 +326,9 @@ export function useNodeDiffPreview(
 
 function NodeDiffPreviewCard(props: {
   preview: PreviewState;
+  pinned: boolean;
+  onEngage(): void;
+  onClose(): void;
   onMouseEnter(): void;
   onMouseLeave(): void;
 }) {
@@ -319,6 +360,8 @@ function NodeDiffPreviewCard(props: {
       style={{ ...PANEL_STYLE, ...placement }}
       onMouseEnter={props.onMouseEnter}
       onMouseLeave={props.onMouseLeave}
+      onMouseDownCapture={props.onEngage}
+      onFocusCapture={props.onEngage}
       onMouseDown={stop}
       onClick={stop}
       onDoubleClick={stop}
@@ -335,9 +378,29 @@ function NodeDiffPreviewCard(props: {
             <span style={DELETED_STYLE}>−{model.summary.deleted}</span>
           </span>
         ) : null}
+        {props.pinned ? <span style={PINNED_STYLE}>Pinned</span> : null}
+        {props.pinned ? (
+          <button
+            type="button"
+            aria-label="Close code preview"
+            title="Close code preview"
+            style={CLOSE_STYLE}
+            onClick={props.onClose}
+          >
+            ×
+          </button>
+        ) : null}
       </header>
       <div style={BODY_STYLE}>
-        <SourceDiffBody model={model} maxHeight={Math.max(90, placement.maxHeight - 74)} showGutter />
+        <SourceDiffBody
+          model={model}
+          maxHeight={Math.max(
+            90,
+            placement.maxHeight - PREVIEW_CHROME_HEIGHT - (model.reviewCommentScopeNote ? COMMENT_SCOPE_NOTE_RESERVE : 0),
+          )}
+          showGutter
+          onComposerEngage={props.onEngage}
+        />
       </div>
     </div>
   );
@@ -410,4 +473,32 @@ const SUMMARY_STYLE: React.CSSProperties = {
 };
 const ADDED_STYLE: React.CSSProperties = { color: "#56C271" };
 const DELETED_STYLE: React.CSSProperties = { color: "#F0787C" };
+const PINNED_STYLE: React.CSSProperties = {
+  flexShrink: 0,
+  border: "1px solid rgba(125,211,252,0.36)",
+  borderRadius: 999,
+  padding: "1px 6px",
+  color: "#7DD3FC",
+  background: "rgba(56,139,253,0.10)",
+  fontSize: 9.5,
+  fontWeight: 700,
+  letterSpacing: "0.02em",
+  textTransform: "uppercase",
+};
+const CLOSE_STYLE: React.CSSProperties = {
+  flexShrink: 0,
+  width: 24,
+  height: 24,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  border: "none",
+  borderRadius: 6,
+  background: "transparent",
+  color: "#9AA4B2",
+  cursor: "pointer",
+  font: "inherit",
+  fontSize: 18,
+  lineHeight: 1,
+};
 const BODY_STYLE: React.CSSProperties = { minHeight: 0, padding: 9, overflow: "hidden", background: "#10151B" };

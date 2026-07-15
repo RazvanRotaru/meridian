@@ -156,6 +156,15 @@ import {
 import { streamPrAnalysis, type PrAnalyzeStage } from "./prAnalysis";
 import { isPrReviewStale, prReviewRevisionKey, reviewRevision, type PrReviewRevision } from "./prReviewFreshness";
 import {
+  discardReviewLineComposer as discardReviewLineComposerState,
+  keepEditingReviewLineComposer as keepEditingReviewLineComposerState,
+  matchesReviewLineComposerTarget,
+  openReviewLineComposer as openReviewLineComposerState,
+  requestReviewLineComposerDismiss as requestReviewLineComposerDismissState,
+  setReviewLineComposerBody as setReviewLineComposerBodyState,
+  type ReviewLineComposerState,
+} from "./reviewLineComposer";
+import {
   fetchPreparedArtifact,
   fetchPreparedGraphSession,
   hasPrReviewLineDiff,
@@ -541,6 +550,9 @@ export interface BlueprintState {
   reviewFileTicks: Record<string, ReviewTick>;
   /** Draft review comments (file- or unit-anchored), persisted until submitted. */
   reviewComments: ReviewComment[];
+  /** One unfinished HEAD-line comment shared by every source host. Session-only: unlike a Pending
+   * review comment it is not submittable yet, but host swaps and incidental dismissal must not erase it. */
+  reviewLineComposer: ReviewLineComposerState | null;
   /** Projection shown in the PR review's bottom logic-flow split. This browser-local reader
    * preference is deliberately separate from the full Logic lens's URL-synced `logicView`. */
   reviewFlowSplitView: ReviewFlowSplitView;
@@ -849,6 +861,13 @@ export interface BlueprintState {
   toggleReviewFileViewed(path: string): void;
   toggleReviewFilesViewed(paths: readonly string[]): void;
   addReviewComment(path: string, nodeId: string | null, body: string, line?: number | null): void;
+  openReviewLineComposer(path: string, line: number): void;
+  setReviewLineComposerBody(body: string): void;
+  /** True means the caller may dismiss immediately. False leaves a dirty composer open on its
+   * inline Keep/Discard confirmation; the requesting host closes only after a later discard. */
+  requestReviewLineComposerDismiss(): boolean;
+  keepEditingReviewLineComposer(): void;
+  discardReviewLineComposer(): void;
   updateReviewComment(id: string, body: string): void;
   deleteReviewComment(id: string): void;
   setReviewFlowSplitView(view: ReviewFlowSplitView): void;
@@ -892,7 +911,7 @@ export interface BlueprintState {
   refreshTelemetry(): Promise<void>;
   /** Load one node's review diff for the hover preview without taking over the global code modal. */
   loadCodePreview(node: GraphNode): Promise<CodeView | null>;
-  showCode(node: GraphNode, opts?: { wholeFile?: boolean }): Promise<void>;
+  showCode(node: GraphNode, opts?: { wholeFile?: boolean; mode?: CodeView["mode"] }): Promise<void>;
   /** Open a changed file's full source even when the extractor produced no graph node for it. */
   showReviewFile(path: string): Promise<void>;
   /** Open contextual source beside the clicked wire's inspector. */
@@ -900,7 +919,8 @@ export interface BlueprintState {
   /** Move the open edge-source pane to another occurrence, loading its file/context on demand. */
   selectEdgeEvidence(index: number): Promise<void>;
   /** Close edge source only; a stale graph surface must never dismiss ordinary node/PR source. */
-  closeEdgeEvidence(): void;
+  /** True when the dock may unmount. A dirty line composer returns false until it is discarded. */
+  closeEdgeEvidence(): boolean;
   expandCode(): void;
   closeCode(): void;
   setPrsTab(tab: PrsTab): void;
@@ -1327,6 +1347,27 @@ function isSourceLineCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
+/** Whether changing only this view's chrome keeps the active composer mounted on the exact same
+ * HEAD source row. This lets inline → modal expansion feel continuous while still guarding an
+ * unrelated hover-card draft that happens to coexist with an older inline source view. */
+function codeViewCanHostReviewLineComposer(state: BlueprintState, view: CodeView): boolean {
+  const composer = state.reviewLineComposer;
+  if (
+    composer === null
+    || state.review === null
+    || composer.reviewKey !== state.review.context.reviewKey
+    || composer.lineRevision !== prReviewRevisionKey(state.prReviewRevision)
+    || composer.path !== view.node.location.file
+    || (view.sourceSide ?? "head") !== "head"
+    || view.code === null
+  ) {
+    return false;
+  }
+  const baseLine = view.baseLine ?? view.node.location.startLine;
+  const lineCount = view.lineCount ?? view.code.split("\n").length;
+  return composer.line >= baseLine && composer.line < baseLine + lineCount;
+}
+
 /** The module surface (Map + Service) opened at its top level: whole-repo overview, nothing expanded
  * or selected. The lens-switch fallback when no path node can be carried into it. */
 const MODULE_TOP_LEVEL = { moduleFocus: null, moduleExpanded: new Set<string>(), moduleSelected: new Set<string>() } as const;
@@ -1623,6 +1664,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let prReviewResumeRequest: { number: number; promise: Promise<void> } | null = null;
   // Edge-evidence context switches are asynchronous source reads; only the latest click may win.
   let edgeEvidenceSeq = 0;
+  // Every global source host shares this lane. Node id alone is insufficient because a node slice,
+  // its whole file, and edge evidence can all request the same id with different coordinates.
+  let codeViewSeq = 0;
+  // Dirty-composer navigation stays out of Zustand because callbacks are ephemeral behavior, not
+  // renderable state. The composer itself carries the visible confirmation; Discard replays the
+  // exact attempted source/lens/revision transition, while Keep editing clears this callback.
+  let pendingReviewLineComposerTransition: (() => void) | null = null;
   const prsNextPage: Record<PrsTab, number> = { open: 1, closed: 1 };
   // PR-head reads return an entire file. Share that response across every changed node in the file;
   // fetchCodeView still slices and annotates a separate node-specific view for each caller.
@@ -1723,6 +1771,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   return createStore<BlueprintState>((set, get) => {
     const requestMinimalRelayout = (activity?: LayoutActivity): Promise<void> =>
       get().minimalRelayout(activity);
+    const guardReviewLineComposerTransition = (transition: () => void): boolean => {
+      const current = get().reviewLineComposer;
+      const result = requestReviewLineComposerDismissState(current);
+      if (result.composer !== current) {
+        set({ reviewLineComposer: result.composer });
+      }
+      if (result.allowed) {
+        pendingReviewLineComposerTransition = null;
+        return true;
+      }
+      pendingReviewLineComposerTransition = transition;
+      return false;
+    };
 
     const reprojectArtifactReview = (showTests: boolean): void => {
       const state = get();
@@ -2164,6 +2225,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewUnitTicks: initialProgress?.unitTicks ?? {},
     reviewFileTicks: initialProgress?.fileTicks ?? {},
     reviewComments: initialProgress?.comments ?? [],
+    reviewLineComposer: null,
     reviewFlowSplitView: reviewPreferences.flowSplitView,
     reviewOpenFlowSplitOnSelect: reviewPreferences.openFlowSplitOnSelect,
     reviewCodePreviewTrigger: reviewPreferences.codePreviewTrigger,
@@ -2450,6 +2512,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       const context = requestCodebaseContextFor(state, exactNodeIds);
       if (context === null) {
+        return;
+      }
+      if (!guardReviewLineComposerTransition(() => get().revealSelectedTraceInCodebase())) {
         return;
       }
 
@@ -2850,6 +2915,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // projection: it returns only after proving this exact id is a REAL node in the derived tree.
         const context = requestCodebaseContextFor(state, [graphTarget]);
         if (context === null || !context.highlightTargetIds.has(graphTarget)) return;
+        if (!guardReviewLineComposerTransition(() => get().selectFlowPaneTarget(nodeId))) return;
         set(canonicalRequestMapPatch(state, context));
         const subject = executionOrigin === "synthetic" ? "synthetic run" : "request";
         void get().moduleRelayout({ label: `Revealing ${state.index.nodesById.get(graphTarget)?.displayName ?? graphTarget} from ${subject}…` }).then(recenterIfCurrent);
@@ -3004,6 +3070,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Open a callable's logic flow (the double-click "dive into logic" gesture). A fresh chart
     // starts at default expansion; clear any prior selection (it means nothing in a new chart).
     openLogicFlow(nodeId) {
+      if (!guardReviewLineComposerTransition(() => get().openLogicFlow(nodeId))) {
+        return;
+      }
       const state = get();
       moduleLayoutSeq += 1;
       beginLensTransition(get, set);
@@ -3028,6 +3097,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // the unit revealed on canvas AND rooted/selected in the composition side panel, so a reader can
     // pivot from "who calls this" to "how healthy is the unit it lives in".
     openComposition(unitId) {
+      if (!guardReviewLineComposerTransition(() => get().openComposition(unitId))) {
+        return;
+      }
       const state = get();
       beginLensTransition(get, set);
       const reveal = serviceRevealStateForMany(
@@ -3253,6 +3325,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // is unchanged it still clears the stale selection + code so navigation always returns to the
     // graph first.
     setCompRoot(id) {
+      if (!guardReviewLineComposerTransition(() => get().setCompRoot(id))) {
+        return;
+      }
       const sameRoot = get().compRoot === id;
       // Root navigation should always return to the graph surface; if the root is unchanged, still
       // clear stale composition selection/code so Cmd+P never appears to jump straight to source.
@@ -3945,9 +4020,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     setMinimalView(view) {
-      if (get().minimalSeedIds.length > 0 && get().minimalView !== view) {
-        set({ minimalView: view });
-      }
+      const state = get();
+      if (state.minimalSeedIds.length === 0 || state.minimalView === view) return;
+      if (!guardReviewLineComposerTransition(() => get().setMinimalView(view))) return;
+      set({ minimalView: view });
     },
 
     setMinimalShowGhostNodes(visible) {
@@ -3975,6 +4051,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         || state.flowPaneLayoutStatus === "laying-out"
         || state.syntheticExecutionStatus === "running"
       ) {
+        return;
+      }
+      if (!guardReviewLineComposerTransition(() => get().buildMinimalGraph())) {
         return;
       }
       // The active surface's spec decides how a selection seeds the overlay: identity on the Map,
@@ -4103,6 +4182,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         get().closeMinimalGraph();
         return;
       }
+      if (!guardReviewLineComposerTransition(() => get().backMinimalGraph())) {
+        return;
+      }
       minimalLayoutSeq += 1;
       flowPaneLayoutSeq += 1;
       requestTargetRevealSeq += 1;
@@ -4161,6 +4243,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // can adjust it and rebuild without re-picking every card. Bumping the seq discards any ELK
     // pass still in flight, so a slow layout can't repopulate the arrays after the close.
     closeMinimalGraph() {
+      if (!guardReviewLineComposerTransition(() => get().closeMinimalGraph())) {
+        return;
+      }
       const stateBeforeClose = get();
       const closingPrReview = stateBeforeClose.prReviewed;
       // A user close/lens transition wins over a refresh. Invalidate both its data-fetch lane and
@@ -4433,6 +4518,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (resolution === null) {
         return; // nothing anchored resolves to a cluster — there is no scope to open.
       }
+      if (!guardReviewLineComposerTransition(() => get().openServiceScope())) {
+        return;
+      }
       beginLensTransition(get, set);
       // Scoping from WITHIN the call lens narrows the canvas the reader is already on, so their
       // open frames must survive: UNION the reveal's expansion into the current one. From any
@@ -4626,6 +4714,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       ) {
         return;
       }
+      if (!guardReviewLineComposerTransition(() => get().selectReviewGroup(groupId))) {
+        return;
+      }
       // An unknown id falls back to "All" — a stale group id can never strand the reader on an empty Map.
       const group = groupId === null ? null : reviewGroups.groups.find((candidate) => candidate.id === groupId) ?? null;
       const allowed = group === null ? null : new Set(group.moduleIds);
@@ -4689,6 +4780,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         deletedNodeIds: state.reviewDeletedNodeIds,
       });
       if (normalized !== null && projection.seeds.length === 0) {
+        return;
+      }
+      if (!guardReviewLineComposerTransition(() => get().selectReviewPathScope(path))) {
         return;
       }
       invalidateMinimalLayout();
@@ -4758,6 +4852,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         .filter((match) => state.index.isWithinFocus(rootId, match.moduleId));
       const seeds = [...new Set(matched.map((match) => match.moduleId))].sort();
       if (seeds.length === 0) {
+        return;
+      }
+      if (!guardReviewLineComposerTransition(() => get().openReviewSubgraph(rootId))) {
         return;
       }
       // Treat the focused root as a rollup boundary only for expansion calculation: every file and
@@ -4875,6 +4972,72 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const next = applyFilesToggle(files, reviewUnitTicks, reviewFileTicks, new Date().toISOString());
       set({ reviewUnitTicks: next.unitTicks, reviewFileTicks: next.fileTicks });
       persistReviewProgress(get());
+    },
+
+    // The line composer is one session-only editing surface shared by hover, inline, modal, and
+    // edge source hosts. Capturing the review revision prevents a remounted view from silently
+    // retargeting unfinished prose after the PR head changes.
+    openReviewLineComposer(path, line) {
+      const state = get();
+      if (
+        !state.review
+        || state.prReviewRefreshing
+        || state.prReviewStatus === "preparing"
+        || !Number.isInteger(line)
+        || line < 1
+      ) {
+        return;
+      }
+      const target = {
+        reviewKey: state.review.context.reviewKey,
+        lineRevision: prReviewRevisionKey(state.prReviewRevision),
+        path,
+        line,
+      };
+      const current = state.reviewLineComposer;
+      if (matchesReviewLineComposerTarget(current, target)) {
+        // Re-selecting the current line is an explicit return to the draft, so it also cancels a
+        // previously queued source transition and leaves confirmation mode.
+        pendingReviewLineComposerTransition = null;
+        set({ reviewLineComposer: openReviewLineComposerState(current, target) });
+        return;
+      }
+      if (!guardReviewLineComposerTransition(() => get().openReviewLineComposer(path, line))) {
+        return;
+      }
+      set({ reviewLineComposer: openReviewLineComposerState(get().reviewLineComposer, target) });
+    },
+
+    setReviewLineComposerBody(body) {
+      const current = get().reviewLineComposer;
+      if (current === null) return;
+      set({ reviewLineComposer: setReviewLineComposerBodyState(current, body) });
+    },
+
+    requestReviewLineComposerDismiss() {
+      // An explicit Cancel/host-close supersedes a queued source switch. The host-level guard owns
+      // its own replay callback and will close only after Discard.
+      pendingReviewLineComposerTransition = null;
+      const current = get().reviewLineComposer;
+      const result = requestReviewLineComposerDismissState(current);
+      if (result.composer !== current) {
+        set({ reviewLineComposer: result.composer });
+      }
+      return result.allowed;
+    },
+
+    keepEditingReviewLineComposer() {
+      pendingReviewLineComposerTransition = null;
+      const current = get().reviewLineComposer;
+      if (current === null) return;
+      set({ reviewLineComposer: keepEditingReviewLineComposerState(current) });
+    },
+
+    discardReviewLineComposer() {
+      const transition = pendingReviewLineComposerTransition;
+      pendingReviewLineComposerTransition = null;
+      set({ reviewLineComposer: discardReviewLineComposerState() });
+      transition?.();
     },
 
     // Add a draft comment on a file (nodeId null), touched unit, or explicit HEAD-side line. Drafts
@@ -5225,6 +5388,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
         return;
       }
+      if (!guardReviewLineComposerTransition(() => get().setViewMode(mode))) {
+        return;
+      }
       if (previous === "prs") {
         // A prepare-first review only owns the PRs waiting surface. Leaving it explicitly abandons
         // the entry; the server stream may finish, but its sequence can no longer swap the graph.
@@ -5315,6 +5481,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Hiding tests while having selected test code would strand the view on nodes that no longer
     // exist, so selection — including the composition panel's own selection/root — retreats first.
     toggleShowTests() {
+      if (!guardReviewLineComposerTransition(() => get().toggleShowTests())) {
+        return;
+      }
       const showTests = !get().showTests;
       const beforeToggle = get();
       // Live PR reprojection below replaces the whole review workspace and clears its split. An
@@ -5554,32 +5723,40 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       return request ? fetchCodeView(request, "inline", codePayloadCache) : null;
     },
 
-    // Fetch and reveal a callable's source, starting inline on the node. Inert when the server
-    // ships no source access or the node has no location. A race guard drops the result if a newer
-    // click (a different node) has since taken over the view; the mode is preserved across the
-    // fetch so a mid-flight expand-to-modal is not clobbered when the code lands.
+    // Fetch and reveal a callable's source in the requested host (inline by default). Inert when
+    // the server ships no source access or the node has no location. A race guard drops the result
+    // if a newer click has since taken over; the host is preserved across the fetch so a mid-flight
+    // inline → modal expansion is not clobbered when the code lands.
     async showCode(node, opts) {
-      const request = codeLoadRequest(node, opts, get(), sourceUrl, prFileUrl);
+      const state = get();
+      const request = codeLoadRequest(node, opts, state, sourceUrl, prFileUrl);
       if (!request) {
         return;
       }
+      if (!guardReviewLineComposerTransition(
+        () => { void get().showCode(node, opts); },
+      )) {
+        return;
+      }
+      const requestedMode = opts?.mode ?? "inline";
+      const sequence = ++codeViewSeq;
       set({
         codeView: {
           node,
           code: null,
           loading: true,
           error: null,
-          mode: "inline",
+          mode: requestedMode,
           baseLine: request.baseLine,
           wholeFile: request.wholeFile,
         },
       });
-      const view = await fetchCodeView(request, "inline", codePayloadCache);
-      if (get().codeView?.node.id !== node.id) {
+      const view = await fetchCodeView(request, requestedMode, codePayloadCache);
+      if (sequence !== codeViewSeq || get().codeView?.node.id !== node.id) {
         return;
       }
       // The reader may expand the loading inline panel before the response lands.
-      set({ codeView: { ...view, mode: get().codeView?.mode ?? "inline" } });
+      set({ codeView: { ...view, mode: get().codeView?.mode ?? requestedMode } });
     },
 
     async showReviewFile(path) {
@@ -5599,12 +5776,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         parentId: null,
         location: { file: path, startLine: 1 },
       };
-      const loading = get().showCode(sourceNode, { wholeFile: true });
-      // Synthetic files have no card-mounted inline host. Promote the loading state immediately so
-      // a slow GitHub source response still gives visible feedback in the shared modal.
-      if (get().codeView?.node.id === sourceNode.id) {
-        get().expandCode();
+      const request = codeLoadRequest(sourceNode, { wholeFile: true }, state, sourceUrl, prFileUrl);
+      if (!request || !guardReviewLineComposerTransition(
+        () => { void get().showReviewFile(path); },
+      )) {
+        return;
       }
+      // A file row has no card-mounted inline host, so modal intent is part of the guarded source
+      // transition itself and survives a dirty-draft Discard replay.
+      const loading = get().showCode(sourceNode, { wholeFile: true, mode: "modal" });
       await loading;
     },
 
@@ -5615,13 +5795,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       const selectedIndex = Math.min(Math.max(Math.trunc(activeIndex), 0), contexts.length - 1);
       const context = contexts[selectedIndex]!;
-      const node = edgeEvidenceNode(context, selectedIndex, get());
-      const request = codeLoadRequest(node, undefined, get(), sourceUrl, prFileUrl);
+      const state = get();
+      const node = edgeEvidenceNode(context, selectedIndex, state);
+      const request = codeLoadRequest(node, undefined, state, sourceUrl, prFileUrl);
       if (!request) {
         get().closeEdgeEvidence();
         return; // The pinned inspector remains visible and truthfully reports attribution only.
       }
-      const span = displayedEvidenceSpan(context, get(), prFileUrl);
+      if (!guardReviewLineComposerTransition(
+        () => { void get().showEdgeEvidence(contexts, activeIndex); },
+      )) {
+        return;
+      }
+      const span = displayedEvidenceSpan(context, state, prFileUrl);
       const edgeEvidence = {
         contexts: [...contexts],
         activeIndex: selectedIndex,
@@ -5629,6 +5815,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         focusEndLine: span.end,
       };
       const sequence = ++edgeEvidenceSeq;
+      const codeSequence = ++codeViewSeq;
       const selectionKey = edgeEvidenceKey(context);
       set({
         codeView: {
@@ -5647,6 +5834,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const currentContext = current?.edgeEvidence?.contexts[current.edgeEvidence.activeIndex];
       if (
         sequence !== edgeEvidenceSeq
+        || codeSequence !== codeViewSeq
         || currentContext === undefined
         || edgeEvidenceKey(currentContext) !== selectionKey
       ) {
@@ -5665,25 +5853,42 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     closeEdgeEvidence() {
       if (get().codeView?.edgeEvidence === undefined) {
-        return;
+        return true;
+      }
+      if (!guardReviewLineComposerTransition(() => get().closeEdgeEvidence())) {
+        return false;
       }
       edgeEvidenceSeq += 1;
+      codeViewSeq += 1;
       set({ codeView: null });
+      return true;
     },
 
     // Blow the current inline panel up into the centered modal. A no-op when nothing is shown.
     expandCode() {
-      const { codeView } = get();
+      const state = get();
+      const { codeView } = state;
       if (!codeView) {
+        return;
+      }
+      if (
+        state.reviewLineComposer !== null
+        && !codeViewCanHostReviewLineComposer(state, codeView)
+        && !guardReviewLineComposerTransition(() => get().expandCode())
+      ) {
         return;
       }
       set({ codeView: { ...codeView, mode: "modal" } });
     },
 
     closeCode() {
+      if (!guardReviewLineComposerTransition(() => get().closeCode())) {
+        return;
+      }
       if (get().codeView?.edgeEvidence !== undefined) {
         edgeEvidenceSeq += 1;
       }
+      codeViewSeq += 1;
       set({ codeView: null });
     },
 
@@ -6029,6 +6234,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         || before.viewMode !== "modules"
         || before.minimalSeedIds.length === 0
       ) {
+        return;
+      }
+      if (!guardReviewLineComposerTransition(() => { void get().refreshPrReview(); })) {
         return;
       }
       // Refresh temporarily installs the new file inputs because both synchronous projection and
@@ -6382,6 +6590,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         || summary === null
         || (enteringFromPrs && state.viewMode !== "prs")
       ) {
+        return;
+      }
+      if (!guardReviewLineComposerTransition(() => { void get().prepareHeadGraph(); })) {
         return;
       }
       // A direct manual re-run supersedes the prior action just like Retry does through

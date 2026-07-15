@@ -109,12 +109,22 @@ export function CodeBlock({
   changedLineKinds?: ReadonlyMap<number, ChangedLineKind>;
   /** Absolute source rows that prove the selected graph edge. Styled independently from PR diffs. */
   evidenceLines?: ReadonlySet<number>;
-  /** Opens the controlled line composer. Only the gutter affordance invokes this callback. */
+  /** Opens the controlled line composer from either the source row or its keyboard gutter action. */
   onLineClick?: (line: number) => void;
   /** Absolute HEAD-side lines allowed to host a RIGHT-side review comment. */
   commentableLines?: ReadonlySet<number>;
   /** The panel-owned composer shown immediately below its absolute source row. */
-  lineComposer?: { line: number; onAdd: (body: string) => void; onCancel: () => void } | null;
+  lineComposer?: {
+    line: number;
+    onAdd: (body: string) => void | boolean | Promise<void | boolean>;
+    onCancel: () => void;
+    value?: string;
+    onValueChange?: (value: string) => void;
+    confirmDiscard?: boolean;
+    error?: string | null;
+    onKeepEditing?: () => void;
+    onDiscard?: () => void;
+  } | null;
   /** Existing GitHub RIGHT-side comments already filtered to this visible file slice. */
   existingComments?: readonly PrGitHubComment[];
   /** Fresh local line drafts already filtered to this visible file slice. */
@@ -228,10 +238,16 @@ export function CodeBlock({
     const row = container.querySelector<HTMLTableRowElement>(`tr[data-source-line="${firstFocus}"]`);
     container.scrollTop = Math.max(0, (row?.offsetTop ?? (firstFocus - startLine) * LINE_HEIGHT_PX) - 3 * LINE_HEIGHT_PX);
   }, [code, startLine, changedLines, changedLineKinds, evidenceLines, existingCommentsByLine, pendingCommentsByLine]);
-  // GitHub reveals its line-comment affordance when the pointer is anywhere on the source row.
-  // Restricting this to the narrow gutter made the control effectively undiscoverable while
-  // reading/selecting code, especially in the modal and compact hover preview.
-  const [hoveredLine, setHoveredLine] = useState<number | null>(null);
+  useEffect(() => {
+    if (!lineComposer?.confirmDiscard) return;
+    const row = listingRef.current?.querySelector<HTMLTableRowElement>(
+      `tr[data-line-comment-composer="${lineComposer.line}"]`,
+    );
+    // A host-level close may be requested after the reader has scrolled far from the edited line.
+    // Bring the inline confirmation (and its auto-focused Keep button) back into view so the close
+    // never appears inert.
+    row?.scrollIntoView({ block: "nearest" });
+  }, [lineComposer?.confirmDiscard, lineComposer?.line]);
   if (startLine === undefined) {
     return <pre style={{ ...PRE_STYLE, maxHeight }}>{renderHighlightedLines(highlightedLines)}</pre>;
   }
@@ -251,6 +267,7 @@ export function CodeBlock({
   const lastLine = startLine + highlightedLines.length - 1;
   return (
     <div ref={listingRef} style={{ ...LISTING_STYLE, maxHeight }}>
+      <style>{LINE_COMMENT_BUTTON_CSS}</style>
       <table style={CODE_TABLE_STYLE}>
         <tbody>
           {canonicalRows?.deletedByBeforeLine.get(firstLine)?.map((line) => (
@@ -309,8 +326,7 @@ export function CodeBlock({
                   aria-label={canonicalDiffAriaLabel(canonicalRow)}
                   data-edge-evidence-line={evidence ? "true" : undefined}
                   data-review-comment-line={commentable ? lineNo : undefined}
-                  onMouseEnter={() => setHoveredLine(lineNo)}
-                  onMouseLeave={() => setHoveredLine((current) => current === lineNo ? null : current)}
+                  data-line-comment-composer-open={composerOpen ? "true" : undefined}
                 >
                   {gutterVisible ? (
                     <td style={GUTTER_CELL_STYLE}>
@@ -318,10 +334,8 @@ export function CodeBlock({
                         {commentable ? (
                           <button
                             type="button"
-                            style={{
-                              ...LINE_COMMENT_BUTTON_STYLE,
-                              visibility: hoveredLine === lineNo || composerOpen ? "visible" : "hidden",
-                            }}
+                            className="mrd-line-comment-button"
+                            style={LINE_COMMENT_BUTTON_STYLE}
                             aria-label={`Comment on line ${lineNo}`}
                             title={`Comment on line ${lineNo}`}
                             onClick={(event) => {
@@ -342,7 +356,23 @@ export function CodeBlock({
                       </div>
                     </td>
                   ) : null}
-                  <td style={{ ...CODE_CELL_STYLE, ...(lineRowStyle(kind) ?? {}), ...(evidence ? EVIDENCE_ROW_STYLE : {}) }}>
+                  <td
+                    data-source-code-cell={commentable ? lineNo : undefined}
+                    title={commentable ? `Click to comment on line ${lineNo}` : undefined}
+                    style={{
+                      ...CODE_CELL_STYLE,
+                      ...(lineRowStyle(kind) ?? {}),
+                      ...(evidence ? EVIDENCE_ROW_STYLE : {}),
+                      ...(commentable ? COMMENTABLE_CODE_CELL_STYLE : {}),
+                    }}
+                    onClick={commentable ? (event) => {
+                      // A compact hover preview should not require finding a 15px gutter target.
+                      // Preserve ordinary code selection and modified clicks, but make a direct
+                      // primary click on any GitHub-commentable line open the same composer.
+                      if (!shouldOpenLineComposerFromCodeCell(event)) return;
+                      onLineClick(lineNo);
+                    } : undefined}
+                  >
                     {line.length > 0 ? line : " "}
                   </td>
                 </tr>
@@ -364,13 +394,19 @@ export function CodeBlock({
                   </tr>
                 ) : null}
                 {composerOpen ? (
-                  <tr>
+                  <tr data-line-comment-composer={lineNo}>
                     <td colSpan={gutterVisible ? 2 : 1} style={COMPOSER_CELL_STYLE}>
                       <CommentComposer
                         key={lineNo}
                         placeholder={`Comment on line ${lineNo}…`}
                         onAdd={lineComposer.onAdd}
                         onCancel={lineComposer.onCancel}
+                        value={lineComposer.value}
+                        onValueChange={lineComposer.onValueChange}
+                        confirmDiscard={lineComposer.confirmDiscard}
+                        error={lineComposer.error}
+                        onKeepEditing={lineComposer.onKeepEditing}
+                        onDiscard={lineComposer.onDiscard}
                         stopEscape
                       />
                     </td>
@@ -399,6 +435,24 @@ export function CodeBlock({
       </table>
     </div>
   );
+}
+
+function shouldOpenLineComposerFromCodeCell(event: React.MouseEvent<HTMLTableCellElement>): boolean {
+  if (
+    event.button !== 0
+    || event.altKey
+    || event.ctrlKey
+    || event.metaKey
+    || event.shiftKey
+  ) {
+    return false;
+  }
+  const target = event.target as { closest?: (selector: string) => Element | null } | null;
+  if (target?.closest?.("button,a,input,textarea,select,summary,[contenteditable='true']")) {
+    return false;
+  }
+  const selection = event.currentTarget.ownerDocument.getSelection();
+  return selection === null || selection.isCollapsed;
 }
 
 function foldFocus(options: {
@@ -663,6 +717,22 @@ const LINE_COMMENT_BUTTON_STYLE: React.CSSProperties = {
   cursor: "pointer",
   flexShrink: 0,
 };
+export const LINE_COMMENT_BUTTON_CSS = `
+tr[data-review-comment-line] .mrd-line-comment-button {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 90ms ease;
+}
+tr[data-review-comment-line]:hover .mrd-line-comment-button,
+tr[data-review-comment-line]:focus-within .mrd-line-comment-button,
+tr[data-line-comment-composer-open="true"] .mrd-line-comment-button {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (prefers-reduced-motion: reduce) {
+  tr[data-review-comment-line] .mrd-line-comment-button { transition: none; }
+}`;
+const COMMENTABLE_CODE_CELL_STYLE: React.CSSProperties = { cursor: "pointer" };
 const CHANGED_LINE_STYLE: React.CSSProperties = { color: "#E2A33C", fontWeight: 700 };
 const EVIDENCE_GUTTER_STYLE: React.CSSProperties = { color: "#7DD3FC", fontWeight: 800 };
 const CODE_LINE_STYLE: React.CSSProperties = { display: "block", width: "100%" };

@@ -42,7 +42,10 @@ export function useGitHubCommentableReviewLines(
   lineCount?: number,
 ): ReadonlySet<number> {
   const ranges = useBlueprint((state) => path === null ? NO_RANGES : (state.reviewCommentRangesByFile[path] ?? NO_RANGES));
-  const enabled = useBlueprint((state) => state.prReviewed !== null && state.review !== null);
+  const enabled = useBlueprint((state) => state.prReviewed !== null
+    && state.review !== null
+    && !state.prReviewRefreshing
+    && state.prReviewStatus !== "preparing");
   return useMemo(
     () => commentableReviewLines(ranges, baseLine, code, enabled, lineCount),
     [baseLine, code, enabled, lineCount, ranges],

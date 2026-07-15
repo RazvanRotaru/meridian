@@ -11,22 +11,27 @@ import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import type { CodeView } from "../state/store";
 import { relationColor } from "../theme/relationTheme";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
+import { useReviewLineComposerGuard } from "./review/useReviewLineComposerGuard";
 import { SourceDiffBody, useSourceDiffModel } from "./SourceDiffBody";
 
 export function CodePanel() {
   const codeView = useBlueprint((state) => state.codeView);
   const { closeCode } = useBlueprintActions();
   const open = codeView?.mode === "modal" && codeView.edgeEvidence === undefined;
+  const requestClose = useReviewLineComposerGuard(
+    closeCode,
+    open ? codeView?.node.location.file ?? null : null,
+  );
 
   // Edge evidence has a graph-local host beside its wire inspector. Keeping the global panel
   // deliberately empty prevents the old second modal (and its independent close lifecycle).
-  useClearOnEscape(closeCode, open);
+  useClearOnEscape(requestClose, open);
   if (!codeView || !open) {
     return null;
   }
   return (
-    <div style={BACKDROP_STYLE} onClick={closeCode}>
-      <SourcePanel codeView={codeView} presentation="modal" onClose={closeCode} />
+    <div style={BACKDROP_STYLE} data-source-code-backdrop="true" onClick={requestClose}>
+      <SourcePanel codeView={codeView} presentation="modal" onClose={requestClose} />
     </div>
   );
 }

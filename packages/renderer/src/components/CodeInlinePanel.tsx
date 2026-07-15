@@ -13,6 +13,7 @@
  */
 
 import type { CodeView } from "../state/store";
+import { useReviewLineComposerGuard } from "./review/useReviewLineComposerGuard";
 import { SourceDiffBody, useSourceDiffModel } from "./SourceDiffBody";
 
 export function CodeInlinePanel({
@@ -28,6 +29,7 @@ export function CodeInlinePanel({
 }) {
   const { node } = codeView;
   const model = useSourceDiffModel(codeView);
+  const requestClose = useReviewLineComposerGuard(onClose, codeView.node.location.file);
   const wholeFile = codeView.wholeFile ?? false;
   const { file, startLine, endLine } = node.location;
   const baseLine = model.baseLine;
@@ -64,7 +66,7 @@ export function CodeInlinePanel({
           title="Close"
           onClick={(event) => {
             stop(event);
-            onClose();
+            requestClose();
           }}
         >
           ×

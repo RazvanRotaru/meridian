@@ -39,6 +39,27 @@ describe("CommentComposer", () => {
     expect(markup).toContain("Add reply");
     expect(markup).toContain("GitHub rejected the comment");
   });
+
+  it("keeps a controlled draft visible while confirming an explicit discard", () => {
+    const markup = renderToStaticMarkup(
+      <CommentComposer
+        placeholder="Comment on line 19…"
+        value="Do not lose this unfinished thought"
+        confirmDiscard
+        onValueChange={() => undefined}
+        onKeepEditing={() => undefined}
+        onDiscard={() => undefined}
+        onAdd={() => undefined}
+        onCancel={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("Do not lose this unfinished thought");
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain("Keep editing");
+    expect(markup).toContain("Discard comment");
+    expect(markup).not.toContain(">Add comment<");
+  });
 });
 
 describe("reviewCommentThreadOrder", () => {

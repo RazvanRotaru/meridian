@@ -10,6 +10,8 @@ import { useEffect, useRef } from "react";
 import { EdgeSourcePane } from "./CodePanel";
 import { WireInspector } from "./WireInspector";
 import { useClearOnEscape } from "./canvas/useClearOnEscape";
+import { useBlueprint } from "../state/StoreContext";
+import { useReviewLineComposerGuard } from "./review/useReviewLineComposerGuard";
 
 interface EdgeInspectionDockProps {
   pair: Edge[];
@@ -20,7 +22,11 @@ interface EdgeInspectionDockProps {
 
 export function EdgeInspectionDock({ pair, labelOf, onClose, onDrill }: EdgeInspectionDockProps) {
   const dockRef = useRef<HTMLDivElement>(null);
-  useClearOnEscape(onClose, true);
+  const sourcePath = useBlueprint((state) => state.codeView?.edgeEvidence === undefined
+    ? null
+    : state.codeView.node.location.file);
+  const requestClose = useReviewLineComposerGuard(onClose, sourcePath);
+  useClearOnEscape(requestClose, true);
   useEffect(() => {
     const previous = document.activeElement;
     dockRef.current?.focus({ preventScroll: true });
@@ -41,7 +47,7 @@ export function EdgeInspectionDock({ pair, labelOf, onClose, onDrill }: EdgeInsp
       onClick={(event) => event.stopPropagation()}
     >
       <EdgeSourcePane />
-      <WireInspector pair={pair} labelOf={labelOf} onClose={onClose} onDrill={onDrill} />
+      <WireInspector pair={pair} labelOf={labelOf} onClose={requestClose} onDrill={onDrill} />
     </div>
   );
 }

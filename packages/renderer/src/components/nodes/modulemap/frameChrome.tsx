@@ -39,7 +39,7 @@ export function frameTitleBarStyle(status: ChangeStatus | undefined): React.CSSP
 export function CodeButton({ id }: { id: string }) {
   const node = useBlueprint((state) => state.index.nodesById.get(id));
   const sourceUrl = useBlueprint((state) => state.sourceUrl);
-  const { showCode, expandCode } = useBlueprintActions();
+  const { showCode } = useBlueprintActions();
   if (!isSourceBackedNode(node) || !sourceUrl) {
     return null;
   }
@@ -51,8 +51,7 @@ export function CodeButton({ id }: { id: string }) {
       aria-label="View source"
       onClick={(event) => {
         event.stopPropagation();
-        void showCode(node);
-        expandCode();
+        void showCode(node, { mode: "modal" });
       }}
       onDoubleClick={(event) => event.stopPropagation()}
     >

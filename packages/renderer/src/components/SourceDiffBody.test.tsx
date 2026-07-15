@@ -6,7 +6,13 @@ import type { BlueprintState, CodeView } from "../state/store";
 import { createBlueprintStore } from "../state/store";
 import { StoreProvider } from "../state/StoreContext";
 import type { CodeDiffLine } from "./CodeBlock";
-import { diffLinesWithinSlice, SourceDiffBody, sourceDiffInstanceKey, useSourceDiffModel } from "./SourceDiffBody";
+import {
+  diffLinesWithinSlice,
+  githubLineCommentScopeNote,
+  SourceDiffBody,
+  sourceDiffInstanceKey,
+  useSourceDiffModel,
+} from "./SourceDiffBody";
 
 const FILE = "src/review.ts";
 const NODE: GraphNode = {
@@ -60,6 +66,8 @@ describe("SourceDiffBody", () => {
     expect(hoverBody).not.toContain('data-source-line="24"');
     expect(hoverBody.match(/data-diff-origin="delete"/g)).toHaveLength(1);
     expect(hoverBody.match(/data-diff-origin="add"/g)).toHaveLength(1);
+    expect(hoverBody).toContain('data-review-comment-scope="partial"');
+    expect(hoverBody).toContain("Hover L17–L23 to add a comment");
   });
 
   it("keeps the legacy deletion immediately before the first visible source line", () => {
@@ -154,6 +162,69 @@ describe("SourceDiffBody", () => {
     expect(html).toContain('data-non-textual-diff="true"');
     expect(html).toContain("Git reports this file changed, but no textual diff is available");
     expect(html).toContain('data-source-line="1"');
+    expect(html).not.toContain("data-review-comment-scope");
+  });
+
+  it("labels a live preview with no API-commentable overlap without promising a GitHub target", () => {
+    const view: CodeView = {
+      node: NODE,
+      code: "line 1\nline 2\nline 3",
+      lineCount: 3,
+      loading: false,
+      error: null,
+      mode: "inline",
+      baseLine: 1,
+    };
+    const html = renderBody(view, 340);
+
+    expect(html).toContain('data-review-comment-scope="none"');
+    expect(html).toContain("No inline-commentable PR diff lines in this preview");
+    expect(html).not.toContain("use GitHub");
+  });
+
+  it("restores the shared unfinished composer when the same line mounts in another source host", () => {
+    const view: CodeView = {
+      node: NODE,
+      code: Array.from({ length: 40 }, (_value, index) => `line ${index + 1}`).join("\n"),
+      loading: false,
+      error: null,
+      mode: "modal",
+      baseLine: 1,
+    };
+    const html = renderBody(view, "70vh", {
+      reviewCommentRangesByFile: { [FILE]: [{ start: 20, end: 20 }] },
+      reviewLineComposer: {
+        reviewKey: "source-diff-test",
+        lineRevision: null,
+        path: FILE,
+        line: 20,
+        body: "Carry this exact text between code views",
+        confirmDiscard: false,
+        error: null,
+      },
+    });
+
+    expect(html).toContain('placeholder="Comment on line 20…"');
+    expect(html).toContain("Carry this exact text between code views");
+  });
+});
+
+describe("githubLineCommentScopeNote", () => {
+  it("names a contiguous range and bounds fragmented range copy", () => {
+    expect(githubLineCommentScopeNote(new Set([7, 8, 9]), 14)).toBe(
+      "Hover L7–L9 to add a comment · use GitHub for other lines",
+    );
+    expect(githubLineCommentScopeNote(new Set([7, 9, 10, 14]), 14)).toBe(
+      "Hover L7, L9–L10 +1 more to add a comment · use GitHub for other lines",
+    );
+  });
+
+  it("stays silent when the whole source is commentable and explains an empty overlap", () => {
+    expect(githubLineCommentScopeNote(new Set([17, 18, 19]), 3)).toBeNull();
+    expect(githubLineCommentScopeNote(new Set(), 14)).toBe(
+      "No inline-commentable PR diff lines in this preview",
+    );
+    expect(githubLineCommentScopeNote(new Set(), 0)).toBeNull();
   });
 });
 

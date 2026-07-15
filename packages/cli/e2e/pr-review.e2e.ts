@@ -214,6 +214,40 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await loyaltyPreview.waitFor();
     await loyaltyPreview.getByText(EXISTING_COMMENT_TEXT, { exact: true }).waitFor();
 
+    // Starting a line comment turns the default hover preview into a sticky work surface. Pointer
+    // movement past the full hover-close grace preserves the exact draft, adding it keeps the card
+    // open with Pending confirmation, and only its explicit close control dismisses it.
+    const inlineRange = fixture!.files[0].headerHunks[0];
+    const firstInlineLine = inlineRange.start;
+    const secondInlineLine = inlineRange.end;
+    expect(secondInlineLine).toBeGreaterThan(firstInlineLine);
+    const previewSourceRow = loyaltyPreview.locator(`tr[data-source-line="${firstInlineLine}"]`);
+    const previewLineAction = previewSourceRow.getByRole("button", {
+      name: `Comment on line ${firstInlineLine}`,
+      exact: true,
+    });
+    expect(await lineActionStyle(previewLineAction)).toEqual({ opacity: "0", pointerEvents: "none" });
+    await previewSourceRow.hover();
+    await expect.poll(() => lineActionStyle(previewLineAction)).toEqual({ opacity: "1", pointerEvents: "auto" });
+    // Click the code itself: this is the compact-card path people naturally use, and guards
+    // against regressing to a hidden, tiny gutter-only target.
+    await previewSourceRow.locator(`[data-source-code-cell="${firstInlineLine}"]`).click();
+    const previewDraft = loyaltyPreview.getByPlaceholder(`Comment on line ${firstInlineLine}…`);
+    await previewDraft.waitFor();
+    expect(await previewDraft.evaluate((element) => element === document.activeElement)).toBe(true);
+    await previewDraft.fill(DRAFT_TEXT);
+    await page.getByText("Files changed", { exact: true }).hover();
+    await page.waitForTimeout(500);
+    expect(await loyaltyPreview.isVisible()).toBe(true);
+    expect(await previewDraft.inputValue()).toBe(DRAFT_TEXT);
+    await loyaltyPreview.getByRole("button", { name: "Add comment", exact: true }).click();
+    const previewPendingDraft = loyaltyPreview.locator(`[data-pending-review-comments-line="${firstInlineLine}"]`);
+    await previewPendingDraft.getByText(DRAFT_TEXT, { exact: true }).waitFor();
+    await previewPendingDraft.getByText("Pending", { exact: true }).waitFor();
+    expect(await loyaltyPreview.isVisible()).toBe(true);
+    await loyaltyPreview.getByRole("button", { name: "Close code preview" }).click();
+    await loyaltyPreview.waitFor({ state: "detached" });
+
     // Readers can switch previews from the default hover dwell to click-to-pin. Hover becomes inert,
     // a node click opens immediately, pointer movement does not dismiss the pinned card, and a bare
     // canvas click closes it. Restore hover afterwards because the rest of this journey exercises the
@@ -256,15 +290,24 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await loyaltySourceDialog.locator('[data-review-comment-reply="true"]').waitFor();
     expect(await loyaltySourceDialog.locator('[data-review-comment-reply="true"]').count()).toBe(1);
 
-    // Add two distinct line drafts through the source gutter. Deriving both anchors from the
-    // patch-header span proves the UI only offers GitHub-valid RIGHT-side rows, and exercising two
-    // rows guards against collapsing all local drafts into one top-level review summary.
-    const inlineRange = fixture!.files[0].headerHunks[0];
-    const firstInlineLine = inlineRange.start;
-    const secondInlineLine = inlineRange.end;
-    expect(secondInlineLine).toBeGreaterThan(firstInlineLine);
-    await addInlineDraft(loyaltySourceDialog, firstInlineLine, DRAFT_TEXT);
-    await addInlineDraft(loyaltySourceDialog, secondInlineLine, SECOND_DRAFT_TEXT);
+    // Add the second distinct line draft through the full-source gutter. An attempted modal close
+    // first exposes the shared Keep/Discard choice; keeping resumes the exact text before Add.
+    const secondSourceRow = loyaltySourceDialog.locator(`tr[data-source-line="${secondInlineLine}"]`);
+    await secondSourceRow.scrollIntoViewIfNeeded();
+    await secondSourceRow.hover();
+    await secondSourceRow.getByRole("button", { name: `Comment on line ${secondInlineLine}`, exact: true }).click();
+    const secondDraft = loyaltySourceDialog.getByPlaceholder(`Comment on line ${secondInlineLine}…`);
+    await secondDraft.fill(SECOND_DRAFT_TEXT);
+    await loyaltySourceDialog.getByRole("button", { name: "Close source" }).click();
+    await loyaltySourceDialog.getByRole("alert").waitFor();
+    expect(await loyaltySourceDialog.isVisible()).toBe(true);
+    await loyaltySourceDialog.getByRole("button", { name: "Keep editing" }).click();
+    expect(await secondDraft.inputValue()).toBe(SECOND_DRAFT_TEXT);
+    await loyaltySourceDialog.getByRole("button", { name: "Add comment", exact: true }).click();
+    await loyaltySourceDialog
+      .locator(`[data-pending-review-comments-line="${secondInlineLine}"]`)
+      .getByText(SECOND_DRAFT_TEXT, { exact: true })
+      .waitFor();
     const lineDrafts = loyaltySourceDialog.locator("[data-pending-review-comment-id]");
     expect(await lineDrafts.count()).toBe(2);
 
@@ -401,19 +444,6 @@ function reviewFileButton(page: Page, path: string): Locator {
   return page.locator(`button[title^="${path}"]`);
 }
 
-async function addInlineDraft(sourceDialog: Locator, line: number, body: string): Promise<void> {
-  const sourceRow = sourceDialog.locator(`tr[data-source-line="${line}"]`);
-  await sourceRow.scrollIntoViewIfNeeded();
-  await sourceRow.hover();
-  await sourceRow.getByRole("button", { name: `Comment on line ${line}`, exact: true }).click();
-  await sourceDialog.getByPlaceholder(`Comment on line ${line}…`).fill(body);
-  await sourceDialog.getByRole("button", { name: "Add comment", exact: true }).click();
-  await sourceDialog
-    .locator(`[data-pending-review-comments-line="${line}"]`)
-    .getByText(body, { exact: true })
-    .waitFor();
-}
-
 async function waitForGraphViewportToSettle(surface: Locator): Promise<void> {
   const viewport = surface.locator(".react-flow__viewport");
   await viewport.waitFor();
@@ -427,6 +457,13 @@ async function waitForGraphViewportToSettle(surface: Locator): Promise<void> {
     previous = current;
     return stableSamples;
   }, { interval: 100, timeout: 5_000 }).toBeGreaterThanOrEqual(3);
+}
+
+async function lineActionStyle(action: Locator): Promise<{ opacity: string; pointerEvents: string }> {
+  return action.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { opacity: style.opacity, pointerEvents: style.pointerEvents };
+  });
 }
 
 /** Pick an actual empty point on React Flow's pane before issuing the real pointer click. A fixed

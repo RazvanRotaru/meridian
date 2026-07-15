@@ -172,6 +172,15 @@ describe("CodePanel review comments", () => {
       expect(markup).toContain(`aria-label="Comment on line ${line}"`);
     }
     expect(markup).not.toContain('aria-label="Comment on line 20"');
+    expect(markup).toContain('data-review-comment-scope="partial"');
+    expect(markup).toContain("Hover L17–L19 to add a comment");
+  });
+
+  it("does not add a scope note when every visible line is in the PR diff", () => {
+    const markup = sourceModal({ live: true, code: "first\nsecond\nthird", lineCount: 3 });
+
+    expect(markup.match(/aria-label="Comment on line /g)).toHaveLength(3);
+    expect(markup).not.toContain("data-review-comment-scope");
   });
 
   it("keeps artifact-only reviews limited to their anchorable changed rows", () => {

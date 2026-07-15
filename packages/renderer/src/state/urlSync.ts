@@ -27,6 +27,13 @@ export async function restoreFromUrl(store: BlueprintStore, search?: string): Pr
   const nav = decodeNavState(new URLSearchParams(search ?? window.location.search));
   const rebuildingReview = nav.reviewActive && nav.reviewPr !== null;
   const restoredViewMode = rebuildingReview ? "prs" : nav.viewMode;
+  if (store.getState().reviewLineComposer !== null) {
+    // The navigation guard already obtained explicit browser-level confirmation. Clear any queued
+    // in-product transition before discarding so accepting Back cannot replay an older button click
+    // on the way to the history entry, or leave a session-only composer invisibly blocking it.
+    store.getState().keepEditingReviewLineComposer();
+    store.getState().discardReviewLineComposer();
+  }
   if (store.getState().viewMode === "prs" && restoredViewMode !== "prs") {
     store.getState().cancelPrReviewPreparation();
   }

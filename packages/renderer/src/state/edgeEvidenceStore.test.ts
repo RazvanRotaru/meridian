@@ -170,6 +170,36 @@ describe("edge source evidence store", () => {
     expect(store.getState().codeView).toBe(ordinary);
   });
 
+  it("vetoes dock unmount until its dirty line composer is discarded", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ code: "one", startLine: 100, truncated: false })));
+    const store = freshStore();
+    store.setState({
+      review: {
+        context: {
+          changedFiles: [{ path: "src/a.ts", status: "modified", hunks: [{ start: 100, end: 102 }] }],
+          baseRef: "main",
+          baseSha: "base",
+          headRef: "feature",
+          reviewKey: "sticky-edge-host",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+    });
+    await store.getState().showEdgeEvidence([context()]);
+    store.getState().openReviewLineComposer("src/a.ts", 100);
+    store.getState().setReviewLineComposerBody("Keep this beside the wire");
+
+    expect(store.getState().closeEdgeEvidence()).toBe(false);
+    expect(store.getState().codeView?.edgeEvidence).toBeDefined();
+    expect(store.getState().reviewLineComposer).toMatchObject({ confirmDiscard: true });
+
+    store.getState().discardReviewLineComposer();
+    expect(store.getState().codeView).toBeNull();
+    expect(store.getState().reviewLineComposer).toBeNull();
+  });
+
   it("cannot resurrect contextual source after the dock closes during a request", async () => {
     let resolve!: (response: Response) => void;
     vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise<Response>((done) => { resolve = done; })));

@@ -73,6 +73,7 @@ import { CycleEdge } from "../edges/CycleEdge";
 import { WireEdge, WIRE_EDGE_TYPE } from "../edges/WireEdge";
 import { withReactFlowDimensions } from "./reactFlowDimensions";
 import { useNodeDiffPreview } from "../review/useNodeDiffPreview";
+import { useReviewLineComposerGuard } from "../review/useReviewLineComposerGuard";
 import { GhostHierarchyEdge, GHOST_HIERARCHY_EDGE_TYPE } from "../edges/GhostHierarchyEdge";
 import { prepareCanvasEdges } from "./presentationEdgePipeline";
 import { GraphLayoutIndicator, type GraphLayoutIndicatorProps } from "./GraphLayoutIndicator";
@@ -305,6 +306,9 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const showHighways = useBlueprint((state) => state.showHighways);
   const groupGhostsByParent = useBlueprint((state) => state.groupGhostsByParent);
   const edgeEvidenceOpen = useBlueprint((state) => state.codeView?.edgeEvidence !== undefined);
+  const edgeEvidenceSourcePath = useBlueprint((state) => state.codeView?.edgeEvidence === undefined
+    ? null
+    : state.codeView.node.location.file);
   const { showEdgeEvidence, closeEdgeEvidence, toggleModuleExpand } = useBlueprintActions();
   const emphasisMode = props.emphasisMode ?? highlightMode;
   const groupGhosts = props.groupGhosts ?? groupGhostsByParent;
@@ -626,6 +630,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
     openWireEvidence,
     closeEdgeEvidence,
   );
+  const requestClearInspected = useReviewLineComposerGuard(wire.clearInspected, edgeEvidenceSourcePath);
   useEffect(() => {
     if (edgeEvidenceOpen || !inspectionOwnsSource.current) return;
     // Another source gesture/state reset replaced a source-backed edge inspection. End its local
@@ -717,7 +722,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
             nodeDiff.onPaneClick();
           }
           // A pane click always unpins the inspector. Frozen context views keep their fixed target set.
-          wire.clearInspected();
+          requestClearInspected();
           if (!props.readOnly || props.selectionOnly) {
             props.interactions.onPaneClick();
           }

@@ -4,7 +4,7 @@
  * reviewKey) until deleted or submitted. With no PR session the drafts simply stay local notes.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { ReviewComment } from "../../state/reviewTicksPref";
 import { buildReviewSubmission } from "../../derive/reviewSubmit";
@@ -112,15 +112,40 @@ export function CommentComposer(props: {
   onAdd: (body: string) => void | boolean | Promise<void | boolean>;
   onCancel: () => void;
   initialBody?: string;
+  /** Optional owner-controlled draft. Omit to retain the composer's original local state. */
+  value?: string;
+  onValueChange?: (value: string) => void;
+  /** Keep the draft visible while asking for an explicit destructive dismissal. */
+  confirmDiscard?: boolean;
+  onKeepEditing?: () => void;
+  onDiscard?: () => void;
   submitLabel?: string;
   compact?: boolean;
   error?: string | null;
   /** Keep an inline code-panel Escape from reaching the panel's own layer-stack closer. */
   stopEscape?: boolean;
 }) {
-  const [body, setBody] = useState(props.initialBody ?? "");
+  const [localBody, setLocalBody] = useState(props.initialBody ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const wasConfirmingDiscard = useRef(props.confirmDiscard ?? false);
+  const body = props.value === undefined ? localBody : props.value;
+  const setBody = (value: string) => {
+    if (props.value === undefined) {
+      setLocalBody(value);
+    }
+    props.onValueChange?.(value);
+  };
+  const keepEditing = () => props.onKeepEditing?.();
+  const discard = () => (props.onDiscard ?? props.onCancel)();
+  useEffect(() => {
+    const wasConfirming = wasConfirmingDiscard.current;
+    wasConfirmingDiscard.current = props.confirmDiscard ?? false;
+    if (wasConfirming && !props.confirmDiscard) {
+      textareaRef.current?.focus();
+    }
+  }, [props.confirmDiscard]);
   const add = async () => {
     if (body.trim().length === 0 || submitting) {
       return;
@@ -139,19 +164,33 @@ export function CommentComposer(props: {
     }
   };
   return (
-    <div style={props.compact ? COMPACT_COMPOSER : COMPOSER}>
+    <div
+      style={props.compact ? COMPACT_COMPOSER : COMPOSER}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || !props.confirmDiscard) {
+          return;
+        }
+        event.preventDefault();
+        if (props.stopEscape) {
+          event.stopPropagation();
+        }
+        keepEditing();
+      }}
+    >
       <textarea
+        ref={textareaRef}
         style={TEXTAREA}
         rows={3}
-        autoFocus
+        autoFocus={!props.confirmDiscard}
         placeholder={props.placeholder}
         value={body}
+        readOnly={props.confirmDiscard}
         onChange={(event) => setBody(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+          if (!props.confirmDiscard && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
             event.preventDefault();
             void add();
-          } else if (event.key === "Escape") {
+          } else if (event.key === "Escape" && !props.confirmDiscard) {
             if (props.stopEscape) {
               event.stopPropagation();
             }
@@ -160,14 +199,28 @@ export function CommentComposer(props: {
         }}
       />
       {(props.error || localError) ? <div style={COMPOSER_ERROR}>{props.error || localError}</div> : null}
-      <div style={COMPOSER_ROW}>
-        <button type="button" style={ADD_BTN} disabled={body.trim().length === 0 || submitting} onClick={() => void add()}>
-          {submitting ? "Saving…" : (props.submitLabel ?? "Add comment")}
-        </button>
-        <button type="button" style={CANCEL_BTN} disabled={submitting} onClick={props.onCancel}>
-          Cancel
-        </button>
-      </div>
+      {props.confirmDiscard ? (
+        <div role="alert" style={DISCARD_ALERT}>
+          <span style={DISCARD_PROMPT}>Discard this comment?</span>
+          <div style={COMPOSER_ROW}>
+            <button type="button" style={CANCEL_BTN} autoFocus onClick={keepEditing}>
+              Keep editing
+            </button>
+            <button type="button" style={DISCARD_BTN} onClick={discard}>
+              Discard comment
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div style={COMPOSER_ROW}>
+          <button type="button" style={ADD_BTN} disabled={body.trim().length === 0 || submitting} onClick={() => void add()}>
+            {submitting ? "Saving…" : (props.submitLabel ?? "Add comment")}
+          </button>
+          <button type="button" style={CANCEL_BTN} disabled={submitting} onClick={props.onCancel}>
+            Cancel
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -192,6 +245,9 @@ const COMPACT_COMPOSER: React.CSSProperties = { display: "flex", flexDirection: 
 const TEXTAREA: React.CSSProperties = { width: "100%", boxSizing: "border-box", resize: "vertical", background: "#0D1117", border: "1px solid #2A2F37", borderRadius: 7, color: "#E6EDF3", font: "inherit", fontSize: 12, padding: "6px 8px", outline: "none" };
 const COMPOSER_ERROR: React.CSSProperties = { color: "#F85149", fontSize: 10.5, lineHeight: "14px" };
 const COMPOSER_ROW: React.CSSProperties = { display: "flex", gap: 6 };
+const DISCARD_ALERT: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", border: "1px solid rgba(240,120,124,0.42)", background: "rgba(240,120,124,0.08)", borderRadius: 6, padding: "5px 7px" };
+const DISCARD_PROMPT: React.CSSProperties = { color: "#E6EDF3", fontSize: 11.5 };
 const ADD_BTN: React.CSSProperties = { font: "inherit", border: "1px solid #2F5C3B", background: "rgba(86,194,113,0.16)", color: "#6BE38A", borderRadius: 6, padding: "3px 10px", fontSize: 11.5, fontWeight: 600, cursor: "pointer", ...NO_FOCUS_RING };
 const CANCEL_BTN: React.CSSProperties = { font: "inherit", border: "1px solid #2A2F37", background: "transparent", color: "#9AA4B2", borderRadius: 6, padding: "3px 10px", fontSize: 11.5, cursor: "pointer", ...NO_FOCUS_RING };
+const DISCARD_BTN: React.CSSProperties = { ...CANCEL_BTN, borderColor: "rgba(240,120,124,0.48)", background: "rgba(240,120,124,0.12)", color: "#F0787C" };
 const EMPTY_BLOCKED_IDS: ReadonlySet<string> = new Set<string>();

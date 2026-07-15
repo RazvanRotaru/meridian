@@ -1226,7 +1226,7 @@ function GhostDepthDial(props: { depth: number; moreCount: number; onSet: (depth
 function EmptyFlowCard(props: { rootId: NodeId }) {
   const index = useBlueprint((state) => state.index);
   const sourceUrl = useBlueprint((state) => state.sourceUrl);
-  const { showCode, expandCode } = useBlueprintActions();
+  const { showCode } = useBlueprintActions();
   const rootNode = index.nodesById.get(props.rootId);
   const rootName = rootNode?.displayName ?? props.rootId;
   const canShowCode = isSourceBackedNode(rootNode) && Boolean(sourceUrl);
@@ -1240,8 +1240,7 @@ function EmptyFlowCard(props: { rootId: NodeId }) {
             type="button"
             style={SHOW_CODE_STYLE}
             onClick={() => {
-              void showCode(rootNode);
-              expandCode();
+              void showCode(rootNode, { mode: "modal" });
             }}
           >
             Show code
