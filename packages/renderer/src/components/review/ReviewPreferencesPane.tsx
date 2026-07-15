@@ -10,6 +10,7 @@ import type { ReviewCodePreviewTrigger, ReviewFlowSplitView } from "../../state/
 const HEADING_ID = "review-preferences-heading";
 const TEST_CHANGES_DESCRIPTION_ID = "review-test-changes-description";
 const DIFF_ONLY_DESCRIPTION_ID = "review-diff-only-description";
+const ADDED_SOURCE_COMMENTS_DESCRIPTION_ID = "review-added-source-comments-description";
 const CODE_PREVIEW_DESCRIPTION_ID = "review-code-preview-description";
 const PROJECTION_DESCRIPTION_ID = "review-flow-view-description";
 const NOTE_ID = "review-preferences-storage-note";
@@ -22,11 +23,13 @@ interface ReviewPreferencesPaneProps {
   flowView: ReviewFlowSplitView;
   openFlowSplitOnSelect: boolean;
   codePreviewTrigger: ReviewCodePreviewTrigger;
+  hideAddedSourceCommentDiffs: boolean;
   onExcludeTestChangesChange: (exclude: boolean) => void;
   onHideNodesNotInDiffChange: (hide: boolean) => void;
   onFlowViewChange: (view: ReviewFlowSplitView) => void;
   onOpenFlowSplitOnSelectChange: (open: boolean) => void;
   onCodePreviewTriggerChange: (trigger: ReviewCodePreviewTrigger) => void;
+  onHideAddedSourceCommentDiffsChange: (hide: boolean) => void;
   onClose: () => void;
 }
 
@@ -122,6 +125,25 @@ export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
         </label>
       </fieldset>
 
+      <fieldset style={BEHAVIOR_FIELDSET} aria-describedby={`${ADDED_SOURCE_COMMENTS_DESCRIPTION_ID} ${NOTE_ID}`}>
+        <legend style={LEGEND}>Source diff display</legend>
+        <label style={optionStyle(props.hideAddedSourceCommentDiffs)}>
+          <input
+            type="checkbox"
+            checked={props.hideAddedSourceCommentDiffs}
+            style={RADIO}
+            aria-describedby={ADDED_SOURCE_COMMENTS_DESCRIPTION_ID}
+            onChange={(event) => props.onHideAddedSourceCommentDiffsChange(event.currentTarget.checked)}
+          />
+          <span style={OPTION_COPY}>
+            <span style={OPTION_TITLE}>Hide diff on source comments</span>
+            <span id={ADDED_SOURCE_COMMENTS_DESCRIPTION_ID} style={OPTION_DESCRIPTION}>
+              Show comment-only additions as neutral source context. Code and lines that mix code with comments stay highlighted.
+            </span>
+          </span>
+        </label>
+      </fieldset>
+
       <fieldset style={BEHAVIOR_FIELDSET} aria-describedby={`${CODE_PREVIEW_DESCRIPTION_ID} ${NOTE_ID}`}>
         <legend style={LEGEND}>Code preview behavior</legend>
         <p id={CODE_PREVIEW_DESCRIPTION_ID} style={DESCRIPTION}>Choose how graph node code previews open.</p>
@@ -194,7 +216,7 @@ export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
       </fieldset>
 
       <p id={NOTE_ID} style={NOTE}>
-        Flow and code preview preferences are saved in this browser. Graph display and test visibility apply to the current PR review.
+        Flow, code preview, and source diff preferences are saved in this browser. Graph display and test visibility apply to the current PR review.
       </p>
     </section>
   );

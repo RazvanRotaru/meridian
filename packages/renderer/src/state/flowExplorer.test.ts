@@ -53,7 +53,7 @@ function freshStore() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("flow explorer store slice", () => {
-  it("persists projection, split-opening, and code-preview preferences without clobbering another choice", () => {
+  it("persists projection, split-opening, code-preview, and source-comment preferences without clobbering another choice", () => {
     const persisted = new Map<string, string>();
     vi.stubGlobal("window", {
       localStorage: {
@@ -66,41 +66,57 @@ describe("flow explorer store slice", () => {
     expect(store.getState().reviewFlowSplitView).toBe("timeline");
     expect(store.getState().reviewOpenFlowSplitOnSelect).toBe(true);
     expect(store.getState().reviewCodePreviewTrigger).toBe("hover");
+    expect(store.getState().reviewHideAddedSourceCommentDiffs).toBe(false);
     store.getState().setReviewOpenFlowSplitOnSelect(false);
     expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
-      version: 3,
+      version: 4,
       flowSplitView: "timeline",
       openFlowSplitOnSelect: false,
       codePreviewTrigger: "hover",
+      hideAddedSourceCommentDiffs: false,
     });
     for (const { mode } of STATIC_LOGIC_VIEW_MODES) {
       store.getState().setReviewFlowSplitView(mode);
       expect(store.getState().reviewFlowSplitView).toBe(mode);
       expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
-        version: 3,
+        version: 4,
         flowSplitView: mode,
         openFlowSplitOnSelect: false,
         codePreviewTrigger: "hover",
+        hideAddedSourceCommentDiffs: false,
       });
       expect(freshStore().getState().reviewFlowSplitView).toBe(mode);
       expect(freshStore().getState().reviewOpenFlowSplitOnSelect).toBe(false);
       expect(freshStore().getState().reviewCodePreviewTrigger).toBe("hover");
+      expect(freshStore().getState().reviewHideAddedSourceCommentDiffs).toBe(false);
     }
     store.getState().setReviewCodePreviewTrigger("click");
     expect(store.getState().reviewCodePreviewTrigger).toBe("click");
     expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
-      version: 3,
+      version: 4,
       flowSplitView: "timeline",
       openFlowSplitOnSelect: false,
       codePreviewTrigger: "click",
+      hideAddedSourceCommentDiffs: false,
     });
     expect(freshStore().getState().reviewCodePreviewTrigger).toBe("click");
+    store.getState().setReviewHideAddedSourceCommentDiffs(true);
+    expect(store.getState().reviewHideAddedSourceCommentDiffs).toBe(true);
+    expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
+      version: 4,
+      flowSplitView: "timeline",
+      openFlowSplitOnSelect: false,
+      codePreviewTrigger: "click",
+      hideAddedSourceCommentDiffs: true,
+    });
+    expect(freshStore().getState().reviewHideAddedSourceCommentDiffs).toBe(true);
     store.getState().setReviewOpenFlowSplitOnSelect(true);
     expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
-      version: 3,
+      version: 4,
       flowSplitView: "timeline",
       openFlowSplitOnSelect: true,
       codePreviewTrigger: "click",
+      hideAddedSourceCommentDiffs: true,
     });
   });
 

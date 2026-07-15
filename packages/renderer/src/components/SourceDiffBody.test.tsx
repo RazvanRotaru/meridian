@@ -228,6 +228,118 @@ describe("githubLineCommentScopeNote", () => {
   });
 });
 
+describe("SourceDiffBody source-comment preference", () => {
+  it("keeps added source comments visible but removes their diff treatment when preferred", () => {
+    const code = [
+      "export function reviewTarget() {",
+      "  // Explain the behavior that follows.",
+      "  return run(); // This mixed line remains code.",
+      "}",
+    ].join("\n");
+    const view: CodeView = {
+      node: { ...NODE, location: { ...NODE.location, startLine: 1, endLine: 4 } },
+      code,
+      lineCount: 4,
+      loading: false,
+      error: null,
+      mode: "inline",
+      baseLine: 1,
+      diffLines: code.split("\n").map((text, index) => ({
+        kind: "added" as const,
+        oldLine: null,
+        newLine: index + 1,
+        beforeNewLine: index + 1,
+        text,
+      })),
+      sourceSide: "head",
+    };
+
+    const ordinary = renderBody(view, 340);
+    const focused = renderBody(view, 340, {
+      prReviewed: null,
+      reviewHideAddedSourceCommentDiffs: true,
+    });
+
+    expect(sourceRowOpeningTag(ordinary, 2)).toContain('data-diff-origin="add"');
+    expect(ordinary).toContain('data-source-summary-added="4"');
+    expect(focused).toContain("Explain the behavior that follows.");
+    expect(sourceRowOpeningTag(focused, 2)).not.toContain("data-diff-origin");
+    expect(sourceRowOpeningTag(focused, 2)).toContain('data-review-comment-line="2"');
+    expect(sourceRowOpeningTag(focused, 3)).toContain('data-diff-origin="add"');
+    expect(focused).toContain('data-source-summary-added="3"');
+  });
+
+  it("neutralizes and keeps a replacement's full explanatory comment block expanded", () => {
+    const source = Array.from({ length: 30 }, (_value, index) => `line ${index + 1}`);
+    source.splice(
+      9,
+      6,
+      "// Explain the replacement, part 1.",
+      "// Explain the replacement, part 2.",
+      "// Explain the replacement, part 3.",
+      "// Explain the replacement, part 4.",
+      "// Explain the replacement, part 5.",
+      "return newTier();",
+    );
+    const view: CodeView = {
+      node: { ...NODE, location: { ...NODE.location, startLine: 1, endLine: 30 } },
+      code: source.join("\n"),
+      lineCount: 30,
+      loading: false,
+      error: null,
+      mode: "inline",
+      baseLine: 1,
+      diffLines: [
+        { kind: "deleted", oldLine: 10, newLine: null, beforeNewLine: 10, text: "return oldTier();" },
+        ...source.slice(9, 14).map((text, index) => ({
+          kind: "added" as const,
+          oldLine: null,
+          newLine: index + 10,
+          beforeNewLine: index + 10,
+          text,
+        })),
+        { kind: "added", oldLine: null, newLine: 15, beforeNewLine: 15, text: source[14] },
+      ],
+      sourceSide: "head",
+    };
+
+    const html = renderBody(view, 340, { reviewHideAddedSourceCommentDiffs: true });
+
+    for (const line of [10, 11, 12, 13, 14]) {
+      expect(html).toContain(`data-source-line="${line}"`);
+      expect(sourceRowOpeningTag(html, line)).not.toContain("data-diff-origin");
+    }
+    expect(sourceRowOpeningTag(html, 15)).toContain('data-diff-origin="add"');
+    expect(html).toContain('data-source-summary-added="1"');
+    expect(html.match(/data-diff-origin="delete"/g)).toHaveLength(1);
+  });
+
+  it("does not apply the review preference to an ordinary source view", () => {
+    const view: CodeView = {
+      node: { ...NODE, location: { ...NODE.location, startLine: 1, endLine: 2 } },
+      code: "// Explain the behavior.\nrun();",
+      lineCount: 2,
+      loading: false,
+      error: null,
+      mode: "inline",
+      baseLine: 1,
+      diffLines: [
+        { kind: "added", oldLine: null, newLine: 1, beforeNewLine: 1, text: "// Explain the behavior." },
+        { kind: "added", oldLine: null, newLine: 2, beforeNewLine: 2, text: "run();" },
+      ],
+      sourceSide: "head",
+    };
+
+    const html = renderBody(view, 340, {
+      review: null,
+      reviewHideAddedSourceCommentDiffs: true,
+    });
+
+    expect(sourceRowOpeningTag(html, 1)).toContain('data-diff-origin="add"');
+    expect(html).toContain('data-source-summary-added="2"');
+  });
+});
+
 describe("diffLinesWithinSlice", () => {
   it("retains deletes before the first row and after the final row", () => {
     const lines: CodeDiffLine[] = [
@@ -339,7 +451,18 @@ function renderBody(
 
 function BodyHarness({ view, maxHeight }: { view: CodeView; maxHeight: number | string }) {
   const model = useSourceDiffModel(view);
-  return <SourceDiffBody model={model} maxHeight={maxHeight} showGutter />;
+  return (
+    <div
+      data-source-summary-added={model.summary?.added ?? "none"}
+      data-source-summary-deleted={model.summary?.deleted ?? "none"}
+    >
+      <SourceDiffBody model={model} maxHeight={maxHeight} showGutter />
+    </div>
+  );
+}
+
+function sourceRowOpeningTag(html: string, line: number): string {
+  return html.match(new RegExp(`<tr[^>]*data-source-line="${line}"[^>]*>`))?.[0] ?? "";
 }
 
 function normalizeHeight(html: string): string {

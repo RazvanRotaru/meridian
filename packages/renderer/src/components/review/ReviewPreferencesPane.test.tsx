@@ -12,6 +12,7 @@ function render(
   excludeTestChanges = true,
   hideNodesNotInDiff = false,
   codePreviewTrigger: ReviewCodePreviewTrigger = "hover",
+  hideAddedSourceCommentDiffs = false,
 ) {
   return renderToStaticMarkup(
     <ReviewPreferencesPane
@@ -20,11 +21,13 @@ function render(
       flowView={flowView}
       openFlowSplitOnSelect={openFlowSplitOnSelect}
       codePreviewTrigger={codePreviewTrigger}
+      hideAddedSourceCommentDiffs={hideAddedSourceCommentDiffs}
       onExcludeTestChangesChange={() => undefined}
       onHideNodesNotInDiffChange={() => undefined}
       onFlowViewChange={() => undefined}
       onOpenFlowSplitOnSelectChange={() => undefined}
       onCodePreviewTriggerChange={() => undefined}
+      onHideAddedSourceCommentDiffsChange={() => undefined}
       onClose={() => undefined}
     />,
   );
@@ -48,8 +51,13 @@ describe("ReviewPreferencesPane", () => {
     expect(markup).toContain("Logic flow behavior");
     expect(markup).toContain("Open split view when selecting a logic flow");
     expect(markup).toContain("stays highlighted in the review graph");
-    expect(markup.match(/type="checkbox"/g)).toHaveLength(3);
+    expect(markup.match(/type="checkbox"/g)).toHaveLength(4);
     expect(markup.match(/<input(?=[^>]*type="checkbox")(?=[^>]*checked="")[^>]*>/g)).toHaveLength(2);
+    expect(markup).toContain("Source diff display");
+    expect(markup).toContain("Hide diff on source comments");
+    expect(markup).toContain("Show comment-only additions as neutral source context");
+    expect(markup).toContain("Code and lines that mix code with comments stay highlighted");
+    expect(markup).toMatch(/<input(?=[^>]*type="checkbox")(?=[^>]*aria-describedby="review-added-source-comments-description")[^>]*>/);
     expect(markup).toContain("Code preview behavior");
     expect(markup).toContain("On hover");
     expect(markup).toContain("On click");
@@ -63,7 +71,7 @@ describe("ReviewPreferencesPane", () => {
     expect(markup).toContain("Execution graph");
     expect(markup).toContain("Metro");
     expect(markup).toContain("Blocks");
-    expect(markup).toContain("Flow and code preview preferences are saved in this browser");
+    expect(markup).toContain("Flow, code preview, and source diff preferences are saved in this browser");
     expect(markup).toContain("Graph display and test visibility apply to the current PR review");
     expect(markup).toContain('aria-label="Close review preferences"');
   });
@@ -82,6 +90,13 @@ describe("ReviewPreferencesPane", () => {
     expect(markup).toMatch(/<input(?=[^>]*name="review-code-preview-trigger")(?=[^>]*value="click")(?=[^>]*checked="")[^>]*>/);
     expect(markup).not.toMatch(/<input(?=[^>]*name="review-code-preview-trigger")(?=[^>]*value="hover")(?=[^>]*checked="")[^>]*>/);
     expect(markup).toMatch(/<input(?=[^>]*name="review-flow-split-view")(?=[^>]*value="timeline")(?=[^>]*checked="")[^>]*>/);
+  });
+
+  it("can hide source-comment diff treatment independently from the preview trigger", () => {
+    const markup = render("timeline", true, true, false, "click", true);
+
+    expect(markup).toMatch(/<input(?=[^>]*type="checkbox")(?=[^>]*checked="")(?=[^>]*aria-describedby="review-added-source-comments-description")[^>]*>/);
+    expect(markup).toMatch(/<input(?=[^>]*name="review-code-preview-trigger")(?=[^>]*value="click")(?=[^>]*checked="")[^>]*>/);
   });
 
   it("checks the diff-only graph control independently from the other review preferences", () => {

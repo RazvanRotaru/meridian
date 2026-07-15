@@ -31,7 +31,10 @@ const SECOND_DRAFT_TEXT = "Please cover the standard-tier fallback with a focuse
 const EXISTING_COMMENT_TEXT = "Should this threshold stay aligned with the billing tier for every existing customer configuration, including installations that still rely on the previous browser-prefix allowlist behavior?";
 const EDITED_EXISTING_COMMENT_TEXT = "Keep this threshold aligned with the billing tier.";
 const THREAD_REPLY_TEXT = "Agreed — I will keep the two thresholds together.";
-const EXISTING_COMMENT_LINE = 2;
+const SOURCE_COMMENT_TEXT = "// Keep the loyalty threshold explicit before choosing the customer's tier.";
+const SOURCE_COMMENT_LINE = 2;
+const LOYALTY_RETURN_LINE = 3;
+const EXISTING_COMMENT_LINE = LOYALTY_RETURN_LINE;
 const ORDER_SERVICE_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/services/orderService.ts" });
 const PRICING_PACKAGE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing" });
 const PRICING_SERVICE_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing/pricingService.ts" });
@@ -190,6 +193,11 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     const loyaltyPreview = page.getByRole("dialog", { name: "Code preview for loyaltyTierFor" });
     await loyaltyPreview.waitFor();
     await loyaltyPreview.getByText(EXISTING_COMMENT_TEXT, { exact: true }).waitFor();
+    const sourceCommentRow = loyaltyPreview.locator(`tr[data-source-line="${SOURCE_COMMENT_LINE}"]`);
+    const loyaltyReturnRow = loyaltyPreview.locator(`tr[data-source-line="${LOYALTY_RETURN_LINE}"]`);
+    await sourceCommentRow.getByText(SOURCE_COMMENT_TEXT, { exact: true }).waitFor();
+    expect(await sourceCommentRow.getAttribute("data-diff-origin")).toBe("add");
+    expect(await loyaltyReturnRow.getAttribute("data-diff-origin")).toBe("add");
 
     const hideComments = page.getByRole("button", { name: "Hide comments", exact: true });
     await hideComments.waitFor();
@@ -248,13 +256,26 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await loyaltyPreview.getByRole("button", { name: "Close code preview" }).click();
     await loyaltyPreview.waitFor({ state: "detached" });
 
-    // Readers can switch previews from the default hover dwell to click-to-pin. Hover becomes inert,
-    // a node click opens immediately, pointer movement does not dismiss the pinned card, and a bare
-    // canvas click closes it. Restore hover afterwards because the rest of this journey exercises the
-    // default interaction contract.
+    // Agent-authored source explanations can stay readable without dominating the code diff. The
+    // preference removes only the added marker from a full-line source comment: its text remains,
+    // and the changed code that follows it stays marked as added.
     const preferencesButton = page.getByRole("button", { name: "Review preferences" });
     await preferencesButton.click();
     const preferencesPane = page.getByRole("region", { name: "Review preferences" });
+    const hideSourceCommentDiff = preferencesPane.getByRole("checkbox", { name: /^Hide diff on source comments/ });
+    expect(await hideSourceCommentDiff.isChecked()).toBe(false);
+    await hideSourceCommentDiff.check();
+    await preferencesPane.getByRole("button", { name: "Close review preferences" }).click();
+    await loyaltyTierNode.hover();
+    await loyaltyPreview.waitFor();
+    await sourceCommentRow.getByText(SOURCE_COMMENT_TEXT, { exact: true }).waitFor();
+    expect(await sourceCommentRow.getAttribute("data-diff-origin")).toBeNull();
+    expect(await loyaltyReturnRow.getAttribute("data-diff-origin")).toBe("add");
+
+    // Readers can independently switch previews from hover dwell to click-to-pin. Restore the
+    // source-comment diff before exercising that contract, then restore hover for the journey.
+    await preferencesButton.click();
+    await hideSourceCommentDiff.uncheck();
     await preferencesPane.getByRole("radio", { name: /^On click/ }).check();
     await preferencesPane.getByRole("button", { name: "Close review preferences" }).click();
     await loyaltyTierNode.hover();
