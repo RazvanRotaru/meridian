@@ -28,7 +28,7 @@ const WEB_UI = fileURLToPath(new URL("../web-ui/index.html", import.meta.url));
 const DRAFT_TEXT = "Please keep this tier boundary explicit.";
 const EDITED_DRAFT_TEXT = "Please keep this tier boundary explicit and documented.";
 const SECOND_DRAFT_TEXT = "Please cover the standard-tier fallback with a focused test.";
-const EXISTING_COMMENT_TEXT = "Should this threshold stay aligned with the billing tier?";
+const EXISTING_COMMENT_TEXT = "Should this threshold stay aligned with the billing tier for every existing customer configuration, including installations that still rely on the previous browser-prefix allowlist behavior?";
 const EDITED_EXISTING_COMMENT_TEXT = "Keep this threshold aligned with the billing tier.";
 const THREAD_REPLY_TEXT = "Agreed — I will keep the two thresholds together.";
 const EXISTING_COMMENT_LINE = 2;
@@ -276,6 +276,38 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     const loyaltySourceDialog = page.getByRole("dialog", { name: "Source code" });
     await loyaltySourceDialog.waitFor();
     await loyaltySourceDialog.getByText(EXISTING_COMMENT_TEXT, { exact: true }).waitFor();
+
+    // A wide colspan comment must wrap inside the source viewport without becoming a table sizing
+    // constraint. Otherwise auto table layout assigns part of its max-content width to the sticky
+    // gutter and creates a large blank strip to the left of every line number.
+    const existingCommentCard = loyaltySourceDialog.locator('[data-existing-review-comment-id="7001"]');
+    const sourceLine = loyaltySourceDialog.locator(`tr[data-source-line="${EXISTING_COMMENT_LINE}"]`);
+    const listing = sourceLine.locator("xpath=ancestor::table[1]/..");
+    const gutter = sourceLine.locator("td").first();
+    const lineNumber = gutter.locator("span").last();
+    await listing.evaluate((element) => { element.scrollLeft = 0; });
+    const commentBox = await existingCommentCard.boundingBox();
+    const listingBox = await listing.boundingBox();
+    const gutterWithComment = await gutter.boundingBox();
+    const numberWithComment = await lineNumber.boundingBox();
+    if (commentBox === null || listingBox === null || gutterWithComment === null || numberWithComment === null) {
+      throw new Error("inline review comment layout is not measurable");
+    }
+    expect(commentBox.x + commentBox.width).toBeLessThanOrEqual(listingBox.x + listingBox.width + 1);
+
+    // The modal intentionally covers the control panel, so dispatch the preference toggle without
+    // pointer actionability; this keeps the same mounted source table available for comparison.
+    await hideComments.dispatchEvent("click");
+    await existingCommentCard.waitFor({ state: "detached" });
+    const gutterWithoutComment = await gutter.boundingBox();
+    const numberWithoutComment = await lineNumber.boundingBox();
+    if (gutterWithoutComment === null || numberWithoutComment === null) {
+      throw new Error("source gutter layout is not measurable");
+    }
+    expect(Math.abs(gutterWithComment.width - gutterWithoutComment.width)).toBeLessThanOrEqual(1);
+    expect(Math.abs(numberWithComment.x - numberWithoutComment.x)).toBeLessThanOrEqual(1);
+    await viewComments.dispatchEvent("click");
+    await existingCommentCard.waitFor();
 
     // Submitted comments use GitHub's real edit/reply endpoints and refresh the thread in place.
     const existingComment = loyaltySourceDialog.locator('[data-existing-review-comment-id="7001"]');
