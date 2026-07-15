@@ -59,6 +59,8 @@ describe("ReviewPreferencesPane", () => {
     expect(markup).toContain("Code and lines that mix code with comments stay highlighted");
     expect(markup).toMatch(/<input(?=[^>]*type="checkbox")(?=[^>]*aria-describedby="review-added-source-comments-description")[^>]*>/);
     expect(markup).toContain("Code preview behavior");
+    expect(markup).toContain("across the review graph and logic flow");
+    expect(markup).toContain("source-backed node in the graph or logic flow");
     expect(markup).toContain("On hover");
     expect(markup).toContain("On click");
     expect(markup.match(/name="review-code-preview-trigger"/g)).toHaveLength(2);

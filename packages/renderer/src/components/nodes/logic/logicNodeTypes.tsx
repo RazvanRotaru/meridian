@@ -9,12 +9,13 @@
  * peels into a dashed error lane. Every lane owns a stable source pin.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { PlusCircledIcon } from "@radix-ui/react-icons";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import type { ChangeStatus } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../../state/StoreContext";
 import type { DefGroupData, LogicRfNode } from "../../../layout/logicElk";
-import { FRAME_PROVENANCE_MAX_WIDTH, type LogicBranchPort, type LogicNodeData, type TerminalData } from "../../../derive/logicGraph";
+import { FRAME_PROVENANCE_MAX_WIDTH, type CollapsedEdgeData, type LogicBranchPort, type LogicNodeData, type TerminalData } from "../../../derive/logicGraph";
 import { FLOW_COLORS } from "../../../derive/flowViewModel";
 import { isSourceBackedNode } from "../../../derive/sourceBackedNode";
 import { executionCoverageIndex, executionEvidenceForCallTarget } from "../../../derive/logicExecutionCoverage";
@@ -25,6 +26,10 @@ import { changedTextColor } from "../../../theme/changedColors";
 import { BaseNode, type BaseNodeModel } from "../BaseNode";
 import { EmptyNodeExpansion } from "../EmptyNodeExpansion";
 import { useLogicFlowOrientation } from "./LogicFlowOrientationContext";
+import {
+  handoffLogicEdgeDisclosureFocus,
+  useLogicEdgeCollapseAction,
+} from "../../edges/LogicEdgeActionScope";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
@@ -244,7 +249,15 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
     void showCode(codeNode!, { mode: "modal" });
   };
   const codeButton = canCode && codeNode ? (
-    <button type="button" style={d.compact ? COMPACT_CODE_BTN : CODE_BTN} title="view source" onClick={(e) => { stop(e); toggleCode(); }}>{"</>"}</button>
+    <button
+      type="button"
+      style={d.compact ? COMPACT_CODE_BTN : CODE_BTN}
+      title="View source"
+      aria-label={`View source for ${codeNode.displayName}`}
+      onClick={(e) => { stop(e); toggleCode(); }}
+    >
+      {"</>"}
+    </button>
   ) : null;
   const inline = showingInline && codeView ? <CodeInlinePanel codeView={codeView} onExpand={expandCode} onClose={closeCode} /> : null;
   if (d.isContainer) {
@@ -982,6 +995,64 @@ function TerminalNode({ data }: NodeProps<LogicRfNode>) {
   );
 }
 
+/** The persistent continuation for one manually folded edge. Unlike a branch node's disclosure,
+ * this restores only the exact path/connection represented by its stable semantic edge key. */
+function FoldNode({ data }: NodeProps<LogicRfNode>) {
+  const orientation = useLogicFlowOrientation();
+  const toggleCollapse = useLogicEdgeCollapseAction();
+  const d = data as CollapsedEdgeData;
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const pathLabel = d.edgeLabel ? `${d.edgeLabel} path` : "collapsed path";
+  const hidden = d.hiddenStepCount;
+  const accent = foldedEdgeAccent(d);
+  const title = hidden > 0
+    ? `Expand ${pathLabel}, ${hidden} hidden step${hidden === 1 ? "" : "s"} toward ${d.targetLabel}`
+    : `Expand ${pathLabel} connection toward ${d.targetLabel}`;
+  return (
+    <div style={FOLD_WRAP} data-logic-edge-fold="true" data-edge-role={d.branchRole}>
+      <Handle
+        type="target"
+        position={orientation === "horizontal" ? Position.Left : Position.Top}
+        style={PIN}
+        isConnectable={false}
+      />
+      <Handle
+        type="source"
+        position={orientation === "horizontal" ? Position.Right : Position.Bottom}
+        style={PIN}
+        isConnectable={false}
+      />
+      <button
+        type="button"
+        aria-label={title}
+        aria-expanded="false"
+        title={title}
+        data-logic-edge-disclosure="true"
+        data-edge-disclosure-state="collapsed"
+        data-edge-role={d.branchRole}
+        data-edge-collapse-key={d.collapseKey}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        onClick={(event) => {
+          event.stopPropagation();
+          toggleCollapse?.(d.collapseKey);
+          if (event.detail === 0) {
+            handoffLogicEdgeDisclosureFocus(d.collapseKey, "expanded");
+          }
+        }}
+        onDoubleClick={(event) => event.stopPropagation()}
+        style={foldButtonStyle(accent, hovered || focused, focused)}
+      >
+        <PlusCircledIcon width={14} height={14} aria-hidden="true" />
+        <span style={FOLD_HIDDEN}>{hidden > 0 ? `${hidden} hidden` : "link"}</span>
+      </button>
+    </div>
+  );
+}
+
 /**
  * A def-group FRAME: the structural container the module view groups a callable owner's methods
  * into — an object literal, a class, or the top-level `functions` bucket. It fills its laid-out box
@@ -1015,7 +1086,7 @@ function DefGroupNode({ id, data }: NodeProps<LogicRfNode>) {
   );
 }
 
-export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: BranchNode, exception: ExceptionNode, finally: FinallyNode, join: JoinNode, async: AsyncNode, jumpflow: JumpFlowNode, defgroup: DefGroupNode, servicegroup: ServiceGroupNode, terminal: TerminalNode };
+export const logicNodeTypes = { block: BlockNode, control: ControlNode, branch: BranchNode, exception: ExceptionNode, finally: FinallyNode, join: JoinNode, async: AsyncNode, jumpflow: JumpFlowNode, defgroup: DefGroupNode, servicegroup: ServiceGroupNode, terminal: TerminalNode, fold: FoldNode };
 
 // Selection is BY TARGET (a target can be called many times): a matched call site rings green so
 // every call of the same target lights up together; while some target is selected, unrelated nodes
@@ -1547,6 +1618,56 @@ const ASYNC_GATE_HATCH: React.CSSProperties = {
 };
 const ASYNC_GATE_GLYPH: React.CSSProperties = { position: "relative", color: AWAIT_ACCENT, fontSize: 17, lineHeight: 1 };
 const ASYNC_GATE_LABEL: React.CSSProperties = { position: "relative", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10.5, fontWeight: 650 };
+
+const FOLD_WRAP: React.CSSProperties = {
+  position: "relative",
+  width: "100%",
+  height: "100%",
+  display: "grid",
+  placeItems: "center",
+  overflow: "visible",
+};
+const FOLD_BUTTON_BASE: React.CSSProperties = {
+  width: "100%",
+  height: "100%",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 5,
+  padding: "0 8px",
+  border: "1px solid",
+  borderRadius: 7,
+  fontFamily: MONO,
+  fontSize: 10,
+  fontWeight: 700,
+  lineHeight: 1,
+  whiteSpace: "nowrap",
+  cursor: "pointer",
+  outline: "none",
+  transition: "border-color 120ms ease, background 120ms ease, color 120ms ease, box-shadow 120ms ease",
+};
+const FOLD_HIDDEN: React.CSSProperties = { lineHeight: 1 };
+
+function foldedEdgeAccent(data: CollapsedEdgeData): string {
+  if (data.edgeKind === "async") return FLOW_COLORS.awaited;
+  if (data.branchRole === "catch") return FLOW_COLORS.try;
+  if (data.edgeKind === "branch") return FLOW_COLORS.loop;
+  return FLOW_COLORS.ink;
+}
+
+function foldButtonStyle(accent: string, active: boolean, focused: boolean): React.CSSProperties {
+  return {
+    ...FOLD_BUTTON_BASE,
+    borderColor: active ? accent : `${accent}99`,
+    background: active ? `${accent}18` : FLOW_COLORS.card,
+    color: active ? accent : `${accent}CC`,
+    boxShadow: focused
+      ? `0 0 0 2px ${FLOW_COLORS.canvas}, 0 0 0 4px #7DD3FC`
+      : active
+        ? `0 3px 12px rgba(0,0,0,0.42), 0 0 8px ${accent}24`
+        : "none",
+  };
+}
 
 const GLYPH: React.CSSProperties = { fontSize: 11, opacity: 0.85 };
 const NAME: React.CSSProperties = { flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };

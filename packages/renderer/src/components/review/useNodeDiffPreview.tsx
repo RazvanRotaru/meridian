@@ -1,5 +1,5 @@
 /**
- * Hover/click-to-preview for every source-backed node on the PR review graph. React Flow owns the
+ * Hover/click-to-preview for every source-backed node on PR review canvases. React Flow owns the
  * node elements (and scales/clips them with the canvas), so this hook listens at the shared surface
  * and portals one fixed, interactive card to document.body. Hover uses a short dwell to avoid
  * fetching source while the pointer merely crosses the graph, plus a leave grace that lets the
@@ -8,10 +8,10 @@
  * hover and click cannot diverge through a second node-local cache that outlives a review revision.
  */
 
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type SyntheticEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type SyntheticEvent } from "react";
 import { createPortal } from "react-dom";
 import type { Node as FlowNode } from "@xyflow/react";
-import type { GraphNode } from "@meridian/core";
+import type { FlowSourceAnchor, GraphNode } from "@meridian/core";
 import { isSourceBackedNode } from "../../derive/sourceBackedNode";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { ReviewCodePreviewTrigger } from "../../state/reviewPreferences";
@@ -88,7 +88,7 @@ export function placeNodeDiffPreview(anchor: PreviewRect, bounds: PreviewBounds)
   return { left, top, width, maxHeight };
 }
 
-type LocatedGraphNode = GraphNode & { location: NonNullable<GraphNode["location"]> };
+export type LocatedGraphNode = GraphNode & { location: NonNullable<GraphNode["location"]> };
 
 /** Resolve hover source by graph identity alone. PR change membership only decorates the preview;
  * it must never decide whether an otherwise source-backed node can open one. */
@@ -103,8 +103,54 @@ export function codePreviewNode(
   return node;
 }
 
-interface PreviewState {
+export interface CodePreviewTarget {
+  targetId: string;
+  /** Presentation-only statement focus inside `targetId`'s canonical source. */
+  focus?: FlowSourceAnchor;
+  /** Structural occurrence label; the canonical owner remains the source identity. */
+  label?: string;
+}
+
+export type CodePreviewTargetResolver = (node: FlowNode) => string | CodePreviewTarget | null;
+
+export interface NodeDiffPreviewSubject {
+  /** The concrete React Flow occurrence whose DOM bounds anchor the card. */
+  anchorId: string;
+  /** The canonical artifact node whose source is loaded into the card. */
   node: LocatedGraphNode;
+  focus?: FlowSourceAnchor;
+  label?: string;
+}
+
+const defaultCodePreviewTarget: CodePreviewTargetResolver = (node) => node.id;
+
+/** Keep the rendered occurrence distinct from its canonical source target. Logic-flow canvases can
+ * render one artifact at several call sites, and moving between those occurrences must reposition
+ * the card even though every occurrence loads the same source-backed graph node. */
+export function resolveNodeDiffPreviewSubject(
+  nodesById: ReadonlyMap<string, GraphNode>,
+  flowNode: FlowNode,
+  resolveTarget: CodePreviewTargetResolver = defaultCodePreviewTarget,
+): NodeDiffPreviewSubject | null {
+  const target = resolveTarget(flowNode);
+  if (target === null) return null;
+  const targetId = typeof target === "string" ? target : target.targetId;
+  const node = codePreviewNode(nodesById, targetId);
+  return node === null
+    ? null
+    : {
+        anchorId: flowNode.id,
+        node,
+        ...(typeof target === "string" || target.focus === undefined ? {} : { focus: target.focus }),
+        ...(typeof target === "string" || target.label === undefined ? {} : { label: target.label }),
+      };
+}
+
+interface PreviewState {
+  anchorId: string;
+  node: LocatedGraphNode;
+  focus?: FlowSourceAnchor;
+  label?: string;
   anchor: PreviewRect;
   bounds: PreviewBounds;
   loading: boolean;
@@ -125,6 +171,7 @@ export interface NodeDiffPreviewControls {
 export function useNodeDiffPreview(
   enabled: boolean,
   trigger: ReviewCodePreviewTrigger,
+  resolveTarget: CodePreviewTargetResolver = defaultCodePreviewTarget,
 ): NodeDiffPreviewControls {
   const index = useBlueprint((state) => state.index);
   const reviewRevision = useBlueprint((state) => state.prReviewRevision);
@@ -222,26 +269,27 @@ export function useNodeDiffPreview(
       hideNow();
       return;
     }
-    const graphNode = codePreviewNode(index.nodesById, flowNode.id);
-    if (!graphNode) {
+    const subject = resolveNodeDiffPreviewSubject(index.nodesById, flowNode, resolveTarget);
+    if (subject === null) {
       scheduleHide();
       return;
     }
+    const { anchorId, node: graphNode, focus, label } = subject;
     // Once the reader interacts with a preview it becomes a small working surface. Incidental node
     // hover—and even another node click while writing—cannot replace its subject underneath them.
     if (engagedRef.current) {
       clearOpenTimer();
       return;
     }
-    // Returning from the card to the same node should keep the already-loaded preview steady.
-    if (activeId.current === graphNode.id) {
+    // Returning from the card to the same rendered occurrence keeps the loaded preview steady.
+    if (activeId.current === anchorId) {
       clearOpenTimer();
       return;
     }
     // React Flow can emit many moves during the dwell. Keep the original timer instead of pushing
     // the preview perpetually into the future; `onNodeMouseMove` also covers a node that laid out
     // underneath an already-stationary pointer and therefore never received a native enter.
-    if (pendingId.current === graphNode.id) {
+    if (pendingId.current === anchorId) {
       return;
     }
     clearOpenTimer();
@@ -255,20 +303,30 @@ export function useNodeDiffPreview(
       openTimer.current = null;
       pendingId.current = null;
       const token = ++requestToken.current;
-      activeId.current = graphNode.id;
+      activeId.current = anchorId;
       engagedRef.current = false;
-      setPinnedNodeId(dwell ? null : graphNode.id);
-      setPreview({ node: graphNode, anchor, bounds, loading: true, view: null, unavailable: false });
+      setPinnedNodeId(dwell ? null : anchorId);
+      setPreview({
+        anchorId,
+        node: graphNode,
+        ...(focus ? { focus } : {}),
+        ...(label ? { label } : {}),
+        anchor,
+        bounds,
+        loading: true,
+        view: null,
+        unavailable: false,
+      });
       // Do not retain a second component-local payload cache. The store already deduplicates source
       // requests by immutable URL, while a mounted hook cache could survive a revision refresh and
       // replay a stale CodeView for a node id that exists in both revisions.
-      const pending = loadCodePreview(graphNode).catch(() => null);
+      const pending = loadCodePreview(graphNode, focus ? { focus } : undefined).catch(() => null);
       void pending.then((view) => {
-        if (requestToken.current !== token || activeId.current !== graphNode.id) {
+        if (requestToken.current !== token || activeId.current !== anchorId) {
           return;
         }
         setPreview((current) => {
-          if (!current || current.node.id !== graphNode.id) {
+          if (!current || current.anchorId !== anchorId || current.node.id !== graphNode.id) {
             return current;
           }
           return { ...current, loading: false, view, unavailable: view === null };
@@ -276,12 +334,12 @@ export function useNodeDiffPreview(
       });
     };
     if (dwell) {
-      pendingId.current = graphNode.id;
+      pendingId.current = anchorId;
       openTimer.current = setTimeout(open, OPEN_DWELL_MS);
     } else {
       open();
     }
-  }, [clearCloseTimer, clearOpenTimer, codeModalOpen, enabled, hideNow, index, loadCodePreview, scheduleHide]);
+  }, [clearCloseTimer, clearOpenTimer, codeModalOpen, enabled, hideNow, index, loadCodePreview, resolveTarget, scheduleHide]);
 
   const onNodeMouseEnter = useCallback((event: ReactMouseEvent, flowNode: FlowNode) => {
     if (trigger === "hover") {
@@ -303,7 +361,7 @@ export function useNodeDiffPreview(
     ? createPortal(
         <NodeDiffPreviewCard
           preview={preview}
-          pinned={pinnedNodeId === preview.node.id}
+          pinned={pinnedNodeId === preview.anchorId}
           onEngage={pinPreview}
           onClose={requestHide}
           onMouseEnter={holdPreview}
@@ -343,20 +401,26 @@ function NodeDiffPreviewCard(props: {
     wholeFile: false,
   };
   const model = useSourceDiffModel(codeView);
+  const focusLines = useMemo(
+    () => lineRangeSet(codeView.previewFocus),
+    [codeView.previewFocus?.end, codeView.previewFocus?.start],
+  );
   const placement = placeNodeDiffPreview(preview.anchor, preview.bounds);
   const shownEnd = codeView.code === null
     ? preview.node.location.endLine ?? model.baseLine
     : model.shownEnd;
+  const shownRange = codeView.previewFocus ?? { start: model.baseLine, end: shownEnd };
   const range = codeView.code !== null && model.sourceLineCount === 0
     ? "empty"
-    : shownEnd === model.baseLine ? String(model.baseLine) : `${model.baseLine}-${shownEnd}`;
+    : shownRange.end === shownRange.start ? String(shownRange.start) : `${shownRange.start}-${shownRange.end}`;
+  const previewLabel = preview.label ?? preview.node.displayName;
   const stop = (event: SyntheticEvent) => event.stopPropagation();
 
   return (
     <div
       className="nodrag nopan nowheel"
       role="dialog"
-      aria-label={`Code preview for ${preview.node.displayName}`}
+      aria-label={`Code preview for ${previewLabel}`}
       style={{ ...PANEL_STYLE, ...placement }}
       onMouseEnter={props.onMouseEnter}
       onMouseLeave={props.onMouseLeave}
@@ -370,7 +434,7 @@ function NodeDiffPreviewCard(props: {
       <header style={HEADER_STYLE}>
         <div style={HEADER_TEXT_STYLE}>
           <div style={PATH_STYLE} title={preview.node.location.file}>{preview.node.location.file}</div>
-          <div style={NODE_STYLE} title={preview.node.qualifiedName}>{preview.node.displayName} · {range}</div>
+          <div style={NODE_STYLE} title={preview.node.qualifiedName}>{previewLabel} · {range}</div>
         </div>
         {model.summary ? (
           <span style={SUMMARY_STYLE} aria-label={`${model.summary.added} added lines, ${model.summary.deleted} deleted lines`}>
@@ -398,6 +462,7 @@ function NodeDiffPreviewCard(props: {
             90,
             placement.maxHeight - PREVIEW_CHROME_HEIGHT - (model.reviewCommentScopeNote ? COMMENT_SCOPE_NOTE_RESERVE : 0),
           )}
+          focusLines={focusLines}
           showGutter
           onComposerEngage={props.onEngage}
         />
@@ -405,6 +470,15 @@ function NodeDiffPreviewCard(props: {
     </div>
   );
 }
+
+function lineRangeSet(range: { start: number; end: number } | undefined): ReadonlySet<number> {
+  if (range === undefined) return EMPTY_FOCUS_LINES;
+  const lines = new Set<number>();
+  for (let line = range.start; line <= range.end; line += 1) lines.add(line);
+  return lines;
+}
+
+const EMPTY_FOCUS_LINES: ReadonlySet<number> = new Set<number>();
 
 function rectOf(rect: DOMRect): PreviewRect {
   return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height };

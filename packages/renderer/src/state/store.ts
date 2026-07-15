@@ -25,6 +25,7 @@ import type {
   ChangedLineSpan,
   ChangeGroupsResult,
   CoverageReport,
+  FlowSourceAnchor,
   FlowPath,
   FlowStep,
   GraphArtifact,
@@ -286,6 +287,9 @@ export interface CodeView {
   /** Which side `code` belongs to. Normally HEAD; a removed file has no HEAD source, so its base
    * snippet is rendered directly as deleted rows instead of duplicating it as ghost text. */
   sourceSide?: "head" | "base";
+  /** Presentation-only structural range inside `node`. It is expressed in the coordinates of the
+   * displayed source and must never participate in diff ownership or commentability. */
+  previewFocus?: LineRange;
   /** Edge-click mode: the concrete syntax occurrences behind the aggregate wire and the currently
    * loaded one. Its focus range is in the coordinates of the code being shown (HEAD during a
    * synchronous PR review, otherwise artifact/source coordinates). Presence moves the large source
@@ -296,6 +300,11 @@ export interface CodeView {
     focusStartLine: number;
     focusEndLine: number;
   };
+}
+
+export interface CodePreviewOptions {
+  /** Exact control statement inside the canonical enclosing callable. */
+  focus?: FlowSourceAnchor;
 }
 
 /** A review container opened as its own exact-file graph. Navigation history is owned by the
@@ -352,6 +361,9 @@ export interface BlueprintState {
   /** Logic-graph nodes the reader toggled AWAY from their default expansion (calls default
    * collapsed; loops/try default expanded) — an expand/collapse flips membership. */
   expandedLogic: Set<string>;
+  /** Stable semantic edge keys folded in the full Logic lens. Kept independent from whole-node
+   * disclosure so reopening an if/try restores the reader's per-path choices. */
+  collapsedLogicEdges: Set<string>;
   /** Hide the non-expandable (greyed) building-block leaves in the Logic graph. */
   hideGreyed: boolean;
   /** Nest consecutive same-owner calls under service frames in the Logic graph. Default OFF (flat):
@@ -372,6 +384,9 @@ export interface BlueprintState {
   /** Static explorer/review-flow occurrence ids toggled away from Logic's defaults. This pane owns
    * an isolated override set so expanding here never mutates the separately mounted Logic lens. */
   flowPaneExpansionOverrides: Set<string>;
+  /** Stable semantic edge keys folded in the shared static/request/synthetic split pane. Runtime
+   * occurrence ids and static flow ids are namespaced, so one set remains collision-free. */
+  flowPaneCollapsedEdges: Set<string>;
   /** Explicit server capability plus its bounded, advertised harnesses. These are independent of
    * telemetry sources: running trusted local code never changes environment/source selection. */
   syntheticExecutionUrl: string | null;
@@ -752,6 +767,8 @@ export interface BlueprintState {
   toggleRequestFlowExpand(nodeId: string): void;
   /** Expand/collapse one occurrence in the static explorer/review split only. */
   toggleFlowPaneExpand(nodeId: string): void;
+  /** Fold/restore one semantic edge in the shared static/request/synthetic split pane. */
+  toggleFlowPaneEdgeCollapse(collapseKey: string): void;
   flowPaneRelayout(): Promise<void>;
   /** The logic flow charted for a callable, or undefined when it has none (empty body). */
   logicFlowFor(nodeId: string): FlowStep[] | undefined;
@@ -768,6 +785,8 @@ export interface BlueprintState {
   selectLogicTarget(id: NodeId | null): void;
   togglePinnedFlow(id: NodeId): void;
   toggleLogicExpand(nodeId: string): void;
+  /** Fold/restore one semantic edge in the full Logic lens. */
+  toggleLogicEdgeCollapse(collapseKey: string): void;
   toggleHideGreyed(): void;
   toggleNestByService(): void;
   logicRelayout(activity?: LayoutActivity): Promise<void>;
@@ -914,7 +933,7 @@ export interface BlueprintState {
   setSelectedTrace(traceId: string | null): void;
   refreshTelemetry(): Promise<void>;
   /** Load one node's review diff for the hover preview without taking over the global code modal. */
-  loadCodePreview(node: GraphNode): Promise<CodeView | null>;
+  loadCodePreview(node: GraphNode, opts?: CodePreviewOptions): Promise<CodeView | null>;
   showCode(node: GraphNode, opts?: { wholeFile?: boolean; mode?: CodeView["mode"] }): Promise<void>;
   /** Open a changed file's full source even when the extractor produced no graph node for it. */
   showReviewFile(path: string): Promise<void>;
@@ -1223,6 +1242,50 @@ function codeLoadRequest(
     diffLines: artifactDiffLines ?? reviewDiffLines ?? [],
     diffOldSpan,
     sourceSide: readsComparisonBase ? "base" : "head",
+  };
+}
+
+/** Attach a structural focus without changing the canonical declaration request or its PR diff
+ * ownership. Synchronous reviews store FlowSourceAnchor coordinates on BASE while displaying HEAD,
+ * so only that branch needs the same edit-map projection used for the enclosing callable. */
+function withCodePreviewFocus(
+  view: CodeView,
+  node: GraphNode,
+  focus: FlowSourceAnchor,
+  request: CodeLoadRequest,
+  state: BlueprintState,
+): CodeView {
+  if (
+    normalizeReviewFilePath(focus.file) !== normalizeReviewFilePath(node.location.file)
+    || view.code === null
+  ) {
+    return view;
+  }
+  let range: LineRange = {
+    start: Math.max(1, focus.line),
+    end: Math.max(Math.max(1, focus.line), focus.endLine ?? focus.line),
+  };
+  if (request.headSpan !== null && !state.prPreparedArtifactCurrent) {
+    const normalizedFile = normalizeReviewFilePath(focus.file);
+    const reviewDiff = state.reviewDiffByFile[focus.file]
+      ?? state.reviewDiffByFile[normalizedFile]
+      ?? null;
+    if (reviewDiff !== null) {
+      range = headSpanFor(range.start, range.end, reviewDiff.edits);
+    }
+  }
+  const firstShown = view.baseLine ?? node.location.startLine;
+  const lineCount = view.lineCount ?? view.code.split("\n").length;
+  const lastShown = firstShown + lineCount - 1;
+  if (lineCount <= 0 || range.end < firstShown || range.start > lastShown) {
+    return view;
+  }
+  return {
+    ...view,
+    previewFocus: {
+      start: Math.max(firstShown, range.start),
+      end: Math.min(lastShown, range.end),
+    },
   };
 }
 
@@ -2011,6 +2074,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               requestFlowTraceId: null,
               requestFlowExpansionOverrides: new Set<string>(),
               flowPaneExpansionOverrides: new Set<string>(),
+              flowPaneCollapsedEdges: new Set<string>(),
               ...syntheticExecutionReset(),
               syntheticExperimentRootId: null,
               syntheticInputOverrides: [],
@@ -2147,6 +2211,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     ghostDepth: 1,
     pinnedFlows: [],
     expandedLogic: new Set<string>(),
+    collapsedLogicEdges: new Set<string>(),
     hideGreyed: false,
     nestByService: false,
     flowExplorerOpen: false,
@@ -2155,6 +2220,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     requestFlowTraceId: null,
     requestFlowExpansionOverrides: new Set<string>(),
     flowPaneExpansionOverrides: new Set<string>(),
+    flowPaneCollapsedEdges: new Set<string>(),
     syntheticExecutionUrl: initialSyntheticExecutionUrl,
     syntheticExecutionTrust: initialSyntheticExecutionTrust,
     syntheticScenarios: initialSyntheticScenarios,
@@ -2364,6 +2430,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           requestFlowTraceId: null,
           requestFlowExpansionOverrides: new Set<string>(),
           flowPaneExpansionOverrides: new Set<string>(),
+          flowPaneCollapsedEdges: new Set<string>(),
           ...syntheticExecutionReset(),
           flowPaneRfNodes: [],
           flowPaneRfEdges: [],
@@ -2425,6 +2492,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           requestFlowTraceId: null,
           requestFlowExpansionOverrides: new Set<string>(),
           flowPaneExpansionOverrides: new Set<string>(),
+          flowPaneCollapsedEdges: new Set<string>(),
           ...syntheticExecutionReset(),
           logicSelected: null,
           moduleSelected: related,
@@ -2463,6 +2531,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         requestFlowTraceId: null,
         requestFlowExpansionOverrides: new Set<string>(),
         flowPaneExpansionOverrides: new Set<string>(),
+        flowPaneCollapsedEdges: new Set<string>(),
         ...syntheticExecutionReset(),
       });
       // Both module lenses the explorer serves (Map + UI) bulk-reveal the flow's modules in the
@@ -2566,6 +2635,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         requestFlowTraceId: trace.traceId,
         requestFlowExpansionOverrides: new Set<string>(),
         flowPaneExpansionOverrides: new Set<string>(),
+        flowPaneCollapsedEdges: new Set<string>(),
         flowPaneRfNodes: [],
         flowPaneRfEdges: [],
         flowPaneLayoutStatus: "laying-out",
@@ -2833,6 +2903,26 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().flowPaneRelayout();
     },
 
+    toggleFlowPaneEdgeCollapse(collapseKey) {
+      const state = get();
+      if (state.flowPaneOrigin === null || state.flowPaneLayoutStatus !== "ready") {
+        return;
+      }
+      const edgeVisible = state.flowPaneRfEdges.some((edge) => edge.data?.collapseKey === collapseKey);
+      const foldVisible = state.flowPaneRfNodes.some((node) => (
+        node.type === "fold"
+        && (node.data as { collapseKey?: unknown }).collapseKey === collapseKey
+      ));
+      if (!edgeVisible && !foldVisible) {
+        return;
+      }
+      set({
+        flowPaneCollapsedEdges: withToggled(state.flowPaneCollapsedEdges, collapseKey),
+        flowPaneLayoutStatus: "laying-out",
+      });
+      void get().flowPaneRelayout();
+    },
+
     selectFlowPaneTarget(nodeId) {
       const state = get();
       const syntheticReview = state.flowPaneOrigin === "synthetic"
@@ -2983,6 +3073,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         requestFlowTraceId,
         requestFlowExpansionOverrides,
         flowPaneExpansionOverrides,
+        flowPaneCollapsedEdges,
         syntheticSelectedMomentId,
         syntheticFlowOrientation,
         syntheticFlowPresentation,
@@ -3018,6 +3109,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               syntheticFlowOrientation,
               requestFlowExpansionOverrides,
               execution?.snapshots ?? [],
+              flowPaneCollapsedEdges,
             )
           : await deriveRequestFlowPaneLayout(
               trace,
@@ -3025,6 +3117,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               flows,
               requestFlowExpansionOverrides,
               execution?.snapshots ?? [],
+              flowPaneCollapsedEdges,
             );
         if (
           flowPaneLayoutSeq !== sequence
@@ -3055,7 +3148,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         : reviewNodeStatusSourcesFromKinds(changedLineKindsFromExtensions(artifact.extensions));
       const graph = await deriveFlowPaneLayout(flowSelection, flows, index, flowPaneExpansionOverrides, {
         changedStatusForSource: (source) => reviewSourceChangeStatus(source, stepStatusSources),
-      });
+      }, flowPaneCollapsedEdges);
       if (flowPaneLayoutSeq !== sequence || get().flowSelection !== flowSelection) {
         return;
       }
@@ -3093,6 +3186,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         logicFocus: [],
         logicSelected: null,
         expandedLogic: new Set<string>(),
+        collapsedLogicEdges: new Set<string>(),
         ...(resetSynthetic ? logicHostedSyntheticReset() : {}),
       });
       void get().logicRelayout(nodeLayoutActivity(state, "Opening logic for", nodeId));
@@ -3146,6 +3240,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         logicFocus: [],
         logicSelected: null,
         expandedLogic: new Set<string>(),
+        collapsedLogicEdges: new Set<string>(),
         ...(resetSynthetic ? logicHostedSyntheticReset() : {}),
       });
       void get().logicRelayout(nodeLayoutActivity(state, "Opening logic for", nodeId));
@@ -3170,6 +3265,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         logicFocus: [],
         logicSelected: null,
         expandedLogic: new Set<string>(),
+        collapsedLogicEdges: new Set<string>(),
         ...(resetSynthetic ? logicHostedSyntheticReset() : {}),
       });
       void get().logicRelayout(nodeLayoutActivity(state, "Returning to", nodeId));
@@ -3178,14 +3274,24 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Dive INTO a control container (loop/try): re-chart the canvas to show ONLY its bodies as a
     // focused sub-view, the breadcrumb gaining a segment. Push it, reset expansion, relayout.
     diveLogicContainer(id, label, bodies) {
-      set({ logicFocus: [...get().logicFocus, { id, label, bodies }], logicSelected: null, expandedLogic: new Set<string>() });
+      set({
+        logicFocus: [...get().logicFocus, { id, label, bodies }],
+        logicSelected: null,
+        expandedLogic: new Set<string>(),
+        collapsedLogicEdges: new Set<string>(),
+      });
       void get().logicRelayout({ label: `Opening ${label}…` });
     },
 
     // Jump back along the container-dive trail (a focus-breadcrumb click): truncate to `index + 1`;
     // a negative index clears focus entirely, back to the full callable flow. Reset, relayout.
     logicFocusTo(index) {
-      set({ logicFocus: index < 0 ? [] : get().logicFocus.slice(0, index + 1), logicSelected: null, expandedLogic: new Set<string>() });
+      set({
+        logicFocus: index < 0 ? [] : get().logicFocus.slice(0, index + 1),
+        logicSelected: null,
+        expandedLogic: new Set<string>(),
+        collapsedLogicEdges: new Set<string>(),
+      });
       void get().logicRelayout({ label: index < 0 ? "Returning to full logic flow…" : "Returning to parent flow…" });
     },
 
@@ -3241,6 +3347,27 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().logicRelayout(nodeLayoutActivity(state, "Updating", nodeId));
     },
 
+    toggleLogicEdgeCollapse(collapseKey) {
+      const state = get();
+      if (state.logicLayoutStatus !== "ready") {
+        return;
+      }
+      const edgeVisible = state.logicRfEdges.some((edge) => edge.data?.collapseKey === collapseKey);
+      const foldVisible = state.logicRfNodes.some((node) => (
+        node.type === "fold"
+        && (node.data as { collapseKey?: unknown }).collapseKey === collapseKey
+      ));
+      if (!edgeVisible && !foldVisible) {
+        return;
+      }
+      set({
+        collapsedLogicEdges: withToggled(state.collapsedLogicEdges, collapseKey),
+        logicLayoutStatus: "laying-out",
+        logicLayoutActivity: { label: state.collapsedLogicEdges.has(collapseKey) ? "Expanding flow path…" : "Collapsing flow path…" },
+      });
+      void get().logicRelayout();
+    },
+
     // Toggle hiding the greyed (non-expandable) building-block leaves — the library/leaf calls.
     toggleHideGreyed() {
       const hideGreyed = !get().hideGreyed;
@@ -3264,6 +3391,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         index,
         artifact,
         expandedLogic,
+        collapsedLogicEdges,
         hideGreyed,
         nestByService,
         logicFocus,
@@ -3302,7 +3430,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           hideGreyed,
           nestByService,
           changedStatusForSource: (source) => reviewSourceChangeStatus(source, stepStatusSources),
-        }, focus);
+        }, focus, collapsedLogicEdges);
         if (logicLayoutSeq !== sequence) {
           return; // a newer layout superseded this one.
         }
@@ -4094,6 +4222,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             reviewSelectedId: null,
             flowSelection: null,
             flowPaneExpansionOverrides: new Set<string>(),
+            flowPaneCollapsedEdges: new Set<string>(),
             logicSelected: null,
             flowPaneRfNodes: [] as LogicRfNode[],
             flowPaneRfEdges: [] as LogicRfEdge[],
@@ -4118,6 +4247,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             requestFlowTraceId: null,
             requestFlowExpansionOverrides: new Set<string>(),
             flowPaneExpansionOverrides: new Set<string>(),
+            flowPaneCollapsedEdges: new Set<string>(),
             flowPaneRfNodes: [] as LogicRfNode[],
             flowPaneRfEdges: [] as LogicRfEdge[],
             flowPaneLayoutStatus: "idle" as const,
@@ -4153,6 +4283,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               requestFlowTraceId: null,
               requestFlowExpansionOverrides: new Set<string>(),
               flowPaneExpansionOverrides: new Set<string>(),
+              flowPaneCollapsedEdges: new Set<string>(),
               flowPaneRfNodes: [] as LogicRfNode[],
               flowPaneRfEdges: [] as LogicRfEdge[],
               flowPaneLayoutStatus: "idle" as const,
@@ -4314,6 +4445,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           ? {
               flowSelection: null,
               flowPaneExpansionOverrides: new Set<string>(),
+              flowPaneCollapsedEdges: new Set<string>(),
               logicSelected: null,
               flowPaneRfNodes: [] as LogicRfNode[],
               flowPaneRfEdges: [] as LogicRfEdge[],
@@ -4641,6 +4773,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // logic flow and must not linger with a now-unrelated pane selection.
         flowSelection: null,
         flowPaneExpansionOverrides: new Set<string>(),
+        flowPaneCollapsedEdges: new Set<string>(),
         logicSelected: null,
         flowPaneRfNodes: [],
         flowPaneRfEdges: [],
@@ -4678,6 +4811,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewLitNodeIds: new Set(lit),
         flowSelection: null,
         flowPaneExpansionOverrides: new Set<string>(),
+        flowPaneCollapsedEdges: new Set<string>(),
         logicSelected: null,
         flowPaneRfNodes: [],
         flowPaneRfEdges: [],
@@ -4745,6 +4879,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleSelected: new Set<string>(),
         flowSelection: null,
         flowPaneExpansionOverrides: new Set<string>(),
+        flowPaneCollapsedEdges: new Set<string>(),
         logicSelected: null,
         flowPaneRfNodes: [],
         flowPaneRfEdges: [],
@@ -4803,6 +4938,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleSelected: new Set<string>(),
         flowSelection: null,
         flowPaneExpansionOverrides: new Set<string>(),
+        flowPaneCollapsedEdges: new Set<string>(),
         logicSelected: null,
         flowPaneRfNodes: [],
         flowPaneRfEdges: [],
@@ -4886,6 +5022,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         requestFlowTraceId: null,
         requestFlowExpansionOverrides: new Set<string>(),
         flowPaneExpansionOverrides: new Set<string>(),
+        flowPaneCollapsedEdges: new Set<string>(),
         logicSelected: null,
         flowPaneRfNodes: [] as LogicRfNode[],
         flowPaneRfEdges: [] as LogicRfEdge[],
@@ -5741,9 +5878,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Hover previews have their own local lifecycle. Loading through this action reuses the exact
     // click-to-open source rules without mutating `codeView`, so hovering can never replace an open
     // modal. The preview component owns dwell, stale-result, and per-node caching behavior.
-    async loadCodePreview(node) {
-      const request = codeLoadRequest(node, undefined, get(), sourceUrl, prFileUrl);
-      return request ? fetchCodeView(request, "inline", codePayloadCache) : null;
+    async loadCodePreview(node, opts) {
+      const state = get();
+      const request = codeLoadRequest(node, undefined, state, sourceUrl, prFileUrl);
+      if (!request) return null;
+      const view = await fetchCodeView(request, "inline", codePayloadCache);
+      return opts?.focus === undefined
+        ? view
+        : withCodePreviewFocus(view, node, opts.focus, request, state);
     },
 
     // Fetch and reveal a callable's source in the requested host (inline by default). Inert when
@@ -7557,6 +7699,7 @@ function requestFlowPaneReset(state?: BlueprintState): Partial<BlueprintState> {
     requestFlowTraceId: null,
     requestFlowExpansionOverrides: new Set<string>(),
     flowPaneExpansionOverrides: new Set<string>(),
+    flowPaneCollapsedEdges: new Set<string>(),
     flowPaneRfNodes: [],
     flowPaneRfEdges: [],
     flowPaneLayoutStatus: "idle",

@@ -475,7 +475,11 @@ function staticBodyGraft(
     flows,
     index,
     requestFlowExpansionOverrides,
-    { hideGreyed: false, nestByService: false },
+    {
+      hideGreyed: false,
+      nestByService: false,
+      ...(span.nodeId ? { sourceOwnerId: span.nodeId } : {}),
+    },
   );
   if (spec.nodes.length === 0) return null;
   const correlatedEdges = correlateStaticRequestEdges({

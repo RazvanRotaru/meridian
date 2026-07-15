@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { GraphNode } from "@meridian/core";
+import type { Node as FlowNode } from "@xyflow/react";
 import type { PrGitHubComment } from "../../state/prTypes";
 import type { ReviewComment } from "../../state/reviewTicksPref";
 import { codeReviewComments, codeReviewDrafts, commentableReviewLines, isHeadSideReviewComment } from "./useCodeReviewComments";
 import {
   codePreviewNode,
   placeNodeDiffPreview,
+  resolveNodeDiffPreviewSubject,
   type PreviewRect,
 } from "./useNodeDiffPreview";
 
@@ -130,6 +132,34 @@ describe("codePreviewNode", () => {
     node("ipc:http/GET+/orders", "channel", "(http)"),
   ])("does not preview structural or synthetic node $id", (candidate) => {
     expect(codePreviewNode(new Map([[candidate.id, candidate]]), candidate.id)).toBeNull();
+  });
+
+  it("loads a canonical logic target while retaining each rendered occurrence as its anchor", () => {
+    const canonical = node("ts:src/orders.ts#submit", "function", "src/orders.ts");
+    const first: FlowNode = {
+      id: "logic:submit:then:0",
+      position: { x: 0, y: 0 },
+      data: { targetId: canonical.id },
+    };
+    const second: FlowNode = {
+      id: "logic:submit:else:0",
+      position: { x: 200, y: 0 },
+      data: { targetId: canonical.id },
+    };
+    const targetOf = (flowNode: FlowNode) => {
+      const targetId = flowNode.data.targetId;
+      return typeof targetId === "string" ? targetId : null;
+    };
+    const nodes = new Map([[canonical.id, canonical]]);
+
+    expect(resolveNodeDiffPreviewSubject(nodes, first, targetOf)).toEqual({
+      anchorId: first.id,
+      node: canonical,
+    });
+    expect(resolveNodeDiffPreviewSubject(nodes, second, targetOf)).toEqual({
+      anchorId: second.id,
+      node: canonical,
+    });
   });
 });
 

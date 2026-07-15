@@ -52,13 +52,15 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
               {viewMode === "logic" ? <LogicFlowView /> : viewMode === "prs" ? <PrsView /> : <ModuleMapView />}
             </ReactFlowProvider>
             <Toolbar preselectedEnv={props.preselectedEnv} />
-            <CodePanel />
             {/* Global Cmd/Ctrl+P quick-open — mounted here so the shortcut works in every view mode. */}
             <CommandPalette />
           </div>
         )}
         flow={<FlowPane />}
       />
+      {/* Source is opened from both split panes. Keep its modal host outside the resizable panes so
+          minimizing the graph cannot clip it or place it inside an aria-hidden/inert subtree. */}
+      <CodePanel />
     </div>
   );
 }

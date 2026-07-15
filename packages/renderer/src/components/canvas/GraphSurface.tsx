@@ -126,7 +126,7 @@ import { REVIEW_NODE_VIEWED_CSS } from "../review/ReviewFileNodeViewedControls";
  * "wire" is the plain curve every remaining edge retypes to on hover-enabled surfaces. One shared
  * map — a surface whose flags never mint a type simply has no
  * edges wearing it. */
-const moduleEdgeTypes: EdgeTypes = {
+export const moduleEdgeTypes: EdgeTypes = {
   [BUNDLE_EDGE_TYPE]: BundledEdge,
   [ROUTED_EDGE_TYPE]: RoutedEdge,
   [RIBBON_EDGE_TYPE]: RibbonEdge,

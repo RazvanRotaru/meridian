@@ -10,6 +10,7 @@ import type {
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { logicNodeTypes } from "../nodes/logic/logicNodeTypes";
 import { logicEdgeTypes } from "../edges/AsyncRailEdge";
+import { LogicEdgeActionScope } from "../edges/LogicEdgeActionScope";
 import { CanvasChrome, READONLY_CANVAS_PROPS } from "../canvas/flowCanvasProps";
 import type { LogicNodeData } from "../../derive/logicGraph";
 import { stepsAt, type FlowSelectionRef } from "../../derive/flowBlocks";
@@ -53,6 +54,10 @@ import { LogicFlowOrientationProvider } from "../nodes/logic/LogicFlowOrientatio
 import type { LogicFlowOrientation } from "../../layout/logicElk";
 import { deriveObservedRequestRoute } from "../../derive/requestObservedRoute";
 import { ObservedRouteStrip } from "./ObservedRouteStrip";
+import {
+  useNodeDiffPreview,
+  type CodePreviewTarget,
+} from "../review/useNodeDiffPreview";
 
 const EMPTY_INPUT_OVERRIDES: readonly SyntheticInputOverride[] = [];
 const EMPTY_FIELD_WATCHERS: readonly SyntheticFieldWatcher[] = [];
@@ -668,6 +673,10 @@ function FlowPaneSurface({ focusRequest = null }: { focusRequest?: FlowPaneFocus
   const edges = useBlueprint((state) => state.flowPaneRfEdges);
   const status = useBlueprint((state) => state.flowPaneLayoutStatus);
   const logicSelected = useBlueprint((state) => state.logicSelected);
+  const reviewCodePreviewEnabled = useBlueprint(
+    (state) => state.flowSelection !== null && state.reviewFlowBaseline !== null,
+  );
+  const reviewCodePreviewTrigger = useBlueprint((state) => state.reviewCodePreviewTrigger);
   const executionOpen = useBlueprint((state) => state.flowPaneOrigin === "request" || state.flowPaneOrigin === "synthetic");
   const syntheticOpen = useBlueprint((state) => state.flowPaneOrigin === "synthetic");
   const syntheticPresentation = useBlueprint((state) => state.syntheticFlowPresentation);
@@ -676,27 +685,31 @@ function FlowPaneSurface({ focusRequest = null }: { focusRequest?: FlowPaneFocus
     selectSyntheticMoment,
     toggleFlowPaneExpand,
     toggleRequestFlowExpand,
+    toggleFlowPaneEdgeCollapse,
     openLogicFlow,
   } = useBlueprintActions();
+  const nodeDiff = useNodeDiffPreview(
+    reviewCodePreviewEnabled,
+    reviewCodePreviewTrigger,
+    flowPaneCodePreviewTarget,
+  );
   const focusedSynthetic = syntheticOpen && syntheticPresentation === "focused";
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const fittedNodes = useRef<readonly Node[] | null>(null);
-  // A request trace is mounted under its own ReactFlowProvider key, so this ref naturally resets
-  // when the selected request changes. Expansion relayouts keep the same mount and must preserve
-  // the viewport the reader panned to instead of jumping back to the opening moments.
-  const requestInitialFitDone = useRef(false);
+  // The surface is mounted under a selection/trace-specific ReactFlowProvider key, so this resets
+  // on navigation. Same-flow node or edge disclosure relayouts keep the mount and must preserve the
+  // viewport the reader panned to instead of jumping back to the whole graph.
+  const initialFitDone = useRef(false);
 
   const fitReadyNodes = (instance: ReactFlowInstance<Node, Edge>) => {
     if (status !== "ready" || nodes.length === 0 || fittedNodes.current === nodes) {
       return;
     }
     fittedNodes.current = nodes;
-    if (!shouldAutoFitFlowPane(executionOpen, requestInitialFitDone.current)) {
+    if (!shouldAutoFitFlowPane(executionOpen, initialFitDone.current)) {
       return;
     }
-    if (executionOpen) {
-      requestInitialFitDone.current = true;
-    }
+    initialFitDone.current = true;
     requestAnimationFrame(() => {
       // A whole request can contain dozens of runtime moments. Fitting every card turns the split
       // into an unreadable miniature timeline, so request mode opens on the entry + first four
@@ -787,42 +800,57 @@ function FlowPaneSurface({ focusRequest = null }: { focusRequest?: FlowPaneFocus
           }
         }}
       >
-        <ReactFlow<Node, Edge>
-          {...READONLY_CANVAS_PROPS}
-          nodes={nodes}
-          edges={edges}
-          nodeTypes={logicNodeTypes}
-          edgeTypes={logicEdgeTypes}
-          fitViewOptions={focusedSynthetic ? { padding: 0.2, minZoom: 0.78, maxZoom: 1.5 } : READONLY_CANVAS_PROPS.fitViewOptions}
-          minZoom={focusedSynthetic ? 0.78 : READONLY_CANVAS_PROPS.minZoom}
-          maxZoom={focusedSynthetic ? 1.5 : READONLY_CANVAS_PROPS.maxZoom}
-          onInit={(instance) => {
-            rfRef.current = instance;
-            fittedNodes.current = null;
-            fitReadyNodes(instance);
-          }}
-          onNodeClick={(_event, node) => {
-            const target = artifactTargetOf(node);
-            if (syntheticOpen) {
-              const runtime = (node.data as Partial<LogicNodeData>).runtime;
-              if (runtime !== undefined) {
-                selectSyntheticMoment(node.id, target);
-              } else if (target !== null) {
-                selectFlowPaneTarget(target);
+        <LogicEdgeActionScope toggleCollapse={toggleFlowPaneEdgeCollapse}>
+          <ReactFlow<Node, Edge>
+            {...READONLY_CANVAS_PROPS}
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={logicNodeTypes}
+            edgeTypes={logicEdgeTypes}
+            fitViewOptions={focusedSynthetic ? { padding: 0.2, minZoom: 0.78, maxZoom: 1.5 } : READONLY_CANVAS_PROPS.fitViewOptions}
+            minZoom={focusedSynthetic ? 0.78 : READONLY_CANVAS_PROPS.minZoom}
+            maxZoom={focusedSynthetic ? 1.5 : READONLY_CANVAS_PROPS.maxZoom}
+            onInit={(instance) => {
+              rfRef.current = instance;
+              fittedNodes.current = null;
+              fitReadyNodes(instance);
+            }}
+            onNodeClick={(event, node) => {
+              if (reviewCodePreviewEnabled) {
+                nodeDiff.onNodeClick(event, node);
               }
-              return;
-            }
-            if (target !== null) {
-              // Request occurrences always reveal their exact mapped artifact node. Static/review flows
-              // retain their historical toggle-by-target behavior through `logicSelected`.
-              selectFlowPaneTarget(executionOpen ? target : target === logicSelected ? null : target);
-            }
-          }}
-          onPaneClick={() => selectFlowPaneTarget(null)}
-        >
-          <CanvasChrome nodeColor={miniMapColor} />
-        </ReactFlow>
+              const target = artifactTargetOf(node);
+              if (syntheticOpen) {
+                const runtime = (node.data as Partial<LogicNodeData>).runtime;
+                if (runtime !== undefined) {
+                  selectSyntheticMoment(node.id, target);
+                } else if (target !== null) {
+                  selectFlowPaneTarget(target);
+                }
+                return;
+              }
+              if (target !== null) {
+                // Request occurrences always reveal their exact mapped artifact node. Static/review flows
+                // retain their historical toggle-by-target behavior through `logicSelected`.
+                selectFlowPaneTarget(executionOpen ? target : target === logicSelected ? null : target);
+              }
+            }}
+            onNodeMouseEnter={reviewCodePreviewEnabled ? nodeDiff.onNodeMouseEnter : undefined}
+            onNodeMouseMove={reviewCodePreviewEnabled ? nodeDiff.onNodeMouseMove : undefined}
+            onNodeMouseLeave={reviewCodePreviewEnabled ? nodeDiff.onNodeMouseLeave : undefined}
+            onPaneMouseMove={reviewCodePreviewEnabled ? nodeDiff.onPaneMouseMove : undefined}
+            onPaneClick={() => {
+              if (reviewCodePreviewEnabled) {
+                nodeDiff.onPaneClick();
+              }
+              selectFlowPaneTarget(null);
+            }}
+          >
+            <CanvasChrome nodeColor={miniMapColor} />
+          </ReactFlow>
+        </LogicEdgeActionScope>
       </BaseNodeActionScope>
+      {nodeDiff.layer}
     </GraphSurface>
   );
 }
@@ -831,11 +859,10 @@ function GraphSurface(props: { children: React.ReactNode }) {
   return <div style={SURFACE_FILL} data-flow-pane-view="graph">{props.children}</div>;
 }
 
-/** Request panes fit their opening moments once per trace mount, then preserve the reader's camera
- * across expand/collapse relayouts. Static explorer/review panes retain their existing fit-on-layout
- * behavior. Exported only as a pure policy seam for the focused regression test. */
-export function shouldAutoFitFlowPane(requestOpen: boolean, requestInitialFitDone: boolean): boolean {
-  return !requestOpen || !requestInitialFitDone;
+/** Every pane fits once per selection/trace mount, then preserves the reader's camera across node
+ * and edge disclosure relayouts. Exported only as a pure policy seam for focused regressions. */
+export function shouldAutoFitFlowPane(_requestOpen: boolean, initialFitDone: boolean): boolean {
+  return !initialFitDone;
 }
 
 /** React Flow stores nested child positions relative to their containers. Center the first two
@@ -890,6 +917,25 @@ function artifactTargetOf(node: Node): string | null {
     return data.targetId;
   }
   return null;
+}
+
+/** Calls retain the graph-view contract and preview their callee. Structural controls have no
+ * standalone GraphNode, so they load their canonical enclosing callable and carry the exact
+ * statement only as a presentation focus. Joins/terminals/services remain intentionally inert. */
+export function flowPaneCodePreviewTarget(node: Node): string | CodePreviewTarget | null {
+  const data = node.data as Partial<LogicNodeData>;
+  if (typeof data.targetId === "string") {
+    return data.targetId;
+  }
+  const sourceContext = data.sourceContext;
+  if (sourceContext === undefined || typeof sourceContext.ownerId !== "string") {
+    return null;
+  }
+  return {
+    targetId: sourceContext.ownerId,
+    ...(sourceContext.anchor ? { focus: sourceContext.anchor } : {}),
+    ...(typeof data.label === "string" ? { label: data.label } : {}),
+  };
 }
 
 /** The navigator focuses the first visible occurrence of a changed callable. A changed flow root is

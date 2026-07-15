@@ -52,6 +52,7 @@ import { logicEdgeTypes } from "./edges/AsyncRailEdge";
 import { BaseNodeActionScope, type BaseNodeModel } from "./nodes/BaseNode";
 import { LogicActionBar } from "./controlpanel/LogicActionBar";
 import { changedColor } from "./ChangedBadge";
+import { LogicEdgeActionScope } from "./edges/LogicEdgeActionScope";
 
 export function LogicFlowView() {
   const logicRoot = useBlueprint((state) => state.logicRoot);
@@ -100,7 +101,7 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
     [artifact, coverageMode],
   );
   const showLogicTests = useBlueprint((state) => state.showLogicTests);
-  const { drillLogicFlow, logicFlowTo, diveLogicContainer, logicFocusTo, toggleLogicExpand, toggleHideGreyed, toggleNestByService, setGhostDepth, selectLogicTarget, openComposition, toggleLogicTests, expandAll, collapseAll } =
+  const { drillLogicFlow, logicFlowTo, diveLogicContainer, logicFocusTo, toggleLogicExpand, toggleLogicEdgeCollapse, toggleHideGreyed, toggleNestByService, setGhostDepth, selectLogicTarget, openComposition, toggleLogicTests, expandAll, collapseAll } =
     useBlueprintActions();
 
   // The two gestures the node components don't own, mutually exclusive by node kind: a control
@@ -265,31 +266,33 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
         toggleExpand={(model) => toggleLogicExpand(model.instanceId)}
         navigateInto={navigateBaseNode}
       >
-        <ReadonlyGraphCanvas<Node, Edge>
-          nodes={[...nodes, ...jumpNodes, ...testNodes]}
-          edges={[...styledEdges, ...jumpEdges, ...testEdges]}
-          nodeTypes={logicNodeTypes}
-          edgeTypes={logicEdgeTypes}
-          onInit={(instance) => {
-            setRfInstance(instance);
-          }}
-          onNodeClick={onNodeClick}
-          onNodeDoubleClick={onNodeDoubleClick}
-          onPaneClick={() => selectLogicTarget(null)}
-          miniMapColor={(node) => miniMapColor(node, coverage, logicRoot, execution, index)}
-        >
-          <LogicActionBar
-            selectedCount={selectedActionScope.nodeIds.length}
-            canFocus={rfInstance !== null && (logicSelected === null
-              ? nodes.length + jumpNodes.length + testNodes.length > 0
-              : selectedActionScope.nodeIds.length > 0)}
-            canExpand={selectedActionScope.canExpand}
-            canCollapse={selectedActionScope.canCollapse}
-            onFocusSelection={focusSelection}
-            onExpandSelection={expandAll}
-            onCollapseSelection={collapseAll}
-          />
-        </ReadonlyGraphCanvas>
+        <LogicEdgeActionScope toggleCollapse={toggleLogicEdgeCollapse}>
+          <ReadonlyGraphCanvas<Node, Edge>
+            nodes={[...nodes, ...jumpNodes, ...testNodes]}
+            edges={[...styledEdges, ...jumpEdges, ...testEdges]}
+            nodeTypes={logicNodeTypes}
+            edgeTypes={logicEdgeTypes}
+            onInit={(instance) => {
+              setRfInstance(instance);
+            }}
+            onNodeClick={onNodeClick}
+            onNodeDoubleClick={onNodeDoubleClick}
+            onPaneClick={() => selectLogicTarget(null)}
+            miniMapColor={(node) => miniMapColor(node, coverage, logicRoot, execution, index)}
+          >
+            <LogicActionBar
+              selectedCount={selectedActionScope.nodeIds.length}
+              canFocus={rfInstance !== null && (logicSelected === null
+                ? nodes.length + jumpNodes.length + testNodes.length > 0
+                : selectedActionScope.nodeIds.length > 0)}
+              canExpand={selectedActionScope.canExpand}
+              canCollapse={selectedActionScope.canCollapse}
+              onFocusSelection={focusSelection}
+              onExpandSelection={expandAll}
+              onCollapseSelection={collapseAll}
+            />
+          </ReadonlyGraphCanvas>
+        </LogicEdgeActionScope>
       </BaseNodeActionScope>
       <LogicOverlayHeader
         stack={logicStack}
@@ -746,7 +749,9 @@ function jumpEdge(source: string, target: string, pair: string, labeled: boolean
 // the entry/exit end-caps. Those carry no call data (a satellite owns its own click; a terminal is
 // no call site), so hand back logic data only for real exec nodes.
 function logicDataOf(node: Pick<Node, "type" | "data">): LogicNodeData | null {
-  return node.type === "jumpflow" || node.type === "terminal" ? null : (node.data as LogicNodeData);
+  return node.type === "jumpflow" || node.type === "terminal" || node.type === "fold"
+    ? null
+    : (node.data as LogicNodeData);
 }
 
 // ---- coverage lens over the logic flow --------------------------------------------------------
