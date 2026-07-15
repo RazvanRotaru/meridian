@@ -629,7 +629,10 @@ const LISTING_STYLE: React.CSSProperties = {
   tabSize: 2,
 };
 const CODE_TABLE_STYLE: React.CSSProperties = {
-  width: "max-content",
+  // Keep wrappable colspan content (comments/composers) from becoming the table's intrinsic width
+  // and distributing that excess into the gutter. Preformatted code still grows an auto-layout
+  // table past the scrollport when a source line itself is wider than the available space.
+  width: "100%",
   minWidth: "100%",
   borderCollapse: "collapse",
   borderSpacing: 0,
