@@ -58,20 +58,7 @@ export interface SymbolEntry {
 }
 
 export function CommandPalette() {
-  const artifact = useBlueprint((state) => state.artifact);
-  const index = useBlueprint((state) => state.index);
-  const viewMode = useBlueprint((state) => state.viewMode);
-  const { openLogicFlow, revealInView, addToView } = useBlueprintActions();
-  // In a map lens, the palette reveals/adds a graph node; elsewhere it opens a logic flow.
-  const isMap = MAP_VIEWS.has(viewMode);
-
   const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const [highlighted, setHighlighted] = useState(0);
-  const [scope, setScope] = useState<SearchScope>("public");
-  const [scopeMenuOpen, setScopeMenuOpen] = useState(false);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const activeRowRef = useRef<HTMLDivElement | null>(null);
 
   // The global shortcut. Cmd/Ctrl+P is the browser's Print dialog, so preventDefault is CRITICAL —
   // without it the print window steals the keystroke and the palette never opens. Pressing it again
@@ -87,15 +74,24 @@ export function CommandPalette() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // A fresh open starts empty with the top row primed, so the reader never inherits a stale query.
-  useEffect(() => {
-    if (open) {
-      setQuery("");
-      setHighlighted(0);
-      setScope("public");
-      setScopeMenuOpen(false);
-    }
-  }, [open]);
+  // Keep the closed shell independent of artifact/index. Mounting the body only while visible means
+  // its repo-wide searchable collection is released as soon as the palette closes.
+  return open ? <OpenCommandPalette onClose={() => setOpen(false)} /> : null;
+}
+
+function OpenCommandPalette(props: { onClose: () => void }) {
+  const artifact = useBlueprint((state) => state.artifact);
+  const index = useBlueprint((state) => state.index);
+  const viewMode = useBlueprint((state) => state.viewMode);
+  const { openLogicFlow, revealInView, addToView } = useBlueprintActions();
+  // In a map lens, the palette reveals/adds a graph node; elsewhere it opens a logic flow.
+  const isMap = MAP_VIEWS.has(viewMode);
+  const [query, setQuery] = useState("");
+  const [highlighted, setHighlighted] = useState(0);
+  const [scope, setScope] = useState<SearchScope>("public");
+  const [scopeMenuOpen, setScopeMenuOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const activeRowRef = useRef<HTMLDivElement | null>(null);
 
   // Rank once per artifact + mode (not on every keystroke): map lists every navigable node by name;
   // logic ranks flow-bearing symbols first. The order carries through the substring filter below.
@@ -117,11 +113,6 @@ export function CommandPalette() {
     activeRowRef.current?.scrollIntoView({ block: "nearest" });
   }, [highlighted, results]);
 
-  if (!open) {
-    return null;
-  }
-
-  const close = () => setOpen(false);
   // Enter/click a row: a map lens reveals it (go-to / pin+select), logic/ui opens its logic flow. Close.
   const openPick = (id: NodeId) => {
     if (isMap) {
@@ -129,7 +120,7 @@ export function CommandPalette() {
     } else {
       openLogicFlow(id);
     }
-    close();
+    props.onClose();
   };
   // The "+" (map lenses only): add the node to the visible graph WITHOUT navigating. Stay open so a
   // reader can add several nodes before dismissing to see the result on the canvas.
@@ -163,13 +154,13 @@ export function CommandPalette() {
       }
     } else if (event.key === "Escape") {
       event.preventDefault();
-      close();
+      props.onClose();
     }
   };
 
   // Backdrop click closes; clicks inside the dialog are swallowed so they don't reach it.
   return (
-    <div style={BACKDROP_STYLE} onClick={close}>
+    <div style={BACKDROP_STYLE} onClick={props.onClose}>
       <div style={DIALOG_STYLE} role="dialog" aria-modal aria-label={isMap ? "Reveal or add a node in the current view" : "Open a symbol's logic flow"} onClick={(e) => e.stopPropagation()}>
         <div style={SEARCH_HEADER_STYLE}>
           <input

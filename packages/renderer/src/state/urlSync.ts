@@ -10,6 +10,7 @@
  */
 
 import { telemetryEnvironmentSchema, telemetrySourceAllowsEnvironment } from "@meridian/core";
+import { PERFORMANCE, startPerformanceSpan } from "../boot/performanceMarks";
 import { selectedPrSummary, type BlueprintStore } from "./store";
 import { decodeNavState, isNavigationChange, mergeNavIntoSearch, navFrom, type NavState } from "./urlState";
 
@@ -51,16 +52,21 @@ export async function restoreFromUrl(store: BlueprintStore, search?: string): Pr
   store.setState(structuralState(nav));
   // The restored viewMode decides which layout pass runs; every module surface routes through
   // relayout() (→ moduleRelayout), "logic" needs its own ELK pass. This is the boot's first layout.
-  if (store.getState().viewMode === "logic") {
-    await store.getState().logicRelayout();
-  } else {
-    await store.getState().relayout();
-  }
-  // The minimal-graph overlay is restored state too: rebuild its nodes when the URL carried seeds so
-  // a reload / back-forward into an open overlay reproduces it (structuralState already cleared it
-  // when the URL carried none).
-  if (store.getState().minimalSeedIds.length > 0) {
-    await store.getState().minimalRelayout();
+  const finishLayout = startPerformanceSpan(PERFORMANCE.initialLayout);
+  try {
+    if (store.getState().viewMode === "logic") {
+      await store.getState().logicRelayout();
+    } else {
+      await store.getState().relayout();
+    }
+    // The minimal-graph overlay is restored state too: rebuild its nodes when the URL carried seeds so
+    // a reload / back-forward into an open overlay reproduces it (structuralState already cleared it
+    // when the URL carried none).
+    if (store.getState().minimalSeedIds.length > 0) {
+      await store.getState().minimalRelayout();
+    }
+  } finally {
+    finishLayout();
   }
   if (nav.reviewActive && nav.reviewPr !== null) {
     await restorePrReview(store, nav.reviewPr);

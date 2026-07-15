@@ -50,7 +50,7 @@ describe("POST /api/generate response formats", () => {
     const done = lines.at(-1)!;
     expect(done.id).toBeTypeOf("string");
     expect(done.counts?.nodes).toBeGreaterThan(0);
-    expect((await fetch(`${base}/api/graph?id=${done.id}`)).status).toBe(200);
+    expect((await fetch(`${base}/api/graph/manifest?id=${done.id}`)).status).toBe(200);
   }, 60_000);
 
   it("streams an error after the last stage that actually started", async () => {

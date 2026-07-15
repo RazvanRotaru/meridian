@@ -16,14 +16,18 @@ describe("injectBootScript", () => {
 
   it("still injects a parseable boot object that never defaults the environment", () => {
     const html = injectBootScript("<head></head>", { kind: "mock" }, "staging", null);
+    expect(html).toContain('"projectionManifestUrl":"/api/graph/manifest"');
+    expect(html).toContain('"projectionUrl":"/api/graph/projection"');
+    expect(html).not.toContain('"graphUrl"');
     expect(html).toContain('"traceUrl":"/api/traces"');
     expect(html).toContain('"syntheticExecutionUrl":null');
+    expect(html).toContain('"syntheticExecutionTrust":null');
     expect(html).toContain('"syntheticScenarios":[]');
     expect(html).toContain('"telemetrySources":[{"id":"demo","kind":"mock","label":"Synthetic demo","provenance":"synthetic","environments":["demo","dev","staging","prod"],"environmentMode":"arbitrary","supportsMetrics":true,"supportsTraces":true}]');
     expect(html).toContain('"preselectedTelemetrySourceId":"demo"');
     expect(html).toContain('"preselectedEnv":"staging"');
     expect(html).toContain('"defaultEnv":null');
-    expect(html).toContain('"githubSource":false');
+    expect(html).toContain('"githubSource":null');
   });
 
   it("advertises an explicit custom mock environment without turning suggestions into an allowlist", () => {
@@ -48,6 +52,7 @@ describe("injectBootScript", () => {
     const enabled = injectBootScript("<head></head>", { kind: "none" }, null, "/repo", [scenario]);
 
     expect(enabled).toContain('"syntheticExecutionUrl":"/api/synthetic-executions"');
+    expect(enabled).toContain('"syntheticExecutionTrust":{"mode":"local"}');
     expect(enabled).toContain('"syntheticScenarios":[{"id":"place-order"');
     expect(injectBootScript("<head></head>", { kind: "none" }, null, "/repo")).toContain(
       '"syntheticExecutionUrl":null',

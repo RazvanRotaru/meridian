@@ -1,33 +1,25 @@
 /**
  * The PR-review artifact session: swap the loaded graph for the freshly-prepared PR-head artifact
- * (so the review computes in HEAD coordinates — the diff hunks' own line numbers), and restore the
- * boot pair while the review is parked. The store's `prepareHeadGraph` drives the swap behind its
- * stale-seq guard; starting another review or explicitly leaving review history ends the session.
+ * (so the review computes in HEAD coordinates — the diff hunks' own line numbers), and retain only
+ * the prior projection identity while the review is active. The store's `prepareHeadGraph` drives
+ * the swap behind its stale-seq guard; starting another review or explicitly leaving review
+ * history ends the session.
  * The coverage lives in store actions, not in any one component. Only TYPES are imported from the
  * store (erased at build), so there is no runtime cycle.
  */
 
 import {
-  changedDiffLinesFromExtensions,
-  changedLineKindsFromExtensions,
   collectChangedIds,
   computeCoverage,
   syntheticScenarioDescriptorSchema,
 } from "@meridian/core";
 import type {
-  ChangedLineSpan,
   GraphArtifact,
   LineRange,
-  ReviewContext,
   SyntheticScenarioDescriptor,
 } from "@meridian/core";
-import { loadArtifact } from "../boot/loadArtifact";
-import { applyChangedIds, applyChangedStatus, buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
-import type { FileMatch } from "../derive/matchAffectedFiles";
-import { deriveReviewData, type ReviewData } from "../derive/reviewData";
-import { deriveReviewProjection } from "../derive/reviewProjection";
-import { readReviewProgress } from "./reviewTicksPref";
-import { reviewNodeStatusEntries, reviewNodeStatusSourcesFromDiff } from "./reviewNodeStatus";
+import { applyChangedIds, type GraphIndex } from "../graph/graphIndex";
+import type { GraphProjectionRequest, LoadedReviewProjection } from "../graph/graphProjectionClient";
 import type { BlueprintState } from "./store";
 import type { SyntheticExecutionTrust } from "./syntheticExecutionTrust";
 
@@ -37,11 +29,7 @@ export interface PreparedSyntheticCapability {
   syntheticExecutionTrust: SyntheticExecutionTrust | null;
 }
 
-export interface PreparedGraphSession extends PreparedSyntheticCapability {
-  artifact: GraphArtifact;
-}
-
-/** Immutable identity the renderer already learned from the analyze stream (or saved review
+/** Immutable identity the renderer already learned from the prepare stream (or saved review
  * session). An executable prepared capability is accepted only when its server-attested sandbox
  * provenance names this exact repository and commit. */
 export interface PreparedGraphIdentity {
@@ -49,91 +37,60 @@ export interface PreparedGraphIdentity {
   headSha: string | null;
 }
 
-/** The boot artifact/index (+ its artifact-carried review, if any), saved once when the first swap
- * happens so ending the session restores the exact graph the session booted with. */
+/** A lightweight return coordinate for the prior graph view. The decoded pair remains solely in the
+ * projection transport's bounded LRU and may be evicted/reloaded independently. */
 export interface PrReviewBaseline {
-  artifact: GraphArtifact;
-  index: GraphIndex;
-  review: ReviewData | null;
+  graphId: string;
+  projectionKey: string;
+  projectionId: string;
+  request: GraphProjectionRequest;
   syntheticExecutionUrl: string | null;
   syntheticScenarios: SyntheticScenarioDescriptor[];
   syntheticExecutionTrust: SyntheticExecutionTrust | null;
 }
 
-/** The immutable graph extracted at the PR's exact merge-base. This is deliberately not the boot
- * baseline: main can advance after a PR branches, and deleted symbols must come from the revision
- * Git actually compares with HEAD rather than from whatever graph opened the browser session. */
-export interface PrReviewComparison {
-  artifact: GraphArtifact;
-  index: GraphIndex;
-}
-
-/** GET the prepared PR-head artifact from the same graph endpoint the boot artifact came from,
- * exchanging the `id` query param. Validation matches boot exactly (`loadArtifact`): the schema
- * MAJOR gate only — lenient like `view`/`web`, never Tier-1/2 strict. */
-export async function fetchPreparedArtifact(graphUrl: string, preparedGraphId: string): Promise<GraphArtifact> {
-  if (graphUrl === "") {
-    throw new Error("this session has no graph endpoint to load the prepared PR artifact from");
-  }
-  const url = new URL(graphUrl, requestOrigin());
-  url.searchParams.set("id", preparedGraphId);
-  return loadArtifact(url.toString());
-}
-
-/** Load both halves of a prepared review session before committing either. A valid graph paired
- * with missing or malformed execution metadata is a failed prepare, not a partially capable UI. */
-export async function fetchPreparedGraphSession(
-  graphUrl: string,
+/** Load bounded execution metadata independently from the graph projection. A malformed runnable
+ * capability is a failed prepare, never a partially trusted UI. */
+export async function fetchPreparedSyntheticCapability(
   metaUrl: string,
-  preparedGraphId: string,
   expectedIdentity: PreparedGraphIdentity,
-): Promise<PreparedGraphSession> {
+  signal?: AbortSignal,
+): Promise<PreparedSyntheticCapability> {
   if (metaUrl === "") {
     throw new Error("this session has no meta endpoint to load prepared synthetic capabilities from");
   }
-  const preparedMetaUrl = new URL(metaUrl, requestOrigin());
-  preparedMetaUrl.searchParams.set("id", preparedGraphId);
-  const [artifact, capability] = await Promise.all([
-    fetchPreparedArtifact(graphUrl, preparedGraphId),
-    fetchPreparedSyntheticCapability(preparedMetaUrl.toString()),
-  ]);
+  const capability = await readPreparedSyntheticCapability(metaUrl, signal);
   assertPreparedCapabilityIdentity(capability, expectedIdentity);
-  return { artifact, ...capability };
+  return capability;
 }
 
 /**
- * Make the prepared PR-head artifact the CURRENT graph. The boot pair is saved ONCE — a re-review
- * (the same PR again, or another PR without leaving the session) must keep restoring to the
- * ORIGINAL artifact, never to a previous PR's head graph. The caller invalidates its once-per-
- * artifact derive caches via `invalidateArtifactCaches` (they must rebuild from the new index).
+ * Make the prepared PR-head projection current. The original projection identity is saved once;
+ * re-reviewing never creates a second decoded baseline outside the bounded transport cache.
  */
-export function swapToPreparedArtifact(
+export function swapToPreparedReviewProjection(
   get: () => BlueprintState,
   set: (partial: Partial<BlueprintState>) => void,
-  prepared: GraphArtifact,
+  prepared: LoadedReviewProjection,
   invalidateArtifactCaches: () => void,
   capability: PreparedSyntheticCapability = currentSyntheticCapability(get()),
-  comparison: GraphArtifact | null = null,
 ): void {
   const state = get();
-  // Snapshot the review the BOOT artifact itself carries (if any) — never the live PR review:
-  // the sync-first flow means a PR review is already running when the first head-extract swaps,
-  // and session-end restore must not resurrect it.
-  const baseline = state.prReviewBaseline ?? {
-    artifact: state.artifact,
-    index: state.index,
-    review: deriveReviewData(state.artifact, state.index),
-    syntheticExecutionUrl: state.syntheticExecutionUrl,
-    syntheticScenarios: [...state.syntheticScenarios],
-    syntheticExecutionTrust: state.syntheticExecutionTrust,
-  };
+  const baseline = state.prReviewBaseline ?? activeBaseline(state);
+  const head = prepared.head;
   invalidateArtifactCaches();
   set({
-    artifact: prepared,
-    index: buildGraphIndex(prepared),
-    prReviewComparison: comparison === null ? null : { artifact: comparison, index: buildGraphIndex(comparison) },
+    artifact: head.artifact,
+    index: head.index,
+    activeProjectionGraphId: head.graphId,
+    activeProjectionRequest: head.request,
+    activeProjectionKey: prepared.key,
+    activeProjectionId: prepared.projectionId,
+    prReviewComparison: prepared.mergeBase,
     prReviewBaseline: baseline,
     prPreparedArtifactCurrent: true,
+    reviewHeadRef: null,
+    reviewDiffByFile: {},
     syntheticExecutionUrl: capability.syntheticExecutionUrl,
     syntheticScenarios: [...capability.syntheticScenarios],
     syntheticExecutionTrust: capability.syntheticExecutionTrust,
@@ -143,7 +100,7 @@ export function swapToPreparedArtifact(
     reviewBaseSpanByHeadId: new Map<string, LineRange>(),
     // The cached coverage report belongs to the outgoing artifact: recompute for the head graph
     // when coverage mode is showing, else drop it so the next toggle recomputes lazily.
-    coverage: state.coverageMode ? computeCoverage(prepared.nodes, prepared.edges) : null,
+    coverage: state.coverageMode ? computeCoverage(head.artifact.nodes, head.artifact.edges) : null,
     // An open code panel shows the outgoing artifact's node/lines — stale against the new graph.
     codeView: null,
     // Preview roots belong to the outgoing artifact/projection and must never cross the swap.
@@ -154,20 +111,21 @@ export function swapToPreparedArtifact(
 /**
  * Reset an index's amber changed-id marking to the artifact's OWN tag-derived set (usually none).
  * `applyChangedIds` mutates whichever index is current when a review runs, so an index can carry a
- * finished PR's amber set; this wipes those leftovers so the restored/plain graph shows exactly the
- * boot marking. Shared by the baseline restore and the sync-mode overlay close (no baseline to swap).
+ * finished PR's amber set; this wipes those leftovers so the restored/plain graph shows exactly its
+ * own marking. Shared by the baseline restore and the base-graph overlay close (no baseline to swap).
  */
 export function resetChangedIdsToArtifact(artifact: GraphArtifact, index: GraphIndex): void {
   applyChangedIds(index, collectChangedIds(artifact.nodes));
 }
 
 /**
- * Put the boot artifact/index back. Two modes:
+ * Leave the prepared projection. Two modes:
  *  - `endSession` (default true): the review session is over — clear every review-owned field and
  *    the pre-expanded/seeded Map (starting another review or leaving it through browser history).
- *  - `endSession:false`: a SOFT close (the overlay closed mid-review) — restore the boot graph but
+ *  - `endSession:false`: a SOFT close (the overlay closed mid-review) — leave the prepared graph and
  *    keep review/ticks/seeds/baseline/prepared-id so `resumePrReview` can re-open from them.
- * Returns false (a no-op) outside a swapped session, so callers can hook this unconditionally.
+ * The decoded prior projection is deliberately not retained here; the store promotes it from the
+ * bounded recent-view LRU when present, otherwise the next layout reloads it by request identity.
  */
 export function restorePrReviewBaseline(
   get: () => BlueprintState,
@@ -176,22 +134,18 @@ export function restorePrReviewBaseline(
   options: { endSession?: boolean } = {},
 ): boolean {
   const endSession = options.endSession ?? true;
-  const baseline = get().prReviewBaseline;
+  const state = get();
+  const baseline = state.prReviewBaseline;
   if (baseline === null) {
     return false;
   }
-  resetChangedIdsToArtifact(baseline.artifact, baseline.index);
   invalidateArtifactCaches();
-  // Both modes swap the boot graph back in, drop the (now-stale) code panel, and recompute coverage
-  // for the boot artifact when the coverage lens is showing (else drop it for a lazy recompute).
-  const restoredGraph: Partial<BlueprintState> = {
-    artifact: baseline.artifact,
-    index: baseline.index,
+  const restoredSession: Partial<BlueprintState> = {
     prPreparedArtifactCurrent: false,
+    prReviewComparison: null,
     reviewBaseNodeIds: new Set<string>(),
     reviewDeletedNodeIds: new Set<string>(),
     reviewBaseSpanByHeadId: new Map<string, LineRange>(),
-    coverage: get().coverageMode ? computeCoverage(baseline.artifact.nodes, baseline.artifact.edges) : null,
     codeView: null,
     moduleGhostInspection: null,
     syntheticExecutionUrl: baseline.syntheticExecutionUrl,
@@ -202,45 +156,22 @@ export function restorePrReviewBaseline(
   if (!endSession) {
     // Soft close: the review stays fully populated (chip + resume). The overlay's own arrays are
     // reset by closeMinimalGraph, and moduleFocus/Selected/Expanded stay so a resume replays them.
-    set(restoredGraph);
+    set(restoredSession);
     return true;
   }
-  // An artifact-sourced review (the boot artifact carried one) gets its checklist + progress back;
-  // a plain session clears every review-owned field.
-  const progress = baseline.review ? readReviewProgress(baseline.review.context.reviewKey) : null;
-  const projection = baseline.review
-    ? deriveReviewProjection(baseline.review.context, baseline.artifact, baseline.index, {
-        baseIndex: null,
-        showTests: get().showTests,
-      })
-    : null;
-  if (projection !== null) {
-    applyChangedIds(baseline.index, projection.affected.map((node) => node.nodeId));
-    applyChangedStatus(
-      baseline.index,
-      reviewNodeStatusEntries(
-        baseline.index,
-        projection.affected,
-        reviewNodeStatusSourcesFromDiff(
-          changedLineKindsFromExtensions(baseline.artifact.extensions),
-          changedDiffLinesFromExtensions(baseline.artifact.extensions),
-        ),
-      ),
-    );
-  }
   set({
-    ...restoredGraph,
-    review: projection?.review ?? null,
-    reviewTicks: progress?.ticks ?? {},
-    reviewUnitTicks: progress?.unitTicks ?? {},
-    reviewFileTicks: progress?.fileTicks ?? {},
-    reviewComments: progress?.comments ?? [],
-    reviewFiles: projection?.files ?? [],
+    ...restoredSession,
+    review: null,
+    reviewTicks: {},
+    reviewUnitTicks: {},
+    reviewFileTicks: {},
+    reviewComments: [],
+    reviewFiles: [],
     reviewPanelHidden: false,
     reviewSubmitStatus: "idle",
     reviewSubmitError: null,
     reviewSubmittedUrl: null,
-    reviewAffectedIds: new Set(projection?.affected.map((node) => node.nodeId) ?? []),
+    reviewAffectedIds: new Set(),
     reviewDiffOnly: false,
     reviewLitNodeIds: null,
     reviewSelectedId: null,
@@ -272,11 +203,11 @@ export function restorePrReviewBaseline(
     reviewRemovedByFile: {},
     reviewRemovedTruncatedByFile: {},
     prReviewBaseline: null,
-    prReviewComparison: null,
-    prPreparedGraphId: null,
-    prPreparedComparisonGraphId: null,
-    prPreparedMergeBaseSha: null,
+    prPreparedHead: null,
+    prPreparedMergeBase: null,
+    prPreparedFilePaths: [],
     prPreparedHeadSha: null,
+    prPreparedMergeBaseSha: null,
     // The review pre-expanded/seeded the Map around the PR; none of that is the reader's own
     // navigation, so the Map returns to its top level and the minimal overlay closes.
     moduleFocus: null,
@@ -304,7 +235,7 @@ function currentSyntheticCapability(state: BlueprintState): PreparedSyntheticCap
 
 /** Disabled execution metadata carries no authority and can accompany an otherwise valid prepared
  * review graph. A runnable prepared capability, however, must be the sandboxed capability minted
- * for the exact PR repository + analyzed commit; local or stale sandbox authority fails closed. */
+ * for the exact PR repository + prepared commit; local or stale sandbox authority fails closed. */
 function assertPreparedCapabilityIdentity(
   capability: PreparedSyntheticCapability,
   expected: PreparedGraphIdentity,
@@ -354,8 +285,11 @@ function resetSyntheticRunState(state: BlueprintState): Partial<BlueprintState> 
   return reset;
 }
 
-async function fetchPreparedSyntheticCapability(metaUrl: string): Promise<PreparedSyntheticCapability> {
-  const response = await fetch(metaUrl);
+async function readPreparedSyntheticCapability(
+  metaUrl: string,
+  signal?: AbortSignal,
+): Promise<PreparedSyntheticCapability> {
+  const response = await fetch(metaUrl, { signal });
   if (!response.ok) {
     throw new Error(`prepared meta fetch failed (${response.status}) from ${metaUrl}`);
   }
@@ -429,48 +363,22 @@ function invalidPreparedCapability(field: string): never {
   throw new Error(`prepared meta returned invalid ${field}`);
 }
 
-/**
- * Synthesize the line-level `changedSince` diff channel from the GitHub patch hunks, keyed by each
- * matched module's own `location.file`, so the code panel's `</>` highlights the added lines. This
- * is the FALLBACK source of truth, used only when the artifact carries no stamp of its own — see
- * applyPrReviewToMap for the choice between the two.
- */
-export function withPrLineDiff(
-  artifact: GraphArtifact,
-  index: GraphIndex,
-  context: ReviewContext,
-  matchedFiles: readonly FileMatch[],
-  prNumber: number,
-): GraphArtifact {
-  const hunksByPath = new Map(context.changedFiles.map((file) => [file.path, file.hunks]));
-  const changedFiles: Record<string, LineRange[]> = {};
-  const changedKinds: Record<string, ChangedLineSpan[]> = {};
-  for (const match of matchedFiles) {
-    const hunks = hunksByPath.get(match.path);
-    const locFile = index.nodesById.get(match.moduleId)?.location?.file;
-    if (hunks && hunks.length > 0 && locFile) {
-      changedFiles[locFile] = hunks.map((hunk) => ({ start: hunk.start, end: hunk.end }));
-      changedKinds[locFile] = hunks.map((hunk) => ({ start: hunk.start, end: hunk.end, kind: "added" as const }));
-    }
+function activeBaseline(state: BlueprintState): PrReviewBaseline {
+  if (
+    state.activeProjectionGraphId === null
+    || state.activeProjectionRequest === null
+    || state.activeProjectionKey === null
+    || state.activeProjectionId === null
+  ) {
+    throw new Error("cannot prepare a PR without an active graph projection identity");
   }
-  // extensions is a strict JsonValue; the ranges/spans are plain JSON, so cast the assembled
-  // artifact back to its type rather than widen JsonValue.
   return {
-    ...artifact,
-    extensions: {
-      ...(artifact.extensions as Record<string, unknown> | undefined),
-      changedSince: { baseRef: `pr#${prNumber}`, source: "pr-review", files: changedFiles, kinds: changedKinds },
-    },
-  } as unknown as GraphArtifact;
-}
-
-/** Whether changedSince was synthesized client-side by withPrLineDiff. Unlike an extractor-owned
- * stamp, this projection must be regenerated whenever the Tests toggle changes its file set. */
-export function hasPrReviewLineDiff(artifact: GraphArtifact): boolean {
-  return (artifact.extensions as { changedSince?: { source?: unknown } } | undefined)
-    ?.changedSince?.source === "pr-review";
-}
-
-function requestOrigin(): string {
-  return typeof window === "undefined" ? "http://meridian.local" : window.location.origin;
+    graphId: state.activeProjectionGraphId,
+    request: state.activeProjectionRequest,
+    projectionKey: state.activeProjectionKey,
+    projectionId: state.activeProjectionId,
+    syntheticExecutionUrl: state.syntheticExecutionUrl,
+    syntheticScenarios: [...state.syntheticScenarios],
+    syntheticExecutionTrust: state.syntheticExecutionTrust,
+  };
 }

@@ -1,15 +1,16 @@
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { GraphArtifact, SyntheticScenarioDescriptor } from "@meridian/core";
+import { totalmem } from "node:os";
+import { getHeapStatistics } from "node:v8";
 import { CliError, EXIT } from "../errors";
 import { serveStatic } from "./static-files";
 import type { StaticAssets } from "./static-files";
 import { sendOverlay as sendTelemetryOverlay, sendTraces as sendTelemetryTraces } from "./api";
 import { WebError } from "./web-error";
 import { injectPrefill } from "./web-boot";
-import type { SyntheticExecutionTrust } from "./web-boot";
 import { sendHtml, sendJson } from "./http-response";
 import { createGitHubClient, resolveGitHubClientId } from "./github";
 import type { GitHubClient } from "./github";
@@ -25,7 +26,14 @@ import {
   handleRepoBranches,
   handleRepoSearch,
 } from "./web-auth";
-import { handleGenerate, sendGraph, sendMeta, sendView } from "./web-graph";
+import {
+  handleGenerate,
+  handleGraphProjection,
+  resolveSyntheticCapability,
+  sendMeta,
+  sendProjectionManifest,
+  sendView,
+} from "./web-graph";
 import {
   handlePullRequestChecks,
   handlePullRequestCommentMutation,
@@ -37,21 +45,37 @@ import {
   handlePullRequests,
   handleSubmitReview,
 } from "./web-prs";
-import { handlePrAnalyze } from "./web-pr-analyze";
+import { handlePrPrepare } from "./web-pr-prepare";
 import { handlePickFolder } from "./web-pick-folder";
 import { handleRepoPullRequests } from "./web-repo-pulls";
 import type { ArtifactSource } from "./web-source";
 import { sendSource } from "./source-serve";
-import type { CachedGraph } from "./web-cache";
+import { cachedPrPreparation } from "./web-pr-cache";
+import type {
+  CachedPrPreparation,
+  PrPreparationInputs,
+  PrPrepareProgress,
+} from "./web-pr-cache";
 import { resolveWebCacheRoot } from "./web-cache-storage";
 import { handleCacheStatus } from "./web-cache-status";
 import { parseSyntheticExecutionRequest, readJsonBody } from "./web-request";
 import {
-  runSyntheticScenario,
+  runSyntheticScenarioFromArtifactFile,
   runSyntheticScenarioInOci,
   SyntheticExecutionError,
   syntheticPrSandboxRuntimeSupported,
 } from "./synthetic-execution";
+import { InspectionQueueFullError, InspectionScheduler } from "./inspection-scheduler";
+import { InspectionSnapshotStore } from "./inspection-snapshot-store";
+import { RepositoryMirrorStore } from "./repository-mirror";
+import { extractionWorkerHeapMb, runExtractionWorker } from "./extraction-worker";
+import type {
+  ExtractionWorkerResult,
+  ExtractionWorkerRunner,
+  SerializablePipelineRequest,
+} from "./extraction-worker";
+import { resolveInspectionConcurrency } from "./inspection-capacity";
+import type { InspectionGraphSummary } from "./inspection-snapshot-store";
 
 const WEB_TELEMETRY_SOURCE = { kind: "none" } as const;
 
@@ -80,23 +104,31 @@ export interface WebServerConfig {
 }
 
 export interface Context {
-  graphs: Map<string, GraphArtifact>;
+  /** File-backed local results; the server reads only their projection bundle and summary. */
+  localGraphFiles: Map<string, {
+    artifactPath: string;
+    graphSummary: InspectionGraphSummary;
+    projectionDirectory: string;
+  }>;
   /** Per-id source directory retained after a successful generate so `/api/source` can read it. */
   sourceRoots: Map<string, string>;
   /** Per-id original source metadata retained for GitHub PR listing. */
   sources: Map<string, ArtifactSource>;
-  /** Prevalidated scenario manifests for per-id execution capabilities. */
-  syntheticScenarios: Map<string, SyntheticScenarioDescriptor[]>;
-  /** Private source/config snapshots paired with the scenarios advertised for each graph. */
-  syntheticSourceFingerprints: Map<string, string>;
-  /** Explicit per-id trust and provenance; absence prevents boot endpoint advertisement. */
-  syntheticExecutionTrust: Map<string, SyntheticExecutionTrust>;
   /** Per-PR repo-root changed paths, invalidated when GitHub's updated_at or head SHA changes. */
   prFilesCache: Map<string, { updatedAt: string; headSha: string | null; paths: string[] }>;
   /** Temp-clone removers, held until process exit so retained sources are cleaned on shutdown. */
   tempCleanups: Set<() => void>;
-  /** Duplicate remote generations share one clone/extract job within this server process. */
-  cacheJobs: Map<string, Promise<CachedGraph>>;
+  /** All cold PR inspections pass through one bounded, cancellable singleflight boundary. */
+  prInspectionScheduler: InspectionScheduler<string, PrPreparationInputs, CachedPrPreparation, PrPrepareProgress>;
+  /** Base/local generation lifecycle admission; extraction still shares the stricter worker pool. */
+  generationScheduler: InspectionScheduler<string, GenerationLifecycleJob, unknown, string>;
+  /** Restart-safe id resolver and bounded descriptor-only cache for immutable inspections. */
+  inspectionSnapshots: InspectionSnapshotStore;
+  /** Node-local bare object cache and isolated detached worktree allocator. */
+  repositoryMirrors: RepositoryMirrorStore;
+  /** One process-wide pool bounds every CPU-heavy extraction, including base/local generation. */
+  extractionScheduler: InspectionScheduler<string, ExtractionJob, ExtractionWorkerResult>;
+  runExtraction: ExtractionWorkerRunner;
   cacheRoot: string;
   refreshCache: boolean;
   rendererIndex: string;
@@ -113,6 +145,8 @@ export interface Context {
   allowSyntheticPrExecution: boolean;
   /** Injectable capability probe; production checks for the prebuilt, no-fallback OCI runner. */
   syntheticPrSandboxRuntimeSupported: () => boolean;
+  /** Local file worker; the long-lived server never parses artifact.json. */
+  runSyntheticScenarioFromArtifactFile: typeof runSyntheticScenarioFromArtifactFile;
   /** Injectable OCI executor; never substituted with the host-process runner. */
   runSyntheticScenarioInOci: typeof runSyntheticScenarioInOci;
 }
@@ -132,16 +166,67 @@ function buildContext(config: WebServerConfig): Context {
   const github = createGitHubClient({ clientId: resolveGitHubClientId(config.githubClientId) });
   const landing = injectPrefill(readFileSync(config.webUiPath, "utf8"), config.source);
   const cacheRoot = resolveWebCacheRoot(config.cacheRoot);
+  const repositoryMirrors = new RepositoryMirrorStore({ cacheRoot });
+  // Crash-orphaned detached worktrees and private refs must not accumulate forever. Scavenging is
+  // lock-coordinated inside the mirror store and deliberately does not delay server readiness.
+  void repositoryMirrors.scavenge().catch(() => {
+    // Best effort: a later process/startup pass can retry, while live inspection remains usable.
+  });
+  const concurrency = inspectionConcurrency();
+  const extractionScheduler = new InspectionScheduler<string, ExtractionJob, ExtractionWorkerResult>({
+    concurrency,
+    maxQueued: inspectionQueueLimit(concurrency),
+    execute: ({ input, signal }) => runExtractionWorker(input.request, {
+      artifactOutputPath: input.artifactOutputPath,
+      token: input.token,
+      signal,
+    }),
+  });
+  const runExtraction: ExtractionWorkerRunner = (request, options) => {
+    try {
+      return extractionScheduler.schedule(
+        extractionJobKey(request, options.artifactOutputPath, options.token),
+        { kind: "extract", request, artifactOutputPath: options.artifactOutputPath, token: options.token },
+        { signal: options.signal, admitted: options.admitted },
+      );
+    } catch (error) {
+      if (error instanceof InspectionQueueFullError) throw new WebError(error.status, error.message);
+      throw error;
+    }
+  };
+  let inspectionSnapshots: InspectionSnapshotStore | undefined;
+  const generationConcurrency = Math.max(4, concurrency * 2);
   const ctx: Context = {
-    graphs: new Map(),
+    localGraphFiles: new Map(),
     sourceRoots: new Map(),
     sources: new Map(),
-    syntheticScenarios: new Map(),
-    syntheticSourceFingerprints: new Map(),
-    syntheticExecutionTrust: new Map(),
     prFilesCache: new Map(),
     tempCleanups: new Set(),
-    cacheJobs: new Map(),
+    extractionScheduler,
+    runExtraction,
+    generationScheduler: new InspectionScheduler({
+      concurrency: generationConcurrency,
+      maxQueued: inspectionQueueLimit(generationConcurrency),
+      execute: ({ input, signal, reportProgress }) => input.run(signal, reportProgress),
+    }),
+    prInspectionScheduler: new InspectionScheduler({
+      concurrency,
+      maxQueued: inspectionQueueLimit(concurrency),
+      execute: ({ input, signal, reportProgress }) => cachedPrPreparation({
+        ...input,
+        signal,
+        extractionAdmitted: true,
+        onProgress: reportProgress,
+        repositoryMirrors,
+        runExtraction,
+      }),
+    }),
+    get inspectionSnapshots() {
+      // Most web sessions never inspect a PR. Keep boot and local-only generation free of cache
+      // filesystem writes; the first immutable-id read or publication initializes the resolver.
+      return inspectionSnapshots ??= new InspectionSnapshotStore({ cacheRoot });
+    },
+    repositoryMirrors,
     cacheRoot,
     refreshCache: config.refreshCache === true,
     rendererIndex: readFileSync(indexPath, "utf8"),
@@ -156,10 +241,49 @@ function buildContext(config: WebServerConfig): Context {
     allowSyntheticExecution: config.allowSyntheticExecution === true,
     allowSyntheticPrExecution: config.allowSyntheticPrExecution === true,
     syntheticPrSandboxRuntimeSupported,
+    runSyntheticScenarioFromArtifactFile,
     runSyntheticScenarioInOci,
   };
   cleanRetainedSourcesOnExit(ctx);
   return ctx;
+}
+
+interface ExtractionJob {
+  readonly kind: "extract";
+  readonly request: SerializablePipelineRequest;
+  readonly artifactOutputPath: string;
+  readonly token?: string;
+}
+
+interface GenerationLifecycleJob {
+  readonly run: (signal: AbortSignal, reportProgress: (stage: string) => void) => Promise<unknown>;
+}
+
+function extractionJobKey(
+  request: SerializablePipelineRequest,
+  artifactOutputPath: string,
+  token: string | undefined,
+): string {
+  const credential = token ? createHash("sha256").update(token).digest("hex") : "anonymous";
+  return createHash("sha256").update(JSON.stringify({ request, artifactOutputPath, credential })).digest("hex");
+}
+
+function inspectionQueueLimit(concurrency: number): number {
+  const configured = Number.parseInt(process.env.MERIDIAN_INSPECTION_QUEUE_LIMIT ?? "", 10);
+  return Number.isSafeInteger(configured) && configured >= 0 ? configured : concurrency;
+}
+
+function inspectionConcurrency(): number {
+  const bytesPerMb = 1024 ** 2;
+  const availableBytes = typeof process.availableMemory === "function" ? process.availableMemory() : totalmem();
+  return resolveInspectionConcurrency({
+    totalMemoryMb: totalmem() / bytesPerMb,
+    availableMemoryMb: availableBytes / bytesPerMb,
+    parentHeapMb: getHeapStatistics().heap_size_limit / bytesPerMb,
+    workerHeapMb: extractionWorkerHeapMb(),
+    requestedConcurrency: process.env.MERIDIAN_INSPECTION_CONCURRENCY,
+    memoryBudgetMb: process.env.MERIDIAN_INSPECTION_MEMORY_BUDGET_MB,
+  });
 }
 
 // A successful generate keeps its temp clone alive so `/api/source` can serve file slices; this
@@ -207,8 +331,12 @@ async function handleApiPost(ctx: Context, request: IncomingMessage, response: S
     await handleGenerate(ctx, request, response);
     return;
   }
-  if (pathname === "/api/pr/analyze") {
-    await handlePrAnalyze(ctx, request, response);
+  if (pathname === "/api/graph/projection") {
+    await handleGraphProjection(ctx, request, response, url.searchParams.get("id"));
+    return;
+  }
+  if (pathname === "/api/pr/prepare") {
+    await handlePrPrepare(ctx, request, response);
     return;
   }
   if (pathname === "/api/synthetic-executions") {
@@ -249,61 +377,82 @@ export async function handleSyntheticExecution(
   id: string | null,
 ): Promise<void> {
   assertLoopbackHost(request);
-  const artifact = id === null ? undefined : ctx.graphs.get(id);
-  const sourceRoot = id === null ? undefined : ctx.sourceRoots.get(id);
-  const source = id === null ? undefined : ctx.sources.get(id);
-  const scenarios = id === null ? undefined : ctx.syntheticScenarios.get(id);
-  const sourceFingerprint = id === null ? undefined : ctx.syntheticSourceFingerprints.get(id);
-  const trust = id === null ? undefined : ctx.syntheticExecutionTrust.get(id);
-  const localAdmission = source?.kind === "path"
-    && ctx.allowSyntheticExecution
-    && trust?.mode === "local";
-  const sandboxedPrAdmission = source?.kind === "github"
-    && ctx.allowSyntheticPrExecution
-    && trust?.mode === "sandboxed-pr"
-    && trust.provenance.repository === `${source.owner}/${source.repo}`
-    && trust.provenance.headSha.length > 0
-    && ctx.syntheticPrSandboxRuntimeSupported();
-  if (
-    (!localAdmission && !sandboxedPrAdmission)
-    || artifact === undefined
-    || sourceRoot === undefined
-    || scenarios === undefined
-    || scenarios.length === 0
-    || sourceFingerprint === undefined
-  ) {
+  const capability = resolveSyntheticCapability(ctx, id);
+  if (!capability
+    || capability.scenarios.length === 0
+    || capability.sourceFingerprint === null) {
     sendJson(response, 404, { error: "synthetic execution is not enabled for this graph" });
     return;
   }
+  const sandboxedPrAdmission = capability.trust.mode === "sandboxed-pr";
   if (sandboxedPrAdmission && request.headers["x-meridian-sandbox-consent"] !== "true") {
     sendJson(response, 403, { error: "sandbox consent is required for GitHub synthetic execution" });
     return;
   }
   const body = parseSyntheticExecutionRequest(await readJsonBody(request));
-  const scenario = scenarios.find((candidate) => candidate.id === body.scenarioId);
-  if (scenario !== undefined && scenario.rootId !== body.rootNodeId) {
+  const scenario = capability.scenarios.find((candidate) => candidate.id === body.scenarioId);
+  if (scenario === undefined) {
+    sendJson(response, 404, { error: "synthetic execution is not enabled for this graph" });
+    return;
+  }
+  if (scenario.rootId !== body.rootNodeId) {
     throw new WebError(409, "selected flow no longer matches the synthetic scenario");
   }
-  const executionRequest = {
-    sourceRoot,
-    artifact,
-    scenarioId: body.scenarioId,
-    expectedRootId: body.rootNodeId,
-    expectedSourceFingerprint: sourceFingerprint,
-    input: body.input,
-    inputOverrides: body.inputOverrides,
-    watchers: body.watchers,
+  const cancellation = cancelSyntheticWhenClientLeaves(request, response);
+  try {
+    const executionRequest = {
+      sourceRoot: capability.sourceRoot,
+      artifactPath: capability.artifactPath,
+      scenarioId: body.scenarioId,
+      expectedRootId: body.rootNodeId,
+      expectedSourceFingerprint: capability.sourceFingerprint,
+      input: body.input,
+      inputOverrides: body.inputOverrides,
+      watchers: body.watchers,
+      signal: cancellation.signal,
+    };
+    const execution = sandboxedPrAdmission
+      ? await ctx.runSyntheticScenarioInOci(executionRequest)
+      : await ctx.runSyntheticScenarioFromArtifactFile(executionRequest);
+    sendJson(response, 200, execution);
+  } finally {
+    cancellation.dispose();
+  }
+}
+
+function cancelSyntheticWhenClientLeaves(
+  request: IncomingMessage,
+  response: ServerResponse,
+): { signal: AbortSignal; dispose(): void } {
+  const controller = new AbortController();
+  const abort = () => {
+    if (controller.signal.aborted) return;
+    const error = new Error("The client closed the synthetic execution request");
+    error.name = "AbortError";
+    controller.abort(error);
   };
-  const execution = sandboxedPrAdmission
-    ? await ctx.runSyntheticScenarioInOci(executionRequest)
-    : await runSyntheticScenario(executionRequest);
-  sendJson(response, 200, execution);
+  request.once("aborted", abort);
+  const events = response as ServerResponse & {
+    once?: (event: string, listener: () => void) => unknown;
+    off?: (event: string, listener: () => void) => unknown;
+  };
+  const onClose = () => {
+    if (!response.writableEnded) abort();
+  };
+  events.once?.("close", onClose);
+  return {
+    signal: controller.signal,
+    dispose() {
+      request.off("aborted", abort);
+      events.off?.("close", onClose);
+    },
+  };
 }
 
 async function handleApiGet(ctx: Context, request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
   const pathname = url.pathname;
-  if (pathname === "/api/graph") {
-    sendGraph(ctx, response, url.searchParams.get("id"));
+  if (pathname === "/api/graph/manifest") {
+    sendProjectionManifest(ctx, response, url.searchParams.get("id"));
     return;
   }
   if (pathname === "/api/meta") {
@@ -311,31 +460,33 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
     return;
   }
   if (pathname === "/api/overlay") {
-    const artifact = telemetryGraph(ctx, response, url.searchParams.get("id"));
-    if (artifact === null) return;
-    sendTelemetryOverlay(
+    const artifactPath = telemetryArtifactPath(ctx, response, url.searchParams.get("id"));
+    if (artifactPath === null) return;
+    await sendTelemetryOverlay(
       response,
-      artifact,
       WEB_TELEMETRY_SOURCE,
       url.searchParams.get("env"),
       url.searchParams.get("source"),
+      { artifactPath, scratchRoot: join(ctx.cacheRoot, "web-telemetry") },
     );
     return;
   }
   if (pathname === "/api/traces") {
-    const artifact = telemetryGraph(ctx, response, url.searchParams.get("id"));
-    if (artifact === null) return;
-    sendTelemetryTraces(
+    const artifactPath = telemetryArtifactPath(ctx, response, url.searchParams.get("id"));
+    if (artifactPath === null) return;
+    await sendTelemetryTraces(
       response,
-      artifact,
       WEB_TELEMETRY_SOURCE,
       url.searchParams.get("env"),
       url.searchParams.get("source"),
+      { artifactPath, scratchRoot: join(ctx.cacheRoot, "web-telemetry") },
     );
     return;
   }
   if (pathname === "/api/source") {
-    sendSource(response, ctx.sourceRoots.get(url.searchParams.get("id") ?? "") ?? null, url.searchParams);
+    const id = url.searchParams.get("id") ?? "";
+    const sourceRoot = ctx.sourceRoots.get(id) ?? ctx.inspectionSnapshots.resolveSource(id)?.sourceDir ?? null;
+    sendSource(response, sourceRoot, url.searchParams);
     return;
   }
   if (pathname === "/api/prs") {
@@ -393,13 +544,15 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
   sendJson(response, 404, { error: "unknown endpoint" });
 }
 
-function telemetryGraph(ctx: Context, response: ServerResponse, id: string | null): GraphArtifact | null {
-  const artifact = id === null ? undefined : ctx.graphs.get(id);
-  if (artifact === undefined) {
+function telemetryArtifactPath(ctx: Context, response: ServerResponse, id: string | null): string | null {
+  const artifactPath = id === null
+    ? undefined
+    : ctx.localGraphFiles.get(id)?.artifactPath ?? ctx.inspectionSnapshots.resolveArtifact(id)?.path;
+  if (artifactPath === undefined) {
     sendJson(response, 404, { error: "unknown graph id" });
     return null;
   }
-  return artifact;
+  return artifactPath;
 }
 
 function sendError(response: ServerResponse, error: unknown): void {

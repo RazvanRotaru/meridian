@@ -9,6 +9,7 @@ import type { FlowStep, GraphArtifact, LogicFlows } from "@meridian/core";
 import { extractToArtifact } from "../extract-pipeline";
 import {
   loadSyntheticScenarios,
+  runSyntheticArtifactFileWorker,
   runSyntheticScenario,
   syntheticExecutionRuntimeSupported,
   syntheticSandboxCompilationRuntimeSupported,
@@ -26,6 +27,34 @@ afterEach(() => {
 });
 
 describe("synthetic execution manifest", () => {
+  it("terminates the complete artifact-worker process group before a timeout settles", async () => {
+    if (process.platform === "win32") return;
+    const root = temporaryRoot();
+    const artifactPath = join(root, "artifact.json");
+    const workerPath = join(root, "hanging-worker.mjs");
+    const pidPath = join(root, "grandchild.pid");
+    writeFileSync(artifactPath, "{}", "utf8");
+    writeFileSync(workerPath, [
+      "import { spawn } from 'node:child_process';",
+      "import { writeFileSync } from 'node:fs';",
+      "import { join } from 'node:path';",
+      "const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+      "writeFileSync(join(process.argv[4], 'grandchild.pid'), String(grandchild.pid));",
+      "process.stdin.resume();",
+      "setInterval(() => {}, 1000);",
+    ].join("\n"), "utf8");
+
+    await expect(runSyntheticArtifactFileWorker(workerPath, root, artifactPath, "{}", {
+      timeoutMs: 500,
+      terminateGraceMs: 25,
+      processTreeWaitMs: 2_000,
+    })).rejects.toMatchObject({ code: "execution-failed", status: 422 });
+
+    const pid = Number.parseInt(readFileSync(pidPath, "utf8"), 10);
+    expect(Number.isSafeInteger(pid)).toBe(true);
+    expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+  }, 10_000);
+
   it("reports whether the runtime can enforce both filesystem and network isolation", () => {
     expect(syntheticExecutionRuntimeSupported()).toBe(process.allowedNodeEnvironmentFlags.has("--allow-net")
       && (process.allowedNodeEnvironmentFlags.has("--permission")

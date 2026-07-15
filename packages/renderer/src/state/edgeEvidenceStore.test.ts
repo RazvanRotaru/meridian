@@ -113,7 +113,7 @@ describe("edge source evidence store", () => {
     });
   });
 
-  it("maps base-artifact evidence into PR-head coordinates before highlighting", async () => {
+  it("maps base-projection evidence into current PR-head coordinates before highlighting", async () => {
     const fetchMock = vi.fn().mockResolvedValue(Response.json({
       code: Array.from({ length: 400 }, (_, index) => `head ${index + 1}`).join("\n"),
       truncated: false,

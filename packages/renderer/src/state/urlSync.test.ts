@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GraphArtifact } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
+import type {
+  GraphProjectionDataSource,
+  GraphProjectionRequest,
+  LoadedGraphProjection,
+  LoadedReviewProjection,
+} from "../graph/graphProjectionClient";
 import type { TelemetryProvider, TelemetrySourceRegistration } from "../telemetry/provider";
 import { createBlueprintStore } from "./store";
 import { restoreFromUrl, startUrlSync } from "./urlSync";
@@ -25,13 +31,56 @@ const HEAD_ARTIFACT: GraphArtifact = {
   generatedAt: "2026-07-02T00:00:00.000Z",
 };
 
+const BOOT_REQUEST: GraphProjectionRequest = {
+  view: "modules",
+  filePaths: [],
+  focusIds: [],
+  expandedIds: [],
+  extraIds: [],
+  depth: 1,
+  radius: 0,
+  includeTests: false,
+};
+
 function freshStore(telemetry?: {
   provider: TelemetryProvider;
   sources: TelemetrySourceRegistration[];
 }) {
+  const bootIndex = buildGraphIndex(BOOT_ARTIFACT);
+  const initialProjection: LoadedGraphProjection = {
+    key: "boot-projection-key",
+    projectionId: "boot-projection-id",
+    graphId: "artifact-1",
+    request: BOOT_REQUEST,
+    artifact: BOOT_ARTIFACT,
+    index: bootIndex,
+    serializedBytes: 100,
+    residentBytes: 300,
+  };
+  const projectionDataSource: GraphProjectionDataSource = {
+    activeKey: initialProjection.key,
+    loadManifest: async () => ({
+      version: 2,
+      graphId: "artifact-1",
+      contentId: "0".repeat(64),
+      graphSummary: {
+        schemaVersion: BOOT_ARTIFACT.schemaVersion,
+        generatedAt: BOOT_ARTIFACT.generatedAt,
+        nodeCount: BOOT_ARTIFACT.nodes.length,
+        edgeCount: BOOT_ARTIFACT.edges.length,
+      },
+      defaultView: BOOT_REQUEST,
+    }),
+    activate: async () => initialProjection,
+    activateCached: (key) => key === initialProjection.key ? initialProjection : undefined,
+    activateReviewPair: async () => { throw new Error("review pair is not loaded during URL exit"); },
+    activateCachedReview: (): LoadedReviewProjection | undefined => undefined,
+  };
   return createBlueprintStore({
     artifact: BOOT_ARTIFACT,
-    index: buildGraphIndex(BOOT_ARTIFACT),
+    index: bootIndex,
+    projectionDataSource,
+    initialProjection,
     provider: telemetry?.provider ?? null,
     ...(telemetry === undefined ? {} : { telemetrySources: telemetry.sources }),
     hasOverlay: telemetry !== undefined,
@@ -57,23 +106,30 @@ afterEach(() => {
 });
 
 describe("restoreFromUrl review exit", () => {
-  it("restores an extracted review's boot graph before applying a pre-review Map URL", async () => {
+  it("restores an extracted review's prior graph before applying a pre-review Map URL", async () => {
     const store = freshStore();
     const bootIndex = store.getState().index;
     store.setState({
       artifact: HEAD_ARTIFACT,
       index: buildGraphIndex(HEAD_ARTIFACT),
+      activeProjectionGraphId: "pr-head-7",
+      activeProjectionRequest: { ...BOOT_REQUEST, view: "review" },
+      activeProjectionKey: "head-projection-key",
+      activeProjectionId: "head-projection-id",
       prReviewBaseline: {
-        artifact: BOOT_ARTIFACT,
-        index: bootIndex,
-        review: null,
+        graphId: "artifact-1",
+        request: BOOT_REQUEST,
+        projectionKey: "boot-projection-key",
+        projectionId: "boot-projection-id",
         syntheticExecutionUrl: null,
         syntheticScenarios: [],
         syntheticExecutionTrust: null,
       },
       prReviewed: 7,
       prSelected: 7,
-      prPreparedGraphId: "pr-head-7",
+      prPreparedHead: preparedDescriptor("pr-head-7"),
+      prPreparedMergeBase: preparedDescriptor("pr-head-7-base"),
+      prPreparedFilePaths: ["src/a.ts"],
       prPreparedHeadSha: "abc123",
       prPreparedArtifactCurrent: true,
       minimalSeedIds: [FILE_ID],
@@ -88,7 +144,7 @@ describe("restoreFromUrl review exit", () => {
     expect(store.getState().prReviewed).toBe(null);
     expect(store.getState().prSelected).toBe(null);
     expect(store.getState().prReviewBaseline).toBe(null);
-    expect(store.getState().prPreparedGraphId).toBe(null);
+    expect(store.getState().prPreparedHead).toBe(null);
     expect(store.getState().minimalSeedIds).toEqual([]);
     // The baseline restore ran first; the target URL's Map focus therefore wins afterward.
     expect(store.getState().moduleFocus).toBe(PACKAGE_ID);
@@ -195,24 +251,6 @@ describe("restoreFromUrl review exit", () => {
     expect(store.getState().environment).toBe("qa-west");
   });
 
-  it("ends a synchronous review through the same baseline-clearing path", async () => {
-    const store = freshStore();
-    store.setState({
-      prReviewed: 7,
-      prSelected: 7,
-      minimalSeedIds: [FILE_ID],
-      minimalMemberIds: [FILE_ID],
-    });
-    stubWindow();
-
-    await restoreFromUrl(store, "");
-
-    expect(store.getState().artifact).toBe(BOOT_ARTIFACT);
-    expect(store.getState().prReviewed).toBe(null);
-    expect(store.getState().prSelected).toBe(null);
-    expect(store.getState().prReviewBaseline).toBe(null);
-    expect(store.getState().minimalSeedIds).toEqual([]);
-  });
 });
 
 describe("startUrlSync extraction history", () => {
@@ -287,4 +325,20 @@ function stubUrlSyncBrowser() {
     removeEventListener: vi.fn(),
   });
   return { location, pushState, replaceState };
+}
+
+function preparedDescriptor(graphId: string) {
+  return {
+    graphId,
+    manifestUrl: `/api/graph/manifest?id=${graphId}`,
+    projectionUrl: `/api/graph/projection?id=${graphId}`,
+    sourceUrl: `/api/source?id=${graphId}`,
+    metaUrl: `/api/meta?id=${graphId}`,
+    graphSummary: {
+      schemaVersion: "1.0.0",
+      generatedAt: "2026-07-02T00:00:00.000Z",
+      nodeCount: 2,
+      edgeCount: 0,
+    },
+  };
 }

@@ -17,6 +17,8 @@ import type { SourceRequest } from "./clone";
 import { WebError } from "./web-error";
 
 const MAX_BODY_BYTES = 64_000;
+const GENERATE_KEYS = new Set(["kind", "value", "ref", "subdir", "token", "refresh"]);
+const SYNTHETIC_KEYS = new Set(["scenarioId", "rootNodeId", "input", "inputOverrides", "watchers"]);
 
 export interface GenerateRequest extends SourceRequest {
   token?: string;
@@ -56,15 +58,24 @@ export function readJsonBody(request: IncomingMessage): Promise<unknown> {
 }
 
 export function parseGenerateRequest(body: unknown): GenerateRequest {
-  if (typeof body !== "object" || body === null) {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
     throw new WebError(400, "request body must be a JSON object");
   }
   const raw = body as Record<string, unknown>;
+  if (Object.keys(raw).some((key) => !GENERATE_KEYS.has(key))) {
+    throw new WebError(400, "generate request contains an unknown field");
+  }
   if (raw.kind !== "github" && raw.kind !== "path") {
     throw new WebError(400, "kind must be 'github' or 'path'");
   }
   if (typeof raw.value !== "string" || raw.value.trim() === "") {
     throw new WebError(400, "value is required");
+  }
+  assertOptionalString(raw, "ref");
+  assertOptionalString(raw, "subdir");
+  assertOptionalString(raw, "token");
+  if (raw.refresh !== undefined && typeof raw.refresh !== "boolean") {
+    throw new WebError(400, "refresh must be a boolean");
   }
   return {
     kind: raw.kind,
@@ -84,6 +95,9 @@ export function parseSyntheticExecutionRequest(body: unknown): SyntheticExecutio
     throw new WebError(400, "synthetic execution request must be a JSON object");
   }
   const raw = body as Record<string, unknown>;
+  if (Object.keys(raw).some((key) => !SYNTHETIC_KEYS.has(key))) {
+    throw new WebError(400, "synthetic execution request contains an unknown field");
+  }
   if (typeof raw.scenarioId !== "string" || raw.scenarioId.trim().length === 0 || raw.scenarioId.length > 256) {
     throw new WebError(400, "scenarioId must be a non-empty string of at most 256 characters");
   }
@@ -115,20 +129,29 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 }
 
-/** Deterministic short id from the source identity — token deliberately excluded. */
+function assertOptionalString(record: Record<string, unknown>, key: "ref" | "subdir" | "token"): void {
+  const value = record[key];
+  if (value !== undefined && (typeof value !== "string" || value.trim() === "")) {
+    throw new WebError(400, `${key} must be a non-empty string when provided`);
+  }
+}
+
+/** Deterministic 96-bit id from source plus supplied analysis identity — token deliberately excluded. */
 export function artifactId(request: GenerateRequest, commit = "", analysisKey = ""): string {
-  const key = [
-    request.kind,
-    request.value,
-    request.ref ?? "",
-    request.subdir ?? "",
-    commit,
-    analysisKey,
-  ].join(" ");
-  return createHash("sha1").update(key).digest("hex").slice(0, 12);
+  const key = [request.kind, request.value, request.ref ?? "", request.subdir ?? "", commit, analysisKey].join(" ");
+  return createHash("sha256").update(key).digest("hex").slice(0, 24);
 }
 
 /** Remote graph ids use canonical cache identity so equivalent repository spellings converge. */
-export function remoteArtifactId(repositoryKey: string, commit: string, analysisKey: string): string {
-  return createHash("sha1").update([repositoryKey, commit, analysisKey].join(" ")).digest("hex").slice(0, 12);
+export function remoteArtifactId(
+  repositoryKey: string,
+  commit: string,
+  analysisKey: string,
+  generationId: string,
+  branch = "",
+): string {
+  return createHash("sha256")
+    .update([repositoryKey, commit, analysisKey, generationId, branch].join(" "))
+    .digest("hex")
+    .slice(0, 24);
 }

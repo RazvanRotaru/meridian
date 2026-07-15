@@ -27,7 +27,7 @@ export function PrReviewCard(props: {
   const checks = useBlueprint((state) => state.prChecks);
   const reviewed = useBlueprint((state) => state.prReviewed === props.pr.number);
   // The same prepare lane the PRs page's step indicator reads — this card fires the same
-  // reviewPrInGraph, so while the server streams the PR-head analysis it must not re-fire, and
+  // reviewPrInGraph, so while the server prepares the revision pair it must not re-fire, and
   // the reader needs to see WHY the click has not landed yet.
   const reviewStatus = useBlueprint((state) => state.prReviewStatus);
   const prepareError = useBlueprint((state) => state.prPrepareError);

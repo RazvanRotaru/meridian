@@ -10,10 +10,8 @@ import type { Edge, Node } from "@xyflow/react";
 import {
   buildNodeId,
   changedDiffLinesFromExtensions,
-  changedFileManifestFromExtensions,
   changedLineKindsFromExtensions,
   changedLineStatsFromExtensions,
-  changedRangesFromExtensions,
   computeAffectedNodes,
   computeChangeGroups,
   computeCoverage,
@@ -45,6 +43,12 @@ import type {
   TraceGraphRef,
 } from "@meridian/core";
 import { applyChangedIds, applyChangedStatus, buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
+import type {
+  GraphProjectionDataSource,
+  GraphProjectionRequest,
+  LoadedGraphProjection,
+  LoadedReviewProjection,
+} from "../graph/graphProjectionClient";
 import { matchAffectedFiles } from "../derive/matchAffectedFiles";
 import { isReviewPathInScope, normalizeReviewPathScope } from "../derive/reviewPathScope";
 import { isSourceBackedNode } from "../derive/sourceBackedNode";
@@ -132,12 +136,12 @@ import {
 } from "../graph/edgeEvidence";
 import {
   PRS_UNAVAILABLE_ERROR,
-  type LineEdit,
   type PrChangedFile,
   type PrChecks,
   type PrDiscussionResult,
   type PrFilesResponse,
   type PrFileStatus,
+  type LineEdit,
   type PrListResponse,
   type PrOneResponse,
   type PrReviewSubmissionEvent,
@@ -154,7 +158,13 @@ import {
   reviewNodeStatusSourcesFromKinds,
   reviewSourceChangeStatus,
 } from "./reviewNodeStatus";
-import { streamPrAnalysis, type PrAnalyzeStage } from "./prAnalysis";
+import {
+  changedFileProjectionPaths,
+  streamPrPreparation,
+  type PreparedGraphDescriptor,
+  type PreparedChangedFile,
+  type PrPrepareStage,
+} from "./prPreparation";
 import { isPrReviewStale, prReviewRevisionKey, reviewRevision, type PrReviewRevision } from "./prReviewFreshness";
 import {
   discardReviewLineComposer as discardReviewLineComposerState,
@@ -166,15 +176,11 @@ import {
   type ReviewLineComposerState,
 } from "./reviewLineComposer";
 import {
-  fetchPreparedArtifact,
-  fetchPreparedGraphSession,
-  hasPrReviewLineDiff,
+  fetchPreparedSyntheticCapability,
   resetChangedIdsToArtifact,
   restorePrReviewBaseline,
-  swapToPreparedArtifact,
-  withPrLineDiff,
+  swapToPreparedReviewProjection,
   type PrReviewBaseline,
-  type PrReviewComparison,
 } from "./prReviewSession";
 import { deriveReviewData, applyTick, type ReviewData } from "../derive/reviewData";
 import { readReviewProgress, writeReviewProgress, type ReviewComment, type ReviewProgress, type ReviewTick } from "./reviewTicksPref";
@@ -320,13 +326,18 @@ export interface ReviewFocusedSubgraph {
 export interface BlueprintState {
   artifact: GraphArtifact;
   index: GraphIndex;
+  /** Identity only; decoded projection bodies live in the transport's bounded active/recent cache. */
+  activeProjectionKey: string | null;
+  activeProjectionId: string | null;
+  activeProjectionGraphId: string | null;
+  activeProjectionRequest: GraphProjectionRequest | null;
   /** Which relationship story is on screen: the call graph, or the React composition tree. */
   viewMode: ViewMode;
   /** Whether test code (nodes tagged/heuristically detected as tests) is drawn at all. */
   showTests: boolean;
   /** Coverage lens: imported runtime counters when present, otherwise estimated static reachability. */
   coverageMode: boolean;
-  /** Computed once, on first entering coverage mode (the artifact never changes after boot). */
+  /** Computed lazily for the active projection and invalidated whenever projection identity changes. */
   coverage: CoverageReport | null;
   /** Whether request telemetry controls, runtime paint, and request-only surfaces are visible.
    * Loaded data stays resident when this presentation mode is off so re-entry is instant. */
@@ -645,9 +656,8 @@ export interface BlueprintState {
   /** Base URL for on-demand source fetches; null when the server ships no source access. Node
    * components read it to decide whether to offer a "show source" control. */
   sourceUrl: string | null;
-  /** POST endpoint for PR-head preparation; null when this session can't prepare one (plain
-   * `view`, older server). Gates prepare-first review entry and the fallback extract button. */
-  analyzeUrl: string | null;
+  /** Direct POST endpoint for immutable PR head + merge-base preparation. */
+  prepareUrl: string | null;
   /** Whether this graph was loaded from a GitHub repository and can use the PR endpoints. */
   githubSource: boolean;
   /** PR API endpoints derived from the graph artifact URL; 404/network means this session lacks PRs. */
@@ -698,14 +708,12 @@ export interface BlueprintState {
   prReviewStale: boolean;
   /** The stale review is fetching fresh PR data and rebuilding its graph in place. */
   prReviewRefreshing: boolean;
-  /** Immutable head SHA (falling back to the ref only when GitHub omitted it) used by synchronous
-   * source requests. Null off-review. */
+  /** Immutable head SHA (falling back to the ref only when GitHub omitted it) used by direct
+   * PR-head source requests. Strict prepared reviews leave this null and use descriptor source. */
   reviewHeadRef: string | null;
-  /** Per changed file (keyed by node.location.file): the PR diff needed to slice + paint the head code. */
+  /** Base-to-HEAD edit mapping for a review whose active nodes still use base coordinates. */
   reviewDiffByFile: Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }>;
-  /** Exact ordered +/- rows from the selected PR, keyed like reviewDiffByFile. This is the
-   * synchronous-review fallback; prepared reviews prefer the local merge-base Git rows stamped
-   * into the artifact. */
+  /** Exact ordered +/- rows from the selected PR, keyed by canonical source path. */
   reviewDiffLinesByFile: Record<string, ChangedDiffLine[]>;
   /** Review-only nodes whose source coordinates belong to the exact merge-base comparison graph.
    * The active prepared graph remains HEAD-authoritative for edges/flows; these ids are appended
@@ -720,40 +728,37 @@ export interface BlueprintState {
   reviewBaseSpanByHeadId: Map<string, LineRange>;
   /** Context-padded new-side hunk ranges accepted by GitHub's public inline-review API. */
   reviewCommentRangesByFile: Record<string, LineRange[]>;
-  /** Removed patch text keyed like reviewDiffByFile. Positions are HEAD-side in both review modes. */
+  /** Removed patch text keyed like reviewDiffLinesByFile. */
   reviewRemovedByFile: Record<string, { afterNewLine: number; lines: string[] }[]>;
   /** Files whose removed patch text exceeded the server-side cap, keyed like reviewRemovedByFile. */
   reviewRemovedTruncatedByFile: Record<string, boolean>;
-  /** The review-PREPARATION lane: "preparing" while the server streams the clone→checkout→extract
-   * analysis of the PR head; "error" when that stream failed (Retry or base fallback); else "idle". */
+  /** The review-preparation lane: "preparing" while the server resolves refs, updates the shared
+   * mirror, extracts both revisions, and publishes their bounded projections; otherwise idle/error. */
   prReviewStatus: "idle" | "preparing" | "error";
-  /** The analyze stage currently running server-side; null outside "preparing". */
-  prPrepareStage: PrAnalyzeStage | null;
+  /** The preparation stage currently running server-side; null outside "preparing". */
+  prPrepareStage: PrPrepareStage | null;
+  /** Server-reported elapsed time for the current v1 progress line. */
+  prPrepareElapsedMs: number | null;
   /** Why preparation failed; null outside "error". */
   prPrepareError: string | null;
-  /** The server-side graph id of the prepared PR-head artifact (the analyze stream's "done"
-   * payload). Kept across a soft close so the review can resume without another extraction. */
-  prPreparedGraphId: string | null;
-  /** Exact merge-base graph paired with prPreparedGraphId. Its source root serves deleted nodes. */
-  prPreparedComparisonGraphId: string | null;
-  /** Immutable merge-base commit represented by prPreparedComparisonGraphId. */
-  prPreparedMergeBaseSha: string | null;
-  /** The head commit the server analyzed for the prepared artifact (the "done" payload's
-   * provenance); shown in the review header. Set on swap, cleared with prPreparedGraphId. */
+  /** Direct immutable endpoints for the prepared head; retained across a soft close. */
+  prPreparedHead: PreparedGraphDescriptor | null;
+  /** Direct immutable endpoints for the prepared merge base; retained across a soft close. */
+  prPreparedMergeBase: PreparedGraphDescriptor | null;
+  /** Canonical changed paths routing both bounded review slices. */
+  prPreparedFilePaths: string[];
+  /** The head commit the server extracted for the prepared projection (the "done" payload's
+   * provenance); shown in the review header. */
   prPreparedHeadSha: string | null;
-  /** True only while the loaded artifact/index pair is the prepared PR-head graph. Unlike its id,
+  prPreparedMergeBaseSha: string | null;
+  /** The merge-base half of the active, byte-charged composite review projection. */
+  prReviewComparison: LoadedGraphProjection | null;
+  /** True only while the active projection is the prepared PR-head graph. Unlike its id,
    * this disarms on a soft baseline restore and re-arms when resumePrReview swaps the graph back. */
   prPreparedArtifactCurrent: boolean;
-  /** The boot artifact/index pair, saved ONCE when a streamed review swaps in the prepared PR-head
-   * artifact and restored while the review is parked. It is cleared only when another review starts
-   * or history explicitly leaves review state. Null outside a swapped review. */
+  /** Lightweight boot-projection return coordinate. Decoded graph/index data stays exclusively in
+   * the bounded projection cache and may be evicted while a prepared review is active. */
   prReviewBaseline: PrReviewBaseline | null;
-  /** Exact merge-base artifact/index for the current prepared review. Kept distinct from
-   * prReviewBaseline: the latter restores the user's boot graph, which may be a newer base tip. */
-  prReviewComparison: PrReviewComparison | null;
-  /** The artifact endpoint this session loaded from; the wave-2 swap fetches the prepared PR
-   * graph from it by exchanging the `id` query param. Empty when booted without a server. */
-  graphUrl: string;
   /** The open source view (inline panel or modal); null when nothing is being shown. */
   codeView: CodeView | null;
   /** Reveal one more containment level within the current selection (or the whole view / root
@@ -968,15 +973,13 @@ export interface BlueprintState {
   /** Replace a stale review's files, discussion, checks, and graph without a page reload. */
   refreshPrReview(): Promise<void>;
   reviewPrInGraph(): Promise<void>;
-  /** Explicit fallback after prepare-first entry fails: review against the loaded base graph. */
-  reviewPrOnBaseGraph(): Promise<void>;
-  /** Head extract: stream the server's clone→checkout→extract of the PR head, swap the
-   * loaded artifact for the head-accurate one, and run the review in head coordinates. On an
-   * entry failure the PRs page stays put; a fallback review remains intact on manual failure. */
+  /** Prepare both revisions: stream mirror/extraction progress, activate the paired bounded
+   * projections, and run the review in head coordinates. On entry failure the PRs page stays put;
+   * on refresh failure the prior immutable pair remains active. */
   prepareHeadGraph(): Promise<void>;
   /** Re-open a review whose overlay was soft-closed (explicit Close/lens switch) WITHOUT re-running
-   * the expensive head prepare: re-swap the already-prepared artifact (a plain GET) if there was
-   * one, repaint the kept amber, and reseed the minimal overlay from `reviewAllSeedIds`. Guarded on
+   * the expensive head prepare: reactivate the already-prepared projection if there was one,
+   * repaint the kept amber, and reseed the minimal overlay from `reviewAllSeedIds`. Guarded on
    * a live-but-collapsed review (`prReviewed !== null && minimalSeedIds.length === 0`). */
   resumePrReview(): Promise<void>;
   /** Abandon an in-flight prepare-first entry; server work may continue behind the stale-seq guard. */
@@ -989,11 +992,16 @@ export interface BlueprintState {
 export interface StoreDependencies {
   artifact: GraphArtifact;
   index: GraphIndex;
+  /** Required for server sessions; omitted only by isolated local/test embedders. */
+  projectionDataSource?: GraphProjectionDataSource | null;
+  /** The overview projection already activated during boot (avoids retaining a second pair). */
+  initialProjection?: LoadedGraphProjection | null;
   provider: TelemetryProvider | null;
   telemetrySources?: TelemetrySourceRegistration[];
   telemetrySourceId?: string | null;
   hasOverlay: boolean;
   sourceUrl: string | null;
+  /** Explicit, server-authored execution capability; null means code execution is disabled. */
   syntheticExecutionUrl?: string | null;
   syntheticExecutionTrust?: SyntheticExecutionTrust | null;
   syntheticScenarios?: SyntheticScenarioDescriptor[];
@@ -1006,52 +1014,147 @@ export interface StoreDependencies {
   prChecksUrl: string;
   /** GET base for one changed file's text at the PR head ref (the review code panel's head-fetch). */
   prFileUrl?: string;
-  /** POST endpoint for PR-head preparation. Null/absent (a plain `view` session, or an older
-   * server) makes reviewPrInGraph use the synchronously-applied loaded-artifact review. */
-  analyzeUrl?: string | null;
-  /** The current GitHub artifact id — the analyze POST body's `id`. */
-  graphId?: string | null;
-  /** The graph-fetch URL; wave 2 loads the prepared PR artifact from it by swapping the id. */
-  graphUrl?: string;
-  /** Meta endpoint paired with graphUrl; prepared PR swaps exchange its id in the same transaction. */
-  metaUrl?: string;
+  /** Direct POST endpoint for PR preparation. Null only for non-GitHub/dev embedders. */
+  prepareUrl?: string | null;
   /** POST target for submitting review comments (web sessions only; 404s elsewhere). */
   prReviewUrl: string;
 }
 
 export type BlueprintStore = StoreApi<BlueprintState>;
 
-/** The `/api/source` base for the CURRENT graph: after a head-graph swap the server serves the
- * PR-head checkout under the prepared graph id (web-pr-analyze registers its sourceRoots there),
+/** Turn renderer navigation into the bounded, canonical server projection contract. The review
+ * view is semantic: the server derives its changed-node rollups, so a repository-wide PR never
+ * serializes every affected id back into the request body. */
+export function projectionRequestForState(state: Pick<
+  BlueprintState,
+  | "viewMode"
+  | "moduleFocus"
+  | "moduleExpanded"
+  | "moduleSelected"
+  | "mapExtra"
+  | "moduleGhostInspection"
+  | "minimalMemberIds"
+  | "moduleRadius"
+  | "logicRoot"
+  | "logicStack"
+  | "logicFocus"
+  | "expandedLogic"
+  | "logicInlineDepth"
+  | "logicSelected"
+  | "compRoot"
+  | "compSelectedId"
+  | "flowSelection"
+  | "showTests"
+  | "prReviewed"
+  | "prPreparedArtifactCurrent"
+  | "prPreparedFilePaths"
+  | "prFiles"
+>): GraphProjectionRequest {
+  const reviewView = state.prPreparedArtifactCurrent || state.prReviewed !== null;
+  const view = reviewView
+    ? "review" as const
+    : state.viewMode === "prs"
+      ? "modules" as const
+      : state.viewMode;
+  const logic = state.viewMode === "logic";
+  const focusIds = compactIds([
+    state.moduleFocus,
+    state.compRoot,
+    state.logicRoot,
+    ...state.logicStack,
+    ...state.logicFocus.map((focus) => focus.id),
+  ]);
+  // Large review membership is intentionally absent: `view: review` asks the server for its
+  // precomputed semantic rollup. Only direct reader anchors join the current slice.
+  const extraIds = compactIds([
+    ...state.moduleSelected,
+    ...state.mapExtra,
+    ...(state.moduleGhostInspection?.visitedIds ?? []),
+    ...(reviewView ? [] : state.minimalMemberIds),
+    state.logicSelected,
+    state.compSelectedId,
+    state.flowSelection?.rootId ?? null,
+  ]);
+  return {
+    view,
+    filePaths: reviewView
+      ? state.prPreparedFilePaths.length > 0
+        ? state.prPreparedFilePaths
+        : compactIds((state.prFiles ?? []).flatMap((file) => [file.path, file.previousPath]))
+      : [],
+    focusIds,
+    expandedIds: logic ? [...state.expandedLogic] : [...state.moduleExpanded],
+    extraIds,
+    depth: Math.min(4, logic ? Math.max(1, state.logicInlineDepth + 1) : 1),
+    radius: Math.min(3, Math.max(0, state.moduleRadius)),
+    includeTests: state.showTests,
+  };
+}
+
+function compactIds(ids: Iterable<string | null | undefined>): string[] {
+  const compact: string[] = [];
+  for (const id of ids) {
+    if (typeof id === "string" && id.length > 0) compact.push(id);
+  }
+  return compact;
+}
+
+/** The `/api/source` base for the CURRENT graph: after a head projection swap the server serves the
+ * PR-head checkout under the descriptor published by `/api/pr/prepare`,
  * so the boot URL's `id` is exchanged — else every source fetch would read base-clone bytes
  * against head-relative node locations. Every store source fetch must route through this. */
 function activeSourceUrl(state: BlueprintState): string | null {
-  if (state.sourceUrl === null || !state.prPreparedArtifactCurrent || state.prPreparedGraphId === null) {
+  if (!state.prPreparedArtifactCurrent || state.prPreparedHead === null) {
     return state.sourceUrl;
   }
-  return sourceUrlForGraph(state.sourceUrl, state.prPreparedGraphId);
+  return state.prPreparedHead.sourceUrl;
 }
 
-/** Exchange only the immutable graph id while retaining the boot endpoint's origin/path. */
-function sourceUrlForGraph(sourceUrl: string, graphId: string): string {
-  const url = new URL(sourceUrl, requestOrigin());
-  url.searchParams.set("id", graphId);
-  return url.toString();
-}
-
-/** Keep local execution pinned to the source tree backing the active artifact. A prepared PR review
- * swaps to a distinct retained checkout exactly like source viewing, so exchange the graph id too. */
+/** The active capability URL is already immutable and graph-specific: boot injects the baseline
+ * URL, while a prepared HEAD swap installs the descriptor's validated meta capability atomically. */
 function activeSyntheticExecutionUrl(state: BlueprintState): string | null {
-  if (
-    state.syntheticExecutionUrl === null
-    || !state.prPreparedArtifactCurrent
-    || state.prPreparedGraphId === null
-  ) {
-    return state.syntheticExecutionUrl;
+  return state.syntheticExecutionUrl;
+}
+
+function graphProjectionEndpoints(descriptor: PreparedGraphDescriptor): {
+  manifestUrl: string;
+  projectionUrl: string;
+} {
+  return { manifestUrl: descriptor.manifestUrl, projectionUrl: descriptor.projectionUrl };
+}
+
+async function activatePreparedReviewProjection(
+  source: GraphProjectionDataSource,
+  state: BlueprintState,
+  signal?: AbortSignal,
+): Promise<LoadedReviewProjection> {
+  if (state.prPreparedHead === null || state.prPreparedMergeBase === null) {
+    throw new Error("prepared PR review requires both HEAD and merge-base descriptors");
   }
-  const url = new URL(state.syntheticExecutionUrl, requestOrigin());
-  url.searchParams.set("id", state.prPreparedGraphId);
-  return url.toString();
+  const headRequest: GraphProjectionRequest = {
+    ...projectionRequestForState(state),
+    view: "review",
+    filePaths: state.prPreparedFilePaths,
+  };
+  const mergeBaseRequest = mergeBaseProjectionRequest(headRequest);
+  return source.activateReviewPair({
+    head: { request: headRequest, endpoints: graphProjectionEndpoints(state.prPreparedHead) },
+    mergeBase: { request: mergeBaseRequest, endpoints: graphProjectionEndpoints(state.prPreparedMergeBase) },
+    signal,
+  });
+}
+
+function mergeBaseProjectionRequest(headRequest: GraphProjectionRequest): GraphProjectionRequest {
+  return {
+    ...headRequest,
+    // Node ids from HEAD are not stable evidence that the same declaration exists at merge-base.
+    // Paths are the cross-revision routing key; the server supplies the relevant base-side subtree.
+    focusIds: [],
+    expandedIds: [],
+    extraIds: [],
+    depth: 1,
+    radius: 0,
+  };
 }
 
 /** `/api/source` URL for a node slice (or the whole file). */
@@ -1066,7 +1169,7 @@ function baseSourceUrl(sourceUrl: string, location: NonNullable<GraphNode["locat
   return url;
 }
 
-/** `/api/prs/file` URL for one changed file's text at the PR head ref. */
+/** `/api/prs/file` URL for one changed file's text at the selected PR head ref. */
 function prFileHeadUrl(prFileUrl: string, file: string, ref: string): URL {
   const url = new URL(prFileUrl, window.location.origin);
   url.searchParams.set("path", file);
@@ -1079,7 +1182,7 @@ interface CodeLoadRequest {
   url: URL;
   baseLine: number;
   wholeFile: boolean;
-  /** Present when the request reads the PR head rather than the loaded source root. */
+  /** Present when base-relative node coordinates must be sliced from a whole HEAD file. */
   headSpan: { start: number; end: number } | null;
   headKinds: readonly ChangedLineSpan[];
   diffLines: readonly ChangedDiffLine[];
@@ -1096,15 +1199,6 @@ interface CodePayload {
 }
 
 type CodePayloadCache = Map<string, Promise<CodePayload>>;
-
-function liveReviewStatusSources(
-  files: Readonly<Record<string, { edits: readonly LineEdit[]; kinds: readonly ChangedLineSpan[] }>>,
-  diffLines: Readonly<Record<string, ChangedDiffLine[]>>,
-) {
-  const kinds = Object.fromEntries(Object.entries(files).map(([file, detail]) => [file, [...detail.kinds]]));
-  const edits = Object.fromEntries(Object.entries(files).map(([file, detail]) => [file, detail.edits]));
-  return reviewNodeStatusSourcesFromDiff(kinds, diffLines, edits);
-}
 
 /** Generous surrounding source for edge evidence: enough to understand the declaration/control
  * flow without asking the source server for only the proving line or risking its 2,000-line cap. */
@@ -1143,7 +1237,7 @@ function edgeEvidenceNode(
       };
 }
 
-/** Map artifact/base evidence onto the source coordinates codeLoadRequest will display. */
+/** Map base-projection evidence onto the source coordinates codeLoadRequest will display. */
 function displayedEvidenceSpan(
   context: EdgeEvidenceContext,
   state: BlueprintState,
@@ -1153,8 +1247,7 @@ function displayedEvidenceSpan(
   const end = Math.max(start, context.site.endLine ?? start);
   const diff = state.reviewDiffByFile[context.site.file] ?? null;
   const removedAtHead = state.reviewFileDelta[context.site.file]?.status === "removed";
-  const readsPrHead =
-    !state.prPreparedArtifactCurrent
+  const readsPrHead = !state.prPreparedArtifactCurrent
     && !removedAtHead
     && state.prReviewed !== null
     && prFileUrl !== null
@@ -1173,29 +1266,22 @@ function codeLoadRequest(
   if (!isSourceBackedNode(node)) {
     return null;
   }
-  // A prepared PR artifact has its own retained source root. Route every code surface through that
-  // graph id and keep it out of the GitHub head-file branch: its nodes and source already share HEAD
-  // coordinates, while the head-file fallback below exists for reviews on the loaded base artifact.
+  // A prepared PR projection has its own retained source root. Every code surface reads the exact
+  // immutable HEAD or merge-base descriptor; GitHub patch text is never used as a source fallback.
   const preparedArtifactCurrent = state.prPreparedArtifactCurrent;
   const removedAtHead = state.reviewFileDelta[node.location.file]?.status === "removed";
   const readsComparisonBase = state.reviewBaseNodeIds.has(node.id) || removedAtHead;
   const resolvedSourceUrl = preparedArtifactCurrent
-    ? readsComparisonBase && state.sourceUrl !== null && state.prPreparedComparisonGraphId !== null
-      ? sourceUrlForGraph(state.sourceUrl, state.prPreparedComparisonGraphId)
-      : readsComparisonBase
-        ? sourceUrl
-        : activeSourceUrl(state)
+    ? readsComparisonBase
+      ? state.prPreparedMergeBase?.sourceUrl ?? null
+      : activeSourceUrl(state)
     : sourceUrl;
-  // A live PR review reads changed files from the PR head. The synchronous path holds BASE node
-  // coordinates and therefore needs the edit map; a prepared artifact is already in HEAD
-  // coordinates, so mapping it again would double-shift the preview after an earlier hunk.
-  const reviewDiff = !preparedArtifactCurrent && state.prReviewed !== null && prFileUrl && state.reviewHeadRef
+  // The strict prepared path reads immutable descriptor source directly. The PR-head endpoint is
+  // still required for the current main-side base-coordinate source contract (including files
+  // without graph nodes); it is never an analysis or graph fallback.
+  const reviewDiff = !preparedArtifactCurrent && state.prReviewed !== null && prFileUrl !== null && state.reviewHeadRef !== null
     ? state.reviewDiffByFile[node.location.file] ?? null
     : null;
-  // A patch can be absent for a binary/oversized change, but the file is still a PR-head file. Its
-  // file-delta entry is the fallback capability signal so the preview never silently shows BASE
-  // source just because GitHub omitted hunk detail. Removed files are the exception: no HEAD path
-  // exists, so their old (entirely deleted) node span must come from the base source endpoint.
   const readsPrHead = !preparedArtifactCurrent && !readsComparisonBase
     && state.prReviewed !== null && prFileUrl !== null && state.reviewHeadRef !== null
     && (reviewDiff !== null || state.reviewFileDelta[node.location.file] !== undefined);
@@ -1208,11 +1294,10 @@ function codeLoadRequest(
       ? { start: node.location.startLine, end: node.location.endLine ?? node.location.startLine }
       : headSpanFor(node.location.startLine, node.location.endLine ?? node.location.startLine, reviewDiff.edits)
     : null;
-  const baseLine = wholeFile ? 1 : headSpan ? headSpan.start : node.location.startLine;
+  const baseLine = wholeFile ? 1 : headSpan?.start ?? node.location.startLine;
   // A deletion cursor at `endLine + 1` is inherently shared by the declarations on either side of
   // that boundary. Declaration previews therefore need the exact old-side counterpart span before
-  // accepting the row. In synchronous reviews the active node itself is in BASE coordinates; in a
-  // prepared review the deletion projection supplies the fail-closed semantic counterpart. File
+  // accepting the row. The comparison projection supplies the fail-closed semantic counterpart. File
   // modules and explicit whole-file views intentionally remain cursor-scoped so EOF deletions stay
   // visible even when the extractor's module span stops before the physical final line.
   const scopesDeletedRows = !wholeFile && node.kind !== "module" && !readsComparisonBase;
@@ -1221,15 +1306,11 @@ function codeLoadRequest(
     : preparedArtifactCurrent && state.prReviewComparison !== null
       ? state.reviewBaseSpanByHeadId.get(node.id) ?? null
       : readsPrHead
-        ? {
-            start: node.location.startLine,
-            end: node.location.endLine ?? node.location.startLine,
-          }
+        ? { start: node.location.startLine, end: node.location.endLine ?? node.location.startLine }
         : undefined;
   const normalizedFile = node.location.file.replace(/\\/g, "/");
-  // Prepared/local artifacts carry the canonical merge-base diff beside the graph. A synchronous
-  // GitHub review has not swapped artifacts, so it uses the selected PR response parsed through the
-  // same unified-diff model. Never hybridize local additions with GitHub deletions.
+  // Prepared/local artifacts carry the canonical merge-base diff beside the graph. A base-shaped
+  // PR source view uses its explicit HEAD edit map and never hybridizes the two authorities.
   const artifactKinds = !readsComparisonBase && (preparedArtifactCurrent || state.prReviewed === null)
     ? changedLineKindsFromExtensions(state.artifact.extensions)?.[normalizedFile]
     : undefined;
@@ -1240,7 +1321,7 @@ function codeLoadRequest(
   return {
     node,
     url: readsPrHead
-      ? prFileHeadUrl(prFileUrl!, node.location.file, state.reviewHeadRef!)
+      ? prFileHeadUrl(prFileUrl, node.location.file, state.reviewHeadRef!)
       : baseSourceUrl(resolvedSourceUrl!, node.location, wholeFile),
     baseLine,
     wholeFile,
@@ -1256,9 +1337,7 @@ function codeLoadRequest(
   };
 }
 
-/** Attach a structural focus without changing the canonical declaration request or its PR diff
- * ownership. Synchronous reviews store FlowSourceAnchor coordinates on BASE while displaying HEAD,
- * so only that branch needs the same edit-map projection used for the enclosing callable. */
+/** Attach a structural focus without changing canonical declaration or diff ownership. */
 function withCodePreviewFocus(
   view: CodeView,
   node: GraphNode,
@@ -1325,7 +1404,7 @@ async function fetchCodeView(
   }
   try {
     const data = await pending;
-    if (request.headSpan) {
+    if (request.headSpan !== null) {
       return sliceHeadCodeView(
         request.node,
         data.code,
@@ -1381,7 +1460,7 @@ async function fetchCodeView(
   }
 }
 
-/** Slice the fetched HEAD file to the node's head span and pin the PR's own change kinds onto it. */
+/** Slice a whole HEAD-file response to the mapped declaration span and retain exact diff paint. */
 function sliceHeadCodeView(
   node: GraphNode,
   fullCode: string,
@@ -1416,8 +1495,9 @@ function sliceHeadCodeView(
     sourceSide,
     ...(diffLines.length > 0 ? { diffLines } : {}),
     ...(diffOldSpan !== undefined ? { diffOldSpan } : {}),
-    changedLineKinds,
-    changedLines: new Set(changedLineKinds.keys()),
+    ...(changedLineKinds.size > 0
+      ? { changedLineKinds, changedLines: new Set(changedLineKinds.keys()) }
+      : {}),
   };
 }
 
@@ -1664,6 +1744,9 @@ function sourceDescriptor(source: TelemetrySourceRegistration): TelemetrySourceD
 }
 
 export function createBlueprintStore(dependencies: StoreDependencies): BlueprintStore {
+  const projectionDataSource = dependencies.projectionDataSource ?? null;
+  let projectionRequestSeq = 0;
+  let projectionRequestController: AbortController | null = null;
   const sourceRegistrations = telemetryRegistrations(dependencies);
   const telemetrySourceCatalog = new Map(sourceRegistrations.map((source) => [source.id, source]));
   const initialTelemetrySourceId = initialSourceId(dependencies, telemetrySourceCatalog);
@@ -1711,8 +1794,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let unitIndex: UnitIndex | null = null;
   // Resolve any symbol to the card the map lenses actually draw: its nearest owning unit
   // (class/interface/object), or its module for a top-level callable (module is itself a UNIT_KIND).
-  const resolveCard = (id: string): string => {
-    unitIndex ??= buildUnitIndex([...dependencies.index.nodesById.values()]);
+  const resolveCard = (id: string, index: GraphIndex): string => {
+    unitIndex ??= buildUnitIndex([...index.nodesById.values()]);
     return unitIndex.unitIdOf(id) ?? id;
   };
   // Same guard for the Code flows explorer's embedded flow preview pane.
@@ -1730,14 +1813,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let prFilesRequest: { number: number; sequence: number; promise: Promise<void> } | null = null;
   let prFreshnessRequest: { number: number; revision: PrReviewRevision; promise: Promise<void> } | null = null;
   let prReviewRefreshSeq = 0;
-  let prAnalyzeSeq = 0;
+  let prPrepareSeq = 0;
   // Aggregate metrics and request traces share one invalidation sequence. Each settles independently,
   // while a newer load/environment prevents either stale channel from repainting the store.
   let telemetryFetchSeq = 0;
   // Local code execution is explicit and independently stale-guarded. Selecting another flow or
   // starting a newer run invalidates the prior child-process response without touching telemetry.
   let syntheticExecutionSeq = 0;
-  let prAnalyzeCancellation: { sequence: number; resolve: () => void } | null = null;
+  let prPrepareCancellation: { sequence: number; resolve: () => void; controller: AbortController } | null = null;
   let prReviewEntryRequest: { number: number; promise: Promise<void> } | null = null;
   let prReviewResumeRequest: { number: number; promise: Promise<void> } | null = null;
   // Edge-evidence context switches are asynchronous source reads; only the latest click may win.
@@ -1766,6 +1849,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const invalidateArtifactCaches = () => {
     moduleGraph = null;
     blockDeps = null;
+    unitIndex = null;
     codePayloadCache.clear();
     invalidateModuleLayout();
     invalidateMinimalLayout();
@@ -1774,17 +1858,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     syntheticExecutionSeq += 1;
     flowPaneLayoutSeq += 1;
   };
-  const restorePreparedReviewBaseline = (
-    getState: () => BlueprintState,
-    setState: (partial: Partial<BlueprintState>) => void,
-    options: { endSession?: boolean } = {},
-  ) => {
-    invalidateSyntheticArtifactBoundary();
-    return restorePrReviewBaseline(getState, setState, invalidateArtifactCaches, options);
-  };
-  // The parsed review payload from a `meridian review` artifact (null when the artifact carries no
-  // valid `review` extension — e.g. a plain `web`/`view` session). Computed once (the artifact never
-  // changes after boot); a GitHub PR opened via reviewPrInGraph can later populate `review` at runtime.
+  // The parsed review payload from the initial `meridian review` projection (null when it carries no
+  // valid `review` extension). Live PR projections populate their review independently at runtime.
   const artifactReview = deriveReviewData(dependencies.artifact, dependencies.index);
   const initialReviewProjection = artifactReview
     ? deriveReviewProjection(artifactReview.context, dependencies.artifact, dependencies.index, { baseIndex: null, showTests: false })
@@ -1805,18 +1880,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     );
   }
   const initialSyntheticExecutionUrl = dependencies.syntheticExecutionUrl ?? null;
-  const initialSyntheticExecutionTrust = dependencies.syntheticExecutionTrust === undefined
-    ? initialSyntheticExecutionUrl ? { mode: "local" as const } : null
-    : dependencies.syntheticExecutionTrust;
+  const initialSyntheticExecutionTrust = dependencies.syntheticExecutionTrust ?? null;
   const initialSyntheticScenarios = [...(dependencies.syntheticScenarios ?? [])];
-  const bootReviewBaseline: PrReviewBaseline = {
-    artifact: dependencies.artifact,
-    index: dependencies.index,
-    review: artifactReview,
-    syntheticExecutionUrl: initialSyntheticExecutionUrl,
-    syntheticScenarios: initialSyntheticScenarios,
-    syntheticExecutionTrust: initialSyntheticExecutionTrust,
-  };
   // The files checklist + persisted progress for an artifact-sourced review; a GitHub PR opened via
   // reviewPrInGraph re-derives both at runtime under its own reviewKey.
   const reviewFiles = initialReviewProjection?.files ?? [];
@@ -1824,7 +1889,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const reviewPreferences = readReviewPreferences();
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
-  const githubSource = (dependencies.prSessionSource ?? null) !== null;
+  const prSessionSource = dependencies.prSessionSource ?? null;
+  const githubSource = prSessionSource !== null;
   const prsUrl = dependencies.prsUrl;
   const prOneUrl = dependencies.prOneUrl;
   const prFilesUrl = dependencies.prFilesUrl;
@@ -1832,12 +1898,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const prCommentsUrl = dependencies.prCommentsUrl;
   const prChecksUrl = dependencies.prChecksUrl;
   const prFileUrl = dependencies.prFileUrl ?? null;
-  const analyzeGraphId = dependencies.graphId ?? null;
-  const metaUrl = dependencies.metaUrl ?? "";
-  // The route alone is not a usable prepare capability: plain `view` still knows the route name,
-  // but has no stored graph id for the request. Expose null in that context so every consumer has
-  // one truthful capability flag and reviewPrInGraph takes its synchronous path.
-  const analyzeUrl = analyzeGraphId === null ? null : dependencies.analyzeUrl ?? null;
+  const prepareUrl = prSessionSource === null ? null : dependencies.prepareUrl ?? null;
+  if (prepareUrl !== null && projectionDataSource === null) {
+    throw new Error("PR preparation requires graph projection transport");
+  }
   const prReviewUrl = dependencies.prReviewUrl;
   // The composition tab opens on the WHOLE-SYSTEM overview (null root); file-rooting is the explicit
   // focus tool (⌘P / click a boundary or frame). Auto-rooting at the declared entry module proved a
@@ -2342,6 +2406,115 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       return true;
     };
 
+    /** Activate exactly the graph slice named by the current navigation state. Only this method
+     * installs decoded projection pairs in Zustand; the transport owns the bounded recent-view LRU.
+     * A newer navigation aborts and supersedes an older fetch before either layout starts. */
+    const ensureCurrentProjection = async (): Promise<boolean> => {
+      if (projectionDataSource === null || get().viewMode === "prs") {
+        return true;
+      }
+      projectionRequestController?.abort();
+      const controller = new AbortController();
+      projectionRequestController = controller;
+      const sequence = ++projectionRequestSeq;
+      const state = get();
+      try {
+        const reviewPair = state.prPreparedArtifactCurrent
+          ? await activatePreparedReviewProjection(
+              projectionDataSource,
+              state,
+              controller.signal,
+            )
+          : null;
+        const projection = reviewPair?.head ?? await projectionDataSource.activate(
+          projectionRequestForState(state),
+          { signal: controller.signal },
+        );
+        if (projectionRequestSeq !== sequence || controller.signal.aborted) {
+          return false;
+        }
+        // A cache hit for the already-active request must not churn the store or invalidate derive
+        // caches; this is the common path for repaint-only actions.
+        const activeKey = reviewPair?.key ?? projection.key;
+        if (get().activeProjectionKey === activeKey && get().artifact === projection.artifact) {
+          return true;
+        }
+        moduleGraph = null;
+        blockDeps = null;
+        unitIndex = null;
+        codePayloadCache.clear();
+        invalidateMinimalLayout();
+        set({
+          artifact: projection.artifact,
+          index: projection.index,
+          activeProjectionGraphId: projection.graphId,
+          activeProjectionRequest: projection.request,
+          activeProjectionKey: activeKey,
+          activeProjectionId: reviewPair?.projectionId ?? projection.projectionId,
+          coverage: get().coverageMode
+            ? computeCoverage(projection.artifact.nodes, projection.artifact.edges)
+            : null,
+          prReviewComparison: reviewPair?.mergeBase ?? null,
+        });
+        return true;
+      } catch (error) {
+        if (controller.signal.aborted || projectionRequestSeq !== sequence) {
+          return false;
+        }
+        throw error;
+      } finally {
+        if (projectionRequestController === controller) {
+          projectionRequestController = null;
+        }
+      }
+    };
+
+    const loadPreparedReview = async (
+      head: PreparedGraphDescriptor,
+      mergeBase: PreparedGraphDescriptor,
+      filePaths: readonly string[],
+      signal?: AbortSignal,
+    ): Promise<LoadedReviewProjection> => {
+      if (projectionDataSource === null) {
+        throw new Error("PR preparation requires graph projection transport");
+      }
+      return activatePreparedReviewProjection(projectionDataSource, {
+        ...get(),
+        prPreparedHead: head,
+        prPreparedMergeBase: mergeBase,
+        prPreparedFilePaths: [...filePaths],
+      }, signal);
+    };
+
+    /** Clear review-owned state and promote the prior projection only when it survived the bounded
+     * recent-view LRU. An evicted baseline is not retained through a side channel: the next layout
+     * requests the appropriate base view from disk-backed projection storage. */
+    const restoreReviewSession = (options: { endSession?: boolean } = {}): boolean => {
+      const baseline = get().prReviewBaseline;
+      if (baseline === null && get().prReviewed !== null && options.endSession === false) {
+        resetChangedIdsToArtifact(get().artifact, get().index);
+      }
+      const restored = restorePrReviewBaseline(get, set, invalidateArtifactCaches, options);
+      if (!restored || baseline === null || projectionDataSource === null) {
+        return restored;
+      }
+      const cached = projectionDataSource.activateCached(baseline.projectionKey);
+      if (cached === undefined) {
+        return restored;
+      }
+      resetChangedIdsToArtifact(cached.artifact, cached.index);
+      set({
+        artifact: cached.artifact,
+        index: cached.index,
+        activeProjectionGraphId: cached.graphId,
+        activeProjectionRequest: cached.request,
+        activeProjectionKey: cached.key,
+        activeProjectionId: cached.projectionId,
+        coverage: get().coverageMode ? computeCoverage(cached.artifact.nodes, cached.artifact.edges) : null,
+      });
+      return restored;
+    };
+
     const mutatePrReviewComment = async (mutation: {
       number: number;
       action: "edit" | "reply";
@@ -2428,6 +2601,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     return {
     artifact: dependencies.artifact,
     index: dependencies.index,
+    activeProjectionKey: dependencies.initialProjection?.key ?? null,
+    activeProjectionId: dependencies.initialProjection?.projectionId ?? null,
+    activeProjectionGraphId: dependencies.initialProjection?.graphId ?? null,
+    activeProjectionRequest: dependencies.initialProjection?.request ?? null,
     // A `meridian review` artifact opens straight on the review surface; everything else (plain
     // `view`, or a `web` GitHub session) opens on the Map — the default lens.
     viewMode: "modules",
@@ -2570,14 +2747,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     provider: initialTelemetryProvider,
     hasOverlay: dependencies.hasOverlay,
     sourceUrl,
-    analyzeUrl,
+    prepareUrl,
     githubSource,
     prsUrl,
     prOneUrl,
     prFilesUrl,
     prCommentsUrl,
     prChecksUrl,
-    prSessionSource: dependencies.prSessionSource ?? null,
+    prSessionSource,
     prsTab: "open",
     prsList: { open: null, closed: null },
     prExtraSummaries: {},
@@ -2610,15 +2787,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewRemovedTruncatedByFile: {},
     prReviewStatus: "idle",
     prPrepareStage: null,
+    prPrepareElapsedMs: null,
     prPrepareError: null,
-    prPreparedGraphId: null,
-    prPreparedComparisonGraphId: null,
-    prPreparedMergeBaseSha: null,
+    prPreparedHead: null,
+    prPreparedMergeBase: null,
+    prPreparedFilePaths: [],
     prPreparedHeadSha: null,
+    prPreparedMergeBaseSha: null,
+    prReviewComparison: null,
     prPreparedArtifactCurrent: false,
     prReviewBaseline: null,
-    prReviewComparison: null,
-    graphUrl: dependencies.graphUrl ?? "",
     codeView: null,
 
     // Reveal one more containment level, scoped to the current selection (or the whole view when
@@ -3348,9 +3526,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         syntheticFlowPresentation,
         index,
         artifact,
-        prPreparedArtifactCurrent,
-        prReviewed,
-        reviewDiffByFile,
       } = get();
       if (flowPaneOrigin === "request" || flowPaneOrigin === "synthetic") {
         const execution = flowPaneOrigin === "synthetic" ? get().syntheticExecution : null;
@@ -3409,12 +3584,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const sequence = ++flowPaneLayoutSeq;
       set({ flowPaneLayoutStatus: "laying-out" });
-      // Match the full Logic lens: a flow node's PR status belongs to its own source site, not its
-      // callee. Synchronous reviews resolve base-coordinate anchors through GitHub's aligned diff;
-      // prepared/current artifacts already carry head-coordinate changed-line kinds themselves.
-      const stepStatusSources = prReviewed !== null && !prPreparedArtifactCurrent
-        ? reviewDiffByFile
-        : reviewNodeStatusSourcesFromKinds(changedLineKindsFromExtensions(artifact.extensions));
+      // A flow node's PR status belongs to its own source site. Prepared projections carry the
+      // canonical head-coordinate changed-line kinds beside the graph.
+      const stepStatusSources = reviewNodeStatusSourcesFromKinds(
+        changedLineKindsFromExtensions(artifact.extensions),
+      );
       const graph = await deriveFlowPaneLayout(flowSelection, flows, index, flowPaneExpansionOverrides, {
         changedStatusForSource: (source) => reviewSourceChangeStatus(source, stepStatusSources),
       }, flowPaneCollapsedEdges);
@@ -3457,6 +3631,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         expandedLogic: new Set<string>(),
         collapsedLogicEdges: new Set<string>(),
         ...(resetSynthetic ? logicHostedSyntheticReset() : {}),
+        ...releasedModuleScene(),
+        ...releasedLogicScene(),
       });
       void get().logicRelayout(nodeLayoutActivity(state, "Opening logic for", nodeId));
     },
@@ -3469,6 +3645,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       const state = get();
+      logicLayoutSeq += 1;
       beginLensTransition(get, set);
       const reveal = serviceRevealStateForMany(
         [unitId],
@@ -3486,6 +3663,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleRfEdges: [],
         moduleSemanticLayers: [],
         moduleEffectiveFocus: null,
+        ...releasedLogicScene(),
         // Composition pivots deliberately re-enter the full Service lens; unlike tab-to-tab path
         // carry, they must not recreate the session-only scoped sub-view that the reader exited.
         serviceScope: null,
@@ -3655,31 +3833,33 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Re-derive the Logic graph for the current root through ELK, behind a stale-seq guard (a newer
     // open/drill/toggle discards an older in-flight layout). A null root clears the graph.
     async logicRelayout(activity) {
-      const {
-        logicRoot,
-        index,
-        artifact,
-        expandedLogic,
-        collapsedLogicEdges,
-        hideGreyed,
-        nestByService,
-        logicFocus,
-        prPreparedArtifactCurrent,
-        prReviewed,
-        reviewDiffByFile,
-        reviewDiffLinesByFile,
-      } = get();
-      if (logicRoot === null) {
+      if (get().logicRoot === null) {
         set({ logicRfNodes: [], logicRfEdges: [], logicLayoutStatus: "idle", logicLayoutActivity: null });
         return;
       }
-      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const sequence = ++logicLayoutSeq;
       set({
         logicLayoutStatus: "laying-out",
         logicLayoutActivity: activity ?? { label: "Arranging logic flow…" },
       });
       try {
+        if ((projectionDataSource !== null && !await ensureCurrentProjection()) || logicLayoutSeq !== sequence) {
+          return;
+        }
+        const {
+          logicRoot,
+          index,
+          artifact,
+          expandedLogic,
+          collapsedLogicEdges,
+          hideGreyed,
+          nestByService,
+          logicFocus,
+        } = get();
+        if (logicRoot === null) {
+          return;
+        }
+        const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
         await yieldForPaint();
         if (logicLayoutSeq !== sequence) {
           return;
@@ -3689,12 +3869,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         const focus = top ? { id: top.id, bodies: top.bodies } : undefined;
         // Flow nodes represent source sites, not their callees. Resolve their PR status from each
         // FlowStep source anchor using the same aligned line-kind source as node colouring.
-        const stepStatusSources = prReviewed !== null && !prPreparedArtifactCurrent
-          ? liveReviewStatusSources(reviewDiffByFile, reviewDiffLinesByFile)
-          : reviewNodeStatusSourcesFromDiff(
-              changedLineKindsFromExtensions(artifact.extensions),
-              changedDiffLinesFromExtensions(artifact.extensions),
-            );
+        const stepStatusSources = reviewNodeStatusSourcesFromDiff(
+          changedLineKindsFromExtensions(artifact.extensions),
+          changedDiffLinesFromExtensions(artifact.extensions),
+        );
         const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, {
           hideGreyed,
           nestByService,
@@ -3805,6 +3983,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleLayoutActivity: activity ?? defaultModuleLayoutActivity(get()),
       });
       try {
+        if ((projectionDataSource !== null && !await ensureCurrentProjection()) || moduleLayoutSeq !== sequence) {
+          return;
+        }
         await yieldForPaint();
         if (moduleLayoutSeq !== sequence) {
           return;
@@ -4122,7 +4303,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       if (viewMode === "call") {
         const state = get();
-        const card = resolveCard(rawId);
+        const card = resolveCard(rawId, state.index);
         set({
           mapExtra: new Set(state.mapExtra).add(card),
           moduleSelected: new Set([card]),
@@ -4153,7 +4334,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
 
-      const card = resolveCard(rawId);
+      const card = resolveCard(rawId, state.index);
       if (!state.mapExtra.has(card)) {
         set({
           mapExtra: new Set(state.mapExtra).add(card),
@@ -4586,6 +4767,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           : {
               prReviewed: null,
               prReviewSource: null,
+              reviewHeadRef: null,
+              reviewDiffByFile: {},
               ...requestFlowPaneReset(state),
             }),
         ...clearSyntheticFlow,
@@ -4686,15 +4869,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const reviewFlowOpen = stateBeforeClose.review !== null
         && stateBeforeClose.flowSelection !== null
         && flowBaseline !== null;
-      // Closing the overlay mid-review must not strand the reader on the swapped PR-head artifact
+      // Closing the overlay mid-review must not strand the reader on the swapped PR-head projection
       // (still amber-marked) under the plain Map — yet the review must stay RESUMABLE. Soft-restore
-      // the boot graph while keeping every review field (the chip + resumePrReview re-open from
-      // them); in sync mode (never swapped, so no baseline to restore) just strip the review's amber
-      // back to the boot artifact's own marking. No-op for a non-review overlay close.
+      // the prior projection when it is still cached while keeping every review field (the chip +
+      // resumePrReview re-open from them). No-op otherwise.
       if (get().prReviewed !== null) {
-        if (!restorePreparedReviewBaseline(get, set, { endSession: false })) {
-          resetChangedIdsToArtifact(get().artifact, get().index);
-        }
+        restoreReviewSession({ endSession: false });
       }
       const sourceRestoreSequence = moduleLayoutSeq;
       minimalLayoutSeq += 1;
@@ -4951,6 +5131,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       beginLensTransition(get, set);
+      if (viewMode === "logic") {
+        logicLayoutSeq += 1;
+      }
       // Scoping from WITHIN the call lens narrows the canvas the reader is already on, so their
       // open frames must survive: UNION the reveal's expansion into the current one. From any
       // other lens this is a lens switch, where the reveal REPLACES the expansion (the outgoing
@@ -4966,6 +5149,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleRfEdges: [],
         moduleSemanticLayers: [],
         moduleEffectiveFocus: null,
+        ...releasedLogicScene(),
         ...resolution.reveal,
         moduleExpanded: revealExpanded,
       });
@@ -5670,7 +5854,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       } = get();
       const visibleComments = showTests
         ? reviewComments
-        : reviewComments.filter((comment) => !isReviewTestPath(comment.path, index, get().prReviewBaseline?.index ?? null));
+        : reviewComments.filter((comment) => !isReviewTestPath(comment.path, index, null));
       const reviewBody = body.trim();
       if (
         !review
@@ -5862,17 +6046,23 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       beginLensTransition(get, set);
       if (mode === "logic") {
         moduleLayoutSeq += 1;
-        set({ viewMode: mode });
+        const restoreLogicScene = get().logicRoot !== null && get().logicRfNodes.length === 0;
+        set({ viewMode: mode, ...releasedModuleScene() });
+        if (restoreLogicScene) {
+          void get().logicRelayout({ label: "Restoring logic flow…" });
+        }
         return;
       }
       if (mode === "prs") {
         moduleLayoutSeq += 1;
-        // beginLensTransition softly parked any open review and restored the boot graph. Keep its
+        logicLayoutSeq += 1;
+        // beginLensTransition softly parked any open review and restored its prior projection when
+        // cached. Keep the review
         // payload and prepared id alive while the queue is browsed; starting another review is the
         // commit point that replaces it. No relayout here because the PR page has no canvas.
         // Remember the lens we're leaving so `togglePrsView` can resume it (previous !== "prs" here).
         lensBeforePrs = previous;
-        set({ viewMode: mode });
+        set({ viewMode: mode, ...releasedModuleScene(), ...releasedLogicScene() });
         if (get().prsList[get().prsTab] === null) {
           void get().loadPrs(1);
         }
@@ -5883,6 +6073,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // "+" pins (`mapExtra`) are session scratch of the level we leave — always cleared. Every
       // remaining mode is a module surface (Map / Service / UI) with its own anchor reveal.
       const { index, serviceGroupingMode, serviceGroupingTargetSize } = get();
+      logicLayoutSeq += 1;
       const serviceResolution = mode === "call"
         ? resolveServiceAnchors(anchors, index, serviceGroupingMode, serviceGroupingTargetSize)
         : null;
@@ -5904,6 +6095,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleRfEdges: [],
         moduleSemanticLayers: [],
         moduleEffectiveFocus: null,
+        ...releasedLogicScene(),
         serviceScope:
           mode === "call" && serviceResolution !== null
             ? serviceScopeFor(serviceResolution.owningLeads, index)
@@ -5916,9 +6108,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     // The "PR review" control is a toggle: off → open the full PR page; on → resume the lens you came
-    // from (Map/Service/UI/Logic). The graph state is left untouched while PRs are open, so flipping
-    // the mode back restores it exactly where you left it — no reset, no re-layout — except when that
-    // lens was never laid out (PRs opened before its surface first rendered), which we relayout for.
+    // from (Map/Service/UI/Logic). Navigation state stays intact while PRs are open, but derived
+    // React Flow arrays are released; flipping back rebuilds only the scene that becomes visible.
     togglePrsView() {
       if (get().viewMode !== "prs") {
         get().setViewMode("prs");
@@ -5930,6 +6121,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ viewMode: back });
       if (moduleSurfaceSpec(back) !== null && get().moduleRfNodes.length === 0) {
         void get().moduleRelayout({ label: "Restoring graph…" });
+      } else if (back === "logic" && get().logicRoot !== null && get().logicRfNodes.length === 0) {
+        void get().logicRelayout({ label: "Restoring logic flow…" });
       }
     },
 
@@ -6517,13 +6710,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       get().cancelPrReviewPreparation();
       // Browsing another card must not discard a parked review. Only an explicit navigation restore
       // away from review state requests teardown; starting another review owns replacement below.
-      if (
-        options.endReviewSession
-        && restoreSelectedPrReview(get, set, bootReviewBaseline, () => restorePreparedReviewBaseline(get, set))
-      ) {
+      if (options.endReviewSession && restoreSelectedPrReview(get, restoreReviewSession)) {
         void get().relayout();
       }
-      const prepareReset = { prReviewStatus: "idle" as const, prPrepareStage: null, prPrepareError: null };
+      const prepareReset = {
+        prReviewStatus: "idle" as const,
+        prPrepareStage: null,
+        prPrepareElapsedMs: null,
+        prPrepareError: null,
+      };
       if (number === null) {
         set({
           prSelected: null,
@@ -6678,7 +6873,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     // Refresh a stale review in place. Drafts/ticks remain live under the stable reviewKey; the
-    // fresh files, discussion, checks, and (when available) prepared head artifact replace the old
+    // fresh files, discussion, checks, and prepared head projection replace the old
     // content only after their guarded requests land. Failures leave the previous review visible.
     async refreshPrReview() {
       const before = get();
@@ -6703,14 +6898,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // head preparation consume them from store state. Until that projection succeeds, retain
       // the prior inputs as one transaction so a failed/canceled refresh cannot poison a later
       // Resume with files from a graph we rolled back. Summary/discussion/checks stay fresh.
-      let stagedPrFiles: BlueprintState["prFiles"] = null;
       const restoreRetainedReviewFiles = () => {
         const current = get();
         if (
           current.prReviewed !== number
           || current.prSelected !== number
           || current.prReviewRevision !== revision
-          || current.prFiles !== stagedPrFiles
         ) {
           return;
         }
@@ -6724,7 +6917,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       };
       const sequence = ++prReviewRefreshSeq;
       const active = () => prReviewRefreshSeq === sequence && sameReviewRefresh(get(), number, revision);
-      set({ prReviewRefreshing: true, prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null });
+      set({
+        prReviewRefreshing: true,
+        prReviewStatus: "idle",
+        prPrepareStage: null,
+        prPrepareElapsedMs: null,
+        prPrepareError: null,
+      });
       try {
         const latest = await fetchPrSummary(prOneUrl, number);
         if (!active()) {
@@ -6740,7 +6939,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           return;
         }
         const current = get();
-        stagedPrFiles = files.files;
         set({
           ...refreshedPrSummaryState(current, latest),
           prFiles: files.files,
@@ -6756,46 +6954,24 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           prChecks: checks,
         });
 
-        if (analyzeUrl !== null && analyzeGraphId !== null) {
+        if (prepareUrl !== null && prSessionSource !== null) {
           await get().prepareHeadGraph();
           // Successful projection replaces the revision object. If it did not, preparation either
           // failed, found no matching HEAD nodes, or was canceled by a soft close; all three keep
           // the prior review and therefore must keep its matching GitHub payload as well.
           restoreRetainedReviewFiles();
         } else {
-          // Older/plain view sessions cannot build a head artifact. Re-run the synchronous review
-          // against the immutable boot graph so the new GitHub hunks replace the synthesized diff;
-          // using the already-reviewed artifact here would accidentally retain its old stamp.
-          const previous = get();
-          invalidateArtifactCaches();
-          set({
-            artifact: bootReviewBaseline.artifact,
-            index: bootReviewBaseline.index,
-            coverage: previous.coverageMode ? computeCoverage(bootReviewBaseline.artifact.nodes, bootReviewBaseline.artifact.edges) : null,
-            codeView: null,
-          });
-          if (!applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches, {
-            preserveReviewDiffOnly: true,
-          })) {
-            // The refreshed PR no longer intersects this extraction. Keep the old review rather than
-            // silently replacing it with an empty/base canvas; the stale control remains retryable.
-            invalidateArtifactCaches();
-            set({
-              artifact: previous.artifact,
-              index: previous.index,
-              coverage: previous.coverage,
-              codeView: null,
-              prReviewBlocked: null,
-              prReviewStatus: "error",
-              prPrepareError: "The refreshed pull request no longer matches this graph.",
-            });
-            restoreRetainedReviewFiles();
-          }
+          throw new Error("PR refresh requires direct graph preparation transport");
         }
       } catch (error) {
         restoreRetainedReviewFiles();
         if (active()) {
-          set({ prReviewStatus: "error", prPrepareStage: null, prPrepareError: refreshErrorMessage(error) });
+          set({
+            prReviewStatus: "error",
+            prPrepareStage: null,
+            prPrepareElapsedMs: null,
+            prPrepareError: refreshErrorMessage(error),
+          });
         }
       } finally {
         if (prReviewRefreshSeq === sequence && get().prReviewed === number) {
@@ -6804,9 +6980,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // Once the selected PR's files are ready, a capable web session PREPARES first while the PRs
-    // page remains visible. Only the swapped PR-head graph is allowed to enter the Map. A plain
-    // view (no analyze capability) retains the synchronous loaded-artifact entry path.
+    // Once the selected PR's files are ready, a review-capable web session PREPARES first while the
+    // PRs page remains visible. Only the swapped PR-head projection is allowed to enter the Map.
     async reviewPrInGraph() {
       const selected = get().prSelected;
       if (selected === null) {
@@ -6826,12 +7001,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       // Selection is only browsing; pressing Review in graph is the commit point that replaces an
-      // older parked session. Restore the immutable boot pair before preparing the new PR.
+      // older parked session. Drop its lightweight return coordinate before preparing the new PR.
       if (get().prReviewed !== null) {
-        restoreSelectedPrReview(get, set, bootReviewBaseline, () => restorePreparedReviewBaseline(get, set));
+        restoreSelectedPrReview(get, restoreReviewSession);
       }
-      if (analyzeUrl === null || analyzeGraphId === null) {
-        await get().reviewPrOnBaseGraph();
+      if (prepareUrl === null || prSessionSource === null) {
+        set({
+          prReviewStatus: "error",
+          prPrepareStage: null,
+          prPrepareElapsedMs: null,
+          prPrepareError: "This session does not provide direct PR preparation.",
+        });
         return;
       }
       // A double-click shares the one blocking entry promise; it must neither supersede the
@@ -6854,37 +7034,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // The old synchronous entry is now deliberately narrow: no analyze capability, or the user's
-    // explicit fallback after prepare-first failed. It never starts server preparation itself.
-    async reviewPrOnBaseGraph() {
-      const selected = get().prSelected;
-      if (selected === null) {
-        return;
-      }
-      if (get().prFiles === null) {
-        const inFlight = prFilesRequest?.number === selected && prFilesRequest.sequence === prFilesSeq
-          ? prFilesRequest.promise
-          : get().selectPr(selected);
-        await inFlight;
-        if (get().prSelected !== selected || get().prFiles === null) {
-          return;
-        }
-      }
-      applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches);
-    },
-
     // Re-open a review whose overlay was soft-closed (explicit Close/lens switch) — cheaply. The
-    // expensive clone→checkout→extract NEVER re-runs here: a swapped review re-fetches its already-
-    // prepared head artifact with one GET and re-swaps (against the SAME saved baseline); a sync
-    // review keeps the boot artifact it never left. Then re-project the complete PR through the
-    // current Tests setting so a toggle changed while the workspace was parked is honored.
+    // expensive mirror/extraction pipeline NEVER re-runs here: a swapped review reactivates its
+    // already-prepared head projection (against the same lightweight return coordinate). Then
+    // re-project the review through the current Tests setting so a toggle changed while the
+    // workspace was parked is honored.
     async resumePrReview() {
       const {
         prReviewed,
         prReviewSource,
         minimalSeedIds,
-        prPreparedGraphId,
-        prPreparedComparisonGraphId,
+        prPreparedHead,
+        prPreparedMergeBase,
+        prPreparedFilePaths,
         prPreparedHeadSha,
         reviewActiveGroupId: resumeGroupId,
         reviewPathScope: resumePathScope,
@@ -6896,7 +7058,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         await prReviewResumeRequest.promise;
         return;
       }
-      // A normal Code Flow may have been opened on the base Map after the review overlay soft-
+      // A normal Code Flow may have been opened on the restored Map after the review overlay soft-
       // closed. It belongs to that Map, not the resumed review/head artifact; clear it before any
       // possible artifact swap so only a flow selected inside the review enters review mode.
       const clearResumeFlow = () => {
@@ -6934,32 +7096,29 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           });
         }
         clearResumeFlow();
-        set({ prReviewStatus: "preparing", prPrepareStage: null, prPrepareError: null });
+        set({ prReviewStatus: "preparing", prPrepareStage: null, prPrepareElapsedMs: null, prPrepareError: null });
         try {
-          if (prPreparedGraphId !== null) {
-            const [prepared, comparison] = await Promise.all([
-              fetchPreparedGraphSession(get().graphUrl, metaUrl, prPreparedGraphId, {
-                repository: dependencies.prSessionSource?.repository ?? null,
+          if (prPreparedHead !== null && prPreparedMergeBase !== null) {
+            const [prepared, capability] = await Promise.all([
+              loadPreparedReview(prPreparedHead, prPreparedMergeBase, prPreparedFilePaths),
+              fetchPreparedSyntheticCapability(prPreparedHead.metaUrl, {
+                repository: prSessionSource?.repository ?? null,
                 headSha: prPreparedHeadSha,
               }),
-              prPreparedComparisonGraphId === null
-                ? Promise.resolve(null)
-                : fetchPreparedArtifact(get().graphUrl, prPreparedComparisonGraphId),
             ]);
             if (
               get().prReviewed !== prReviewed
               || get().minimalSeedIds.length > 0
-              || get().prPreparedGraphId !== prPreparedGraphId
-              || get().prPreparedComparisonGraphId !== prPreparedComparisonGraphId
+              || get().prPreparedHead !== prPreparedHead
+              || get().prPreparedMergeBase !== prPreparedMergeBase
               || get().prPreparedHeadSha !== prPreparedHeadSha
             ) {
               return; // the review moved on (or resumed elsewhere) while the artifact was in flight.
             }
-            // The base Map stayed interactive during the fetch. Clear once more so a Code Flow opened
+            // The restored Map stayed interactive during the fetch. Clear once more so a Code Flow opened
             // in that window cannot ride the stale base-artifact ref across the head-graph swap.
             clearResumeFlow();
-            invalidateSyntheticArtifactBoundary();
-            swapToPreparedArtifact(get, set, prepared.artifact, invalidateArtifactCaches, prepared, comparison);
+            swapToPreparedReviewProjection(get, set, prepared, invalidateArtifactCaches, capability);
           }
           const resumed = applyPrReviewToMap(
             get,
@@ -6974,15 +7133,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             },
           );
           if (!resumed) {
-            // A corrupted/mutated retained payload must never leave the prepared HEAD artifact
-            // active behind a closed overlay. Sync reviews do not swap, but surface the same honest
-            // retry state instead of leaving Resume stuck on "preparing".
-            if (prPreparedGraphId !== null) {
-              restorePreparedReviewBaseline(get, set, { endSession: false });
+            // A corrupted or mutated retained payload must never leave the prepared HEAD projection
+            // active behind a closed overlay; surface an honest retry state instead.
+            if (prPreparedHead !== null) {
+              restoreReviewSession({ endSession: false });
             }
             set({
               prReviewStatus: "error",
               prPrepareStage: null,
+              prPrepareElapsedMs: null,
               prPrepareError: "The retained pull request no longer matches this graph.",
             });
             return;
@@ -6993,11 +7152,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           get().selectReviewGroup(resumeGroupId);
           get().selectReviewPathScope(resumePathScope);
           if (get().prReviewed === prReviewed) {
-            set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null });
+            set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareElapsedMs: null, prPrepareError: null });
           }
         } catch (error) {
           if (get().prReviewed === prReviewed && get().minimalSeedIds.length === 0) {
-            set({ prReviewStatus: "error", prPrepareStage: null, prPrepareError: resumeErrorMessage(error) });
+            set({
+              prReviewStatus: "error",
+              prPrepareStage: null,
+              prPrepareElapsedMs: null,
+              prPrepareError: resumeErrorMessage(error),
+            });
           }
         }
       })();
@@ -7012,8 +7176,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // Prepare-first entry (and the fallback review's manual "Extract head graph"): stream the
-    // clone→checkout→extract analysis, SWAP the loaded artifact for the prepared head-accurate one,
+    // Prepare-first entry and refresh: stream resolve/mirror/extract/publish progress, then swap to
+    // the prepared HEAD + merge-base projection pair,
     // then run the review so marking, seeds, and line diff all compute in HEAD coordinates. The
     // stale-seq + identity guards drop a canceled entry, PR switch, or PRs-lens exit.
     async prepareHeadGraph() {
@@ -7023,30 +7187,32 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const refreshingExistingReview = !enteringFromPrs && state.prReviewRefreshing;
       const summary = selectedPrSummary(state, prNumber);
       // A refresh/manual re-extract can start while an older prepared review is still current.
-      // Keep that exact graph as a transactional fallback: a clone/fetch/derive failure must not
-      // throw the reader back to the boot graph or discard the review they were looking at.
-      const previousPrepared = !enteringFromPrs && state.prPreparedArtifactCurrent
+      // Keep only its projection coordinate. The transport may promote the bounded decoded entry
+      // or reload it from disk, but this action must never retain a second artifact/index pair.
+      const previousPrepared = !enteringFromPrs
+        && state.prPreparedArtifactCurrent
+        && state.activeProjectionGraphId !== null
+        && state.activeProjectionRequest !== null
+        && state.activeProjectionKey !== null
+        && state.prPreparedHead !== null
+        && state.prPreparedMergeBase !== null
         ? {
-            artifact: state.artifact,
-            index: state.index,
-            comparison: state.prReviewComparison,
-            coverage: state.coverage,
-            graphId: state.prPreparedGraphId,
-            comparisonGraphId: state.prPreparedComparisonGraphId,
-            mergeBaseSha: state.prPreparedMergeBaseSha,
+            projectionKey: state.activeProjectionKey,
+            projectionRequest: state.activeProjectionRequest,
+            preparedHead: state.prPreparedHead,
+            mergeBase: state.prPreparedMergeBase,
+            filePaths: state.prPreparedFilePaths,
             headSha: state.prPreparedHeadSha,
+            mergeBaseSha: state.prPreparedMergeBaseSha,
             syntheticExecutionUrl: state.syntheticExecutionUrl,
             syntheticScenarios: [...state.syntheticScenarios],
             syntheticExecutionTrust: state.syntheticExecutionTrust,
-            baseNodeIds: state.reviewBaseNodeIds,
-            deletedNodeIds: state.reviewDeletedNodeIds,
-            baseSpanByHeadId: state.reviewBaseSpanByHeadId,
           }
         : null;
       if (
         prNumber === null
-        || analyzeUrl === null
-        || analyzeGraphId === null
+        || prepareUrl === null
+        || prSessionSource === null
         || summary === null
         || (enteringFromPrs && state.viewMode !== "prs")
       ) {
@@ -7057,17 +7223,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       // A direct manual re-run supersedes the prior action just like Retry does through
       // reviewPrInGraph; resolve its public waiter while its guarded stream drains.
-      prAnalyzeCancellation?.resolve();
-      const sequence = ++prAnalyzeSeq;
+      prPrepareCancellation?.controller.abort();
+      prPrepareCancellation?.resolve();
+      const sequence = ++prPrepareSeq;
       let resolveCanceled!: () => void;
       const canceled = new Promise<void>((resolve) => {
         resolveCanceled = resolve;
       });
-      const cancellation = { sequence, resolve: resolveCanceled };
-      prAnalyzeCancellation = cancellation;
+      const cancellation = { sequence, resolve: resolveCanceled, controller: new AbortController() };
+      prPrepareCancellation = cancellation;
       const active = () => {
         const current = get();
-        return prAnalyzeSeq === sequence
+        return prPrepareSeq === sequence
           && current.prSelected === prNumber
           && (enteringFromPrs
             ? current.viewMode === "prs" && current.prReviewed === null
@@ -7077,14 +7244,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       };
       set({
         prReviewStatus: "preparing",
-        prPrepareStage: "clone",
+        prPrepareStage: "resolve",
+        prPrepareElapsedMs: 0,
         prPrepareError: null,
         ...(previousPrepared === null
           ? {
-              prPreparedGraphId: null,
-              prPreparedComparisonGraphId: null,
-              prPreparedMergeBaseSha: null,
+              prPreparedHead: null,
+              prPreparedMergeBase: null,
+              prPreparedFilePaths: [],
               prPreparedHeadSha: null,
+              prPreparedMergeBaseSha: null,
               prReviewComparison: null,
               reviewBaseNodeIds: new Set<string>(),
               reviewDeletedNodeIds: new Set<string>(),
@@ -7093,70 +7262,102 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           : {}),
         prReviewBlocked: null,
       });
-      let swappedNewArtifact = false;
-      const restorePreviousPrepared = () => {
-        if (previousPrepared === null) {
+      let swappedNewProjection = false;
+      const restorePreviousPrepared = async (): Promise<boolean> => {
+        if (previousPrepared === null || projectionDataSource === null) {
           return false;
         }
-        invalidateSyntheticArtifactBoundary();
-        invalidateArtifactCaches();
-        set({
-          artifact: previousPrepared.artifact,
-          index: previousPrepared.index,
-          prReviewComparison: previousPrepared.comparison,
-          coverage: previousPrepared.coverage,
-          codeView: null,
-          prPreparedArtifactCurrent: true,
-          prPreparedGraphId: previousPrepared.graphId,
-          prPreparedComparisonGraphId: previousPrepared.comparisonGraphId,
-          prPreparedMergeBaseSha: previousPrepared.mergeBaseSha,
-          prPreparedHeadSha: previousPrepared.headSha,
-          syntheticExecutionUrl: previousPrepared.syntheticExecutionUrl,
-          syntheticScenarios: [...previousPrepared.syntheticScenarios],
-          syntheticExecutionTrust: previousPrepared.syntheticExecutionTrust,
-          reviewBaseNodeIds: previousPrepared.baseNodeIds,
-          reviewDeletedNodeIds: previousPrepared.deletedNodeIds,
-          reviewBaseSpanByHeadId: previousPrepared.baseSpanByHeadId,
-          prReviewBlocked: null,
-        });
-        return true;
+        try {
+          const restored = projectionDataSource.activateCachedReview(previousPrepared.projectionKey)
+            ?? await projectionDataSource.activateReviewPair({
+              head: {
+                request: previousPrepared.projectionRequest,
+                endpoints: graphProjectionEndpoints(previousPrepared.preparedHead),
+              },
+              mergeBase: {
+                request: mergeBaseProjectionRequest(previousPrepared.projectionRequest),
+                endpoints: graphProjectionEndpoints(previousPrepared.mergeBase),
+              },
+              signal: cancellation.controller.signal,
+            });
+          if (!active()) return false;
+          invalidateSyntheticArtifactBoundary();
+          swapToPreparedReviewProjection(get, set, restored, invalidateArtifactCaches, {
+            syntheticExecutionUrl: previousPrepared.syntheticExecutionUrl,
+            syntheticScenarios: previousPrepared.syntheticScenarios,
+            syntheticExecutionTrust: previousPrepared.syntheticExecutionTrust,
+          });
+          set({
+            prPreparedHead: previousPrepared.preparedHead,
+            prPreparedMergeBase: previousPrepared.mergeBase,
+            prPreparedFilePaths: previousPrepared.filePaths,
+            prPreparedHeadSha: previousPrepared.headSha,
+            prPreparedMergeBaseSha: previousPrepared.mergeBaseSha,
+            prReviewComparison: restored.mergeBase,
+            prReviewBlocked: null,
+          });
+          return true;
+        } catch {
+          return false;
+        }
       };
       const work = (async () => {
         try {
-          const request = { id: analyzeGraphId, prNumber, baseRef: summary.baseRef, headRef: summary.headRef };
-          const analysis = await streamPrAnalysis(analyzeUrl, request, (stage) => {
+          const repository = splitGitHubRepository(prSessionSource.repository);
+          const request = {
+            ...repository,
+            ...(prSessionSource.subdir.length > 0 ? { subdir: prSessionSource.subdir } : {}),
+            prNumber,
+            baseRef: summary.baseRef,
+            headRef: summary.headRef,
+          };
+          const analysis = await streamPrPreparation(prepareUrl, request, (stage, elapsedMs) => {
             if (active()) {
-              set({ prPrepareStage: stage });
+              set({ prPrepareStage: stage, prPrepareElapsedMs: elapsedMs });
             }
-          });
+          }, cancellation.controller.signal);
           if (!active()) {
             return;
           }
-          // SWAP: load the prepared PR-head artifact and make it the CURRENT graph BEFORE the review
+          // SWAP: load the prepared PR-head projection and make it CURRENT before the review
           // body runs, so amber marking, seeds, and the line diff compute in HEAD coordinates.
-          const [prepared, comparison] = await Promise.all([
-            fetchPreparedGraphSession(get().graphUrl, metaUrl, analysis.graphId, {
-              repository: dependencies.prSessionSource?.repository ?? null,
+          const filePaths = changedFileProjectionPaths(analysis.changedFiles);
+          const [prepared, capability] = await Promise.all([
+            loadPreparedReview(
+              analysis.head,
+              analysis.mergeBase,
+              filePaths,
+              cancellation.controller.signal,
+            ),
+            fetchPreparedSyntheticCapability(analysis.head.metaUrl, {
+              repository: prSessionSource.repository,
               headSha: analysis.headSha,
-            }),
-            analysis.comparisonGraphId === null
-              ? Promise.resolve(null)
-              : fetchPreparedArtifact(get().graphUrl, analysis.comparisonGraphId),
+            }, cancellation.controller.signal),
           ]);
           if (!active()) {
             return;
           }
+          const canonicalFiles = canonicalPreparedPrFiles(
+            get().prFiles ?? [],
+            analysis.changedFiles,
+            prepared.head.artifact,
+          );
           invalidateSyntheticArtifactBoundary();
-          swapToPreparedArtifact(get, set, prepared.artifact, invalidateArtifactCaches, prepared, comparison);
-          swappedNewArtifact = true;
+          swapToPreparedReviewProjection(get, set, prepared, invalidateArtifactCaches, capability);
+          swappedNewProjection = true;
           set({
             prReviewStatus: "idle",
             prPrepareStage: null,
+            prPrepareElapsedMs: null,
             prPrepareError: null,
-            prPreparedGraphId: analysis.graphId,
-            prPreparedComparisonGraphId: analysis.comparisonGraphId,
-            prPreparedMergeBaseSha: analysis.mergeBaseSha,
+            prPreparedHead: analysis.head,
+            prPreparedMergeBase: analysis.mergeBase,
+            prPreparedFilePaths: filePaths,
             prPreparedHeadSha: analysis.headSha,
+            prPreparedMergeBaseSha: analysis.mergeBaseSha,
+            prFiles: canonicalFiles,
+            prFilesTruncated: false,
+            prFilesTotal: Math.max(get().prFilesTotal, canonicalFiles.length + get().prFilesOutside),
           });
           const entered = applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches, {
             preserveReviewDiffOnly: !enteringFromPrs,
@@ -7164,22 +7365,27 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           if (!entered) {
             // The zero-match decision was made against HEAD. Do not leak that unreviewed prepared
             // graph behind the PRs page (or replace an explicit base fallback that still matches).
-            if (!restorePreviousPrepared()) {
-              restorePreparedReviewBaseline(get, set, { endSession: enteringFromPrs });
+            if (!await restorePreviousPrepared()) {
+              restoreReviewSession({ endSession: enteringFromPrs });
             }
             if (!enteringFromPrs && previousPrepared === null) {
               set({
-                prPreparedGraphId: null,
-                prPreparedComparisonGraphId: null,
-                prPreparedMergeBaseSha: null,
+                prPreparedHead: null,
+                prPreparedMergeBase: null,
+                prPreparedFilePaths: [],
                 prPreparedHeadSha: null,
+                prPreparedMergeBaseSha: null,
                 prReviewComparison: null,
+                reviewBaseNodeIds: new Set<string>(),
+                reviewDeletedNodeIds: new Set<string>(),
+                reviewBaseSpanByHeadId: new Map<string, LineRange>(),
               });
             }
             if (get().prReviewRefreshing) {
               set({
                 prReviewStatus: "error",
                 prPrepareStage: null,
+                prPrepareElapsedMs: null,
                 prPrepareError: "The refreshed pull request no longer matches this graph.",
               });
             }
@@ -7187,44 +7393,54 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         } catch (error) {
           if (active()) {
             // Derivation after a successful fetch is still part of preparation. If it throws after
-            // the swap, put the prior graph back before exposing the retry/fallback state.
-            if (swappedNewArtifact && !restorePreviousPrepared()) {
-              restorePreparedReviewBaseline(get, set, { endSession: enteringFromPrs });
+            // the swap, put the prior graph back before exposing the retry state.
+            if (swappedNewProjection && !await restorePreviousPrepared()) {
+              restoreReviewSession({ endSession: enteringFromPrs });
               if (!enteringFromPrs && previousPrepared === null) {
                 set({
-                  prPreparedGraphId: null,
-                  prPreparedComparisonGraphId: null,
-                  prPreparedMergeBaseSha: null,
+                  prPreparedHead: null,
+                  prPreparedMergeBase: null,
+                  prPreparedFilePaths: [],
                   prPreparedHeadSha: null,
+                  prPreparedMergeBaseSha: null,
                   prReviewComparison: null,
+                  reviewBaseNodeIds: new Set<string>(),
+                  reviewDeletedNodeIds: new Set<string>(),
+                  reviewBaseSpanByHeadId: new Map<string, LineRange>(),
                 });
               }
             }
-            set({ prReviewStatus: "error", prPrepareStage: null, prPrepareError: prepareErrorMessage(error) });
+            set({
+              prReviewStatus: "error",
+              prPrepareStage: null,
+              prPrepareElapsedMs: null,
+              prPrepareError: prepareErrorMessage(error),
+            });
           }
         }
       })();
       try {
-        // Cancel resolves the public/blocking action immediately. `work` deliberately keeps
-        // draining server output, but every landing point is fenced by `active()`.
+        // Cancel resolves the public action immediately and aborts the HTTP subscription. The
+        // server keeps a shared job alive only when another subscriber is still interested.
         await Promise.race([work, canceled]);
       } finally {
-        if (prAnalyzeCancellation === cancellation) {
-          prAnalyzeCancellation = null;
+        if (prPrepareCancellation === cancellation) {
+          prPrepareCancellation = null;
         }
       }
     },
 
     cancelPrReviewPreparation() {
-      prAnalyzeSeq += 1;
-      const cancellation = prAnalyzeCancellation;
-      prAnalyzeCancellation = null;
+      prPrepareSeq += 1;
+      const cancellation = prPrepareCancellation;
+      prPrepareCancellation = null;
+      cancellation?.controller.abort();
       cancellation?.resolve();
-      set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null });
+      set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareElapsedMs: null, prPrepareError: null });
     },
 
     dismissPrepareError() {
-      set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null });
+      set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareElapsedMs: null, prPrepareError: null });
     },
 
     async relayout() {
@@ -7245,8 +7461,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
  * are pushed into the shared `changedIds` channel so the cards ring exactly them amber, and the
  * affected logic flows fill the hierarchical panel beside the overlay. Same review CONTEXT a
  * `meridian review` artifact carries — only the render surface is main's, not a bespoke graph.
- * Extracted from the store so reviewPrInGraph can run it either directly (no analyze endpoint)
- * or after the streamed PR-head preparation lands.
+ * Extracted from the store so direct preparation and cached resume share one derivation path.
  */
 function applyPrReviewToMap(
   get: () => BlueprintState,
@@ -7278,31 +7493,26 @@ function applyPrReviewToMap(
     reviewFileTicks: liveReviewFileTicks,
     reviewComments: liveReviewComments,
   } = get();
-  if (prSelected === null) {
+  if (
+    prSelected === null
+    || prFiles === null
+    || !prPreparedArtifactCurrent
+    || prReviewComparison === null
+  ) {
     return false;
   }
-  // "Swapped" == the loaded artifact IS the prepared PR-head graph: node locations are already
-  // head-relative, so every base→head remap below must stand down (running it would corrupt an
-  // already-correct coordinate space — the #134 machinery is for the base-graph sync mode only).
-  const swapped = prPreparedArtifactCurrent;
   // Tests reprojection and refresh can re-enter while the presentation composite is current. Strip
   // its prior base-only overlay first so every pass starts from one pure HEAD coordinate space and
   // cannot duplicate tombstones or let their old spans influence HEAD affected-node derivation.
-  const headArtifact = swapped && activeBaseNodeIds.size > 0
+  const headArtifact = activeBaseNodeIds.size > 0
     ? { ...activeArtifact, nodes: activeArtifact.nodes.filter((node) => !activeBaseNodeIds.has(node.id)) }
     : activeArtifact;
   const headIndex = headArtifact === activeArtifact ? activeIndex : buildGraphIndex(headArtifact);
-  // GitHub caps the PR-files endpoint, while line-less changes (fully deleted files, pure renames,
-  // binary edits, and mode-only edits) cannot be reconstructed from patch hunks. A prepared HEAD
-  // artifact carries Git's exact merge-base name-status transaction, so make that inventory the
-  // review's authority and retain GitHub detail only for files the bounded response did include.
-  const exactManifest = swapped ? changedFileManifestFromExtensions(headArtifact.extensions) : null;
-  const reviewPrFiles = exactManifest === null
-    ? (prFiles ?? [])
-    : canonicalPrFiles(prFiles ?? [], headArtifact);
-  const reviewFilesTotal = exactManifest === null
-    ? prFilesTotal
-    : Math.max(prFilesTotal, reviewPrFiles.length + prFilesOutside);
+  // Direct preparation installs its canonical, status-rich done manifest into `prFiles` before the
+  // projection swap. A projection-local extension is only a slice and must never define PR
+  // completeness, even when it happens to mention every currently requested path.
+  const reviewPrFiles = prFiles;
+  const reviewFilesTotal = Math.max(prFilesTotal, reviewPrFiles.length + prFilesOutside);
   const summary = selectedPrSummary(get());
   const context = reviewContextFromPrFiles(
     {
@@ -7312,8 +7522,7 @@ function applyPrReviewToMap(
       scopeId: prFilesUrl,
       files: reviewPrFiles,
     },
-    // Base-side hunks mark base coordinates — right for the boot artifact, wrong for a head graph.
-    { baseSide: !swapped },
+    { baseSide: false },
   );
   // A refresh re-enters this same reviewKey. Carry the in-memory progress directly so drafts made
   // while persistence is unavailable (or while the refresh request is in flight) cannot disappear.
@@ -7328,44 +7537,35 @@ function applyPrReviewToMap(
   const projection = deriveReviewProjection(context, headArtifact, headIndex, {
     // Deleted impact and test classification must use the same exact merge-base Git diff used to
     // build the prepared artifact. The boot graph may represent a newer base tip.
-    baseIndex: swapped ? (prReviewComparison?.index ?? null) : null,
-    baseArtifact: swapped ? (prReviewComparison?.artifact ?? null) : null,
+    baseIndex: prReviewComparison.index,
+    // Causal-flow discovery is two-sided too: base-only flows come from the exact immutable
+    // comparison descriptor, never from whichever base tip happened to boot the renderer.
+    baseArtifact: prReviewComparison.artifact,
     showTests: get().showTests,
   });
   const { review, visibleContext } = projection;
-  const headMatchedFiles = matchAffectedFiles(
+  const reviewedHeadArtifact = headArtifact;
+  const deletedProjection: DeletedNodeProjection = deriveDeletedNodeProjection({
+    headArtifact: reviewedHeadArtifact,
     headIndex,
-    visibleContext.changedFiles.map((file) => file.path),
-  ).matched;
-  const reviewedHeadArtifact =
-    changedRangesFromExtensions(headArtifact.extensions) !== null && !hasPrReviewLineDiff(headArtifact)
-      ? headArtifact
-      : withPrLineDiff(headArtifact, headIndex, visibleContext, headMatchedFiles, prSelected);
-  const deletedProjection: DeletedNodeProjection = swapped && prReviewComparison !== null
-    ? deriveDeletedNodeProjection({
-        headArtifact: reviewedHeadArtifact,
-        headIndex,
-        baseArtifact: prReviewComparison.artifact,
-        baseIndex: prReviewComparison.index,
-        // Compose the COMPLETE PR before the Tests filter. An all-test deletion still needs a
-        // hidden workspace sentinel so the review opens and the Tests toggle can reveal it.
-        context,
-        prFiles: reviewPrFiles,
-      })
-    : emptyDeletedNodeProjection(reviewedHeadArtifact, headIndex);
+    baseArtifact: prReviewComparison.artifact,
+    baseIndex: prReviewComparison.index,
+    // Compose the COMPLETE PR before the Tests filter. An all-test deletion still needs a
+    // hidden workspace sentinel so the review opens and the Tests toggle can reveal it.
+    context,
+    prFiles: reviewPrFiles,
+  });
   const artifact = deletedProjection.artifact;
   const index = deletedProjection.index;
   const visiblePaths = new Set(visibleContext.changedFiles.map((file) => file.path));
   const visibleDeletedFiles = deletedProjection.files.filter((file) => visiblePaths.has(file.path));
-  const headAffected = swapped && prReviewComparison !== null
-    ? preparedHeadAffected(
-        visibleContext,
-        reviewPrFiles,
-        reviewedHeadArtifact,
-        headIndex,
-        deletedProjection.survivingAffectedHeadIds,
-      )
-    : projection.affected;
+  const headAffected = preparedHeadAffected(
+    visibleContext,
+    reviewPrFiles,
+    reviewedHeadArtifact,
+    headIndex,
+    deletedProjection.survivingAffectedHeadIds,
+  );
   const deletedAffected = visibleDeletedFiles.flatMap((file) => file.affected);
   const affected = mergeAffectedNodes(headAffected, deletedAffected);
   const files = mergeDeletedReviewFiles(projection.files, headAffected, visibleDeletedFiles, index);
@@ -7403,36 +7603,21 @@ function applyPrReviewToMap(
   const fileBindings = bindReviewFiles(
     reviewPrFiles,
     headIndex,
-    swapped ? (prReviewComparison?.index ?? null) : null,
+    prReviewComparison.index,
     deletedProjection,
   );
-  // The synchronous review's graph is base-relative while patch kinds are head-relative. Preserve
-  // each file's edit map beside its exact kinds so node spans can be translated before colouring.
-  // A prepared graph instead reads its own authoritative, already-aligned changedSince stamp.
-  const reviewDiffByFile: Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }> = {};
   const reviewDiffLinesByFile: Record<string, ChangedDiffLine[]> = {};
-  if (!swapped) {
-    for (const binding of fileBindings) {
-      if (binding.file.diffComplete !== false && binding.file.edits && binding.file.edits.length > 0) {
-        for (const locFile of binding.headFiles) {
-          reviewDiffByFile[locFile] = { edits: binding.file.edits, kinds: binding.file.kinds ?? [] };
-        }
-      }
-    }
-  }
-  const canonicalDiffLines = swapped ? changedDiffLinesFromExtensions(reviewedHeadArtifact.extensions) : null;
+  const canonicalDiffLines = changedDiffLinesFromExtensions(reviewedHeadArtifact.extensions);
   for (const binding of fileBindings) {
     const rows = valueForReviewAliases(canonicalDiffLines, binding.aliases)
       ?? (binding.file.diffComplete !== false ? binding.file.diffLines : undefined);
     if (!rows || rows.length === 0) continue;
     for (const locFile of binding.aliases) reviewDiffLinesByFile[locFile] = rows;
   }
-  const nodeStatusSources = swapped
-    ? reviewNodeStatusSourcesFromDiff(
-        changedLineKindsFromExtensions(reviewedHeadArtifact.extensions),
-        changedDiffLinesFromExtensions(reviewedHeadArtifact.extensions),
-      )
-    : liveReviewStatusSources(reviewDiffByFile, reviewDiffLinesByFile);
+  const nodeStatusSources = reviewNodeStatusSourcesFromDiff(
+    changedLineKindsFromExtensions(reviewedHeadArtifact.extensions),
+    changedDiffLinesFromExtensions(reviewedHeadArtifact.extensions),
+  );
   // The changed code blocks (hunks ∩ node ranges); repaint main's changed-node channel to THIS PR.
   applyChangedIds(index, affected.map((node) => node.nodeId));
   // Colour each touched CODE BLOCK by its own exact edits: additions-only green, deletions-only red,
@@ -7447,7 +7632,7 @@ function applyPrReviewToMap(
   const changeGroups = computeChangeGroups(artifact.nodes, artifact.edges, visibleContext.changedFiles, review.flows);
   // GitHub's whole-file +N/-M churn per changed file, keyed by node.location.file, for the marker a
   // changed FILE card shows before its name (files aren't coloured; only their touched blocks are).
-  const artifactStats = swapped ? changedLineStatsFromExtensions(reviewedHeadArtifact.extensions) : null;
+  const artifactStats = changedLineStatsFromExtensions(reviewedHeadArtifact.extensions);
   const reviewFileDelta: Record<string, { added: number; deleted: number; status?: PrFileStatus }> = {};
   for (const binding of fileBindings) {
     const fallback = {
@@ -7459,13 +7644,7 @@ function applyPrReviewToMap(
     const delta = canonical ? { ...canonical, status: binding.file.status } : fallback;
     for (const locFile of binding.aliases) reviewFileDelta[locFile] = delta;
   }
-  // ONE source of truth for the line-level changedSince channel (the code panel's </> diff): the
-  // artifact's OWN stamp when it carries one — the prepared PR-head artifact does, computed by the
-  // extract pipeline from the real merge-base git diff, keyed by the extractor's own location.file
-  // paths, with true added/modified/deleted span kinds and no truncation. The client-side join from
-  // the GitHub patch hunks is strictly weaker (suffix-matched paths, "added"-only kinds, and it
-  // silently misses files whenever the server capped the PR file list), so it remains only as the
-  // fallback for a boot artifact that carries no stamp (the synchronous, no-analyze-endpoint path).
+  // The prepared projection's own merge-base diff is the sole line-level authority.
   const reviewedArtifact = artifact;
   // Pre-expand the packages and file modules on the path to each changed file (packages too,
   // else deriveModuleTree never descends to the file — mirrors flowExplorer's
@@ -7486,13 +7665,8 @@ function applyPrReviewToMap(
     invalidateModuleLayout();
     invalidateMinimalLayout();
   }
-  // Capture the head ref + each changed file's real per-line diff (old/new spans + head-relative
-  // added/modified lines), keyed by node.location.file, so opening a changed unit's </> fetches the
-  // PR HEAD of that file and paints exactly its diff — code + highlight that match the PR, not base.
-  // Keyed off the MATCHED node's location.file (same matching that seeds the graph), robust to any
-  // path prefix. This is what makes the fast (synchronous) review show head code without re-extract.
-  // SWAPPED mode carries neither field: node.location is already head-relative, so showCode's
-  // headSpanFor remap must never run — it reads the local head checkout via activeSourceUrl instead.
+  // Comment ranges remain GitHub-API metadata; source and line ownership come only from the
+  // immutable prepared descriptors and their canonical diff extension.
   const reviewCommentRangesByFile: Record<string, LineRange[]> = {};
   for (const binding of fileBindings) {
     const file = binding.file;
@@ -7510,9 +7684,8 @@ function applyPrReviewToMap(
       for (const locFile of binding.headFiles) reviewCommentRangesByFile[locFile] = ranges;
     }
   }
-  // Removed text is parsed from GitHub's patch in HEAD coordinates, so unlike the base→head edit
-  // remap above it is valid in BOTH sync and swapped reviews. Join through the same matched module
-  // path so the code panel can look it up with node.location.file in either graph.
+  // Removed text is parsed from GitHub's patch in HEAD coordinates. Join through the same matched
+  // module path so the code panel can look it up with node.location.file.
   const reviewRemovedByFile: Record<string, { afterNewLine: number; lines: string[] }[]> = {};
   const reviewRemovedTruncatedByFile: Record<string, boolean> = {};
   for (const binding of fileBindings) {
@@ -7528,7 +7701,7 @@ function applyPrReviewToMap(
   const currentSelection = get();
   const loadedRevision = options.reprojecting
     ? currentSelection.prReviewRevision
-    : summary === null ? null : reviewRevision(summary, swapped ? prPreparedHeadSha : null);
+    : summary === null ? null : reviewRevision(summary, prPreparedHeadSha);
   const reviewComments = reconcileReviewLineAnchors(progress.comments, loadedRevision);
   const lineAnchorsInvalidated = reviewComments !== progress.comments;
   const revisionMismatch = options.reprojecting
@@ -7550,28 +7723,26 @@ function applyPrReviewToMap(
     // (beginLensTransition → closeMinimalGraph's soft restore, when re-seeding a swapped review) can
     // swap the boot index back in, so the pair must be re-set together, not left to the prior swap.
     index,
-    prPreparedArtifactCurrent: swapped,
+    prPreparedArtifactCurrent: true,
     review,
     prReviewBlocked: null,
     prReviewed: prSelected,
     prReviewSource: {
       number: prSelected,
       files: reviewPrFiles,
-      // The exact local manifest is complete for this extraction root even when GitHub's response
-      // was capped. Preserve the warning only for the legacy/no-manifest fallback.
-      truncated: exactManifest === null && get().prFilesTruncated,
+      // The direct-prepare name-status manifest is complete for this extraction root.
+      truncated: false,
       total: reviewFilesTotal,
       outside: prFilesOutside,
       suggestedSubdir: get().prFilesSuggestedSubdir,
     },
     prReviewRevision: loadedRevision,
-    // If the head moved during a long extraction, its exact analyzed SHA and the earlier summary/file
+    // If the head moved during a long extraction, its exact prepared SHA and the earlier summary/file
     // snapshot disagree. Surface Refresh immediately instead of pretending those mixed inputs match.
     prReviewStale: revisionMismatch,
-    reviewHeadRef: options.reprojecting
-      ? currentSelection.reviewHeadRef
-      : swapped ? null : summary?.headSha ?? summary?.headRef ?? null,
-    reviewDiffByFile,
+    // Prepared projections and their immutable source descriptor are already HEAD-relative.
+    reviewHeadRef: null,
+    reviewDiffByFile: {},
     reviewDiffLinesByFile,
     reviewBaseNodeIds: deletedProjection.baseSourceNodeIds,
     reviewDeletedNodeIds: deletedProjection.deletedNodeIds,
@@ -7645,18 +7816,40 @@ function applyPrReviewToMap(
   return true;
 }
 
-/** Empty two-sided projection for synchronous reviews and older prepared-review servers. */
-function emptyDeletedNodeProjection(artifact: GraphArtifact, index: GraphIndex): DeletedNodeProjection {
-  return {
-    artifact,
-    index,
-    baseSourceNodeIds: new Set<string>(),
-    deletedNodeIds: new Set<string>(),
-    survivingAffectedHeadIds: new Set<string>(),
-    baseSpanByHeadId: new Map<string, LineRange>(),
-    affected: [],
-    files: [],
-  };
+/** Join exact local diff detail onto the prepare stream's COMPLETE name-status inventory. The
+ * stream controls membership/status/rename identity; projection extensions contribute detail only
+ * and a missing exact body fails closed instead of promoting GitHub's possibly truncated patch. */
+function canonicalPreparedPrFiles(
+  githubFiles: readonly PrChangedFile[],
+  manifest: readonly PreparedChangedFile[],
+  headArtifact: GraphArtifact,
+): PrChangedFile[] {
+  const exactDetail = new Map(
+    canonicalPrFiles(githubFiles, headArtifact)
+      .map((file) => [normalizeReviewFilePath(file.path), file] as const),
+  );
+  const githubDetail = new Map(
+    githubFiles.map((file) => [normalizeReviewFilePath(file.path), file] as const),
+  );
+  return manifest.map((entry) => {
+    const key = normalizeReviewFilePath(entry.path);
+    const exact = exactDetail.get(key);
+    const fallback = githubDetail.get(key);
+    const file: PrChangedFile = {
+      ...(exact ?? fallback ?? {}),
+      path: entry.path,
+      status: entry.status === "deleted" ? "removed" : entry.status,
+      additions: exact?.additions ?? fallback?.additions ?? 0,
+      deletions: exact?.deletions ?? fallback?.deletions ?? 0,
+      diffComplete: exact?.diffComplete === true,
+    };
+    if (entry.status === "renamed") {
+      file.previousPath = entry.previousPath!;
+    } else {
+      delete file.previousPath;
+    }
+    return file;
+  });
 }
 
 /** HEAD affected nodes without fabricated pure-deletion seams. Paintable local kinds identify rows
@@ -7845,7 +8038,7 @@ function reconcileReviewLineAnchors(comments: ReviewComment[], revision: PrRevie
   return changed ? next : comments;
 }
 
-/** The selected PR's summary row (its refs feed the analyze request); null when unavailable.
+/** The selected PR's summary row (its refs feed the direct prepare request); null when unavailable.
  * An explicit number lets URL restoration resolve a row before selecting it. */
 export function selectedPrSummary(state: BlueprintState, number: number | null = state.prSelected): PrSummary | null {
   if (number === null) {
@@ -7855,23 +8048,24 @@ export function selectedPrSummary(state: BlueprintState, number: number | null =
   return [...(prsList.open ?? []), ...(prsList.closed ?? [])].find((pr) => pr.number === number) ?? prExtraSummaries[number] ?? null;
 }
 
-/** End either review mode through the existing baseline restore. Sync mode normally has no saved
- * pair, so selectPr seeds the immutable boot pair just for this immediate end-session restore. */
+/** End either a prepared or explicit base review without retaining another graph pair. */
 function restoreSelectedPrReview(
   get: () => BlueprintState,
-  set: (partial: Partial<BlueprintState>) => void,
-  bootBaseline: PrReviewBaseline,
-  restoreBaseline: () => boolean,
+  restore: (options?: { endSession?: boolean }) => boolean,
 ): boolean {
-  const state = get();
-  if (state.prReviewed !== null && state.prReviewBaseline === null) {
-    set({ prReviewBaseline: bootBaseline });
-  }
-  return restoreBaseline();
+  return get().prReviewed !== null && restore();
 }
 
 function prepareErrorMessage(error: unknown): string {
   return error instanceof Error && error.message.length > 0 ? error.message : "PR analysis failed.";
+}
+
+function splitGitHubRepository(repository: string): { owner: string; repo: string } {
+  const parts = repository.split("/");
+  if (parts.length !== 2 || parts.some((part) => part.length === 0)) {
+    throw new Error("invalid GitHub repository identity in renderer boot configuration");
+  }
+  return { owner: parts[0]!, repo: parts[1]! };
 }
 
 /** Route an in-place expansion relayout to whichever module surface is showing: the minimal-graph
@@ -7881,6 +8075,43 @@ function relayoutActiveModuleSurface(get: () => BlueprintState, activity?: Layou
   return get().minimalSeedIds.length > 0
     ? get().minimalRelayout(activity)
     : get().moduleRelayout(activity);
+}
+
+type ReleasedModuleScene = Pick<
+  BlueprintState,
+  | "moduleRfNodes"
+  | "moduleRfEdges"
+  | "moduleSemanticLayers"
+  | "moduleEffectiveFocus"
+  | "moduleLayoutStatus"
+  | "moduleLayoutActivity"
+>;
+
+/** Drop only derived React Flow data; canonical navigation/selection remains available to rebuild. */
+function releasedModuleScene(): ReleasedModuleScene {
+  return {
+    moduleRfNodes: [],
+    moduleRfEdges: [],
+    moduleSemanticLayers: [],
+    moduleEffectiveFocus: null,
+    moduleLayoutStatus: "idle",
+    moduleLayoutActivity: null,
+  };
+}
+
+type ReleasedLogicScene = Pick<
+  BlueprintState,
+  "logicRfNodes" | "logicRfEdges" | "logicLayoutStatus" | "logicLayoutActivity"
+>;
+
+/** The logic root/trails remain canonical; these ELK/React Flow arrays are safe to re-derive. */
+function releasedLogicScene(): ReleasedLogicScene {
+  return {
+    logicRfNodes: [],
+    logicRfEdges: [],
+    logicLayoutStatus: "idle",
+    logicLayoutActivity: null,
+  };
 }
 
 /**

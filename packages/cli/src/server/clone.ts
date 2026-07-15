@@ -41,12 +41,29 @@ export interface ResolvedSource {
 export function parseGitHubSource(value: string): string {
   const trimmed = value.trim();
   if (OWNER_REPO.test(trimmed)) {
+    // Keep this spelling stable: repository and artifact cache keys created before the shared
+    // mirror layer include this URL verbatim. Mirror-only canonicalization lives below.
     return `https://github.com/${trimmed.replace(/\.git$/, "")}.git`;
   }
   if (/^https?:\/\//i.test(trimmed)) {
     return validateHttpGitUrl(trimmed);
   }
   throw new WebError(400, "enter owner/repo or an https git URL (ssh, file://, and shell characters are rejected)");
+}
+
+/**
+ * Ambient GitHub credentials are host-scoped: a user-entered GitLab or arbitrary HTTPS URL must
+ * never receive GITHUB_TOKEN/GH_TOKEN/session credentials. A token explicitly supplied with that
+ * generate request may target another HTTPS host (for GitHub Enterprise, GitLab, and similar).
+ */
+export function gitTokenForRemote(remoteUrl: string, token: string | undefined, explicit = false): string | undefined {
+  if (!token) return undefined;
+  const url = new URL(remoteUrl);
+  if (url.protocol !== "https:") {
+    if (explicit) throw new WebError(400, "a repository token can only be sent over https");
+    return undefined;
+  }
+  return url.hostname.toLowerCase() === "github.com" || explicit ? token : undefined;
 }
 
 function validateHttpGitUrl(value: string): string {
@@ -65,6 +82,31 @@ function validateHttpGitUrl(value: string): string {
   if (url.username || url.password) {
     throw new WebError(400, "do not embed credentials in the URL; use the token field");
   }
+  return url.toString();
+}
+
+/**
+ * GitHub repository paths are case-insensitive, and its clone endpoint accepts the web URL,
+ * trailing-slash, and `.git` spellings as the same project. Collapse only that well-known host so
+ * shared mirrors converge without changing the spelling used by the persistent checkout and
+ * artifact caches, or the identity of case-sensitive Git hosts.
+ */
+export function canonicalRepositoryUrl(remoteUrl: string): string {
+  return canonicalGitHubCloneUrl(new URL(remoteUrl));
+}
+
+function canonicalGitHubCloneUrl(url: URL): string {
+  if (url.hostname.toLowerCase() !== "github.com" || url.search || url.hash) {
+    return url.toString();
+  }
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length !== 2) return url.toString();
+  const owner = parts[0];
+  const repository = parts[1]?.replace(/\.git$/i, "");
+  if (!owner || !repository || !OWNER_REPO.test(`${owner}/${repository}`)) {
+    return url.toString();
+  }
+  url.pathname = `/${owner.toLowerCase()}/${repository.toLowerCase()}.git`;
   return url.toString();
 }
 

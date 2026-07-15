@@ -1,0 +1,2097 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src 'unsafe-inline' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Meridian Parallel PR Inspection Architecture</title>
+<style>:root{color-scheme:light dark;background:light-dark(rgb(255 255 255), rgb(24 24 24))}html,body{margin:0}body{box-sizing:border-box;padding:1rem;background:inherit}iframe{display:block;width:100%;max-width:736px;height:calc(100vh - 2rem);margin:0 auto;border:0}</style>
+</head>
+<body>
+<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="Meridian Parallel PR Inspection Architecture" srcdoc="&lt;!doctype html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;
+&lt;meta name=&quot;referrer&quot; content=&quot;no-referrer&quot;&gt;
+&lt;meta http-equiv=&quot;Content-Security-Policy&quot; content=&quot;default-src &#x27;none&#x27;; script-src &#x27;unsafe-inline&#x27; &#x27;unsafe-eval&#x27; &#x27;wasm-unsafe-eval&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src &#x27;unsafe-inline&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src &#x27;none&#x27;; object-src &#x27;none&#x27;; base-uri &#x27;none&#x27;; form-action &#x27;none&#x27;&quot;&gt;
+&lt;title&gt;Meridian Parallel PR Inspection Architecture&lt;/title&gt;
+&lt;style&gt;:root {
+  color-scheme: light dark;
+  background-color: var(--background) !important;
+
+  /* Agent-facing contract; keep in sync with SKILL.md. */
+  --background: light-dark(rgb(255 255 255), rgb(24 24 24));
+  --foreground: light-dark(rgb(26 28 31), rgb(255 255 255));
+  --card: color-mix(in oklab, var(--foreground) 5%, transparent);
+  --card-foreground: var(--foreground);
+  --popover: light-dark(rgb(255 255 255), rgb(45 45 45));
+  --popover-foreground: var(--foreground);
+  --primary: light-dark(rgb(51 156 255), rgb(131 195 255));
+  --primary-foreground: light-dark(rgb(255 255 255), rgb(13 13 13));
+  --secondary: light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%));
+  --secondary-foreground: var(--foreground);
+  --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --muted-foreground: light-dark(
+    rgb(26 28 31 / 49.4%),
+    rgb(255 255 255 / 49.8%)
+  );
+  --accent: light-dark(rgb(229 242 255), rgb(13 39 63));
+  --accent-foreground: var(--primary);
+  --destructive: light-dark(rgb(226 85 7), rgb(255 133 73));
+  --border: light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%));
+  --input: light-dark(
+    rgb(26 28 31 / 11.8%),
+    color-mix(in oklab, rgb(0 0 0) 10%, transparent)
+  );
+  --ring: light-dark(rgb(51 156 255), rgb(131 195 255 / 76%));
+  --font-size-base: 14px;
+  --viz-series-1: var(--primary);
+  --viz-series-2: light-dark(rgb(243 136 59), rgb(245 154 86));
+  --viz-series-3: light-dark(rgb(93 201 119), rgb(116 213 139));
+  --viz-series-4: light-dark(rgb(235 119 177), rgb(240 143 192));
+  --viz-series-5: light-dark(rgb(155 121 236), rgb(170 145 239));
+  --viz-series-6: light-dark(rgb(58 185 177), rgb(90 203 194));
+
+  /* Internal implementation variables; not part of the agent contract. */
+  --font-sans: -apple-system, system-ui, &quot;Segoe UI&quot;, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;,
+    monospace;
+  --font-size-normal: max(11px, var(--font-size-base));
+  --font-size-tooltip: calc(var(--font-size-base) - 1px);
+  --font-size-small: max(11px, calc(var(--font-size-base) - 2px));
+  --font-size-h1: calc(var(--font-size-normal) * 1.7142857143);
+  --font-size-h2: calc(var(--font-size-normal) * 1.4285714286);
+  --font-size-h3: calc(var(--font-size-normal) * 1.2857142857);
+  --font-weight-normal: 430;
+  --font-weight-medium: 500;
+  --line-height-normal: calc(var(--font-size-normal) * 1.5);
+  --line-height-tooltip: calc(var(--font-size-tooltip) * 1.4285714286);
+  --line-height-small: calc(var(--font-size-small) + 4px);
+  --radius: 12.5px;
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-2xl: calc(var(--radius) * 1.6);
+  --radius-full: 9999px;
+  --shadow-sm: 0 1px 2px -1px rgb(0 0 0 / 8%);
+  --checkmark-image: url(&quot;data:image/svg+xml,%3Csvg xmlns=&#x27;http://www.w3.org/2000/svg&#x27; viewBox=&#x27;0 0 17 17&#x27;%3E%3Cpath d=&#x27;M12.8961 3.64101C13.1297 3.41418 13.4984 3.37523 13.7779 3.56581C14.0571 3.75635 14.1554 4.11331 14.0299 4.41347L13.9615 4.53847L7.71151 13.7045C7.59411 13.8767 7.4063 13.9877 7.19881 14.0072C6.99136 14.0267 6.78564 13.9533 6.63826 13.806L2.88826 10.056L2.79842 9.9457C2.6192 9.67407 2.64927 9.30496 2.88826 9.06581C3.12738 8.82669 3.49647 8.79676 3.76815 8.97597L3.8785 9.06581L7.03084 12.2182L12.8053 3.74941L12.8961 3.64101Z&#x27;/%3E%3C/svg%3E&quot;);
+
+  /* Legacy aliases; not part of the current agent contract. */
+  --viz-bg: transparent;
+  --viz-panel: var(--card);
+  --viz-border: var(--border);
+  --viz-text: var(--foreground);
+  --viz-muted: var(--muted-foreground);
+  --viz-accent: var(--primary);
+  --viz-accent-text: var(--primary-foreground);
+  --viz-accent-bg: var(--accent);
+  --viz-font-size: var(--font-size-base);
+  --viz-warning: var(--destructive);
+  --color-background-primary: var(--background);
+  --color-text-primary: var(--foreground);
+  --color-border-secondary: var(--border);
+}
+
+:root[data-theme=&quot;light&quot;] {
+  color-scheme: light;
+}
+
+:root[data-theme=&quot;dark&quot;] {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html &gt; body {
+  margin: 0;
+  padding: 5px;
+  color: var(--foreground);
+  background: transparent !important;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-normal);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+}
+
+a {
+  color: color-mix(in srgb, var(--viz-accent) 80%, var(--viz-text) 20%);
+  cursor: pointer;
+  font-weight: var(--viz-font-weight-medium);
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+
+a:is(:hover, :focus-visible) {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 0.5px;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin-block: 0;
+}
+
+h1 {
+  font-size: var(--font-size-h1);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h2 {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h3,
+h4,
+h5,
+h6 {
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+b,
+strong,
+th {
+  font-weight: var(--font-weight-medium);
+}
+
+code:not(pre code) {
+  display: inline;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  word-break: break-word;
+}
+
+#widget {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  background: transparent !important;
+}
+
+.card {
+  min-width: 0;
+  padding: 12px;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  border-radius: var(--radius-2xl);
+  corner-shape: superellipse(1.5);
+  color: var(--card-foreground);
+  background: var(--card);
+}
+
+#widget &gt; :not(.card) {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  left: 0;
+  width: max-content;
+  max-width: min(
+    20rem,
+    var(--tooltip-available-width, calc(100vw - 10px)),
+    calc(100vw - 10px)
+  );
+  max-height: min(
+    var(--tooltip-available-height, calc(100vh - 10px)),
+    calc(100vh - 10px)
+  );
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--popover-foreground);
+  background: var(--popover);
+  box-shadow: none;
+  font-size: var(--font-size-tooltip);
+  line-height: var(--line-height-tooltip);
+  overflow-wrap: break-word;
+  white-space: normal;
+  pointer-events: none;
+  user-select: none;
+}
+
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(180px, 24%), 1fr));
+  gap: 10px;
+}
+
+.viz-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.viz-stat-value {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+.viz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.viz-badge {
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-weight: var(--font-weight-medium);
+}
+
+small,
+.text-small,
+.viz-badge {
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-small);
+}
+
+.text-muted {
+  color: var(--muted-foreground);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.viz-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.viz-controls &gt; .form-label {
+  display: grid;
+  min-width: min(100%, 260px);
+  flex: 1 1 280px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-bottom: 0;
+}
+
+.viz-controls &gt; .form-label &gt; :is(.form-control, .form-range, .form-select) {
+  grid-column: 1 / -1;
+}
+
+.btn,
+.form-check-input,
+.form-control,
+.form-range,
+.form-select {
+  font: inherit;
+}
+
+.btn {
+  appearance: button;
+  display: inline-flex;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0 8px;
+  -webkit-app-region: no-drag;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: var(--cursor-interaction, pointer);
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.btn:is(.btn-block, .viz-tile) {
+  inline-size: 100%;
+}
+
+.btn.viz-tile {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+a.btn {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn-primary {
+  border-color: transparent;
+  color: var(--primary-foreground);
+  background: var(--foreground);
+  background-clip: padding-box;
+}
+
+.btn-primary .text-muted {
+  color: color-mix(in srgb, var(--primary-foreground) 50%, transparent);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 80%, transparent);
+  background-clip: padding-box;
+}
+
+.btn-ghost {
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+
+.btn-ghost:not(:disabled):hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+[data-lucide] {
+  stroke-width: 1.6;
+}
+
+.form-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--foreground);
+}
+
+.form-control {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background: var(--secondary);
+}
+
+.form-control::placeholder {
+  color: var(--muted-foreground);
+}
+
+.form-control[type=&quot;file&quot;] {
+  padding: 0;
+  overflow: hidden;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control[type=&quot;file&quot;]::file-selector-button {
+  min-height: 26px;
+  margin-right: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--input);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: inherit;
+  font: inherit;
+}
+
+.form-control[type=&quot;file&quot;]:not(:disabled):hover::file-selector-button {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-control-color[type=&quot;color&quot;] {
+  width: 40px;
+  height: 28px;
+  padding: 3px;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch {
+  border: 0;
+  border-radius: calc(var(--radius-lg) - 4px);
+  corner-shape: superellipse(1.5);
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 72px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.form-control:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-control:disabled,
+.form-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.form-select {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 32px 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background-color: var(--secondary);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+    linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px;
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-select:not(:disabled):hover {
+  background-color: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-select:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-check {
+  display: flex;
+  min-height: 20px;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-check-input {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid var(--input);
+  color: var(--primary-foreground);
+  background-color: transparent;
+  cursor: var(--cursor-interaction, default);
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    box-shadow 150ms;
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;] {
+  border-color: var(--input);
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background-color: var(--secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input:not(:disabled):not(:checked):hover {
+  background-color: var(--card);
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;]:checked {
+  border-color: var(--primary);
+  background-color: var(--primary);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input[type=&quot;checkbox&quot;]:checked::before {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--primary-foreground);
+  content: &quot;&quot;;
+  mask: var(--checkmark-image) center / 12px 12px no-repeat;
+}
+
+.form-check-input[type=&quot;radio&quot;] {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+}
+
+.form-check-input[type=&quot;radio&quot;]:checked {
+  border: 2px solid var(--primary);
+  background:
+    radial-gradient(circle, var(--primary-foreground) 0 2.5px, transparent 3px),
+    var(--primary);
+}
+
+.form-check:not(.form-switch) .form-check-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled {
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+}
+
+.form-switch .form-check-input:disabled,
+.form-switch .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-check-label {
+  color: var(--foreground);
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-switch .form-check-input {
+  position: relative;
+  width: 32px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  box-shadow: none;
+  transition: background-color 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 1px solid light-dark(var(--primary-foreground), var(--foreground));
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+  box-shadow: var(--shadow-sm);
+  content: &quot;&quot;;
+  transform: translate(2px, -50%);
+  transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input:checked {
+  background: var(--primary);
+}
+
+.form-switch .form-check-input:checked::before {
+  transform: translate(14px, -50%);
+}
+
+.form-switch .form-check-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.form-range {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 28px;
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  outline: none;
+  border: 0;
+  accent-color: var(--primary);
+  background: linear-gradient(
+      color-mix(in srgb, var(--foreground) 7%, transparent),
+      color-mix(in srgb, var(--foreground) 7%, transparent)
+    )
+    center / 100% 2px no-repeat;
+}
+
+.form-range::-webkit-slider-runnable-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-webkit-slider-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range::-moz-range-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-moz-range-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.btn:not(.btn-primary, .viz-tile):is(
+    [aria-pressed=&quot;true&quot;],
+    [aria-selected=&quot;true&quot;],
+    .is-selected
+  ) {
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+
+.btn.viz-tile:is([aria-pressed=&quot;true&quot;], [aria-selected=&quot;true&quot;], .is-selected) {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+#widget &gt; svg {
+  width: 100%;
+}
+
+.text-warning,
+.text-destructive {
+  color: var(--destructive);
+}
+
+html&gt;body{padding:0}&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div id=&quot;meridian-parallel-report&quot;&gt;
+  &lt;style&gt;
+    #meridian-parallel-report {
+      color: var(--foreground);
+      width: 100%;
+    }
+
+    #meridian-parallel-report * {
+      box-sizing: border-box;
+    }
+
+    #meridian-parallel-report .report-stack,
+    #meridian-parallel-report .section-stack,
+    #meridian-parallel-report .diagram-stack {
+      display: grid;
+      gap: 18px;
+    }
+
+    #meridian-parallel-report .summary-grid,
+    #meridian-parallel-report .status-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    #meridian-parallel-report .status-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    #meridian-parallel-report .viz-stat-value {
+      overflow-wrap: anywhere;
+    }
+
+    #meridian-parallel-report .panel[hidden] {
+      display: none;
+    }
+
+    #meridian-parallel-report .section-stack &gt; h2,
+    #meridian-parallel-report .section-stack &gt; h3 {
+      margin: 0;
+    }
+
+    #meridian-parallel-report .decision-callout {
+      margin: 0;
+      padding: 12px 14px;
+      border-left: 3px solid var(--primary);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      background: color-mix(in srgb, var(--primary) 7%, transparent);
+    }
+
+    #meridian-parallel-report .status-note {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: color-mix(in srgb, var(--card) 92%, transparent);
+    }
+
+    #meridian-parallel-report .status-note p {
+      margin: 0;
+    }
+
+    #meridian-parallel-report .status-note .swatch {
+      margin-top: 4px;
+    }
+
+    #meridian-parallel-report .diagram-block {
+      display: grid;
+      gap: 9px;
+    }
+
+    #meridian-parallel-report .diagram-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    #meridian-parallel-report .diagram-heading h2,
+    #meridian-parallel-report .diagram-heading p {
+      margin: 0;
+    }
+
+    #meridian-parallel-report .architecture-svg {
+      width: 100%;
+      height: auto;
+      display: block;
+      color: var(--foreground);
+    }
+
+    #meridian-parallel-report .architecture-svg .node {
+      fill: color-mix(in srgb, var(--card) 92%, transparent);
+      stroke: var(--border);
+      stroke-width: 1.5;
+    }
+
+    #meridian-parallel-report .architecture-svg .node-current {
+      fill: color-mix(in srgb, var(--destructive) 11%, var(--card));
+      stroke: color-mix(in srgb, var(--destructive) 55%, var(--border));
+      stroke-width: 1.5;
+    }
+
+    #meridian-parallel-report .architecture-svg .node-identity {
+      fill: color-mix(in srgb, var(--viz-series-1) 14%, var(--card));
+      stroke: color-mix(in srgb, var(--viz-series-1) 60%, var(--border));
+      stroke-width: 1.5;
+    }
+
+    #meridian-parallel-report .architecture-svg .node-cache {
+      fill: color-mix(in srgb, var(--viz-series-2) 14%, var(--card));
+      stroke: color-mix(in srgb, var(--viz-series-2) 60%, var(--border));
+      stroke-width: 1.5;
+    }
+
+    #meridian-parallel-report .architecture-svg .node-worker {
+      fill: color-mix(in srgb, var(--viz-series-3) 14%, var(--card));
+      stroke: color-mix(in srgb, var(--viz-series-3) 60%, var(--border));
+      stroke-width: 1.5;
+    }
+
+    #meridian-parallel-report .architecture-svg .node-disk {
+      fill: color-mix(in srgb, var(--viz-series-4) 14%, var(--card));
+      stroke: color-mix(in srgb, var(--viz-series-4) 60%, var(--border));
+      stroke-width: 1.5;
+    }
+
+    #meridian-parallel-report .architecture-svg .lane {
+      fill: none;
+      stroke: var(--border);
+      stroke-width: 1;
+      stroke-dasharray: 4 5;
+    }
+
+    #meridian-parallel-report .architecture-svg .flow,
+    #meridian-parallel-report .architecture-svg .flow-identity,
+    #meridian-parallel-report .architecture-svg .flow-cache,
+    #meridian-parallel-report .architecture-svg .flow-disk {
+      fill: none;
+      stroke: var(--muted-foreground);
+      stroke-width: 1.8;
+      marker-end: url(#mpr-arrow-muted);
+    }
+
+    #meridian-parallel-report .architecture-svg .flow-identity {
+      stroke: var(--viz-series-1);
+      marker-end: url(#mpr-arrow-identity);
+    }
+
+    #meridian-parallel-report .architecture-svg .flow-cache {
+      stroke: var(--viz-series-2);
+      marker-end: url(#mpr-arrow-cache);
+    }
+
+    #meridian-parallel-report .architecture-svg .flow-disk {
+      stroke: var(--viz-series-4);
+      marker-end: url(#mpr-arrow-disk);
+    }
+
+    #meridian-parallel-report .architecture-svg .label {
+      fill: var(--foreground);
+      font-size: var(--font-size-base);
+      font-weight: 500;
+      text-anchor: middle;
+    }
+
+    #meridian-parallel-report .architecture-svg .sub-label,
+    #meridian-parallel-report .architecture-svg .annotation {
+      fill: var(--muted-foreground);
+      font-size: calc(var(--font-size-base) * 0.81);
+      font-weight: 400;
+      text-anchor: middle;
+    }
+
+    #meridian-parallel-report .architecture-svg .annotation-start {
+      text-anchor: start;
+    }
+
+    #meridian-parallel-report .legend {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    #meridian-parallel-report .legend-item,
+    #meridian-parallel-report .priority-cell {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    #meridian-parallel-report .swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      flex: 0 0 auto;
+      background: var(--muted-foreground);
+    }
+
+    #meridian-parallel-report .swatch.identity { background: var(--viz-series-1); }
+    #meridian-parallel-report .swatch.cache { background: var(--viz-series-2); }
+    #meridian-parallel-report .swatch.worker { background: var(--viz-series-3); }
+    #meridian-parallel-report .swatch.disk { background: var(--viz-series-4); }
+    #meridian-parallel-report .swatch.risk { background: var(--destructive); }
+
+    #meridian-parallel-report .mobile-flow {
+      display: none;
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      gap: 0;
+    }
+
+    #meridian-parallel-report .mobile-flow li {
+      position: relative;
+      padding: 10px 8px 10px 18px;
+      border-left: 2px solid var(--border);
+    }
+
+    #meridian-parallel-report .mobile-flow li::before {
+      content: &quot;&quot;;
+      position: absolute;
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      left: -5px;
+      top: 16px;
+      background: var(--viz-series-1);
+    }
+
+    #meridian-parallel-report .report-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    #meridian-parallel-report .report-table th,
+    #meridian-parallel-report .report-table td {
+      text-align: left;
+      vertical-align: top;
+      padding: 11px 9px;
+      border-bottom: 1px solid var(--border);
+      overflow-wrap: anywhere;
+    }
+
+    #meridian-parallel-report .report-table th {
+      color: var(--muted-foreground);
+      font-weight: 500;
+    }
+
+    #meridian-parallel-report .report-table code {
+      white-space: normal;
+    }
+
+    #meridian-parallel-report .status-table th:first-child,
+    #meridian-parallel-report .status-table td:first-child {
+      width: 24%;
+    }
+
+    #meridian-parallel-report .status-table th:nth-child(2),
+    #meridian-parallel-report .status-table td:nth-child(2) {
+      width: 110px;
+    }
+
+    #meridian-parallel-report .reasoning-table th:first-child,
+    #meridian-parallel-report .reasoning-table td:first-child {
+      width: 20%;
+    }
+
+    #meridian-parallel-report .reasoning-table th:nth-child(2),
+    #meridian-parallel-report .reasoning-table td:nth-child(2) {
+      width: 25%;
+    }
+
+    #meridian-parallel-report .state-table th:first-child,
+    #meridian-parallel-report .state-table td:first-child {
+      width: 24%;
+    }
+
+    #meridian-parallel-report .implementation-table th:first-child,
+    #meridian-parallel-report .implementation-table td:first-child {
+      width: 86px;
+    }
+
+    #meridian-parallel-report .gate-table th:first-child,
+    #meridian-parallel-report .gate-table td:first-child {
+      width: 25%;
+    }
+
+    #meridian-parallel-report .decision-list {
+      margin: 0;
+      padding-left: 19px;
+      display: grid;
+      gap: 7px;
+    }
+
+    #meridian-parallel-report .contract-block {
+      margin: 0;
+      padding: 14px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: color-mix(in srgb, var(--card) 88%, var(--muted));
+      color: var(--foreground);
+      font-size: calc(var(--font-size-base) * 0.86);
+      line-height: 1.55;
+      tab-size: 2;
+    }
+
+    #meridian-parallel-report .contract-block code {
+      white-space: pre;
+    }
+
+    #meridian-parallel-report .roadmap {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 14px;
+      counter-reset: phase;
+    }
+
+    #meridian-parallel-report .roadmap li {
+      position: relative;
+      padding-top: 24px;
+      counter-increment: phase;
+    }
+
+    #meridian-parallel-report .roadmap li::before {
+      content: counter(phase);
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      color: var(--primary-foreground);
+      background: var(--primary);
+      font-size: calc(var(--font-size-base) * 0.82);
+      font-weight: 500;
+    }
+
+    #meridian-parallel-report .roadmap li:not(:last-child)::after {
+      content: &quot;&quot;;
+      position: absolute;
+      top: 9px;
+      left: 24px;
+      right: -8px;
+      height: 1px;
+      background: var(--border);
+    }
+
+    #meridian-parallel-report .roadmap h3,
+    #meridian-parallel-report .roadmap p {
+      margin: 0;
+    }
+
+    #meridian-parallel-report .roadmap p {
+      margin-top: 5px;
+    }
+
+    @media (max-width: 760px) {
+      #meridian-parallel-report .summary-grid,
+      #meridian-parallel-report .status-grid {
+        grid-template-columns: 1fr;
+      }
+
+      #meridian-parallel-report .roadmap {
+        grid-template-columns: 1fr;
+      }
+
+      #meridian-parallel-report .roadmap li:not(:last-child)::after {
+        top: 24px;
+        bottom: -14px;
+        left: 9px;
+        right: auto;
+        width: 1px;
+        height: auto;
+      }
+
+      #meridian-parallel-report .report-table,
+      #meridian-parallel-report .report-table tbody,
+      #meridian-parallel-report .report-table tr,
+      #meridian-parallel-report .report-table td {
+        display: block;
+        width: 100% !important;
+      }
+
+      #meridian-parallel-report .report-table thead {
+        display: none;
+      }
+
+      #meridian-parallel-report .report-table tr {
+        padding: 10px 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      #meridian-parallel-report .report-table td {
+        border: 0;
+        padding: 4px 0;
+      }
+
+      #meridian-parallel-report .report-table td::before {
+        content: attr(data-label);
+        display: block;
+        color: var(--muted-foreground);
+        font-size: calc(var(--font-size-base) * 0.82);
+        margin-bottom: 2px;
+      }
+
+      #meridian-parallel-report .architecture-svg {
+        display: none;
+      }
+
+      #meridian-parallel-report .mobile-flow {
+        display: grid;
+      }
+    }
+  &lt;/style&gt;
+
+  &lt;div class=&quot;report-stack&quot;&gt;
+    &lt;div class=&quot;summary-grid&quot; aria-label=&quot;Architecture summary&quot;&gt;
+      &lt;div class=&quot;card viz-stat&quot;&gt;
+        &lt;div class=&quot;text-muted&quot;&gt;Service contract&lt;/div&gt;
+        &lt;div class=&quot;viz-stat-value&quot;&gt;Two-sided prepare&lt;/div&gt;
+        &lt;div class=&quot;text-small&quot;&gt;Strict v1 NDJSON publishes exact HEAD and merge-base projection descriptors&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;card viz-stat&quot;&gt;
+        &lt;div class=&quot;text-muted&quot;&gt;Graph memory&lt;/div&gt;
+        &lt;div class=&quot;viz-stat-value&quot;&gt;Projection-only&lt;/div&gt;
+        &lt;div class=&quot;text-small&quot;&gt;No full-graph route or browser hydration; every cache has a charged bound&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;card viz-stat&quot;&gt;
+        &lt;div class=&quot;text-muted&quot;&gt;Delivery status&lt;/div&gt;
+        &lt;div class=&quot;viz-stat-value&quot;&gt;Cutover core implemented&lt;/div&gt;
+        &lt;div class=&quot;text-small&quot;&gt;Latest-main reconciliation and final full-suite validation remain in progress&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+
+    &lt;div class=&quot;viz-controls&quot; role=&quot;tablist&quot; aria-label=&quot;Report view&quot;&gt;
+      &lt;button class=&quot;btn btn-primary&quot; type=&quot;button&quot; role=&quot;tab&quot; aria-selected=&quot;true&quot; aria-controls=&quot;mpr-status&quot; id=&quot;mpr-tab-status&quot; data-panel=&quot;status&quot;&gt;Status&lt;/button&gt;
+      &lt;button class=&quot;btn&quot; type=&quot;button&quot; role=&quot;tab&quot; aria-selected=&quot;false&quot; aria-controls=&quot;mpr-architecture&quot; id=&quot;mpr-tab-architecture&quot; data-panel=&quot;architecture&quot;&gt;Architecture&lt;/button&gt;
+      &lt;button class=&quot;btn&quot; type=&quot;button&quot; role=&quot;tab&quot; aria-selected=&quot;false&quot; aria-controls=&quot;mpr-reasoning&quot; id=&quot;mpr-tab-reasoning&quot; data-panel=&quot;reasoning&quot;&gt;Reasoning&lt;/button&gt;
+      &lt;button class=&quot;btn&quot; type=&quot;button&quot; role=&quot;tab&quot; aria-selected=&quot;false&quot; aria-controls=&quot;mpr-contract&quot; id=&quot;mpr-tab-contract&quot; data-panel=&quot;contract&quot;&gt;API &amp;amp; state&lt;/button&gt;
+      &lt;button class=&quot;btn&quot; type=&quot;button&quot; role=&quot;tab&quot; aria-selected=&quot;false&quot; aria-controls=&quot;mpr-implementation&quot; id=&quot;mpr-tab-implementation&quot; data-panel=&quot;implementation&quot;&gt;Plan &amp;amp; gates&lt;/button&gt;
+    &lt;/div&gt;
+
+    &lt;section class=&quot;panel section-stack&quot; id=&quot;mpr-status&quot; role=&quot;tabpanel&quot; aria-labelledby=&quot;mpr-tab-status&quot;&gt;
+      &lt;h2&gt;Recommended cutover&lt;/h2&gt;
+      &lt;p class=&quot;decision-callout&quot;&gt;&lt;strong&gt;Decision:&lt;/strong&gt; make each inspection an immutable, cancelable job and keep only bounded caches around it. A request prepares two exact revisions, persists projection-ready artifacts, and returns descriptors. The web parent and browser never own the complete graph.&lt;/p&gt;
+
+      &lt;div class=&quot;status-grid&quot; aria-label=&quot;Current delivery checkpoints&quot;&gt;
+        &lt;div class=&quot;status-note&quot;&gt;
+          &lt;span class=&quot;swatch disk&quot; aria-hidden=&quot;true&quot;&gt;&lt;/span&gt;
+          &lt;p&gt;&lt;strong&gt;Implemented on the cutover branch&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;Shared mirrors, isolated worktrees, bounded extraction, singleflight/cancellation, disk-backed artifacts, projection v2, and bounded renderer caches.&lt;/span&gt;&lt;/p&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;status-note&quot; data-finalize=&quot;latest-main-reconciliation&quot;&gt;
+          &lt;span class=&quot;swatch risk&quot; aria-hidden=&quot;true&quot;&gt;&lt;/span&gt;
+          &lt;p&gt;&lt;strong&gt;In progress: reconcile latest main &lt;code&gt;01c9044&lt;/code&gt;&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;Merge #222 synthetic-execution capabilities and #223 two-sided changed-file behavior without restoring full-graph state.&lt;/span&gt;&lt;/p&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;status-note&quot;&gt;
+          &lt;span class=&quot;swatch identity&quot; aria-hidden=&quot;true&quot;&gt;&lt;/span&gt;
+          &lt;p&gt;&lt;strong&gt;Strict contract, no fallback&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;&lt;code&gt;POST /api/pr/prepare&lt;/code&gt; is the only PR preparation route. Unversioned, HEAD-only, graph-id-only, and nullable comparison responses are rejected.&lt;/span&gt;&lt;/p&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;status-note&quot; data-finalize=&quot;full-suite-validation&quot;&gt;
+          &lt;span class=&quot;swatch risk&quot; aria-hidden=&quot;true&quot;&gt;&lt;/span&gt;
+          &lt;p&gt;&lt;strong&gt;Pending: final validation evidence&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;Focused suites are part of implementation; the reconciled full CLI/renderer suite, build, and end-to-end gates must pass before rollout.&lt;/span&gt;&lt;/p&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+
+      &lt;table class=&quot;report-table status-table&quot;&gt;
+        &lt;thead&gt;
+          &lt;tr&gt;
+            &lt;th&gt;Capability&lt;/th&gt;
+            &lt;th&gt;Status&lt;/th&gt;
+            &lt;th&gt;Result&lt;/th&gt;
+          &lt;/tr&gt;
+        &lt;/thead&gt;
+        &lt;tbody&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Capability&quot;&gt;&lt;strong&gt;Direct PR preparation&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Status&quot;&gt;&lt;span class=&quot;priority-cell&quot;&gt;&lt;span class=&quot;swatch identity&quot;&gt;&lt;/span&gt;Cutover&lt;/span&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Result&quot;&gt;One strict v1 NDJSON operation resolves Git once and prepares exact HEAD plus exact merge-base descriptors, including &lt;code&gt;metaUrl&lt;/code&gt;.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Capability&quot;&gt;&lt;strong&gt;Canonical comparison&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Status&quot;&gt;&lt;span class=&quot;priority-cell&quot;&gt;&lt;span class=&quot;swatch disk&quot;&gt;&lt;/span&gt;Required&lt;/span&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Result&quot;&gt;The manifest preserves &lt;code&gt;added&lt;/code&gt;, &lt;code&gt;modified&lt;/code&gt;, &lt;code&gt;deleted&lt;/code&gt;, and &lt;code&gt;renamed&lt;/code&gt;; renamed entries retain &lt;code&gt;previousPath&lt;/code&gt;. &lt;code&gt;baseSha&lt;/code&gt; is provenance, while &lt;code&gt;mergeBaseSha&lt;/code&gt; is comparison identity.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Capability&quot;&gt;&lt;strong&gt;Repository reuse&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Status&quot;&gt;&lt;span class=&quot;priority-cell&quot;&gt;&lt;span class=&quot;swatch cache&quot;&gt;&lt;/span&gt;Implemented&lt;/span&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Result&quot;&gt;One bare partial mirror per canonical repository/security domain supplies job-scoped refs and isolated detached worktrees.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Capability&quot;&gt;&lt;strong&gt;Parallel extraction&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Status&quot;&gt;&lt;span class=&quot;priority-cell&quot;&gt;&lt;span class=&quot;swatch worker&quot;&gt;&lt;/span&gt;Implemented&lt;/span&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Result&quot;&gt;Memory-aware admission, a finite worker pool, keyed singleflight, subscriber-local cancellation, and process teardown bound concurrent cold work.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Capability&quot;&gt;&lt;strong&gt;Reusable base work&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Status&quot;&gt;&lt;span class=&quot;priority-cell&quot;&gt;&lt;span class=&quot;swatch cache&quot;&gt;&lt;/span&gt;Implemented design&lt;/span&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Result&quot;&gt;Populated merge-base artifacts are reusable across PRs by revision/config identity. Empty-side variants are keyed by the hint fingerprint that determines extraction scope.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Capability&quot;&gt;&lt;strong&gt;Projection-only serving&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Status&quot;&gt;&lt;span class=&quot;priority-cell&quot;&gt;&lt;span class=&quot;swatch disk&quot;&gt;&lt;/span&gt;Implemented&lt;/span&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Result&quot;&gt;Projection format v2 stores path shards and bounded indexes. There is no complete-graph response, route, process registry, or browser hydration path.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Capability&quot;&gt;&lt;strong&gt;Fast navigation&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Status&quot;&gt;&lt;span class=&quot;priority-cell&quot;&gt;&lt;span class=&quot;swatch cache&quot;&gt;&lt;/span&gt;Bounded&lt;/span&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Result&quot;&gt;The browser keeps one active single/composite projection plus at most three recent inactive views under a shared 48 MiB charged LRU.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Capability&quot;&gt;&lt;strong&gt;Synthetic execution&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Status&quot;&gt;&lt;span class=&quot;priority-cell&quot;&gt;&lt;span class=&quot;swatch risk&quot;&gt;&lt;/span&gt;Reconciling&lt;/span&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Result&quot;&gt;#222 capabilities move to a bounded HEAD-only sidecar and file-oriented worker. The web parent does not decode or retain a complete graph; the merge-base descriptor never inherits HEAD capabilities.&lt;/td&gt;
+          &lt;/tr&gt;
+        &lt;/tbody&gt;
+      &lt;/table&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;panel diagram-stack&quot; id=&quot;mpr-architecture&quot; role=&quot;tabpanel&quot; aria-labelledby=&quot;mpr-tab-architecture&quot; hidden&gt;
+      &lt;div class=&quot;diagram-block&quot;&gt;
+        &lt;div class=&quot;diagram-heading&quot;&gt;
+          &lt;h2&gt;Why the current flow cannot scale safely&lt;/h2&gt;
+          &lt;p class=&quot;text-small text-muted&quot;&gt;Repeated analysis, mutable process ownership, and full browser hydration&lt;/p&gt;
+        &lt;/div&gt;
+        &lt;svg class=&quot;architecture-svg&quot; viewBox=&quot;0 0 900 245&quot; role=&quot;img&quot; aria-labelledby=&quot;mpr-before-title mpr-before-desc&quot;&gt;
+          &lt;title id=&quot;mpr-before-title&quot;&gt;Stateful pull request inspection flow before the cutover&lt;/title&gt;
+          &lt;desc id=&quot;mpr-before-desc&quot;&gt;The landing flow analyzes the base, then separately prepares head and merge base, keeps graphs in process registries, and hydrates a full graph in the browser before the application shell appears. A second inspection competes for mutable state and blocks behind extraction.&lt;/desc&gt;
+          &lt;defs&gt;
+            &lt;marker id=&quot;mpr-arrow-muted&quot; viewBox=&quot;0 0 10 10&quot; refX=&quot;8&quot; refY=&quot;5&quot; markerWidth=&quot;6&quot; markerHeight=&quot;6&quot; orient=&quot;auto-start-reverse&quot;&gt;
+              &lt;path d=&quot;M 0 0 L 10 5 L 0 10 z&quot; fill=&quot;var(--muted-foreground)&quot;&gt;&lt;/path&gt;
+            &lt;/marker&gt;
+          &lt;/defs&gt;
+          &lt;rect class=&quot;lane&quot; x=&quot;8&quot; y=&quot;34&quot; width=&quot;884&quot; height=&quot;92&quot; rx=&quot;10&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;annotation annotation-start&quot; x=&quot;20&quot; y=&quot;26&quot;&gt;Inspection A&lt;/text&gt;
+          &lt;rect class=&quot;node&quot; x=&quot;24&quot; y=&quot;57&quot; width=&quot;104&quot; height=&quot;48&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;76&quot; y=&quot;78&quot;&gt;Landing&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;76&quot; y=&quot;95&quot;&gt;base first&lt;/text&gt;
+          &lt;rect class=&quot;node-current&quot; x=&quot;158&quot; y=&quot;49&quot; width=&quot;124&quot; height=&quot;64&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;220&quot; y=&quot;73&quot;&gt;3 analyses&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;220&quot; y=&quot;92&quot;&gt;base + head + MB&lt;/text&gt;
+          &lt;rect class=&quot;node-current&quot; x=&quot;312&quot; y=&quot;49&quot; width=&quot;126&quot; height=&quot;64&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;375&quot; y=&quot;73&quot;&gt;Process Maps&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;375&quot; y=&quot;92&quot;&gt;graph ownership&lt;/text&gt;
+          &lt;rect class=&quot;node-current&quot; x=&quot;468&quot; y=&quot;49&quot; width=&quot;126&quot; height=&quot;64&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;531&quot; y=&quot;73&quot;&gt;Full response&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;531&quot; y=&quot;92&quot;&gt;serialize + parse&lt;/text&gt;
+          &lt;rect class=&quot;node-current&quot; x=&quot;624&quot; y=&quot;49&quot; width=&quot;120&quot; height=&quot;64&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;684&quot; y=&quot;73&quot;&gt;Browser graph&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;684&quot; y=&quot;92&quot;&gt;index + layout&lt;/text&gt;
+          &lt;rect class=&quot;node-current&quot; x=&quot;774&quot; y=&quot;49&quot; width=&quot;104&quot; height=&quot;64&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;826&quot; y=&quot;73&quot;&gt;App shell&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;826&quot; y=&quot;92&quot;&gt;appears last&lt;/text&gt;
+          &lt;path class=&quot;flow&quot; d=&quot;M128 81 H154&quot;&gt;&lt;/path&gt;
+          &lt;path class=&quot;flow&quot; d=&quot;M282 81 H308&quot;&gt;&lt;/path&gt;
+          &lt;path class=&quot;flow&quot; d=&quot;M438 81 H464&quot;&gt;&lt;/path&gt;
+          &lt;path class=&quot;flow&quot; d=&quot;M594 81 H620&quot;&gt;&lt;/path&gt;
+          &lt;path class=&quot;flow&quot; d=&quot;M744 81 H770&quot;&gt;&lt;/path&gt;
+          &lt;rect class=&quot;lane&quot; x=&quot;8&quot; y=&quot;147&quot; width=&quot;884&quot; height=&quot;76&quot; rx=&quot;10&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;annotation annotation-start&quot; x=&quot;20&quot; y=&quot;140&quot;&gt;Inspection B&lt;/text&gt;
+          &lt;rect class=&quot;node&quot; x=&quot;24&quot; y=&quot;161&quot; width=&quot;104&quot; height=&quot;48&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;76&quot; y=&quot;189&quot;&gt;Request&lt;/text&gt;
+          &lt;path class=&quot;flow&quot; d=&quot;M128 185 H309&quot;&gt;&lt;/path&gt;
+          &lt;rect class=&quot;node-current&quot; x=&quot;313&quot; y=&quot;155&quot; width=&quot;431&quot; height=&quot;60&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;528.5&quot; y=&quot;180&quot;&gt;Waits behind shared extraction and mutable graph state&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;528.5&quot; y=&quot;199&quot;&gt;cancellation cannot reliably reclaim all work&lt;/text&gt;
+        &lt;/svg&gt;
+        &lt;ol class=&quot;mobile-flow&quot; aria-label=&quot;Former inspection flow on narrow screens&quot;&gt;
+          &lt;li&gt;&lt;strong&gt;Analyze base before PR preparation&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;Then separately extract HEAD and merge base&lt;/span&gt;&lt;/li&gt;
+          &lt;li&gt;&lt;strong&gt;Register complete graphs in the process&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;Serving correctness depends on the process that generated them&lt;/span&gt;&lt;/li&gt;
+          &lt;li&gt;&lt;strong&gt;Serialize and hydrate the full artifact&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;Browser parse, index, and layout gate the app shell&lt;/span&gt;&lt;/li&gt;
+          &lt;li&gt;&lt;strong&gt;Second inspection waits&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;Mutable state and blocking extraction prevent safe parallelism&lt;/span&gt;&lt;/li&gt;
+        &lt;/ol&gt;
+      &lt;/div&gt;
+
+      &lt;div class=&quot;diagram-block&quot;&gt;
+        &lt;div class=&quot;diagram-heading&quot;&gt;
+          &lt;h2&gt;Projection-only parallel architecture&lt;/h2&gt;
+          &lt;p class=&quot;text-small text-muted&quot;&gt;Immutable jobs; shared Git objects; bounded memory at every layer&lt;/p&gt;
+        &lt;/div&gt;
+        &lt;svg class=&quot;architecture-svg&quot; viewBox=&quot;0 0 900 390&quot; role=&quot;img&quot; aria-labelledby=&quot;mpr-after-title mpr-after-desc&quot;&gt;
+          &lt;title id=&quot;mpr-after-title&quot;&gt;Projection-only parallel inspection architecture&lt;/title&gt;
+          &lt;desc id=&quot;mpr-after-desc&quot;&gt;Concurrent preparation requests resolve exact head and merge-base identities, share a bare partial mirror, use isolated detached worktrees and bounded child workers, persist complete artifacts only on disk, publish path-sharded projection bundles, and hydrate only an active browser projection plus a bounded recent cache.&lt;/desc&gt;
+          &lt;defs&gt;
+            &lt;marker id=&quot;mpr-arrow-identity&quot; viewBox=&quot;0 0 10 10&quot; refX=&quot;8&quot; refY=&quot;5&quot; markerWidth=&quot;6&quot; markerHeight=&quot;6&quot; orient=&quot;auto-start-reverse&quot;&gt;
+              &lt;path d=&quot;M 0 0 L 10 5 L 0 10 z&quot; fill=&quot;var(--viz-series-1)&quot;&gt;&lt;/path&gt;
+            &lt;/marker&gt;
+            &lt;marker id=&quot;mpr-arrow-cache&quot; viewBox=&quot;0 0 10 10&quot; refX=&quot;8&quot; refY=&quot;5&quot; markerWidth=&quot;6&quot; markerHeight=&quot;6&quot; orient=&quot;auto-start-reverse&quot;&gt;
+              &lt;path d=&quot;M 0 0 L 10 5 L 0 10 z&quot; fill=&quot;var(--viz-series-2)&quot;&gt;&lt;/path&gt;
+            &lt;/marker&gt;
+            &lt;marker id=&quot;mpr-arrow-disk&quot; viewBox=&quot;0 0 10 10&quot; refX=&quot;8&quot; refY=&quot;5&quot; markerWidth=&quot;6&quot; markerHeight=&quot;6&quot; orient=&quot;auto-start-reverse&quot;&gt;
+              &lt;path d=&quot;M 0 0 L 10 5 L 0 10 z&quot; fill=&quot;var(--viz-series-4)&quot;&gt;&lt;/path&gt;
+            &lt;/marker&gt;
+          &lt;/defs&gt;
+          &lt;rect class=&quot;lane&quot; x=&quot;8&quot; y=&quot;30&quot; width=&quot;884&quot; height=&quot;100&quot; rx=&quot;10&quot;&gt;&lt;/rect&gt;
+          &lt;rect class=&quot;lane&quot; x=&quot;8&quot; y=&quot;146&quot; width=&quot;884&quot; height=&quot;100&quot; rx=&quot;10&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;annotation annotation-start&quot; x=&quot;20&quot; y=&quot;23&quot;&gt;Concurrent PR A&lt;/text&gt;
+          &lt;text class=&quot;annotation annotation-start&quot; x=&quot;20&quot; y=&quot;139&quot;&gt;Concurrent PR B&lt;/text&gt;
+
+          &lt;rect class=&quot;node&quot; x=&quot;22&quot; y=&quot;55&quot; width=&quot;92&quot; height=&quot;50&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;68&quot; y=&quot;77&quot;&gt;Prepare A&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;68&quot; y=&quot;94&quot;&gt;strict v1&lt;/text&gt;
+          &lt;rect class=&quot;node&quot; x=&quot;22&quot; y=&quot;171&quot; width=&quot;92&quot; height=&quot;50&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;68&quot; y=&quot;193&quot;&gt;Prepare B&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;68&quot; y=&quot;210&quot;&gt;strict v1&lt;/text&gt;
+
+          &lt;rect class=&quot;node-identity&quot; x=&quot;140&quot; y=&quot;47&quot; width=&quot;138&quot; height=&quot;66&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;209&quot; y=&quot;70&quot;&gt;Exact pair A&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;209&quot; y=&quot;89&quot;&gt;HEAD + merge base&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;209&quot; y=&quot;103&quot;&gt;singleflight identity&lt;/text&gt;
+          &lt;rect class=&quot;node-identity&quot; x=&quot;140&quot; y=&quot;163&quot; width=&quot;138&quot; height=&quot;66&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;209&quot; y=&quot;186&quot;&gt;Exact pair B&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;209&quot; y=&quot;205&quot;&gt;HEAD + merge base&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;209&quot; y=&quot;219&quot;&gt;singleflight identity&lt;/text&gt;
+
+          &lt;rect class=&quot;node-cache&quot; x=&quot;310&quot; y=&quot;91&quot; width=&quot;148&quot; height=&quot;94&quot; rx=&quot;10&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;384&quot; y=&quot;118&quot;&gt;Bare partial mirror&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;384&quot; y=&quot;137&quot;&gt;one / repo + security&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;384&quot; y=&quot;154&quot;&gt;short mutation lock&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;384&quot; y=&quot;171&quot;&gt;namespaced refs&lt;/text&gt;
+
+          &lt;rect class=&quot;node-cache&quot; x=&quot;490&quot; y=&quot;47&quot; width=&quot;124&quot; height=&quot;66&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;552&quot; y=&quot;70&quot;&gt;Worktree A&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;552&quot; y=&quot;89&quot;&gt;detached + isolated&lt;/text&gt;
+          &lt;rect class=&quot;node-cache&quot; x=&quot;490&quot; y=&quot;163&quot; width=&quot;124&quot; height=&quot;66&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;552&quot; y=&quot;186&quot;&gt;Worktree B&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;552&quot; y=&quot;205&quot;&gt;detached + isolated&lt;/text&gt;
+
+          &lt;rect class=&quot;node-worker&quot; x=&quot;646&quot; y=&quot;47&quot; width=&quot;112&quot; height=&quot;66&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;702&quot; y=&quot;70&quot;&gt;Worker A&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;702&quot; y=&quot;89&quot;&gt;bounded child&lt;/text&gt;
+          &lt;rect class=&quot;node-worker&quot; x=&quot;646&quot; y=&quot;163&quot; width=&quot;112&quot; height=&quot;66&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;702&quot; y=&quot;186&quot;&gt;Worker B&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;702&quot; y=&quot;205&quot;&gt;bounded child&lt;/text&gt;
+
+          &lt;rect class=&quot;node-disk&quot; x=&quot;790&quot; y=&quot;91&quot; width=&quot;94&quot; height=&quot;94&quot; rx=&quot;10&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;837&quot; y=&quot;118&quot;&gt;Disk&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;837&quot; y=&quot;137&quot;&gt;artifacts&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;837&quot; y=&quot;154&quot;&gt;v2 shards&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;837&quot; y=&quot;171&quot;&gt;descriptors&lt;/text&gt;
+
+          &lt;path class=&quot;flow-identity&quot; d=&quot;M114 80 H136&quot;&gt;&lt;/path&gt;
+          &lt;path class=&quot;flow-identity&quot; d=&quot;M114 196 H136&quot;&gt;&lt;/path&gt;
+          &lt;path class=&quot;flow-cache&quot; d=&quot;M278 80 C296 80 294 113 306 113&quot;&gt;&lt;/path&gt;
+          &lt;path class=&quot;flow-cache&quot; d=&quot;M278 196 C296 196 294 163 306 163&quot;&gt;&lt;/path&gt;
+          &lt;path class=&quot;flow-cache&quot; d=&quot;M458 113 C476 113 472 80 486 80&quot;&gt;&lt;/path&gt;
+          &lt;path class=&quot;flow-cache&quot; d=&quot;M458 163 C476 163 472 196 486 196&quot;&gt;&lt;/path&gt;
+          &lt;path class=&quot;flow-identity&quot; d=&quot;M614 80 H642&quot;&gt;&lt;/path&gt;
+          &lt;path class=&quot;flow-identity&quot; d=&quot;M614 196 H642&quot;&gt;&lt;/path&gt;
+          &lt;path class=&quot;flow-disk&quot; d=&quot;M758 80 C776 80 774 113 786 113&quot;&gt;&lt;/path&gt;
+          &lt;path class=&quot;flow-disk&quot; d=&quot;M758 196 C776 196 774 163 786 163&quot;&gt;&lt;/path&gt;
+
+          &lt;rect class=&quot;node-disk&quot; x=&quot;604&quot; y=&quot;292&quot; width=&quot;244&quot; height=&quot;68&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;726&quot; y=&quot;315&quot;&gt;Projection API v2&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;726&quot; y=&quot;334&quot;&gt;path shards · ≤5k nodes · ≤20k edges&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;726&quot; y=&quot;350&quot;&gt;4 readers × 8 MiB charged cache&lt;/text&gt;
+          &lt;rect class=&quot;node-cache&quot; x=&quot;316&quot; y=&quot;292&quot; width=&quot;244&quot; height=&quot;68&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;438&quot; y=&quot;315&quot;&gt;Renderer projection cache&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;438&quot; y=&quot;334&quot;&gt;one active single/composite&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;438&quot; y=&quot;350&quot;&gt;3 recent · 48 MiB charged LRU&lt;/text&gt;
+          &lt;rect class=&quot;node-identity&quot; x=&quot;52&quot; y=&quot;292&quot; width=&quot;220&quot; height=&quot;68&quot; rx=&quot;8&quot;&gt;&lt;/rect&gt;
+          &lt;text class=&quot;label&quot; x=&quot;162&quot; y=&quot;315&quot;&gt;Early interactive shell&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;162&quot; y=&quot;334&quot;&gt;progress before hydration&lt;/text&gt;
+          &lt;text class=&quot;sub-label&quot; x=&quot;162&quot; y=&quot;350&quot;&gt;layout + first-paint timings&lt;/text&gt;
+          &lt;path class=&quot;flow-disk&quot; d=&quot;M837 185 V264 C837 280 826 288 816 292&quot;&gt;&lt;/path&gt;
+          &lt;path class=&quot;flow-cache&quot; d=&quot;M604 326 H564&quot;&gt;&lt;/path&gt;
+          &lt;path class=&quot;flow-identity&quot; d=&quot;M316 326 H276&quot;&gt;&lt;/path&gt;
+        &lt;/svg&gt;
+        &lt;ol class=&quot;mobile-flow&quot; aria-label=&quot;Projection-only architecture on narrow screens&quot;&gt;
+          &lt;li&gt;&lt;strong&gt;Strict two-sided preparation&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;HEAD and exact merge-base identities, never a nullable comparison&lt;/span&gt;&lt;/li&gt;
+          &lt;li&gt;&lt;strong&gt;Shared Git objects, isolated mutable state&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;One mirror; job-scoped refs and detached worktrees&lt;/span&gt;&lt;/li&gt;
+          &lt;li&gt;&lt;strong&gt;Bounded workers&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;Admission, singleflight, progress, cancellation, and teardown&lt;/span&gt;&lt;/li&gt;
+          &lt;li&gt;&lt;strong&gt;Complete artifact stays off the serving path&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;Transient in the extraction child, immutable on disk&lt;/span&gt;&lt;/li&gt;
+          &lt;li&gt;&lt;strong&gt;Path-sharded projection v2&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;Server reads only the shards needed for the current query&lt;/span&gt;&lt;/li&gt;
+          &lt;li&gt;&lt;strong&gt;Bounded back/forward cache&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;One active single/composite view plus three recent views under 48 MiB&lt;/span&gt;&lt;/li&gt;
+          &lt;li&gt;&lt;strong&gt;Shell first&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;Preparation progress is visible before projection hydration and layout&lt;/span&gt;&lt;/li&gt;
+        &lt;/ol&gt;
+        &lt;div class=&quot;legend text-small&quot; aria-label=&quot;Architecture legend&quot;&gt;
+          &lt;span class=&quot;legend-item&quot;&gt;&lt;span class=&quot;swatch identity&quot;&gt;&lt;/span&gt;immutable identity / contract&lt;/span&gt;
+          &lt;span class=&quot;legend-item&quot;&gt;&lt;span class=&quot;swatch cache&quot;&gt;&lt;/span&gt;bounded disposable cache&lt;/span&gt;
+          &lt;span class=&quot;legend-item&quot;&gt;&lt;span class=&quot;swatch worker&quot;&gt;&lt;/span&gt;supervised execution&lt;/span&gt;
+          &lt;span class=&quot;legend-item&quot;&gt;&lt;span class=&quot;swatch disk&quot;&gt;&lt;/span&gt;immutable disk state&lt;/span&gt;
+          &lt;span class=&quot;legend-item&quot;&gt;&lt;span class=&quot;swatch risk&quot;&gt;&lt;/span&gt;release gate in progress&lt;/span&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;panel section-stack&quot; id=&quot;mpr-reasoning&quot; role=&quot;tabpanel&quot; aria-labelledby=&quot;mpr-tab-reasoning&quot; hidden&gt;
+      &lt;h2&gt;Why this architecture&lt;/h2&gt;
+      &lt;p class=&quot;decision-callout&quot;&gt;&lt;strong&gt;Cacheful statelessness:&lt;/strong&gt; correctness is carried by immutable request identities and descriptors. Mirrors, readers, workers, indexes, and renderer views are performance accelerators with explicit ownership, byte charges, and eviction.&lt;/p&gt;
+      &lt;table class=&quot;report-table reasoning-table&quot;&gt;
+        &lt;thead&gt;
+          &lt;tr&gt;
+            &lt;th&gt;Requirement&lt;/th&gt;
+            &lt;th&gt;Failure mode&lt;/th&gt;
+            &lt;th&gt;Decision&lt;/th&gt;
+            &lt;th&gt;Reasoning&lt;/th&gt;
+          &lt;/tr&gt;
+        &lt;/thead&gt;
+        &lt;tbody&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Requirement&quot;&gt;&lt;strong&gt;Parallel safety&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Failure mode&quot;&gt;Sharing one mutable checkout would race &lt;code&gt;HEAD&lt;/code&gt;, index, cleanup, and source serving.&lt;/td&gt;
+            &lt;td data-label=&quot;Decision&quot;&gt;Share only immutable Git objects; isolate refs and detached worktrees per job.&lt;/td&gt;
+            &lt;td data-label=&quot;Reasoning&quot;&gt;Object reuse removes repeated clone/history transfer without coupling filesystem state across inspections.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Requirement&quot;&gt;&lt;strong&gt;Correct comparison&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Failure mode&quot;&gt;A moving target-branch tip is not the comparison base, and a HEAD-only artifact loses deletions, renames, and base ghosts.&lt;/td&gt;
+            &lt;td data-label=&quot;Decision&quot;&gt;&lt;code&gt;mergeBaseSha&lt;/code&gt; addresses the comparison; &lt;code&gt;baseSha&lt;/code&gt; remains provenance. Publish both descriptors and the status-rich manifest.&lt;/td&gt;
+            &lt;td data-label=&quot;Reasoning&quot;&gt;The identity remains stable for the actual PR diff while UI provenance still explains which base tip was resolved.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Requirement&quot;&gt;&lt;strong&gt;Fast repeated reviews&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Failure mode&quot;&gt;Pair-only caching repeats extraction for the same populated merge base across many PRs.&lt;/td&gt;
+            &lt;td data-label=&quot;Decision&quot;&gt;Cache populated merge-base artifacts independently; fingerprint hints for empty-side whole-subtree variants.&lt;/td&gt;
+            &lt;td data-label=&quot;Reasoning&quot;&gt;Common base work is reusable, while hint-dependent empty graphs cannot be incorrectly shared.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Requirement&quot;&gt;&lt;strong&gt;Bounded service memory&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Failure mode&quot;&gt;A graph registry or decoded-artifact cache silently recreates the original statefulness and grows with inspection size.&lt;/td&gt;
+            &lt;td data-label=&quot;Decision&quot;&gt;The parent opens projection readers only: four readers, each charged to an 8 MiB page cache.&lt;/td&gt;
+            &lt;td data-label=&quot;Reasoning&quot;&gt;A complete artifact is never a parent-process correctness dependency; restart and eviction are routine.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Requirement&quot;&gt;&lt;strong&gt;Responsive navigation&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Failure mode&quot;&gt;Keeping every visited graph is unbounded; evicting immediately makes back/forward navigation expensive.&lt;/td&gt;
+            &lt;td data-label=&quot;Decision&quot;&gt;Keep the active single/composite review plus three recent inactive projections under one 48 MiB charged LRU.&lt;/td&gt;
+            &lt;td data-label=&quot;Reasoning&quot;&gt;The common navigation loop is warm while memory remains capped and composite HEAD/base ownership is atomic.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Requirement&quot;&gt;&lt;strong&gt;Perceived performance&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Failure mode&quot;&gt;A static splash hides useful preparation progress until fetch, parse, index, and layout all finish.&lt;/td&gt;
+            &lt;td data-label=&quot;Decision&quot;&gt;Mount the shell first, show the five preparation stages, and hydrate/layout projections incrementally.&lt;/td&gt;
+            &lt;td data-label=&quot;Reasoning&quot;&gt;Users receive immediate state and cancellation even when cold extraction remains expensive.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Requirement&quot;&gt;&lt;strong&gt;#222 capability parity&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Failure mode&quot;&gt;Persisting scenario graphs or decoding a full artifact in the web parent would violate the memory cutover.&lt;/td&gt;
+            &lt;td data-label=&quot;Decision&quot;&gt;Persist only bounded scenario/fingerprint/trust/provenance metadata on HEAD and execute artifact-dependent work in a file-oriented child.&lt;/td&gt;
+            &lt;td data-label=&quot;Reasoning&quot;&gt;Synthetic execution preserves consent and exact provenance without giving the serving process a graph heap.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Requirement&quot;&gt;&lt;strong&gt;One coherent product&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Failure mode&quot;&gt;Feature fallbacks keep two protocols, two cache formats, and ambiguous failure behavior alive indefinitely.&lt;/td&gt;
+            &lt;td data-label=&quot;Decision&quot;&gt;Remove &lt;code&gt;/api/pr/analyze&lt;/code&gt;, complete-graph routes, old cache readers/migrations, and permissive boot fallbacks.&lt;/td&gt;
+            &lt;td data-label=&quot;Reasoning&quot;&gt;A strict cutover is easier to reason about, test, secure, and operate; stale entries miss and regenerate.&lt;/td&gt;
+          &lt;/tr&gt;
+        &lt;/tbody&gt;
+      &lt;/table&gt;
+
+      &lt;h2&gt;Deliberate boundaries&lt;/h2&gt;
+      &lt;ul class=&quot;decision-list text-small&quot;&gt;
+        &lt;li&gt;&lt;strong&gt;Node-local, not distributed Git state.&lt;/strong&gt; Mirrors and worktrees remain local. Multi-node serving requires an external immutable object/artifact store and metadata service, never a shared writable checkout.&lt;/li&gt;
+        &lt;li&gt;&lt;strong&gt;No full-artifact web optimization.&lt;/strong&gt; Faster serialization or compression does not make full-graph hydration acceptable; projection transport is the only serving path.&lt;/li&gt;
+        &lt;li&gt;&lt;strong&gt;No HEAD-only shortcut.&lt;/strong&gt; Deletion, rename, whole-subtree addition, and base-side ghost behavior are release invariants.&lt;/li&gt;
+        &lt;li&gt;&lt;strong&gt;No unbounded concurrency.&lt;/strong&gt; Increase worker capacity only from measured memory, queue latency, and cancellation evidence.&lt;/li&gt;
+        &lt;li&gt;&lt;strong&gt;No hidden compatibility period.&lt;/strong&gt; Old feature records and routes are not read. An incompatible cache entry is a miss, followed by current-format regeneration.&lt;/li&gt;
+      &lt;/ul&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;panel section-stack&quot; id=&quot;mpr-contract&quot; role=&quot;tabpanel&quot; aria-labelledby=&quot;mpr-tab-contract&quot; hidden&gt;
+      &lt;h2&gt;Strict v1 preparation contract&lt;/h2&gt;
+      &lt;p class=&quot;decision-callout&quot;&gt;&lt;strong&gt;One terminal record:&lt;/strong&gt; the client accepts only versioned &lt;code&gt;progress&lt;/code&gt;, &lt;code&gt;done&lt;/code&gt;, or &lt;code&gt;error&lt;/code&gt; NDJSON records and navigates only after one valid &lt;code&gt;done&lt;/code&gt;. Any malformed, duplicate-terminal, HEAD-only, or nullable-comparison response fails closed.&lt;/p&gt;
+
+      &lt;h3&gt;Request&lt;/h3&gt;
+      &lt;pre class=&quot;contract-block&quot; aria-label=&quot;Pull request preparation request&quot;&gt;&lt;code&gt;POST /api/pr/prepare
+Content-Type: application/json
+
+{
+  &quot;owner&quot;: &quot;acme&quot;,
+  &quot;repo&quot;: &quot;payments&quot;,
+  &quot;subdir&quot;: &quot;services/api&quot;,
+  &quot;prNumber&quot;: 418,
+  &quot;baseRef&quot;: &quot;main&quot;,
+  &quot;headRef&quot;: &quot;refs/pull/418/head&quot;
+}&lt;/code&gt;&lt;/pre&gt;
+
+      &lt;h3&gt;NDJSON records&lt;/h3&gt;
+      &lt;pre class=&quot;contract-block&quot; aria-label=&quot;Pull request preparation response records&quot;&gt;&lt;code&gt;{&quot;version&quot;:1,&quot;type&quot;:&quot;progress&quot;,&quot;stage&quot;:&quot;resolve&quot;,&quot;elapsedMs&quot;:8}
+{&quot;version&quot;:1,&quot;type&quot;:&quot;progress&quot;,&quot;stage&quot;:&quot;git&quot;,&quot;elapsedMs&quot;:74}
+{&quot;version&quot;:1,&quot;type&quot;:&quot;progress&quot;,&quot;stage&quot;:&quot;extract-head&quot;,&quot;elapsedMs&quot;:1320}
+{&quot;version&quot;:1,&quot;type&quot;:&quot;progress&quot;,&quot;stage&quot;:&quot;extract-merge-base&quot;,&quot;elapsedMs&quot;:884}
+{&quot;version&quot;:1,&quot;type&quot;:&quot;progress&quot;,&quot;stage&quot;:&quot;publish&quot;,&quot;elapsedMs&quot;:51}
+{&quot;version&quot;:1,&quot;type&quot;:&quot;done&quot;,&quot;headSha&quot;:&quot;&amp;lt;40-hex&amp;gt;&quot;,&quot;baseSha&quot;:&quot;&amp;lt;40-hex provenance tip&amp;gt;&quot;,&quot;mergeBaseSha&quot;:&quot;&amp;lt;40-hex comparison identity&amp;gt;&quot;,&quot;changedFiles&quot;:[{&quot;path&quot;:&quot;src/new.ts&quot;,&quot;status&quot;:&quot;added&quot;},{&quot;path&quot;:&quot;src/core.ts&quot;,&quot;status&quot;:&quot;modified&quot;},{&quot;path&quot;:&quot;src/old.ts&quot;,&quot;status&quot;:&quot;deleted&quot;},{&quot;path&quot;:&quot;src/named.ts&quot;,&quot;previousPath&quot;:&quot;src/name.ts&quot;,&quot;status&quot;:&quot;renamed&quot;}],&quot;head&quot;:{&quot;graphId&quot;:&quot;&amp;lt;id&amp;gt;&quot;,&quot;manifestUrl&quot;:&quot;/api/graph/manifest?id=&amp;lt;id&amp;gt;&quot;,&quot;projectionUrl&quot;:&quot;/api/graph/projection?id=&amp;lt;id&amp;gt;&quot;,&quot;sourceUrl&quot;:&quot;/api/source?id=&amp;lt;id&amp;gt;&quot;,&quot;metaUrl&quot;:&quot;/api/meta?id=&amp;lt;id&amp;gt;&quot;,&quot;graphSummary&quot;:{&quot;schemaVersion&quot;:&quot;&amp;lt;version&amp;gt;&quot;,&quot;generatedAt&quot;:&quot;&amp;lt;ISO timestamp&amp;gt;&quot;,&quot;nodeCount&quot;:0,&quot;edgeCount&quot;:0}},&quot;mergeBase&quot;:{&quot;graphId&quot;:&quot;&amp;lt;id&amp;gt;&quot;,&quot;manifestUrl&quot;:&quot;/api/graph/manifest?id=&amp;lt;id&amp;gt;&quot;,&quot;projectionUrl&quot;:&quot;/api/graph/projection?id=&amp;lt;id&amp;gt;&quot;,&quot;sourceUrl&quot;:&quot;/api/source?id=&amp;lt;id&amp;gt;&quot;,&quot;metaUrl&quot;:&quot;/api/meta?id=&amp;lt;id&amp;gt;&quot;,&quot;graphSummary&quot;:{&quot;schemaVersion&quot;:&quot;&amp;lt;version&amp;gt;&quot;,&quot;generatedAt&quot;:&quot;&amp;lt;ISO timestamp&amp;gt;&quot;,&quot;nodeCount&quot;:0,&quot;edgeCount&quot;:0}},&quot;cache&quot;:&quot;miss&quot;,&quot;timings&quot;:{&quot;resolve&quot;:8,&quot;git&quot;:74,&quot;extract-head&quot;:1320,&quot;extract-merge-base&quot;:884,&quot;publish&quot;:51},&quot;warnings&quot;:[]}
+{&quot;version&quot;:1,&quot;type&quot;:&quot;error&quot;,&quot;message&quot;:&quot;safe client-facing message&quot;}&lt;/code&gt;&lt;/pre&gt;
+
+      &lt;ul class=&quot;decision-list text-small&quot;&gt;
+        &lt;li&gt;&lt;strong&gt;One object per physical line:&lt;/strong&gt; the example above is valid NDJSON. The only progress vocabulary is &lt;code&gt;resolve&lt;/code&gt;, &lt;code&gt;git&lt;/code&gt;, &lt;code&gt;extract-head&lt;/code&gt;, &lt;code&gt;extract-merge-base&lt;/code&gt;, and &lt;code&gt;publish&lt;/code&gt;; every &lt;code&gt;elapsedMs&lt;/code&gt; is finite and non-negative.&lt;/li&gt;
+        &lt;li&gt;&lt;strong&gt;Complete descriptors:&lt;/strong&gt; both HEAD and merge-base contain &lt;code&gt;graphId&lt;/code&gt;, &lt;code&gt;manifestUrl&lt;/code&gt;, &lt;code&gt;projectionUrl&lt;/code&gt;, &lt;code&gt;sourceUrl&lt;/code&gt;, &lt;code&gt;metaUrl&lt;/code&gt;, and &lt;code&gt;graphSummary&lt;/code&gt;.&lt;/li&gt;
+        &lt;li&gt;&lt;strong&gt;Canonical file status:&lt;/strong&gt; only added/modified/deleted/renamed. A renamed file requires a safe, distinct &lt;code&gt;previousPath&lt;/code&gt;.&lt;/li&gt;
+        &lt;li&gt;&lt;strong&gt;Bounded streaming:&lt;/strong&gt; require NDJSON content type, cap line bytes, validate UTF-8 and record counts, and reject data after the terminal record.&lt;/li&gt;
+      &lt;/ul&gt;
+
+      &lt;h2&gt;State and memory ownership&lt;/h2&gt;
+      &lt;table class=&quot;report-table state-table&quot;&gt;
+        &lt;thead&gt;
+          &lt;tr&gt;
+            &lt;th&gt;State&lt;/th&gt;
+            &lt;th&gt;Owner and lifetime&lt;/th&gt;
+            &lt;th&gt;Bound / eviction&lt;/th&gt;
+            &lt;th&gt;Correctness role&lt;/th&gt;
+          &lt;/tr&gt;
+        &lt;/thead&gt;
+        &lt;tbody&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;State&quot;&gt;&lt;strong&gt;Bare partial mirror&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Owner and lifetime&quot;&gt;Node-local repository/security-domain cache; shared across jobs.&lt;/td&gt;
+            &lt;td data-label=&quot;Bound / eviction&quot;&gt;Disk quota and operator GC; short lock only for mutation.&lt;/td&gt;
+            &lt;td data-label=&quot;Correctness role&quot;&gt;Accelerator. Pinned OIDs and immutable request identity remain authoritative.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;State&quot;&gt;&lt;strong&gt;Detached worktree&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Owner and lifetime&quot;&gt;One lease per extraction job and revision.&lt;/td&gt;
+            &lt;td data-label=&quot;Bound / eviction&quot;&gt;Scheduler admission; remove after publish/abort/crash.&lt;/td&gt;
+            &lt;td data-label=&quot;Correctness role&quot;&gt;Isolates mutable &lt;code&gt;HEAD&lt;/code&gt;, index, and filesystem state.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;State&quot;&gt;&lt;strong&gt;Complete artifact&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Owner and lifetime&quot;&gt;Built transiently in the extraction child, then persisted as immutable bytes on disk.&lt;/td&gt;
+            &lt;td data-label=&quot;Bound / eviction&quot;&gt;Never retained in the web parent or browser; disk generation retention/GC only.&lt;/td&gt;
+            &lt;td data-label=&quot;Correctness role&quot;&gt;Source for projection publication and file-oriented synthetic work.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;State&quot;&gt;&lt;strong&gt;Projection bundle v2&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Owner and lifetime&quot;&gt;Immutable disk bundle with file-to-node index, changed-path shards, and entry-module shards.&lt;/td&gt;
+            &lt;td data-label=&quot;Bound / eviction&quot;&gt;Request limits: ≤512 file paths / 48 KiB path input; response ≤5k nodes, ≤20k edges, ≤16 MiB.&lt;/td&gt;
+            &lt;td data-label=&quot;Correctness role&quot;&gt;The only graph transport contract.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;State&quot;&gt;&lt;strong&gt;Server reader cache&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Owner and lifetime&quot;&gt;Web process; lazily opened projection readers.&lt;/td&gt;
+            &lt;td data-label=&quot;Bound / eviction&quot;&gt;At most four readers, each charged to an 8 MiB page cache; LRU eviction.&lt;/td&gt;
+            &lt;td data-label=&quot;Correctness role&quot;&gt;None. Any reader can be reopened from its descriptor.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;State&quot;&gt;&lt;strong&gt;Active renderer view&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Owner and lifetime&quot;&gt;Browser; one single projection or atomic HEAD + merge-base composite.&lt;/td&gt;
+            &lt;td data-label=&quot;Bound / eviction&quot;&gt;Replaced as one charged allocation when navigation changes.&lt;/td&gt;
+            &lt;td data-label=&quot;Correctness role&quot;&gt;Only the currently rendered review state.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;State&quot;&gt;&lt;strong&gt;Recent renderer views&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Owner and lifetime&quot;&gt;Browser navigation accelerator.&lt;/td&gt;
+            &lt;td data-label=&quot;Bound / eviction&quot;&gt;Maximum three inactive views and 48 MiB total charged bytes; LRU.&lt;/td&gt;
+            &lt;td data-label=&quot;Correctness role&quot;&gt;None. Evicted views refetch projections.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;State&quot;&gt;&lt;strong&gt;Synthetic capability sidecar&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Owner and lifetime&quot;&gt;Immutable descriptor metadata for HEAD only.&lt;/td&gt;
+            &lt;td data-label=&quot;Bound / eviction&quot;&gt;Bounded scenarios, fingerprint, trust, and provenance; no graph objects.&lt;/td&gt;
+            &lt;td data-label=&quot;Correctness role&quot;&gt;Preserves #222 consent/provenance while file workers perform artifact-dependent work.&lt;/td&gt;
+          &lt;/tr&gt;
+        &lt;/tbody&gt;
+      &lt;/table&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;panel section-stack&quot; id=&quot;mpr-implementation&quot; role=&quot;tabpanel&quot; aria-labelledby=&quot;mpr-tab-implementation&quot; hidden&gt;
+      &lt;h2&gt;Implementation and rollout plan&lt;/h2&gt;
+      &lt;p class=&quot;decision-callout&quot;&gt;&lt;strong&gt;Current checkpoint:&lt;/strong&gt; the cutover core is implemented in the working branch. Phase 4 is active: reconcile &lt;code&gt;01c9044&lt;/code&gt; deliberately and preserve #222/#223 semantics. Phase 5 cannot be marked complete until the reconciled full suite and end-to-end gates pass.&lt;/p&gt;
+
+      &lt;ol class=&quot;roadmap&quot; aria-label=&quot;Implementation phases&quot;&gt;
+        &lt;li&gt;
+          &lt;h3&gt;✓ Isolate execution&lt;/h3&gt;
+          &lt;p class=&quot;text-small text-muted&quot;&gt;Mirror, worktrees, workers, admission, cancellation&lt;/p&gt;
+        &lt;/li&gt;
+        &lt;li&gt;
+          &lt;h3&gt;✓ Publish two sides&lt;/h3&gt;
+          &lt;p class=&quot;text-small text-muted&quot;&gt;Strict prepare v1, canonical statuses, base reuse&lt;/p&gt;
+        &lt;/li&gt;
+        &lt;li&gt;
+          &lt;h3&gt;✓ Project by path&lt;/h3&gt;
+          &lt;p class=&quot;text-small text-muted&quot;&gt;Disk shards, bounded readers, no graph route&lt;/p&gt;
+        &lt;/li&gt;
+        &lt;li data-finalize=&quot;latest-main-reconciliation&quot;&gt;
+          &lt;h3&gt;Now: reconcile main&lt;/h3&gt;
+          &lt;p class=&quot;text-small text-muted&quot;&gt;#222 sidecar/worker and #223 two-sided parity&lt;/p&gt;
+        &lt;/li&gt;
+        &lt;li data-finalize=&quot;full-suite-validation&quot;&gt;
+          &lt;h3&gt;Next: validate + roll&lt;/h3&gt;
+          &lt;p class=&quot;text-small text-muted&quot;&gt;Full suites, E2E, benchmarks, canary&lt;/p&gt;
+        &lt;/li&gt;
+      &lt;/ol&gt;
+
+      &lt;table class=&quot;report-table implementation-table&quot;&gt;
+        &lt;thead&gt;
+          &lt;tr&gt;
+            &lt;th&gt;Phase&lt;/th&gt;
+            &lt;th&gt;Deliverables&lt;/th&gt;
+            &lt;th&gt;Exit criteria&lt;/th&gt;
+          &lt;/tr&gt;
+        &lt;/thead&gt;
+        &lt;tbody&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Phase&quot;&gt;&lt;span class=&quot;priority-cell&quot;&gt;&lt;span class=&quot;swatch cache&quot;&gt;&lt;/span&gt;1 · Done&lt;/span&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Deliverables&quot;&gt;Canonical repository/security identity; one bare partial mirror; job refs; detached revision leases; bounded scheduler and worker pool; subscriber-aware singleflight and cancellation.&lt;/td&gt;
+            &lt;td data-label=&quot;Exit criteria&quot;&gt;Different PRs overlap safely, identical requests execute once, last-subscriber abort terminates descendants, and cleanup never deletes another job’s state.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Phase&quot;&gt;&lt;span class=&quot;priority-cell&quot;&gt;&lt;span class=&quot;swatch identity&quot;&gt;&lt;/span&gt;2 · Cutover&lt;/span&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Deliverables&quot;&gt;Strict v1 &lt;code&gt;/api/pr/prepare&lt;/code&gt;; exact HEAD and merge-base descriptors; canonical changed-file manifest; populated base reuse; hint-fingerprinted empty variants.&lt;/td&gt;
+            &lt;td data-label=&quot;Exit criteria&quot;&gt;No base-first graph generation, no HEAD-only response, no base-tip cache invalidation, and addition/deletion/rename/whole-subtree parity with the serial baseline.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Phase&quot;&gt;&lt;span class=&quot;priority-cell&quot;&gt;&lt;span class=&quot;swatch disk&quot;&gt;&lt;/span&gt;3 · Cutover&lt;/span&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Deliverables&quot;&gt;Projection format v2 file/path shards; strict query limits; bounded server readers; early renderer shell; active/composite and recent-view caches; singleflight projection hydration.&lt;/td&gt;
+            &lt;td data-label=&quot;Exit criteria&quot;&gt;No complete graph reaches the parent or browser, malformed requests fail closed, cache activation is kind-safe, and back/forward navigation stays within the charged bounds.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr data-finalize=&quot;latest-main-reconciliation&quot;&gt;
+            &lt;td data-label=&quot;Phase&quot;&gt;&lt;span class=&quot;priority-cell&quot;&gt;&lt;span class=&quot;swatch risk&quot;&gt;&lt;/span&gt;4 · Active&lt;/span&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Deliverables&quot;&gt;Deliberate reconciliation onto &lt;code&gt;01c9044&lt;/code&gt;; bounded #222 synthetic sidecar/file worker; full #223 canonical comparison behavior; standalone projection boot; removal of feature fallbacks.&lt;/td&gt;
+            &lt;td data-label=&quot;Exit criteria&quot;&gt;Synthetic consent, fingerprint, trust, and provenance survive; merge base has no HEAD capability; deleted/renamed/base ghost behavior passes focused tests; searches find no old feature routes/readers.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr data-finalize=&quot;full-suite-validation&quot;&gt;
+            &lt;td data-label=&quot;Phase&quot;&gt;&lt;span class=&quot;priority-cell&quot;&gt;&lt;span class=&quot;swatch risk&quot;&gt;&lt;/span&gt;5 · Pending&lt;/span&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Deliverables&quot;&gt;Full CLI/renderer tests and typechecks, build, browser E2E, restart/parallel/cancellation tests, memory and latency benchmarks, and rollout evidence.&lt;/td&gt;
+            &lt;td data-label=&quot;Exit criteria&quot;&gt;All gates below are green on the reconciled commit; rollout begins at concurrency 1 on an isolated current-format cache root, then advances to 2 only on hosts that satisfy admission budgets.&lt;/td&gt;
+          &lt;/tr&gt;
+        &lt;/tbody&gt;
+      &lt;/table&gt;
+
+      &lt;h2&gt;Performance instrumentation&lt;/h2&gt;
+      &lt;ul class=&quot;decision-list text-small&quot;&gt;
+        &lt;li&gt;&lt;strong&gt;Server:&lt;/strong&gt; record Git resolve/fetch/worktree, HEAD extraction, merge-base extraction, publication, projection query, and projection serialization.&lt;/li&gt;
+        &lt;li&gt;&lt;strong&gt;Transport/client:&lt;/strong&gt; record projection transfer, UTF-8/NDJSON validation, parse, index, layout, shell mount, and first usable paint.&lt;/li&gt;
+        &lt;li&gt;&lt;strong&gt;Capacity:&lt;/strong&gt; record queue time, admitted workers, singleflight joins, cancellations, worker RSS, server reader bytes, and renderer active/recent charged bytes.&lt;/li&gt;
+        &lt;li&gt;&lt;strong&gt;Compare:&lt;/strong&gt; cold distinct PRs, repeated merge base, identical request, back/forward navigation, and restart serve. Report p50/p95 and peak RSS, not only a single warm timing.&lt;/li&gt;
+      &lt;/ul&gt;
+
+      &lt;h2&gt;Risks and mitigations&lt;/h2&gt;
+      &lt;table class=&quot;report-table gate-table&quot;&gt;
+        &lt;thead&gt;
+          &lt;tr&gt;
+            &lt;th&gt;Risk&lt;/th&gt;
+            &lt;th&gt;Mitigation&lt;/th&gt;
+            &lt;th&gt;Release evidence&lt;/th&gt;
+          &lt;/tr&gt;
+        &lt;/thead&gt;
+        &lt;tbody&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Risk&quot;&gt;&lt;strong&gt;Empty-side extraction shared incorrectly&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Mitigation&quot;&gt;Reuse populated revisions by SHA/config, but include a stable hint-set fingerprint when whole-subtree behavior creates an empty-side artifact.&lt;/td&gt;
+            &lt;td data-label=&quot;Release evidence&quot;&gt;Addition and deletion fixtures across mixed TypeScript/Python projects produce exact two-sided parity.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Risk&quot;&gt;&lt;strong&gt;Projection metadata silently truncated&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Mitigation&quot;&gt;Validate canonical ranges, diff lines, manifests, file paths, versions, and request caps; fail closed rather than filtering malformed records.&lt;/td&gt;
+            &lt;td data-label=&quot;Release evidence&quot;&gt;Adversarial format/query tests reject every malformed shard and never broaden an empty file-path query.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Risk&quot;&gt;&lt;strong&gt;Cancellation poisons shared work&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Mitigation&quot;&gt;Give each subscriber a local abort while the shared job continues until its last subscriber leaves; retain teardown tombstones until descendants exit.&lt;/td&gt;
+            &lt;td data-label=&quot;Release evidence&quot;&gt;One waiter aborts without affecting another; last waiter abort reclaims worker, refs, worktree, and scheduler slot.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Risk&quot;&gt;&lt;strong&gt;Memory bounds count objects inaccurately&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Mitigation&quot;&gt;Charge encoded/parsed projection bytes and treat a HEAD/base review as one composite allocation. Evict before activation when the budget would be exceeded.&lt;/td&gt;
+            &lt;td data-label=&quot;Release evidence&quot;&gt;Large-navigation E2E holds one active plus no more than three recent views and never exceeds the 48 MiB charge.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Risk&quot;&gt;&lt;strong&gt;Latest-main feature regression&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Mitigation&quot;&gt;Resolve conflicts semantically in Git diff/extract, boot, cache, graph, and store areas; add focused #222/#223 tests before the full suite.&lt;/td&gt;
+            &lt;td data-label=&quot;Release evidence&quot;&gt;Synthetic provenance and all canonical change statuses pass on the reconciled &lt;code&gt;01c9044&lt;/code&gt; descendant.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Risk&quot;&gt;&lt;strong&gt;Cross-node assumptions leak in&lt;/strong&gt;&lt;/td&gt;
+            &lt;td data-label=&quot;Mitigation&quot;&gt;Keep mirrors/worktrees node-local. Externalize immutable artifacts and descriptors before any multi-node claim.&lt;/td&gt;
+            &lt;td data-label=&quot;Release evidence&quot;&gt;Deployment documentation states the node/cache-root boundary and prohibits shared writable Git directories.&lt;/td&gt;
+          &lt;/tr&gt;
+        &lt;/tbody&gt;
+      &lt;/table&gt;
+
+      &lt;h2&gt;Validation gates&lt;/h2&gt;
+      &lt;table class=&quot;report-table gate-table&quot;&gt;
+        &lt;thead&gt;
+          &lt;tr&gt;
+            &lt;th&gt;Scenario&lt;/th&gt;
+            &lt;th&gt;What it proves&lt;/th&gt;
+            &lt;th&gt;Pass condition&lt;/th&gt;
+          &lt;/tr&gt;
+        &lt;/thead&gt;
+        &lt;tbody&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Scenario&quot;&gt;Strict NDJSON contract&lt;/td&gt;
+            &lt;td data-label=&quot;What it proves&quot;&gt;No ambiguous or partial navigation&lt;/td&gt;
+            &lt;td data-label=&quot;Pass condition&quot;&gt;Only v1 records and the five stages pass; both descriptors and one terminal record are mandatory; line/content/UTF-8 limits fail closed.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Scenario&quot;&gt;Added, modified, deleted, renamed&lt;/td&gt;
+            &lt;td data-label=&quot;What it proves&quot;&gt;#223 comparison parity&lt;/td&gt;
+            &lt;td data-label=&quot;Pass condition&quot;&gt;Canonical status manifest, distinct rename &lt;code&gt;previousPath&lt;/code&gt;, two-sided artifacts, base ghosts, and whole-subtree cases match the serial baseline.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Scenario&quot;&gt;Two cold PRs, same repository&lt;/td&gt;
+            &lt;td data-label=&quot;What it proves&quot;&gt;Object reuse plus isolated parallelism&lt;/td&gt;
+            &lt;td data-label=&quot;Pass condition&quot;&gt;One mirror, separate worktrees, both workers may run, no second full-history clone, and HTTP remains responsive.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Scenario&quot;&gt;Different PRs, same populated merge base&lt;/td&gt;
+            &lt;td data-label=&quot;What it proves&quot;&gt;Cross-PR base reuse&lt;/td&gt;
+            &lt;td data-label=&quot;Pass condition&quot;&gt;Merge-base extraction executes once for the revision/config identity while each HEAD remains independently keyed.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Scenario&quot;&gt;Identical requests + partial abort&lt;/td&gt;
+            &lt;td data-label=&quot;What it proves&quot;&gt;Singleflight and caller-local cancellation&lt;/td&gt;
+            &lt;td data-label=&quot;Pass condition&quot;&gt;One execution; aborting one subscriber does not cancel the other; last-subscriber abort reclaims all resources.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Scenario&quot;&gt;Projection query and navigation&lt;/td&gt;
+            &lt;td data-label=&quot;What it proves&quot;&gt;No full-graph fallback and bounded warm navigation&lt;/td&gt;
+            &lt;td data-label=&quot;Pass condition&quot;&gt;Only selected path/radius shards are read; response caps hold; active/composite plus recent LRU stays within count and byte bounds.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Scenario&quot;&gt;Restart / second same-node process&lt;/td&gt;
+            &lt;td data-label=&quot;What it proves&quot;&gt;Descriptors, not memory, carry correctness&lt;/td&gt;
+            &lt;td data-label=&quot;Pass condition&quot;&gt;Projection and source resolve by immutable descriptor without graph registration or regeneration.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td data-label=&quot;Scenario&quot;&gt;Synthetic execution&lt;/td&gt;
+            &lt;td data-label=&quot;What it proves&quot;&gt;#222 capability without graph residency&lt;/td&gt;
+            &lt;td data-label=&quot;Pass condition&quot;&gt;HEAD sidecar preserves consent/fingerprint/trust/provenance, merge base has none, and file worker completes without parent full-artifact decode.&lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr data-finalize=&quot;full-suite-validation&quot;&gt;
+            &lt;td data-label=&quot;Scenario&quot;&gt;Reconciled full suite and E2E&lt;/td&gt;
+            &lt;td data-label=&quot;What it proves&quot;&gt;The cutover is releasable as one system&lt;/td&gt;
+            &lt;td data-label=&quot;Pass condition&quot;&gt;CLI/renderer typechecks, unit/integration suites, build, browser flows, diff checks, memory benchmarks, and first-usable-paint timings are all green on the final commit.&lt;/td&gt;
+          &lt;/tr&gt;
+        &lt;/tbody&gt;
+      &lt;/table&gt;
+
+      &lt;h2&gt;Rollout&lt;/h2&gt;
+      &lt;ul class=&quot;decision-list text-small&quot;&gt;
+        &lt;li&gt;&lt;strong&gt;Coordinated format cutover:&lt;/strong&gt; drain old writers, deploy the current-only reader/writer, and use an isolated or freshly generated cache root. There is no feature compatibility reader.&lt;/li&gt;
+        &lt;li&gt;&lt;strong&gt;Canary:&lt;/strong&gt; begin with worker concurrency 1, verify artifacts/comparisons, cancellation, projection bounds, and timing telemetry, then enable the default 2 only where memory admission permits.&lt;/li&gt;
+        &lt;li&gt;&lt;strong&gt;Observe:&lt;/strong&gt; alert on queue saturation, worker crashes, repeated base extraction, projection cap rejections, renderer eviction churn, and first-usable-paint regression.&lt;/li&gt;
+        &lt;li&gt;&lt;strong&gt;Rollback:&lt;/strong&gt; roll back the binary and cache root together. Never let mixed versions write the same cache root.&lt;/li&gt;
+      &lt;/ul&gt;
+    &lt;/section&gt;
+  &lt;/div&gt;
+
+  &lt;script&gt;
+    (() =&gt; {
+      const root = document.getElementById(&quot;meridian-parallel-report&quot;);
+      if (!root) return;
+      const tabs = Array.from(root.querySelectorAll(&#x27;[role=&quot;tab&quot;]&#x27;));
+      const panels = Array.from(root.querySelectorAll(&#x27;[role=&quot;tabpanel&quot;]&#x27;));
+
+      const selectPanel = (name) =&gt; {
+        tabs.forEach((tab) =&gt; {
+          const selected = tab.dataset.panel === name;
+          tab.setAttribute(&quot;aria-selected&quot;, String(selected));
+          tab.classList.toggle(&quot;btn-primary&quot;, selected);
+          tab.tabIndex = selected ? 0 : -1;
+        });
+        panels.forEach((panel) =&gt; {
+          panel.hidden = panel.id !== `mpr-${name}`;
+        });
+      };
+
+      const focusRelativeTab = (current, offset) =&gt; {
+        const index = tabs.indexOf(current);
+        const next = tabs[(index + offset + tabs.length) % tabs.length];
+        selectPanel(next.dataset.panel);
+        next.focus();
+      };
+
+      tabs.forEach((tab) =&gt; {
+        tab.addEventListener(&quot;click&quot;, () =&gt; selectPanel(tab.dataset.panel));
+        tab.addEventListener(&quot;keydown&quot;, (event) =&gt; {
+          if (event.key === &quot;ArrowRight&quot;) {
+            event.preventDefault();
+            focusRelativeTab(tab, 1);
+          } else if (event.key === &quot;ArrowLeft&quot;) {
+            event.preventDefault();
+            focusRelativeTab(tab, -1);
+          } else if (event.key === &quot;Home&quot;) {
+            event.preventDefault();
+            selectPanel(tabs[0].dataset.panel);
+            tabs[0].focus();
+          } else if (event.key === &quot;End&quot;) {
+            event.preventDefault();
+            selectPanel(tabs[tabs.length - 1].dataset.panel);
+            tabs[tabs.length - 1].focus();
+          }
+        });
+      });
+      selectPanel(&quot;status&quot;);
+    })();
+  &lt;/script&gt;
+&lt;/div&gt;
+
+&lt;script src=&quot;https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script src=&quot;https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  if (window.FloatingUIDOM == null) {
+    return;
+  }
+  const { autoUpdate, computePosition, flip, offset, shift, size } =
+    window.FloatingUIDOM;
+  const tooltipPlacements = new Set([&quot;top&quot;, &quot;right&quot;, &quot;bottom&quot;, &quot;left&quot;]);
+  const tooltipId = `codex-visualization-tooltip-${
+    window.crypto?.randomUUID?.() ?? Date.now().toString(36)
+  }`;
+  const tooltipGap = 5;
+  const hoverDelay = 700;
+  const skipDelay = 300;
+  let activeTrigger = null;
+  let pendingTrigger = null;
+  let tooltip = null;
+  let openTimeout = null;
+  let autoUpdateCleanup = null;
+  let positionRequest = 0;
+  let skipDelayUntil = 0;
+
+  const getTrigger = (target) =&gt;
+    target?.nodeType === Node.ELEMENT_NODE
+      ? target.closest(&quot;[data-tooltip]&quot;)
+      : null;
+  const containsTarget = (trigger, target) =&gt;
+    target?.nodeType != null &amp;&amp; trigger.contains(target);
+  const getContent = (trigger) =&gt;
+    trigger.getAttribute(&quot;data-tooltip&quot;)?.trim() ?? &quot;&quot;;
+  const getPlacement = (trigger) =&gt; {
+    const placement = trigger.getAttribute(&quot;data-tooltip-placement&quot;);
+    return tooltipPlacements.has(placement) ? placement : &quot;top&quot;;
+  };
+  const getTooltip = () =&gt; {
+    if (tooltip == null) {
+      tooltip = document.createElement(&quot;div&quot;);
+      tooltip.id = tooltipId;
+      tooltip.className = &quot;tooltip&quot;;
+      tooltip.setAttribute(&quot;role&quot;, &quot;tooltip&quot;);
+    }
+    return tooltip;
+  };
+  const setDescribedBy = (trigger, described) =&gt; {
+    const ids = new Set(
+      (trigger.getAttribute(&quot;aria-describedby&quot;) ?? &quot;&quot;)
+        .split(/\s+/)
+        .filter(Boolean),
+    );
+    if (described) {
+      ids.add(tooltipId);
+    } else {
+      ids.delete(tooltipId);
+    }
+    if (ids.size === 0) {
+      trigger.removeAttribute(&quot;aria-describedby&quot;);
+    } else {
+      trigger.setAttribute(&quot;aria-describedby&quot;, [...ids].join(&quot; &quot;));
+    }
+  };
+  const clearOpenTimeout = () =&gt; {
+    if (openTimeout != null) {
+      window.clearTimeout(openTimeout);
+      openTimeout = null;
+    }
+    pendingTrigger = null;
+  };
+  const closeTooltip = (activateSkipDelay = true) =&gt; {
+    clearOpenTimeout();
+    positionRequest += 1;
+    autoUpdateCleanup?.();
+    autoUpdateCleanup = null;
+    if (activeTrigger == null) {
+      return;
+    }
+    setDescribedBy(activeTrigger, false);
+    activeTrigger = null;
+    tooltip?.remove();
+    if (activateSkipDelay) {
+      skipDelayUntil = Date.now() + skipDelay;
+    }
+  };
+  const updatePosition = (trigger, floating) =&gt; {
+    const request = ++positionRequest;
+    void computePosition(trigger, floating, {
+      middleware: [
+        offset(tooltipGap),
+        flip({ padding: tooltipGap }),
+        shift({ padding: tooltipGap }),
+        size({
+          padding: tooltipGap,
+          apply({ availableHeight, availableWidth, elements }) {
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-width&quot;,
+              `${Math.max(0, availableWidth)}px`,
+            );
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-height&quot;,
+              `${Math.max(0, availableHeight)}px`,
+            );
+          },
+        }),
+      ],
+      placement: getPlacement(trigger),
+      strategy: &quot;fixed&quot;,
+    })
+      .then(({ x, y }) =&gt; {
+        if (activeTrigger !== trigger || request !== positionRequest) {
+          return;
+        }
+        const scale = window.devicePixelRatio || 1;
+        floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;
+        floating.style.visibility = &quot;visible&quot;;
+      })
+      .catch(() =&gt; {
+        if (activeTrigger === trigger &amp;&amp; request === positionRequest) {
+          closeTooltip(false);
+        }
+      });
+  };
+  const openTooltip = (trigger) =&gt; {
+    const content = getContent(trigger);
+    if (!trigger.isConnected || content.length === 0) {
+      return;
+    }
+    clearOpenTimeout();
+    if (activeTrigger === trigger) {
+      return;
+    }
+    closeTooltip();
+    const floating = getTooltip();
+    floating.textContent = content;
+    floating.style.visibility = &quot;hidden&quot;;
+    floating.style.transform = &quot;translate(0, 0)&quot;;
+    document.body.appendChild(floating);
+    activeTrigger = trigger;
+    setDescribedBy(trigger, true);
+    autoUpdateCleanup = autoUpdate(trigger, floating, () =&gt; {
+      updatePosition(trigger, floating);
+    });
+  };
+  const requestOpen = (trigger, immediate = false) =&gt; {
+    if (
+      getContent(trigger).length === 0 ||
+      activeTrigger === trigger ||
+      pendingTrigger === trigger
+    ) {
+      return;
+    }
+    clearOpenTimeout();
+    pendingTrigger = trigger;
+    const delay =
+      immediate || activeTrigger != null || Date.now() &lt; skipDelayUntil
+        ? 0
+        : hoverDelay;
+    if (delay === 0) {
+      openTooltip(trigger);
+      return;
+    }
+    openTimeout = window.setTimeout(() =&gt; {
+      openTimeout = null;
+      pendingTrigger = null;
+      openTooltip(trigger);
+    }, delay);
+  };
+  const handlePointerOpen = (event) =&gt; {
+    if (event.pointerType === &quot;touch&quot;) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    requestOpen(trigger);
+  };
+  const handleLeave = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const handleFocusIn = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger?.matches(&quot;:focus-visible&quot;)) {
+      requestOpen(trigger, true);
+    }
+  };
+  const handleKeyDown = (event) =&gt; {
+    if (event.key === &quot;Escape&quot;) {
+      closeTooltip();
+    }
+  };
+  const handleContextMenu = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const destroy = () =&gt; {
+    closeTooltip(false);
+    document.removeEventListener(&quot;pointerover&quot;, handlePointerOpen);
+    document.removeEventListener(&quot;pointerout&quot;, handleLeave);
+    document.removeEventListener(&quot;focusin&quot;, handleFocusIn);
+    document.removeEventListener(&quot;focusout&quot;, handleLeave);
+    document.removeEventListener(&quot;keydown&quot;, handleKeyDown);
+    document.removeEventListener(&quot;contextmenu&quot;, handleContextMenu);
+    tooltip = null;
+  };
+
+  document.addEventListener(&quot;pointerover&quot;, handlePointerOpen);
+  document.addEventListener(&quot;pointerout&quot;, handleLeave);
+  document.addEventListener(&quot;focusin&quot;, handleFocusIn);
+  document.addEventListener(&quot;focusout&quot;, handleLeave);
+  document.addEventListener(&quot;keydown&quot;, handleKeyDown);
+  document.addEventListener(&quot;contextmenu&quot;, handleContextMenu);
+  window.addEventListener(&quot;pagehide&quot;, destroy, { once: true });
+})();
+&lt;/script&gt;
+&lt;script id=&quot;codex-visualization-lucide&quot; async src=&quot;https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  const initialize = () =&gt; {
+    globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });
+  };
+  if (globalThis.lucide != null) {
+    initialize();
+    return;
+  }
+  document
+    .getElementById(&quot;codex-visualization-lucide&quot;)
+    ?.addEventListener(&quot;load&quot;, initialize, { once: true });
+})();
+&lt;/script&gt;
+
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe>
+</body>
+</html>

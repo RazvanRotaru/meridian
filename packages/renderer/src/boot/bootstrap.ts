@@ -5,13 +5,17 @@
  */
 
 import { buildGraphIndex } from "../graph/graphIndex";
+import {
+  GraphProjectionClient,
+  type GraphProjectionDataSource,
+  type LoadedGraphProjection,
+} from "../graph/graphProjectionClient";
 import { createHttpTelemetryProvider } from "../telemetry/httpProvider";
-import type { TelemetrySourceDescriptor, TelemetrySourceRegistration } from "../telemetry/provider";
+import type { TelemetrySourceRegistration } from "../telemetry/provider";
 import { createBlueprintStore, type BlueprintStore } from "../state/store";
 import { restoreFromUrl, startUrlSync } from "../state/urlSync";
-import { prApiUrlsFromGraphUrl, readBootConfig, type BootConfig } from "./bootConfig";
-import { loadArtifact } from "./loadArtifact";
-import { loadEnvironments } from "./loadEnvironments";
+import { prApiUrlsFromProjectionManifest, readBootConfig, type BootConfig } from "./bootConfig";
+import { loadDevSampleArtifact } from "./loadDevSampleArtifact";
 import { startPrReviewNavigationGuard } from "./prReviewNavigationGuard";
 
 export interface BootResult {
@@ -19,19 +23,30 @@ export interface BootResult {
   boot: BootConfig;
 }
 
-export async function bootstrap(): Promise<BootResult> {
+export interface PreparedBootstrap extends BootResult {
+  /** Restore URL state, run the first scene layout/PR preparation, then start history sync. */
+  hydrate(): Promise<void>;
+}
+
+/**
+ * Load only the first bounded graph view and construct the store. React mounts this store before
+ * `hydrate` starts, which makes real streamed PR preparation stages visible during URL restore.
+ */
+export async function prepareBootstrap(): Promise<PreparedBootstrap> {
   // Start synchronously, before the first artifact/provider await: a `rev=1` reload must be guarded
   // from its first splash frame, including the time before a store exists to say `preparing`.
   const navigationGuard = startPrReviewNavigationGuard();
   try {
     const boot = readBootConfig();
-    const artifact = await loadArtifact(boot.graphUrl);
-    const index = buildGraphIndex(artifact);
+    const loadedGraph = await loadBootGraph(boot);
+    const { artifact, index } = loadedGraph;
     const telemetrySources = await buildTelemetrySources(boot);
     const selectedTelemetrySource = boot.preselectedTelemetrySourceId === null
       ? null
       : telemetrySources.find((source) => source.id === boot.preselectedTelemetrySourceId) ?? null;
-    const prApi = prApiUrlsFromGraphUrl(boot.graphUrl);
+    const prApi = prApiUrlsFromProjectionManifest(
+      boot.graphSource.kind === "projections" ? boot.graphSource.manifestUrl : null,
+    );
     const store = createBlueprintStore({
       artifact,
       index,
@@ -51,32 +66,69 @@ export async function bootstrap(): Promise<BootResult> {
       prCommentsUrl: prApi.prCommentsUrl,
       prChecksUrl: prApi.prChecksUrl,
       prFileUrl: prApi.prFileUrl,
-      graphUrl: boot.graphUrl,
-      metaUrl: boot.metaUrl,
       prReviewUrl: prApi.prReviewUrl,
-      analyzeUrl: boot.githubSource ? prApi.analyzeUrl : null,
-      graphId: boot.githubSource ? prApi.graphId : null,
+      prepareUrl: boot.githubSource ? prApi.prepareUrl : null,
+      projectionDataSource: loadedGraph.dataSource,
+      initialProjection: loadedGraph.projection,
     });
     navigationGuard.bindStore(store);
-    // Restore the navigation state carried in the URL (or fall through to defaults) and run the
-    // first layout, then start reflecting the store back into the URL for reload/back/forward.
-    await restoreFromUrl(store);
-    navigationGuard.completeInitialRestore();
-    startUrlSync(store);
-    return { store, boot };
+    let hydration: Promise<void> | null = null;
+    const hydrate = (): Promise<void> => {
+      hydration ??= (async () => {
+        try {
+          // Restore the navigation state carried in the URL (or fall through to defaults) and run
+          // the first layout, then reflect subsequent navigation back into history.
+          await restoreFromUrl(store);
+          navigationGuard.completeInitialRestore();
+          startUrlSync(store);
+        } catch (error) {
+          navigationGuard.dispose();
+          throw error;
+        }
+      })();
+      return hydration;
+    };
+    return { store, boot, hydrate };
   } catch (error) {
     navigationGuard.dispose();
     throw error;
   }
 }
 
+/** Non-React embedders keep the prior all-in-one convenience entry point. */
+export async function bootstrap(): Promise<BootResult> {
+  const prepared = await prepareBootstrap();
+  await prepared.hydrate();
+  return { store: prepared.store, boot: prepared.boot };
+}
+
+interface LoadedBootGraph {
+  artifact: Awaited<ReturnType<typeof loadDevSampleArtifact>>;
+  index: ReturnType<typeof buildGraphIndex>;
+  dataSource: GraphProjectionDataSource | null;
+  projection: LoadedGraphProjection | null;
+}
+
+/** Injected sessions have one graph transport: bounded projections. The complete-artifact loader
+ * exists only for Vite's non-injected sample and is unreachable from server-provided config. */
+export async function loadBootGraph(boot: BootConfig): Promise<LoadedBootGraph> {
+  if (boot.graphSource.kind === "dev-sample") {
+    const artifact = await loadDevSampleArtifact(boot.graphSource.artifactUrl);
+    return { artifact, index: buildGraphIndex(artifact), dataSource: null, projection: null };
+  }
+  const client = new GraphProjectionClient(boot.graphSource.manifestUrl, boot.graphSource.projectionUrl);
+  const manifest = await client.loadManifest();
+  const projection = await client.activate(manifest.defaultView);
+  return {
+    artifact: projection.artifact,
+    index: projection.index,
+    dataSource: client,
+    projection,
+  };
+}
+
 async function buildTelemetrySources(boot: BootConfig): Promise<TelemetrySourceRegistration[]> {
-  const descriptors = boot.telemetrySources.length > 0
-    ? boot.telemetrySources
-    : boot.preselectedTelemetrySourceId !== null
-      ? await legacyTelemetrySources(boot)
-      : [];
-  return descriptors.map((descriptor) => ({
+  return boot.telemetrySources.map((descriptor) => ({
     ...descriptor,
     provider: createHttpTelemetryProvider(
       boot.overlayUrl,
@@ -84,42 +136,4 @@ async function buildTelemetrySources(boot: BootConfig): Promise<TelemetrySourceR
       descriptor,
     ),
   }));
-}
-
-/** Older servers advertise one overlay rather than a catalog. Boot normalization turns that
- * explicit legacy capability into the matching preselected id; a present empty catalog stays off. */
-async function legacyTelemetrySources(boot: BootConfig): Promise<TelemetrySourceDescriptor[]> {
-  if (!boot.hasOverlay || boot.overlayKind === null) return [];
-  const environments = await loadEnvironments(boot.metaUrl);
-  if (boot.overlayKind === "tempo") {
-    return [{
-      id: "tempo",
-      kind: "tempo",
-      label: "Tempo",
-      provenance: "observed",
-      environments,
-      supportsMetrics: true,
-      supportsTraces: boot.traceAvailable,
-    }];
-  }
-  if (boot.overlayKind === "file") {
-    return [{
-      id: "file",
-      kind: "file",
-      label: "Saved telemetry snapshot",
-      provenance: "saved",
-      environments,
-      supportsMetrics: true,
-      supportsTraces: false,
-    }];
-  }
-  return [{
-    id: "mock",
-    kind: "mock",
-    label: "Synthetic demo",
-    provenance: "synthetic",
-    environments,
-    supportsMetrics: true,
-    supportsTraces: boot.traceAvailable,
-  }];
 }

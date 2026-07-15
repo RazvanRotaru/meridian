@@ -8,6 +8,15 @@ import { blockOpenKeysForSelection, entryOpenKeysForSelection, withOpenKeys } fr
 export function FlowExplorerPanel() {
   const open = useBlueprint((state) => state.flowExplorerOpen);
   const viewMode = useBlueprint((state) => state.viewMode);
+  // The closed shell deliberately does not derive the repo-wide flow tree. Unmounting the body also
+  // releases its filtered tree and open-key sets instead of retaining a hidden explorer model.
+  if (!open || (viewMode !== "ui" && viewMode !== "modules")) {
+    return null;
+  }
+  return <OpenFlowExplorerPanel />;
+}
+
+function OpenFlowExplorerPanel() {
   const selection = useBlueprint((state) => state.flowPaneOrigin === "request" ? null : state.flowSelection);
   const { selectFlowEntry } = useBlueprintActions();
   const tree = useFlowTree();
@@ -26,9 +35,6 @@ export function FlowExplorerPanel() {
       setOpenBlocks((current) => withOpenKeys(current, blockKeys));
     }
   }, [selection, tree]);
-  if (!open || (viewMode !== "ui" && viewMode !== "modules")) {
-    return null;
-  }
   const filterActive = filter.trim().length > 0;
   return (
     <aside

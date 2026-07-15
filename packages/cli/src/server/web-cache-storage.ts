@@ -11,6 +11,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -44,9 +45,15 @@ export function readJson(path: string): unknown {
 
 export function writePrivateJson(path: string, value: unknown): void {
   createPrivateDirectory(dirname(path));
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  renameSync(temporary, path);
+  // A process can publish multiple cache records concurrently. A PID-only temporary name lets
+  // those writes trample each other before the final atomic rename, so include per-write entropy.
+  const temporary = `${path}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    renameSync(temporary, path);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
 }
 
 /** Publish a complete immutable directory. A racing publisher wins without corrupting either copy. */
@@ -85,18 +92,24 @@ export function touchMetadata(path: string): void {
   }
 }
 
-/** Startup-only pruning means no entry can be removed while this process is serving an open tab. */
+/**
+ * Destructive maintenance primitive for an operator-controlled exclusive maintenance window.
+ * Request handling intentionally never calls it: another Meridian process may own a worktree or
+ * serve an immutable snapshot even when this process has no in-memory knowledge of that lease.
+ */
 export function pruneExpiredCache(root: string, now = Date.now()): void {
-  pruneLeaves(join(root, "repositories"), 2, now);
-  pruneLeaves(join(root, "artifacts"), 3, now);
-  pruneLeaves(join(root, "pr-artifacts"), 4, now);
+  pruneLeaves(join(root, "repositories"), 2, now, ["metadata.json"]);
+  pruneLeaves(join(root, "artifacts"), 3, now, ["current.json"]);
+  pruneLeaves(join(root, "pr-artifacts"), 6, now, ["current.json"]);
+  pruneLeaves(join(root, "pr-base-artifacts"), 6, now, ["current.json"]);
+  pruneLeaves(join(root, "pr-exact-lookups"), 6, now, ["current.json"]);
 }
 
-function pruneLeaves(base: string, depth: number, now: number): void {
+function pruneLeaves(base: string, depth: number, now: number, markers: string[]): void {
   for (const leaf of leafDirectories(base, depth)) {
-    const metadata = join(leaf, "metadata.json");
     try {
-      if (now - statSync(metadata).mtimeMs > CACHE_TTL_MS) {
+      const marker = markers.map((name) => join(leaf, name)).find((path) => existsSync(path));
+      if (!marker || now - statSync(marker).mtimeMs > CACHE_TTL_MS) {
         removeEntry(leaf);
       }
     } catch {

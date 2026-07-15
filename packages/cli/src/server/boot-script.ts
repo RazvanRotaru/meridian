@@ -43,13 +43,16 @@ function bootJson(
   sourceRoot: string | null,
   syntheticScenarios: SyntheticScenarioDescriptor[] | null,
 ): string {
+  const syntheticEnabled = syntheticScenarios !== null;
   return JSON.stringify({
-    graphUrl: "/api/graph",
+    projectionManifestUrl: "/api/graph/manifest",
+    projectionUrl: "/api/graph/projection",
     metaUrl: "/api/meta",
     overlayUrl: "/api/overlay",
     traceUrl: "/api/traces",
     sourceUrl: sourceRoot ? "/api/source" : null,
-    syntheticExecutionUrl: syntheticScenarios === null ? null : "/api/synthetic-executions",
+    syntheticExecutionUrl: syntheticEnabled ? "/api/synthetic-executions" : null,
+    syntheticExecutionTrust: syntheticEnabled ? { mode: "local" } : null,
     syntheticScenarios: syntheticScenarios ?? [],
     hasOverlay: hasOverlay(overlay),
     overlayKind: overlayKind(overlay),
@@ -58,6 +61,6 @@ function bootJson(
     envRequired: hasOverlay(overlay),
     preselectedEnv,
     defaultEnv: null,
-    githubSource: false,
+    githubSource: null,
   });
 }

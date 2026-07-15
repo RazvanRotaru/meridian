@@ -8,12 +8,28 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { base64Auth, buildCloneArgs, parseGitHubSource, resolveExtractionSubdir, sanitizeSubdir } from "./clone";
+import {
+  base64Auth,
+  buildCloneArgs,
+  canonicalRepositoryUrl,
+  gitTokenForRemote,
+  parseGitHubSource,
+  resolveExtractionSubdir,
+  sanitizeSubdir,
+} from "./clone";
 import { WebError } from "./web-error";
 
 describe("parseGitHubSource", () => {
   it("expands owner/repo to an https clone URL", () => {
     expect(parseGitHubSource("sindresorhus/type-fest")).toBe("https://github.com/sindresorhus/type-fest.git");
+  });
+
+  it("preserves the historical URL spelling used by persistent cache identities", () => {
+    expect(parseGitHubSource("Owner/Repo")).toBe("https://github.com/Owner/Repo.git");
+    expect(parseGitHubSource("owner/repo.git")).toBe("https://github.com/owner/repo.git");
+    expect(parseGitHubSource("https://github.com/Owner/Repo")).toBe("https://github.com/Owner/Repo");
+    expect(parseGitHubSource("https://github.com/owner/repo/")).toBe("https://github.com/owner/repo/");
+    expect(parseGitHubSource("https://github.com/owner/repo.GIT")).toBe("https://github.com/owner/repo.GIT");
   });
 
   it("accepts a full https git URL", () => {
@@ -29,6 +45,39 @@ describe("parseGitHubSource", () => {
 
   it("rejects credentials embedded in the URL", () => {
     expect(() => parseGitHubSource("https://user:pass@github.com/o/r.git")).toThrow(WebError);
+  });
+});
+
+describe("canonicalRepositoryUrl", () => {
+  it("converges equivalent GitHub spellings for the shared mirror only", () => {
+    const expected = "https://github.com/owner/repo.git";
+    for (const source of [
+      "https://github.com/Owner/Repo.git",
+      "https://github.com/owner/repo.git",
+      "https://github.com/Owner/Repo",
+      "https://github.com/owner/repo/",
+      "https://github.com/owner/repo.GIT",
+    ]) {
+      expect(canonicalRepositoryUrl(source)).toBe(expected);
+    }
+  });
+
+  it("does not merge identities on case-sensitive Git hosts", () => {
+    expect(canonicalRepositoryUrl("https://git.example/Owner/Repo.git"))
+      .toBe("https://git.example/Owner/Repo.git");
+  });
+});
+
+describe("gitTokenForRemote", () => {
+  it("sends ambient credentials only to github.com", () => {
+    expect(gitTokenForRemote("https://github.com/o/r.git", "ambient")).toBe("ambient");
+    expect(gitTokenForRemote("https://gitlab.example/o/r.git", "ambient")).toBeUndefined();
+    expect(gitTokenForRemote("http://github.com/o/r.git", "ambient")).toBeUndefined();
+  });
+
+  it("allows an explicit token on another HTTPS host but never over HTTP", () => {
+    expect(gitTokenForRemote("https://git.example/o/r.git", "explicit", true)).toBe("explicit");
+    expect(() => gitTokenForRemote("http://git.example/o/r.git", "explicit", true)).toThrow(/only be sent over https/);
   });
 });
 

@@ -39,7 +39,7 @@ export function syntheticExecutionBootCapability(
       && syntheticExecutionTrust.provenance.repository === `${source.owner}/${source.repo}`
       && syntheticExecutionTrust.provenance.headSha.length > 0
     );
-  if (!trustMatches) {
+  if (!trustMatches || syntheticScenarios === null || syntheticScenarios.length === 0) {
     return { syntheticExecutionUrl: null, syntheticScenarios: [], syntheticExecutionTrust: null };
   }
   return {
@@ -66,7 +66,8 @@ export function injectViewBoot(
     syntheticExecutionTrust,
   );
   const boot = {
-    graphUrl: `/api/graph?id=${id}`,
+    projectionManifestUrl: `/api/graph/manifest?id=${id}`,
+    projectionUrl: `/api/graph/projection?id=${id}`,
     metaUrl: `/api/meta?id=${id}`,
     overlayUrl: `/api/overlay?id=${id}`,
     traceUrl: `/api/traces?id=${id}`,

@@ -1,12 +1,12 @@
-import { createHash } from "node:crypto";
-import type { GraphArtifact } from "@meridian/core";
-import { analyzeRepository } from "../repository-analysis";
+import { join } from "node:path";
 import { resolveSource } from "./clone";
 import { cachedRemoteGraph, webAnalysisKey } from "./web-cache";
 import { artifactId, remoteArtifactId } from "./web-request";
 import type { GenerateRequest } from "./web-request";
 import type { Context } from "./web-server";
 import { artifactSourceFor } from "./web-source";
+import { createStageDirectory, removeEntry } from "./web-cache-storage";
+import type { SerializablePipelineRequest } from "./extraction-worker";
 
 export interface GenerateResult {
   id: string;
@@ -17,7 +17,7 @@ export interface GenerateResult {
   checkoutCache: "hit" | "miss" | "bypass";
 }
 
-type GenerateStage = "cache" | "source" | "extract";
+export type GenerateStage = "cache" | "source" | "extract";
 type StageReporter = (stage: GenerateStage) => void | Promise<void>;
 
 /** Resolve, cache when remote, extract when needed, and register one graph with its source tree. */
@@ -26,10 +26,12 @@ export function generateGraph(
   request: GenerateRequest,
   token: string | undefined,
   onStage: StageReporter = () => {},
+  signal?: AbortSignal,
+  extractionAdmitted = false,
 ): Promise<GenerateResult> {
   return request.kind === "github"
-    ? generateRemote(ctx, request, token, onStage)
-    : generateLocal(ctx, request, onStage);
+    ? generateRemote(ctx, request, token, onStage, signal, extractionAdmitted)
+    : generateLocal(ctx, request, onStage, signal, extractionAdmitted);
 }
 
 async function generateRemote(
@@ -37,80 +39,109 @@ async function generateRemote(
   request: GenerateRequest,
   token: string | undefined,
   onStage: StageReporter,
+  signal: AbortSignal | undefined,
+  extractionAdmitted: boolean,
 ): Promise<GenerateResult> {
   await onStage("cache");
   const effectiveRequest = ctx.refreshCache ? { ...request, refresh: true } : request;
-  const credentialKey = token ? createHash("sha256").update(token).digest("hex") : "anonymous";
-  const jobKey = `${artifactId(effectiveRequest, "", webAnalysisKey(effectiveRequest))}:${credentialKey}:${effectiveRequest.refresh === true}`;
-  let pending = ctx.cacheJobs.get(jobKey);
-  if (!pending) {
-    pending = cachedRemoteGraph({
-      cacheRoot: ctx.cacheRoot,
-      request: effectiveRequest,
-      cwd: ctx.cwd,
-      token,
-      onClone: () => onStage("source"),
-      onExtract: () => onStage("extract"),
-    });
-    ctx.cacheJobs.set(jobKey, pending);
-  }
-  try {
-    const cached = await pending;
-    const id = remoteArtifactId(cached.checkout.repositoryKey, cached.checkout.commit, cached.analysisKey);
-    registerGraph(ctx, id, cached.artifact, cached.sourceDir, request);
-    return {
-      id,
-      target: cached.target,
-      counts: { nodes: cached.artifact.nodes.length, edges: cached.artifact.edges.length },
-      warnings: cached.warnings,
-      cache: cached.cache,
-      checkoutCache: cached.checkout.cache,
-    };
-  } finally {
-    if (ctx.cacheJobs.get(jobKey) === pending) {
-      ctx.cacheJobs.delete(jobKey);
-    }
-  }
+  // The bounded lifecycle scheduler is the singleflight owner. Keeping a second promise map here
+  // would couple the shared work to whichever outer subscriber arrived first, so cancelling that
+  // subscriber could abort another lifecycle job that happened to reuse this promise.
+  const cached = await cachedRemoteGraph({
+    cacheRoot: ctx.cacheRoot,
+    request: effectiveRequest,
+    cwd: ctx.cwd,
+    token,
+    tokenIsExplicit: request.token !== undefined,
+    repositoryMirrors: ctx.repositoryMirrors,
+    runExtraction: ctx.runExtraction,
+    signal,
+    extractionAdmitted,
+    onClone: () => onStage("source"),
+    onExtract: () => onStage("extract"),
+  });
+  const id = remoteArtifactId(
+    cached.checkout.repositoryKey,
+    cached.checkout.commit,
+    cached.analysisKey,
+    cached.generationId,
+    cached.checkout.branch ?? "",
+  );
+  ctx.inspectionSnapshots.publish({
+    id,
+    artifactPath: cached.artifactPath,
+    graphSummary: cached.graphSummary,
+    vcsBranch: cached.checkout.branch,
+    sourceRoot: cached.checkout.repoDir,
+    sourceSubdir: request.subdir,
+    source: artifactSourceFor(request),
+  });
+  return {
+    id,
+    target: cached.target,
+    counts: { nodes: cached.graphSummary.nodeCount, edges: cached.graphSummary.edgeCount },
+    warnings: cached.warnings,
+    cache: cached.cache,
+    checkoutCache: cached.checkout.cache,
+  };
 }
 
-async function generateLocal(ctx: Context, request: GenerateRequest, onStage: StageReporter): Promise<GenerateResult> {
+async function generateLocal(
+  ctx: Context,
+  request: GenerateRequest,
+  onStage: StageReporter,
+  signal: AbortSignal | undefined,
+  extractionAdmitted: boolean,
+): Promise<GenerateResult> {
   await onStage("source");
   const source = await resolveSource(request, ctx.cwd);
   let retained = false;
+  const outputDirectory = createStageDirectory(join(ctx.cacheRoot, "local-artifacts"));
+  const artifactOutputPath = join(outputDirectory, "artifact.json");
   try {
     await onStage("extract");
-    const { artifact, warnings } = await analyzeRepository({
+    const extractionRequest: SerializablePipelineRequest = {
       absoluteRoot: source.dir,
       cwd: source.dir,
+      depth: "function",
+      includeExternal: true,
+      materializeBoundary: true,
+      valueRefs: process.env.MERIDIAN_VALUE_REFS === "1",
       targetName: source.target,
+    };
+    const extracted = await ctx.runExtraction(extractionRequest, {
+      artifactOutputPath,
+      signal,
+      admitted: extractionAdmitted,
     });
-    const id = artifactId(request);
-    registerGraph(ctx, id, artifact, source.dir, request);
-    ctx.tempCleanups.add(source.cleanup);
+    if (extracted.artifactPath !== artifactOutputPath) throw new Error("local extraction wrote outside its cache stage");
+    // Local sources have no commit/generation id, so the analysis key is part of their durable
+    // identity. Otherwise two concurrent language/settings variants overwrite the same graph id.
+    const id = artifactId(request, "", webAnalysisKey(request));
+    ctx.localGraphFiles.set(id, {
+      artifactPath: artifactOutputPath,
+      graphSummary: extracted.graphSummary,
+      projectionDirectory: extracted.projectionDirectory,
+    });
+    ctx.sourceRoots.set(id, source.dir);
+    ctx.sources.set(id, artifactSourceFor(request));
+    ctx.tempCleanups.add(() => {
+      source.cleanup();
+      removeEntry(outputDirectory);
+    });
     retained = true;
     return {
       id,
       target: source.target,
-      counts: { nodes: artifact.nodes.length, edges: artifact.edges.length },
-      warnings,
+      counts: { nodes: extracted.graphSummary.nodeCount, edges: extracted.graphSummary.edgeCount },
+      warnings: extracted.warnings,
       cache: "bypass",
       checkoutCache: "bypass",
     };
   } finally {
     if (!retained) {
       source.cleanup();
+      removeEntry(outputDirectory);
     }
   }
-}
-
-function registerGraph(
-  ctx: Context,
-  id: string,
-  artifact: GraphArtifact,
-  sourceDir: string,
-  request: GenerateRequest,
-): void {
-  ctx.graphs.set(id, artifact);
-  ctx.sourceRoots.set(id, sourceDir);
-  ctx.sources.set(id, artifactSourceFor(request));
 }

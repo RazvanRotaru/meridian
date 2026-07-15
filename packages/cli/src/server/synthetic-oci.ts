@@ -8,7 +8,6 @@ import { syntheticExecutionSchema } from "@meridian/core";
 import type { SyntheticExecution } from "@meridian/core";
 import { SyntheticExecutionError } from "./synthetic-error";
 import type { RunSyntheticScenarioRequest } from "./synthetic-execution";
-import { syntheticSourceFingerprint } from "./synthetic-fingerprint";
 import { syntheticWorkerBundlePath } from "./synthetic-compiler-child";
 import { parseSyntheticWorkerError } from "./synthetic-worker-job";
 
@@ -31,9 +30,12 @@ const SCRUBBED_CONTAINER_ENV = [
   "NODE_OPTIONS=",
 ] as const;
 
-export interface RunSyntheticScenarioInOciRequest extends RunSyntheticScenarioRequest {
+export interface RunSyntheticScenarioInOciRequest extends Omit<RunSyntheticScenarioRequest, "artifact"> {
+  /** Immutable graph file mounted read-only; the host server never opens or decodes it. */
+  artifactPath: string;
   /** Required for PR execution. Both the host and the container recheck it. */
   expectedSourceFingerprint: string;
+  signal?: AbortSignal;
 }
 
 /** True only when the complete OCI boundary is ready. Images are never pulled implicitly. */
@@ -60,9 +62,7 @@ export async function runSyntheticScenarioInOci(
   request: RunSyntheticScenarioInOciRequest,
 ): Promise<SyntheticExecution> {
   const sourceRoot = canonicalDirectory(request.sourceRoot);
-  if (syntheticSourceFingerprint(sourceRoot, request.artifact) !== request.expectedSourceFingerprint) {
-    throw new SyntheticExecutionError("invalid-request", 409, "Synthetic scenario source changed after it was selected; reload the graph.");
-  }
+  const artifactPath = canonicalFile(request.artifactPath);
   const workerPath = syntheticWorkerBundlePath();
   if (workerPath === null || !syntheticPrSandboxRuntimeSupported()) {
     throw new SyntheticExecutionError(
@@ -72,19 +72,26 @@ export async function runSyntheticScenarioInOci(
     );
   }
   assertMountPath(sourceRoot);
+  assertMountPath(artifactPath);
   assertMountPath(workerPath);
   const containerUser = syntheticOciContainerUser();
   if (containerUser === null) {
     throw new SyntheticExecutionError("unsupported-runtime", 422, "PR synthetic execution refuses a root Docker host identity.");
   }
-  const { sourceRoot: _sourceRoot, compilationMode: _compilationMode, ...job } = request;
+  const {
+    sourceRoot: _sourceRoot,
+    artifactPath: _artifactPath,
+    compilationMode: _compilationMode,
+    signal: _signal,
+    ...job
+  } = request;
   const serialized = JSON.stringify(job);
   if (Buffer.byteLength(serialized, "utf8") > MAX_JOB_BYTES) {
     throw new SyntheticExecutionError("invalid-request", 400, "Synthetic OCI job is too large.");
   }
   const containerName = `meridian-synthetic-${randomUUID()}`;
-  const args = buildSyntheticOciDockerArgs(containerName, sourceRoot, workerPath, containerUser);
-  const stdout = await runDockerContainer(containerName, args, serialized);
+  const args = buildSyntheticOciDockerArgs(containerName, sourceRoot, artifactPath, workerPath, containerUser);
+  const stdout = await runDockerContainer(containerName, args, serialized, request.signal);
   return parseSyntheticOciResult(stdout);
 }
 
@@ -92,6 +99,7 @@ export async function runSyntheticScenarioInOci(
 export function buildSyntheticOciDockerArgs(
   containerName: string,
   sourceRoot: string,
+  artifactPath: string,
   workerPath: string,
   containerUser: string,
 ): string[] {
@@ -115,6 +123,7 @@ export function buildSyntheticOciDockerArgs(
     "--workdir=/tmp",
     "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=192m,mode=1777",
     "--mount", `type=bind,src=${sourceRoot},dst=/source,readonly`,
+    "--mount", `type=bind,src=${artifactPath},dst=/artifact.json,readonly`,
     "--mount", `type=bind,src=${workerPath},dst=/opt/meridian/synthetic-oci-worker.js,readonly`,
     "--env", "LANG=C",
     "--env", "LC_ALL=C",
@@ -128,10 +137,18 @@ export function buildSyntheticOciDockerArgs(
     "/opt/meridian/synthetic-oci-worker.js",
     "run-oci",
     "-",
+    "/source",
+    "/artifact.json",
   ];
 }
 
-function runDockerContainer(containerName: string, args: string[], job: string): Promise<string> {
+function runDockerContainer(
+  containerName: string,
+  args: string[],
+  job: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (signal?.aborted) return Promise.reject(abortReason(signal));
   return new Promise((resolveContainer, rejectContainer) => {
     const child = spawn("docker", args, {
       env: DOCKER_ENV,
@@ -147,12 +164,15 @@ function runDockerContainer(containerName: string, args: string[], job: string):
         timeout: 2_000,
       });
     };
-    const fail = (error: SyntheticExecutionError) => {
+    const abort = () => fail(abortReason(signal!));
+    const cleanup = () => signal?.removeEventListener("abort", abort);
+    const fail = (error: unknown) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       child.kill("SIGKILL");
       forceRemove();
+      cleanup();
       rejectContainer(error);
     };
     const timer = setTimeout(() => fail(new SyntheticExecutionError(
@@ -160,6 +180,7 @@ function runDockerContainer(containerName: string, args: string[], job: string):
       422,
       "Synthetic OCI execution exceeded the 25 second time limit.",
     )), TIMEOUT_MS);
+    signal?.addEventListener("abort", abort, { once: true });
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
       if (Buffer.byteLength(stdout, "utf8") > MAX_STDOUT_BYTES) {
@@ -181,6 +202,7 @@ function runDockerContainer(containerName: string, args: string[], job: string):
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      cleanup();
       if (code !== 0) {
         rejectContainer(parseSyntheticWorkerError(stdout, "OCI")
           ?? new SyntheticExecutionError("execution-failed", 422, "Synthetic execution failed inside the OCI sandbox."));
@@ -190,6 +212,13 @@ function runDockerContainer(containerName: string, args: string[], job: string):
     });
     child.stdin.end(job, "utf8");
   });
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  if (signal.reason !== undefined) return signal.reason;
+  const error = new Error("The operation was aborted");
+  error.name = "AbortError";
+  return error;
 }
 
 /** Match the source checkout owner so a 0700 prepared clone remains private from other host
@@ -245,6 +274,17 @@ function canonicalDirectory(path: string): string {
     return canonical;
   } catch {
     throw new SyntheticExecutionError("invalid-request", 400, "Synthetic execution source root is unavailable.");
+  }
+}
+
+function canonicalFile(path: string): string {
+  try {
+    const canonical = realpathSync.native(resolve(path));
+    const entry = statSync(canonical);
+    if (!entry.isFile() || entry.size < 1) throw new Error();
+    return canonical;
+  } catch {
+    throw new SyntheticExecutionError("invalid-request", 400, "Synthetic execution artifact is unavailable.");
   }
 }
 

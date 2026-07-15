@@ -2,7 +2,11 @@ import { defineConfig } from "tsup";
 
 export default defineConfig([
   {
-    entry: ["src/bin.ts"],
+    entry: [
+      "src/bin.ts",
+      "src/server/extraction-worker-child.ts",
+      "src/server/standalone-view-mock-worker-child.ts",
+    ],
     format: ["esm"],
     dts: false,
     clean: true,

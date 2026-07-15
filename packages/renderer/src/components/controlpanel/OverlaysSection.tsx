@@ -204,19 +204,14 @@ export function countTestFiles(state: BlueprintState): number {
   };
   addIndexTests(state.index);
   const addReviewTestPath = (path: string) => {
-    const baselineIndex = state.prReviewBaseline?.index ?? null;
-    if (!isReviewTestPath(path, state.index, baselineIndex)) {
+    if (!isReviewTestPath(path, state.index, state.prReviewComparison?.index ?? null)) {
       return;
     }
     const activeMatch = matchAffectedFiles(state.index, [path]).matched[0];
-    const baselineMatch = activeMatch === undefined && baselineIndex !== null
-      ? matchAffectedFiles(baselineIndex, [path]).matched[0]
-      : undefined;
-    const matchedIndex = activeMatch === undefined ? baselineIndex : state.index;
-    const moduleId = activeMatch?.moduleId ?? baselineMatch?.moduleId;
-    const graphPath = moduleId === undefined || matchedIndex === null
+    const moduleId = activeMatch?.moduleId;
+    const graphPath = moduleId === undefined
       ? null
-      : matchedIndex.nodesById.get(moduleId)?.location.file ?? null;
+      : state.index.nodesById.get(moduleId)?.location.file ?? null;
     paths.add(graphPath ?? path);
   };
   // A PR can add its first test file, so it has no module in the base graph yet. Keep the toggle
