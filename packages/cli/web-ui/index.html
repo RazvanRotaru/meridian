@@ -578,6 +578,50 @@
       .search-wrap {
         position: relative;
       }
+      .repository-selection {
+        min-height: 45px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 7px 6px 13px;
+        border: 1px solid rgba(63, 185, 80, 0.28);
+        border-radius: 10px;
+        background: rgba(63, 185, 80, 0.07);
+      }
+      .repository-selection-name {
+        min-width: 0;
+        flex: 1;
+        overflow: hidden;
+        color: var(--text);
+        font-family: var(--font-mono);
+        font-size: 13px;
+        font-weight: 600;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      button.change-repository {
+        min-height: 40px;
+        flex: 0 0 auto;
+        padding: 7px 9px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--text);
+        font-family: var(--font-sans);
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: border-color 0.15s, background 0.15s;
+      }
+      button.change-repository:hover {
+        border-color: rgba(88, 166, 255, 0.58);
+        background: rgba(88, 166, 255, 0.11);
+      }
+      button.change-repository:focus-visible {
+        outline: none;
+        border-color: var(--blue);
+        box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
+      }
       .results {
         list-style: none;
         margin: 0;
@@ -1033,8 +1077,26 @@
               <div class="field">
                 <label for="repo" id="repo-label">Public GitHub repository</label>
                 <div class="search-wrap" id="repo-search-wrap">
-                  <input id="repo" name="repo" placeholder="owner/repo  or  https://github.com/owner/repo" />
+                  <input
+                    id="repo"
+                    name="repo"
+                    placeholder="owner/repo  or  https://github.com/owner/repo"
+                  />
                   <ul class="results dropdown" id="results" hidden></ul>
+                </div>
+                <div
+                  class="repository-selection"
+                  id="repository-selection"
+                  role="group"
+                  aria-label="Selected GitHub repository"
+                  hidden
+                >
+                  <span
+                    class="repository-selection-name"
+                    id="selected-repository-name"
+                    aria-live="polite"
+                  ></span>
+                  <button type="button" class="change-repository" id="change-repository">Change repository</button>
                 </div>
               </div>
 
@@ -1334,11 +1396,15 @@
       $("intent-explore").addEventListener("click", () => setGithubIntent("explore"));
       $("intent-review").addEventListener("click", () => setGithubIntent("review"));
 
-      // A CLI positional (`meridian web <source>`) is injected as a prefill string.
+      // A CLI positional (`meridian web <source>`) is injected as a prefill string. A GitHub
+      // positional wins over the browser's persisted selection; a local positional leaves that
+      // GitHub preference intact for the next time the user switches back to the GitHub tab.
       const prefill = window.__MERIDIAN_PREFILL__;
+      let initialGithubRepository = null;
       if (typeof prefill === "string" && prefill.length) {
         if (/^https?:\/\//i.test(prefill) || /^[\w.-]+\/[\w.-]+$/.test(prefill)) {
           $("repo").value = prefill;
+          initialGithubRepository = prefill;
         } else {
           $("path").value = prefill;
           setMode("path");
@@ -1390,7 +1456,9 @@
       // Signed out there is no search — the field takes an exact public repo. Signed in it
       // becomes a live search over all repos the token can see, so the label says so.
       function labelRepoField(isSignedIn) {
-        $("repo-label").textContent = isSignedIn ? "Search GitHub repositories" : "Public GitHub repository";
+        $("repo-label").textContent = selectedRepository
+          ? "GitHub repository"
+          : isSignedIn ? "Search GitHub repositories" : "Public GitHub repository";
         $("repo").placeholder = isSignedIn
           ? "type to search  or  owner/repo"
           : "owner/repo  or  https://github.com/owner/repo";
@@ -1570,6 +1638,9 @@
       // "All GitHub" (the debounced server-side search) ---
       let myRepos = [];
       let activeQuery = null;
+      const SELECTED_REPOSITORY_STORAGE_KEY = "meridian.selectedRepository";
+      let selectedRepository = null;
+      let changingRepository = false;
       const CUSTOM_BRANCH_VALUE = ":custom";
       let pullRequests = [];
       let selectedPrNumber = null;
@@ -1591,6 +1662,72 @@
           return null;
         }
       }
+
+      function readSelectedRepository() {
+        try {
+          return githubRepoSlug(window.localStorage.getItem(SELECTED_REPOSITORY_STORAGE_KEY));
+        } catch {
+          return null;
+        }
+      }
+
+      function writeSelectedRepository(repository) {
+        try {
+          window.localStorage.setItem(SELECTED_REPOSITORY_STORAGE_KEY, repository);
+        } catch {
+          // Persistence is best-effort; the in-memory selection still works when storage is blocked.
+        }
+      }
+
+      function showRepositorySelection(repository) {
+        selectedRepository = repository;
+        changingRepository = false;
+        $("repo").value = repository;
+        $("selected-repository-name").textContent = repository;
+        $("repo-search-wrap").hidden = true;
+        $("repository-selection").hidden = false;
+        labelRepoField(signedIn);
+      }
+
+      function selectRepository(value, options) {
+        const repository = githubRepoSlug(value);
+        if (!repository) return null;
+        const changed = repository !== selectedRepository;
+        if (changed) cancelGithubDiscovery();
+        showRepositorySelection(repository);
+        writeSelectedRepository(repository);
+        hideAllPickerPopovers();
+        if ((!options || options.load !== false) && changed) {
+          loadGithubRepositoryData(repository, options && options.defaultBranch);
+        }
+        return repository;
+      }
+
+      function startRepositoryChange() {
+        if (!selectedRepository) return;
+        changingRepository = true;
+        animateCardSwap(() => {
+          $("repository-selection").hidden = true;
+          $("repo-search-wrap").hidden = false;
+          labelRepoField(signedIn);
+          setStatus("", "");
+        });
+        hideAllPickerPopovers();
+        requestAnimationFrame(() => {
+          $("repo").focus();
+          $("repo").select();
+        });
+      }
+
+      function cancelRepositoryChange() {
+        if (!changingRepository || !selectedRepository) return;
+        showRepositorySelection(selectedRepository);
+        hideAllPickerPopovers();
+        loadGithubRepositoryData(selectedRepository);
+        requestAnimationFrame(() => $("change-repository").focus());
+      }
+
+      $("change-repository").addEventListener("click", startRepositoryChange);
 
       function menuButtons(id) {
         return [...$(id + "-options").querySelectorAll("button.result")];
@@ -2313,9 +2450,8 @@
         // it and appearing to drop the pick. Nulling activeQuery makes that late render a no-op.
         clearTimeout(searchTimer);
         activeQuery = null;
-        $("repo").value = typeof repo.fullName === "string" ? repo.fullName : "";
-        loadGithubRepositoryData($("repo").value, repo.defaultBranch);
-        hideAllPickerPopovers();
+        const repository = selectRepository(repo.fullName, { defaultBranch: repo.defaultBranch });
+        if (repository) requestAnimationFrame(() => $("change-repository").focus());
       }
 
       function hideResults() {
@@ -2338,7 +2474,11 @@
         if (!target?.closest(".menu-select")) closeAllMenus();
       });
       $("repo").addEventListener("keydown", (event) => {
-        if (event.key === "Escape") hideAllPickerPopovers();
+        if (event.key === "Escape") {
+          const resultsWereOpen = !$("results").hidden;
+          hideAllPickerPopovers();
+          if (!resultsWereOpen) cancelRepositoryChange();
+        }
         if (event.key === "Tab") hideResults();
       });
 
@@ -2527,6 +2667,9 @@
           if (pullRequestMissing) $("pr-query").focus();
           return;
         }
+        if (request.kind === "github") {
+          request.value = selectRepository(request.value, { load: false }) || request.value;
+        }
         hideAllPickerPopovers();
         setStatus("", null);
         $("submit").disabled = true;
@@ -2585,6 +2728,8 @@
         }
       });
 
+      const restoredRepository = githubRepoSlug(initialGithubRepository) || readSelectedRepository();
+      if (restoredRepository) selectRepository(restoredRepository, { load: false });
       initAuth();
 
       // --- the animated graph background (ported from the design handoff; plain Canvas 2D) ---

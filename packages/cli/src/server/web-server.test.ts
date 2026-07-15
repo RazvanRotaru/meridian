@@ -71,6 +71,13 @@ describe("createWebServer landing + errors", () => {
     expect(html).toContain('id="pr-results"');
     expect(html).toContain("/api/repos/pulls?repo=");
     expect(html).toContain('"&view=modules&prn="');
+    expect(html).toContain('id="repository-selection"');
+    expect(html).toContain('id="selected-repository-name"');
+    expect(html).toContain('id="change-repository"');
+    expect(html).toContain("Change repository");
+    expect(html).toContain('SELECTED_REPOSITORY_STORAGE_KEY = "meridian.selectedRepository"');
+    expect(html).toContain("window.localStorage.getItem(SELECTED_REPOSITORY_STORAGE_KEY)");
+    expect(html).toContain("window.localStorage.setItem(SELECTED_REPOSITORY_STORAGE_KEY, repository)");
     expect(html).not.toContain("<select");
     expect(html).not.toContain('id="pr-number"');
     expect(html).not.toContain('id="subdir"');
