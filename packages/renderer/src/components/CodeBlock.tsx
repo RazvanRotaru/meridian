@@ -83,6 +83,7 @@ export function CodeBlock({
   changedLines,
   changedLineKinds,
   evidenceLines,
+  focusLines,
   onLineClick,
   commentableLines,
   lineComposer,
@@ -109,6 +110,8 @@ export function CodeBlock({
   changedLineKinds?: ReadonlyMap<number, ChangedLineKind>;
   /** Absolute source rows that prove the selected graph edge. Styled independently from PR diffs. */
   evidenceLines?: ReadonlySet<number>;
+  /** Absolute rows for a presentation-only structural focus. Never treated as a PR change. */
+  focusLines?: ReadonlySet<number>;
   /** Opens the controlled line composer from either the source row or its keyboard gutter action. */
   onLineClick?: (line: number) => void;
   /** Absolute HEAD-side lines allowed to host a RIGHT-side review comment. */
@@ -187,6 +190,7 @@ export function CodeBlock({
       changedLines,
       changedLineKinds,
       evidenceLines,
+      focusLines,
       existingCommentsByLine,
       pendingCommentsByLine,
       composerLine: lineComposer?.line,
@@ -204,6 +208,7 @@ export function CodeBlock({
     changedLines,
     changedLineKinds,
     evidenceLines,
+    focusLines,
     existingCommentsByLine,
     foldUnchanged,
     highlightedLines.length,
@@ -224,20 +229,32 @@ export function CodeBlock({
     for (let line = fold.startLine; line <= fold.endLine; line += 1) collapsedLines.add(line);
   }
   const listingRef = useRef<HTMLDivElement>(null);
-  // Edge evidence is the reader's explicit target, so it wins the initial scroll position. A
-  // regular source panel still lands on its first diff as before.
+  // Structural focus and edge evidence are explicit reader targets, so they win the initial scroll
+  // position. A regular source panel still lands on its first diff as before.
   useEffect(() => {
     const container = listingRef.current;
     if (!container || startLine === undefined) {
       return;
     }
-    const firstFocus = firstFocusedLine(evidenceLines, changedLineKinds, changedLines);
+    const firstFocus = firstFocusedLine(focusLines, evidenceLines, changedLineKinds, changedLines);
     if (firstFocus === null) {
       return;
     }
     const row = container.querySelector<HTMLTableRowElement>(`tr[data-source-line="${firstFocus}"]`);
-    container.scrollTop = Math.max(0, (row?.offsetTop ?? (firstFocus - startLine) * LINE_HEIGHT_PX) - 3 * LINE_HEIGHT_PX);
-  }, [code, startLine, changedLines, changedLineKinds, evidenceLines, existingCommentsByLine, pendingCommentsByLine]);
+    container.scrollTop = codeFocusScrollTop(
+      row?.offsetTop ?? (firstFocus - startLine) * LINE_HEIGHT_PX,
+      (focusLines?.size ?? 0) > 0,
+    );
+  }, [
+    code,
+    startLine,
+    changedLines,
+    changedLineKinds,
+    evidenceLines,
+    focusLines,
+    existingCommentsByLine,
+    pendingCommentsByLine,
+  ]);
   useEffect(() => {
     if (!lineComposer?.confirmDiscard) return;
     const row = listingRef.current?.querySelector<HTMLTableRowElement>(
@@ -298,6 +315,7 @@ export function CodeBlock({
               : diffLines === undefined ? changedLineKinds?.get(lineNo) : undefined;
             const changed = diffLines === undefined && (changedLines?.has(lineNo) ?? false);
             const evidence = evidenceLines?.has(lineNo) ?? false;
+            const focused = focusLines?.has(lineNo) ?? false;
             const commentable = onLineClick !== undefined && (commentableLines?.has(lineNo) ?? false);
             const composerOpen = lineComposer?.line === lineNo;
             const lineComments = existingCommentsByLine.get(lineNo) ?? EMPTY_EXISTING_COMMENTS;
@@ -325,6 +343,7 @@ export function CodeBlock({
                   data-no-newline={canonicalRow?.noNewline ? "true" : undefined}
                   aria-label={canonicalDiffAriaLabel(canonicalRow)}
                   data-edge-evidence-line={evidence ? "true" : undefined}
+                  data-source-focus-line={focused ? "true" : undefined}
                   data-review-comment-line={commentable ? lineNo : undefined}
                   data-line-comment-composer-open={composerOpen ? "true" : undefined}
                 >
@@ -363,6 +382,7 @@ export function CodeBlock({
                       ...CODE_CELL_STYLE,
                       ...(lineRowStyle(kind) ?? {}),
                       ...(evidence ? EVIDENCE_ROW_STYLE : {}),
+                      ...(focused ? FOCUS_ROW_STYLE : {}),
                       ...(commentable ? COMMENTABLE_CODE_CELL_STYLE : {}),
                     }}
                     onClick={commentable ? (event) => {
@@ -459,6 +479,7 @@ function foldFocus(options: {
   changedLines?: ReadonlySet<number>;
   changedLineKinds?: ReadonlyMap<number, ChangedLineKind>;
   evidenceLines?: ReadonlySet<number>;
+  focusLines?: ReadonlySet<number>;
   existingCommentsByLine: ReadonlyMap<number, readonly PrGitHubComment[]>;
   pendingCommentsByLine: ReadonlyMap<number, readonly ReviewComment[]>;
   composerLine?: number;
@@ -471,6 +492,7 @@ function foldFocus(options: {
   options.changedLines?.forEach((line) => lines.add(line));
   options.changedLineKinds?.forEach((_kind, line) => lines.add(line));
   options.evidenceLines?.forEach((line) => lines.add(line));
+  options.focusLines?.forEach((line) => lines.add(line));
   // GitHub commentability already covers the patch's U3 context. Treating every commentable row as
   // a change focus would add another three rows around that context and silently widen U3 to U6.
   // Canonical +/- rows define the fold; existing comments/drafts below can still pin their rows.
@@ -572,10 +594,14 @@ function diffRowKey(line: CodeDiffLine): string {
 }
 
 function firstFocusedLine(
+  focusLines?: ReadonlySet<number>,
   evidenceLines?: ReadonlySet<number>,
   changedLineKinds?: ReadonlyMap<number, ChangedLineKind>,
   changedLines?: ReadonlySet<number>,
 ): number | null {
+  if (focusLines && focusLines.size > 0) {
+    return Math.min(...focusLines);
+  }
   if (evidenceLines && evidenceLines.size > 0) {
     return Math.min(...evidenceLines);
   }
@@ -586,6 +612,17 @@ function firstFocusedLine(
     return Math.min(...changedLines);
   }
   return null;
+}
+
+/**
+ * Structural previews are intentionally tighter than regular source readers: the selected
+ * control statement is the subject of the card, so its first row anchors the viewport. Diff and
+ * evidence readers retain a little leading context to explain how their first highlighted row is
+ * reached.
+ */
+export function codeFocusScrollTop(focusRowTop: number, hasStructuralFocus: boolean): number {
+  const contextRows = hasStructuralFocus ? 0 : 3;
+  return Math.max(0, focusRowTop - contextRows * LINE_HEIGHT_PX);
 }
 
 /** Split tokenized pieces into explicit visual rows so code/gutter never desync on wrapped token streams. */
@@ -752,6 +789,11 @@ const DELETED_ROW_STYLE: React.CSSProperties = {
 const EVIDENCE_ROW_STYLE: React.CSSProperties = {
   backgroundImage: "linear-gradient(rgba(56,139,253,0.14), rgba(56,139,253,0.14))",
   boxShadow: "inset 3px 0 0 #7DD3FC, inset 0 0 0 1px rgba(125,211,252,0.28)",
+};
+const FOCUS_ROW_STYLE: React.CSSProperties = {
+  backgroundImage: "linear-gradient(rgba(125,211,252,0.08), rgba(125,211,252,0.08))",
+  outline: "1px solid rgba(125,211,252,0.18)",
+  outlineOffset: -1,
 };
 const CODE_CELL_STYLE: React.CSSProperties = {
   height: LINE_HEIGHT_PX,

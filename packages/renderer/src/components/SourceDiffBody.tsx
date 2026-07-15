@@ -217,12 +217,15 @@ export function SourceDiffBody({
   model,
   maxHeight,
   evidenceLines = EMPTY_EVIDENCE_LINES,
+  focusLines = EMPTY_FOCUS_LINES,
   showGutter,
   onComposerEngage,
 }: {
   model: SourceDiffModel;
   maxHeight: number | string;
   evidenceLines?: ReadonlySet<number>;
+  /** Presentation-only rows for a hovered structural control. They affect focus/folding, not diffs. */
+  focusLines?: ReadonlySet<number>;
   /** Ordinary Logic source may remain gutterless; every active review diff gets the shared gutter. */
   showGutter?: boolean;
   /** Promote a transient host before inserting/focusing the composer can change card geometry. */
@@ -284,6 +287,7 @@ export function SourceDiffBody({
           changedLines={model.changedLines}
           changedLineKinds={model.changedLineKinds}
           evidenceLines={evidenceLines}
+          focusLines={focusLines}
           commentableLines={model.commentableLines}
           onLineClick={model.commentableLines.size > 0 ? (line) => {
             // Pin synchronously. Waiting for the controlled composer render is late enough for a
@@ -432,6 +436,7 @@ function summarizeDiffLines(lines: readonly CodeDiffLine[]): SourceDiffSummary |
 const EMPTY_COMMENTABLE_LINES: ReadonlySet<number> = new Set<number>();
 const EMPTY_EVIDENCE_LINES: ReadonlySet<number> = new Set<number>();
 const EMPTY_NEUTRALIZED_LINES: ReadonlySet<number> = new Set<number>();
+const EMPTY_FOCUS_LINES: ReadonlySet<number> = new Set<number>();
 const EMPTY_REMOVED: readonly { afterNewLine: number; lines: string[] }[] = [];
 const EMPTY_REMOVED_ROWS: ReadonlyMap<number, string[]> = new Map<number, string[]>();
 const STATUS_STYLE: React.CSSProperties = { padding: 16, color: "#8B949E", fontSize: 12 };

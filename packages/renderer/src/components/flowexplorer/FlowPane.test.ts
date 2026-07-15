@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Node } from "@xyflow/react";
-import type { RequestTrace, SyntheticScenarioDescriptor } from "@meridian/core";
+import type { GraphNode, RequestTrace, SyntheticScenarioDescriptor } from "@meridian/core";
 import { STATIC_LOGIC_VIEW_MODES } from "../../derive/flowViewModel";
+import { resolveNodeDiffPreviewSubject } from "../review/useNodeDiffPreview";
 import {
+  flowPaneCodePreviewTarget,
   flowPanePresentation,
   flowPaneNavigationTarget,
   flowPaneShouldRender,
@@ -36,6 +38,73 @@ describe("flowPaneNavigationTarget", () => {
   it("keeps structural, runtime-only, and unresolved moments in the pane", () => {
     expect(flowPaneNavigationTarget({ targetId: null, canNavigate: true })).toBeNull();
     expect(flowPaneNavigationTarget({ targetId: "ts:orders.ts#visitOrder", canNavigate: false })).toBeNull();
+  });
+});
+
+describe("flowPaneCodePreviewTarget", () => {
+  const owner: GraphNode = {
+    id: "ts:src/orders.ts#submit",
+    kind: "function",
+    qualifiedName: "submit",
+    displayName: "submit",
+    parentId: null,
+    location: { file: "src/orders.ts", startLine: 10, endLine: 40 },
+  };
+
+  it("loads a structural control from its enclosing callable while retaining exact occurrence focus", () => {
+    const focus = { file: "src/orders.ts", line: 18, col: 2, endLine: 26, endCol: 3 };
+    const structural = {
+      id: "submit::1/b0/0",
+      position: { x: 0, y: 0 },
+      data: {
+        logicKind: "if",
+        label: "if order.ready",
+        targetId: null,
+        sourceContext: { ownerId: owner.id, anchor: focus },
+      },
+    } as Node;
+
+    expect(flowPaneCodePreviewTarget(structural)).toEqual({
+      targetId: owner.id,
+      focus,
+      label: "if order.ready",
+    });
+    expect(resolveNodeDiffPreviewSubject(
+      new Map([[owner.id, owner]]),
+      structural,
+      flowPaneCodePreviewTarget,
+    )).toEqual({
+      anchorId: structural.id,
+      node: owner,
+      focus,
+      label: "if order.ready",
+    });
+  });
+
+  it("keeps call previews pointed at the callee and leaves source-less structure inert", () => {
+    const call = { id: "call", position: { x: 0, y: 0 }, data: { targetId: owner.id } } as Node;
+    const join = { id: "join", position: { x: 0, y: 0 }, data: { targetId: null, logicKind: "join" } } as Node;
+
+    expect(flowPaneCodePreviewTarget(call)).toBe(owner.id);
+    expect(flowPaneCodePreviewTarget(join)).toBeNull();
+  });
+
+  it("falls back to the whole enclosing callable when an older control has no exact anchor", () => {
+    const structural = {
+      id: "legacy-try",
+      position: { x: 0, y: 0 },
+      data: {
+        logicKind: "try",
+        label: "try / catch",
+        targetId: null,
+        sourceContext: { ownerId: owner.id },
+      },
+    } as Node;
+
+    expect(flowPaneCodePreviewTarget(structural)).toEqual({
+      targetId: owner.id,
+      label: "try / catch",
+    });
   });
 });
 
@@ -84,7 +153,7 @@ describe("request flow camera fitting", () => {
     expect(shouldAutoFitFlowPane(true, false)).toBe(true);
     expect(shouldAutoFitFlowPane(true, true)).toBe(false);
     expect(shouldAutoFitFlowPane(false, false)).toBe(true);
-    expect(shouldAutoFitFlowPane(false, true)).toBe(true);
+    expect(shouldAutoFitFlowPane(false, true)).toBe(false);
   });
 
   it("centers focused child steps in absolute graph coordinates instead of their container origin", () => {

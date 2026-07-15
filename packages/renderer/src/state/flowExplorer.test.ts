@@ -187,6 +187,48 @@ describe("flow explorer store slice", () => {
     expect(store.getState().flowPaneExpansionOverrides).toEqual(new Set());
   });
 
+  it("collapses and restores a static-pane edge without leaking state into the main Logic view", async () => {
+    const store = freshStore();
+    const firstSelection = { rootId: "ts:pkg/src/a.ts#run", blockPath: [] };
+    store.setState({ collapsedLogicEdges: new Set(["main-logic-edge"]) });
+    store.getState().selectFlowEntry(firstSelection);
+    await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
+
+    const collapsibleEdge = store.getState().flowPaneRfEdges.find((edge) => (
+      edge.data?.collapsible === true && typeof edge.data.collapseKey === "string"
+    ));
+    expect(collapsibleEdge).toBeDefined();
+    const collapseKey = collapsibleEdge!.data!.collapseKey!;
+
+    store.getState().toggleFlowPaneEdgeCollapse(collapseKey);
+    await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
+
+    expect(store.getState().flowPaneCollapsedEdges).toEqual(new Set([collapseKey]));
+    expect(store.getState().collapsedLogicEdges).toEqual(new Set(["main-logic-edge"]));
+    expect(store.getState().flowPaneRfNodes).toContainEqual(expect.objectContaining({
+      type: "fold",
+      data: expect.objectContaining({ collapseKey }),
+    }));
+    expect(store.getState().flowPaneRfEdges.some((edge) => edge.data?.collapseKey === collapseKey)).toBe(false);
+
+    // The same action restores from the synthetic fold node after the original edge is hidden.
+    store.getState().toggleFlowPaneEdgeCollapse(collapseKey);
+    await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
+
+    expect(store.getState().flowPaneCollapsedEdges).toEqual(new Set());
+    expect(store.getState().flowPaneRfNodes.some((node) => node.type === "fold")).toBe(false);
+    expect(store.getState().flowPaneRfEdges.some((edge) => edge.data?.collapseKey === collapseKey)).toBe(true);
+    expect(store.getState().collapsedLogicEdges).toEqual(new Set(["main-logic-edge"]));
+
+    store.getState().toggleFlowPaneEdgeCollapse(collapseKey);
+    await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
+    expect(store.getState().flowPaneCollapsedEdges).toEqual(new Set([collapseKey]));
+
+    store.getState().selectFlowEntry({ rootId: "ts:pkg/src/b.ts#leaf", blockPath: [] });
+    expect(store.getState().flowPaneCollapsedEdges).toEqual(new Set());
+    expect(store.getState().collapsedLogicEdges).toEqual(new Set(["main-logic-edge"]));
+  });
+
   it("clears ghost inspection before relaying out a non-review flow reveal", () => {
     const store = freshStore();
     const inspectionAtRelayout: unknown[] = [];

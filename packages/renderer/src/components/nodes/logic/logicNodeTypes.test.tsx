@@ -2,7 +2,7 @@ import type { ComponentType } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ReactFlowProvider, type NodeProps } from "@xyflow/react";
 import { describe, expect, it } from "vitest";
-import type { LogicNodeData } from "../../../derive/logicGraph";
+import type { CollapsedEdgeData, LogicNodeData } from "../../../derive/logicGraph";
 import type { DefGroupData, LogicFlowOrientation, LogicRfNode } from "../../../layout/logicElk";
 import { ALPHA_RUN, freshStore } from "../../../parity/surfaceFixture";
 import { StoreProvider } from "../../../state/StoreContext";
@@ -15,6 +15,7 @@ import {
   withChanged,
 } from "./logicNodeTypes";
 import { LogicFlowOrientationProvider } from "./LogicFlowOrientationContext";
+import { LogicEdgeActionScope } from "../../edges/LogicEdgeActionScope";
 
 describe("logic PR-change paint", () => {
   it("washes the whole node, keeps external hatching, and strengthens a dimmed changed node", () => {
@@ -106,6 +107,40 @@ describe("Logic definition-owner frame", () => {
     expect(markup.indexOf("INTERFACE")).toBeLessThan(markup.indexOf("data-base-node-disclosure"));
   });
 });
+
+describe("Logic edge fold", () => {
+  it("renders one keyboard-operable semantic disclosure for the exact collapsed path", () => {
+    const Fold = logicNodeTypes.fold;
+    const data: CollapsedEdgeData = {
+      targetId: null,
+      isContainer: false,
+      collapseKey: "branch:if:then",
+      edgeKind: "branch",
+      targetLabel: "reserve inventory",
+      hiddenStepCount: 3,
+      edgeLabel: "then",
+      branchRole: "then",
+    };
+    const props = { id: "flow::fold/then", data } as NodeProps<LogicRfNode>;
+    const markup = renderToStaticMarkup(
+      <ReactFlowProvider>
+        <LogicFlowOrientationProvider value="horizontal">
+          <LogicEdgeActionScope toggleCollapse={() => undefined}>
+            <Fold {...props} />
+          </LogicEdgeActionScope>
+        </LogicFlowOrientationProvider>
+      </ReactFlowProvider>,
+    );
+
+    expect(markup).toContain('data-logic-edge-fold="true"');
+    expect(markup).toContain('data-edge-role="then"');
+    expect(markup).toContain('data-edge-disclosure-state="collapsed"');
+    expect(markup).toContain('data-edge-collapse-key="branch:if:then"');
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain('aria-label="Expand then path, 3 hidden steps toward reserve inventory"');
+    expect(markup).toContain("3 hidden");
+  });
+});
 describe("Logic async node composition", () => {
   it("uses the shared kind and semantic rail for a standalone await gate", () => {
     const AsyncNode = logicNodeTypes.async;
@@ -140,6 +175,29 @@ describe("Logic async node composition", () => {
 });
 
 describe("Logic callable semantic composition", () => {
+  it("gives the source action a descriptive accessible name", () => {
+    const store = freshStore();
+    store.setState({ sourceUrl: "/source" });
+    const markup = renderBlock({
+      logicKind: "call",
+      label: "run",
+      targetId: ALPHA_RUN,
+      resolution: "resolved",
+      expandable: false,
+      isExpanded: false,
+      isContainer: false,
+      compact: true,
+      callScope: "internal",
+      greyed: false,
+      provenance: null,
+      childCount: 0,
+    }, store);
+
+    expect(markup).toContain('title="View source"');
+    expect(markup).toContain('aria-label="View source for run"');
+    expect(markup).toContain("&lt;/&gt;");
+  });
+
   it("keeps identity, declaration, result, occurrence, and provenance when a card expands into a frame", () => {
     const base: LogicNodeData = {
       logicKind: "call",
@@ -348,8 +406,7 @@ describe("synthetic runtime node snapshots", () => {
   });
 });
 
-function renderBlock(data: LogicNodeData): string {
-  const store = freshStore();
+function renderBlock(data: LogicNodeData, store = freshStore()): string {
   const state = store.getState();
   Object.assign(store, { getInitialState: () => state });
   const Block = logicNodeTypes.block;

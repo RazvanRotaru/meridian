@@ -1952,6 +1952,57 @@ describe("PR store slice", () => {
     expect(store.getState().codeView).toBe(openModal);
   });
 
+  it("maps a structural preview focus into displayed PR-head lines without narrowing its parent declaration", async () => {
+    vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
+    const fullCode = Array.from({ length: 24 }, (_value, index) => `line${index + 1}`).join("\n");
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: fullCode, truncated: false }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ sourceUrl: "/api/source?id=artifact-1", prFileUrl: "/api/prs/file?id=artifact-1" });
+    store.setState({
+      prReviewed: 7,
+      reviewHeadRef: "feature",
+      reviewFileDelta: { "src/a.ts": { added: 1, deleted: 0, status: "modified" } },
+      reviewDiffByFile: {
+        "src/a.ts": {
+          edits: [{ oldStart: 11, oldLines: 1, newStart: 11, newLines: 2 }],
+          kinds: [{ start: 11, end: 12, kind: "modified" }],
+        },
+      },
+    });
+    const method = store.getState().index.nodesById.get(METHOD_ID)!;
+
+    const preview = await store.getState().loadCodePreview(method, {
+      focus: { file: "src/a.ts", line: 11, endLine: 11 },
+    });
+
+    expect(fetchMock.mock.calls[0][0].toString()).toBe(
+      "http://meridian.local/api/prs/file?id=artifact-1&path=src%2Fa.ts&ref=feature",
+    );
+    expect(preview?.node).toBe(method);
+    expect(preview?.baseLine).toBe(10);
+    expect(preview?.lineCount).toBe(4);
+    expect(preview?.previewFocus).toEqual({ start: 11, end: 12 });
+    expect([...preview!.changedLineKinds!.entries()]).toEqual([[11, "modified"], [12, "modified"]]);
+  });
+
+  it("falls back to the parent preview when a structural anchor names another file", async () => {
+    vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      code: "line10\nline11\nline12",
+      startLine: 10,
+      truncated: false,
+    })));
+    const store = freshStore({ sourceUrl: "/api/source?id=artifact-1" });
+    const method = store.getState().index.nodesById.get(METHOD_ID)!;
+
+    const preview = await store.getState().loadCodePreview(method, {
+      focus: { file: "linked/src/a.ts", line: 11, endLine: 12 },
+    });
+
+    expect(preview?.code).toBe("line10\nline11\nline12");
+    expect(preview?.previewFocus).toBeUndefined();
+  });
+
   it("gives hover and modal the same canonical diff rows from one source request", async () => {
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
     const fullCode = Array.from({ length: 20 }, (_value, index) => `line${index + 1}`).join("\n");

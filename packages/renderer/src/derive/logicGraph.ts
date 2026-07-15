@@ -55,7 +55,7 @@ import {
 /** No owner/signature enrichment — the default when a caller (e.g. a unit test) supplies no lookup. */
 const NO_OWNER: OwnerLookup = () => null;
 
-export type LogicNodeType = "block" | "control" | "branch" | "exception" | "finally" | "join" | "async" | "servicegroup" | "terminal";
+export type LogicNodeType = "block" | "control" | "branch" | "exception" | "finally" | "join" | "async" | "servicegroup" | "terminal" | "fold";
 
 /** A call's ownership boundary, kept separate from whether its card is a compact leaf. */
 export type LogicCallScope = "internal" | "external" | "unresolved";
@@ -143,6 +143,11 @@ export type LogicNodeData = {
   /** Exact source identity for a branch decision. Present only on if/switch/try nodes emitted by
    * current extractors; older artifacts remain readable and simply cannot join runtime counters. */
   branchSource?: FlowSourceAnchor;
+  /** The canonical callable/module whose source contains this rendered structural occurrence.
+   * `anchor` is the exact control statement when the extractor supplied one. Keep this independent
+   * from `targetId`: calls preview their callee, while if/try/loop/finally nodes preview this owner
+   * and merely focus the statement inside it. */
+  sourceContext?: { ownerId: string; anchor?: FlowSourceAnchor };
   branchKind?: BranchKind;
   /** Rich async event + its task-rail endpoints. Legacy awaited/detached remain above for old data. */
   asyncEvent?: LogicAsyncEvent;
@@ -194,11 +199,25 @@ export type TerminalData = {
   changedStatus?: ChangeStatus;
 };
 
+/** A compact continuation inserted when one edge is folded. It is a presentation node, not source
+ * or runtime evidence: the semantic edge key restores the exact cut while the count reports only
+ * execution steps owned exclusively by that path. */
+export type CollapsedEdgeData = {
+  targetId: null;
+  isContainer: false;
+  collapseKey: string;
+  edgeKind: LogicEdgeSpec["kind"];
+  targetLabel: string;
+  hiddenStepCount: number;
+  edgeLabel?: string;
+  branchRole?: LogicBranchPort["role"];
+};
+
 export interface LogicNodeSpec {
   id: string;
   parentId: string | null;
   type: LogicNodeType;
-  data: LogicNodeData | TerminalData;
+  data: LogicNodeData | TerminalData | CollapsedEdgeData;
   width?: number;
   height?: number;
 }
@@ -222,6 +241,9 @@ export interface LogicEdgeSpec {
    * relation; static FlowSteps need site/path correlation before their internal edges can carry the
    * same claim. */
   requestTraversal?: RequestEdgeTraversalEvidence;
+  /** Fold projections replace a canonical connection with non-collapsible segments around a `+N`
+   * continuation node. Omitted means this canonical edge can be folded. */
+  collapsible?: boolean;
 }
 
 export type RequestRuntimeCausalRelation =
@@ -293,6 +315,9 @@ export interface LogicGraphOptions {
   hideGreyed: boolean;
   nestByService?: boolean;
   withTerminals?: boolean;
+  /** Canonical source owner when `rootId` is only an occurrence namespace (focused body/request
+   * grafts). Ordinary callable graphs default this to `rootId`. */
+  sourceOwnerId?: string;
   /** Resolve change status from a flow step's own source line, never from its call target. */
   changedStatusForSource?: (source: FlowSourceAnchor | undefined) => ChangeStatus | undefined;
 }
@@ -420,6 +445,7 @@ class LogicGraphBuilder {
    * so two expanded call sites of the same callee can never cross-wire their async rails. */
   private readonly asyncLaunches = new Map<string, { nodeId: string; sourcePort: string }>();
   private edgeSeq = 0;
+  private readonly initialSourceOwnerId: string;
 
   constructor(
     private readonly rootId: string,
@@ -428,10 +454,12 @@ class LogicGraphBuilder {
     private readonly expanded: ReadonlySet<string>,
     private readonly options: LogicGraphOptions,
     private readonly ownerLookup: OwnerLookup,
-  ) {}
+  ) {
+    this.initialSourceOwnerId = options.sourceOwnerId ?? rootId;
+  }
 
   build(steps: FlowStep[]): LogicGraphSpec {
-    const { firstId, lastExits } = this.sequence(steps, null, "", this.rootId);
+    const { firstId, lastExits } = this.sequence(steps, null, "", this.rootId, this.initialSourceOwnerId);
     // Frame the whole flow with entry/exit end-caps when asked (top-level callable flows only). Guarded
     // on a real first step: an all-greyed-and-hidden flow leaves `firstId` null, so it gets no terminals.
     if (this.options.withTerminals && firstId !== null) {
@@ -478,7 +506,13 @@ class LogicGraphBuilder {
    * exactly like a container's inner rendering — only here they sit at the top level, not nested.
    */
   buildFromBodies(bodies: FlowPath[]): LogicGraphSpec {
-    bodies.forEach((body, i) => this.sequence(body.body, null, logicTopLevelBodyPrefix(i), this.rootId));
+    bodies.forEach((body, i) => this.sequence(
+      body.body,
+      null,
+      logicTopLevelBodyPrefix(i),
+      this.rootId,
+      this.initialSourceOwnerId,
+    ));
     return { nodes: this.nodes, edges: this.edges };
   }
 
@@ -494,13 +528,21 @@ class LogicGraphBuilder {
     parentId: string | null,
     prefix: string,
     asyncScope: string,
+    sourceOwnerId: string,
   ): { firstId: string | null; lastExits: Exit[] } {
     let firstId: string | null = null;
     let prevExits: Exit[] = [];
     for (const unit of this.planLevel(steps, prefix)) {
       const stepParent = unit.frame ? this.emitServiceFrame(unit.frame, unit.steps.length, parentId) : parentId;
       for (const { step, i } of unit.steps) {
-        const emit = this.step(step, stepParent, logicStepPath(prefix, i), unit.frame !== null, asyncScope);
+        const emit = this.step(
+          step,
+          stepParent,
+          logicStepPath(prefix, i),
+          unit.frame !== null,
+          asyncScope,
+          sourceOwnerId,
+        );
         if (firstId === null) {
           firstId = emit.entry;
         }
@@ -600,10 +642,11 @@ class LogicGraphBuilder {
     path: string,
     framed: boolean,
     asyncScope: string,
+    sourceOwnerId: string,
   ): { entry: string; exits: Exit[] } {
     const id = logicNodeId(this.rootId, path);
     if (step.kind === "call") {
-      return this.callStep(step, parentId, path, id, framed, asyncScope);
+      return this.callStep(step, parentId, path, id, framed, asyncScope, sourceOwnerId);
     }
     if (step.kind === "await") {
       return this.awaitStep(step, parentId, id, asyncScope);
@@ -613,7 +656,18 @@ class LogicGraphBuilder {
     }
     if (step.kind === "loop" || step.kind === "callback") {
       const bodies: FlowPath[] = [{ label: step.label, body: step.body }];
-      return this.container(parentId, path, id, step.kind, step.label, bodies, step.body.length, asyncScope, step.source);
+      return this.container(
+        parentId,
+        path,
+        id,
+        step.kind,
+        step.label,
+        bodies,
+        step.body.length,
+        asyncScope,
+        sourceOwnerId,
+        step.source,
+      );
     }
     // `finally` is not a third alternative arm. When both protected arms fall through, chart it as
     // one mandatory phase after their merge. Explicit returns/throws inside those arms must be
@@ -624,14 +678,25 @@ class LogicGraphBuilder {
         // A charted TRY/CATCH/FINALLY folds as one structural beat. Reopening it restores the exact
         // split/join/finally topology; a FINALLY phase can then be folded independently as well.
         if (!this.expandedState(id, true)) {
-          return this.branchStep(step, parentId, path, id, asyncScope);
+          return this.branchStep(step, parentId, path, id, asyncScope, sourceOwnerId);
         }
-        return this.tryFinallyStep(step, parentId, path, id, asyncScope);
+        return this.tryFinallyStep(step, parentId, path, id, asyncScope, sourceOwnerId);
       }
       const count = step.paths.reduce((sum, p) => sum + p.body.length, 0);
-      return this.container(parentId, path, id, "try", "try / catch", step.paths, count, asyncScope, step.source);
+      return this.container(
+        parentId,
+        path,
+        id,
+        "try",
+        "try / catch",
+        step.paths,
+        count,
+        asyncScope,
+        sourceOwnerId,
+        step.source,
+      );
     }
-    return this.branchStep(step, parentId, path, id, asyncScope);
+    return this.branchStep(step, parentId, path, id, asyncScope, sourceOwnerId);
   }
 
   /**
@@ -659,6 +724,7 @@ class LogicGraphBuilder {
     id: string,
     framed: boolean,
     asyncScope: string,
+    sourceOwnerId: string,
   ): { entry: string; exits: Exit[] } {
     const display = callDisplay(step, this.flows, this.index);
     const navigable = display.navigable;
@@ -727,7 +793,7 @@ class LogicGraphBuilder {
     this.push(id, parentId, "block", data);
     this.wireCallAsync(correlatedAsync, asyncPorts, id, asyncScope);
     if (isExpanded && calleeFlow.length > 0) {
-      this.sequence(calleeFlow, id, logicCallBodyPrefix(path), id);
+      this.sequence(calleeFlow, id, logicCallBodyPrefix(path), id, step.target ?? sourceOwnerId);
     }
     return { entry: id, exits: [{ id }] };
   }
@@ -822,6 +888,7 @@ class LogicGraphBuilder {
     bodies: FlowPath[],
     childCount: number,
     asyncScope: string,
+    sourceOwnerId: string,
     source: FlowSourceAnchor | undefined,
   ): { entry: string; exits: Exit[] } {
     const isExpanded = this.expandedState(id, true);
@@ -840,6 +907,7 @@ class LogicGraphBuilder {
       childCount,
       ...(childCount === 0 ? { emptyFlow: true } : {}),
       changedStatus: this.changedStatus(source),
+      sourceContext: { ownerId: sourceOwnerId, ...(source ? { anchor: source } : {}) },
       // Carried so a double-click can DIVE into these sub-chains without re-parsing the flow.
       bodies,
     };
@@ -847,7 +915,13 @@ class LogicGraphBuilder {
     if (isExpanded) {
       // Each body is an independent sub-chain inside the frame. This is deliberately presentation-
       // only for the try/finally fallback; it avoids inventing an incorrect alternative-lane edge.
-      bodies.forEach((body, bi) => this.sequence(body.body, id, logicControlBodyPrefix(path, bi), asyncScope));
+      bodies.forEach((body, bi) => this.sequence(
+        body.body,
+        id,
+        logicControlBodyPrefix(path, bi),
+        asyncScope,
+        sourceOwnerId,
+      ));
     }
     return { entry: id, exits: [{ id }] };
   }
@@ -858,6 +932,7 @@ class LogicGraphBuilder {
     path: string,
     id: string,
     asyncScope: string,
+    sourceOwnerId: string,
   ): { entry: string; exits: Exit[] } {
     const kind = branchKindOf(step);
     const isExpanded = this.expandedState(id, true);
@@ -896,6 +971,7 @@ class LogicGraphBuilder {
       branchPorts,
       branchKind: kind,
       ...(step.source ? { branchSource: step.source } : {}),
+      sourceContext: { ownerId: sourceOwnerId, ...(step.source ? { anchor: step.source } : {}) },
     };
     // IF/SWITCH own the decision diamond. TRY/CATCH is an exception gate with a straight normal
     // route and a lower catch outlet; keeping a separate node type prevents it reading as a choice.
@@ -909,7 +985,13 @@ class LogicGraphBuilder {
     step.paths.forEach((flowPath, pi) => {
       const port = branchPorts[pi];
       const role = pathRole(flowPath);
-      const sub = this.sequence(flowPath.body, parentId, logicBranchBodyPrefix(path, pi), asyncScope);
+      const sub = this.sequence(
+        flowPath.body,
+        parentId,
+        logicBranchBodyPrefix(path, pi),
+        asyncScope,
+        sourceOwnerId,
+      );
       if (sub.firstId) {
         this.pushEdge(id, sub.firstId, "branch", flowPath.label, { sourcePort: port.id, branchRole: role });
         // A path that ends at a return/throw cap surfaces NO exits — it dead-ends there instead of
@@ -939,12 +1021,24 @@ class LogicGraphBuilder {
     path: string,
     id: string,
     asyncScope: string,
+    sourceOwnerId: string,
   ): { entry: string; exits: Exit[] } {
     const { tryPath, catchPath, finallyPath } = tryArms(step);
     // Guarded by canChartFinallyAsSharedPhase; keep the defensive fallback structurally valid.
     if (!tryPath || !catchPath || !finallyPath) {
       const count = step.paths.reduce((sum, candidate) => sum + candidate.body.length, 0);
-      return this.container(parentId, path, id, "try", "try / catch", step.paths, count, asyncScope, step.source);
+      return this.container(
+        parentId,
+        path,
+        id,
+        "try",
+        "try / catch",
+        step.paths,
+        count,
+        asyncScope,
+        sourceOwnerId,
+        step.source,
+      );
     }
 
     const protectedFlow = this.branchStep(
@@ -953,6 +1047,7 @@ class LogicGraphBuilder {
       path,
       id,
       asyncScope,
+      sourceOwnerId,
     );
     const finallyId = `${id}::finally`;
     const finallyExpandable = true;
@@ -972,6 +1067,10 @@ class LogicGraphBuilder {
       childCount: finallyPath.body.length,
       ...(finallyPath.body.length === 0 ? { emptyFlow: true } : {}),
       changedStatus: this.changedStatus(finallyPath.source),
+      sourceContext: {
+        ownerId: sourceOwnerId,
+        ...(finallyPath.source ? { anchor: finallyPath.source } : {}),
+      },
     };
     this.push(finallyId, parentId, "finally", finallyData);
     for (const exit of protectedFlow.exits) {
@@ -982,7 +1081,13 @@ class LogicGraphBuilder {
       return { entry: protectedFlow.entry, exits: [{ id: finallyId }] };
     }
 
-    const cleanup = this.sequence(finallyPath.body, parentId, logicFinallyBodyPrefix(path), asyncScope);
+    const cleanup = this.sequence(
+      finallyPath.body,
+      parentId,
+      logicFinallyBodyPrefix(path),
+      asyncScope,
+      sourceOwnerId,
+    );
     if (cleanup.firstId === null) {
       return { entry: protectedFlow.entry, exits: [{ id: finallyId }] };
     }

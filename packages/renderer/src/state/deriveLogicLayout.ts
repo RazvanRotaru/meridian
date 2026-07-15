@@ -18,6 +18,7 @@ import {
 import { buildOwnerLookup, type OwnerLookup } from "../derive/logicOwner";
 import { buildLogicElkGraph, toReactFlowLogic, type DefGroupData, type LogicReactFlowGraph, type LogicRfNode } from "../layout/logicElk";
 import { runElkLayout } from "../layout/elkLayout";
+import { collapseLogicEdges } from "../derive/collapseLogicEdges";
 
 export async function deriveLogicLayout(
   rootId: string,
@@ -28,18 +29,19 @@ export async function deriveLogicLayout(
   // When set, chart ONLY this container's bodies as a focused sub-view (the DIVE gesture) instead
   // of the whole callable flow rooted at `rootId`.
   focus?: { id: string; bodies: FlowPath[] },
+  collapsedEdges: ReadonlySet<string> = new Set<string>(),
 ): Promise<LogicReactFlowGraph> {
   // Built ONCE per relayout and threaded into every node builder: it maps a call target to its owning
   // Service-composition unit (health + smell), the seam that links the two views.
   const ownerLookup = buildOwnerLookup([...index.nodesById.values()], index.edges);
-  const flow = await layoutFlow(rootId, flows, index, expandedLogic, options, ownerLookup, focus);
+  const flow = await layoutFlow(rootId, flows, index, expandedLogic, options, ownerLookup, focus, collapsedEdges);
   // A module mostly EXPORTS callables; its top-level load-flow is thin (often empty), so the
   // methods it defines never show as steps. When a module root is open (not a container dive),
   // ALSO render those definitions as a disconnected grid below the flow — hence no early return on
   // an empty module flow. Collapsed declarations have no wires; an expanded declaration owns its
   // callable's independently laid-out child flow and internal wires.
   if (!focus && index.nodesById.get(rootId)?.kind === "module") {
-    const defs = await definitionGroups(rootId, flow.nodes, flows, index, ownerLookup, expandedLogic, options);
+    const defs = await definitionGroups(rootId, flow.nodes, flows, index, ownerLookup, expandedLogic, options, collapsedEdges);
     return { nodes: [...flow.nodes, ...defs.nodes], edges: [...flow.edges, ...defs.edges] };
   }
   return flow;
@@ -54,14 +56,24 @@ async function layoutFlow(
   options: LogicGraphOptions & { nestByService: boolean },
   ownerLookup: OwnerLookup,
   focus?: { id: string; bodies: FlowPath[] },
+  collapsedEdges: ReadonlySet<string> = new Set<string>(),
 ): Promise<LogicReactFlowGraph> {
   // Entry/exit end-caps frame a callable's flow only: a container DIVE (`focus`) charts sub-chains
   // with no single entry, and a module's top-level flow is a load sequence that nothing "calls" — so
   // both opt out of terminals (a module still gets its def-grid below, appended in deriveLogicLayout).
   const withTerminals = index.nodesById.get(rootId)?.kind !== "module";
-  const spec = focus
-    ? deriveLogicGraphFromBodies(focus.id, focus.bodies, flows, index, expandedLogic, options, ownerLookup)
+  const canonicalSpec = focus
+    ? deriveLogicGraphFromBodies(
+        focus.id,
+        focus.bodies,
+        flows,
+        index,
+        expandedLogic,
+        { ...options, sourceOwnerId: rootId },
+        ownerLookup,
+      )
     : deriveLogicGraph(rootId, flows, index, expandedLogic, { ...options, withTerminals }, ownerLookup);
+  const spec = collapseLogicEdges(canonicalSpec, collapsedEdges);
   if (spec.nodes.length === 0) {
     return { nodes: [], edges: [] };
   }
@@ -121,6 +133,7 @@ async function definitionGroups(
   ownerLookup: OwnerLookup,
   expandedLogic: ReadonlySet<string>,
   options: LogicGraphOptions & { nestByService: boolean },
+  collapsedEdges: ReadonlySet<string>,
 ): Promise<LogicReactFlowGraph> {
   const nodes: LogicRfNode[] = [];
   const edges: LogicReactFlowGraph["edges"] = [];
@@ -159,7 +172,7 @@ async function definitionGroups(
     }
 
     const definitions = await Promise.all(
-      group.defIds.map((defId) => layoutDefinition(moduleId, defId, flows, index, ownerLookup, expandedLogic, options)),
+      group.defIds.map((defId) => layoutDefinition(moduleId, defId, flows, index, ownerLookup, expandedLogic, options, collapsedEdges)),
     );
     const cols = Math.min(COLS, n);
     const rows = Math.ceil(n / cols);
@@ -211,6 +224,7 @@ async function layoutDefinition(
   ownerLookup: OwnerLookup,
   expandedLogic: ReadonlySet<string>,
   options: LogicGraphOptions & { nestByService: boolean },
+  collapsedEdges: ReadonlySet<string>,
 ): Promise<LaidOutDefinition> {
   const occurrenceId = `${moduleId}::def/${defId}`;
   const data = definitionNodeData(defId, flows, index, ownerLookup, expandedLogic.has(occurrenceId));
@@ -220,7 +234,7 @@ async function layoutDefinition(
     return { occurrenceId, width: headerWidth, height: DEF_H, data, children: [], edges: [] };
   }
 
-  const flow = await layoutFlow(defId, flows, index, expandedLogic, options, ownerLookup);
+  const flow = await layoutFlow(defId, flows, index, expandedLogic, options, ownerLookup, undefined, collapsedEdges);
   const children = flow.nodes.map((node) => (
     node.parentId === undefined ? { ...node, parentId: occurrenceId, extent: "parent" as const } : node
   ));

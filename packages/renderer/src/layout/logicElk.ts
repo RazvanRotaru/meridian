@@ -10,6 +10,7 @@
 import { type Edge, type Node } from "@xyflow/react";
 import type { ElkNode } from "elkjs/lib/elk-api";
 import type {
+  CollapsedEdgeData,
   LogicEdgeSpec,
   LogicGraphSpec,
   LogicNodeData,
@@ -18,6 +19,7 @@ import type {
   RequestEdgeTraversalEvidence,
   TerminalData,
 } from "../derive/logicGraph";
+import { logicEdgeCollapseKey } from "../derive/collapseLogicEdges";
 import { arrowMarker } from "../theme/edgeColors";
 import { buildNestedElkGraph, emitReactFlowNodes, parentRelativePlacement, type ElkNestAdapter } from "./elkNesting";
 
@@ -43,7 +45,7 @@ export type DefGroupData = {
   isContainer: boolean;
 };
 
-export type LogicRfNode = Node<LogicNodeData | DefGroupData | TerminalData, LogicNodeType>;
+export type LogicRfNode = Node<LogicNodeData | DefGroupData | TerminalData | CollapsedEdgeData, LogicNodeType>;
 /**
  * A renderer-only summary of the measurable call targets visible in one branch lane. This is
  * deliberately named "static lane" rather than branch coverage: the core report proves graph
@@ -88,6 +90,9 @@ export type LogicRfEdgeData = {
   /** Imported runtime branch-path evidence. When present it always supersedes `staticLane`. */
   executionLane?: ExecutionLaneSignal;
   orientation?: LogicFlowOrientation;
+  /** Stable semantic identity used by per-edge disclosure. Never use the sequential RF edge id. */
+  collapseKey?: string;
+  collapsible?: boolean;
 };
 export type LogicRfEdge = Edge<LogicRfEdgeData>;
 export const LOGIC_ASYNC_EDGE_TYPE = "logicAsync";
@@ -278,11 +283,18 @@ export function toReactFlowLogic(
 }
 
 function toReactFlowNode(elkNode: ElkNode, parentId: string | undefined, spec: LogicNodeSpec): LogicRfNode {
+  const fold = spec.type === "fold" ? spec.data as CollapsedEdgeData : null;
   return {
     id: elkNode.id,
     type: spec.type,
     ...parentRelativePlacement(elkNode, parentId),
     data: spec.data,
+    ...(fold ? {
+      focusable: false,
+      ariaLabel: fold.hiddenStepCount > 0
+        ? `Collapsed path, ${fold.hiddenStepCount} hidden step${fold.hiddenStepCount === 1 ? "" : "s"}`
+        : "Collapsed path connection",
+    } : {}),
   };
 }
 
@@ -296,13 +308,15 @@ function toReactFlowEdge(edge: LogicEdgeSpec, orientation: LogicFlowOrientation)
   // exception wire on both its split hop and final hop into the join. Other branch arms retain the
   // established branch colour.
   const color = exceptional ? EXCEPTION_COLOR : edge.branchRole === "try" ? EXEC_COLOR : branch ? BRANCH_COLOR : async ? ASYNC_COLOR : EXEC_COLOR;
+  const collapsible = edge.collapsible !== false;
+  const collapseKey = collapsible ? logicEdgeCollapseKey(edge) : undefined;
   return {
     id: edge.id,
     source: edge.source,
     target: edge.target,
     ...(edge.sourcePort ? { sourceHandle: edge.sourcePort } : {}),
     ...(edge.targetPort ? { targetHandle: edge.targetPort } : {}),
-    type: async ? LOGIC_ASYNC_EDGE_TYPE : "smoothstep",
+    type: async ? LOGIC_ASYNC_EDGE_TYPE : "logicCollapsible",
     animated: !branch && !async && !exceptional,
     // Promise identity is carried by the rail/socket pairing; repeating variable labels over the
     // canvas made multi-task barriers noisy. The endpoint hover still exposes each input label.
@@ -312,12 +326,18 @@ function toReactFlowEdge(edge: LogicEdgeSpec, orientation: LogicFlowOrientation)
     labelBgPadding: [4, 2],
     style: { stroke: color, strokeWidth: async ? 2.25 : 2, ...(exceptional ? { strokeDasharray: "7 5" } : {}) },
     markerEnd: async ? undefined : arrowMarker(color, 16),
+    interactionWidth: 22,
+    // The native disclosure button owns keyboard focus. Keeping the React Flow edge wrapper out of
+    // the tab order avoids two stops for one action.
+    focusable: false,
+    ariaLabel: collapsible ? `Collapse ${edge.label ? `${edge.label} path` : async ? "async rail" : "flow path"}` : undefined,
     data: {
       kind: edge.kind,
       ...(edge.sourcePort ? { sourcePort: edge.sourcePort } : {}),
       ...(edge.targetPort ? { targetPort: edge.targetPort } : {}),
       ...(edge.taskId ? { taskId: edge.taskId } : {}),
       ...(edge.branchRole ? { branchRole: edge.branchRole } : {}),
+      ...(collapseKey ? { collapseKey, collapsible: true } : { collapsible: false }),
       orientation,
     },
   };

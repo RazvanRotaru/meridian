@@ -7,7 +7,7 @@ import type { PrGitHubComment } from "../state/prTypes";
 import type { ReviewComment } from "../state/reviewTicksPref";
 import { createBlueprintStore } from "../state/store";
 import { StoreProvider } from "../state/StoreContext";
-import { CodeBlock } from "./CodeBlock";
+import { CodeBlock, codeFocusScrollTop } from "./CodeBlock";
 import type { CodeDiffLine } from "./CodeBlock";
 
 const ARTIFACT: GraphArtifact = {
@@ -103,6 +103,30 @@ describe("CodeBlock edge evidence", () => {
     }));
     expect(html).toContain("› 21");
     expect(html).toContain("#7DD3FC");
+  });
+});
+
+describe("CodeBlock structural focus", () => {
+  it("anchors the first structural row instead of scrolling to leading context", () => {
+    expect(codeFocusScrollTop(51, true)).toBe(51);
+    expect(codeFocusScrollTop(51, false)).toBe(0);
+    expect(codeFocusScrollTop(140, false)).toBe(89);
+  });
+
+  it("keeps focused control rows visible without turning them into PR changes or comment targets", () => {
+    const html = renderToStaticMarkup(createElement(CodeBlock, {
+      code: Array.from({ length: 18 }, (_value, index) => `line ${index + 1}`).join("\n"),
+      startLine: 1,
+      showGutter: true,
+      foldUnchanged: true,
+      focusLines: new Set([9, 10, 11]),
+    }));
+
+    expect(html.match(/data-source-focus-line="true"/g)).toHaveLength(3);
+    expect(html).toContain('data-source-line="9" data-source-focus-line="true"');
+    expect(html).toContain('data-source-line="11" data-source-focus-line="true"');
+    expect(html).not.toContain('data-diff-origin="add"');
+    expect(html).not.toMatch(/<tr[^>]*data-review-comment-line/);
   });
 });
 

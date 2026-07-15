@@ -71,8 +71,8 @@ const CODE_PREVIEW_OPTIONS: Array<{
   label: string;
   description: string;
 }> = [
-  { value: "hover", label: "On hover", description: "Open after pausing over a source-backed graph node." },
-  { value: "click", label: "On click", description: "Open when a source-backed graph node is clicked; keep it open until another node or the canvas is clicked." },
+  { value: "hover", label: "On hover", description: "Open after pausing over a source-backed node in the graph or logic flow." },
+  { value: "click", label: "On click", description: "Open when a source-backed node in the graph or logic flow is clicked; keep it open until another node or the canvas is clicked." },
 ];
 
 export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
@@ -146,7 +146,7 @@ export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
 
       <fieldset style={BEHAVIOR_FIELDSET} aria-describedby={`${CODE_PREVIEW_DESCRIPTION_ID} ${NOTE_ID}`}>
         <legend style={LEGEND}>Code preview behavior</legend>
-        <p id={CODE_PREVIEW_DESCRIPTION_ID} style={DESCRIPTION}>Choose how graph node code previews open.</p>
+        <p id={CODE_PREVIEW_DESCRIPTION_ID} style={DESCRIPTION}>Choose how source-backed code previews open across the review graph and logic flow.</p>
         <div style={OPTION_LIST}>
           {CODE_PREVIEW_OPTIONS.map((option) => {
             const selected = props.codePreviewTrigger === option.value;

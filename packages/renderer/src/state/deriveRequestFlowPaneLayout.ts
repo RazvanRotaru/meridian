@@ -10,6 +10,7 @@ import {
 } from "../layout/logicElk";
 import { runElkLayout } from "../layout/elkLayout";
 import type { LogicEdgeSpec, LogicNodeSpec } from "../derive/logicGraph";
+import { collapseLogicEdges } from "../derive/collapseLogicEdges";
 
 export const REQUEST_FLOW_EDGE_CLASS = "request-flow-edge";
 export const REQUEST_FLOW_EDGE_OBSERVED_CLASS = "request-flow-edge--observed";
@@ -26,8 +27,10 @@ export async function deriveRequestFlowPaneLayout(
   flows: LogicFlows = {},
   requestFlowExpansionOverrides: ReadonlySet<string> = new Set<string>(),
   snapshots: readonly SyntheticNodeSnapshot[] = [],
+  collapsedEdges: ReadonlySet<string> = new Set<string>(),
 ): Promise<LogicReactFlowGraph> {
-  const spec = deriveRequestExecutionFlow(trace, index, flows, requestFlowExpansionOverrides, snapshots);
+  const canonicalSpec = deriveRequestExecutionFlow(trace, index, flows, requestFlowExpansionOverrides, snapshots);
+  const spec = collapseLogicEdges(canonicalSpec, collapsedEdges);
   if (spec.nodes.length === 0) return { nodes: [], edges: [] };
   const laidOut = await runElkLayout(buildLogicElkGraph(spec));
   const specById = new Map<string, LogicNodeSpec>(spec.nodes.map((node) => [node.id, node]));
@@ -49,8 +52,9 @@ export async function deriveFocusedRequestFlowPaneLayout(
   orientation: LogicFlowOrientation,
   requestFlowExpansionOverrides: ReadonlySet<string> = new Set<string>(),
   snapshots: readonly SyntheticNodeSnapshot[] = [],
+  collapsedEdges: ReadonlySet<string> = new Set<string>(),
 ): Promise<LogicReactFlowGraph> {
-  const spec = deriveFocusedRequestExecutionFlow(
+  const canonicalSpec = deriveFocusedRequestExecutionFlow(
     trace,
     index,
     flows,
@@ -58,6 +62,7 @@ export async function deriveFocusedRequestFlowPaneLayout(
     requestFlowExpansionOverrides,
     snapshots,
   );
+  const spec = collapseLogicEdges(canonicalSpec, collapsedEdges);
   if (spec.nodes.length === 0) return { nodes: [], edges: [] };
   const laidOut = await runElkLayout(buildLogicElkGraph(spec, orientation));
   const specById = new Map<string, LogicNodeSpec>(spec.nodes.map((node) => [node.id, node]));

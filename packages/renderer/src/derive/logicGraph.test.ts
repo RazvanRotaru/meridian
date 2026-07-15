@@ -135,6 +135,27 @@ describe("deriveLogicGraph", () => {
     );
   });
 
+  it("keeps an expanded callee's structural source owned by that callee", () => {
+    const target = "ts:m#fn";
+    const source = { file: "src/m.ts", line: 20, col: 2, endLine: 24, endCol: 3 };
+    const branch: FlowStep = {
+      kind: "branch",
+      branchKind: "if",
+      label: "if ready",
+      source,
+      paths: [{ label: "then", role: "then", body: [] }],
+    };
+    const flows: LogicFlows = { r: [call("fn", target, "resolved")], [target]: [branch] };
+    const index = makeIndex([{ id: target, name: "fn", kind: "function", parentId: null }]);
+
+    const { nodes } = deriveLogicGraph("r", flows, index, new Set(["r::0"]), { hideGreyed: false });
+
+    expect(nodes.find((node) => node.id === "r::0/0")).toMatchObject({
+      parentId: "r::0",
+      data: { logicKind: "if", sourceContext: { ownerId: target, anchor: source } },
+    });
+  });
+
   it("expands an empty local callable in place without inventing child nodes or edges", () => {
     const target = "ts:m#leaf";
     const flows: LogicFlows = {
@@ -174,10 +195,20 @@ describe("deriveLogicGraph", () => {
   });
 
   it("renders a loop as a default-expanded container with nested children", () => {
-    const loop: FlowStep = { kind: "loop", label: "for each x", body: [call("step", "ext:l#s", "external")] };
+    const source = { file: "src/a.ts", line: 3, col: 2, endLine: 6, endCol: 3 };
+    const loop: FlowStep = { kind: "loop", label: "for each x", source, body: [call("step", "ext:l#s", "external")] };
     const { nodes } = deriveLogicGraph("r", { r: [loop] }, makeIndex([]), NONE, { hideGreyed: false });
     const container = nodes.find((n) => n.id === "r::0")!;
-    expect(container).toMatchObject({ type: "control", data: { logicKind: "loop", isContainer: true, expandable: true, isExpanded: true } });
+    expect(container).toMatchObject({
+      type: "control",
+      data: {
+        logicKind: "loop",
+        isContainer: true,
+        expandable: true,
+        isExpanded: true,
+        sourceContext: { ownerId: "r", anchor: source },
+      },
+    });
     expect(nodes.find((n) => n.parentId === "r::0")).toBeTruthy();
   });
 
@@ -223,6 +254,7 @@ describe("deriveLogicGraph", () => {
         logicKind: "if",
         branchKind: "if",
         branchSource,
+        sourceContext: { ownerId: "r", anchor: branchSource },
         expandable: true,
         isExpanded: true,
         isContainer: false,
@@ -297,10 +329,12 @@ describe("deriveLogicGraph", () => {
   });
 
   it("renders ordinary try/catch as explicit normal/error lanes with stable pins and a join", () => {
+    const source = { file: "src/a.ts", line: 12, col: 2, endLine: 18, endCol: 3 };
     const tryStep: FlowStep = {
       kind: "branch",
       branchKind: "try",
       label: "try/catch",
+      source,
       paths: [
         { label: "try", role: "try", body: [call("t", "ext:l#t", "external")] },
         { label: "catch e", role: "catch", body: [call("c", "ext:l#c", "external")] },
@@ -312,6 +346,7 @@ describe("deriveLogicGraph", () => {
       type: "exception",
       data: {
         logicKind: "try",
+        sourceContext: { ownerId: "r", anchor: source },
         isContainer: false,
         expandable: true,
         isExpanded: true,
@@ -360,6 +395,7 @@ describe("deriveLogicGraph", () => {
   });
 
   it("charts finally as one mandatory phase after the explicit try/catch lanes merge", () => {
+    const finallySource = { file: "src/a.ts", line: 20, col: 2, endLine: 22, endCol: 3 };
     const tryFinally: FlowStep = {
       kind: "branch",
       branchKind: "try",
@@ -367,7 +403,7 @@ describe("deriveLogicGraph", () => {
       paths: [
         { label: "try", role: "try", body: [call("t", "ext:l#t", "external")] },
         { label: "catch e", role: "catch", body: [call("c", "ext:l#c", "external")] },
-        { label: "finally", role: "finally", body: [call("cleanup", "ext:l#cleanup", "external")] },
+        { label: "finally", role: "finally", source: finallySource, body: [call("cleanup", "ext:l#cleanup", "external")] },
       ],
     };
     const loop: FlowStep = { kind: "loop", label: "for each x", body: [call("s", "ext:l#s", "external")] };
@@ -381,7 +417,13 @@ describe("deriveLogicGraph", () => {
       type: "finally",
       width: 256,
       height: 66,
-      data: { logicKind: "finally", label: "finally · always", expandable: true, isExpanded: true },
+      data: {
+        logicKind: "finally",
+        label: "finally · always",
+        expandable: true,
+        isExpanded: true,
+        sourceContext: { ownerId: "r", anchor: finallySource },
+      },
     });
     expect(cleanup).toMatchObject({ type: "block", data: { label: "cleanup" } });
     expect(edges).toContainEqual(expect.objectContaining({ source: "r::0::join", target: finallyNode.id, kind: "seq" }));
