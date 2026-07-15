@@ -121,6 +121,32 @@ describe("restoreFromUrl review exit", () => {
     expect(store.getState().reviewFocusedSubgraph).toBeNull();
   });
 
+  it("discards a confirmed session-only line composer before history changes its host", async () => {
+    const store = freshStore();
+    store.setState({
+      review: {
+        context: {
+          changedFiles: [{ path: "src/a.ts", status: "modified", hunks: [{ start: 1, end: 1 }] }],
+          baseRef: "main",
+          baseSha: "base",
+          headRef: "feature",
+          reviewKey: "artifact-history-draft",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+    });
+    store.getState().openReviewLineComposer("src/a.ts", 1);
+    store.getState().setReviewLineComposerBody("Do not leave this invisible");
+    stubWindow();
+
+    await restoreFromUrl(store, "view=logic");
+
+    expect(store.getState().viewMode).toBe("logic");
+    expect(store.getState().reviewLineComposer).toBeNull();
+  });
+
   it("enters telemetry mode for a deep-linked request trace", async () => {
     const store = freshStore();
     stubWindow();

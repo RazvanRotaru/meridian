@@ -1712,6 +1712,229 @@ describe("PR store slice", () => {
     expect(store.getState().viewMode).toBe("logic");
   });
 
+  it("guards and replays a dirty line-composer target switch", () => {
+    const store = freshStore();
+    store.setState({
+      review: {
+        context: {
+          changedFiles: [{ path: "src/a.ts", status: "modified", hunks: [{ start: 10, end: 12 }] }],
+          baseRef: "main",
+          baseSha: "base",
+          headRef: "feature",
+          reviewKey: "sticky-line-switch",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+    });
+    store.getState().openReviewLineComposer("src/a.ts", 10);
+    store.getState().setReviewLineComposerBody("Keep the original line context");
+
+    store.getState().openReviewLineComposer("src/a.ts", 11);
+
+    expect(store.getState().reviewLineComposer).toMatchObject({
+      line: 10,
+      body: "Keep the original line context",
+      confirmDiscard: true,
+    });
+    store.getState().keepEditingReviewLineComposer();
+    expect(store.getState().reviewLineComposer).toMatchObject({ line: 10, confirmDiscard: false });
+
+    store.getState().openReviewLineComposer("src/a.ts", 11);
+    store.getState().discardReviewLineComposer();
+    expect(store.getState().reviewLineComposer).toMatchObject({ line: 11, body: "", confirmDiscard: false });
+  });
+
+  it("keeps the old source mounted until a dirty cross-file transition is discarded", async () => {
+    vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: "next one\nnext two", startLine: 1, truncated: false }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ sourceUrl: "/api/source?id=artifact-1" });
+    const method = store.getState().index.nodesById.get(METHOD_ID)!;
+    const oldView = { node: method, code: "old source", loading: false, error: null, mode: "modal" as const, baseLine: 10 };
+    const nextNode = node("ts:src/b.ts#next", "method", "src/b.ts", undefined, { start: 1, end: 2 });
+    store.setState({
+      review: {
+        context: {
+          changedFiles: [
+            { path: "src/a.ts", status: "modified", hunks: [{ start: 10, end: 10 }] },
+            { path: "src/b.ts", status: "modified", hunks: [{ start: 1, end: 2 }] },
+          ],
+          baseRef: "main",
+          baseSha: "base",
+          headRef: "feature",
+          reviewKey: "sticky-source-switch",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+      codeView: oldView,
+    });
+    store.getState().openReviewLineComposer("src/a.ts", 10);
+    store.getState().setReviewLineComposerBody("Do not orphan this draft");
+
+    await store.getState().showCode(nextNode, { mode: "modal" });
+
+    expect(store.getState().codeView).toBe(oldView);
+    expect(store.getState().reviewLineComposer).toMatchObject({
+      path: "src/a.ts",
+      body: "Do not orphan this draft",
+      confirmDiscard: true,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    store.getState().discardReviewLineComposer();
+    await vi.waitFor(() => expect(store.getState().codeView).toMatchObject({
+      node: nextNode,
+      code: "next one\nnext two",
+      loading: false,
+      mode: "modal",
+    }));
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(store.getState().reviewLineComposer).toBeNull();
+  });
+
+  it("drops an older whole-file response for the same node after a newer slice owns the composer", async () => {
+    vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
+    const resolveResponse: Array<(response: Response) => void> = [];
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => new Promise<Response>((resolve) => {
+      resolveResponse.push(resolve);
+    })));
+    const store = freshStore({ sourceUrl: "/api/source?id=artifact-1" });
+    const method = store.getState().index.nodesById.get(METHOD_ID)!;
+    store.setState({
+      review: {
+        context: {
+          changedFiles: [{ path: "src/a.ts", status: "modified", hunks: [{ start: 10, end: 12 }] }],
+          baseRef: "main",
+          baseSha: "base",
+          headRef: "feature",
+          reviewKey: "sticky-same-node-race",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+    });
+
+    const olderWholeFile = store.getState().showCode(method, { wholeFile: true, mode: "modal" });
+    const newerSlice = store.getState().showCode(method, { mode: "modal" });
+    expect(resolveResponse).toHaveLength(2);
+
+    resolveResponse[1]!(Response.json({ code: "new ten\nnew eleven\nnew twelve", startLine: 10, lineCount: 3, truncated: false }));
+    await newerSlice;
+    store.getState().openReviewLineComposer("src/a.ts", 10);
+    store.getState().setReviewLineComposerBody("Stay with the winning slice");
+
+    resolveResponse[0]!(Response.json({ code: "stale whole file", startLine: 1, lineCount: 1, truncated: false }));
+    await olderWholeFile;
+
+    expect(store.getState().codeView).toMatchObject({
+      node: method,
+      code: "new ten\nnew eleven\nnew twelve",
+      baseLine: 10,
+      wholeFile: false,
+      mode: "modal",
+    });
+    expect(store.getState().reviewLineComposer).toMatchObject({
+      line: 10,
+      body: "Stay with the winning slice",
+      confirmDiscard: false,
+    });
+  });
+
+  it("moves an owned composer into the modal but guards an unrelated preview draft", () => {
+    const store = freshStore();
+    const method = store.getState().index.nodesById.get(METHOD_ID)!;
+    const inlineView = {
+      node: method,
+      code: "line ten\nline eleven\nline twelve",
+      lineCount: 3,
+      loading: false,
+      error: null,
+      mode: "inline" as const,
+      baseLine: 10,
+      sourceSide: "head" as const,
+    };
+    store.setState({
+      review: {
+        context: {
+          changedFiles: [
+            { path: "src/a.ts", status: "modified", hunks: [{ start: 10, end: 12 }] },
+            { path: "src/b.ts", status: "modified", hunks: [{ start: 1, end: 1 }] },
+          ],
+          baseRef: "main",
+          baseSha: "base",
+          headRef: "feature",
+          reviewKey: "sticky-host-transfer",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+      codeView: inlineView,
+    });
+    store.getState().openReviewLineComposer("src/a.ts", 10);
+    store.getState().setReviewLineComposerBody("Follow this row into the modal");
+
+    store.getState().expandCode();
+
+    expect(store.getState().codeView).toMatchObject({ mode: "modal" });
+    expect(store.getState().reviewLineComposer).toMatchObject({
+      path: "src/a.ts",
+      line: 10,
+      body: "Follow this row into the modal",
+      confirmDiscard: false,
+    });
+
+    store.getState().discardReviewLineComposer();
+    store.setState({ codeView: inlineView });
+    store.getState().openReviewLineComposer("src/b.ts", 1);
+    store.getState().setReviewLineComposerBody("This belongs to the floating preview");
+
+    store.getState().expandCode();
+
+    expect(store.getState().codeView).toMatchObject({ mode: "inline" });
+    expect(store.getState().reviewLineComposer).toMatchObject({
+      path: "src/b.ts",
+      body: "This belongs to the floating preview",
+      confirmDiscard: true,
+    });
+    store.getState().discardReviewLineComposer();
+    expect(store.getState().codeView).toMatchObject({ mode: "modal" });
+    expect(store.getState().reviewLineComposer).toBeNull();
+  });
+
+  it("keeps the active minimal source host mounted until a view swap is discarded", () => {
+    const store = freshStore();
+    store.setState({
+      minimalSeedIds: [METHOD_ID],
+      review: {
+        context: {
+          changedFiles: [{ path: "src/a.ts", status: "modified", hunks: [{ start: 10, end: 12 }] }],
+          baseRef: "main",
+          baseSha: "base",
+          headRef: "feature",
+          reviewKey: "sticky-minimal-host",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+    });
+    store.getState().openReviewLineComposer("src/a.ts", 10);
+    store.getState().setReviewLineComposerBody("Keep this on the extracted graph");
+
+    store.getState().setMinimalView("codebase");
+
+    expect(store.getState().minimalView).toBe("graph");
+    expect(store.getState().reviewLineComposer).toMatchObject({ confirmDiscard: true });
+    store.getState().discardReviewLineComposer();
+    expect(store.getState().minimalView).toBe("codebase");
+  });
+
   it("loads an isolated hover preview without replacing the open code modal", async () => {
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: "line10\nline11\nline12", startLine: 10, truncated: false }));

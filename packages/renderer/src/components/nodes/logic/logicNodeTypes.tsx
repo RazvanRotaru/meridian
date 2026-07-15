@@ -236,13 +236,12 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
     : null;
   const codeNode = d.targetId ? index.nodesById.get(d.targetId) : undefined;
   const canCode = isSourceBackedNode(codeNode) && Boolean(sourceUrl);
-  // The inline box shows only for THIS block's own target, and only while the store keeps it in
-  // the compact "inline" mode (the modal takes over once expandCode flips mode → "modal").
+  // Keep rendering an inline view when one was opened programmatically; the visible source button
+  // now expresses its modal destination atomically so a guarded dirty-draft replay cannot lose it.
   const showingInline = codeNode != null && codeView != null && codeView.node.id === codeNode.id && codeView.mode === "inline";
   const stop = (e: React.MouseEvent) => e.stopPropagation();
   const toggleCode = () => {
-    void showCode(codeNode!);
-    expandCode();
+    void showCode(codeNode!, { mode: "modal" });
   };
   const codeButton = canCode && codeNode ? (
     <button type="button" style={d.compact ? COMPACT_CODE_BTN : CODE_BTN} title="view source" onClick={(e) => { stop(e); toggleCode(); }}>{"</>"}</button>

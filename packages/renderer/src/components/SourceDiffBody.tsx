@@ -5,11 +5,13 @@
  * here prevents a new review affordance from silently inventing a fourth interpretation of the diff.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import type { ChangedLineKind, LineRange } from "@meridian/core";
 import { nonTextualDiffNotice } from "../derive/nonTextualDiffNotice";
 import { anchorableHunks } from "../derive/reviewSubmit";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
+import { prReviewRevisionKey } from "../state/prReviewFreshness";
+import { matchesReviewLineComposerTarget } from "../state/reviewLineComposer";
 import type { CodeView } from "../state/store";
 import { CodeBlock, type CodeDiffLine, type CodeSourceSide } from "./CodeBlock";
 import {
@@ -50,6 +52,8 @@ export interface SourceDiffModel {
   existingComments: ReturnType<typeof useCodeReviewComments>;
   pendingComments: ReturnType<typeof usePendingCodeReviewComments>;
   commentableLines: ReadonlySet<number>;
+  /** Explains a partial/empty GitHub inline-comment range instead of leaving rows mysteriously inert. */
+  reviewCommentScopeNote: string | null;
   removedRows: ReadonlyMap<number, string[]>;
   removedTruncated: boolean;
   /** The manifest proves a file change, but Git supplied no trustworthy line-level body. */
@@ -61,6 +65,8 @@ export interface SourceDiffModel {
 export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
   const review = useBlueprint((state) => state.review);
   const prReviewed = useBlueprint((state) => state.prReviewed);
+  const prReviewRefreshing = useBlueprint((state) => state.prReviewRefreshing);
+  const prReviewStatus = useBlueprint((state) => state.prReviewStatus);
   const prReviewFiles = useBlueprint((state) => state.prReviewSource?.files ?? null);
   const file = codeView.node.location.file;
   const legacyRemoved = useBlueprint((state) => state.reviewRemovedByFile[file] ?? EMPTY_REMOVED);
@@ -114,6 +120,11 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
   const existingComments = useCodeReviewComments(file, baseLine, commentCode, sourceLineCount);
   const pendingComments = usePendingCodeReviewComments(file, baseLine, commentCode, sourceLineCount);
   const githubCommentableLines = useGitHubCommentableReviewLines(file, baseLine, commentCode, sourceLineCount);
+  const githubCommentingReady = prReviewed !== null
+    && review !== null
+    && !prReviewRefreshing
+    && prReviewStatus !== "preparing";
+  const textualDiffNotice = review === null ? null : nonTextualDiffNotice(file, prReviewFiles);
   const commentableLines = useMemo(() => {
     if (review === null || sourceSide === "base") return EMPTY_COMMENTABLE_LINES;
     if (prReviewed !== null) return githubCommentableLines;
@@ -123,6 +134,12 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
       ? new Set([...changedLineKinds].filter(([, kind]) => kind === "added" || kind === "modified").map(([line]) => line))
       : new Set(changedLines);
   }, [changedLineKinds, changedLines, file, githubCommentableLines, prReviewed, review, sourceSide]);
+  const reviewCommentScopeNote = useMemo(
+    () => githubCommentingReady && sourceSide === "head" && textualDiffNotice === null
+      ? githubLineCommentScopeNote(githubCommentableLines, sourceLineCount)
+      : null,
+    [githubCommentableLines, githubCommentingReady, sourceLineCount, sourceSide, textualDiffNotice],
+  );
 
   return {
     view: codeView,
@@ -139,9 +156,10 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
     existingComments,
     pendingComments,
     commentableLines,
+    reviewCommentScopeNote,
     removedRows,
     removedTruncated: diffLines === undefined && legacyRemovedTruncated,
-    textualDiffNotice: review === null ? null : nonTextualDiffNotice(file, prReviewFiles),
+    textualDiffNotice,
     // unchangedCodeFolds itself requires a focus row, so unchanged review nodes remain fully visible.
     foldUnchanged: review !== null,
   };
@@ -152,16 +170,41 @@ export function SourceDiffBody({
   maxHeight,
   evidenceLines = EMPTY_EVIDENCE_LINES,
   showGutter,
+  onComposerEngage,
 }: {
   model: SourceDiffModel;
   maxHeight: number | string;
   evidenceLines?: ReadonlySet<number>;
   /** Ordinary Logic source may remain gutterless; every active review diff gets the shared gutter. */
   showGutter?: boolean;
+  /** Promote a transient host before inserting/focusing the composer can change card geometry. */
+  onComposerEngage?: () => void;
 }) {
-  const { addReviewComment } = useBlueprintActions();
-  const [activeCommentLine, setActiveCommentLine] = useState<number | null>(null);
-  useEffect(() => setActiveCommentLine(null), [model.view.node.id, model.baseLine]);
+  const reviewKey = useBlueprint((state) => state.review?.context.reviewKey ?? null);
+  const lineRevision = useBlueprint((state) => prReviewRevisionKey(state.prReviewRevision));
+  const composer = useBlueprint((state) => state.reviewLineComposer);
+  const {
+    addReviewComment,
+    discardReviewLineComposer,
+    keepEditingReviewLineComposer,
+    openReviewLineComposer,
+    requestReviewLineComposerDismiss,
+    setReviewLineComposerBody,
+  } = useBlueprintActions();
+  const activeComposer = composer !== null
+    && reviewKey !== null
+    && matchesReviewLineComposerTarget(composer, {
+      reviewKey,
+      lineRevision,
+      path: model.file,
+      line: composer.line,
+    })
+    && model.commentableLines.has(composer.line)
+    ? composer
+    : null;
+  useEffect(() => {
+    if (activeComposer !== null) onComposerEngage?.();
+  }, [activeComposer, onComposerEngage]);
   const { code, error, loading, truncated } = model.view;
   return (
     <div data-source-diff-body="true">
@@ -170,6 +213,16 @@ export function SourceDiffBody({
       {model.textualDiffNotice ? (
         <div role="status" data-non-textual-diff="true" style={NON_TEXTUAL_DIFF_STYLE}>
           {model.textualDiffNotice}
+        </div>
+      ) : null}
+      {model.reviewCommentScopeNote ? (
+        <div
+          role="note"
+          data-review-comment-scope={model.commentableLines.size === 0 ? "none" : "partial"}
+          title="GitHub's public review API currently accepts Meridian inline comments only on lines included in the pull request diff."
+          style={COMMENT_SCOPE_NOTE_STYLE}
+        >
+          {model.reviewCommentScopeNote}
         </div>
       ) : null}
       {code !== null ? (
@@ -184,11 +237,27 @@ export function SourceDiffBody({
           changedLineKinds={model.changedLineKinds}
           evidenceLines={evidenceLines}
           commentableLines={model.commentableLines}
-          onLineClick={model.commentableLines.size > 0 ? setActiveCommentLine : undefined}
-          lineComposer={activeCommentLine === null || !model.commentableLines.has(activeCommentLine) ? null : {
-            line: activeCommentLine,
-            onAdd: (body) => addReviewComment(model.file, null, body, activeCommentLine),
-            onCancel: () => setActiveCommentLine(null),
+          onLineClick={model.commentableLines.size > 0 ? (line) => {
+            // Pin synchronously. Waiting for the controlled composer render is late enough for a
+            // hover-card leave timer to win when the inserted row moves the pointer outside.
+            onComposerEngage?.();
+            openReviewLineComposer(model.file, line);
+          } : undefined}
+          lineComposer={activeComposer === null ? null : {
+            line: activeComposer.line,
+            value: activeComposer.body,
+            onValueChange: setReviewLineComposerBody,
+            confirmDiscard: activeComposer.confirmDiscard,
+            error: activeComposer.error,
+            onKeepEditing: keepEditingReviewLineComposer,
+            onDiscard: discardReviewLineComposer,
+            onAdd: (body) => {
+              addReviewComment(model.file, null, body, activeComposer.line);
+              discardReviewLineComposer();
+            },
+            onCancel: () => {
+              requestReviewLineComposerDismiss();
+            },
           }}
           existingComments={model.existingComments}
           pendingComments={model.pendingComments}
@@ -220,6 +289,40 @@ export function sourceDiffInstanceKey(model: {
       ? "no-base-counterpart"
       : `${model.diffOldSpan.start}-${model.diffOldSpan.end}`;
   return [model.view.node.id, model.file, model.baseLine, model.shownEnd, model.sourceSide, oldScope].join(":");
+}
+
+/** Compact the visible GitHub-safe rows into an exact explanation for partial source snippets. */
+export function githubLineCommentScopeNote(
+  commentableLines: ReadonlySet<number>,
+  visibleLineCount: number,
+): string | null {
+  if (visibleLineCount <= 0 || commentableLines.size >= visibleLineCount) return null;
+  if (commentableLines.size === 0) {
+    return "No inline-commentable PR diff lines in this preview";
+  }
+  return `Hover ${formatLineRanges(commentableLines)} to add a comment · use GitHub for other lines`;
+}
+
+function formatLineRanges(lines: ReadonlySet<number>): string {
+  const sorted = [...lines].sort((left, right) => left - right);
+  if (sorted.length === 0) return "";
+  const labels: string[] = [];
+  let start = sorted[0]!;
+  let end = start;
+  for (let index = 1; index < sorted.length; index += 1) {
+    const line = sorted[index]!;
+    if (line === end + 1) {
+      end = line;
+      continue;
+    }
+    labels.push(start === end ? `L${start}` : `L${start}–L${end}`);
+    start = line;
+    end = line;
+  }
+  labels.push(start === end ? `L${start}` : `L${start}–L${end}`);
+  const visible = labels.slice(0, 2);
+  const hidden = labels.length - visible.length;
+  return hidden > 0 ? `${visible.join(", ")} +${hidden} more` : visible.join(", ");
 }
 
 /** Clip canonical rows to the shown source while retaining deletes immediately before the first row
@@ -293,5 +396,16 @@ const NON_TEXTUAL_DIFF_STYLE: React.CSSProperties = {
   color: "#D7B56D",
   fontSize: 10.5,
   lineHeight: "15px",
+};
+const COMMENT_SCOPE_NOTE_STYLE: React.CSSProperties = {
+  boxSizing: "border-box",
+  padding: "5px 9px",
+  borderBottom: "1px solid rgba(56,139,253,0.18)",
+  background: "rgba(56,139,253,0.055)",
+  color: "#91A5BC",
+  fontSize: 10.5,
+  lineHeight: "15px",
+  maxHeight: 45,
+  overflow: "hidden",
 };
 const TRUNCATED_STYLE: React.CSSProperties = { padding: "6px 12px", color: "#8B949E", fontSize: 10 };

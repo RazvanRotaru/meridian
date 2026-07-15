@@ -26,7 +26,7 @@ export function UnitDiagnosisPanel(props: { unit: UnitMetrics | null; node: Grap
 function Diagnosis({ unit, node }: { unit: UnitMetrics; node: GraphNode | null }) {
   const diagnosis = diagnoseUnit(unit);
   const tone = TONE_COLOR[diagnosis.tone];
-  const { showCode, expandCode } = useBlueprintActions();
+  const { showCode } = useBlueprintActions();
   const summary = useChangeSummary(node ?? undefined);
   const canOpen = isSourceBackedNode(node);
   return (
@@ -63,8 +63,7 @@ function Diagnosis({ unit, node }: { unit: UnitMetrics; node: GraphNode | null }
                 type="button"
                 style={OPEN_STYLE}
                 onClick={() => {
-                  void showCode(node);
-                  expandCode();
+                  void showCode(node, { mode: "modal" });
                 }}
               >
                 Open Diff

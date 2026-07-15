@@ -60,7 +60,8 @@ export function useWireHover(
   nodes: Node[],
   enabled: boolean,
   onInspectPair?: (pair: Edge[]) => void,
-  onInspectionEnd?: () => void,
+  /** Return false to keep the local dock mounted while its source host asks Keep/Discard. */
+  onInspectionEnd?: () => boolean | void,
 ): WireInteractionApi {
   const [hover, setHover] = useState<WireHover | null>(null);
   const [inspected, setInspected] = useState<Edge | null>(null);
@@ -69,9 +70,12 @@ export function useWireHover(
   onInspectionEndRef.current = onInspectionEnd;
   const clearInspected = useCallback(() => {
     if (inspectedRef.current === null) return;
+    // The source lifecycle owns dismissal permission. Clear local wire identity only after it says
+    // the dock may actually go; doing this in the opposite order orphaned dirty edge comments on
+    // every edge-array refresh before the store guard had a chance to render its confirmation.
+    if (onInspectionEndRef.current?.() === false) return;
     inspectedRef.current = null;
     setInspected(null);
-    onInspectionEndRef.current?.();
   }, []);
   // Unpin whenever the wires re-derive (see the header): the pinned strand may no longer be drawn.
   useEffect(() => {
@@ -85,8 +89,9 @@ export function useWireHover(
   // Unmount cannot set hook state, but it still owes the shared edge-evidence lifecycle its end.
   useEffect(() => () => {
     if (inspectedRef.current !== null) {
-      inspectedRef.current = null;
-      onInspectionEndRef.current?.();
+      if (onInspectionEndRef.current?.() !== false) {
+        inspectedRef.current = null;
+      }
     }
   }, []);
 
@@ -165,7 +170,9 @@ export function useWireHover(
 
   const labelOf = (id: string) => labelById.get(id);
   if (!enabled) {
-    return { edges: dressedEdges, hover: null, inspectedPair: null, labelOf, inspect: () => {}, clearInspected };
+    // A disabled surface normally has no inspector. If dismissal was vetoed by a dirty composer,
+    // keep returning its pair so the dock and inline confirmation remain reachable until resolved.
+    return { edges: dressedEdges, hover: null, inspectedPair, labelOf, inspect: () => {}, clearInspected };
   }
 
   const onEdgeMouseEnter = (event: React.MouseEvent, edge: Edge) => {

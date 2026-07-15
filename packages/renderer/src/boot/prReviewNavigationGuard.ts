@@ -14,8 +14,12 @@ import type { BlueprintState, BlueprintStore } from "../state/store";
 const ROOT_LOCK_CLASS = "mrd-pr-review-navigation-lock";
 const WHEEL_OPTIONS: AddEventListenerOptions = { capture: true, passive: false };
 export const PR_REVIEW_LEAVE_MESSAGE = "Are you sure you want to leave this page? All review progress will be lost.";
+export const REVIEW_COMMENT_LEAVE_MESSAGE = "You have an unfinished comment. Leave and discard it?";
 
-type GuardState = Pick<BlueprintState, "minimalSeedIds" | "prReviewed" | "prReviewStatus" | "viewMode">;
+type GuardState = Pick<
+  BlueprintState,
+  "minimalSeedIds" | "prReviewed" | "prReviewStatus" | "reviewLineComposer" | "viewMode"
+>;
 
 export interface PrReviewNavigationGuard {
   /** Begin following live review state once bootstrap has created the store. */
@@ -27,7 +31,9 @@ export interface PrReviewNavigationGuard {
 
 /** True while preparation is cancelable or a live (possibly parked/resumable) review exists. */
 export function prReviewNeedsNavigationLock(state: GuardState): boolean {
-  return state.prReviewStatus === "preparing" || state.prReviewed !== null;
+  return state.prReviewStatus === "preparing"
+    || state.prReviewed !== null
+    || (state.reviewLineComposer?.body.trim().length ?? 0) > 0;
 }
 
 /** Trackpad history swipes are horizontal wheel sequences; ctrl+wheel is pinch zoom, not Back. */
@@ -54,7 +60,7 @@ export function startPrReviewNavigationGuard(): PrReviewNavigationGuard {
     event.preventDefault();
     // Modern browsers intentionally replace custom copy with their own native warning, but setting
     // returnValue is still required by older engines to request the dialog.
-    event.returnValue = PR_REVIEW_LEAVE_MESSAGE;
+    event.returnValue = leaveMessage(store);
   };
 
   const onPopState = (event: PopStateEvent) => {
@@ -63,7 +69,7 @@ export function startPrReviewNavigationGuard(): PrReviewNavigationGuard {
       event.stopImmediatePropagation();
       return;
     }
-    if (window.confirm(PR_REVIEW_LEAVE_MESSAGE)) {
+    if (window.confirm(leaveMessage(store))) {
       return;
     }
     // popstate cannot be canceled. Stop the URL-sync listener before it tears down the review, then
@@ -152,8 +158,15 @@ const IDLE_GUARD_STATE: GuardState = {
   viewMode: "modules",
   prReviewed: null,
   prReviewStatus: "idle",
+  reviewLineComposer: null,
   minimalSeedIds: [],
 };
+
+function leaveMessage(store: BlueprintStore | null): string {
+  return (store?.getState().reviewLineComposer?.body.trim().length ?? 0) > 0
+    ? REVIEW_COMMENT_LEAVE_MESSAGE
+    : PR_REVIEW_LEAVE_MESSAGE;
+}
 
 /** Match the URL decoder's review contract; a stray `rev=1` without a valid PR is not a lock. */
 export function reviewRestoreRequested(search: string): boolean {

@@ -316,7 +316,18 @@ describe("CodeBlock review comments", () => {
 
     expect(html.match(/data-review-comment-line=/g)).toHaveLength(1);
     expect(html).toContain('data-review-comment-line="41"');
+    expect(html).toContain('data-source-code-cell="41"');
+    expect(html).toContain('title="Click to comment on line 41"');
     expect(html).toContain('aria-label="Comment on line 41"');
+    expect(html).toContain('class="mrd-line-comment-button"');
+    expect(html).toContain("tr[data-review-comment-line] .mrd-line-comment-button");
+    expect(html).toContain("opacity: 0");
+    expect(html).toContain("pointer-events: none");
+    expect(html).toContain("tr[data-review-comment-line]:hover .mrd-line-comment-button");
+    expect(html).toContain("tr[data-review-comment-line]:focus-within .mrd-line-comment-button");
+    expect(html).toContain('tr[data-line-comment-composer-open="true"] .mrd-line-comment-button');
+    expect(html).not.toContain('data-source-code-cell="40"');
+    expect(html).not.toContain('data-source-code-cell="42"');
     expect(html).not.toContain('aria-label="Comment on line 40"');
     expect(html).not.toContain('aria-label="Comment on line 42"');
   });
