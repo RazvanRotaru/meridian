@@ -17,6 +17,7 @@ import type {
 import { runPythonAnalyzer } from "./analyzer";
 import { buildNodes } from "./nodes";
 import { buildEdges, type EdgeResult } from "./edges";
+import { buildFlows } from "./flows";
 import { buildStats } from "./stats";
 import type { AnalyzeOutput } from "./types";
 
@@ -91,6 +92,7 @@ function runExtraction(options: ExtractOptions): ExtractionResult {
   const output = runPythonAnalyzer(options);
   const index = buildNodes(output);
   const built = buildEdges(output, index, options);
+  const flows = buildFlows(output, index, built.nodes);
   const stats = buildStats({
     files: output.modules.length,
     nodes: built.nodes,
@@ -102,7 +104,7 @@ function runExtraction(options: ExtractOptions): ExtractionResult {
   if (index.renamed > 0) {
     diagnostics.push({ severity: "warn", message: `${index.renamed} colliding node id(s) disambiguated with ~n ordinals` });
   }
-  return { language: "python", nodes: built.nodes, edges: built.edges, stats, diagnostics };
+  return { language: "python", nodes: built.nodes, edges: built.edges, stats, diagnostics, flows };
 }
 
 function diagnosticsOf(output: AnalyzeOutput, built: EdgeResult): ExtractionDiagnostic[] {
